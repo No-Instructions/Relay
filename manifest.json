@@ -1,0 +1,11 @@
+{
+	"id": "obsidian-live",
+	"name": "Obsidian Live",
+	"minAppVersion": "0.15.0",
+	"description": "Realtime Collaborative Workspace",
+	"author": "Daniel Grossmann-Kavanagh",
+	"authorUrl": "https://github.com/dtkav",
+	"fundingUrl": "https://www.buymeacoffee.com/dtkav",
+	"isDesktopOnly": false,
+	"version": "1.0.0"
+}
