@@ -4,9 +4,9 @@
 	"description": "Real-time collaborative workspace for Obsidian.",
 	"main": "main.js",
 	"scripts": {
-		"dev": "node esbuild.config.mjs debug",
+		"dev": "node esbuild.config.mjs watch",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-		"beta": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs",
+		"beta": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs debug",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"test": "jest"
 	},
@@ -16,6 +16,7 @@
 	"devDependencies": {
 		"@types/diff": "^5.0.9",
 		"@types/jest": "^29.5.12",
+		"@types/jsonwebtoken": "^9.0.6",
 		"@types/node": "^16.11.6",
 		"@typescript-eslint/eslint-plugin": "5.29.0",
 		"@typescript-eslint/parser": "5.29.0",
@@ -25,16 +26,16 @@
 		"obsidian": "latest",
 		"ts-jest": "^29.1.2",
 		"tslib": "2.4.0",
-		"typescript": "4.7.4"
+		"typescript": "^4.7.4"
 	},
 	"dependencies": {
 		"@y-sweet/client": "^0.1.0",
 		"diff": "^5.2.0",
 		"gray-matter": "^4.0.3",
+		"jsonwebtoken": "^9.0.2",
 		"monkey-around": "^3.0.0",
 		"pocketbase": "^0.20.3",
 		"tslib": "2.4.0",
-		"typescript": "4.7.4",
 		"y-indexeddb": "^9.0.9",
 		"y-protocols": "^1.0.5",
 		"y-websocket": "^1.5.3"
