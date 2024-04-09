@@ -16,6 +16,7 @@ import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
 import { curryLog } from "./debug";
 import { around } from "monkey-around";
+import { LiveTokenStore } from "./LiveTokenStore";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -30,13 +31,17 @@ export default class Live extends Plugin {
 	sharedFolders: SharedFolders;
 	vault: VaultFacade;
 	loginManager: LoginManager;
+	tokenStore: LiveTokenStore;
 	_extensions: [];
+	log: (message: string) => void;
 	private _liveViews: LiveViewManager;
 
 	async onload() {
 		console.log("[Obsidian Live] Loading Plugin");
+		this.log = curryLog("[Obsidian Live]");
 		await this.loadSettings();
 		this.loginManager = new LoginManager();
+		this.tokenStore = new LiveTokenStore(this.loginManager, 3);
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please login to Obsidian Live");
@@ -62,9 +67,12 @@ export default class Live extends Plugin {
 			this.sharedFolders,
 			this.loginManager
 		);
+
 		// NOTE: Extensions list should be loaded once and then mutated.
 		// this.app.workspace.updateOptions(); must be called to apply changes.
 		this.registerEditorExtension(this._liveViews.extensions);
+
+		this.tokenStore.start();
 
 		this.setup();
 	}
@@ -104,7 +112,8 @@ export default class Live extends Plugin {
 			_guid,
 			path,
 			this.loginManager,
-			this.vault
+			this.vault,
+			this.tokenStore
 		);
 		return folder;
 	}
@@ -138,12 +147,12 @@ export default class Live extends Plugin {
 
 		const workspaceLog = curryLog("[Live][Workspace]");
 
-		this.registerEvent(
-			this.app.workspace.on("file-open", (file) => {
-				workspaceLog("file-open");
-				plugin._liveViews.refresh("file-open");
-			})
-		);
+		//this.registerEvent(
+		//	this.app.workspace.on("file-open", (file) => {
+		//		workspaceLog("file-open");
+		//		plugin._liveViews.refresh("file-open");
+		//	})
+		//);
 
 		this.registerEvent(
 			this.app.workspace.on("layout-change", () => {
@@ -228,13 +237,32 @@ export default class Live extends Plugin {
 			})
 		);
 
+		function onNetworkConnect(e: Event) {
+			this.log("network online");
+		}
+		function onNetworkDisconnect(e: Event) {
+			this.log("network offline");
+		}
+
+		function registerNetworkListeners(): () => void {
+			window.addEventListener("online", onNetworkConnect);
+			window.addEventListener("offline", onNetworkDisconnect);
+
+			const unregisterNetworkListeners = () => {
+				window.removeEventListener("online", onNetworkConnect);
+				window.removeEventListener("offline", onNetworkDisconnect);
+			};
+			return unregisterNetworkListeners;
+		}
+		this.registerEvent(registerNetworkListeners);
+
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
 		const patchOnUnloadFile = around(MarkdownView.prototype, {
 			onUnloadFile(old) {
 				return function (file) {
-					plugin._liveViews.refresh("unload");
+					plugin._liveViews.wipe();
 					return old.call(this, file);
 				};
 			},
@@ -249,6 +277,9 @@ export default class Live extends Plugin {
 		});
 		console.log("[Obsidian Live]: Unloading Plugin");
 		this.saveSettings();
+
+		this.tokenStore.stop();
+		this.tokenStore.clearState();
 	}
 
 	async loadSettings() {

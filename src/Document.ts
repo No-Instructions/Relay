@@ -6,6 +6,8 @@ import { SharedFolder } from "./SharedFolder";
 import { YText } from "yjs/dist/src/internals";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
+import { LiveTokenStore } from "./LiveTokenStore";
+import { YSweetProvider } from "@y-sweet/client";
 
 export class Document extends HasProvider {
 	guid: string;
@@ -15,6 +17,7 @@ export class Document extends HasProvider {
 	ydoc: Y.Doc;
 	path: string;
 	_locallyRaised: boolean;
+	tokenStore: LiveTokenStore;
 
 	constructor(
 		path: string,
@@ -29,15 +32,16 @@ export class Document extends HasProvider {
 		this.guid = guid;
 		this.path = path;
 		this.log = curryLog(`[SharedDoc](${this.path})`);
+		this.tokenStore = parent.tokenStore;
 
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 
-		this.ydoc.on(
-			"update",
-			(update: Uint8Array, origin: any, doc: Y.Doc) => {
-				this.log(`Update from origin`, origin, update);
-			}
-		);
+		//this.ydoc.on(
+		//	"update",
+		//	(update: Uint8Array, origin: any, doc: Y.Doc) => {
+		//		this.log(`Update from origin`, origin, update);
+		//	}
+		//);
 	}
 
 	public get ytext(): YText {

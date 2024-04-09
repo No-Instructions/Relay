@@ -73,21 +73,24 @@ export class LiveView {
 	}
 
 	attach(): Promise<LiveView> {
+		if (!this._offStatus) {
+			this.document
+				.providerStatusSubscription((status) => {
+					this._connectionStatusIcon.setState(
+						this.document.guid,
+						status.status
+					);
+				})
+				.then((sub) => {
+					sub.on();
+					this._offStatus = sub.off;
+				});
+		}
+
 		return new Promise((resolve) => {
 			return this.document.whenReady().then((doc) => {
 				if (this.shouldConnect) {
 					this.connect();
-				}
-				if (!this._offStatus) {
-					doc.providerStatusSubscription((status) => {
-						this._connectionStatusIcon.setState(
-							doc.guid,
-							status.status
-						);
-					}).then((sub) => {
-						sub.on();
-						this._offStatus = sub.off;
-					});
 				}
 				resolve(this);
 			});
@@ -267,15 +270,16 @@ export class LiveViewManager {
 		const log = curryLog(ctx);
 		log("Refresh");
 
+		const readyFolders = await this.foldersReady();
+		log("Ready Folders", readyFolders);
+		if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
+
 		if (!this.loginManager.hasUser) {
 			console.warn("no user");
 			const views = this.getViews();
 			this._loginBanner(views);
 			return;
 		}
-
-		const readyFolders = await this.foldersReady();
-		log("Ready Folders", readyFolders);
 
 		const [matching, stale] = this.deduplicate();
 

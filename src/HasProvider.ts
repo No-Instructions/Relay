@@ -1,20 +1,16 @@
 "use strict";
-import { requestUrl } from "obsidian";
 import { Doc } from "yjs";
 import { YSweetProvider, createYjsProvider } from "@y-sweet/client";
 import { User } from "./User";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
+import { LiveTokenStore } from "./LiveTokenStore";
+import { ClientToken } from "./y-sweet";
 
 export interface Status {
 	status: "connected" | "connecting" | "disconnected";
 }
 
-export type ClientToken = {
-	url: string;
-	docId: string;
-	token: string;
-};
 export interface Subscription {
 	on: () => void;
 	off: () => void;
@@ -28,31 +24,24 @@ export class HasProvider {
 	path: string;
 	ydoc: Doc;
 	loginManager: LoginManager;
+	tokenStore: LiveTokenStore;
 	clientToken: ClientToken | null;
 	private _offConnectionError: () => void;
 	PROVIDER_MAX_ERRORS = 3;
 	log = curryLog("[HasProvider]");
 
-	async _getProviderToken(): Promise<ClientToken> {
-		this.log("getting token for ", this.path);
-		const headers = {
-			Authorization: `Bearer ${this.loginManager.user.token}`,
-		};
-		console.log(this.loginManager.user.token);
-		const promise = requestUrl({
-			url: "https://api.dnup.org/doc/token",
-			method: "POST",
-			headers: headers,
-			body: JSON.stringify({ docId: this.guid }),
-		}).then((response) => {
-			if (response.status !== 200) {
-				throw Error(
-					`Received status code ${response.status} from an API.`
-				);
-			}
-			return response.json as ClientToken;
+	async getProviderToken(): Promise<ClientToken> {
+		return new Promise((resolve, reject) => {
+			this.tokenStore
+				.getToken(this.guid, this.path, this.refreshProvider.bind(this))
+				.then(([clientToken, err]) => {
+					if (clientToken) {
+						resolve(clientToken);
+					} else {
+						reject(err);
+					}
+				});
 		});
-		return promise;
 	}
 
 	deauth() {
@@ -60,13 +49,13 @@ export class HasProvider {
 		this.clientToken = null;
 	}
 
-	async getProviderToken(): Promise<ClientToken> {
-		if (this.clientToken) {
-			return this.clientToken;
-		}
-		this.clientToken = await this._getProviderToken();
-		return this.clientToken as ClientToken;
-	}
+	//async getProviderToken(): Promise<ClientToken> {
+	//	if (this.clientToken) {
+	//		return this.clientToken;
+	//	}
+	//	this.clientToken = await this._getProviderToken();
+	//	return this.clientToken as ClientToken;
+	//}
 
 	async getUser(): Promise<User> {
 		const loginManager = this.loginManager;
@@ -87,30 +76,33 @@ export class HasProvider {
 		});
 	}
 
-	refreshProvider() {
-		this._getProviderToken().then((clientToken) => {
-			this.clientToken = clientToken;
-			const tempProvider = new YSweetProvider(
-				clientToken.url,
-				this.guid,
-				new Doc(),
-				{
-					connect: false,
-					params: { token: clientToken.token },
-					disableBc: true,
-				}
-			);
-			if (!this._provider) {
-				this._provider = tempProvider;
-			} else {
-				this._provider.disconnect();
-				this._provider.url = tempProvider.url;
+	refreshProvider(clientToken: ClientToken | null, err: Error | null) {
+		this.log("refreshProvider");
+		if (err || !clientToken) {
+			return;
+		}
+		this.clientToken = clientToken;
+		const tempProvider = new YSweetProvider(
+			clientToken.url,
+			this.guid,
+			new Doc(),
+			{
+				connect: false,
+				params: { token: clientToken.token },
+				disableBc: true,
 			}
-			this._provider.connect();
-			this.log(
-				`Token Refreshed: setting new provider url, ${this._provider.url}`
-			);
-		});
+		);
+		if (!this._provider) {
+			throw new Error("missing provider unexpectedly");
+			this._provider = tempProvider;
+		} else {
+			this._provider.disconnect();
+			this._provider.url = tempProvider.url;
+		}
+		this._provider.connect();
+		this.log(
+			`Token Refreshed: setting new provider url, ${this._provider.url}`
+		);
 	}
 
 	getProvider(): Promise<YSweetProvider> {
@@ -123,14 +115,14 @@ export class HasProvider {
 			this._activePromise = null;
 		}
 
-		if (this._provider) {
-			const existsPromise: Promise<YSweetProvider> = new Promise(
-				(resolve) => {
-					if (this._provider) resolve(this._provider);
-				}
-			);
-			return existsPromise;
-		}
+		//if (this._provider) {
+		//	const existsPromise: Promise<YSweetProvider> = new Promise(
+		//		(resolve) => {
+		//			if (this._provider) resolve(this._provider);
+		//		}
+		//	);
+		//	return existsPromise;
+		//}
 
 		if (this._activePromise) {
 			return this._activePromise;
@@ -178,7 +170,7 @@ export class HasProvider {
 			this._provider = provider;
 
 			this.providerConnectionErrorSubscription((status) => {
-				this.refreshProvider();
+				this.disconnect();
 			}).then((sub) => {
 				sub.on();
 				this._offConnectionError = sub.off;

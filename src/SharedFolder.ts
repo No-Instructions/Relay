@@ -13,6 +13,9 @@ import { Document } from "./Document";
 import { curryLog } from "./debug";
 import { ObservableSet } from "./ObservableSet";
 import { LoginManager } from "./LoginManager";
+import { TokenStore } from "./TokenStore";
+import { LiveTokenStore } from "./LiveTokenStore";
+import { YSweetProvider } from "@y-sweet/client";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -25,6 +28,7 @@ export class SharedFolder extends HasProvider {
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	private vault: Vault;
 	loginManager: LoginManager;
+	tokenStore: LiveTokenStore;
 
 	private _persistence: IndexeddbPersistence;
 
@@ -55,7 +59,8 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		path: string,
 		loginManager: LoginManager,
-		vault: Vault
+		vault: Vault,
+		tokenStore: LiveTokenStore
 	) {
 		super();
 		this.loginManager = loginManager;
@@ -65,7 +70,13 @@ export class SharedFolder extends HasProvider {
 		this.ydoc = new Y.Doc();
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
+		this.tokenStore = tokenStore;
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+		this._provider = new YSweetProvider("", this.guid, new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+		});
+
 		this.getProvider().then((provider) => {
 			this._provider = provider;
 			this.connect();
