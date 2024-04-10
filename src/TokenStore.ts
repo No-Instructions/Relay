@@ -35,6 +35,7 @@ interface TokenInfo<Token> {
 	token: Token | null;
 	expiryTime: number;
 	attempts: number;
+	callback: (token: Token) => void;
 	_timeProvider?: TimeProvider;
 }
 
@@ -48,6 +49,7 @@ export class TokenStore<TokenType> {
 	private maxConnections: number;
 	private getJwtExpiry: (token: any) => number;
 	private _log: (message: string) => void;
+	private _activePromises: Map<string, Promise<TokenType>>;
 	private refresh: (
 		documentId: string,
 		onSuccess: (token: TokenType) => void,
@@ -55,6 +57,7 @@ export class TokenStore<TokenType> {
 	) => void;
 
 	constructor(config: TokenStoreConfig, maxConnections = 5) {
+		this._activePromises = new Map();
 		this.tokenMap = new Map();
 		this.refreshQueue = new Set();
 		this._log = config.log;
@@ -72,6 +75,19 @@ export class TokenStore<TokenType> {
 		}
 		this.maxConnections = maxConnections;
 		this.refreshInterval = null;
+	}
+
+	onRefresh(documentId: string): Promise<TokenType> {
+		const promise = new Promise((resolve, reject) => {
+			const onSuccess = (token: TokenType) => {
+				resolve(token);
+			};
+			const onError = (error: Error) => {
+				reject(error);
+			};
+			this.refresh(documentId, onSuccess, onError);
+		});
+		return promise as Promise<TokenType>;
 	}
 
 	start() {
@@ -158,6 +174,7 @@ export class TokenStore<TokenType> {
 				expiryTime,
 				attempts: existing.attempts,
 			} as TokenInfo<TokenType>);
+			existing.callback(token);
 			this.log(
 				`Token refreshed for ${existing.friendlyName} (${documentId})`
 			);
@@ -187,14 +204,18 @@ export class TokenStore<TokenType> {
 		documentId: string,
 		friendlyName: string,
 		callback: (token: TokenType, err: Error | null) => void
-	): Promise<[TokenType | null, Error | null]> {
+	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
+		const activePromise = this._activePromises.get(documentId);
+		if (activePromise) {
+			return activePromise;
+		}
+
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
-				callback(tokenInfo.token, null);
-				return Promise.resolve([tokenInfo.token, null]);
+				return Promise.resolve(tokenInfo.token);
 			}
 		}
 		this.tokenMap.set(documentId, {
@@ -202,21 +223,24 @@ export class TokenStore<TokenType> {
 			friendlyName: friendlyName,
 			expiryTime: 0,
 			attempts: 0,
+			callback: callback,
 		} as TokenInfo<TokenType>);
-		return new Promise((resolve) => {
-			this.refresh(
-				documentId,
-				(newToken: TokenType) => {
-					this.onTokenRefreshed(documentId, newToken);
-					callback(newToken, null);
-					resolve([newToken, null]);
-				},
-				(err) => {
-					this.onRefreshFailure(documentId);
-					resolve([null, err]);
-				}
-			);
-		});
+		if (!documentId) {
+			throw new Error("missing document ID!");
+		}
+		const sharedPromise = this.onRefresh(documentId)
+			.then((newToken: TokenType) => {
+				this.onTokenRefreshed(documentId, newToken);
+				this._activePromises.delete(documentId);
+				return newToken;
+			})
+			.catch((err) => {
+				this.onRefreshFailure(documentId);
+				this._activePromises.delete(documentId);
+				return err;
+			});
+		this._activePromises.set(documentId, sharedPromise);
+		return sharedPromise;
 	}
 
 	report(): string {

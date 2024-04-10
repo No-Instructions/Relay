@@ -7,7 +7,6 @@ import { YText } from "yjs/dist/src/internals";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { YSweetProvider } from "@y-sweet/client";
 
 export class Document extends HasProvider {
 	guid: string;
@@ -25,14 +24,12 @@ export class Document extends HasProvider {
 		loginManager: LoginManager,
 		parent: SharedFolder
 	) {
-		super();
+		super(guid, parent.tokenStore);
 		this.loginManager = loginManager;
 		this._parent = parent;
 		this.ydoc = new Y.Doc();
-		this.guid = guid;
 		this.path = path;
 		this.log = curryLog(`[SharedDoc](${this.path})`);
-		this.tokenStore = parent.tokenStore;
 
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 
@@ -58,7 +55,7 @@ export class Document extends HasProvider {
 			dependencies.push(this.whenSynced());
 		}
 		if (!this._provider) {
-			dependencies.push(this.withProvider());
+			dependencies.push(this.withActiveProvider());
 		}
 		return Promise.all(dependencies).then((_) => {
 			return this;

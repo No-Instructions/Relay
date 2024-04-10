@@ -74,17 +74,14 @@ export class LiveView {
 
 	attach(): Promise<LiveView> {
 		if (!this._offStatus) {
-			this.document
-				.providerStatusSubscription((status) => {
-					this._connectionStatusIcon.setState(
-						this.document.guid,
-						status.status
-					);
-				})
-				.then((sub) => {
-					sub.on();
-					this._offStatus = sub.off;
-				});
+			const sub = this.document.providerStatusSubscription((status) => {
+				this._connectionStatusIcon.setState(
+					this.document.guid,
+					status.status
+				);
+			});
+			sub.on();
+			this._offStatus = sub.off;
 		}
 
 		return new Promise((resolve) => {

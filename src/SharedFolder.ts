@@ -62,25 +62,16 @@ export class SharedFolder extends HasProvider {
 		vault: Vault,
 		tokenStore: LiveTokenStore
 	) {
-		super();
+		super(guid, tokenStore);
 		this.loginManager = loginManager;
 		this.vault = vault;
 		this.path = path;
-		this.guid = guid;
 		this.ydoc = new Y.Doc();
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
-		this.tokenStore = tokenStore;
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
-		this._provider = new YSweetProvider("", this.guid, new Y.Doc(), {
-			connect: false,
-			disableBc: true,
-		});
 
-		this.getProvider().then((provider) => {
-			this._provider = provider;
-			this.connect();
-		});
+		this.getProviderToken();
 
 		this.whenReady().then(() => {
 			this.addLocalDocs();
@@ -104,7 +95,7 @@ export class SharedFolder extends HasProvider {
 
 	async whenReady(): Promise<SharedFolder> {
 		//Note this doesn't guarantee that the map is actually synced...
-		await this.withProvider().then((provider) => {
+		await this.withActiveProvider().then((provider) => {
 			this.connect();
 			const syncPromise = new Promise((resolve) => {
 				if (!this._provider) {

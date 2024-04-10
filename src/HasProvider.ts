@@ -1,6 +1,6 @@
 "use strict";
 import { Doc } from "yjs";
-import { YSweetProvider, createYjsProvider } from "@y-sweet/client";
+import { YSweetProvider } from "@y-sweet/client";
 import { User } from "./User";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
@@ -17,8 +17,7 @@ export interface Subscription {
 }
 
 export class HasProvider {
-	_provider: YSweetProvider | null;
-	_activePromise: Promise<YSweetProvider> | null;
+	_provider: YSweetProvider;
 	guid: string;
 	user: User;
 	path: string;
@@ -30,58 +29,62 @@ export class HasProvider {
 	PROVIDER_MAX_ERRORS = 3;
 	log = curryLog("[HasProvider]");
 
+	constructor(guid: string, tokenStore: LiveTokenStore) {
+		this.guid = guid;
+		this.tokenStore = tokenStore;
+		this._provider = new YSweetProvider("", this.guid, new Doc(), {
+			connect: false,
+			params: {},
+			disableBc: true,
+		});
+
+		const connectionErrorSub = this.providerConnectionErrorSubscription(
+			(status) => {
+				this.disconnect();
+			}
+		);
+		connectionErrorSub.on();
+		this._offConnectionError = connectionErrorSub.off;
+	}
+
 	async getProviderToken(): Promise<ClientToken> {
+		this.log("get provider token");
 		return new Promise((resolve, reject) => {
-			this.tokenStore
-				.getToken(this.guid, this.path, this.refreshProvider.bind(this))
-				.then(([clientToken, err]) => {
-					if (clientToken) {
-						resolve(clientToken);
-					} else {
-						reject(err);
-					}
-				});
+			this.tokenStore.getToken(
+				this.guid,
+				this.path,
+				this.refreshProvider.bind(this)
+			);
 		});
 	}
 
-	deauth() {
-		this._provider?.destroy();
-		this.clientToken = null;
-	}
-
-	//async getProviderToken(): Promise<ClientToken> {
-	//	if (this.clientToken) {
-	//		return this.clientToken;
-	//	}
-	//	this.clientToken = await this._getProviderToken();
-	//	return this.clientToken as ClientToken;
+	//async getUser(): Promise<User> {
+	//	const loginManager = this.loginManager;
+	//	return new Promise((resolve) => {
+	//		if (loginManager.hasUser) {
+	//			return resolve(loginManager.user);
+	//		}
+	//		const withuser = () => {
+	//			if (loginManager.hasUser) {
+	//				return resolve(loginManager.user);
+	//			}
+	//		};
+	//		const once = () => {
+	//			loginManager.off(once);
+	//			return withuser();
+	//		};
+	//		loginManager.on(once);
+	//	});
 	//}
 
-	async getUser(): Promise<User> {
-		const loginManager = this.loginManager;
-		return new Promise((resolve) => {
-			if (loginManager.hasUser) {
-				return resolve(loginManager.user);
-			}
-			const withuser = () => {
-				if (loginManager.hasUser) {
-					return resolve(loginManager.user);
-				}
-			};
-			const once = () => {
-				loginManager.off(once);
-				return withuser();
-			};
-			loginManager.on(once);
-		});
-	}
-
 	refreshProvider(clientToken: ClientToken | null, err: Error | null) {
+		// updates the provider when a new token is received
 		this.log("refreshProvider");
 		if (err || !clientToken) {
 			return;
 		}
 		this.clientToken = clientToken;
+		console.log(clientToken);
 		const tempProvider = new YSweetProvider(
 			clientToken.url,
 			this.guid,
@@ -92,66 +95,33 @@ export class HasProvider {
 				disableBc: true,
 			}
 		);
-		if (!this._provider) {
-			throw new Error("missing provider unexpectedly");
-			this._provider = tempProvider;
-		} else {
-			this._provider.disconnect();
-			this._provider.url = tempProvider.url;
-		}
-		this._provider.connect();
-		this.log(
-			`Token Refreshed: setting new provider url, ${this._provider.url}`
-		);
-	}
-
-	getProvider(): Promise<YSweetProvider> {
-		if (
-			this._provider &&
-			this._provider.wsUnsuccessfulReconnects > this.PROVIDER_MAX_ERRORS
-		) {
-			this._provider.destroy();
-			this._provider = null;
-			this._activePromise = null;
-		}
-
-		//if (this._provider) {
-		//	const existsPromise: Promise<YSweetProvider> = new Promise(
-		//		(resolve) => {
-		//			if (this._provider) resolve(this._provider);
-		//		}
-		//	);
-		//	return existsPromise;
-		//}
-
-		if (this._activePromise) {
-			return this._activePromise;
-		}
-
-		const myPromise = this.getProviderToken().then((clientToken) => {
-			const provider = createYjsProvider(this.ydoc, clientToken, {
-				disableBc: true,
-				connect: false,
-			});
-			const user = this.loginManager.user;
-			provider.awareness.setLocalStateField("user", {
+		const user = this.loginManager?.user;
+		if (user) {
+			this._provider.awareness.setLocalStateField("user", {
 				name: user.name,
 				color: user.color.color,
 				colorLight: user.color.light,
 			});
-			return provider;
-		});
-		if (this._activePromise == null) {
-			this._activePromise = myPromise;
 		}
-		return myPromise;
+
+		if (!this._provider) {
+			this._provider = tempProvider;
+		} else if (this._provider.url !== tempProvider.url) {
+			this._provider.url = tempProvider.url;
+			this.log(
+				`Token Refreshed: setting new provider url, ${this._provider.url}`
+			);
+			if (this._provider.wsconnected) {
+				this._provider.disconnect();
+				this._provider.connect();
+			}
+		}
 	}
 
 	connect() {
-		if (!this._provider) {
-			throw new Error("Attempted to connect without a provider");
-		}
-		this._provider.connect();
+		this.getProviderToken().then((clientToken) => {
+			this._provider.connect();
+		});
 	}
 
 	disconnect() {
@@ -160,75 +130,39 @@ export class HasProvider {
 		}
 	}
 
-	public withProvider<T extends HasProvider>(this: T): Promise<T> {
-		if (this._provider) {
+	public withActiveProvider<T extends HasProvider>(this: T): Promise<T> {
+		if (this._provider && this._provider.wsconnected) {
 			return new Promise((resolve) => {
 				resolve(this);
 			});
 		}
-		return this.getProvider().then((provider) => {
-			this._provider = provider;
-
-			this.providerConnectionErrorSubscription((status) => {
-				this.disconnect();
-			}).then((sub) => {
-				sub.on();
-				this._offConnectionError = sub.off;
-			});
+		return this.getProviderToken().then((clientToken) => {
 			return this;
 		});
 	}
 
 	private providerConnectionErrorSubscription(
 		f: (status: Status) => void
-	): Promise<Subscription> {
-		return this.withProvider().then((doc) => {
-			return new Promise((resolve) => {
-				const on = () => {
-					if (!doc._provider) {
-						throw new Error(
-							"Attempted to add connection hooks without a provider"
-						);
-					}
-					doc._provider.on("connection-error", f);
-				};
-				const off = () => {
-					if (!doc._provider) {
-						throw new Error(
-							"Attempted to remove connection hooks without a provider"
-						);
-					}
-					doc._provider.off("connection-error", f);
-				};
-				return resolve({ on, off });
-			});
-		});
+	): Subscription {
+		const on = () => {
+			this._provider.on("connection-error", f);
+		};
+		const off = () => {
+			this._provider.off("connection-error", f);
+		};
+		return { on, off } as Subscription;
 	}
 
 	public providerStatusSubscription(
 		f: (status: Status) => void
-	): Promise<Subscription> {
-		return this.withProvider().then((doc) => {
-			return new Promise((resolve) => {
-				const on = () => {
-					if (!doc._provider) {
-						throw new Error(
-							"Attempted to add status hooks without a provider"
-						);
-					}
-					doc._provider.on("status", f);
-				};
-				const off = () => {
-					if (!doc._provider) {
-						throw new Error(
-							"Attempted to remove status hooks without a provider"
-						);
-					}
-					doc._provider.off("status", f);
-				};
-				return resolve({ on, off });
-			});
-		});
+	): Subscription {
+		const on = () => {
+			this._provider.on("status", f);
+		};
+		const off = () => {
+			this._provider.off("status", f);
+		};
+		return { on, off } as Subscription;
 	}
 
 	public get connected(): boolean {
@@ -242,7 +176,6 @@ export class HasProvider {
 		if (this._provider) {
 			this._provider.disconnect();
 			this._provider.destroy();
-			this._provider = null;
 		}
 	}
 }

@@ -1,6 +1,4 @@
 // This file is the Obsidian Live variant of the token store.
-import jwt from "jsonwebtoken";
-
 import { TokenStore } from "./TokenStore";
 import { LoginManager } from "./LoginManager";
 import { requestUrl } from "obsidian";
@@ -30,6 +28,8 @@ async function refresh(
 	const headers = {
 		Authorization: `Bearer ${loginManager.user.token}`,
 	};
+	const log = curryLog("[refresh]");
+	log(`{docId: ${documentId}}`);
 	requestUrl({
 		url: "https://api.dnup.org/doc/token",
 		method: "POST",
@@ -37,6 +37,7 @@ async function refresh(
 		body: JSON.stringify({ docId: documentId }),
 	}).then((response) => {
 		if (response.status !== 200) {
+			log(response.status, response.text);
 			onError(
 				Error(`Received status code ${response.status} from an API.`)
 			);
