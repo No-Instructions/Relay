@@ -81,6 +81,7 @@ export default class Live extends Plugin {
 		sharedFolderSettings: SharedFolderSettings[]
 	): SharedFolders {
 		const sharedFolders = new SharedFolders(
+			// TODO remove this as it isn't needed
 			this._createSharedFolder.bind(this)
 		);
 		sharedFolderSettings.forEach(
@@ -147,12 +148,12 @@ export default class Live extends Plugin {
 
 		const workspaceLog = curryLog("[Live][Workspace]");
 
-		//this.registerEvent(
-		//	this.app.workspace.on("file-open", (file) => {
-		//		workspaceLog("file-open");
-		//		plugin._liveViews.refresh("file-open");
-		//	})
-		//);
+		this.registerEvent(
+			this.app.workspace.on("file-open", (file) => {
+				workspaceLog("file-open");
+				plugin._liveViews.refresh("file-open");
+			})
+		);
 
 		this.registerEvent(
 			this.app.workspace.on("layout-change", () => {

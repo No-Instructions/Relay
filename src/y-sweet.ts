@@ -30,6 +30,8 @@ export type ClientToken = {
 	docId: string;
 
 	token: string;
+
+	exprityTime?: number;
 };
 
 function stringToBase64(input: string) {

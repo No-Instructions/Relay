@@ -29,6 +29,7 @@ export class SharedFolder extends HasProvider {
 	private vault: Vault;
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
+	readyPromise: Promise<SharedFolder> | null;
 
 	private _persistence: IndexeddbPersistence;
 
@@ -71,7 +72,9 @@ export class SharedFolder extends HasProvider {
 		this.docs = new Map();
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 
-		this.getProviderToken();
+		this.getProviderToken().then((token) => {
+			this.connect();
+		});
 
 		this.whenReady().then(() => {
 			this.addLocalDocs();
@@ -95,21 +98,18 @@ export class SharedFolder extends HasProvider {
 
 	async whenReady(): Promise<SharedFolder> {
 		//Note this doesn't guarantee that the map is actually synced...
-		await this.withActiveProvider().then((provider) => {
-			this.connect();
-			const syncPromise = new Promise((resolve) => {
-				if (!this._provider) {
-					throw new Error(
-						"Attempted to register synced promise on missing provider"
-					);
+		if (this.readyPromise) {
+			return this.readyPromise;
+		}
+		this.readyPromise = new Promise((resolve) => {
+			Promise.all([this.onceConnected(), this.onceProviderSynced()]).then(
+				() => {
+					console.log("connected and synced!");
+					resolve(this);
 				}
-				this._provider.once("synced", resolve);
-			});
-			if (!this._provider?.synced) {
-				return Promise.all([syncPromise]);
-			}
+			);
 		});
-		return this;
+		return this.readyPromise;
 	}
 
 	_debugFileTree(): Map<string, any> {

@@ -49,13 +49,11 @@ export class HasProvider {
 
 	async getProviderToken(): Promise<ClientToken> {
 		this.log("get provider token");
-		return new Promise((resolve, reject) => {
-			this.tokenStore.getToken(
-				this.guid,
-				this.path,
-				this.refreshProvider.bind(this)
-			);
-		});
+		return this.tokenStore.getToken(
+			this.guid,
+			this.path,
+			this.refreshProvider.bind(this)
+		);
 	}
 
 	//async getUser(): Promise<User> {
@@ -138,6 +136,29 @@ export class HasProvider {
 		}
 		return this.getProviderToken().then((clientToken) => {
 			return this;
+		});
+	}
+
+	onceConnected(): Promise<void> {
+		// XXX memory leak of subscriptions...
+		return new Promise((resolve) => {
+			const resolveOnConnect = (status: Status) => {
+				if (status.status === "connected") {
+					resolve();
+				}
+			};
+			this._provider.on("status", resolveOnConnect);
+		});
+	}
+
+	onceProviderSynced(): Promise<void> {
+		if (this._provider?.synced) {
+			return new Promise((resolve) => {
+				resolve();
+			});
+		}
+		return new Promise((resolve) => {
+			this._provider.once("synced", resolve);
 		});
 	}
 

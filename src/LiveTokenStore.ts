@@ -7,7 +7,7 @@ import { ClientToken } from "./y-sweet";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
-	return Date.now() + 1000 * 60 * 30;
+	return clientToken.exprityTime || 0;
 }
 
 function withLoginManager(
@@ -43,6 +43,8 @@ async function refresh(
 			);
 		}
 		const clientToken = response.json as ClientToken;
+		// lol this is so fake
+		clientToken.exprityTime = Date.now() + 1000 * 60 * 60;
 		onSuccess(clientToken);
 	});
 }
