@@ -11,6 +11,7 @@ if you want to view the source, please visit the github repository of this plugi
 
 const watch = (process.argv[2] === "watch");
 const debug = (process.argv[2] === "debug" || process.argv[2] === "watch");
+const out = process.argv[3] || '.'
 
 const context = await esbuild.context({
 	banner: {
@@ -41,7 +42,7 @@ const context = await esbuild.context({
       'BUILD_TYPE': '"' + process.argv[2] + '"'
     },
 	treeShaking: true,
-	outfile: "../obsidian-live/main.js",
+	outfile: out + "/main.js",
 });
 
 if (watch) {
