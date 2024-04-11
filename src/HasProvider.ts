@@ -40,7 +40,8 @@ export class HasProvider {
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(status) => {
-				this.disconnect();
+				console.log(`[${this.path}] disconnection status`, status);
+				//this.disconnect();
 			}
 		);
 		connectionErrorSub.on();

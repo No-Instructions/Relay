@@ -35,18 +35,24 @@ async function refresh(
 		method: "POST",
 		headers: headers,
 		body: JSON.stringify({ docId: documentId }),
-	}).then((response) => {
-		if (response.status !== 200) {
-			log(response.status, response.text);
-			onError(
-				Error(`Received status code ${response.status} from an API.`)
-			);
-		}
-		const clientToken = response.json as ClientToken;
-		// lol this is so fake
-		clientToken.exprityTime = Date.now() + 1000 * 60 * 60;
-		onSuccess(clientToken);
-	});
+	})
+		.then((response) => {
+			if (response.status !== 200) {
+				log(response.status, response.text);
+				onError(
+					Error(
+						`Received status code ${response.status} from an API.`
+					)
+				);
+			}
+			const clientToken = response.json as ClientToken;
+			// lol this is so fake
+			clientToken.exprityTime = Date.now() + 1000 * 60 * 60;
+			onSuccess(clientToken);
+		})
+		.catch((reason) => {
+			onError(reason);
+		});
 }
 
 export class LiveTokenStore extends TokenStore<ClientToken> {

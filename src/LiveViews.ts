@@ -174,6 +174,25 @@ export class LiveViewManager {
 		});
 	}
 
+	private findFolders(): SharedFolder[] {
+		const folders: Set<SharedFolder> = new Set<SharedFolder>();
+		this.workspace.iterateMarkdownViews((markdownView) => {
+			// Check if the view is displaying a file
+			const viewFilePath = markdownView.file?.path;
+			if (!viewFilePath) {
+				return;
+			}
+			const folder = this.sharedFolders.lookup(viewFilePath);
+			if (folder) {
+				folders.add(folder);
+			}
+		});
+		if ([...folders].length == 0) {
+			return [];
+		}
+		return [...folders];
+	}
+
 	private async foldersReady(): Promise<SharedFolder[]> {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
 		this.workspace.iterateMarkdownViews((markdownView) => {
@@ -267,9 +286,13 @@ export class LiveViewManager {
 		const log = curryLog(ctx);
 		log("Refresh");
 
-		const readyFolders = await this.foldersReady();
-		log("Ready Folders", readyFolders);
-		if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
+		//const readyFolders = await this.foldersReady();
+		//log("Ready Folders", readyFolders);
+		//if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
+		const activeDocumentFolders = this.findFolders();
+		if (activeDocumentFolders.length === 0 && this.views.length === 0) {
+			return; // no live views open
+		}
 
 		if (!this.loginManager.hasUser) {
 			console.warn("no user");

@@ -403,6 +403,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 
 	lookup(path: string): SharedFolder | null {
 		const folder = this.find((sharedFolder: SharedFolder) => {
+			if (sharedFolder.path.length < 1) {
+				throw new Error("wtff");
+			}
 			return path.contains(sharedFolder.path + "/");
 		});
 		if (!folder) {

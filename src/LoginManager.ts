@@ -51,21 +51,25 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 			url: "https://api.dnup.org/billing",
 			method: "POST",
 			headers: headers,
-		}).then((response) => {
-			if (response.status !== 200) {
-				throw Error(
-					`Received status code ${response.status} from an API.`
+		})
+			.then((response) => {
+				if (response.status !== 200) {
+					throw Error(
+						`Received status code ${response.status} from an API.`
+					);
+				}
+				const response_json = response.json;
+				this.add(
+					new Subscription(
+						response_json["active"],
+						response_json["subscribe"],
+						response_json["cancel"]
+					)
 				);
-			}
-			const response_json = response.json;
-			this.add(
-				new Subscription(
-					response_json["active"],
-					response_json["subscribe"],
-					response_json["cancel"]
-				)
-			);
-		});
+			})
+			.catch((reason) => {
+				console.log(reason);
+			});
 	}
 }
 
@@ -94,9 +98,13 @@ export class LoginManager extends ObservableSet<User> {
 			url: "https://api.dnup.org/whoami",
 			method: "GET",
 			headers: headers,
-		}).then((response) => {
-			console.log(response.json);
-		});
+		})
+			.then((response) => {
+				console.log(response.json);
+			})
+			.catch((reason) => {
+				console.log(reason);
+			});
 	}
 
 	get hasUser() {

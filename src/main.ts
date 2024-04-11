@@ -166,7 +166,7 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
-				vaultLog("create", file);
+				//vaultLog("create", file);
 				// NOTE: this is called on every file at startup...
 				if (file instanceof TFolder) {
 					return;
