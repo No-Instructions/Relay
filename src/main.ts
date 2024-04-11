@@ -263,7 +263,7 @@ export default class Live extends Plugin {
 		const patchOnUnloadFile = around(MarkdownView.prototype, {
 			onUnloadFile(old) {
 				return function (file) {
-					plugin._liveViews.wipe();
+					plugin._liveViews.refresh("unload");
 					return old.call(this, file);
 				};
 			},

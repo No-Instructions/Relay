@@ -11,6 +11,7 @@ import {
 } from "@codemirror/view";
 import { LiveView, LiveViewManager } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
+import { curryLog } from "src/debug";
 
 export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 	Facet.define({
@@ -27,6 +28,7 @@ export class LiveCMPluginValue implements PluginValue {
 	connectionManager: LiveViewManager;
 	_observer: (event: YTextEvent, tr: Transaction) => void;
 	_ytext: YText;
+	log: (message: string) => void;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -38,6 +40,8 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!this.view) {
 			return;
 		}
+		this.log = curryLog(`[LiveCMPluginValue][${this.view.document.path}]`);
+		this.log("created");
 		this.view.plugin = this;
 		this.view.document.whenSynced().then(() => {
 			this.setBuffer();
@@ -68,6 +72,7 @@ export class LiveCMPluginValue implements PluginValue {
 						pos += d.retain;
 					}
 				}
+				this.log("dispatch");
 				editor.dispatch({
 					changes,
 					annotations: [ySyncAnnotation.of(this)],
@@ -79,10 +84,11 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	setBuffer(): boolean {
+		this.log(`setting buffer ${this.view?.document} ${this.editor}`);
 		if (
 			this.view?.document &&
-			this.view?.document.text !== this.editor.state.doc.toString() &&
-			this.view?.document._provider?.shouldConnect
+			this.view?.document.text !== this.editor.state.doc.toString() //&&
+			//this.view?.document._provider?.shouldConnect
 		) {
 			this.editor.dispatch({
 				changes: {

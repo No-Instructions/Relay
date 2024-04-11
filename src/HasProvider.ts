@@ -31,8 +31,9 @@ export class HasProvider {
 
 	constructor(guid: string, tokenStore: LiveTokenStore) {
 		this.guid = guid;
+		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
-		this._provider = new YSweetProvider("", this.guid, new Doc(), {
+		this._provider = new YSweetProvider("", this.guid, this.ydoc, {
 			connect: false,
 			params: {},
 			disableBc: true,

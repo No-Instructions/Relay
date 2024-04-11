@@ -74,6 +74,7 @@ export class LiveView {
 
 	attach(): Promise<LiveView> {
 		if (!this._offStatus) {
+			this._connectionStatusIcon.attach();
 			const sub = this.document.providerStatusSubscription((status) => {
 				this._connectionStatusIcon.setState(
 					this.document.guid,
@@ -106,7 +107,7 @@ export class LiveView {
 		if (this._offStatus) {
 			this._offStatus();
 		}
-		this._connectionStatusIcon.destroy();
+		this._connectionStatusIcon.detach();
 		this.document.disconnect();
 	}
 }
@@ -306,7 +307,7 @@ export class LiveViewManager {
 		if (stale.length == 0 && ViewsetsEqual(matching, this.views)) {
 			log("No work to do");
 			const attachedViews = await this.viewsAttached(this.views);
-			log("Attached Vies", attachedViews);
+			log("Attached Views", attachedViews);
 		} else {
 			log("Releasing Views", stale);
 			this.releaseViews(stale);
@@ -316,6 +317,7 @@ export class LiveViewManager {
 			log("Attached Views", attachedViews);
 		}
 		this.views = matching;
+		log("loading plugins");
 		this.load();
 	}
 

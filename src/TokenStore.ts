@@ -91,14 +91,16 @@ export class TokenStore<TokenType> {
 	}
 
 	start() {
+		this.log("starting");
 		this.clearState();
 		this.refreshInterval = this.timeProvider.setInterval(
 			() => this.checkAndRefreshTokens(),
-			60 * 1000
+			20 * 1000
 		); // Check every minute
 	}
 
 	stop() {
+		this.log("stopping");
 		if (this.refreshInterval) {
 			this.timeProvider.clearInterval(this.refreshInterval);
 			this.refreshInterval = null;
@@ -192,7 +194,7 @@ export class TokenStore<TokenType> {
 
 	isTokenValid(token: TokenInfo<TokenType>): boolean {
 		const currentTime = this.timeProvider.getTime();
-		return currentTime > token.expiryTime;
+		return currentTime < token.expiryTime;
 	}
 
 	shouldRefresh(token: TokenInfo<TokenType>): boolean {
@@ -209,11 +211,7 @@ export class TokenStore<TokenType> {
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
-			if (
-				tokenInfo.token &&
-				tokenInfo.expiryTime &&
-				tokenInfo.expiryTime !== 0
-			) {
+			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
 				// && this.isTokenValid(tokenInfo)) {
 				console.log("token was valid, cache hit!");
 				return Promise.resolve(tokenInfo.token);

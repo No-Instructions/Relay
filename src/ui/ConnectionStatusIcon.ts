@@ -8,9 +8,14 @@ export class ConnectionStatusIcon {
 	constructor(view: LiveView) {
 		this.view = view;
 		this.iconContainer = null;
+		this.ensureIconContainer();
 	}
 
-	ensureIconContainer() {
+	attach() {
+		this.ensureIconContainer();
+	}
+
+	private ensureIconContainer() {
 		if (this.iconContainer) return true;
 
 		const viewActionsElement =
@@ -40,7 +45,7 @@ export class ConnectionStatusIcon {
 		return true;
 	}
 
-	destroy() {
+	detach() {
 		const viewActionsElement =
 			this.view.view.containerEl.querySelector(".view-actions");
 

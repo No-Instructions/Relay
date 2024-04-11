@@ -67,7 +67,6 @@ export class SharedFolder extends HasProvider {
 		this.loginManager = loginManager;
 		this.vault = vault;
 		this.path = path;
-		this.ydoc = new Y.Doc();
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);

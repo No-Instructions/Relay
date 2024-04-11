@@ -27,18 +27,17 @@ export class Document extends HasProvider {
 		super(guid, parent.tokenStore);
 		this.loginManager = loginManager;
 		this._parent = parent;
-		this.ydoc = new Y.Doc();
 		this.path = path;
 		this.log = curryLog(`[SharedDoc](${this.path})`);
 
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 
-		//this.ydoc.on(
-		//	"update",
-		//	(update: Uint8Array, origin: any, doc: Y.Doc) => {
-		//		this.log(`Update from origin`, origin, update);
-		//	}
-		//);
+		this.ydoc.on(
+			"update",
+			(update: Uint8Array, origin: any, doc: Y.Doc) => {
+				this.log(`Update from origin`, origin, update);
+			}
+		);
 	}
 
 	public get ytext(): YText {
