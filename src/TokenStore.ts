@@ -206,17 +206,28 @@ export class TokenStore<TokenType> {
 		callback: (token: TokenType, err: Error | null) => void
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
-		const activePromise = this._activePromises.get(documentId);
-		if (activePromise) {
-			return activePromise;
-		}
-
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
-			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
+			if (
+				tokenInfo.token &&
+				tokenInfo.expiryTime &&
+				tokenInfo.expiryTime !== 0
+			) {
+				// && this.isTokenValid(tokenInfo)) {
+				console.log("token was valid, cache hit!");
 				return Promise.resolve(tokenInfo.token);
+			} else {
+				console.log(
+					"token was invalid???",
+					tokenInfo,
+					this.timeProvider.getTime()
+				);
 			}
+		}
+		const activePromise = this._activePromises.get(documentId);
+		if (activePromise) {
+			return activePromise;
 		}
 		this.tokenMap.set(documentId, {
 			token: null,
