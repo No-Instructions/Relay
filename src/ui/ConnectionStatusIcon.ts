@@ -62,6 +62,19 @@ export class ConnectionStatusIcon {
 		if (!this.ensureIconContainer()) return;
 		if (!this.iconContainer) return;
 		this.iconContainer.innerHTML = `<span class="connection-status-icon-${status}">●</span>`;
+		if (status === "connected") {
+			this.iconContainer.setAttr(
+				"aria-label",
+				"connected: click to go offline"
+			);
+		} else if (status === "disconnected") {
+			this.iconContainer.setAttr(
+				"aria-label",
+				"disconnected: click to go online"
+			);
+		} else {
+			this.iconContainer.setAttr("aria-label", status);
+		}
 	}
 
 	connect(guid: string) {
