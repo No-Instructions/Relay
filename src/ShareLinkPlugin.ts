@@ -88,7 +88,7 @@ export class ShareLinkPluginValue implements PluginValue {
 		const withShareLink = updateFrontMatter(text, {
 			shareLink: shareLink,
 		});
-		if (!text) {
+		if (!(text || this.view.document.text)) {
 			// document is empty
 			this.editor.dispatch({
 				changes: { from: 0, insert: withShareLink },
