@@ -72,10 +72,34 @@ export class LiveView {
 		return this.document.ytext;
 	}
 
+	offlineBanner() {
+		console.log(
+			"connection error, going offline",
+			this.shouldConnect,
+			this
+		);
+		if (this.shouldConnect) {
+			const banner = new Banner(
+				this.view,
+				"You're offline -- click to reconnect",
+				() => {
+					this.connect();
+				}
+			);
+			this.document.onceConnected().then(() => {
+				console.log("reconnected");
+				banner.destroy();
+			});
+		}
+	}
+
 	attach(): Promise<LiveView> {
+		this._connectionStatusIcon.attach();
 		if (!this._offStatus) {
-			this._connectionStatusIcon.attach();
 			const sub = this.document.providerStatusSubscription((status) => {
+				if (status.status === "disconnected" && this.shouldConnect) {
+					this.offlineBanner();
+				}
 				this._connectionStatusIcon.setState(
 					this.document.guid,
 					status.status

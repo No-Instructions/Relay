@@ -41,8 +41,9 @@ export class HasProvider {
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(status) => {
-				console.log(`[${this.path}] disconnection status`, status);
-				//this.disconnect();
+				this.log(
+					`[${this.path}] disconnection status: ${status.status}`
+				);
 			}
 		);
 		connectionErrorSub.on();
@@ -113,6 +114,8 @@ export class HasProvider {
 			);
 			if (this._provider.wsconnected) {
 				this._provider.disconnect();
+				this._provider.connect();
+			} else if (this._provider.shouldConnect) {
 				this._provider.connect();
 			}
 		}
