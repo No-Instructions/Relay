@@ -59,25 +59,6 @@ export class HasProvider {
 		);
 	}
 
-	//async getUser(): Promise<User> {
-	//	const loginManager = this.loginManager;
-	//	return new Promise((resolve) => {
-	//		if (loginManager.hasUser) {
-	//			return resolve(loginManager.user);
-	//		}
-	//		const withuser = () => {
-	//			if (loginManager.hasUser) {
-	//				return resolve(loginManager.user);
-	//			}
-	//		};
-	//		const once = () => {
-	//			loginManager.off(once);
-	//			return withuser();
-	//		};
-	//		loginManager.on(once);
-	//	});
-	//}
-
 	refreshProvider(clientToken: ClientToken | null, err: Error | null) {
 		// updates the provider when a new token is received
 		this.log("refreshProvider");
