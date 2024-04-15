@@ -1,4 +1,5 @@
 import jwt from "jsonwebtoken";
+import { LocalStorage } from "./LocalStorage";
 
 interface TokenStoreConfig {
 	log: (message: string) => void;
@@ -58,7 +59,8 @@ export class TokenStore<TokenType> {
 
 	constructor(config: TokenStoreConfig, maxConnections = 5) {
 		this._activePromises = new Map();
-		this.tokenMap = new Map();
+		this.tokenMap = new LocalStorage<TokenInfo<TokenType>>("TokenStore");
+
 		this.refreshQueue = new Set();
 		this._log = config.log;
 		this.refresh = config.refresh;
@@ -92,11 +94,11 @@ export class TokenStore<TokenType> {
 
 	start() {
 		this.log("starting");
-		this.clearState();
 		this.refreshInterval = this.timeProvider.setInterval(
 			() => this.checkAndRefreshTokens(),
 			20 * 1000
 		); // Check every minute
+		this.checkAndRefreshTokens();
 	}
 
 	stop() {
@@ -188,7 +190,7 @@ export class TokenStore<TokenType> {
 		const existing = this.tokenMap.get(documentId)!;
 		this.tokenMap.set(documentId, {
 			...existing,
-			attempts: existing.attempts + 1,
+			attempts: (existing?.attempts || 0) + 1,
 		});
 	}
 
@@ -200,6 +202,10 @@ export class TokenStore<TokenType> {
 	shouldRefresh(token: TokenInfo<TokenType>): boolean {
 		const currentTime = this.timeProvider.getTime();
 		return token.expiryTime - currentTime <= this.expiryMargin;
+	}
+
+	getTokenSync(documentId: string) {
+		return this.tokenMap.get(documentId)?.token;
 	}
 
 	async getToken(

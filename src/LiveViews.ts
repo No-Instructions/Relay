@@ -19,6 +19,8 @@ import { YText } from "yjs/dist/src/types/YText";
 import { Banner } from "./ui/Banner";
 import { LoginManager } from "./LoginManager";
 import { ShareLinkPlugin } from "./ShareLinkPlugin";
+import NetworkStatus from "./NetworkStatus";
+import { promiseWithTimeout } from "./promiseUtils";
 
 function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 	if (vs1.length !== vs2.length) {
@@ -57,6 +59,9 @@ export class LiveView {
 		this.document = document;
 		this._connectionStatusIcon = new ConnectionStatusIcon(this);
 		this.shouldConnect = shouldConnect;
+		if (!connectionManager.networkStatus.online) {
+			this.offlineBanner();
+		}
 	}
 
 	toggleConnection() {
@@ -72,58 +77,74 @@ export class LiveView {
 		return this.document.ytext;
 	}
 
-	offlineBanner() {
+	offlineBanner(): () => void {
 		console.log(
 			"connection error, going offline",
 			this.shouldConnect,
 			this
 		);
+		this._connectionStatusIcon.setState(this.document.status.status);
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
 				"You're offline -- click to reconnect",
 				() => {
-					this.connect();
+					this._parent.networkStatus.checkStatus();
+					this.document.getProviderToken().then((clientToken) => {
+						this.connect();
+					});
 				}
 			);
 			this.document.onceConnected().then(() => {
 				console.log("reconnected");
 				banner.destroy();
 			});
+			return () => {
+				banner.destroy();
+			};
 		}
+		return () => {};
 	}
 
 	attach(): Promise<LiveView> {
 		this._connectionStatusIcon.attach();
 		if (!this._offStatus) {
 			const sub = this.document.providerStatusSubscription((status) => {
-				if (status.status === "disconnected" && this.shouldConnect) {
-					this.offlineBanner();
-				}
-				this._connectionStatusIcon.setState(
-					this.document.guid,
-					status.status
-				);
+				//if (status.status === "disconnected" && this.shouldConnect) {
+				//	//this.offlineBanner(() => {});
+				//}
+				this._connectionStatusIcon.setState(status.status);
 			});
 			sub.on();
 			this._offStatus = sub.off;
 		}
+		this._connectionStatusIcon.setState(this.document.status.status);
 
 		return new Promise((resolve) => {
-			return this.document.whenReady().then((doc) => {
-				if (this.shouldConnect) {
-					this.connect();
-				}
-				resolve(this);
-			});
+			return this.document
+				.whenReady()
+				.then((doc) => {
+					if (this.shouldConnect) {
+						this.connect();
+					}
+					resolve(this);
+				})
+				.catch(() => {
+					this.offlineBanner();
+				});
 		});
 	}
 
 	connect() {
 		if (!this._connectionStatusIcon) {
 			this._connectionStatusIcon = new ConnectionStatusIcon(this);
+			this._connectionStatusIcon.setState(this.document.status.status);
 		}
-		this.document.connect();
+		if (this._parent.networkStatus.online) {
+			this.document.connect();
+		} else {
+			this.document.disconnect();
+		}
 	}
 
 	release() {
@@ -145,11 +166,13 @@ export class LiveViewManager {
 	private loginManager: LoginManager;
 	sharedFolders: SharedFolders;
 	extensions: Extension[];
+	networkStatus: NetworkStatus;
 
 	constructor(
 		workspace: WorkspaceFacade,
 		sharedFolders: SharedFolders,
-		loginManager: LoginManager
+		loginManager: LoginManager,
+		networkStatus: NetworkStatus
 	) {
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
@@ -159,6 +182,7 @@ export class LiveViewManager {
 		this._activePromise = null;
 		this._stale = false;
 		this.loginManager = loginManager;
+		this.networkStatus = networkStatus;
 
 		this.views = this.getViews();
 
@@ -168,8 +192,26 @@ export class LiveViewManager {
 
 		this.refresh("Constructor");
 	}
+
 	loginBanner() {
 		this._loginBanner(this.views);
+	}
+
+	goOffline() {
+		this.views.forEach((view) => {
+			view.document.disconnect();
+			const clear = view.offlineBanner();
+			this.networkStatus.onceOnline(clear);
+		});
+	}
+
+	goOnline() {
+		this.views.forEach((view) => {
+			view.document.getProviderToken();
+		});
+		this.views.forEach((view) => {
+			view.attach();
+		});
 	}
 
 	_loginBanner(views: LiveView[]) {
@@ -352,7 +394,10 @@ export class LiveViewManager {
 			log("refresh views was already running");
 			return;
 		}
-		this._activePromise = this._refreshViews(context);
+		this._activePromise = promiseWithTimeout(
+			this._refreshViews(context),
+			3000
+		);
 		await this._activePromise;
 		this._activePromise = null;
 		if (this._stale) {

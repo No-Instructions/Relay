@@ -6,6 +6,7 @@ import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import { ClientToken } from "./y-sweet";
+import { promiseWithTimeout } from "./promiseUtils";
 
 export interface Status {
 	status: "connected" | "connecting" | "disconnected";
@@ -25,7 +26,9 @@ export class HasProvider {
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
 	clientToken: ClientToken | null;
+	_status: Status;
 	private _offConnectionError: () => void;
+	private _offStatus: () => void;
 	PROVIDER_MAX_ERRORS = 3;
 	log = curryLog("[HasProvider]");
 
@@ -33,30 +36,61 @@ export class HasProvider {
 		this.guid = guid;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
-		this._provider = new YSweetProvider("", this.guid, this.ydoc, {
+		this._status = { status: "disconnected" };
+		const url = this.tokenStore.getTokenSync(this.guid)?.url || "";
+		const token = this.tokenStore.getTokenSync(this.guid)?.token;
+		this._provider = new YSweetProvider(url, this.guid, this.ydoc, {
 			connect: false,
-			params: {},
+			params: token ? { token: token } : {},
 			disableBc: true,
 		});
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
-			(status) => {
-				this.log(
-					`[${this.path}] disconnection status: ${status.status}`
-				);
+			(event) => {
+				this.log(`[${this.path}] disconnection event: ${event}`);
+				console.log(this._provider);
+				this.disconnect();
 			}
 		);
 		connectionErrorSub.on();
 		this._offConnectionError = connectionErrorSub.off;
+
+		const statusSub = this.providerStatusSubscription((status: Status) => {
+			this._status = status;
+		});
+		statusSub.on();
+		this._offStatus = statusSub.off;
+	}
+
+	get status(): Status {
+		if (this._provider.wsconnected) {
+			this._status = { status: "connected" };
+		} else if (this._provider.wsconnecting) {
+			this._status = { status: "connecting" };
+		} else {
+			this._status = { status: "disconnected" };
+		}
+		return this._status;
 	}
 
 	async getProviderToken(): Promise<ClientToken> {
 		this.log("get provider token");
-		return this.tokenStore.getToken(
+
+		const tokenPromise = this.tokenStore.getToken(
 			this.guid,
 			this.path,
 			this.refreshProvider.bind(this)
 		);
+		return promiseWithTimeout<ClientToken>(tokenPromise, 10000);
+	}
+
+	providerActive() {
+		if (this.clientToken) {
+			const tokenSet = this._provider.url == this.clientToken.url;
+			const expired = Date.now() > (this.clientToken?.exprityTime || 0);
+			return tokenSet && !expired;
+		}
+		return false;
 	}
 
 	refreshProvider(clientToken: ClientToken | null, err: Error | null) {
@@ -115,7 +149,7 @@ export class HasProvider {
 	}
 
 	public withActiveProvider<T extends HasProvider>(this: T): Promise<T> {
-		if (this._provider && this._provider.wsconnected) {
+		if (this.providerActive()) {
 			return new Promise((resolve) => {
 				resolve(this);
 			});
@@ -179,6 +213,9 @@ export class HasProvider {
 	destroy() {
 		if (this._offConnectionError) {
 			this._offConnectionError();
+		}
+		if (this._offStatus) {
+			this._offStatus();
 		}
 		if (this._provider) {
 			this._provider.disconnect();

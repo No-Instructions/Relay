@@ -58,7 +58,7 @@ export class ConnectionStatusIcon {
 		return true;
 	}
 
-	setState(guid: string, status: string) {
+	setState(status: string) {
 		if (!this.ensureIconContainer()) return;
 		if (!this.iconContainer) return;
 		this.iconContainer.innerHTML = `<span class="connection-status-icon-${status}">●</span>`;
@@ -77,11 +77,11 @@ export class ConnectionStatusIcon {
 		}
 	}
 
-	connect(guid: string) {
-		this.setState(guid, "connected");
+	connect() {
+		this.setState("connected");
 	}
 
 	disconnect() {
-		this.setState("", "disconnected");
+		this.setState("disconnected");
 	}
 }

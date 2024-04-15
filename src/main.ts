@@ -17,6 +17,7 @@ import { LoginManager } from "./LoginManager";
 import { curryLog } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
+import NetworkStatus from "./NetworkStatus";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -32,6 +33,7 @@ export default class Live extends Plugin {
 	vault: VaultFacade;
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
+	networkStatus: NetworkStatus;
 	_extensions: [];
 	log: (message: string) => void;
 	private _liveViews: LiveViewManager;
@@ -42,6 +44,7 @@ export default class Live extends Plugin {
 		await this.loadSettings();
 		this.loginManager = new LoginManager();
 		this.tokenStore = new LiveTokenStore(this.loginManager, 3);
+		this.networkStatus = new NetworkStatus("https://api.dnup.org/health");
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please login to Obsidian Live");
@@ -65,7 +68,8 @@ export default class Live extends Plugin {
 		this._liveViews = new LiveViewManager(
 			workspace,
 			this.sharedFolders,
-			this.loginManager
+			this.loginManager,
+			this.networkStatus
 		);
 
 		// NOTE: Extensions list should be loaded once and then mutated.
@@ -73,6 +77,14 @@ export default class Live extends Plugin {
 		this.registerEditorExtension(this._liveViews.extensions);
 
 		this.tokenStore.start();
+		this.networkStatus.addEventListener("offline", () => {
+			this.tokenStore.stop();
+			this._liveViews.goOffline();
+		});
+		this.networkStatus.addEventListener("online", () => {
+			this.tokenStore.start();
+			this._liveViews.goOnline();
+		});
 
 		this.setup();
 	}

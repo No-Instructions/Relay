@@ -71,6 +71,10 @@ export class SharedFolder extends HasProvider {
 		this.docs = new Map();
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 
+		this._persistence.once("synced", () => {
+			console.log(this.ids);
+		});
+
 		this.getProviderToken().then((token) => {
 			this.connect();
 		});
@@ -237,12 +241,12 @@ export class SharedFolder extends HasProvider {
 				return doc;
 			} else {
 				// the ID exists, but the file doesn't
-				this.log("[getDoc]: creating file for existing doc");
+				this.log("[getDoc]: creating doc for shared ID");
 				return this.createDoc(vPath, false);
 			}
 		} else if (create) {
 			// the File exists, but the ID doesn't
-			this.log("[getDoc]: creating doc for existing file");
+			this.log("[getDoc]: creating new shared ID for existing file");
 			return this.createDoc(vPath, true);
 		} else {
 			throw new Error("No shared doc for path: " + vPath);
