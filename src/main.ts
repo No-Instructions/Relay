@@ -250,25 +250,6 @@ export default class Live extends Plugin {
 			})
 		);
 
-		function onNetworkConnect(e: Event) {
-			this.log("network online");
-		}
-		function onNetworkDisconnect(e: Event) {
-			this.log("network offline");
-		}
-
-		function registerNetworkListeners(): () => void {
-			window.addEventListener("online", onNetworkConnect);
-			window.addEventListener("offline", onNetworkDisconnect);
-
-			const unregisterNetworkListeners = () => {
-				window.removeEventListener("online", onNetworkConnect);
-				window.removeEventListener("offline", onNetworkDisconnect);
-			};
-			return unregisterNetworkListeners;
-		}
-		this.registerEvent(registerNetworkListeners);
-
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
@@ -280,8 +261,7 @@ export default class Live extends Plugin {
 				};
 			},
 		});
-
-		this.registerEvent(patchOnUnloadFile);
+		this.register(patchOnUnloadFile);
 	}
 
 	onunload() {
@@ -293,6 +273,8 @@ export default class Live extends Plugin {
 
 		this.tokenStore.stop();
 		this.tokenStore.clearState();
+
+		this.networkStatus.stop();
 	}
 
 	async loadSettings() {
