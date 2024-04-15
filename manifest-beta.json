@@ -1,7 +1,7 @@
 {
 	"id": "obsidian-live",
 	"name": "Obsidian Live",
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"minAppVersion": "0.15.0",
 	"description": "Realtime Collaborative Workspace",
 	"author": "Daniel Grossmann-Kavanagh",
