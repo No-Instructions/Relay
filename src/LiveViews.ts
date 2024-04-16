@@ -78,11 +78,6 @@ export class LiveView {
 	}
 
 	offlineBanner(): () => void {
-		console.log(
-			"connection error, going offline",
-			this.shouldConnect,
-			this
-		);
 		this._connectionStatusIcon.setState(this.document.status.status);
 		if (this.shouldConnect) {
 			const banner = new Banner(
@@ -96,7 +91,6 @@ export class LiveView {
 				}
 			);
 			this.document.onceConnected().then(() => {
-				console.log("reconnected");
 				banner.destroy();
 			});
 			return () => {
@@ -358,6 +352,10 @@ export class LiveViewManager {
 		//if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
 		const activeDocumentFolders = this.findFolders();
 		if (activeDocumentFolders.length === 0 && this.views.length === 0) {
+			if (this.extensions.length !== 0) {
+				console.warn("unexpected plugins loaded");
+				this.wipe();
+			}
 			return; // no live views open
 		}
 
