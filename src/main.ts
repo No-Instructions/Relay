@@ -254,9 +254,10 @@ export default class Live extends Plugin {
 		const plugin = this;
 
 		const patchOnUnloadFile = around(MarkdownView.prototype, {
+			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old) {
 				return function (file) {
-					plugin._liveViews.refresh("unload");
+					plugin._liveViews.wipe();
 					return old.call(this, file);
 				};
 			},
