@@ -63,8 +63,7 @@ export class SharedFolder extends HasProvider {
 		vault: Vault,
 		tokenStore: LiveTokenStore
 	) {
-		super(guid, tokenStore);
-		this.loginManager = loginManager;
+		super(guid, tokenStore, loginManager);
 		this.vault = vault;
 		this.path = path;
 		this.ids = this.ydoc.getMap("docs");

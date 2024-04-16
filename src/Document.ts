@@ -24,7 +24,7 @@ export class Document extends HasProvider {
 		loginManager: LoginManager,
 		parent: SharedFolder
 	) {
-		super(guid, parent.tokenStore);
+		super(guid, parent.tokenStore, loginManager);
 		this.loginManager = loginManager;
 		this._parent = parent;
 		this.path = path;
