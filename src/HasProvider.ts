@@ -17,6 +17,19 @@ export interface Subscription {
 	off: () => void;
 }
 
+function generateRandomString(): string {
+	let result = "";
+	const characters =
+		"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+	const charactersLength = characters.length;
+	for (let i = 0; i < 16; i++) {
+		result += characters.charAt(
+			Math.floor(Math.random() * charactersLength)
+		);
+	}
+	return result;
+}
+
 export class HasProvider {
 	_provider: YSweetProvider;
 	guid: string;
@@ -39,9 +52,10 @@ export class HasProvider {
 		this._status = { status: "disconnected" };
 		const url = this.tokenStore.getTokenSync(this.guid)?.url || "";
 		const token = this.tokenStore.getTokenSync(this.guid)?.token;
+		const params = { token: token || "", r: generateRandomString() };
 		this._provider = new YSweetProvider(url, this.guid, this.ydoc, {
 			connect: false,
-			params: token ? { token: token } : {},
+			params: params,
 			disableBc: true,
 		});
 
@@ -49,7 +63,7 @@ export class HasProvider {
 			(event) => {
 				this.log(`[${this.path}] disconnection event: ${event}`);
 				console.log(this._provider);
-				this.disconnect();
+				this.refreshProvider(this.clientToken, null);
 			}
 		);
 		connectionErrorSub.on();
@@ -107,7 +121,7 @@ export class HasProvider {
 			new Doc(),
 			{
 				connect: false,
-				params: { token: clientToken.token },
+				params: { token: clientToken.token, r: generateRandomString() },
 				disableBc: true,
 			}
 		);
