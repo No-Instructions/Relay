@@ -7,6 +7,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
+import { TokenStore } from "./TokenStore";
 
 export interface Status {
 	status: "connected" | "connecting" | "disconnected";
@@ -30,6 +31,33 @@ function generateRandomString(): string {
 	return result;
 }
 
+function makeProvider(
+	clientToken: ClientToken,
+	guid: string,
+	ydoc: Doc,
+	user?: User
+) {
+	const params = {
+		token: clientToken.token || "",
+		r: generateRandomString(),
+	};
+	const provider = new YSweetProvider(clientToken.url, guid, ydoc, {
+		connect: false,
+		params: params,
+		disableBc: true,
+	});
+	if (user) {
+		provider.awareness.setLocalStateField("user", {
+			name: user.name,
+			color: user.color.color,
+			colorLight: user.color.light,
+		});
+	} else {
+		console.log("user missing...");
+	}
+	return provider;
+}
+
 export class HasProvider {
 	_provider: YSweetProvider;
 	guid: string;
@@ -50,20 +78,19 @@ export class HasProvider {
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
 		this._status = { status: "disconnected" };
-		const url = this.tokenStore.getTokenSync(this.guid)?.url || "";
-		const token = this.tokenStore.getTokenSync(this.guid)?.token;
-		const params = { token: token || "", r: generateRandomString() };
-		this._provider = new YSweetProvider(url, this.guid, this.ydoc, {
-			connect: false,
-			params: params,
-			disableBc: true,
-		});
+		const clientToken =
+			this.tokenStore.getTokenSync(this.guid) ||
+			({ token: "", url: "", exprityTime: 0 } as ClientToken);
+		const user = this.loginManager?.user;
+		this._provider = makeProvider(clientToken, this.guid, this.ydoc, user);
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
 				this.log(`[${this.path}] disconnection event: ${event}`);
 				console.log(this._provider);
-				this.refreshProvider(this.clientToken, null);
+				if (this.clientToken) {
+					this.refreshProvider(this.clientToken);
+				}
 			}
 		);
 		connectionErrorSub.on();
@@ -95,7 +122,11 @@ export class HasProvider {
 			this.path,
 			this.refreshProvider.bind(this)
 		);
-		return promiseWithTimeout<ClientToken>(tokenPromise, 10000);
+		const timeoutPromise = promiseWithTimeout<ClientToken>(
+			tokenPromise,
+			10000
+		);
+		return timeoutPromise;
 	}
 
 	providerActive() {
@@ -107,37 +138,20 @@ export class HasProvider {
 		return false;
 	}
 
-	refreshProvider(clientToken: ClientToken | null, err: Error | null) {
+	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
 		this.log("refreshProvider");
-		if (err || !clientToken) {
-			return;
-		}
 		this.clientToken = clientToken;
 		console.log(clientToken);
-		const tempProvider = new YSweetProvider(
-			clientToken.url,
-			this.guid,
-			new Doc(),
-			{
-				connect: false,
-				params: { token: clientToken.token, r: generateRandomString() },
-				disableBc: true,
-			}
-		);
+
 		const user = this.loginManager?.user;
-		if (user) {
-			this._provider.awareness.setLocalStateField("user", {
-				name: user.name,
-				color: user.color.color,
-				colorLight: user.color.light,
-			});
-		}
+		const provider = makeProvider(clientToken, this.guid, this.ydoc, user);
 
 		if (!this._provider) {
-			this._provider = tempProvider;
-		} else if (this._provider.url !== tempProvider.url) {
-			this._provider.url = tempProvider.url;
+			this._provider = provider;
+		} else if (this._provider.url !== provider.url) {
+			// XXX revisit whether this is helpful vs. just setting a new provider
+			this._provider.url = provider.url;
 			this.log(
 				`Token Refreshed: setting new provider url, ${this._provider.url}`
 			);
