@@ -71,7 +71,7 @@ export class HasProvider {
 		this._status = { status: "disconnected" };
 		this.clientToken =
 			this.tokenStore.getTokenSync(this.guid) ||
-			({ token: "", url: "", exprityTime: 0 } as ClientToken);
+			({ token: "", url: "", expiryTime: 0 } as ClientToken);
 		const user = this.loginManager?.user;
 		this._provider = makeProvider(
 			this.clientToken,
@@ -83,7 +83,7 @@ export class HasProvider {
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
 				this.log(`[${this.path}] disconnection event: ${event}`);
-				console.log(this._provider);
+				console.log(this._provider, this.clientToken);
 				this._provider.disconnect();
 				this.getProviderToken().then((clientToken) => {
 					this.connect();
@@ -129,7 +129,7 @@ export class HasProvider {
 	providerActive() {
 		if (this.clientToken) {
 			const tokenSet = this._provider.url == this.clientToken.url;
-			const expired = Date.now() > (this.clientToken?.exprityTime || 0);
+			const expired = Date.now() > (this.clientToken?.expiryTime || 0);
 			return tokenSet && !expired;
 		}
 		return false;

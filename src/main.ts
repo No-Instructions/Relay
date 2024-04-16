@@ -65,6 +65,7 @@ export default class Live extends Plugin {
 		});
 
 		const workspace = new WorkspaceFacade(this.app.workspace);
+
 		this._liveViews = new LiveViewManager(
 			workspace,
 			this.sharedFolders,
@@ -276,6 +277,7 @@ export default class Live extends Plugin {
 		this.tokenStore.clearState();
 
 		this.networkStatus.stop();
+		this._liveViews.destroy();
 	}
 
 	async loadSettings() {

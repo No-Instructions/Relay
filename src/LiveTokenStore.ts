@@ -8,7 +8,7 @@ import { LocalStorage } from "./LocalStorage";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
-	return clientToken.exprityTime || 0;
+	return clientToken.expiryTime || 0;
 }
 
 function withLoginManager(
@@ -48,7 +48,7 @@ async function refresh(
 			}
 			const clientToken = response.json as ClientToken;
 			// lol this is so fake
-			clientToken.exprityTime = Date.now() + 1000 * 60 * 60;
+			clientToken.expiryTime = Date.now() + 1000 * 60 * 30;
 			onSuccess(clientToken);
 		})
 		.catch((reason) => {

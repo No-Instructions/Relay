@@ -1,5 +1,4 @@
 import jwt from "jsonwebtoken";
-import { LocalStorage } from "./LocalStorage";
 
 interface TokenStoreConfig {
 	log: (message: string) => void;
@@ -168,7 +167,7 @@ export class TokenStore<TokenType> {
 	}
 
 	log(text: string) {
-		//this._log(text);
+		this._log(text);
 	}
 
 	private onTokenRefreshed(documentId: string, token: TokenType) {
@@ -183,7 +182,6 @@ export class TokenStore<TokenType> {
 				...existing,
 				token,
 				expiryTime,
-				attempts: existing.attempts,
 			} as TokenInfo<TokenType>);
 			callback(token);
 			this.log(
@@ -195,10 +193,15 @@ export class TokenStore<TokenType> {
 	private onRefreshFailure(documentId: string) {
 		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 		const existing = this.tokenMap.get(documentId)!;
-		this.tokenMap.set(documentId, {
-			...existing,
-			attempts: (existing?.attempts || 0) + 1,
-		});
+		const attempts = existing?.attempts || 0 + 1;
+		if (attempts <= 3) {
+			this.tokenMap.set(documentId, {
+				...existing,
+				attempts: attempts,
+			});
+		} else {
+			this.tokenMap.delete(documentId);
+		}
 	}
 
 	isTokenValid(token: TokenInfo<TokenType>): boolean {

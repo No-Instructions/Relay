@@ -177,13 +177,14 @@ export class LiveViewManager {
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 
-		this.views = this.getViews();
+		this.foldersReady().then((folders) => {
+			this.views = this.getViews();
+			this.refresh("[Constructor]");
+		});
 
 		this.sharedFolders.on(() => {
 			this.refresh("[Shared Folders]");
 		});
-
-		this.refresh("Constructor");
 	}
 
 	loginBanner() {
@@ -410,12 +411,19 @@ export class LiveViewManager {
 
 	load() {
 		this.wipe();
-		this.extensions.push([
-			this._compartment.of(connectionManagerFacet.of(this)),
-			LiveEdit,
-			yRemoteSelectionsTheme,
-			yRemoteSelections,
-		]);
-		this.workspace.updateOptions();
+		if (this.views.length > 0) {
+			this.extensions.push([
+				this._compartment.of(connectionManagerFacet.of(this)),
+				LiveEdit,
+				yRemoteSelectionsTheme,
+				yRemoteSelections,
+			]);
+			this.workspace.updateOptions();
+		}
+	}
+
+	public destroy() {
+		this.releaseViews(this.views);
+		this.wipe();
 	}
 }

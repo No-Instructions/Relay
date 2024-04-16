@@ -8,14 +8,11 @@ import { dirname } from "path";
 import { Doc } from "yjs";
 import { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
-import { User } from "./User";
 import { Document } from "./Document";
 import { curryLog } from "./debug";
 import { ObservableSet } from "./ObservableSet";
 import { LoginManager } from "./LoginManager";
-import { TokenStore } from "./TokenStore";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { YSweetProvider } from "@y-sweet/client";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -69,7 +66,6 @@ export class SharedFolder extends HasProvider {
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
-
 		this._persistence.once("synced", () => {
 			console.log(this.ids);
 		});
@@ -228,7 +224,12 @@ export class SharedFolder extends HasProvider {
 
 	getFile(path: string, create = true): Document {
 		const vPath = this.getVirtualPath(path);
-		return this.getDoc(vPath, create);
+		try {
+			return this.getDoc(vPath, create);
+		} catch (e) {
+			console.log(e, path);
+			throw e;
+		}
 	}
 
 	getDoc(vPath: string, create = true): Document {
@@ -248,7 +249,7 @@ export class SharedFolder extends HasProvider {
 			this.log("[getDoc]: creating new shared ID for existing file");
 			return this.createDoc(vPath, true);
 		} else {
-			throw new Error("No shared doc for path: " + vPath);
+			throw new Error("No shared doc for vpath: " + vPath);
 		}
 	}
 

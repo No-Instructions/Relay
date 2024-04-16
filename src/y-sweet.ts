@@ -31,7 +31,7 @@ export type ClientToken = {
 
 	token: string;
 
-	exprityTime?: number;
+	expiryTime?: number;
 };
 
 function stringToBase64(input: string) {
