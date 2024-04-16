@@ -163,7 +163,7 @@ export class TokenStore<TokenType> {
 	}
 
 	log(text: string) {
-		this._log(text);
+		//this._log(text);
 	}
 
 	private onTokenRefreshed(documentId: string, token: TokenType) {

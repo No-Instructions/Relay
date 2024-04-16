@@ -18,6 +18,10 @@ class NetworkStatus {
 		this.start();
 	}
 
+	log(text: string) {
+		console.log(text);
+	}
+
 	public start() {
 		if (!this.timer) {
 			this.timer = this.checkStatusRepeatedly();
@@ -46,10 +50,10 @@ class NetworkStatus {
 	}
 
 	private async _checkStatus(): Promise<void> {
-		console.log(`checking network connection. online? ${this.online}`);
 		return requestUrl({ url: this.url, method: "HEAD" })
 			.then((response) => {
 				if (response.status === 200 && !this.online) {
+					this.log("back online");
 					this.online = true;
 					this.onOnline.forEach((callback) => callback());
 
