@@ -10,6 +10,7 @@ interface TokenStoreConfig {
 	) => void;
 	getTimeProvider?: () => TimeProvider;
 	getJwtExpiry?: (token: any) => number;
+	getStorage?: () => Map<string, any>;
 }
 
 export interface TimeProvider {
@@ -31,17 +32,16 @@ function _getJwtExpiry(token: string): number {
 	return exp * 1000; // Convert to milliseconds
 }
 
-interface TokenInfo<Token> {
+export interface TokenInfo<Token> {
 	friendlyName: string;
 	token: Token | null;
 	expiryTime: number;
 	attempts: number;
-	callback: (token: Token) => void;
-	_timeProvider?: TimeProvider;
 }
 
 export class TokenStore<TokenType> {
 	private tokenMap: Map<string, TokenInfo<TokenType>>;
+	private callbacks: Map<string, (token: TokenType) => void>;
 	private refreshQueue: Set<string>;
 	private timeProvider: TimeProvider;
 	private refreshInterval: NodeJS.Timer | null;
@@ -59,7 +59,12 @@ export class TokenStore<TokenType> {
 
 	constructor(config: TokenStoreConfig, maxConnections = 5) {
 		this._activePromises = new Map();
-		this.tokenMap = new LocalStorage<TokenInfo<TokenType>>("TokenStore");
+		if (config.getStorage) {
+			this.tokenMap = config.getStorage();
+		} else {
+			this.tokenMap = new Map<string, TokenInfo<TokenType>>();
+		}
+		this.callbacks = new Map();
 
 		this.refreshQueue = new Set();
 		this._log = config.log;
@@ -171,6 +176,8 @@ export class TokenStore<TokenType> {
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const existing = this.tokenMap.get(documentId)!;
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			const callback = this.callbacks.get(documentId)!;
 			this.log(`new expiry time is ${expiryTime}`);
 			this.tokenMap.set(documentId, {
 				...existing,
@@ -178,7 +185,7 @@ export class TokenStore<TokenType> {
 				expiryTime,
 				attempts: existing.attempts,
 			} as TokenInfo<TokenType>);
-			existing.callback(token);
+			callback(token);
 			this.log(
 				`Token refreshed for ${existing.friendlyName} (${documentId})`
 			);
@@ -211,22 +218,19 @@ export class TokenStore<TokenType> {
 	async getToken(
 		documentId: string,
 		friendlyName: string,
-		callback: (token: TokenType, err: Error | null) => void
+		callback: (token: TokenType) => void
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
-				// && this.isTokenValid(tokenInfo)) {
+				this.tokenMap.set(documentId, {
+					...tokenInfo,
+				});
+				this.callbacks.set(documentId, callback);
 				console.log("token was valid, cache hit!");
 				return Promise.resolve(tokenInfo.token);
-			} else {
-				console.log(
-					"token was invalid???",
-					tokenInfo,
-					this.timeProvider.getTime()
-				);
 			}
 		}
 		const activePromise = this._activePromises.get(documentId);
@@ -238,11 +242,8 @@ export class TokenStore<TokenType> {
 			friendlyName: friendlyName,
 			expiryTime: 0,
 			attempts: 0,
-			callback: callback,
 		} as TokenInfo<TokenType>);
-		if (!documentId) {
-			throw new Error("missing document ID!");
-		}
+		this.callbacks.set(documentId, callback);
 		const sharedPromise = this.onRefresh(documentId)
 			.then((newToken: TokenType) => {
 				this.onTokenRefreshed(documentId, newToken);

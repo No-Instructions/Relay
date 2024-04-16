@@ -1,9 +1,10 @@
 // This file is the Obsidian Live variant of the token store.
-import { TokenStore } from "./TokenStore";
+import { TokenStore, TokenInfo } from "./TokenStore";
 import { LoginManager } from "./LoginManager";
 import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import { ClientToken } from "./y-sweet";
+import { LocalStorage } from "./LocalStorage";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
@@ -62,6 +63,11 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				log: curryLog("[LiveTokenStore]"),
 				refresh: withLoginManager(loginManager, refresh),
 				getJwtExpiry: getJwtExpiryFromClientToken,
+				getStorage: function () {
+					return new LocalStorage<TokenInfo<ClientToken>>(
+						"TokenStore"
+					);
+				},
 			},
 			maxConnections
 		);
