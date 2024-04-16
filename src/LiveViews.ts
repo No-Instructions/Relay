@@ -18,7 +18,6 @@ import { curryLog } from "./debug";
 import { YText } from "yjs/dist/src/types/YText";
 import { Banner } from "./ui/Banner";
 import { LoginManager } from "./LoginManager";
-import { ShareLinkPlugin } from "./ShareLinkPlugin";
 import NetworkStatus from "./NetworkStatus";
 import { promiseWithTimeout } from "./promiseUtils";
 
@@ -414,7 +413,6 @@ export class LiveViewManager {
 		this.extensions.push([
 			this._compartment.of(connectionManagerFacet.of(this)),
 			LiveEdit,
-			ShareLinkPlugin,
 			yRemoteSelectionsTheme,
 			yRemoteSelections,
 		]);
