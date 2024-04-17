@@ -57,7 +57,11 @@ async function refresh(
 }
 
 export class LiveTokenStore extends TokenStore<ClientToken> {
-	constructor(loginManager: LoginManager, maxConnections = 5) {
+	constructor(
+		loginManager: LoginManager,
+		vaultName: string,
+		maxConnections = 5
+	) {
 		super(
 			{
 				log: curryLog("[LiveTokenStore]"),
@@ -65,7 +69,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				getJwtExpiry: getJwtExpiryFromClientToken,
 				getStorage: function () {
 					return new LocalStorage<TokenInfo<ClientToken>>(
-						"TokenStore"
+						"TokenStore/" + vaultName
 					);
 				},
 			},

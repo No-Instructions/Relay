@@ -42,14 +42,15 @@ export default class Live extends Plugin {
 		console.log("[Obsidian Live] Loading Plugin");
 		this.log = curryLog("[Obsidian Live]");
 		await this.loadSettings();
+		this.vault = new VaultFacade(this.app);
 		this.loginManager = new LoginManager();
-		this.tokenStore = new LiveTokenStore(this.loginManager, 3);
+		const vaultName = this.vault.getName();
+		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
 		this.networkStatus = new NetworkStatus("https://api.dnup.org/health");
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please login to Obsidian Live");
 		}
-		this.vault = new VaultFacade(this.app);
 		this.sharedFolders = this.loadSharedFolders(
 			this.settings.sharedFolders
 		); // Loading shared folders also sanitizes them...
