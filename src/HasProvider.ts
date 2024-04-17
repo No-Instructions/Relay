@@ -164,12 +164,9 @@ export class HasProvider {
 			this.log(
 				`Token Refreshed: setting new provider url, ${this._provider.url}`
 			);
-			if (this._provider.wsconnected) {
-				this._provider.disconnect();
-				this._provider.connect();
-			} else if (this._provider.shouldConnect) {
-				this._provider.connect();
-			}
+			this._provider.ws?.close();
+		} else {
+			console.log("url was the same!", this._provider.url, newUrl);
 		}
 	}
 

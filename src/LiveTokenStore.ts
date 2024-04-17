@@ -47,8 +47,6 @@ async function refresh(
 				);
 			}
 			const clientToken = response.json as ClientToken;
-			// lol this is so fake
-			clientToken.expiryTime = Date.now() + 1000 * 60 * 30;
 			onSuccess(clientToken);
 		})
 		.catch((reason) => {
