@@ -89,6 +89,10 @@ export class VaultFacade extends Observable<string> implements Vault {
 		return existsSync(this.fullPath(name));
 	}
 
+	public getName(): string {
+		return this.app.vault.getName();
+	}
+
 	public get root(): string {
 		const vaultRoot = (
 			this.app.vault.adapter as FileSystemAdapter
