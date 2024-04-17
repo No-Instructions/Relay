@@ -121,7 +121,11 @@ export class TokenStore<TokenType> {
 			this.log(
 				`documentId: ${documentId}, expiryTime: ${tokenInfo.expiryTime} (in ${diff}s)`
 			);
-			if (this.shouldRefresh(tokenInfo)) {
+
+			if (
+				this.callbacks.has(documentId) &&
+				this.shouldRefresh(tokenInfo)
+			) {
 				this.log("adding to refresh queue");
 				this.addToRefreshQueue(documentId);
 			}
@@ -211,7 +215,7 @@ export class TokenStore<TokenType> {
 
 	shouldRefresh(token: TokenInfo<TokenType>): boolean {
 		const currentTime = this.timeProvider.getTime();
-		return token.expiryTime - currentTime <= this.expiryMargin;
+		return currentTime + this.expiryMargin > token.expiryTime;
 	}
 
 	getTokenSync(documentId: string) {
@@ -228,9 +232,6 @@ export class TokenStore<TokenType> {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
-				this.tokenMap.set(documentId, {
-					...tokenInfo,
-				});
 				this.callbacks.set(documentId, callback);
 				console.log("token was valid, cache hit!");
 				return Promise.resolve(tokenInfo.token);
