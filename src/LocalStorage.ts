@@ -1,23 +1,26 @@
 export class LocalStorage<T> implements Map<string, T> {
 	private namespace: string;
+	private seperator = "/";
 
 	constructor(namespace: string) {
 		this.namespace = namespace;
 	}
 
 	private fullKey(key: string): string {
-		return `${this.namespace}:${key}`;
+		return `${this.namespace}${this.seperator}${key}`;
 	}
 
 	public get size(): number {
 		return Object.keys(localStorage).filter((key: string) =>
-			key.startsWith(this.namespace + ":")
+			key.startsWith(this.namespace + this.seperator)
 		).length;
 	}
 
 	public clear(): void {
 		Object.keys(localStorage)
-			.filter((key: string) => key.startsWith(this.namespace + ":"))
+			.filter((key: string) =>
+				key.startsWith(this.namespace + this.seperator)
+			)
 			.forEach((key: string) => localStorage.removeItem(key));
 	}
 
@@ -33,9 +36,13 @@ export class LocalStorage<T> implements Map<string, T> {
 		thisArg?: any
 	): void {
 		Object.keys(localStorage)
-			.filter((key: string) => key.startsWith(this.namespace + ":"))
+			.filter((key: string) =>
+				key.startsWith(this.namespace + this.seperator)
+			)
 			.forEach((key: string) => {
-				const storageKey = key.split(`${this.namespace}:`)[1];
+				const storageKey = key.split(
+					`${this.namespace}${this.seperator}`
+				)[1];
 				const value = this.get(storageKey);
 				callbackfn.call(thisArg, value, storageKey, this);
 			});
@@ -60,8 +67,13 @@ export class LocalStorage<T> implements Map<string, T> {
 
 	public keys(): IterableIterator<string> {
 		const keys = Object.keys(localStorage)
-			.filter((key: string) => key.startsWith(this.namespace + ":"))
-			.map((key: string) => key.split(`${this.namespace}:`)[1]);
+			.filter((key: string) =>
+				key.startsWith(this.namespace + this.seperator)
+			)
+			.map(
+				(key: string) =>
+					key.split(`${this.namespace}${this.seperator}`)[1]
+			);
 		return keys.values();
 	}
 
