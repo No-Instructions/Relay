@@ -25,7 +25,6 @@ export class Document extends HasProvider {
 		parent: SharedFolder
 	) {
 		super(guid, parent.tokenStore, loginManager);
-		this.loginManager = loginManager;
 		this._parent = parent;
 		this.path = path;
 		this.log = curryLog(`[SharedDoc](${this.path})`);
