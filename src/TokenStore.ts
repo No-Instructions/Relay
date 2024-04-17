@@ -18,6 +18,18 @@ export interface TimeProvider {
 	clearInterval: (timerId: NodeJS.Timer) => void;
 }
 
+function formatTime(milliseconds: number): string {
+	if (milliseconds < 1000) {
+		return `${milliseconds}ms`;
+	} else if (milliseconds < 60000) {
+		return `${Math.round(milliseconds / 1000)}s`;
+	} else if (milliseconds < 3600000) {
+		return `${Math.round(milliseconds / 60000)}m`;
+	} else {
+		return `${Math.round(milliseconds / 3600000)}h`;
+	}
+}
+
 function _getJwtExpiry(token: string): number {
 	// Attempt to decode the token without verification
 	const decoded = jwt.decode(token);
@@ -119,7 +131,9 @@ export class TokenStore<TokenType> {
 			const diff =
 				(tokenInfo.expiryTime - this.timeProvider.getTime()) / 1000;
 			this.log(
-				`documentId: ${documentId}, expiryTime: ${tokenInfo.expiryTime} (in ${diff}s)`
+				`documentId: ${documentId}, expiryTime: ${
+					tokenInfo.expiryTime
+				} (in ${formatTime(diff)} - ${formatTime(this.expiryMargin)})`
 			);
 
 			if (
@@ -265,16 +279,18 @@ export class TokenStore<TokenType> {
 
 	report(): string {
 		const reportLines: string[] = [];
+		reportLines.push("Token Store Report:");
 		const currentTime = this.timeProvider.getTime();
 		for (const [
 			documentId,
 			{ friendlyName, expiryTime, attempts },
 		] of this.tokenMap.entries()) {
-			const timeUntilExpiry = (expiryTime - currentTime) / 1000; // Convert to seconds
+			const timeUntilExpiry = expiryTime - currentTime;
 			reportLines.push(
-				`${documentId} (${friendlyName}): ${attempts} attempts, expires in ${timeUntilExpiry.toFixed(
-					2
-				)} seconds`
+				`${documentId} (${friendlyName}): ${attempts} attempts, expires in 
+				} (in ${formatTime(timeUntilExpiry)} - ${formatTime(
+					this.expiryMargin
+				)}) (callback: ${this.callbacks.has(documentId)})`
 			);
 		}
 		reportLines.push(`Queue size: ${this.refreshQueue.size}`);
