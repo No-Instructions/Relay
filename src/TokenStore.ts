@@ -128,14 +128,6 @@ export class TokenStore<TokenType> {
 	private checkAndRefreshTokens() {
 		this.log("check and refresh tokens");
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
-			const diff =
-				(tokenInfo.expiryTime - this.timeProvider.getTime()) / 1000;
-			this.log(
-				`documentId: ${documentId}, expiryTime: ${
-					tokenInfo.expiryTime
-				} (in ${formatTime(diff)} - ${formatTime(this.expiryMargin)})`
-			);
-
 			if (
 				this.callbacks.has(documentId) &&
 				this.shouldRefresh(tokenInfo)
@@ -286,11 +278,18 @@ export class TokenStore<TokenType> {
 			{ friendlyName, expiryTime, attempts },
 		] of this.tokenMap.entries()) {
 			const timeUntilExpiry = expiryTime - currentTime;
+			let timeReport = "";
+			if (timeUntilExpiry > 0) {
+				timeReport = `expires in ${formatTime(
+					timeUntilExpiry
+				)} - ${formatTime(this.expiryMargin)}`;
+			} else {
+				timeReport = "expired";
+			}
 			reportLines.push(
-				`${documentId} (${friendlyName}): ${attempts} attempts, expires in 
-				} (in ${formatTime(timeUntilExpiry)} - ${formatTime(
-					this.expiryMargin
-				)}) (callback: ${this.callbacks.has(documentId)})`
+				`${documentId} (${friendlyName}): ${attempts} attempts, (${timeReport}) (callback: ${this.callbacks.has(
+					documentId
+				)})`
 			);
 		}
 		reportLines.push(`Queue size: ${this.refreshQueue.size}`);
