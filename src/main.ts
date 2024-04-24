@@ -14,10 +14,11 @@ import { FolderNavIcon } from "./ui/FolderNav";
 import { FolderMenu } from "./ui/FolderMenu";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
-import { curryLog } from "./debug";
+import { curryLog, toast } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
+import { ObsidianLiveException } from "./Exceptions";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -178,6 +179,39 @@ export default class Live extends Plugin {
 
 		const vaultLog = curryLog("[Live][Vault]");
 
+		const handleErrorEvent = (event: ErrorEvent) => {
+			const error = event.error;
+			if (error instanceof ObsidianLiveException) {
+				toast(error);
+			}
+			//event.preventDefault();
+		};
+
+		const errorListener = (event: ErrorEvent) => handleErrorEvent(event);
+		window.addEventListener("error", errorListener, true);
+		this.registerEvent({
+			dispose: () =>
+				window.removeEventListener("error", errorListener, true),
+		});
+
+		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {
+			if (event.reason instanceof ObsidianLiveException) {
+				toast(event.reason);
+			}
+			//event.preventDefault();
+		};
+		const rejectionListener = (event: PromiseRejectionEvent) =>
+			handlePromiseRejection(event);
+		window.addEventListener("unhandledrejection", rejectionListener, true);
+		this.registerEvent({
+			dispose: () =>
+				window.removeEventListener(
+					"unhandledrejection",
+					rejectionListener,
+					true
+				),
+		});
+
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
 				//vaultLog("create", file);
@@ -236,9 +270,9 @@ export default class Live extends Plugin {
 				if (folder) {
 					folder.whenReady().then((folder) => {
 						folder.renameFile(file.path, oldPath);
+						this._liveViews.refresh("rename");
 					});
 				}
-				this._liveViews.refresh("rename");
 			})
 		);
 
@@ -259,6 +293,7 @@ export default class Live extends Plugin {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old) {
 				return function (file) {
+					vaultLog("unloading", file);
 					plugin._liveViews.wipe();
 					return old.call(this, file);
 				};
