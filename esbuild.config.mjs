@@ -39,7 +39,7 @@ const context = await esbuild.context({
 	logLevel: "info",
 	sourcemap: debug ? "inline": false,
     define: {
-      'BUILD_TYPE': '"' + process.argv[2] + '"'
+      'BUILD_TYPE': debug ? '"debug"': '"prod"'
     },
 	treeShaking: true,
 	outfile: out + "/main.js",
