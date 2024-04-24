@@ -269,29 +269,51 @@ export class TokenStore<TokenType> {
 		return sharedPromise;
 	}
 
-	report(): string {
+	_reportWithFilter(filter: (documentId: string) => boolean) {
 		const reportLines: string[] = [];
-		reportLines.push("Token Store Report:");
 		const currentTime = this.timeProvider.getTime();
+		const tokens = Array.from(this.tokenMap.entries()).sort((a, b) => {
+			return a[1].expiryTime - b[1].expiryTime;
+		});
 		for (const [
 			documentId,
 			{ friendlyName, expiryTime, attempts },
-		] of this.tokenMap.entries()) {
+		] of tokens) {
+			if (!filter(documentId)) {
+				continue;
+			}
 			const timeUntilExpiry = expiryTime - currentTime;
 			let timeReport = "";
 			if (timeUntilExpiry > 0) {
 				timeReport = `expires in ${formatTime(
-					timeUntilExpiry
-				)} - ${formatTime(this.expiryMargin)}`;
+					timeUntilExpiry - this.expiryMargin
+				)}`;
 			} else {
 				timeReport = "expired";
 			}
 			reportLines.push(
-				`${documentId} (${friendlyName}): ${attempts} attempts, (${timeReport}) (callback: ${this.callbacks.has(
-					documentId
-				)})`
+				`${documentId} (${friendlyName}): ${attempts} attempts, (${timeReport})`
 			);
 		}
+		return reportLines;
+	}
+
+	report(): string {
+		const reportLines: string[] = [];
+		reportLines.push("Token Store Report:");
+		reportLines.push(`Expiry Margin: ${formatTime(this.expiryMargin)}`);
+		reportLines.push("Active Tokens:");
+		reportLines.push(
+			...this._reportWithFilter((documentId) => {
+				return this.callbacks.has(documentId);
+			})
+		);
+		reportLines.push("Stale Tokens:");
+		reportLines.push(
+			...this._reportWithFilter((documentId) => {
+				return !this.callbacks.has(documentId);
+			})
+		);
 		reportLines.push(`Queue size: ${this.refreshQueue.size}`);
 		return reportLines.join("\n");
 	}
