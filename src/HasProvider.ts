@@ -128,9 +128,9 @@ export class HasProvider {
 
 	providerActive() {
 		if (this.clientToken) {
-			const tokenSet = this._provider.url == this.clientToken.url;
+			const tokenIsSet = this._provider.url == this.clientToken.url;
 			const expired = Date.now() > (this.clientToken?.expiryTime || 0);
-			return tokenSet && !expired;
+			return tokenIsSet && !expired;
 		}
 		return false;
 	}
