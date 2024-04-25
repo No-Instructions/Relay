@@ -46,6 +46,10 @@ async function refresh(
 					)
 				);
 			}
+			if (response.headers["x-tf-cached"] === "True") {
+				console.warn("Overfetched token");
+				console.log(response.headers);
+			}
 			const clientToken = response.json as ClientToken;
 			onSuccess(clientToken);
 		})
