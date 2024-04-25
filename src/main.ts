@@ -189,10 +189,9 @@ export default class Live extends Plugin {
 
 		const errorListener = (event: ErrorEvent) => handleErrorEvent(event);
 		window.addEventListener("error", errorListener, true);
-		this.registerEvent({
-			dispose: () =>
-				window.removeEventListener("error", errorListener, true),
-		});
+		this.register(() =>
+			window.removeEventListener("error", errorListener, true)
+		);
 
 		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {
 			if (event.reason instanceof ObsidianLiveException) {
@@ -203,14 +202,13 @@ export default class Live extends Plugin {
 		const rejectionListener = (event: PromiseRejectionEvent) =>
 			handlePromiseRejection(event);
 		window.addEventListener("unhandledrejection", rejectionListener, true);
-		this.registerEvent({
-			dispose: () =>
-				window.removeEventListener(
-					"unhandledrejection",
-					rejectionListener,
-					true
-				),
-		});
+		this.register(() =>
+			window.removeEventListener(
+				"unhandledrejection",
+				rejectionListener,
+				true
+			)
+		);
 
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
