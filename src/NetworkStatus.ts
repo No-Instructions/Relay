@@ -50,37 +50,34 @@ class NetworkStatus {
 	}
 
 	private async _checkStatus(): Promise<void> {
-		return (
-			fetch(this.url, { method: "HEAD" })
-				//return requestUrl({ url: this.url, method: "HEAD" })
-				.then((response) => {
-					if (response.status === 200 && !this.online) {
-						this.log("back online");
-						this.online = true;
-						this.onOnline.forEach((callback) => callback());
+		return requestUrl({ url: this.url, method: "HEAD" })
+			.then((response) => {
+				if (response.status === 200 && !this.online) {
+					this.log("back online");
+					this.online = true;
+					this.onOnline.forEach((callback) => callback());
 
-						this._onceOnline.forEach((callback) => callback());
-						this._onceOnline.clear();
+					this._onceOnline.forEach((callback) => callback());
+					this._onceOnline.clear();
 
-						return;
-					} else if (response.status !== 200 && this.online) {
-						throw new Error("disconnected");
-					}
-				})
-				.catch((error) => {
-					console.log(error);
-					if (error.message.includes("ERR_NETWORK_CHANGED")) {
-						console.warn("error in message", error);
-						return;
-					}
-					if (error.name.includes("ERR_NETWORK_CHANGED")) {
-						console.warn("error in name", error);
-						return;
-					}
-					this.online = false;
-					this.onOffline.forEach((callback) => callback());
-				})
-		);
+					return;
+				} else if (response.status !== 200 && this.online) {
+					throw new Error("disconnected");
+				}
+			})
+			.catch((error) => {
+				console.log(error);
+				if (error.message.includes("ERR_NETWORK_CHANGED")) {
+					console.warn("error in message", error);
+					return;
+				}
+				if (error.name.includes("ERR_NETWORK_CHANGED")) {
+					console.warn("error in name", error);
+					return;
+				}
+				this.online = false;
+				this.onOffline.forEach((callback) => callback());
+			});
 	}
 
 	public onceOnline(callback: Callback): void {
