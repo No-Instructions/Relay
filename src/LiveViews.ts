@@ -153,8 +153,8 @@ export class LiveView {
 export class LiveViewManager {
 	workspace: WorkspaceFacade;
 	views: LiveView[];
-	private _activePromise?: Promise<void> | null;
-	private _stale: boolean;
+	private _activePromise?: Promise<boolean> | null;
+	private _stale: string;
 	private _compartment: Compartment;
 	private loginManager: LoginManager;
 	sharedFolders: SharedFolders;
@@ -173,7 +173,7 @@ export class LiveViewManager {
 		this.extensions = [];
 		this._compartment = new Compartment();
 		this._activePromise = null;
-		this._stale = false;
+		this._stale = "";
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 
@@ -352,7 +352,7 @@ export class LiveViewManager {
 		return [matching, stale];
 	}
 
-	async _refreshViews(context: string): Promise<void> {
+	async _refreshViews(context: string): Promise<boolean> {
 		const ctx = `[ConnectionManager][${context}]`;
 		const log = curryLog(ctx);
 		log("Refresh");
@@ -366,14 +366,14 @@ export class LiveViewManager {
 				console.warn("unexpected plugins loaded");
 				this.wipe();
 			}
-			return; // no live views open
+			return true; // no live views open
 		}
 
 		if (!this.loginManager.hasUser) {
 			console.warn("no user");
 			const views = this.getViews();
 			this._loginBanner(views);
-			return;
+			return false;
 		}
 
 		activeDocumentFolders.forEach((folder) => {
@@ -397,25 +397,28 @@ export class LiveViewManager {
 		this.views = matching;
 		log("loading plugins");
 		this.load();
+		return true;
 	}
 
-	async refresh(context: string): Promise<void> {
+	async refresh(context: string): Promise<boolean> {
 		const log = curryLog(context);
 		if (this._activePromise) {
-			this._stale = true;
+			this._stale += context;
 			log("refresh views was already running");
-			return;
+			return false;
 		}
-		this._activePromise = promiseWithTimeout(
+		this._activePromise = promiseWithTimeout<boolean>(
 			this._refreshViews(context),
 			3000
 		);
 		await this._activePromise;
 		this._activePromise = null;
-		if (this._stale) {
-			this._stale = false;
-			this.refresh(context);
+		if (this._stale !== "") {
+			this.refresh(this._stale);
+			this._stale = "";
+			return true;
 		}
+		return false;
 	}
 
 	wipe() {
