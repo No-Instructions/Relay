@@ -1,10 +1,10 @@
 {
-	"id": "obsidian-live",
-	"name": "Obsidian Live",
+	"id": "system3",
+	"name": "System 3",
 	"minAppVersion": "0.15.0",
 	"description": "Realtime Collaborative Workspace",
-	"author": "Daniel Grossmann-Kavanagh",
-	"authorUrl": "https://github.com/dtkav",
+	"author": "No Instructions, LLC",
+	"authorUrl": "https://noinstructions.ai",
 	"fundingUrl": "https://www.buymeacoffee.com/dtkav",
 	"isDesktopOnly": false,
 	"version": "1.0.0"

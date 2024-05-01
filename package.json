@@ -1,5 +1,5 @@
 {
-	"name": "obsidian-live",
+	"name": "system3",
 	"version": "1.0.0",
 	"description": "Real-time collaborative workspace for Obsidian.",
 	"main": "main.js",
@@ -14,6 +14,7 @@
 	"author": "Daniel Grossmann-Kavanagh",
 	"license": "MIT",
 	"devDependencies": {
+		"@tsconfig/svelte": "^5.0.4",
 		"@types/diff": "^5.0.9",
 		"@types/jest": "^29.5.12",
 		"@types/jsonwebtoken": "^9.0.6",
@@ -22,11 +23,14 @@
 		"@typescript-eslint/parser": "5.29.0",
 		"builtin-modules": "3.3.0",
 		"esbuild": "0.17.3",
+		"esbuild-svelte": "^0.8.0",
 		"jest": "^29.7.0",
 		"obsidian": "latest",
+		"svelte": "^4.2.15",
+		"svelte-preprocess": "^5.1.4",
 		"ts-jest": "^29.1.2",
 		"tslib": "2.4.0",
-		"typescript": "^4.7.4"
+		"typescript": "^5.4.5"
 	},
 	"dependencies": {
 		"@y-sweet/client": "^0.1.0",
