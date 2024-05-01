@@ -28,6 +28,8 @@ const DEFAULT_SETTINGS: LiveSettings = {
 	sharedFolders: [],
 };
 
+declare const HEALTH_URL: string;
+
 export default class Live extends Plugin {
 	settings: LiveSettings;
 	sharedFolders: SharedFolders;
@@ -47,7 +49,7 @@ export default class Live extends Plugin {
 		this.loginManager = new LoginManager();
 		const vaultName = this.vault.getName();
 		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
-		this.networkStatus = new NetworkStatus("https://api.dnup.org/health");
+		this.networkStatus = new NetworkStatus(HEALTH_URL);
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please login to Obsidian Live");
