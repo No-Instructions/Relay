@@ -1,35 +1,35 @@
 "use strict";
 export class ObservableSet<T> {
-	private set: Set<T>;
-	private listeners: Set<() => void>;
+	protected _set: Set<T>;
+	private _listeners: Set<() => void>;
 
 	constructor() {
-		this.set = new Set();
-		this.listeners = new Set();
+		this._set = new Set();
+		this._listeners = new Set();
 	}
 
 	protected notifyListeners(): void {
-		for (const listener of this.listeners) {
+		for (const listener of this._listeners) {
 			listener();
 		}
 	}
 
 	on(listener: () => void): void {
-		this.listeners.add(listener);
+		this._listeners.add(listener);
 	}
 
 	off(listener: () => void): void {
-		this.listeners.delete(listener);
+		this._listeners.delete(listener);
 	}
 
 	add(item: T): ObservableSet<T> {
-		this.set.add(item);
+		this._set.add(item);
 		this.notifyListeners();
 		return this;
 	}
 
 	delete(item: T): boolean {
-		const result = this.set.delete(item);
+		const result = this._set.delete(item);
 		if (result) {
 			this.notifyListeners();
 		}
@@ -37,20 +37,20 @@ export class ObservableSet<T> {
 	}
 
 	clear(): void {
-		this.set.clear();
+		this._set.clear();
 		this.notifyListeners();
 	}
 
 	has(item: T): boolean {
-		return this.set.has(item);
+		return this._set.has(item);
 	}
 
 	items(): T[] {
-		return [...this.set];
+		return [...this._set];
 	}
 
 	get size(): number {
-		return this.set.size;
+		return this._set.size;
 	}
 
 	forEach(callbackfn: (value: T, index: number, array: T[]) => void): void {
@@ -62,7 +62,7 @@ export class ObservableSet<T> {
 	}
 
 	some(predicate: (item: T) => boolean): boolean {
-		for (const item of this.set) {
+		for (const item of this._set) {
 			if (predicate(item)) {
 				return true;
 			}
