@@ -200,6 +200,10 @@ export class LiveViewManager {
 	}
 
 	goOnline() {
+		const folders = this.findFolders()
+		folders.forEach((folder: SharedFolder) => {
+			folder.connect();
+		});
 		this.views.forEach((view) => {
 			view.document.getProviderToken();
 		});
@@ -371,6 +375,10 @@ export class LiveViewManager {
 			this._loginBanner(views);
 			return;
 		}
+
+		activeDocumentFolders.forEach((folder) => {
+			folder.connect()
+		})
 
 		const [matching, stale] = this.deduplicate();
 

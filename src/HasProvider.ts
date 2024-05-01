@@ -47,8 +47,7 @@ function makeProvider(
 export class HasProvider {
 	_provider: YSweetProvider;
 	guid: string;
-	user: User;
-	path: string;
+	path?: string;
 	ydoc: Doc;
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
@@ -116,7 +115,7 @@ export class HasProvider {
 
 		const tokenPromise = this.tokenStore.getToken(
 			this.guid,
-			this.path,
+			this.path || "unknown",
 			this.refreshProvider.bind(this)
 		);
 		const timeoutPromise = promiseWithTimeout<ClientToken>(
@@ -137,7 +136,7 @@ export class HasProvider {
 
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
-		this.log("refreshProvider");
+		this.log("refreshProvider start");
 		this.clientToken = clientToken;
 		console.log(clientToken);
 
@@ -161,6 +160,7 @@ export class HasProvider {
 			throw new Error("missing provider!");
 		} else if (this._provider.url !== newUrl) {
 			this._provider.url = newUrl;
+			this._provider.wsUnsuccessfulReconnects = 0;
 			this.log(
 				`Token Refreshed: setting new provider url, ${this._provider.url}`
 			);
@@ -171,6 +171,9 @@ export class HasProvider {
 	}
 
 	connect() {
+		if (this._provider.wsconnected) {
+			return;
+		}
 		this.getProviderToken().then((clientToken) => {
 			this._provider.connect();
 		});
