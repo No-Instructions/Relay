@@ -1,9 +1,10 @@
 // This file is the Obsidian Live variant of the token store.
-import { TokenStore, TokenInfo } from "./TokenStore";
+import { TokenStore } from "./TokenStore";
+import type { TokenInfo } from "./TokenStore";
 import { LoginManager } from "./LoginManager";
 import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
-import { ClientToken } from "./y-sweet";
+import type { ClientToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {

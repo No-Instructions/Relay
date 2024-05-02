@@ -6,17 +6,12 @@ import { SharedFolder } from "./SharedFolder";
 import { YText } from "yjs/dist/src/internals";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
-import { LiveTokenStore } from "./LiveTokenStore";
 
 export class Document extends HasProvider {
-	guid: string;
-	loginManager: LoginManager;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
-	ydoc: Y.Doc;
 	path: string;
-	_locallyRaised: boolean;
-	tokenStore: LiveTokenStore;
+	_locallyRaised?: boolean;
 
 	constructor(
 		path: string,

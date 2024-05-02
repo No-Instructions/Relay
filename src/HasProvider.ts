@@ -5,7 +5,7 @@ import { User } from "./User";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { ClientToken } from "./y-sweet";
+import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
 
 export interface Status {

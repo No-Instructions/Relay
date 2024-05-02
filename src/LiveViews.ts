@@ -2,7 +2,8 @@ import { MarkdownView } from "obsidian";
 import { Document } from "./Document";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
-import { Compartment, Extension } from "@codemirror/state";
+import type { Extension } from "@codemirror/state";
+import { Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { ConnectionStatusIcon } from "./ui/ConnectionStatusIcon";
 import { LiveCMPluginValue } from "./y-codemirror.next/LiveEditPlugin";
@@ -40,12 +41,12 @@ function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 export class LiveView {
 	view: MarkdownView;
 	document: Document;
-	plugin: LiveCMPluginValue;
+	plugin?: LiveCMPluginValue;
 	shouldConnect: boolean;
 
 	private _connectionStatusIcon: ConnectionStatusIcon;
 	private _parent: LiveViewManager;
-	private _offStatus: () => void;
+	private _offStatus?: () => void;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -200,7 +201,7 @@ export class LiveViewManager {
 	}
 
 	goOnline() {
-		const folders = this.findFolders()
+		const folders = this.findFolders();
 		folders.forEach((folder: SharedFolder) => {
 			folder.connect();
 		});
@@ -377,8 +378,8 @@ export class LiveViewManager {
 		}
 
 		activeDocumentFolders.forEach((folder) => {
-			folder.connect()
-		})
+			folder.connect();
+		});
 
 		const [matching, stale] = this.deduplicate();
 

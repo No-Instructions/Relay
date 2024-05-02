@@ -10,11 +10,12 @@ import {
 	EditorView,
 	ViewUpdate,
 	ViewPlugin,
-	PluginValue,
-	DecorationSet,
 	Decoration,
 	WidgetType,
 } from "@codemirror/view";
+
+import type { PluginValue, DecorationSet } from "@codemirror/view";
+
 import { LiveView, LiveViewManager } from "../LiveViews";
 
 import * as Y from "yjs";
@@ -158,8 +159,8 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	connectionManager: LiveViewManager;
 	view?: LiveView;
 	decorations: DecorationSet;
-	_awareness: Awareness;
-	_listener: AwarenessChangeHandler;
+	_awareness?: Awareness;
+	_listener?: AwarenessChangeHandler;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -175,7 +176,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				const clients = added.concat(updated).concat(removed);
 				if (
 					clients.findIndex(
-						(id) => id !== this._awareness.doc.clientID
+						(id) => id !== this._awareness?.doc.clientID
 					) >= 0
 				) {
 					editor.dispatch({
@@ -191,7 +192,9 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	}
 
 	destroy() {
-		this._awareness?.off("change", this._listener);
+		if (this._listener) {
+			this._awareness?.off("change", this._listener);
+		}
 	}
 
 	update(update: ViewUpdate) {
@@ -223,12 +226,14 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 					? null
 					: Y.createRelativePositionFromJSON(
 							localAwarenessState.cursor.anchor
+							// eslint-disable-next-line no-mixed-spaces-and-tabs
 					  );
 			const currentHead =
 				localAwarenessState.cursor == null
 					? null
 					: Y.createRelativePositionFromJSON(
 							localAwarenessState.cursor.head
+							// eslint-disable-next-line no-mixed-spaces-and-tabs
 					  );
 
 			if (sel != null) {

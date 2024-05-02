@@ -2,13 +2,10 @@
 // License
 // [The MIT License](./LICENSE) © Kevin Jahns
 
-import { ChangeSpec, Facet, Annotation } from "@codemirror/state";
-import {
-	EditorView,
-	ViewUpdate,
-	ViewPlugin,
-	PluginValue,
-} from "@codemirror/view";
+import { Facet, Annotation } from "@codemirror/state";
+import type { ChangeSpec } from "@codemirror/state";
+import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import type { PluginValue } from "@codemirror/view";
 import { LiveView, LiveViewManager } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
@@ -26,9 +23,9 @@ export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
 	view?: LiveView;
 	connectionManager: LiveViewManager;
-	_observer: (event: YTextEvent, tr: Transaction) => void;
-	_ytext: YText;
-	log: (message: string) => void;
+	_observer?: (event: YTextEvent, tr: Transaction) => void;
+	_ytext?: YText;
+	log: (message: string) => void = (message: string) => {};
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -137,7 +134,9 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	destroy() {
-		this._ytext?.unobserve(this._observer);
+		if (this._observer) {
+			this._ytext?.unobserve(this._observer);
+		}
 	}
 }
 

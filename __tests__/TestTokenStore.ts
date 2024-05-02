@@ -1,4 +1,5 @@
-import { TimeProvider, TokenStore } from "../src/TokenStore";
+import { TokenStore } from "../src/TokenStore";
+import type { TimeProvider } from "../src/TokenStore";
 import { describe, expect, test } from "@jest/globals";
 
 class TestTimeProvider implements TimeProvider {

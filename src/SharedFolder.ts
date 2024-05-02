@@ -6,7 +6,7 @@ import { randomUUID } from "crypto";
 import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { Doc } from "yjs";
-import { Vault } from "./obsidian-api/Vault";
+import type { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
 import { Document } from "./Document";
 import { curryLog } from "./debug";
@@ -20,13 +20,11 @@ export interface SharedFolderSettings {
 }
 
 export class SharedFolder extends HasProvider {
-	ydoc: Y.Doc;
+	path: string;
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	private vault: Vault;
-	loginManager: LoginManager;
-	tokenStore: LiveTokenStore;
-	readyPromise: Promise<SharedFolder> | null;
+	readyPromise: Promise<SharedFolder> | null = null;
 
 	private _persistence: IndexeddbPersistence;
 

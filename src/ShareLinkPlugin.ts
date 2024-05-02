@@ -1,5 +1,6 @@
-import { Annotation, ChangeSpec, ChangeSet } from "@codemirror/state";
-import { EditorView, ViewPlugin, PluginValue } from "@codemirror/view";
+import { Annotation, ChangeSet } from "@codemirror/state";
+import { EditorView, ViewPlugin } from "@codemirror/view";
+import type { PluginValue } from "@codemirror/view";
 import { LiveView, LiveViewManager } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { connectionManagerFacet } from "./y-codemirror.next/LiveEditPlugin";
@@ -56,8 +57,6 @@ export class ShareLinkPluginValue implements PluginValue {
 	editor: EditorView;
 	view?: LiveView;
 	connectionManager: LiveViewManager;
-	_observer: (event: YTextEvent, tr: Transaction) => void;
-	_ytext: YText;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;

@@ -1,8 +1,9 @@
 "use strict";
 
-import { Plugin, TFolder, Notice, MarkdownView, TFile } from "obsidian";
+import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
 
-import { SharedFolder, SharedFolderSettings } from "./SharedFolder";
+import { SharedFolder } from "./SharedFolder";
+import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
 
 import { existsSync } from "fs";
@@ -31,15 +32,15 @@ const DEFAULT_SETTINGS: LiveSettings = {
 declare const HEALTH_URL: string;
 
 export default class Live extends Plugin {
-	settings: LiveSettings;
-	sharedFolders: SharedFolders;
-	vault: VaultFacade;
-	loginManager: LoginManager;
-	tokenStore: LiveTokenStore;
-	networkStatus: NetworkStatus;
-	_extensions: [];
-	log: (message: string) => void;
-	private _liveViews: LiveViewManager;
+	settings!: LiveSettings;
+	sharedFolders!: SharedFolders;
+	vault!: VaultFacade;
+	loginManager!: LoginManager;
+	tokenStore!: LiveTokenStore;
+	networkStatus!: NetworkStatus;
+	_extensions!: [];
+	log!: (message: string) => void;
+	private _liveViews!: LiveViewManager;
 
 	async onload() {
 		console.log("[Obsidian Live] Loading Plugin");
@@ -295,6 +296,7 @@ export default class Live extends Plugin {
 				return function (file) {
 					vaultLog("unloading", file);
 					plugin._liveViews.wipe();
+					// @ts-ignore
 					return old.call(this, file);
 				};
 			},

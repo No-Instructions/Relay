@@ -43,7 +43,7 @@ export class LocalStorage<T> implements Map<string, T> {
 				const storageKey = key.split(
 					`${this.namespace}${this.seperator}`
 				)[1];
-				const value = this.get(storageKey);
+				const value = this.get(storageKey) as unknown as T;
 				callbackfn.call(thisArg, value, storageKey, this);
 			});
 	}

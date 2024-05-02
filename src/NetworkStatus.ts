@@ -8,7 +8,7 @@ class NetworkStatus {
 	private onOnline: Callback[] = [];
 	private _onceOnline: Set<Callback>;
 	private onOffline: Callback[] = [];
-	private timer: NodeJS.Timer;
+	private timer?: NodeJS.Timer;
 	online = true;
 
 	constructor(url: string, interval = 10000) {

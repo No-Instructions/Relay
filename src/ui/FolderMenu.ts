@@ -13,6 +13,7 @@ export class FolderMenu {
 
 	register() {
 		return this.app.workspace.on(
+			// @ts-ignore
 			"file-menu",
 			this.fileMenuItems.bind(this)
 		);

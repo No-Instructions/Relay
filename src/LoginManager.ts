@@ -75,7 +75,12 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 
 export class LoginManager extends ObservableSet<User> {
 	pb: PocketBase;
-	sm: SubscriptionManager;
+	sm?: SubscriptionManager;
+
+	constructor() {
+		super();
+		this.pb = new PocketBase("https://auth.dnup.org");
+	}
 
 	setup(): boolean {
 		this.pb = new PocketBase("https://auth.dnup.org");

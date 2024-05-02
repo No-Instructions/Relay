@@ -68,8 +68,8 @@ export class SharedFolderModal extends Modal {
 					if (shareLink) {
 						try {
 							guid = getGuid(shareLink);
-						} catch (err) {
-							new Notice(err);
+						} catch (err: unknown) {
+							new Notice(err as string);
 						}
 					} else {
 						guid = randomGuid;
