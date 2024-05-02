@@ -110,9 +110,10 @@ export class TokenStore<TokenType> {
 
 	start() {
 		this.log("starting");
+		this.report();
 		this.refreshInterval = this.timeProvider.setInterval(
 			() => this.checkAndRefreshTokens(),
-			20 * 1000
+			60 * 1000
 		); // Check every minute
 		this.checkAndRefreshTokens();
 	}
