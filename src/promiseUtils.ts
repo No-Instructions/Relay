@@ -2,8 +2,15 @@ export function promiseWithTimeout<T>(
 	promise: Promise<T>,
 	ms: number
 ): Promise<T> {
-	const timeout = new Promise<T>((_, reject) =>
-		setTimeout(() => reject(new Error("Timeout after " + ms + " ms")), ms)
-	);
-	return Promise.race([promise, timeout]);
+	let timeoutId: NodeJS.Timeout; // or simply `number` if in browser context
+	const timeout = new Promise<T>((_, reject) => {
+		timeoutId = setTimeout(() => {
+			console.log("timeout on promise", promise);
+			reject(new Error("Timeout after " + ms + " ms"));
+		}, ms);
+	});
+
+	return Promise.race([promise, timeout]).finally(() => {
+		clearTimeout(timeoutId);
+	});
 }
