@@ -246,21 +246,11 @@ export class TokenStore<TokenType> {
 		return this.tokenMap.get(documentId)?.token;
 	}
 
-	async getToken(
+	private getTokenFromNetwork(
 		documentId: string,
 		friendlyName: string,
 		callback: (token: TokenType) => void
-	): Promise<TokenType> {
-		this.log(`getting token ${friendlyName}`);
-		if (this.tokenMap.has(documentId)) {
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-			const tokenInfo = this.tokenMap.get(documentId)!;
-			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
-				this.callbacks.set(documentId, callback);
-				console.log("token was valid, cache hit!");
-				return Promise.resolve(tokenInfo.token);
-			}
-		}
+	) {
 		const activePromise = this._activePromises.get(documentId);
 		if (activePromise) {
 			return activePromise;
@@ -279,12 +269,33 @@ export class TokenStore<TokenType> {
 				return newToken;
 			})
 			.catch((err) => {
+				console.warn(err);
 				this.onRefreshFailure(documentId);
 				this._activePromises.delete(documentId);
 				return err;
 			});
 		this._activePromises.set(documentId, sharedPromise);
 		return sharedPromise;
+	}
+
+	async getToken(
+		documentId: string,
+		friendlyName: string,
+		callback: (token: TokenType) => void
+	): Promise<TokenType> {
+		this.log(`getting token ${friendlyName}`);
+		if (this.tokenMap.has(documentId)) {
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			const tokenInfo = this.tokenMap.get(documentId)!;
+			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
+				this.callbacks.set(documentId, callback);
+				callback(tokenInfo.token);
+				console.log("token was valid, cache hit!");
+				this._activePromises.delete(documentId);
+				return Promise.resolve(tokenInfo.token);
+			}
+		}
+		return this.getTokenFromNetwork(documentId, friendlyName, callback);
 	}
 
 	_reportWithFilter(filter: (documentId: string) => boolean) {
