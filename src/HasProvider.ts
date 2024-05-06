@@ -175,6 +175,7 @@ export class HasProvider {
 			return;
 		}
 		this.getProviderToken().then((clientToken) => {
+			this.refreshProvider(clientToken);
 			this._provider.connect();
 		});
 	}
