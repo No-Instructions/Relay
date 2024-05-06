@@ -14,7 +14,7 @@ if you want to view the source, please visit the github repository of this plugi
 const gitTag = execSync("git describe --tags --always", {
 	encoding: "utf8",
 }).trim();
-const healthUrl = `"https://api.dnup.org/health?verion=${gitTag}"`;
+const healthUrl = `"https://api.dnup.org/health?version=${gitTag}"`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);
 
