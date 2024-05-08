@@ -36,6 +36,10 @@ export class ObservableSet<T> {
 		return result;
 	}
 
+	map<ReturnType>(callbackfn: (value: T) => ReturnType): ReturnType[] {
+		return this.items().map<ReturnType>(callbackfn);
+	}
+
 	clear(): void {
 		this._set.clear();
 		this.notifyListeners();
