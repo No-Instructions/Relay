@@ -1,13 +1,14 @@
 <script lang="ts">
-	export let itemName: string;
-	export let itemDescription: string;
+	export let name: string;
+	export let description: string;
 
-	const itemDescriptionLines = itemDescription.split("\n");
+	const itemDescriptionLines =
+		description !== undefined ? description.split("\n") : [];
 </script>
 
 <div class="setting-item">
 	<div class="setting-item-info">
-		<div class="setting-item-name">{itemName}</div>
+		<div class="setting-item-name">{name || ""}</div>
 		<div class="setting-item-description">
 			{#each itemDescriptionLines as itemDescriptionLine}
 				<div>

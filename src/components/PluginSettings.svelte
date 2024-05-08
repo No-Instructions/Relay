@@ -1,43 +1,98 @@
 <script lang="ts">
 	import LoggedIn from "./LoggedIn.svelte";
-	import Workspaces from "./Workspaces.svelte";
-	import ManageWorkspace from "./ManageWorkspace.svelte";
-	import type { Workspace } from "../Workspace";
+	import Relays from "./Relays.svelte";
+	import ManageRelay from "./ManageRelay.svelte";
+	import { type Relay } from "../Relay";
 	import ModalSettingsNav from "./ModalSettingsNav.svelte";
+	import type Live from "src/main";
+	import store from "../Store";
 
-	interface ManageWorkspaceEventDetail {
-		workspace: Workspace;
+	interface RelayEventDetail {
+		relay: Relay;
+		mount: boolean;
 	}
-	interface ManageWorkspaceEvent
-		extends CustomEvent<ManageWorkspaceEventDetail> {}
+	interface ManageRelayEvent extends CustomEvent<RelayEventDetail> {}
 	interface GoBackEvent extends CustomEvent {}
+	interface CreateRelayEvent extends CustomEvent {}
+	interface CloseEvent extends CustomEvent {}
 
-	let currentComponent: typeof Workspaces | typeof ManageWorkspace =
-		Workspaces;
-	let currentWorkspace: Workspace | null = null;
+	interface JoinRelayEvent extends CustomEvent<RelayEventDetail> {}
 
-	function handleManageWorkspaceEvent(event: ManageWorkspaceEvent) {
-		currentWorkspace = event.detail.workspace;
-		currentComponent = ManageWorkspace;
+	export let plugin: Live;
+	store.plugin.subscribe((p) => {
+		plugin = p;
+	});
+	let relayRoles = plugin.relayManager.relayRoles;
+	let relays = plugin.relayManager.relays;
+
+	let currentComponent: typeof Relays | typeof ManageRelay = Relays;
+	let mount: boolean = false;
+
+	let currentRelay: Relay | null = null;
+
+	export let close: () => void;
+
+	function handleManageRelayEvent(event: ManageRelayEvent) {
+		currentRelay = event.detail.relay;
+		mount = event.detail.mount;
+		if (currentRelay.owner) {
+			currentComponent = ManageRelay;
+		} else {
+			currentComponent = Relays;
+		}
+	}
+	function handleCreateRelayEvent(event: CreateRelayEvent) {
+		plugin.relayManager.createRelay("New Relay").then((relay) => {
+			currentRelay = relay;
+			currentComponent = ManageRelay;
+		});
 	}
 	function handleGoBack(event: GoBackEvent) {
-		currentWorkspace = null;
-		currentComponent = Workspaces;
+		currentRelay = null;
+		currentComponent = Relays;
+	}
+
+	function handleClose(event: CloseEvent) {
+		console.log("close");
+		close();
+	}
+
+	function handleJoinRelay(event: JoinRelayEvent) {
+		mount = event.detail.mount;
+		currentRelay = event.detail.relay;
 	}
 </script>
 
-<div class="vertical-tab-content-container">
-	{#if currentWorkspace}
-		<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
+{#if currentRelay}
+	<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
+{/if}
+<div class="vertical-tab-content">
+	{#if currentRelay}
+		<ManageRelay
+			relay={currentRelay}
+			{mount}
+			on:goBack={handleGoBack}
+			on:close={handleClose}
+			on:manageRelay={handleManageRelayEvent}
+		></ManageRelay>
+	{:else}
+		<LoggedIn>
+			<Relays
+				relayRoles={$relayRoles.filter(
+					(role) => role.user.id == plugin.relayManager.user.id,
+				)}
+				relays={$relays.values()}
+				{plugin}
+				on:manageRelay={handleManageRelayEvent}
+				on:createRelay={handleCreateRelayEvent}
+				on:joinRelay={handleJoinRelay}
+			></Relays>
+		</LoggedIn>
 	{/if}
-	<div class="vertical-tab-content">
-		{#if currentWorkspace}
-			<ManageWorkspace workspace={currentWorkspace}></ManageWorkspace>
-		{:else}
-			<LoggedIn>
-				<Workspaces on:manageWorkspace={handleManageWorkspaceEvent}
-				></Workspaces>
-			</LoggedIn>
-		{/if}
-	</div>
 </div>
+
+<style>
+	.vertical-tab-content {
+		max-height: var(--modal-max-height);
+	}
+</style>

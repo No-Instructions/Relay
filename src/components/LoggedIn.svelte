@@ -34,8 +34,8 @@
 {#if isLoggedIn}
 	<SettingItemHeading name="Account" />
 	<SettingItem
-		itemName="Logged In"
-		itemDescription="User: {plugin.loginManager.user.name}"
+		name="Logged In"
+		description="User: {plugin.loginManager.user.name}"
 	>
 		<button on:click={logout}>Logout</button>
 	</SettingItem>
@@ -43,8 +43,8 @@
 {:else}
 	<SettingItemHeading name="Account" />
 	<SettingItem
-		itemName="Login"
-		itemDescription="You need to login to use this plugin."
+		name="Login"
+		description="You need to login to use this plugin."
 	>
 		<button on:click={login}>Login with Google</button>
 	</SettingItem>

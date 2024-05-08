@@ -1,6 +1,6 @@
 "use strict";
 
-import { Plugin, TFolder, Notice, MarkdownView, TFile } from "obsidian";
+import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
 import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
@@ -19,6 +19,7 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
 import { ObsidianLiveException } from "./Exceptions";
 import { FileManagerFacade } from "./obsidian-api/FileManager";
+import { RelayManager } from "./RelayManager";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -44,6 +45,7 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	folderNavDecorations!: FolderNavigationDecorations;
 	_offSaveSettings!: () => void;
+	relayManager!: RelayManager;
 	_extensions!: [];
 	log!: (message: string) => void;
 	private _liveViews!: LiveViewManager;
@@ -86,6 +88,7 @@ export default class Live extends Plugin {
 					this._onLogout();
 				}
 			});
+			this.relayManager = new RelayManager(this.sharedFolders);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
@@ -350,6 +353,8 @@ export default class Live extends Plugin {
 
 		this.tokenStore?.stop();
 		this.tokenStore?.clearState();
+
+		this.relayManager.destroy();
 
 		this.networkStatus?.stop();
 		this._liveViews?.destroy();
