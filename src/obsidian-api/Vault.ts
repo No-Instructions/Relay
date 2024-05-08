@@ -18,7 +18,7 @@ import {
 	unlinkSync,
 } from "fs";
 import { randomUUID } from "crypto";
-import { dirname, join } from "path";
+import path, { dirname, join } from "path";
 
 // Ok, so we want to factor out the vault behavior...
 // So a base vault should support registering and triggerings signals.
@@ -42,7 +42,9 @@ export interface Vault extends Observable<string> {
 	getFiles(): FilePath[];
 	trashLocal(path: string): void;
 	fullPath(name: string): string;
+	createFolder(path: string): Promise<TFolder>;
 	exists(name: string): boolean;
+	getFolderByPath(path: string): TFolder | null;
 
 	on(name: "create", f: (arg0: FilePath) => void): void;
 	on(name: "delete", f: (arg0: FilePath) => void): void;
@@ -101,11 +103,26 @@ export class VaultFacade extends Observable<string> implements Vault {
 	}
 
 	fullPath(name: string): string {
-		return `${this.root}/${name}`;
+		return path.join(this.root, name);
 	}
 
 	getFiles(): FilePath[] {
 		return this.app.vault.getFiles().map((tfile) => new FilePath(tfile));
+	}
+
+	getFolderByPath(path: string): TFolder | null {
+		if (!this.exists(path)) {
+			return null;
+		}
+		const maybeFolder = this.app.vault.getAbstractFileByPath(path);
+		if (maybeFolder instanceof TFolder) {
+			return maybeFolder;
+		}
+		return null;
+	}
+
+	createFolder(path: string): Promise<TFolder> {
+		return this.app.vault.createFolder(path);
 	}
 
 	iterateFolders(fn: (folder: TFolder) => void) {
@@ -174,12 +191,6 @@ export class SimpleVault extends Observable<string> implements Vault {
 		return dir;
 	}
 
-	public newDir(name: string) {
-		const dir = this.mkdirp(this.fullPath(name));
-		//this.emit("create", [new FilePath(name, true)]);
-		return dir;
-	}
-
 	fullPath(name: string): string {
 		return `${this.root}/${name}`;
 	}
@@ -201,6 +212,29 @@ export class SimpleVault extends Observable<string> implements Vault {
 			writeFileSync(fd, contents);
 		});
 		this.emit("create", [new FilePath(name)]);
+	}
+
+	getFolderByPath(path: string): TFolder | null {
+		if (!this.exists(path)) {
+			return null;
+		}
+		const folder = new TFolder();
+		folder.name = path;
+		folder.path = path;
+		// XXX missing a bunch of vault functionality...
+		// @ts-ignore
+		folder.vault = this;
+		return folder;
+	}
+
+	createFolder(path: string): Promise<TFolder> {
+		// XXX this is upposed to error if the path exists...
+		mkdirSync(this.fullPath(path), { recursive: true });
+		const dir = this.getFolderByPath(path);
+		if (!dir) {
+			throw new Error("Failed to create folder");
+		}
+		return Promise.resolve(dir);
 	}
 }
 
