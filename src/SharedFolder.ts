@@ -88,6 +88,14 @@ export class SharedFolder extends HasProvider {
 		);
 	}
 
+	public get name(): string {
+		return this.path.split("/").pop() || "";
+	}
+
+	public get location(): string {
+		return this.path.split("/").slice(0, -1).join("/");
+	}
+
 	public get settings(): SharedFolderSettings {
 		return { guid: this.guid, path: this.path };
 	}
