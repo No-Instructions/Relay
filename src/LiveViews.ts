@@ -5,7 +5,7 @@ import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import type { Extension } from "@codemirror/state";
 import { Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { ConnectionStatusIcon } from "./ui/ConnectionStatusIcon";
+import ConnectionStatusIcon from "src/components/ConnectionStatusIcon.svelte";
 import { LiveCMPluginValue } from "./y-codemirror.next/LiveEditPlugin";
 import {
 	connectionManagerFacet,
@@ -45,9 +45,8 @@ export class LiveView {
 	plugin?: LiveCMPluginValue;
 	shouldConnect: boolean;
 
-	private _connectionStatusIcon: ConnectionStatusIcon;
+	private _connectionStatusIcon!: ConnectionStatusIcon;
 	private _parent: LiveViewManager;
-	private _offStatus?: () => void;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -58,7 +57,7 @@ export class LiveView {
 		this._parent = connectionManager; // for debug
 		this.view = view;
 		this.document = document;
-		this._connectionStatusIcon = new ConnectionStatusIcon(this);
+
 		this.shouldConnect = shouldConnect;
 		if (!connectionManager.networkStatus.online) {
 			this.offlineBanner();
@@ -79,7 +78,6 @@ export class LiveView {
 	}
 
 	offlineBanner(): () => void {
-		this._connectionStatusIcon.setState(this.document.state.status);
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
@@ -102,17 +100,31 @@ export class LiveView {
 	}
 
 	attach(): Promise<LiveView> {
-		this._connectionStatusIcon.attach();
-		if (!this._offStatus) {
-			this.document.subscribe(
-				this._connectionStatusIcon.iconContainer,
-				(status: ConnectionState) => {
-					this._connectionStatusIcon.setState(status.status);
-				}
-			);
+		const viewActionsElement =
+			this.view.containerEl.querySelector(".view-actions");
+		const connectionStatusIcon = this.view.containerEl.querySelector(
+			".connection-status-icon"
+		);
+		if (
+			viewActionsElement &&
+			viewActionsElement.firstChild &&
+			!connectionStatusIcon
+		) {
+			this._connectionStatusIcon = new ConnectionStatusIcon({
+				target: viewActionsElement,
+				anchor: viewActionsElement.firstChild as Element,
+				props: {
+					view: this,
+					state: this.document.state,
+				},
+			});
 		}
-		this._connectionStatusIcon.setState(this.document.state.status);
-
+		this.document.subscribe(
+			connectionStatusIcon,
+			(state: ConnectionState) => {
+				this._connectionStatusIcon.$set({ state: state });
+			}
+		);
 		return new Promise((resolve) => {
 			return this.document
 				.whenReady()
@@ -129,10 +141,6 @@ export class LiveView {
 	}
 
 	connect() {
-		if (!this._connectionStatusIcon) {
-			this._connectionStatusIcon = new ConnectionStatusIcon(this);
-			this._connectionStatusIcon.setState(this.document.state.status);
-		}
 		if (this._parent.networkStatus.online) {
 			this.document.connect();
 		} else {
@@ -142,10 +150,7 @@ export class LiveView {
 
 	release() {
 		// Called when a view is released from management
-		if (this._offStatus) {
-			this._offStatus();
-		}
-		this._connectionStatusIcon.detach();
+		this._connectionStatusIcon?.$destroy();
 		this.document.disconnect();
 	}
 }
@@ -388,11 +393,6 @@ export class LiveViewManager {
 			log("No work to do");
 			const attachedViews = await this.viewsAttached(this.views);
 			log("Attached Views", attachedViews);
-			attachedViews.forEach((view) => {
-				if (view.shouldConnect) {
-					view.connect();
-				}
-			});
 		} else {
 			log("Releasing Views", stale);
 			this.releaseViews(stale);
