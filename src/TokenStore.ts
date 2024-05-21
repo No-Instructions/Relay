@@ -290,6 +290,7 @@ export class TokenStore<TokenType> {
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
 				this.callbacks.set(documentId, callback);
+				tokenInfo.friendlyName = friendlyName;
 				callback(tokenInfo.token);
 				console.log("token was valid, cache hit!");
 				this._activePromises.delete(documentId);
