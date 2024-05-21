@@ -295,15 +295,9 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
-				try {
-					const doc = folder.getFile(viewFilePath, false);
-					const view = new LiveView(this, markdownView, doc);
-					views.push(view);
-				} catch (e) {
-					console.warn(
-						"Live doc downgraded to normal doc. This can happen when a rename is in progress."
-					);
-				}
+				const doc = folder.getFile(viewFilePath, false);
+				const view = new LiveView(this, markdownView, doc);
+				views.push(view);
 			}
 		});
 		return views;

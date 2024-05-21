@@ -276,10 +276,15 @@ export default class Live extends Plugin {
 					this.sharedFolders.lookup(oldPath) ||
 					this.sharedFolders.lookup(file.path);
 				if (folder) {
-					folder.whenReady().then((folder) => {
+					if (folder.ready) {
 						folder.renameFile(file.path, oldPath);
 						this._liveViews.refresh("rename");
-					});
+					} else {
+						folder.whenReady().then((folder) => {
+							folder.renameFile(file.path, oldPath);
+							this._liveViews.refresh("rename");
+						});
+					}
 				}
 			})
 		);

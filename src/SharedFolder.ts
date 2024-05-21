@@ -379,11 +379,14 @@ export class SharedFolder extends HasProvider {
 			} else {
 				// moving within shared folder.. move the live doc.
 				const guid = this.ids.get(oldVPath);
-				if (!guid) return;
+				if (!guid) {
+					console.warn("unexpected missing guid");
+					return;
+				}
 				this.ydoc.transact(() => {
 					this.ids.set(newVPath, guid);
 					this.ids.delete(oldVPath);
-					this.docs.delete(oldVPath);
+					this.docs.delete(guid); // let it be recreated with the right info
 				}, this);
 				doc?.destroy();
 				//XXX holy coupling batman
