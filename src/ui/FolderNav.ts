@@ -3,10 +3,11 @@ import { SharedFolder, SharedFolders } from "../SharedFolder";
 import { VaultFacade } from "src/obsidian-api/Vault";
 import type { ConnectionState } from "src/HasProvider";
 
-export class FolderNavIcon {
+export class FolderNavigationDecorations {
 	vault: VaultFacade;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
+	folderListener: any;
 
 	constructor(
 		vault: VaultFacade,
@@ -18,7 +19,7 @@ export class FolderNavIcon {
 		this.sharedFolders = sharedFolders;
 
 		this.workspace.onLayoutReady(() => this.refresh());
-		this.sharedFolders.on(() => this.refresh());
+		this.folderListener = this.sharedFolders.on(() => this.refresh());
 		this.refresh();
 	}
 
@@ -95,30 +96,34 @@ export class FolderNavIcon {
 							}
 						});
 
-						sharedFolder.docs.forEach((doc) => {
-							const docPath = sharedFolder.getPath(doc.path);
-							const fileItem =
-								//@ts-expect-error
-								fileExplorer.view.fileItems[docPath];
-							if (!fileItem) {
-								// like a rename / race condition
-								return;
-							}
-							this.docStatus(fileItem.el, doc.state);
-							doc.subscribe(fileItem.el, (status) => {
-								const fileExplorers =
-									this.workspace.getLeavesOfType(
-										"file-explorer"
-									);
-								fileExplorers.forEach((fileExplorer) => {
-									const fileItem =
-										//@ts-expect-error
-										fileExplorer.view.fileItems[docPath];
-									if (!fileItem) {
-										// like a rename / race condition
-										return;
-									}
-									this.docStatus(fileItem.el, status);
+						sharedFolder.whenReady().then(() => {
+							sharedFolder.docs.forEach((doc) => {
+								const docPath = sharedFolder.getPath(doc.path);
+								const fileItem =
+									//@ts-expect-error
+									fileExplorer.view.fileItems[docPath];
+								if (!fileItem) {
+									// like a rename / race condition
+									return;
+								}
+								this.docStatus(fileItem.el, doc.state);
+								doc.subscribe(fileItem.el, (status) => {
+									const fileExplorers =
+										this.workspace.getLeavesOfType(
+											"file-explorer"
+										);
+									fileExplorers.forEach((fileExplorer) => {
+										const fileItem =
+											//@ts-expect-error
+											fileExplorer.view.fileItems[
+												docPath
+											];
+										if (!fileItem) {
+											// like a rename / race condition
+											return;
+										}
+										this.docStatus(fileItem.el, status);
+									});
 								});
 							});
 						});
@@ -144,5 +149,10 @@ export class FolderNavIcon {
 				}
 			});
 		});
+	}
+
+	destroy() {
+		this.sharedFolders.off(this.folderListener);
+		this.refresh();
 	}
 }

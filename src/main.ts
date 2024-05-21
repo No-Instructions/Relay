@@ -11,7 +11,7 @@ import { randomUUID } from "crypto";
 import { VaultFacade } from "./obsidian-api/Vault";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import { SharedFolders } from "./SharedFolder";
-import { FolderNavIcon } from "./ui/FolderNav";
+import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { FolderMenu } from "./ui/FolderMenu";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
@@ -38,6 +38,8 @@ export default class Live extends Plugin {
 	loginManager!: LoginManager;
 	tokenStore!: LiveTokenStore;
 	networkStatus!: NetworkStatus;
+	folderNavDecorations!: FolderNavigationDecorations;
+	_offSaveSettings!: () => void;
 	_extensions!: [];
 	log!: (message: string) => void;
 	private _liveViews!: LiveViewManager;
@@ -119,9 +121,13 @@ export default class Live extends Plugin {
 				sharedFolders.add(folder);
 			}
 		);
-		sharedFolders.on(() => {
+		const saveSettingsHook = () => {
 			this.saveSettings();
-		});
+		};
+		sharedFolders.on(saveSettingsHook);
+		this._offSaveSettings = () => {
+			sharedFolders.off(saveSettingsHook);
+		};
 		return sharedFolders;
 	}
 
@@ -152,12 +158,13 @@ export default class Live extends Plugin {
 	}
 
 	setup() {
-		const folderNavIcon = new FolderNavIcon(
+		this.folderNavDecorations = new FolderNavigationDecorations(
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders
 		);
-		this.registerEvent(folderNavIcon.register());
+		this.registerEvent(this.folderNavDecorations.register());
+		this.folderNavDecorations.refresh();
 
 		const folderMenu = new FolderMenu(this.app, this.sharedFolders);
 		this.registerEvent(folderMenu.register());
@@ -305,11 +312,13 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
-		this.sharedFolders.forEach((sharedFolder) => {
-			sharedFolder.destroy();
-		});
 		console.log("[Obsidian Live]: Unloading Plugin");
-		this.saveSettings();
+		// We want to unload the visual components but not the data
+		this._offSaveSettings();
+		this.sharedFolders.destroy();
+
+		console.log("unloading folder nav decoractions");
+		this.folderNavDecorations.destroy();
 
 		this.tokenStore.stop();
 		this.tokenStore.clearState();

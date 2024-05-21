@@ -421,6 +421,13 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		return folder;
 	}
 
+	destroy() {
+		this.items().forEach((folder) => {
+			folder.destroy();
+		});
+		this.clear();
+	}
+
 	constructor(folderBuilder: (guid: string, path: string) => SharedFolder) {
 		super();
 		this.folderBuilder = folderBuilder;
