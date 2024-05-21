@@ -8,8 +8,12 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
 
-type ConnectionStatus = "connected" | "connecting" | "disconnected";
-type ConnectionIntent = "connected" | "disconnected";
+export type ConnectionStatus =
+	| "connected"
+	| "connecting"
+	| "disconnected"
+	| "unknown";
+export type ConnectionIntent = "connected" | "disconnected";
 
 export interface ConnectionState {
 	status: ConnectionStatus;
@@ -58,7 +62,7 @@ export class HasProvider {
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
 	clientToken: ClientToken | null;
-	_state: ConnectionState;
+	state: ConnectionState;
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
@@ -75,7 +79,6 @@ export class HasProvider {
 		this.loginManager = loginManager;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
-		this._state = { status: "disconnected", intent: "disconnected" };
 		this.clientToken =
 			this.tokenStore.getTokenSync(this.guid) ||
 			({ token: "", url: "", expiryTime: 0 } as ClientToken);
@@ -86,6 +89,10 @@ export class HasProvider {
 			this.ydoc,
 			user
 		);
+		this.state = {
+			status: "unknown",
+			intent: this._provider.shouldConnect ? "connected" : "disconnected",
+		};
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
@@ -102,9 +109,9 @@ export class HasProvider {
 
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
-				this._state = state;
+				this.state = state;
 				this.listeners.forEach((listener, el) => {
-					listener(state);
+					listener(this.state);
 				});
 			}
 		);
@@ -114,20 +121,6 @@ export class HasProvider {
 
 	subscribe(el: any, listener: Listener) {
 		this.listeners.set(el, listener);
-	}
-
-	get state(): ConnectionState {
-		let connectionStatus: ConnectionStatus = this._provider.wsconnected
-			? "connected"
-			: "disconnected";
-		connectionStatus = this._provider.wsconnecting
-			? "connecting"
-			: connectionStatus;
-		const intent = this._provider.shouldConnect
-			? "connected"
-			: "disconnected";
-		this._state = { status: connectionStatus, intent: intent };
-		return this._state;
 	}
 
 	async getProviderToken(): Promise<ClientToken> {
@@ -244,18 +237,17 @@ export class HasProvider {
 		});
 	}
 
-    private _injectIntent(
-			f: (state: ConnectionState) => void
-		): ((state: ConnectionState) => void) {
-			const inner = (state: ConnectionState) => {
-				const intent = this._provider.shouldConnect
-					? "connected"
-					: "disconnected";
-				f({ status: state.status, intent: intent });
-			};
-			return inner;
+	private _injectIntent(
+		f: (state: ConnectionState) => void
+	): (state: ConnectionState) => void {
+		const inner = (state: ConnectionState) => {
+			const intent = this._provider.shouldConnect
+				? "connected"
+				: "disconnected";
+			f({ status: state.status, intent: intent });
 		};
-
+		return inner;
+	}
 
 	private providerConnectionErrorSubscription(
 		f: (state: ConnectionState) => void
