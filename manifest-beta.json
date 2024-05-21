@@ -1,7 +1,7 @@
 {
 	"id": "system3",
 	"name": "System 3",
-	"version": "0.0.18",
+	"version": "0.0.19",
 	"minAppVersion": "0.15.0",
 	"description": "Realtime Collaborative Workspaces",
 	"author": "No Instructions, LLC",
