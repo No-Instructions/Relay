@@ -44,6 +44,8 @@ function makeProvider(
 	return provider;
 }
 
+type Listener = (status: Status) => void;
+
 export class HasProvider {
 	_provider: YSweetProvider;
 	guid: string;
@@ -57,6 +59,7 @@ export class HasProvider {
 	private _offStatus: () => void;
 	PROVIDER_MAX_ERRORS = 3;
 	log = curryLog("[HasProvider]");
+	listeners: Map<any, Listener>;
 
 	constructor(
 		guid: string,
@@ -64,6 +67,7 @@ export class HasProvider {
 		loginManager: LoginManager
 	) {
 		this.guid = guid;
+		this.listeners = new Map<any, Listener>();
 		this.loginManager = loginManager;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
@@ -94,9 +98,16 @@ export class HasProvider {
 
 		const statusSub = this.providerStatusSubscription((status: Status) => {
 			this._status = status;
+			this.listeners.forEach((listener, el) => {
+				listener(status);
+			});
 		});
 		statusSub.on();
 		this._offStatus = statusSub.off;
+	}
+
+	subscribe(el: any, listener: Listener) {
+		this.listeners.set(el, listener);
 	}
 
 	get status(): Status {
@@ -166,7 +177,15 @@ export class HasProvider {
 			);
 			this._provider.ws?.close();
 		} else {
-			console.log("url was the same!", this._provider.url, newUrl);
+			console.log(
+				"url was the same!",
+				this._provider.url,
+				newUrl,
+				this._provider,
+				this._provider.shouldConnect,
+				this._provider.wsconnected,
+				this._provider.wsconnecting
+			);
 		}
 	}
 
@@ -232,7 +251,7 @@ export class HasProvider {
 		return { on, off } as Subscription;
 	}
 
-	public providerStatusSubscription(
+	protected providerStatusSubscription(
 		f: (status: Status) => void
 	): Subscription {
 		const on = () => {
