@@ -83,6 +83,7 @@ export class SharedFolder extends HasProvider {
 				if (origin == this) {
 					return;
 				}
+				console.log(this._debugFileTree());
 				this.syncFileTree(doc, update);
 			}
 		);
