@@ -36,7 +36,7 @@ export class SharedFolderModal extends Modal {
 			contentEl.createEl("form", "form-live", (form) => {
 				const randomGuid = randomUUID();
 				contentEl.createEl("p", {
-					text: "A new share-link has been generated for a new workspace. If you want to join an existing live workspace, enter the share link below.",
+					text: "A new share key has been generated for this folder. If you want to join an existing folder, enter the share key for that folder below.",
 				});
 
 				form.createEl("input", {
@@ -45,7 +45,7 @@ export class SharedFolderModal extends Modal {
 						name: "ShareLink",
 						id: "shareLink-guid",
 					},
-					value: `https://ydoc.live/${randomGuid}`,
+					value: `${randomGuid}`,
 				});
 
 				form.createEl("button", {
@@ -53,10 +53,6 @@ export class SharedFolderModal extends Modal {
 					type: "submit",
 				});
 
-				const getGuid = function (url: string) {
-					const url_ = new URL(url);
-					return url_.pathname.slice(1);
-				};
 				form.onsubmit = async (e) => {
 					e.preventDefault();
 
@@ -67,7 +63,7 @@ export class SharedFolderModal extends Modal {
 					let guid: string = randomGuid;
 					if (shareLink) {
 						try {
-							guid = getGuid(shareLink);
+							guid = shareLink;
 						} catch (err: unknown) {
 							new Notice(err as string);
 						}
