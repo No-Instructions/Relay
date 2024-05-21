@@ -118,13 +118,13 @@ export class LiveView {
 					state: this.document.state,
 				},
 			});
+			this.document.subscribe(
+				connectionStatusIcon,
+				(state: ConnectionState) => {
+					this._connectionStatusIcon?.$set({ state: state });
+				}
+			);
 		}
-		this.document.subscribe(
-			connectionStatusIcon,
-			(state: ConnectionState) => {
-				this._connectionStatusIcon.$set({ state: state });
-			}
-		);
 		return new Promise((resolve) => {
 			return this.document
 				.whenReady()
