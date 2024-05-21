@@ -29,7 +29,7 @@ export class Document extends HasProvider {
 		this.ydoc.on(
 			"update",
 			(update: Uint8Array, origin: any, doc: Y.Doc) => {
-				this.log(`Update from origin`, origin, update);
+				//this.log(`Update from origin`, origin, update);
 			}
 		);
 	}
