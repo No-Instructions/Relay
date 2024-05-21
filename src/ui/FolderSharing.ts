@@ -72,8 +72,10 @@ export class SharedFolderModal extends Modal {
 					}
 
 					const path = this.folder.path;
-					this.sharedFolders.new(path, guid);
-					this.close();
+					const folder = this.sharedFolders.new(path, guid);
+					folder.whenReady().then((folder) => {
+						this.close();
+					});
 				};
 			});
 		}
