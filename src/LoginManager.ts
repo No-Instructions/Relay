@@ -88,6 +88,7 @@ export class LoginManager extends ObservableSet<User> {
 			this.notifyListeners(); // notify anyway
 			return false;
 		}
+		console.log("LoginManager", this);
 		const user = this.makeUser(this.pb.authStore);
 		this.sm = new SubscriptionManager(user);
 		this.add(user);
