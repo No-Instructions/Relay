@@ -326,8 +326,7 @@ export class LiveViewManager {
 		);
 	}
 
-	private deduplicate(): [LiveView[], LiveView[]] {
-		const views = this.getViews();
+	private deduplicate(views: LiveView[]): [LiveView[], LiveView[]] {
 		const stale: LiveView[] = [];
 		const matching: LiveView[] = [];
 		this.views.forEach((oldView) => {
@@ -357,21 +356,22 @@ export class LiveViewManager {
 		const log = curryLog(ctx);
 		log("Refresh");
 
+		const views = this.getViews();
 		//const readyFolders = await this.foldersReady();
 		//log("Ready Folders", readyFolders);
 		//if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
 		const activeDocumentFolders = this.findFolders();
-		if (activeDocumentFolders.length === 0 && this.views.length === 0) {
+		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
 				console.warn("unexpected plugins loaded");
 				this.wipe();
 			}
+			log("no live views open");
 			return true; // no live views open
 		}
 
 		if (!this.loginManager.hasUser) {
 			console.warn("no user");
-			const views = this.getViews();
 			this._loginBanner(views);
 			return false;
 		}
@@ -380,12 +380,18 @@ export class LiveViewManager {
 			folder.connect();
 		});
 
-		const [matching, stale] = this.deduplicate();
+		const [matching, stale] = this.deduplicate(views);
+		console.log("dedupe", matching, stale);
 
 		if (stale.length == 0 && ViewsetsEqual(matching, this.views)) {
 			log("No work to do");
 			const attachedViews = await this.viewsAttached(this.views);
 			log("Attached Views", attachedViews);
+			attachedViews.forEach((view) => {
+				if (view.shouldConnect) {
+					view.connect();
+				}
+			});
 		} else {
 			log("Releasing Views", stale);
 			this.releaseViews(stale);
