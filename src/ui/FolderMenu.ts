@@ -37,11 +37,11 @@ export class FolderMenu {
 					});
 
 					menu.addItem((item) => {
-						item.setTitle("Copy ShareLink").onClick(() =>
+						item.setTitle("Copy Share Key").onClick(() =>
 							navigator.clipboard
-								.writeText(`https://ydoc.live/${folder.guid}`)
+								.writeText(`${folder.guid}`)
 								.then(() => {
-									new Notice("Copied Folder ShareLink");
+									new Notice("Copied Folder Share Key");
 								})
 						);
 					});
