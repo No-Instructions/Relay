@@ -8,8 +8,12 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
 
-export interface Status {
-	status: "connected" | "connecting" | "disconnected";
+type ConnectionStatus = "connected" | "connecting" | "disconnected";
+type ConnectionIntent = "connected" | "disconnected";
+
+export interface ConnectionState {
+	status: ConnectionStatus;
+	intent: ConnectionIntent;
 }
 
 export interface Subscription {
@@ -44,7 +48,7 @@ function makeProvider(
 	return provider;
 }
 
-type Listener = (status: Status) => void;
+type Listener = (state: ConnectionState) => void;
 
 export class HasProvider {
 	_provider: YSweetProvider;
@@ -54,9 +58,9 @@ export class HasProvider {
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
 	clientToken: ClientToken | null;
-	_status: Status;
+	_state: ConnectionState;
 	private _offConnectionError: () => void;
-	private _offStatus: () => void;
+	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
 	log = curryLog("[HasProvider]");
 	listeners: Map<any, Listener>;
@@ -71,7 +75,7 @@ export class HasProvider {
 		this.loginManager = loginManager;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
-		this._status = { status: "disconnected" };
+		this._state = { status: "disconnected", intent: "disconnected" };
 		this.clientToken =
 			this.tokenStore.getTokenSync(this.guid) ||
 			({ token: "", url: "", expiryTime: 0 } as ClientToken);
@@ -96,29 +100,34 @@ export class HasProvider {
 		connectionErrorSub.on();
 		this._offConnectionError = connectionErrorSub.off;
 
-		const statusSub = this.providerStatusSubscription((status: Status) => {
-			this._status = status;
-			this.listeners.forEach((listener, el) => {
-				listener(status);
-			});
-		});
-		statusSub.on();
-		this._offStatus = statusSub.off;
+		const stateSub = this.providerStateSubscription(
+			(state: ConnectionState) => {
+				this._state = state;
+				this.listeners.forEach((listener, el) => {
+					listener(state);
+				});
+			}
+		);
+		stateSub.on();
+		this._offState = stateSub.off;
 	}
 
 	subscribe(el: any, listener: Listener) {
 		this.listeners.set(el, listener);
 	}
 
-	get status(): Status {
-		if (this._provider.wsconnected) {
-			this._status = { status: "connected" };
-		} else if (this._provider.wsconnecting) {
-			this._status = { status: "connecting" };
-		} else {
-			this._status = { status: "disconnected" };
-		}
-		return this._status;
+	get state(): ConnectionState {
+		let connectionStatus: ConnectionStatus = this._provider.wsconnected
+			? "connected"
+			: "disconnected";
+		connectionStatus = this._provider.wsconnecting
+			? "connecting"
+			: connectionStatus;
+		const intent = this._provider.shouldConnect
+			? "connected"
+			: "disconnected";
+		this._state = { status: connectionStatus, intent: intent };
+		return this._state;
 	}
 
 	async getProviderToken(): Promise<ClientToken> {
@@ -178,13 +187,9 @@ export class HasProvider {
 			this._provider.ws?.close();
 		} else {
 			console.log(
-				"url was the same!",
-				this._provider.url,
-				newUrl,
+				`url was the same! url=${this._provider.url}`,
 				this._provider,
-				this._provider.shouldConnect,
-				this._provider.wsconnected,
-				this._provider.wsconnecting
+				this.state
 			);
 		}
 	}
@@ -219,8 +224,8 @@ export class HasProvider {
 	onceConnected(): Promise<void> {
 		// XXX memory leak of subscriptions...
 		return new Promise((resolve) => {
-			const resolveOnConnect = (status: Status) => {
-				if (status.status === "connected") {
+			const resolveOnConnect = (state: ConnectionState) => {
+				if (state.status === "connected") {
 					resolve();
 				}
 			};
@@ -239,26 +244,39 @@ export class HasProvider {
 		});
 	}
 
+    private _injectIntent(
+			f: (state: ConnectionState) => void
+		): ((state: ConnectionState) => void) {
+			const inner = (state: ConnectionState) => {
+				const intent = this._provider.shouldConnect
+					? "connected"
+					: "disconnected";
+				f({ status: state.status, intent: intent });
+			};
+			return inner;
+		};
+
+
 	private providerConnectionErrorSubscription(
-		f: (status: Status) => void
+		f: (state: ConnectionState) => void
 	): Subscription {
 		const on = () => {
-			this._provider.on("connection-error", f);
+			this._provider.on("connection-error", this._injectIntent(f));
 		};
 		const off = () => {
-			this._provider.off("connection-error", f);
+			this._provider.off("connection-error", this._injectIntent(f));
 		};
 		return { on, off } as Subscription;
 	}
 
-	protected providerStatusSubscription(
-		f: (status: Status) => void
+	protected providerStateSubscription(
+		f: (state: ConnectionState) => void
 	): Subscription {
 		const on = () => {
-			this._provider.on("status", f);
+			this._provider.on("status", this._injectIntent(f));
 		};
 		const off = () => {
-			this._provider.off("status", f);
+			this._provider.off("status", this._injectIntent(f));
 		};
 		return { on, off } as Subscription;
 	}
@@ -271,8 +289,8 @@ export class HasProvider {
 		if (this._offConnectionError) {
 			this._offConnectionError();
 		}
-		if (this._offStatus) {
-			this._offStatus();
+		if (this._offState) {
+			this._offState();
 		}
 		if (this._provider) {
 			this._provider.disconnect();

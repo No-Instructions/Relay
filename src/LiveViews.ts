@@ -21,6 +21,7 @@ import { Banner } from "./ui/Banner";
 import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { promiseWithTimeout } from "./promiseUtils";
+import type { ConnectionState } from "./HasProvider";
 
 function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 	if (vs1.length !== vs2.length) {
@@ -78,7 +79,7 @@ export class LiveView {
 	}
 
 	offlineBanner(): () => void {
-		this._connectionStatusIcon.setState(this.document.status.status);
+		this._connectionStatusIcon.setState(this.document.state.status);
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
@@ -103,16 +104,14 @@ export class LiveView {
 	attach(): Promise<LiveView> {
 		this._connectionStatusIcon.attach();
 		if (!this._offStatus) {
-			const sub = this.document.providerStatusSubscription((status) => {
-				//if (status.status === "disconnected" && this.shouldConnect) {
-				//	//this.offlineBanner(() => {});
-				//}
-				this._connectionStatusIcon.setState(status.status);
-			});
-			sub.on();
-			this._offStatus = sub.off;
+			this.document.subscribe(
+				this._connectionStatusIcon.iconContainer,
+				(status: ConnectionState) => {
+					this._connectionStatusIcon.setState(status.status);
+				}
+			);
 		}
-		this._connectionStatusIcon.setState(this.document.status.status);
+		this._connectionStatusIcon.setState(this.document.state.status);
 
 		return new Promise((resolve) => {
 			return this.document
@@ -132,7 +131,7 @@ export class LiveView {
 	connect() {
 		if (!this._connectionStatusIcon) {
 			this._connectionStatusIcon = new ConnectionStatusIcon(this);
-			this._connectionStatusIcon.setState(this.document.status.status);
+			this._connectionStatusIcon.setState(this.document.state.status);
 		}
 		if (this._parent.networkStatus.online) {
 			this.document.connect();
