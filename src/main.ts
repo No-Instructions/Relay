@@ -45,8 +45,8 @@ export default class Live extends Plugin {
 	private _liveViews!: LiveViewManager;
 
 	async onload() {
-		console.log("[Obsidian Live] Loading Plugin");
-		this.log = curryLog("[Obsidian Live]");
+		console.log("[System3] Loading Plugin");
+		this.log = curryLog("[System3]");
 		await this.loadSettings();
 		this.vault = new VaultFacade(this.app);
 		this.loginManager = new LoginManager();
@@ -55,7 +55,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
 
 		if (!this.loginManager.setup()) {
-			new Notice("Please login to Obsidian Live");
+			new Notice("Please login to System3");
 		}
 		this.sharedFolders = this.loadSharedFolders(
 			this.settings.sharedFolders
@@ -110,7 +110,7 @@ export default class Live extends Plugin {
 					!existsSync(this.vault.fullPath(sharedFolderSetting.path))
 				) {
 					console.warn(
-						`[Obsidian Live][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
+						`[System3][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
 					);
 					return;
 				}
@@ -317,7 +317,7 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
-		console.log("[Obsidian Live]: Unloading Plugin");
+		console.log("[System3]: Unloading Plugin");
 		// We want to unload the visual components but not the data
 		this._offSaveSettings();
 		this.sharedFolders.destroy();
