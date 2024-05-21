@@ -184,6 +184,13 @@ export class LiveViewManager {
 
 		this.sharedFolders.on(() => {
 			this.refresh("[Shared Folders]");
+			this.sharedFolders.forEach((folder) => {
+				if (!folder.ready) {
+					folder.whenReady().then(() => {
+						this.refresh("[Shared Folder Ready]");
+					});
+				}
+			});
 		});
 	}
 

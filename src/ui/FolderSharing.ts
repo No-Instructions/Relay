@@ -56,10 +56,13 @@ export class SharedFolderModal extends Modal {
 				form.onsubmit = async (e) => {
 					e.preventDefault();
 
-					const shareLink = form.querySelector(
+					const input = form.querySelector(
 						'input[id="shareLink-guid"]'
-						// @ts-expect-error, not typed
-					)?.value;
+					);
+					// @ts-expect-error, not typed
+					const shareLink = input?.value;
+					// @ts-expect-error, not typed
+					input.disabled = true;
 					let guid: string = randomGuid;
 					if (shareLink) {
 						try {

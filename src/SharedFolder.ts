@@ -101,6 +101,10 @@ export class SharedFolder extends HasProvider {
 		return { guid: this.guid, path: this.path };
 	}
 
+	public get ready(): boolean {
+		return this._provider?.wsconnected && this._provider?.synced;
+	}
+
 	async whenReady(): Promise<SharedFolder> {
 		//Note this doesn't guarantee that the map is actually synced...
 		if (this.readyPromise) {
@@ -434,6 +438,10 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	}
 
 	new(path: string, guid: string) {
+		const existing = this.find((folder) => folder.path == path);
+		if (existing) {
+			return existing;
+		}
 		const folder = this.folderBuilder(path, guid);
 		this.add(folder);
 		return folder;
