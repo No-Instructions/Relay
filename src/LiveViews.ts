@@ -362,7 +362,13 @@ export class LiveViewManager {
 		const log = curryLog(ctx);
 		log("Refresh");
 
-		const views = this.getViews();
+		let views: LiveView[];
+		try {
+			views = this.getViews();
+		} catch (e) {
+			console.warn(e);
+			return false;
+		}
 		//const readyFolders = await this.foldersReady();
 		//log("Ready Folders", readyFolders);
 		//if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
