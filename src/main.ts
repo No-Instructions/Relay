@@ -298,23 +298,16 @@ export default class Live extends Plugin {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
-		const onUnloadFile = (old: any) => {
-			return (file: TFile) => {
-				vaultLog("unloading", file);
-				const folder = this.sharedFolders.lookup(file.path);
-				if (folder) {
-					console.warn("overriding unload");
-					return;
-				}
-				plugin._liveViews.wipe();
-				// @ts-ignore
-				return old.call(this, file);
-			};
-		};
-
 		const patchOnUnloadFile = around(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
-			onUnloadFile,
+			onUnloadFile(old) {
+				return function (file) {
+					vaultLog("unloading", file);
+					plugin._liveViews.wipe();
+					// @ts-ignore
+					return old.call(this, file);
+				};
+			},
 		});
 		this.register(patchOnUnloadFile);
 	}
