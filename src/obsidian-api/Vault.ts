@@ -44,7 +44,9 @@ export interface Vault extends Observable<string> {
 	fullPath(name: string): string;
 	createFolder(path: string): Promise<TFolder>;
 	exists(name: string): boolean;
+	rename(file: TAbstractFile, newName: string): void;
 	getFolderByPath(path: string): TFolder | null;
+	getAbstractFileByPath(path: string): TAbstractFile | null;
 
 	on(name: "create", f: (arg0: FilePath) => void): void;
 	on(name: "delete", f: (arg0: FilePath) => void): void;
@@ -110,6 +112,13 @@ export class VaultFacade extends Observable<string> implements Vault {
 		return this.app.vault.getFiles().map((tfile) => new FilePath(tfile));
 	}
 
+	getAbstractFileByPath(path: string): TAbstractFile | null {
+		if (!this.exists(path)) {
+			return null;
+		}
+		return this.app.vault.getAbstractFileByPath(path);
+	}
+
 	getFolderByPath(path: string): TFolder | null {
 		if (!this.exists(path)) {
 			return null;
@@ -119,6 +128,10 @@ export class VaultFacade extends Observable<string> implements Vault {
 			return maybeFolder;
 		}
 		return null;
+	}
+
+	rename(file: TAbstractFile, newName: string) {
+		this.app.vault.rename(file, newName);
 	}
 
 	createFolder(path: string): Promise<TFolder> {
@@ -195,9 +208,9 @@ export class SimpleVault extends Observable<string> implements Vault {
 		return `${this.root}/${name}`;
 	}
 
-	public rename(oldName: string, newName: string): void {
-		renameSync(this.fullPath(oldName), this.fullPath(newName));
-		this.emit("rename", [new FilePath(this.fullPath(newName)), oldName]);
+	public rename(file: TAbstractFile, newName: string): void {
+		renameSync(this.fullPath(file.path), this.fullPath(newName));
+		this.emit("rename", [new FilePath(this.fullPath(newName)), file.path]);
 	}
 
 	public newFile(name: string, contents: string) {
@@ -225,6 +238,18 @@ export class SimpleVault extends Observable<string> implements Vault {
 		// @ts-ignore
 		folder.vault = this;
 		return folder;
+	}
+
+	getAbstractFileByPath(path: string): TAbstractFile | null {
+		if (!this.exists(path)) {
+			return null;
+		}
+		const file = new TFile();
+		// XXX missing a bunch of vault functionality...
+		file.path = path;
+		// @ts-ignore
+		file.vault = this;
+		return file;
 	}
 
 	createFolder(path: string): Promise<TFolder> {

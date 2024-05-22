@@ -1,6 +1,6 @@
 "use strict";
 import * as Y from "yjs";
-import { TFolder } from "obsidian";
+import { FileManager, TFolder } from "obsidian";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
@@ -25,6 +25,7 @@ export class SharedFolder extends HasProvider {
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	private vault: Vault;
 	readyPromise: Promise<SharedFolder> | null = null;
+	fileManager: FileManager;
 
 	private _persistence: IndexeddbPersistence;
 
@@ -56,9 +57,11 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		loginManager: LoginManager,
 		vault: Vault,
+		fileManager: FileManager,
 		tokenStore: LiveTokenStore
 	) {
 		super(guid, tokenStore, loginManager);
+		this.fileManager = fileManager;
 		this.vault = vault;
 		this.path = path;
 		this.ids = this.ydoc.getMap("docs");
@@ -134,6 +137,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	syncFileTree(doc: Doc, update: Uint8Array) {
+		const renames: string[] = [];
 		const map = doc.getMap<string>("docs");
 		this.ydoc.transact(() => {
 			map.forEach((guid, path) => {
@@ -155,28 +159,26 @@ export class SharedFolder extends HasProvider {
 					const pathInIDs = this.ids.get(path);
 					const inIds = Array.from(this.ids.values()).includes(guid);
 					const inDocs = this.docs.get(guid);
-					if (!pathInIDs && inIds && inDocs) {
-						// it was a rename
-						let keyFound = null;
-						for (const [key, value] of map.entries()) {
-							if (value === guid) {
-								keyFound = key;
-								break;
+					if (inIds && inDocs) {
+						const oldPath = this.getPath(inDocs.path);
+						this.log(`${oldPath} was renamed to ${path}`);
+						const file = this.vault.getAbstractFileByPath(oldPath);
+						if (file) {
+							renames.push(oldPath);
+							this.fileManager.renameFile(file, this.path + path);
+						}
+					} else {
+						// this will trigger `create` which will read the file from disk by default.
+						// so we need to pre-empt that by loading the file into docs.
+						open(fullPath, "w", (err, fd) => {
+							if (err) {
+								throw err;
 							}
-						}
-						this.log(`${keyFound} was renamed to ${path}`);
+							this.log(
+								`Sync Message for ${this.path + path}: opening`
+							);
+						});
 					}
-
-					// this will trigger `create` which will read the file from disk by default.
-					// so we need to pre-empt that by loading the file into docs.
-					open(fullPath, "w", (err, fd) => {
-						if (err) {
-							throw err;
-						}
-						this.log(
-							`Sync Message for ${this.path + path}: opening`
-						);
-					});
 				}
 			});
 		}, this);
@@ -186,9 +188,10 @@ export class SharedFolder extends HasProvider {
 		files.forEach((file) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const fileInFolder = this.checkPath(file.path);
+			const wasRenamed = renames.contains(file.path);
 			const fileInMap = map.has(file.path.slice(this.path.length));
 			const synced = this._provider?.synced && this._persistence?.synced;
-			if (fileInFolder && !fileInMap) {
+			if (fileInFolder && !fileInMap && !wasRenamed) {
 				if (synced) {
 					this.log("Trashing File...", file.path, this.path);
 					this.vault.trashLocal(file.path);
@@ -386,7 +389,9 @@ export class SharedFolder extends HasProvider {
 				this.ydoc.transact(() => {
 					this.ids.set(newVPath, guid);
 					this.ids.delete(oldVPath);
-					this.docs.delete(guid); // let it be recreated with the right info
+					if (doc) {
+						doc.move(newVPath);
+					}
 				}, this);
 			}
 		}

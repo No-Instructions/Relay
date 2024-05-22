@@ -1,6 +1,6 @@
 "use strict";
 
-import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
+import { Plugin, TFolder, Notice, MarkdownView, TFile } from "obsidian";
 
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
@@ -138,6 +138,7 @@ export default class Live extends Plugin {
 			path,
 			this.loginManager,
 			this.vault,
+			this.app.fileManager, // XXX create a facade
 			this.tokenStore
 		);
 		return folder;
@@ -276,15 +277,11 @@ export default class Live extends Plugin {
 					this.sharedFolders.lookup(oldPath) ||
 					this.sharedFolders.lookup(file.path);
 				if (folder) {
-					if (folder.ready) {
+					this._liveViews.rename(oldPath, file.path);
+					folder.whenReady().then((folder) => {
 						folder.renameFile(file.path, oldPath);
 						this._liveViews.refresh("rename");
-					} else {
-						folder.whenReady().then((folder) => {
-							folder.renameFile(file.path, oldPath);
-							this._liveViews.refresh("rename");
-						});
-					}
+					});
 				}
 			})
 		);
@@ -302,16 +299,23 @@ export default class Live extends Plugin {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
+		const onUnloadFile = (old: any) => {
+			return (file: TFile) => {
+				vaultLog("unloading", file);
+				const folder = this.sharedFolders.lookup(file.path);
+				if (folder) {
+					console.warn("overriding unload");
+					return;
+				}
+				plugin._liveViews.wipe();
+				// @ts-ignore
+				return old.call(this, file);
+			};
+		};
+
 		const patchOnUnloadFile = around(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
-			onUnloadFile(old) {
-				return function (file) {
-					vaultLog("unloading", file);
-					plugin._liveViews.wipe();
-					// @ts-ignore
-					return old.call(this, file);
-				};
-			},
+			onUnloadFile,
 		});
 		this.register(patchOnUnloadFile);
 	}

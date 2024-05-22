@@ -34,6 +34,12 @@ export class Document extends HasProvider {
 		);
 	}
 
+	move(newPath: string) {
+		// XXX: Maybe a document should reference a TFile instead of a path...
+		this.path = newPath;
+		this.log = curryLog(`[SharedDoc](${this.path})`);
+	}
+
 	public get ytext(): YText {
 		return this.ydoc.getText("contents");
 	}
