@@ -90,10 +90,12 @@ export class FolderNavigationDecorations {
 					let pill = titleEl.querySelector(".obsidian-live-pill");
 
 					if (sharedFolder) {
+						// The element is not always available if the folder is not expanded
 						titleEl.addEventListener("click", () => {
-							if (this.sharedFolders.has(sharedFolder)) {
-								this.folderStatus(titleEl, sharedFolder);
-							}
+							this.folderStatus(titleEl, sharedFolder);
+						});
+						sharedFolder.subscribe(titleEl, (status) => {
+							this.folderStatus(titleEl, sharedFolder);
 						});
 
 						sharedFolder.whenReady().then(() => {
@@ -102,10 +104,6 @@ export class FolderNavigationDecorations {
 								const fileItem =
 									//@ts-expect-error
 									fileExplorer.view.fileItems[docPath];
-								if (!fileItem) {
-									// like a rename / race condition
-									return;
-								}
 								this.docStatus(fileItem.el, doc.state);
 								doc.subscribe(fileItem.el, (status) => {
 									const fileExplorers =
@@ -118,10 +116,6 @@ export class FolderNavigationDecorations {
 											fileExplorer.view.fileItems[
 												docPath
 											];
-										if (!fileItem) {
-											// like a rename / race condition
-											return;
-										}
 										this.docStatus(fileItem.el, status);
 									});
 								});
@@ -131,10 +125,7 @@ export class FolderNavigationDecorations {
 						this.folderStatus(titleEl, sharedFolder);
 
 						if (!pill) {
-							sharedFolder.subscribe(titleEl, (status) => {
-								this.folderStatus(titleEl, sharedFolder);
-							});
-
+							// TODO move this to a svelte component
 							// add a pill
 							pill = titleEl.createDiv();
 							pill.classList.add("obsidian-live-pill");
@@ -153,7 +144,6 @@ export class FolderNavigationDecorations {
 
 	destroy() {
 		this.sharedFolders.off(this.folderListener);
-
 		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
 		for (const fileExplorer of fileExplorers) {
 			const root = this.vault.getFolderByPath(this.vault.root);
