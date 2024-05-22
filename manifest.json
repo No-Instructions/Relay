@@ -6,6 +6,6 @@
 	"author": "No Instructions, LLC",
 	"authorUrl": "https://noinstructions.ai",
 	"fundingUrl": "https://www.buymeacoffee.com/dtkav",
-	"isDesktopOnly": false,
+	"isDesktopOnly": true,
 	"version": "1.0.0"
 }
