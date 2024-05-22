@@ -369,9 +369,6 @@ export class LiveViewManager {
 			console.warn(e);
 			return false;
 		}
-		//const readyFolders = await this.foldersReady();
-		//log("Ready Folders", readyFolders);
-		//if (readyFolders.length === 0 && this.views.length === 0) return; // no live views open
 		const activeDocumentFolders = this.findFolders();
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
@@ -379,6 +376,9 @@ export class LiveViewManager {
 				this.wipe();
 			}
 			log("no live views open");
+			log("Releasing Views", this.views);
+			this.releaseViews(this.views);
+			this.views = [];
 			return true; // no live views open
 		}
 
