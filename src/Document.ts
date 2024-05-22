@@ -111,5 +111,6 @@ export class Document extends HasProvider {
 		if (this._persistence) {
 			this._persistence.destroy();
 		}
+		this.listeners.clear();
 	}
 }

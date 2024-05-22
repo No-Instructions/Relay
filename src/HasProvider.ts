@@ -123,6 +123,10 @@ export class HasProvider {
 		this.listeners.set(el, listener);
 	}
 
+	unsubscribe(el: any) {
+		this.listeners.delete(el);
+	}
+
 	async getProviderToken(): Promise<ClientToken> {
 		this.log("get provider token");
 
@@ -288,5 +292,6 @@ export class HasProvider {
 			this._provider.disconnect();
 			this._provider.destroy();
 		}
+		this.listeners.clear();
 	}
 }

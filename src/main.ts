@@ -277,7 +277,6 @@ export default class Live extends Plugin {
 					this.sharedFolders.lookup(oldPath) ||
 					this.sharedFolders.lookup(file.path);
 				if (folder) {
-					this._liveViews.rename(oldPath, file.path);
 					folder.whenReady().then((folder) => {
 						folder.renameFile(file.path, oldPath);
 						this._liveViews.refresh("rename");
