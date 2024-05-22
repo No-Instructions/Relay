@@ -58,10 +58,8 @@ export class SharedFolderModal extends Modal {
 
 					const input = form.querySelector(
 						'input[id="shareLink-guid"]'
-					);
-					// @ts-expect-error, not typed
+					) as HTMLInputElement;
 					const shareLink = input?.value;
-					// @ts-expect-error, not typed
 					input.disabled = true;
 					let guid: string = randomGuid;
 					if (shareLink) {
