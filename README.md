@@ -1,8 +1,9 @@
 # System 3
 
-System 3 is a collaborative editing plugin for [Obsidian](https://obsidian.md) provided by [No Instructions, LLC](https://noinstructions.ai).
+System 3 is a collaborative editing plugin for [Obsidian](https://obsidian.md) built by [No Instructions, LLC](https://noinstructions.ai).
+System 3 provides hosted relays to forward document updates between users.
 
-> [!ERROR] System 3 is BETA software
+> :warning: **Warning: System 3 is BETA software**
 > System 3 is currently in limited beta, and is not yet in the Obsidian plugin repository.
 > If you don't have System 3 installed, you can beta test System 3 using BRAT.
 
