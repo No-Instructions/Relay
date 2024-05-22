@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+import { decodeJwt } from "jose";
 
 interface TokenStoreConfig {
 	log: (message: string) => void;
@@ -32,7 +32,7 @@ function formatTime(milliseconds: number): string {
 
 function _getJwtExpiry(token: string): number {
 	// Attempt to decode the token without verification
-	const decoded = jwt.decode(token);
+	const decoded = decodeJwt(token);
 	if (typeof decoded === "string") {
 		return 0;
 	}
