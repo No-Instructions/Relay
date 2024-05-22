@@ -1,6 +1,7 @@
 "use strict";
 import * as Y from "yjs";
-import { FileManager, TFolder } from "obsidian";
+import { TFolder } from "obsidian";
+import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
@@ -24,8 +25,8 @@ export class SharedFolder extends HasProvider {
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	private vault: Vault;
-	readyPromise: Promise<SharedFolder> | null = null;
-	fileManager: FileManager;
+	private fileManager: FileManager;
+	private readyPromise: Promise<SharedFolder> | null = null;
 
 	private _persistence: IndexeddbPersistence;
 

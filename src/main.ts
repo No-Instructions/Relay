@@ -20,6 +20,7 @@ import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
 import { ObsidianLiveException } from "./Exceptions";
+import { FileManagerFacade } from "./obsidian-api/FileManager";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -36,6 +37,7 @@ export default class Live extends Plugin {
 	sharedFolders!: SharedFolders;
 	vault!: VaultFacade;
 	loginManager!: LoginManager;
+	fileManager!: FileManagerFacade;
 	tokenStore!: LiveTokenStore;
 	networkStatus!: NetworkStatus;
 	folderNavDecorations!: FolderNavigationDecorations;
@@ -50,6 +52,7 @@ export default class Live extends Plugin {
 		await this.loadSettings();
 		this.vault = new VaultFacade(this.app);
 		this.loginManager = new LoginManager();
+		this.fileManager = new FileManagerFacade(this.app);
 		const vaultName = this.vault.getName();
 		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
@@ -138,7 +141,7 @@ export default class Live extends Plugin {
 			path,
 			this.loginManager,
 			this.vault,
-			this.app.fileManager, // XXX create a facade
+			this.fileManager,
 			this.tokenStore
 		);
 		return folder;
