@@ -388,8 +388,6 @@ export class SharedFolder extends HasProvider {
 					this.ids.delete(oldVPath);
 					this.docs.delete(guid); // let it be recreated with the right info
 				}, this);
-				doc?.destroy();
-				//XXX holy coupling batman
 			}
 		}
 	}
