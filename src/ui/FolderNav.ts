@@ -9,6 +9,7 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	folderListener: any;
+	clickListeners: Map<HTMLElement, any>;
 	pills: Map<HTMLElement, Pill>;
 
 	constructor(
@@ -18,6 +19,7 @@ export class FolderNavigationDecorations {
 	) {
 		this.vault = vault;
 		this.pills = new Map<HTMLElement, Pill>();
+		this.clickListeners = new Map<HTMLElement, any>();
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 
@@ -98,10 +100,14 @@ export class FolderNavigationDecorations {
 					let pill = this.pills.get(titleEl);
 
 					if (sharedFolder) {
-						// The element is not always available if the folder is not expanded
-						titleEl.addEventListener("click", () => {
+						// The element is not always available if the folder is not expanded,
+						// so we add a click event listener to update the status if the folder is expanded.
+						const clickListener = () => {
 							this.folderStatus(titleEl, sharedFolder);
-						});
+						};
+						titleEl.addEventListener("click", clickListener);
+						this.clickListeners.set(titleEl, clickListener);
+
 						sharedFolder.subscribe(titleEl, (status) => {
 							this.folderStatus(titleEl, sharedFolder);
 						});
@@ -142,6 +148,10 @@ export class FolderNavigationDecorations {
 						this.pills.delete(titleEl);
 						pill.$destroy();
 						this.removeStatuses(fileExplorer, folder);
+						const clickListener = this.clickListeners.get(titleEl);
+						if (clickListener) {
+							titleEl.removeEventListener("click", clickListener);
+						}
 					}
 				}
 			});
@@ -157,6 +167,9 @@ export class FolderNavigationDecorations {
 				this.removeStatuses(fileExplorer, root);
 			}
 		}
+		this.clickListeners.forEach((listener, el) => {
+			el.removeEventListener("click", listener);
+		});
 		this.refresh();
 	}
 }
