@@ -4,6 +4,7 @@ System 3 is a collaborative editing plugin for [Obsidian](https://obsidian.md) b
 System 3 provides hosted relays to forward document updates between users.
 
 > :warning: **Warning: System 3 is BETA software**
+>
 > System 3 is currently in limited beta, and is not yet in the Obsidian plugin repository.
 > If you don't have System 3 installed, you can beta test System 3 using BRAT.
 
