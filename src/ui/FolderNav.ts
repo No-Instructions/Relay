@@ -153,6 +153,14 @@ export class FolderNavigationDecorations {
 
 	destroy() {
 		this.sharedFolders.off(this.folderListener);
+
+		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
+		for (const fileExplorer of fileExplorers) {
+			const root = this.vault.getFolderByPath(this.vault.root);
+			if (root) {
+				this.removeStatuses(fileExplorer, root);
+			}
+		}
 		this.refresh();
 	}
 }
