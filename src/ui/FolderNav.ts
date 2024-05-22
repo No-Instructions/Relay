@@ -1,13 +1,15 @@
-import { TFolder, Workspace, WorkspaceLeaf } from "obsidian";
+import { TAbstractFile, TFolder, Workspace, WorkspaceLeaf } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import { VaultFacade } from "src/obsidian-api/Vault";
 import type { ConnectionState } from "src/HasProvider";
+import Pill from "src/components/Pill.svelte";
 
 export class FolderNavigationDecorations {
 	vault: VaultFacade;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	folderListener: any;
+	pills: Map<HTMLElement, Pill>;
 
 	constructor(
 		vault: VaultFacade,
@@ -15,6 +17,7 @@ export class FolderNavigationDecorations {
 		sharedFolders: SharedFolders
 	) {
 		this.vault = vault;
+		this.pills = new Map<HTMLElement, Pill>();
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 
@@ -53,20 +56,23 @@ export class FolderNavigationDecorations {
 		}
 	}
 
-	removeStatuses(fileExplorer: WorkspaceLeaf, folder: TFolder) {
+	private getFileExplorerItem(
+		fileExplorer: WorkspaceLeaf,
+		file: TAbstractFile
+	) {
+		// XXX this is a private API
 		//@ts-expect-error
-		const folderItem = fileExplorer.view.fileItems[folder.path];
+		return fileExplorer.view.fileItems[file.path];
+	}
+
+	removeStatuses(fileExplorer: WorkspaceLeaf, folder: TFolder) {
+		const folderItem = this.getFileExplorerItem(fileExplorer, folder);
 		this.folderStatus(folderItem.selfEl);
 		folder.children.forEach((child) => {
 			if (child instanceof TFolder) {
 				this.removeStatuses(fileExplorer, child);
 			} else {
-				//@ts-expect-error
-				const fileItem = fileExplorer.view.fileItems[child.path];
-				if (!fileItem) {
-					// likely a rename
-					return;
-				}
+				const fileItem = this.getFileExplorerItem(fileExplorer, child);
 				this.docStatus(fileItem.el);
 			}
 		});
@@ -81,13 +87,15 @@ export class FolderNavigationDecorations {
 					const sharedFolder = this.sharedFolders.find((f) => {
 						return f.path == folder.path;
 					});
-					//@ts-expect-error
-					const folderItem = fileExplorer.view.fileItems[folder.path];
+					const folderItem = this.getFileExplorerItem(
+						fileExplorer,
+						folder
+					);
 					if (!folderItem) {
 						return;
 					}
 					const titleEl = folderItem.selfEl;
-					let pill = titleEl.querySelector(".obsidian-live-pill");
+					let pill = this.pills.get(titleEl);
 
 					if (sharedFolder) {
 						// The element is not always available if the folder is not expanded
@@ -125,16 +133,14 @@ export class FolderNavigationDecorations {
 						this.folderStatus(titleEl, sharedFolder);
 
 						if (!pill) {
-							// TODO move this to a svelte component
-							// add a pill
-							pill = titleEl.createDiv();
-							pill.classList.add("obsidian-live-pill");
-							pill.innerHTML = "<span>live</span>";
-							titleEl.appendChild(pill);
+							pill = new Pill({
+								target: titleEl,
+							});
+							this.pills.set(titleEl, pill);
 						}
 					} else if (pill) {
-						// remove a pill
-						pill.remove();
+						this.pills.delete(titleEl);
+						pill.$destroy();
 						this.removeStatuses(fileExplorer, folder);
 					}
 				}

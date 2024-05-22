@@ -65,7 +65,7 @@
 }
 
 
-.obsidian-live-pill {
+.system3-pill {
   border: 1px solid transparent;
   margin: 0px 4px 0px 0px;
   display: flex;
@@ -73,7 +73,7 @@
   margin-left: auto;
 }
 
-.obsidian-live-pill > span {
+.system3-pill > span {
     color: var(--text-on-accent);
     background-color: var(--color-accent);
     border-radius: var(--radius-s);
