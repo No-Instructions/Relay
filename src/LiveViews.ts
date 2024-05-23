@@ -109,32 +109,42 @@ export class LiveView {
 		return () => {};
 	}
 
-	attach(): Promise<LiveView> {
+	setConnectionDot(): void {
 		const viewActionsElement =
 			this.view.containerEl.querySelector(".view-actions");
-		const connectionStatusIcon = this.view.containerEl.querySelector(
-			".connection-status-icon"
-		);
-		if (
-			viewActionsElement &&
-			viewActionsElement.firstChild &&
-			!connectionStatusIcon
-		) {
-			this._connectionStatusIcon = new ConnectionStatusIcon({
-				target: viewActionsElement,
-				anchor: viewActionsElement.firstChild as Element,
-				props: {
-					view: this,
-					state: this.document.state,
-				},
+		if (viewActionsElement && viewActionsElement.firstChild) {
+			const connectionStatusIcon = this.view.containerEl.querySelector(
+				".connection-status-icon"
+			);
+			if (!this._connectionStatusIcon) {
+				this._connectionStatusIcon = new ConnectionStatusIcon({
+					target: viewActionsElement,
+					anchor: viewActionsElement.firstChild as Element,
+					props: {
+						view: this,
+						state: this.document.state,
+					},
+				});
+			}
+			this._connectionStatusIcon.$set({
+				view: this,
+				state: this.document.state,
 			});
 			this.document.subscribe(
 				connectionStatusIcon,
 				(state: ConnectionState) => {
-					this._connectionStatusIcon?.$set({ state: state });
+					this._connectionStatusIcon?.$set({
+						view: this,
+						state: state,
+					});
 				}
 			);
 		}
+	}
+
+	attach(): Promise<LiveView> {
+		// can be called multiple times, whereas release is only ever called once
+		this.setConnectionDot();
 		return new Promise((resolve) => {
 			return this.document
 				.whenReady()

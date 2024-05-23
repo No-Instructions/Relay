@@ -29,6 +29,7 @@
 	aria-label={ariaLabels[state.status]}
 	role="button"
 	tabindex="0"
+	data-filename={view.view.file?.name}
 	on:click={handleClick}
 	on:keypress={handleKeyPress}
 >
