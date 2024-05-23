@@ -74,7 +74,12 @@ export class LiveView {
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
 		if (this.shouldConnect) {
-			this.document.connect();
+			this.document.connect().then((connected) => {
+				if (!connected) {
+					// If we couldn't connect, ensure their next press tries again.
+					this.shouldConnect = false;
+				}
+			});
 		} else {
 			this.document.disconnect();
 		}
@@ -91,9 +96,7 @@ export class LiveView {
 				"You're offline -- click to reconnect",
 				() => {
 					this._parent.networkStatus.checkStatus();
-					this.document.getProviderToken().then((clientToken) => {
-						this.connect();
-					});
+					this.connect();
 				}
 			);
 			this.document.onceConnected().then(() => {
