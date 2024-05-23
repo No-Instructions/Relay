@@ -1,4 +1,4 @@
-import { MarkdownView } from "obsidian";
+import { MarkdownView, type WorkspaceLeaf } from "obsidian";
 import { Document } from "./Document";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
@@ -23,6 +23,8 @@ import NetworkStatus from "./NetworkStatus";
 import { promiseWithTimeout } from "./promiseUtils";
 import type { ConnectionState } from "./HasProvider";
 
+const BACKGROUND_CONNECTIONS = 20;
+
 function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 	if (vs1.length !== vs2.length) {
 		return false;
@@ -44,6 +46,7 @@ export class LiveView {
 	document: Document;
 	plugin?: LiveCMPluginValue;
 	shouldConnect: boolean;
+	canConnect: boolean;
 
 	private _connectionStatusIcon!: ConnectionStatusIcon;
 	private _parent: LiveViewManager;
@@ -52,13 +55,15 @@ export class LiveView {
 		connectionManager: LiveViewManager,
 		view: MarkdownView,
 		document: Document,
-		shouldConnect = true
+		shouldConnect = true,
+		canConnect = true
 	) {
 		this._parent = connectionManager; // for debug
 		this.view = view;
 		this.document = document;
 
 		this.shouldConnect = shouldConnect;
+		this.canConnect = canConnect;
 		if (!connectionManager.networkStatus.online) {
 			this.offlineBanner();
 		}
@@ -129,7 +134,7 @@ export class LiveView {
 			return this.document
 				.whenReady()
 				.then((doc) => {
-					if (this.shouldConnect) {
+					if (this.shouldConnect && this.canConnect) {
 						this.connect();
 					}
 					resolve(this);
@@ -219,9 +224,7 @@ export class LiveViewManager {
 		this.views.forEach((view) => {
 			view.document.getProviderToken();
 		});
-		this.views.forEach((view) => {
-			view.attach();
-		});
+		this.viewsAttachedWithConnectionPool(this.views);
 	}
 
 	_loginBanner(views: LiveView[]) {
@@ -324,6 +327,31 @@ export class LiveViewManager {
 		);
 	}
 
+	private async viewsAttachedWithConnectionPool(
+		views: LiveView[],
+		backgroundConnections: number = BACKGROUND_CONNECTIONS
+	): Promise<LiveView[]> {
+		const activeView =
+			this.workspace.workspace.getActiveViewOfType<MarkdownView>(
+				MarkdownView
+			);
+
+		let connectionPool = backgroundConnections;
+
+		for (const view of views) {
+			if (view.view === activeView) {
+				view.canConnect = true;
+			} else {
+				view.canConnect = connectionPool > 0;
+				connectionPool--;
+			}
+		}
+
+		console.log("connection pool: remaining connections", connectionPool);
+
+		return this.viewsAttached(views);
+	}
+
 	private async viewsAttached(views: LiveView[]): Promise<LiveView[]> {
 		return await Promise.all(
 			views.map(async (view) => {
@@ -397,14 +425,19 @@ export class LiveViewManager {
 
 		if (stale.length == 0 && ViewsetsEqual(matching, this.views)) {
 			log("No work to do");
-			const attachedViews = await this.viewsAttached(this.views);
+			// XXX backgroundConnections should probably be an advanced setting.
+			const attachedViews = await this.viewsAttachedWithConnectionPool(
+				this.views
+			);
 			log("Attached Views", attachedViews);
 		} else {
 			log("Releasing Views", stale);
 			this.releaseViews(stale);
 			const readyViews = await this.viewsReady(matching);
 			log("Ready Views", readyViews);
-			const attachedViews = await this.viewsAttached(readyViews);
+			const attachedViews = await this.viewsAttachedWithConnectionPool(
+				this.views
+			);
 			log("Attached Views", attachedViews);
 		}
 		this.views = matching;

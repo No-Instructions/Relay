@@ -1,4 +1,10 @@
-import { Workspace, MarkdownView } from "obsidian";
+import {
+	Workspace,
+	MarkdownView,
+	type WorkspaceLeaf,
+	type Constructor,
+	View,
+} from "obsidian";
 
 export class WorkspaceFacade {
 	workspace: Workspace;
@@ -13,6 +19,10 @@ export class WorkspaceFacade {
 				fn(leaf.view);
 			}
 		});
+	}
+
+	public getActiveViewOfType<T extends View>(type: Constructor<T>): T | null {
+		return this.workspace.getActiveViewOfType<T>(type);
 	}
 
 	public updateOptions() {
