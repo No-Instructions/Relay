@@ -233,23 +233,14 @@ button.stripe:disabled {
 }
 
 .tree-item-children.system3-live {
-    border-inline-start: var(--nav-indentation-guide-width) solid green;
+    border-inline-start: var(--nav-indentation-guide-width) solid var(--color-accent);
 }
-
-.tree-item-children.system3-connected {
-    border-inline-start: var(--nav-indentation-guide-width) solid green;
-}
-
-.tree-item-children.system3-connecting {
-    border-inline-start: var(--nav-indentation-guide-width) solid yellow;
-}
-
-
 
 .nav-file.system3-connected {
-    border-inline-start: 1px solid green;
+    border-inline-start: 1px solid var(--color-accent);
 }
 
 .nav-file.system3-connecting {
-    border-inline-start: 1px solid yellow;
+    border-inline-start: 1px solid var(--color-base-40);
 }
+

@@ -35,13 +35,20 @@ export class FolderNavigationDecorations {
 	folderStatus(el: any, status?: ConnectionStatus) {
 		if (status === "connected") {
 			el.nextSibling?.removeClass("system3-connecting");
+			el.nextSibling?.addClass("system3-live");
 			el.nextSibling?.addClass("system3-connected");
 		} else if (status === "connecting") {
 			el.nextSibling?.removeClass("system3-connected");
+			el.nextSibling?.addClass("system3-live");
 			el.nextSibling?.addClass("system3-connecting");
+		} else if (status === "disconnected") {
+			el.nextSibling?.removeClass("system3-connected");
+			el.nextSibling?.removeClass("system3-connecting");
+			el.nextSibling?.addClass("system3-live");
 		} else {
 			el.nextSibling?.removeClass("system3-connecting");
 			el.nextSibling?.removeClass("system3-connected");
+			el.nextSibling?.removeClass("system3-live");
 		}
 	}
 
@@ -49,12 +56,19 @@ export class FolderNavigationDecorations {
 		if (status?.status === "connected") {
 			el.removeClass("system3-connecting");
 			el.addClass("system3-connected");
+			el.addClass("system3-live");
 		} else if (status?.status === "connecting") {
 			el.removeClass("system3-connected");
 			el.addClass("system3-connecting");
+			el.addClass("system3-live");
+		} else if (status?.status === "disconnected") {
+			el.addClass("system3-live");
+			el.removeClass("system3-connected");
+			el.removeClass("system3-connecting");
 		} else {
 			el.removeClass("system3-connected");
 			el.removeClass("system3-connecting");
+			el.removeClass("system3-live");
 		}
 	}
 
@@ -154,6 +168,12 @@ export class FolderNavigationDecorations {
 						if (!pill) {
 							pill = new Pill({
 								target: titleEl,
+								props: {
+									status: sharedFolder.state.status,
+								},
+							});
+							sharedFolder.subscribe(titleEl, (status) => {
+								pill?.$set({ status: status.status });
 							});
 							this.pills.set(titleEl, pill);
 						}
