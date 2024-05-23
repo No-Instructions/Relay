@@ -1,7 +1,7 @@
 import { TAbstractFile, TFolder, Workspace, WorkspaceLeaf } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import { VaultFacade } from "src/obsidian-api/Vault";
-import type { ConnectionState } from "src/HasProvider";
+import type { ConnectionState, ConnectionStatus } from "src/HasProvider";
 import Pill from "src/components/Pill.svelte";
 
 export class FolderNavigationDecorations {
@@ -9,7 +9,7 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	folderListener: any;
-	clickListeners: Map<HTMLElement, any>;
+	mutationObservers: Map<HTMLElement, any>;
 	pills: Map<HTMLElement, Pill>;
 
 	constructor(
@@ -19,7 +19,7 @@ export class FolderNavigationDecorations {
 	) {
 		this.vault = vault;
 		this.pills = new Map<HTMLElement, Pill>();
-		this.clickListeners = new Map<HTMLElement, any>();
+		this.mutationObservers = new Map<HTMLElement, any>();
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 
@@ -32,11 +32,11 @@ export class FolderNavigationDecorations {
 		return this.workspace.on("layout-change", () => this.refresh());
 	}
 
-	folderStatus(el: any, folder?: SharedFolder) {
-		if (folder?.state.status === "connected") {
+	folderStatus(el: any, status?: ConnectionStatus) {
+		if (status === "connected") {
 			el.nextSibling?.removeClass("system3-connecting");
 			el.nextSibling?.addClass("system3-connected");
-		} else if (folder?.state.status === "connecting") {
+		} else if (status === "connecting") {
 			el.nextSibling?.removeClass("system3-connected");
 			el.nextSibling?.addClass("system3-connecting");
 		} else {
@@ -100,16 +100,32 @@ export class FolderNavigationDecorations {
 					let pill = this.pills.get(titleEl);
 
 					if (sharedFolder) {
-						// The element is not always available if the folder is not expanded,
-						// so we add a click event listener to update the status if the folder is expanded.
-						const clickListener = () => {
-							this.folderStatus(titleEl, sharedFolder);
-						};
-						titleEl.addEventListener("click", clickListener);
-						this.clickListeners.set(titleEl, clickListener);
+						if (!this.mutationObservers.has(titleEl)) {
+							const observer = new MutationObserver(
+								(mutationsList) => {
+									for (let mutation of mutationsList) {
+										if (mutation.type === "childList") {
+											if (titleEl.nextSibling) {
+												this.folderStatus(
+													titleEl,
+													sharedFolder.state.status
+												);
+											}
+										}
+									}
+								}
+							);
+							observer.observe(titleEl.parentElement, {
+								childList: true,
+								subtree: true,
+							});
+							this.mutationObservers.set(titleEl, observer);
+						}
+
+						this.folderStatus(titleEl, sharedFolder.state.status);
 
 						sharedFolder.subscribe(titleEl, (status) => {
-							this.folderStatus(titleEl, sharedFolder);
+							this.folderStatus(titleEl, status.status);
 						});
 
 						sharedFolder.whenReady().then(() => {
@@ -135,9 +151,6 @@ export class FolderNavigationDecorations {
 								});
 							});
 						});
-
-						this.folderStatus(titleEl, sharedFolder);
-
 						if (!pill) {
 							pill = new Pill({
 								target: titleEl,
@@ -148,9 +161,10 @@ export class FolderNavigationDecorations {
 						this.pills.delete(titleEl);
 						pill.$destroy();
 						this.removeStatuses(fileExplorer, folder);
-						const clickListener = this.clickListeners.get(titleEl);
-						if (clickListener) {
-							titleEl.removeEventListener("click", clickListener);
+						const mutationObserver =
+							this.mutationObservers.get(titleEl);
+						if (mutationObserver) {
+							mutationObserver.disconnect();
 						}
 					}
 				}
@@ -167,8 +181,8 @@ export class FolderNavigationDecorations {
 				this.removeStatuses(fileExplorer, root);
 			}
 		}
-		this.clickListeners.forEach((listener, el) => {
-			el.removeEventListener("click", listener);
+		this.mutationObservers.forEach((listener, el) => {
+			listener.disconnect();
 		});
 		this.refresh();
 	}
