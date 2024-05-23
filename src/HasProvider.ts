@@ -151,10 +151,7 @@ export class HasProvider {
 
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
-		this.log("refreshProvider start");
 		this.clientToken = clientToken;
-		console.log(clientToken);
-
 		const params = {
 			token: clientToken.token,
 		};
@@ -180,12 +177,6 @@ export class HasProvider {
 				`Token Refreshed: setting new provider url, ${this._provider.url}`
 			);
 			this._provider.ws?.close();
-		} else {
-			console.log(
-				`url was the same! url=${this._provider.url}`,
-				this._provider,
-				this.state
-			);
 		}
 	}
 
@@ -195,7 +186,7 @@ export class HasProvider {
 		}
 		return this.getProviderToken()
 			.then((clientToken) => {
-				this.refreshProvider(clientToken);
+				this.refreshProvider(clientToken); // XXX is this still needed?
 				this._provider.connect();
 				return true;
 			})
