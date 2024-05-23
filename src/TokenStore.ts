@@ -129,12 +129,7 @@ export class TokenStore<TokenType> {
 	private _cleanupInvalidTokens() {
 		const toDelete: string[] = [];
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
-			if (
-				!(
-					this.callbacks.has(documentId) &&
-					this.isTokenValid(tokenInfo)
-				)
-			) {
+			if (!this.isTokenValid(tokenInfo)) {
 				toDelete.push(documentId);
 			}
 		}
