@@ -52,6 +52,12 @@ export class Document extends HasProvider {
 		return this.ytext.toString();
 	}
 
+	connect(): Promise<boolean> {
+		return this.sharedFolder.connect().then((connected) => {
+			return super.connect();
+		});
+	}
+
 	public async whenReady(): Promise<Document> {
 		const dependencies = [];
 		if (!this._persistence.synced) {

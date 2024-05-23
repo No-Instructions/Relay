@@ -99,9 +99,7 @@ export class HasProvider {
 				this.log(`[${this.path}] disconnection event: ${event}`);
 				console.log(this._provider, this.clientToken);
 				this._provider.disconnect();
-				this.getProviderToken().then((clientToken) => {
-					this.connect();
-				});
+				this.connect();
 			}
 		);
 		connectionErrorSub.on();
@@ -191,14 +189,19 @@ export class HasProvider {
 		}
 	}
 
-	connect() {
+	connect(): Promise<boolean> {
 		if (this._provider.wsconnected) {
-			return;
+			return Promise.resolve(true);
 		}
-		this.getProviderToken().then((clientToken) => {
-			this.refreshProvider(clientToken);
-			this._provider.connect();
-		});
+		return this.getProviderToken()
+			.then((clientToken) => {
+				this.refreshProvider(clientToken);
+				this._provider.connect();
+				return true;
+			})
+			.catch((e) => {
+				return false;
+			});
 	}
 
 	disconnect() {
