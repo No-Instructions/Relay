@@ -65,21 +65,6 @@
 }
 
 
-.system3-pill {
-  border: 1px solid transparent;
-  margin: 0px 4px 0px 0px;
-  display: flex;
-  align-self: center;
-  margin-left: auto;
-}
-
-.system3-pill > span {
-    color: var(--text-on-accent);
-    background-color: var(--color-accent);
-    border-radius: var(--radius-s);
-    padding: 0px 5px 0px 5px;
-}
-
 .banner {
     border-color: var(--pill-border-color-hover);
     cursor: pointer;
