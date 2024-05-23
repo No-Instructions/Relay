@@ -24,6 +24,8 @@ import { promiseWithTimeout } from "./promiseUtils";
 import type { ConnectionState } from "./HasProvider";
 
 const BACKGROUND_CONNECTIONS = 20;
+const MAX_TIMEOUT = 10000;
+const TIMEOUT_INCREASE = 3000;
 
 function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 	if (vs1.length !== vs2.length) {
@@ -196,9 +198,18 @@ export class LiveViewManager {
 			this.refresh("[Shared Folders]");
 			this.sharedFolders.forEach((folder) => {
 				if (!folder.ready) {
-					folder.whenReady().then(() => {
-						this.refresh("[Shared Folder Ready]");
-					});
+					folder
+						.whenReady()
+						.then(() => {
+							this.refresh("[Shared Folder Ready]");
+						})
+						.catch((_) => {
+							this.views.forEach((view) => {
+								if (view.document.sharedFolder === folder) {
+									view.offlineBanner();
+								}
+							});
+						});
 				}
 			});
 		});
@@ -446,25 +457,47 @@ export class LiveViewManager {
 		return true;
 	}
 
-	async refresh(context: string): Promise<boolean> {
+	async refresh(context: string, timeout = 3000): Promise<boolean> {
 		const log = curryLog(context);
-		if (this._activePromise) {
+		if (this._activePromise !== null) {
 			this._stale += context;
 			log("refresh views was already running");
 			return false;
 		}
 		this._activePromise = promiseWithTimeout<boolean>(
 			this._refreshViews(context),
-			3000
-		);
-		await this._activePromise;
-		this._activePromise = null;
-		if (this._stale !== "") {
-			this.refresh(this._stale);
-			this._stale = "";
+			timeout
+		).catch((_) => {
+			console.warn(`refresh views timed out... timeout=${timeout}`);
+			return false;
+		});
+
+		let viewsRefreshed = await this._activePromise;
+		if (viewsRefreshed) {
+			this._activePromise = null;
+			if (this._stale !== "") {
+				this.refresh(this._stale);
+				this._stale = "";
+			}
 			return true;
 		}
-		return false;
+		while (!viewsRefreshed) {
+			timeout += TIMEOUT_INCREASE;
+			if (timeout > MAX_TIMEOUT) {
+				this.goOffline();
+				break;
+			}
+			this._activePromise = promiseWithTimeout<boolean>(
+				this._refreshViews(context),
+				timeout
+			).catch((reason) => {
+				console.warn(`refresh views timed out... timeout=${timeout}`);
+				return false;
+			});
+			viewsRefreshed = await this._activePromise;
+		}
+		this._activePromise = null;
+		return viewsRefreshed;
 	}
 
 	wipe() {

@@ -40,6 +40,10 @@ export class Document extends HasProvider {
 		this.log = curryLog(`[SharedDoc](${this.path})`);
 	}
 
+	public get sharedFolder(): SharedFolder {
+		return this._parent;
+	}
+
 	public get ytext(): YText {
 		return this.ydoc.getText("contents");
 	}
