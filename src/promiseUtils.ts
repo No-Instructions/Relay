@@ -6,7 +6,7 @@ export function promiseWithTimeout<T>(
 	const timeout = new Promise<T>((_, reject) => {
 		timeoutId = setTimeout(() => {
 			console.log("timeout on promise", promise);
-			reject(new Error("Timeout after " + ms + " ms"));
+			reject("Timeout after " + ms + " ms");
 		}, ms);
 	});
 
