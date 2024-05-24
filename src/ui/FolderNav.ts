@@ -116,14 +116,29 @@ export class FolderNavigationDecorations {
 					if (sharedFolder) {
 						if (!this.mutationObservers.has(titleEl)) {
 							const observer = new MutationObserver(
-								(mutationsList) => {
+								(mutationsList, observer) => {
 									for (let mutation of mutationsList) {
 										if (mutation.type === "childList") {
 											if (titleEl.nextSibling) {
+												console.log("observation");
 												this.folderStatus(
 													titleEl,
 													sharedFolder.state.status
 												);
+												sharedFolder.subscribe(
+													titleEl.nextSibling,
+													(status) => {
+														this.folderStatus(
+															titleEl,
+															status.status
+														);
+													}
+												);
+												pill?.$set({
+													status: sharedFolder.state
+														.status,
+												});
+												observer.disconnect();
 											}
 										}
 									}
@@ -137,10 +152,6 @@ export class FolderNavigationDecorations {
 						}
 
 						this.folderStatus(titleEl, sharedFolder.state.status);
-
-						sharedFolder.subscribe(titleEl, (status) => {
-							this.folderStatus(titleEl, status.status);
-						});
 
 						sharedFolder.whenReady().then(() => {
 							sharedFolder.docs.forEach((doc) => {
@@ -185,6 +196,7 @@ export class FolderNavigationDecorations {
 							this.mutationObservers.get(titleEl);
 						if (mutationObserver) {
 							mutationObserver.disconnect();
+							this.mutationObservers.delete(titleEl);
 						}
 					}
 				}
