@@ -32,25 +32,31 @@ export class FolderNavigationDecorations {
 		return this.workspace.on("layout-change", () => this.refresh());
 	}
 
-	folderStatus(el: any, status?: ConnectionStatus) {
-		if (status === "connected") {
-			el.nextSibling?.removeClass("system3-connecting");
-			el.nextSibling?.addClass("system3-live");
-			el.nextSibling?.addClass("system3-connected");
-		} else if (status === "connecting") {
-			el.nextSibling?.removeClass("system3-connected");
-			el.nextSibling?.addClass("system3-live");
-			el.nextSibling?.addClass("system3-connecting");
-		} else if (status === "disconnected") {
-			el.nextSibling?.removeClass("system3-connected");
-			el.nextSibling?.removeClass("system3-connecting");
+	folderDecoration(el: any, isSharedFolder: boolean) {
+		if (isSharedFolder) {
 			el.nextSibling?.addClass("system3-live");
 		} else {
-			el.nextSibling?.removeClass("system3-connecting");
-			el.nextSibling?.removeClass("system3-connected");
 			el.nextSibling?.removeClass("system3-live");
 		}
 	}
+	//	if (status === "connected") {
+	//		el.nextSibling?.removeClass("system3-connecting");
+	//		el.nextSibling?.addClass("system3-live");
+	//		el.nextSibling?.addClass("system3-connected");
+	//	} else if (status === "connecting") {
+	//		el.nextSibling?.removeClass("system3-connected");
+	//		el.nextSibling?.addClass("system3-live");
+	//		el.nextSibling?.addClass("system3-connecting");
+	//	} else if (status === "disconnected" || status === "unknown") {
+	//		el.nextSibling?.removeClass("system3-connected");
+	//		el.nextSibling?.removeClass("system3-connecting");
+	//		el.nextSibling?.addClass("system3-live");
+	//	} else {
+	//		el.nextSibling?.removeClass("system3-connecting");
+	//		el.nextSibling?.removeClass("system3-connected");
+	//		el.nextSibling?.removeClass("system3-live");
+	//	}
+	//}
 
 	docStatus(el: any, status?: ConnectionState) {
 		if (status?.status === "connected") {
@@ -72,21 +78,91 @@ export class FolderNavigationDecorations {
 		}
 	}
 
+	private getFileExplorerItem(fileExplorer: WorkspaceLeaf, file: string): any;
+
 	private getFileExplorerItem(
 		fileExplorer: WorkspaceLeaf,
 		file: TAbstractFile
+	): any;
+
+	private getFileExplorerItem(
+		fileExplorer: WorkspaceLeaf,
+		file: TAbstractFile | string
 	) {
 		// XXX this is a private API
+		const path = file instanceof TAbstractFile ? file.path : file;
 		//@ts-expect-error
-		return fileExplorer.view.fileItems[file.path];
+		return fileExplorer.view.fileItems[path];
 	}
 
-	removeStatuses(fileExplorer: WorkspaceLeaf, folder: TFolder) {
+	removePills(force = false, folder?: TFolder) {
+		const sharedFolderPaths = force
+			? []
+			: this.sharedFolders.map((sharedFolder) => sharedFolder.path);
+		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
+		const root = folder
+			? folder
+			: (this.vault.getAbstractFileByPath("/") as TFolder | null);
+		console.warn("remove pills", sharedFolderPaths, fileExplorers, root);
+		fileExplorers.forEach((fileExplorer) => {
+			if (root) {
+				this._removePills(fileExplorer, root, sharedFolderPaths);
+			}
+		});
+	}
+
+	_removePills(
+		fileExplorer: WorkspaceLeaf,
+		folder: TFolder,
+		sharedFolderPaths: string[]
+	) {
 		const folderItem = this.getFileExplorerItem(fileExplorer, folder);
-		this.folderStatus(folderItem.selfEl);
+		if (folderItem) {
+			const pill = this.pills.get(folderItem.selfEl);
+			if (pill && !sharedFolderPaths.contains(folder.path)) {
+				console.warn("removing pill");
+				pill.$destroy();
+				this.pills.delete(folderItem.selfEl);
+			}
+		}
 		folder.children.forEach((child) => {
 			if (child instanceof TFolder) {
-				this.removeStatuses(fileExplorer, child);
+				this._removePills(fileExplorer, child, sharedFolderPaths);
+			}
+		});
+	}
+
+	removeStatuses(force = false, folder?: TFolder) {
+		const sharedFolderPaths = force
+			? []
+			: this.sharedFolders.map((sharedFolder) => sharedFolder.path);
+		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
+		const root = folder
+			? folder
+			: (this.vault.getAbstractFileByPath("/") as TFolder | null);
+		fileExplorers.forEach((fileExplorer) => {
+			if (root) {
+				this._removeStatuses(fileExplorer, root, sharedFolderPaths);
+			}
+		});
+	}
+
+	_removeStatuses(
+		fileExplorer: WorkspaceLeaf,
+		folder: TFolder,
+		sharedFolderPaths: string[]
+	) {
+		const folderItem = this.getFileExplorerItem(fileExplorer, folder);
+		if (folderItem) {
+			const decorate = sharedFolderPaths.contains(folder.path);
+			if (decorate) {
+				console.warn("decorate", folder.path);
+			}
+			this.folderDecoration(folderItem.selfEl, decorate);
+		}
+		folder.children.forEach((child) => {
+			if (child instanceof TFolder) {
+				this._removeStatuses(fileExplorer, child, sharedFolderPaths);
 			} else {
 				const fileItem = this.getFileExplorerItem(fileExplorer, child);
 				this.docStatus(fileItem.el);
@@ -95,126 +171,107 @@ export class FolderNavigationDecorations {
 	}
 
 	refresh() {
+		console.warn("foldernav refresh");
 		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
+		const sharedFolders = this.sharedFolders.items();
 
-		this.vault.iterateFolders((folder) => {
+		sharedFolders.forEach((sharedFolder) => {
+			console.warn("shared folder", sharedFolder.path);
+			const folder = this.vault.getAbstractFileByPath(
+				sharedFolder.path
+			) as TFolder | null;
+			if (!folder) {
+				return;
+			}
+
 			fileExplorers.forEach((fileExplorer) => {
-				if (folder) {
-					const sharedFolder = this.sharedFolders.find((f) => {
-						return f.path == folder.path;
-					});
-					const folderItem = this.getFileExplorerItem(
-						fileExplorer,
-						folder
-					);
-					if (!folderItem) {
-						return;
-					}
-					const titleEl = folderItem.selfEl;
-					let pill = this.pills.get(titleEl);
+				const folderItem = this.getFileExplorerItem(
+					fileExplorer,
+					folder
+				);
+				if (!folderItem) {
+					return;
+				}
+				const titleEl = folderItem.selfEl;
+				let pill = this.pills.get(titleEl);
 
-					if (sharedFolder) {
-						if (!this.mutationObservers.has(titleEl)) {
-							const observer = new MutationObserver(
-								(mutationsList, observer) => {
-									for (let mutation of mutationsList) {
-										if (mutation.type === "childList") {
-											if (titleEl.nextSibling) {
-												console.log("observation");
-												this.folderStatus(
-													titleEl,
-													sharedFolder.state.status
-												);
-												sharedFolder.subscribe(
-													titleEl.nextSibling,
-													(status) => {
-														this.folderStatus(
-															titleEl,
-															status.status
-														);
-													}
-												);
-												pill?.$set({
-													status: sharedFolder.state
-														.status,
-												});
-												observer.disconnect();
-											}
-										}
+				if (!pill) {
+					pill = new Pill({
+						target: titleEl,
+						props: {
+							status: sharedFolder.state.status,
+						},
+					});
+					sharedFolder.subscribe(titleEl, (status) => {
+						pill?.$set({ status: status.status });
+					});
+					this.pills.set(titleEl, pill);
+				}
+
+				if (!this.mutationObservers.has(titleEl)) {
+					const observer = new MutationObserver(
+						(mutationsList, observer) => {
+							for (let mutation of mutationsList) {
+								if (mutation.type === "childList") {
+									if (titleEl.nextSibling) {
+										console.log("observation");
+										this.folderDecoration(titleEl, true);
+										pill?.$set({
+											status: sharedFolder.state.status,
+										});
+										observer.disconnect();
 									}
 								}
-							);
-							observer.observe(titleEl.parentElement, {
-								childList: true,
-								subtree: true,
-							});
-							this.mutationObservers.set(titleEl, observer);
+							}
 						}
+					);
+					observer.observe(titleEl.parentElement, {
+						childList: true,
+						subtree: true,
+					});
+					this.mutationObservers.set(titleEl, observer);
+				}
 
-						this.folderStatus(titleEl, sharedFolder.state.status);
+				this.folderDecoration(titleEl, true);
 
-						sharedFolder.whenReady().then(() => {
-							sharedFolder.docs.forEach((doc) => {
-								const docPath = sharedFolder.getPath(doc.path);
-								const fileItem =
-									//@ts-expect-error
-									fileExplorer.view.fileItems[docPath];
-								this.docStatus(fileItem.el, doc.state);
-								doc.subscribe(fileItem.el, (status) => {
-									const fileExplorers =
-										this.workspace.getLeavesOfType(
-											"file-explorer"
-										);
-									fileExplorers.forEach((fileExplorer) => {
-										const fileItem =
-											//@ts-expect-error
-											fileExplorer.view.fileItems[
-												docPath
-											];
-										this.docStatus(fileItem.el, status);
-									});
-								});
+				sharedFolder.whenReady().then(() => {
+					sharedFolder.docs.forEach((doc) => {
+						const docPath = sharedFolder.getPath(doc.path);
+						const fileItem = this.getFileExplorerItem(
+							fileExplorer,
+							docPath
+						);
+						this.docStatus(fileItem.el, doc.state);
+						doc.subscribe(fileItem.el, (status) => {
+							const fileExplorers =
+								this.workspace.getLeavesOfType("file-explorer");
+							fileExplorers.forEach((fileExplorer) => {
+								const fileItem = this.getFileExplorerItem(
+									fileExplorer,
+									docPath
+								);
+								this.docStatus(fileItem.el, status);
 							});
 						});
-						if (!pill) {
-							pill = new Pill({
-								target: titleEl,
-								props: {
-									status: sharedFolder.state.status,
-								},
-							});
-							sharedFolder.subscribe(titleEl, (status) => {
-								pill?.$set({ status: status.status });
-							});
-							this.pills.set(titleEl, pill);
-						}
-					} else if (pill) {
-						this.pills.delete(titleEl);
-						pill.$destroy();
-						this.removeStatuses(fileExplorer, folder);
-						const mutationObserver =
-							this.mutationObservers.get(titleEl);
-						if (mutationObserver) {
-							mutationObserver.disconnect();
-							this.mutationObservers.delete(titleEl);
-						}
-					}
-				}
+					});
+				});
 			});
 		});
+		console.warn("cleanup");
+		this.removePills();
+		this.removeStatuses();
 	}
 
 	destroy() {
 		this.sharedFolders.off(this.folderListener);
 		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
-		for (const fileExplorer of fileExplorers) {
-			const root = this.vault.getFolderByPath(this.vault.root);
-			if (root) {
-				this.removeStatuses(fileExplorer, root);
-			}
-		}
+		this.removePills(true);
+		this.removeStatuses(true);
 		this.mutationObservers.forEach((listener, el) => {
 			listener.disconnect();
+		});
+		this.pills.forEach((pill) => {
+			pill.$destroy();
 		});
 		this.refresh();
 	}
