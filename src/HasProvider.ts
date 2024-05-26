@@ -117,8 +117,11 @@ export class HasProvider {
 		this._offState = stateSub.off;
 	}
 
-	subscribe(el: any, listener: Listener) {
+	subscribe(el: any, listener: Listener): () => void {
 		this.listeners.set(el, listener);
+		return () => {
+			this.unsubscribe(el);
+		};
 	}
 
 	unsubscribe(el: any) {
