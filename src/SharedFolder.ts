@@ -140,14 +140,26 @@ export class SharedFolder extends HasProvider {
 	syncFileTree(doc: Doc, update: Uint8Array) {
 		const renames: string[] = [];
 		const map = doc.getMap<string>("docs");
+
+		const diffLog: string[] = [];
+
+		// Apply Updates for shared docs
 		this.ydoc.transact(() => {
 			map.forEach((guid, path) => {
 				const fullPath = this.vault.root + this.path + path;
 
+				// Check if the path is valid (inside of shared folder), otherwise delete
 				try {
 					this.assertPath(this.path + path);
 				} catch {
+					console.warn(
+						"Deleting doc (somehow moved outside of shared folder)",
+						path
+					);
 					this.ids.delete(path);
+					diffLog.push(
+						"Deleting doc (somehow moved outside of shared folder)"
+					);
 					return;
 				}
 
@@ -155,13 +167,17 @@ export class SharedFolder extends HasProvider {
 					const dir = dirname(fullPath);
 					if (!existsSync(dir)) {
 						mkdirSync(dir, { recursive: true });
+						diffLog.push(`creating directory ${dir}`);
 					}
 
-					const pathInIDs = this.ids.get(path);
-					const inIds = Array.from(this.ids.values()).includes(guid);
-					const inDocs = this.docs.get(guid);
-					if (inIds && inDocs) {
-						const oldPath = this.getPath(inDocs.path);
+					const inIds: boolean = Array.from(
+						this.ids.values()
+					).includes(guid);
+					const doc = this.docs.get(guid);
+					if (inIds && doc) {
+						// Rename
+						const oldPath = this.getPath(doc.path);
+						diffLog.push(`${oldPath} was renamed to ${path}`);
 						this.log(`${oldPath} was renamed to ${path}`);
 						const file = this.vault.getAbstractFileByPath(oldPath);
 						if (file) {
@@ -171,6 +187,11 @@ export class SharedFolder extends HasProvider {
 					} else {
 						// this will trigger `create` which will read the file from disk by default.
 						// so we need to pre-empt that by loading the file into docs.
+						const doc = this.createFile(path, false);
+						doc.locallyRaised(false);
+						diffLog.push(
+							`created local file for remotely added doc ${path}`
+						);
 						open(fullPath, "w", (err, fd) => {
 							if (err) {
 								throw err;
@@ -194,11 +215,15 @@ export class SharedFolder extends HasProvider {
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (fileInFolder && !fileInMap && !wasRenamed) {
 				if (synced) {
+					diffLog.push(
+						`deleted local file ${file.path} for remotely deleted doc`
+					);
 					this.log("Trashing File...", file.path, this.path);
 					this.vault.trashLocal(file.path);
 				}
 			}
 		});
+		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 	}
 
 	readFileSync(doc: Document): string {
@@ -252,7 +277,7 @@ export class SharedFolder extends HasProvider {
 		if (id !== undefined) {
 			const doc = this.docs.get(id);
 			if (doc !== undefined) {
-				doc.path = vPath;
+				doc.move(vPath);
 				return doc;
 			} else {
 				// the ID exists, but the file doesn't
@@ -298,18 +323,15 @@ export class SharedFolder extends HasProvider {
 		} else {
 			guid = maybeGuid;
 		}
-		let doc = this.docs.get(guid);
-		if (!doc) {
-			doc = new Document(vpath, guid, this.loginManager, this);
-		}
-
-		let contents = "";
+		const doc =
+			this.docs.get(guid) ||
+			new Document(vpath, guid, this.loginManager, this);
 		if (loadFromDisk && this.existsSync(doc)) {
-			contents = this.readFileSync(doc);
+			const contents = this.readFileSync(doc);
 			const text = doc.ydoc.getText("contents");
 			doc.whenSynced()
 				.then(async () => {
-					return await doc?.locallyRaised();
+					return await doc.locallyRaised();
 				})
 				.then((locallyRaised) => {
 					if (

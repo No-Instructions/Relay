@@ -264,8 +264,7 @@ export default class Live extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
 				vaultLog("rename", file, oldPath);
-				// TODO: this is broken when moving files between two shared folders...
-				// TODO: this is broken when renaming a shared folder
+				// TODO this doesn't work for empty folders.
 				if (file instanceof TFolder) {
 					const sharedFolder = this.sharedFolders.find((folder) => {
 						return folder.path == oldPath;

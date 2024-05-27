@@ -104,8 +104,11 @@ export class Document extends HasProvider {
 		});
 	}
 
-	async locallyRaised(): Promise<boolean> {
+	async locallyRaised(set?: boolean): Promise<boolean> {
 		// XXX: Might be able to use _persistence.once("synced", ...) instead
+		if (set !== undefined) {
+			this._locallyRaised = set;
+		}
 		if (this._locallyRaised !== undefined) {
 			return this._locallyRaised;
 		}
