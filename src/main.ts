@@ -321,13 +321,13 @@ export default class Live extends Plugin {
 		this.sharedFolders.destroy();
 
 		console.log("unloading folder nav decoractions");
-		this.folderNavDecorations.destroy();
+		this.folderNavDecorations?.destroy();
 
-		this.tokenStore.stop();
-		this.tokenStore.clearState();
+		this.tokenStore?.stop();
+		this.tokenStore?.clearState();
 
-		this.networkStatus.stop();
-		this._liveViews.destroy();
+		this.networkStatus?.stop();
+		this._liveViews?.destroy();
 	}
 
 	async loadSettings() {
