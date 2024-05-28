@@ -1,6 +1,6 @@
 "use strict";
 import * as Y from "yjs";
-import { TFolder } from "obsidian";
+import { TFolder, debounce } from "obsidian";
 import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence } from "y-indexeddb";
 import { randomUUID } from "crypto";
@@ -22,6 +22,9 @@ export interface SharedFolderSettings {
 }
 
 class Documents extends ObservableSet<Document> {
+	// Startup performance optimization
+	notifyListeners = debounce(super.notifyListeners, 100);
+
 	update() {
 		this.notifyListeners();
 		return;
