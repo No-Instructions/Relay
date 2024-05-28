@@ -50,7 +50,8 @@ export class LiveView {
 	shouldConnect: boolean;
 	canConnect: boolean;
 
-	private _connectionStatusIcon!: ConnectionStatusIcon;
+	private _connectionStatusIcon?: ConnectionStatusIcon;
+	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 
 	constructor(
@@ -133,7 +134,7 @@ export class LiveView {
 				view: this,
 				state: this.document.state,
 			});
-			this.document.subscribe(
+			this.offConnectionStatusSubscription = this.document.subscribe(
 				connectionStatusIcon,
 				(state: ConnectionState) => {
 					this._connectionStatusIcon?.$set({
@@ -174,6 +175,11 @@ export class LiveView {
 	release() {
 		// Called when a view is released from management
 		this._connectionStatusIcon?.$destroy();
+		this._connectionStatusIcon = undefined;
+		if (this.offConnectionStatusSubscription) {
+			this.offConnectionStatusSubscription();
+			this.offConnectionStatusSubscription = undefined;
+		}
 		this.document.disconnect();
 	}
 }
@@ -463,7 +469,7 @@ export class LiveViewManager {
 				readyViews
 			);
 			log("Attached Views", attachedViews);
-		    this.views = matching;
+			this.views = matching;
 		}
 		log("loading plugins");
 		this.load();
