@@ -332,7 +332,8 @@ export class FolderNavigationDecorations {
 	vault: VaultFacade;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
-	folderListener: any;
+	offFolderListener: () => void;
+	offDocumentListeners: (() => void)[];
 	pills: Map<HTMLElement, Pill>;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 
@@ -347,7 +348,22 @@ export class FolderNavigationDecorations {
 		this.sharedFolders = sharedFolders;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => this.refresh());
-		this.folderListener = this.sharedFolders.on(() => this.refresh());
+		const folderListener = () => this.refresh();
+		this.sharedFolders.on(folderListener);
+		this.offFolderListener = () => {
+			this.sharedFolders.off(folderListener);
+		};
+		this.offDocumentListeners = [];
+		this.sharedFolders.forEach((folder) => {
+			// XXX a full refresh is only needed when a document is moved outside of a shared folder.
+			const documentListener = () => {
+				this.refresh();
+			};
+			folder.docset.on(documentListener);
+			this.offDocumentListeners.push(() => {
+				folder.docset.off(documentListener);
+			});
+		});
 		this.refresh();
 	}
 
@@ -396,7 +412,8 @@ export class FolderNavigationDecorations {
 	}
 
 	destroy() {
-		this.sharedFolders.off(this.folderListener);
+		this.offFolderListener();
+		this.offDocumentListeners.forEach((off) => off());
 		this.refresh();
 	}
 }
