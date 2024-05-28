@@ -341,7 +341,7 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	offFolderListener: () => void;
-	offDocumentListeners: (() => void)[];
+	offDocumentListeners: Map<SharedFolder, () => void>;
 	pills: Map<HTMLElement, Pill>;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 
@@ -356,22 +356,27 @@ export class FolderNavigationDecorations {
 		this.sharedFolders = sharedFolders;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => this.refresh());
-		const folderListener = () => this.refresh();
+		this.offDocumentListeners = new Map();
+		const folderListener = () => {
+			this.sharedFolders.forEach((folder) => {
+				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
+				const documentListener = () => {
+					this.refresh();
+				};
+				const docsetListener = this.offDocumentListeners.get(folder);
+				if (!docsetListener) {
+					folder.docset.on(documentListener);
+					this.offDocumentListeners.set(folder, () => {
+						folder.docset.off(documentListener);
+					});
+				}
+			});
+			this.refresh();
+		};
 		this.sharedFolders.on(folderListener);
 		this.offFolderListener = () => {
 			this.sharedFolders.off(folderListener);
 		};
-		this.offDocumentListeners = [];
-		this.sharedFolders.forEach((folder) => {
-			// XXX a full refresh is only needed when a document is moved outside of a shared folder.
-			const documentListener = () => {
-				this.refresh();
-			};
-			folder.docset.on(documentListener);
-			this.offDocumentListeners.push(() => {
-				folder.docset.off(documentListener);
-			});
-		});
 		this.refresh();
 	}
 
