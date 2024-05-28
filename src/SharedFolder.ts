@@ -194,7 +194,7 @@ export class SharedFolder extends HasProvider {
 					} else {
 						// this will trigger `create` which will read the file from disk by default.
 						// so we need to pre-empt that by loading the file into docs.
-						const doc = this.createFile(path, false);
+						const doc = this.createDoc(path, false);
 						const start = moment.now();
 						doc.locallyRaised(false);
 						doc.whenReady().then(() => {
