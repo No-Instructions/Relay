@@ -21,7 +21,12 @@ export interface SharedFolderSettings {
 	path: string;
 }
 
-class Documents extends ObservableSet<Document> {}
+class Documents extends ObservableSet<Document> {
+	update() {
+		this.notifyListeners();
+		return;
+	}
+}
 
 export class SharedFolder extends HasProvider {
 	path: string;
@@ -54,7 +59,6 @@ export class SharedFolder extends HasProvider {
 			}
 			if (this.checkPath(file.path) && !this.ids.has(file.path)) {
 				this.createFile(file.path, true);
-				this.log(`uploading document: ${file.path}`);
 			}
 		});
 	};
@@ -239,6 +243,9 @@ export class SharedFolder extends HasProvider {
 				}
 			}
 		});
+		if (renames.length > 0) {
+			this.docset.update();
+		}
 		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 	}
 
@@ -366,7 +373,9 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.docs.set(guid, doc);
-		this.docset.add(doc);
+		doc.whenReady().then(() => {
+			this.docset.add(doc);
+		});
 		return doc;
 	}
 
