@@ -441,7 +441,6 @@ export class LiveViewManager {
 		try {
 			views = this.getViews();
 		} catch (e) {
-			console.warn(e);
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();
@@ -510,9 +509,10 @@ export class LiveViewManager {
 				this.refreshQueue.pop()!(),
 				timeout
 			)
-				.catch((_) => {
+				.catch((e) => {
 					console.warn(
-						`refresh views timed out... timeout=${timeout}`
+						`refresh views timed out... timeout=${timeout}`,
+						e
 					);
 					return false;
 				})
