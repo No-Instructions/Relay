@@ -22,6 +22,7 @@ import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { promiseWithTimeout } from "./promiseUtils";
 import type { ConnectionState } from "./HasProvider";
+import moment from "moment";
 
 const BACKGROUND_CONNECTIONS = 20;
 const MAX_TIMEOUT = 10000;
@@ -194,6 +195,7 @@ export class LiveViewManager {
 	sharedFolders: SharedFolders;
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
+	refreshQueue: (() => Promise<boolean>)[];
 
 	constructor(
 		workspace: WorkspaceFacade,
@@ -210,6 +212,7 @@ export class LiveViewManager {
 		this._stale = "";
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
+		this.refreshQueue = [];
 
 		this.foldersReady().then((folders) => {
 			this.views = this.getViews();
@@ -218,12 +221,14 @@ export class LiveViewManager {
 
 		this.sharedFolders.forEach((folder) => {
 			folder.docset.on(() => {
+				console.log("docs event");
 				this.refresh("[Docset]");
 			});
 		});
 
 		this.sharedFolders.on(() => {
 			this.refresh("[Shared Folders]");
+
 			this.sharedFolders.forEach((folder) => {
 				if (!folder.ready) {
 					folder
@@ -424,8 +429,11 @@ export class LiveViewManager {
 		return [matching, stale];
 	}
 
-	async _refreshViews(context: string): Promise<boolean> {
-		const ctx = `[ConnectionManager][${context}]`;
+	async _refreshViews(
+		context: string,
+		queuedAt: moment.Moment
+	): Promise<boolean> {
+		const ctx = `[LiveViews][${context}]`;
 		const log = curryLog(ctx);
 		log("Refresh");
 
@@ -479,50 +487,41 @@ export class LiveViewManager {
 		}
 		log("loading plugins");
 		this.load();
+		const now = moment.utc();
+		log(`refresh completed in ${now.diff(queuedAt)}ms`, ctx);
 		return true;
 	}
 
-	async refresh(context: string, timeout = 3000): Promise<boolean> {
-		const log = curryLog(context);
-		if (this._activePromise !== null) {
-			this._stale += context;
-			log("refresh views was already running");
-			return false;
-		}
-		this._activePromise = promiseWithTimeout<boolean>(
-			this._refreshViews(context),
-			timeout
-		).catch((_) => {
-			console.warn(`refresh views timed out... timeout=${timeout}`);
-			return false;
+	async refresh(context: string, timeout = 3000) {
+		const queuedAt = moment.utc();
+		this.refreshQueue.push(() => {
+			return this._refreshViews(context, queuedAt);
 		});
-
-		let viewsRefreshed = await this._activePromise;
-		if (viewsRefreshed) {
-			this._activePromise = null;
-			if (this._stale !== "") {
-				this.refresh(this._stale);
-				this._stale = "";
-			}
-			return true;
+		if (this._activePromise !== null) {
+			console.log("couldn't acquire lock");
+			return false;
 		}
-		while (!viewsRefreshed) {
-			timeout += TIMEOUT_INCREASE;
-			if (timeout > MAX_TIMEOUT) {
-				this.goOffline();
-				break;
+		while (this.refreshQueue.length > 0) {
+			if (this.refreshQueue.length > 2) {
+				console.log("purging queue", this.refreshQueue.length);
+				this.refreshQueue.slice(-2);
 			}
 			this._activePromise = promiseWithTimeout<boolean>(
-				this._refreshViews(context),
+				this.refreshQueue.pop()!(),
 				timeout
-			).catch((reason) => {
-				console.warn(`refresh views timed out... timeout=${timeout}`);
-				return false;
-			});
-			viewsRefreshed = await this._activePromise;
+			)
+				.catch((_) => {
+					console.warn(
+						`refresh views timed out... timeout=${timeout}`
+					);
+					return false;
+				})
+				.finally(() => {
+					this._activePromise = null;
+				});
+			await this._activePromise;
 		}
-		this._activePromise = null;
-		return viewsRefreshed;
+		return true;
 	}
 
 	wipe() {
