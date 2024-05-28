@@ -320,7 +320,6 @@ export default class Live extends Plugin {
 		this._offSaveSettings();
 		this.sharedFolders.destroy();
 
-		console.log("unloading folder nav decoractions");
 		this.folderNavDecorations?.destroy();
 
 		this.tokenStore?.stop();

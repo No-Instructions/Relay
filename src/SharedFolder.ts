@@ -131,7 +131,6 @@ export class SharedFolder extends HasProvider {
 		this.readyPromise = new Promise((resolve) => {
 			Promise.all([this.onceConnected(), this.onceProviderSynced()]).then(
 				() => {
-					console.log("connected and synced!");
 					resolve(this);
 				}
 			);
