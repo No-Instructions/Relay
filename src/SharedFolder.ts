@@ -8,12 +8,13 @@ import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { Doc } from "yjs";
 import type { Vault } from "./obsidian-api/Vault";
-import { HasProvider } from "./HasProvider";
+import { HasProvider, type ConnectionState } from "./HasProvider";
 import { Document } from "./Document";
 import { curryLog } from "./debug";
 import { ObservableSet } from "./ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
+import moment from "moment";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -53,6 +54,7 @@ export class SharedFolder extends HasProvider {
 			}
 			if (this.checkPath(file.path) && !this.ids.has(file.path)) {
 				this.createFile(file.path, true);
+				this.log(`uploading document: ${file.path}`);
 			}
 		});
 	};
@@ -193,7 +195,16 @@ export class SharedFolder extends HasProvider {
 						// this will trigger `create` which will read the file from disk by default.
 						// so we need to pre-empt that by loading the file into docs.
 						const doc = this.createFile(path, false);
+						const start = moment.now();
 						doc.locallyRaised(false);
+						doc.whenReady().then(() => {
+							const end = moment.now();
+							console.log(
+								`send delay: received content for ${
+									doc.path
+								} after ${end - start}ms`
+							);
+						});
 						diffLog.push(
 							`created local file for remotely added doc ${path}`
 						);
@@ -223,7 +234,7 @@ export class SharedFolder extends HasProvider {
 					diffLog.push(
 						`deleted local file ${file.path} for remotely deleted doc`
 					);
-					this.log("Trashing File...", file.path, this.path);
+					this.log(`Trashing File... ${this.path} ${file.path}`);
 					this.vault.trashLocal(file.path);
 				}
 			}
@@ -338,7 +349,7 @@ export class SharedFolder extends HasProvider {
 				.then(async () => {
 					return await doc.locallyRaised();
 				})
-				.then((locallyRaised) => {
+				.then((locallyRaised: boolean) => {
 					if (
 						locallyRaised &&
 						contents &&
