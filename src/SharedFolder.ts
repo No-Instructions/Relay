@@ -20,10 +20,14 @@ export interface SharedFolderSettings {
 	path: string;
 }
 
+class Documents extends ObservableSet<Document> {}
+
 export class SharedFolder extends HasProvider {
 	path: string;
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
+	docset: Documents;
+	log: (message: string) => void;
 	private vault: Vault;
 	private fileManager: FileManager;
 	private readyPromise: Promise<SharedFolder> | null = null;
@@ -67,6 +71,7 @@ export class SharedFolder extends HasProvider {
 		this.path = path;
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
+		this.docset = new Documents();
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 		this._persistence.once("synced", () => {
 			console.log(this.ids);
@@ -350,6 +355,7 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.docs.set(guid, doc);
+		this.docset.add(doc);
 		return doc;
 	}
 
@@ -363,7 +369,10 @@ export class SharedFolder extends HasProvider {
 		if (guid) {
 			this.ydoc.transact(() => {
 				this.ids.delete(vPath);
-				this.docs.get(guid)?.destroy();
+				const doc = this.docs.get(guid)?.destroy();
+				if (doc) {
+					this.docset.delete(doc);
+				}
 				this.docs.delete(guid);
 			}, this);
 		}
@@ -400,7 +409,10 @@ export class SharedFolder extends HasProvider {
 				this.ydoc.transact(() => {
 					this.ids.delete(oldVPath);
 				}, this);
-				doc?.destroy();
+				if (doc) {
+					doc.destroy();
+					this.docset.delete(doc);
+				}
 				this.docs.delete(guid);
 			} else {
 				// moving within shared folder.. move the live doc.
@@ -429,6 +441,7 @@ export class SharedFolder extends HasProvider {
 		if (this._persistence) {
 			this._persistence.destroy();
 		}
+		this.docset.clear();
 	}
 }
 export class SharedFolders extends ObservableSet<SharedFolder> {
