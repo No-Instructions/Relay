@@ -421,11 +421,14 @@ export class SharedFolder extends HasProvider {
 	}
 
 	destroy() {
-		this.listeners.clear();
-		this.docs.forEach((doc) => {
+		this.docs.forEach((doc: Document) => {
 			doc.destroy();
 			this.docs.delete(doc.guid);
 		});
+		super.destroy();
+		if (this._persistence) {
+			this._persistence.destroy();
+		}
 	}
 }
 export class SharedFolders extends ObservableSet<SharedFolder> {
