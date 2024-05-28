@@ -216,6 +216,12 @@ export class LiveViewManager {
 			this.refresh("[Constructor]");
 		});
 
+		this.sharedFolders.forEach((folder) => {
+			folder.docset.on(() => {
+				this.refresh("[Docset]");
+			});
+		});
+
 		this.sharedFolders.on(() => {
 			this.refresh("[Shared Folders]");
 			this.sharedFolders.forEach((folder) => {
