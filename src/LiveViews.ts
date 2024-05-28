@@ -448,26 +448,23 @@ export class LiveViewManager {
 		});
 
 		const [matching, stale] = this.deduplicate(views);
-		console.log("dedupe", matching, stale);
-
-		if (stale.length == 0 && ViewsetsEqual(matching, this.views)) {
-			log("No work to do");
-			// XXX backgroundConnections should probably be an advanced setting.
+		log("Releasing Views", stale);
+		this.releaseViews(stale);
+		if (stale.length === 0 && ViewsetsEqual(matching, this.views)) {
+			// We can assume all views are ready.
 			const attachedViews = await this.viewsAttachedWithConnectionPool(
 				this.views
 			);
 			log("Attached Views", attachedViews);
 		} else {
-			log("Releasing Views", stale);
-			this.releaseViews(stale);
 			const readyViews = await this.viewsReady(matching);
 			log("Ready Views", readyViews);
 			const attachedViews = await this.viewsAttachedWithConnectionPool(
-				this.views
+				readyViews
 			);
 			log("Attached Views", attachedViews);
+		    this.views = matching;
 		}
-		this.views = matching;
 		log("loading plugins");
 		this.load();
 		return true;
