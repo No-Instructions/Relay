@@ -221,7 +221,6 @@ export class LiveViewManager {
 
 		this.sharedFolders.forEach((folder) => {
 			folder.docset.on(() => {
-				console.log("docs event");
 				this.refresh("[Docset]");
 			});
 		});
@@ -381,17 +380,24 @@ export class LiveViewManager {
 			);
 
 		let connectionPool = backgroundConnections;
+		let attemptedConnections = 0;
 
 		for (const view of views) {
 			if (view.view === activeView) {
 				view.canConnect = true;
 			} else {
-				view.canConnect = connectionPool > 0;
-				connectionPool--;
+				view.canConnect = attemptedConnections < connectionPool;
+				attemptedConnections++;
 			}
 		}
 
-		console.log("connection pool: remaining connections", connectionPool);
+		if (attemptedConnections > connectionPool) {
+			console.warn(
+				`connection pool (max ${connectionPool}): rejected connections for ${
+					attemptedConnections - connectionPool
+				} views`
+			);
+		}
 
 		return this.viewsAttached(views);
 	}
@@ -497,12 +503,10 @@ export class LiveViewManager {
 			return this._refreshViews(context, queuedAt);
 		});
 		if (this._activePromise !== null) {
-			console.log("couldn't acquire lock");
 			return false;
 		}
 		while (this.refreshQueue.length > 0) {
 			if (this.refreshQueue.length > 2) {
-				console.log("purging queue", this.refreshQueue.length);
 				this.refreshQueue.slice(-2);
 			}
 			this._activePromise = promiseWithTimeout<boolean>(
