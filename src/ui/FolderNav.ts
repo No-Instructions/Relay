@@ -147,6 +147,12 @@ class FolderPillVisitor extends BaseVisitor<[Pill, Unsubscribe]> {
 	): [Pill, Unsubscribe] | null {
 		const titleEl = item.selfEl;
 		if (sharedFolder && !storage) {
+			console.log("pill element what", item.el, item.selfEl);
+			const existingPillElement = item.el.querySelector(".system3-pill");
+			if (existingPillElement) {
+				console.warn("Pill already exists", existingPillElement);
+				existingPillElement.remove();
+			}
 			const pill = new Pill({
 				target: titleEl,
 				props: {
