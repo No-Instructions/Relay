@@ -216,11 +216,13 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 		sharedFolder?: SharedFolder
 	): DocumentStatus | null {
 		if (sharedFolder) {
-			const document = sharedFolder.getFile(file.path, false);
-			if (!document) {
+			try {
+				const document = sharedFolder.getFile(file.path, false);
+				return storage || new DocumentStatus(item.el, document, file);
+			} catch (e) {
+				// document doesn't exist yet...
 				return null;
 			}
-			return storage || new DocumentStatus(item.el, document, file);
 		}
 		if (storage) {
 			storage.destroy();
