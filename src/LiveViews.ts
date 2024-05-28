@@ -117,6 +117,9 @@ export class LiveView {
 				".connection-status-icon"
 			);
 			if (!this._connectionStatusIcon) {
+				if (connectionStatusIcon) {
+					connectionStatusIcon.remove();
+				}
 				this._connectionStatusIcon = new ConnectionStatusIcon({
 					target: viewActionsElement,
 					anchor: viewActionsElement.firstChild as Element,
