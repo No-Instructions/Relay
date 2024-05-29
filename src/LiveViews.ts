@@ -346,7 +346,7 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
-				const doc = folder.getFile(viewFilePath, false);
+				const doc = folder.getFile(viewFilePath, false, false);
 				const view = new LiveView(this, markdownView, doc);
 				views.push(view);
 			}
@@ -447,6 +447,7 @@ export class LiveViewManager {
 		try {
 			views = this.getViews();
 		} catch (e) {
+			console.warn("error getting views", e);
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();

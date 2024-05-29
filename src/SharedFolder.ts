@@ -29,6 +29,14 @@ class Documents extends ObservableSet<Document> {
 		this.notifyListeners();
 		return;
 	}
+
+	add(item: Document, update = true): ObservableSet<Document> {
+		this._set.add(item);
+		if (update) {
+			this.notifyListeners();
+		}
+		return this;
+	}
 }
 
 export class SharedFolder extends HasProvider {
@@ -45,6 +53,7 @@ export class SharedFolder extends HasProvider {
 
 	private addLocalDocs = () => {
 		const files = this.vault.getFiles();
+		const docs: Document[] = [];
 		const vpaths: string[] = [];
 		files.forEach((file) => {
 			// if the file is in the shared folder and not in the map, move it to the Trash
@@ -61,9 +70,18 @@ export class SharedFolder extends HasProvider {
 				return;
 			}
 			if (this.checkPath(file.path) && !this.ids.has(file.path)) {
-				this.createFile(file.path, true);
+				const doc = this.createFile(file.path, true, false);
+				docs.push(doc);
+			}
+			if (this.checkPath(file.path) && this.ids.has(file.path)) {
+				const doc = this.createFile(file.path, false, false);
+				docs.push(doc);
 			}
 		});
+		if (docs.length > 0) {
+			console.warn("local docs added", docs);
+			this.docset.update();
+		}
 	};
 
 	constructor(
@@ -151,7 +169,9 @@ export class SharedFolder extends HasProvider {
 	}
 
 	syncFileTree(doc: Doc, update: Uint8Array) {
+		const creates: Document[] = [];
 		const renames: string[] = [];
+		const deletes: string[] = [];
 		const map = doc.getMap<string>("docs");
 
 		const diffLog: string[] = [];
@@ -200,7 +220,8 @@ export class SharedFolder extends HasProvider {
 					} else {
 						// this will trigger `create` which will read the file from disk by default.
 						// so we need to pre-empt that by loading the file into docs.
-						const doc = this.createDoc(path, false);
+						const doc = this.createDoc(path, false, false);
+						creates.push(doc);
 						const start = moment.now();
 						doc.locallyRaised(false);
 						doc.whenReady().then(() => {
@@ -242,10 +263,11 @@ export class SharedFolder extends HasProvider {
 					);
 					this.log(`Trashing File... ${this.path} ${file.path}`);
 					this.vault.trashLocal(file.path);
+					deletes.push(file.path);
 				}
 			}
 		});
-		if (renames.length > 0) {
+		if ([...renames, ...creates, ...deletes].length > 0) {
 			this.docset.update();
 		}
 		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
@@ -287,17 +309,17 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
-	getFile(path: string, create = true): Document {
+	getFile(path: string, create = true, update = true): Document {
 		const vPath = this.getVirtualPath(path);
 		try {
-			return this.getDoc(vPath, create);
+			return this.getDoc(vPath, create, update);
 		} catch (e) {
 			console.log(e, path);
 			throw e;
 		}
 	}
 
-	getDoc(vPath: string, create = true): Document {
+	getDoc(vPath: string, create = true, update = true): Document {
 		const id = this.ids.get(vPath);
 		if (id !== undefined) {
 			const doc = this.docs.get(id);
@@ -307,20 +329,20 @@ export class SharedFolder extends HasProvider {
 			} else {
 				// the ID exists, but the file doesn't
 				this.log("[getDoc]: creating doc for shared ID");
-				return this.createDoc(vPath, false);
+				return this.createDoc(vPath, false, update);
 			}
 		} else if (create) {
 			// the File exists, but the ID doesn't
 			this.log("[getDoc]: creating new shared ID for existing file");
-			return this.createDoc(vPath, true);
+			return this.createDoc(vPath, true, update);
 		} else {
 			throw new Error("No shared doc for vpath: " + vPath);
 		}
 	}
 
-	createFile(path: string, loadFromDisk = false): Document {
+	createFile(path: string, loadFromDisk = false, update = true): Document {
 		const vPath = this.getVirtualPath(path);
-		return this.createDoc(vPath, loadFromDisk);
+		return this.createDoc(vPath, loadFromDisk, update);
 	}
 
 	placeHold(vpaths: string[]) {
@@ -334,7 +356,7 @@ export class SharedFolder extends HasProvider {
 		}, this);
 	}
 
-	createDoc(vpath: string, loadFromDisk = false): Document {
+	createDoc(vpath: string, loadFromDisk = false, update = true): Document {
 		if (!this._provider?.synced && !this.ids.get(vpath)) {
 			this.log("WARNING may cause document split");
 		}
@@ -375,9 +397,7 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.docs.set(guid, doc);
-		doc.whenReady().then(() => {
-			this.docset.add(doc);
-		});
+		this.docset.add(doc, update);
 		return doc;
 	}
 
