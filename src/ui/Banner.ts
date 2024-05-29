@@ -4,9 +4,13 @@ import { MarkdownView } from "obsidian";
 export class Banner {
 	view: MarkdownView;
 	text: string;
-	onClick: () => void;
+	onClick: () => Promise<boolean>;
 
-	constructor(view: MarkdownView, text: string, onClick: () => void) {
+	constructor(
+		view: MarkdownView,
+		text: string,
+		onClick: () => Promise<boolean>
+	) {
 		this.view = view;
 		this.text = text;
 		this.onClick = onClick;
@@ -35,10 +39,13 @@ export class Banner {
 			banner.classList.add("banner");
 			banner.innerHTML = `<span>${this.text}</span>`;
 			bannerBox.appendChild(banner);
-			banner.addEventListener("click", this.onClick);
-			banner.addEventListener("click", () => {
-				this.destroy();
-			});
+			const onClick = async () => {
+				const destroy = await this.onClick();
+				if (destroy) {
+					this.destroy();
+				}
+			};
+			banner.addEventListener("click", onClick);
 		}
 		return true;
 	}

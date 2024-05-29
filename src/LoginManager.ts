@@ -113,6 +113,10 @@ export class LoginManager extends ObservableSet<User> {
 			});
 	}
 
+	public get loggedIn() {
+		return this.pb.authStore.isValid;
+	}
+
 	get hasUser() {
 		return this.items().length > 0;
 	}

@@ -69,7 +69,7 @@ export default class Live extends Plugin {
 
 		// install hooks for logout/login
 		this.loginManager.on(() => {
-			if (this.loginManager.hasUser) {
+			if (this.loginManager.loggedIn) {
 				this._onLogin();
 			} else {
 				this._onLogout();
@@ -170,7 +170,6 @@ export default class Live extends Plugin {
 			this.sharedFolders,
 			this.settings.showDocumentStatus
 		);
-		//this.registerEvent(this.folderNavDecorations.register());
 		this.folderNavDecorations.refresh();
 
 		const folderMenu = new FolderMenu(

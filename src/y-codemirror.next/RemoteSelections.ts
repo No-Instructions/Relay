@@ -16,7 +16,7 @@ import {
 
 import type { PluginValue, DecorationSet } from "@codemirror/view";
 
-import { LiveView, LiveViewManager } from "../LiveViews";
+import { type S3View, LiveViewManager, LiveView } from "../LiveViews";
 
 import * as Y from "yjs";
 import { connectionManagerFacet } from "./LiveEditPlugin";
@@ -157,7 +157,7 @@ type AwarenessChangeHandler = (
 export class YRemoteSelectionsPluginValue implements PluginValue {
 	editor: EditorView;
 	connectionManager: LiveViewManager;
-	view?: LiveView;
+	view?: S3View;
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
@@ -169,9 +169,9 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			connectionManagerFacet
 		);
 		const view = this.connectionManager.findView(editor);
-		if (view) {
+		if (view && view instanceof LiveView) {
 			this.view = view;
-			const provider = this.view.document._provider;
+			const provider = this.view.document?._provider;
 			this._listener = ({ added, updated, removed }, s, t) => {
 				const clients = added.concat(updated).concat(removed);
 				if (
@@ -200,11 +200,11 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	update(update: ViewUpdate) {
 		const editor: EditorView = update.view;
 		this.view = this.connectionManager?.findView(editor);
-		const ytext = this.view?.document.ytext;
+		const ytext = this.view?.document?.ytext;
 		if (!(this.view && ytext && ytext.doc)) {
 			return;
 		}
-		const provider = this.view.document._provider;
+		const provider = this.view.document?._provider;
 		if (!provider) {
 			return;
 		}

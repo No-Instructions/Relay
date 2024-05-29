@@ -6,7 +6,7 @@ import { Facet, Annotation } from "@codemirror/state";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import { LiveView, LiveViewManager } from "../LiveViews";
+import { type S3View, LiveViewManager } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 
@@ -21,7 +21,7 @@ export const ySyncAnnotation = Annotation.define();
 
 export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
-	view?: LiveView;
+	view?: S3View;
 	connectionManager: LiveViewManager;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
@@ -37,8 +37,13 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!this.view) {
 			return;
 		}
-		this.log = curryLog(`[LiveCMPluginValue][${this.view.document.path}]`);
+		this.log = curryLog(
+			`[LiveCMPluginValue][${this.view.view.file?.path}]`
+		);
 		this.log("created");
+		if (!this.view.document) {
+			return;
+		}
 		this.view.plugin = this;
 		this.view.document.whenSynced().then(() => {
 			this.setBuffer();
@@ -111,7 +116,7 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 		const editor: EditorView = update.view;
 		this.view = this.connectionManager.findView(editor);
-		const ytext = this.view?.document.ytext;
+		const ytext = this.view?.document?.ytext;
 		if (!ytext) {
 			console.warn(
 				"unable to proccess update from editor. view.document is missing.",

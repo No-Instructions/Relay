@@ -26,7 +26,7 @@ import moment from "moment";
 
 const BACKGROUND_CONNECTIONS = 20;
 
-function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
+function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 	if (vs1.length !== vs2.length) {
 		return false;
 	}
@@ -35,14 +35,57 @@ function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 		if (vs1[i].view.file?.path !== vs2[i].view.file?.path) {
 			return false;
 		}
-		if (vs1[i].document.path !== vs2[i].document.path) {
+		if (vs1[i].document?.path !== vs2[i].document?.path) {
 			return false;
 		}
 	}
 	return true;
 }
 
-export class LiveView {
+export interface S3View {
+	view: MarkdownView;
+	plugin?: LiveCMPluginValue;
+	release: () => void;
+	attach: () => Promise<S3View>;
+	document: Document | null;
+}
+
+export class LoggedOutView implements S3View {
+	view: MarkdownView;
+	plugin?: LiveCMPluginValue;
+	login: () => Promise<boolean>;
+	banner?: Banner;
+	document = null;
+
+	private _parent: LiveViewManager;
+
+	constructor(
+		connectionManager: LiveViewManager,
+		view: MarkdownView,
+		login: () => Promise<boolean>
+	) {
+		this._parent = connectionManager; // for debug
+		this.view = view;
+		this.login = login;
+	}
+
+	attach() {
+		this.banner = new Banner(
+			this.view,
+			"Login to enable Live edits",
+			async () => {
+				return this.login();
+			}
+		);
+		return Promise.resolve(this);
+	}
+
+	release() {
+		this.banner?.destroy();
+	}
+}
+
+export class LiveView implements S3View {
 	view: MarkdownView;
 	document: Document;
 	plugin?: LiveCMPluginValue;
@@ -185,7 +228,7 @@ export class LiveView {
 
 export class LiveViewManager {
 	workspace: WorkspaceFacade;
-	views: LiveView[];
+	views: S3View[];
 	private _activePromise?: Promise<boolean> | null;
 	private _stale: string;
 	private _compartment: Compartment;
@@ -248,8 +291,8 @@ export class LiveViewManager {
 						})
 						.catch((_) => {
 							this.views.forEach((view) => {
-								if (view.document.sharedFolder === folder) {
-									view.offlineBanner();
+								if (view.document?.sharedFolder === folder) {
+									(view as LiveView).offlineBanner();
 								}
 							});
 						});
@@ -262,15 +305,13 @@ export class LiveViewManager {
 		});
 	}
 
-	loginBanner() {
-		this._loginBanner(this.views);
-	}
-
 	goOffline() {
 		this.views.forEach((view) => {
-			view.document.disconnect();
-			const clear = view.offlineBanner();
-			this.networkStatus.onceOnline(clear);
+			if (view instanceof LiveView) {
+				view.document.disconnect();
+				const clear = view.offlineBanner();
+				this.networkStatus.onceOnline(clear);
+			}
 		});
 	}
 
@@ -280,33 +321,14 @@ export class LiveViewManager {
 			folder.connect();
 		});
 		this.views.forEach((view) => {
-			view.document.getProviderToken();
+			if (view instanceof LiveView) {
+				view.document.getProviderToken();
+			}
 		});
 		this.viewsAttachedWithConnectionPool(this.views);
 	}
 
-	_loginBanner(views: LiveView[]) {
-		if (!this.loginManager.hasUser) {
-			// XXX do better kid
-			// we are logged out
-			views.forEach((view) => {
-				const banner = new Banner(
-					view.view,
-					"Login to enable Live edits",
-					() => {
-						this.loginManager.login();
-					}
-				);
-				this.loginManager.on(() => {
-					if (this.loginManager.hasUser) {
-						banner.destroy();
-					}
-				});
-			});
-		}
-	}
-
-	private releaseViews(views: LiveView[]) {
+	private releaseViews(views: S3View[]) {
 		views.forEach((view) => {
 			view.release();
 		});
@@ -352,8 +374,8 @@ export class LiveViewManager {
 		return await Promise.all(readyFolders);
 	}
 
-	private getViews(): LiveView[] {
-		const views: LiveView[] = [];
+	private getViews(): S3View[] {
+		const views: S3View[] = [];
 		this.workspace.iterateMarkdownViews((markdownView) => {
 			const viewFilePath = markdownView.file?.path;
 			if (!viewFilePath) {
@@ -361,55 +383,70 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
-				const doc = folder.getFile(viewFilePath, false, false);
-				const view = new LiveView(this, markdownView, doc);
-				views.push(view);
+				if (this.loginManager.loggedIn) {
+					const doc = folder.getFile(viewFilePath, false, false);
+					const view = new LiveView(this, markdownView, doc);
+					views.push(view);
+				} else {
+					const view = new LoggedOutView(this, markdownView, () => {
+						return this.loginManager.login();
+					});
+					views.push(view);
+				}
 			}
 		});
 		return views;
 	}
 
-	findView(cmEditor: EditorView): LiveView | undefined {
+	findView(cmEditor: EditorView): S3View | undefined {
 		return this.views.find((view) => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			const editor = view.view.editor as any;
 			const cm = editor.cm as EditorView;
 			return cm === cmEditor;
 		});
 	}
 
-	private async viewsReady(views: LiveView[]): Promise<LiveView[]> {
+	private async viewsReady(views: S3View[]): Promise<LiveView[]> {
+		// XXX yeesh
 		return await Promise.all(
-			views.map(async (view) =>
-				view.document.whenReady().then((_) => view)
-			)
+			views
+				.filter((view) => view instanceof LiveView)
+				.map(async (view) =>
+					(view as LiveView).document
+						.whenReady()
+						.then((_) => view as LiveView)
+				)
 		);
 	}
 
 	private async viewsAttachedWithConnectionPool(
-		views: LiveView[],
+		views: S3View[],
 		backgroundConnections: number = BACKGROUND_CONNECTIONS
-	): Promise<LiveView[]> {
+	): Promise<S3View[]> {
 		const activeView =
 			this.workspace.workspace.getActiveViewOfType<MarkdownView>(
 				MarkdownView
 			);
 
-		let connectionPool = backgroundConnections;
 		let attemptedConnections = 0;
 
 		for (const view of views) {
-			if (view.view === activeView) {
-				view.canConnect = true;
-			} else {
-				view.canConnect = attemptedConnections < connectionPool;
-				attemptedConnections++;
+			if (view instanceof LiveView) {
+				if (view.view === activeView) {
+					view.canConnect = true;
+				} else {
+					view.canConnect =
+						attemptedConnections < backgroundConnections;
+					attemptedConnections++;
+				}
 			}
 		}
 
-		if (attemptedConnections > connectionPool) {
+		if (attemptedConnections > backgroundConnections) {
 			console.warn(
-				`connection pool (max ${connectionPool}): rejected connections for ${
-					attemptedConnections - connectionPool
+				`connection pool (max ${backgroundConnections}): rejected connections for ${
+					attemptedConnections - backgroundConnections
 				} views`
 			);
 		}
@@ -417,7 +454,7 @@ export class LiveViewManager {
 		return this.viewsAttached(views);
 	}
 
-	private async viewsAttached(views: LiveView[]): Promise<LiveView[]> {
+	private async viewsAttached(views: S3View[]): Promise<S3View[]> {
 		return await Promise.all(
 			views.map(async (view) => {
 				return view.attach();
@@ -425,9 +462,9 @@ export class LiveViewManager {
 		);
 	}
 
-	private deduplicate(views: LiveView[]): [LiveView[], LiveView[]] {
-		const stale: LiveView[] = [];
-		const matching: LiveView[] = [];
+	private deduplicate(views: S3View[]): [S3View[], S3View[]] {
+		const stale: S3View[] = [];
+		const matching: S3View[] = [];
 		this.views.forEach((oldView) => {
 			const found = views.find((newView) => {
 				if (
@@ -458,13 +495,14 @@ export class LiveViewManager {
 		const log = curryLog(ctx);
 		log("Refresh");
 
-		let views: LiveView[];
+		let views: S3View[] = [];
 		try {
 			views = this.getViews();
 		} catch (e) {
 			console.warn("error getting views", e);
 			return false;
 		}
+		console.warn(views);
 		const activeDocumentFolders = this.findFolders();
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
@@ -478,15 +516,15 @@ export class LiveViewManager {
 			return true; // no live views open
 		}
 
-		if (!this.loginManager.hasUser) {
-			console.warn("no user");
-			this._loginBanner(views);
-			return false;
+		if (this.loginManager.loggedIn && this.networkStatus.online) {
+			activeDocumentFolders.forEach((folder) => {
+				folder.connect();
+			});
+		} else {
+			this.sharedFolders.forEach((folder) => {
+				folder.disconnect();
+			});
 		}
-
-		activeDocumentFolders.forEach((folder) => {
-			folder.connect();
-		});
 
 		const [matching, stale] = this.deduplicate(views);
 		log("Releasing Views", stale);
