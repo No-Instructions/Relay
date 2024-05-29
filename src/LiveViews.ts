@@ -1,4 +1,4 @@
-import { MarkdownView, type WorkspaceLeaf } from "obsidian";
+import { MarkdownView } from "obsidian";
 import { Document } from "./Document";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
@@ -25,8 +25,6 @@ import type { ConnectionState } from "./HasProvider";
 import moment from "moment";
 
 const BACKGROUND_CONNECTIONS = 20;
-const MAX_TIMEOUT = 10000;
-const TIMEOUT_INCREASE = 3000;
 
 function ViewsetsEqual(vs1: LiveView[], vs2: LiveView[]): boolean {
 	if (vs1.length !== vs2.length) {
