@@ -19,7 +19,7 @@ class SiblingWatcher {
 		this.el = el;
 
 		const observer = new MutationObserver((mutationsList, observer) => {
-			for (let mutation of mutationsList) {
+			for (const mutation of mutationsList) {
 				if (mutation.type === "childList") {
 					if (el.nextSibling) {
 						onceSibling(el);
@@ -38,34 +38,6 @@ class SiblingWatcher {
 	destroy() {
 		this.mutationObserver?.disconnect();
 		this.mutationObserver = null;
-	}
-}
-
-class FolderBar {
-	el: HTMLElement;
-	sharedFolder: SharedFolder;
-	siblingWatcher: SiblingWatcher;
-
-	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
-		this.el = el;
-		this.sharedFolder = sharedFolder;
-		this.siblingWatcher = new SiblingWatcher(this.el, (el) => {
-			this.add();
-		});
-		this.add();
-	}
-
-	add() {
-		(this.el.nextSibling as HTMLElement)?.addClass("system3-live");
-	}
-
-	remove() {
-		(this.el.nextSibling as HTMLElement)?.removeClass("system3-live");
-	}
-
-	destroy() {
-		this.siblingWatcher.destroy();
-		this.remove();
 	}
 }
 
@@ -97,7 +69,11 @@ interface FileSystemVisitor<T> {
 	): T | null;
 }
 
-class BaseVisitor<T> implements FileSystemVisitor<T> {
+interface Destroyable {
+	destroy(): void;
+}
+
+class BaseVisitor<T extends Destroyable> implements FileSystemVisitor<T> {
 	visitFolder(
 		folder: TFolder,
 		item: FolderItem,
@@ -119,13 +95,41 @@ class BaseVisitor<T> implements FileSystemVisitor<T> {
 	}
 }
 
+class FolderBar implements Destroyable {
+	el: HTMLElement;
+	sharedFolder: SharedFolder;
+	siblingWatcher: SiblingWatcher;
+
+	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
+		this.el = el;
+		this.sharedFolder = sharedFolder;
+		this.siblingWatcher = new SiblingWatcher(this.el, (el) => {
+			this.add();
+		});
+		this.add();
+	}
+
+	add() {
+		(this.el.nextSibling as HTMLElement)?.addClass("system3-live");
+	}
+
+	remove() {
+		(this.el.nextSibling as HTMLElement)?.removeClass("system3-live");
+	}
+
+	destroy() {
+		this.siblingWatcher.destroy();
+		this.remove();
+	}
+}
+
 class FolderBarVisitor extends BaseVisitor<FolderBar> {
 	visitFolder(
 		folder: TFolder,
 		item: FolderItem,
 		storage: FolderBar,
 		sharedFolder?: SharedFolder
-	) {
+	): FolderBar | null {
 		if (sharedFolder) {
 			return storage || new FolderBar(item.selfEl, sharedFolder);
 		}
@@ -137,44 +141,57 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 }
 
 type Unsubscribe = () => void;
+class PillDecoration {
+	el: HTMLElement;
+	sharedFolder: SharedFolder;
+	pill: Pill;
+	unsubscribe: Unsubscribe;
 
-class FolderPillVisitor extends BaseVisitor<[Pill, Unsubscribe]> {
+	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
+		this.el = el;
+		this.sharedFolder = sharedFolder;
+		this.pill = new Pill({
+			target: this.el,
+			props: {
+				status: sharedFolder.state.status,
+			},
+		});
+		this.unsubscribe = sharedFolder.subscribe(
+			el,
+			(state: ConnectionState) => {
+				this.set(state);
+			}
+		);
+	}
+
+	set(state: ConnectionState) {
+		this.pill.$set({ status: state.status });
+	}
+
+	destroy() {
+		this.pill.$destroy();
+		this.unsubscribe();
+	}
+}
+
+class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 	visitFolder(
 		folder: TFolder,
 		item: FolderItem,
-		storage?: [Pill, Unsubscribe] | null,
+		storage?: PillDecoration,
 		sharedFolder?: SharedFolder
-	): [Pill, Unsubscribe] | null {
-		const titleEl = item.selfEl;
-		if (sharedFolder && !storage) {
-			const existingPillElement = item.el.querySelector(".system3-pill");
-			if (existingPillElement) {
-				console.warn("Pill already exists", existingPillElement);
-				existingPillElement.remove();
-			}
-			const pill = new Pill({
-				target: titleEl,
-				props: {
-					status: sharedFolder.state.status,
-				},
-			});
-			const unsubscribe = sharedFolder.subscribe(titleEl, (status) => {
-				pill?.$set({ status: status.status });
-			});
-			return [pill, unsubscribe];
-		} else if (storage && !sharedFolder) {
-			const [pill, unsubscribe] = storage;
-			unsubscribe();
-			pill.$destroy();
-			return null;
-		} else if (storage && sharedFolder) {
-			return storage;
+	): PillDecoration | null {
+		if (sharedFolder) {
+			return storage || new PillDecoration(item.selfEl, sharedFolder);
+		}
+		if (storage) {
+			storage.destroy();
 		}
 		return null;
 	}
 }
 
-class DocumentStatus {
+class DocumentStatus implements Destroyable {
 	el: HTMLElement;
 	document?: Document;
 
@@ -239,21 +256,24 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 class FileExplorerWalker {
 	fileExplorer: WorkspaceLeaf;
 	sharedFolders: SharedFolders;
-	visitors: FileSystemVisitor<any>[];
-	storage: Map<FileSystemVisitor<any>, Map<TreeNode, any>>;
+	visitors: FileSystemVisitor<Destroyable>[];
+	storage: Map<FileSystemVisitor<Destroyable>, Map<TreeNode, Destroyable>>;
 
 	constructor(
 		fileExplorer: WorkspaceLeaf,
 		sharedFolders: SharedFolders,
-		visitors: FileSystemVisitor<any>[]
+		visitors: FileSystemVisitor<Destroyable>[]
 	) {
 		this.fileExplorer = fileExplorer;
 		this.sharedFolders = sharedFolders;
 		this.visitors = visitors;
 
-		this.storage = new Map<FileSystemVisitor<any>, Map<TreeNode, any>>();
+		this.storage = new Map<
+			FileSystemVisitor<Destroyable>,
+			Map<TreeNode, Destroyable>
+		>();
 		for (const visitor of this.visitors) {
-			this.storage.set(visitor, new Map<TreeNode, any>());
+			this.storage.set(visitor, new Map<TreeNode, Destroyable>());
 		}
 	}
 
@@ -333,12 +353,21 @@ class FileExplorerWalker {
 			}
 		});
 	}
+
+	destory() {
+		this.storage.forEach((store) => {
+			store.forEach((item) => {
+				item.destroy();
+			});
+		});
+	}
 }
 
 export class FolderNavigationDecorations {
 	vault: VaultFacade;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
+	showDocumentStatus: boolean;
 	offFolderListener: () => void;
 	offDocumentListeners: Map<SharedFolder, () => void>;
 	pills: Map<HTMLElement, Pill>;
@@ -347,27 +376,32 @@ export class FolderNavigationDecorations {
 	constructor(
 		vault: VaultFacade,
 		workspace: Workspace,
-		sharedFolders: SharedFolders
+		sharedFolders: SharedFolders,
+		showDocumentStatus = false
 	) {
 		this.vault = vault;
 		this.pills = new Map<HTMLElement, Pill>();
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
+		this.showDocumentStatus = showDocumentStatus;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => this.refresh());
 		this.offDocumentListeners = new Map();
 		const folderListener = () => {
 			this.sharedFolders.forEach((folder) => {
 				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
-				const documentListener = () => {
-					this.refresh();
-				};
-				const docsetListener = this.offDocumentListeners.get(folder);
-				if (!docsetListener) {
-					folder.docset.on(documentListener);
-					this.offDocumentListeners.set(folder, () => {
-						folder.docset.off(documentListener);
-					});
+				if (showDocumentStatus) {
+					const documentListener = () => {
+						this.refresh();
+					};
+					const docsetListener =
+						this.offDocumentListeners.get(folder);
+					if (!docsetListener) {
+						folder.docset.on(documentListener);
+						this.offDocumentListeners.set(folder, () => {
+							folder.docset.off(documentListener);
+						});
+					}
 				}
 			});
 			this.refresh();
@@ -383,17 +417,27 @@ export class FolderNavigationDecorations {
 		return this.workspace.on("layout-change", () => this.quickRefresh());
 	}
 
+	makeVisitors(): FileSystemVisitor<Destroyable>[] {
+		const visitors = [];
+		visitors.push(new FolderBarVisitor());
+		visitors.push(new FolderPillVisitor());
+		if (this.showDocumentStatus) {
+			visitors.push(new FileStatusVisitor());
+		}
+		return visitors;
+	}
+
 	quickRefresh() {
 		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
 		const sharedFolders = this.sharedFolders.map((folder) => folder.path);
 		for (const fileExplorer of fileExplorers) {
 			const walker =
 				this.treeState.get(fileExplorer) ||
-				new FileExplorerWalker(fileExplorer, this.sharedFolders, [
-					new FolderBarVisitor(),
-					new FolderPillVisitor(),
-					new FileStatusVisitor(),
-				]);
+				new FileExplorerWalker(
+					fileExplorer,
+					this.sharedFolders,
+					this.makeVisitors()
+				);
 			this.treeState.set(fileExplorer, walker);
 			for (const sharedFolderPath of sharedFolders) {
 				const sharedFolder =
@@ -410,11 +454,11 @@ export class FolderNavigationDecorations {
 		for (const fileExplorer of fileExplorers) {
 			const walker =
 				this.treeState.get(fileExplorer) ||
-				new FileExplorerWalker(fileExplorer, this.sharedFolders, [
-					new FolderBarVisitor(),
-					new FolderPillVisitor(),
-					new FileStatusVisitor(),
-				]);
+				new FileExplorerWalker(
+					fileExplorer,
+					this.sharedFolders,
+					this.makeVisitors()
+				);
 			this.treeState.set(fileExplorer, walker);
 			const root = this.vault.getAbstractFileByPath("/");
 			if (root instanceof TFolder) {
@@ -426,6 +470,9 @@ export class FolderNavigationDecorations {
 	destroy() {
 		this.offFolderListener();
 		this.offDocumentListeners.forEach((off) => off());
-		this.refresh();
+		this.treeState.forEach((walker) => {
+			walker.destory();
+		});
+		this.treeState.clear();
 	}
 }

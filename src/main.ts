@@ -24,10 +24,12 @@ import { FileManagerFacade } from "./obsidian-api/FileManager";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
+	showDocumentStatus: boolean;
 }
 
 const DEFAULT_SETTINGS: LiveSettings = {
 	sharedFolders: [],
+	showDocumentStatus: false,
 };
 
 declare const HEALTH_URL: string;
@@ -165,7 +167,8 @@ export default class Live extends Plugin {
 		this.folderNavDecorations = new FolderNavigationDecorations(
 			this.vault,
 			this.app.workspace,
-			this.sharedFolders
+			this.sharedFolders,
+			this.settings.showDocumentStatus
 		);
 		//this.registerEvent(this.folderNavDecorations.register());
 		this.folderNavDecorations.refresh();

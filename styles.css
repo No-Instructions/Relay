@@ -232,8 +232,8 @@ button.stripe:disabled {
   }
 }
 
-.tree-item-children.system3-live {
-    border-inline-start: var(--nav-indentation-guide-width) solid var(--color-accent);
+.nav-folder > .nav-folder-children.system3-live {
+    border-inline-start: var(--nav-indentation-guide-width) solid var(--color-accent) !important;
 }
 
 .nav-file.system3-connected {
