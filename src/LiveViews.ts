@@ -190,6 +190,7 @@ export class LiveViewManager {
 	private _stale: string;
 	private _compartment: Compartment;
 	private loginManager: LoginManager;
+	private offListeners: (() => void)[] = [];
 	sharedFolders: SharedFolders;
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
@@ -217,13 +218,25 @@ export class LiveViewManager {
 			this.refresh("[Constructor]");
 		});
 
+		const refreshOnAuthenticationEvent = () => {
+			this.refresh("[LoginManager]");
+		};
+		this.loginManager.on(refreshOnAuthenticationEvent);
+		this.offListeners.push(() => {
+			this.loginManager.off(refreshOnAuthenticationEvent);
+		});
+
 		this.sharedFolders.forEach((folder) => {
-			folder.docset.on(() => {
+			const docsetListener = () => {
 				this.refresh("[Docset]");
+			};
+			folder.docset.on(docsetListener);
+			this.offListeners.push(() => {
+				folder.docset.off(docsetListener);
 			});
 		});
 
-		this.sharedFolders.on(() => {
+		const sharedFolderListener = () => {
 			this.refresh("[Shared Folders]");
 
 			this.sharedFolders.forEach((folder) => {
@@ -242,6 +255,10 @@ export class LiveViewManager {
 						});
 				}
 			});
+		};
+		this.sharedFolders.on(sharedFolderListener);
+		this.offListeners.push(() => {
+			this.sharedFolders.off(sharedFolderListener);
 		});
 	}
 
@@ -547,6 +564,7 @@ export class LiveViewManager {
 
 	public destroy() {
 		this.releaseViews(this.views);
+		this.offListeners.forEach((off) => off());
 		this.wipe();
 	}
 }
