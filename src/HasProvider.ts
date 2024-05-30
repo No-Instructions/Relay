@@ -15,6 +15,20 @@ export type ConnectionStatus =
 	| "unknown";
 export type ConnectionIntent = "connected" | "disconnected";
 
+enum readyState {
+	CONNECTING = 0,
+	OPEN = 1,
+	CLOSING = 2,
+	CLOSED = 3,
+}
+
+const readyStateMap = {
+	3: "disconnected",
+	2: "disconnected",
+	1: "connected",
+	0: "connecting",
+} as const;
+
 export interface ConnectionState {
 	status: ConnectionStatus;
 	intent: ConnectionIntent;
@@ -62,7 +76,6 @@ export class HasProvider {
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
 	clientToken: ClientToken | null;
-	state: ConnectionState;
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
@@ -89,17 +102,15 @@ export class HasProvider {
 			this.ydoc,
 			user
 		);
-		this.state = {
-			status: "unknown",
-			intent: this._provider.shouldConnect ? "connected" : "disconnected",
-		};
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
-				this.log(`[${this.path}] disconnection event: ${event}`);
-				console.log(this._provider, this.clientToken);
-				this._provider.disconnect();
-				this.connect();
+				this.log(`[${this.path}] disconnection event`, event);
+				const shouldConnect = this._provider.shouldConnect;
+				this.disconnect();
+				if (shouldConnect) {
+					this.connect();
+				}
 			}
 		);
 		connectionErrorSub.on();
@@ -107,14 +118,17 @@ export class HasProvider {
 
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
-				this.state = state;
-				this.listeners.forEach((listener, el) => {
-					listener(this.state);
-				});
+				this.notifyListeners();
 			}
 		);
 		stateSub.on();
 		this._offState = stateSub.off;
+	}
+
+	notifyListeners() {
+		this.listeners.forEach((listener) => {
+			listener(this.state);
+		});
 	}
 
 	subscribe(el: any, listener: Listener): () => void {
@@ -183,14 +197,19 @@ export class HasProvider {
 		}
 	}
 
+	public get connected(): boolean {
+		return this.state.status === "connected";
+	}
+
 	connect(): Promise<boolean> {
-		if (this._provider.wsconnected) {
+		if (this.connected) {
 			return Promise.resolve(true);
 		}
 		return this.getProviderToken()
 			.then((clientToken) => {
 				this.refreshProvider(clientToken); // XXX is this still needed?
 				this._provider.connect();
+				this.notifyListeners();
 				return true;
 			})
 			.catch((e) => {
@@ -198,10 +217,27 @@ export class HasProvider {
 			});
 	}
 
+	public get state(): ConnectionState {
+		return {
+			status: readyStateMap[
+				(this._provider.ws?.readyState ||
+					readyState.CLOSED) as readyState
+			],
+			intent: this._provider.shouldConnect ? "connected" : "disconnected",
+		};
+	}
+
+	public get synced(): boolean {
+		return this._provider.synced;
+	}
+
 	disconnect() {
-		if (this._provider) {
-			this._provider.disconnect();
-		}
+		// this is cursed -- I should consider forking the ysweet provider.
+		console.warn(this._provider);
+		this._provider.shouldConnect = false;
+		this._provider.ws?.close();
+		this._provider.ws = null;
+		this.notifyListeners();
 	}
 
 	public withActiveProvider<T extends HasProvider>(this: T): Promise<T> {
@@ -251,13 +287,13 @@ export class HasProvider {
 	}
 
 	private providerConnectionErrorSubscription(
-		f: (state: ConnectionState) => void
+		f: (event: Event) => void
 	): Subscription {
 		const on = () => {
-			this._provider.on("connection-error", this._injectIntent(f));
+			this._provider.on("connection-error", f);
 		};
 		const off = () => {
-			this._provider.off("connection-error", this._injectIntent(f));
+			this._provider.off("connection-error", f);
 		};
 		return { on, off } as Subscription;
 	}
@@ -272,10 +308,6 @@ export class HasProvider {
 			this._provider.off("status", this._injectIntent(f));
 		};
 		return { on, off } as Subscription;
-	}
-
-	public get connected(): boolean {
-		return this._provider?.wsconnected || false;
 	}
 
 	destroy() {
