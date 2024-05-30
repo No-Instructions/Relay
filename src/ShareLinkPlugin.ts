@@ -1,8 +1,7 @@
 import { Annotation, ChangeSet } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import { LiveView, LiveViewManager } from "./LiveViews";
-import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
+import { LiveView, LiveViewManager, type S3View } from "./LiveViews";
 import { connectionManagerFacet } from "./y-codemirror.next/LiveEditPlugin";
 import { hasKey, updateFrontMatter } from "./Frontmatter";
 import { diffChars } from "diff";
@@ -55,7 +54,7 @@ function diffToChangeSet(originalText: string, newText: string): ChangeSet {
 
 export class ShareLinkPluginValue implements PluginValue {
 	editor: EditorView;
-	view?: LiveView;
+	view?: S3View;
 	connectionManager: LiveViewManager;
 
 	constructor(editor: EditorView) {
@@ -66,9 +65,10 @@ export class ShareLinkPluginValue implements PluginValue {
 		this.view = this.connectionManager.findView(editor);
 		this.editor = editor;
 		if (this.view) {
-			this.view.document.whenSynced().then(async () => {
-				const locallyRaised = await this.view?.document.locallyRaised();
-				if (this.view?.document.text || locallyRaised) {
+			this.view.document?.whenSynced().then(async () => {
+				const locallyRaised =
+					await this.view?.document?.locallyRaised();
+				if (this.view?.document?.text || locallyRaised) {
 					this.updateFrontMatter();
 				}
 			});
@@ -76,6 +76,9 @@ export class ShareLinkPluginValue implements PluginValue {
 	}
 
 	updateFrontMatter() {
+		if (!(this.view instanceof LiveView)) {
+			return;
+		}
 		if (!this.view || !this.view.shouldConnect) {
 			return;
 		}
