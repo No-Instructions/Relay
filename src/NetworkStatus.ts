@@ -66,13 +66,11 @@ class NetworkStatus {
 				}
 			})
 			.catch((error) => {
-				console.log(error);
+				console.warn(error);
 				if (error.message.includes("ERR_NETWORK_CHANGED")) {
-					console.warn("error in message", error);
-					return;
-				}
-				if (error.name.includes("ERR_NETWORK_CHANGED")) {
-					console.warn("error in name", error);
+					// This doesn't necessarily imply a disconnect,
+					// We should immediately try again to get a name resolution error.
+					this._checkStatus();
 					return;
 				}
 				this.online = false;
