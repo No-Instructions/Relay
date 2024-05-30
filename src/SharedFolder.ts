@@ -138,7 +138,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get ready(): boolean {
-		return this._provider?.wsconnected && this._provider?.synced;
+		return this.connected && this.synced;
 	}
 
 	async whenReady(): Promise<SharedFolder> {
