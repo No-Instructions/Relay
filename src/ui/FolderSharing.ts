@@ -1,6 +1,7 @@
 import { Modal, TFolder, App, Notice } from "obsidian";
 import { randomUUID } from "crypto";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
+import { promiseWithTimeout } from "src/promiseUtils";
 
 export class SharedFolderModal extends Modal {
 	sharedFolders: SharedFolders;
@@ -73,10 +74,8 @@ export class SharedFolderModal extends Modal {
 					}
 
 					const path = this.folder.path;
-					const folder = this.sharedFolders.new(path, guid);
-					folder.whenReady().then((folder) => {
-						this.close();
-					});
+					this.sharedFolders.new(path, guid);
+					this.close();
 				};
 			});
 		}

@@ -141,13 +141,13 @@ export class LoginManager extends ObservableSet<User> {
 		});
 	}
 
-	async login() {
+	async login(): Promise<boolean> {
 		if (this.hasUser) {
-			return;
+			return true;
 		}
 		await this.pb.collection("users").authWithOAuth2({
 			provider: "google",
 		});
-		this.setup();
+		return this.setup();
 	}
 }

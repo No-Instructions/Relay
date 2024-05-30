@@ -1,14 +1,21 @@
 import { App, Menu, Notice, TFile, TFolder } from "obsidian";
 import { SharedFolders } from "src/SharedFolder";
 import { SharedFolderModal, UnshareFolderModal } from "./FolderSharing";
+import type { LoginManager } from "src/LoginManager";
 
 export class FolderMenu {
-	app: App; // xxx this is just so we can create modals?
+	app: App;
 	sharedFolders: SharedFolders;
+	loginManager: LoginManager;
 
-	constructor(app: App, sharedFolders: SharedFolders) {
+	constructor(
+		app: App,
+		loginManager: LoginManager,
+		sharedFolders: SharedFolders
+	) {
 		this.app = app;
 		this.sharedFolders = sharedFolders;
+		this.loginManager = loginManager;
 	}
 
 	register() {
@@ -50,7 +57,7 @@ export class FolderMenu {
 				return false;
 			});
 
-			if (!isShared) {
+			if (!isShared && this.loginManager.loggedIn) {
 				menu.addItem((item) => {
 					item.setTitle("Share Folder")
 						.setIcon("dot-network")

@@ -173,7 +173,11 @@ export default class Live extends Plugin {
 		//this.registerEvent(this.folderNavDecorations.register());
 		this.folderNavDecorations.refresh();
 
-		const folderMenu = new FolderMenu(this.app, this.sharedFolders);
+		const folderMenu = new FolderMenu(
+			this.app,
+			this.loginManager,
+			this.sharedFolders
+		);
 		this.registerEvent(folderMenu.register());
 
 		this.addSettingTab(new LiveSettingsTab(this.app, this));
