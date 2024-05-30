@@ -8,7 +8,7 @@ import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { Doc } from "yjs";
 import type { Vault } from "./obsidian-api/Vault";
-import { HasProvider, type ConnectionState } from "./HasProvider";
+import { HasProvider } from "./HasProvider";
 import { Document } from "./Document";
 import { curryLog } from "./debug";
 import { ObservableSet } from "./ObservableSet";
@@ -115,7 +115,7 @@ export class SharedFolder extends HasProvider {
 		this.log = curryLog(`[SharedFolder](${this.path}):`);
 		this.ydoc.on(
 			"update",
-			(update: Uint8Array, origin: any, doc: Y.Doc) => {
+			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 				if (origin == this) {
 					return;
 				}
@@ -156,7 +156,7 @@ export class SharedFolder extends HasProvider {
 		return this.readyPromise;
 	}
 
-	_debugFileTree(): Map<string, any> {
+	_debugFileTree() {
 		const ids = new Map();
 		this.ydoc.getMap("docs")._map.forEach((item, path) => {
 			if (item.content instanceof Y.ContentAny) {
