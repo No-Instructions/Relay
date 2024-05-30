@@ -163,6 +163,9 @@ export class LiveView implements S3View {
 				if (connectionStatusIcon) {
 					connectionStatusIcon.remove();
 				}
+				if (this.offConnectionStatusSubscription) {
+					this.offConnectionStatusSubscription();
+				}
 				this._connectionStatusIcon = new ConnectionStatusIcon({
 					target: viewActionsElement,
 					anchor: viewActionsElement.firstChild as Element,
@@ -171,20 +174,20 @@ export class LiveView implements S3View {
 						state: this.document.state,
 					},
 				});
+				this.offConnectionStatusSubscription = this.document.subscribe(
+					viewActionsElement,
+					(state: ConnectionState) => {
+						this._connectionStatusIcon?.$set({
+							view: this,
+							state: state,
+						});
+					}
+				);
 			}
 			this._connectionStatusIcon.$set({
 				view: this,
 				state: this.document.state,
 			});
-			this.offConnectionStatusSubscription = this.document.subscribe(
-				connectionStatusIcon,
-				(state: ConnectionState) => {
-					this._connectionStatusIcon?.$set({
-						view: this,
-						state: state,
-					});
-				}
-			);
 		}
 	}
 
