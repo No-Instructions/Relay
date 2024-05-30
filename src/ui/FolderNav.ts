@@ -159,13 +159,9 @@ class PillDecoration {
 		this.unsubscribe = sharedFolder.subscribe(
 			el,
 			(state: ConnectionState) => {
-				this.set(state);
+				this.pill.$set({ status: state.status });
 			}
 		);
-	}
-
-	set(state: ConnectionState) {
-		this.pill.$set({ status: state.status });
 	}
 
 	destroy() {
