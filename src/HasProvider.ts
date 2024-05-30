@@ -80,7 +80,7 @@ export class HasProvider {
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
 	log = curryLog("[HasProvider]");
-	listeners: Map<any, Listener>;
+	listeners: Map<unknown, Listener>;
 
 	constructor(
 		guid: string,
@@ -88,7 +88,7 @@ export class HasProvider {
 		loginManager: LoginManager
 	) {
 		this.guid = guid;
-		this.listeners = new Map<any, Listener>();
+		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
@@ -131,14 +131,14 @@ export class HasProvider {
 		});
 	}
 
-	subscribe(el: any, listener: Listener): () => void {
+	subscribe(el: unknown, listener: Listener): () => void {
 		this.listeners.set(el, listener);
 		return () => {
 			this.unsubscribe(el);
 		};
 	}
 
-	unsubscribe(el: any) {
+	unsubscribe(el: unknown) {
 		this.listeners.delete(el);
 	}
 
