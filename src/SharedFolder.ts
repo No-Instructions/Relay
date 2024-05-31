@@ -15,6 +15,7 @@ import { ObservableSet } from "./ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import moment from "moment";
+import { SharedPromise } from "./promiseUtils";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -47,7 +48,8 @@ export class SharedFolder extends HasProvider {
 	log: (message: string) => void;
 	private vault: Vault;
 	private fileManager: FileManager;
-	private readyPromise: Promise<SharedFolder> | null = null;
+	private readyPromise: SharedPromise<SharedFolder> | null = null;
+	private locallyRaisedPromise: SharedPromise<boolean> | null = null;
 
 	private _persistence: IndexeddbPersistence;
 	private _locallyRaised?: boolean;
@@ -138,35 +140,40 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get ready(): boolean {
-		return this.connected && this.synced;
+		return (
+			(this.connected || !this.locallyRaised()) &&
+			this.synced &&
+			this._persistence.synced
+		);
 	}
 
 	async whenReady(): Promise<SharedFolder> {
-		//Note this doesn't guarantee that the map is actually synced...
-		if (this.readyPromise) {
-			return this.readyPromise;
-		}
-		this.readyPromise = this.whenSynced().then(() => {
+		const promiseFn = async (): Promise<SharedFolder> => {
 			return this.locallyRaised().then((locallyRaised) => {
 				if (locallyRaised) {
+					// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 					console.warn(
 						"locallyRaised -- waiting for connection before allowing edits"
 					);
-					// We should really avoid creating new docs in bulk...
-					// so whenReady will require a connection
 					return this.onceConnected().then(() => {
 						return this.onceProviderSynced().then(() => {
 							return this;
 						});
 					});
 				}
+				// If this is a shared folder with edits, then we can behave as though we're just offline.
 				return this;
-				//return this.onceProviderSynced().then(() => {
-				//	return this;
-				//});
 			});
-		});
-		return this.readyPromise;
+		};
+		this.readyPromise =
+			this.readyPromise ||
+			new SharedPromise<SharedFolder>(
+				promiseFn,
+				(): [boolean, SharedFolder] => {
+					return [this.ready, this];
+				}
+			);
+		return this.readyPromise.getPromise();
 	}
 
 	_debugFileTree() {
@@ -214,17 +221,25 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
-	async locallyRaised(set?: boolean): Promise<boolean> {
+	async locallyRaised(): Promise<boolean> {
 		// XXX: Might be able to use _persistence.once("synced", ...) instead
-		if (set !== undefined) {
-			this._locallyRaised = set;
-		}
-		if (this._locallyRaised !== undefined) {
-			return this._locallyRaised;
-		}
-		const nUpdates = await this._countUpdates();
-		this._locallyRaised = nUpdates < 3;
-		return this._locallyRaised;
+		this.locallyRaisedPromise = new SharedPromise<boolean>(
+			async (): Promise<boolean> => {
+				return this.whenSynced().then(() => {
+					return this._countUpdates().then((nUpdates) => {
+						this._locallyRaised = nUpdates < 3;
+						return this._locallyRaised;
+					});
+				});
+			},
+			(): [boolean, boolean] => {
+				return [
+					this._locallyRaised !== undefined,
+					this._locallyRaised || false,
+				];
+			}
+		);
+		return this.locallyRaisedPromise.getPromise();
 	}
 
 	syncFileTree(doc: Doc, update: Uint8Array) {
