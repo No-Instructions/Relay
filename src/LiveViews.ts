@@ -387,7 +387,12 @@ export class LiveViewManager {
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
 				if (this.loginManager.loggedIn) {
-					const doc = folder.getFile(viewFilePath, false, false);
+					const doc = folder.getFile(
+						viewFilePath,
+						false,
+						false,
+						true
+					);
 					const view = new LiveView(this, markdownView, doc);
 					views.push(view);
 				} else {

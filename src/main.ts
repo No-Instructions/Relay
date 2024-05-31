@@ -240,7 +240,7 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					folder.whenReady().then((folder) => {
-						folder.getFile(file.path, true);
+						folder.getFile(file.path, true, true);
 					});
 				}
 			})

@@ -309,17 +309,27 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
-	getFile(path: string, create = true, update = true): Document {
+	getFile(
+		path: string,
+		create = true,
+		loadFromDisk = false,
+		update = true
+	): Document {
 		const vPath = this.getVirtualPath(path);
 		try {
-			return this.getDoc(vPath, create, update);
+			return this.getDoc(vPath, create, loadFromDisk, update);
 		} catch (e) {
 			console.log(e, path);
 			throw e;
 		}
 	}
 
-	getDoc(vPath: string, create = true, update = true): Document {
+	getDoc(
+		vPath: string,
+		create = true,
+		loadFromDisk = false,
+		update = true
+	): Document {
 		const id = this.ids.get(vPath);
 		if (id !== undefined) {
 			const doc = this.docs.get(id);
@@ -334,7 +344,7 @@ export class SharedFolder extends HasProvider {
 		} else if (create) {
 			// the File exists, but the ID doesn't
 			this.log("[getDoc]: creating new shared ID for existing file");
-			return this.createDoc(vPath, true, update);
+			return this.createDoc(vPath, loadFromDisk, update);
 		} else {
 			throw new Error("No shared doc for vpath: " + vPath);
 		}
@@ -349,6 +359,7 @@ export class SharedFolder extends HasProvider {
 		this.ydoc.transact(() => {
 			vpaths.forEach((vpath) => {
 				if (!this.ids.has(vpath)) {
+					console.debug("creating entirely new doc for", vpath);
 					const guid = randomUUID();
 					this.ids.set(vpath, guid);
 				}
@@ -357,12 +368,18 @@ export class SharedFolder extends HasProvider {
 	}
 
 	createDoc(vpath: string, loadFromDisk = false, update = true): Document {
-		if (!this._provider?.synced && !this.ids.get(vpath)) {
+		if (!this.synced && !this.ids.get(vpath)) {
 			this.log("WARNING may cause document split");
 		}
 		const maybeGuid: string | undefined = this.ids.get(vpath);
 		let guid: string;
 		if (maybeGuid === undefined) {
+			console.warn("creating entirely new doc for", vpath);
+			if (!loadFromDisk) {
+				throw new Error(
+					"attempting to create a new doc without a local file"
+				);
+			}
 			guid = randomUUID();
 			this.ydoc.transact(() => {
 				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
