@@ -197,7 +197,11 @@ export class LiveView implements S3View {
 			return this.document
 				.whenReady()
 				.then((doc) => {
-					if (this.shouldConnect && this.canConnect) {
+					if (
+						this.shouldConnect &&
+						this.canConnect &&
+						this._parent.networkStatus.online
+					) {
 						this.connect();
 					}
 					resolve(this);
@@ -209,11 +213,7 @@ export class LiveView implements S3View {
 	}
 
 	connect() {
-		if (this._parent.networkStatus.online) {
-			this.document.connect();
-		} else {
-			this.document.disconnect();
-		}
+		this.document.connect();
 	}
 
 	release() {
