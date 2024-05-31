@@ -91,12 +91,14 @@ export default class Live extends Plugin {
 		this.tokenStore.start();
 		this.networkStatus.addEventListener("offline", () => {
 			this.tokenStore.stop();
+			this.sharedFolders.forEach((folder) => folder.disconnect());
 			this._liveViews.goOffline();
 		});
 		this.networkStatus.addEventListener("online", () => {
 			this.tokenStore.start();
 			this._liveViews.goOnline();
 		});
+		this.networkStatus.checkStatus();
 
 		this.setup();
 	}

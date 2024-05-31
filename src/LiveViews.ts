@@ -308,24 +308,15 @@ export class LiveViewManager {
 	}
 
 	goOffline() {
-		this.views.forEach((view) => {
-			if (view instanceof LiveView) {
-				view.document.disconnect();
-				const clear = view.offlineBanner();
-				this.networkStatus.onceOnline(clear);
-			}
-		});
+		console.debug("[System 3][Live Views] going offline");
+		this.views.forEach((view) => view.document?.disconnect());
+		this.refresh("[NetworkStatus]");
 	}
 
 	goOnline() {
-		const folders = this.findFolders();
-		folders.forEach((folder: SharedFolder) => {
+		console.debug("[System 3][Live Views] going online");
+		this.sharedFolders.items().forEach((folder: SharedFolder) => {
 			folder.connect();
-		});
-		this.views.forEach((view) => {
-			if (view instanceof LiveView) {
-				view.document.getProviderToken();
-			}
 		});
 		this.viewsAttachedWithConnectionPool(this.views);
 	}
