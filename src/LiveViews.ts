@@ -443,7 +443,7 @@ export class LiveViewManager {
 
 		if (attemptedConnections > backgroundConnections) {
 			console.warn(
-				`connection pool (max ${backgroundConnections}): rejected connections for ${
+				`[System 3][Live Views] connection pool (max ${backgroundConnections}): rejected connections for ${
 					attemptedConnections - backgroundConnections
 				} views`
 			);
@@ -499,14 +499,15 @@ export class LiveViewManager {
 		try {
 			views = this.getViews();
 		} catch (e) {
-			console.warn("error getting views", e);
+			console.warn("[System 3][Live Views] error getting views", e);
 			return false;
 		}
-		console.warn(views);
 		const activeDocumentFolders = this.findFolders();
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
-				console.warn("unexpected plugins loaded");
+				console.warn(
+					"[System 3][Live Views] unexpected plugins loaded"
+				);
 				this.wipe();
 			}
 			log("no live views open");
@@ -569,7 +570,7 @@ export class LiveViewManager {
 			)
 				.catch((e) => {
 					console.warn(
-						`refresh views timed out... timeout=${timeout}`,
+						`[System 3][Live Views] refresh views timed out... timeout=${timeout}`,
 						e
 					);
 					return false;
