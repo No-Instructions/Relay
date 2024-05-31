@@ -503,6 +503,8 @@ export class LiveViewManager {
 		const log = curryLog(ctx);
 		log("Refresh");
 
+		await this.foldersReady();
+
 		let views: S3View[] = [];
 		try {
 			views = this.getViews();
