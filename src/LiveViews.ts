@@ -137,17 +137,16 @@ export class LiveView implements S3View {
 			const banner = new Banner(
 				this.view,
 				"You're offline -- click to reconnect",
-				() => {
+				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
+					return this._parent.networkStatus.online;
 				}
 			);
-			this.document.onceConnected().then(() => {
+			this._parent.networkStatus.onceOnline(() => {
+				this.connect();
 				banner.destroy();
 			});
-			return () => {
-				banner.destroy();
-			};
 		}
 		return () => {};
 	}
