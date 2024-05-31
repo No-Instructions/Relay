@@ -126,6 +126,7 @@ export class HasProvider {
 	}
 
 	notifyListeners() {
+		console.debug("[Provider State]", this.path, this.state);
 		this.listeners.forEach((listener) => {
 			listener(this.state);
 		});
@@ -233,7 +234,6 @@ export class HasProvider {
 
 	disconnect() {
 		// this is cursed -- I should consider forking the ysweet provider.
-		console.warn(this._provider);
 		this._provider.shouldConnect = false;
 		this._provider.ws?.close();
 		this._provider.ws = null;
