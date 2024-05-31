@@ -2,7 +2,7 @@
 import * as Y from "yjs";
 import { TFolder, debounce } from "obsidian";
 import type { FileManager } from "./obsidian-api/FileManager";
-import { IndexeddbPersistence } from "y-indexeddb";
+import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { randomUUID } from "crypto";
 import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
@@ -50,6 +50,7 @@ export class SharedFolder extends HasProvider {
 	private readyPromise: Promise<SharedFolder> | null = null;
 
 	private _persistence: IndexeddbPersistence;
+	private _locallyRaised?: boolean;
 
 	private addLocalDocs = () => {
 		const files = this.vault.getFiles();
@@ -79,7 +80,6 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 		if (docs.length > 0) {
-			console.warn("local docs added", docs);
 			this.docset.update();
 		}
 	};
@@ -146,12 +146,25 @@ export class SharedFolder extends HasProvider {
 		if (this.readyPromise) {
 			return this.readyPromise;
 		}
-		this.readyPromise = new Promise((resolve) => {
-			Promise.all([this.onceConnected(), this.onceProviderSynced()]).then(
-				() => {
-					resolve(this);
+		this.readyPromise = this.whenSynced().then(() => {
+			return this.locallyRaised().then((locallyRaised) => {
+				if (locallyRaised) {
+					console.warn(
+						"locallyRaised -- waiting for connection before allowing edits"
+					);
+					// We should really avoid creating new docs in bulk...
+					// so whenReady will require a connection
+					return this.onceConnected().then(() => {
+						return this.onceProviderSynced().then(() => {
+							return this;
+						});
+					});
 				}
-			);
+				return this;
+				//return this.onceProviderSynced().then(() => {
+				//	return this;
+				//});
+			});
 		});
 		return this.readyPromise;
 	}
@@ -166,6 +179,52 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 		return ids;
+	}
+
+	whenSynced(): Promise<void> {
+		if (this._persistence.synced) {
+			return new Promise((resolve) => {
+				resolve();
+			});
+		}
+		return new Promise((resolve) => {
+			this._persistence.once("synced", resolve);
+		});
+	}
+
+	private async _countUpdates(): Promise<number> {
+		return new Promise((resolve, reject) => {
+			try {
+				fetchUpdates(this._persistence).then((db) => {
+					const countRequest = db.count();
+
+					countRequest.onsuccess = () => {
+						resolve(countRequest.result); // Resolve with the count
+					};
+
+					countRequest.onerror = (event: Event) => {
+						console.error("Count request failed");
+						reject(new Error("Count request failed"));
+					};
+				});
+			} catch (e) {
+				console.error("Failed to count rows:", e);
+				reject(e);
+			}
+		});
+	}
+
+	async locallyRaised(set?: boolean): Promise<boolean> {
+		// XXX: Might be able to use _persistence.once("synced", ...) instead
+		if (set !== undefined) {
+			this._locallyRaised = set;
+		}
+		if (this._locallyRaised !== undefined) {
+			return this._locallyRaised;
+		}
+		const nUpdates = await this._countUpdates();
+		this._locallyRaised = nUpdates < 3;
+		return this._locallyRaised;
 	}
 
 	syncFileTree(doc: Doc, update: Uint8Array) {
