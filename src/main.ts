@@ -281,14 +281,17 @@ export default class Live extends Plugin {
 					}
 					return;
 				}
-				const folder =
-					this.sharedFolders.lookup(oldPath) ||
-					this.sharedFolders.lookup(file.path);
-				if (folder) {
-					folder.whenReady().then((folder) => {
-						folder.renameFile(file.path, oldPath);
-						this._liveViews.refresh("rename");
-					});
+				const fromFolder = this.sharedFolders.lookup(oldPath);
+				const toFolder = this.sharedFolders.lookup(file.path);
+				const folder = fromFolder || toFolder;
+				if (fromFolder && toFolder) {
+					// between two shared folders
+					fromFolder.renameFile(file.path, oldPath);
+					toFolder.renameFile(file.path, oldPath);
+					this._liveViews.refresh("rename");
+				} else if (folder) {
+					folder.renameFile(file.path, oldPath);
+					this._liveViews.refresh("rename");
 				}
 			})
 		);
