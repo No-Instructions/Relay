@@ -612,7 +612,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			return existing;
 		}
 		const folder = await this.folderBuilder(path, guid);
-		this.add(folder);
+		folder.whenReady().then(() => {
+			this.add(folder);
+		});
 		return folder;
 	}
 }
