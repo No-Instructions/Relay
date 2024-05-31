@@ -504,7 +504,10 @@ export class SharedFolder extends HasProvider {
 	}
 }
 export class SharedFolders extends ObservableSet<SharedFolder> {
-	private folderBuilder: (path: string, guid: string) => SharedFolder;
+	private folderBuilder: (
+		path: string,
+		guid: string
+	) => Promise<SharedFolder>;
 
 	public toSettings(): SharedFolderSettings[] {
 		return this.items().map((folder) => folder.settings);
@@ -537,17 +540,19 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		this.clear();
 	}
 
-	constructor(folderBuilder: (guid: string, path: string) => SharedFolder) {
+	constructor(
+		folderBuilder: (guid: string, path: string) => Promise<SharedFolder>
+	) {
 		super();
 		this.folderBuilder = folderBuilder;
 	}
 
-	new(path: string, guid: string) {
+	async new(path: string, guid: string) {
 		const existing = this.find((folder) => folder.path == path);
 		if (existing) {
 			return existing;
 		}
-		const folder = this.folderBuilder(path, guid);
+		const folder = await this.folderBuilder(path, guid);
 		this.add(folder);
 		return folder;
 	}

@@ -1,13 +1,12 @@
 "use strict";
 
-import { Plugin, TFolder, Notice, MarkdownView, TFile } from "obsidian";
+import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
 
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
 
 import { existsSync } from "fs";
-import { randomUUID } from "crypto";
 import { VaultFacade } from "./obsidian-api/Vault";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import { SharedFolders } from "./SharedFolder";
@@ -106,7 +105,6 @@ export default class Live extends Plugin {
 		sharedFolderSettings: SharedFolderSettings[]
 	): SharedFolders {
 		const sharedFolders = new SharedFolders(
-			// TODO remove this as it isn't needed
 			this._createSharedFolder.bind(this)
 		);
 		sharedFolderSettings.forEach(
@@ -119,11 +117,10 @@ export default class Live extends Plugin {
 					);
 					return;
 				}
-				const folder = this._createSharedFolder(
+				sharedFolders.new(
 					sharedFolderSetting.path,
 					sharedFolderSetting.guid
 				);
-				sharedFolders.add(folder);
 			}
 		);
 		const saveSettingsHook = () => {
@@ -136,10 +133,12 @@ export default class Live extends Plugin {
 		return sharedFolders;
 	}
 
-	private _createSharedFolder(path: string, guid: string): SharedFolder {
-		const _guid = guid || randomUUID();
+	private async _createSharedFolder(
+		path: string,
+		guid: string
+	): Promise<SharedFolder> {
 		const folder = new SharedFolder(
-			_guid,
+			guid,
 			path,
 			this.loginManager,
 			this.vault,
