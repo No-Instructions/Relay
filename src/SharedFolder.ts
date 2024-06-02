@@ -49,10 +49,9 @@ export class SharedFolder extends HasProvider {
 	private vault: Vault;
 	private fileManager: FileManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
-	private locallyRaisedPromise: SharedPromise<boolean> | null = null;
+	private _hasKnownPeers?: boolean;
 
 	private _persistence: IndexeddbPersistence;
-	private _locallyRaised?: boolean;
 
 	private addLocalDocs = () => {
 		const files = this.vault.getFiles();
@@ -140,20 +139,30 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get ready(): boolean {
-		return (
-			(this.connected || !this.locallyRaised()) &&
-			this.synced &&
-			this._persistence.synced
-		);
+		const hasKnownPeers = this._persistence._dbsize > 2;
+		const persistenceSynced = this._persistence.synced;
+		const serverSynced = this.synced && this.connected;
+		return persistenceSynced && (serverSynced || hasKnownPeers);
+	}
+
+	hasKnownPeers(): Promise<boolean> {
+		if (this._hasKnownPeers !== undefined) {
+			return Promise.resolve(this._hasKnownPeers);
+		}
+		return this.whenSynced().then(async () => {
+			await fetchUpdates(this._persistence);
+			this._hasKnownPeers = this._persistence._dbsize > 2;
+			return this._hasKnownPeers;
+		});
 	}
 
 	async whenReady(): Promise<SharedFolder> {
 		const promiseFn = async (): Promise<SharedFolder> => {
-			return this.locallyRaised().then((locallyRaised) => {
-				if (locallyRaised) {
+			return this.hasKnownPeers().then((hasKnownPeers) => {
+				if (!hasKnownPeers) {
 					// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 					console.warn(
-						"locallyRaised -- waiting for connection before allowing edits"
+						"No known peers -- waiting for connection before allowing edits"
 					);
 					return this.onceConnected().then(() => {
 						return this.onceProviderSynced().then(() => {
@@ -197,49 +206,6 @@ export class SharedFolder extends HasProvider {
 		return new Promise((resolve) => {
 			this._persistence.once("synced", resolve);
 		});
-	}
-
-	private async _countUpdates(): Promise<number> {
-		return new Promise((resolve, reject) => {
-			try {
-				fetchUpdates(this._persistence).then((db) => {
-					const countRequest = db.count();
-
-					countRequest.onsuccess = () => {
-						resolve(countRequest.result); // Resolve with the count
-					};
-
-					countRequest.onerror = (event: Event) => {
-						console.error("Count request failed");
-						reject(new Error("Count request failed"));
-					};
-				});
-			} catch (e) {
-				console.error("Failed to count rows:", e);
-				reject(e);
-			}
-		});
-	}
-
-	async locallyRaised(): Promise<boolean> {
-		// XXX: Might be able to use _persistence.once("synced", ...) instead
-		this.locallyRaisedPromise = new SharedPromise<boolean>(
-			async (): Promise<boolean> => {
-				return this.whenSynced().then(() => {
-					return this._countUpdates().then((nUpdates) => {
-						this._locallyRaised = nUpdates < 3;
-						return this._locallyRaised;
-					});
-				});
-			},
-			(): [boolean, boolean] => {
-				return [
-					this._locallyRaised !== undefined,
-					this._locallyRaised || false,
-				];
-			}
-		);
-		return this.locallyRaisedPromise.getPromise();
 	}
 
 	syncFileTree(doc: Doc, update: Uint8Array) {
@@ -297,7 +263,6 @@ export class SharedFolder extends HasProvider {
 						const doc = this.createDoc(path, false, false);
 						creates.push(doc);
 						const start = moment.now();
-						doc.locallyRaised(false);
 						doc.whenReady().then(() => {
 							const end = moment.now();
 							console.log(
@@ -467,20 +432,14 @@ export class SharedFolder extends HasProvider {
 		if (loadFromDisk && this.existsSync(doc)) {
 			const contents = this.readFileSync(doc);
 			const text = doc.ydoc.getText("contents");
-			doc.whenSynced()
-				.then(async () => {
-					return await doc.locallyRaised();
-				})
-				.then((locallyRaised: boolean) => {
-					if (
-						locallyRaised &&
-						contents &&
-						text.toString() != contents
-					) {
-						this.log(`Locally Raised; Syncing file into ytext.`);
-						text.insert(0, contents);
-					}
-				});
+			doc.hasKnownPeers().then((hasKnownPeers: boolean) => {
+				if (!hasKnownPeers && contents && text.toString() != contents) {
+					this.log(
+						`[${doc.path}] No Known Peers: Syncing file into ytext.`
+					);
+					text.insert(0, contents);
+				}
+			});
 		}
 
 		if (!vpath) {

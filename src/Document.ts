@@ -10,8 +10,8 @@ import { LoginManager } from "./LoginManager";
 export class Document extends HasProvider {
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
+	_hasKnownPeers?: boolean;
 	path: string;
-	_locallyRaised?: boolean;
 
 	constructor(
 		path: string,
@@ -28,7 +28,7 @@ export class Document extends HasProvider {
 
 		this.ydoc.on(
 			"update",
-			(update: Uint8Array, origin: any, doc: Y.Doc) => {
+			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 				//this.log(`Update from origin`, origin, update);
 			}
 		);
@@ -73,48 +73,22 @@ export class Document extends HasProvider {
 
 	whenSynced(): Promise<void> {
 		if (this._persistence.synced) {
-			return new Promise((resolve) => {
-				resolve();
-			});
+			return Promise.resolve();
 		}
 		return new Promise((resolve) => {
 			this._persistence.once("synced", resolve);
 		});
 	}
 
-	private async _countUpdates(): Promise<number> {
-		return new Promise((resolve, reject) => {
-			try {
-				fetchUpdates(this._persistence).then((db) => {
-					const countRequest = db.count();
-
-					countRequest.onsuccess = () => {
-						resolve(countRequest.result); // Resolve with the count
-					};
-
-					countRequest.onerror = (event: Event) => {
-						console.error("Count request failed");
-						reject(new Error("Count request failed"));
-					};
-				});
-			} catch (e) {
-				console.error("Failed to count rows:", e);
-				reject(e);
-			}
+	hasKnownPeers(): Promise<boolean> {
+		if (this._hasKnownPeers !== undefined) {
+			return Promise.resolve(this._hasKnownPeers);
+		}
+		return this.whenSynced().then(async () => {
+			await fetchUpdates(this._persistence);
+			this._hasKnownPeers = this._persistence._dbsize > 2;
+			return this._hasKnownPeers;
 		});
-	}
-
-	async locallyRaised(set?: boolean): Promise<boolean> {
-		// XXX: Might be able to use _persistence.once("synced", ...) instead
-		if (set !== undefined) {
-			this._locallyRaised = set;
-		}
-		if (this._locallyRaised !== undefined) {
-			return this._locallyRaised;
-		}
-		const nUpdates = await this._countUpdates();
-		this._locallyRaised = nUpdates < 3;
-		return this._locallyRaised;
 	}
 
 	destroy() {

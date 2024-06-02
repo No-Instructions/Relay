@@ -66,9 +66,9 @@ export class ShareLinkPluginValue implements PluginValue {
 		this.editor = editor;
 		if (this.view) {
 			this.view.document?.whenSynced().then(async () => {
-				const locallyRaised =
-					await this.view?.document?.locallyRaised();
-				if (this.view?.document?.text || locallyRaised) {
+				const hasKnownPeers =
+					await this.view?.document?.hasKnownPeers();
+				if (this.view?.document?.text || !hasKnownPeers) {
 					this.updateFrontMatter();
 				}
 			});
