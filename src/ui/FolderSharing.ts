@@ -1,7 +1,6 @@
 import { Modal, TFolder, App, Notice } from "obsidian";
 import { randomUUID } from "crypto";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
-import { promiseWithTimeout } from "src/promiseUtils";
 
 export class SharedFolderModal extends Modal {
 	sharedFolders: SharedFolders;
