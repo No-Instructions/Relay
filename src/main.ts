@@ -64,7 +64,6 @@ export default class Live extends Plugin {
 		this.sharedFolders = this.loadSharedFolders(
 			this.settings.sharedFolders
 		); // Loading shared folders also sanitizes them...
-		this.saveSettings();
 
 		// install hooks for logout/login
 		this.loginManager.on(() => {
@@ -101,6 +100,8 @@ export default class Live extends Plugin {
 		this.networkStatus.checkStatus();
 
 		this.setup();
+
+		this.saveSettings();
 	}
 
 	private loadSharedFolders(
