@@ -118,10 +118,6 @@ export class LiveCMPluginValue implements PluginValue {
 		this.view = this.connectionManager.findView(editor);
 		const ytext = this.view?.document?.ytext;
 		if (!ytext) {
-			console.warn(
-				"unable to proccess update from editor. view.document is missing.",
-				this.view
-			);
 			return;
 		}
 		ytext.doc?.transact(() => {
