@@ -18,7 +18,7 @@ import {
 	unlinkSync,
 } from "fs";
 import { v4 as uuidv4 } from "uuid";
-import path, { dirname, join } from "path";
+import path, { dirname, join } from "path-browserify";
 
 // Ok, so we want to factor out the vault behavior...
 // So a base vault should support registering and triggerings signals.

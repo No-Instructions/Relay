@@ -5,7 +5,7 @@ import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
 import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
-import { dirname } from "path";
+import { dirname } from "path-browserify";
 import { Doc } from "yjs";
 import type { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
