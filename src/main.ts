@@ -1,7 +1,7 @@
 "use strict";
 
 import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
-
+import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
@@ -24,11 +24,13 @@ import { FileManagerFacade } from "./obsidian-api/FileManager";
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
 	showDocumentStatus: boolean;
+	debugging: boolean;
 }
 
 const DEFAULT_SETTINGS: LiveSettings = {
 	sharedFolders: [],
 	showDocumentStatus: false,
+	debugging: false,
 };
 
 declare const HEALTH_URL: string;
@@ -57,6 +59,15 @@ export default class Live extends Plugin {
 		const vaultName = this.vault.getName();
 		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
+
+		if (this.settings.debugging) {
+			this.addCommand({
+				id: "toggle-emulate-mobile",
+				name: "Mobile emulation toggle",
+				//@ts-expect-error
+				callback: () => this.app.emulateMobile(!Platform.isMobile),
+			});
+		}
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please sign in to use Relay");
