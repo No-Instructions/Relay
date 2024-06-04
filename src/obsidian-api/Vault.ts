@@ -17,7 +17,7 @@ import {
 	writeFileSync,
 	unlinkSync,
 } from "fs";
-import { randomUUID } from "crypto";
+import { v4 as uuidv4 } from "uuid";
 import path, { dirname, join } from "path";
 
 // Ok, so we want to factor out the vault behavior...
@@ -270,6 +270,6 @@ export class ShadowVault extends SimpleVault implements Vault {
 }
 export class TestVault extends SimpleVault implements Vault {
 	constructor() {
-		super(`${tmpdir()}/test-${randomUUID()}`);
+		super(`${tmpdir()}/test-${uuidv4()}`);
 	}
 }

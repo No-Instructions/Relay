@@ -1,5 +1,5 @@
 import { Modal, TFolder, App, Notice } from "obsidian";
-import { randomUUID } from "crypto";
+import { v4 as uuidv4 } from "uuid";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 
 export class SharedFolderModal extends Modal {
@@ -34,7 +34,7 @@ export class SharedFolderModal extends Modal {
 		} else {
 			contentEl.createEl("h2", { text: "Share Settings" });
 			contentEl.createEl("form", "form-live", (form) => {
-				const randomGuid = randomUUID();
+				const randomGuid = uuidv4();
 				contentEl.createEl("p", {
 					text: "A new share key has been generated for this folder. If you want to join an existing folder, enter the share key for that folder below.",
 				});

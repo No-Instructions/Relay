@@ -3,7 +3,7 @@ import * as Y from "yjs";
 import { TFolder, debounce } from "obsidian";
 import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
-import { randomUUID } from "crypto";
+import { v4 as uuidv4 } from "uuid";
 import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { Doc } from "yjs";
@@ -399,7 +399,7 @@ export class SharedFolder extends HasProvider {
 			vpaths.forEach((vpath) => {
 				if (!this.ids.has(vpath)) {
 					console.debug("creating entirely new doc for", vpath);
-					const guid = randomUUID();
+					const guid = uuidv4();
 					this.ids.set(vpath, guid);
 				}
 			});
@@ -419,7 +419,7 @@ export class SharedFolder extends HasProvider {
 					"attempting to create a new doc without a local file"
 				);
 			}
-			guid = randomUUID();
+			guid = uuidv4();
 			this.ydoc.transact(() => {
 				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
 			}, this);
