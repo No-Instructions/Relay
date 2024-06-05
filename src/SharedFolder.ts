@@ -1,11 +1,10 @@
 "use strict";
 import * as Y from "yjs";
-import { TFolder, debounce } from "obsidian";
+import { TFolder, debounce, normalizePath } from "obsidian";
 import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
-import { existsSync, readFileSync, open, mkdirSync, writeFileSync } from "fs";
-import { dirname } from "path-browserify";
+import { dirname, join, sep } from "path-browserify";
 import { Doc } from "yjs";
 import type { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
@@ -161,9 +160,6 @@ export class SharedFolder extends HasProvider {
 			return this.hasKnownPeers().then((hasKnownPeers) => {
 				if (!hasKnownPeers) {
 					// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
-					console.warn(
-						"No known peers -- waiting for connection before allowing edits"
-					);
 					return this.onceConnected().then(() => {
 						return this.onceProviderSynced().then(() => {
 							return this;
@@ -208,6 +204,56 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
+	_handleServerRename(
+		doc: Document,
+		path: string,
+		diffLog?: string[]
+	): string | null {
+		// take a doc and it's new path.
+		const oldPath = this.getPath(doc.path);
+		diffLog?.push(`${oldPath} was renamed to ${path}`);
+		const file = this.vault.getAbstractFileByPath(oldPath);
+		if (file) {
+			this.fileManager.renameFile(file, this.path + path).then(() => {
+				doc.move(path);
+			});
+			return oldPath;
+		}
+		return null;
+	}
+
+	_handleServerCreate(path: string, diffLog?: string[]): Document {
+		const doc = this.createDoc(path, false, false);
+
+		// Create directories as needed
+		let folderPromise: Promise<void> = Promise.resolve();
+		const dir = dirname(path);
+		if (!this.existsSync(dir)) {
+			folderPromise = this.mkdir(dir);
+			diffLog?.push(`creating directory ${dir}`);
+		}
+
+		// Recieve content, then flush to disk
+		const file = this.vault.getAbstractFileByPath(
+			normalizePath(this.getPath(path))
+		);
+		console.log("this file doesn't exist", file);
+		const start = moment.now();
+		doc.whenReady().then(async () => {
+			const end = moment.now();
+			console.log(
+				`receive delay: received content for ${doc.path} after ${
+					end - start
+				}ms`,
+				doc.text.toString()
+			);
+			await folderPromise;
+			this.flush(doc, doc.text.toString());
+		});
+		diffLog?.push(`created local file for remotely added doc ${path}`);
+		return doc;
+	}
+
 	syncFileTree(doc: Doc, update: Uint8Array) {
 		const creates: Document[] = [];
 		const renames: string[] = [];
@@ -219,8 +265,6 @@ export class SharedFolder extends HasProvider {
 		// Apply Updates for shared docs
 		this.ydoc.transact(() => {
 			map.forEach((guid, path) => {
-				const fullPath = this.vault.root + this.path + path;
-
 				// Check if the path is valid (inside of shared folder), otherwise delete
 				try {
 					this.assertPath(this.path + path);
@@ -230,59 +274,31 @@ export class SharedFolder extends HasProvider {
 						path
 					);
 					this.ids.delete(path);
-					diffLog.push(
-						"Deleting doc (somehow moved outside of shared folder)"
-					);
 					return;
 				}
 
-				if (!existsSync(fullPath)) {
-					const dir = dirname(fullPath);
-					if (!existsSync(dir)) {
-						mkdirSync(dir, { recursive: true });
-						diffLog.push(`creating directory ${dir}`);
-					}
+				const doc = this.docs.get(guid);
+				if (this.existsSync(path)) {
+					return;
+				}
 
-					const inIds: boolean = Array.from(
-						this.ids.values()
-					).includes(guid);
-					const doc = this.docs.get(guid);
-					if (inIds && doc) {
-						// Rename
-						const oldPath = this.getPath(doc.path);
-						diffLog.push(`${oldPath} was renamed to ${path}`);
-						this.log(`${oldPath} was renamed to ${path}`);
-						const file = this.vault.getAbstractFileByPath(oldPath);
-						if (file) {
-							renames.push(oldPath);
-							this.fileManager.renameFile(file, this.path + path);
-						}
-					} else {
-						// this will trigger `create` which will read the file from disk by default.
-						// so we need to pre-empt that by loading the file into docs.
-						const doc = this.createDoc(path, false, false);
-						creates.push(doc);
-						const start = moment.now();
-						doc.whenReady().then(() => {
-							const end = moment.now();
-							console.log(
-								`send delay: received content for ${
-									doc.path
-								} after ${end - start}ms`
-							);
-						});
-						diffLog.push(
-							`created local file for remotely added doc ${path}`
-						);
-						open(fullPath, "w", (err, fd) => {
-							if (err) {
-								throw err;
-							}
-							this.log(
-								`Sync Message for ${this.path + path}: opening`
-							);
-						});
+				const inIds: boolean = Array.from(this.ids.values()).includes(
+					guid
+				);
+				if (inIds && doc) {
+					const renamed = this._handleServerRename(
+						doc,
+						path,
+						diffLog
+					);
+					if (renamed) {
+						renames.push(renamed);
 					}
+				} else {
+					// write will trigger `create` which will read the file from disk by default.
+					// so we need to pre-empt that by loading the file into docs.
+					const created = this._handleServerCreate(path, diffLog);
+					creates.push(created);
 				}
 			});
 		}, this);
@@ -300,8 +316,7 @@ export class SharedFolder extends HasProvider {
 					diffLog.push(
 						`deleted local file ${file.path} for remotely deleted doc`
 					);
-					this.log(`Trashing File... ${this.path} ${file.path}`);
-					this.vault.trashLocal(file.path);
+					this.vault.adapter.trashLocal(file.path);
 					deletes.push(file.path);
 				}
 			}
@@ -312,23 +327,29 @@ export class SharedFolder extends HasProvider {
 		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 	}
 
-	readFileSync(doc: Document): string {
-		const fullPath = this.vault.root + this.path + doc.path;
-		return readFileSync(fullPath, "utf-8");
+	read(doc: Document): Promise<string> {
+		const vaultPath = join(this.path, doc.path);
+		return this.vault.adapter.read(normalizePath(vaultPath));
 	}
 
-	existsSync(doc: Document): boolean {
-		const fullPath = this.vault.root + this.path + doc.path;
-		return existsSync(fullPath);
+	existsSync(path: string): boolean {
+		const vaultPath = normalizePath(join(this.path, path));
+		const pathExists = this.vault.getAbstractFileByPath(vaultPath) !== null;
+		return pathExists;
 	}
 
-	writeFileSync(doc: Document, content: string): void {
-		const fullPath = this.vault.root + this.path + doc.path;
-		writeFileSync(fullPath, content);
+	exists(doc: Document): Promise<boolean> {
+		const vaultPath = join(this.path, doc.path);
+		return this.vault.adapter.exists(normalizePath(vaultPath));
+	}
+
+	flush(doc: Document, content: string): Promise<void> {
+		const vaultPath = join(this.path, doc.path);
+		return this.vault.adapter.write(normalizePath(vaultPath), content);
 	}
 
 	getPath(path: string): string {
-		return this.path + path;
+		return join(this.path, path);
 	}
 
 	assertPath(path: string) {
@@ -337,8 +358,13 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	mkdir(path: string): Promise<void> {
+		const vaultPath = join(this.path, path);
+		return this.vault.adapter.mkdir(normalizePath(vaultPath));
+	}
+
 	checkPath(path: string): boolean {
-		return path.startsWith(this.path + "/");
+		return path.startsWith(this.path + sep);
 	}
 
 	getVirtualPath(path: string): string {
@@ -413,7 +439,6 @@ export class SharedFolder extends HasProvider {
 		const maybeGuid: string | undefined = this.ids.get(vpath);
 		let guid: string;
 		if (maybeGuid === undefined) {
-			console.warn("creating entirely new doc for", vpath);
 			if (!loadFromDisk) {
 				throw new Error(
 					"attempting to create a new doc without a local file"
@@ -429,25 +454,31 @@ export class SharedFolder extends HasProvider {
 		const doc =
 			this.docs.get(guid) ||
 			new Document(vpath, guid, this.loginManager, this);
-		if (loadFromDisk && this.existsSync(doc)) {
-			const contents = this.readFileSync(doc);
-			const text = doc.ydoc.getText("contents");
-			doc.hasKnownPeers().then((hasKnownPeers: boolean) => {
+		const knownPeersPromise = doc.hasKnownPeers();
+
+		if (loadFromDisk) {
+			(async () => {
+				const exists = await this.exists(doc);
+				if (!exists) {
+					return;
+				}
+				const [contents, hasKnownPeers] = await Promise.all([
+					this.read(doc),
+					knownPeersPromise,
+				]);
+				const text = doc.ydoc.getText("contents");
 				if (!hasKnownPeers && contents && text.toString() != contents) {
 					this.log(
 						`[${doc.path}] No Known Peers: Syncing file into ytext.`
 					);
 					text.insert(0, contents);
 				}
-			});
-		}
-
-		if (!vpath) {
-			throw new Error("empty vpath!");
+			})();
 		}
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
+
 		return doc;
 	}
 
@@ -490,7 +521,7 @@ export class SharedFolder extends HasProvider {
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			this.createDoc(newVPath, true);
+			this.createDoc(newVPath, true, true);
 		} else {
 			// live doc exists
 			const guid = this.ids.get(oldVPath);
@@ -557,8 +588,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	}
 
 	lookup(path: string): SharedFolder | null {
+		// Return the shared folder that contains the file -- agnostic of whether the file actually exists
 		const folder = this.find((sharedFolder: SharedFolder) => {
-			return path.startsWith(sharedFolder.path + "/");
+			return sharedFolder.checkPath(path);
 		});
 		if (!folder) {
 			return null;

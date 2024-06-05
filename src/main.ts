@@ -1,12 +1,11 @@
 "use strict";
 
-import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
+import { Plugin, TFolder, Notice, MarkdownView, TFile } from "obsidian";
 import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
 
-import { existsSync } from "fs";
 import { VaultFacade } from "./obsidian-api/Vault";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import { SharedFolders } from "./SharedFolder";
@@ -72,47 +71,48 @@ export default class Live extends Plugin {
 		if (!this.loginManager.setup()) {
 			new Notice("Please sign in to use Relay");
 		}
-		this.sharedFolders = this.loadSharedFolders(
-			this.settings.sharedFolders
-		); // Loading shared folders also sanitizes them...
 
-		// install hooks for logout/login
-		this.loginManager.on(() => {
-			if (this.loginManager.loggedIn) {
-				this._onLogin();
-			} else {
-				this._onLogout();
-			}
-		});
+		this.app.workspace.onLayoutReady(() => {
+			this.sharedFolders = this.loadSharedFolders(
+				this.settings.sharedFolders
+			); // Loading shared folders also sanitizes them...
+			this.saveSettings();
 
-		const workspace = new WorkspaceFacade(this.app.workspace);
+			// install hooks for logout/login
+			this.loginManager.on(() => {
+				if (this.loginManager.loggedIn) {
+					this._onLogin();
+				} else {
+					this._onLogout();
+				}
+			});
 
-		this._liveViews = new LiveViewManager(
-			workspace,
-			this.sharedFolders,
-			this.loginManager,
-			this.networkStatus
-		);
+			const workspace = new WorkspaceFacade(this.app.workspace);
+			this._liveViews = new LiveViewManager(
+				workspace,
+				this.sharedFolders,
+				this.loginManager,
+				this.networkStatus
+			);
 
-		// NOTE: Extensions list should be loaded once and then mutated.
-		// this.app.workspace.updateOptions(); must be called to apply changes.
-		this.registerEditorExtension(this._liveViews.extensions);
+			// NOTE: Extensions list should be loaded once and then mutated.
+			// this.app.workspace.updateOptions(); must be called to apply changes.
+			this.registerEditorExtension(this._liveViews.extensions);
 
-		this.tokenStore.start();
-		this.networkStatus.addEventListener("offline", () => {
-			this.tokenStore.stop();
-			this.sharedFolders.forEach((folder) => folder.disconnect());
-			this._liveViews.goOffline();
-		});
-		this.networkStatus.addEventListener("online", () => {
 			this.tokenStore.start();
-			this._liveViews.goOnline();
+			this.networkStatus.addEventListener("offline", () => {
+				this.tokenStore.stop();
+				this.sharedFolders.forEach((folder) => folder.disconnect());
+				this._liveViews.goOffline();
+			});
+			this.networkStatus.addEventListener("online", () => {
+				this.tokenStore.start();
+				this._liveViews.goOnline();
+			});
+			this.networkStatus.checkStatus();
+
+			this.setup();
 		});
-		this.networkStatus.checkStatus();
-
-		this.setup();
-
-		this.saveSettings();
 	}
 
 	private loadSharedFolders(
@@ -123,9 +123,10 @@ export default class Live extends Plugin {
 		);
 		sharedFolderSettings.forEach(
 			(sharedFolderSetting: SharedFolderSettings) => {
-				if (
-					!existsSync(this.vault.fullPath(sharedFolderSetting.path))
-				) {
+				const tFolder = this.vault.getFolderByPath(
+					sharedFolderSetting.path
+				);
+				if (!tFolder) {
 					console.warn(
 						`[System 3][Relay][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
 					);
