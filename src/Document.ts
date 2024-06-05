@@ -86,7 +86,7 @@ export class Document extends HasProvider {
 		}
 		return this.whenSynced().then(async () => {
 			await fetchUpdates(this._persistence);
-			this._hasKnownPeers = this._persistence._dbsize > 2;
+			this._hasKnownPeers = this._persistence._dbsize > 3;
 			return this._hasKnownPeers;
 		});
 	}
