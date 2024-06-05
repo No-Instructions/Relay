@@ -364,6 +364,11 @@ export class TokenStore<TokenType> {
 			}
 		}
 	}
+
+	clear() {
+		this.tokenMap.clear();
+		this.refreshQueue.clear();
+	}
 }
 
 export class DefaultTimeProvider implements TimeProvider {

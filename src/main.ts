@@ -164,6 +164,7 @@ export default class Live extends Plugin {
 
 	private _onLogout() {
 		this.saveSettings();
+		this.tokenStore?.clear();
 		this._liveViews.refresh("logout");
 	}
 
