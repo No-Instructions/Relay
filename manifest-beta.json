@@ -1,6 +1,6 @@
 {
-	"id": "system3",
-	"name": "System 3",
+	"id": "relay",
+	"name": "Relay",
 	"version": "0.0.31",
 	"minAppVersion": "0.15.0",
 	"description": "Realtime Collaborative Workspaces",

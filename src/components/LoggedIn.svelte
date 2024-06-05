@@ -30,7 +30,7 @@
 	}
 </script>
 
-<h2>System 3</h2>
+<h2>Relay</h2>
 {#if isLoggedIn}
 	<SettingItemHeading name="Account" />
 	<SettingItem

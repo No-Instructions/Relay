@@ -308,13 +308,13 @@ export class LiveViewManager {
 	}
 
 	goOffline() {
-		console.debug("[System 3][Live Views] going offline");
+		console.debug("[System 3][Relay][Live Views] going offline");
 		this.views.forEach((view) => view.document?.disconnect());
 		this.refresh("[NetworkStatus]");
 	}
 
 	goOnline() {
-		console.debug("[System 3][Live Views] going online");
+		console.debug("[System 3][Relay][Live Views] going online");
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
 			folder.connect();
 		});
@@ -443,7 +443,7 @@ export class LiveViewManager {
 
 		if (attemptedConnections > backgroundConnections) {
 			console.warn(
-				`[System 3][Live Views] connection pool (max ${backgroundConnections}): rejected connections for ${
+				`[System 3][Relay][Live Views] connection pool (max ${backgroundConnections}): rejected connections for ${
 					attemptedConnections - backgroundConnections
 				} views`
 			);
@@ -499,14 +499,14 @@ export class LiveViewManager {
 		try {
 			views = this.getViews();
 		} catch (e) {
-			console.warn("[System 3][Live Views] error getting views", e);
+			console.warn("[System 3][Relay][Live Views] error getting views", e);
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
 				console.warn(
-					"[System 3][Live Views] unexpected plugins loaded"
+					"[System 3][Relay][Live Views] unexpected plugins loaded"
 				);
 				this.wipe();
 			}
@@ -570,7 +570,7 @@ export class LiveViewManager {
 			)
 				.catch((e) => {
 					console.warn(
-						`[System 3][Live Views] refresh views timed out... timeout=${timeout}`,
+						`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
 						e
 					);
 					return false;

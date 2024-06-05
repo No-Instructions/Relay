@@ -1,5 +1,5 @@
 {
-	"name": "system3",
+	"name": "relay",
 	"version": "1.0.0",
 	"description": "Real-time collaborative workspace for Obsidian.",
 	"main": "main.js",

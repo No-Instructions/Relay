@@ -48,8 +48,8 @@ export default class Live extends Plugin {
 	private _liveViews!: LiveViewManager;
 
 	async onload() {
-		console.log("[System3] Loading Plugin");
-		this.log = curryLog("[System3]");
+		console.log("[System 3][Relay] Loading Plugin");
+		this.log = curryLog("[System 3][Relay]");
 		await this.loadSettings();
 		this.vault = new VaultFacade(this.app);
 		this.loginManager = new LoginManager();
@@ -59,7 +59,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
 
 		if (!this.loginManager.setup()) {
-			new Notice("Please login to System3");
+			new Notice("Please sign in to use Relay");
 		}
 		this.sharedFolders = this.loadSharedFolders(
 			this.settings.sharedFolders
@@ -116,7 +116,7 @@ export default class Live extends Plugin {
 					!existsSync(this.vault.fullPath(sharedFolderSetting.path))
 				) {
 					console.warn(
-						`[System3][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
+						`[System 3][Relay][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
 					);
 					return;
 				}
@@ -326,7 +326,7 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
-		console.log("[System3]: Unloading Plugin");
+		console.log("[System 3][Relay]: Unloading Plugin");
 		// We want to unload the visual components but not the data
 		this._offSaveSettings();
 		this.sharedFolders.destroy();
