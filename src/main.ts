@@ -341,8 +341,10 @@ export default class Live extends Plugin {
 	onunload() {
 		console.log("[System 3][Relay]: Unloading Plugin");
 		// We want to unload the visual components but not the data
-		this._offSaveSettings();
-		this.sharedFolders.destroy();
+		if (this._offSaveSettings) {
+			this._offSaveSettings();
+			this.sharedFolders.destroy();
+		}
 
 		this.folderNavDecorations?.destroy();
 
