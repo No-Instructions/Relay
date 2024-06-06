@@ -1,5 +1,5 @@
 {
-	"id": "relay",
+	"id": "system3-relay",
 	"name": "Relay",
 	"minAppVersion": "0.15.0",
 	"description": "Realtime Collaborative Workspace",
