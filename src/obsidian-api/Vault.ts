@@ -59,7 +59,11 @@ export class VaultFacade extends Observable<string> implements Vault {
 	}
 
 	getFolderByPath(path: string): TFolder | null {
-		return this.app.vault.getFolderByPath(path);
+		const maybeFolder = this.app.vault.getAbstractFileByPath(path);
+		if (maybeFolder instanceof TFolder) {
+			return maybeFolder;
+		}
+		return null;
 	}
 
 	rename(file: TAbstractFile, newName: string) {
