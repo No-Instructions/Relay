@@ -127,7 +127,10 @@ function toRelay(
 	relayRoles: ObservableMap<string, RelayRole>,
 	relayInvitations: ObservableMap<string, RelayInvitation>
 ): Relay {
-	const role: Role = relayRoles.get(relay.id)?.role || ("Member" as Role);
+	const role: Role =
+		relayRoles.find((role) => {
+			return role.relay?.id === relay.id;
+		})?.role || ("Member" as Role);
 	const relayInvitation = relayInvitations.find(
 		(invite) => invite.relay.id === relay.id
 	);
