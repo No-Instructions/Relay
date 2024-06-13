@@ -6,8 +6,10 @@ import { SharedFolder } from "./SharedFolder";
 import { YText } from "yjs/dist/src/internals";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
+import { S3RN, S3Document } from "./S3RN";
 
 export class Document extends HasProvider {
+	guid: string;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
 	_hasKnownPeers?: boolean;
@@ -19,7 +21,9 @@ export class Document extends HasProvider {
 		loginManager: LoginManager,
 		parent: SharedFolder
 	) {
-		super(guid, parent.tokenStore, loginManager);
+		const s3rn = S3RN.encode(new S3Document(parent.guid, guid));
+		super(s3rn, parent.tokenStore, loginManager);
+		this.guid = guid;
 		this._parent = parent;
 		this.path = path;
 		this.log = curryLog(`[SharedDoc](${this.path})`);

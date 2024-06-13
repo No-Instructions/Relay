@@ -6,6 +6,7 @@ import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { ClientToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
+import { S3RN, S3Document, S3Relay, type S3RNType } from "./S3RN";
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
@@ -30,13 +31,33 @@ async function refresh(
 	const headers = {
 		Authorization: `Bearer ${loginManager.user.token}`,
 	};
-	const log = curryLog("[refresh]");
-	log(`{docId: ${documentId}}`);
+	const log = curryLog("[TokenStore][Refresh]");
+	log(`${documentId}`);
+	const entity: S3RNType = S3RN.decode(documentId);
+	let payload: string;
+	console.warn(
+		entity,
+		entity instanceof S3Document,
+		entity instanceof S3Relay
+	);
+	if (entity instanceof S3Document) {
+		payload = JSON.stringify({
+			docId: entity.documentId,
+			relay: entity.relayId,
+		});
+	} else if (entity instanceof S3Relay) {
+		payload = JSON.stringify({
+			relay: entity.relayId,
+			docId: entity.relayId,
+		});
+	} else {
+		throw new Error("Invalid type");
+	}
 	requestUrl({
-		url: "https://api.dnup.org/doc/token",
+		url: "https://api.dnup.org/token",
 		method: "POST",
 		headers: headers,
-		body: JSON.stringify({ docId: documentId }),
+		body: payload,
 	})
 		.then((response) => {
 			if (response.status !== 200) {
@@ -48,13 +69,14 @@ async function refresh(
 				);
 			}
 			if (response.headers["x-tf-cached"] === "True") {
-				console.warn("Overfetched token");
 				console.log(response.headers);
 			}
 			const clientToken = response.json as ClientToken;
 			onSuccess(clientToken);
 		})
 		.catch((reason) => {
+			console.error(payload);
+			console.error(reason);
 			onError(reason);
 		});
 }

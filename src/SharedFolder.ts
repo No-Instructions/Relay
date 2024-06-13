@@ -15,6 +15,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import moment from "moment";
 import { SharedPromise } from "./promiseUtils";
+import { S3RN, S3Relay } from "./S3RN";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -41,6 +42,7 @@ class Documents extends ObservableSet<Document> {
 
 export class SharedFolder extends HasProvider {
 	path: string;
+	guid: string;
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	docset: Documents;
@@ -92,7 +94,9 @@ export class SharedFolder extends HasProvider {
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore
 	) {
-		super(guid, tokenStore, loginManager);
+		const s3rn = S3RN.encode(new S3Relay(guid));
+		super(s3rn, tokenStore, loginManager);
+		this.guid = guid;
 		this.fileManager = fileManager;
 		this.vault = vault;
 		this.path = path;

@@ -7,6 +7,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
+import { S3Document, S3RN, S3Relay, type S3RNType } from "./S3RN";
 
 export type ConnectionStatus =
 	| "connected"
@@ -39,16 +40,31 @@ export interface Subscription {
 	off: () => void;
 }
 
+function s3rnToYsweetDocId(s3rn: string): string {
+	// YSweet has various restrictions on the allowed characterset
+	const entity: S3RNType = S3RN.decode(s3rn);
+	let ysweetDocId: string;
+	if (entity instanceof S3Document) {
+		ysweetDocId = entity.relayId + "-" + entity.documentId;
+	} else if (entity instanceof S3Relay) {
+		ysweetDocId = entity.relayId;
+	} else {
+		throw new Error("Invalid type");
+	}
+	return ysweetDocId;
+}
+
 function makeProvider(
 	clientToken: ClientToken,
-	guid: string,
+	s3rn: string,
 	ydoc: Doc,
-	user: User
+	user?: User
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
 	};
-	const provider = new YSweetProvider(clientToken.url, guid, ydoc, {
+	const ysweetDocId = s3rnToYsweetDocId(s3rn);
+	const provider = new YSweetProvider(clientToken.url, ysweetDocId, ydoc, {
 		connect: false,
 		params: params,
 		disableBc: true,
@@ -70,7 +86,7 @@ type Listener = (state: ConnectionState) => void;
 
 export class HasProvider {
 	_provider: YSweetProvider;
-	guid: string;
+	s3rn: string;
 	path?: string;
 	ydoc: Doc;
 	loginManager: LoginManager;
@@ -83,22 +99,22 @@ export class HasProvider {
 	listeners: Map<unknown, Listener>;
 
 	constructor(
-		guid: string,
+		s3rn: string,
 		tokenStore: LiveTokenStore,
 		loginManager: LoginManager
 	) {
-		this.guid = guid;
+		this.s3rn = s3rn;
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
 		this.clientToken =
-			this.tokenStore.getTokenSync(this.guid) ||
+			this.tokenStore.getTokenSync(this.s3rn) ||
 			({ token: "", url: "", expiryTime: 0 } as ClientToken);
 		const user = this.loginManager?.user;
 		this._provider = makeProvider(
 			this.clientToken,
-			this.guid,
+			this.s3rn,
 			this.ydoc,
 			user
 		);
@@ -147,7 +163,7 @@ export class HasProvider {
 		this.log("get provider token");
 
 		const tokenPromise = this.tokenStore.getToken(
-			this.guid,
+			this.s3rn,
 			this.path || "unknown",
 			this.refreshProvider.bind(this)
 		);
@@ -170,20 +186,7 @@ export class HasProvider {
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
 		this.clientToken = clientToken;
-		const params = {
-			token: clientToken.token,
-		};
-		const tempDoc = new Doc();
-		const tempProvider = new YSweetProvider(
-			clientToken.url,
-			this.guid,
-			tempDoc,
-			{
-				connect: false,
-				params: params,
-				disableBc: true,
-			}
-		);
+		const tempProvider = makeProvider(clientToken, this.s3rn, new Doc());
 		const newUrl = tempProvider.url;
 
 		if (!this._provider) {
