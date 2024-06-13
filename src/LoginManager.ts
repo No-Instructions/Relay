@@ -1,5 +1,5 @@
 import { requestUrl } from "obsidian";
-import { ObservableSet } from "./ObservableSet";
+import { ObservableSet } from "./observable/ObservableSet";
 import { User } from "./User";
 import PocketBase, { BaseAuthStore } from "pocketbase";
 

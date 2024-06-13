@@ -1,25 +1,13 @@
 "use strict";
-export class ObservableSet<T> {
+
+import { Observable } from "./Observable";
+
+export class ObservableSet<T> extends Observable<ObservableSet<T>> {
 	protected _set: Set<T>;
-	private _listeners: Set<() => void>;
 
 	constructor() {
+		super();
 		this._set = new Set();
-		this._listeners = new Set();
-	}
-
-	protected notifyListeners(): void {
-		for (const listener of this._listeners) {
-			listener();
-		}
-	}
-
-	on(listener: () => void): void {
-		this._listeners.add(listener);
-	}
-
-	off(listener: () => void): void {
-		this._listeners.delete(listener);
 	}
 
 	add(item: T): ObservableSet<T> {
@@ -34,10 +22,6 @@ export class ObservableSet<T> {
 			this.notifyListeners();
 		}
 		return result;
-	}
-
-	map<ReturnType>(callbackfn: (value: T) => ReturnType): ReturnType[] {
-		return this.items().map<ReturnType>(callbackfn);
 	}
 
 	clear(): void {
@@ -57,6 +41,10 @@ export class ObservableSet<T> {
 		return this._set.size;
 	}
 
+	map<ReturnType>(callbackfn: (value: T) => ReturnType): ReturnType[] {
+		return this.items().map(callbackfn);
+	}
+
 	forEach(callbackfn: (value: T, index: number, array: T[]) => void): void {
 		this.items().forEach(callbackfn);
 	}
@@ -72,5 +60,15 @@ export class ObservableSet<T> {
 			}
 		}
 		return false;
+	}
+
+	filter(predicate: (value: T) => boolean): T[] {
+		const filtered: T[] = [];
+		for (const value of this._set) {
+			if (predicate(value)) {
+				filtered.push(value);
+			}
+		}
+		return filtered;
 	}
 }

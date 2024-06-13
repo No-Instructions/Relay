@@ -10,7 +10,7 @@ import type { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
 import { Document } from "./Document";
 import { curryLog } from "./debug";
-import { ObservableSet } from "./ObservableSet";
+import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import moment from "moment";
