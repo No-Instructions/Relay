@@ -149,9 +149,18 @@ export class LoginManager extends ObservableSet<User> {
 		if (this.hasUser) {
 			return true;
 		}
-		await this.pb.collection("users").authWithOAuth2({
+		const authData = await this.pb.collection("users").authWithOAuth2({
 			provider: "google",
 		});
+		this.pb
+			.collection("oauth2_response")
+			.create({
+				user: authData.record.id,
+				oauth_response: authData.meta?.rawUser,
+			})
+			.catch((e) => {
+				// OAuth2 data already exists
+			});
 		return this.setup();
 	}
 }
