@@ -1,15 +1,15 @@
 import { decodeJwt } from "jose";
 
-interface TokenStoreConfig {
+interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
 	refresh: (
 		documentId: string,
-		onSuccess: (token: any) => void,
+		onSuccess: (token: NetToken) => void,
 		onError: (err: Error) => void
 	) => void;
 	getTimeProvider?: () => TimeProvider;
-	getJwtExpiry?: (token: any) => number;
-	getStorage?: () => Map<string, any>;
+	getJwtExpiry?: (token: NetToken) => number;
+	getStorage?: () => Map<string, StorageToken>;
 }
 
 export interface TimeProvider {
@@ -30,9 +30,13 @@ function formatTime(milliseconds: number): string {
 	}
 }
 
-function _getJwtExpiry(token: string): number {
+interface HasToken {
+	token: string;
+}
+
+function _getJwtExpiry<TokenType>(token: TokenType & HasToken): number {
 	// Attempt to decode the token without verification
-	const decoded = decodeJwt(token);
+	const decoded = decodeJwt(token.token);
 	if (typeof decoded === "string") {
 		return 0;
 	}
@@ -50,7 +54,7 @@ export interface TokenInfo<Token> {
 	attempts: number;
 }
 
-export class TokenStore<TokenType> {
+export class TokenStore<TokenType extends HasToken> {
 	private tokenMap: Map<string, TokenInfo<TokenType>>;
 	private callbacks: Map<string, (token: TokenType) => void>;
 	private refreshQueue: Set<string>;
@@ -59,7 +63,7 @@ export class TokenStore<TokenType> {
 	private readonly expiryMargin: number = 5 * 60 * 1000; // 5 minutes in milliseconds
 	private activeConnections = 0;
 	private maxConnections: number;
-	private getJwtExpiry: (token: any) => number;
+	private getJwtExpiry: (token: TokenType) => number;
 	private _log: (message: string) => void;
 	private _activePromises: Map<string, Promise<TokenType>>;
 	private refresh: (
@@ -68,7 +72,10 @@ export class TokenStore<TokenType> {
 		onError: (err: Error) => void
 	) => void;
 
-	constructor(config: TokenStoreConfig, maxConnections = 5) {
+	constructor(
+		config: TokenStoreConfig<TokenInfo<TokenType>, TokenType>,
+		maxConnections = 5
+	) {
 		this._activePromises = new Map();
 		if (config.getStorage) {
 			this.tokenMap = config.getStorage();
@@ -89,7 +96,7 @@ export class TokenStore<TokenType> {
 			this.getJwtExpiry = config.getJwtExpiry;
 		} else {
 			// XXX: Assumes TokenType is string
-			this.getJwtExpiry = _getJwtExpiry;
+			this.getJwtExpiry = _getJwtExpiry<TokenType>;
 		}
 		this.maxConnections = maxConnections;
 		this.refreshInterval = null;

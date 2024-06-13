@@ -94,6 +94,10 @@ class TestTimeProvider implements TimeProvider {
 	}
 }
 
+interface TestToken {
+	token: string;
+}
+
 async function _testTokenStore() {
 	// Setup
 	const testTimeProvider = new TestTimeProvider();
@@ -101,17 +105,19 @@ async function _testTokenStore() {
 	const mockLog = (message: string) => console.log(`Log: ${message}`);
 	const mockRefresh = (
 		documentId: string,
-		callback: (newToken: string) => void
+		callback: (newToken: TestToken) => void
 	) => {
 		testTimeProvider.setTimeout(() => {
-			callback((testTimeProvider.getTime() + 30 * 60 * 1000).toString());
+			callback({
+				token: (testTimeProvider.getTime() + 30 * 60 * 1000).toString(),
+			});
 		}, 100);
 	};
-	const _testGetJwtExpiry = (token: string) => {
-		return parseInt(token);
+	const _testGetJwtExpiry = (token: TestToken) => {
+		return parseInt(token.token);
 	};
 
-	const tokenStore = new TokenStore(
+	const tokenStore = new TokenStore<TestToken>(
 		{
 			log: mockLog,
 			refresh: mockRefresh,
