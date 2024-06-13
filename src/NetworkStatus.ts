@@ -66,7 +66,6 @@ class NetworkStatus {
 				}
 			})
 			.catch((error) => {
-				console.warn(error);
 				if (error.message.includes("ERR_NETWORK_CHANGED")) {
 					// This doesn't necessarily imply a disconnect,
 					// We should immediately try again to get a name resolution error.
