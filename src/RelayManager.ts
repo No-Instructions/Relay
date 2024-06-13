@@ -22,7 +22,7 @@ interface RelayDAO {
 }
 
 interface RelayDAOExpandingRelayInvitation extends RelayDAO {
-	expand: {
+	expand?: {
 		relay_invitations_via_relay: RelayInvitationDAO;
 	};
 }
@@ -40,24 +40,24 @@ interface RelayRoleDAO {
 }
 
 interface RelayRoleDAOExpandingRelayRole extends RelayRoleDAO {
-	expand: {
-		role: RoleDAO;
-		relay: RelayDAO;
+	expand?: {
+		role?: RoleDAO;
+		relay?: RelayDAO;
 	};
 }
 
 interface RelayRoleDAOExpandingRelayUser extends RelayRoleDAO {
-	expand: {
-		user: UserDAO;
-		relay: RelayDAO;
+	expand?: {
+		user?: UserDAO;
+		relay?: RelayDAO;
 	};
 }
 
 interface UserDAOExpandingRelayRoles {
 	id: string;
 	name: string;
-	expand: {
-		relay_roles_via_user: RelayRoleDAOExpandingRelayRole[];
+	expand?: {
+		relay_roles_via_user?: RelayRoleDAOExpandingRelayRole[];
 	};
 }
 
@@ -74,9 +74,12 @@ function toRelays(
 ): Relay[] {
 	const relays: Relay[] = [];
 	try {
-		user.expand.relay_roles_via_user.forEach((role) => {
+		user.expand?.relay_roles_via_user?.forEach((role) => {
+			if (!(role.expand?.relay && role.expand.role)) {
+				return;
+			}
 			const folder = sharedFolders.find(
-				(folder) => folder.guid === role.expand.relay.guid
+				(folder) => folder.guid === role.expand?.relay?.guid
 			);
 			relays.push(
 				makeRelay(
@@ -105,8 +108,13 @@ function toRelayRoles(
 		string,
 		RelayRole
 	>();
-	user.expand.relay_roles_via_user.forEach((role) => {
-		const relay = relays.find((relay) => relay.id === role.expand.relay.id);
+	user.expand?.relay_roles_via_user?.forEach((role) => {
+		if (!role.expand?.relay?.id || !role.expand?.role) {
+			return;
+		}
+		const relay = relays.find(
+			(relay) => relay.id === role.expand?.relay?.id
+		);
 		const id = role.id;
 		if (!relay) {
 			console.error("relay not found", role.expand.relay.id);
@@ -336,9 +344,9 @@ export class RelayManager {
 						this.relayInvitations
 					);
 					this.relays.set(e.record.id, relay);
-					if (e.record.expand.relay_invitations_via_relay) {
+					if (e.record.expand?.relay_invitations_via_relay) {
 						const newInvitation = new RelayInvitationAuto(
-							e.record.expand.relay_invitations_via_relay,
+							e.record.expand?.relay_invitations_via_relay,
 							this.relays,
 							this.roles
 						);
@@ -379,10 +387,12 @@ export class RelayManager {
 					}
 					try {
 						const makeRole = () => {
-							this.users.set(
-								e.record.expand.user.id,
-								e.record.expand.user
-							);
+							if (e.record.expand?.user) {
+								this.users.set(
+									e.record.expand.user.id,
+									e.record.expand.user
+								);
+							}
 							const role = new RelayRoleAuto(
 								e.record,
 								this.relays,
@@ -446,7 +456,12 @@ export class RelayManager {
 			})
 			.then((roles) => {
 				roles.items.forEach((record) => {
-					this.users.set(record.expand.user.id, record.expand.user);
+					if (record.expand?.user) {
+						this.users.set(
+							record.expand.user.id,
+							record.expand.user
+						);
+					}
 					const role = new RelayRoleAuto(
 						record,
 						this.relays,
