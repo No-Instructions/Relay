@@ -89,20 +89,23 @@ const watchAndMove = (fnames, mapping) => {
 	});
 };
 
-const move = (fnames) => {
+const move = (fnames, mapping) => {
 	// only usable on top level directory
 	for (const fname of fnames) {
-		copyFile(fname, path.join(out, fname));
+		const destName = mapping[fname] || fname;
+		const destPath = path.join(out, path.basename(destName));
+		copyFile(fname, destPath);
 	}
 };
 
 if (watch) {
 	await context.watch();
-	watchAndMove(["styles.css", "manifest-beta.json"], {
-		"manifest-beta.json": "manifest.json",
-	});
+    const files = ["styles.css", "manifest-beta.json"]
+    const mapping = {"manifest-beta.json": "manifest.json"}
+    move(files, mapping)
+	watchAndMove(files, mapping)
 } else {
 	await context.rebuild();
-	move(["styles.css", "manifest.json"]);
+	move(["styles.css", "manifest.json"], {});
 	process.exit(0);
 }
