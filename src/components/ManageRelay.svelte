@@ -7,7 +7,7 @@
 	import type { SharedFolder } from "src/SharedFolder";
 	import MountRelay from "./JoinRelay.svelte";
 	import { Notice, debounce } from "obsidian";
-	import { createEventDispatcher } from "svelte";
+	import { createEventDispatcher, onMount } from "svelte";
 	import { writable } from "svelte/store";
 
 	export let relay: Relay;
@@ -18,6 +18,14 @@
 	let relayRoles: RelayRole[] = [];
 
 	export let mount: boolean;
+
+	let nameValid = writable(true);
+	let nameInput: HTMLInputElement;
+	onMount(() => {
+		if (!folder && nameInput) {
+			nameInput.focus();
+		}
+	});
 
 	const dispatch = createEventDispatcher();
 
@@ -63,21 +71,40 @@
 		true,
 	);
 
+	function isValidObsidianFolderName(path: string): boolean {
+		// Obsidian restricted characters in folder and file names
+		const restrictedCharacters = /[\\:*?"<>|]/;
+
+		// Check if the path contains any restricted characters
+		if (restrictedCharacters.test(path)) {
+			return false;
+		}
+
+		// Check for leading or trailing whitespaces which are not allowed
+		if (path.trim() !== path) {
+			return false;
+		}
+
+		// Check for any segment of the path being empty or only '.'
+		const segments = path.split("/");
+		for (const segment of segments) {
+			if (segment === "" || segment === "." || segment === "..") {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	function handleNameChange() {
-		updating.set(true);
-		updateRelay();
+		nameValid.set(isValidObsidianFolderName(nameInput.value));
+		if ($nameValid) {
+			updating.set(true);
+			updateRelay();
+		}
 	}
 
 	function handleUnlink() {
 		relay = plugin.relayManager.unmountRelay(relay);
-		//folder =
-		//	relay.folder ||
-		//	plugin.sharedFolders.find(
-		//		(folder) => folder.id === relay.id,
-		//	);
-		//if (folder) {
-		//	relay = plugin.workspaceManager.unmountRelay(workspace);
-		//}
 	}
 
 	function handleTransfer() {
@@ -134,8 +161,10 @@
 				spellcheck="false"
 				placeholder="Example: Shared Notes"
 				bind:value={relay.name}
+				bind:this={nameInput}
 				on:input={handleNameChange}
-				class={$updating ? "system3-updating" : ""}
+				class={($updating ? "system3-updating" : "") +
+					($nameValid ? "" : " system3-input-invalid")}
 			/>
 		</SettingItem>
 		<SettingItem
@@ -254,7 +283,11 @@
 		margin-top: 6em;
 	}
 
-	.system3-updating {
-		border: 1px solid var(--color-accent);
+	input.system3-updating {
+		border: 1px solid var(--color-accent) !important;
+	}
+
+	input.system3-input-invalid {
+		border: 1px solid var(--color-red) !important;
 	}
 </style>

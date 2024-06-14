@@ -9,6 +9,7 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import { createEventDispatcher } from "svelte";
 	import { Folder } from "lucide-svelte";
+	import { normalizePath } from "obsidian";
 
 	export let relay: Relay;
 
@@ -50,9 +51,10 @@
 
 	function handleMount() {
 		// XXX refactor
-		const vaultRelativePath = path.join(folderLocation, folderName);
+		const vaultRelativePath = normalizePath(
+			path.join(folderLocation, folderName),
+		);
 		if (plugin.vault.getFolderByPath(vaultRelativePath) !== null) {
-			// XXX this could accidentally share people's local content...
 			plugin.sharedFolders
 				.new(path.join(folderLocation, folderName), relay.guid)
 				.then((sharedFolder) => {
