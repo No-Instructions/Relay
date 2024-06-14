@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type Live from "../main";
-	import path from "path";
+	import path from "path-browserify";
 
 	import store from "../Store";
 	import SettingItem from "./SettingItem.svelte";
