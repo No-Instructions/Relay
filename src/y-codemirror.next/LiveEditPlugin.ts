@@ -47,6 +47,7 @@ export class LiveCMPluginValue implements PluginValue {
 		this.view.plugin = this;
 		this.view.document.whenSynced().then(() => {
 			this.setBuffer();
+			this.view?.view.requestSave();
 		});
 
 		this._observer = (event, tr) => {
