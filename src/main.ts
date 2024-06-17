@@ -215,7 +215,7 @@ export default class Live extends Plugin {
 			})
 		);
 
-		const vaultLog = curryLog("[Live][Vault]");
+		const vaultLog = curryLog("[System 3][Relay][Vault]");
 
 		const handleErrorEvent = (event: ErrorEvent) => {
 			const error = event.error;
@@ -250,7 +250,6 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
-				//vaultLog("create", file);
 				// NOTE: this is called on every file at startup...
 				if (file instanceof TFolder) {
 					return;
@@ -266,7 +265,6 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
-				vaultLog("delete", file);
 				if (file instanceof TFolder) {
 					const folder = this.sharedFolders.find(
 						(folder) => folder.path === file.path
@@ -278,6 +276,7 @@ export default class Live extends Plugin {
 				}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
+					vaultLog("Delete", file);
 					folder.whenReady().then((folder) => {
 						folder.deleteFile(file.path);
 					});
@@ -287,7 +286,6 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
-				vaultLog("rename", file, oldPath);
 				// TODO this doesn't work for empty folders.
 				if (file instanceof TFolder) {
 					const sharedFolder = this.sharedFolders.find((folder) => {
@@ -304,10 +302,12 @@ export default class Live extends Plugin {
 				const folder = fromFolder || toFolder;
 				if (fromFolder && toFolder) {
 					// between two shared folders
+					vaultLog("Rename", file, oldPath);
 					fromFolder.renameFile(file.path, oldPath);
 					toFolder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
 				} else if (folder) {
+					vaultLog("Rename", file, oldPath);
 					folder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
 				}
@@ -316,9 +316,9 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("modify", (file) => {
-				vaultLog("modify", file);
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
+					vaultLog("Modify", file);
 					this.app.metadataCache.trigger("resolve", file);
 				}
 			})
@@ -331,7 +331,6 @@ export default class Live extends Plugin {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old) {
 				return function (file) {
-					vaultLog("unloading", file);
 					plugin._liveViews.wipe();
 					// @ts-ignore
 					return old.call(this, file);
@@ -358,6 +357,11 @@ export default class Live extends Plugin {
 
 		this.networkStatus?.stop();
 		this._liveViews?.destroy();
+	}
+
+	onExternalSettingsChange() {
+		this.onunload();
+		this.onload();
 	}
 
 	async loadSettings() {
