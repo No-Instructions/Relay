@@ -35,11 +35,6 @@ async function refresh(
 	log(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
 	let payload: string;
-	console.warn(
-		entity,
-		entity instanceof S3Document,
-		entity instanceof S3Relay
-	);
 	if (entity instanceof S3Document) {
 		payload = JSON.stringify({
 			docId: entity.documentId,
@@ -67,9 +62,6 @@ async function refresh(
 						`Received status code ${response.status} from an API.`
 					)
 				);
-			}
-			if (response.headers["x-tf-cached"] === "True") {
-				console.log(response.headers);
 			}
 			const clientToken = response.json as ClientToken;
 			onSuccess(clientToken);

@@ -380,7 +380,7 @@ export class RelayManager {
 			.subscribe<RelayRoleDAOExpandingRelayUser>(
 				"*",
 				(e) => {
-					console.log("event: relay_roles", e.action, e.record);
+					this.log("event: relay_roles", e.action, e.record);
 					if (e.action === "delete") {
 						this.relayRoles.delete(e.record.id);
 						return;

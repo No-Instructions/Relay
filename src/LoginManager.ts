@@ -2,6 +2,7 @@ import { requestUrl } from "obsidian";
 import { ObservableSet } from "./observable/ObservableSet";
 import { User } from "./User";
 import PocketBase, { BaseAuthStore } from "pocketbase";
+import { curryLog } from "./debug";
 
 class Subscription {
 	active: boolean;
@@ -21,11 +22,17 @@ class Subscription {
 
 class SubscriptionManager extends ObservableSet<Subscription> {
 	user: User;
+	private _log: (message: string, ...args: unknown[]) => void;
 
 	constructor(user: User) {
 		super();
+		this._log = curryLog("[SubscriptionManager]");
 		this.user = user;
 		this.getPaymentLink();
+	}
+
+	log(message: string, ...args: unknown[]) {
+		this._log(message, ...args);
 	}
 
 	hasSubscription() {
@@ -68,7 +75,7 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 				);
 			})
 			.catch((reason) => {
-				console.log(reason);
+				this.log(reason);
 			});
 	}
 }
@@ -76,10 +83,16 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 export class LoginManager extends ObservableSet<User> {
 	pb: PocketBase;
 	sm?: SubscriptionManager;
+	private _log: (message: string, ...args: unknown[]) => void;
 
 	constructor() {
 		super();
+		this._log = curryLog("[LoginManager]");
 		this.pb = new PocketBase("https://auth.dnup.org");
+	}
+
+	log(message: string, ...args: unknown[]) {
+		this._log(message, ...args);
 	}
 
 	setup(): boolean {
@@ -88,7 +101,7 @@ export class LoginManager extends ObservableSet<User> {
 			this.notifyListeners(); // notify anyway
 			return false;
 		}
-		console.log("LoginManager", this);
+		this.log("LoginManager", this);
 		const user = this.makeUser(this.pb.authStore);
 		this.sm = new SubscriptionManager(user);
 		this.add(user);
@@ -106,10 +119,10 @@ export class LoginManager extends ObservableSet<User> {
 			headers: headers,
 		})
 			.then((response) => {
-				console.log(response.json);
+				this.log(response.json);
 			})
 			.catch((reason) => {
-				console.log(reason);
+				this.log(reason);
 			});
 	}
 

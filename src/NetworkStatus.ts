@@ -1,4 +1,5 @@
 import { requestUrl } from "obsidian";
+import { curryLog } from "./debug";
 
 type Callback = () => void;
 
@@ -9,17 +10,19 @@ class NetworkStatus {
 	private _onceOnline: Set<Callback>;
 	private onOffline: Callback[] = [];
 	private timer?: NodeJS.Timer;
+	private _log: (message: string, ...args: unknown[]) => void;
 	online = true;
 
 	constructor(url: string, interval = 10000) {
+		this._log = curryLog("[NetworkStatus]");
 		this.url = url;
 		this.interval = interval;
 		this._onceOnline = new Set();
 		this.start();
 	}
 
-	log(text: string) {
-		console.log(text);
+	log(message: string, ...args: unknown[]) {
+		this._log(message, ...args);
 	}
 
 	public start() {

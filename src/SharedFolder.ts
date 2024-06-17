@@ -46,7 +46,6 @@ export class SharedFolder extends HasProvider {
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	docset: Documents;
-	log: (message: string) => void;
 	private vault: Vault;
 	private fileManager: FileManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
@@ -105,7 +104,7 @@ export class SharedFolder extends HasProvider {
 		this.docset = new Documents();
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 		this._persistence.once("synced", () => {
-			console.log(this.ids);
+			this.log("", this.ids);
 		});
 
 		this.getProviderToken().then((token) => {
@@ -116,14 +115,13 @@ export class SharedFolder extends HasProvider {
 			this.addLocalDocs();
 		});
 
-		this.log = curryLog(`[SharedFolder](${this.path}):`);
 		this.ydoc.on(
 			"update",
 			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 				if (origin == this) {
 					return;
 				}
-				console.log(this._debugFileTree());
+				this.log("file tree", this._debugFileTree());
 				this.syncFileTree(doc, update);
 			}
 		);

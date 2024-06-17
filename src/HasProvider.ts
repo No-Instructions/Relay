@@ -76,8 +76,6 @@ function makeProvider(
 			color: user.color.color,
 			colorLight: user.color.light,
 		});
-	} else {
-		console.log("user missing...");
 	}
 	return provider;
 }

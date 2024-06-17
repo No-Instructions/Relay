@@ -71,7 +71,6 @@ export class S3RN {
 		}
 
 		const [, product, type, item, subType, subItem] = parts;
-		console.log(parts);
 		if (!this.validateUUID(item)) {
 			throw new Error("Invalid UUID");
 		}
