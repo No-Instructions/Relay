@@ -345,7 +345,7 @@ export default class Live extends Plugin {
 		this.tokenStore?.stop();
 		this.tokenStore?.clearState();
 
-		this.relayManager.destroy();
+		this.relayManager?.destroy();
 
 		this.networkStatus?.stop();
 		this._liveViews?.destroy();

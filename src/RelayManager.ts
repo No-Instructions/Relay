@@ -278,8 +278,11 @@ export class RelayManager {
 		this.sharedFolders = sharedFolders;
 		this.pb = new PocketBase(AUTH_URL);
 		this.user = this.pb.authStore.model as UserDAO;
+		console.warn("User", this.user);
 		this.users = new ObservableMap<string, UserDAO>();
-		this.users.set(this.user.id, this.user);
+		if (this.user) {
+			this.users.set(this.user.id, this.user);
+		}
 		this.subscribe();
 		this.update();
 	}
@@ -589,9 +592,13 @@ export class RelayManager {
 	}
 
 	destroy(): void {
-		this._offSharedFolders();
-		this.pb.collection("relays").unsubscribe();
-		this.pb.collection("relay_roles").unsubscribe();
-		this.pb.collection("relay_invitations").unsubscribe();
+		if (this._offSharedFolders) {
+			this._offSharedFolders();
+		}
+		if (this.pb) {
+			this.pb.collection("relays").unsubscribe();
+			this.pb.collection("relay_roles").unsubscribe();
+			this.pb.collection("relay_invitations").unsubscribe();
+		}
 	}
 }
