@@ -489,7 +489,7 @@ export class RelayManager {
 			});
 	}
 
-	async acceptInvitation(shareKey: string) {
+	async acceptInvitation(shareKey: string): Promise<Relay> {
 		return this.pb
 			.send("/api/accept-invitation", {
 				method: "POST",
@@ -502,7 +502,16 @@ export class RelayManager {
 			})
 			.then((response) => {
 				this.log("[InviteAccept]", response);
-				return response;
+				const relay = toRelay(
+					response,
+					this.relayRoles,
+					this.relayInvitations
+				);
+				this.relays.set(relay.id, relay);
+				return relay;
+			})
+			.catch((e) => {
+				throw new Error("Failed to accept invitation");
 			});
 	}
 

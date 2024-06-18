@@ -15,6 +15,7 @@
 	});
 
 	let shareKey = "";
+	let invalidShareKey = false;
 
 	const makeDescription = (relayRole: RelayRole) => {
 		const relay = relayRole.relay;
@@ -22,7 +23,6 @@
 			return `Role: ${relayRole.role}\nUser Limit: 2`;
 		}
 		return `Role: ${relay.role}\nUser Limit: ${relay.user_limit}\nPath: ${relay.path}`;
-		//return `Role: ${relay.role}\nUser Limit: ${relay.user_limit}\nId: ${relay.id}\nGuid: ${relay.guid}`;
 	};
 
 	const dispatch = createEventDispatcher();
@@ -39,10 +39,18 @@
 		}
 		dispatch("joinRelay", { relay, mount: true });
 	}
+	function handleShareKeyInput() {
+		invalidShareKey = false;
+	}
 	function handleJoinRelayFromInvite(shareKey: string) {
-		plugin.relayManager.acceptInvitation(shareKey).then((_) => {
-			//dispatch("joinRelay", { relay, mount: true });
-		});
+		plugin.relayManager
+			.acceptInvitation(shareKey)
+			.then((relay) => {
+				dispatch("joinRelay", { relay, mount: true });
+			})
+			.catch((error) => {
+				invalidShareKey = true;
+			});
 	}
 	function handleLeaveRelay(relay?: Relay) {
 		if (!relay) {
@@ -64,7 +72,13 @@
 	name="Share Key"
 	description="Enter the code that was shared with you"
 >
-	<input type="text" placeholder="Enter Share Key" bind:value={shareKey} />
+	<input
+		type="text"
+		placeholder="Enter Share Key"
+		bind:value={shareKey}
+		on:input={handleShareKeyInput}
+		class={invalidShareKey ? "system3-input-invalid" : ""}
+	/>
 	<button class="mod-cta" on:click={() => handleJoinRelayFromInvite(shareKey)}
 		>Join Relay</button
 	>
@@ -103,3 +117,9 @@
 		>Create Relay</button
 	>
 </SettingItem>
+
+<style>
+	input.system3-input-invalid {
+		border: 1px solid var(--color-red) !important;
+	}
+</style>
