@@ -8,6 +8,8 @@ import type { ClientToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
 import { S3RN, S3Document, S3Relay, type S3RNType } from "./S3RN";
 
+declare const API_URL: string;
+
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
 	return clientToken.expiryTime || 0;
@@ -49,7 +51,7 @@ async function refresh(
 		throw new Error("Invalid type");
 	}
 	requestUrl({
-		url: "https://api.dnup.org/token",
+		url: `${API_URL}/token`,
 		method: "POST",
 		headers: headers,
 		body: payload,

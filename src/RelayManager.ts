@@ -13,6 +13,8 @@ import PocketBase from "pocketbase";
 import { ObservableMap } from "./observable/ObservableMap";
 import { curryLog } from "./debug";
 
+declare const AUTH_URL: string;
+
 interface RelayDAO {
 	id: string;
 	guid: string;
@@ -274,7 +276,7 @@ export class RelayManager {
 		];
 		this.relayRoles = new ObservableMap<string, RelayRole>();
 		this.sharedFolders = sharedFolders;
-		this.pb = new PocketBase("https://auth.dnup.org");
+		this.pb = new PocketBase(AUTH_URL);
 		this.user = this.pb.authStore.model as UserDAO;
 		this.users = new ObservableMap<string, UserDAO>();
 		this.users.set(this.user.id, this.user);

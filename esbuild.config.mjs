@@ -17,7 +17,9 @@ if you want to view the source, please visit the github repository of this plugi
 const gitTag = execSync("git describe --tags --always", {
 	encoding: "utf8",
 }).trim();
-const healthUrl = `"https://api.dnup.org/health?version=${gitTag}"`;
+const apiUrl = `https://api.system3.studio`;
+const authUrl = `https://auth.system3.studio`;
+const healthUrl = `${apiUrl}/health?version=${gitTag}`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);
 
@@ -61,16 +63,18 @@ const context = await esbuild.context({
 	define: {
 		BUILD_TYPE: debug ? '"debug"' : '"prod"',
 		GIT_TAG: `"${gitTag}"`,
-		HEALTH_URL: healthUrl,
+		HEALTH_URL: `"${healthUrl}"`,
+		API_URL: `"${apiUrl}"`,
+		AUTH_URL: `"${authUrl}"`,
 	},
 	treeShaking: true,
 	outfile: out + "/main.js",
 });
 
 const copyFile = (src, dest) => {
-    if (src === dest) {
-        return
-    }
+	if (src === dest) {
+		return;
+	}
 	fs.copyFileSync(src, dest);
 	console.log(`Copied ${src} to ${dest}`);
 };
@@ -100,10 +104,10 @@ const move = (fnames, mapping) => {
 
 if (watch) {
 	await context.watch();
-    const files = ["styles.css", "manifest-beta.json"]
-    const mapping = {"manifest-beta.json": "manifest.json"}
-    move(files, mapping)
-	watchAndMove(files, mapping)
+	const files = ["styles.css", "manifest-beta.json"];
+	const mapping = { "manifest-beta.json": "manifest.json" };
+	move(files, mapping);
+	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
 	move(["styles.css", "manifest.json"], {});

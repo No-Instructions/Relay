@@ -4,6 +4,9 @@ import { User } from "./User";
 import PocketBase, { BaseAuthStore } from "pocketbase";
 import { curryLog } from "./debug";
 
+declare const API_URL: string;
+declare const AUTH_URL: string;
+
 class Subscription {
 	active: boolean;
 	subscribe: string | null;
@@ -55,7 +58,7 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 			Authorization: `Bearer ${this.user.token}`,
 		};
 		requestUrl({
-			url: "https://api.dnup.org/billing",
+			url: `${API_URL}/billing`,
 			method: "POST",
 			headers: headers,
 		})
@@ -88,7 +91,7 @@ export class LoginManager extends ObservableSet<User> {
 	constructor() {
 		super();
 		this._log = curryLog("[LoginManager]");
-		this.pb = new PocketBase("https://auth.dnup.org");
+		this.pb = new PocketBase(AUTH_URL);
 	}
 
 	log(message: string, ...args: unknown[]) {
@@ -96,7 +99,7 @@ export class LoginManager extends ObservableSet<User> {
 	}
 
 	setup(): boolean {
-		this.pb = new PocketBase("https://auth.dnup.org");
+		this.pb = new PocketBase(AUTH_URL);
 		if (!this.pb.authStore.isValid) {
 			this.notifyListeners(); // notify anyway
 			return false;
@@ -114,7 +117,7 @@ export class LoginManager extends ObservableSet<User> {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 		};
 		requestUrl({
-			url: "https://api.dnup.org/whoami",
+			url: `${API_URL}/whoami`,
 			method: "GET",
 			headers: headers,
 		})
