@@ -178,6 +178,7 @@ export default class Live extends Plugin {
 		); // Loading shared folders also sanitizes them...
 		this.saveSettings();
 		this._liveViews.refresh("login");
+		this.relayManager?.update();
 	}
 
 	setup() {
@@ -349,11 +350,6 @@ export default class Live extends Plugin {
 
 		this.networkStatus?.stop();
 		this._liveViews?.destroy();
-	}
-
-	onExternalSettingsChange() {
-		this.onunload();
-		this.onload();
 	}
 
 	async loadSettings() {
