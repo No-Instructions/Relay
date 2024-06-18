@@ -1,10 +1,10 @@
 {
 	"id": "system3-relay",
 	"name": "Relay",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"minAppVersion": "0.15.0",
 	"description": "Realtime Collaborative Workspaces",
-	"author": "No Instructions, LLC",
+	"author": "System 3",
 	"authorUrl": "https://noinstructions.ai",
 	"fundingUrl": "https://www.buymeacoffee.com/dtkav",
 	"isDesktopOnly": false
