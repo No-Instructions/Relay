@@ -78,9 +78,6 @@
 	{:else}
 		<LoggedIn>
 			<Relays
-				relayRoles={$relayRoles.filter(
-					(role) => role.user.id == plugin.relayManager.user.id,
-				)}
 				relays={$relays.values()}
 				{plugin}
 				on:manageRelay={handleManageRelayEvent}

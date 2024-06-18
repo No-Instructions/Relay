@@ -195,7 +195,7 @@ class RelayRoleAuto implements RelayRole {
 	public get user(): UserDAO {
 		const user = this.users.get(this.relayRole.user);
 		if (!user) {
-			throw new Error("invalid user");
+			throw new Error(`Unable to find user: ${this.relayRole.user}`);
 		}
 		return user;
 	}
@@ -260,7 +260,7 @@ export class RelayManager {
 	users: ObservableMap<string, UserDAO>;
 	sharedFolders: SharedFolders;
 	roles: RoleDAO[];
-	user: UserDAO;
+	user?: UserDAO;
 	_offSharedFolders: () => void = () => {};
 	_log: (message: string, ...args: unknown[]) => void;
 	private pb: PocketBase;
@@ -277,18 +277,37 @@ export class RelayManager {
 		this.relayRoles = new ObservableMap<string, RelayRole>();
 		this.sharedFolders = sharedFolders;
 		this.pb = new PocketBase(AUTH_URL);
-		this.user = this.pb.authStore.model as UserDAO;
-		console.warn("User", this.user);
 		this.users = new ObservableMap<string, UserDAO>();
-		if (this.user) {
-			this.users.set(this.user.id, this.user);
-		}
+		this.setUser();
 		this.subscribe();
 		this.update();
 	}
 
 	private log(message: string, ...args: unknown[]) {
 		this._log(message, ...args);
+	}
+
+	setUser() {
+		this.user = this.pb.authStore.model as UserDAO;
+		console.warn("User", this.user);
+		if (this.user) {
+			this.users.set(this.user.id, this.user);
+		}
+	}
+
+	login() {
+		this.setUser();
+		this.subscribe();
+		this.update();
+	}
+
+	logout() {
+		this.relays.clear();
+		this.relayRoles.clear();
+		this.relayInvitations.clear();
+		this.users.clear();
+		this.user = undefined;
+		this.unsubscribe();
 	}
 
 	async getRelayInvitationKey(relay: Relay): Promise<string> {
@@ -438,10 +457,11 @@ export class RelayManager {
 			!this.pb.authStore.isValid ||
 			this.pb.authStore.model?.id === undefined
 		) {
+			console.warn("auth store invalid");
 			return;
 		}
 
-		await this.pb
+		this.pb
 			.collection("users")
 			.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
 				expand: "relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role",
@@ -454,7 +474,7 @@ export class RelayManager {
 				this.relayRoles = toRelayRoles(user, [...this.relays.values()]);
 			});
 
-		await this.pb
+		this.pb
 			.collection("relay_roles")
 			.getList<RelayRoleDAOExpandingRelayUser>(0, 200, {
 				expand: "user",
@@ -476,7 +496,7 @@ export class RelayManager {
 					this.relayRoles.set(role.id, role);
 				});
 			});
-		await this.pb
+		this.pb
 			.collection("relay_invitations")
 			.getList<RelayInvitationDAO>()
 			.then((relayInvitations) => {
@@ -591,14 +611,18 @@ export class RelayManager {
 		return relay;
 	}
 
-	destroy(): void {
-		if (this._offSharedFolders) {
-			this._offSharedFolders();
-		}
+	unsubscribe() {
 		if (this.pb) {
 			this.pb.collection("relays").unsubscribe();
 			this.pb.collection("relay_roles").unsubscribe();
 			this.pb.collection("relay_invitations").unsubscribe();
 		}
+	}
+
+	destroy(): void {
+		if (this._offSharedFolders) {
+			this._offSharedFolders();
+		}
+		this.unsubscribe();
 	}
 }

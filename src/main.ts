@@ -168,6 +168,7 @@ export default class Live extends Plugin {
 	private _onLogout() {
 		this.saveSettings();
 		this.tokenStore?.clear();
+		this.relayManager?.logout();
 		this._liveViews.refresh("logout");
 	}
 
@@ -178,7 +179,7 @@ export default class Live extends Plugin {
 		); // Loading shared folders also sanitizes them...
 		this.saveSettings();
 		this._liveViews.refresh("login");
-		this.relayManager?.update();
+		this.relayManager?.login();
 	}
 
 	setup() {

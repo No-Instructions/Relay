@@ -8,7 +8,6 @@
 	import { Satellite } from "lucide-svelte";
 
 	export let plugin: Live;
-	export let relayRoles: RelayRole[];
 	export let relays: Relay[];
 	store.plugin.subscribe((p) => {
 		plugin = p;
@@ -17,11 +16,7 @@
 	let shareKey = "";
 	let invalidShareKey = false;
 
-	const makeDescription = (relayRole: RelayRole) => {
-		const relay = relayRole.relay;
-		if (!relay) {
-			return `Role: ${relayRole.role}\nUser Limit: 2`;
-		}
+	const makeDescription = (relay: Relay) => {
 		return `Role: ${relay.role}\nUser Limit: ${relay.user_limit}\nPath: ${relay.path}`;
 	};
 
@@ -90,28 +85,22 @@
 		? "Create your own relay and invite collaborators"
 		: "Manage relays"}
 ></SettingItemHeading>
-{#each relayRoles as relayRole}
+{#each relays as relay}
 	<SettingItem
-		name={relayRole.relay?.name || "..."}
-		description={makeDescription(relayRole)}
+		name={relay.name || "..."}
+		description={makeDescription(relay)}
 	>
-		{#if relayRole.relay !== undefined}
-			{#if relayRole.relay?.folder}
-				<button
-					class="mod-destructive"
-					on:click={() => handleLeaveRelay(relayRole.relay)}
-				>
-					Disconnect
-				</button>
-			{:else}
-				<button on:click={() => handleJoinRelay(relayRole.relay)}>
-					Connect
-				</button>
-			{/if}
-			<button on:click={() => handleManageRelay(relayRole.relay)}>
-				Manage
+		{#if relay.folder}
+			<button
+				class="mod-destructive"
+				on:click={() => handleLeaveRelay(relay)}
+			>
+				Disconnect
 			</button>
+		{:else}
+			<button on:click={() => handleJoinRelay(relay)}> Connect </button>
 		{/if}
+		<button on:click={() => handleManageRelay(relay)}> Manage </button>
 	</SettingItem>
 {/each}
 
