@@ -10,7 +10,6 @@ import { VaultFacade } from "./obsidian-api/Vault";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
-import { FolderMenu } from "./ui/FolderMenu";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
 import { curryLog, toast } from "./debug";
@@ -189,13 +188,6 @@ export default class Live extends Plugin {
 			this.settings.showDocumentStatus
 		);
 		this.folderNavDecorations.refresh();
-
-		const folderMenu = new FolderMenu(
-			this.app,
-			this.loginManager,
-			this.sharedFolders
-		);
-		this.registerEvent(folderMenu.register());
 
 		this.addSettingTab(new LiveSettingsTab(this.app, this));
 
