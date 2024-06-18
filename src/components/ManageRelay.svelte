@@ -290,4 +290,8 @@
 	input.system3-input-invalid {
 		border: 1px solid var(--color-red) !important;
 	}
+
+	input#system3InviteLink {
+		width: auto;
+	}
 </style>

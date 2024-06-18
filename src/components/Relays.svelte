@@ -96,11 +96,11 @@
 		description={makeDescription(relayRole)}
 	>
 		{#if relayRole.relay !== undefined}
-			<button on:click={() => handleManageRelay(relayRole.relay)}>
-				Manage
-			</button>
 			{#if relayRole.relay?.folder}
-				<button on:click={() => handleLeaveRelay(relayRole.relay)}>
+				<button
+					class="mod-destructive"
+					on:click={() => handleLeaveRelay(relayRole.relay)}
+				>
 					Disconnect
 				</button>
 			{:else}
@@ -108,6 +108,9 @@
 					Connect
 				</button>
 			{/if}
+			<button on:click={() => handleManageRelay(relayRole.relay)}>
+				Manage
+			</button>
 		{/if}
 	</SettingItem>
 {/each}
