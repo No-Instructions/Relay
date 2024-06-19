@@ -50,6 +50,10 @@ async function refresh(
 	} else {
 		throw new Error("Invalid type");
 	}
+	if (!loginManager.loggedIn) {
+		onError(Error("Not logged in"));
+		return;
+	}
 	requestUrl({
 		url: `${API_URL}/token`,
 		method: "POST",

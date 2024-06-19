@@ -76,7 +76,7 @@
 			on:manageRelay={handleManageRelayEvent}
 		></ManageRelay>
 	{:else}
-		<LoggedIn>
+		<LoggedIn {plugin}>
 			<Relays
 				relays={$relays.values()}
 				{plugin}

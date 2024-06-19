@@ -45,6 +45,7 @@ export default class Live extends Plugin {
 	folderNavDecorations!: FolderNavigationDecorations;
 	_offSaveSettings!: () => void;
 	relayManager!: RelayManager;
+	settingsTab!: LiveSettingsTab;
 	_extensions!: [];
 	log!: (message: string) => void;
 	private _liveViews!: LiveViewManager;
@@ -54,7 +55,7 @@ export default class Live extends Plugin {
 		this.log = curryLog("[System 3][Relay]");
 		await this.loadSettings();
 		this.vault = new VaultFacade(this.app);
-		this.loginManager = new LoginManager();
+		this.loginManager = new LoginManager(this.openSettings.bind(this));
 		this.fileManager = new FileManagerFacade(this.app);
 		const vaultName = this.vault.getName();
 		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
@@ -182,6 +183,13 @@ export default class Live extends Plugin {
 		this.relayManager?.login();
 	}
 
+	async openSettings() {
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const setting = (this.app as any).setting;
+		await setting.open();
+		setting.openTabById("system3-relay");
+	}
+
 	setup() {
 		this.folderNavDecorations = new FolderNavigationDecorations(
 			this.vault,
@@ -191,7 +199,8 @@ export default class Live extends Plugin {
 		);
 		this.folderNavDecorations.refresh();
 
-		this.addSettingTab(new LiveSettingsTab(this.app, this));
+		this.settingsTab = new LiveSettingsTab(this.app, this);
+		this.addSettingTab(this.settingsTab);
 
 		const workspaceLog = curryLog("[Live][Workspace]");
 

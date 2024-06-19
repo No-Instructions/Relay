@@ -1,8 +1,11 @@
+"use strict";
+
 import { requestUrl } from "obsidian";
 import { ObservableSet } from "./observable/ObservableSet";
 import { User } from "./User";
 import PocketBase, { BaseAuthStore } from "pocketbase";
 import { curryLog } from "./debug";
+import { Observable } from "./observable/Observable";
 
 declare const API_URL: string;
 declare const AUTH_URL: string;
@@ -83,15 +86,30 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 	}
 }
 
+export class OAuth2Url extends Observable<OAuth2Url> {
+	url?: string;
+	delay: number = 0;
+
+	set(value: string) {
+		this.url = value;
+		this.notifyListeners();
+	}
+}
+
 export class LoginManager extends ObservableSet<User> {
 	pb: PocketBase;
 	sm?: SubscriptionManager;
 	private _log: (message: string, ...args: unknown[]) => void;
+	private openSettings: () => Promise<void>;
+	url: OAuth2Url;
 
-	constructor() {
+	constructor(openSettings: () => Promise<void>) {
 		super();
 		this._log = curryLog("[LoginManager]");
 		this.pb = new PocketBase(AUTH_URL);
+		this.openSettings = openSettings;
+		this.url = new OAuth2Url();
+		//this.getLoginUrl();
 	}
 
 	log(message: string, ...args: unknown[]) {
@@ -161,22 +179,67 @@ export class LoginManager extends ObservableSet<User> {
 		});
 	}
 
-	async login(): Promise<boolean> {
-		if (this.hasUser) {
-			return true;
-		}
-		const authData = await this.pb.collection("users").authWithOAuth2({
-			provider: "google",
+	async getLoginUrl(): Promise<number> {
+		const start = Date.now();
+		return new Promise<number>((resolve, reject) => {
+			this.pb
+				.collection("users")
+				.authWithOAuth2({
+					provider: "google",
+					urlCallback: (url) => {
+						this.url.set(url);
+						const end = Date.now();
+						this.url.delay = end - start;
+						resolve(this.url.delay);
+					},
+				})
+				.then((authData) => {
+					this.pb
+						.collection("oauth2_response")
+						.create({
+							user: authData.record.id,
+							oauth_response: authData.meta?.rawUser,
+						})
+						.catch((e) => {
+							// OAuth2 data already exists
+						});
+					this.setup();
+				});
 		});
-		this.pb
-			.collection("oauth2_response")
-			.create({
-				user: authData.record.id,
-				oauth_response: authData.meta?.rawUser,
+	}
+
+	async login(): Promise<boolean> {
+		await this.pb
+			.collection("users")
+			.authWithOAuth2({
+				provider: "google",
 			})
-			.catch((e) => {
-				// OAuth2 data already exists
+			.then((authData) => {
+				this.pb
+					.collection("oauth2_response")
+					.create({
+						user: authData.record.id,
+						oauth_response: authData.meta?.rawUser,
+					})
+					.catch((e) => {
+						// OAuth2 data already exists
+					});
 			});
 		return this.setup();
+	}
+
+	async openLoginPage() {
+		await this.openSettings();
+		const promise = new Promise<boolean>((resolve, reject) => {
+			const isLoggedIn = () => {
+				if (this.loggedIn) {
+					this.off(isLoggedIn);
+					resolve(true);
+				}
+				resolve(false);
+			};
+			this.on(isLoggedIn);
+		});
+		return await promise;
 	}
 }

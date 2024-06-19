@@ -74,7 +74,7 @@ export class LoggedOutView implements S3View {
 			this.view,
 			"Login to enable Live edits",
 			async () => {
-				return this.login();
+				return await this.login();
 			}
 		);
 		return Promise.resolve(this);
@@ -382,7 +382,7 @@ export class LiveViewManager {
 					views.push(view);
 				} else {
 					const view = new LoggedOutView(this, markdownView, () => {
-						return this.loginManager.login();
+						return this.loginManager.openLoginPage();
 					});
 					views.push(view);
 				}
@@ -494,7 +494,10 @@ export class LiveViewManager {
 		try {
 			views = this.getViews();
 		} catch (e) {
-			console.warn("[System 3][Relay][Live Views] error getting views", e);
+			console.warn(
+				"[System 3][Relay][Live Views] error getting views",
+				e
+			);
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();

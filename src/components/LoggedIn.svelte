@@ -2,36 +2,22 @@
 	import type Live from "../main";
 	import store from "../Store";
 	import SettingItem from "./SettingItem.svelte";
-
-	let plugin: Live;
-
-	store.plugin.subscribe((p) => (plugin = p));
-
-	import { onMount } from "svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	let isLoggedIn = false;
+	import type { OAuth2Url, LoginManager } from "src/LoginManager";
 
-	onMount(async () => {
-		isLoggedIn = await checkLoginStatus();
-	});
-
-	async function checkLoginStatus() {
-		return plugin.loginManager.hasUser;
-	}
-
+	export let plugin: Live;
+	let userSet: LoginManager = plugin.loginManager;
 	async function logout() {
 		plugin.loginManager.logout();
-		isLoggedIn = false;
 	}
 
 	async function login() {
 		await plugin.loginManager.login();
-		isLoggedIn = true;
 	}
 </script>
 
 <h2>Relay</h2>
-{#if isLoggedIn}
+{#if $userSet.items().length > 0}
 	<SettingItemHeading name="Account" />
 	<SettingItem
 		name="Logged In"
