@@ -60,7 +60,6 @@ export default class Live extends Plugin {
 		const vaultName = this.vault.getName();
 		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
-
 		if (this.settings.debugging) {
 			this.addCommand({
 				id: "toggle-emulate-mobile",
@@ -103,16 +102,20 @@ export default class Live extends Plugin {
 			this.registerEditorExtension(this._liveViews.extensions);
 
 			this.tokenStore.start();
-			this.networkStatus.addEventListener("offline", () => {
-				this.tokenStore.stop();
-				this.sharedFolders.forEach((folder) => folder.disconnect());
-				this._liveViews.goOffline();
-			});
-			this.networkStatus.addEventListener("online", () => {
-				this.tokenStore.start();
-				this._liveViews.goOnline();
-			});
-			this.networkStatus.checkStatus();
+
+			if (!Platform.isIosApp) {
+				// We can't run network status on iOS or it will always be offline.
+				this.networkStatus.addEventListener("offline", () => {
+					this.tokenStore.stop();
+					this.sharedFolders.forEach((folder) => folder.disconnect());
+					this._liveViews.goOffline();
+				});
+				this.networkStatus.addEventListener("online", () => {
+					this.tokenStore.start();
+					this._liveViews.goOnline();
+				});
+				this.networkStatus.start();
+			}
 
 			this.setup();
 		});

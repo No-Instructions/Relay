@@ -6,6 +6,7 @@
 	import ModalSettingsNav from "./ModalSettingsNav.svelte";
 	import type Live from "src/main";
 	import store from "../Store";
+	import SettingItem from "./SettingItem.svelte";
 
 	interface RelayEventDetail {
 		relay: Relay;

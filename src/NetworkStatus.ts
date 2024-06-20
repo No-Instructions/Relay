@@ -18,7 +18,6 @@ class NetworkStatus {
 		this.url = url;
 		this.interval = interval;
 		this._onceOnline = new Set();
-		this.start();
 	}
 
 	log(message: string, ...args: unknown[]) {
