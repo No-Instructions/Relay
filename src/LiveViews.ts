@@ -571,6 +571,7 @@ export class LiveViewManager {
 						`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
 						e
 					);
+					this._activePromise = null;
 					return false;
 				})
 				.finally(() => {
