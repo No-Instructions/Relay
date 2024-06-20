@@ -1,4 +1,4 @@
-import { MarkdownView } from "obsidian";
+import { MarkdownView, Platform } from "obsidian";
 import { Document } from "./Document";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { WorkspaceFacade } from "./obsidian-api/Workspace";
@@ -562,22 +562,29 @@ export class LiveViewManager {
 			if (this.refreshQueue.length > 2) {
 				this.refreshQueue.slice(-2);
 			}
-			this._activePromise = promiseWithTimeout<boolean>(
-				this.refreshQueue.pop()!(),
-				timeout
-			)
-				.catch((e) => {
-					console.warn(
-						`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
-						e
-					);
-					this._activePromise = null;
-					return false;
-				})
-				.finally(() => {
+			if (Platform.isIosApp) {
+				this._activePromise = this.refreshQueue.pop()!().finally(() => {
 					this._activePromise = null;
 				});
-			await this._activePromise;
+				await this._activePromise;
+			} else {
+				this._activePromise = promiseWithTimeout<boolean>(
+					this.refreshQueue.pop()!(),
+					timeout
+				)
+					.catch((e) => {
+						console.warn(
+							`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
+							e
+						);
+						this._activePromise = null;
+						return false;
+					})
+					.finally(() => {
+						this._activePromise = null;
+					});
+				await this._activePromise;
+			}
 		}
 		return true;
 	}

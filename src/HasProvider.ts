@@ -8,6 +8,7 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
 import { S3Document, S3RN, S3Relay, type S3RNType } from "./S3RN";
+import { Platform } from "obsidian";
 
 export type ConnectionStatus =
 	| "connected"
@@ -165,6 +166,9 @@ export class HasProvider {
 			this.path || "unknown",
 			this.refreshProvider.bind(this)
 		);
+		if (Platform.isIosApp) {
+			return tokenPromise;
+		}
 		const timeoutPromise = promiseWithTimeout<ClientToken>(
 			tokenPromise,
 			10000
