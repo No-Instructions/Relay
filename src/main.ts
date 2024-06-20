@@ -19,6 +19,7 @@ import NetworkStatus from "./NetworkStatus";
 import { ObsidianLiveException } from "./Exceptions";
 import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
+import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -39,6 +40,7 @@ export default class Live extends Plugin {
 	sharedFolders!: SharedFolders;
 	vault!: VaultFacade;
 	loginManager!: LoginManager;
+	timeProvider!: TimeProvider;
 	fileManager!: FileManagerFacade;
 	tokenStore!: LiveTokenStore;
 	networkStatus!: NetworkStatus;
@@ -58,7 +60,16 @@ export default class Live extends Plugin {
 		this.loginManager = new LoginManager(this.openSettings.bind(this));
 		this.fileManager = new FileManagerFacade(this.app);
 		const vaultName = this.vault.getName();
-		this.tokenStore = new LiveTokenStore(this.loginManager, vaultName, 3);
+		this.timeProvider = new DefaultTimeProvider();
+		this.register(() => {
+			this.timeProvider.destroy();
+		});
+		this.tokenStore = new LiveTokenStore(
+			this.loginManager,
+			this.timeProvider,
+			vaultName,
+			3
+		);
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
 		if (this.settings.debugging) {
 			this.addCommand({

@@ -1,5 +1,5 @@
 import { TokenStore } from "../src/TokenStore";
-import type { TimeProvider } from "../src/TokenStore";
+import type { TimeProvider } from "src/TimeProvider";
 import { describe, expect, test } from "@jest/globals";
 
 class TestTimeProvider implements TimeProvider {
@@ -33,20 +33,16 @@ class TestTimeProvider implements TimeProvider {
 	//	return timerId;
 	//}
 
-	setInterval(callback: () => void, ms: number): NodeJS.Timer {
+	setInterval(callback: () => void, ms: number): number {
 		return this.setTimeout(callback, ms, true);
 	}
 
-	clearInterval(timerId: NodeJS.Timer): void {
+	clearInterval(timerId: number): void {
 		const id = <number>(<unknown>timerId);
 		this.timers = this.timers.filter((timer) => timer.id !== id);
 	}
 
-	setTimeout(
-		callback: () => void,
-		ms: number,
-		isInterval = false
-	): NodeJS.Timer {
+	setTimeout(callback: () => void, ms: number, isInterval = false): number {
 		const triggerTime = this.currentTime + ms;
 		const timerId = this.nextTimerId++;
 		const timer = { id: timerId, callback, triggerTime };
@@ -63,6 +59,11 @@ class TestTimeProvider implements TimeProvider {
 		return <any>timerId;
 	}
 
+	destroy() {
+		this.timers.forEach((timer) => clearTimeout(timer.id));
+		this.timers = [];
+	}
+
 	//clearInterval(timerId: TimerID): void {
 	//	this.timers = this.timers.filter((timer) => timer.id !== timerId);
 	//	clearTimeout(timerId);
@@ -75,7 +76,7 @@ class TestTimeProvider implements TimeProvider {
 	//	return timerId;
 	//}
 
-	clearTimeout(timerId: NodeJS.Timer): void {
+	clearTimeout(timerId: number): void {
 		const id = <number>(<unknown>timerId);
 		this.timers = this.timers.filter((timer) => timer.id !== id);
 	}

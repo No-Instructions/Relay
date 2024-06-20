@@ -1,4 +1,7 @@
+"use strict";
+
 import { decodeJwt } from "jose";
+import type { TimeProvider } from "./TimeProvider";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
@@ -7,15 +10,9 @@ interface TokenStoreConfig<StorageToken, NetToken> {
 		onSuccess: (token: NetToken) => void,
 		onError: (err: Error) => void
 	) => void;
-	getTimeProvider?: () => TimeProvider;
+	getTimeProvider: () => TimeProvider;
 	getJwtExpiry?: (token: NetToken) => number;
 	getStorage?: () => Map<string, StorageToken>;
-}
-
-export interface TimeProvider {
-	getTime: () => number;
-	setInterval: (callback: () => void, ms: number) => NodeJS.Timer;
-	clearInterval: (timerId: NodeJS.Timer) => void;
 }
 
 function formatTime(milliseconds: number): string {
@@ -59,7 +56,7 @@ export class TokenStore<TokenType extends HasToken> {
 	private callbacks: Map<string, (token: TokenType) => void>;
 	private refreshQueue: Set<string>;
 	private timeProvider: TimeProvider;
-	private refreshInterval: NodeJS.Timer | null;
+	private refreshInterval: number | null;
 	private readonly expiryMargin: number = 5 * 60 * 1000; // 5 minutes in milliseconds
 	private activeConnections = 0;
 	private maxConnections: number;
@@ -87,11 +84,7 @@ export class TokenStore<TokenType extends HasToken> {
 		this.refreshQueue = new Set();
 		this._log = config.log;
 		this.refresh = config.refresh;
-		if (config.getTimeProvider) {
-			this.timeProvider = config.getTimeProvider();
-		} else {
-			this.timeProvider = new DefaultTimeProvider();
-		}
+		this.timeProvider = config.getTimeProvider();
 		if (config.getJwtExpiry) {
 			this.getJwtExpiry = config.getJwtExpiry;
 		} else {
@@ -375,19 +368,5 @@ export class TokenStore<TokenType extends HasToken> {
 	clear() {
 		this.tokenMap.clear();
 		this.refreshQueue.clear();
-	}
-}
-
-export class DefaultTimeProvider implements TimeProvider {
-	getTime(): number {
-		return Date.now();
-	}
-
-	setInterval(callback: () => void, ms: number): NodeJS.Timer {
-		return setInterval(callback, ms);
-	}
-
-	clearInterval(timerId: NodeJS.Timer): void {
-		clearInterval(timerId);
 	}
 }

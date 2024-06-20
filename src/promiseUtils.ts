@@ -1,10 +1,12 @@
+"use strict";
+
 export function promiseWithTimeout<T>(
 	promise: Promise<T>,
 	ms: number
 ): Promise<T> {
-	let timeoutId: NodeJS.Timeout; // or simply `number` if in browser context
+	let timeoutId: number;
 	const timeout = new Promise<T>((_, reject) => {
-		timeoutId = setTimeout(() => {
+		timeoutId = window.setTimeout(() => {
 			console.log("timeout on promise", promise);
 			reject("Timeout after " + ms + " ms");
 		}, ms);

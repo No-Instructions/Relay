@@ -1,6 +1,8 @@
 // This file is the Obsidian Live variant of the token store.
 import { TokenStore } from "./TokenStore";
+import { DefaultTimeProvider } from "./TimeProvider";
 import type { TokenInfo } from "./TokenStore";
+import type { TimeProvider } from "./TimeProvider";
 import { LoginManager } from "./LoginManager";
 import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
@@ -82,6 +84,7 @@ async function refresh(
 export class LiveTokenStore extends TokenStore<ClientToken> {
 	constructor(
 		loginManager: LoginManager,
+		timeProvider: TimeProvider,
 		vaultName: string,
 		maxConnections = 5
 	) {
@@ -94,6 +97,9 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 					return new LocalStorage<TokenInfo<ClientToken>>(
 						"TokenStore/" + vaultName
 					);
+				},
+				getTimeProvider: () => {
+					return timeProvider;
 				},
 			},
 			maxConnections
