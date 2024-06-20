@@ -89,10 +89,16 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 export class OAuth2Url extends Observable<OAuth2Url> {
 	url?: string;
 	delay: number = 0;
+	_age: number = 0;
 
 	set(value: string) {
 		this.url = value;
+		this._age = Date.now();
 		this.notifyListeners();
+	}
+
+	public get age() {
+		return Date.now() - this._age;
 	}
 }
 

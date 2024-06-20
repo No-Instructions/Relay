@@ -1,12 +1,17 @@
 <script lang="ts">
 	import type Live from "../main";
-	import store from "../Store";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import type { OAuth2Url, LoginManager } from "src/LoginManager";
 
 	export let plugin: Live;
-	let userSet: LoginManager = plugin.loginManager;
+	let userSet: LoginManager;
+	let url: OAuth2Url;
+
+	userSet = plugin.loginManager;
+	url = plugin.loginManager.url;
+	plugin.loginManager.getLoginUrl();
+
 	async function logout() {
 		plugin.loginManager.logout();
 	}
@@ -34,4 +39,8 @@
 	>
 		<button on:click={login}>Login with Google</button>
 	</SettingItem>
+	<a href={$url.url} target="_blank" rel="noopener noreferrer">
+		Login with Google
+	</a>
+	(debug: url took {$url.delay}ms to generate and is {$url.age}ms old)
 {/if}
