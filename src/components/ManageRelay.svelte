@@ -149,6 +149,10 @@
 		dispatch("goBack", {});
 	}
 
+	function handleKick(relay_role: RelayRole) {
+		plugin.relayManager.kick(relay_role);
+	}
+
 	function selectText(event: Event) {
 		console.log(event);
 		const inputEl = event.target as HTMLInputElement;
@@ -211,7 +215,14 @@
 	{#each $roles as item}
 		<SettingItem name={item.user.name} description={item.role}>
 			{#if item.role === "Member" && relay.owner}
-				<button> Remove </button>
+				<button
+					class="mod-destructive"
+					on:click={debounce(() => {
+						handleKick(item);
+					})}
+				>
+					Kick
+				</button>
 			{/if}
 		</SettingItem>
 	{/each}

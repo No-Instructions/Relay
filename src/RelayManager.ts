@@ -634,6 +634,10 @@ export class RelayManager {
 		}
 	}
 
+	async kick(relay_role: RelayRole) {
+		return this.pb.collection("relay_roles").delete(relay_role.id);
+	}
+
 	unsubscribe() {
 		if (this.pb) {
 			this.pb.collection("relays").unsubscribe();
