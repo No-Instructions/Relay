@@ -138,7 +138,6 @@
 	}
 
 	function handleDestroy() {
-		console.log("destroying relay");
 		relay = plugin.relayManager.unmountRelay(relay);
 		plugin.relayManager.destroyRelay(relay);
 		dispatch("goBack", {});
@@ -181,16 +180,9 @@
 					($nameValid ? "" : " system3-input-invalid")}
 			/>
 		</SettingItem>
-		<SettingItem
-			name="System3 for Teams"
-			description="You are currently on the free plan (limited to 2 Users)"
-		>
-			<button class="mod-cta"> Upgrade </button>
-		</SettingItem>
 	{:else}
 		<h3>{relay.name}</h3>
 	{/if}
-	<SettingItemHeading name="Status"></SettingItemHeading>
 	{#if relay.folder !== undefined}
 		<SettingItem name="Folder" description={relay.path || ""}></SettingItem>
 	{:else}
@@ -221,6 +213,7 @@
 			{/if}
 		</SettingItem>
 	{/each}
+
 	<!--
 
     <SettingItem name="" description="">
@@ -229,21 +222,28 @@
 		</button>
 	</SettingItem>
     -->
+	<SettingItemHeading name="Sharing"></SettingItemHeading>
 	{#if relay.owner}
-		<SettingItemHeading name="Sharing"></SettingItemHeading>
 		<SettingItem
-			name="Share Key"
-			description="Share this key with your collaborators"
+			name="Plan: Free"
+			description="You are currently on the free plan (limited to 2 Users)"
 		>
-			<input
-				value={relay_invitation_key}
-				type="text"
-				readonly
-				on:click={selectText}
-				id="system3InviteLink"
-			/>
+			<button class="mod-cta"> Upgrade </button>
 		</SettingItem>
 	{/if}
+
+	<SettingItem
+		name="Share Key"
+		description="Share this key with your collaborators"
+	>
+		<input
+			value={relay_invitation_key}
+			type="text"
+			readonly
+			on:click={selectText}
+			id="system3InviteLink"
+		/>
+	</SettingItem>
 
 	<h3 class="system3-settings-danger-zone">Danger Zone</h3>
 	<SettingItemHeading name="Data Management"></SettingItemHeading>
