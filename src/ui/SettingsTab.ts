@@ -18,6 +18,7 @@ export class LiveSettingsTab extends PluginSettingTab {
 		this.targetEl = containerEl.parentElement as HTMLElement;
 		this.targetEl.empty();
 		store.plugin.set(this.plugin);
+		this.plugin.relayManager.update();
 		this.component = new PluginSettings({
 			target: this.targetEl,
 			props: {
