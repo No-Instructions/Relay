@@ -70,6 +70,12 @@ interface RelayInvitationDAO {
 	key: string;
 }
 
+interface RelayInvitationDAOExpandingRelay extends RelayInvitationDAO {
+	expand?: {
+		relay: RelayDAO;
+	};
+}
+
 function toRelays(
 	user: UserDAOExpandingRelayRoles,
 	sharedFolders: SharedFolders
@@ -389,19 +395,36 @@ export class RelayManager {
 			);
 		this.pb
 			.collection("relay_invitations")
-			.subscribe<RelayInvitationDAO>("*", (e) => {
-				this.log("[Event]: relay_invitations", e.action, e.record);
-				if (e.action === "delete") {
-					this.relayInvitations.delete(e.record.id);
-					return;
+			.subscribe<RelayInvitationDAOExpandingRelay>(
+				"*",
+				(e) => {
+					this.log("[Event]: relay_invitations", e.action, e.record);
+					if (e.action === "delete") {
+						this.relayInvitations.delete(e.record.id);
+						return;
+					}
+					if (e.record.expand?.relay) {
+						this.relays.set(
+							e.record.expand.relay.id,
+							toRelay(
+								e.record.expand.relay,
+								this.relays,
+								this.relayRoles,
+								this.relayInvitations
+							)
+						);
+					}
+					const newInvitation = new RelayInvitationAuto(
+						e.record,
+						this.relays,
+						this.roles
+					);
+					this.relayInvitations.set(newInvitation.id, newInvitation);
+				},
+				{
+					expand: ["relay"],
 				}
-				const newInvitation = new RelayInvitationAuto(
-					e.record,
-					this.relays,
-					this.roles
-				);
-				this.relayInvitations.set(newInvitation.id, newInvitation);
-			});
+			);
 		this.pb
 			.collection("relay_roles")
 			.subscribe<RelayRoleDAOExpandingRelayUser>(
