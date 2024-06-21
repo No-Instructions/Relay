@@ -18,6 +18,7 @@
 	interface CloseEvent extends CustomEvent {}
 
 	interface JoinRelayEvent extends CustomEvent<RelayEventDetail> {}
+	interface RejectRelayEvent extends CustomEvent<RelayEventDetail> {}
 
 	export let plugin: Live;
 	store.plugin.subscribe((p) => {
@@ -62,6 +63,12 @@
 		mount = event.detail.mount;
 		currentRelay = event.detail.relay;
 	}
+
+	function handleRejectRelay(event: RejectRelayEvent) {
+		plugin.relayManager.leaveRelay(event.detail.relay);
+		currentRelay = null;
+		mount = false;
+	}
 </script>
 
 {#if currentRelay}
@@ -70,6 +77,7 @@
 <div class="vertical-tab-content">
 	{#if currentRelay}
 		<ManageRelay
+			{relayRoles}
 			relay={currentRelay}
 			{mount}
 			on:goBack={handleGoBack}
@@ -79,10 +87,12 @@
 	{:else}
 		<LoggedIn {plugin}>
 			<Relays
-				relays={$relays.values()}
+				{relays}
+				{relayRoles}
 				{plugin}
 				on:manageRelay={handleManageRelayEvent}
 				on:createRelay={handleCreateRelayEvent}
+				on:rejectRelay={handleRejectRelay}
 				on:joinRelay={handleJoinRelay}
 			></Relays>
 		</LoggedIn>

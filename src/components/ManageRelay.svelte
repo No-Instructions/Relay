@@ -8,14 +8,32 @@
 	import MountRelay from "./JoinRelay.svelte";
 	import { Notice, debounce } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
-	import { writable } from "svelte/store";
+	import { derived, writable } from "svelte/store";
+	import type { ObservableMap } from "src/observable/ObservableMap";
 
 	export let relay: Relay;
 
 	let plugin: Live;
 	let folder: SharedFolder | undefined;
 
-	let relayRoles: RelayRole[] = [];
+	function userSort(a: RelayRole, b: RelayRole) {
+		if (a.role === "Owner" && b.role !== "Owner") {
+			return -1;
+		}
+		if (a.role !== "Owner" && b.role === "Owner") {
+			return 1;
+		}
+		return a.user.name > b.user.name ? 1 : -1;
+	}
+
+	export let relayRoles: ObservableMap<string, RelayRole>;
+	let roles = derived(relayRoles, ($relayRoles) => {
+		const newRoles = $relayRoles
+			.filter((role: RelayRole) => role.relay?.id === relay.id)
+			.sort(userSort);
+		console.log("relay roles updated", $relayRoles, newRoles);
+		return newRoles;
+	});
 
 	export let mount: boolean;
 
@@ -47,9 +65,6 @@
 				relay.path = folder.path;
 				relay.folder = folder;
 			}
-			relayRoles = plugin.relayManager.relayRoles.filter(
-				(role) => role.relay?.id === relay.id,
-			);
 			relay_invitation_key =
 				await plugin.relayManager.getRelayInvitationKey(relay);
 		}
@@ -189,8 +204,11 @@
 	{/if}
 
 	<h3>Collaboration</h3>
-	<SettingItemHeading name="Users"></SettingItemHeading>
-	{#each relayRoles as item}
+	<SettingItemHeading name="Users"
+		>{$roles.length} / {relay.user_limit}</SettingItemHeading
+	>
+
+	{#each $roles as item}
 		<SettingItem name={item.user.name} description={item.role}>
 			{#if item.role === "Member" && relay.owner}
 				<button> Remove </button>
