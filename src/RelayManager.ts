@@ -622,6 +622,18 @@ export class RelayManager {
 		return relay;
 	}
 
+	async leaveRelay(relay: Relay): Promise<void> {
+		this.unmountRelay(relay);
+		const role = this.relayRoles.find((role) => {
+			return (
+				role.user.id === this.user?.id && role.relay?.id === relay.id
+			);
+		});
+		if (role) {
+			await this.pb.collection("relay_roles").delete(role.id);
+		}
+	}
+
 	unsubscribe() {
 		if (this.pb) {
 			this.pb.collection("relays").unsubscribe();
