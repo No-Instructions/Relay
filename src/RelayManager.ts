@@ -674,5 +674,6 @@ export class RelayManager {
 			this._offSharedFolders();
 		}
 		this.unsubscribe();
+		this.pb.cancelAllRequests();
 	}
 }
