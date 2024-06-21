@@ -19,35 +19,8 @@
 
 	let folderName: string = relay.path || "-" + relay.name;
 	let folderLocation: string = "";
-	let error = "";
-	let folder;
 
 	const dispatch = createEventDispatcher();
-
-	function isValidObsidianFolderName(path: string): string {
-		// Obsidian restricted characters in folder and file names
-		const restrictedCharacters = /[\\:*?"<>|]/;
-
-		// Check if the path contains any restricted characters
-		if (restrictedCharacters.test(path)) {
-			return `invalid: ${Date.now()}`;
-		}
-
-		// Check for leading or trailing whitespaces which are not allowed
-		if (path.trim() !== path) {
-			return `invalid: ${Date.now()}`;
-		}
-
-		// Check for any segment of the path being empty or only '.'
-		const segments = path.split("/");
-		for (const segment of segments) {
-			if (segment === "" || segment === "." || segment === "..") {
-				return `invalid: ${Date.now()}`;
-			}
-		}
-
-		return "";
-	}
 
 	function handleMount() {
 		// XXX refactor
