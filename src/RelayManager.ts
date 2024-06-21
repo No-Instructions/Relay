@@ -134,6 +134,7 @@ function toRelayRoles(
 
 function toRelay(
 	relay: RelayDAO,
+	relays: ObservableMap<string, Relay>,
 	relayRoles: ObservableMap<string, RelayRole>,
 	relayInvitations: ObservableMap<string, RelayInvitation>
 ): Relay {
@@ -144,13 +145,14 @@ function toRelay(
 	const relayInvitation = relayInvitations.find(
 		(invite) => invite.relay.id === relay.id
 	);
+	const existingRelay = relays.get(relay.id);
 	return makeRelay(
 		relay.id,
 		relay.guid,
 		relay.name,
-		relay.path,
+		existingRelay?.path,
 		relay.user_limit,
-		undefined,
+		existingRelay?.folder,
 		relayInvitation,
 		role
 	);
@@ -364,6 +366,7 @@ export class RelayManager {
 					}
 					const relay = toRelay(
 						e.record,
+						this.relays,
 						this.relayRoles,
 						this.relayInvitations
 					);
@@ -435,6 +438,7 @@ export class RelayManager {
 								.then((relayRecord) => {
 									const relay = toRelay(
 										relayRecord,
+										this.relays,
 										this.relayRoles,
 										this.relayInvitations
 									);
@@ -471,7 +475,12 @@ export class RelayManager {
 				for (const relay of relays) {
 					this.relays.set(relay.id, relay);
 				}
-				this.relayRoles = toRelayRoles(user, [...this.relays.values()]);
+				const newRelayRoles = toRelayRoles(user, [
+					...this.relays.values(),
+				]);
+				for (const role of newRelayRoles.values()) {
+					this.relayRoles.set(role.id, role);
+				}
 			});
 
 		this.pb
@@ -529,6 +538,7 @@ export class RelayManager {
 				this.log("[InviteAccept]", response);
 				const relay = toRelay(
 					response,
+					this.relays,
 					this.relayRoles,
 					this.relayInvitations
 				);
@@ -574,6 +584,7 @@ export class RelayManager {
 				.then((record) => {
 					const updatedRelay = toRelay(
 						record,
+						this.relays,
 						this.relayRoles,
 						this.relayInvitations
 					);
