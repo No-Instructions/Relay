@@ -80,7 +80,7 @@
 </SettingItem-->
 	<button class="mod-cta" on:click={() => handleMount()}>
 		{#if folderName == relay.path}
-			Connect
+			Join
 		{:else}
 			Add to Vault
 		{/if}

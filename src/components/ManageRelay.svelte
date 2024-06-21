@@ -254,17 +254,20 @@
 	<SettingItemHeading name="Data Management"></SettingItemHeading>
 	{#if relay.folder}
 		<SettingItem
-			name="Disconnect"
-			description="This will disconnect your local folder from the relay (keeping all contents)."
+			name="Leave"
+			description="Keeps local content, but stops sharing."
 		>
-			<button class="mod-warning" on:click={handleUnlink}>
-				Disconnect
-			</button>
+			<button class="mod-warning" on:click={handleUnlink}> Leave </button>
 		</SettingItem>
-
+	{:else}
+		<SettingItem name="Leave" description="You have not joined the relay">
+			<button disabled> Leave </button>
+		</SettingItem>
+	{/if}
+	{#if relay.path}
 		<SettingItem
 			name="Delete Local Folder"
-			description="Deletes your local data."
+			description="Deletes your local data and stops sharing."
 		>
 			<button class="mod-warning" on:click={handleDelete}>
 				Delete
@@ -272,15 +275,8 @@
 		</SettingItem>
 	{:else}
 		<SettingItem
-			name="Disconnect"
-			description="You are not connected to the relay"
-		>
-			<button disabled> Disconnect </button>
-		</SettingItem>
-
-		<SettingItem
-			name="Delete Folder"
-			description="You are not connected to the relay"
+			name="Delete Local Folder"
+			description="This relay isn't associated with a folder."
 		>
 			<button disabled> Delete </button>
 		</SettingItem>
