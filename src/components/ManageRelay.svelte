@@ -40,7 +40,7 @@
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
 	onMount(() => {
-		if (!folder && nameInput) {
+		if (!folder && nameInput && nameInput.value === "") {
 			nameInput.focus();
 		}
 	});
@@ -95,11 +95,6 @@
 			return false;
 		}
 
-		// Check for leading or trailing whitespaces which are not allowed
-		if (path.trim() !== path) {
-			return false;
-		}
-
 		// Check for any segment of the path being empty or only '.'
 		const segments = path.split("/");
 		for (const segment of segments) {
@@ -112,7 +107,7 @@
 
 	function handleNameChange() {
 		nameValid.set(isValidObsidianFolderName(nameInput.value));
-		if ($nameValid) {
+		if ($nameValid && nameInput.value !== "") {
 			updating.set(true);
 			updateRelay();
 		}

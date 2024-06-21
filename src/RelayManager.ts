@@ -602,7 +602,7 @@ export class RelayManager {
 			this.pb
 				.collection("relays")
 				.update<RelayDAO>(relay.id, {
-					name: relay.name,
+					name: relay.name.trim(),
 				})
 				.then((record) => {
 					const updatedRelay = toRelay(
