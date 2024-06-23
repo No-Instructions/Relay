@@ -10,6 +10,8 @@ import { Observable } from "./observable/Observable";
 declare const API_URL: string;
 declare const AUTH_URL: string;
 
+import { customFetch } from "./customFetch";
+
 class Subscription {
 	active: boolean;
 	subscribe: string | null;
@@ -113,6 +115,10 @@ export class LoginManager extends ObservableSet<User> {
 		super();
 		this._log = curryLog("[LoginManager]");
 		this.pb = new PocketBase(AUTH_URL);
+		this.pb.beforeSend = (url, options) => {
+			this._log(url, options);
+			return { url, options };
+		};
 		this.openSettings = openSettings;
 		this.url = new OAuth2Url();
 		//this.getLoginUrl();
@@ -123,16 +129,15 @@ export class LoginManager extends ObservableSet<User> {
 	}
 
 	setup(): boolean {
-		this.pb = new PocketBase(AUTH_URL);
 		if (!this.pb.authStore.isValid) {
 			this.notifyListeners(); // notify anyway
 			return false;
 		}
 		this.log("LoginManager", this);
 		const user = this.makeUser(this.pb.authStore);
-		this.sm = new SubscriptionManager(user);
+		//this.sm = new SubscriptionManager(user);
 		this.add(user);
-		this.whoami();
+		//this.whoami();
 		return true;
 	}
 
@@ -198,6 +203,7 @@ export class LoginManager extends ObservableSet<User> {
 						this.url.delay = end - start;
 						resolve(this.url.delay);
 					},
+					fetch: customFetch,
 				})
 				.then((authData) => {
 					this.pb
@@ -219,6 +225,7 @@ export class LoginManager extends ObservableSet<User> {
 			.collection("users")
 			.authWithOAuth2({
 				provider: "google",
+				fetch: customFetch,
 			})
 			.then((authData) => {
 				this.pb
@@ -226,6 +233,7 @@ export class LoginManager extends ObservableSet<User> {
 					.create({
 						user: authData.record.id,
 						oauth_response: authData.meta?.rawUser,
+						fetch: customFetch,
 					})
 					.catch((e) => {
 						// OAuth2 data already exists
