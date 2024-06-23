@@ -8,7 +8,7 @@ import {
 	type RelayInvitation,
 	type Role,
 } from "./Relay";
-import PocketBase, { type RecordModel } from "pocketbase";
+import PocketBase, { type ListResult, type RecordModel } from "pocketbase";
 import { ObservableMap } from "./observable/ObservableMap";
 import { curryLog } from "./debug";
 import { customFetch } from "./customFetch";
@@ -61,7 +61,7 @@ interface RelayRoleDAOExpandingRelayUser extends RelayRoleDAO {
 	};
 }
 
-interface UserDAOExpandingRelayRoles {
+interface UserDAOExpandingRelayRoles extends RecordModel {
 	id: string;
 	name: string;
 	expand?: {
@@ -260,26 +260,43 @@ class Store {
 		}
 	}
 
+	ingestPage<T>(
+		result?: ListResult<RecordModel>
+	): (T | undefined)[] | undefined {
+		return this.ingestBatch(result?.items);
+	}
+
+	ingestBatch<T>(records?: RecordModel[]): (T | undefined)[] | undefined {
+		if (!records) {
+			return;
+		}
+		return records.map((record) => {
+			return this.ingest(record);
+		});
+	}
+
 	ingest<T>(record?: RecordModel): T | undefined {
 		if (!record) {
 			console.warn("No record to ingest");
 			return;
 		}
+		let result;
 		const collection = this.collections.get(record.collectionName);
 		if (collection) {
-			return collection.ingest(record) as T;
+			result = collection.ingest(record) as T;
 		} else {
 			console.warn("No collection found for record", record);
 		}
-		// auto handle expanded items
-		//if (record.expand) {
-		//	for (const [key, value] of Object.entries(record.expand)) {
-		//		const collection = this.collections.get(value.collectionName);
-		//		if (collection) {
-		//			collection.update(value);
-		//		}
-		//	}
-		//}
+		if (record.expand) {
+			for (const [, value] of Object.entries(record.expand)) {
+				if (Array.isArray(value)) {
+					this.ingestBatch(value);
+				} else {
+					this.ingest(value);
+				}
+			}
+		}
+		return result;
 	}
 
 	delete(record: RecordModel) {
@@ -635,9 +652,6 @@ export class RelayManager {
 						return;
 					}
 					this.store?.ingest(e.record);
-					this.store?.ingest(
-						e.record.expand?.relay_invitations_via_relay
-					);
 				},
 				{
 					expand: ["relay_invitations_via_relay"],
@@ -655,7 +669,6 @@ export class RelayManager {
 						return;
 					}
 					this.store?.ingest(e.record);
-					this.store?.ingest(e.record?.expand?.relay);
 				},
 				{
 					expand: ["relay"],
@@ -673,8 +686,6 @@ export class RelayManager {
 						return;
 					}
 					this.store?.ingest(e.record);
-					this.store?.ingest(e.record.expand?.user);
-					this.store?.ingest(e.record.expand?.relay);
 				},
 				{
 					expand: ["user", "relay"],
@@ -699,11 +710,7 @@ export class RelayManager {
 				fetch: customFetch,
 			})
 			.then((user) => {
-				user.expand?.relay_roles_via_user?.forEach((relayRole) => {
-					this.store?.ingest(relayRole.expand?.relay);
-					//this.store?.ingest(relayRole.expand?.role)
-					this.store?.ingest(relayRole);
-				});
+				this.store?.ingest(user);
 			});
 
 		this.pb
@@ -715,9 +722,6 @@ export class RelayManager {
 			.then((roles) => {
 				roles.forEach((record) => {
 					this.store?.ingest(record);
-					if (record.expand?.user) {
-						this.store?.ingest(record.expand.user);
-					}
 				});
 			});
 		this.pb
@@ -755,10 +759,7 @@ export class RelayManager {
 							fetch: customFetch,
 						})
 						.then((roles) => {
-							roles.forEach((record) => {
-								this.store?.ingest(record);
-								this.store?.ingest(record.expand?.user);
-							});
+							this.store?.ingestBatch(roles);
 							const relay = this.store?.ingest<Relay>(response);
 							if (!relay) {
 								throw new Error("Failed to accept invitation");
