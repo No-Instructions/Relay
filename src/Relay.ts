@@ -1,7 +1,5 @@
-import { randomUUID } from "crypto";
 import type { SharedFolder } from "./SharedFolder";
 
-type RelayType = "personal" | "team";
 export type Role = "Owner" | "Member";
 
 // A relay is a shared folder "constructor"
@@ -16,9 +14,10 @@ export interface Relay {
 	path?: string;
 	user_limit: number;
 	role: Role;
-	owner: boolean;
 	folder?: SharedFolder;
 	invitation?: RelayInvitation;
+
+	update(update: unknown): Relay;
 }
 
 export interface RelayRoleUser {
@@ -31,6 +30,8 @@ export interface RelayRole {
 	user: RelayRoleUser;
 	role: Role;
 	relay?: Relay;
+
+	update(update: unknown): RelayRole;
 }
 
 export interface RelayInvitation {
@@ -38,39 +39,6 @@ export interface RelayInvitation {
 	role: Role;
 	relay: Relay;
 	key: string;
-}
 
-export function newRelay() {
-	return {
-		guid: randomUUID(),
-		type: "personal" as RelayType,
-		user_limit: 2,
-		name: "New Relay",
-		path: "-New Relay",
-		role: "Owner" as Role,
-		owner: true,
-	};
-}
-
-export function makeRelay(
-	id: string,
-	guid: string,
-	name: string,
-	path: string | undefined,
-	user_limit: number,
-	folder?: SharedFolder,
-	invitation?: RelayInvitation,
-	role: Role = "Owner" as Role
-): Relay {
-	return {
-		id: id,
-		guid: guid,
-		name: name,
-		user_limit: user_limit,
-		role: role,
-		owner: role === "Owner",
-		path: path,
-		folder: folder,
-		invitation: invitation,
-	};
+	update(update: unknown): RelayInvitation;
 }

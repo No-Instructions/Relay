@@ -14,7 +14,6 @@
 	if (Platform.isIosApp) {
 		plugin.loginManager.getLoginUrl();
 	}
-	plugin.loginManager.getLoginUrl();
 
 	async function logout() {
 		plugin.loginManager.logout();
@@ -91,7 +90,11 @@
 			name="Login"
 			description="You need to login to use this plugin."
 		>
-			<button on:click={login}>Login with Google</button>
+			<button
+				on:click={async () => {
+					await login();
+				}}>Login with Google</button
+			>
 		</SettingItem>
 	{/if}
 {/if}

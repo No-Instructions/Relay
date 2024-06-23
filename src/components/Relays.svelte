@@ -100,7 +100,7 @@
 		? "Create your own relay and invite collaborators"
 		: "Manage relays"}
 ></SettingItemHeading>
-{#each $relays.values().sort(sortFn) as relay}
+{#each $relays.values() as relay}
 	{#if relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id)}
 		<SettingItem
 			name={relay.name || "..."}
@@ -121,8 +121,8 @@
 	{/if}
 {/each}
 
-{#each $relays.values().sort(sortFn) as relay}
-	{#if !relay.folder && relay.owner && $relayRoles.some((role) => role.relay?.id === relay.id)}
+{#each $relays.values() as relay}
+	{#if !relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id && role.role === "Owner")}
 		<SettingItem
 			name={relay.name || "..."}
 			description={makeDescription(relay)}
@@ -148,7 +148,7 @@
 	>
 </SettingItem>
 
-{#if $relays.some((relay) => !relay.folder && !relay.owner && $relayRoles.some((role) => role.relay?.id === relay.id))}
+{#if $relays.some((relay) => !relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id && role.role === "Member"))}
 	<SettingItemHeading
 		name="Invites"
 		description={relays
@@ -157,7 +157,7 @@
 	></SettingItemHeading>
 {/if}
 {#each $relays.values() as relay}
-	{#if !relay.folder && !relay.owner && $relayRoles.some((role) => role.relay?.id === relay.id)}
+	{#if !relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id && role.role === "Member")}
 		<SettingItem
 			name={relay.name || "..."}
 			description={makeDescription(relay)}

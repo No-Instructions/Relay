@@ -3,24 +3,35 @@
 import { randomUUID } from "crypto";
 import { SharedFolders, type SharedFolder } from "./SharedFolder";
 import {
-	makeRelay,
 	type RelayRole,
 	type Relay,
 	type RelayInvitation,
 	type Role,
 } from "./Relay";
-import PocketBase from "pocketbase";
+import PocketBase, { type RecordModel } from "pocketbase";
 import { ObservableMap } from "./observable/ObservableMap";
 import { curryLog } from "./debug";
+import { customFetch } from "./customFetch";
 
 declare const AUTH_URL: string;
 
-interface RelayDAO {
+interface UserDAO extends RecordModel {
+	id: string;
+	name: string;
+}
+
+// Hard coding the roles for now
+interface RoleDAO {
+	id: string;
+	name: string;
+}
+interface RelayDAO extends RecordModel {
 	id: string;
 	guid: string;
 	name: string;
 	path: string;
 	user_limit: number;
+	creator: string;
 }
 
 interface RelayDAOExpandingRelayInvitation extends RelayDAO {
@@ -29,12 +40,7 @@ interface RelayDAOExpandingRelayInvitation extends RelayDAO {
 	};
 }
 
-interface RoleDAO {
-	id: string;
-	name: string;
-}
-
-interface RelayRoleDAO {
+interface RelayRoleDAO extends RecordModel {
 	id: string;
 	user: string;
 	role: string;
@@ -63,7 +69,7 @@ interface UserDAOExpandingRelayRoles {
 	};
 }
 
-interface RelayInvitationDAO {
+interface RelayInvitationDAO extends RecordModel {
 	id: string;
 	role: string;
 	relay: string;
@@ -76,102 +82,212 @@ interface RelayInvitationDAOExpandingRelay extends RelayInvitationDAO {
 	};
 }
 
-function toRelays(
-	user: UserDAOExpandingRelayRoles,
-	sharedFolders: SharedFolders
-): Relay[] {
-	const relays: Relay[] = [];
-	try {
-		user.expand?.relay_roles_via_user?.forEach((role) => {
-			if (!(role.expand?.relay && role.expand.role)) {
-				return;
-			}
-			const folder = sharedFolders.find(
-				(folder) => folder.guid === role.expand?.relay?.guid
-			);
-			relays.push(
-				makeRelay(
-					role.expand.relay.id,
-					role.expand.relay.guid,
-					role.expand.relay.name,
-					folder?.path || role.expand.relay.path,
-					role.expand.relay.user_limit,
-					folder,
-					undefined,
-					role.expand.role.name as Role
-				)
-			);
-		});
-	} catch (e) {
-		// User has no roles...
+interface Collection<D, A> {
+	collectionName: string;
+	ingest(update: D): A;
+	delete(id: string): void;
+}
+
+class RelayCollection implements Collection<RelayDAO, Relay> {
+	collectionName: string = "relays";
+	relays: ObservableMap<string, Relay>;
+	roles: RoleDAO[];
+	relayRoles: ObservableMap<string, RelayRole>;
+	relayInvitations: ObservableMap<string, RelayInvitation>;
+	sharedFolders: SharedFolders;
+	user: UserDAO;
+
+	constructor(
+		relays: ObservableMap<string, Relay>,
+		roles: RoleDAO[],
+		relayRoles: ObservableMap<string, RelayRole>,
+		relayInvitations: ObservableMap<string, RelayInvitation>,
+		sharedFolders: SharedFolders,
+		user: UserDAO
+	) {
+		this.relays = relays;
+		this.roles = roles;
+		this.relayRoles = relayRoles;
+		this.relayInvitations = relayInvitations;
+		this.sharedFolders = sharedFolders;
+		this.user = user;
 	}
-	return relays;
-}
 
-function toRelayRoles(
-	user: UserDAOExpandingRelayRoles,
-	relays: Relay[]
-): ObservableMap<string, RelayRole> {
-	const roles: ObservableMap<string, RelayRole> = new ObservableMap<
-		string,
-		RelayRole
-	>();
-	user.expand?.relay_roles_via_user?.forEach((role) => {
-		if (!role.expand?.relay?.id || !role.expand?.role) {
-			return;
+	ingest(update: RelayDAO): Relay {
+		console.log("[RelayCollection] Ingest", update);
+		const existingRelay = this.relays.get(update.id);
+		if (existingRelay) {
+			existingRelay.update(update);
+			const folder = this.sharedFolders.find((folder) => {
+				return folder.guid === update.guid;
+			});
+			if (folder) {
+				existingRelay.folder = folder;
+				existingRelay.path = folder.path;
+			}
+			this.relays.notifyListeners();
+			return existingRelay;
 		}
-		const relay = relays.find(
-			(relay) => relay.id === role.expand?.relay?.id
-		);
-		const id = role.id;
-		if (!relay) {
-			console.error("relay not found", role.expand.relay.id);
-			return;
-		}
-		roles.set(id, {
-			id,
-			user: { id: user.id, name: user.name },
-			role: role.expand.role.name as Role,
-			relay: relay,
+		const folder = this.sharedFolders.find((folder) => {
+			return folder.guid === update.guid;
 		});
-	});
-	return roles;
+		const relay = new RelayAuto(
+			update,
+			this.roles,
+			this.relayRoles,
+			this.relayInvitations,
+			this.user,
+			folder?.path,
+			folder
+		);
+		this.relays.set(relay.id, relay);
+		return relay;
+	}
+
+	delete(id: string) {
+		this.relays.delete(id);
+	}
 }
 
-function toRelay(
-	relay: RelayDAO,
-	relays: ObservableMap<string, Relay>,
-	relayRoles: ObservableMap<string, RelayRole>,
-	relayInvitations: ObservableMap<string, RelayInvitation>
-): Relay {
-	const role: Role =
-		relayRoles.find((role) => {
-			return role.relay?.id === relay.id;
-		})?.role || ("Member" as Role);
-	const relayInvitation = relayInvitations.find(
-		(invite) => invite.relay.id === relay.id
-	);
-	const existingRelay = relays.get(relay.id);
-	return makeRelay(
-		relay.id,
-		relay.guid,
-		relay.name,
-		existingRelay?.path,
-		relay.user_limit,
-		existingRelay?.folder,
-		relayInvitation,
-		role
-	);
+class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
+	collectionName: string = "relay_roles";
+	relayRoles: ObservableMap<string, RelayRole>;
+	relays: ObservableMap<string, Relay>;
+	users: ObservableMap<string, UserDAO>;
+	roles: RoleDAO[];
+
+	constructor(
+		relayRoles: ObservableMap<string, RelayRole>,
+		relays: ObservableMap<string, Relay>,
+		users: ObservableMap<string, UserDAO>,
+		roles: RoleDAO[]
+	) {
+		this.relayRoles = relayRoles;
+		this.relays = relays;
+		this.users = users;
+		this.roles = roles;
+	}
+
+	ingest(update: RelayRoleDAO): RelayRole {
+		console.log("[RelayRoleCollection] Ingest", update);
+		const existingRole = this.relayRoles.get(update.id);
+		if (existingRole) {
+			existingRole.update(update);
+			this.relayRoles.notifyListeners();
+			return existingRole;
+		}
+		const role = new RelayRoleAuto(
+			update,
+			this.relays,
+			this.users,
+			this.roles
+		);
+		this.relayRoles.set(role.id, role);
+		return role;
+	}
+
+	delete(id: string) {
+		this.relayRoles.delete(id);
+	}
 }
 
-interface UserDAO {
-	id: string;
-	name: string;
+class RelayInvitationsCollection
+	implements Collection<RelayInvitationDAO, RelayInvitation>
+{
+	collectionName: string = "relay_invitations";
+	relayInvitations: ObservableMap<string, RelayInvitation>;
+	relays: ObservableMap<string, Relay>;
+	roles: RoleDAO[];
+
+	constructor(
+		relayInvitations: ObservableMap<string, RelayInvitation>,
+		relays: ObservableMap<string, Relay>,
+		roles: RoleDAO[]
+	) {
+		this.relayInvitations = relayInvitations;
+		this.relays = relays;
+		this.roles = roles;
+	}
+
+	ingest(update: RelayInvitationDAO): RelayInvitation {
+		console.log("[RelayInvitationCollection] Ingest", update);
+		const existingInvitation = this.relayInvitations.get(update.id);
+		if (existingInvitation) {
+			existingInvitation.update(update);
+			this.relayInvitations.notifyListeners();
+			return existingInvitation;
+		}
+		const invitation = new RelayInvitationAuto(
+			update,
+			this.relays,
+			this.roles
+		);
+		this.relayInvitations.set(invitation.id, invitation);
+		return invitation;
+	}
+
+	delete(id: string) {
+		this.relayInvitations.delete(id);
+	}
 }
 
-interface RoleDAO {
-	id: string;
-	name: string;
+class UserCollection implements Collection<UserDAO, UserDAO> {
+	collectionName: string = "users";
+	users: ObservableMap<string, UserDAO>;
+
+	constructor(users: ObservableMap<string, UserDAO>) {
+		this.users = users;
+	}
+
+	ingest(update: UserDAO): UserDAO {
+		console.log("[UserCollection] Ingest", update);
+		this.users.set(update.id, update);
+		return update;
+	}
+
+	delete(id: string) {
+		this.users.delete(id);
+	}
+}
+
+class Store {
+	collections: Map<string, Collection<unknown, unknown>>;
+
+	constructor(collections: Collection<unknown, unknown>[]) {
+		this.collections = new Map();
+		for (const collection of collections) {
+			this.collections.set(collection.collectionName, collection);
+		}
+	}
+
+	ingest<T>(record?: RecordModel): T | undefined {
+		if (!record) {
+			console.warn("No record to ingest");
+			return;
+		}
+		const collection = this.collections.get(record.collectionName);
+		if (collection) {
+			return collection.ingest(record) as T;
+		} else {
+			console.warn("No collection found for record", record);
+		}
+		// auto handle expanded items
+		//if (record.expand) {
+		//	for (const [key, value] of Object.entries(record.expand)) {
+		//		const collection = this.collections.get(value.collectionName);
+		//		if (collection) {
+		//			collection.update(value);
+		//		}
+		//	}
+		//}
+	}
+
+	delete(record: RecordModel) {
+		const collection = this.collections.get(record.collectionName);
+		if (collection) {
+			collection.delete(record.id);
+		}
+	}
 }
 
 class RelayRoleAuto implements RelayRole {
@@ -194,6 +310,11 @@ class RelayRoleAuto implements RelayRole {
 		this.roles = roles;
 		this.relays = relays;
 		this.relayRole = relayRole;
+	}
+
+	update(relayRole: RelayRoleDAO) {
+		this.relayRole = relayRole;
+		return this;
 	}
 
 	public get id() {
@@ -234,6 +355,11 @@ class RelayInvitationAuto implements RelayInvitation {
 		this.relays = relays;
 	}
 
+	update(relayInvitation: RelayInvitationDAO) {
+		this.relayInvitation = relayInvitation;
+		return this;
+	}
+
 	public get key() {
 		return this.relayInvitation.key;
 	}
@@ -260,35 +386,162 @@ class RelayInvitationAuto implements RelayInvitation {
 	}
 }
 
+class RelayAuto implements Relay {
+	relayRoles: ObservableMap<string, RelayRole>;
+	relayInvitations: ObservableMap<string, RelayInvitation>;
+	roles: RoleDAO[];
+	relay: RelayDAO;
+	user: UserDAO;
+	path?: string;
+	folder?: SharedFolder;
+
+	constructor(
+		relay: RelayDAO,
+		roles: RoleDAO[],
+		relayRoles: ObservableMap<string, RelayRole>,
+		relayInvitations: ObservableMap<string, RelayInvitation>,
+		user: UserDAO,
+		path?: string,
+		folder?: SharedFolder
+	) {
+		this.relayRoles = relayRoles;
+		this.roles = roles;
+		this.relayInvitations = relayInvitations;
+		this.relay = relay;
+		this.user = user;
+		this.folder = folder;
+		this.path = path;
+	}
+
+	update(update: RelayDAO) {
+		this.relay = update;
+		return this;
+	}
+
+	public get id() {
+		return this.relay.id;
+	}
+
+	public get guid() {
+		return this.relay.guid;
+	}
+
+	public get name() {
+		return this.relay.name;
+	}
+
+	public set name(value: string) {
+		this.relay.name = value;
+	}
+
+	public get user_limit() {
+		return this.relay.user_limit;
+	}
+
+	public get role(): Role {
+		const isCreator = this.relay.creator === this.user.id;
+		const role = this.relayRoles.find(
+			(role) =>
+				role.relay?.id === this.relay.id &&
+				role.user.id === this.user.id
+		)?.role;
+		if (role) {
+			return role;
+		}
+		console.warn("couldn't find role", this.relay.id, this.user, isCreator);
+		return isCreator ? "Owner" : "Member";
+	}
+
+	public get owner() {
+		return this.role === "Owner";
+	}
+
+	public get invitation() {
+		return this.relayInvitations.find(
+			(invite) => invite.relay.id === this.relay.id
+		);
+	}
+}
+
 export class RelayManager {
 	relays: ObservableMap<string, Relay>;
-	relayset: ObservableMap<string, Relay>;
 	relayRoles: ObservableMap<string, RelayRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
 	users: ObservableMap<string, UserDAO>;
 	sharedFolders: SharedFolders;
 	roles: RoleDAO[];
 	user?: UserDAO;
+	store?: Store;
 	_offSharedFolders: () => void = () => {};
 	_log: (message: string, ...args: unknown[]) => void;
 	private pb: PocketBase;
 
 	constructor(sharedFolders: SharedFolders) {
+		this.sharedFolders = sharedFolders;
 		this._log = curryLog("[RelayManager]");
+
+		this.pb = new PocketBase(AUTH_URL);
+		this.pb.beforeSend = (url, options) => {
+			this._log(url, options);
+			return { url, options };
+		};
+
+		// Build the NodeLists
+		this.users = new ObservableMap<string, UserDAO>();
 		this.relays = new ObservableMap<string, Relay>();
 		this.relayInvitations = new ObservableMap<string, RelayInvitation>();
-		this.relayset = new ObservableMap<string, Relay>();
+		this.relayRoles = new ObservableMap<string, RelayRole>();
 		this.roles = [
 			{ name: "Owner", id: "2arnubkcv7jpce8" },
 			{ name: "Member", id: "x6lllh2qsf9lxk6" },
 		];
-		this.relayRoles = new ObservableMap<string, RelayRole>();
-		this.sharedFolders = sharedFolders;
-		this.pb = new PocketBase(AUTH_URL);
-		this.users = new ObservableMap<string, UserDAO>();
+
+		// XXX this is so akward that the class behaves poorly if a user is unset.
 		this.setUser();
+
+		if (!this.user) {
+			return;
+		}
+
+		this.buildGraph();
 		this.subscribe();
 		this.update();
+	}
+
+	buildGraph() {
+		if (!this.user) {
+			return;
+		}
+		if (this.store) {
+			return;
+		}
+		// Build the AdapterGraph
+		const userCollection = new UserCollection(this.users);
+		const relayCollection = new RelayCollection(
+			this.relays,
+			this.roles,
+			this.relayRoles,
+			this.relayInvitations,
+			this.sharedFolders,
+			this.user
+		);
+		const relayRolesCollection = new RelayRolesCollection(
+			this.relayRoles,
+			this.relays,
+			this.users,
+			this.roles
+		);
+		const relayInvitationsCollection = new RelayInvitationsCollection(
+			this.relayInvitations,
+			this.relays,
+			this.roles
+		);
+		this.store = new Store([
+			userCollection,
+			relayCollection,
+			relayRolesCollection,
+			relayInvitationsCollection,
+		]);
 	}
 
 	private log(message: string, ...args: unknown[]) {
@@ -305,6 +558,7 @@ export class RelayManager {
 
 	login() {
 		this.setUser();
+		this.buildGraph();
 		this.subscribe();
 		this.update();
 	}
@@ -315,6 +569,7 @@ export class RelayManager {
 		this.relayInvitations.clear();
 		this.users.clear();
 		this.user = undefined;
+		this.store = undefined;
 		this.unsubscribe();
 	}
 
@@ -327,18 +582,17 @@ export class RelayManager {
 		}
 		return this.pb
 			.collection("relay_invitations")
-			.getList<RelayInvitationDAO>()
+			.getList<RelayInvitationDAO>(0, 200, {
+				fetch: customFetch,
+			})
 			.then((invitations) => {
-				const invite = invitations["items"].find((invite) => {
-					return invite.relay === relay.id;
+				invitations.items.forEach((invite) => {
+					this.store?.ingest(invite);
+				});
+				const invite = this.relayInvitations.find((invite) => {
+					return invite.relay.id === relay.id;
 				});
 				if (invite) {
-					const newInvitation = new RelayInvitationAuto(
-						invite,
-						this.relays,
-						this.roles
-					);
-					this.relayInvitations.set(newInvitation.id, newInvitation);
 					return invite.key;
 				}
 				return "";
@@ -346,20 +600,30 @@ export class RelayManager {
 	}
 
 	async subscribe() {
-		this._offSharedFolders = this.sharedFolders.subscribe((folders) => {
-			this.relays.forEach((relay) => {
-				if (relay.folder) {
-					return;
-				}
-				const folder = folders.find(
-					(folder) => folder.guid === relay.guid
-				);
-				if (folder) {
-					relay.folder = folder;
-					relay.path = folder.path;
-				}
+		if (
+			!this.pb.authStore.isValid ||
+			this.pb.authStore.model?.id === undefined
+		) {
+			console.warn("auth store invalid");
+			return;
+		}
+
+		if (!this._offSharedFolders) {
+			this._offSharedFolders = this.sharedFolders.subscribe((folders) => {
+				this.relays.forEach((relay) => {
+					if (relay.folder) {
+						return;
+					}
+					const folder = folders.find(
+						(folder) => folder.guid === relay.guid
+					);
+					if (folder) {
+						relay.folder = folder;
+						relay.path = folder.path;
+					}
+				});
 			});
-		});
+		}
 		this.pb
 			.collection("relays")
 			.subscribe<RelayDAOExpandingRelayInvitation>(
@@ -367,30 +631,17 @@ export class RelayManager {
 				(e) => {
 					this.log("[Event]: relays", e.action, e.record);
 					if (e.action === "delete") {
-						this.relays.delete(e.record.id);
+						this.store?.delete(e.record);
 						return;
 					}
-					const relay = toRelay(
-						e.record,
-						this.relays,
-						this.relayRoles,
-						this.relayInvitations
+					this.store?.ingest(e.record);
+					this.store?.ingest(
+						e.record.expand?.relay_invitations_via_relay
 					);
-					this.relays.set(e.record.id, relay);
-					if (e.record.expand?.relay_invitations_via_relay) {
-						const newInvitation = new RelayInvitationAuto(
-							e.record.expand?.relay_invitations_via_relay,
-							this.relays,
-							this.roles
-						);
-						this.relayInvitations.set(
-							newInvitation.id,
-							newInvitation
-						);
-					}
 				},
 				{
 					expand: ["relay_invitations_via_relay"],
+					fetch: customFetch,
 				}
 			);
 		this.pb
@@ -400,29 +651,15 @@ export class RelayManager {
 				(e) => {
 					this.log("[Event]: relay_invitations", e.action, e.record);
 					if (e.action === "delete") {
-						this.relayInvitations.delete(e.record.id);
+						this.store?.delete(e.record);
 						return;
 					}
-					if (e.record.expand?.relay) {
-						this.relays.set(
-							e.record.expand.relay.id,
-							toRelay(
-								e.record.expand.relay,
-								this.relays,
-								this.relayRoles,
-								this.relayInvitations
-							)
-						);
-					}
-					const newInvitation = new RelayInvitationAuto(
-						e.record,
-						this.relays,
-						this.roles
-					);
-					this.relayInvitations.set(newInvitation.id, newInvitation);
+					this.store?.ingest(e.record);
+					this.store?.ingest(e.record?.expand?.relay);
 				},
 				{
 					expand: ["relay"],
+					fetch: customFetch,
 				}
 			);
 		this.pb
@@ -432,49 +669,16 @@ export class RelayManager {
 				(e) => {
 					this.log("event: relay_roles", e.action, e.record);
 					if (e.action === "delete") {
-						this.relayRoles.delete(e.record.id);
+						this.store?.delete(e.record);
 						return;
 					}
-					try {
-						const makeRole = () => {
-							if (e.record.expand?.user) {
-								this.users.set(
-									e.record.expand.user.id,
-									e.record.expand.user
-								);
-							}
-							const role = new RelayRoleAuto(
-								e.record,
-								this.relays,
-								this.users,
-								this.roles
-							);
-							this.relayRoles.set(e.record.id, role);
-							return role;
-						};
-						const role = makeRole();
-
-						if (role.relay === undefined) {
-							this.pb
-								.collection("relays")
-								.getOne<RelayDAO>(e.record.relay)
-								.then((relayRecord) => {
-									const relay = toRelay(
-										relayRecord,
-										this.relays,
-										this.relayRoles,
-										this.relayInvitations
-									);
-									this.relays.set(relay.id, relay);
-									makeRole();
-								});
-						}
-					} catch (e) {
-						console.error(e);
-					}
+					this.store?.ingest(e.record);
+					this.store?.ingest(e.record.expand?.user);
+					this.store?.ingest(e.record.expand?.relay);
 				},
 				{
 					expand: ["user", "relay"],
+					fetch: customFetch,
 				}
 			);
 	}
@@ -492,85 +696,77 @@ export class RelayManager {
 			.collection("users")
 			.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
 				expand: "relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role",
+				fetch: customFetch,
 			})
 			.then((user) => {
-				const relays = toRelays(user, this.sharedFolders);
-				for (const relay of relays) {
-					this.relays.set(relay.id, relay);
-				}
-				const newRelayRoles = toRelayRoles(user, [
-					...this.relays.values(),
-				]);
-				for (const role of newRelayRoles.values()) {
-					this.relayRoles.set(role.id, role);
-				}
+				user.expand?.relay_roles_via_user?.forEach((relayRole) => {
+					this.store?.ingest(relayRole.expand?.relay);
+					//this.store?.ingest(relayRole.expand?.role)
+					this.store?.ingest(relayRole);
+				});
 			});
 
 		this.pb
 			.collection("relay_roles")
-			.getList<RelayRoleDAOExpandingRelayUser>(0, 200, {
+			.getFullList<RelayRoleDAOExpandingRelayUser>({
 				expand: "user",
+				fetch: customFetch,
 			})
 			.then((roles) => {
-				roles.items.forEach((record) => {
+				roles.forEach((record) => {
+					this.store?.ingest(record);
 					if (record.expand?.user) {
-						this.users.set(
-							record.expand.user.id,
-							record.expand.user
-						);
+						this.store?.ingest(record.expand.user);
 					}
-					const role = new RelayRoleAuto(
-						record,
-						this.relays,
-						this.users,
-						this.roles
-					);
-					this.relayRoles.set(role.id, role);
 				});
 			});
 		this.pb
 			.collection("relay_invitations")
-			.getList<RelayInvitationDAO>()
+			.getFullList<RelayInvitationDAO>({
+				fetch: customFetch,
+			})
 			.then((relayInvitations) => {
-				relayInvitations.items.forEach((record) => {
-					const relayInvitation = new RelayInvitationAuto(
-						record,
-						this.relays,
-						this.roles
-					);
-					this.relayInvitations.set(
-						relayInvitation.id,
-						relayInvitation
-					);
+				relayInvitations.forEach((record) => {
+					this.store?.ingest(record);
 				});
 			});
 	}
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
-		return this.pb
-			.send("/api/accept-invitation", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					key: shareKey,
-				}),
-			})
-			.then((response) => {
-				this.log("[InviteAccept]", response);
-				const relay = toRelay(
-					response,
-					this.relays,
-					this.relayRoles,
-					this.relayInvitations
-				);
-				this.relays.set(relay.id, relay);
-				return relay;
-			})
-			.catch((e) => {
-				throw new Error("Failed to accept invitation");
-			});
+		return new Promise((resolve) => {
+			this.pb
+				.send("/api/accept-invitation", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({
+						key: shareKey,
+					}),
+					fetch: customFetch,
+				})
+				.then((response: RelayDAO) => {
+					this.log("[InviteAccept]", response);
+					// Maybe we should return roles as well
+					this.pb
+						.collection("relay_roles")
+						.getFullList<RelayRoleDAOExpandingRelayUser>({
+							expand: "user",
+							fetch: customFetch,
+						})
+						.then((roles) => {
+							roles.forEach((record) => {
+								this.store?.ingest(record);
+								this.store?.ingest(record.expand?.user);
+							});
+							const relay = this.store?.ingest<Relay>(response);
+							if (!relay) {
+								throw new Error("Failed to accept invitation");
+							}
+							resolve(relay);
+						});
+				});
+		});
 	}
 
 	createRelay(name: string): Promise<Relay> {
@@ -578,18 +774,25 @@ export class RelayManager {
 			const guid = randomUUID();
 			this.pb
 				.collection("relays")
-				.create({
-					guid: guid,
-					name: name,
-					path: null,
-				})
+				.create<RelayDAO>(
+					{
+						guid: guid,
+						name: name,
+						path: null,
+					},
+
+					{ fetch: customFetch }
+				)
 				.then((record) => {
-					const relay = makeRelay(
-						record.id,
-						guid,
-						name,
-						undefined,
-						2
+					if (!this.user) {
+						return;
+					}
+					const relay = new RelayAuto(
+						record,
+						this.roles,
+						this.relayRoles,
+						this.relayInvitations,
+						this.user
 					);
 					this.relays.set(relay.id, relay);
 					resolve(relay);
@@ -601,19 +804,15 @@ export class RelayManager {
 		return new Promise<Relay>((resolve) => {
 			this.pb
 				.collection("relays")
-				.update<RelayDAO>(relay.id, {
-					name: relay.name.trim(),
-				})
+				.update<RelayDAO>(
+					relay.id,
+					{
+						name: relay.name.trim(),
+					},
+					{ fetch: customFetch }
+				)
 				.then((record) => {
-					const updatedRelay = toRelay(
-						record,
-						this.relays,
-						this.relayRoles,
-						this.relayInvitations
-					);
-					updatedRelay.folder = relay.folder;
-					updatedRelay.path = relay.path;
-					this.relays.set(relay.id, updatedRelay);
+					this.store?.ingest(record);
 					resolve(relay);
 				});
 		});
@@ -627,7 +826,7 @@ export class RelayManager {
 	}
 
 	destroyRelay(relay: Relay): boolean {
-		this.pb.collection("relays").delete(relay.id);
+		this.pb.collection("relays").delete(relay.id, { fetch: customFetch });
 		if (relay.folder) {
 			this.sharedFolders.delete(relay.folder);
 		}
@@ -653,7 +852,14 @@ export class RelayManager {
 			);
 		});
 		if (role) {
-			await this.pb.collection("relay_roles").delete(role.id);
+			await this.pb
+				.collection("relay_roles")
+				.delete(role.id, { fetch: customFetch })
+				.then((deleted: boolean) => {
+					if (deleted) {
+						this.relayRoles.delete(role.id);
+					}
+				});
 		}
 	}
 
