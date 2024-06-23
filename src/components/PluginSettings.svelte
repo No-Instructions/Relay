@@ -25,6 +25,7 @@
 	});
 	let relayRoles = plugin.relayManager.relayRoles;
 	let relays = plugin.relayManager.relays;
+	let user = plugin.relayManager.user;
 
 	let currentComponent: typeof Relays | typeof ManageRelay = Relays;
 	let mount: boolean = false;
@@ -89,6 +90,7 @@
 				{relays}
 				{relayRoles}
 				{plugin}
+				{user}
 				on:manageRelay={handleManageRelayEvent}
 				on:createRelay={handleCreateRelayEvent}
 				on:rejectRelay={handleRejectRelay}

@@ -2,17 +2,35 @@
 	import { createEventDispatcher } from "svelte";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import { type Relay, type RelayRole } from "../Relay";
+	import { type Relay, type RelayRoleUser, type RelayRole } from "../Relay";
 	import store from "../Store";
 	import type Live from "src/main";
 	import { Satellite } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
+	import { derived } from "svelte/store";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
 	export let relayRoles: ObservableMap<string, RelayRole>;
+	export let user: RelayRoleUser | undefined;
 	store.plugin.subscribe((p) => {
 		plugin = p;
+	});
+
+	let myRoles = derived(relayRoles, ($relayRoles) => {
+		return $relayRoles.filter((role) => role.user.id === user?.id);
+	});
+
+	let ownerOf = derived(relayRoles, ($relayRoles) => {
+		return $relayRoles.filter(
+			(role) => role.role === "Owner" && role.user.id === user?.id,
+		);
+	});
+
+	let memberOf = derived(relayRoles, ($relayRoles) => {
+		return $relayRoles.filter(
+			(role) => role.role === "Member" && role.user.id === user?.id,
+		);
 	});
 
 	let shareKey = "";
@@ -100,29 +118,8 @@
 		? "Create your own relay and invite collaborators"
 		: "Manage relays"}
 ></SettingItemHeading>
-{#each $relays.values() as relay}
-	{#if relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id)}
-		<SettingItem
-			name={relay.name || "..."}
-			description={makeDescription(relay)}
-		>
-			{#if relay.folder}
-				<button
-					class="mod-destructive"
-					on:click={() => handleLeaveRelay(relay)}
-				>
-					Leave
-				</button>
-			{:else}
-				<button on:click={() => handleJoinRelay(relay)}> Join </button>
-			{/if}
-			<button on:click={() => handleManageRelay(relay)}> Manage </button>
-		</SettingItem>
-	{/if}
-{/each}
-
-{#each $relays.values() as relay}
-	{#if !relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id && role.role === "Owner")}
+{#each $relays.values().sort(sortFn) as relay}
+	{#if (relay.folder && $myRoles.some((role) => role.relay?.id === relay.id)) || $ownerOf.some((role) => role.relay?.id === relay.id)}
 		<SettingItem
 			name={relay.name || "..."}
 			description={makeDescription(relay)}
@@ -148,7 +145,7 @@
 	>
 </SettingItem>
 
-{#if $relays.some((relay) => !relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id && role.role === "Member"))}
+{#if $relays.some((relay) => !relay.folder && $memberOf.some((role) => role.relay?.id === relay.id))}
 	<SettingItemHeading
 		name="Invites"
 		description={relays
@@ -157,7 +154,7 @@
 	></SettingItemHeading>
 {/if}
 {#each $relays.values() as relay}
-	{#if !relay.folder && $relayRoles.some((role) => role.relay?.id === relay.id && role.role === "Member")}
+	{#if !relay.folder && $memberOf.some((role) => role.relay?.id === relay.id)}
 		<SettingItem
 			name={relay.name || "..."}
 			description={makeDescription(relay)}
