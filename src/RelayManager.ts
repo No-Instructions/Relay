@@ -187,6 +187,16 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 	}
 
 	delete(id: string) {
+		const relayRole = this.relayRoles.get(id);
+		if (!relayRole) {
+			return;
+		}
+		const relay = relayRole.relay;
+		if (relay) {
+			// XXX this isn't a full implementation of cascade...
+			// Relay invitations will still exist.
+			this.relays.delete(relay.id);
+		}
 		this.relayRoles.delete(id);
 	}
 }
