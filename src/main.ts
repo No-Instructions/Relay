@@ -84,10 +84,12 @@ export default class Live extends Plugin {
 			new Notice("Please sign in to use Relay");
 		}
 
+		this.sharedFolders = new SharedFolders(
+			this._createSharedFolder.bind(this)
+		);
+
 		this.app.workspace.onLayoutReady(() => {
-			this.sharedFolders = this.loadSharedFolders(
-				this.settings.sharedFolders
-			); // Loading shared folders also sanitizes them...
+			this.loadSharedFolders(this.settings.sharedFolders); // Loading shared folders also sanitizes them...
 			this.saveSettings();
 
 			// install hooks for logout/login
@@ -132,12 +134,10 @@ export default class Live extends Plugin {
 		});
 	}
 
-	private loadSharedFolders(
-		sharedFolderSettings: SharedFolderSettings[]
-	): SharedFolders {
-		const sharedFolders = new SharedFolders(
-			this._createSharedFolder.bind(this)
-		);
+	private loadSharedFolders(sharedFolderSettings: SharedFolderSettings[]) {
+		// XXX this will cause more notifications than necessary
+		this._offSaveSettings?.();
+		this.sharedFolders.clear();
 		sharedFolderSettings.forEach(
 			(sharedFolderSetting: SharedFolderSettings) => {
 				const tFolder = this.vault.getFolderByPath(
@@ -149,7 +149,7 @@ export default class Live extends Plugin {
 					);
 					return;
 				}
-				sharedFolders.new(
+				this.sharedFolders.new(
 					sharedFolderSetting.path,
 					sharedFolderSetting.guid
 				);
@@ -158,11 +158,10 @@ export default class Live extends Plugin {
 		const saveSettingsHook = () => {
 			this.saveSettings();
 		};
-		sharedFolders.on(saveSettingsHook);
+		this.sharedFolders.on(saveSettingsHook);
 		this._offSaveSettings = () => {
-			sharedFolders.off(saveSettingsHook);
+			this.sharedFolders.off(saveSettingsHook);
 		};
-		return sharedFolders;
 	}
 
 	private async _createSharedFolder(
@@ -188,10 +187,7 @@ export default class Live extends Plugin {
 	}
 
 	private _onLogin() {
-		this.saveSettings();
-		this.sharedFolders = this.loadSharedFolders(
-			this.settings.sharedFolders
-		); // Loading shared folders also sanitizes them...
+		this.loadSharedFolders(this.settings.sharedFolders);
 		this.saveSettings();
 		this._liveViews.refresh("login");
 		this.relayManager?.login();
