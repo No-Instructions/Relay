@@ -107,9 +107,11 @@ export class SharedFolder extends HasProvider {
 			this.log("", this.ids);
 		});
 
-		this.getProviderToken().then((token) => {
-			this.connect();
-		});
+		if (loginManager.loggedIn) {
+			this.getProviderToken().then((token) => {
+				this.connect();
+			});
+		}
 
 		this.whenReady().then(() => {
 			this.addLocalDocs();
