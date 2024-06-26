@@ -14,6 +14,7 @@ export interface Relay {
 	path?: string;
 	user_limit: number;
 	role: Role;
+	owner: boolean;
 	folder?: SharedFolder;
 	invitation?: RelayInvitation;
 
