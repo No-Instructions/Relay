@@ -24,17 +24,11 @@ export class LiveSettingsTab extends PluginSettingTab {
 			props: {
 				plugin: this.plugin,
 				close: () => {
-					this.closeModal();
+					// eslint-disable-next-line @typescript-eslint/no-explicit-any
+					(this as any).setting.close();
 				},
 			},
 		});
-	}
-
-	closeModal() {
-		const modal = this.targetEl.closest(".modal");
-		console.log(modal);
-		// @ts-ignore
-		//modal?.prototype.close();
 	}
 
 	hide(): void {
