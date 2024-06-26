@@ -7,7 +7,11 @@ export function promiseWithTimeout<T>(
 	let timeoutId: number;
 	const timeout = new Promise<T>((_, reject) => {
 		timeoutId = window.setTimeout(() => {
-			console.log("timeout on promise", promise);
+			try {
+				throw new Error("Timeout");
+			} catch (error) {
+				console.error("timeout on promise", promise);
+			}
 			reject("Timeout after " + ms + " ms");
 		}, ms);
 	});
