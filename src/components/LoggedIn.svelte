@@ -6,10 +6,10 @@
 	import type { OAuth2Url, LoginManager } from "src/LoginManager";
 
 	export let plugin: Live;
-	let userSet: LoginManager;
+	let lm: LoginManager;
 	let url: OAuth2Url;
 
-	userSet = plugin.loginManager;
+	lm = plugin.loginManager;
 	url = plugin.loginManager.url;
 	if (Platform.isIosApp) {
 		plugin.loginManager.getLoginUrl();
@@ -25,12 +25,11 @@
 </script>
 
 <h2>Relay</h2>
-{#if $userSet.items().length > 0}
+{#if $lm.hasUser}
 	<SettingItemHeading name="Account" />
 	<SettingItem
 		name="Your Account"
-		description="You are currently logged in as: {plugin.loginManager.user
-			.name}"
+		description="You are currently logged in as: {$lm.user?.name}"
 	>
 		<button on:click={logout}>Logout</button>
 	</SettingItem>

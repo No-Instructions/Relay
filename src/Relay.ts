@@ -28,6 +28,7 @@ export interface RelayRoleUser {
 export interface RelayRole {
 	id: string;
 	user: RelayRoleUser;
+	userId: string;
 	role: Role;
 	relay?: Relay;
 

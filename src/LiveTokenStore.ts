@@ -1,6 +1,5 @@
 // This file is the Obsidian Live variant of the token store.
 import { TokenStore } from "./TokenStore";
-import { DefaultTimeProvider } from "./TimeProvider";
 import type { TokenInfo } from "./TokenStore";
 import type { TimeProvider } from "./TimeProvider";
 import { LoginManager } from "./LoginManager";
@@ -32,9 +31,6 @@ async function refresh(
 	onSuccess: (clientToken: ClientToken) => void,
 	onError: (err: Error) => void
 ) {
-	const headers = {
-		Authorization: `Bearer ${loginManager.user.token}`,
-	};
 	const log = curryLog("[TokenStore][Refresh]");
 	log(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
@@ -56,6 +52,9 @@ async function refresh(
 		onError(Error("Not logged in"));
 		return;
 	}
+	const headers = {
+		Authorization: `Bearer ${loginManager.user?.token}`,
+	};
 	requestUrl({
 		url: `${API_URL}/token`,
 		method: "POST",

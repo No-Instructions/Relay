@@ -104,12 +104,13 @@ export class OAuth2Url extends Observable<OAuth2Url> {
 	}
 }
 
-export class LoginManager extends ObservableSet<User> {
+export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	sm?: SubscriptionManager;
 	private _log: (message: string, ...args: unknown[]) => void;
 	private openSettings: () => Promise<void>;
 	url: OAuth2Url;
+	user?: User;
 
 	constructor(openSettings: () => Promise<void>) {
 		super();
@@ -121,7 +122,6 @@ export class LoginManager extends ObservableSet<User> {
 		};
 		this.openSettings = openSettings;
 		this.url = new OAuth2Url();
-		//this.getLoginUrl();
 	}
 
 	log(message: string, ...args: unknown[]) {
@@ -134,9 +134,9 @@ export class LoginManager extends ObservableSet<User> {
 			return false;
 		}
 		this.log("LoginManager", this);
-		const user = this.makeUser(this.pb.authStore);
+		this.user = this.makeUser(this.pb.authStore);
 		//this.sm = new SubscriptionManager(user);
-		this.add(user);
+		this.notifyListeners();
 		//this.whoami();
 		return true;
 	}
@@ -159,35 +159,29 @@ export class LoginManager extends ObservableSet<User> {
 	}
 
 	public get loggedIn() {
-		return this.pb.authStore.isValid;
+		return this.user !== undefined;
 	}
 
 	get hasUser() {
-		return this.items().length > 0;
+		return this.user !== undefined;
 	}
 
 	private makeUser(authStore: BaseAuthStore): User {
-		return new User(authStore.model?.email, authStore.token);
+		return new User(
+			authStore.model?.id,
+			authStore.model?.email,
+			authStore.token
+		);
 	}
 
 	public get anon(): User {
-		return new User("Anonymous", "");
-	}
-
-	public get user(): User {
-		if (this.items().length == 0) {
-			return this.anon;
-		} else if (this.items().length == 1) {
-			return this.items()[0];
-		}
-		throw new Error("Unexpected multiple users in login manager");
+		return new User("", "Anonymous", "");
 	}
 
 	logout() {
 		this.pb.authStore.clear();
-		this.forEach((user) => {
-			this.delete(user);
-		});
+		this.user = undefined;
+		this.notifyListeners();
 	}
 
 	async getLoginUrl(): Promise<number> {

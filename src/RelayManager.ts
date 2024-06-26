@@ -348,6 +348,10 @@ class RelayRoleAuto implements RelayRole {
 		return this.relayRole.id;
 	}
 
+	public get userId() {
+		return this.relayRole.user;
+	}
+
 	public get user(): UserDAO {
 		const user = this.users.get(this.relayRole.user);
 		if (!user) {

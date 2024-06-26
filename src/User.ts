@@ -18,11 +18,13 @@ export const usercolors: UserColor[] = [
 ];
 
 export class User {
+	id: string;
 	name: string;
 	token: string;
 	color: UserColor;
 
-	constructor(name: string, token: string) {
+	constructor(id: string, name: string, token: string) {
+		this.id = id;
 		this.name = name;
 		this.token = token;
 		this.color = usercolors[random.uint32() % usercolors.length];

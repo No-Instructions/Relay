@@ -12,24 +12,29 @@
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
 	export let relayRoles: ObservableMap<string, RelayRole>;
-	export let user: RelayRoleUser | undefined;
+
+	let loginManager = plugin.loginManager;
+	const user = derived(loginManager, ($loginManager) => {
+		const lm = $loginManager;
+		return lm.user;
+	});
 	store.plugin.subscribe((p) => {
 		plugin = p;
 	});
 
 	let myRoles = derived(relayRoles, ($relayRoles) => {
-		return $relayRoles.filter((role) => role.user.id === user?.id);
+		return $relayRoles.filter((role) => role.userId === $user?.id);
 	});
 
 	let ownerOf = derived(relayRoles, ($relayRoles) => {
 		return $relayRoles.filter(
-			(role) => role.role === "Owner" && role.user.id === user?.id,
+			(role) => role.role === "Owner" && role.userId === $user?.id,
 		);
 	});
 
 	let memberOf = derived(relayRoles, ($relayRoles) => {
 		return $relayRoles.filter(
-			(role) => role.role === "Member" && role.user.id === user?.id,
+			(role) => role.role === "Member" && role.userId === $user?.id,
 		);
 	});
 
