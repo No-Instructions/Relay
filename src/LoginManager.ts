@@ -69,7 +69,7 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 		})
 			.then((response) => {
 				if (response.status !== 200) {
-					throw Error(
+					throw new Error(
 						`Received status code ${response.status} from an API.`
 					);
 				}
