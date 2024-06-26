@@ -617,9 +617,23 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	}
 
 	async new(path: string, guid: string) {
-		const existing = this.find((folder) => folder.path == path);
+		const existing = this.find(
+			(folder) => folder.path == path && folder.guid == guid
+		);
 		if (existing) {
 			return existing;
+		}
+		const sameGuid = this.find((folder) => folder.guid == guid);
+		if (sameGuid) {
+			throw new Error(
+				`This relay is already monted at ${sameGuid.path}.`
+			);
+		}
+		const samePath = this.find((folder) => folder.path == path);
+		if (samePath) {
+			throw new Error(
+				"A different relay is already mounted at this path."
+			);
 		}
 		const folder = await this.folderBuilder(path, guid);
 		folder.whenReady().then(() => {
