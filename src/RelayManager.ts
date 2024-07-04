@@ -20,11 +20,11 @@ interface UserDAO extends RecordModel {
 	name: string;
 }
 
-// Hard coding the roles for now
-interface RoleDAO {
+interface RoleDAO extends RecordModel {
 	id: string;
 	name: string;
 }
+
 interface RelayDAO extends RecordModel {
 	id: string;
 	guid: string;
@@ -88,10 +88,29 @@ interface Collection<D, A> {
 	delete(id: string): void;
 }
 
+class RoleCollection implements Collection<RoleDAO, RoleDAO> {
+	collectionName: string = "roles";
+	roles: ObservableMap<string, RoleDAO>;
+
+	constructor(roles: ObservableMap<string, RoleDAO>) {
+		this.roles = roles;
+	}
+
+	ingest(update: UserDAO): UserDAO {
+		console.log("[RoleCollection] Ingest", update);
+		this.roles.set(update.id, update);
+		return update;
+	}
+
+	delete(id: string) {
+		this.roles.delete(id);
+	}
+}
+
 class RelayCollection implements Collection<RelayDAO, Relay> {
 	collectionName: string = "relays";
 	relays: ObservableMap<string, Relay>;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 	relayRoles: ObservableMap<string, RelayRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
 	sharedFolders: SharedFolders;
@@ -99,7 +118,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 
 	constructor(
 		relays: ObservableMap<string, Relay>,
-		roles: RoleDAO[],
+		roles: ObservableMap<string, RoleDAO>,
 		relayRoles: ObservableMap<string, RelayRole>,
 		relayInvitations: ObservableMap<string, RelayInvitation>,
 		sharedFolders: SharedFolders,
@@ -154,13 +173,13 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 	relayRoles: ObservableMap<string, RelayRole>;
 	relays: ObservableMap<string, Relay>;
 	users: ObservableMap<string, UserDAO>;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 
 	constructor(
 		relayRoles: ObservableMap<string, RelayRole>,
 		relays: ObservableMap<string, Relay>,
 		users: ObservableMap<string, UserDAO>,
-		roles: RoleDAO[]
+		roles: ObservableMap<string, RoleDAO>
 	) {
 		this.relayRoles = relayRoles;
 		this.relays = relays;
@@ -207,12 +226,12 @@ class RelayInvitationsCollection
 	collectionName: string = "relay_invitations";
 	relayInvitations: ObservableMap<string, RelayInvitation>;
 	relays: ObservableMap<string, Relay>;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 
 	constructor(
 		relayInvitations: ObservableMap<string, RelayInvitation>,
 		relays: ObservableMap<string, Relay>,
-		roles: RoleDAO[]
+		roles: ObservableMap<string, RoleDAO>
 	) {
 		this.relayInvitations = relayInvitations;
 		this.relays = relays;
@@ -323,7 +342,7 @@ class RelayRoleAuto implements RelayRole {
 	// we don't receive the update for created relays, and the relay role will point to a missing entity.
 	// This class makes a lazy accessor.
 	users: ObservableMap<string, UserDAO>;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 	relays: ObservableMap<string, Relay>;
 	relayRole: RelayRoleDAO;
 
@@ -331,7 +350,7 @@ class RelayRoleAuto implements RelayRole {
 		relayRole: RelayRoleDAO,
 		relays: ObservableMap<string, Relay>,
 		users: ObservableMap<string, UserDAO>,
-		roles: RoleDAO[]
+		roles: ObservableMap<string, RoleDAO>
 	) {
 		this.users = users;
 		this.roles = roles;
@@ -361,8 +380,7 @@ class RelayRoleAuto implements RelayRole {
 	}
 
 	public get role(): Role {
-		return this.roles.find((role) => role.id === this.relayRole.role)
-			?.name as Role;
+		return this.roles.get(this.relayRole.role)?.name as Role;
 	}
 
 	public get relay(): Relay | undefined {
@@ -373,13 +391,13 @@ class RelayRoleAuto implements RelayRole {
 
 class RelayInvitationAuto implements RelayInvitation {
 	relayInvitation: RelayInvitationDAO;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 	relays: ObservableMap<string, Relay>;
 
 	constructor(
 		relayInvitation: RelayInvitationDAO,
 		relays: ObservableMap<string, Relay>,
-		roles: RoleDAO[]
+		roles: ObservableMap<string, RoleDAO>
 	) {
 		this.relayInvitation = relayInvitation;
 		this.roles = roles;
@@ -400,8 +418,7 @@ class RelayInvitationAuto implements RelayInvitation {
 	}
 
 	public get role(): Role {
-		return this.roles.find((role) => role.id === this.relayInvitation.role)
-			?.name as Role;
+		return this.roles.get(this.relayInvitation.role)?.name as Role;
 	}
 
 	public get relayId(): string {
@@ -420,7 +437,7 @@ class RelayInvitationAuto implements RelayInvitation {
 class RelayAuto implements Relay {
 	relayRoles: ObservableMap<string, RelayRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 	relay: RelayDAO;
 	user: UserDAO;
 	path?: string;
@@ -428,7 +445,7 @@ class RelayAuto implements Relay {
 
 	constructor(
 		relay: RelayDAO,
-		roles: RoleDAO[],
+		roles: ObservableMap<string, RoleDAO>,
 		relayRoles: ObservableMap<string, RelayRole>,
 		relayInvitations: ObservableMap<string, RelayInvitation>,
 		user: UserDAO,
@@ -499,8 +516,7 @@ export class RelayManager {
 	relayRoles: ObservableMap<string, RelayRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
 	users: ObservableMap<string, UserDAO>;
-	sharedFolders: SharedFolders;
-	roles: RoleDAO[];
+	roles: ObservableMap<string, RoleDAO>;
 	user?: UserDAO;
 	store?: Store;
 	_offSharedFolders: () => void = () => {};
@@ -547,6 +563,7 @@ export class RelayManager {
 			return;
 		}
 		// Build the AdapterGraph
+		const roleCollection = new RoleCollection(this.roles);
 		const userCollection = new UserCollection(this.users);
 		const relayCollection = new RelayCollection(
 			this.relays,
@@ -568,6 +585,7 @@ export class RelayManager {
 			this.roles
 		);
 		this.store = new Store([
+			roleCollection,
 			userCollection,
 			relayCollection,
 			relayRolesCollection,
