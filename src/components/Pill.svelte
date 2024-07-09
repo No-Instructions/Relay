@@ -1,46 +1,45 @@
 <script lang="ts">
 	import { Satellite, Layers } from "lucide-svelte";
 	import type { ConnectionStatus } from "src/HasProvider";
-
+	import type { RemoteSharedFolder } from "src/Relay";
 	export let status: ConnectionStatus = "disconnected";
-	export let hasRelay: boolean;
+	export let remote: RemoteSharedFolder | undefined;
 </script>
 
-<div class="system3-pill system3-{status}">
-	{#if hasRelay}
-		<span class="satellite" aria-label={`Relay ${status}`}
-			><Satellite class="svg-icon" style="width: 1.5em" /></span
+<div class="folder-icons">
+	{#if remote}
+		<span
+			class="satellite system3-{status}"
+			aria-label={`${remote.relay.name} (${status})`}
 		>
+			<Satellite class="inline-icon" />
+		</span>
 		<span class="notebook" aria-label="Tracking Changes">
-			<Layers class="svg-icon" style="width: 1.2em" />
+			<Layers class="inline-icon" style="width: .8em" />
 		</span>
 	{:else}
 		<span class="notebook" aria-label="Tracking Changes">
-			<Layers class="svg-icon" style="width: 1.2em" />
+			<Layers class="inline-icon" style="width: .8em" />
 		</span>
 	{/if}
 </div>
 
 <style>
-	.system3-pill > span.satellite {
-		border-radius: var(--radius-s);
+	.folder-icons {
+		display: inline-flex;
+		margin-left: auto;
+		align-items: center;
+		vertical-align: middle;
+		overflow: hidden;
 	}
 
-	.system3-pill.system3-connected > span.satellite {
+	span.system3-connected {
 		color: var(--color-accent);
 	}
-	.system3-pill.system3-disconnected > span.satellite {
+	span.system3-disconnected {
 		color: var(--color-base-40);
 	}
-
-	.system3-pill > span.notebook {
+	span.notebook {
 		color: var(--color-accent);
-	}
-
-	.system3-pill {
-		border: 1px solid transparent;
-		position: absolute;
-		right: 4px;
-		top: 2px;
 	}
 </style>

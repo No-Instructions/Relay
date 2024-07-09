@@ -149,18 +149,25 @@ class PillDecoration {
 
 	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
 		this.el = el;
+		console.warn(el);
 		this.sharedFolder = sharedFolder;
+		this.el.addClass("system3-pill");
+
 		this.pill = new Pill({
 			target: this.el,
+			//anchor: sibling,
 			props: {
-				status: sharedFolder.state.status,
-				hasRelay: sharedFolder.relayId !== undefined,
+				status: this.sharedFolder.state.status,
+				remote: this.sharedFolder.remote,
 			},
 		});
-		this.unsubscribe = sharedFolder.subscribe(
-			el,
+		this.unsubscribe = this.sharedFolder.subscribe(
+			this.el,
 			(state: ConnectionState) => {
-				this.pill.$set({ status: state.status });
+				this.pill.$set({
+					status: state.status,
+					remote: this.sharedFolder.remote,
+				});
 			}
 		);
 	}
@@ -168,6 +175,7 @@ class PillDecoration {
 	destroy() {
 		this.pill.$destroy();
 		this.unsubscribe();
+		this.el.removeClass("system3-pill");
 	}
 }
 
