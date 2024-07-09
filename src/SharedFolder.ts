@@ -50,7 +50,7 @@ export class SharedFolder extends HasProvider {
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	docset: Documents;
 	relayId?: string;
-	remote?: RemoteSharedFolder;
+	_remote?: RemoteSharedFolder;
 	private _relay?: Relay;
 	private vault: Vault;
 	private fileManager: FileManager;
@@ -175,6 +175,15 @@ export class SharedFolder extends HasProvider {
 
 	public get settings(): SharedFolderSettings {
 		return { guid: this.guid, path: this.path, relay: this.relayId };
+	}
+
+	public get remote(): RemoteSharedFolder | undefined {
+		return this._remote;
+	}
+
+	public set remote(value: RemoteSharedFolder | undefined) {
+		this._remote = value;
+		this.notifyListeners();
 	}
 
 	public get ready(): boolean {

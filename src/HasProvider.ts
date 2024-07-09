@@ -54,7 +54,7 @@ function s3rnToYsweetDocId(s3rn: string): string {
 	if (entity instanceof S3RemoteDocument) {
 		ysweetDocId = entity.relayId + "-" + entity.documentId;
 	} else if (entity instanceof S3RemoteFolder) {
-		ysweetDocId = entity.relayId;
+		ysweetDocId = entity.relayId + "-" + entity.folderId;
 	} else {
 		throw new Error("Invalid type");
 	}

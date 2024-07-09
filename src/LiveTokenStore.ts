@@ -48,8 +48,8 @@ async function refresh(
 		});
 	} else if (entity instanceof S3RemoteFolder) {
 		payload = JSON.stringify({
+			docId: entity.folderId,
 			relay: entity.relayId,
-			docId: entity.relayId,
 		});
 	} else {
 		throw new Error("Invalid type");
