@@ -20,6 +20,7 @@ import { ObsidianLiveException } from "./Exceptions";
 import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
+import { auditTeardown } from "./observable/Observable";
 
 interface LiveSettings {
 	sharedFolders: SharedFolderSettings[];
@@ -84,23 +85,14 @@ export default class Live extends Plugin {
 			new Notice("Please sign in to use Relay");
 		}
 
+		this.relayManager = new RelayManager();
 		this.sharedFolders = new SharedFolders(
+			this.relayManager,
 			this._createSharedFolder.bind(this)
 		);
 
 		this.app.workspace.onLayoutReady(() => {
 			this.loadSharedFolders(this.settings.sharedFolders); // Loading shared folders also sanitizes them...
-			this.saveSettings();
-
-			// install hooks for logout/login
-			this.loginManager.on(() => {
-				if (this.loginManager.loggedIn) {
-					this._onLogin();
-				} else {
-					this._onLogout();
-				}
-			});
-			this.relayManager = new RelayManager(this.sharedFolders);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
@@ -113,6 +105,16 @@ export default class Live extends Plugin {
 			// NOTE: Extensions list should be loaded once and then mutated.
 			// this.app.workspace.updateOptions(); must be called to apply changes.
 			this.registerEditorExtension(this._liveViews.extensions);
+
+			this.register(
+				this.loginManager.subscribe(() => {
+					if (this.loginManager.loggedIn) {
+						this._onLogin();
+					} else {
+						this._onLogout();
+					}
+				})
+			);
 
 			this.tokenStore.start();
 
@@ -151,22 +153,20 @@ export default class Live extends Plugin {
 				}
 				this.sharedFolders.new(
 					sharedFolderSetting.path,
-					sharedFolderSetting.guid
+					sharedFolderSetting.guid,
+					sharedFolderSetting.relay
 				);
 			}
 		);
-		const saveSettingsHook = () => {
+		this._offSaveSettings = this.sharedFolders.subscribe(() => {
 			this.saveSettings();
-		};
-		this.sharedFolders.on(saveSettingsHook);
-		this._offSaveSettings = () => {
-			this.sharedFolders.off(saveSettingsHook);
-		};
+		});
 	}
 
 	private async _createSharedFolder(
 		path: string,
-		guid: string
+		guid: string,
+		relayId?: string
 	): Promise<SharedFolder> {
 		const folder = new SharedFolder(
 			guid,
@@ -174,13 +174,14 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.vault,
 			this.fileManager,
-			this.tokenStore
+			this.tokenStore,
+			this.relayManager,
+			relayId
 		);
 		return folder;
 	}
 
 	private _onLogout() {
-		this.saveSettings();
 		this.tokenStore?.clear();
 		this.relayManager?.logout();
 		this._liveViews.refresh("logout");
@@ -188,7 +189,6 @@ export default class Live extends Plugin {
 
 	private _onLogin() {
 		this.loadSharedFolders(this.settings.sharedFolders);
-		this.saveSettings();
 		this._liveViews.refresh("login");
 		this.relayManager?.login();
 	}
@@ -370,6 +370,8 @@ export default class Live extends Plugin {
 
 		this.networkStatus?.stop();
 		this._liveViews?.destroy();
+
+		auditTeardown();
 	}
 
 	async loadSettings() {

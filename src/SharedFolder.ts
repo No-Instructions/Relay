@@ -9,17 +9,20 @@ import { Doc } from "yjs";
 import type { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
 import { Document } from "./Document";
-import { curryLog } from "./debug";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import moment from "moment";
 import { SharedPromise } from "./promiseUtils";
-import { S3RN, S3Relay } from "./S3RN";
+import { S3Folder, S3RN, S3RemoteFolder } from "./S3RN";
+import type { Relay, RemoteSharedFolder } from "./Relay";
+import { RelayManager } from "./RelayManager";
+import type { Unsubscriber } from "svelte/store";
 
 export interface SharedFolderSettings {
 	guid: string;
 	path: string;
+	relay?: string;
 }
 
 class Documents extends ObservableSet<Document> {
@@ -46,10 +49,15 @@ export class SharedFolder extends HasProvider {
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	docset: Documents;
+	relayId?: string;
+	remote?: RemoteSharedFolder;
+	private _relay?: Relay;
 	private vault: Vault;
 	private fileManager: FileManager;
+	private relayManager: RelayManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
 	private _hasKnownPeers?: boolean;
+	private unsubscribes: Unsubscriber[] = [];
 
 	private _persistence: IndexeddbPersistence;
 
@@ -91,9 +99,13 @@ export class SharedFolder extends HasProvider {
 		loginManager: LoginManager,
 		vault: Vault,
 		fileManager: FileManager,
-		tokenStore: LiveTokenStore
+		tokenStore: LiveTokenStore,
+		relayManager: RelayManager,
+		relayId?: string
 	) {
-		const s3rn = S3RN.encode(new S3Relay(guid));
+		const s3rn = relayId
+			? S3RN.encode(new S3RemoteFolder(relayId, guid))
+			: S3RN.encode(new S3Folder(guid));
 		super(s3rn, tokenStore, loginManager);
 		this.guid = guid;
 		this.fileManager = fileManager;
@@ -102,12 +114,36 @@ export class SharedFolder extends HasProvider {
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
 		this.docset = new Documents();
+		this.relayManager = relayManager;
+		this.relayId = relayId;
+		if (relayId) {
+			this._relay = this.relayManager.relays.get(relayId);
+		}
+		this.unsubscribes.push(
+			this.relayManager.relays.subscribe((relays) => {
+				if (this.relayId) {
+					this._relay = relays.get(this.relayId);
+				}
+			})
+		);
+		this.unsubscribes.push(
+			this.relayManager.remoteFolders.subscribe((folders) => {
+				console.warn(
+					"got remote shared folder update!",
+					this.guid,
+					folders
+				);
+				this.remote = folders.find(
+					(folder) => folder.guid == this.guid
+				);
+			})
+		);
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 		this._persistence.once("synced", () => {
 			this.log("", this.ids);
 		});
 
-		if (loginManager.loggedIn) {
+		if (loginManager.loggedIn && this.relayId) {
 			this.getProviderToken().then((token) => {
 				this.connect();
 			});
@@ -138,7 +174,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get settings(): SharedFolderSettings {
-		return { guid: this.guid, path: this.path };
+		return { guid: this.guid, path: this.path, relay: this.relayId };
 	}
 
 	public get ready(): boolean {
@@ -569,13 +605,19 @@ export class SharedFolder extends HasProvider {
 			this._persistence.destroy();
 		}
 		this.docset.clear();
+		this.unsubscribes.forEach((unsubscribe) => {
+			unsubscribe();
+		});
 	}
 }
 export class SharedFolders extends ObservableSet<SharedFolder> {
 	private folderBuilder: (
 		path: string,
-		guid: string
+		guid: string,
+		relayId?: string
 	) => Promise<SharedFolder>;
+	private relayManager: RelayManager;
+	private _offRemoteUpdates?: () => void;
 
 	public toSettings(): SharedFolderSettings[] {
 		return this.items().map((folder) => folder.settings);
@@ -607,16 +649,45 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			folder.destroy();
 		});
 		this.clear();
+		if (this._offRemoteUpdates) {
+			this._offRemoteUpdates();
+		}
 	}
 
 	constructor(
-		folderBuilder: (guid: string, path: string) => Promise<SharedFolder>
+		relayManager: RelayManager,
+		folderBuilder: (
+			guid: string,
+			path: string,
+			relayId?: string
+		) => Promise<SharedFolder>
 	) {
 		super();
 		this.folderBuilder = folderBuilder;
+		this.relayManager = relayManager;
+
+		if (!this._offRemoteUpdates) {
+			this._offRemoteUpdates = this.relayManager.remoteFolders.subscribe(
+				(remotes) => {
+					let updated = false;
+					this.items().forEach((folder) => {
+						const remote = remotes.find(
+							(remote) => remote.guid == folder.guid
+						);
+						if (folder.remote != remote) {
+							updated = true;
+						}
+						folder.remote = remote;
+					});
+					if (updated) {
+						this.notifyListeners();
+					}
+				}
+			);
+		}
 	}
 
-	async new(path: string, guid: string) {
+	async new(path: string, guid: string, relayId?: string) {
 		const existing = this.find(
 			(folder) => folder.path == path && folder.guid == guid
 		);
@@ -626,7 +697,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		const sameGuid = this.find((folder) => folder.guid == guid);
 		if (sameGuid) {
 			throw new Error(
-				`This relay is already monted at ${sameGuid.path}.`
+				`This relay is already mounted at ${sameGuid.path}.`
 			);
 		}
 		const samePath = this.find((folder) => folder.path == path);
@@ -635,10 +706,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				"A different relay is already mounted at this path."
 			);
 		}
-		const folder = await this.folderBuilder(path, guid);
-		folder.whenReady().then(() => {
-			this.add(folder);
-		});
+		const folder = await this.folderBuilder(path, guid, relayId);
+		this.add(folder);
 		return folder;
 	}
 }

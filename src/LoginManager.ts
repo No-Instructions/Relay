@@ -122,6 +122,9 @@ export class LoginManager extends Observable<LoginManager> {
 		};
 		this.openSettings = openSettings;
 		this.url = new OAuth2Url();
+		this.user = this.pb.authStore.isValid
+			? this.makeUser(this.pb.authStore)
+			: undefined;
 	}
 
 	log(message: string, ...args: unknown[]) {

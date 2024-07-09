@@ -1,46 +1,48 @@
-import type { SharedFolder } from "./SharedFolder";
-
 export type Role = "Owner" | "Member";
 
-// A relay is a shared folder "constructor"
-// It is a centralized concept, whereas each user can mount the relay into their own vault as a shared folder.
-// The relay has a single owner and a limit on the number of users.
-// A relay can have billing information associated with it.
-// The billing information can be complex, but the subscription manager will also control user_limit and type.
-export interface Relay {
+interface Identified {
+	id: string;
+}
+interface Updatable<T> {
+	update(update: unknown): T;
+}
+
+export interface RemoteSharedFolder
+	extends Identified,
+		Updatable<RemoteSharedFolder> {
 	id: string;
 	guid: string;
 	name: string;
-	path?: string;
+	private: boolean;
+	relay: Relay;
+}
+
+export interface Relay extends Identified, Updatable<Relay> {
+	id: string;
+	guid: string;
+	name: string;
 	user_limit: number;
 	role: Role;
 	owner: boolean;
-	folder?: SharedFolder;
 	invitation?: RelayInvitation;
-
-	update(update: unknown): Relay;
 }
 
-export interface RelayRoleUser {
+export interface RelayRoleUser extends Identified {
 	id: string;
 	name: string;
 }
 
-export interface RelayRole {
+export interface RelayRole extends Identified, Updatable<RelayRole> {
 	id: string;
 	user: RelayRoleUser;
 	userId: string;
 	role: Role;
-	relay?: Relay;
-
-	update(update: unknown): RelayRole;
+	relay: Relay;
 }
 
-export interface RelayInvitation {
+export interface RelayInvitation extends Updatable<RelayInvitation> {
 	id: string;
 	role: Role;
 	relay: Relay;
 	key: string;
-
-	update(update: unknown): RelayInvitation;
 }

@@ -1,5 +1,6 @@
 "use strict";
 
+import type { Unsubscriber } from "svelte/store";
 import { Observable } from "./Observable";
 
 export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
@@ -33,8 +34,8 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 		return this._map.has(key);
 	}
 
-	get(key: K): V | undefined {
-		return this._map.get(key);
+	get<T = V>(key: K): T | undefined {
+		return this._map.get(key) as T;
 	}
 
 	keys(): K[] {
@@ -75,13 +76,49 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 		return false;
 	}
 
-	filter(predicate: (value: V, key: K) => boolean): V[] {
-		const filtered: V[] = [];
-		for (const [key, value] of this._map) {
-			if (predicate(value, key)) {
-				filtered.push(value);
-			}
+	filter(predicate: (value: V, key: K) => boolean): ObservableMap<K, V> {
+		return new DerivedMap<K, V>(this, predicate);
+	}
+}
+
+class DerivedMap<K, V> extends ObservableMap<K, V> {
+	private unsub?: Unsubscriber;
+
+	constructor(
+		private parentMap: ObservableMap<K, V>,
+		private predicate: (value: V, key: K) => boolean
+	) {
+		super();
+		this.sub();
+	}
+
+	private sub(): void {
+		if (this.unsub) {
+			return;
 		}
-		return filtered;
+		this.unsub = this.parentMap.subscribe(() => {
+			const newMap = new Map<K, V>();
+			this.parentMap.forEach((value, key) => {
+				if (this.predicate(value, key)) {
+					newMap.set(key, value);
+				}
+			});
+			this._map = newMap;
+			this.notifyListeners();
+			console.warn(this._map);
+		});
+	}
+
+	subscribe(run: (value: ObservableMap<K, V>) => unknown): Unsubscriber {
+		this.sub();
+		return super.subscribe(run);
+	}
+
+	unsubscribe(run: (value: ObservableMap<K, V>) => unknown): void {
+		super.unsubscribe(run);
+		if ([...this._listeners.values()].length === 0 && this.unsub) {
+			this.unsub();
+			this.unsub = undefined;
+		}
 	}
 }

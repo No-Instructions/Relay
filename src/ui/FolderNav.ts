@@ -154,6 +154,7 @@ class PillDecoration {
 			target: this.el,
 			props: {
 				status: sharedFolder.state.status,
+				hasRelay: sharedFolder.relayId !== undefined,
 			},
 		});
 		this.unsubscribe = sharedFolder.subscribe(

@@ -7,7 +7,13 @@ import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { ClientToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
-import { S3RN, S3Document, S3Relay, type S3RNType } from "./S3RN";
+import {
+	S3RN,
+	S3RemoteDocument,
+	S3Relay,
+	type S3RNType,
+	S3RemoteFolder,
+} from "./S3RN";
 
 declare const API_URL: string;
 
@@ -35,12 +41,12 @@ async function refresh(
 	log(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
 	let payload: string;
-	if (entity instanceof S3Document) {
+	if (entity instanceof S3RemoteDocument) {
 		payload = JSON.stringify({
 			docId: entity.documentId,
 			relay: entity.relayId,
 		});
-	} else if (entity instanceof S3Relay) {
+	} else if (entity instanceof S3RemoteFolder) {
 		payload = JSON.stringify({
 			relay: entity.relayId,
 			docId: entity.relayId,

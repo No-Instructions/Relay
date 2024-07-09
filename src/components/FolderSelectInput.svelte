@@ -1,22 +1,23 @@
 <script lang="ts">
 	import { onMount, onDestroy } from "svelte";
-	import { FolderSuggest } from "../FolderSuggest";
+	import { FolderSuggest } from "../ui/FolderSuggest";
 	import type { App } from "obsidian";
+	import { writable } from "svelte/store";
+	import type { SharedFolders } from "src/SharedFolder";
 
 	export let app: App;
-	export let onFolderSelect: (folderPath: string) => void;
 
 	let inputEl: HTMLInputElement;
 	let folderSuggest: FolderSuggest;
-	export let selectedFolder = "";
+	export let sharedFolders: SharedFolders;
+	export let selectedFolder = writable<string | undefined>();
 
 	onMount(() => {
-		folderSuggest = new FolderSuggest(inputEl, app);
+		folderSuggest = new FolderSuggest(app, sharedFolders, inputEl);
 
 		// Custom event listener for folder selection
 		const handleFolderSelect = (event: CustomEvent) => {
 			selectedFolder = event.detail.folder.path;
-			onFolderSelect(selectedFolder);
 		};
 
 		inputEl.addEventListener(
@@ -47,8 +48,8 @@
 	<input
 		bind:this={inputEl}
 		type="text"
-		placeholder="Select a folder"
+		placeholder="/"
 		on:input={handleInput}
-		value={selectedFolder}
+		bind:value={$selectedFolder}
 	/>
 </div>

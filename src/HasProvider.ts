@@ -7,7 +7,13 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
-import { S3Document, S3RN, S3Relay, type S3RNType } from "./S3RN";
+import {
+	S3RemoteDocument,
+	S3RN,
+	S3Relay,
+	type S3RNType,
+	S3RemoteFolder,
+} from "./S3RN";
 import { Platform } from "obsidian";
 
 export type ConnectionStatus =
@@ -45,9 +51,9 @@ function s3rnToYsweetDocId(s3rn: string): string {
 	// YSweet has various restrictions on the allowed characterset
 	const entity: S3RNType = S3RN.decode(s3rn);
 	let ysweetDocId: string;
-	if (entity instanceof S3Document) {
+	if (entity instanceof S3RemoteDocument) {
 		ysweetDocId = entity.relayId + "-" + entity.documentId;
-	} else if (entity instanceof S3Relay) {
+	} else if (entity instanceof S3RemoteFolder) {
 		ysweetDocId = entity.relayId;
 	} else {
 		throw new Error("Invalid type");

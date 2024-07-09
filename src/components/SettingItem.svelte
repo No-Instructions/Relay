@@ -1,5 +1,5 @@
 <script lang="ts">
-	export let name: string;
+	export let name: HTMLSpanElement | string = "";
 	export let description: string;
 
 	const itemDescriptionLines =
@@ -7,15 +7,22 @@
 </script>
 
 <div class="setting-item">
-	<div class="setting-item-info">
-		<div class="setting-item-name">{name || ""}</div>
-		<div class="setting-item-description">
-			{#each itemDescriptionLines as itemDescriptionLine}
-				<div>
-					{itemDescriptionLine}
-				</div>
-			{/each}
+	<div class="setting-item-info" style="display: grid">
+		<div
+			class="setting-item-name"
+			style="display: grid; align-items: center"
+		>
+			<slot name="name">{name}</slot>
 		</div>
+		{#if itemDescriptionLines.length > 0}
+			<div class="setting-item-description">
+				{#each itemDescriptionLines as itemDescriptionLine}
+					<div>
+						{itemDescriptionLine}
+					</div>
+				{/each}
+			</div>
+		{/if}
 	</div>
 	<div class="setting-item-control">
 		<slot></slot>

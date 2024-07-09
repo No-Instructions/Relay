@@ -1,20 +1,32 @@
 <script lang="ts">
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import { type Relay, type RelayRole } from "../Relay";
+	import {
+		type Relay,
+		type RelayRole,
+		type RemoteSharedFolder,
+	} from "../Relay";
+	import { RelayAuto } from "../RelayManager";
 	import SettingItem from "./SettingItem.svelte";
 	import store from "../Store";
 	import type Live from "src/main";
-	import type { SharedFolder } from "src/SharedFolder";
-	import MountRelay from "./JoinRelay.svelte";
-	import { Notice, debounce } from "obsidian";
+	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
+	import Folder from "./Folder.svelte";
+	import { Notice, debounce, normalizePath } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
+	import path, { join } from "path-browserify";
+	import SettingsControl from "./SettingsControl.svelte";
+	import { uuidv4 } from "lib0/random";
+	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
+	import { AddToVaultModal } from "src/ui/AddToVaultModal";
+	import { Filter } from "lucide-svelte";
 
-	export let relay: Relay;
-
-	let plugin: Live;
-	let folder: SharedFolder | undefined;
+	export let relay: RelayAuto;
+	const remoteFolders = relay.folders;
+	export let plugin!: Live;
+	export let sharedFolders!: SharedFolders;
+	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	function userSort(a: RelayRole, b: RelayRole) {
 		if (a.role === "Owner" && b.role !== "Owner") {
@@ -26,16 +38,17 @@
 		return a.user.name > b.user.name ? 1 : -1;
 	}
 
-	export let relayRoles: ObservableMap<string, RelayRole>;
-	let roles = derived(relayRoles, ($relayRoles) => {
-		const newRoles = $relayRoles
-			.filter((role: RelayRole) => role.relay?.id === relay.id)
-			.sort(userSort);
-		console.log("relay roles updated", $relayRoles, newRoles);
-		return newRoles;
-	});
-
-	export let mount: boolean;
+	let folder: SharedFolder | undefined;
+	//let roles = derived(relayRoles, ($relayRoles) => {
+	//	const newRoles = $relayRoles
+	//		.filter((role: RelayRole) => role.relay?.id === relay.id)
+	//		.values()
+	//		.sort(userSort);
+	//	return newRoles;
+	//});
+	const roles = $relayRoles.filter(
+		(role: RelayRole) => role.relay?.id === relay.id,
+	);
 
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
@@ -44,35 +57,35 @@
 			nameInput.focus();
 		}
 	});
-
 	const dispatch = createEventDispatcher();
 
-	function handleManageRelay(ws: Relay) {
-		console.log("manageRelayHood", relay, ws);
-		relay = ws;
-		mount = false;
+	async function handleLeaveRelay() {
+		plugin.relayManager.leaveRelay(relay);
+		dispatch("goBack", {});
 	}
 
 	let relay_invitation_key: string;
-
-	store.plugin.subscribe(async (p) => {
-		plugin = p;
-		if (relay.id !== undefined) {
-			folder = plugin.sharedFolders.find(
-				(folder) => folder.guid === relay.guid,
-			);
-			if (folder) {
-				relay.path = folder.path;
-				relay.folder = folder;
-			}
-			relay_invitation_key =
-				await plugin.relayManager.getRelayInvitationKey(relay);
-		}
+	plugin.relayManager.getRelayInvitationKey(relay).then((key) => {
+		relay_invitation_key = key;
 	});
 
-	function handleMountRelay() {
-		mount = true;
-		dispatch("manageRelay", { relay, mount: true });
+	async function addToVault(
+		remoteFolder: RemoteSharedFolder,
+		name: string,
+		location: string,
+	) {
+		const vaultRelativePath = normalizePath(join(location, name));
+		if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
+			await plugin.vault.createFolder(vaultRelativePath);
+		}
+		const folder = await plugin.sharedFolders.new(
+			vaultRelativePath,
+			remoteFolder.guid,
+			relay.guid,
+		);
+		folder.remote = remoteFolder;
+		plugin.sharedFolders.notifyListeners();
+		dispatch("manageRelay", { relay });
 	}
 
 	let updating = writable(false);
@@ -85,6 +98,15 @@
 		500,
 		true,
 	);
+
+	const showAddToVaultModal = (remoteFolder: RemoteSharedFolder) => {
+		new AddToVaultModal(
+			plugin.app,
+			sharedFolders,
+			remoteFolder,
+			addToVault,
+		).open();
+	};
 
 	function isValidObsidianFolderName(path: string): boolean {
 		// Obsidian restricted characters in folder and file names
@@ -113,38 +135,24 @@
 		}
 	}
 
-	function handleUnlink() {
-		relay = plugin.relayManager.unmountRelay(relay);
-	}
-
 	function handleTransfer() {
 		console.log("Transfer Ownership");
 	}
 
-	function handleClose() {
-		console.log("close inner");
-		dispatch("close", {});
-	}
-
-	function handleDelete() {
-		if (relay.path === undefined) {
-			return;
-		}
-		const folder = plugin.vault.getFolderByPath(relay.path);
-		if (folder) {
-			plugin.app.vault.trash(folder, false);
-		}
-		relay = plugin.relayManager.unmountRelay(relay);
-	}
-
 	function handleDestroy() {
-		relay = plugin.relayManager.unmountRelay(relay);
 		plugin.relayManager.destroyRelay(relay);
 		dispatch("goBack", {});
 	}
 
 	function handleKick(relay_role: RelayRole) {
 		plugin.relayManager.kick(relay_role);
+	}
+
+	function handleManageSharedFolder(folder: SharedFolder, relay?: Relay) {
+		if (!folder) {
+			return;
+		}
+		dispatch("manageSharedFolder", { folder, relay, mount: false });
 	}
 
 	function selectText(event: Event) {
@@ -157,64 +165,126 @@
 			.then(() => new Notice("Invite Link Copied"))
 			.catch((err) => console.error("Failed to copy text: ", err));
 	}
+
+	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
+		plugin.app,
+		sharedFolders,
+		async (path: string) => {
+			const normalizedPath = normalizePath(path);
+			const folder = sharedFolders.find((folder) => folder.path == path);
+			// shared folder exists, but remote does not
+			if (folder) {
+				const remote = await plugin.relayManager.createRemoteFolder(
+					folder,
+					relay,
+				);
+				folder.remote = remote;
+				plugin.sharedFolders.notifyListeners();
+				return;
+			}
+			// ensure folder exists in vault
+			if (plugin.vault.getFolderByPath(normalizedPath) === null) {
+				await plugin.vault.createFolder(normalizedPath);
+			}
+
+			// create new shared folder
+			const guid = uuidv4();
+			const sharedFolder = await plugin.sharedFolders.new(
+				normalizePath(path),
+				guid,
+				relay.guid,
+			);
+
+			// create remote folder
+			const remote = await plugin.relayManager.createRemoteFolder(
+				sharedFolder,
+				relay,
+			);
+			sharedFolder.remote = remote;
+
+			plugin.sharedFolders.notifyListeners();
+		},
+	);
 </script>
 
-{#if mount}
-	<MountRelay
-		on:manageRelay={() => handleManageRelay(relay)}
-		on:close={handleClose}
-		{relay}
-	></MountRelay>
-{:else}
-	{#if relay.owner}
-		<SettingItemHeading name="Relay Settings"></SettingItemHeading>
-		<SettingItem name="Relay Name" description="Set the Relay Name">
-			<input
-				type="text"
-				spellcheck="false"
-				placeholder="Example: Shared Notes"
-				bind:value={relay.name}
-				bind:this={nameInput}
-				on:input={handleNameChange}
-				class={($updating ? "system3-updating" : "") +
-					($nameValid ? "" : " system3-input-invalid")}
-			/>
+<h3>{relay.name}</h3>
+{#if relay.owner}
+	<SettingItem name="Relay Name" description="Set the Relay Name">
+		<input
+			type="text"
+			spellcheck="false"
+			placeholder="Example: Shared Notes"
+			bind:value={relay.name}
+			bind:this={nameInput}
+			on:input={handleNameChange}
+			class={($updating ? "system3-updating" : "") +
+				($nameValid ? "" : " system3-input-invalid")}
+		/>
+	</SettingItem>
+{/if}
+
+<SettingItemHeading name="Shared Folders"></SettingItemHeading>
+{#each $remoteFolders.values() as remote}
+	{#if $sharedFolders.find((local) => local.remote === remote)}
+		<SettingItem description=""
+			><Folder folder={remote} slot="name" />
+			<SettingsControl
+				on:settings={() => {
+					const local = $sharedFolders.find(
+						(local) => local.remote === remote,
+					);
+					if (local) {
+						handleManageSharedFolder(local, remote.relay);
+					}
+				}}
+			></SettingsControl>
 		</SettingItem>
 	{:else}
-		<h3>{relay.name}</h3>
+		<SettingItem description="">
+			<Folder folder={remote} slot="name" />
+			<button
+				class="mod-cta"
+				aria-label="Add Shared Folder to Vault"
+				on:click={() => {
+					showAddToVaultModal(remote);
+				}}
+			>
+				Add to Vault
+			</button>
+		</SettingItem>
 	{/if}
-	{#if relay.folder !== undefined}
-		<SettingItem name="Folder" description={relay.path || ""}></SettingItem>
-	{:else}
-		<SettingItem
-			name="Join"
-			description="Join the relay to start collaborating."
-			><button class="mod-cta" on:click={handleMountRelay}>Join</button
-			></SettingItem
-		>
-	{/if}
+{/each}
 
-	<h3>Collaboration</h3>
-	<SettingItemHeading name="Users"
-		>{$roles.length} / {relay.user_limit}</SettingItemHeading
+<SettingItem description="" name="">
+	<button
+		class="mod-cta"
+		aria-label="Select a folder to add to the Relay"
+		on:click={() => {
+			folderSelect.open();
+		}}>Add</button
 	>
+</SettingItem>
 
-	{#each $roles as item}
-		<SettingItem name={item.user.name} description={item.role}>
-			{#if item.role === "Member" && relay.owner}
-				<button
-					class="mod-destructive"
-					on:click={debounce(() => {
-						handleKick(item);
-					})}
-				>
-					Kick
-				</button>
-			{/if}
-		</SettingItem>
-	{/each}
+<SettingItemHeading name="Users"
+	>{$roles.values().length} / {relay.user_limit}</SettingItemHeading
+>
 
-	<!--
+{#each $roles.values().sort(userSort) as item}
+	<SettingItem name={item.user.name} description={item.role}>
+		{#if item.role === "Member" && relay.owner}
+			<button
+				class="mod-destructive"
+				on:click={debounce(() => {
+					handleKick(item);
+				})}
+			>
+				Kick
+			</button>
+		{/if}
+	</SettingItem>
+{/each}
+
+<!--
 
     <SettingItem name="" description="">
 		<button class="mod-cta" on:click={() => handleAddUser()}>
@@ -222,72 +292,52 @@
 		</button>
 	</SettingItem>
     -->
-	<SettingItemHeading name="Sharing"></SettingItemHeading>
-	{#if relay.owner}
-		<SettingItem
-			name="Plan: Free"
-			description="You are currently on the free plan (limited to 2 Users)"
-		>
-			<button class="mod-cta"> Upgrade </button>
-		</SettingItem>
-	{/if}
+<SettingItemHeading name="Sharing"></SettingItemHeading>
 
+<SettingItem
+	name="Share Key"
+	description="Share this key with your collaborators"
+>
+	<input
+		value={relay_invitation_key}
+		type="text"
+		readonly
+		on:click={selectText}
+		id="system3InviteLink"
+	/>
+</SettingItem>
+{#if relay.owner}
 	<SettingItem
-		name="Share Key"
-		description="Share this key with your collaborators"
+		name="Plan: Free"
+		description="You are currently on the free plan."
 	>
-		<input
-			value={relay_invitation_key}
-			type="text"
-			readonly
-			on:click={selectText}
-			id="system3InviteLink"
-		/>
+		<button
+			class="mod-disabled"
+			aria-label="We haven't implemented billing yet."
+			disabled={true}
+		>
+			Upgrade
+		</button>
 	</SettingItem>
 
-	<h3 class="system3-settings-danger-zone">Danger Zone</h3>
-	<SettingItemHeading name="Data Management"></SettingItemHeading>
-	{#if relay.folder}
-		<SettingItem
-			name="Leave"
-			description="Keeps local content, but stops sharing."
-		>
-			<button class="mod-warning" on:click={handleUnlink}> Leave </button>
-		</SettingItem>
-	{:else}
-		<SettingItem name="Leave" description="You have not joined the relay">
-			<button disabled> Leave </button>
-		</SettingItem>
-	{/if}
-	{#if relay.path}
-		<SettingItem
-			name="Delete Local Folder"
-			description="Deletes your local data and stops sharing."
-		>
-			<button class="mod-warning" on:click={handleDelete}>
-				Delete
-			</button>
-		</SettingItem>
-	{:else}
-		<SettingItem
-			name="Delete Local Folder"
-			description="This relay isn't associated with a folder."
-		>
-			<button disabled> Delete </button>
-		</SettingItem>
-	{/if}
+	<SettingItemHeading name="Storage" description=""></SettingItemHeading>
+	<SettingItem
+		name="Destroy Relay"
+		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
+	>
+		<button class="mod-warning" on:click={handleDestroy}> Destroy </button>
+	</SettingItem>
+{:else}
+	<SettingItemHeading name="Membership" description=""></SettingItemHeading>
+	<SettingItem
+		name="Leave Relay"
+		description="Leave the Relay. Local data is preserved."
+	>
+		<button class="mod-warning" on:click={handleLeaveRelay}> Leave </button>
+	</SettingItem>
+{/if}
 
-	{#if relay.owner}
-		<SettingItemHeading name="Relay Management"></SettingItemHeading>
-		<SettingItem
-			name="Destroy Relay"
-			description="This will destroy the relay and delete all data on it. All sharing will stop."
-		>
-			<button class="mod-warning" on:click={handleDestroy}>
-				Destroy
-			</button>
-		</SettingItem>
-		<!--SettingItem
+<!--SettingItem
 			name="Transfer Ownership"
 			description="Transfer ownership to another user."
 		>
@@ -295,8 +345,6 @@
 				Transfer
 			</button>
 		</SettingItem-->
-	{/if}
-{/if}
 
 <style>
 	.system3-settings-danger-zone {
@@ -309,9 +357,5 @@
 
 	input.system3-input-invalid {
 		border: 1px solid var(--color-red) !important;
-	}
-
-	input#system3InviteLink {
-		width: auto;
 	}
 </style>

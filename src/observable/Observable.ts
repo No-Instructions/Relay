@@ -2,10 +2,28 @@
 
 import type { Unsubscriber, Subscriber } from "svelte/store";
 
+let observables = new Map<Observable<any>, () => void>();
+
+export function auditTeardown(): void {
+	for (const [observable, auditTeardown] of observables) {
+		auditTeardown();
+	}
+	observables.clear();
+}
+
 export class Observable<T> {
 	protected _listeners: Set<Subscriber<T>>;
 
 	constructor() {
+		observables.set(this, () => {
+			if (this._listeners.size > 0) {
+				console.warn(
+					`Missing tear down of ${this._listeners.size} listeners`,
+					this,
+					this._listeners
+				);
+			}
+		});
 		this._listeners = new Set();
 	}
 

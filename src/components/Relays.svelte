@@ -2,12 +2,15 @@
 	import { createEventDispatcher } from "svelte";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
+	import SettingsControl from "./SettingsControl.svelte";
 	import { type Relay, type RelayRoleUser, type RelayRole } from "../Relay";
 	import store from "../Store";
 	import type Live from "src/main";
-	import { Satellite } from "lucide-svelte";
+	import { Satellite, Folder, Settings, ArrowRightLeft } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { derived } from "svelte/store";
+	import type { SharedFolder } from "src/SharedFolder";
+	import SharedFolderSpan from "./SharedFolderSpan.svelte";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
@@ -22,14 +25,19 @@
 		plugin = p;
 	});
 
+	const sharedFolders = plugin.sharedFolders;
+	console.log(sharedFolders);
+
 	let myRoles = derived(relayRoles, ($relayRoles) => {
 		return $relayRoles.filter((role) => role.userId === $user?.id);
 	});
 
 	let ownerOf = derived(relayRoles, ($relayRoles) => {
-		return $relayRoles.filter(
-			(role) => role.role === "Owner" && role.userId === $user?.id,
-		);
+		return $relayRoles
+			.filter(
+				(role) => role.role === "Owner" && role.userId === $user?.id,
+			)
+			.values();
 	});
 
 	let memberOf = derived(relayRoles, ($relayRoles) => {
@@ -38,13 +46,26 @@
 		);
 	});
 
+	let ownerOrMemberOf = derived(relayRoles, ($relayRoles) => {
+		return $relayRoles.filter(
+			(role) =>
+				role.role === "Member" ||
+				(role.role === "Owner" && role.userId === $user?.id),
+		);
+	});
+
+	let visibleRelays = derived(relays, ($relays) => {
+		return $relays.filter((relay) => {
+			return $relayRoles.some(
+				(role) =>
+					role.relay?.guid === relay.guid &&
+					(role.role === "Owner" || role.role === "Member"),
+			);
+		});
+	});
+
 	let shareKey = "";
 	let invalidShareKey = false;
-
-	const makeDescription = (relay: Relay) => {
-		let description = `Role: ${relay.role}`;
-		return description;
-	};
 
 	const dispatch = createEventDispatcher();
 
@@ -52,13 +73,20 @@
 		if (!relay) {
 			return;
 		}
-		dispatch("manageRelay", { relay, mount: false });
+		dispatch("manageRelay", { relay });
 	}
+	function handleManageSharedFolder(folder: SharedFolder, relay?: Relay) {
+		if (!folder) {
+			return;
+		}
+		dispatch("manageSharedFolder", { folder, relay });
+	}
+
 	function handleJoinRelay(relay?: Relay) {
 		if (!relay) {
 			return;
 		}
-		dispatch("joinRelay", { relay, mount: true });
+		dispatch("joinRelay", { relay });
 	}
 	function handleShareKeyInput() {
 		invalidShareKey = false;
@@ -67,23 +95,15 @@
 		plugin.relayManager
 			.acceptInvitation(shareKey)
 			.then((relay) => {
-				dispatch("joinRelay", { relay, mount: false });
+				dispatch("joinRelay", { relay });
 			})
 			.catch((error) => {
 				invalidShareKey = true;
 			});
 	}
-	function handleLeaveRelay(relay?: Relay) {
-		if (!relay) {
-			return;
-		}
-		plugin.relayManager.unmountRelay(relay);
-	}
+
 	function handleCreateRelay() {
 		dispatch("createRelay");
-	}
-	function handleRejectRelay(relay: Relay) {
-		dispatch("rejectRelay", { relay: relay, mount: false });
 	}
 	function sortFn(a: Relay, b: Relay): number {
 		if (a.owner && !b.owner) {
@@ -96,11 +116,7 @@
 	}
 </script>
 
-<SettingItemHeading
-	name="Join a Relay"
-	description="Relays facilitate sharing by sending changes to collaborators."
-	><Satellite /></SettingItemHeading
->
+<SettingItemHeading name="Join a Relay" description=""></SettingItemHeading>
 <SettingItem
 	name="Share Key"
 	description="Enter the code that was shared with you"
@@ -117,62 +133,38 @@
 	>
 </SettingItem>
 
-<SettingItemHeading
-	name="My Relays"
-	description={relays
-		? "Create your own relay and invite collaborators"
-		: "Manage relays"}
-></SettingItemHeading>
-{#each $relays.values().sort(sortFn) as relay}
-	{#if (relay.folder && $myRoles.some((role) => role.relay?.id === relay.id)) || $ownerOf.some((role) => role.relay?.id === relay.id)}
-		<SettingItem
-			name={relay.name || "..."}
-			description={makeDescription(relay)}
-		>
-			{#if relay.folder}
-				<button
-					class="mod-destructive"
-					on:click={() => handleLeaveRelay(relay)}
-				>
-					Leave
-				</button>
-			{:else}
-				<button on:click={() => handleJoinRelay(relay)}> Join </button>
-			{/if}
-			<button on:click={() => handleManageRelay(relay)}> Manage </button>
-		</SettingItem>
-	{/if}
+<SettingItemHeading name="Relays"></SettingItemHeading>
+{#each $visibleRelays.values().sort(sortFn) as relay}
+	<SettingItem description="">
+		<span slot="name" style="display: inline-flex"
+			><Satellite class="svg-icon" />{relay.name}
+		</span>
+		<SettingsControl
+			on:settings={() => {
+				handleManageRelay(relay);
+			}}
+		></SettingsControl>
+	</SettingItem>
 {/each}
-
 <SettingItem name="" description="">
 	<button class="mod-cta" on:click={() => handleCreateRelay()}
-		>Create Relay</button
+		>New Relay</button
 	>
 </SettingItem>
 
-{#if $relays.some((relay) => !relay.folder && $memberOf.some((role) => role.relay?.id === relay.id))}
-	<SettingItemHeading
-		name="Invites"
-		description={relays
-			? "Pending invitations"
-			: "Type in a share key to see invitations"}
-	></SettingItemHeading>
-{/if}
-{#each $relays.values() as relay}
-	{#if !relay.folder && $memberOf.some((role) => role.relay?.id === relay.id)}
-		<SettingItem
-			name={relay.name || "..."}
-			description={makeDescription(relay)}
-		>
-			<button on:click={() => handleManageRelay(relay)}> Accept </button>
-			<button
-				class="mod-destructive"
-				on:click={() => handleRejectRelay(relay)}
-			>
-				Reject
-			</button>
-		</SettingItem>
-	{/if}
+<SettingItemHeading name="Shared Folders"></SettingItemHeading>
+{#each $sharedFolders.items() as folder}
+	<SettingItem description="">
+		<SharedFolderSpan {folder} slot="name" />
+		<SettingsControl
+			on:settings={() => {
+				const relay = $relays.values().find((relay) => {
+					return folder.remote?.relay.guid === relay.guid;
+				});
+				handleManageSharedFolder(folder, relay);
+			}}
+		></SettingsControl>
+	</SettingItem>
 {/each}
 
 <style>

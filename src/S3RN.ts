@@ -18,26 +18,47 @@ export class S3RelayProduct implements S3Product {
 export class S3Relay {
 	platform: string = "s3rn";
 	product: string = "relay";
-	relayId: UUID;
 
-	constructor(relayId: UUID) {
-		this.relayId = relayId;
-	}
+	constructor(public relayId: UUID) {}
+}
+
+export class S3RemoteFolder {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(public relayId: UUID, public folderId: UUID) {}
+}
+
+export class S3RemoteDocument {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(
+		public relayId: UUID,
+		public folderId: UUID,
+		public documentId: UUID
+	) {}
+}
+
+export class S3Folder {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(public folderId: UUID) {}
 }
 
 export class S3Document {
 	platform: string = "s3rn";
 	product: string = "relay";
-	relayId: UUID;
-	documentId: UUID;
 
-	constructor(relayId: UUID, documentId: UUID) {
-		this.relayId = relayId;
-		this.documentId = documentId;
-	}
+	constructor(public folderId: UUID, public documentId: UUID) {}
 }
 
-export type S3RNType = S3RelayProduct | S3Relay | S3Document;
+export type S3RNType =
+	| S3RelayProduct
+	| S3Relay
+	| S3RemoteFolder
+	| S3RemoteDocument;
 
 export class S3RN {
 	static validateUUID(uuid: UUID): boolean {
@@ -55,6 +76,14 @@ export class S3RN {
 			}
 			s3rn += `:relay:${entity.relayId}`;
 		}
+
+		if ("folderId" in entity) {
+			if (!this.validateUUID(entity.folderId)) {
+				throw new Error("Invalid folder UUID");
+			}
+			s3rn += `:folder:${entity.folderId}`;
+		}
+
 		if ("documentId" in entity) {
 			if (!this.validateUUID(entity.documentId)) {
 				throw new Error("Invalid document UUID");
@@ -70,19 +99,41 @@ export class S3RN {
 			throw new Error("Invalid s3rn format");
 		}
 
-		const [, product, type, item, subType, subItem] = parts;
-		if (!this.validateUUID(item)) {
+		const [, product, type0, item0, type1, item1, type2, item2] = parts;
+		if (!this.validateUUID(item0)) {
 			throw new Error("Invalid UUID");
 		}
-		if (subItem && !this.validateUUID(subItem)) {
+		if (item1 && !this.validateUUID(item1)) {
+			throw new Error("Invalid UUID");
+		}
+		if (item2 && !this.validateUUID(item2)) {
 			throw new Error("Invalid UUID");
 		}
 
-		if (product === "relay" && type === "relay" && subType === "doc") {
-			return new S3Document(item, subItem);
-		} else if (product === "relay" && type === "relay") {
-			return new S3Relay(item);
-		} else if (type === undefined) {
+		if (
+			product === "relay" &&
+			type0 === "relay" &&
+			type1 === "folder" &&
+			type2 === "doc"
+		) {
+			return new S3RemoteDocument(item0, item1, item2);
+		} else if (
+			product === "relay" &&
+			type0 === "relay" &&
+			type1 == "folder"
+		) {
+			return new S3RemoteFolder(item0, item1);
+		} else if (
+			product === "relay" &&
+			type0 === "folder" &&
+			type1 === "document"
+		) {
+			return new S3Document(item0, item1);
+		} else if (product === "relay" && type0 === "folder") {
+			return new S3Folder(item0);
+		} else if (product === "relay" && type0 === "relay") {
+			return new S3Relay(item0);
+		} else if (type0 === undefined) {
 			return new S3RelayProduct();
 		}
 		throw new Error("Invalid s3rn format for the given product type");
