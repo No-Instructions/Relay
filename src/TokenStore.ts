@@ -268,7 +268,7 @@ export class TokenStore<TokenType extends HasToken> {
 				console.warn(err);
 				this.onRefreshFailure(documentId);
 				this._activePromises.delete(documentId);
-				return err;
+				throw err;
 			});
 		this._activePromises.set(documentId, sharedPromise);
 		return sharedPromise;
