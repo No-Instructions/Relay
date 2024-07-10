@@ -1070,8 +1070,10 @@ export class RelayManager {
 			await this.pb
 				.collection("relay_roles")
 				.delete(role.id, { fetch: customFetch });
-			this.store?.cascade("relay_roles", role.id);
+		} else {
+			console.warn("No role found to leave relay");
 		}
+		this.store?.cascade("relay", relay.id);
 	}
 
 	async kick(relay_role: RelayRole) {
