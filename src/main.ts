@@ -154,7 +154,7 @@ export default class Live extends Plugin {
 				this.sharedFolders.new(
 					sharedFolderSetting.path,
 					sharedFolderSetting.guid,
-					sharedFolderSetting.relay
+					sharedFolderSetting?.relay
 				);
 			}
 		);
