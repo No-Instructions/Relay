@@ -72,7 +72,7 @@
 		if ($folderStore) {
 			plugin.sharedFolders.delete($folderStore);
 		}
-		dispatch("goBack", {});
+		dispatch("goBack", { clear: true });
 	}
 
 	function handleDeleteLocal() {
@@ -160,9 +160,9 @@
 >
 	<button
 		class="mod-warning"
-		on:click={() => {
+		on:click={debounce(() => {
 			handleDeleteLocal();
-		}}
+		})}
 	>
 		Delete Local
 	</button>
@@ -176,9 +176,9 @@
 		class={$relayStore ? "mod-disabled" : "mod-warning"}
 		disabled={$relayStore ? true : false}
 		aria-label={$relayStore ? "Metadata is required for sharing." : ""}
-		on:click={() => {
+		on:click={debounce(() => {
 			handleDeleteMetadata();
-		}}
+		})}
 	>
 		Delete Metadata
 	</button>
@@ -191,7 +191,10 @@
 			name="Remove from Relay"
 			description={`Deletes the remote folder from the Relay. Local files will be preserved.`}
 		>
-			<button class="mod-destructive" on:click={handleDeleteRemote}>
+			<button
+				class="mod-destructive"
+				on:click={debounce(handleDeleteRemote)}
+			>
 				Delete Remote
 			</button>
 		</SettingItem>
@@ -205,9 +208,9 @@
 			><Satellite class="svg-icon" />{$relayStore.name}
 		</span>
 		<SettingsControl
-			on:settings={() => {
+			on:settings={debounce(() => {
 				handleManageRelay($relayStore);
-			}}
+			})}
 		></SettingsControl>
 	</SettingItem>
 {/if}

@@ -38,6 +38,10 @@
 		return a.user.name > b.user.name ? 1 : -1;
 	}
 
+	if (!relay) {
+		throw new Error("Relay not found");
+	}
+
 	let folder: SharedFolder | undefined;
 	//let roles = derived(relayRoles, ($relayRoles) => {
 	//	const newRoles = $relayRoles
@@ -61,7 +65,7 @@
 
 	async function handleLeaveRelay() {
 		plugin.relayManager.leaveRelay(relay);
-		dispatch("goBack", {});
+		dispatch("goBack", { clear: true });
 	}
 
 	let relay_invitation_key: string;
@@ -85,7 +89,6 @@
 		);
 		folder.remote = remoteFolder;
 		plugin.sharedFolders.notifyListeners();
-		dispatch("manageRelay", { relay });
 	}
 
 	let updating = writable(false);
@@ -229,14 +232,14 @@
 		<SettingItem description=""
 			><Folder folder={remote} slot="name" />
 			<SettingsControl
-				on:settings={() => {
+				on:settings={debounce(() => {
 					const local = $sharedFolders.find(
 						(local) => local.remote === remote,
 					);
 					if (local) {
 						handleManageSharedFolder(local, remote.relay);
 					}
-				}}
+				})}
 			></SettingsControl>
 		</SettingItem>
 	{:else}
@@ -245,9 +248,9 @@
 			<button
 				class="mod-cta"
 				aria-label="Add Shared Folder to Vault"
-				on:click={() => {
+				on:click={debounce(() => {
 					showAddToVaultModal(remote);
-				}}
+				})}
 			>
 				Add to Vault
 			</button>
@@ -259,9 +262,9 @@
 	<button
 		class="mod-cta"
 		aria-label="Select a folder to add to the Relay"
-		on:click={() => {
+		on:click={debounce(() => {
 			folderSelect.open();
-		}}>Add</button
+		})}>Add</button
 	>
 </SettingItem>
 
@@ -302,7 +305,7 @@
 		value={relay_invitation_key}
 		type="text"
 		readonly
-		on:click={selectText}
+		on:click={debounce(selectText)}
 		id="system3InviteLink"
 	/>
 </SettingItem>
@@ -325,7 +328,9 @@
 		name="Destroy Relay"
 		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
 	>
-		<button class="mod-warning" on:click={handleDestroy}> Destroy </button>
+		<button class="mod-warning" on:click={debounce(handleDestroy)}>
+			Destroy
+		</button>
 	</SettingItem>
 {:else}
 	<SettingItemHeading name="Membership" description=""></SettingItemHeading>
@@ -333,7 +338,14 @@
 		name="Leave Relay"
 		description="Leave the Relay. Local data is preserved."
 	>
-		<button class="mod-warning" on:click={handleLeaveRelay}> Leave </button>
+		<button
+			class="mod-warning"
+			on:click={debounce(() => {
+				handleLeaveRelay();
+			})}
+		>
+			Leave
+		</button>
 	</SettingItem>
 {/if}
 

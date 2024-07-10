@@ -11,6 +11,7 @@
 	import { derived } from "svelte/store";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
+	import { debounce } from "obsidian";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
@@ -54,15 +55,18 @@
 		);
 	});
 
-	let visibleRelays = derived(relays, ($relays) => {
-		return $relays.filter((relay) => {
-			return $relayRoles.some(
-				(role) =>
-					role.relay?.guid === relay.guid &&
-					(role.role === "Owner" || role.role === "Member"),
-			);
-		});
-	});
+	let visibleRelays = derived(
+		[relayRoles, relays],
+		([$relayRoles, $relays]) => {
+			return $relays.filter((relay) => {
+				return $relayRoles.some(
+					(role) =>
+						role.relay?.guid === relay.guid &&
+						(role.role === "Owner" || role.role === "Member"),
+				);
+			});
+		},
+	);
 
 	let shareKey = "";
 	let invalidShareKey = false;
@@ -82,24 +86,17 @@
 		dispatch("manageSharedFolder", { folder, relay });
 	}
 
-	function handleJoinRelay(relay?: Relay) {
-		if (!relay) {
-			return;
-		}
-		dispatch("joinRelay", { relay });
-	}
 	function handleShareKeyInput() {
 		invalidShareKey = false;
 	}
-	function handleJoinRelayFromInvite(shareKey: string) {
-		plugin.relayManager
-			.acceptInvitation(shareKey)
-			.then((relay) => {
-				dispatch("joinRelay", { relay });
-			})
-			.catch((error) => {
-				invalidShareKey = true;
-			});
+
+	async function handleJoinRelayFromInvite(shareKey: string) {
+		try {
+			const relay = await plugin.relayManager.acceptInvitation(shareKey);
+			dispatch("joinRelay", { relay });
+		} catch (e) {
+			invalidShareKey = true;
+		}
 	}
 
 	function handleCreateRelay() {
@@ -128,7 +125,9 @@
 		on:input={handleShareKeyInput}
 		class={invalidShareKey ? "system3-input-invalid" : ""}
 	/>
-	<button class="mod-cta" on:click={() => handleJoinRelayFromInvite(shareKey)}
+	<button
+		class="mod-cta"
+		on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
 		>Join Relay</button
 	>
 </SettingItem>
@@ -147,7 +146,7 @@
 	</SettingItem>
 {/each}
 <SettingItem name="" description="">
-	<button class="mod-cta" on:click={() => handleCreateRelay()}
+	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}
 		>New Relay</button
 	>
 </SettingItem>
@@ -157,12 +156,12 @@
 	<SettingItem description="">
 		<SharedFolderSpan {folder} slot="name" />
 		<SettingsControl
-			on:settings={() => {
+			on:settings={debounce(() => {
 				const relay = $relays.values().find((relay) => {
 					return folder.remote?.relay.guid === relay.guid;
 				});
 				handleManageSharedFolder(folder, relay);
-			}}
+			})}
 		></SettingsControl>
 	</SettingItem>
 {/each}

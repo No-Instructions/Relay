@@ -33,9 +33,7 @@
 	}
 	interface CreateRelayEvent extends CustomEvent {}
 	interface CloseEvent extends CustomEvent {}
-
 	interface JoinRelayEvent extends CustomEvent<RelayEventDetail> {}
-	interface RejectRelayEvent extends CustomEvent<RelayEventDetail> {}
 
 	export let plugin: Live;
 	const app = plugin.app;
@@ -56,32 +54,35 @@
 	export let close: () => void;
 
 	function handleManageRelayEvent(event: ManageRelayEvent) {
-		currentRelay = event.detail.relay;
-		sharedFolder = undefined;
-		if (currentRelay.owner) {
-			currentComponent = ManageRelay;
-		} else {
-			currentComponent = Relays;
-		}
-		history.push({ currentRelay, component: currentComponent });
-	}
-	function handleManageSharedFolderEvent(event: ManageSharedFolderEvent) {
-		sharedFolder = event.detail.folder;
-		currentRelay = event.detail.relay;
 		history.push({
 			currentRelay,
 			sharedFolder,
-			component: ManageSharedFolder,
+			component: currentComponent,
 		});
+		currentRelay = event.detail.relay;
+		sharedFolder = undefined;
+		currentComponent = ManageRelay;
+	}
+	function handleManageSharedFolderEvent(event: ManageSharedFolderEvent) {
+		history.push({
+			currentRelay,
+			sharedFolder,
+			component: currentComponent,
+		});
+		sharedFolder = event.detail.folder;
+		currentRelay = event.detail.relay;
 	}
 
-	function handleCreateRelayEvent(event: CreateRelayEvent) {
-		plugin.relayManager.createRelay("").then((relay) => {
-			currentRelay = relay;
-			currentComponent = ManageRelay;
+	async function handleCreateRelayEvent(event: CreateRelayEvent) {
+		history.push({
+			currentRelay,
+			sharedFolder,
+			component: currentComponent,
 		});
-		history.push({ currentRelay, component: ManageRelay });
+		currentRelay = await plugin.relayManager.createRelay("");
+		currentComponent = ManageRelay;
 	}
+
 	function handleGoBack(event: GoBackEvent) {
 		if (event.detail.clear) {
 			history.length = 0;
@@ -90,17 +91,37 @@
 			currentComponent = Relays;
 			return;
 		}
-		history.pop();
-		const view = history.pop();
+
+		let view = history.pop();
 		if (view) {
-			if (view.sharedFolder) {
-				currentRelay = view.sharedFolder.remote?.relay;
-			} else {
-				currentRelay = view.currentRelay;
-				sharedFolder = undefined;
+			while (view) {
+				if (!view.currentRelay && !view.sharedFolder) {
+					currentRelay = view.currentRelay;
+					sharedFolder = view.sharedFolder;
+					currentComponent = view.component;
+				} else if (
+					view.sharedFolder &&
+					sharedFolders.has(view.sharedFolder)
+				) {
+					currentRelay = view.currentRelay;
+					sharedFolder = view.sharedFolder;
+					currentComponent = view.component;
+					break;
+				} else if (
+					view.currentRelay &&
+					relayManager.relays.get(view.currentRelay.id)
+				) {
+					currentRelay = view.currentRelay;
+					sharedFolder = view.sharedFolder;
+					currentComponent = view.component;
+					break;
+				}
+				view = history.pop();
 			}
-			currentComponent = view.component;
-			history.push(view);
+		} else {
+			currentRelay = undefined;
+			sharedFolder = undefined;
+			currentComponent = Relays;
 		}
 	}
 
@@ -111,12 +132,7 @@
 
 	function handleJoinRelay(event: JoinRelayEvent) {
 		currentRelay = event.detail.relay;
-		history.push({ currentRelay, component: ManageRelay });
-	}
-
-	function handleRejectRelay(event: RejectRelayEvent) {
-		plugin.relayManager.leaveRelay(event.detail.relay);
-		currentRelay = undefined;
+		currentComponent = ManageRelay;
 	}
 </script>
 
@@ -132,8 +148,8 @@
 			{sharedFolder}
 			{sharedFolders}
 			on:goBack={handleGoBack}
-			on:manageRelay={handleManageRelayEvent}
 			on:close={handleClose}
+			on:manageRelay={handleManageRelayEvent}
 		></ManageSharedFolder>
 	{:else if currentRelay}
 		<ManageRelay
@@ -143,9 +159,7 @@
 			{sharedFolders}
 			on:goBack={handleGoBack}
 			on:close={handleClose}
-			on:manageRelay={handleManageRelayEvent}
 			on:manageSharedFolder={handleManageSharedFolderEvent}
-			on:rejectRelay={handleRejectRelay}
 		></ManageRelay>
 	{:else}
 		<LoggedIn {plugin}>
@@ -156,7 +170,6 @@
 				on:manageRelay={handleManageRelayEvent}
 				on:manageSharedFolder={handleManageSharedFolderEvent}
 				on:createRelay={handleCreateRelayEvent}
-				on:rejectRelay={handleRejectRelay}
 				on:joinRelay={handleJoinRelay}
 			></Relays>
 		</LoggedIn>
