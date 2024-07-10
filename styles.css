@@ -32,7 +32,7 @@
 		width: auto !important;
 }
 
-.system3-pill:hover > .folder-icons > .notebook {
+.system3-pill:hover > .folder-icons > .icon {
   display: flex;
 }
 
