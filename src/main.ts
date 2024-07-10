@@ -106,15 +106,15 @@ export default class Live extends Plugin {
 			// this.app.workspace.updateOptions(); must be called to apply changes.
 			this.registerEditorExtension(this._liveViews.extensions);
 
-			this.register(
-				this.loginManager.subscribe(() => {
-					if (this.loginManager.loggedIn) {
-						this._onLogin();
-					} else {
-						this._onLogout();
-					}
-				})
-			);
+			const unsub = () => {
+				if (this.loginManager.loggedIn) {
+					this._onLogin();
+				} else {
+					this._onLogout();
+				}
+			};
+			this.loginManager.on(unsub);
+			this.register(unsub);
 
 			this.tokenStore.start();
 
@@ -189,8 +189,8 @@ export default class Live extends Plugin {
 
 	private _onLogin() {
 		this.loadSharedFolders(this.settings.sharedFolders);
-		this._liveViews.refresh("login");
 		this.relayManager?.login();
+		this._liveViews.refresh("login");
 	}
 
 	async openSettings() {
