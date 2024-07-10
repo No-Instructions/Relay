@@ -44,13 +44,14 @@
 	.nav-folder-title-content {
 		margin-inline-end: auto;
 	}
-
-.inline-icon {
-	display: inline-block;
-	width: 1em;
-  max-height: 1em;
-	vertical-align: middle;
-}
+	.inline-icon {
+		display: inline-block;
+		margin-right: auto;
+		margin-left: auto;
+		width: 1.3em;
+		max-height: 1.3em;
+		vertical-align: middle;
+	}
 
 .connection-status-icon {
   opacity: 0.5;

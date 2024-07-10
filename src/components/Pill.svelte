@@ -45,11 +45,6 @@
 		transition: display 0.3s ease;
 	}
 
-	.inline-icon {
-		margin-right: auto;
-		margin-left: auto;
-	}
-
 	span.system3-connected {
 		color: var(--color-accent);
 	}
