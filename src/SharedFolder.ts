@@ -128,11 +128,6 @@ export class SharedFolder extends HasProvider {
 		);
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
-				console.warn(
-					"got remote shared folder update!",
-					this.guid,
-					folders
-				);
 				this.remote = folders.find(
 					(folder) => folder.guid == this.guid
 				);

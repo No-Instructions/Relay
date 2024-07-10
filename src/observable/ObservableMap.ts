@@ -105,7 +105,6 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 			});
 			this._map = newMap;
 			this.notifyListeners();
-			console.warn(this._map);
 		});
 	}
 

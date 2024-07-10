@@ -112,7 +112,6 @@ class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 	}
 
 	ingest(update: UserDAO): UserDAO {
-		console.log("[RoleCollection] Ingest", update);
 		this.roles.set(update.id, update);
 		return update;
 	}
@@ -189,7 +188,6 @@ class RemoteFolderCollection
 	}
 
 	ingest(update: RemoteFolderDAO): RemoteFolder {
-		console.log("[RemoteFolderCollection] Ingest", update);
 		const existingFolder = this.remoteFolders.get(update.id);
 		if (existingFolder) {
 			existingFolder.update(update);
@@ -236,7 +234,6 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 	}
 
 	ingest(update: RelayDAO): Relay {
-		console.log("[RelayCollection] Ingest", update);
 		const existingRelay = this.relays.get(update.id);
 		if (existingRelay) {
 			existingRelay.update(update);
@@ -284,7 +281,6 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 	}
 
 	ingest(update: RelayRoleDAO): RelayRole {
-		console.log("[RelayRoleCollection] Ingest", update);
 		const existingRole = this.relayRoles.get<RelayRoleAuto>(update.id);
 		if (existingRole) {
 			existingRole.update(update);
@@ -333,7 +329,6 @@ class RelayInvitationsCollection
 	}
 
 	ingest(update: RelayInvitationDAO): RelayInvitation {
-		console.log("[RelayInvitationCollection] Ingest", update);
 		const existingInvitation = this.relayInvitations.get(update.id);
 		if (existingInvitation) {
 			existingInvitation.update(update);
@@ -367,7 +362,6 @@ class UserCollection implements Collection<UserDAO, UserDAO> {
 	}
 
 	ingest(update: UserDAO): UserDAO {
-		console.log("[UserCollection] Ingest", update);
 		this.users.set(update.id, update);
 		return update;
 	}
@@ -415,9 +409,7 @@ class Store {
 	}
 
 	ingest<T>(record?: RecordModel): T | undefined {
-		console.log("ingesting", record);
 		if (!record) {
-			console.warn("No record to ingest");
 			return;
 		}
 		let result;
@@ -446,10 +438,8 @@ class Store {
 		if (record.expand) {
 			for (const [key, value] of Object.entries(record.expand)) {
 				if (Array.isArray(value)) {
-					console.log("ingest array", key);
 					this.ingestBatch(value);
 				} else {
-					console.log("ingest single expand", key);
 					this.ingest(value);
 				}
 			}

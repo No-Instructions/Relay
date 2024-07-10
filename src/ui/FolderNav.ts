@@ -149,7 +149,6 @@ class PillDecoration {
 
 	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
 		this.el = el;
-		console.warn(el);
 		this.sharedFolder = sharedFolder;
 		this.el.addClass("system3-pill");
 
