@@ -24,8 +24,26 @@
 }
 
 .system3-pill {
-    margin-right: -1em;
+    padding-inline-end: 0px !important;
 }
+
+.system3-pill:hover > .folder-icons {
+		background-color: var(--color-base-05);
+		width: auto !important;
+}
+
+.system3-pill:hover > .folder-icons > .notebook {
+  display: flex;
+}
+
+	.nav-file-title,
+	.nav-folder-title {
+		display: flex;
+		align-items: center;
+	}
+	.nav-folder-title-content {
+		margin-inline-end: auto;
+	}
 
 .inline-icon {
 	display: inline-block;

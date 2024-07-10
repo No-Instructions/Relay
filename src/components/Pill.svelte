@@ -8,17 +8,17 @@
 
 <div class="folder-icons">
 	{#if remote}
+		<span class="notebook icon" aria-label="Tracking Changes">
+			<Layers class="inline-icon" style="width: .8em" />
+		</span>
 		<span
 			class="satellite system3-{status}"
 			aria-label={`${remote.relay.name} (${status})`}
 		>
 			<Satellite class="inline-icon" />
 		</span>
-		<span class="notebook" aria-label="Tracking Changes">
-			<Layers class="inline-icon" style="width: .8em" />
-		</span>
 	{:else}
-		<span class="notebook" aria-label="Tracking Changes">
+		<span class="notebook icon" aria-label="Tracking Changes">
 			<Layers class="inline-icon" style="width: .8em" />
 		</span>
 	{/if}
@@ -26,11 +26,21 @@
 
 <style>
 	.folder-icons {
+		align-self: flex-end;
 		display: inline-flex;
-		margin-left: auto;
 		align-items: center;
 		vertical-align: middle;
-		overflow: hidden;
+		border-radius: var(--radius-m);
+		transition: width 0.3s ease;
+		margin-right: 0.6em;
+		padding-left: 0.2em;
+		padding-right: 0.2em;
+		background-color: var(--color-base-05);
+	}
+
+	.icon {
+		margin-right: 0.2em;
+		margin-left: 0.2em;
 	}
 
 	span.system3-connected {
@@ -41,5 +51,10 @@
 	}
 	span.notebook {
 		color: var(--color-accent);
+		display: none;
+	}
+	.folder-icons:hover > span.notebook {
+		display: flex;
+		transition: display 0.3s ease;
 	}
 </style>
