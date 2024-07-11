@@ -27,6 +27,17 @@ const watch = process.argv[2] === "watch";
 const debug = process.argv[2] === "debug" || process.argv[2] === "watch";
 const out = process.argv[3] || ".";
 
+const NotifyPlugin = {
+	name: "on-end",
+	setup(build) {
+		build.onEnd((result) => {
+			if (result.errors.length > 0)
+				execSync(`notify-send "Build Failed"`);
+		});
+	},
+};
+
+
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -55,6 +66,7 @@ const context = await esbuild.context({
 			compilerOptions: { css: true },
 			preprocess: sveltePreprocess(),
 		}),
+		NotifyPlugin,
 	],
 
 	target: "es2018",
