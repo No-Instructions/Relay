@@ -138,7 +138,7 @@ export class SharedFolder extends HasProvider {
 			this.log("", this.ids);
 		});
 
-		if (loginManager.loggedIn && this.relayId) {
+		if (loginManager.loggedIn && this.s3rn instanceof S3RemoteFolder) {
 			this.getProviderToken().then((token) => {
 				this.connect();
 			});
@@ -158,6 +158,13 @@ export class SharedFolder extends HasProvider {
 				this.syncFileTree(doc, update);
 			}
 		);
+	}
+
+	connect(): Promise<boolean> {
+		if (this.s3rn instanceof S3RemoteFolder) {
+			return super.connect();
+		}
+		return Promise.resolve(false);
 	}
 
 	public get name(): string {

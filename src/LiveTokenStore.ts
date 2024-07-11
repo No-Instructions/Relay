@@ -52,7 +52,8 @@ async function refresh(
 			relay: entity.relayId,
 		});
 	} else {
-		throw new Error("Invalid type");
+		onError(new Error("No remote to connect to"));
+		return;
 	}
 	if (!loginManager.loggedIn) {
 		onError(Error("Not logged in"));

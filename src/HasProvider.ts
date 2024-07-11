@@ -7,13 +7,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
-import {
-	S3RemoteDocument,
-	S3RN,
-	S3Relay,
-	type S3RNType,
-	S3RemoteFolder,
-} from "./S3RN";
+import { S3RemoteDocument, S3RN, type S3RNType, S3RemoteFolder } from "./S3RN";
 import { Platform } from "obsidian";
 
 export type ConnectionStatus =
@@ -125,7 +119,11 @@ export class HasProvider {
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
 				this.log(`[${this.path}] disconnection event`, event);
-				const shouldConnect = this._provider.shouldConnect;
+				const shouldConnect =
+					this._provider.url &&
+					this._provider.shouldConnect &&
+					this._provider.wsUnsuccessfulReconnects <
+						this.PROVIDER_MAX_ERRORS;
 				this.disconnect();
 				if (shouldConnect) {
 					this.connect();
