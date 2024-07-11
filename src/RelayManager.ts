@@ -94,6 +94,7 @@ interface RelayInvitationDAOExpandingRelay extends RelayInvitationDAO {
 
 interface Collection<D, A> {
 	collectionName: string;
+	clear(): void;
 	get(id: string): A | undefined;
 	ingest(update: D): A;
 	delete(id: string): void;
@@ -105,6 +106,10 @@ class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 
 	constructor(roles: ObservableMap<string, RoleDAO>) {
 		this.roles = roles;
+	}
+
+	clear() {
+		this.roles.clear();
 	}
 
 	get(id: string) {
@@ -183,6 +188,10 @@ class RemoteFolderCollection
 		private relays: ObservableMap<string, Relay>
 	) {}
 
+	clear() {
+		this.remoteFolders.clear();
+	}
+
 	get(id: string) {
 		return this.remoteFolders.get(id);
 	}
@@ -227,6 +236,10 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 		this.relayInvitations = relayInvitations;
 		this.remoteFolders = remoteFolders;
 		this.user = user;
+	}
+
+	clear() {
+		this.relays.clear();
 	}
 
 	get(id: string) {
@@ -274,6 +287,10 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 		this.relays = relays;
 		this.users = users;
 		this.roles = roles;
+	}
+
+	clear() {
+		this.relayRoles.clear();
 	}
 
 	get(id: string) {
@@ -324,6 +341,10 @@ class RelayInvitationsCollection
 		this.roles = roles;
 	}
 
+	clear() {
+		this.relayInvitations.clear();
+	}
+
 	get(id: string) {
 		return this.relayInvitations.get(id);
 	}
@@ -355,6 +376,10 @@ class UserCollection implements Collection<UserDAO, UserDAO> {
 
 	constructor(users: ObservableMap<string, UserDAO>) {
 		this.users = users;
+	}
+
+	clear(): void {
+		this.users.clear();
 	}
 
 	get(id: string) {
@@ -391,6 +416,14 @@ class Store {
 		return [...this.collections.values()].find((collection) => {
 			return collection.get(id);
 		});
+	}
+
+	clear() {
+		this.collections.forEach((collection) => {
+			collection.clear();
+		});
+		this.collections.clear();
+		this.relationships.clear();
 	}
 
 	ingestPage<T>(
@@ -770,17 +803,11 @@ export class RelayManager {
 		this.setUser();
 		this.buildGraph();
 		this.subscribe();
-		this.update().then(() => {
-			console.log(this.store);
-		});
+		this.update();
 	}
 
 	logout() {
-		this.relays.clear();
-		this.remoteFolders.clear();
-		this.relayRoles.clear();
-		this.relayInvitations.clear();
-		this.users.clear();
+		this.store?.clear();
 		this.user = undefined;
 		this.store = undefined;
 		this.unsubscribe();
