@@ -1,4 +1,4 @@
-name: Beta Releases
+name: Releases
 
 on: 
   push:
@@ -17,8 +17,8 @@ jobs:
       with:
         node-version: '20.x'
     - run: npm ci
-    - run: npm run beta
+    - run: npm run build
     - uses: ncipollo/release-action@v1
       with:
         artifacts: "main.js,styles.css,manifest.json"
-        prerelease: true
+        draft: true
