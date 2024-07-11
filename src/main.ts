@@ -52,6 +52,7 @@ export default class Live extends Plugin {
 	_extensions!: [];
 	log!: (message: string) => void;
 	private _liveViews!: LiveViewManager;
+	private settingsFileLocked = false;
 
 	async onload() {
 		console.log("[System 3][Relay] Loading Plugin");
@@ -92,7 +93,7 @@ export default class Live extends Plugin {
 		);
 
 		this.app.workspace.onLayoutReady(() => {
-			this.loadSharedFolders(this.settings.sharedFolders); // Loading shared folders also sanitizes them...
+			this.loadSharedFolders(this.settings.sharedFolders);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
@@ -137,9 +138,7 @@ export default class Live extends Plugin {
 	}
 
 	private loadSharedFolders(sharedFolderSettings: SharedFolderSettings[]) {
-		// XXX this will cause more notifications than necessary
-		this._offSaveSettings?.();
-		this.sharedFolders.clear();
+		this.settingsFileLocked = true;
 		sharedFolderSettings.forEach(
 			(sharedFolderSetting: SharedFolderSettings) => {
 				const tFolder = this.vault.getFolderByPath(
@@ -158,9 +157,12 @@ export default class Live extends Plugin {
 				);
 			}
 		);
-		this._offSaveSettings = this.sharedFolders.subscribe(() => {
-			this.saveSettings();
-		});
+		this.settingsFileLocked = false;
+		if (!this._offSaveSettings) {
+			this._offSaveSettings = this.sharedFolders.subscribe(() => {
+				this.saveSettings();
+			});
+		}
 	}
 
 	private async _createSharedFolder(
@@ -383,7 +385,9 @@ export default class Live extends Plugin {
 	}
 
 	async saveSettings() {
-		this.settings.sharedFolders = this.sharedFolders.toSettings();
-		await this.saveData(this.settings);
+		if (!this.settingsFileLocked) {
+			this.settings.sharedFolders = this.sharedFolders.toSettings();
+			await this.saveData(this.settings);
+		}
 	}
 }
