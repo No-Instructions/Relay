@@ -777,6 +777,7 @@ export class RelayManager {
 
 	logout() {
 		this.relays.clear();
+		this.remoteFolders.clear();
 		this.relayRoles.clear();
 		this.relayInvitations.clear();
 		this.users.clear();
