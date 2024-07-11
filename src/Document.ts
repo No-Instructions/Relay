@@ -6,13 +6,7 @@ import { SharedFolder } from "./SharedFolder";
 import { YText } from "yjs/dist/src/internals";
 import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
-import {
-	S3Document,
-	S3Folder,
-	S3RN,
-	S3RemoteDocument,
-	S3RemoteFolder,
-} from "./S3RN";
+import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
 
 export class Document extends HasProvider {
 	guid: string;
@@ -70,13 +64,15 @@ export class Document extends HasProvider {
 			return Promise.resolve(false);
 		} else if (this.s3rn instanceof S3Document) {
 			// convert to remote document
-			this.s3rn = this.sharedFolder.relayId
-				? new S3RemoteDocument(
-						this.sharedFolder.relayId,
-						this.sharedFolder.guid,
-						this.guid
-				  )
-				: new S3Document(this.sharedFolder.guid, this.guid);
+			if (this.sharedFolder.relayId) {
+				this.s3rn = new S3RemoteDocument(
+					this.sharedFolder.relayId,
+					this.sharedFolder.guid,
+					this.guid
+				);
+			} else {
+				this.s3rn = new S3Document(this.sharedFolder.guid, this.guid);
+			}
 		}
 		return this.sharedFolder.connect().then((connected) => {
 			return super.connect();

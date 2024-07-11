@@ -1,10 +1,4 @@
-import {
-	Workspace,
-	MarkdownView,
-	type WorkspaceLeaf,
-	type Constructor,
-	View,
-} from "obsidian";
+import { Workspace, MarkdownView, type Constructor, View } from "obsidian";
 
 export class WorkspaceFacade {
 	workspace: Workspace;

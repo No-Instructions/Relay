@@ -33,7 +33,7 @@ export class LocalStorage<T> implements Map<string, T> {
 
 	public forEach(
 		callbackfn: (value: T, key: string, map: Map<string, T>) => void,
-		thisArg?: any
+		thisArg?: unknown
 	): void {
 		Object.keys(localStorage)
 			.filter((key: string) =>

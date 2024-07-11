@@ -8,7 +8,8 @@
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"beta": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs debug",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
-		"test": "jest"
+		"test": "jest",
+		"lint": "npx eslint . --ext .ts"
 	},
 	"keywords": [],
 	"author": "Daniel Grossmann-Kavanagh",

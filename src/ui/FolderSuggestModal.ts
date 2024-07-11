@@ -1,4 +1,4 @@
-import { App, SuggestModal, TFolder, type Instruction } from "obsidian";
+import { App, SuggestModal, TFolder } from "obsidian";
 import type { SharedFolders } from "src/SharedFolder";
 import FolderSuggestion from "../components/FolderSuggestion.svelte";
 

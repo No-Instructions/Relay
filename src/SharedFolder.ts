@@ -14,7 +14,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import moment from "moment";
 import { SharedPromise } from "./promiseUtils";
-import { S3Folder, S3RN, S3RemoteFolder } from "./S3RN";
+import { S3Folder, S3RemoteFolder } from "./S3RN";
 import type { Relay, RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";

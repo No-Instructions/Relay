@@ -1,7 +1,7 @@
 import matter from "gray-matter";
 
 interface Frontmatter {
-	[key: string]: any; // Flexible to accommodate any frontmatter schema
+	[key: string]: unknown;
 }
 
 export function updateFrontMatter(

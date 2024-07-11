@@ -396,8 +396,6 @@ class UserCollection implements Collection<UserDAO, UserDAO> {
 	}
 }
 
-type Unwrap<T> = T extends Promise<infer U> ? U : T;
-
 class Store {
 	collections: Map<string, Collection<unknown, unknown>>;
 	relationships: Map<string, string[]>;
@@ -469,7 +467,7 @@ class Store {
 			}
 		}
 		if (record.expand) {
-			for (const [key, value] of Object.entries(record.expand)) {
+			for (const [, value] of Object.entries(record.expand)) {
 				if (Array.isArray(value)) {
 					this.ingestBatch(value);
 				} else {

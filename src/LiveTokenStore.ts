@@ -7,13 +7,7 @@ import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { ClientToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
-import {
-	S3RN,
-	S3RemoteDocument,
-	S3Relay,
-	type S3RNType,
-	S3RemoteFolder,
-} from "./S3RN";
+import { S3RN, S3RemoteDocument, type S3RNType, S3RemoteFolder } from "./S3RN";
 
 declare const API_URL: string;
 

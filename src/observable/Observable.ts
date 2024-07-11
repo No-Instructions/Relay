@@ -2,10 +2,10 @@
 
 import type { Unsubscriber, Subscriber } from "svelte/store";
 
-let observables = new Map<Observable<any>, () => void>();
+const observables = new Map<Observable<any>, () => void>();
 
 export function auditTeardown(): void {
-	for (const [observable, auditTeardown] of observables) {
+	for (const [, auditTeardown] of observables) {
 		auditTeardown();
 	}
 	observables.clear();
