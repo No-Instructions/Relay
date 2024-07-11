@@ -2,9 +2,9 @@
 	"id": "system3-relay",
 	"name": "Relay",
 	"minAppVersion": "0.15.0",
-	"description": "Realtime Collaborative Workspace",
+	"description": "Real-time collaboration with live cursors. Folder-level sharing. Local-first storage with centralized access management.",
 	"author": "System 3",
-	"authorUrl": "https://noinstructions.ai",
+	"authorUrl": "https://system3.studio",
 	"fundingUrl": "https://www.buymeacoffee.com/dtkav",
 	"isDesktopOnly": true,
 	"version": "1.0.0"
