@@ -47,23 +47,20 @@ export interface Subscription {
 	off: () => void;
 }
 
-function s3rnToYsweetDocId(s3rn: string): string {
+function s3rnToYsweetDocId(entity: S3RNType): string {
 	// YSweet has various restrictions on the allowed characterset
-	const entity: S3RNType = S3RN.decode(s3rn);
-	let ysweetDocId: string;
 	if (entity instanceof S3RemoteDocument) {
-		ysweetDocId = entity.relayId + "-" + entity.documentId;
-	} else if (entity instanceof S3RemoteFolder) {
-		ysweetDocId = entity.relayId + "-" + entity.folderId;
-	} else {
-		throw new Error("Invalid type");
+		return entity.relayId + "-" + entity.documentId;
 	}
-	return ysweetDocId;
+	if (entity instanceof S3RemoteFolder) {
+		return entity.relayId + "-" + entity.folderId;
+	}
+	return "-";
 }
 
 function makeProvider(
 	clientToken: ClientToken,
-	s3rn: string,
+	s3rn: S3RNType,
 	ydoc: Doc,
 	user?: User
 ): YSweetProvider {
@@ -91,12 +88,12 @@ type Listener = (state: ConnectionState) => void;
 
 export class HasProvider {
 	_provider: YSweetProvider;
-	s3rn: string;
+	_s3rn: S3RNType;
 	path?: string;
 	ydoc: Doc;
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
-	clientToken: ClientToken | null;
+	clientToken: ClientToken;
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
@@ -104,19 +101,20 @@ export class HasProvider {
 	listeners: Map<unknown, Listener>;
 
 	constructor(
-		s3rn: string,
+		s3rn: S3RNType,
 		tokenStore: LiveTokenStore,
 		loginManager: LoginManager
 	) {
-		this.s3rn = s3rn;
+		this._s3rn = s3rn;
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
 		this.ydoc = new Doc();
 		this.tokenStore = tokenStore;
 		this.clientToken =
-			this.tokenStore.getTokenSync(this.s3rn) ||
+			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
 			({ token: "", url: "", expiryTime: 0 } as ClientToken);
 		const user = this.loginManager?.user;
+
 		this._provider = makeProvider(
 			this.clientToken,
 			this.s3rn,
@@ -146,6 +144,15 @@ export class HasProvider {
 		this._offState = stateSub.off;
 	}
 
+	public get s3rn(): S3RNType {
+		return this._s3rn;
+	}
+
+	public set s3rn(value: S3RNType) {
+		this._s3rn = value;
+		this.refreshProvider(this.clientToken);
+	}
+
 	notifyListeners() {
 		console.debug("[Provider State]", this.path, this.state);
 		this.listeners.forEach((listener) => {
@@ -168,7 +175,7 @@ export class HasProvider {
 		this.log("get provider token");
 
 		const tokenPromise = this.tokenStore.getToken(
-			this.s3rn,
+			S3RN.encode(this.s3rn),
 			this.path || "unknown",
 			this.refreshProvider.bind(this)
 		);

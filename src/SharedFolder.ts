@@ -104,8 +104,8 @@ export class SharedFolder extends HasProvider {
 		relayId?: string
 	) {
 		const s3rn = relayId
-			? S3RN.encode(new S3RemoteFolder(relayId, guid))
-			: S3RN.encode(new S3Folder(guid));
+			? new S3RemoteFolder(relayId, guid)
+			: new S3Folder(guid);
 		super(s3rn, tokenStore, loginManager);
 		this.guid = guid;
 		this.fileManager = fileManager;
@@ -178,6 +178,10 @@ export class SharedFolder extends HasProvider {
 
 	public set remote(value: RemoteSharedFolder | undefined) {
 		this._remote = value;
+		this.relayId = value?.relay?.guid;
+		this.s3rn = this.relayId
+			? new S3RemoteFolder(this.relayId, this.guid)
+			: new S3Folder(this.guid);
 		this.notifyListeners();
 	}
 
