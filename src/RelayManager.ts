@@ -1,6 +1,6 @@
 "use strict";
 
-import { randomUUID } from "crypto";
+import { v4 as uuid } from "uuid";
 import {
 	type RelayRole,
 	type Relay,
@@ -992,7 +992,7 @@ export class RelayManager {
 	}
 
 	async createRelay(name: string): Promise<Relay> {
-		const guid = randomUUID();
+		const guid = uuid();
 		const record = await this.pb.collection("relays").create<RelayDAO>(
 			{
 				guid: guid,
