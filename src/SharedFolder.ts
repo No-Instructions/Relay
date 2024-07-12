@@ -150,7 +150,7 @@ export class SharedFolder extends HasProvider {
 
 		this.ydoc.on(
 			"update",
-			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
+			async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 				if (origin == this) {
 					return;
 				}
@@ -259,25 +259,42 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
-	_handleServerRename(
+	async _handleServerRename(
 		doc: Document,
 		path: string,
 		diffLog?: string[]
-	): string | null {
+	): Promise<string | null> {
 		// take a doc and it's new path.
 		const oldPath = this.getPath(doc.path);
 		diffLog?.push(`${oldPath} was renamed to ${path}`);
 		const file = this.vault.getAbstractFileByPath(oldPath);
 		if (file) {
-			this.fileManager.renameFile(file, this.path + path).then(() => {
-				doc.move(path);
-			});
+			const dir = dirname(path);
+			if (!this.existsSync(dir)) {
+				await this.mkdir(dir);
+				diffLog?.push(`creating directory ${dir}`);
+			}
+			try {
+				await this.fileManager.renameFile(
+					file,
+					normalizePath(this.getPath(path))
+				);
+			} catch (e) {
+				this.log("Error renaming file, creating instead", e);
+				this._handleServerCreate(path, diffLog);
+			}
+			doc.move(path);
 			return oldPath;
+		} else {
+			this._handleServerCreate(path, diffLog);
 		}
 		return null;
 	}
 
-	_handleServerCreate(path: string, diffLog?: string[]): Document {
+	async _handleServerCreate(
+		path: string,
+		diffLog?: string[]
+	): Promise<Document> {
 		const doc = this.createDoc(path, false, false);
 
 		// Create directories as needed
@@ -294,17 +311,16 @@ export class SharedFolder extends HasProvider {
 		);
 		console.log("this file doesn't exist", file);
 		const start = moment.now();
-		doc.whenReady().then(async () => {
-			const end = moment.now();
-			console.log(
-				`receive delay: received content for ${doc.path} after ${
-					end - start
-				}ms`,
-				doc.text.toString()
-			);
-			await folderPromise;
-			this.flush(doc, doc.text.toString());
-		});
+		await doc.whenReady();
+		const end = moment.now();
+		console.log(
+			`receive delay: received content for ${doc.path} after ${
+				end - start
+			}ms`,
+			doc.text.toString()
+		);
+		await folderPromise;
+		this.flush(doc, doc.text.toString());
 		diffLog?.push(`created local file for remotely added doc ${path}`);
 		return doc;
 	}
@@ -319,7 +335,7 @@ export class SharedFolder extends HasProvider {
 
 		// Apply Updates for shared docs
 		this.ydoc.transact(() => {
-			map.forEach((guid, path) => {
+			map.forEach(async (guid, path) => {
 				// Check if the path is valid (inside of shared folder), otherwise delete
 				try {
 					this.assertPath(this.path + path);
@@ -341,7 +357,7 @@ export class SharedFolder extends HasProvider {
 					guid
 				);
 				if (inIds && doc) {
-					const renamed = this._handleServerRename(
+					const renamed = await this._handleServerRename(
 						doc,
 						path,
 						diffLog
@@ -352,7 +368,10 @@ export class SharedFolder extends HasProvider {
 				} else {
 					// write will trigger `create` which will read the file from disk by default.
 					// so we need to pre-empt that by loading the file into docs.
-					const created = this._handleServerCreate(path, diffLog);
+					const created = await this._handleServerCreate(
+						path,
+						diffLog
+					);
 					creates.push(created);
 				}
 			});
