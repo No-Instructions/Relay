@@ -41,32 +41,24 @@ export interface Subscription {
 	off: () => void;
 }
 
-function s3rnToYsweetDocId(entity: S3RNType): string {
-	// YSweet has various restrictions on the allowed characterset
-	if (entity instanceof S3RemoteDocument) {
-		return entity.relayId + "-" + entity.documentId;
-	}
-	if (entity instanceof S3RemoteFolder) {
-		return entity.relayId + "-" + entity.folderId;
-	}
-	return "-";
-}
-
 function makeProvider(
 	clientToken: ClientToken,
-	s3rn: S3RNType,
 	ydoc: Doc,
 	user?: User
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
 	};
-	const ysweetDocId = s3rnToYsweetDocId(s3rn);
-	const provider = new YSweetProvider(clientToken.url, ysweetDocId, ydoc, {
-		connect: false,
-		params: params,
-		disableBc: true,
-	});
+	const provider = new YSweetProvider(
+		clientToken.url,
+		clientToken.docId,
+		ydoc,
+		{
+			connect: false,
+			params: params,
+			disableBc: true,
+		}
+	);
 
 	if (user) {
 		provider.awareness.setLocalStateField("user", {
@@ -106,15 +98,10 @@ export class HasProvider {
 		this.tokenStore = tokenStore;
 		this.clientToken =
 			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
-			({ token: "", url: "", expiryTime: 0 } as ClientToken);
+			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
 		const user = this.loginManager?.user;
 
-		this._provider = makeProvider(
-			this.clientToken,
-			this.s3rn,
-			this.ydoc,
-			user
-		);
+		this._provider = makeProvider(this.clientToken, this.ydoc, user);
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
@@ -199,7 +186,7 @@ export class HasProvider {
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
 		this.clientToken = clientToken;
-		const tempProvider = makeProvider(clientToken, this.s3rn, new Doc());
+		const tempProvider = makeProvider(clientToken, new Doc());
 		const newUrl = tempProvider.url;
 
 		if (!this._provider) {
