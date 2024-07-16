@@ -523,6 +523,7 @@ export class SharedFolder extends HasProvider {
 			this.docs.get(guid) ||
 			new Document(vpath, guid, this.loginManager, this);
 		const knownPeersPromise = doc.hasKnownPeers();
+		const awaitingUpdatesPromise = this.awaitingUpdates();
 
 		if (loadFromDisk) {
 			(async () => {
@@ -530,12 +531,19 @@ export class SharedFolder extends HasProvider {
 				if (!exists) {
 					return;
 				}
-				const [contents, hasKnownPeers] = await Promise.all([
-					this.read(doc),
-					knownPeersPromise,
-				]);
+				const [contents, hasKnownPeers, awaitingUpdates] =
+					await Promise.all([
+						this.read(doc),
+						knownPeersPromise,
+						awaitingUpdatesPromise,
+					]);
 				const text = doc.ydoc.getText("contents");
-				if (!hasKnownPeers && contents && text.toString() != contents) {
+				if (
+					!awaitingUpdates &&
+					!hasKnownPeers &&
+					contents &&
+					text.toString() != contents
+				) {
 					this.log(
 						`[${doc.path}] No Known Peers: Syncing file into ytext.`
 					);
