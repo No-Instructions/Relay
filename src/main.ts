@@ -50,9 +50,9 @@ export default class Live extends Plugin {
 	relayManager!: RelayManager;
 	settingsTab!: LiveSettingsTab;
 	_extensions!: [];
-	log!: (message: string) => void;
+	log!: (message: string, ...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
-	private settingsFileLocked = false;
+	private settingsFileLocked = true;
 
 	async onload() {
 		console.log("[System 3][Relay] Loading Plugin");
@@ -134,10 +134,13 @@ export default class Live extends Plugin {
 			}
 
 			this.setup();
+			this.settingsFileLocked = false;
+			this.saveSettings();
 		});
 	}
 
 	private loadSharedFolders(sharedFolderSettings: SharedFolderSettings[]) {
+		const beforeLock = this.settingsFileLocked;
 		this.settingsFileLocked = true;
 		sharedFolderSettings.forEach(
 			(sharedFolderSetting: SharedFolderSettings) => {
@@ -157,12 +160,12 @@ export default class Live extends Plugin {
 				);
 			}
 		);
-		this.settingsFileLocked = false;
 		if (!this._offSaveSettings) {
 			this._offSaveSettings = this.sharedFolders.subscribe(() => {
 				this.saveSettings();
 			});
 		}
+		this.settingsFileLocked = beforeLock;
 	}
 
 	private async _createSharedFolder(
@@ -389,6 +392,7 @@ export default class Live extends Plugin {
 	async saveSettings() {
 		if (!this.settingsFileLocked) {
 			this.settings.sharedFolders = this.sharedFolders.toSettings();
+			this.log("Saving settings", this.settings);
 			await this.saveData(this.settings);
 		}
 	}
