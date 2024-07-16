@@ -14,9 +14,10 @@
 		remoteFolder: RemoteSharedFolder,
 		folderName: string,
 		folderLocation: string,
-	) => void;
+	) => Promise<void>;
 	let folderName: string = remoteFolder.name;
 	let folderLocation = writable<string | undefined>();
+	let error: string = "";
 </script>
 
 <div class="modal-title">Add to Vault</div>
@@ -37,11 +38,28 @@
 	</SettingItem>
 
 	<div class="modal-button-container">
+		{#if error}
+			<span class="mod-warning error">{error}</span>
+		{/if}
 		<button
 			class="mod-cta"
-			on:click={debounce(() => {
-				onConfirm(remoteFolder, folderName, $folderLocation || "");
+			on:click={debounce(async () => {
+				onConfirm(
+					remoteFolder,
+					folderName,
+					$folderLocation || "",
+				).catch((e) => {
+					console.error(e);
+					error = e.message;
+				});
 			})}>Confirm</button
 		>
 	</div>
 </div>
+
+<style>
+	span.error {
+		flex: auto;
+		align-content: center;
+	}
+</style>

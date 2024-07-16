@@ -1,7 +1,7 @@
 import { App, Modal } from "obsidian";
 import type { RemoteSharedFolder } from "src/Relay";
 import AddToVaultModalContent from "../components/AddToVaultModalContent.svelte";
-import type { SharedFolders } from "src/SharedFolder";
+import type { SharedFolder, SharedFolders } from "src/SharedFolder";
 
 export class AddToVaultModal extends Modal {
 	private component?: AddToVaultModalContent;
@@ -14,7 +14,7 @@ export class AddToVaultModal extends Modal {
 			remoteFolder: RemoteSharedFolder,
 			folderName: string,
 			folderLocation: string
-		) => void
+		) => Promise<SharedFolder>
 	) {
 		super(app);
 		this.onConfirm = onConfirm;
@@ -28,12 +28,16 @@ export class AddToVaultModal extends Modal {
 			props: {
 				remoteFolder: this.remoteFolder,
 				sharedFolders: this.sharedFolders,
-				onConfirm: (
+				onConfirm: async (
 					remoteFolder: RemoteSharedFolder,
 					folderName: string,
 					folderLocation: string
 				) => {
-					this.onConfirm(remoteFolder, folderName, folderLocation);
+					await this.onConfirm(
+						remoteFolder,
+						folderName,
+						folderLocation
+					);
 					this.close();
 				},
 				app: this.app,
