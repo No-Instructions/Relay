@@ -66,26 +66,28 @@ export class SharedFolder extends HasProvider {
 		const vpaths: string[] = [];
 		files.forEach((file) => {
 			// if the file is in the shared folder and not in the map, move it to the Trash
+			if (!this.checkPath(file.path)) {
+				return;
+			}
 			if (file instanceof TFolder) {
 				return;
 			}
-			if (this.checkPath(file.path) && !this.ids.has(file.path)) {
+			if (!this.ids.has(file.path)) {
 				vpaths.push(this.getVirtualPath(file.path));
 			}
 		});
 		this.placeHold(vpaths);
 		files.forEach((file) => {
+			if (!this.checkPath(file.path)) {
+				return;
+			}
 			if (file instanceof TFolder) {
 				return;
 			}
-			if (this.checkPath(file.path) && !this.ids.has(file.path)) {
-				const doc = this.createFile(file.path, true, false);
-				docs.push(doc);
-			}
-			if (this.checkPath(file.path) && this.ids.has(file.path)) {
-				const doc = this.createFile(file.path, false, false);
-				docs.push(doc);
-			}
+			// XXX this will always be false due to the placeHold above
+			const loadFromDisk = !this.ids.has(file.path);
+			const doc = this.createFile(file.path, loadFromDisk, false);
+			docs.push(doc);
 		});
 		if (docs.length > 0) {
 			this.docset.update();
