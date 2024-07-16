@@ -27,33 +27,6 @@
 	});
 
 	const sharedFolders = plugin.sharedFolders;
-	console.log(sharedFolders);
-
-	let myRoles = derived(relayRoles, ($relayRoles) => {
-		return $relayRoles.filter((role) => role.userId === $user?.id);
-	});
-
-	let ownerOf = derived(relayRoles, ($relayRoles) => {
-		return $relayRoles
-			.filter(
-				(role) => role.role === "Owner" && role.userId === $user?.id,
-			)
-			.values();
-	});
-
-	let memberOf = derived(relayRoles, ($relayRoles) => {
-		return $relayRoles.filter(
-			(role) => role.role === "Member" && role.userId === $user?.id,
-		);
-	});
-
-	let ownerOrMemberOf = derived(relayRoles, ($relayRoles) => {
-		return $relayRoles.filter(
-			(role) =>
-				role.role === "Member" ||
-				(role.role === "Owner" && role.userId === $user?.id),
-		);
-	});
 
 	let visibleRelays = derived(
 		[relayRoles, relays],
