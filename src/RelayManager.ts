@@ -139,7 +139,8 @@ class Auto {
 class RemoteFolderAuto extends Auto implements RemoteFolder {
 	constructor(
 		private remoteFolder: RemoteFolderDAO,
-		private relays: ObservableMap<string, Relay>
+		private relays: ObservableMap<string, Relay>,
+		private users: ObservableMap<string, UserDAO>
 	) {
 		super();
 	}
@@ -165,6 +166,14 @@ class RemoteFolderAuto extends Auto implements RemoteFolder {
 		return this.remoteFolder.private;
 	}
 
+	public get creator() {
+		const user = this.users.get(this.remoteFolder.creator);
+		if (!user) {
+			throw new Error("invalid remote folder");
+		}
+		return user;
+	}
+
 	public get relay(): Relay {
 		const relay = this.relays.get(this.remoteFolder.relay);
 		if (!relay) {
@@ -185,7 +194,8 @@ class RemoteFolderCollection
 
 	constructor(
 		public remoteFolders: ObservableMap<string, RemoteFolder>,
-		private relays: ObservableMap<string, Relay>
+		private relays: ObservableMap<string, Relay>,
+		private users: ObservableMap<string, UserDAO>
 	) {}
 
 	clear() {
@@ -203,7 +213,7 @@ class RemoteFolderCollection
 			this.remoteFolders.notifyListeners();
 			return existingFolder;
 		}
-		const folder = new RemoteFolderAuto(update, this.relays);
+		const folder = new RemoteFolderAuto(update, this.relays, this.users);
 		this.remoteFolders.set(update.id, folder);
 		return folder;
 	}
@@ -773,7 +783,8 @@ export class RelayManager {
 		);
 		const sharedFolderCollection = new RemoteFolderCollection(
 			this.remoteFolders,
-			this.relays
+			this.relays,
+			this.users
 		);
 		this.store = new Store([
 			roleCollection,
@@ -861,6 +872,7 @@ export class RelayManager {
 					expand: [
 						"relay_invitations_via_relay",
 						"shared_folders_via_relay",
+						"shared_folders_via_relay.creator",
 					],
 					fetch: customFetch,
 				}
@@ -910,7 +922,7 @@ export class RelayManager {
 				this.store?.ingest(e.record);
 			},
 			{
-				expand: ["relay"],
+				expand: ["relay", "creator"],
 				fetch: customFetch,
 			}
 		);
@@ -959,7 +971,7 @@ export class RelayManager {
 		await this.pb
 			.collection("shared_folders")
 			.getFullList<RemoteFolderDAO>({
-				expand: "relay",
+				expand: "relay,creator",
 				fetch: customFetch,
 			})
 			.then((remoteFolders) => {

@@ -7,6 +7,11 @@ interface Updatable<T> {
 	update(update: unknown): T;
 }
 
+export interface RelayUser extends Identified {
+	id: string;
+	name: string;
+}
+
 export interface RemoteSharedFolder
 	extends Identified,
 		Updatable<RemoteSharedFolder> {
@@ -15,6 +20,7 @@ export interface RemoteSharedFolder
 	name: string;
 	private: boolean;
 	relay: Relay;
+	creator: RelayUser;
 }
 
 export interface Relay extends Identified, Updatable<Relay> {
@@ -27,14 +33,9 @@ export interface Relay extends Identified, Updatable<Relay> {
 	invitation?: RelayInvitation;
 }
 
-export interface RelayRoleUser extends Identified {
-	id: string;
-	name: string;
-}
-
 export interface RelayRole extends Identified, Updatable<RelayRole> {
 	id: string;
-	user: RelayRoleUser;
+	user: RelayUser;
 	userId: string;
 	role: Role;
 	relay: Relay;

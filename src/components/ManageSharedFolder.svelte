@@ -185,7 +185,7 @@
 </SettingItem>
 
 {#if $relayStore}
-	{#if $relayStore?.owner}
+	{#if $relayStore?.owner || $folderStore?.remote?.creator?.id === plugin.relayManager.user?.id}
 		<SettingItemHeading name="Remote Folder"></SettingItemHeading>
 		<SettingItem
 			name="Remove from Relay"
