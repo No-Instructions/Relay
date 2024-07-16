@@ -3,7 +3,7 @@
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
-	import { type Relay, type RelayRoleUser, type RelayRole } from "../Relay";
+	import { type Relay, type RelayUser, type RelayRole } from "../Relay";
 	import store from "../Store";
 	import type Live from "src/main";
 	import { Satellite, Folder, Settings, ArrowRightLeft } from "lucide-svelte";
