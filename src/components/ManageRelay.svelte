@@ -77,19 +77,18 @@
 		remoteFolder: RemoteSharedFolder,
 		name: string,
 		location: string,
-	) {
+	): Promise<SharedFolder> {
 		const vaultRelativePath = normalizePath(join(location, name));
 		if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
 			await plugin.vault.createFolder(vaultRelativePath);
 		}
-		const folder = await plugin.sharedFolders.new(
-			vaultRelativePath,
-			remoteFolder.guid,
-			relay.guid,
-			true,
-		);
-		folder.remote = remoteFolder;
-		plugin.sharedFolders.notifyListeners();
+		return plugin.sharedFolders
+			.new(vaultRelativePath, remoteFolder.guid, relay.guid, true)
+			.then((folder) => {
+				folder.remote = remoteFolder;
+				plugin.sharedFolders.notifyListeners();
+				return folder;
+			});
 	}
 
 	let updating = writable(false);
@@ -183,6 +182,7 @@
 					relay,
 				);
 				folder.remote = remote;
+				folder.connect();
 				plugin.sharedFolders.notifyListeners();
 				return;
 			}
