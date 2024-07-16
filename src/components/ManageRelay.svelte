@@ -138,10 +138,6 @@
 		}
 	}
 
-	function handleTransfer() {
-		console.log("Transfer Ownership");
-	}
-
 	function handleDestroy() {
 		plugin.relayManager.destroyRelay(relay);
 		dispatch("goBack", {});
@@ -159,7 +155,6 @@
 	}
 
 	function selectText(event: Event) {
-		console.log(event);
 		const inputEl = event.target as HTMLInputElement;
 		inputEl.focus();
 		inputEl.select();

@@ -18,6 +18,7 @@ import { S3Folder, S3RemoteFolder } from "./S3RN";
 import type { Relay, RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
+import { curryLog } from "./debug";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -110,6 +111,11 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(s3rn, tokenStore, loginManager);
+
+		this.log = curryLog("[SharedFolder]", console.log);
+		this.warn = curryLog("[SharedFolder]", console.warn);
+		this.debug = curryLog("[SharedFolder]", console.debug);
+
 		this.guid = guid;
 		this.fileManager = fileManager;
 		this.vault = vault;
@@ -303,11 +309,10 @@ export class SharedFolder extends HasProvider {
 		const file = this.vault.getAbstractFileByPath(
 			normalizePath(this.getPath(path))
 		);
-		console.log("this file doesn't exist", file);
 		const start = moment.now();
 		await doc.whenReady();
 		const end = moment.now();
-		console.log(
+		this.debug(
 			`receive delay: received content for ${doc.path} after ${
 				end - start
 			}ms`,
@@ -452,7 +457,7 @@ export class SharedFolder extends HasProvider {
 		try {
 			return this.getDoc(vPath, create, loadFromDisk, update);
 		} catch (e) {
-			console.log(e, path);
+			this.warn(e, path);
 			throw e;
 		}
 	}
@@ -492,7 +497,7 @@ export class SharedFolder extends HasProvider {
 		this.ydoc.transact(() => {
 			vpaths.forEach((vpath) => {
 				if (!this.ids.has(vpath)) {
-					console.debug("creating entirely new doc for", vpath);
+					this.debug("creating entirely new doc for", vpath);
 					const guid = uuidv4();
 					this.ids.set(vpath, guid);
 				}
@@ -502,7 +507,7 @@ export class SharedFolder extends HasProvider {
 
 	createDoc(vpath: string, loadFromDisk = false, update = true): Document {
 		if (!this.synced && !this.ids.get(vpath)) {
-			this.log("WARNING may cause document split");
+			this.warn(`potential for document split at ${vpath}`);
 		}
 		const maybeGuid: string | undefined = this.ids.get(vpath);
 		let guid: string;

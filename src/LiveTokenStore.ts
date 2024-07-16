@@ -31,7 +31,8 @@ async function refresh(
 	onSuccess: (clientToken: ClientToken) => void,
 	onError: (err: Error) => void
 ) {
-	const log = curryLog("[TokenStore][Refresh]");
+	const log = curryLog("[TokenStore][Refresh]", console.log);
+	const error = curryLog("[TokenStore][Refresh]", console.error);
 	log(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
 	let payload: string;
@@ -75,8 +76,7 @@ async function refresh(
 			onSuccess(clientToken);
 		})
 		.catch((reason) => {
-			console.error(payload);
-			console.error(reason);
+			error(reason, payload);
 			onError(reason);
 		});
 }
@@ -90,7 +90,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 	) {
 		super(
 			{
-				log: curryLog("[LiveTokenStore]"),
+				log: curryLog("[LiveTokenStore]", console.log),
 				refresh: withLoginManager(loginManager, refresh),
 				getJwtExpiry: getJwtExpiryFromClientToken,
 				getStorage: function () {

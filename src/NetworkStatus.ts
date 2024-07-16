@@ -14,7 +14,7 @@ class NetworkStatus {
 	online = true;
 
 	constructor(url: string, interval = 10000) {
-		this._log = curryLog("[NetworkStatus]");
+		this._log = curryLog("[NetworkStatus]", console.log);
 		this.url = url;
 		this.interval = interval;
 		this._onceOnline = new Set();

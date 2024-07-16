@@ -477,7 +477,7 @@ export class LiveViewManager {
 		queuedAt: moment.Moment
 	): Promise<boolean> {
 		const ctx = `[LiveViews][${context}]`;
-		const log = curryLog(ctx);
+		const log = curryLog(ctx, console.log);
 		log("Refresh");
 
 		await this.foldersReady();

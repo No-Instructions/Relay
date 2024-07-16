@@ -4,6 +4,12 @@ import { Notice } from "obsidian";
 
 declare const BUILD_TYPE: string;
 
+let debugging = false;
+
+export function setDebugging(debug: boolean) {
+	debugging = debug;
+}
+
 function toastDebug(error: Error): Error {
 	new Notice(error.name + "\n" + error.message);
 	return error;
@@ -15,14 +21,12 @@ function toastProd(error: Error): Error {
 	return error;
 }
 
-// Define two versions of curryLog
-function curryLogDebug(initialText: string) {
-	return (...args: unknown[]) => console.log(initialText, ": ", ...args);
-}
-
-function curryLogProd(initialText: string) {
+export function curryLog(initialText: string, fn: Function) {
+	if (debugging) {
+		return (...args: unknown[]) => fn(initialText, ": ", ...args);
+	}
 	return (...args: unknown[]) => {};
 }
+
 const debug = BUILD_TYPE === "debug";
-export const curryLog = debug ? curryLogDebug : curryLogProd;
 export const toast = debug ? toastDebug : toastProd;

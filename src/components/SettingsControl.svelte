@@ -6,7 +6,6 @@
 
 	function handleSettingsClick() {
 		dispatch("settings");
-		console.log("Settings clicked");
 	}
 </script>
 

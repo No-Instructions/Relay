@@ -498,13 +498,11 @@ class Store {
 		for (const child of children || []) {
 			const collection = this.bruteGetCollection(child);
 			if (collection) {
-				console.log("cascading", collection.collectionName, child);
 				collection.delete(child);
 				this.relationships.delete(child);
 			}
 		}
 		if (collection) {
-			console.log("delete", collection.collectionName, id);
 			collection.delete(id);
 		}
 	}
@@ -716,7 +714,7 @@ export class RelayManager {
 	private pb: PocketBase;
 
 	constructor() {
-		this._log = curryLog("[RelayManager]");
+		this._log = curryLog("[RelayManager]", console.log);
 
 		this.pb = new PocketBase(AUTH_URL);
 		this.pb.beforeSend = (url, options) => {

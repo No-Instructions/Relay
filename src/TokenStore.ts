@@ -265,7 +265,6 @@ export class TokenStore<TokenType extends HasToken> {
 				return newToken;
 			})
 			.catch((err) => {
-				console.warn(err);
 				this.onRefreshFailure(documentId);
 				this._activePromises.delete(documentId);
 				throw err;
@@ -287,7 +286,7 @@ export class TokenStore<TokenType extends HasToken> {
 				this.callbacks.set(documentId, callback);
 				tokenInfo.friendlyName = friendlyName;
 				callback(tokenInfo.token);
-				console.log("token was valid, cache hit!");
+				this.log("token was valid, cache hit!");
 				this._activePromises.delete(documentId);
 				return Promise.resolve(tokenInfo.token);
 			}

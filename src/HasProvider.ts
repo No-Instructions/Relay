@@ -83,7 +83,9 @@ export class HasProvider {
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
-	log = curryLog("[HasProvider]");
+	log = curryLog("[HasProvider]", console.log);
+	warn = curryLog("[HasProvider]", console.warn);
+	debug = curryLog("[HasProvider]", console.debug);
 	listeners: Map<unknown, Listener>;
 
 	constructor(
@@ -139,7 +141,7 @@ export class HasProvider {
 	}
 
 	notifyListeners() {
-		console.debug("[Provider State]", this.path, this.state);
+		this.debug("[Provider State]", this.path, this.state);
 		this.listeners.forEach((listener) => {
 			listener(this.state);
 		});

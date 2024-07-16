@@ -38,7 +38,8 @@ export class LiveCMPluginValue implements PluginValue {
 			return;
 		}
 		this.log = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`
+			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
+			console.log
 		);
 		this.log("created");
 		if (!this.view.document) {

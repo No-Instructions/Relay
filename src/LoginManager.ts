@@ -34,7 +34,7 @@ class SubscriptionManager extends ObservableSet<Subscription> {
 
 	constructor(user: User) {
 		super();
-		this._log = curryLog("[SubscriptionManager]");
+		this._log = curryLog("[SubscriptionManager]", console.log);
 		this.user = user;
 		this.getPaymentLink();
 	}
@@ -114,7 +114,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	constructor(openSettings: () => Promise<void>) {
 		super();
-		this._log = curryLog("[LoginManager]");
+		this._log = curryLog("[LoginManager]", console.log);
 		this.pb = new PocketBase(AUTH_URL);
 		this.pb.beforeSend = (url, options) => {
 			this._log(url, options);

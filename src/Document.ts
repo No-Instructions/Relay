@@ -15,6 +15,12 @@ export class Document extends HasProvider {
 	_hasKnownPeers?: boolean;
 	path: string;
 
+	setLoggers(context: string) {
+		this.debug = curryLog(context, console.debug);
+		this.log = curryLog(context, console.log);
+		this.warn = curryLog(context, console.warn);
+	}
+
 	constructor(
 		path: string,
 		guid: string,
@@ -28,7 +34,7 @@ export class Document extends HasProvider {
 		this.guid = guid;
 		this._parent = parent;
 		this.path = path;
-		this.log = curryLog(`[SharedDoc](${this.path})`);
+		this.setLoggers(`[SharedDoc](${this.path})`);
 
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 
@@ -43,7 +49,7 @@ export class Document extends HasProvider {
 	move(newPath: string) {
 		// XXX: Maybe a document should reference a TFile instead of a path...
 		this.path = newPath;
-		this.log = curryLog(`[SharedDoc](${this.path})`);
+		this.setLoggers(`[SharedDoc](${this.path})`);
 	}
 
 	public get sharedFolder(): SharedFolder {

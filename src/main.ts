@@ -12,7 +12,7 @@ import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
-import { curryLog, toast } from "./debug";
+import { curryLog, toast, setDebugging } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
@@ -55,8 +55,8 @@ export default class Live extends Plugin {
 	private settingsFileLocked = true;
 
 	async onload() {
-		console.log("[System 3][Relay] Loading Plugin");
-		this.log = curryLog("[System 3][Relay]");
+		console.debug("[System 3][Relay] Loading Plugin");
+		this.log = curryLog("[System 3][Relay]", console.log);
 		await this.loadSettings();
 		this.vault = new VaultFacade(this.app);
 		this.loginManager = new LoginManager(this.openSettings.bind(this));
@@ -74,6 +74,7 @@ export default class Live extends Plugin {
 		);
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
 		if (this.settings.debugging) {
+			setDebugging(this.settings.debugging);
 			this.addCommand({
 				id: "toggle-emulate-mobile",
 				name: "Mobile emulation toggle",
@@ -219,7 +220,7 @@ export default class Live extends Plugin {
 		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addSettingTab(this.settingsTab);
 
-		const workspaceLog = curryLog("[Live][Workspace]");
+		const workspaceLog = curryLog("[Live][Workspace]", console.log);
 
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
@@ -235,7 +236,7 @@ export default class Live extends Plugin {
 			})
 		);
 
-		const vaultLog = curryLog("[System 3][Relay][Vault]");
+		const vaultLog = curryLog("[System 3][Relay][Vault]", console.log);
 
 		const handleErrorEvent = (event: ErrorEvent) => {
 			const error = event.error;
@@ -361,7 +362,7 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
-		console.log("[System 3][Relay]: Unloading Plugin");
+		console.debug("[System 3][Relay]: Unloading Plugin");
 		// We want to unload the visual components but not the data
 		if (this._offSaveSettings) {
 			this._offSaveSettings();
