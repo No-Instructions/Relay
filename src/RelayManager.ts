@@ -791,7 +791,6 @@ export class RelayManager {
 
 	setUser() {
 		this.user = this.pb.authStore.model as UserDAO;
-		console.warn("User", this.user);
 		if (this.user) {
 			this.users.set(this.user.id, this.user);
 		}
