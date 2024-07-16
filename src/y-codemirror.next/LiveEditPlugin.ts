@@ -87,12 +87,11 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	setBuffer(): boolean {
-		this.log(`setting buffer ${this.view?.document} ${this.editor}`);
 		if (
 			this.view?.document &&
-			this.view?.document.text !== this.editor.state.doc.toString() //&&
-			//this.view?.document._provider?.shouldConnect
+			this.view?.document.text !== this.editor.state.doc.toString()
 		) {
+			this.log(`setting buffer ${this.view?.document} ${this.editor}`);
 			this.editor.dispatch({
 				changes: {
 					from: 0,
