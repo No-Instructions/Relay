@@ -391,29 +391,24 @@ export class FolderNavigationDecorations {
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => this.refresh());
 		this.offDocumentListeners = new Map();
-		const folderListener = () => {
+		this.offFolderListener = this.sharedFolders.on(() => {
 			this.sharedFolders.forEach((folder) => {
 				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
 				if (showDocumentStatus) {
-					const documentListener = () => {
-						this.refresh();
-					};
 					const docsetListener =
 						this.offDocumentListeners.get(folder);
 					if (!docsetListener) {
-						folder.docset.on(documentListener);
-						this.offDocumentListeners.set(folder, () => {
-							folder.docset.off(documentListener);
-						});
+						this.offDocumentListeners.set(
+							folder,
+							folder.docset.on(() => {
+								this.refresh();
+							})
+						);
 					}
 				}
 			});
 			this.refresh();
-		};
-		this.sharedFolders.on(folderListener);
-		this.offFolderListener = () => {
-			this.sharedFolders.off(folderListener);
-		};
+		});
 		this.refresh();
 	}
 

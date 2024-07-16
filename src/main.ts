@@ -107,15 +107,15 @@ export default class Live extends Plugin {
 			// this.app.workspace.updateOptions(); must be called to apply changes.
 			this.registerEditorExtension(this._liveViews.extensions);
 
-			const unsub = () => {
-				if (this.loginManager.loggedIn) {
-					this._onLogin();
-				} else {
-					this._onLogout();
-				}
-			};
-			this.loginManager.on(unsub);
-			this.register(unsub);
+			this.register(
+				this.loginManager.on(() => {
+					if (this.loginManager.loggedIn) {
+						this._onLogin();
+					} else {
+						this._onLogout();
+					}
+				})
+			);
 
 			this.tokenStore.start();
 

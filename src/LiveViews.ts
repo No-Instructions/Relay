@@ -263,46 +263,40 @@ export class LiveViewManager {
 			this.refresh("[Constructor]");
 		});
 
-		const refreshOnAuthenticationEvent = () => {
-			this.refresh("[LoginManager]");
-		};
-		this.loginManager.on(refreshOnAuthenticationEvent);
-		this.offListeners.push(() => {
-			this.loginManager.off(refreshOnAuthenticationEvent);
-		});
+		this.offListeners.push(
+			this.loginManager.on(() => {
+				this.refresh("[LoginManager]");
+			})
+		);
 
 		this.sharedFolders.forEach((folder) => {
-			const docsetListener = () => {
-				this.refresh("[Docset]");
-			};
-			folder.docset.on(docsetListener);
-			this.offListeners.push(() => {
-				folder.docset.off(docsetListener);
-			});
+			this.offListeners.push(
+				folder.docset.on(() => {
+					this.refresh("[Docset]");
+				})
+			);
 		});
 
-		const sharedFolderListener = () => {
-			this.refresh("[Shared Folders]");
+		this.offListeners.push(
+			this.sharedFolders.on(() => {
+				this.refresh("[Shared Folders]");
 
-			this.sharedFolders.forEach((folder) => {
-				folder
-					.whenReady()
-					.then(() => {
-						this.refresh("[Shared Folder Ready]");
-					})
-					.catch((_) => {
-						this.views.forEach((view) => {
-							if (view.document?.sharedFolder === folder) {
-								(view as LiveView).offlineBanner();
-							}
+				this.sharedFolders.forEach((folder) => {
+					folder
+						.whenReady()
+						.then(() => {
+							this.refresh("[Shared Folder Ready]");
+						})
+						.catch((_) => {
+							this.views.forEach((view) => {
+								if (view.document?.sharedFolder === folder) {
+									(view as LiveView).offlineBanner();
+								}
+							});
 						});
-					});
-			});
-		};
-		this.sharedFolders.on(sharedFolderListener);
-		this.offListeners.push(() => {
-			this.sharedFolders.off(sharedFolderListener);
-		});
+				});
+			})
+		);
 	}
 
 	goOffline() {
