@@ -285,20 +285,18 @@ export class LiveViewManager {
 			this.refresh("[Shared Folders]");
 
 			this.sharedFolders.forEach((folder) => {
-				if (!folder.ready) {
-					folder
-						.whenReady()
-						.then(() => {
-							this.refresh("[Shared Folder Ready]");
-						})
-						.catch((_) => {
-							this.views.forEach((view) => {
-								if (view.document?.sharedFolder === folder) {
-									(view as LiveView).offlineBanner();
-								}
-							});
+				folder
+					.whenReady()
+					.then(() => {
+						this.refresh("[Shared Folder Ready]");
+					})
+					.catch((_) => {
+						this.views.forEach((view) => {
+							if (view.document?.sharedFolder === folder) {
+								(view as LiveView).offlineBanner();
+							}
 						});
-				}
+					});
 			});
 		};
 		this.sharedFolders.on(sharedFolderListener);
@@ -376,18 +374,14 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
-				if (
-					this.loginManager.loggedIn &&
-					folder.ready &&
-					folder.remote
-				) {
-					const doc = folder.getFile(viewFilePath, true, true, true);
-					const view = new LiveView(this, markdownView, doc);
-					views.push(view);
-				} else {
+				if (!this.loginManager.loggedIn) {
 					const view = new LoggedOutView(this, markdownView, () => {
 						return this.loginManager.openLoginPage();
 					});
+					views.push(view);
+				} else {
+					const doc = folder.getFile(viewFilePath, true, true, true);
+					const view = new LiveView(this, markdownView, doc);
 					views.push(view);
 				}
 			}
