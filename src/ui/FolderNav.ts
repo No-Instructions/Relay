@@ -391,7 +391,7 @@ export class FolderNavigationDecorations {
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => this.refresh());
 		this.offDocumentListeners = new Map();
-		this.offFolderListener = this.sharedFolders.on(() => {
+		this.offFolderListener = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
 				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
 				if (showDocumentStatus) {
@@ -409,7 +409,6 @@ export class FolderNavigationDecorations {
 			});
 			this.refresh();
 		});
-		this.refresh();
 	}
 
 	register() {
