@@ -51,12 +51,11 @@ export class SharedFolder extends HasProvider {
 	docset: Documents;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
-	private _relay?: Relay;
 	private vault: Vault;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
-	private _hasKnownPeers?: boolean;
+	private _awaitingUpdates: boolean;
 	private unsubscribes: Unsubscriber[] = [];
 
 	private _persistence: IndexeddbPersistence;
@@ -101,11 +100,13 @@ export class SharedFolder extends HasProvider {
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
-		relayId?: string
+		relayId?: string,
+		awaitingUpdates: boolean = true
 	) {
 		const s3rn = relayId
 			? new S3RemoteFolder(relayId, guid)
 			: new S3Folder(guid);
+
 		super(s3rn, tokenStore, loginManager);
 		this.guid = guid;
 		this.fileManager = fileManager;
@@ -115,17 +116,8 @@ export class SharedFolder extends HasProvider {
 		this.docs = new Map();
 		this.docset = new Documents();
 		this.relayManager = relayManager;
+		this._awaitingUpdates = awaitingUpdates;
 		this.relayId = relayId;
-		if (relayId) {
-			this._relay = this.relayManager.relays.get(relayId);
-		}
-		this.unsubscribes.push(
-			this.relayManager.relays.subscribe((relays) => {
-				if (this.relayId) {
-					this._relay = relays.get(this.relayId);
-				}
-			})
-		);
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find(
@@ -138,10 +130,8 @@ export class SharedFolder extends HasProvider {
 			this.log("", this.ids);
 		});
 
-		if (loginManager.loggedIn && this.s3rn instanceof S3RemoteFolder) {
-			this.getProviderToken().then((token) => {
-				this.connect();
-			});
+		if (loginManager.loggedIn) {
+			this.connect();
 		}
 
 		this.whenReady().then(() => {
@@ -176,7 +166,11 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get settings(): SharedFolderSettings {
-		return { guid: this.guid, path: this.path, relay: this.relayId };
+		return {
+			guid: this.guid,
+			path: this.path,
+			relay: this.relayId,
+		};
 	}
 
 	public get remote(): RemoteSharedFolder | undefined {
@@ -184,6 +178,9 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public set remote(value: RemoteSharedFolder | undefined) {
+		if (this._remote === value) {
+			return;
+		}
 		this._remote = value;
 		this.relayId = value?.relay?.guid;
 		this.s3rn = this.relayId
@@ -192,38 +189,32 @@ export class SharedFolder extends HasProvider {
 		this.notifyListeners();
 	}
 
-	public get ready(): boolean {
-		const hasKnownPeers = this._persistence._dbsize > 2;
+	private get ready(): boolean {
 		const persistenceSynced = this._persistence.synced;
 		const serverSynced = this.synced && this.connected;
-		return persistenceSynced && (serverSynced || hasKnownPeers);
+		return persistenceSynced && (!this._awaitingUpdates || serverSynced);
 	}
 
-	hasKnownPeers(): Promise<boolean> {
-		if (this._hasKnownPeers !== undefined) {
-			return Promise.resolve(this._hasKnownPeers);
-		}
-		return this.whenSynced().then(async () => {
+	async awaitingUpdates(): Promise<boolean> {
+		await this.whenSynced();
+		if (this._awaitingUpdates) {
 			await fetchUpdates(this._persistence);
-			this._hasKnownPeers = this._persistence._dbsize > 3;
-			return this._hasKnownPeers;
-		});
+			this._awaitingUpdates = this._persistence._dbsize < 3;
+		}
+		return this._awaitingUpdates;
 	}
 
 	async whenReady(): Promise<SharedFolder> {
 		const promiseFn = async (): Promise<SharedFolder> => {
-			return this.hasKnownPeers().then((hasKnownPeers) => {
-				if (!hasKnownPeers) {
-					// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
-					return this.onceConnected().then(() => {
-						return this.onceProviderSynced().then(() => {
-							return this;
-						});
-					});
-				}
-				// If this is a shared folder with edits, then we can behave as though we're just offline.
+			const awaitingUpdates = await this.awaitingUpdates();
+			if (awaitingUpdates) {
+				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				await this.onceConnected();
+				await this.onceProviderSynced();
 				return this;
-			});
+			}
+			// If this is a shared folder with edits, then we can behave as though we're just offline.
+			return this;
 		};
 		this.readyPromise =
 			this.readyPromise ||
@@ -648,7 +639,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	private folderBuilder: (
 		path: string,
 		guid: string,
-		relayId?: string
+		relayId?: string,
+		awaitingUpdates?: boolean
 	) => Promise<SharedFolder>;
 	private relayManager: RelayManager;
 	private _offRemoteUpdates?: () => void;
@@ -693,7 +685,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		folderBuilder: (
 			guid: string,
 			path: string,
-			relayId?: string
+			relayId?: string,
+			awaitingUpdates?: boolean
 		) => Promise<SharedFolder>
 	) {
 		super();
@@ -721,7 +714,12 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		}
 	}
 
-	async new(path: string, guid: string, relayId?: string) {
+	async new(
+		path: string,
+		guid: string,
+		relayId?: string,
+		awaitingUpdates?: boolean
+	) {
 		const existing = this.find(
 			(folder) => folder.path == path && folder.guid == guid
 		);
@@ -740,7 +738,12 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				"A different relay is already mounted at this path."
 			);
 		}
-		const folder = await this.folderBuilder(path, guid, relayId);
+		const folder = await this.folderBuilder(
+			path,
+			guid,
+			relayId,
+			awaitingUpdates
+		);
 		this.add(folder);
 		return folder;
 	}

@@ -168,7 +168,8 @@ export default class Live extends Plugin {
 	private async _createSharedFolder(
 		path: string,
 		guid: string,
-		relayId?: string
+		relayId?: string,
+		awaitingUpdates?: boolean
 	): Promise<SharedFolder> {
 		const folder = new SharedFolder(
 			guid,
@@ -178,7 +179,8 @@ export default class Live extends Plugin {
 			this.fileManager,
 			this.tokenStore,
 			this.relayManager,
-			relayId
+			relayId,
+			awaitingUpdates
 		);
 		return folder;
 	}
