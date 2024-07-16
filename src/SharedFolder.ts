@@ -199,6 +199,7 @@ export class SharedFolder extends HasProvider {
 		await this.whenSynced();
 		if (this._awaitingUpdates) {
 			await fetchUpdates(this._persistence);
+			this.log("update count", this.path, this._persistence._dbsize);
 			this._awaitingUpdates = this._persistence._dbsize < 3;
 		}
 		return this._awaitingUpdates;
