@@ -86,6 +86,7 @@
 			vaultRelativePath,
 			remoteFolder.guid,
 			relay.guid,
+			true,
 		);
 		folder.remote = remoteFolder;
 		plugin.sharedFolders.notifyListeners();
@@ -196,6 +197,7 @@
 				normalizePath(path),
 				guid,
 				relay.guid,
+				false,
 			);
 
 			// create remote folder
