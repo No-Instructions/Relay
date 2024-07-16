@@ -33,8 +33,11 @@ export class Observable<T> {
 		}
 	}
 
-	on(listener: () => void): void {
+	on(listener: () => void): Unsubscriber {
 		this._listeners.add(listener);
+		return () => {
+			this.off(listener);
+		};
 	}
 
 	subscribe(run: Subscriber<T>): Unsubscriber {
