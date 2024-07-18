@@ -3,7 +3,6 @@
 import { App, PluginSettingTab } from "obsidian";
 import Live from "src/main";
 import PluginSettings from "src/components/PluginSettings.svelte";
-import store from "src/Store";
 
 export class LiveSettingsTab extends PluginSettingTab {
 	plugin: Live;
@@ -17,7 +16,6 @@ export class LiveSettingsTab extends PluginSettingTab {
 		const { containerEl } = this;
 		this.targetEl = containerEl.parentElement as HTMLElement;
 		this.targetEl.empty();
-		store.plugin.set(this.plugin);
 		this.plugin.relayManager.update();
 		this.component = new PluginSettings({
 			target: this.targetEl,

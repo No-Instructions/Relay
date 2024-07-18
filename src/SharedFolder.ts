@@ -15,7 +15,7 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import moment from "moment";
 import { SharedPromise } from "./promiseUtils";
 import { S3Folder, S3RemoteFolder } from "./S3RN";
-import type { Relay, RemoteSharedFolder } from "./Relay";
+import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
 import { curryLog } from "./debug";
@@ -305,10 +305,7 @@ export class SharedFolder extends HasProvider {
 			diffLog?.push(`creating directory ${dir}`);
 		}
 
-		// Recieve content, then flush to disk
-		const file = this.vault.getAbstractFileByPath(
-			normalizePath(this.getPath(path))
-		);
+		// Receive content, then flush to disk
 		const start = moment.now();
 		await doc.whenReady();
 		const end = moment.now();

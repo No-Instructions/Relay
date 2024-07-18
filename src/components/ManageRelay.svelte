@@ -7,20 +7,18 @@
 	} from "../Relay";
 	import { RelayAuto } from "../RelayManager";
 	import SettingItem from "./SettingItem.svelte";
-	import store from "../Store";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import Folder from "./Folder.svelte";
 	import { Notice, debounce, normalizePath } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
-	import { derived, writable } from "svelte/store";
+	import { writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
-	import path, { join } from "path-browserify";
+	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
-	import { Filter } from "lucide-svelte";
 
 	export let relay: RelayAuto;
 	const remoteFolders = relay.folders;
@@ -43,13 +41,6 @@
 	}
 
 	let folder: SharedFolder | undefined;
-	//let roles = derived(relayRoles, ($relayRoles) => {
-	//	const newRoles = $relayRoles
-	//		.filter((role: RelayRole) => role.relay?.id === relay.id)
-	//		.values()
-	//		.sort(userSort);
-	//	return newRoles;
-	//});
 	const roles = $relayRoles.filter(
 		(role: RelayRole) => role.relay?.id === relay.id,
 	);

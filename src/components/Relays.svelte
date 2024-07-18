@@ -3,10 +3,9 @@
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
-	import { type Relay, type RelayUser, type RelayRole } from "../Relay";
-	import store from "../Store";
+	import { type Relay, type RelayRole } from "../Relay";
 	import type Live from "src/main";
-	import { Satellite, Folder, Settings, ArrowRightLeft } from "lucide-svelte";
+	import { Satellite } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { derived } from "svelte/store";
 	import type { SharedFolder } from "src/SharedFolder";
@@ -16,15 +15,6 @@
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
 	export let relayRoles: ObservableMap<string, RelayRole>;
-
-	let loginManager = plugin.loginManager;
-	const user = derived(loginManager, ($loginManager) => {
-		const lm = $loginManager;
-		return lm.user;
-	});
-	store.plugin.subscribe((p) => {
-		plugin = p;
-	});
 
 	const sharedFolders = plugin.sharedFolders;
 

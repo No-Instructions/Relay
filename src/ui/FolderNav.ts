@@ -154,7 +154,6 @@ class PillDecoration {
 
 		this.pill = new Pill({
 			target: this.el,
-			//anchor: sibling,
 			props: {
 				status: this.sharedFolder.state.status,
 				remote: this.sharedFolder.remote,

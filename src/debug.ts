@@ -21,7 +21,10 @@ function toastProd(error: Error): Error {
 	return error;
 }
 
-export function curryLog(initialText: string, fn: Function) {
+export function curryLog(
+	initialText: string,
+	fn: (...args: unknown[]) => void
+) {
 	if (debugging) {
 		return (...args: unknown[]) => fn(initialText, ": ", ...args);
 	}

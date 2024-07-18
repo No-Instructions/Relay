@@ -7,7 +7,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
-import { S3RemoteDocument, S3RN, type S3RNType, S3RemoteFolder } from "./S3RN";
+import { S3RN, type S3RNType } from "./S3RN";
 import { Platform } from "obsidian";
 
 export type ConnectionStatus =
