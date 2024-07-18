@@ -1,6 +1,6 @@
 "use strict";
 import * as Y from "yjs";
-import { TFolder, debounce, normalizePath } from "obsidian";
+import { TAbstractFile, TFolder, debounce, normalizePath } from "obsidian";
 import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
@@ -25,6 +25,40 @@ export interface SharedFolderSettings {
 	path: string;
 	relay?: string;
 }
+
+interface Operation {
+	op: "create" | "rename" | "delete" | "noop";
+	path: string;
+	promise: Promise<void> | Promise<Document>;
+}
+
+interface Create extends Operation {
+	op: "create";
+	path: string;
+	promise: Promise<Document>;
+}
+
+interface Rename extends Operation {
+	op: "rename";
+	path: string;
+	from: string;
+	to: string;
+	promise: Promise<void>;
+}
+
+interface Delete extends Operation {
+	op: "delete";
+	path: string;
+	promise: Promise<void>;
+}
+
+interface Noop extends Operation {
+	op: "noop";
+	path: string;
+	promise: Promise<void>;
+}
+
+type OperationType = Create | Rename | Delete | Noop;
 
 class Documents extends ObservableSet<Document> {
 	// Startup performance optimization
@@ -153,7 +187,7 @@ export class SharedFolder extends HasProvider {
 					return;
 				}
 				this.log("file tree", this._debugFileTree());
-				this.syncFileTree(doc, update);
+				await this.syncFileTree(doc);
 			}
 		);
 	}
@@ -262,33 +296,21 @@ export class SharedFolder extends HasProvider {
 	async _handleServerRename(
 		doc: Document,
 		path: string,
+		file: TAbstractFile,
 		diffLog?: string[]
-	): Promise<string | null> {
+	): Promise<void> {
 		// take a doc and it's new path.
-		const oldPath = this.getPath(doc.path);
-		diffLog?.push(`${oldPath} was renamed to ${path}`);
-		const file = this.vault.getAbstractFileByPath(oldPath);
-		if (file) {
-			const dir = dirname(path);
-			if (!this.existsSync(dir)) {
-				await this.mkdir(dir);
-				diffLog?.push(`creating directory ${dir}`);
-			}
-			try {
-				await this.fileManager.renameFile(
-					file,
-					normalizePath(this.getPath(path))
-				);
-			} catch (e) {
-				this.log("Error renaming file, creating instead", e);
-				this._handleServerCreate(path, diffLog);
-			}
-			doc.move(path);
-			return oldPath;
-		} else {
-			this._handleServerCreate(path, diffLog);
+		diffLog?.push(`${file.path} was renamed to ${path}`);
+		const dir = dirname(path);
+		if (!this.existsSync(dir)) {
+			await this.mkdir(dir);
+			diffLog?.push(`creating directory ${dir}`);
 		}
-		return null;
+		this.fileManager
+			.renameFile(file, normalizePath(this.getPath(path)))
+			.then(() => {
+				doc.move(path);
+			});
 	}
 
 	async _handleServerCreate(
@@ -321,76 +343,109 @@ export class SharedFolder extends HasProvider {
 		return doc;
 	}
 
-	syncFileTree(doc: Doc, update: Uint8Array) {
-		const creates: Document[] = [];
-		const renames: string[] = [];
-		const deletes: string[] = [];
-		const map = doc.getMap<string>("docs");
+	private _assertNamespacing(path: string) {
+		// Check if the path is valid (inside of shared folder), otherwise delete
+		try {
+			this.assertPath(this.path + path);
+		} catch {
+			console.warn(
+				"Deleting doc (somehow moved outside of shared folder)",
+				path
+			);
+			this.ids.delete(path);
+			return;
+		}
+	}
 
-		const diffLog: string[] = [];
+	private applyRemoteState(
+		guid: string,
+		path: string,
+		remoteIds: Set<string>,
+		diffLog: string[]
+	): OperationType {
+		const doc = this.docs.get(guid);
+		if (this.existsSync(path)) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
 
-		// Apply Updates for shared docs
-		this.ydoc.transact(() => {
-			map.forEach(async (guid, path) => {
-				// Check if the path is valid (inside of shared folder), otherwise delete
-				try {
-					this.assertPath(this.path + path);
-				} catch {
-					console.warn(
-						"Deleting doc (somehow moved outside of shared folder)",
-						path
-					);
-					this.ids.delete(path);
-					return;
-				}
-
-				const doc = this.docs.get(guid);
-				if (this.existsSync(path)) {
-					return;
-				}
-
-				const inIds: boolean = Array.from(this.ids.values()).includes(
-					guid
+		if (remoteIds.has(guid) && doc) {
+			const oldPath = this.getPath(doc.path);
+			const file = this.vault.getAbstractFileByPath(oldPath);
+			if (file) {
+				const promise = this._handleServerRename(
+					doc,
+					path,
+					file,
+					diffLog
 				);
-				if (inIds && doc) {
-					const renamed = await this._handleServerRename(
-						doc,
-						path,
-						diffLog
-					);
-					if (renamed) {
-						renames.push(renamed);
-					}
-				} else {
-					// write will trigger `create` which will read the file from disk by default.
-					// so we need to pre-empt that by loading the file into docs.
-					const created = await this._handleServerCreate(
-						path,
-						diffLog
-					);
-					creates.push(created);
-				}
-			});
-		}, this);
+				return {
+					op: "rename",
+					path: path,
+					from: oldPath,
+					to: path,
+					promise,
+				};
+			}
+		}
 
+		// write will trigger `create` which will read the file from disk by default.
+		// so we need to pre-empt that by loading the file into docs.
+		const promise = this._handleServerCreate(path, diffLog);
+		return { op: "create", path, promise };
+	}
+
+	private cleanupExtraLocalFiles(
+		remotePaths: string[],
+		diffLog: string[]
+	): Delete[] {
 		// Delete files that are no longer shared
 		const files = this.vault.getFiles();
+		const deletes: Delete[] = [];
 		files.forEach((file) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const fileInFolder = this.checkPath(file.path);
-			const wasRenamed = renames.contains(file.path);
-			const fileInMap = map.has(file.path.slice(this.path.length));
+			const fileInMap = remotePaths.contains(
+				file.path.slice(this.path.length)
+			);
 			const synced = this._provider?.synced && this._persistence?.synced;
-			if (fileInFolder && !fileInMap && !wasRenamed) {
+			if (fileInFolder && !fileInMap) {
 				if (synced) {
 					diffLog.push(
 						`deleted local file ${file.path} for remotely deleted doc`
 					);
-					this.vault.adapter.trashLocal(file.path);
-					deletes.push(file.path);
+					const promise = this.vault.adapter.trashLocal(file.path);
+					deletes.push({ op: "delete", path: file.path, promise });
 				}
 			}
 		});
+		return deletes;
+	}
+
+	async syncFileTree(doc: Doc) {
+		const ops: Operation[] = [];
+		const map = doc.getMap<string>("docs");
+		const diffLog: string[] = [];
+
+		this.ydoc.transact(() => {
+			map.forEach((_, path) => {
+				this._assertNamespacing(path);
+			});
+			const remoteIds = new Set(this.ids.values());
+			map.forEach((guid, path) => {
+				this._assertNamespacing(path);
+				ops.push(this.applyRemoteState(guid, path, remoteIds, diffLog));
+			});
+		});
+
+		const creates = ops.filter((op) => op.op === "create");
+		const renames = ops.filter((op) => op.op === "rename");
+		const remotePaths = ops.map((op) => op.path);
+
+		// Ensure these complete before checking for deletions
+		await Promise.all([...creates, ...renames].map((op) => op.promise));
+
+		const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
+
 		if ([...renames, ...creates, ...deletes].length > 0) {
 			this.docset.update();
 		}
