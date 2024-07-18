@@ -134,6 +134,8 @@ export default class Live extends Plugin {
 				});
 				this.networkStatus.addEventListener("online", () => {
 					this.tokenStore.start();
+					this.relayManager.subscribe();
+					this.relayManager.update();
 					this._liveViews.goOnline();
 				});
 				this.networkStatus.start();
