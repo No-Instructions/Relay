@@ -197,7 +197,7 @@ export class SharedFolder extends HasProvider {
 		this.notifyListeners();
 	}
 
-	private get ready(): boolean {
+	public get ready(): boolean {
 		const persistenceSynced = this._persistence.synced;
 		const serverSynced = this.synced && this.connected;
 		return persistenceSynced && (!this._awaitingUpdates || serverSynced);
@@ -670,10 +670,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		return super.delete(item);
 	}
 
-	update() {
-		this.notifyListeners();
-		return;
-	}
+	update = debounce(this.notifyListeners, 100);
 
 	lookup(path: string): SharedFolder | null {
 		// Return the shared folder that contains the file -- agnostic of whether the file actually exists
@@ -723,19 +720,19 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 						folder.remote = remote;
 					});
 					if (updated) {
-						this.notifyListeners();
+						this.update();
 					}
 				}
 			);
 		}
 	}
 
-	async new(
+	async _new(
 		path: string,
 		guid: string,
 		relayId?: string,
 		awaitingUpdates?: boolean
-	) {
+	): Promise<SharedFolder> {
 		const existing = this.find(
 			(folder) => folder.path == path && folder.guid == guid
 		);
@@ -760,7 +757,18 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			relayId,
 			awaitingUpdates
 		);
-		this.add(folder);
+		this._set.add(folder);
+		return folder;
+	}
+
+	async new(
+		path: string,
+		guid: string,
+		relayId?: string,
+		awaitingUpdates?: boolean
+	) {
+		const folder = await this._new(path, guid, relayId, awaitingUpdates);
+		this.notifyListeners();
 		return folder;
 	}
 }

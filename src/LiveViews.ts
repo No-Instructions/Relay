@@ -236,6 +236,7 @@ export class LiveViewManager {
 	private _compartment: Compartment;
 	private loginManager: LoginManager;
 	private offListeners: (() => void)[] = [];
+	private folderListeners: Map<SharedFolder, () => void> = new Map();
 	sharedFolders: SharedFolders;
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
@@ -258,42 +259,46 @@ export class LiveViewManager {
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
 
-		this.foldersReady().then((folders) => {
-			this.views = this.getViews();
-			this.refresh("[Constructor]");
-		});
-
 		this.offListeners.push(
 			this.loginManager.on(() => {
 				this.refresh("[LoginManager]");
 			})
 		);
 
-		this.sharedFolders.forEach((folder) => {
-			this.offListeners.push(
-				folder.docset.on(() => {
-					this.refresh("[Docset]");
-				})
-			);
-		});
+		const folderSub = (folder: SharedFolder) => {
+			if (!folder.ready) {
+				folder
+					.whenReady()
+					.then(() => {
+						this.refresh("[Shared Folder Ready]");
+					})
+					.catch((_) => {
+						this.views.forEach((view) => {
+							if (view.document?.sharedFolder === folder) {
+								(view as LiveView).offlineBanner();
+							}
+						});
+					});
+			}
+
+			return folder.docset.on(() => {
+				this.refresh("[Docset]");
+			});
+		};
 
 		this.offListeners.push(
 			this.sharedFolders.on(() => {
 				this.refresh("[Shared Folders]");
-
+				this.folderListeners.forEach((off, folder) => {
+					if (!this.sharedFolders.has(folder)) {
+						off();
+						this.folderListeners.delete(folder);
+					}
+				});
 				this.sharedFolders.forEach((folder) => {
-					folder
-						.whenReady()
-						.then(() => {
-							this.refresh("[Shared Folder Ready]");
-						})
-						.catch((_) => {
-							this.views.forEach((view) => {
-								if (view.document?.sharedFolder === folder) {
-									(view as LiveView).offlineBanner();
-								}
-							});
-						});
+					if (!this.folderListeners.has(folder)) {
+						this.folderListeners.set(folder, folderSub(folder));
+					}
 				});
 			})
 		);
@@ -356,7 +361,7 @@ export class LiveViewManager {
 		}
 
 		const readyFolders = [...folders].map((folder) => folder.whenReady());
-		return await Promise.all(readyFolders);
+		return Promise.all(readyFolders);
 	}
 
 	private getViews(): S3View[] {
@@ -477,7 +482,7 @@ export class LiveViewManager {
 		queuedAt: moment.Moment
 	): Promise<boolean> {
 		const ctx = `[LiveViews][${context}]`;
-		const log = curryLog(ctx, console.log);
+		const log = curryLog(ctx, console.warn);
 		log("Refresh");
 
 		await this.foldersReady();
@@ -495,12 +500,9 @@ export class LiveViewManager {
 		const activeDocumentFolders = this.findFolders();
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
-				console.warn(
-					"[System 3][Relay][Live Views] unexpected plugins loaded"
-				);
+				log("Unexpected plugins loaded.");
 				this.wipe();
 			}
-			log("no live views open");
 			log("Releasing Views", this.views);
 			this.releaseViews(this.views);
 			this.views = [];
@@ -543,6 +545,7 @@ export class LiveViewManager {
 	}
 
 	async refresh(context: string, timeout = 3000) {
+		const log = curryLog(context, console.warn);
 		const queuedAt = moment.utc();
 		this.refreshQueue.push(() => {
 			return this._refreshViews(context, queuedAt);
@@ -552,6 +555,7 @@ export class LiveViewManager {
 		}
 		while (this.refreshQueue.length > 0) {
 			if (this.refreshQueue.length > 2) {
+				log("refreshQueue size:", this.refreshQueue.length);
 				this.refreshQueue.slice(-2);
 			}
 			if (Platform.isIosApp) {
@@ -602,6 +606,9 @@ export class LiveViewManager {
 	public destroy() {
 		this.releaseViews(this.views);
 		this.offListeners.forEach((off) => off());
+		this.offListeners.length = 0;
+		this.folderListeners.forEach((off) => off());
+		this.folderListeners.clear();
 		this.wipe();
 	}
 }

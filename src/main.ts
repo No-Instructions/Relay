@@ -56,23 +56,8 @@ export default class Live extends Plugin {
 
 	async onload() {
 		console.debug("[System 3][Relay] Loading Plugin");
-		this.log = curryLog("[System 3][Relay]", console.log);
 		await this.loadSettings();
-		this.vault = new VaultFacade(this.app);
-		this.loginManager = new LoginManager(this.openSettings.bind(this));
-		this.fileManager = new FileManagerFacade(this.app);
-		const vaultName = this.vault.getName();
-		this.timeProvider = new DefaultTimeProvider();
-		this.register(() => {
-			this.timeProvider.destroy();
-		});
-		this.tokenStore = new LiveTokenStore(
-			this.loginManager,
-			this.timeProvider,
-			vaultName,
-			3
-		);
-		this.networkStatus = new NetworkStatus(HEALTH_URL);
+
 		if (this.settings.debugging) {
 			setDebugging(this.settings.debugging);
 			this.addCommand({
@@ -82,10 +67,15 @@ export default class Live extends Plugin {
 				callback: () => this.app.emulateMobile(!Platform.isMobile),
 			});
 		}
+		this.log = curryLog("[System 3][Relay]", console.log);
 
-		if (!this.loginManager.setup()) {
-			new Notice("Please sign in to use Relay");
-		}
+		this.vault = new VaultFacade(this.app);
+		const vaultName = this.vault.getName();
+		this.fileManager = new FileManagerFacade(this.app);
+		this.timeProvider = new DefaultTimeProvider();
+		this.register(() => {
+			this.timeProvider.destroy();
+		});
 
 		this.relayManager = new RelayManager();
 		this.sharedFolders = new SharedFolders(
@@ -93,8 +83,23 @@ export default class Live extends Plugin {
 			this._createSharedFolder.bind(this)
 		);
 
-		this.app.workspace.onLayoutReady(() => {
-			this.loadSharedFolders(this.settings.sharedFolders);
+		this.loginManager = new LoginManager(this.openSettings.bind(this));
+
+		this.tokenStore = new LiveTokenStore(
+			this.loginManager,
+			this.timeProvider,
+			vaultName,
+			3
+		);
+
+		this.networkStatus = new NetworkStatus(HEALTH_URL);
+
+		if (!this.loginManager.setup()) {
+			new Notice("Please sign in to use Relay");
+		}
+
+		this.app.workspace.onLayoutReady(async () => {
+			await this.loadSharedFolders(this.settings.sharedFolders);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
@@ -136,13 +141,14 @@ export default class Live extends Plugin {
 
 			this.setup();
 			this.settingsFileLocked = false;
-			this.saveSettings();
 		});
 	}
 
 	private loadSharedFolders(sharedFolderSettings: SharedFolderSettings[]) {
+		this.log("Loading shared folders");
 		const beforeLock = this.settingsFileLocked;
 		this.settingsFileLocked = true;
+		let updated = false;
 		sharedFolderSettings.forEach(
 			(sharedFolderSetting: SharedFolderSettings) => {
 				const tFolder = this.vault.getFolderByPath(
@@ -154,11 +160,12 @@ export default class Live extends Plugin {
 					);
 					return;
 				}
-				this.sharedFolders.new(
+				this.sharedFolders._new(
 					sharedFolderSetting.path,
 					sharedFolderSetting.guid,
 					sharedFolderSetting?.relay
 				);
+				updated = true;
 			}
 		);
 		if (!this._offSaveSettings) {
@@ -167,6 +174,9 @@ export default class Live extends Plugin {
 			});
 		}
 		this.settingsFileLocked = beforeLock;
+		if (updated) {
+			this.sharedFolders.notifyListeners();
+		}
 	}
 
 	private async _createSharedFolder(
@@ -364,10 +374,12 @@ export default class Live extends Plugin {
 	onunload() {
 		console.debug("[System 3][Relay]: Unloading Plugin");
 		// We want to unload the visual components but not the data
+		this.settingsFileLocked = true;
+
 		if (this._offSaveSettings) {
 			this._offSaveSettings();
-			this.sharedFolders.destroy();
 		}
+		this.sharedFolders.destroy();
 
 		this.folderNavDecorations?.destroy();
 
@@ -395,6 +407,8 @@ export default class Live extends Plugin {
 			this.settings.sharedFolders = this.sharedFolders.toSettings();
 			this.log("Saving settings", this.settings);
 			await this.saveData(this.settings);
+		} else {
+			this.log("Saving settings: settings file locked");
 		}
 	}
 }
