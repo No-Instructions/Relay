@@ -1,11 +1,17 @@
-<script>
+<script lang="ts">
 	import { Settings } from "lucide-svelte";
 	import { createEventDispatcher } from "svelte";
 
 	const dispatch = createEventDispatcher();
 
-	function handleSettingsClick() {
-		dispatch("settings");
+	function handleSettingsClick(event: KeyboardEvent | MouseEvent) {
+		if (
+			event instanceof MouseEvent ||
+			(event instanceof KeyboardEvent &&
+				(event.key === "Enter" || event.key === " "))
+		) {
+			dispatch("settings");
+		}
 	}
 </script>
 
