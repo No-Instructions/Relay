@@ -49,7 +49,6 @@
 					folderName,
 					$folderLocation || "",
 				).catch((e) => {
-					console.error(e);
 					error = e.message;
 				});
 			})}>Confirm</button

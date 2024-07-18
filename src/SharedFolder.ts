@@ -794,13 +794,13 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		const sameGuid = this.find((folder) => folder.guid == guid);
 		if (sameGuid) {
 			throw new Error(
-				`This relay is already mounted at ${sameGuid.path}.`
+				`This folder is already mounted at ${sameGuid.path}.`
 			);
 		}
 		const samePath = this.find((folder) => folder.path == path);
 		if (samePath) {
 			throw new Error(
-				"A different relay is already mounted at this path."
+				"Conflict with an existing tracked folder at this location."
 			);
 		}
 		const folder = await this.folderBuilder(
