@@ -76,14 +76,14 @@
 	}
 </script>
 
-<SettingItemHeading name="Join a Relay" description=""></SettingItemHeading>
+<SettingItemHeading name="Join a relay" description=""></SettingItemHeading>
 <SettingItem
-	name="Share Key"
-	description="Enter the code that was shared with you"
+	name="Share key"
+	description="Enter the code that was shared with you."
 >
 	<input
 		type="text"
-		placeholder="Enter Share Key"
+		placeholder="Enter share key"
 		bind:value={shareKey}
 		on:input={handleShareKeyInput}
 		class={invalidShareKey ? "system3-input-invalid" : ""}
@@ -91,7 +91,7 @@
 	<button
 		class="mod-cta"
 		on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
-		>Join Relay</button
+		>Join relay</button
 	>
 </SettingItem>
 
@@ -110,11 +110,11 @@
 {/each}
 <SettingItem name="" description="">
 	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}
-		>New Relay</button
+		>New relay</button
 	>
 </SettingItem>
 
-<SettingItemHeading name="Shared Folders"></SettingItemHeading>
+<SettingItemHeading name="Shared folders"></SettingItemHeading>
 {#each $sharedFolders.items() as folder}
 	<SettingItem description="">
 		<SharedFolderSpan {folder} slot="name" />

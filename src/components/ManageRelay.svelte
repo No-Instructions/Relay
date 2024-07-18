@@ -200,7 +200,7 @@
 
 <h3>{relay.name}</h3>
 {#if relay.owner}
-	<SettingItem name="Relay Name" description="Set the Relay Name">
+	<SettingItem name="Relay name" description="Set the relay name.">
 		<input
 			type="text"
 			spellcheck="false"
@@ -214,7 +214,7 @@
 	</SettingItem>
 {/if}
 
-<SettingItemHeading name="Shared Folders"></SettingItemHeading>
+<SettingItemHeading name="Shared folders"></SettingItemHeading>
 {#each $remoteFolders.values() as remote}
 	{#if $sharedFolders.find((local) => local.remote === remote)}
 		<SettingItem description=""
@@ -235,7 +235,7 @@
 			<Folder folder={remote} slot="name" />
 			<button
 				class="mod-cta"
-				aria-label="Add Shared Folder to Vault"
+				aria-label="Add shared folder to vault"
 				on:click={debounce(() => {
 					showAddToVaultModal(remote);
 				})}
@@ -249,7 +249,7 @@
 <SettingItem description="" name="">
 	<button
 		class="mod-cta"
-		aria-label="Select a folder to add to the Relay"
+		aria-label="Select a folder to add to the relay"
 		on:click={debounce(() => {
 			folderSelect.open();
 		})}>Add</button
@@ -286,8 +286,8 @@
 <SettingItemHeading name="Sharing"></SettingItemHeading>
 
 <SettingItem
-	name="Share Key"
-	description="Share this key with your collaborators"
+	name="Share key"
+	description="Share this key with your collaborators."
 >
 	<input
 		value={relay_invitation_key}
@@ -313,7 +313,7 @@
 
 	<SettingItemHeading name="Storage" description=""></SettingItemHeading>
 	<SettingItem
-		name="Destroy Relay"
+		name="Destroy relay"
 		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
 	>
 		<button class="mod-warning" on:click={debounce(handleDestroy)}>
@@ -323,8 +323,8 @@
 {:else}
 	<SettingItemHeading name="Membership" description=""></SettingItemHeading>
 	<SettingItem
-		name="Leave Relay"
-		description="Leave the Relay. Local data is preserved."
+		name="Leave relay"
+		description="Leave the relay. Local data is preserved."
 	>
 		<button
 			class="mod-warning"

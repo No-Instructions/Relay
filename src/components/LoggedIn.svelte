@@ -28,8 +28,8 @@
 {#if $lm.hasUser}
 	<SettingItemHeading name="Account" />
 	<SettingItem
-		name="Your Account"
-		description="You are currently logged in as: {$lm.user?.name}"
+		name="Your account"
+		description="You are currently logged in as: {$lm.user?.name}."
 	>
 		<button on:click={logout}>Logout</button>
 	</SettingItem>

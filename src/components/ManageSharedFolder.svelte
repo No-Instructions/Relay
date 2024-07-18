@@ -68,9 +68,9 @@
 </script>
 
 <h3><Folder folder={sharedFolder} /></h3>
-<SettingItemHeading name="Local Folder"></SettingItemHeading>
+<SettingItemHeading name="Local folder"></SettingItemHeading>
 <SettingItem
-	name="Delete from Vault"
+	name="Delete from vault"
 	description="Delete the local Shared Folder and all of its contents."
 >
 	<button
@@ -79,12 +79,12 @@
 			handleDeleteLocal();
 		})}
 	>
-		Delete Local
+		Delete local
 	</button>
 </SettingItem>
 
 <SettingItem
-	name="Delete Metadata"
+	name="Delete metadata"
 	description="Deletes edit history and disables change tracking."
 >
 	<button
@@ -95,7 +95,7 @@
 			handleDeleteMetadata();
 		})}
 	>
-		Delete Metadata
+		Delete metadata
 	</button>
 </SettingItem>
 
@@ -103,14 +103,14 @@
 	{#if $relayStore?.owner || $folderStore?.remote?.creator?.id === plugin.relayManager.user?.id}
 		<SettingItemHeading name="Remote Folder"></SettingItemHeading>
 		<SettingItem
-			name="Remove from Relay"
-			description={`Deletes the remote folder from the Relay. Local files will be preserved.`}
+			name="Remove from relay"
+			description={`Deletes the remote folder from the relay. Local files will be preserved.`}
 		>
 			<button
 				class="mod-destructive"
 				on:click={debounce(handleDeleteRemote)}
 			>
-				Delete Remote
+				Delete remote
 			</button>
 		</SettingItem>
 	{/if}
