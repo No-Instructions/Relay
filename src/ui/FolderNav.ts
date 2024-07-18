@@ -373,7 +373,6 @@ export class FolderNavigationDecorations {
 	showDocumentStatus: boolean;
 	offFolderListener: () => void;
 	offDocumentListeners: Map<SharedFolder, () => void>;
-	pills: Map<HTMLElement, Pill>;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 
 	constructor(
@@ -383,7 +382,6 @@ export class FolderNavigationDecorations {
 		showDocumentStatus = false
 	) {
 		this.vault = vault;
-		this.pills = new Map<HTMLElement, Pill>();
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 		this.showDocumentStatus = showDocumentStatus;
