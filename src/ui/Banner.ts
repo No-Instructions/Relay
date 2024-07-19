@@ -37,7 +37,9 @@ export class Banner {
 		if (!banner) {
 			banner = document.createElement("div");
 			banner.classList.add("banner");
-			banner.innerHTML = `<span>${this.text}</span>`;
+			const span = banner.createSpan();
+			span.setText(this.text);
+			banner.appendChild(span);
 			bannerBox.appendChild(banner);
 			const onClick = async () => {
 				const destroy = await this.onClick();
@@ -57,7 +59,7 @@ export class Banner {
 		}
 		const bannerBox = leafContentEl.querySelector(".bannerBox");
 		if (bannerBox) {
-			bannerBox.innerHTML = "";
+			bannerBox.replaceChildren();
 		}
 		return true;
 	}
