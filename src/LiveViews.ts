@@ -170,6 +170,7 @@ export class LiveView implements S3View {
 					anchor: viewActionsElement.firstChild as Element,
 					props: {
 						view: this,
+						document: this.document,
 						state: this.document.state,
 					},
 				});
@@ -178,6 +179,7 @@ export class LiveView implements S3View {
 					(state: ConnectionState) => {
 						this._connectionStatusIcon?.$set({
 							view: this,
+							document: this.document,
 							state: state,
 						});
 					}
@@ -185,6 +187,7 @@ export class LiveView implements S3View {
 			}
 			this._connectionStatusIcon.$set({
 				view: this,
+				document: this.document,
 				state: this.document.state,
 			});
 		}

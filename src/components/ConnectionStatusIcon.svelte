@@ -1,10 +1,18 @@
 <script lang="ts">
 	import { LiveView } from "../LiveViews";
 	import type { ConnectionState, ConnectionStatus } from "../HasProvider";
-
-	export let state: ConnectionState;
+	import type { Document } from "src/Document";
+	import type { RemoteSharedFolder } from "src/Relay";
+	import { Layers, Satellite } from "lucide-svelte";
 
 	export let view: LiveView;
+	export let document: Document;
+	export let state: ConnectionState;
+	let remote: RemoteSharedFolder;
+
+	if (document?.sharedFolder?.remote) {
+		remote = document.sharedFolder.remote;
+	}
 
 	const ariaLabels: Record<ConnectionStatus, string> = {
 		connected: "connected: click to go offline",
@@ -24,26 +32,44 @@
 	};
 </script>
 
-<span
-	class="connection-status-icon"
-	aria-label={ariaLabels[state.status]}
-	role="button"
-	tabindex="0"
-	data-filename={view.view.file?.name}
-	on:click={handleClick}
-	on:keypress={handleKeyPress}
->
-	<span class={"connection-status-icon-" + state.status}>●</span>
-</span>
+{#if remote}
+	<button
+		class="hidden notebook clickable-icon view-action"
+		aria-label="Tracking Changes"
+		tabindex="0"
+		data-filename={view.view.file?.name}
+	>
+		<Layers class="svg-icon inline-icon" />
+	</button>
+	<button
+		class="system3-{state.status} clickable-icon view-action"
+		aria-label={`${remote.relay.name} (${state.status})`}
+		tabindex="0"
+		on:click={handleClick}
+		on:keypress={handleKeyPress}
+	>
+		<Satellite class="svg-icon inline-icon" />
+	</button>
+{:else}
+	<button
+		class="notebook clickable-icon view-action"
+		aria-label="Tracking Changes"
+		tabindex="0"
+		data-filename={view.view.file?.name}
+	>
+		<Layers class="svg-icon inline-icon" />
+	</button>
+{/if}
 
 <style>
-	.connection-status-icon span.unknown {
-		color: grey;
+	button.system3-connected {
+		color: var(--color-accent);
 	}
-	.connection-status-icon span.connected {
-		color: green;
+	button.system3-disconnected {
+		color: var(--color-base-40);
 	}
-	.connection-status-icon span.disconnected {
-		color: red;
+	button.notebook {
+		color: var(--color-base-30);
+		background-color: transparent;
 	}
 </style>
