@@ -30,10 +30,6 @@ export class LiveSettingsTab extends PluginSettingTab {
 	}
 
 	hide(): void {
-		try {
-			this.component?.$destroy();
-		} catch (e) {
-			console.error(e);
-		}
+		this.component?.$destroy();
 	}
 }

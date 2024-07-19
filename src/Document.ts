@@ -16,9 +16,10 @@ export class Document extends HasProvider {
 	path: string;
 
 	setLoggers(context: string) {
-		this.debug = curryLog(context, console.debug);
-		this.log = curryLog(context, console.log);
-		this.warn = curryLog(context, console.warn);
+		this.debug = curryLog(context, "debug");
+		this.log = curryLog(context, "log");
+		this.warn = curryLog(context, "warn");
+		this.error = curryLog(context, "error");
 	}
 
 	constructor(

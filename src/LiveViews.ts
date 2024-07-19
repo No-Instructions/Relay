@@ -241,6 +241,8 @@ export class LiveViewManager {
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
 	refreshQueue: (() => Promise<boolean>)[];
+	log: (message: string, ...args: unknown[]) => void;
+	warn: (message: string, ...args: unknown[]) => void;
 
 	constructor(
 		workspace: WorkspaceFacade,
@@ -258,6 +260,9 @@ export class LiveViewManager {
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
+
+		this.log = curryLog("[LiveViews]", "log");
+		this.warn = curryLog("[LiveViews]", "warn");
 
 		this.offListeners.push(
 			this.loginManager.on(() => {
@@ -305,13 +310,13 @@ export class LiveViewManager {
 	}
 
 	goOffline() {
-		console.debug("[System 3][Relay][Live Views] going offline");
+		this.log("[System 3][Relay][Live Views] going offline");
 		this.views.forEach((view) => view.document?.disconnect());
 		this.refresh("[NetworkStatus]");
 	}
 
 	goOnline() {
-		console.debug("[System 3][Relay][Live Views] going online");
+		this.log("[System 3][Relay][Live Views] going online");
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
 			folder.connect();
 		});
@@ -434,7 +439,7 @@ export class LiveViewManager {
 		}
 
 		if (attemptedConnections > backgroundConnections) {
-			console.warn(
+			this.warn(
 				`[System 3][Relay][Live Views] connection pool (max ${backgroundConnections}): rejected connections for ${
 					attemptedConnections - backgroundConnections
 				} views`
@@ -482,7 +487,7 @@ export class LiveViewManager {
 		queuedAt: moment.Moment
 	): Promise<boolean> {
 		const ctx = `[LiveViews][${context}]`;
-		const log = curryLog(ctx, console.warn);
+		const log = curryLog(ctx, "warn");
 		log("Refresh");
 
 		await this.foldersReady();
@@ -491,10 +496,7 @@ export class LiveViewManager {
 		try {
 			views = this.getViews();
 		} catch (e) {
-			console.warn(
-				"[System 3][Relay][Live Views] error getting views",
-				e
-			);
+			this.warn("[System 3][Relay][Live Views] error getting views", e);
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();
@@ -545,7 +547,7 @@ export class LiveViewManager {
 	}
 
 	async refresh(context: string, timeout = 3000) {
-		const log = curryLog(context, console.warn);
+		const log = curryLog(context, "warn");
 		const queuedAt = moment.utc();
 		this.refreshQueue.push(() => {
 			return this._refreshViews(context, queuedAt);
@@ -569,7 +571,7 @@ export class LiveViewManager {
 					timeout
 				)
 					.catch((e) => {
-						console.warn(
+						this.warn(
 							`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
 							e
 						);

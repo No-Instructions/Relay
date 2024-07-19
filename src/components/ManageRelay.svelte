@@ -152,7 +152,7 @@
 		navigator.clipboard
 			.writeText(inputEl.value)
 			.then(() => new Notice("Invite Link Copied"))
-			.catch((err) => console.error("Failed to copy text: ", err));
+			.catch((err) => {})
 	}
 
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(

@@ -146,9 +146,10 @@ export class SharedFolder extends HasProvider {
 
 		super(s3rn, tokenStore, loginManager);
 
-		this.log = curryLog("[SharedFolder]", console.log);
-		this.warn = curryLog("[SharedFolder]", console.warn);
-		this.debug = curryLog("[SharedFolder]", console.debug);
+		this.log = curryLog("[SharedFolder]", "log");
+		this.warn = curryLog("[SharedFolder]", "warn");
+		this.debug = curryLog("[SharedFolder]", "debug");
+		this.error = curryLog("[SharedFolder]", "error");
 
 		this.guid = guid;
 		this.fileManager = fileManager;
@@ -348,7 +349,7 @@ export class SharedFolder extends HasProvider {
 		try {
 			this.assertPath(this.path + path);
 		} catch {
-			console.warn(
+			this.error(
 				"Deleting doc (somehow moved outside of shared folder)",
 				path
 			);
@@ -674,7 +675,6 @@ export class SharedFolder extends HasProvider {
 				// moving within shared folder.. move the live doc.
 				const guid = this.ids.get(oldVPath);
 				if (!guid) {
-					console.warn("unexpected missing guid");
 					return;
 				}
 				this.ydoc.transact(() => {
@@ -800,7 +800,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		const samePath = this.find((folder) => folder.path == path);
 		if (samePath) {
 			throw new Error(
-				"Conflict with an existing tracked folder at this location."
+				"Conflict: Tracked folder exists at this location."
 			);
 		}
 		const folder = await this.folderBuilder(

@@ -1,6 +1,7 @@
 "use strict";
 import { requestUrl } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
+import { curryLog } from "./debug"
 
 // Adjusted customFetch function to match PocketBase's expected signature
 export const customFetch = async (
@@ -44,7 +45,7 @@ export const customFetch = async (
 
 		return fetchResponse;
 	} catch (error) {
-		console.error("Error in customFetch:", error);
+		curryLog("[CustomFetch]", "error")("Error in customFetch:", error);
 		throw error;
 	}
 };

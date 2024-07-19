@@ -1,5 +1,7 @@
 "use strict";
 
+import { curryLog } from "./debug"
+
 export function promiseWithTimeout<T>(
 	promise: Promise<T>,
 	ms: number
@@ -10,7 +12,7 @@ export function promiseWithTimeout<T>(
 			try {
 				throw new Error("Timeout");
 			} catch (error) {
-				console.error("timeout on promise", promise);
+				curryLog("[Promise]", "error")("Timeout on promise", promise);
 			}
 			reject("Timeout after " + ms + " ms");
 		}, ms);

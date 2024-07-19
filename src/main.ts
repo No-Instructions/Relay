@@ -51,11 +51,11 @@ export default class Live extends Plugin {
 	settingsTab!: LiveSettingsTab;
 	_extensions!: [];
 	log!: (message: string, ...args: unknown[]) => void;
+	warn!: (message: string, ...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
 	private settingsFileLocked = true;
 
 	async onload() {
-		console.debug("[System 3][Relay] Loading Plugin");
 		await this.loadSettings();
 
 		if (this.settings.debugging) {
@@ -67,7 +67,8 @@ export default class Live extends Plugin {
 				callback: () => this.app.emulateMobile(!Platform.isMobile),
 			});
 		}
-		this.log = curryLog("[System 3][Relay]", console.log);
+		this.log = curryLog("[System 3][Relay]", "log");
+		this.warn = curryLog("[System 3][Relay]", "warn");
 
 		this.vault = new VaultFacade(this.app);
 		const vaultName = this.vault.getName();
@@ -157,7 +158,7 @@ export default class Live extends Plugin {
 					sharedFolderSetting.path
 				);
 				if (!tFolder) {
-					console.warn(
+					this.warn(
 						`[System 3][Relay][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
 					);
 					return;
@@ -232,7 +233,7 @@ export default class Live extends Plugin {
 		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addSettingTab(this.settingsTab);
 
-		const workspaceLog = curryLog("[Live][Workspace]", console.log);
+		const workspaceLog = curryLog("[Live][Workspace]", "log");
 
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
@@ -248,7 +249,7 @@ export default class Live extends Plugin {
 			})
 		);
 
-		const vaultLog = curryLog("[System 3][Relay][Vault]", console.log);
+		const vaultLog = curryLog("[System 3][Relay][Vault]", "log");
 
 		const handleErrorEvent = (event: ErrorEvent) => {
 			const error = event.error;
@@ -374,7 +375,6 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
-		console.debug("[System 3][Relay]: Unloading Plugin");
 		// We want to unload the visual components but not the data
 		this.settingsFileLocked = true;
 

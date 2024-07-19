@@ -1,5 +1,6 @@
 "use strict";
 
+import { curryLog } from "src/debug";
 import type { Unsubscriber, Subscriber } from "svelte/store";
 
 const observables = new Map<Observable<any>, () => void>();
@@ -15,9 +16,10 @@ export class Observable<T> {
 	protected _listeners: Set<Subscriber<T>>;
 
 	constructor() {
+		const warn = curryLog("[Observable]", "warn");
 		observables.set(this, () => {
 			if (this._listeners.size > 0) {
-				console.warn(
+				warn(
 					`Missing tear down of ${this._listeners.size} listeners`,
 					this,
 					this._listeners

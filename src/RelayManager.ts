@@ -409,6 +409,7 @@ class UserCollection implements Collection<UserDAO, UserDAO> {
 class Store {
 	collections: Map<string, Collection<unknown, unknown>>;
 	relationships: Map<string, string[]>;
+	error: (message: string, ...args: unknown[]) => void;
 
 	constructor(collections: Collection<unknown, unknown>[]) {
 		this.collections = new Map();
@@ -416,6 +417,7 @@ class Store {
 		for (const collection of collections) {
 			this.collections.set(collection.collectionName, collection);
 		}
+		this.error = curryLog("[Store]", "error");
 	}
 
 	bruteGetCollection(id: string) {
@@ -458,7 +460,7 @@ class Store {
 		if (collection) {
 			result = collection.ingest(record) as T;
 		} else {
-			console.warn("No collection found for record", record);
+			this.error("No collection found for record", record);
 		}
 		if (result instanceof Auto) {
 			const aggregate_root = result.aggregate_root;
@@ -622,6 +624,8 @@ export class RelayAuto implements Relay {
 	relay: RelayDAO;
 	remoteFolders: ObservableMap<string, RemoteFolder>;
 	user: UserDAO;
+	log: (message: string, ...args: unknown[]) => void;
+	warn: (message: string, ...args: unknown[]) => void;
 
 	constructor(
 		relay: RelayDAO,
@@ -637,6 +641,9 @@ export class RelayAuto implements Relay {
 		this.relay = relay;
 		this.remoteFolders = remoteFolders;
 		this.user = user;
+
+		this.log = curryLog("[RelayAuto]", "log");
+		this.warn = curryLog("[RelayAuto]", "warn");
 	}
 
 	update(update: RelayDAO): RelayAuto {
@@ -674,7 +681,7 @@ export class RelayAuto implements Relay {
 		if (role) {
 			return role;
 		}
-		console.warn("couldn't find role", this.relay.id, this.user, isCreator);
+		this.warn("couldn't find role", this.relay.id, this.user, isCreator);
 		return isCreator ? "Owner" : "Member";
 	}
 
@@ -710,15 +717,17 @@ export class RelayManager {
 	remoteFolders: ObservableMap<string, RemoteFolder>;
 	user?: UserDAO;
 	store?: Store;
-	_log: (message: string, ...args: unknown[]) => void;
+	log: (message: string, ...args: unknown[]) => void;
+	warn: (message: string, ...args: unknown[]) => void;
 	private pb: PocketBase;
 
 	constructor() {
-		this._log = curryLog("[RelayManager]", console.log);
+		this.log = curryLog("[RelayManager]", "log");
+		this.warn = curryLog("[RelayManager]", "warn");
 
 		this.pb = new PocketBase(AUTH_URL);
 		this.pb.beforeSend = (url, options) => {
-			this._log(url, options);
+			this.log(url, options);
 			return { url, options };
 		};
 
@@ -794,10 +803,6 @@ export class RelayManager {
 		]);
 	}
 
-	private log(message: string, ...args: unknown[]) {
-		this._log(message, ...args);
-	}
-
 	setUser() {
 		this.user = this.pb.authStore.model as UserDAO;
 		if (this.user) {
@@ -850,7 +855,6 @@ export class RelayManager {
 			!this.pb.authStore.isValid ||
 			this.pb.authStore.model?.id === undefined
 		) {
-			console.warn("auth store invalid");
 			return;
 		}
 
@@ -931,7 +935,6 @@ export class RelayManager {
 			!this.pb.authStore.isValid ||
 			this.pb.authStore.model?.id === undefined
 		) {
-			console.warn("auth store invalid");
 			return;
 		}
 
@@ -1096,7 +1099,7 @@ export class RelayManager {
 				.collection("relay_roles")
 				.delete(role.id, { fetch: customFetch });
 		} else {
-			console.warn("No role found to leave relay");
+			this.warn("No role found to leave relay");
 		}
 		this.store?.cascade("relay", relay.id);
 	}

@@ -23,10 +23,11 @@ function toastProd(error: Error): Error {
 
 export function curryLog(
 	initialText: string,
-	fn: (...args: unknown[]) => void
+	level: "debug" | "warn" | "log" | "error" = "log"
 ) {
 	if (debugging) {
-		return (...args: unknown[]) => fn(initialText, ": ", ...args);
+		return (...args: unknown[]) =>
+			console[level](initialText, ": ", ...args);
 	}
 	return (...args: unknown[]) => {};
 }
