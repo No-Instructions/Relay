@@ -12,7 +12,7 @@ True **multiplayer mode** for Obsidian. 💃🕺
 
 Relay is a collaborative editing plugin for Obsidian by [System 3 Studio](https://system3.studio). It uses CRDTs to enable snappy, local-first, real-time and asynchronous collaboration. 
 
-[Join our Discord](https://discord.gg/mgtWWXRbcF_) for support and a good time. 
+[Join our Discord](https://discord.gg/mgtWWXRbcF) for support and a good time. 
 
 ### How does Relay work? 
 
@@ -118,7 +118,7 @@ We haven't implemented billing yet, but here's our intended pricing model:
 * BYO-storage
 
 ### How do I increase the user limit on my Relay?
-Since we don't have billing yet, if you want to bump the user limit on your relay you can email me at daniel@noinstructions.ai or find me on our [Discord](https://discord.gg/mgtWWXRbcF_). 
+Since we don't have billing yet, if you want to bump the user limit on your relay you can email me at daniel@noinstructions.ai or find me on our [Discord](https://discord.gg/mgtWWXRbcF). 
 
 ### Do I need to be online to use Relay?
 Relay is local-first -- this means that all of your edits are tracked locally and the server is used to *relay* the edits to your collaborators. You can work offline and your edits will be merged once you come back online.
@@ -146,7 +146,7 @@ We're working on making our service work globally with low millisecond latency. 
 
 matt@noinstructions.ai
 daniel@noinstructions.ai
-[Talk to us on Discord](https://discord.gg/mgtWWXRbcF_) 
+[Talk to us on Discord](https://discord.gg/mgtWWXRbcF) 
 ### Who's behind Relay? 
 
 Relay is made by [System 3 Studio](https://system3.studio). The legal entity behind System 3 Studio is [No Instructions, LLC](http://noinstructions.ai). 
@@ -179,7 +179,7 @@ Search for "BRAT" and install the plugin by TfTHacker.
     - Ensure that `Enable after installing the plugin` is checked.
     - Click `Add Plugin`
 
-[Join our Discord](https://discord.gg/mgtWWXRbcF_)! 
+[Join our Discord](https://discord.gg/mgtWWXRbcF)! 
 
 ---
 [1] Intro to CRDTs by Lars Hupel https://lars.hupel.info/topics/crdt/01-intro/
