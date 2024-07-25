@@ -22,7 +22,7 @@ import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { promiseWithTimeout } from "./promiseUtils";
 import type { ConnectionState } from "./HasProvider";
-import moment from "moment";
+import { moment } from "obsidian";
 
 const BACKGROUND_CONNECTIONS = 20;
 

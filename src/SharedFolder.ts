@@ -12,7 +12,7 @@ import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import moment from "moment";
+import { moment } from "obsidian";
 import { SharedPromise } from "./promiseUtils";
 import { S3Folder, S3RemoteFolder } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
