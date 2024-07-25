@@ -144,6 +144,7 @@ export default class Live extends Plugin {
 
 			this.setup();
 			this.settingsFileLocked = false;
+			this._liveViews.refresh("init");
 		});
 	}
 
