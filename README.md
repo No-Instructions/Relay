@@ -24,7 +24,7 @@ In a nutshell, Relay:
 
 ### What's a CRDT?
 
-Great question. CRDT stands for **conflict-free replicated data type** and it's a technology that's critical to making local-first real-time collaboration work. To our knowledge, Relay is the only Obsidian plugin that makes use of CRDTs. 
+Great question. CRDT stands for **conflict-free replicated data type** and it's a technology that's critical to making local-first real-time collaboration work.
 
 > The fundamental idea is this: You have data. This data is stored on multiple replicas. CRDTs describe how to coordinate these replicas to always arrive at a consistent state. [1]
 
