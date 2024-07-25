@@ -2,6 +2,7 @@
 
 import { curryLog } from "src/debug";
 import type { Unsubscriber, Subscriber } from "svelte/store";
+import { PostOffice } from "./Postie";
 
 const observables = new Map<Observable<any>, () => void>();
 
@@ -12,10 +13,17 @@ export function auditTeardown(): void {
 	observables.clear();
 }
 
-export class Observable<T> {
+export interface IObservable<T> {
+	on(listener: () => void): Unsubscriber;
+	subscribe(run: Subscriber<T>): Unsubscriber;
+	off(listener: () => void): void;
+	unsubscribe(run: Subscriber<T>): void;
+}
+
+export class Observable<T> implements IObservable<T> {
 	protected _listeners: Set<Subscriber<T>>;
 
-	constructor() {
+	constructor(public observableName?: string) {
 		const warn = curryLog("[Observable]", "warn");
 		observables.set(this, () => {
 			if (this._listeners.size > 0) {
@@ -30,8 +38,11 @@ export class Observable<T> {
 	}
 
 	notifyListeners(): void {
-		for (const listener of this._listeners) {
-			listener(this as unknown as T);
+		for (const recipient of this._listeners) {
+			PostOffice.getInstance().send(
+				this as unknown as T & IObservable<T>,
+				recipient
+			);
 		}
 	}
 
@@ -44,7 +55,11 @@ export class Observable<T> {
 
 	subscribe(run: Subscriber<T>): Unsubscriber {
 		this._listeners.add(run);
-		run(this as unknown as T);
+		PostOffice.getInstance().send(
+			this as unknown as T & IObservable<T>,
+			run,
+			true
+		);
 		return () => {
 			this.unsubscribe(run);
 		};
@@ -54,7 +69,7 @@ export class Observable<T> {
 		this._listeners.delete(listener);
 	}
 
-	unsubscribe(run: (value: T) => unknown): void {
+	unsubscribe(run: Subscriber<T>): void {
 		this._listeners.delete(run);
 	}
 }

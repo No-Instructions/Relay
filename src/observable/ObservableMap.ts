@@ -1,12 +1,12 @@
 "use strict";
 
-import type { Unsubscriber } from "svelte/store";
-import { Observable } from "./Observable";
+import type { Subscriber, Unsubscriber } from "svelte/store";
+import { Observable, type IObservable } from "./Observable";
 
 export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	protected _map: Map<K, V>;
 
-	constructor() {
+	constructor(public observableName?: string) {
 		super();
 		this._map = new Map();
 	}
@@ -90,6 +90,8 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 	) {
 		super();
 		this.sub();
+		this.observableName =
+			parentMap.observableName + "(filter: " + predicate.toString() + ")";
 	}
 
 	private sub(): void {
@@ -110,7 +112,10 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 
 	subscribe(run: (value: ObservableMap<K, V>) => unknown): Unsubscriber {
 		this.sub();
-		return super.subscribe(run);
+		super.subscribe(run);
+		return () => {
+			this.unsubscribe(run);
+		};
 	}
 
 	unsubscribe(run: (value: ObservableMap<K, V>) => unknown): void {

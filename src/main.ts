@@ -116,7 +116,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
 
 		if (!this.loginManager.setup()) {
-			new Notice("Please sign in to use Relay");
+			new Notice("Please sign in to use relay");
 		}
 
 		this.app.workspace.onLayoutReady(async () => {

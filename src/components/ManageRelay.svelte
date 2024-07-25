@@ -5,26 +5,49 @@
 		type RelayRole,
 		type RemoteSharedFolder,
 	} from "../Relay";
-	import { RelayAuto } from "../RelayManager";
-	import SettingItem from "./SettingItem.svelte";
+	import {
+		RelayAuto,
+		RelayRoleAuto,
+		SubscriptionActions,
+	} from "../RelayManager";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import Folder from "./Folder.svelte";
 	import { Notice, debounce, normalizePath } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
-	import { writable } from "svelte/store";
+	import { derived, writable, type Readable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
+	import SettingItem from "./SettingItem.svelte";
 
-	export let relay: RelayAuto;
+	export let relay: Relay;
 	const remoteFolders = relay.folders;
 	export let plugin!: Live;
 	export let sharedFolders!: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
+
+	import moment from "moment";
+
+	function getActiveForMessage(cancelAtDate: Date | null): string {
+		if (!cancelAtDate) {
+			return "Active";
+		}
+		const now = moment();
+		const cancelAt = moment(cancelAtDate);
+		const daysRemaining = cancelAt.diff(now, "days");
+
+		if (daysRemaining <= 0) {
+			return "Subscription has ended";
+		} else if (daysRemaining === 1) {
+			return "Active for 1 more day";
+		} else {
+			return `Active for ${daysRemaining} more days`;
+		}
+	}
 
 	function userSort(a: RelayRole, b: RelayRole) {
 		if (a.role === "Owner" && b.role !== "Owner") {
@@ -36,23 +59,43 @@
 		return a.user.name > b.user.name ? 1 : -1;
 	}
 
-	if (!relay) {
-		throw new Error("Relay not found");
-	}
+	const subscriptions = $relay.subscriptions;
 
-	let folder: SharedFolder | undefined;
-	const roles = $relayRoles.filter(
-		(role: RelayRole) => role.relay?.id === relay.id,
-	);
+	const roles = $relayRoles.filter((role: RelayRole) => {
+		return role.relay?.id === relay.id;
+	});
+	let subActions = writable<SubscriptionActions | undefined>(undefined);
+
+	plugin.relayManager.sm.getPaymentLink($relay).then((actions) => {
+		subActions.set(actions);
+	});
 
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
 	onMount(() => {
-		if (!folder && nameInput && nameInput.value === "") {
+		if (nameInput && nameInput.value === "") {
 			nameInput.focus();
 		}
 	});
 	const dispatch = createEventDispatcher();
+
+	async function handleUpgrade() {
+		if ($subActions?.subscribe) {
+			window.open($subActions?.subscribe, "_blank");
+		}
+	}
+
+	async function handleManage() {
+		if ($subActions?.manage) {
+			window.open($subActions?.manage, "_blank");
+		}
+	}
+
+	async function handleCancel() {
+		if ($subActions?.cancel) {
+			window.open($subActions?.cancel, "_blank");
+		}
+	}
 
 	async function handleLeaveRelay() {
 		plugin.relayManager.leaveRelay(relay);
@@ -257,12 +300,12 @@
 </SettingItem>
 
 <SettingItemHeading name="Users"
-	>{$roles.values().length} / {relay.user_limit}</SettingItemHeading
+	>{$roles.values().length} / {$relay.user_limit}</SettingItemHeading
 >
 
 {#each $roles.values().sort(userSort) as item}
 	<SettingItem name={item.user.name} description={item.role}>
-		{#if item.role === "Member" && relay.owner}
+		{#if item.role === "Member" && $relay.owner}
 			<button
 				class="mod-destructive"
 				on:click={debounce(() => {
@@ -297,28 +340,71 @@
 		id="system3InviteLink"
 	/>
 </SettingItem>
-{#if relay.owner}
-	<SettingItem
-		name="Plan: Free"
-		description="You are currently on the free plan."
-	>
-		<button
-			class="mod-disabled"
-			aria-label="We haven't implemented billing yet."
-			disabled={true}
-		>
-			Upgrade
-		</button>
-	</SettingItem>
+{#if $relay.owner}
+	{#if $subscriptions.values().length > 0}
+		<SettingItem name={"Plan: Relay for Teams"} description="">
+			<fragment slot="description">
+				{"Thanks for supporting Relay development <3"}
+			</fragment>
+			<button
+				on:click={debounce(() => {
+					handleManage();
+				})}
+			>
+				Manage
+			</button>
 
+			{#if $subscriptions.values()[0].active && !$subscriptions.values()[0].cancel_at}
+				<button
+					class="mod-destructive"
+					on:click={debounce(() => {
+						handleCancel();
+					})}
+				>
+					Cancel
+				</button>
+			{/if}
+		</SettingItem>
+		{#if !$subscriptions.values()[0].active || $subscriptions.values()[0].cancel_at}
+			<SettingItem description="">
+				<span slot="name" class="mod-warning">Status: Cancelled</span>
+				{getActiveForMessage($subscriptions.values()[0].cancel_at)}
+			</SettingItem>
+		{/if}
+	{:else}
+		<SettingItem name="Plan: Free (3 users)" description="">
+			<fragment slot="description">
+				{$subActions?.cta ||
+					"Thanks for supporting Relay development <3"}
+			</fragment>
+			<button
+				class="mod-cta"
+				on:click={debounce(() => {
+					handleUpgrade();
+				})}
+			>
+				Upgrade
+			</button>
+		</SettingItem>
+	{/if}
 	<SettingItemHeading name="Storage" description=""></SettingItemHeading>
 	<SettingItem
 		name="Destroy relay"
 		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
 	>
-		<button class="mod-warning" on:click={debounce(handleDestroy)}>
-			Destroy
-		</button>
+		{#if $subscriptions.values().length > 0 && !$subscriptions.values()[0].cancel_at}
+			<button
+				disabled={true}
+				class="mod-warning"
+				aria-label="Cancel subscription to destroy relay."
+			>
+				Destroy
+			</button>
+		{:else}
+			<button class="mod-warning" on:click={debounce(handleDestroy)}>
+				Destroy
+			</button>
+		{/if}
 	</SettingItem>
 {:else}
 	<SettingItemHeading name="Membership" description=""></SettingItemHeading>
