@@ -20,18 +20,18 @@
 	let error: string = "";
 </script>
 
-<div class="modal-title">Add to Vault</div>
+<div class="modal-title">Add to vault</div>
 
 <div class="modal-content">
 	<SettingItem
-		name="Folder Name"
+		name="Folder name"
 		description="Set the name of the folder to be added."
 	>
 		<input type="text" bind:value={folderName} />
 	</SettingItem>
 
 	<SettingItem
-		name="Folder Location"
+		name="Folder location"
 		description="Set the location in your vault."
 	>
 		<FolderSelect {app} {sharedFolders} selectedFolder={folderLocation} />

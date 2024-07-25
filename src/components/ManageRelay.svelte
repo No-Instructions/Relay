@@ -151,8 +151,8 @@
 		inputEl.select();
 		navigator.clipboard
 			.writeText(inputEl.value)
-			.then(() => new Notice("Invite Link Copied"))
-			.catch((err) => {})
+			.then(() => new Notice("Invite link copied"))
+			.catch((err) => {});
 	}
 
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
