@@ -8,7 +8,7 @@ True **multiplayer mode** for Obsidian. 💃🕺
 
 
 
-![Relay-demo-dark-20fps.gif](https://publish-01.obsidian.md/access/7212dc9ec4a27155a0ff3266e8e42e8d/Relay-demo-dark-20fps.gif)
+![Relay Demo](https://publish-01.obsidian.md/access/7212dc9ec4a27155a0ff3266e8e42e8d/Attachments/Relay-demo-dark-20fps.gif)
 
 Relay is a collaborative editing plugin for Obsidian by [System 3 Studio](https://system3.studio). It uses CRDTs to enable snappy, local-first, real-time and asynchronous collaboration. 
 
