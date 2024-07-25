@@ -78,13 +78,13 @@ export default class Live extends Plugin {
 			this.timeProvider.destroy();
 		});
 
-		this.relayManager = new RelayManager();
+		this.loginManager = new LoginManager(this.openSettings.bind(this));
+
+		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this._createSharedFolder.bind(this)
 		);
-
-		this.loginManager = new LoginManager(this.openSettings.bind(this));
 
 		this.tokenStore = new LiveTokenStore(
 			this.loginManager,
@@ -96,7 +96,7 @@ export default class Live extends Plugin {
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
 
 		if (!this.loginManager.setup()) {
-			new Notice("Please sign in to use Relay");
+			new Notice("Please sign in to use relay");
 		}
 
 		this.app.workspace.onLayoutReady(async () => {

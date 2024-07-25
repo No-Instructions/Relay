@@ -134,6 +134,20 @@
 		currentRelay = event.detail.relay;
 		currentComponent = ManageRelay;
 	}
+
+	$: {
+		if (currentRelay && !$relays.has(currentRelay.id)) {
+			currentRelay = undefined;
+			currentComponent = Relays;
+		}
+	}
+
+	$: {
+		if (sharedFolder && !sharedFolders.has(sharedFolder)) {
+			sharedFolder = undefined;
+			currentComponent = Relays;
+		}
+	}
 </script>
 
 {#if currentRelay || sharedFolder}
@@ -144,7 +158,6 @@
 		<ManageSharedFolder
 			{plugin}
 			{relayRoles}
-			relay={currentRelay}
 			{sharedFolder}
 			{sharedFolders}
 			on:goBack={handleGoBack}

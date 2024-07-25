@@ -14,15 +14,17 @@
 		>
 			<slot name="name">{name}</slot>
 		</div>
-		{#if itemDescriptionLines.length > 0}
-			<div class="setting-item-description">
-				{#each itemDescriptionLines as itemDescriptionLine}
-					<div>
-						{itemDescriptionLine}
-					</div>
-				{/each}
-			</div>
-		{/if}
+		<div class="setting-item-description">
+			<slot name="description">
+				{#if itemDescriptionLines.length > 0}
+					{#each itemDescriptionLines as itemDescriptionLine}
+						<div>
+							{itemDescriptionLine}
+						</div>
+					{/each}
+				{/if}
+			</slot>
+		</div>
 	</div>
 	<div class="setting-item-control">
 		<slot></slot>
