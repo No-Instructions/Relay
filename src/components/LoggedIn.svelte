@@ -24,7 +24,6 @@
 	}
 </script>
 
-<h1>Relay</h1>
 {#if $lm.hasUser}
 	<SettingItemHeading name="Account" />
 	<SettingItem
