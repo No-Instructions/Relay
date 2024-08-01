@@ -329,6 +329,10 @@ export class LiveViewManager {
 		this.viewsAttachedWithConnectionPool(this.views);
 	}
 
+	docIsOpen(doc: Document): boolean {
+		return this.views.some((view) => view.document === doc);
+	}
+
 	private releaseViews(views: S3View[]) {
 		views.forEach((view) => {
 			view.release();
