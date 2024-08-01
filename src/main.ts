@@ -21,9 +21,9 @@ import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
-import { updateYDocFromDiskBuffer } from "./bgSync";
-import { FeatureFlagDefaults, type FeatureFlags } from "./flags";
-import { FeatureFlagManager } from "./flagManager";
+import { updateYDocFromDiskBuffer } from "./BackgroundSync";
+import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
+import { FeatureFlagManager, withFlag } from "./flagManager";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -378,6 +378,18 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					vaultLog("Modify", file);
+					withFlag(flag.enableUpdateYDocFromDiskBuffer, () => {
+						try {
+							const doc = folder.getFile(file.path, false, false);
+							if (!this._liveViews.docIsOpen(doc)) {
+								folder.read(doc).then((contents) => {
+									if (contents.length !== 0) {
+										updateYDocFromDiskBuffer(doc.ydoc, contents);
+									}
+								});
+							}
+						} catch (e) {}
+					});
 					this.app.metadataCache.trigger("resolve", file);
 				}
 			}),
