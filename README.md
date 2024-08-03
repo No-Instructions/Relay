@@ -167,9 +167,14 @@ Right now the whole operation is two people:
 
 Yes: [https://system3.md/Privacy+policy](https://system3.md/Privacy+policy).
 
-## Installing the latest Beta Release
 
-Relay is currently in limited beta, and is not yet in the Obsidian plugin repository. If you don't have Relay installed, you can beta test Relay using BRAT.
+## Installing Relay
+
+You can search for `Relay` in the Obsidian Community plugins list,
+or click this [Obsidian Plugin Link](https://obsidian.md/plugins?search=system3-relay).
+
+
+## Installing the latest Beta Release
 
 BRAT is the **Beta Reviewer's Auto-update Tool for Obsidian**.
 
