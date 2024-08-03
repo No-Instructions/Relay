@@ -118,6 +118,7 @@ export class LoginManager extends Observable<LoginManager> {
 		this.pb = new PocketBase(AUTH_URL);
 		this.pb.beforeSend = (url, options) => {
 			this._log(url, options);
+			options.fetch = customFetch;
 			return { url, options };
 		};
 		this.openSettings = openSettings;
@@ -187,42 +188,12 @@ export class LoginManager extends Observable<LoginManager> {
 		this.notifyListeners();
 	}
 
-	async getLoginUrl(): Promise<number> {
-		const start = Date.now();
-		return new Promise<number>((resolve, reject) => {
-			this.pb
-				.collection("users")
-				.authWithOAuth2({
-					provider: "google",
-					urlCallback: (url) => {
-						this.url.set(url);
-						const end = Date.now();
-						this.url.delay = end - start;
-						resolve(this.url.delay);
-					},
-					fetch: customFetch,
-				})
-				.then((authData) => {
-					this.pb
-						.collection("oauth2_response")
-						.create({
-							user: authData.record.id,
-							oauth_response: authData.meta?.rawUser,
-						})
-						.catch((e) => {
-							// OAuth2 data already exists
-						});
-					this.setup();
-				});
-		});
-	}
-
 	async login(): Promise<boolean> {
 		await this.pb
 			.collection("users")
 			.authWithOAuth2({
 				provider: "google",
-				fetch: customFetch,
+				fetch: fetch,
 			})
 			.then((authData) => {
 				this.pb
@@ -230,7 +201,6 @@ export class LoginManager extends Observable<LoginManager> {
 					.create({
 						user: authData.record.id,
 						oauth_response: authData.meta?.rawUser,
-						fetch: customFetch,
 					})
 					.catch((e) => {
 						// OAuth2 data already exists
