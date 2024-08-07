@@ -55,17 +55,37 @@ export default class Live extends Plugin {
 	private _liveViews!: LiveViewManager;
 	private settingsFileLocked = true;
 
+	enableDebugging(save?: boolean) {
+		setDebugging(true);
+		if (save) {
+			this.settings.debugging = false;
+			this.saveSettings();
+		}
+	}
+
+	disableDebugging(save?: boolean) {
+		setDebugging(false);
+		if (save) {
+			this.settings.debugging = false;
+			this.saveSettings();
+		}
+	}
+
+	toggleDebugging(save?: boolean): boolean {
+		const setTo = !this.settings.debugging;
+		setDebugging(setTo);
+		if (save) {
+			this.settings.debugging = setTo;
+			this.saveSettings();
+		}
+		return setTo;
+	}
+
 	async onload() {
 		await this.loadSettings();
 
 		if (this.settings.debugging) {
-			setDebugging(this.settings.debugging);
-			this.addCommand({
-				id: "toggle-emulate-mobile",
-				name: "Mobile emulation toggle",
-				//@ts-expect-error
-				callback: () => this.app.emulateMobile(!Platform.isMobile),
-			});
+			this.enableDebugging();
 		}
 		this.log = curryLog("[System 3][Relay]", "log");
 		this.warn = curryLog("[System 3][Relay]", "warn");
@@ -78,13 +98,13 @@ export default class Live extends Plugin {
 			this.timeProvider.destroy();
 		});
 
-		this.relayManager = new RelayManager();
+		this.loginManager = new LoginManager(this.openSettings.bind(this));
+
+		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this._createSharedFolder.bind(this)
 		);
-
-		this.loginManager = new LoginManager(this.openSettings.bind(this));
 
 		this.tokenStore = new LiveTokenStore(
 			this.loginManager,

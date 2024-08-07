@@ -8,11 +8,17 @@ import {
 	type Role,
 	type RemoteSharedFolder as RemoteFolder,
 } from "./Relay";
-import PocketBase, { type ListResult, type RecordModel } from "pocketbase";
+import PocketBase, {
+	type AuthModel,
+	type ListResult,
+	type RecordModel,
+	type RecordSubscription,
+} from "pocketbase";
 import { ObservableMap } from "./observable/ObservableMap";
 import { curryLog } from "./debug";
 import { customFetch } from "./customFetch";
 import type { SharedFolder } from "./SharedFolder";
+import type { LoginManager } from "./LoginManager";
 
 declare const AUTH_URL: string;
 
@@ -721,16 +727,10 @@ export class RelayManager {
 	warn: (message: string, ...args: unknown[]) => void;
 	private pb: PocketBase;
 
-	constructor() {
+	constructor(private loginManager: LoginManager) {
 		this.log = curryLog("[RelayManager]", "log");
 		this.warn = curryLog("[RelayManager]", "warn");
-
-		this.pb = new PocketBase(AUTH_URL);
-		this.pb.beforeSend = (url, options) => {
-			this.log(url, options);
-			options.fetch = customFetch;
-			return { url, options };
-		};
+		this.pb = this.loginManager.pb;
 
 		// Build the NodeLists
 		this.users = new ObservableMap<string, UserDAO>();
@@ -1094,8 +1094,5 @@ export class RelayManager {
 		}
 	}
 
-	destroy(): void {
-		this.unsubscribe();
-		this.pb.cancelAllRequests();
-	}
+	destroy(): void {}
 }
