@@ -1,12 +1,30 @@
 name: Releases
-
-on: 
+on:
   push:
     tags:
     - '*'
 
 jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Check if tag matches manifest version
+      id: check
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        MANIFEST_VERSION=$(jq -r .version manifest.json)
+        if [ "$TAG" == "$MANIFEST_VERSION" ]; then
+          echo "should_release=true" >> $GITHUB_OUTPUT
+        else
+          echo "should_release=false" >> $GITHUB_OUTPUT
+        fi
+
   build:
+    needs: check-version
+    if: needs.check-version.outputs.should_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
