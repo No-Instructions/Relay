@@ -17,8 +17,8 @@ if you want to view the source, please visit the github repository of this plugi
 const gitTag = execSync("git describe --tags --always", {
 	encoding: "utf8",
 }).trim();
-const apiUrl = `https://api.system3.studio`;
-const authUrl = `https://auth.system3.studio`;
+const apiUrl = `https://api.system3.md`;
+const authUrl = `https://auth.system3.md`;
 const healthUrl = `${apiUrl}/health?version=${gitTag}`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);
@@ -115,14 +115,16 @@ const move = (fnames, mapping) => {
 	}
 };
 
+const mapping = debug ? { "manifest-beta.json": "manifest.json" } : {};
+const manifest = debug ? "manifest-beta.json": "manifest.json";
+const files = ["styles.css", manifest]
+
 if (watch) {
 	await context.watch();
-	const files = ["styles.css", "manifest-beta.json"];
-	const mapping = { "manifest-beta.json": "manifest.json" };
 	move(files, mapping);
 	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
-	move(["styles.css", "manifest.json"], {});
+	move(files, mapping);
 	process.exit(0);
 }
