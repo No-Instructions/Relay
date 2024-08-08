@@ -62,7 +62,7 @@ def main(version_type):
     # Create a commit for the version bump
     repo.git.add(manifest_file)
     try:
-        repo.git.commit(m=f"version: bump the version to {new_version}")
+        repo.git.commit(m=f"version: bump the beta version to {new_version}")
     except git.exc.GitCommandError:
         pass
 
