@@ -10,7 +10,7 @@ True **multiplayer mode** for Obsidian. 💃🕺
 
 Relay is a collaborative editing plugin for Obsidian by [System 3](https://system3.md/). It uses CRDTs to enable snappy, local-first, real-time and asynchronous collaboration.
 
-[Join our Discord](https://discord.gg/mgtWWXRbcF) for support and a good time.
+[Join our Discord](https://discord.system3.md) for support and a good time.
 
 ### How does Relay work?
 
@@ -58,7 +58,7 @@ Oh, the things you can do.
 -   If you're in a note at the same time, you'll see each others' cursors
 -   You can edit the same block at the same time (magic of CRDTs)
 -   You can edit offline and it'll all be fine when you come back on (CRDTs ftw)
--   If you hit any bugs or have questions/requests let us know in the [Discord](https://discord.gg/mgtWWXRbcF)
+-   If you hit any bugs or have questions/requests let us know in the [Discord](https://discord.system3.md)
 
 ### Kick user from a relay
 
@@ -120,7 +120,7 @@ We haven't implemented billing yet, but here's our intended pricing model:
 
 ### How do I increase the user limit on my Relay?
 
-Since we don't have billing yet, if you want to bump the user limit on your relay you can email me at [daniel@noinstructions.ai](mailto:daniel@noinstructions.ai) or find me on our [Discord](https://discord.gg/mgtWWXRbcF_).
+Since we don't have billing yet, if you want to bump the user limit on your relay you can email me at [daniel@noinstructions.ai](mailto:daniel@noinstructions.ai) or find me on our [Discord](https://discord.system3.md).
 
 ### Do I need to be online to use Relay?
 
@@ -152,7 +152,7 @@ We want to support both end-to-end encryption and bring-your-own s3-compatible s
 
 We're working on making our service work globally with low millisecond latency. Let us know if your experience was bad.
 
-[matt@noinstructions.ai](mailto:matt@noinstructions.ai) [daniel@noinstructions.ai](mailto:daniel@noinstructions.ai) [Talk to us on Discord](https://discord.gg/mgtWWXRbcF_)
+[matt@noinstructions.ai](mailto:matt@noinstructions.ai) [daniel@noinstructions.ai](mailto:daniel@noinstructions.ai) [Talk to us on Discord](https://discord.system3.md)
 
 ### Who's behind Relay?
 
@@ -193,7 +193,7 @@ Search for "BRAT" and install the plugin by TfTHacker.
         -   Ensure that `Enable after installing the plugin` is checked.
         -   Click `Add Plugin`
 
-[Join our Discord](https://discord.gg/mgtWWXRbcF)!
+[Join our Discord](https://discord.system3.md)!
 
 ---
 
