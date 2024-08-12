@@ -5,7 +5,7 @@ import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import type { Extension } from "@codemirror/state";
 import { Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import ConnectionStatusIcon from "src/components/ConnectionStatusIcon.svelte";
+import ViewActions from "src/components/ViewActions.svelte";
 import { LiveCMPluginValue } from "./y-codemirror.next/LiveEditPlugin";
 import {
 	connectionManagerFacet,
@@ -92,7 +92,7 @@ export class LiveView implements S3View {
 	shouldConnect: boolean;
 	canConnect: boolean;
 
-	private _connectionStatusIcon?: ConnectionStatusIcon;
+	private _viewActions?: ViewActions;
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 
@@ -155,17 +155,19 @@ export class LiveView implements S3View {
 		const viewActionsElement =
 			this.view.containerEl.querySelector(".view-actions");
 		if (viewActionsElement && viewActionsElement.firstChild) {
-			const connectionStatusIcon = this.view.containerEl.querySelector(
-				".connection-status-icon"
+			const viewActions = this.view.containerEl.querySelectorAll(
+				".system3-view-action"
 			);
-			if (!this._connectionStatusIcon) {
-				if (connectionStatusIcon) {
-					connectionStatusIcon.remove();
+			if (!this._viewActions) {
+				if (viewActions.length > 0) {
+					viewActions.forEach((viewAction) => {
+						viewAction.remove();
+					});
 				}
 				if (this.offConnectionStatusSubscription) {
 					this.offConnectionStatusSubscription();
 				}
-				this._connectionStatusIcon = new ConnectionStatusIcon({
+				this._viewActions = new ViewActions({
 					target: viewActionsElement,
 					anchor: viewActionsElement.firstChild as Element,
 					props: {
@@ -177,7 +179,7 @@ export class LiveView implements S3View {
 				this.offConnectionStatusSubscription = this.document.subscribe(
 					viewActionsElement,
 					(state: ConnectionState) => {
-						this._connectionStatusIcon?.$set({
+						this._viewActions?.$set({
 							view: this,
 							document: this.document,
 							state: state,
@@ -185,7 +187,7 @@ export class LiveView implements S3View {
 					}
 				);
 			}
-			this._connectionStatusIcon.$set({
+			this._viewActions.$set({
 				view: this,
 				document: this.document,
 				state: this.document.state,
@@ -221,8 +223,8 @@ export class LiveView implements S3View {
 
 	release() {
 		// Called when a view is released from management
-		this._connectionStatusIcon?.$destroy();
-		this._connectionStatusIcon = undefined;
+		this._viewActions?.$destroy();
+		this._viewActions = undefined;
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;

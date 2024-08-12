@@ -34,7 +34,7 @@
 
 {#if remote}
 	<button
-		class="hidden notebook clickable-icon view-action"
+		class="hidden notebook clickable-icon view-action system3-view-action"
 		aria-label="Tracking Changes"
 		tabindex="0"
 		data-filename={view.view.file?.name}
@@ -42,7 +42,7 @@
 		<Layers class="svg-icon inline-icon" />
 	</button>
 	<button
-		class="system3-{state.status} clickable-icon view-action"
+		class="system3-{state.status} clickable-icon view-action system3-view-action"
 		aria-label={`${remote.relay.name} (${state.status})`}
 		tabindex="0"
 		on:click={handleClick}
