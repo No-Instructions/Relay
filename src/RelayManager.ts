@@ -963,6 +963,7 @@ export class RelayManager {
 	authUser?: AuthModel;
 	user?: RelayUser;
 	store?: Store;
+	_offLoginManager: Unsubscriber;
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
 	private pb: PocketBase;
@@ -995,6 +996,11 @@ export class RelayManager {
 		this.subscriptions = new ObservableMap<string, RelaySubscription>(
 			"subscriptions"
 		);
+
+		// Subscribe to logout/login
+		this._offLoginManager = this.loginManager.subscribe(() => {
+			this.login();
+		});
 
 		// XXX this is so akward that the class behaves poorly if a user is unset.
 		this.setUser();
@@ -1078,7 +1084,6 @@ export class RelayManager {
 		this.store?.clear();
 		this.user = undefined;
 		this.store = undefined;
-		this.unsubscribe();
 	}
 
 	async getRelayInvitationKey(relay: Relay): Promise<string> {
@@ -1167,6 +1172,11 @@ export class RelayManager {
 			})
 			.then((user) => {
 				this.store?.ingest(user);
+			})
+			.catch((e) => {
+				if (e.status === 404) {
+					this.loginManager.logout();
+				}
 			});
 
 		await this.pb
@@ -1323,17 +1333,10 @@ export class RelayManager {
 		return this.pb.collection("relay_roles").delete(relay_role.id);
 	}
 
-	unsubscribe() {
-		if (this.pb) {
-			this.pb.collection("relays").unsubscribe();
-			this.pb.collection("relay_roles").unsubscribe();
-			this.pb.collection("relay_invitations").unsubscribe();
-			this.pb.collection("shared_folders").unsubscribe();
-			this.pb.collection("subscriptions").unsubscribe();
-		}
-	}
-
 	destroy(): void {
 		this.sm.destroy();
+		if (this._offLoginManager) {
+			this._offLoginManager();
+		}
 	}
 }

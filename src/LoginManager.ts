@@ -14,6 +14,7 @@ import { Observable } from "./observable/Observable";
 
 declare const AUTH_URL: string;
 declare const API_URL: string;
+declare const GIT_TAG: string;
 
 import { customFetch } from "./customFetch";
 
@@ -71,6 +72,9 @@ export class LoginManager extends Observable<LoginManager> {
 		this.pb.beforeSend = (url, options) => {
 			pbLog(url, this.pb, options);
 			options.fetch = customFetch;
+			options.headers = Object.assign({}, options.headers, {
+				"Relay-Version": GIT_TAG,
+			});
 			return { url, options };
 		};
 		this.openSettings = openSettings;
@@ -98,6 +102,9 @@ export class LoginManager extends Observable<LoginManager> {
 				.create({
 					user: authData.record.id,
 					oauth_response: authData.meta?.rawUser,
+				})
+				.then(() => {
+					this.notifyListeners();
 				})
 				.catch((reason) => {
 					this.log(reason);
@@ -161,7 +168,10 @@ export class LoginManager extends Observable<LoginManager> {
 	> {
 		const authMethods = await this.pb
 			.collection("users")
-			.listAuthMethods({ fetch: whichFetch });
+			.listAuthMethods({ fetch: whichFetch })
+			.catch((e) => {
+				throw e.originalError;
+			});
 		const provider = authMethods.authProviders[0];
 		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
 		return [
@@ -221,8 +231,6 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	async login(): Promise<boolean> {
-		let eagerDefaultPopup = openBrowserPopup();
-
 		try {
 			const authData = await this.pb.collection("users").authWithOAuth2({
 				provider: "google",

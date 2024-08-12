@@ -56,13 +56,16 @@
 			const whichFetch = $useCustomFetch ? customFetch : fetch;
 			provider = undefined;
 			url.set("please wait...");
-			lm.initiateManualOAuth2CodeFlow(whichFetch).then(
-				([url_, provider_, authWithCode_]) => {
+			lm.initiateManualOAuth2CodeFlow(whichFetch)
+				.then(([url_, provider_, authWithCode_]) => {
 					provider = provider_;
 					authWithCode = authWithCode_;
 					url.set(url_);
-				},
-			);
+				})
+				.catch((e) => {
+					error.set(e.message);
+					throw e;
+				});
 		} catch (e: any) {
 			error.set(e.message);
 		}
