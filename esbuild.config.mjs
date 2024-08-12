@@ -37,7 +37,6 @@ const NotifyPlugin = {
 	},
 };
 
-
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -105,6 +104,15 @@ const watchAndMove = (fnames, mapping) => {
 	});
 };
 
+const updateManifest = () => {
+	const manifestPath = path.join(out, path.basename("manifest.json"));
+	const raw_manifest = fs.readFileSync(manifestPath);
+	const parsed = JSON.parse(raw_manifest);
+	parsed.version = gitTag;
+	const new_manifest = JSON.stringify(parsed);
+	fs.writeFileSync(manifestPath, new_manifest);
+};
+
 const move = (fnames, mapping) => {
 	// only usable on top level directory
 	mkdirSync(out, { recursive: true });
@@ -116,13 +124,14 @@ const move = (fnames, mapping) => {
 };
 
 const mapping = debug ? { "manifest-beta.json": "manifest.json" } : {};
-const manifest = debug ? "manifest-beta.json": "manifest.json";
-const files = ["styles.css", manifest]
+const manifest = debug ? "manifest-beta.json" : "manifest.json";
+const files = ["styles.css", manifest];
 
 if (watch) {
 	await context.watch();
 	move(files, mapping);
 	watchAndMove(files, mapping);
+	updateManifest();
 } else {
 	await context.rebuild();
 	move(files, mapping);
