@@ -21,14 +21,10 @@ import { ObservableMap } from "./observable/ObservableMap";
 import { curryLog } from "./debug";
 import { customFetch } from "./customFetch";
 import type { SharedFolder } from "./SharedFolder";
-import { requestUrl } from "obsidian";
-import type { User } from "./User";
 import type { LoginManager } from "./LoginManager";
 import type { Unsubscriber } from "svelte/motion";
 import { Observable } from "./observable/Observable";
 import { PostOffice } from "./observable/Postie";
-
-declare const AUTH_URL: string;
 
 interface UserDAO extends RecordModel {
 	id: string;
@@ -57,12 +53,6 @@ interface RemoteFolderDAO extends RecordModel {
 	creator: string;
 	relay: string;
 	private: boolean;
-}
-
-interface RelayDAOExpandingRelayInvitation extends RelayDAO {
-	expand?: {
-		relay_invitations_via_relay: RelayInvitationDAO;
-	};
 }
 
 interface RelayRoleDAO extends RecordModel {
@@ -99,12 +89,6 @@ interface RelayInvitationDAO extends RecordModel {
 	role: string;
 	relay: string;
 	key: string;
-}
-
-interface RelayInvitationDAOExpandingRelay extends RelayInvitationDAO {
-	expand?: {
-		relay: RelayDAO;
-	};
 }
 
 interface Collection<D, A> {
