@@ -219,6 +219,10 @@ class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 	public get aggregate_root(): [string, string] {
 		return ["relays", this.remoteFolder.relay];
 	}
+
+	public get acl(): [string, string] {
+		return ["relays", this.remoteFolder.relay];
+	}
 }
 
 class RemoteFolderCollection
@@ -496,11 +500,14 @@ class Store {
 	}
 
 	clear() {
+		const postie = PostOffice.getInstance();
+		postie.beginTransaction();
 		this.collections.forEach((collection) => {
 			collection.clear();
 		});
 		this.collections.clear();
 		this.relationships.clear();
+		postie.commitTransaction();
 	}
 
 	ingestPage<T>(
@@ -1079,7 +1086,7 @@ export class RelayManager {
 			this.pb
 				.collection(collection.name)
 				.subscribe("*", (e) => handleEvent(collection.name, e), {
-					expand: collection.expand,
+					expand: collection.expand.join(","),
 					fetch: customFetch,
 				});
 		}

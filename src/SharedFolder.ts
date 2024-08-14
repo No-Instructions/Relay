@@ -217,6 +217,13 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get remote(): RemoteSharedFolder | undefined {
+		try {
+			// FIXME: race condition because sharedFolder doesn't use postie
+			// for notifyListener updates.
+			this._remote?.relay;
+		} catch (e) {
+			return undefined;
+		}
 		return this._remote;
 	}
 
