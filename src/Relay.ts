@@ -39,6 +39,7 @@ export interface Relay
 	invitation?: RelayInvitation;
 	folders: ObservableMap<string, RemoteSharedFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
+	cta: string;
 }
 
 export interface RelayRole extends Identified, Updatable<RelayRole> {
@@ -68,4 +69,5 @@ export interface RelaySubscription
 	user: RelayUser;
 	cancel_at: Date | null;
 	quantity: number;
+	token: string;
 }

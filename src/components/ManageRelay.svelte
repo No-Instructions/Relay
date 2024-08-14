@@ -3,13 +3,9 @@
 	import {
 		type Relay,
 		type RelayRole,
+		type RelaySubscription,
 		type RemoteSharedFolder,
 	} from "../Relay";
-	import {
-		RelayAuto,
-		RelayRoleAuto,
-		SubscriptionActions,
-	} from "../RelayManager";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import Folder from "./Folder.svelte";
@@ -60,14 +56,15 @@
 	}
 
 	const subscriptions = $relay.subscriptions;
+	const subscription = derived($subscriptions, ($subscriptions) => {
+		if ($subscriptions.values().length === 0) {
+			return undefined;
+		}
+		return $subscriptions.values()[0];
+	});
 
 	const roles = $relayRoles.filter((role: RelayRole) => {
 		return role.relay?.id === relay.id;
-	});
-	let subActions = writable<SubscriptionActions | undefined>(undefined);
-
-	plugin.relayManager.sm.getPaymentLink($relay).then((actions) => {
-		subActions.set(actions);
 	});
 
 	let nameValid = writable(true);
@@ -79,22 +76,38 @@
 	});
 	const dispatch = createEventDispatcher();
 
-	async function handleUpgrade() {
-		if ($subActions?.subscribe) {
-			window.open($subActions?.subscribe, "_blank");
+	async function handleUpgrade(relay: Relay) {
+		if (!plugin.loginManager?.user) {
+			return;
 		}
+		window.open(
+			plugin.buildApiUrl(
+				`/subscribe?relay=${relay.id}&quantity=10&user_email=${plugin.loginManager.user.name}`,
+			),
+			"_blank",
+		);
 	}
 
-	async function handleManage() {
-		if ($subActions?.manage) {
-			window.open($subActions?.manage, "_blank");
-		}
+	async function handleManage(subscription: RelaySubscription) {
+		const token = subscription.token;
+		const sub_id = subscription.id;
+		window.open(
+			plugin.buildApiUrl(
+				`/subscriptions/${sub_id}/manage?token=${token}`,
+			),
+			"_blank",
+		);
 	}
 
-	async function handleCancel() {
-		if ($subActions?.cancel) {
-			window.open($subActions?.cancel, "_blank");
-		}
+	async function handleCancel(subscription: RelaySubscription) {
+		const token = subscription.token;
+		const sub_id = subscription.id;
+		window.open(
+			plugin.buildApiUrl(
+				`/subscriptions/${sub_id}/cancel?token=${token}`,
+			),
+			"_blank",
+		);
 	}
 
 	async function handleLeaveRelay() {
@@ -341,14 +354,14 @@
 	/>
 </SettingItem>
 {#if $relay.owner}
-	{#if $subscriptions.values().length > 0}
+	{#if $subscription}
 		<SettingItem name={"Plan: Relay for Teams"} description="">
 			<fragment slot="description">
 				{"Thanks for supporting Relay development <3"}
 			</fragment>
 			<button
 				on:click={debounce(() => {
-					handleManage();
+					handleManage($subscription);
 				})}
 			>
 				Manage
@@ -358,7 +371,7 @@
 				<button
 					class="mod-destructive"
 					on:click={debounce(() => {
-						handleCancel();
+						handleCancel($subscription);
 					})}
 				>
 					Cancel
@@ -374,13 +387,12 @@
 	{:else}
 		<SettingItem name="Plan: Free (3 users)" description="">
 			<fragment slot="description">
-				{$subActions?.cta ||
-					"Thanks for supporting Relay development <3"}
+				{$relay?.cta || "Thanks for supporting Relay development <3"}
 			</fragment>
 			<button
 				class="mod-cta"
 				on:click={debounce(() => {
-					handleUpgrade();
+					handleUpgrade($relay);
 				})}
 			>
 				Upgrade

@@ -47,6 +47,7 @@ interface RelayDAO extends RecordModel {
 	path: string;
 	user_limit: number;
 	creator: string;
+	cta: string;
 }
 
 interface RemoteFolderDAO extends RecordModel {
@@ -610,7 +611,7 @@ class Store {
 	}
 }
 
-export class RelayRoleAuto extends Auto implements RelayRole {
+class RelayRoleAuto extends Auto implements RelayRole {
 	users: ObservableMap<string, RelayUser>;
 	roles: ObservableMap<string, RoleDAO>;
 	relays: ObservableMap<string, Relay>;
@@ -727,6 +728,7 @@ interface RelaySubscriptionDAO extends RecordModel {
 	relay: string;
 	stripe_cancel_at: number;
 	stripe_quantity: number;
+	token: string;
 }
 
 export class RelaySubscriptionAuto
@@ -749,6 +751,10 @@ export class RelaySubscriptionAuto
 
 	public get id() {
 		return this.subscription.id;
+	}
+
+	public get token() {
+		return this.subscription.token;
 	}
 
 	public get active() {
@@ -798,71 +804,7 @@ export class RelaySubscriptionAuto
 	}
 }
 
-export class SubscriptionActions {
-	constructor(
-		public subscribe: string | null,
-		public cancel: string | null,
-		public manage: string | null,
-		public cta: string | null
-	) {}
-}
-declare const API_URL: string;
-
-class SubscriptionManager {
-	user?: User;
-	private _offLoginManager: Unsubscriber;
-	private _log: (message: string, ...args: unknown[]) => void;
-
-	constructor(private loginManager: LoginManager) {
-		this._log = curryLog("[SubscriptionManager]", "log");
-		this._offLoginManager = this.loginManager.subscribe((loginManager) => {
-			this.user = loginManager.user;
-		});
-	}
-
-	destroy() {
-		if (this._offLoginManager) {
-			this._offLoginManager();
-		}
-	}
-
-	log(message: string, ...args: unknown[]) {
-		this._log(message, ...args);
-	}
-
-	async getPaymentLink(relay: Relay): Promise<SubscriptionActions> {
-		console.warn("getting paymnent link", relay.id, this.user);
-		if (!this.user) {
-			throw new Error("User is not logged in.");
-		}
-		const headers = {
-			Authorization: `Bearer ${this.user.token}`,
-		};
-		const response = await requestUrl({
-			url: `${API_URL}/billing`,
-			method: "POST",
-			body: JSON.stringify({ relay: relay.id, quantity: 10 }),
-			headers: headers,
-		});
-		if (response.status !== 200) {
-			throw new Error(
-				`Received status code ${response.status} from an API.`
-			);
-		}
-		const response_json = response.json;
-
-		const sub = new SubscriptionActions(
-			response_json["subscribe"],
-			response_json["cancel"],
-			response_json["manage"],
-			response_json["cta"]
-		);
-		return sub;
-	}
-}
-
-// XXX this should probably not be exported
-export class RelayAuto extends Observable<Relay> implements Relay, hasACL {
+class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
 
@@ -883,6 +825,10 @@ export class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		this.relay = update;
 		this.notifyListeners();
 		return this;
+	}
+
+	public get cta() {
+		return this.relay.cta;
 	}
 
 	public get id() {
@@ -959,7 +905,6 @@ export class RelayManager {
 	roles: ObservableMap<string, RoleDAO>;
 	remoteFolders: ObservableMap<string, RemoteFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
-	sm: SubscriptionManager;
 	authUser?: AuthModel;
 	user?: RelayUser;
 	store?: Store;
@@ -972,7 +917,6 @@ export class RelayManager {
 		this.log = curryLog("[RelayManager]", "log");
 		this.warn = curryLog("[RelayManager]", "warn");
 		this.pb = this.loginManager.pb;
-		this.sm = new SubscriptionManager(this.loginManager);
 
 		// Build the NodeLists
 		this.users = new ObservableMap<string, RelayUser>("users");

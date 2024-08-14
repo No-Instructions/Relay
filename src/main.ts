@@ -35,6 +35,7 @@ const DEFAULT_SETTINGS: LiveSettings = {
 };
 
 declare const HEALTH_URL: string;
+declare const API_URL: string;
 
 export default class Live extends Plugin {
 	settings!: LiveSettings;
@@ -79,6 +80,10 @@ export default class Live extends Plugin {
 			this.saveSettings();
 		}
 		return setTo;
+	}
+
+	buildApiUrl(path: string) {
+		return API_URL + path;
 	}
 
 	async onload() {
