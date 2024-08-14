@@ -1262,7 +1262,6 @@ export class RelayManager {
 	}
 
 	destroy(): void {
-		this.sm.destroy();
 		if (this._offLoginManager) {
 			this._offLoginManager();
 		}
