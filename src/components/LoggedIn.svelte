@@ -137,7 +137,7 @@
 				>
 			</span>
 			|
-			<a href="https://discord.gg/mgtWWXRbcF"
+			<a href="https://discord.system3.md"
 				><span
 					><svg
 						width="1em"
@@ -174,7 +174,7 @@
 				}}><span>Back</span></a
 			>
 			|
-			<a href="https://discord.gg/mgtWWXRbcF"
+			<a href="https://discord.system3.md"
 				><span
 					><svg
 						width="1em"
@@ -227,7 +227,7 @@
 		<Callout title="Get Help">
 			<p>
 				We're working on improving the login process. Please <a
-					href="https://discord.gg/mgtWWXRbcF">join our Discord</a
+					href="https://discord.system3.md">join our Discord</a
 				> and we will help you.
 			</p>
 		</Callout>
