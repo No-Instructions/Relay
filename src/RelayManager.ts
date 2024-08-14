@@ -44,6 +44,7 @@ interface RelayDAO extends RecordModel {
 	user_limit: number;
 	creator: string;
 	cta: string;
+	plan: string;
 }
 
 interface RemoteFolderDAO extends RecordModel {
@@ -820,6 +821,10 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 
 	public get cta() {
 		return this.relay.cta;
+	}
+
+	public get plan() {
+		return this.relay.plan;
 	}
 
 	public get id() {

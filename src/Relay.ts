@@ -40,6 +40,7 @@ export interface Relay
 	folders: ObservableMap<string, RemoteSharedFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
 	cta: string;
+    plan: string;
 }
 
 export interface RelayRole extends Identified, Updatable<RelayRole> {

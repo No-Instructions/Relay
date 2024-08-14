@@ -355,9 +355,9 @@
 </SettingItem>
 {#if $relay.owner}
 	{#if $subscription}
-		<SettingItem name={"Plan: Relay for Teams"} description="">
+		<SettingItem name={`Plan: ${$relay.plan}`} description="">
 			<fragment slot="description">
-				{"Thanks for supporting Relay development <3"}
+				{$relay.cta}
 			</fragment>
 			<button
 				on:click={debounce(() => {
@@ -385,9 +385,9 @@
 			</SettingItem>
 		{/if}
 	{:else}
-		<SettingItem name="Plan: Free (3 users)" description="">
+		<SettingItem name={`Plan: ${$relay.plan}`} description="">
 			<fragment slot="description">
-				{$relay?.cta || "Thanks for supporting Relay development <3"}
+				{$relay.cta || "Thanks for supporting Relay development <3"}
 			</fragment>
 			<button
 				class="mod-cta"
