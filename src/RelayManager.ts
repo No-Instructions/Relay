@@ -479,6 +479,7 @@ class RelaySubscriptionCollection
 class Store {
 	collections: Map<string, Collection<unknown, unknown>>;
 	relationships: Map<[string, string], Set<[string, string]>>;
+	warn: (message: string, ...args: unknown[]) => void;
 	error: (message: string, ...args: unknown[]) => void;
 
 	constructor(collections: Collection<unknown, unknown>[]) {
@@ -488,7 +489,8 @@ class Store {
 			this.collections.set(collection.collectionName, collection);
 		}
 		this.error = curryLog("[Store]", "error");
-		console.warn("Store", this);
+		this.warn = curryLog("[Store]", "warn");
+		this.warn("instance", this);
 	}
 
 	getCollection(collecitonName: string): Collection<unknown, unknown> {
@@ -546,7 +548,6 @@ class Store {
 			this.error("No collection found for record", record);
 		}
 		if (hasRoot(result)) {
-			console.warn("has root", result, result.aggregate_root);
 			const aggregate_root = result.aggregate_root;
 			if (aggregate_root) {
 				const pointer = record.id;
@@ -558,7 +559,6 @@ class Store {
 			}
 		}
 		if (hasACL(result)) {
-			console.warn("has ACL", result, result.acl);
 			const acl = result.acl;
 			if (acl) {
 				const pointer = record.id;
