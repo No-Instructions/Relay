@@ -5,7 +5,7 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import Callout from "./Callout.svelte";
 	import type { LoginManager } from "src/LoginManager";
-	import { writable } from "svelte/store";
+	import { derived, writable } from "svelte/store";
 	import { onMount } from "svelte";
 	import type {
 		AuthProviderInfo,
@@ -13,8 +13,10 @@
 		RecordModel,
 	} from "pocketbase";
 	import { customFetch } from "src/customFetch";
+	import ObjectState from "./ObjectState.svelte";
 
 	export let plugin: Live;
+
 	let lm: LoginManager;
 	let automaticFlow = writable<boolean>(true);
 	let pending = writable<boolean>(false);
@@ -51,6 +53,46 @@
 		}
 	}
 
+	function patchFetch() {
+		// Fetch API is broken for some versions of Electron
+		// https://github.com/electron/electron/pull/42419
+		if (!globalThis) {
+			console.warn("unable to patch fetch, global is not defined");
+		}
+		if ((globalThis as any).blinkfetch) {
+			console.warn("Using blinkFetch everywhere");
+			globalThis.fetch = (globalThis as any).blinkFetch;
+			const keys = [
+				"fetch",
+				"Response",
+				"FormData",
+				"Request",
+				"Headers",
+			];
+			for (const key of keys) {
+				(globalThis as any)[key] = (globalThis as any)[`blink${key}`];
+			}
+		}
+	}
+
+	let patched = writable<boolean>(false);
+
+	const responseImpl = writable<string>(Response.toString());
+	const fetchImpl = writable<string>(fetch.toString());
+	const usingBlink = writable<string>(
+		(globalThis as any)?.blinkfetch !== undefined ? "Yes" : "No",
+	);
+	const anyPb = writable<any>(plugin.loginManager.pb as any);
+
+	function refresh() {
+		responseImpl.set(Response.toString());
+		fetchImpl.set(fetch.toString());
+		usingBlink.set(
+			(globalThis as any)?.blinkfetch !== undefined ? "Yes" : "No",
+		);
+		anyPb.set(plugin.loginManager.pb as any);
+	}
+
 	function initiate() {
 		try {
 			const whichFetch = $useCustomFetch ? customFetch : fetch;
@@ -63,7 +105,10 @@
 					url.set(url_);
 				})
 				.catch((e) => {
-					error.set(e.message);
+					let message = e.message;
+					message = message + "\n" + typeof Response;
+					message = message + "\n" + Response.toString();
+					error.set(message);
 					throw e;
 				});
 		} catch (e: any) {
@@ -265,7 +310,40 @@
 			/>
 		</SettingItem>
 
+		<SettingItemHeading name="Environment">
+			<button
+				on:click={debounce(() => {
+					refresh();
+				})}>Refresh</button
+			>
+		</SettingItemHeading>
+		<SettingItem name="User Agent" description="">
+			{navigator.userAgent}
+		</SettingItem>
+		<SettingItem name="Fetch" description="">{$fetchImpl}</SettingItem>
+		<SettingItem name="Response" description="">{$responseImpl}</SettingItem
+		>
+		<SettingItem name="Blink Fetch" description="">
+			{$usingBlink}
+		</SettingItem>
+		<SettingItemHeading name="Connections" />
+		<ObjectState object={$anyPb.cancelControllers} />
 		<SettingItemHeading name="Advanced" />
+
+		<SettingItem
+			name="Patch Fetch API"
+			description="Workaround for Electron fetch API bug."
+		>
+			<button
+				disabled={$patched}
+				on:click={debounce(() => {
+					patchFetch();
+					refresh();
+					patched.set(true);
+				})}>Patch</button
+			>
+		</SettingItem>
+
 		<SettingItem
 			name="Custom fetch"
 			description="Uses requestUrl to avoid CORS preflight checks."
