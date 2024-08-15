@@ -178,7 +178,6 @@
 		<LoggedIn {plugin}>
 			<Relays
 				{relays}
-				{relayRoles}
 				{plugin}
 				on:manageRelay={handleManageRelayEvent}
 				on:manageSharedFolder={handleManageSharedFolderEvent}

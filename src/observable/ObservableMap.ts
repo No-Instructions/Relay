@@ -5,10 +5,15 @@ import { Observable, type IObservable } from "./Observable";
 
 export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	protected _map: Map<K, V>;
+	protected _derivedMaps: WeakMap<
+		(value: V, key: K) => boolean,
+		DerivedMap<K, V>
+	>;
 
 	constructor(public observableName?: string) {
 		super();
 		this._map = new Map();
+		this._derivedMaps = new WeakMap();
 	}
 
 	set(key: K, value: V): ObservableMap<K, V> {
@@ -77,7 +82,13 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	}
 
 	filter(predicate: (value: V, key: K) => boolean): ObservableMap<K, V> {
-		return new DerivedMap<K, V>(this, predicate);
+		const existing = this._derivedMaps.get(predicate);
+		if (existing) {
+			return existing;
+		}
+		const derivedMap = new DerivedMap<K, V>(this, predicate);
+		this._derivedMaps.set(predicate, derivedMap);
+		return derivedMap;
 	}
 }
 
@@ -123,6 +134,12 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 		if ([...this._listeners.values()].length === 0 && this.unsub) {
 			this.unsub();
 			this.unsub = undefined;
+		}
+	}
+
+	destroy(): void {
+		if (this.unsub) {
+			this.unsub();
 		}
 	}
 }

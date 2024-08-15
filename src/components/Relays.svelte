@@ -14,22 +14,8 @@
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
-	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	const sharedFolders = plugin.sharedFolders;
-
-	let visibleRelays = derived(
-		[relayRoles, relays],
-		([$relayRoles, $relays]) => {
-			return $relays.filter((relay) => {
-				return $relayRoles.some(
-					(role) =>
-						role.relay?.guid === relay.guid &&
-						(role.role === "Owner" || role.role === "Member"),
-				);
-			});
-		},
-	);
 
 	let shareKey = "";
 	let invalidShareKey = false;
@@ -96,7 +82,7 @@
 </SettingItem>
 
 <SettingItemHeading name="Relays"></SettingItemHeading>
-{#each $visibleRelays.values().sort(sortFn) as relay}
+{#each $relays.values().sort(sortFn) as relay}
 	<SettingItem description="">
 		<span slot="name" style="display: inline-flex"
 			><Satellite class="svg-icon" />{relay.name}

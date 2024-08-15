@@ -26,6 +26,22 @@ import type { Unsubscriber } from "svelte/motion";
 import { Observable } from "./observable/Observable";
 import { PostOffice } from "./observable/Postie";
 
+interface Identified {
+	id: string;
+}
+
+function hasId(obj: any): obj is Identified {
+	return typeof obj.id === "string";
+}
+
+interface Named {
+	name: string;
+}
+
+function hasName(obj: any): obj is Named {
+	return typeof obj.name === "string";
+}
+
 interface UserDAO extends RecordModel {
 	id: string;
 	name: string;
@@ -94,6 +110,7 @@ interface RelayInvitationDAO extends RecordModel {
 
 interface Collection<D, A> {
 	collectionName: string;
+	items(): A[];
 	clear(): void;
 	get(id: string): A | undefined;
 	ingest(update: D): A;
@@ -106,6 +123,10 @@ class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 
 	constructor(roles: ObservableMap<string, RoleDAO>) {
 		this.roles = roles;
+	}
+
+	items(): RoleDAO[] {
+		return this.roles.values();
 	}
 
 	clear() {
@@ -131,7 +152,7 @@ interface hasRoot {
 }
 
 function hasRoot(obj: any): obj is hasRoot {
-	return typeof obj.aggregate_root === "function";
+	return typeof obj.aggregate_root === "object";
 }
 
 interface hasACL {
@@ -139,7 +160,7 @@ interface hasACL {
 }
 
 function hasACL(obj: any): obj is hasACL {
-	return typeof obj.acl === "function";
+	return typeof obj.acl === "object";
 }
 
 class Auto implements hasRoot, hasACL {
@@ -237,6 +258,10 @@ class RemoteFolderCollection
 		private users: ObservableMap<string, RelayUser>
 	) {}
 
+	items(): RemoteFolder[] {
+		return this.remoteFolders.values();
+	}
+
 	clear() {
 		this.remoteFolders.clear();
 	}
@@ -273,6 +298,10 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 		private subscriptions: ObservableMap<string, RelaySubscription>,
 		private user: RelayUser
 	) {}
+
+	items(): Relay[] {
+		return this.relays.values();
+	}
 
 	clear() {
 		this.relays.clear();
@@ -323,6 +352,10 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 		this.relays = relays;
 		this.users = users;
 		this.roles = roles;
+	}
+
+	items(): RelayRole[] {
+		return this.relayRoles.values();
 	}
 
 	clear() {
@@ -377,6 +410,10 @@ class RelayInvitationsCollection
 		this.roles = roles;
 	}
 
+	items(): RelayInvitation[] {
+		return this.relayInvitations.values();
+	}
+
 	clear() {
 		this.relayInvitations.clear();
 	}
@@ -410,6 +447,10 @@ class UserCollection implements Collection<UserDAO, RelayUser> {
 	collectionName: string = "users";
 
 	constructor(private users: ObservableMap<string, RelayUser>) {}
+
+	items(): RelayUser[] {
+		return this.users.values();
+	}
 
 	clear(): void {
 		this.users.clear();
@@ -447,6 +488,10 @@ class RelaySubscriptionCollection
 		private users: ObservableMap<string, RelayUser>
 	) {}
 
+	items(): RelaySubscription[] {
+		return this.subscriptions.values();
+	}
+
 	clear(): void {
 		this.subscriptions.clear();
 	}
@@ -478,7 +523,7 @@ class RelaySubscriptionCollection
 
 class Store {
 	collections: Map<string, Collection<unknown, unknown>>;
-	relationships: Map<[string, string], Set<[string, string]>>;
+	relationships: Map<string, Set<string>>;
 	warn: (message: string, ...args: unknown[]) => void;
 	error: (message: string, ...args: unknown[]) => void;
 
@@ -552,10 +597,10 @@ class Store {
 			if (aggregate_root) {
 				const pointer = record.id;
 				const refs =
-					this.relationships.get(aggregate_root) ||
-					new Set<[string, string]>();
-				refs.add([record.collectionName, pointer]);
-				this.relationships.set(aggregate_root, refs);
+					this.relationships.get(aggregate_root.join(":")) ||
+					new Set<string>();
+				refs.add([record.collectionName, pointer].join(":"));
+				this.relationships.set(aggregate_root.join(":"), refs);
 			}
 		}
 		if (hasACL(result)) {
@@ -563,9 +608,9 @@ class Store {
 			if (acl) {
 				const pointer = record.id;
 				const refs =
-					this.relationships.get(acl) || new Set<[string, string]>();
-				refs.add([record.collectionName, pointer]);
-				this.relationships.set(acl, refs);
+					this.relationships.get(acl.join(":")) || new Set<string>();
+				refs.add([record.collectionName, pointer].join(":"));
+				this.relationships.set(acl.join(":"), refs);
 			}
 		}
 		if (record.expand) {
@@ -584,20 +629,55 @@ class Store {
 		this.cascade(record.collectionName, record.id);
 	}
 
-	cascade(collectionName: string, id: string) {
-		const collection = this.collections.get(collectionName);
-		const children = this.relationships.get([collectionName, id]);
-		const postie = PostOffice.getInstance();
-		postie.beginTransaction();
-		for (const [childCollection, childId] of children || []) {
-			const collection = this.getCollection(childCollection);
-			if (collection) {
-				collection.delete(childId);
-				this.relationships.delete([collectionName, childId]);
+	graphviz() {
+		let dot = "digraph G {\n";
+		for (const [collectionName, collection] of this.collections) {
+			//dot += `  ${collectionName} [shape=box];\n`;
+			for (const record of collection.items()) {
+				if (!hasId(record)) {
+					this.warn("record has no id", record);
+					continue;
+				}
+				let name = collectionName + "_" + record.id;
+				if (hasName(record)) {
+					name = collectionName + "_" + record.name;
+				}
+				dot += `  ${collectionName}_${record.id} [label="${name}"];\n`;
+				if (hasId(record) && hasRoot(record)) {
+					if (record.aggregate_root) {
+						const [rootCollection, rootId] = record.aggregate_root;
+						dot += `  ${collectionName}_${record.id} -> ${rootCollection}_${rootId};\n`;
+					}
+				}
+				if (hasId(record) && hasACL(record)) {
+					if (record.acl) {
+						const [aclCollection, aclId] = record.acl;
+						dot += `  ${collectionName}_${record.id} -> ${aclCollection}_${aclId} [style=dotted];\n`;
+					}
+				}
 			}
 		}
+		dot += "}";
+		return dot;
+	}
+
+	cascade(collectionName: string, id: string) {
+		const collection = this.collections.get(collectionName);
+		const children = this.relationships.get([collectionName, id].join(":"));
+		const postie = PostOffice.getInstance();
+		postie.beginTransaction();
 		if (collection) {
+			this.warn("cascade delete parent", collectionName, id);
 			collection.delete(id);
+		}
+		this.relationships.delete([collectionName, id].join(":"));
+		for (const fqid of children || []) {
+			const [childCollection, childId] = fqid.split(":");
+			this.warn("cascade delete child", childCollection, childId);
+			const collection = this.getCollection(childCollection);
+			if (collection) {
+				this.cascade(childCollection, childId);
+			}
 		}
 		postie.commitTransaction();
 	}
@@ -661,6 +741,10 @@ class RelayRoleAuto extends Auto implements RelayRole {
 
 	public get aggregate_root(): [string, string] {
 		return ["relays", this.relayRole.relay];
+	}
+
+	public get acl(): [string, string] {
+		return ["users", this.relayRole.user];
 	}
 }
 
@@ -792,7 +876,7 @@ export class RelaySubscriptionAuto
 	}
 
 	public get acl() {
-		return ["relays", this.subscription.user];
+		return ["users", this.subscription.user];
 	}
 }
 
