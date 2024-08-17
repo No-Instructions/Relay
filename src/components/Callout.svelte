@@ -35,3 +35,9 @@
 		</p>
 	</div>
 </div>
+
+<style>
+.callout {
+  mix-blend-mode: normal !important;
+}
+</style>
