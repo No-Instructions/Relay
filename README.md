@@ -36,8 +36,8 @@ For more, check out this video: [Intro to the Modern State of Synchronization](h
 
 Oh, the things you can do.
 
-Here's a video tour: 
-[![Watch the video](https://img.youtube.com/vi/Ol6zDF5vrZo/maxresdefault.jpg)](https://youtu.be/Ol6zDF5vrZo)
+Here's a video tour:  
+[![Watch the video](https://f.system3.md/cdn-cgi/image/format=auto,width=600/walkthrough-video-thumbnail.png)](https://youtu.be/Ol6zDF5vrZo)
 
 
 ### Create a new relay
