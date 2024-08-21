@@ -28,7 +28,7 @@ Great question. CRDT stands for **conflict-free replicated data type** and it's 
 
 For a great intro and overview, watch the first 10 minutes of this video by Martin Kleppmann. If you want to get into the nitty-gritty, watch the whole thing.
 
-[![Intro to the Modern State of Synchronization](https://img.youtube.com/vi/x7drE24geUw/hqdefault.jpg)](https://youtube.com/watch?v=x7drE24geUw)
+[![Intro to the Modern State of Synchronization](https://f.system3.md/cdn-cgi/image/format=auto,width=600/crdt-explainer-thumnail.png)](https://youtube.com/watch?v=x7drE24geUw)
 
 For more, check out this video: [Intro to the Modern State of Synchronization](https://youtu.be/tSvlvMTHhWY?si=Rp6FepkeS7N6y3zO) by [Kevin Jahns](https://github.com/dmonad). Jahns is the maintainer of [Yjs](https://docs.yjs.dev/), which is the the open source CRDT that we use in Relay.
 
