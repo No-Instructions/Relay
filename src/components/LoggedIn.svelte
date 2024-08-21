@@ -56,40 +56,63 @@
 	function patchFetch() {
 		// Fetch API is broken for some versions of Electron
 		// https://github.com/electron/electron/pull/42419
-		if (!globalThis) {
-			console.warn("unable to patch fetch, global is not defined");
-		}
-		if ((globalThis as any).blinkfetch) {
-			console.warn("Using blinkFetch everywhere");
-			globalThis.fetch = (globalThis as any).blinkFetch;
-			const keys = [
-				"fetch",
-				"Response",
-				"FormData",
-				"Request",
-				"Headers",
-			];
-			for (const key of keys) {
-				(globalThis as any)[key] = (globalThis as any)[`blink${key}`];
+		try {
+			if ((globalThis as any).blinkfetch) {
+				console.warn("Using blinkFetch everywhere");
+				globalThis.fetch = (globalThis as any).blinkFetch;
+				const keys = [
+					"fetch",
+					"Response",
+					"FormData",
+					"Request",
+					"Headers",
+				];
+				for (const key of keys) {
+					(globalThis as any)[key] = (globalThis as any)[
+						`blink${key}`
+					];
+				}
 			}
+		} catch (e) {
+			console.error(e);
+		}
+	}
+
+	function getResponse() {
+		try {
+			return Response.toString();
+		} catch (e) {
+			return "undefined";
+		}
+	}
+
+	function getFetch() {
+		try {
+			return fetch.toString();
+		} catch (e) {
+			return "undefined";
+		}
+	}
+
+	function getUsingBlink() {
+		try {
+			return (globalThis as any)?.blinkfetch !== undefined ? "Yes" : "No";
+		} catch (e) {
+			return "No";
 		}
 	}
 
 	let patched = writable<boolean>(false);
 
-	const responseImpl = writable<string>(Response.toString());
-	const fetchImpl = writable<string>(fetch.toString());
-	const usingBlink = writable<string>(
-		(globalThis as any)?.blinkfetch !== undefined ? "Yes" : "No",
-	);
+	const responseImpl = writable<string>(getResponse());
+	const fetchImpl = writable<string>(getFetch());
+	const usingBlink = writable<string>(getUsingBlink());
 	const anyPb = writable<any>(plugin.loginManager.pb as any);
 
 	function refresh() {
-		responseImpl.set(Response.toString());
-		fetchImpl.set(fetch.toString());
-		usingBlink.set(
-			(globalThis as any)?.blinkfetch !== undefined ? "Yes" : "No",
-		);
+		responseImpl.set(getResponse());
+		fetchImpl.set(getFetch());
+		usingBlink.set(getUsingBlink());
 		anyPb.set(plugin.loginManager.pb as any);
 	}
 
@@ -106,8 +129,7 @@
 				})
 				.catch((e) => {
 					let message = e.message;
-					message = message + "\n" + typeof Response;
-					message = message + "\n" + Response.toString();
+					message = message + "\n" + getResponse();
 					error.set(message);
 					throw e;
 				});
