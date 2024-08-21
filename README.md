@@ -36,6 +36,10 @@ For more, check out this video: [Intro to the Modern State of Synchronization](h
 
 Oh, the things you can do.
 
+Here's a video tour: 
+[![Watch the video](https://img.youtube.com/vi/Ol6zDF5vrZo/maxresdefault.jpg)](https://youtu.be/Ol6zDF5vrZo)
+
+
 ### Create a new relay
 
 1. Go to Obsidian settings (gear icon in lower left of Obsidian)
