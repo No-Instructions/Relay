@@ -53,31 +53,6 @@
 		}
 	}
 
-	function patchFetch() {
-		// Fetch API is broken for some versions of Electron
-		// https://github.com/electron/electron/pull/42419
-		try {
-			if ((globalThis as any).blinkfetch) {
-				console.warn("Using blinkFetch everywhere");
-				globalThis.fetch = (globalThis as any).blinkFetch;
-				const keys = [
-					"fetch",
-					"Response",
-					"FormData",
-					"Request",
-					"Headers",
-				];
-				for (const key of keys) {
-					(globalThis as any)[key] = (globalThis as any)[
-						`blink${key}`
-					];
-				}
-			}
-		} catch (e) {
-			console.error(e);
-		}
-	}
-
 	function getResponse() {
 		try {
 			return Response.toString();
@@ -101,8 +76,6 @@
 			return "No";
 		}
 	}
-
-	let patched = writable<boolean>(false);
 
 	const responseImpl = writable<string>(getResponse());
 	const fetchImpl = writable<string>(getFetch());
@@ -351,51 +324,6 @@
 		<SettingItemHeading name="Connections" />
 		<ObjectState object={$anyPb.cancelControllers} />
 		<SettingItemHeading name="Advanced" />
-
-		<SettingItem
-			name="Patch Fetch API"
-			description="Workaround for Electron fetch API bug."
-		>
-			<button
-				disabled={$patched}
-				on:click={debounce(() => {
-					patchFetch();
-					refresh();
-					patched.set(true);
-				})}>Patch</button
-			>
-		</SettingItem>
-
-		<SettingItem
-			name="Custom fetch"
-			description="Uses requestUrl to avoid CORS preflight checks."
-		>
-			<div
-				aria-label="custom fetch can help avoid some network restrictions"
-				on:click={() => {
-					useCustomFetch.set(!$useCustomFetch);
-					initiate();
-				}}
-				role="checkbox"
-				aria-checked={$useCustomFetch}
-				tabindex="0"
-				on:keydown={debounce((e) => {
-					if (e.key === "Enter") {
-						useCustomFetch.set(!$useCustomFetch);
-						initiate();
-					}
-				})}
-				class="checkbox-container mod-small {$useCustomFetch
-					? 'is-enabled'
-					: ''}"
-			>
-				<input
-					type="checkbox"
-					tabindex="0"
-					bind:checked={$useCustomFetch}
-				/>
-			</div>
-		</SettingItem>
 
 		<SettingItem
 			name="Debug logs"
