@@ -282,8 +282,12 @@ class FileExplorerWalker {
 
 	private _getFileExplorerItem(path: string) {
 		// XXX this is a private API
-		//@ts-expect-error this is a private API
-		return this.fileExplorer.view.fileItems[path];
+		try {
+			//@ts-expect-error this is a private API
+			return this.fileExplorer.view.fileItems[path];
+		} catch (e) {
+			return null;
+		}
 	}
 	private getFileExplorerItem<T>(
 		fileExplorer: WorkspaceLeaf,
@@ -307,6 +311,9 @@ class FileExplorerWalker {
 	}
 
 	walk(folder: TFolder) {
+		if (this.fileExplorer.view.getViewType() !== "file-explorer") {
+			return;
+		}
 		const sharedFolder = this.sharedFolders.find(
 			(sharedFolder) => sharedFolder.path === folder.path
 		);
@@ -422,8 +429,23 @@ export class FolderNavigationDecorations {
 		return visitors;
 	}
 
+	getFileExplorers(): WorkspaceLeaf[] {
+		// IMPORTANT: We manually iterate because a popular plugin make.md monkeypatches
+		// getLeavesOfType to return their custom folder explorer.
+		const fileExplorers: WorkspaceLeaf[] = [];
+		this.workspace.iterateAllLeaves((leaf) => {
+			const viewType = leaf.view.getViewType();
+			if (viewType === "file-explorer") {
+				if (!fileExplorers.includes(leaf)) {
+					fileExplorers.push(leaf);
+				}
+			}
+		});
+		return fileExplorers;
+	}
+
 	quickRefresh() {
-		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
+		const fileExplorers = this.getFileExplorers();
 		const sharedFolders = this.sharedFolders.map((folder) => folder.path);
 		for (const fileExplorer of fileExplorers) {
 			const walker =
@@ -445,7 +467,7 @@ export class FolderNavigationDecorations {
 	}
 
 	refresh() {
-		const fileExplorers = this.workspace.getLeavesOfType("file-explorer");
+		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
 				this.treeState.get(fileExplorer) ||
