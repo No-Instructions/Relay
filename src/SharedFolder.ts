@@ -586,7 +586,6 @@ export class SharedFolder extends HasProvider {
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 		const knownPeersPromise = doc.hasKnownPeers();
 		const awaitingUpdatesPromise = this.awaitingUpdates();
-
 		if (loadFromDisk) {
 			(async () => {
 				const exists = await this.exists(doc);

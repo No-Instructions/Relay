@@ -1,6 +1,6 @@
 "use strict";
 
-import { Plugin, TFolder, Notice, MarkdownView } from "obsidian";
+import { TFolder, Notice, MarkdownView } from "obsidian";
 import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
@@ -22,6 +22,12 @@ import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
 import { updateYDocFromDiskBuffer } from "./BackgroundSync";
+import { Plugin } from "obsidian";
+
+import {
+	DifferencesView,
+	VIEW_TYPE_DIFFERENCES,
+} from "./differ/differencesView";
 import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
@@ -60,6 +66,7 @@ export default class Live extends Plugin {
 	warn!: (message: string, ...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
 	private settingsFileLocked = true;
+	fileDiffMergeWarningKey = "file-diff-merge-warning";
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -176,6 +183,10 @@ export default class Live extends Plugin {
 				this.networkStatus.start();
 			}
 
+			this.registerView(
+				VIEW_TYPE_DIFFERENCES,
+				(leaf) => new DifferencesView(leaf),
+			);
 			this.setup();
 			this.settingsFileLocked = false;
 			this._liveViews.refresh("init");
@@ -392,7 +403,9 @@ export default class Live extends Plugin {
 									}
 								});
 							}
-						} catch (e) {}
+						} catch (e) {
+							// fall back to differ
+						}
 					});
 					this.app.metadataCache.trigger("resolve", file);
 				}
@@ -426,6 +439,8 @@ export default class Live extends Plugin {
 		this.timeProvider.destroy();
 
 		this.folderNavDecorations?.destroy();
+
+		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
 		this._liveViews?.destroy();
 		this._liveViews = null as any;

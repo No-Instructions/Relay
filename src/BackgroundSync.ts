@@ -4,7 +4,7 @@ import { curryLog } from "./debug";
 
 export function updateYDocFromDiskBuffer(
 	ydoc: Y.Doc,
-	diskBuffer: string
+	diskBuffer: string,
 ): void {
 	// Get the YText from the YDoc
 	const ytext = ydoc.getText("contents");
@@ -30,6 +30,10 @@ export function updateYDocFromDiskBuffer(
 	log("Updating YDoc:");
 	log("Current content length:", currentContent.length);
 	log("Disk buffer length:", diskBuffer.length);
+
+	if (diffs.length == 0) {
+		return;
+	}
 
 	// Apply the diffs as updates to the YDoc
 	ydoc.transact(() => {

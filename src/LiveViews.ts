@@ -22,6 +22,7 @@ import {
 	yRemoteSelectionsTheme,
 } from "./y-codemirror.next/RemoteSelections";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
+import * as Differ from "./differ/differencesView";
 
 const BACKGROUND_CONNECTIONS = 20;
 
@@ -89,6 +90,10 @@ export class LoggedOutView implements S3View {
 	}
 }
 
+export function isLive(view: S3View): view is LiveView {
+	return view instanceof LiveView;
+}
+
 export class LiveView implements S3View {
 	view: MarkdownView;
 	document: Document;
@@ -98,6 +103,7 @@ export class LiveView implements S3View {
 	private _viewActions?: ViewActions;
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
+	private _banner?: Banner;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -133,6 +139,23 @@ export class LiveView implements S3View {
 
 	public get ytext(): Y.Text {
 		return this.document.ytext;
+	}
+
+	mergeBanner(): () => void {
+		this._banner = new Banner(
+			this.view,
+			"Merge conflict -- click to resolve",
+			async () => {
+				const diskBuffer = await this.document.diskBuffer();
+				this._parent.openDiffView({
+					file1: this.document,
+					file2: diskBuffer,
+					showMergeOption: true,
+				});
+				return true;
+			},
+		);
+		return () => {};
 	}
 
 	offlineBanner(): () => void {
@@ -206,6 +229,17 @@ export class LiveView implements S3View {
 		}
 	}
 
+	checkStale() {
+		this.document.checkStale().then((stale) => {
+			if (stale && this.document._diskBuffer?.contents && this.document.text) {
+				this.mergeBanner();
+			} else {
+				this._banner?.destroy();
+				this._banner = undefined;
+			}
+		});
+	}
+
 	attach(): Promise<LiveView> {
 		// can be called multiple times, whereas release is only ever called once
 		this.setConnectionDot();
@@ -236,6 +270,8 @@ export class LiveView implements S3View {
 		// Called when a view is released from management
 		this._viewActions?.$destroy();
 		this._viewActions = undefined;
+		this._banner?.destroy();
+		this._banner = undefined;
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
@@ -331,6 +367,10 @@ export class LiveViewManager {
 				});
 			}),
 		);
+	}
+
+	openDiffView(state: Differ.ViewState) {
+		Differ.openDiffView(this.workspace.workspace, state);
 	}
 
 	goOffline() {

@@ -14,7 +14,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDownloadOnAddToVault: false,
 	enableUploadOnShare: false,
 	enableSyncService: false,
-};
+}
 
 export type Flag = keyof FeatureFlags;
 

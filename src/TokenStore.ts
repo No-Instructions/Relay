@@ -2,6 +2,7 @@
 
 import { decodeJwt } from "jose";
 import type { TimeProvider } from "./TimeProvider";
+import { ObsidianLiveException } from "./Exceptions";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
@@ -274,7 +275,14 @@ export class TokenStore<TokenType extends HasToken> {
 		callback: (token: TokenType) => void,
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
-		if (this.tokenMap?.has(documentId)) {
+		if (!this.tokenMap) {
+			Promise.reject(
+				new ObsidianLiveException(
+					"attempted to get token after TokenStore was destroyed.",
+				),
+			);
+		}
+		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
