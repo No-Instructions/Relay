@@ -6,9 +6,10 @@ import { Facet, Annotation } from "@codemirror/state";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import { type S3View, LiveViewManager } from "../LiveViews";
+import { type S3View, LiveViewManager, isLive } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
+import { FeatureFlagManager } from "src/flagManager";
 
 export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 	Facet.define({
@@ -23,6 +24,7 @@ export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
 	view?: S3View;
 	connectionManager: LiveViewManager;
+	initialSet = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
 	log: (message: string) => void = (message: string) => {};
@@ -41,7 +43,6 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 		this.view.document.whenSynced().then(() => {
 			this.setBuffer();
-			this.view?.view.requestSave();
 		});
 
 		this._observer = (event, tr) => {
@@ -86,15 +87,25 @@ export class LiveCMPluginValue implements PluginValue {
 			this.view?.document.text !== this.editor.state.doc.toString()
 		) {
 			this.log(`setting buffer ${this.view?.document} ${this.editor}`);
-			this.editor.dispatch({
-				changes: {
-					from: 0,
-					to: this.editor.state.doc.length,
-					insert: this.view.document.text,
-				},
-				annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
-			});
-			return true;
+			if (isLive(this.view) && this.editor.state.doc.toString() !== "") {
+				this.view.document.diskBuffer(true).then(() => {
+					if (!this.view || !isLive(this.view)) {
+						return;
+					}
+					if (FeatureFlagManager.getInstance().flags.enableDiffResolution) {
+						this.view.checkStale();
+					}
+					this.editor.dispatch({
+						changes: {
+							from: 0,
+							to: this.editor.state.doc.length,
+							insert: this.view.document.text,
+						},
+						annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
+					});
+				});
+			}
+			return false;
 		}
 		return false;
 	}

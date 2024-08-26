@@ -5,6 +5,7 @@ import {
 	TAbstractFile,
 	TFolder,
 	type DataAdapter,
+	TFile,
 } from "obsidian";
 import { Observable } from "lib0/observable";
 import path from "path-browserify";
@@ -23,6 +24,7 @@ export interface Vault extends Observable<string> {
 	rename(file: TAbstractFile, newName: string): void;
 	getFolderByPath(path: string): TFolder | null;
 	getAbstractFileByPath(path: string): TAbstractFile | null;
+	cachedRead(file: TFile): Promise<string>;
 }
 
 export class VaultFacade extends Observable<string> implements Vault {
@@ -37,6 +39,10 @@ export class VaultFacade extends Observable<string> implements Vault {
 
 	public getName(): string {
 		return this.app.vault.getName();
+	}
+
+	cachedRead(file: TFile): Promise<string> {
+		return this.app.vault.cachedRead(file);
 	}
 
 	public get root(): string {

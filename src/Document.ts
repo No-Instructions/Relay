@@ -1,5 +1,4 @@
 "use strict";
-import type { TFile } from "obsidian";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
@@ -7,16 +6,27 @@ import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import { curryLog } from "./debug";
+import type { TFile, Vault, TFolder } from "obsidian";
 import type { VaultFacade } from "./obsidian-api/Vault";
+import { DiskBuffer } from "./DiskBuffer";
 
-export class Document extends HasProvider {
+export class Document extends HasProvider implements TFile {
 	guid: string;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
 	_hasKnownPeers?: boolean;
 	path: string;
-	staleText = "";
 	_tfile: TFile | null;
+	name: string;
+	extension: string;
+	basename: string;
+	vault: Vault;
+	stat: {
+		ctime: number;
+		mtime: number;
+		size: number;
+	};
+	_diskBuffer?: DiskBuffer;
 
 	debug!: (message?: any, ...optionalParams: any[]) => void;
 	log!: (message?: any, ...optionalParams: any[]) => void;
@@ -43,23 +53,39 @@ export class Document extends HasProvider {
 		this.guid = guid;
 		this._parent = parent;
 		this.path = path;
+		this.name = "[CRDT] " + path.split("/").pop() || "";
+		this.extension = this.name.split(".").pop() || "";
+		this.basename = this.name.replace(`.${this.extension}`, "");
+		this.vault = (this._parent.vault as VaultFacade).app.vault; // XXX so sick of this..
+		this.stat = {
+			ctime: Date.now(),
+			mtime: Date.now(),
+			size: 0,
+		};
+
 		this.setLoggers(`[SharedDoc](${this.path})`);
-
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
-
 		this.ydoc.on(
 			"update",
 			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 				//this.log(`Update from origin`, origin, update);
+				this.updateStats();
 			},
 		);
 		this._tfile = null;
 	}
 
 	move(newPath: string) {
-		// XXX: Maybe a document should reference a TFile instead of a path...
 		this.path = newPath;
+		this.name = newPath.split("/").pop() || "";
+		this.extension = this.name.split(".").pop() || "";
+		this.basename = this.name.replace(`.${this.extension}`, "");
 		this.setLoggers(`[SharedDoc](${this.path})`);
+		this.updateStats();
+	}
+
+	public get parent(): TFolder | null {
+		return this.tfile?.parent || null;
 	}
 	public getInvalidLinks(): { from: number; to: number }[] {
 		if (!this.tfile) return [];
@@ -91,7 +117,6 @@ export class Document extends HasProvider {
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
-
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
 			this._tfile = this._parent.getTFile(this);
@@ -105,6 +130,33 @@ export class Document extends HasProvider {
 
 	public get text(): string {
 		return this.ytext.toString();
+	}
+
+	public async diskBuffer(read = false): Promise<TFile> {
+		if (read || this._diskBuffer === undefined) {
+			const fileContents = await this._parent.read(this);
+			return this.setDiskBuffer(fileContents);
+		}
+		return this._diskBuffer;
+	}
+
+	setDiskBuffer(contents: string): TFile {
+		if (this._diskBuffer) {
+			this._diskBuffer.contents = contents;
+		} else {
+			this._diskBuffer = new DiskBuffer(
+				(this._parent.vault as VaultFacade).app.vault,
+				"local disk",
+				contents,
+			);
+		}
+		return this._diskBuffer;
+	}
+
+	public async checkStale(): Promise<boolean> {
+		await this.whenReady();
+		const diskBuffer = await this.diskBuffer();
+		return this.text !== (diskBuffer as DiskBuffer).contents;
 	}
 
 	connect(): Promise<boolean> {
@@ -168,5 +220,39 @@ export class Document extends HasProvider {
 		}
 		super.destroy();
 		this.ydoc.destroy();
+		if (this._diskBuffer) {
+			this._diskBuffer.contents = "";
+			this._diskBuffer = undefined;
+		}
+	}
+
+	public async read(): Promise<string> {
+		return this.text;
+	}
+
+	public async rename(newPath: string): Promise<void> {
+		this.move(newPath);
+	}
+
+	public async delete(): Promise<void> {
+		this.destroy();
+	}
+
+	// Helper method to update file stats
+	private updateStats(): void {
+		this.stat.mtime = Date.now();
+		this.stat.size = this.text.length;
+	}
+
+	// Additional methods that might be useful
+	public async write(content: string): Promise<void> {
+		this.ytext.delete(0, this.ytext.length);
+		this.ytext.insert(0, content);
+		this.updateStats();
+	}
+
+	public async append(content: string): Promise<void> {
+		this.ytext.insert(this.ytext.length, content);
+		this.updateStats();
 	}
 }
