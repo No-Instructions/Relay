@@ -10,6 +10,7 @@ import { connectionManagerFacet } from "src/y-codemirror.next/LiveEditPlugin";
 import { type S3View, LiveViewManager } from "../LiveViews";
 import { curryLog } from "src/debug";
 import { FeatureFlagManager } from "src/flagManager";
+import type { CachedMetadata, TFile } from "obsidian";
 
 export const invalidLinkSyncAnnotation = Annotation.define();
 
@@ -17,13 +18,26 @@ export class InvalidLinkPluginValue {
 	editor: EditorView;
 	view?: S3View;
 	connectionManager: LiveViewManager | null;
+	linkRanges: { from: number; to: number }[];
 	decorations: DecorationSet;
 	log: (message: string) => void = (message: string) => {};
+	offMetadataUpdates = () => {};
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
 		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
 		this.decorations = Decoration.none;
+		this.linkRanges = [];
+		const cb = (tfile: TFile, data: string, cache: CachedMetadata) => {
+			if (tfile !== this.view?.document?.tfile) {
+				return;
+			}
+			this.updateFromMetadata();
+		};
+		const offRef = app.metadataCache.on("changed", cb);
+		this.offMetadataUpdates = () => {
+			app.metadataCache.offref(offRef);
+		};
 
 		if (FeatureFlagManager.getInstance().flags.enableInvalidLinkDecoration) {
 			if (!this.connectionManager) {
@@ -48,10 +62,16 @@ export class InvalidLinkPluginValue {
 
 			if (this.view.document) {
 				this.view.document.whenSynced().then(() => {
+					this.updateFromMetadata();
 					this.updateDecorations();
 				});
 			}
 		}
+	}
+
+	updateFromMetadata() {
+		if (!this.view || !this.view.document) return;
+		this.linkRanges = this.view.document.getInvalidLinks();
 	}
 
 	updateDecorations() {
@@ -60,11 +80,7 @@ export class InvalidLinkPluginValue {
 			return;
 		}
 
-		if (!this.view || !this.view.document) return;
-
-		const invalidLinks = this.view.document.getInvalidLinks();
-
-		const decorations = invalidLinks.map(({ from, to }) =>
+		const decorations = this.linkRanges.map(({ from, to }) =>
 			Decoration.mark({
 				class: "invalid-link",
 				attributes: {
@@ -73,16 +89,26 @@ export class InvalidLinkPluginValue {
 				},
 			}).range(from, to),
 		);
-
-		this.decorations = Decoration.set(decorations);
+		if (decorations) {
+			this.decorations = Decoration.set(decorations);
+		} else {
+			this.decorations = Decoration.none;
+		}
 	}
-
 	update(update: ViewUpdate) {
 		if (this.connectionManager) {
 			this.view = this.connectionManager.findView(update.view);
 		}
 
 		if (update.docChanged) {
+			this.linkRanges = this.linkRanges
+				.map((range) => {
+					const newFrom = update.changes.mapPos(range.from);
+					const newTo = update.changes.mapPos(range.to);
+					return { from: newFrom, to: newTo };
+				})
+				.filter((value) => value.from !== value.to)
+				.filter((value) => value.to < update.state.doc.length);
 			this.updateDecorations();
 		}
 
@@ -90,6 +116,7 @@ export class InvalidLinkPluginValue {
 	}
 
 	destroy() {
+		this.offMetadataUpdates();
 		this.decorations = Decoration.none;
 		this.connectionManager = null;
 		this.view = undefined;

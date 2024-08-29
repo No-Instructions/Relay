@@ -1,3 +1,9 @@
+.invalid-link::after {
+	content: "🔐";
+	font-size: 0.8em;
+	vertical-align: super;
+}
+
 .remote-caret {
 	position: absolute;
 	border-left: black;

@@ -1,27 +1,27 @@
-import { MarkdownView, Platform } from "obsidian";
-import { Document } from "./Document";
-import { SharedFolder, SharedFolders } from "./SharedFolder";
-import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import type { Extension } from "@codemirror/state";
 import { Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
+import { MarkdownView, Platform, moment } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
+import * as Y from "yjs";
+import { Document } from "./Document";
+import type { ConnectionState } from "./HasProvider";
+import { LoginManager } from "./LoginManager";
+import NetworkStatus from "./NetworkStatus";
+import { SharedFolder, SharedFolders } from "./SharedFolder";
+import { curryLog } from "./debug";
+import { WorkspaceFacade } from "./obsidian-api/Workspace";
+import { promiseWithTimeout } from "./promiseUtils";
+import { Banner } from "./ui/Banner";
 import {
-	connectionManagerFacet,
 	LiveEdit,
+	connectionManagerFacet,
 } from "./y-codemirror.next/LiveEditPlugin";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
 } from "./y-codemirror.next/RemoteSelections";
-import { curryLog } from "./debug";
-import { YText } from "yjs/dist/src/types/YText";
-import { Banner } from "./ui/Banner";
-import { LoginManager } from "./LoginManager";
-import NetworkStatus from "./NetworkStatus";
-import { promiseWithTimeout } from "./promiseUtils";
-import type { ConnectionState } from "./HasProvider";
-import { moment } from "obsidian";
+import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 
 const BACKGROUND_CONNECTIONS = 20;
 
@@ -131,7 +131,7 @@ export class LiveView implements S3View {
 		}
 	}
 
-	public get ytext(): YText {
+	public get ytext(): Y.Text {
 		return this.document.ytext;
 	}
 
@@ -623,6 +623,7 @@ export class LiveViewManager {
 				LiveEdit,
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
+				InvalidLinkPlugin,
 			]);
 			this.workspace.updateOptions();
 		}

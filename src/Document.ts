@@ -1,12 +1,13 @@
 "use strict";
-import * as Y from "yjs";
+import type { TFile } from "obsidian";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
+import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
-import { SharedFolder } from "./SharedFolder";
-import { YText } from "yjs/dist/src/internals";
-import { curryLog } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
+import { SharedFolder } from "./SharedFolder";
+import { curryLog } from "./debug";
+import type { VaultFacade } from "./obsidian-api/Vault";
 
 export class Document extends HasProvider {
 	guid: string;
@@ -14,6 +15,13 @@ export class Document extends HasProvider {
 	private _persistence: IndexeddbPersistence;
 	_hasKnownPeers?: boolean;
 	path: string;
+	staleText = "";
+	_tfile: TFile | null;
+
+	debug!: (message?: any, ...optionalParams: any[]) => void;
+	log!: (message?: any, ...optionalParams: any[]) => void;
+	warn!: (message?: any, ...optionalParams: any[]) => void;
+	error!: (message?: any, ...optionalParams: any[]) => void;
 
 	setLoggers(context: string) {
 		this.debug = curryLog(context, "debug");
@@ -45,6 +53,7 @@ export class Document extends HasProvider {
 				//this.log(`Update from origin`, origin, update);
 			},
 		);
+		this._tfile = null;
 	}
 
 	move(newPath: string) {
@@ -52,12 +61,45 @@ export class Document extends HasProvider {
 		this.path = newPath;
 		this.setLoggers(`[SharedDoc](${this.path})`);
 	}
+	public getInvalidLinks(): { from: number; to: number }[] {
+		if (!this.tfile) return [];
+
+		const app = (this._parent.vault as VaultFacade).app;
+		const fileCache = app.metadataCache.getFileCache(this.tfile);
+		if (!fileCache || !fileCache.links) return [];
+
+		const invalidLinks: { from: number; to: number }[] = [];
+
+		fileCache.links.forEach((link) => {
+			const linkedFile = app.metadataCache.getFirstLinkpathDest(
+				link.link,
+				this.path,
+			);
+			if (linkedFile && !this._parent.checkPath(linkedFile.path)) {
+				const start =
+					link.position.end.offset - 2 - (link.displayText?.length || 1);
+				const end = link.position.end.offset - 2;
+				invalidLinks.push({
+					from: start,
+					to: end,
+				});
+			}
+		});
+		return invalidLinks;
+	}
 
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
 
-	public get ytext(): YText {
+	public get tfile(): TFile | null {
+		if (!this._tfile) {
+			this._tfile = this._parent.getTFile(this);
+		}
+		return this._tfile;
+	}
+
+	public get ytext(): Y.Text {
 		return this.ydoc.getText("contents");
 	}
 

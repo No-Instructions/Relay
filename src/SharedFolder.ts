@@ -1,6 +1,12 @@
 "use strict";
 import * as Y from "yjs";
-import { TAbstractFile, TFolder, debounce, normalizePath } from "obsidian";
+import {
+	TAbstractFile,
+	TFile,
+	TFolder,
+	debounce,
+	normalizePath,
+} from "obsidian";
 import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
@@ -86,7 +92,7 @@ export class SharedFolder extends HasProvider {
 	docset: Documents;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
-	private vault: Vault;
+	public vault: Vault;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
@@ -506,6 +512,14 @@ export class SharedFolder extends HasProvider {
 			this.warn(e, path);
 			throw e;
 		}
+	}
+
+	getTFile(doc: Document): TFile | null {
+		const maybeTFile = this.vault.getAbstractFileByPath(this.getPath(doc.path));
+		if (maybeTFile instanceof TFile) {
+			return maybeTFile;
+		}
+		return null;
 	}
 
 	getDoc(
