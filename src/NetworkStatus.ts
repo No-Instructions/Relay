@@ -85,7 +85,7 @@ class NetworkStatus {
 
 	public addEventListener(
 		eventType: "online" | "offline",
-		callback: Callback
+		callback: Callback,
 	): void {
 		if (eventType === "online") {
 			this.onOnline.push(callback);

@@ -28,7 +28,7 @@ export class YRange {
 	static fromJSON(json: any): YRange {
 		return new YRange(
 			Y.createRelativePositionFromJSON(json.yanchor),
-			Y.createRelativePositionFromJSON(json.yhead)
+			Y.createRelativePositionFromJSON(json.yhead),
 		);
 	}
 }

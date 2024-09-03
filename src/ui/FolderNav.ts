@@ -59,13 +59,13 @@ interface FileSystemVisitor<T> {
 		folder: TFolder,
 		item: FolderItem,
 		storage?: T,
-		sharedFolder?: SharedFolder
+		sharedFolder?: SharedFolder,
 	): T | null;
 	visitFile(
 		file: TFile,
 		item: FileItem,
 		storage?: T,
-		sharedFolder?: SharedFolder
+		sharedFolder?: SharedFolder,
 	): T | null;
 }
 
@@ -78,7 +78,7 @@ class BaseVisitor<T extends Destroyable> implements FileSystemVisitor<T> {
 		folder: TFolder,
 		item: FolderItem,
 		storage?: T,
-		sharedFolder?: SharedFolder
+		sharedFolder?: SharedFolder,
 	): T | null {
 		// do nothing
 		return null;
@@ -88,7 +88,7 @@ class BaseVisitor<T extends Destroyable> implements FileSystemVisitor<T> {
 		file: TFile,
 		item: FileItem,
 		storage: T,
-		sharedFolder: SharedFolder
+		sharedFolder: SharedFolder,
 	): T | null {
 		// do nothing
 		return null;
@@ -128,7 +128,7 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 		folder: TFolder,
 		item: FolderItem,
 		storage: FolderBar,
-		sharedFolder?: SharedFolder
+		sharedFolder?: SharedFolder,
 	): FolderBar | null {
 		if (sharedFolder) {
 			return storage || new FolderBar(item.selfEl, sharedFolder);
@@ -166,7 +166,7 @@ class PillDecoration {
 					status: state.status,
 					remote: this.sharedFolder.remote,
 				});
-			}
+			},
 		);
 	}
 
@@ -182,7 +182,7 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 		folder: TFolder,
 		item: FolderItem,
 		storage?: PillDecoration,
-		sharedFolder?: SharedFolder
+		sharedFolder?: SharedFolder,
 	): PillDecoration | null {
 		if (sharedFolder) {
 			return storage || new PillDecoration(item.selfEl, sharedFolder);
@@ -238,7 +238,7 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 		file: TFile,
 		item: FileItem,
 		storage?: DocumentStatus,
-		sharedFolder?: SharedFolder
+		sharedFolder?: SharedFolder,
 	): DocumentStatus | null {
 		if (sharedFolder) {
 			try {
@@ -265,7 +265,7 @@ class FileExplorerWalker {
 	constructor(
 		fileExplorer: WorkspaceLeaf,
 		sharedFolders: SharedFolders,
-		visitors: FileSystemVisitor<Destroyable>[]
+		visitors: FileSystemVisitor<Destroyable>[],
 	) {
 		this.fileExplorer = fileExplorer;
 		this.sharedFolders = sharedFolders;
@@ -289,20 +289,17 @@ class FileExplorerWalker {
 			return null;
 		}
 	}
-	private getFileExplorerItem<T>(
-		fileExplorer: WorkspaceLeaf,
-		file: string
-	): T;
+	private getFileExplorerItem<T>(fileExplorer: WorkspaceLeaf, file: string): T;
 
 	private getFileExplorerItem<T>(
 		fileExplorer: WorkspaceLeaf,
-		file: TAbstractFile
+		file: TAbstractFile,
 	): T;
 
 	// XXX this is a private API
 	private getFileExplorerItem<T>(
 		fileExplorer: WorkspaceLeaf,
-		fileOrFolder: TAbstractFile | string
+		fileOrFolder: TAbstractFile | string,
 	) {
 		if (typeof fileOrFolder === "string") {
 			return this._getFileExplorerItem(fileOrFolder) as T;
@@ -315,11 +312,11 @@ class FileExplorerWalker {
 			return;
 		}
 		const sharedFolder = this.sharedFolders.find(
-			(sharedFolder) => sharedFolder.path === folder.path
+			(sharedFolder) => sharedFolder.path === folder.path,
 		);
 		const folderItem = this.getFileExplorerItem<FolderItem>(
 			this.fileExplorer,
-			folder
+			folder,
 		);
 		if (folderItem) {
 			// XXX cache this
@@ -329,7 +326,7 @@ class FileExplorerWalker {
 					folder,
 					folderItem,
 					stored,
-					sharedFolder
+					sharedFolder,
 				);
 				if (stored && !update) {
 					store.delete(folderItem);
@@ -344,7 +341,7 @@ class FileExplorerWalker {
 			} else if (child instanceof TFile) {
 				const fileItem = this.getFileExplorerItem<FileItem>(
 					this.fileExplorer,
-					child
+					child,
 				);
 				this.storage.forEach((store, visitor) => {
 					const stored = store.get(fileItem);
@@ -352,7 +349,7 @@ class FileExplorerWalker {
 						child,
 						fileItem,
 						stored,
-						sharedFolder
+						sharedFolder,
 					);
 					if (stored && !update) {
 						store.delete(fileItem);
@@ -386,7 +383,7 @@ export class FolderNavigationDecorations {
 		vault: VaultFacade,
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
-		showDocumentStatus = false
+		showDocumentStatus = false,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
@@ -399,14 +396,13 @@ export class FolderNavigationDecorations {
 			this.sharedFolders.forEach((folder) => {
 				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
 				if (showDocumentStatus) {
-					const docsetListener =
-						this.offDocumentListeners.get(folder);
+					const docsetListener = this.offDocumentListeners.get(folder);
 					if (!docsetListener) {
 						this.offDocumentListeners.set(
 							folder,
 							folder.docset.on(() => {
 								this.refresh();
-							})
+							}),
 						);
 					}
 				}
@@ -453,12 +449,11 @@ export class FolderNavigationDecorations {
 				new FileExplorerWalker(
 					fileExplorer,
 					this.sharedFolders,
-					this.makeVisitors()
+					this.makeVisitors(),
 				);
 			this.treeState.set(fileExplorer, walker);
 			for (const sharedFolderPath of sharedFolders) {
-				const sharedFolder =
-					this.vault.getAbstractFileByPath(sharedFolderPath);
+				const sharedFolder = this.vault.getAbstractFileByPath(sharedFolderPath);
 				if (sharedFolder instanceof TFolder) {
 					walker.walk(sharedFolder);
 				}
@@ -474,7 +469,7 @@ export class FolderNavigationDecorations {
 				new FileExplorerWalker(
 					fileExplorer,
 					this.sharedFolders,
-					this.makeVisitors()
+					this.makeVisitors(),
 				);
 			this.treeState.set(fileExplorer, walker);
 			const root = this.vault.getAbstractFileByPath("/");

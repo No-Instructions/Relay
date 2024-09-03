@@ -15,16 +15,16 @@ export class FolderSuggestModal extends SuggestModal<Suggestion> {
 	constructor(
 		app: App,
 		private sharedFolders: SharedFolders,
-		public onChoose: (folder: string) => void
+		public onChoose: (folder: string) => void,
 	) {
 		super(app);
 		this.sharedPaths = new Set<string>(
-			this.sharedFolders.map((folder) => folder.path)
+			this.sharedFolders.map((folder) => folder.path),
 		);
 		this.hasRemotes = new Set<string>(
 			this.sharedFolders
 				.filter((folder) => folder.remote !== undefined)
-				.map((folder) => folder.path)
+				.map((folder) => folder.path),
 		);
 		this.setInstructions([
 			{

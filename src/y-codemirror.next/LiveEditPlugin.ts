@@ -29,17 +29,13 @@ export class LiveCMPluginValue implements PluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.facet(
-			connectionManagerFacet
-		);
+		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
 		this.view = this.connectionManager.findView(editor);
 		this.editor = editor;
 		if (!this.view) {
 			return;
 		}
-		this.log = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`
-		);
+		this.log = curryLog(`[LiveCMPluginValue][${this.view.view.file?.path}]`);
 		this.log("created");
 		if (!this.view.document) {
 			return;

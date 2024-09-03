@@ -46,7 +46,7 @@ export class PostOffice {
 	send<T>(
 		sender: T & IObservable<T>,
 		recipient: (value: T) => void,
-		immediate: boolean = false
+		immediate: boolean = false,
 	): void {
 		const mail: Mail<T> = {
 			sender,
@@ -71,7 +71,7 @@ export class PostOffice {
 
 	private deliverImmediate<T>(
 		sender: T & IObservable<T>,
-		recipient: (value: T) => void
+		recipient: (value: T) => void,
 	): void {
 		recipient(sender);
 		this.deliveredMailLog.push({
@@ -142,7 +142,7 @@ export class PostOffice {
 			_log(
 				`  Sender: ${
 					mail.sender.observableName || mail.sender.constructor.name
-				}`
+				}`,
 			);
 			_log(`  Recipient: ${mail.recipient.name || "Anonymous function"}`);
 			_log(`  Recipient Origin: ${mail.recipientOrigin || "Unknown"}`);

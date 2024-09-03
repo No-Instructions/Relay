@@ -62,7 +62,7 @@ export class LoggedOutView implements S3View {
 	constructor(
 		connectionManager: LiveViewManager,
 		view: MarkdownView,
-		login: () => Promise<boolean>
+		login: () => Promise<boolean>,
 	) {
 		this._parent = connectionManager; // for debug
 		this.view = view;
@@ -75,7 +75,7 @@ export class LoggedOutView implements S3View {
 			"Login to enable Live edits",
 			async () => {
 				return await this.login();
-			}
+			},
 		);
 		return Promise.resolve(this);
 	}
@@ -101,7 +101,7 @@ export class LiveView implements S3View {
 		view: MarkdownView,
 		document: Document,
 		shouldConnect = true,
-		canConnect = true
+		canConnect = true,
 	) {
 		this._parent = connectionManager; // for debug
 		this.view = view;
@@ -141,7 +141,7 @@ export class LiveView implements S3View {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
 					return this._parent.networkStatus.online;
-				}
+				},
 			);
 			this._parent.networkStatus.onceOnline(() => {
 				this.connect();
@@ -156,7 +156,7 @@ export class LiveView implements S3View {
 			this.view.containerEl.querySelector(".view-actions");
 		if (viewActionsElement && viewActionsElement.firstChild) {
 			const viewActions = this.view.containerEl.querySelectorAll(
-				".system3-view-action"
+				".system3-view-action",
 			);
 			if (!this._viewActions) {
 				if (viewActions.length > 0) {
@@ -184,7 +184,7 @@ export class LiveView implements S3View {
 							document: this.document,
 							state: state,
 						});
-					}
+					},
 				);
 			}
 			this._viewActions.$set({
@@ -253,7 +253,7 @@ export class LiveViewManager {
 		workspace: WorkspaceFacade,
 		sharedFolders: SharedFolders,
 		loginManager: LoginManager,
-		networkStatus: NetworkStatus
+		networkStatus: NetworkStatus,
 	) {
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
@@ -272,7 +272,7 @@ export class LiveViewManager {
 		this.offListeners.push(
 			this.loginManager.on(() => {
 				this.refresh("[LoginManager]");
-			})
+			}),
 		);
 
 		const folderSub = (folder: SharedFolder) => {
@@ -310,7 +310,7 @@ export class LiveViewManager {
 						this.folderListeners.set(folder, folderSub(folder));
 					}
 				});
-			})
+			}),
 		);
 	}
 
@@ -413,21 +413,17 @@ export class LiveViewManager {
 			views
 				.filter((view) => view instanceof LiveView)
 				.map(async (view) =>
-					(view as LiveView).document
-						.whenReady()
-						.then((_) => view as LiveView)
-				)
+					(view as LiveView).document.whenReady().then((_) => view as LiveView),
+				),
 		);
 	}
 
 	private async viewsAttachedWithConnectionPool(
 		views: S3View[],
-		backgroundConnections: number = BACKGROUND_CONNECTIONS
+		backgroundConnections: number = BACKGROUND_CONNECTIONS,
 	): Promise<S3View[]> {
 		const activeView =
-			this.workspace.workspace.getActiveViewOfType<MarkdownView>(
-				MarkdownView
-			);
+			this.workspace.workspace.getActiveViewOfType<MarkdownView>(MarkdownView);
 
 		let attemptedConnections = 0;
 
@@ -436,8 +432,7 @@ export class LiveViewManager {
 				if (view.view === activeView) {
 					view.canConnect = true;
 				} else {
-					view.canConnect =
-						attemptedConnections < backgroundConnections;
+					view.canConnect = attemptedConnections < backgroundConnections;
 					attemptedConnections++;
 				}
 			}
@@ -447,7 +442,7 @@ export class LiveViewManager {
 			this.warn(
 				`[System 3][Relay][Live Views] connection pool (max ${backgroundConnections}): rejected connections for ${
 					attemptedConnections - backgroundConnections
-				} views`
+				} views`,
 			);
 		}
 
@@ -458,7 +453,7 @@ export class LiveViewManager {
 		return await Promise.all(
 			views.map(async (view) => {
 				return view.attach();
-			})
+			}),
 		);
 	}
 
@@ -489,7 +484,7 @@ export class LiveViewManager {
 
 	async _refreshViews(
 		context: string,
-		queuedAt: moment.Moment
+		queuedAt: moment.Moment,
 	): Promise<boolean> {
 		const ctx = `[LiveViews][${context}]`;
 		const log = curryLog(ctx, "warn");
@@ -532,15 +527,14 @@ export class LiveViewManager {
 		if (stale.length === 0 && ViewsetsEqual(matching, this.views)) {
 			// We can assume all views are ready.
 			const attachedViews = await this.viewsAttachedWithConnectionPool(
-				this.views
+				this.views,
 			);
 			log("Attached Views", attachedViews);
 		} else {
 			const readyViews = await this.viewsReady(matching);
 			log("Ready Views", readyViews);
-			const attachedViews = await this.viewsAttachedWithConnectionPool(
-				readyViews
-			);
+			const attachedViews =
+				await this.viewsAttachedWithConnectionPool(readyViews);
 			log("Attached Views", attachedViews);
 			this.views = matching;
 		}
@@ -573,12 +567,12 @@ export class LiveViewManager {
 			} else {
 				this._activePromise = promiseWithTimeout<boolean>(
 					this.refreshQueue.pop()!(),
-					timeout
+					timeout,
 				)
 					.catch((e) => {
 						this.warn(
 							`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
-							e
+							e,
 						);
 						this._activePromise = null;
 						return false;

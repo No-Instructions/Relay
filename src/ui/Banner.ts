@@ -9,7 +9,7 @@ export class Banner {
 	constructor(
 		view: MarkdownView,
 		text: string,
-		onClick: () => Promise<boolean>
+		onClick: () => Promise<boolean>,
 	) {
 		this.view = view;
 		this.text = text;

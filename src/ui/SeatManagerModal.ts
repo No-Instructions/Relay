@@ -12,7 +12,7 @@ export class SeatManagerModal extends Modal {
 	constructor(
 		app: App,
 		currentQuantity: number,
-		onSubmit: (quantity: number) => void
+		onSubmit: (quantity: number) => void,
 	) {
 		super(app);
 		this.currentQuantity = currentQuantity;
@@ -33,24 +33,22 @@ export class SeatManagerModal extends Modal {
 						this.selectedQuantity--;
 						this.updateDisplay();
 					}
-				})
+				}),
 			)
 			.addText((text) =>
-				text
-					.setValue(this.selectedQuantity.toString())
-					.onChange((value) => {
-						const newValue = parseInt(value, 10);
-						if (!isNaN(newValue) && newValue >= 3) {
-							this.selectedQuantity = newValue;
-							this.updateDisplay();
-						}
-					})
+				text.setValue(this.selectedQuantity.toString()).onChange((value) => {
+					const newValue = parseInt(value, 10);
+					if (!isNaN(newValue) && newValue >= 3) {
+						this.selectedQuantity = newValue;
+						this.updateDisplay();
+					}
+				}),
 			)
 			.addButton((btn) =>
 				btn.setIcon("plus").onClick(() => {
 					this.selectedQuantity++;
 					this.updateDisplay();
-				})
+				}),
 			);
 
 		this.actionButtonEl = contentEl.createEl("button", {

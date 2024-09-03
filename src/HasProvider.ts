@@ -44,7 +44,7 @@ export interface Subscription {
 function makeProvider(
 	clientToken: ClientToken,
 	ydoc: Doc,
-	user?: User
+	user?: User,
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
@@ -57,7 +57,7 @@ function makeProvider(
 			connect: false,
 			params: params,
 			disableBc: true,
-		}
+		},
 	);
 
 	if (user) {
@@ -92,7 +92,7 @@ export class HasProvider {
 	constructor(
 		s3rn: S3RNType,
 		tokenStore: LiveTokenStore,
-		loginManager: LoginManager
+		loginManager: LoginManager,
 	) {
 		this._s3rn = s3rn;
 		this.listeners = new Map<unknown, Listener>();
@@ -112,13 +112,12 @@ export class HasProvider {
 				const shouldConnect =
 					this._provider.url &&
 					this._provider.shouldConnect &&
-					this._provider.wsUnsuccessfulReconnects <
-						this.PROVIDER_MAX_ERRORS;
+					this._provider.wsUnsuccessfulReconnects < this.PROVIDER_MAX_ERRORS;
 				this.disconnect();
 				if (shouldConnect) {
 					this.connect();
 				}
-			}
+			},
 		);
 		connectionErrorSub.on();
 		this._offConnectionError = connectionErrorSub.off;
@@ -126,7 +125,7 @@ export class HasProvider {
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
 				this.notifyListeners();
-			}
+			},
 		);
 		stateSub.on();
 		this._offState = stateSub.off;
@@ -165,15 +164,12 @@ export class HasProvider {
 		const tokenPromise = this.tokenStore.getToken(
 			S3RN.encode(this.s3rn),
 			this.path || "unknown",
-			this.refreshProvider.bind(this)
+			this.refreshProvider.bind(this),
 		);
 		if (Platform.isIosApp) {
 			return tokenPromise;
 		}
-		const timeoutPromise = promiseWithTimeout<ClientToken>(
-			tokenPromise,
-			10000
-		);
+		const timeoutPromise = promiseWithTimeout<ClientToken>(tokenPromise, 10000);
 		return timeoutPromise;
 	}
 
@@ -198,7 +194,7 @@ export class HasProvider {
 			this._provider.url = newUrl;
 			this._provider.wsUnsuccessfulReconnects = 0;
 			this.log(
-				`Token Refreshed: setting new provider url, ${this._provider.url}`
+				`Token Refreshed: setting new provider url, ${this._provider.url}`,
 			);
 			this._provider.ws?.close();
 		}
@@ -226,10 +222,10 @@ export class HasProvider {
 
 	public get state(): ConnectionState {
 		return {
-			status: readyStateMap[
-				(this._provider.ws?.readyState ||
-					readyState.CLOSED) as readyState
-			],
+			status:
+				readyStateMap[
+					(this._provider.ws?.readyState || readyState.CLOSED) as readyState
+				],
 			intent: this._provider.shouldConnect ? "connected" : "disconnected",
 		};
 	}
@@ -281,7 +277,7 @@ export class HasProvider {
 	}
 
 	private _injectIntent(
-		f: (state: ConnectionState) => void
+		f: (state: ConnectionState) => void,
 	): (state: ConnectionState) => void {
 		const inner = (state: ConnectionState) => {
 			const intent = this._provider.shouldConnect
@@ -293,7 +289,7 @@ export class HasProvider {
 	}
 
 	private providerConnectionErrorSubscription(
-		f: (event: Event) => void
+		f: (event: Event) => void,
 	): Subscription {
 		const on = () => {
 			this._provider.on("connection-error", f);
@@ -305,7 +301,7 @@ export class HasProvider {
 	}
 
 	protected providerStateSubscription(
-		f: (state: ConnectionState) => void
+		f: (state: ConnectionState) => void,
 	): Subscription {
 		const on = () => {
 			this._provider.on("status", this._injectIntent(f));

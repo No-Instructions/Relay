@@ -13,8 +13,8 @@ export class AddToVaultModal extends Modal {
 		private onConfirm: (
 			remoteFolder: RemoteSharedFolder,
 			folderName: string,
-			folderLocation: string
-		) => Promise<SharedFolder>
+			folderLocation: string,
+		) => Promise<SharedFolder>,
 	) {
 		super(app);
 		this.onConfirm = onConfirm;
@@ -31,13 +31,9 @@ export class AddToVaultModal extends Modal {
 				onConfirm: async (
 					remoteFolder: RemoteSharedFolder,
 					folderName: string,
-					folderLocation: string
+					folderLocation: string,
 				) => {
-					await this.onConfirm(
-						remoteFolder,
-						folderName,
-						folderLocation
-					);
+					await this.onConfirm(remoteFolder, folderName, folderLocation);
 					this.close();
 				},
 				app: this.app,

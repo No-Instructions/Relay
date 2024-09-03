@@ -108,14 +108,14 @@ export default class Live extends Plugin {
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
-			this._createSharedFolder.bind(this)
+			this._createSharedFolder.bind(this),
 		);
 
 		this.tokenStore = new LiveTokenStore(
 			this.loginManager,
 			this.timeProvider,
 			vaultName,
-			3
+			3,
 		);
 
 		this.networkStatus = new NetworkStatus(HEALTH_URL);
@@ -132,7 +132,7 @@ export default class Live extends Plugin {
 				workspace,
 				this.sharedFolders,
 				this.loginManager,
-				this.networkStatus
+				this.networkStatus,
 			);
 
 			// NOTE: Extensions list should be loaded once and then mutated.
@@ -146,7 +146,7 @@ export default class Live extends Plugin {
 					} else {
 						this._onLogout();
 					}
-				})
+				}),
 			);
 
 			this.tokenStore.start();
@@ -180,22 +180,20 @@ export default class Live extends Plugin {
 		let updated = false;
 		sharedFolderSettings.forEach(
 			(sharedFolderSetting: SharedFolderSettings) => {
-				const tFolder = this.vault.getFolderByPath(
-					sharedFolderSetting.path
-				);
+				const tFolder = this.vault.getFolderByPath(sharedFolderSetting.path);
 				if (!tFolder) {
 					this.warn(
-						`[System 3][Relay][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`
+						`[System 3][Relay][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`,
 					);
 					return;
 				}
 				this.sharedFolders._new(
 					sharedFolderSetting.path,
 					sharedFolderSetting.guid,
-					sharedFolderSetting?.relay
+					sharedFolderSetting?.relay,
 				);
 				updated = true;
-			}
+			},
 		);
 		if (!this._offSaveSettings) {
 			this._offSaveSettings = this.sharedFolders.subscribe(() => {
@@ -212,7 +210,7 @@ export default class Live extends Plugin {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean
+		awaitingUpdates?: boolean,
 	): Promise<SharedFolder> {
 		const folder = new SharedFolder(
 			guid,
@@ -223,7 +221,7 @@ export default class Live extends Plugin {
 			this.tokenStore,
 			this.relayManager,
 			relayId,
-			awaitingUpdates
+			awaitingUpdates,
 		);
 		return folder;
 	}
@@ -252,7 +250,7 @@ export default class Live extends Plugin {
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders,
-			this.settings.showDocumentStatus
+			this.settings.showDocumentStatus,
 		);
 		this.folderNavDecorations.refresh();
 
@@ -265,14 +263,14 @@ export default class Live extends Plugin {
 			this.app.workspace.on("file-open", (file) => {
 				workspaceLog("file-open");
 				plugin._liveViews.refresh("file-open");
-			})
+			}),
 		);
 
 		this.registerEvent(
 			this.app.workspace.on("layout-change", () => {
 				workspaceLog("layout-change");
 				this._liveViews.refresh("layout-change");
-			})
+			}),
 		);
 
 		const vaultLog = curryLog("[System 3][Relay][Vault]", "log");
@@ -288,7 +286,7 @@ export default class Live extends Plugin {
 		const errorListener = (event: ErrorEvent) => handleErrorEvent(event);
 		window.addEventListener("error", errorListener, true);
 		this.register(() =>
-			window.removeEventListener("error", errorListener, true)
+			window.removeEventListener("error", errorListener, true),
 		);
 
 		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {
@@ -301,11 +299,7 @@ export default class Live extends Plugin {
 			handlePromiseRejection(event);
 		window.addEventListener("unhandledrejection", rejectionListener, true);
 		this.register(() =>
-			window.removeEventListener(
-				"unhandledrejection",
-				rejectionListener,
-				true
-			)
+			window.removeEventListener("unhandledrejection", rejectionListener, true),
 		);
 
 		this.registerEvent(
@@ -320,14 +314,14 @@ export default class Live extends Plugin {
 						folder.getFile(file.path, true, true);
 					});
 				}
-			})
+			}),
 		);
 
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
 				if (file instanceof TFolder) {
 					const folder = this.sharedFolders.find(
-						(folder) => folder.path === file.path
+						(folder) => folder.path === file.path,
 					);
 					if (folder) {
 						this.sharedFolders.delete(folder);
@@ -341,7 +335,7 @@ export default class Live extends Plugin {
 						folder.deleteFile(file.path);
 					});
 				}
-			})
+			}),
 		);
 
 		this.registerEvent(
@@ -371,7 +365,7 @@ export default class Live extends Plugin {
 					folder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
 				}
-			})
+			}),
 		);
 
 		this.registerEvent(
@@ -381,7 +375,7 @@ export default class Live extends Plugin {
 					vaultLog("Modify", file);
 					this.app.metadataCache.trigger("resolve", file);
 				}
-			})
+			}),
 		);
 
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
@@ -423,11 +417,7 @@ export default class Live extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign(
-			{},
-			DEFAULT_SETTINGS,
-			await this.loadData()
-		);
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 	}
 
 	async saveSettings() {

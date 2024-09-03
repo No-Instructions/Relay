@@ -8,11 +8,11 @@ export class FolderSuggest extends AbstractInputSuggest<string> {
 	constructor(
 		public app: App,
 		private sharedFolders: SharedFolders,
-		public inputEl: HTMLInputElement
+		public inputEl: HTMLInputElement,
 	) {
 		super(app, inputEl);
 		this.sharedPaths = new Set<string>(
-			this.sharedFolders.map((folder) => folder.path)
+			this.sharedFolders.map((folder) => folder.path),
 		);
 	}
 

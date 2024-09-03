@@ -30,7 +30,7 @@ export class Observable<T> implements IObservable<T> {
 				warn(
 					`Missing tear down of ${this._listeners.size} listeners`,
 					this,
-					this._listeners
+					this._listeners,
 				);
 			}
 		});
@@ -41,7 +41,7 @@ export class Observable<T> implements IObservable<T> {
 		for (const recipient of this._listeners) {
 			PostOffice.getInstance().send(
 				this as unknown as T & IObservable<T>,
-				recipient
+				recipient,
 			);
 		}
 	}
@@ -58,7 +58,7 @@ export class Observable<T> implements IObservable<T> {
 		PostOffice.getInstance().send(
 			this as unknown as T & IObservable<T>,
 			run,
-			true
+			true,
 		);
 		return () => {
 			this.unsubscribe(run);

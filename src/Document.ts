@@ -26,7 +26,7 @@ export class Document extends HasProvider {
 		path: string,
 		guid: string,
 		loginManager: LoginManager,
-		parent: SharedFolder
+		parent: SharedFolder,
 	) {
 		const s3rn = parent.relayId
 			? new S3RemoteDocument(parent.relayId, parent.guid, guid)
@@ -43,7 +43,7 @@ export class Document extends HasProvider {
 			"update",
 			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 				//this.log(`Update from origin`, origin, update);
-			}
+			},
 		);
 	}
 
@@ -75,7 +75,7 @@ export class Document extends HasProvider {
 				this.s3rn = new S3RemoteDocument(
 					this.sharedFolder.relayId,
 					this.sharedFolder.guid,
-					this.guid
+					this.guid,
 				);
 			} else {
 				this.s3rn = new S3Document(this.sharedFolder.guid, this.guid);

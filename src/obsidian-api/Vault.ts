@@ -40,11 +40,11 @@ export class VaultFacade extends Observable<string> implements Vault {
 	}
 
 	public get root(): string {
-        const adapter = this.app.vault.adapter
-        if (adapter instanceof FileSystemAdapter) {
-		    return adapter.getBasePath();
-        }
-        throw new Error("Unexpected Adapter")
+		const adapter = this.app.vault.adapter;
+		if (adapter instanceof FileSystemAdapter) {
+			return adapter.getBasePath();
+		}
+		throw new Error("Unexpected Adapter");
 	}
 
 	fullPath(name: string): string {

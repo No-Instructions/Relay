@@ -22,8 +22,8 @@ function openBrowserPopup(url?: string): Window | null {
 	if (typeof window === "undefined" || !window?.open) {
 		throw new ClientResponseError(
 			new Error(
-				`Not in a browser context - please pass a custom urlCallback function.`
-			)
+				`Not in a browser context - please pass a custom urlCallback function.`,
+			),
 		);
 	}
 
@@ -53,7 +53,7 @@ function openBrowserPopup(url?: string): Window | null {
 			top +
 			",left=" +
 			left +
-			",resizable,menubar=no"
+			",resizable,menubar=no",
 	);
 }
 
@@ -142,7 +142,7 @@ export class LoginManager extends Observable<LoginManager> {
 		return new User(
 			authStore.model?.id,
 			authStore.model?.email,
-			authStore.token
+			authStore.token,
 		);
 	}
 
@@ -158,12 +158,12 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	async initiateManualOAuth2CodeFlow(
-		whichFetch: typeof fetch | typeof customFetch
+		whichFetch: typeof fetch | typeof customFetch,
 	): Promise<
 		[
 			string,
 			AuthProviderInfo,
-			(code: string) => Promise<RecordAuthResponse<RecordModel>>
+			(code: string) => Promise<RecordAuthResponse<RecordModel>>,
 		]
 	> {
 		const authMethods = await this.pb
@@ -187,7 +187,7 @@ export class LoginManager extends Observable<LoginManager> {
 						redirectUrl,
 						{
 							fetch: whichFetch,
-						}
+						},
 					)
 					.then((authData) => {
 						this.setup(authData);
@@ -199,7 +199,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	async poll(
 		provider: AuthProviderInfo,
-		authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>
+		authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>,
 	): Promise<RecordAuthResponse<RecordModel>> {
 		let counter = 0;
 		const interval = 1000;
@@ -212,8 +212,8 @@ export class LoginManager extends Observable<LoginManager> {
 						new Error(
 							`Auth timeout: Timed out after ${
 								(counter * interval) / 1000
-							} seconds`
-						)
+							} seconds`,
+						),
 					);
 				}
 				this.pb

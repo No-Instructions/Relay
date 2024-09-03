@@ -27,8 +27,7 @@ function diffToChangeSet(originalText: string, newText: string): ChangeSet {
 		}
 	}
 	const reduced: { from: number; to?: number; insert?: string }[] = [];
-	let lastChange: { from: number; to?: number; insert?: string } | null =
-		null;
+	let lastChange: { from: number; to?: number; insert?: string } | null = null;
 	changes.forEach((_change) => {
 		if (
 			lastChange &&
@@ -59,15 +58,12 @@ export class ShareLinkPluginValue implements PluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.facet(
-			connectionManagerFacet
-		);
+		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
 		this.view = this.connectionManager.findView(editor);
 		this.editor = editor;
 		if (this.view) {
 			this.view.document?.whenSynced().then(async () => {
-				const hasKnownPeers =
-					await this.view?.document?.hasKnownPeers();
+				const hasKnownPeers = await this.view?.document?.hasKnownPeers();
 				if (this.view?.document?.text || !hasKnownPeers) {
 					this.updateFrontMatter();
 				}

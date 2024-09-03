@@ -97,7 +97,7 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 
 	constructor(
 		private parentMap: ObservableMap<K, V>,
-		private predicate: (value: V, key: K) => boolean
+		private predicate: (value: V, key: K) => boolean,
 	) {
 		super();
 		this.sub();

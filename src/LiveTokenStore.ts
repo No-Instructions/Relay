@@ -19,7 +19,7 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 function withLoginManager(
 	loginManager: LoginManager,
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	fn: (...args: any[]) => void
+	fn: (...args: any[]) => void,
 ) {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	return (...args: any[]) => fn(loginManager, ...args);
@@ -29,7 +29,7 @@ async function refresh(
 	loginManager: LoginManager,
 	documentId: string,
 	onSuccess: (clientToken: ClientToken) => void,
-	onError: (err: Error) => void
+	onError: (err: Error) => void,
 ) {
 	const log = curryLog("[TokenStore][Refresh]", "log");
 	const error = curryLog("[TokenStore][Refresh]", "error");
@@ -66,11 +66,7 @@ async function refresh(
 		.then((response) => {
 			if (response.status !== 200) {
 				log(response.status, response.text);
-				onError(
-					Error(
-						`Received status code ${response.status} from an API.`
-					)
-				);
+				onError(Error(`Received status code ${response.status} from an API.`));
 			}
 			const clientToken = response.json as ClientToken;
 			onSuccess(clientToken);
@@ -86,7 +82,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		loginManager: LoginManager,
 		timeProvider: TimeProvider,
 		vaultName: string,
-		maxConnections = 5
+		maxConnections = 5,
 	) {
 		super(
 			{
@@ -95,14 +91,14 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				getJwtExpiry: getJwtExpiryFromClientToken,
 				getStorage: function () {
 					return new LocalStorage<TokenInfo<ClientToken>>(
-						"TokenStore/" + vaultName
+						"TokenStore/" + vaultName,
 					);
 				},
 				getTimeProvider: () => {
 					return timeProvider;
 				},
 			},
-			maxConnections
+			maxConnections,
 		);
 	}
 }

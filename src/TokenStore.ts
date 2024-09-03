@@ -8,7 +8,7 @@ interface TokenStoreConfig<StorageToken, NetToken> {
 	refresh: (
 		documentId: string,
 		onSuccess: (token: NetToken) => void,
-		onError: (err: Error) => void
+		onError: (err: Error) => void,
 	) => void;
 	getTimeProvider: () => TimeProvider;
 	getJwtExpiry?: (token: NetToken) => number;
@@ -66,12 +66,12 @@ export class TokenStore<TokenType extends HasToken> {
 	private refresh: (
 		documentId: string,
 		onSuccess: (token: TokenType) => void,
-		onError: (err: Error) => void
+		onError: (err: Error) => void,
 	) => void;
 
 	constructor(
 		config: TokenStoreConfig<TokenInfo<TokenType>, TokenType>,
-		maxConnections = 5
+		maxConnections = 5,
 	) {
 		this._activePromises = new Map();
 		if (config.getStorage) {
@@ -113,7 +113,7 @@ export class TokenStore<TokenType extends HasToken> {
 		this.report();
 		this.refreshInterval = this.timeProvider.setInterval(
 			() => this.checkAndRefreshTokens(),
-			60 * 1000
+			60 * 1000,
 		); // Check every minute
 		this.checkAndRefreshTokens();
 	}
@@ -142,10 +142,7 @@ export class TokenStore<TokenType extends HasToken> {
 		this.log("check and refresh tokens");
 		this._cleanupInvalidTokens();
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
-			if (
-				this.callbacks.has(documentId) &&
-				this.shouldRefresh(tokenInfo)
-			) {
+			if (this.callbacks.has(documentId) && this.shouldRefresh(tokenInfo)) {
 				this.log("adding to refresh queue");
 				this.addToRefreshQueue(documentId);
 			}
@@ -208,9 +205,7 @@ export class TokenStore<TokenType extends HasToken> {
 				expiryTime,
 			} as TokenInfo<TokenType>);
 			callback(token);
-			this.log(
-				`Token refreshed for ${existing.friendlyName} (${documentId})`
-			);
+			this.log(`Token refreshed for ${existing.friendlyName} (${documentId})`);
 		}
 	}
 
@@ -245,7 +240,7 @@ export class TokenStore<TokenType extends HasToken> {
 	private getTokenFromNetwork(
 		documentId: string,
 		friendlyName: string,
-		callback: (token: TokenType) => void
+		callback: (token: TokenType) => void,
 	) {
 		const activePromise = this._activePromises.get(documentId);
 		if (activePromise) {
@@ -276,7 +271,7 @@ export class TokenStore<TokenType extends HasToken> {
 	async getToken(
 		documentId: string,
 		friendlyName: string,
-		callback: (token: TokenType) => void
+		callback: (token: TokenType) => void,
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
 		if (this.tokenMap.has(documentId)) {
@@ -300,10 +295,7 @@ export class TokenStore<TokenType extends HasToken> {
 		const tokens = Array.from(this.tokenMap.entries()).sort((a, b) => {
 			return a[1].expiryTime - b[1].expiryTime;
 		});
-		for (const [
-			documentId,
-			{ friendlyName, expiryTime, attempts },
-		] of tokens) {
+		for (const [documentId, { friendlyName, expiryTime, attempts }] of tokens) {
 			if (!filter(documentId)) {
 				continue;
 			}
@@ -311,13 +303,13 @@ export class TokenStore<TokenType extends HasToken> {
 			let timeReport = "";
 			if (timeUntilExpiry > 0) {
 				timeReport = `expires in ${formatTime(
-					timeUntilExpiry - this.expiryMargin
+					timeUntilExpiry - this.expiryMargin,
 				)}`;
 			} else {
 				timeReport = "expired";
 			}
 			reportLines.push(
-				`${documentId} (${friendlyName}): ${attempts} attempts, (${timeReport})`
+				`${documentId} (${friendlyName}): ${attempts} attempts, (${timeReport})`,
 			);
 		}
 		return reportLines;
@@ -331,13 +323,13 @@ export class TokenStore<TokenType extends HasToken> {
 		reportLines.push(
 			...this._reportWithFilter((documentId) => {
 				return this.callbacks.has(documentId);
-			})
+			}),
 		);
 		reportLines.push("Stale Tokens:");
 		reportLines.push(
 			...this._reportWithFilter((documentId) => {
 				return !this.callbacks.has(documentId);
-			})
+			}),
 		);
 		reportLines.push(`Queue size: ${this.refreshQueue.size}`);
 		return reportLines.join("\n");

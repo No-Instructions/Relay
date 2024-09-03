@@ -6,7 +6,7 @@ interface Frontmatter {
 
 export function updateFrontMatter(
 	markdownString: string,
-	newEntry: Frontmatter
+	newEntry: Frontmatter,
 ): string {
 	const parsed = matter(markdownString);
 

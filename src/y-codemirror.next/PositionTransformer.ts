@@ -50,11 +50,11 @@ export class PositionTranformer {
 		}
 		const pos = Y.createAbsolutePositionFromRelativePosition(
 			Y.createRelativePositionFromJSON(rpos),
-			this.ytext.doc
+			this.ytext.doc,
 		);
 		if (pos == null || pos.type !== this.ytext) {
 			throw new Error(
-				"[y-codemirror] The position you want to retrieve was created by a different document"
+				"[y-codemirror] The position you want to retrieve was created by a different document",
 			);
 		}
 		return {

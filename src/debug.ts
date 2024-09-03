@@ -15,19 +15,16 @@ function toastDebug(error: Error): Error {
 	return error;
 }
 function toastProd(error: Error): Error {
-	new Notice(
-		error.name + ":\nAn error has occurred, please reload Obsidian."
-	);
+	new Notice(error.name + ":\nAn error has occurred, please reload Obsidian.");
 	return error;
 }
 
 export function curryLog(
 	initialText: string,
-	level: "debug" | "warn" | "log" | "error" = "log"
+	level: "debug" | "warn" | "log" | "error" = "log",
 ) {
 	if (debugging) {
-		return (...args: unknown[]) =>
-			console[level](initialText, ": ", ...args);
+		return (...args: unknown[]) => console[level](initialText, ": ", ...args);
 	}
 	return (...args: unknown[]) => {};
 }

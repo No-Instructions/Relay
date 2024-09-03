@@ -138,7 +138,7 @@ export class SharedFolder extends HasProvider {
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
 		relayId?: string,
-		awaitingUpdates: boolean = true
+		awaitingUpdates: boolean = true,
 	) {
 		const s3rn = relayId
 			? new S3RemoteFolder(relayId, guid)
@@ -163,10 +163,8 @@ export class SharedFolder extends HasProvider {
 		this.relayId = relayId;
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
-				this.remote = folders.find(
-					(folder) => folder.guid == this.guid
-				);
-			})
+				this.remote = folders.find((folder) => folder.guid == this.guid);
+			}),
 		);
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 		this._persistence.once("synced", () => {
@@ -189,7 +187,7 @@ export class SharedFolder extends HasProvider {
 				}
 				this.log("file tree", this._debugFileTree());
 				await this.syncFileTree(doc);
-			}
+			},
 		);
 	}
 
@@ -273,7 +271,7 @@ export class SharedFolder extends HasProvider {
 				promiseFn,
 				(): [boolean, SharedFolder] => {
 					return [this.ready, this];
-				}
+				},
 			);
 		return this.readyPromise.getPromise();
 	}
@@ -305,7 +303,7 @@ export class SharedFolder extends HasProvider {
 		doc: Document,
 		path: string,
 		file: TAbstractFile,
-		diffLog?: string[]
+		diffLog?: string[],
 	): Promise<void> {
 		// take a doc and it's new path.
 		diffLog?.push(`${file.path} was renamed to ${path}`);
@@ -323,7 +321,7 @@ export class SharedFolder extends HasProvider {
 
 	async _handleServerCreate(
 		path: string,
-		diffLog?: string[]
+		diffLog?: string[],
 	): Promise<Document> {
 		const doc = this.createDoc(path, false, false);
 
@@ -340,10 +338,8 @@ export class SharedFolder extends HasProvider {
 		await doc.whenReady();
 		const end = moment.now();
 		this.debug(
-			`receive delay: received content for ${doc.path} after ${
-				end - start
-			}ms`,
-			doc.text.toString()
+			`receive delay: received content for ${doc.path} after ${end - start}ms`,
+			doc.text.toString(),
 		);
 		await folderPromise;
 		this.flush(doc, doc.text.toString());
@@ -356,10 +352,7 @@ export class SharedFolder extends HasProvider {
 		try {
 			this.assertPath(this.path + path);
 		} catch {
-			this.error(
-				"Deleting doc (somehow moved outside of shared folder)",
-				path
-			);
+			this.error("Deleting doc (somehow moved outside of shared folder)", path);
 			this.ids.delete(path);
 			return;
 		}
@@ -369,7 +362,7 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		path: string,
 		remoteIds: Set<string>,
-		diffLog: string[]
+		diffLog: string[],
 	): OperationType {
 		const doc = this.docs.get(guid);
 		if (this.existsSync(path)) {
@@ -380,12 +373,7 @@ export class SharedFolder extends HasProvider {
 			const oldPath = this.getPath(doc.path);
 			const file = this.vault.getAbstractFileByPath(oldPath);
 			if (file) {
-				const promise = this._handleServerRename(
-					doc,
-					path,
-					file,
-					diffLog
-				);
+				const promise = this._handleServerRename(doc, path, file, diffLog);
 				return {
 					op: "rename",
 					path: path,
@@ -404,7 +392,7 @@ export class SharedFolder extends HasProvider {
 
 	private cleanupExtraLocalFiles(
 		remotePaths: string[],
-		diffLog: string[]
+		diffLog: string[],
 	): Delete[] {
 		// Delete files that are no longer shared
 		const files = this.vault.getFiles();
@@ -412,14 +400,12 @@ export class SharedFolder extends HasProvider {
 		files.forEach((file) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const fileInFolder = this.checkPath(file.path);
-			const fileInMap = remotePaths.contains(
-				file.path.slice(this.path.length)
-			);
+			const fileInMap = remotePaths.contains(file.path.slice(this.path.length));
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (fileInFolder && !fileInMap) {
 				if (synced) {
 					diffLog.push(
-						`deleted local file ${file.path} for remotely deleted doc`
+						`deleted local file ${file.path} for remotely deleted doc`,
 					);
 					const promise = this.vault.adapter.trashLocal(file.path);
 					deletes.push({ op: "delete", path: file.path, promise });
@@ -511,7 +497,7 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		create = true,
 		loadFromDisk = false,
-		update = true
+		update = true,
 	): Document {
 		const vPath = this.getVirtualPath(path);
 		try {
@@ -526,7 +512,7 @@ export class SharedFolder extends HasProvider {
 		vPath: string,
 		create = true,
 		loadFromDisk = false,
-		update = true
+		update = true,
 	): Document {
 		const id = this.ids.get(vPath);
 		if (id !== undefined) {
@@ -573,9 +559,7 @@ export class SharedFolder extends HasProvider {
 		let guid: string;
 		if (maybeGuid === undefined) {
 			if (!loadFromDisk) {
-				throw new Error(
-					"attempting to create a new doc without a local file"
-				);
+				throw new Error("attempting to create a new doc without a local file");
 			}
 			guid = uuidv4();
 			this.ydoc.transact(() => {
@@ -585,8 +569,7 @@ export class SharedFolder extends HasProvider {
 			guid = maybeGuid;
 		}
 		const doc =
-			this.docs.get(guid) ||
-			new Document(vpath, guid, this.loginManager, this);
+			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 		const knownPeersPromise = doc.hasKnownPeers();
 		const awaitingUpdatesPromise = this.awaitingUpdates();
 
@@ -596,12 +579,11 @@ export class SharedFolder extends HasProvider {
 				if (!exists) {
 					return;
 				}
-				const [contents, hasKnownPeers, awaitingUpdates] =
-					await Promise.all([
-						this.read(doc),
-						knownPeersPromise,
-						awaitingUpdatesPromise,
-					]);
+				const [contents, hasKnownPeers, awaitingUpdates] = await Promise.all([
+					this.read(doc),
+					knownPeersPromise,
+					awaitingUpdatesPromise,
+				]);
 				const text = doc.ydoc.getText("contents");
 				if (
 					!awaitingUpdates &&
@@ -609,9 +591,7 @@ export class SharedFolder extends HasProvider {
 					contents &&
 					text.toString() != contents
 				) {
-					this.log(
-						`[${doc.path}] No Known Peers: Syncing file into ytext.`
-					);
+					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
 					text.insert(0, contents);
 				}
 			})();
@@ -715,7 +695,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean
+		awaitingUpdates?: boolean,
 	) => Promise<SharedFolder>;
 	private relayManager: RelayManager;
 	private _offRemoteUpdates?: () => void;
@@ -758,8 +738,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			guid: string,
 			path: string,
 			relayId?: string,
-			awaitingUpdates?: boolean
-		) => Promise<SharedFolder>
+			awaitingUpdates?: boolean,
+		) => Promise<SharedFolder>,
 	) {
 		super();
 		this.folderBuilder = folderBuilder;
@@ -770,9 +750,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				(remotes) => {
 					let updated = false;
 					this.items().forEach((folder) => {
-						const remote = remotes.find(
-							(remote) => remote.guid == folder.guid
-						);
+						const remote = remotes.find((remote) => remote.guid == folder.guid);
 						if (folder.remote != remote) {
 							updated = true;
 						}
@@ -781,7 +759,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 					if (updated) {
 						this.update();
 					}
-				}
+				},
 			);
 		}
 	}
@@ -790,31 +768,27 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean
+		awaitingUpdates?: boolean,
 	): Promise<SharedFolder> {
 		const existing = this.find(
-			(folder) => folder.path == path && folder.guid == guid
+			(folder) => folder.path == path && folder.guid == guid,
 		);
 		if (existing) {
 			return existing;
 		}
 		const sameGuid = this.find((folder) => folder.guid == guid);
 		if (sameGuid) {
-			throw new Error(
-				`This folder is already mounted at ${sameGuid.path}.`
-			);
+			throw new Error(`This folder is already mounted at ${sameGuid.path}.`);
 		}
 		const samePath = this.find((folder) => folder.path == path);
 		if (samePath) {
-			throw new Error(
-				"Conflict: Tracked folder exists at this location."
-			);
+			throw new Error("Conflict: Tracked folder exists at this location.");
 		}
 		const folder = await this.folderBuilder(
 			path,
 			guid,
 			relayId,
-			awaitingUpdates
+			awaitingUpdates,
 		);
 		this._set.add(folder);
 		return folder;
@@ -824,7 +798,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean
+		awaitingUpdates?: boolean,
 	) {
 		const folder = await this._new(path, guid, relayId, awaitingUpdates);
 		this.notifyListeners();

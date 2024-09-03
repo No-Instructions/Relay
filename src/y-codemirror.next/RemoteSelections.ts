@@ -101,22 +101,20 @@ export class YRemoteCaretWidget extends WidgetType {
 					pair.create("class", "cm-ySelectionCaret"),
 					pair.create(
 						"style",
-						`background-color: ${this.color}; border-color: ${this.color}`
+						`background-color: ${this.color}; border-color: ${this.color}`,
 					),
 				],
 				[
 					dom.text("\u2060"),
-					dom.element("div", [
-						pair.create("class", "cm-ySelectionCaretDot"),
-					]),
+					dom.element("div", [pair.create("class", "cm-ySelectionCaretDot")]),
 					dom.text("\u2060"),
 					dom.element(
 						"div",
 						[pair.create("class", "cm-ySelectionInfo")],
-						[dom.text(this.name)]
+						[dom.text(this.name)],
 					),
 					dom.text("\u2060"),
-				]
+				],
 			)
 		);
 	}
@@ -151,7 +149,7 @@ type AwarenessChangeEvent = {
 type AwarenessChangeHandler = (
 	event: AwarenessChangeEvent,
 	origin: any, // The type of origin can be very broad, depending on what triggered the change.
-	awareness: Awareness
+	awareness: Awareness,
 ) => void;
 
 export class YRemoteSelectionsPluginValue implements PluginValue {
@@ -165,9 +163,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	constructor(editor: EditorView) {
 		this.editor = editor;
 		this.decorations = RangeSet.of([]);
-		this.connectionManager = this.editor.state.facet(
-			connectionManagerFacet
-		);
+		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
 		const view = this.connectionManager.findView(editor);
 		if (view && view instanceof LiveView) {
 			this.view = view;
@@ -175,9 +171,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			this._listener = ({ added, updated, removed }, s, t) => {
 				const clients = added.concat(updated).concat(removed);
 				if (
-					clients.findIndex(
-						(id) => id !== this._awareness?.doc.clientID
-					) >= 0
+					clients.findIndex((id) => id !== this._awareness?.doc.clientID) >= 0
 				) {
 					editor.dispatch({
 						annotations: [yRemoteSelectionsAnnotation.of([])],
@@ -218,33 +212,26 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		// set local awareness state (update cursors)
 		if (localAwarenessState != null) {
 			const hasFocus =
-				update.view.hasFocus &&
-				update.view.dom.ownerDocument.hasFocus();
+				update.view.hasFocus && update.view.dom.ownerDocument.hasFocus();
 			const sel = hasFocus ? update.state.selection.main : null;
 			const currentAnchor =
 				localAwarenessState.cursor == null
 					? null
 					: Y.createRelativePositionFromJSON(
-							localAwarenessState.cursor.anchor
+							localAwarenessState.cursor.anchor,
 							// eslint-disable-next-line no-mixed-spaces-and-tabs
-					  );
+						);
 			const currentHead =
 				localAwarenessState.cursor == null
 					? null
 					: Y.createRelativePositionFromJSON(
-							localAwarenessState.cursor.head
+							localAwarenessState.cursor.head,
 							// eslint-disable-next-line no-mixed-spaces-and-tabs
-					  );
+						);
 
 			if (sel != null) {
-				const anchor = Y.createRelativePositionFromTypeIndex(
-					ytext,
-					sel.anchor
-				);
-				const head = Y.createRelativePositionFromTypeIndex(
-					ytext,
-					sel.head
-				);
+				const anchor = Y.createRelativePositionFromTypeIndex(ytext, sel.anchor);
+				const head = Y.createRelativePositionFromTypeIndex(ytext, sel.head);
 				if (
 					localAwarenessState.cursor == null ||
 					!Y.compareRelativePositions(currentAnchor, anchor) ||
@@ -266,20 +253,16 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				return;
 			}
 			const cursor = state.cursor;
-			if (
-				cursor == null ||
-				cursor.anchor == null ||
-				cursor.head == null
-			) {
+			if (cursor == null || cursor.anchor == null || cursor.head == null) {
 				return;
 			}
 			const anchor = Y.createAbsolutePositionFromRelativePosition(
 				cursor.anchor,
-				ydoc
+				ydoc,
 			);
 			const head = Y.createAbsolutePositionFromRelativePosition(
 				cursor.head,
-				ydoc
+				ydoc,
 			);
 			if (
 				anchor == null ||
@@ -290,8 +273,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				return;
 			}
 			const { color = "#30bced", name = "Anonymous" } = state.user || {};
-			const colorLight =
-				(state.user && state.user.colorLight) || color + "33";
+			const colorLight = (state.user && state.user.colorLight) || color + "33";
 			const start = math.min(anchor.index, head.index);
 			const end = math.max(anchor.index, head.index);
 			const startLine = update.view.state.doc.lineAt(start);
@@ -364,5 +346,5 @@ export const yRemoteSelections = ViewPlugin.fromClass(
 	YRemoteSelectionsPluginValue,
 	{
 		decorations: (v) => v.decorations,
-	}
+	},
 );

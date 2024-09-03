@@ -26,7 +26,10 @@ export class S3RemoteFolder {
 	platform: string = "s3rn";
 	product: string = "relay";
 
-	constructor(public relayId: UUID, public folderId: UUID) {}
+	constructor(
+		public relayId: UUID,
+		public folderId: UUID,
+	) {}
 }
 
 export class S3RemoteDocument {
@@ -36,7 +39,7 @@ export class S3RemoteDocument {
 	constructor(
 		public relayId: UUID,
 		public folderId: UUID,
-		public documentId: UUID
+		public documentId: UUID,
 	) {}
 }
 
@@ -51,7 +54,10 @@ export class S3Document {
 	platform: string = "s3rn";
 	product: string = "relay";
 
-	constructor(public folderId: UUID, public documentId: UUID) {}
+	constructor(
+		public folderId: UUID,
+		public documentId: UUID,
+	) {}
 }
 
 export type S3RNType =
@@ -117,11 +123,7 @@ export class S3RN {
 			type2 === "doc"
 		) {
 			return new S3RemoteDocument(item0, item1, item2);
-		} else if (
-			product === "relay" &&
-			type0 === "relay" &&
-			type1 == "folder"
-		) {
+		} else if (product === "relay" && type0 === "relay" && type1 == "folder") {
 			return new S3RemoteFolder(item0, item1);
 		} else if (
 			product === "relay" &&

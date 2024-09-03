@@ -1,10 +1,10 @@
 "use strict";
 
-import { curryLog } from "./debug"
+import { curryLog } from "./debug";
 
 export function promiseWithTimeout<T>(
 	promise: Promise<T>,
-	ms: number
+	ms: number,
 ): Promise<T> {
 	let timeoutId: number;
 	const timeout = new Promise<T>((_, reject) => {
@@ -33,7 +33,7 @@ export class SharedPromise<T> {
 
 	constructor(
 		promiseFunction: PromiseFunction<T>,
-		checkFunction: CheckFunction<T>
+		checkFunction: CheckFunction<T>,
 	) {
 		this.promiseFunction = promiseFunction;
 		this.checkFunction = checkFunction;
@@ -54,7 +54,7 @@ export class SharedPromise<T> {
 				(error) => {
 					this.currentPromise = null; // Reset on failure
 					throw error;
-				}
+				},
 			);
 		}
 		return this.currentPromise;

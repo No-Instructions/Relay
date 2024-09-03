@@ -196,7 +196,7 @@ class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 	constructor(
 		private remoteFolder: RemoteFolderDAO,
 		private relays: ObservableMap<string, Relay>,
-		private users: ObservableMap<string, RelayUser>
+		private users: ObservableMap<string, RelayUser>,
 	) {
 		super();
 	}
@@ -255,7 +255,7 @@ class RemoteFolderCollection
 	constructor(
 		public remoteFolders: ObservableMap<string, RemoteFolder>,
 		private relays: ObservableMap<string, Relay>,
-		private users: ObservableMap<string, RelayUser>
+		private users: ObservableMap<string, RelayUser>,
 	) {}
 
 	items(): RemoteFolder[] {
@@ -296,7 +296,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 		private relayInvitations: ObservableMap<string, RelayInvitation>,
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
 		private subscriptions: ObservableMap<string, RelaySubscription>,
-		private user: RelayUser
+		private user: RelayUser,
 	) {}
 
 	items(): Relay[] {
@@ -324,7 +324,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 			this.relayInvitations,
 			this.remoteFolders,
 			this.subscriptions,
-			this.user
+			this.user,
 		);
 		this.relays.set(relay.id, relay);
 		return relay;
@@ -346,7 +346,7 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 		relayRoles: ObservableMap<string, RelayRole>,
 		relays: ObservableMap<string, Relay>,
 		users: ObservableMap<string, RelayUser>,
-		roles: ObservableMap<string, RoleDAO>
+		roles: ObservableMap<string, RoleDAO>,
 	) {
 		this.relayRoles = relayRoles;
 		this.relays = relays;
@@ -373,12 +373,7 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 			this.relayRoles.notifyListeners();
 			return existingRole;
 		}
-		const role = new RelayRoleAuto(
-			update,
-			this.relays,
-			this.users,
-			this.roles
-		);
+		const role = new RelayRoleAuto(update, this.relays, this.users, this.roles);
 		this.relayRoles.set(role.id, role);
 		return role;
 	}
@@ -403,7 +398,7 @@ class RelayInvitationsCollection
 	constructor(
 		relayInvitations: ObservableMap<string, RelayInvitation>,
 		relays: ObservableMap<string, Relay>,
-		roles: ObservableMap<string, RoleDAO>
+		roles: ObservableMap<string, RoleDAO>,
 	) {
 		this.relayInvitations = relayInvitations;
 		this.relays = relays;
@@ -429,11 +424,7 @@ class RelayInvitationsCollection
 			this.relayInvitations.notifyListeners();
 			return existingInvitation;
 		}
-		const invitation = new RelayInvitationAuto(
-			update,
-			this.relays,
-			this.roles
-		);
+		const invitation = new RelayInvitationAuto(update, this.relays, this.roles);
 		this.relayInvitations.set(invitation.id, invitation);
 		return invitation;
 	}
@@ -485,7 +476,7 @@ class RelaySubscriptionCollection
 	constructor(
 		private subscriptions: ObservableMap<string, RelaySubscription>,
 		private relays: ObservableMap<string, Relay>,
-		private users: ObservableMap<string, RelayUser>
+		private users: ObservableMap<string, RelayUser>,
 	) {}
 
 	items(): RelaySubscription[] {
@@ -510,7 +501,7 @@ class RelaySubscriptionCollection
 		const subscription = new RelaySubscriptionAuto(
 			update,
 			this.relays,
-			this.users
+			this.users,
 		);
 		this.subscriptions.set(update.id, subscription);
 		return subscription;
@@ -559,7 +550,7 @@ class Store {
 	}
 
 	ingestPage<T>(
-		result?: ListResult<RecordModel>
+		result?: ListResult<RecordModel>,
 	): (T | undefined)[] | undefined {
 		return this.ingestBatch(result?.items);
 	}
@@ -597,8 +588,7 @@ class Store {
 			if (aggregate_root) {
 				const pointer = record.id;
 				const refs =
-					this.relationships.get(aggregate_root.join(":")) ||
-					new Set<string>();
+					this.relationships.get(aggregate_root.join(":")) || new Set<string>();
 				refs.add([record.collectionName, pointer].join(":"));
 				this.relationships.set(aggregate_root.join(":"), refs);
 			}
@@ -607,8 +597,7 @@ class Store {
 			const acl = result.acl;
 			if (acl) {
 				const pointer = record.id;
-				const refs =
-					this.relationships.get(acl.join(":")) || new Set<string>();
+				const refs = this.relationships.get(acl.join(":")) || new Set<string>();
 				refs.add([record.collectionName, pointer].join(":"));
 				this.relationships.set(acl.join(":"), refs);
 			}
@@ -693,7 +682,7 @@ class RelayRoleAuto extends Auto implements RelayRole {
 		relayRole: RelayRoleDAO,
 		relays: ObservableMap<string, Relay>,
 		users: ObservableMap<string, RelayUser>,
-		roles: ObservableMap<string, RoleDAO>
+		roles: ObservableMap<string, RoleDAO>,
 	) {
 		super();
 		this.users = users;
@@ -756,7 +745,7 @@ class RelayInvitationAuto implements RelayInvitation {
 	constructor(
 		relayInvitation: RelayInvitationDAO,
 		relays: ObservableMap<string, Relay>,
-		roles: ObservableMap<string, RoleDAO>
+		roles: ObservableMap<string, RoleDAO>,
 	) {
 		this.relayInvitation = relayInvitation;
 		this.roles = roles;
@@ -814,7 +803,7 @@ export class RelaySubscriptionAuto
 	constructor(
 		private subscription: RelaySubscriptionDAO,
 		private relays: ObservableMap<string, Relay>,
-		private users: ObservableMap<string, RelayUser>
+		private users: ObservableMap<string, RelayUser>,
 	) {
 		super();
 	}
@@ -890,7 +879,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		private relayInvitations: ObservableMap<string, RelayInvitation>,
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
 		private _subscriptions: ObservableMap<string, RelaySubscription>,
-		private user: RelayUser
+		private user: RelayUser,
 	) {
 		super();
 		this.log = curryLog("[RelayAuto]", "log");
@@ -935,8 +924,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		const isCreator = this.relay.creator === this.user.id;
 		const role = this.relayRoles.find(
 			(role) =>
-				role.relay?.id === this.relay.id &&
-				role.user.id === this.user.id
+				role.relay?.id === this.relay.id && role.user.id === this.user.id,
 		)?.role;
 		if (role) {
 			return role;
@@ -951,19 +939,17 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 
 	public get invitation() {
 		return this.relayInvitations.find(
-			(invite) => invite.relay.id === this.relay.id
+			(invite) => invite.relay.id === this.relay.id,
 		);
 	}
 
 	public get folders(): ObservableMap<string, RemoteFolder> {
-		return this.remoteFolders.filter(
-			(folder) => folder.relay.id === this.id
-		);
+		return this.remoteFolders.filter((folder) => folder.relay.id === this.id);
 	}
 
 	public get subscriptions(): ObservableMap<string, RelaySubscription> {
 		return this._subscriptions.filter(
-			(subscription) => subscription.relay.id === this.id
+			(subscription) => subscription.relay.id === this.id,
 		);
 	}
 
@@ -1002,10 +988,10 @@ export class RelayManager {
 		this.users = new ObservableMap<string, RelayUser>("users");
 		this.relays = new ObservableMap<string, Relay>("relays");
 		this.remoteFolders = new ObservableMap<string, RemoteFolder>(
-			"remote folders"
+			"remote folders",
 		);
 		this.relayInvitations = new ObservableMap<string, RelayInvitation>(
-			"relay invitations"
+			"relay invitations",
 		);
 		this.relayRoles = new ObservableMap<string, RelayRole>("relay roles");
 		this.roles = new ObservableMap<string, RoleDAO>("roles");
@@ -1018,7 +1004,7 @@ export class RelayManager {
 			id: "x6lllh2qsf9lxk6",
 		} as RoleDAO);
 		this.subscriptions = new ObservableMap<string, RelaySubscription>(
-			"subscriptions"
+			"subscriptions",
 		);
 
 		// Subscribe to logout/login
@@ -1055,28 +1041,28 @@ export class RelayManager {
 			this.relayInvitations,
 			this.remoteFolders,
 			this.subscriptions,
-			this.user
+			this.user,
 		);
 		const relayRolesCollection = new RelayRolesCollection(
 			this.relayRoles,
 			this.relays,
 			this.users,
-			this.roles
+			this.roles,
 		);
 		const relayInvitationsCollection = new RelayInvitationsCollection(
 			this.relayInvitations,
 			this.relays,
-			this.roles
+			this.roles,
 		);
 		const sharedFolderCollection = new RemoteFolderCollection(
 			this.remoteFolders,
 			this.relays,
-			this.users
+			this.users,
 		);
 		const subscriptionCollection = new RelaySubscriptionCollection(
 			this.subscriptions,
 			this.relays,
-			this.users
+			this.users,
 		);
 		this.store = new Store([
 			roleCollection,
@@ -1161,7 +1147,7 @@ export class RelayManager {
 
 		const handleEvent = (
 			collectionName: string,
-			e: RecordSubscription<RecordModel>
+			e: RecordSubscription<RecordModel>,
 		) => {
 			this.log(`[Event]: ${collectionName}`, e.action, e.record);
 			if (e.action === "delete") {
@@ -1192,7 +1178,8 @@ export class RelayManager {
 		await this.pb
 			.collection("users")
 			.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
-				expand: "relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role,subscriptions_via_user,subscriptions_via_user.relay",
+				expand:
+					"relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role,subscriptions_via_user,subscriptions_via_user.relay",
 			})
 			.then((user) => {
 				this.store?.ingest(user);
@@ -1278,7 +1265,7 @@ export class RelayManager {
 			this.relayInvitations,
 			this.remoteFolders,
 			this.subscriptions,
-			this.user
+			this.user,
 		);
 		this.relays.set(relay.id, relay);
 		return relay;
@@ -1300,7 +1287,7 @@ export class RelayManager {
 	async deleteRemote(folder: SharedFolder): Promise<boolean> {
 		folder.remote = undefined;
 		const remote = this.remoteFolders.find(
-			(remote) => remote.guid === folder.guid
+			(remote) => remote.guid === folder.guid,
 		);
 		if (!remote) {
 			return false;
@@ -1312,7 +1299,7 @@ export class RelayManager {
 
 	async createRemoteFolder(
 		sharedFolder: SharedFolder,
-		relay: Relay
+		relay: Relay,
 	): Promise<RemoteFolder> {
 		const record = await this.pb
 			.collection("shared_folders")
@@ -1324,7 +1311,7 @@ export class RelayManager {
 					creator: this.user?.id,
 					private: false,
 				},
-				{ expand: "relay" }
+				{ expand: "relay" },
 			);
 		const folder = this.store?.ingest<RemoteFolder>(record);
 		if (!folder) {
@@ -1341,9 +1328,7 @@ export class RelayManager {
 
 	async leaveRelay(relay: Relay): Promise<void> {
 		const role = this.relayRoles.find((role) => {
-			return (
-				role.user.id === this.user?.id && role.relay?.id === relay.id
-			);
+			return role.user.id === this.user?.id && role.relay?.id === relay.id;
 		});
 		if (role) {
 			await this.pb.collection("relay_roles").delete(role.id);
