@@ -12,7 +12,7 @@ import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
-import { curryLog, toast, setDebugging } from "./debug";
+import { curryLog, toast, setDebugging, RelayInstances } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
@@ -24,6 +24,7 @@ import { auditTeardown } from "./observable/Observable";
 import { updateYDocFromDiskBuffer } from "./BackgroundSync";
 import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, withFlag } from "./flagManager";
+import { PostOffice } from "./observable/Postie";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -62,6 +63,7 @@ export default class Live extends Plugin {
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
+		console.warn("RelayInstances", RelayInstances);
 		if (save) {
 			this.settings.debugging = false;
 			this.saveSettings();
@@ -92,6 +94,7 @@ export default class Live extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		FeatureFlagManager.getInstance().setFlags(this.settings);
 
 		if (this.settings.debugging) {
 			this.enableDebugging();
@@ -107,8 +110,10 @@ export default class Live extends Plugin {
 			this.timeProvider.destroy();
 		});
 
-		this.loginManager = new LoginManager(this.openSettings.bind(this));
-
+		this.loginManager = new LoginManager(
+			this.vault.getName(),
+			this.openSettings.bind(this),
+		);
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
@@ -122,7 +127,7 @@ export default class Live extends Plugin {
 			3,
 		);
 
-		this.networkStatus = new NetworkStatus(HEALTH_URL);
+		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please sign in to use relay");
@@ -130,7 +135,6 @@ export default class Live extends Plugin {
 
 		this.app.workspace.onLayoutReady(async () => {
 			this.loadSharedFolders(this.settings.sharedFolders);
-			FeatureFlagManager.getInstance().setFlags(this.settings);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
@@ -418,19 +422,35 @@ export default class Live extends Plugin {
 		if (this._offSaveSettings) {
 			this._offSaveSettings();
 		}
-		this.sharedFolders.destroy();
+
+		this.timeProvider.destroy();
 
 		this.folderNavDecorations?.destroy();
 
-		this.tokenStore?.stop();
-		this.tokenStore?.clearState();
+		this._liveViews?.destroy();
+		this._liveViews = null as any;
 
 		this.relayManager?.destroy();
+		this.relayManager = null as any;
+
+		this.tokenStore?.stop();
+		this.tokenStore?.clearState();
+		this.tokenStore?.destroy();
+		this.tokenStore = null as any;
 
 		this.networkStatus?.stop();
-		this._liveViews?.destroy();
+		this.networkStatus?.destroy();
+		this.networkStatus = null as any;
+
+		this.sharedFolders.destroy();
+		this.sharedFolders = null as any;
+
+		this.settingsTab.destroy();
+
+		this.loginManager.destroy();
 
 		FeatureFlagManager.destroy();
+		PostOffice.destroy();
 		auditTeardown();
 	}
 

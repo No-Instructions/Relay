@@ -6,7 +6,6 @@ import type { Extension } from "@codemirror/state";
 import { Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import ViewActions from "src/components/ViewActions.svelte";
-import { LiveCMPluginValue } from "./y-codemirror.next/LiveEditPlugin";
 import {
 	connectionManagerFacet,
 	LiveEdit,
@@ -44,15 +43,14 @@ function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 
 export interface S3View {
 	view: MarkdownView;
-	plugin?: LiveCMPluginValue;
 	release: () => void;
 	attach: () => Promise<S3View>;
 	document: Document | null;
+	destroy: () => void;
 }
 
 export class LoggedOutView implements S3View {
 	view: MarkdownView;
-	plugin?: LiveCMPluginValue;
 	login: () => Promise<boolean>;
 	banner?: Banner;
 	document = null;
@@ -69,7 +67,7 @@ export class LoggedOutView implements S3View {
 		this.login = login;
 	}
 
-	attach() {
+	attach(): Promise<S3View> {
 		this.banner = new Banner(
 			this.view,
 			"Login to enable Live edits",
@@ -83,12 +81,17 @@ export class LoggedOutView implements S3View {
 	release() {
 		this.banner?.destroy();
 	}
+
+	destroy() {
+		this.release();
+		this.banner = undefined;
+		this.view = null as any;
+	}
 }
 
 export class LiveView implements S3View {
 	view: MarkdownView;
 	document: Document;
-	plugin?: LiveCMPluginValue;
 	shouldConnect: boolean;
 	canConnect: boolean;
 
@@ -155,15 +158,8 @@ export class LiveView implements S3View {
 		const viewActionsElement =
 			this.view.containerEl.querySelector(".view-actions");
 		if (viewActionsElement && viewActionsElement.firstChild) {
-			const viewActions = this.view.containerEl.querySelectorAll(
-				".system3-view-action",
-			);
 			if (!this._viewActions) {
-				if (viewActions.length > 0) {
-					viewActions.forEach((viewAction) => {
-						viewAction.remove();
-					});
-				}
+				this.clearViewActions();
 				if (this.offConnectionStatusSubscription) {
 					this.offConnectionStatusSubscription();
 				}
@@ -192,6 +188,21 @@ export class LiveView implements S3View {
 				document: this.document,
 				state: this.document.state,
 			});
+		}
+	}
+
+	clearViewActions() {
+		const viewActionsElement =
+			this.view.containerEl.querySelector(".view-actions");
+		if (viewActionsElement && viewActionsElement.firstChild) {
+			const viewActions = this.view.containerEl.querySelectorAll(
+				".system3-view-action",
+			);
+			if (viewActions.length > 0) {
+				viewActions.forEach((viewAction) => {
+					viewAction.remove();
+				});
+			}
 		}
 	}
 
@@ -230,6 +241,14 @@ export class LiveView implements S3View {
 			this.offConnectionStatusSubscription = undefined;
 		}
 		this.document.disconnect();
+	}
+
+	destroy() {
+		this.release();
+		this.clearViewActions();
+		this._parent = null as any;
+		this.view = null as any;
+		this.document = null as any;
 	}
 }
 
@@ -615,6 +634,14 @@ export class LiveViewManager {
 		this.offListeners.length = 0;
 		this.folderListeners.forEach((off) => off());
 		this.folderListeners.clear();
+		this.folderListeners = null as any;
+		this.views.forEach((view) => view.destroy());
+		this.views = [];
 		this.wipe();
+		this.sharedFolders = null as any;
+		this._compartment = null as any;
+		this.refreshQueue = null as any;
+		this.networkStatus = null as any;
+		this._activePromise = null as any;
 	}
 }

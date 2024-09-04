@@ -18,7 +18,7 @@ import PocketBase, {
 	type RecordSubscription,
 } from "pocketbase";
 import { ObservableMap } from "./observable/ObservableMap";
-import { curryLog } from "./debug";
+import { RelayInstances, curryLog } from "./debug";
 import { customFetch } from "./customFetch";
 import type { SharedFolder } from "./SharedFolder";
 import type { LoginManager } from "./LoginManager";
@@ -526,7 +526,7 @@ class Store {
 		}
 		this.error = curryLog("[Store]", "error");
 		this.warn = curryLog("[Store]", "warn");
-		this.warn("instance", this);
+		RelayInstances.set(this, "Store");
 	}
 
 	getCollection(collecitonName: string): Collection<unknown, unknown> {
@@ -547,6 +547,12 @@ class Store {
 		this.collections.clear();
 		this.relationships.clear();
 		postie.commitTransaction();
+	}
+
+	destroy() {
+		this.clear();
+		this.collections = null as any;
+		this.relationships = null as any;
 	}
 
 	ingestPage<T>(
@@ -976,11 +982,13 @@ export class RelayManager {
 	store?: Store;
 	_offLoginManager: Unsubscriber;
 	log: (message: string, ...args: unknown[]) => void;
+	debug: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
-	private pb: PocketBase;
+	private pb: PocketBase | null;
 
 	constructor(private loginManager: LoginManager) {
 		this.log = curryLog("[RelayManager]", "log");
+		this.debug = curryLog("[RelayManager]", "debug");
 		this.warn = curryLog("[RelayManager]", "warn");
 		this.pb = this.loginManager.pb;
 
@@ -1018,6 +1026,8 @@ export class RelayManager {
 		if (!this.user) {
 			return;
 		}
+
+		RelayInstances.set(this, "RelayManager");
 
 		this.buildGraph();
 		this.subscribe();
@@ -1076,7 +1086,7 @@ export class RelayManager {
 	}
 
 	setUser() {
-		this.authUser = this.pb.authStore.model;
+		this.authUser = this.pb?.authStore.model;
 		if (this.authUser) {
 			this.user = new RelayUserAuto(this.authUser as UserDAO);
 			this.users.set(this.user.id, this.user);
@@ -1097,6 +1107,7 @@ export class RelayManager {
 	}
 
 	async getRelayInvitationKey(relay: Relay): Promise<string> {
+		if (!this.pb) return "";
 		const relayInvitation = this.relayInvitations.find((invite) => {
 			return invite.relay.id === relay.id;
 		});
@@ -1122,6 +1133,7 @@ export class RelayManager {
 
 	async subscribe() {
 		if (
+			!this.pb ||
 			!this.pb.authStore.isValid ||
 			this.pb.authStore.model?.id === undefined
 		) {
@@ -1149,7 +1161,7 @@ export class RelayManager {
 			collectionName: string,
 			e: RecordSubscription<RecordModel>,
 		) => {
-			this.log(`[Event]: ${collectionName}`, e.action, e.record);
+			this.debug(`[Event]: ${collectionName}`, e.action, e.record);
 			if (e.action === "delete") {
 				this.store?.delete(e.record);
 			} else {
@@ -1167,71 +1179,81 @@ export class RelayManager {
 		}
 	}
 
+	collection(collectionName: string) {
+		if (!this.pb) return;
+	}
+
 	async update() {
 		if (
+			!this.pb ||
 			!this.pb.authStore.isValid ||
 			this.pb.authStore.model?.id === undefined
 		) {
 			return;
 		}
 
-		await this.pb
-			.collection("users")
-			.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
-				expand:
-					"relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role,subscriptions_via_user,subscriptions_via_user.relay",
-			})
-			.then((user) => {
-				this.store?.ingest(user);
-			})
-			.catch((e) => {
-				if (e.status === 404) {
-					this.loginManager.logout();
-				}
-			});
+		try {
+			await this.pb
+				.collection("users")
+				.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
+					expand:
+						"relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role,subscriptions_via_user,subscriptions_via_user.relay",
+				})
+				.then((user) => {
+					this.store?.ingest(user);
+				})
+				.catch((e) => {
+					if (e.status === 404) {
+						this.loginManager.logout();
+					}
+				});
 
-		await this.pb
-			.collection("relay_roles")
-			.getFullList<RelayRoleDAOExpandingRelayUser>({
-				expand: "user",
-			})
-			.then((roles) => {
-				roles.forEach((record) => {
-					this.store?.ingest(record);
+			await this.pb
+				.collection("relay_roles")
+				.getFullList<RelayRoleDAOExpandingRelayUser>({
+					expand: "user",
+				})
+				.then((roles) => {
+					roles.forEach((record) => {
+						this.store?.ingest(record);
+					});
 				});
-			});
-		await this.pb
-			.collection("relay_invitations")
-			.getFullList<RelayInvitationDAO>()
-			.then((relayInvitations) => {
-				relayInvitations.forEach((record) => {
-					this.store?.ingest(record);
+			await this.pb
+				.collection("relay_invitations")
+				.getFullList<RelayInvitationDAO>()
+				.then((relayInvitations) => {
+					relayInvitations.forEach((record) => {
+						this.store?.ingest(record);
+					});
 				});
-			});
-		await this.pb
-			.collection("shared_folders")
-			.getFullList<RemoteFolderDAO>({
-				expand: "relay,creator",
-			})
-			.then((remoteFolders) => {
-				remoteFolders.forEach((record) => {
-					this.store?.ingest(record);
+			await this.pb
+				.collection("shared_folders")
+				.getFullList<RemoteFolderDAO>({
+					expand: "relay,creator",
+				})
+				.then((remoteFolders) => {
+					remoteFolders.forEach((record) => {
+						this.store?.ingest(record);
+					});
 				});
-			});
-		await this.pb
-			.collection("subscriptions")
-			.getFullList<RemoteFolderDAO>({
-				expand: "relay,user",
-				fetch: customFetch,
-			})
-			.then((subscriptions) => {
-				subscriptions.forEach((record) => {
-					this.store?.ingest(record);
+			await this.pb
+				.collection("subscriptions")
+				.getFullList<RemoteFolderDAO>({
+					expand: "relay,user",
+					fetch: customFetch,
+				})
+				.then((subscriptions) => {
+					subscriptions.forEach((record) => {
+						this.store?.ingest(record);
+					});
 				});
-			});
+		} catch (e) {
+			this.warn("error during update()", e);
+		}
 	}
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
+		if (!this.pb) throw new Error("Failed to accept invitation");
 		const response = await this.pb.send("/api/accept-invitation", {
 			method: "POST",
 			headers: {
@@ -1241,7 +1263,7 @@ export class RelayManager {
 				key: shareKey,
 			}),
 		});
-		this.log("[InviteAccept]", response);
+		this.debug("[InviteAccept]", response);
 		const relay = this.store?.ingest<Relay>(response);
 		if (!relay) {
 			throw new Error("Failed to accept invitation");
@@ -1251,11 +1273,14 @@ export class RelayManager {
 
 	async createRelay(name: string): Promise<Relay> {
 		const guid = uuid();
-		const record = await this.pb.collection("relays").create<RelayDAO>({
+		const record = await this.pb?.collection("relays").create<RelayDAO>({
 			guid: guid,
 			name: name,
 			path: null,
 		});
+		if (!record) {
+			throw new Error("Failed to create Relay");
+		}
 		if (!this.user) {
 			throw new Error("Not Logged In");
 		}
@@ -1272,6 +1297,7 @@ export class RelayManager {
 	}
 
 	async updateRelay(relay: Relay): Promise<Relay> {
+		if (!this.pb) throw new Error("Failed to update relay");
 		const record = await this.pb
 			.collection("relays")
 			.update<RelayDAO>(relay.id, {
@@ -1292,7 +1318,7 @@ export class RelayManager {
 		if (!remote) {
 			return false;
 		}
-		await this.pb.collection("shared_folders").delete(remote.id);
+		await this.pb?.collection("shared_folders").delete(remote.id);
 		folder.remote = undefined;
 		return true;
 	}
@@ -1301,6 +1327,7 @@ export class RelayManager {
 		sharedFolder: SharedFolder,
 		relay: Relay,
 	): Promise<RemoteFolder> {
+		if (!this.pb) throw new Error("Failed to create folder");
 		const record = await this.pb
 			.collection("shared_folders")
 			.create<RemoteFolderDAO>(
@@ -1321,7 +1348,7 @@ export class RelayManager {
 	}
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
-		await this.pb.collection("relays").delete(relay.id);
+		await this.pb?.collection("relays").delete(relay.id);
 		this.store?.cascade("relays", relay.id);
 		return true;
 	}
@@ -1331,7 +1358,7 @@ export class RelayManager {
 			return role.user.id === this.user?.id && role.relay?.id === relay.id;
 		});
 		if (role) {
-			await this.pb.collection("relay_roles").delete(role.id);
+			await this.pb?.collection("relay_roles").delete(role.id);
 		} else {
 			this.warn("No role found to leave relay");
 		}
@@ -1339,12 +1366,18 @@ export class RelayManager {
 	}
 
 	async kick(relay_role: RelayRole) {
-		return this.pb.collection("relay_roles").delete(relay_role.id);
+		return this.pb?.collection("relay_roles").delete(relay_role.id);
 	}
 
 	destroy(): void {
 		if (this._offLoginManager) {
 			this._offLoginManager();
 		}
+		this.pb?.cancelAllRequests();
+		this.loginManager = null as any;
+		this.pb = null as any;
+		this.store?.destroy();
+		this.authUser = null;
+		this.store = null as any;
 	}
 }

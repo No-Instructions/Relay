@@ -185,7 +185,8 @@ export class HasProvider {
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
 		this.clientToken = clientToken;
-		const tempProvider = makeProvider(clientToken, new Doc());
+		const tempDoc = new Doc();
+		const tempProvider = makeProvider(clientToken, tempDoc);
 		const newUrl = tempProvider.url;
 
 		if (!this._provider) {
@@ -198,6 +199,9 @@ export class HasProvider {
 			);
 			this._provider.ws?.close();
 		}
+		tempProvider.awareness.destroy();
+		tempProvider.destroy();
+		tempDoc.destroy();
 	}
 
 	public get connected(): boolean {
@@ -254,13 +258,13 @@ export class HasProvider {
 	}
 
 	onceConnected(): Promise<void> {
-		// XXX memory leak of subscriptions...
 		return new Promise((resolve) => {
 			const resolveOnConnect = (state: ConnectionState) => {
 				if (state.status === "connected") {
 					resolve();
 				}
 			};
+			// provider observers are manually cleared in destroy()
 			this._provider.on("status", resolveOnConnect);
 		});
 	}
@@ -280,7 +284,7 @@ export class HasProvider {
 		f: (state: ConnectionState) => void,
 	): (state: ConnectionState) => void {
 		const inner = (state: ConnectionState) => {
-			const intent = this._provider.shouldConnect
+			const intent = this._provider?.shouldConnect
 				? "connected"
 				: "disconnected";
 			f({ status: state.status, intent: intent });
@@ -321,8 +325,11 @@ export class HasProvider {
 		}
 		if (this._provider) {
 			this._provider.disconnect();
+			this._provider.awareness.destroy();
+			this._provider._observers.clear();
 			this._provider.destroy();
+			window.clearInterval(this._provider.awareness._checkInterval);
 		}
-		this.listeners.clear();
+		this.loginManager = null as any;
 	}
 }

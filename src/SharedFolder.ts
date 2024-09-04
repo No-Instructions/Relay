@@ -684,6 +684,7 @@ export class SharedFolder extends HasProvider {
 		if (this._persistence) {
 			this._persistence.destroy();
 		}
+		this.ydoc.destroy();
 		this.docset.clear();
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
@@ -730,6 +731,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		if (this._offRemoteUpdates) {
 			this._offRemoteUpdates();
 		}
+		this.relayManager = null as any;
+		this.folderBuilder = null as any;
 	}
 
 	constructor(

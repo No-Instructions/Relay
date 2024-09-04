@@ -4,12 +4,11 @@ import { requestUrl } from "obsidian";
 import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
-	ClientResponseError,
 	type AuthProviderInfo,
 	type RecordAuthResponse,
 	type RecordModel,
 } from "pocketbase";
-import { curryLog } from "./debug";
+import { RelayInstances, curryLog } from "./debug";
 import { Observable } from "./observable/Observable";
 
 declare const AUTH_URL: string;
@@ -17,58 +16,22 @@ declare const API_URL: string;
 declare const GIT_TAG: string;
 
 import { customFetch } from "./customFetch";
-
-function openBrowserPopup(url?: string): Window | null {
-	if (typeof window === "undefined" || !window?.open) {
-		throw new ClientResponseError(
-			new Error(
-				`Not in a browser context - please pass a custom urlCallback function.`,
-			),
-		);
-	}
-
-	let width = 1024;
-	let height = 768;
-
-	let windowWidth = window.innerWidth;
-	let windowHeight = window.innerHeight;
-
-	// normalize window size
-	width = width > windowWidth ? windowWidth : width;
-	height = height > windowHeight ? windowHeight : height;
-
-	let left = windowWidth / 2 - width / 2;
-	let top = windowHeight / 2 - height / 2;
-
-	// note: we don't use the noopener and noreferrer attributes since
-	// for some reason browser blocks such windows then url is undefined/blank
-	return window.open(
-		url,
-		"popup_window",
-		"width=" +
-			width +
-			",height=" +
-			height +
-			",top=" +
-			top +
-			",left=" +
-			left +
-			",resizable,menubar=no",
-	);
-}
+import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private _log: (message: string, ...args: unknown[]) => void;
 	private openSettings: () => Promise<void>;
+	private authStore: LocalAuthStore;
 	user?: User;
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 
-	constructor(openSettings: () => Promise<void>) {
+	constructor(vaultName: string, openSettings: () => Promise<void>) {
 		super();
 		this._log = curryLog("[LoginManager]");
 		const pbLog = curryLog("[Pocketbase]");
-		this.pb = new PocketBase(AUTH_URL);
+		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
+		this.pb = new PocketBase(AUTH_URL, this.authStore);
 		this.pb.beforeSend = (url, options) => {
 			pbLog(url, this.pb, options);
 			options.fetch = customFetch;
@@ -81,7 +44,7 @@ export class LoginManager extends Observable<LoginManager> {
 		this.user = this.pb.authStore.isValid
 			? this.makeUser(this.pb.authStore)
 			: undefined;
-		this._log("instance", this);
+		RelayInstances.set(this, "loginManager");
 	}
 
 	log(message: string, ...args: unknown[]) {
@@ -256,5 +219,16 @@ export class LoginManager extends Observable<LoginManager> {
 			this.on(isLoggedIn);
 		});
 		return await promise;
+	}
+
+	destroy() {
+		this.pb.cancelAllRequests();
+		this.pb.realtime.unsubscribe();
+		this.pb = null as any;
+		this.authStore.destroy();
+		this.authStore = null as any;
+		this.user = undefined;
+		this.openSettings = null as any;
+		super.destroy();
 	}
 }

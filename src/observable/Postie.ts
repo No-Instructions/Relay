@@ -1,5 +1,8 @@
-import { curryLog } from "../debug";
-import type { IObservable, Observable } from "./Observable";
+"use strict";
+
+import { DefaultTimeProvider, type TimeProvider } from "src/TimeProvider";
+import { RelayInstances, curryLog } from "../debug";
+import type { IObservable } from "./Observable";
 
 export interface Mail<T> {
 	sender: T & IObservable<T>;
@@ -10,6 +13,7 @@ export interface Mail<T> {
 }
 
 export class PostOffice {
+	private static _destroyed: boolean = false;
 	private static instance: PostOffice;
 	private mailboxes: Map<(value: any) => void, Set<IObservable<any>>> =
 		new Map();
@@ -20,13 +24,18 @@ export class PostOffice {
 	private currentTransactionId: number = 0;
 	private isInTransaction: boolean = false;
 
-	private constructor(private deliveryWindow: number = 20) {}
+	private constructor(
+		private timeProvider: TimeProvider,
+		private deliveryWindow: number = 20,
+	) {}
 
 	static getInstance(): PostOffice {
+		if (this._destroyed) {
+			throw new Error("tried to access postie during teardown");
+		}
 		if (!PostOffice.instance) {
-			PostOffice.instance = new PostOffice();
-			const log = curryLog("[postie]", "warn");
-			log("instance", this.instance);
+			PostOffice.instance = new PostOffice(new DefaultTimeProvider());
+			RelayInstances.set(this.instance, "postie");
 		}
 		return PostOffice.instance;
 	}
@@ -85,7 +94,7 @@ export class PostOffice {
 
 	private scheduleDelivery(): void {
 		this.isDelivering = true;
-		this.deliveryInterval = window.setTimeout(() => {
+		this.deliveryInterval = this.timeProvider.setTimeout(() => {
 			this.deliver();
 			this.deliveryInterval = null;
 			this.isDelivering = false;
@@ -149,8 +158,7 @@ export class PostOffice {
 			_log("---");
 		});
 	}
-
-	getFunctionOrigin(func: Function): string {
+	getFunctionOrigin(func: (...args: any[]) => any): string {
 		// If the function has a name, return it
 		if (func.name) {
 			return func.name;
@@ -176,5 +184,32 @@ export class PostOffice {
 		}
 
 		return `AnonymousFunction(${definition})`;
+	}
+
+	static destroy(): void {
+		if (PostOffice.instance) {
+			// Clear all mailboxes
+			PostOffice.instance.mailboxes = null as any;
+
+			// Clear mail logs
+			PostOffice.instance.allMailLog = [];
+			PostOffice.instance.deliveredMailLog = [];
+
+			// Cancel any pending delivery
+			PostOffice.instance.timeProvider.destroy();
+			PostOffice.instance.timeProvider = null as any;
+
+			// Reset flags
+			PostOffice.instance.isDelivering = false;
+			PostOffice.instance.isInTransaction = false;
+
+			// Reset transaction ID
+			PostOffice.instance.currentTransactionId = 0;
+
+			PostOffice._destroyed = true;
+
+			// Remove the singleton instance
+			PostOffice.instance = undefined as any;
+		}
 	}
 }

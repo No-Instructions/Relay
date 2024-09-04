@@ -125,5 +125,6 @@ export class Document extends HasProvider {
 			this._persistence.destroy();
 		}
 		super.destroy();
+		this.ydoc.destroy();
 	}
 }

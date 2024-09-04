@@ -377,6 +377,7 @@ export class FolderNavigationDecorations {
 	showDocumentStatus: boolean;
 	offFolderListener: () => void;
 	offDocumentListeners: Map<SharedFolder, () => void>;
+	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 
 	constructor(
@@ -409,10 +410,12 @@ export class FolderNavigationDecorations {
 			});
 			this.refresh();
 		});
-	}
-
-	register() {
-		return this.workspace.on("layout-change", () => this.quickRefresh());
+		this.offLayoutChange = (() => {
+			const ref = this.workspace.on("layout-change", () => this.quickRefresh());
+			return () => {
+				this.workspace.offref(ref);
+			};
+		})();
 	}
 
 	makeVisitors(): FileSystemVisitor<Destroyable>[] {
@@ -482,9 +485,15 @@ export class FolderNavigationDecorations {
 	destroy() {
 		this.offFolderListener();
 		this.offDocumentListeners.forEach((off) => off());
+		this.offDocumentListeners.clear();
 		this.treeState.forEach((walker) => {
 			walker.destory();
 		});
 		this.treeState.clear();
+		this.offLayoutChange();
+
+		this.vault = null as any;
+		this.workspace = null as any;
+		this.sharedFolders = null as any;
 	}
 }
