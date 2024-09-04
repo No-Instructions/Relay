@@ -21,8 +21,11 @@ import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
+import { updateYDocFromDiskBuffer } from "./bgSync";
+import { FeatureFlagDefaults, type FeatureFlags } from "./flags";
+import { FeatureFlagManager } from "./flagManager";
 
-interface LiveSettings {
+interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
 	showDocumentStatus: boolean;
 	debugging: boolean;
@@ -32,6 +35,7 @@ const DEFAULT_SETTINGS: LiveSettings = {
 	sharedFolders: [],
 	showDocumentStatus: false,
 	debugging: false,
+	...FeatureFlagDefaults,
 };
 
 declare const HEALTH_URL: string;
@@ -125,7 +129,8 @@ export default class Live extends Plugin {
 		}
 
 		this.app.workspace.onLayoutReady(async () => {
-			await this.loadSharedFolders(this.settings.sharedFolders);
+			this.loadSharedFolders(this.settings.sharedFolders);
+			FeatureFlagManager.getInstance().setFlags(this.settings);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
@@ -413,6 +418,7 @@ export default class Live extends Plugin {
 		this.networkStatus?.stop();
 		this._liveViews?.destroy();
 
+		FeatureFlagManager.destroy();
 		auditTeardown();
 	}
 
@@ -425,6 +431,7 @@ export default class Live extends Plugin {
 			this.settings.sharedFolders = this.sharedFolders.toSettings();
 			this.log("Saving settings", this.settings);
 			await this.saveData(this.settings);
+			FeatureFlagManager.getInstance().setFlags(this.settings);
 		} else {
 			this.log("Saving settings: settings file locked");
 		}
