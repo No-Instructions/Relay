@@ -1,5 +1,7 @@
+"use strict";
+
 import { curryLog } from "../debug";
-import type { IObservable, Observable } from "./Observable";
+import type { IObservable } from "./Observable";
 
 export interface Mail<T> {
 	sender: T & IObservable<T>;
@@ -149,8 +151,7 @@ export class PostOffice {
 			_log("---");
 		});
 	}
-
-	getFunctionOrigin(func: Function): string {
+	getFunctionOrigin(func: (...args: any[]) => any): string {
 		// If the function has a name, return it
 		if (func.name) {
 			return func.name;
@@ -176,5 +177,32 @@ export class PostOffice {
 		}
 
 		return `AnonymousFunction(${definition})`;
+	}
+
+	static destroy(): void {
+		if (PostOffice.instance) {
+			// Clear all mailboxes
+			PostOffice.instance.mailboxes = new WeakMap();
+
+			// Clear mail logs
+			PostOffice.instance.allMailLog = [];
+			PostOffice.instance.deliveredMailLog = [];
+
+			// Cancel any pending delivery
+			if (PostOffice.instance.deliveryInterval !== null) {
+				window.clearTimeout(PostOffice.instance.deliveryInterval);
+				PostOffice.instance.deliveryInterval = null;
+			}
+
+			// Reset flags
+			PostOffice.instance.isDelivering = false;
+			PostOffice.instance.isInTransaction = false;
+
+			// Reset transaction ID
+			PostOffice.instance.currentTransactionId = 0;
+
+			// Remove the singleton instance
+			PostOffice.instance = undefined as any;
+		}
 	}
 }

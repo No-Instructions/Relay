@@ -24,6 +24,7 @@ import { auditTeardown } from "./observable/Observable";
 import { updateYDocFromDiskBuffer } from "./BackgroundSync";
 import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, withFlag } from "./flagManager";
+import { PostOffice } from "./observable/Postie";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -431,6 +432,7 @@ export default class Live extends Plugin {
 		this._liveViews?.destroy();
 
 		FeatureFlagManager.destroy();
+		PostOffice.destroy();
 		auditTeardown();
 	}
 
