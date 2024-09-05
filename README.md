@@ -101,8 +101,6 @@ Other file types are coming soon!
 
 ### How much does Relay cost?
 
-We haven't implemented billing yet, but here's our intended pricing model:
-
 #### Free
 
 -   25 Relays
@@ -113,7 +111,7 @@ We haven't implemented billing yet, but here's our intended pricing model:
 
 -   Unlimited Relays
     -   10 users per Relay
-        -   $2 per additional user
+        -   $2 per additional user up to 20 users.
 -   Unlimited markdown edit history storage
 -   ?? GB of Attachment Storage
 
@@ -122,9 +120,6 @@ We haven't implemented billing yet, but here's our intended pricing model:
 -   Custom per-user pricing
 -   BYO-storage
 
-### How do I increase the user limit on my Relay?
-
-Since we don't have billing yet, if you want to bump the user limit on your relay you can email me at [daniel@noinstructions.ai](mailto:daniel@noinstructions.ai) or find me on our [Discord](https://discord.system3.md).
 
 ### Do I need to be online to use Relay?
 
