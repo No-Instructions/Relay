@@ -31,8 +31,7 @@ const NotifyPlugin = {
 	name: "on-end",
 	setup(build) {
 		build.onEnd((result) => {
-			if (result.errors.length > 0)
-				execSync(`notify-send "Build Failed"`);
+			if (result.errors.length > 0) execSync(`notify-send "Build Failed"`);
 		});
 	},
 };
@@ -67,8 +66,8 @@ const context = await esbuild.context({
 		}),
 		NotifyPlugin,
 	],
-
 	target: "es2018",
+	minify: !debug,
 	logLevel: "info",
 	sourcemap: debug ? "inline" : false,
 	define: {
