@@ -4,6 +4,7 @@ import { Notice } from "obsidian";
 
 declare const BUILD_TYPE: string;
 
+export const RelayInstances = new WeakMap();
 let debugging = false;
 
 export function setDebugging(debug: boolean) {

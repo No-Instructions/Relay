@@ -1,6 +1,7 @@
 "use strict";
 
-import { curryLog } from "../debug";
+import { DefaultTimeProvider, type TimeProvider } from "src/TimeProvider";
+import { RelayInstances, curryLog } from "../debug";
 import type { IObservable } from "./Observable";
 
 export interface Mail<T> {
@@ -12,6 +13,7 @@ export interface Mail<T> {
 }
 
 export class PostOffice {
+	private static _destroyed: boolean = false;
 	private static instance: PostOffice;
 	private mailboxes: Map<(value: any) => void, Set<IObservable<any>>> =
 		new Map();
@@ -22,13 +24,18 @@ export class PostOffice {
 	private currentTransactionId: number = 0;
 	private isInTransaction: boolean = false;
 
-	private constructor(private deliveryWindow: number = 20) {}
+	private constructor(
+		private timeProvider: TimeProvider,
+		private deliveryWindow: number = 20,
+	) {}
 
 	static getInstance(): PostOffice {
+		if (this._destroyed) {
+			throw new Error("tried to access postie during teardown");
+		}
 		if (!PostOffice.instance) {
-			PostOffice.instance = new PostOffice();
-			const log = curryLog("[postie]", "warn");
-			log("instance", this.instance);
+			PostOffice.instance = new PostOffice(new DefaultTimeProvider());
+			RelayInstances.set(this.instance, "postie");
 		}
 		return PostOffice.instance;
 	}
@@ -87,7 +94,7 @@ export class PostOffice {
 
 	private scheduleDelivery(): void {
 		this.isDelivering = true;
-		this.deliveryInterval = window.setTimeout(() => {
+		this.deliveryInterval = this.timeProvider.setTimeout(() => {
 			this.deliver();
 			this.deliveryInterval = null;
 			this.isDelivering = false;
@@ -182,17 +189,15 @@ export class PostOffice {
 	static destroy(): void {
 		if (PostOffice.instance) {
 			// Clear all mailboxes
-			PostOffice.instance.mailboxes = new WeakMap();
+			PostOffice.instance.mailboxes = null as any;
 
 			// Clear mail logs
 			PostOffice.instance.allMailLog = [];
 			PostOffice.instance.deliveredMailLog = [];
 
 			// Cancel any pending delivery
-			if (PostOffice.instance.deliveryInterval !== null) {
-				window.clearTimeout(PostOffice.instance.deliveryInterval);
-				PostOffice.instance.deliveryInterval = null;
-			}
+			PostOffice.instance.timeProvider.destroy();
+			PostOffice.instance.timeProvider = null as any;
 
 			// Reset flags
 			PostOffice.instance.isDelivering = false;
@@ -200,6 +205,8 @@ export class PostOffice {
 
 			// Reset transaction ID
 			PostOffice.instance.currentTransactionId = 0;
+
+			PostOffice._destroyed = true;
 
 			// Remove the singleton instance
 			PostOffice.instance = undefined as any;

@@ -26,7 +26,7 @@ export class Observable<T> implements IObservable<T> {
 	constructor(public observableName?: string) {
 		const warn = curryLog("[Observable]", "warn");
 		observables.set(this, () => {
-			if (this._listeners.size > 0) {
+			if (this._listeners && this._listeners.size > 0) {
 				warn(
 					`Missing tear down of ${this._listeners.size} listeners`,
 					this,
@@ -71,5 +71,10 @@ export class Observable<T> implements IObservable<T> {
 
 	unsubscribe(run: Subscriber<T>): void {
 		this._listeners.delete(run);
+	}
+
+	destroy() {
+		this._listeners.clear();
+		this._listeners = null as any;
 	}
 }

@@ -1,5 +1,6 @@
 import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
+import type { TimeProvider } from "./TimeProvider";
 
 type Callback = () => void;
 
@@ -9,11 +10,15 @@ class NetworkStatus {
 	private onOnline: Callback[] = [];
 	private _onceOnline: Set<Callback>;
 	private onOffline: Callback[] = [];
-	private timer?: NodeJS.Timer;
+	private timer?: number;
 	private _log: (message: string, ...args: unknown[]) => void;
 	online = true;
 
-	constructor(url: string, interval = 10000) {
+	constructor(
+		private timeProvider: TimeProvider,
+		url: string,
+		interval = 10000,
+	) {
 		this._log = curryLog("[NetworkStatus]");
 		this.url = url;
 		this.interval = interval;
@@ -36,8 +41,11 @@ class NetworkStatus {
 		}
 	}
 
-	private checkStatusRepeatedly(): NodeJS.Timer {
-		return setInterval(this._checkStatus.bind(this), this.interval);
+	private checkStatusRepeatedly(): number {
+		return this.timeProvider.setInterval(
+			this._checkStatus.bind(this),
+			this.interval,
+		);
 	}
 
 	public checkStatus(): Promise<boolean> {
@@ -92,6 +100,14 @@ class NetworkStatus {
 		} else if (eventType === "offline") {
 			this.onOffline.push(callback);
 		}
+	}
+
+	destroy() {
+		this._onceOnline.clear();
+		this._onceOnline = null as any;
+		this.onOnline = null as any;
+		this.onOffline = null as any;
+		this.timeProvider = null as any;
 	}
 }
 

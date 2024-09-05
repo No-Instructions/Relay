@@ -31,7 +31,6 @@ export class LiveCMPluginValue implements PluginValue {
 		this.editor = editor;
 		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
 		this.view = this.connectionManager.findView(editor);
-		this.editor = editor;
 		if (!this.view) {
 			return;
 		}
@@ -40,7 +39,6 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!this.view.document) {
 			return;
 		}
-		this.view.plugin = this;
 		this.view.document.whenSynced().then(() => {
 			this.setBuffer();
 			this.view?.view.requestSave();
@@ -138,6 +136,10 @@ export class LiveCMPluginValue implements PluginValue {
 		if (this._observer) {
 			this._ytext?.unobserve(this._observer);
 		}
+		this.connectionManager = null as any;
+		this.view = undefined;
+		this._ytext = undefined;
+		this.editor = null as any;
 	}
 }
 

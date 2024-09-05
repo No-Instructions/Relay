@@ -234,7 +234,7 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	getTokenSync(documentId: string) {
-		return this.tokenMap.get(documentId)?.token;
+		return this.tokenMap?.get(documentId)?.token;
 	}
 
 	private getTokenFromNetwork(
@@ -274,7 +274,7 @@ export class TokenStore<TokenType extends HasToken> {
 		callback: (token: TokenType) => void,
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
-		if (this.tokenMap.has(documentId)) {
+		if (this.tokenMap?.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
@@ -359,5 +359,17 @@ export class TokenStore<TokenType extends HasToken> {
 	clear() {
 		this.tokenMap.clear();
 		this.refreshQueue.clear();
+	}
+
+	destroy() {
+		this.clear();
+		this.timeProvider.destroy();
+		this.timeProvider = null as any;
+		this.refresh = null as any;
+		this.callbacks.clear();
+		this.callbacks = null as any;
+		this._activePromises.clear();
+		this._activePromises = null as any;
+		this.tokenMap = null as any;
 	}
 }
