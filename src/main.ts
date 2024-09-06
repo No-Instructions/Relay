@@ -16,7 +16,7 @@ import { curryLog, toast, setDebugging, RelayInstances } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
-import { ObsidianLiveException } from "./Exceptions";
+import { RelayException } from "./Exceptions";
 import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
@@ -31,6 +31,7 @@ import {
 import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
+import { BackgroundSync } from "./BackgroundSync";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -57,6 +58,7 @@ export default class Live extends Plugin {
 	fileManager!: FileManagerFacade;
 	tokenStore!: LiveTokenStore;
 	networkStatus!: NetworkStatus;
+	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	_offSaveSettings!: () => void;
 	relayManager!: RelayManager;
@@ -135,6 +137,12 @@ export default class Live extends Plugin {
 		);
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);
+
+		this.backgroundSync = new BackgroundSync(
+			this.loginManager,
+			this.timeProvider,
+			this.sharedFolders,
+		);
 
 		if (!this.loginManager.setup()) {
 			new Notice("Please sign in to use relay");
@@ -240,6 +248,7 @@ export default class Live extends Plugin {
 			this.fileManager,
 			this.tokenStore,
 			this.relayManager,
+			this.backgroundSync,
 			relayId,
 			awaitingUpdates,
 		);
@@ -297,10 +306,11 @@ export default class Live extends Plugin {
 
 		const handleErrorEvent = (event: ErrorEvent) => {
 			const error = event.error;
-			if (error instanceof ObsidianLiveException) {
+			console.error(error);
+			if (error instanceof RelayException) {
 				toast(error);
 			}
-			//event.preventDefault();
+			// event.preventDefault();
 		};
 
 		const errorListener = (event: ErrorEvent) => handleErrorEvent(event);
@@ -310,7 +320,7 @@ export default class Live extends Plugin {
 		);
 
 		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {
-			if (event.reason instanceof ObsidianLiveException) {
+			if (event.reason instanceof RelayException) {
 				toast(event.reason);
 			}
 			//event.preventDefault();
@@ -441,6 +451,8 @@ export default class Live extends Plugin {
 		this.folderNavDecorations?.destroy();
 
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+
+		this.backgroundSync.destroy();
 
 		this._liveViews?.destroy();
 		this._liveViews = null as any;

@@ -1,8 +1,13 @@
 "use strict";
 
 import { curryLog } from "src/debug";
-import type { Unsubscriber, Subscriber } from "svelte/store";
 import { PostOffice } from "./Postie";
+
+/** Callback to inform of a value updates. */
+export type Subscriber<T> = (value: T) => void;
+
+/** Unsubscribes from value updates. */
+export type Unsubscriber = () => void;
 
 const observables = new Map<Observable<any>, () => void>();
 

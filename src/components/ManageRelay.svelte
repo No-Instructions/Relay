@@ -5,7 +5,7 @@
 		type RelayRole,
 		type RelaySubscription,
 		type RemoteSharedFolder,
-	} from "../Relay";
+	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import Folder from "./Folder.svelte";
@@ -27,6 +27,8 @@
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	import moment from "moment";
+	import { FeatureFlagManager, withFlag } from "src/flagManager";
+	import { flag } from "src/flags";
 
 	function getActiveForMessage(cancelAtDate: Date | null): string {
 		if (!cancelAtDate) {
@@ -92,9 +94,7 @@
 		const token = subscription.token;
 		const sub_id = subscription.id;
 		window.open(
-			plugin.buildApiUrl(
-				`/subscriptions/${sub_id}/manage?token=${token}`,
-			),
+			plugin.buildApiUrl(`/subscriptions/${sub_id}/manage?token=${token}`),
 			"_blank",
 		);
 	}
@@ -103,9 +103,7 @@
 		const token = subscription.token;
 		const sub_id = subscription.id;
 		window.open(
-			plugin.buildApiUrl(
-				`/subscriptions/${sub_id}/cancel?token=${token}`,
-			),
+			plugin.buildApiUrl(`/subscriptions/${sub_id}/cancel?token=${token}`),
 			"_blank",
 		);
 	}
@@ -134,6 +132,9 @@
 			.then((folder) => {
 				folder.remote = remoteFolder;
 				plugin.sharedFolders.notifyListeners();
+				withFlag(flag.enableDownloadOnAddToVault, () => {
+					plugin.backgroundSync.getFolderFiles(folder);
+				});
 				return folder;
 			});
 	}
@@ -248,7 +249,6 @@
 				relay,
 			);
 			sharedFolder.remote = remote;
-
 			plugin.sharedFolders.notifyListeners();
 		},
 	);
@@ -277,9 +277,7 @@
 			><Folder folder={remote} slot="name" />
 			<SettingsControl
 				on:settings={debounce(() => {
-					const local = $sharedFolders.find(
-						(local) => local.remote === remote,
-					);
+					const local = $sharedFolders.find((local) => local.remote === remote);
 					if (local) {
 						handleManageSharedFolder(local, remote.relay);
 					}

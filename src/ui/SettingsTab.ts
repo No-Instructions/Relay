@@ -32,7 +32,11 @@ export class LiveSettingsTab extends PluginSettingTab {
 	hide(): void {
 		try {
 			this.component?.$destroy();
-		} catch (e) {}
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			//(this as any).setting.close();
+		} catch (e) {
+			console.warn(e);
+		}
 	}
 
 	destroy() {

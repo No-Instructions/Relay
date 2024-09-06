@@ -2,7 +2,7 @@
 
 import { decodeJwt } from "jose";
 import type { TimeProvider } from "./TimeProvider";
-import { ObsidianLiveException } from "./Exceptions";
+import { RelayException } from "./Exceptions";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
@@ -277,7 +277,7 @@ export class TokenStore<TokenType extends HasToken> {
 		this.log(`getting token ${friendlyName}`);
 		if (!this.tokenMap) {
 			Promise.reject(
-				new ObsidianLiveException(
+				new RelayException(
 					"attempted to get token after TokenStore was destroyed.",
 				),
 			);
