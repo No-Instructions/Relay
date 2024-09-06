@@ -17,15 +17,19 @@ if you want to view the source, please visit the github repository of this plugi
 const gitTag = execSync("git describe --tags --always", {
 	encoding: "utf8",
 }).trim();
-const apiUrl = `https://api.system3.md`;
-const authUrl = `https://auth.system3.md`;
+
+const staging = process.argv[2] === "staging";
+const watch = process.argv[2] === "watch" || staging;
+const debug = process.argv[2] === "debug" || watch || staging
+const out = process.argv[3] || ".";
+const tld = staging ? "dev": "md"
+
+const apiUrl = `https://api.system3.${tld}`;
+const authUrl = `https://auth.system3.${tld}`;
 const healthUrl = `${apiUrl}/health?version=${gitTag}`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);
 
-const watch = process.argv[2] === "watch";
-const debug = process.argv[2] === "debug" || process.argv[2] === "watch";
-const out = process.argv[3] || ".";
 
 const NotifyPlugin = {
 	name: "on-end",
