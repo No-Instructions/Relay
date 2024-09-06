@@ -28,6 +28,7 @@ import { curryLog } from "./debug";
 import { withFlag } from "./flagManager";
 import { flag } from "./flags";
 import { DiskBufferStore } from "./DiskBuffer";
+import { BackgroundSync } from "./BackgroundSync";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -121,7 +122,7 @@ export class SharedFolder extends HasProvider {
 				vpaths.push(this.getVirtualPath(file.path));
 			}
 		});
-		this.placeHold(vpaths);
+		const newDocs = this.placeHold(vpaths);
 		files.forEach((file) => {
 			if (!this.checkPath(file.path)) {
 				return;
@@ -129,9 +130,15 @@ export class SharedFolder extends HasProvider {
 			if (file instanceof TFolder) {
 				return;
 			}
-			// XXX this will always be false due to the placeHold above
-			const loadFromDisk = !this.ids.has(file.path);
-			const doc = this.createFile(file.path, loadFromDisk, false);
+			const guid = this.ids.get(this.getVirtualPath(file.path));
+			const loadFromDisk = (guid && newDocs.contains(guid)) || false;
+
+			const upload = (doc: Document) => {
+				withFlag(flag.enableUploadOnShare, () => {
+					this.backgroundSync.putDocument(doc);
+				});
+			};
+			const doc = this.createFile(file.path, loadFromDisk, false, upload);
 			docs.push(doc);
 		});
 		if (docs.length > 0) {
@@ -147,6 +154,7 @@ export class SharedFolder extends HasProvider {
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
+		private backgroundSync: BackgroundSync,
 		relayId?: string,
 		awaitingUpdates: boolean = true,
 	) {
@@ -553,24 +561,37 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	createFile(path: string, loadFromDisk = false, update = true): Document {
+	createFile(
+		path: string,
+		loadFromDisk = false,
+		update = true,
+		onSync = (doc: Document) => {},
+	): Document {
 		const vPath = this.getVirtualPath(path);
-		return this.createDoc(vPath, loadFromDisk, update);
+		return this.createDoc(vPath, loadFromDisk, update, onSync);
 	}
 
-	placeHold(vpaths: string[]) {
+	placeHold(vpaths: string[]): string[] {
+		const newDocs: string[] = [];
 		this.ydoc.transact(() => {
 			vpaths.forEach((vpath) => {
 				if (!this.ids.has(vpath)) {
 					this.debug("creating entirely new doc for", vpath);
 					const guid = uuidv4();
+					newDocs.push(guid);
 					this.ids.set(vpath, guid);
 				}
 			});
 		}, this);
+		return newDocs;
 	}
 
-	createDoc(vpath: string, loadFromDisk = false, update = true): Document {
+	createDoc(
+		vpath: string,
+		loadFromDisk = false,
+		update = true,
+		onSync = (doc: Document) => {},
+	): Document {
 		if (!this.synced && !this.ids.get(vpath)) {
 			this.warn(`potential for document split at ${vpath}`);
 		}
@@ -611,6 +632,7 @@ export class SharedFolder extends HasProvider {
 				) {
 					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
 					text.insert(0, contents);
+					onSync(doc);
 				}
 			})();
 		}
@@ -711,6 +733,7 @@ export class SharedFolder extends HasProvider {
 		this.diskBufferStore.close();
 		this.diskBufferStore = null as any;
 		this.relayManager = null as any;
+		this.backgroundSync = null as any;
 		this.loginManager = null as any;
 		this.tokenStore = null as any;
 		this.fileManager = null as any;
@@ -724,7 +747,6 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		relayId?: string,
 		awaitingUpdates?: boolean,
 	) => Promise<SharedFolder>;
-	private relayManager: RelayManager;
 	private _offRemoteUpdates?: () => void;
 
 	public toSettings(): SharedFolderSettings[] {
@@ -762,7 +784,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	}
 
 	constructor(
-		relayManager: RelayManager,
+		private relayManager: RelayManager,
 		folderBuilder: (
 			guid: string,
 			path: string,
@@ -772,7 +794,6 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	) {
 		super();
 		this.folderBuilder = folderBuilder;
-		this.relayManager = relayManager;
 
 		if (!this._offRemoteUpdates) {
 			this._offRemoteUpdates = this.relayManager.remoteFolders.subscribe(

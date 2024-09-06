@@ -129,6 +129,9 @@ export class Document extends HasProvider implements TFile {
 	}
 
 	public get text(): string {
+		if (!this.ytext) {
+			return "";
+		}
 		return this.ytext.toString();
 	}
 

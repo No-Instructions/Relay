@@ -1,6 +1,16 @@
+import { requestUrl, type RequestUrlResponse } from "obsidian";
+import type { HasProvider } from "./HasProvider";
+import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
+import { S3RN, S3RemoteDocument, S3RemoteFolder } from "./S3RN";
+import type { SharedFolder, SharedFolders } from "./SharedFolder";
+import type { Document } from "./Document";
+import type { TimeProvider } from "./TimeProvider";
+import { RelayInstances, curryLog } from "./debug";
+import type { Unsubscriber } from "./observable/Observable";
 import { diff_match_patch, type Diff } from "diff-match-patch";
-import { curryLog } from "./debug";
+
+declare const API_URL: string;
 
 export function updateYDocFromDiskBuffer(
 	ydoc: Y.Doc,
@@ -58,4 +68,154 @@ export function updateYDocFromDiskBuffer(
 
 	// Log the final state
 	log("Update complete. New content length:", ytext.toString().length);
+}
+
+export class BackgroundSync {
+	subscriptions: Unsubscriber[] = [];
+	downloadQueue: HasProvider[] = [];
+	log = curryLog("[BackgroundSync]", "log");
+	debug = curryLog("[BackgroundSync]", "debug");
+	error = curryLog("[BackgroundSync]", "error");
+	constructor(
+		private loginManager: LoginManager,
+		private timeProvider: TimeProvider,
+		private sharedFolders: SharedFolders,
+	) {
+		RelayInstances.set(this, "BackgroundSync");
+	}
+
+	enqueueDownload(item: HasProvider) {
+		this.downloadQueue.push(item);
+	}
+
+	async downloadItem(item: HasProvider): Promise<RequestUrlResponse> {
+		const entity = item.s3rn;
+		this.log("[downloadItem]", `${S3RN.encode(entity)}`);
+		let docId: string;
+		if (entity instanceof S3RemoteDocument) {
+			docId = entity.documentId;
+		} else if (entity instanceof S3RemoteFolder) {
+			docId = entity.folderId;
+		} else {
+			throw new Error("Unable to decode S3RN");
+		}
+		if (!this.loginManager.loggedIn) {
+			throw new Error("Not logged in");
+		}
+		const headers = {
+			Authorization: `Bearer ${this.loginManager.user?.token}`,
+		};
+		const response = await requestUrl({
+			url: `${API_URL}/relay/${entity.relayId}/doc/${docId}/as-update`,
+			method: "GET",
+			headers: headers,
+		});
+		if (response.status === 200) {
+			this.debug("[downloadItem]", docId, response.status, response.text);
+		} else {
+			this.error("[downloadItem]", docId, response.status, response.text);
+		}
+		return response;
+	}
+
+	async uploadItem(item: Document): Promise<RequestUrlResponse> {
+		const entity = item.s3rn;
+		this.log("[uploadItem]", `${S3RN.encode(entity)}`);
+		let docId: string;
+		if (entity instanceof S3RemoteDocument) {
+			docId = entity.documentId;
+		} else if (entity instanceof S3RemoteFolder) {
+			docId = entity.folderId;
+		} else {
+			throw new Error("Unable to decode S3RN");
+		}
+		if (!this.loginManager.loggedIn) {
+			throw new Error("Not logged in");
+		}
+		const headers = {
+			Authorization: `Bearer ${this.loginManager.user?.token}`,
+			"Content-Type": "application/octet-stream",
+		};
+		const update = Y.encodeStateAsUpdate(item.ydoc);
+		const response = await requestUrl({
+			url: `${API_URL}/relay/${entity.relayId}/doc/${docId}/update`,
+			method: "POST",
+			headers: headers,
+			body: update.buffer,
+			throw: false,
+		});
+		if (response.status === 200) {
+			this.debug("[uploadItem]", docId, response.status, response.text);
+		} else {
+			this.error("[uploadItem]", docId, response.status, response.text);
+		}
+		return response;
+	}
+
+	async getDocument(doc: Document) {
+		try {
+			const response = await this.downloadItem(doc);
+			const rawUpdate = response.arrayBuffer;
+			const updateBytes = new Uint8Array(rawUpdate);
+			const update = Y.decodeUpdate(updateBytes);
+			Y.applyUpdate(doc.ydoc, updateBytes);
+			doc.sharedFolder.flush(doc, doc.text);
+		} catch (e) {
+			console.error(e);
+			return;
+		}
+	}
+
+	async putDocument(doc: Document) {
+		try {
+			const response = await this.uploadItem(doc);
+			if (response.status !== 200) {
+				throw new Error(
+					`Failed to upload document: ${response.status} ${response.text}`,
+				);
+			}
+		} catch (e) {
+			console.error(e);
+			return;
+		}
+	}
+
+	async putFolderFiles(folder: SharedFolder) {
+		await folder.whenReady();
+		this.log("[putFolderFiles]", `Uploading ${folder.docset.size} items`);
+		let i = 1;
+		for (const doc of folder.docset.items()) {
+			await doc.whenReady();
+			if (doc.text) {
+				await this.uploadItem(doc);
+			}
+			this.log("[putFolderFiles]", `${i}/${folder.docset.size}`);
+			i++;
+		}
+	}
+
+	async getFolder(folder: SharedFolder) {
+		const response = await this.downloadItem(folder);
+		const rawUpdate = response.arrayBuffer;
+		const updateBytes = new Uint8Array(rawUpdate);
+		Y.applyUpdate(folder.ydoc, updateBytes);
+	}
+
+	async getFolderFiles(folder: SharedFolder) {
+		await folder.whenReady();
+		this.log("[getFolderFiles]", `Downloading ${folder.docset.size} files`);
+		let i = 1;
+		for (const doc of folder.docset.items()) {
+			await this.getDocument(doc);
+			this.log("[getFolderFiles]", `${i}/${folder.docset.size}`);
+			i++;
+		}
+	}
+
+	destroy() {
+		this.loginManager = null as any;
+		this.sharedFolders = null as any;
+		this.subscriptions.forEach((off) => off());
+		this.downloadQueue = [];
+	}
 }
