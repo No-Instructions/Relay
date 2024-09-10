@@ -158,6 +158,10 @@ export class DifferencesView extends ItemView {
 			this.file2Lines.join("\n"),
 		);
 		this.fileDifferences = FileDifferences.fromParsedDiff(parsedDiff);
+
+		if (this.fileDifferences.differences.length === 0) {
+			this.leaf.detach();
+		}
 	}
 
 	private build(): void {
