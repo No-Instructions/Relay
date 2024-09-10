@@ -10,6 +10,7 @@ import { connectionManagerFacet } from "src/y-codemirror.next/LiveEditPlugin";
 import { type S3View, LiveViewManager } from "../LiveViews";
 import { curryLog } from "src/debug";
 import { FeatureFlagManager } from "src/flagManager";
+import type { CachedMetadata, TFile } from "obsidian";
 
 export const invalidLinkSyncAnnotation = Annotation.define();
 
@@ -19,11 +20,23 @@ export class InvalidLinkPluginValue {
 	connectionManager: LiveViewManager | null;
 	decorations: DecorationSet;
 	log: (message: string) => void = (message: string) => {};
+	offMetadataUpdates = () => {};
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
 		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
 		this.decorations = Decoration.none;
+		const cb = (tfile: TFile, data: string, cache: CachedMetadata) => {
+			if (tfile !== this.view?.document?.tfile) {
+				return;
+			}
+			console.warn("metadata update!");
+			this.updateDecorations();
+		};
+		const offRef = app.metadataCache.on("changed", cb);
+		this.offMetadataUpdates = () => {
+			app.metadataCache.offref(offRef);
+		};
 
 		if (FeatureFlagManager.getInstance().flags.enableInvalidLinkDecoration) {
 			if (!this.connectionManager) {
@@ -90,6 +103,7 @@ export class InvalidLinkPluginValue {
 	}
 
 	destroy() {
+		this.offMetadataUpdates();
 		this.decorations = Decoration.none;
 		this.connectionManager = null;
 		this.view = undefined;

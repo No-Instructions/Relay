@@ -87,7 +87,6 @@ export class Document extends HasProvider implements TFile {
 	public get parent(): TFolder | null {
 		return this.tfile?.parent || null;
 	}
-
 	public getInvalidLinks(): { from: number; to: number }[] {
 		if (!this.tfile) return [];
 
@@ -102,15 +101,16 @@ export class Document extends HasProvider implements TFile {
 				link.link,
 				this.path,
 			);
-
 			if (linkedFile && !this._parent.checkPath(linkedFile.path)) {
+				const start =
+					link.position.end.offset - 2 - (link.displayText?.length || 1);
+				const end = link.position.end.offset - 2;
 				invalidLinks.push({
-					from: link.position.start.offset + 2,
-					to: link.position.end.offset - 2,
+					from: start,
+					to: end,
 				});
 			}
 		});
-
 		return invalidLinks;
 	}
 
