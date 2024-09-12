@@ -519,12 +519,7 @@ export class SharedFolder extends HasProvider {
 		update = true,
 	): Document {
 		const vPath = this.getVirtualPath(path);
-		try {
-			return this.getDoc(vPath, create, loadFromDisk, update);
-		} catch (e) {
-			this.warn(e, path);
-			throw e;
-		}
+		return this.getDoc(vPath, create, loadFromDisk, update);
 	}
 
 	getTFile(doc: Document): TFile | null {

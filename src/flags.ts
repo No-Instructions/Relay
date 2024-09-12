@@ -4,6 +4,8 @@ export interface FeatureFlags {
 	enableDiffResolution: boolean;
 	enableDownloadOnAddToVault: boolean;
 	enableUploadOnShare: boolean;
+	enableDocumentStatus: boolean;
+	enableFolderConnectionToggle: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -12,6 +14,8 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDiffResolution: false,
 	enableDownloadOnAddToVault: false,
 	enableUploadOnShare: false,
+	enableDocumentStatus: false,
+	enableFolderConnectionToggle: false,
 };
 
 export type Flag = keyof FeatureFlags;

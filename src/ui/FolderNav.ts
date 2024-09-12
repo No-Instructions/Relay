@@ -10,6 +10,8 @@ import { VaultFacade } from "src/obsidian-api/Vault";
 import type { ConnectionState } from "src/HasProvider";
 import type { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
+import { withFlag } from "src/flagManager";
+import { flag } from "src/flags";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -242,7 +244,12 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	): DocumentStatus | null {
 		if (sharedFolder) {
 			try {
-				const document = sharedFolder.getFile(file.path, false);
+				const guid = sharedFolder.ids.get(
+					sharedFolder.getVirtualPath(file.path),
+				);
+				if (!guid) return null;
+				const document = sharedFolder.docs.get(guid);
+				if (!document) return null;
 				return storage || new DocumentStatus(item.el, document, file);
 			} catch (e) {
 				// document doesn't exist yet...
@@ -307,7 +314,7 @@ class FileExplorerWalker {
 		return this._getFileExplorerItem(fileOrFolder.path) as T;
 	}
 
-	walk(folder: TFolder) {
+	walk(folder: TFolder, _sharedFolder?: SharedFolder) {
 		if (this.fileExplorer.view.getViewType() !== "file-explorer") {
 			return;
 		}
@@ -337,7 +344,7 @@ class FileExplorerWalker {
 		}
 		folder.children.forEach((child) => {
 			if (child instanceof TFolder) {
-				this.walk(child);
+				this.walk(child, sharedFolder);
 			} else if (child instanceof TFile) {
 				const fileItem = this.getFileExplorerItem<FileItem>(
 					this.fileExplorer,
@@ -349,7 +356,7 @@ class FileExplorerWalker {
 						child,
 						fileItem,
 						stored,
-						sharedFolder,
+						sharedFolder || _sharedFolder,
 					);
 					if (stored && !update) {
 						store.delete(fileItem);
@@ -374,7 +381,6 @@ export class FolderNavigationDecorations {
 	vault: VaultFacade;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
-	showDocumentStatus: boolean;
 	offFolderListener: () => void;
 	offDocumentListeners: Map<SharedFolder, () => void>;
 	offLayoutChange: () => void;
@@ -384,19 +390,17 @@ export class FolderNavigationDecorations {
 		vault: VaultFacade,
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
-		showDocumentStatus = false,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
-		this.showDocumentStatus = showDocumentStatus;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => this.refresh());
 		this.offDocumentListeners = new Map();
 		this.offFolderListener = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
 				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
-				if (showDocumentStatus) {
+				withFlag(flag.enableDocumentStatus, () => {
 					const docsetListener = this.offDocumentListeners.get(folder);
 					if (!docsetListener) {
 						this.offDocumentListeners.set(
@@ -406,7 +410,7 @@ export class FolderNavigationDecorations {
 							}),
 						);
 					}
-				}
+				});
 			});
 			this.refresh();
 		});
@@ -422,9 +426,9 @@ export class FolderNavigationDecorations {
 		const visitors = [];
 		visitors.push(new FolderBarVisitor());
 		visitors.push(new FolderPillVisitor());
-		if (this.showDocumentStatus) {
+		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
-		}
+		});
 		return visitors;
 	}
 

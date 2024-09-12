@@ -35,13 +35,11 @@ import { BackgroundSync } from "./BackgroundSync";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
-	showDocumentStatus: boolean;
 	debugging: boolean;
 }
 
 const DEFAULT_SETTINGS: LiveSettings = {
 	sharedFolders: [],
-	showDocumentStatus: false,
 	debugging: false,
 	...FeatureFlagDefaults,
 };
@@ -279,7 +277,6 @@ export default class Live extends Plugin {
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders,
-			this.settings.showDocumentStatus,
 		);
 		this.folderNavDecorations.refresh();
 
