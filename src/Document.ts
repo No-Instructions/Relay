@@ -9,6 +9,7 @@ import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
 import type { VaultFacade } from "./obsidian-api/Vault";
 import { DiskBuffer } from "./DiskBuffer";
+import type { Unsubscriber } from "./observable/Observable";
 
 export class Document extends HasProvider implements TFile {
 	guid: string;
@@ -27,6 +28,7 @@ export class Document extends HasProvider implements TFile {
 		size: number;
 	};
 	_diskBuffer?: DiskBuffer;
+	offFolderStatusListener: Unsubscriber;
 
 	debug!: (message?: any, ...optionalParams: any[]) => void;
 	log!: (message?: any, ...optionalParams: any[]) => void;
@@ -62,6 +64,14 @@ export class Document extends HasProvider implements TFile {
 			mtime: Date.now(),
 			size: 0,
 		};
+		this.offFolderStatusListener = this._parent.subscribe(
+			this.path,
+			(state) => {
+				if (state.status === "disconnected") {
+					this.disconnect();
+				}
+			},
+		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
@@ -238,6 +248,7 @@ export class Document extends HasProvider implements TFile {
 		if (this._persistence) {
 			this._persistence.destroy();
 		}
+		this.offFolderStatusListener();
 		super.destroy();
 		this.ydoc.destroy();
 		if (this._diskBuffer) {

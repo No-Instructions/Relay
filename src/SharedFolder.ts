@@ -96,6 +96,7 @@ export class SharedFolder extends HasProvider {
 	docset: Documents;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
+	shouldConnect: boolean;
 	public vault: Vault;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
@@ -163,6 +164,7 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(s3rn, tokenStore, loginManager);
+		this.shouldConnect = true;
 
 		this.log = curryLog("[SharedFolder]", "log");
 		this.warn = curryLog("[SharedFolder]", "warn");
@@ -212,7 +214,9 @@ export class SharedFolder extends HasProvider {
 
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
-			return super.connect();
+			if (this.connected || this.shouldConnect) {
+				return super.connect();
+			}
 		}
 		return Promise.resolve(false);
 	}
@@ -316,6 +320,16 @@ export class SharedFolder extends HasProvider {
 		return new Promise((resolve) => {
 			this._persistence.once("synced", resolve);
 		});
+	}
+
+	toggleConnection(): void {
+		if (this.shouldConnect) {
+			this.shouldConnect = false;
+			this.disconnect();
+		} else {
+			this.shouldConnect = true;
+			this.connect();
+		}
 	}
 
 	async _handleServerRename(

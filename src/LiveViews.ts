@@ -255,11 +255,14 @@ export class LiveView implements S3View {
 				.whenReady()
 				.then((doc) => {
 					if (
+						this._parent.networkStatus.online &&
+						this.document.sharedFolder.shouldConnect &&
 						this.shouldConnect &&
-						this.canConnect &&
-						this._parent.networkStatus.online
+						this.canConnect
 					) {
 						this.connect();
+					} else {
+						this.document.disconnect();
 					}
 					resolve(this);
 				})

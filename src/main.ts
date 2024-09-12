@@ -193,6 +193,31 @@ export default class Live extends Plugin {
 				VIEW_TYPE_DIFFERENCES,
 				(leaf) => new DifferencesView(leaf),
 			);
+
+			withFlag(flag.enableFolderConnectionToggle, () => {
+				this.registerEvent(
+					this.app.workspace.on("file-menu", (menu, file) => {
+						if (file instanceof TFolder) {
+							const folder = this.sharedFolders.find(
+								(sharedFolder) => sharedFolder.path === file.path,
+							);
+							if (!folder) {
+								return;
+							}
+							menu.addItem((item) => {
+								item
+									.setTitle(folder.connected ? "Disconnect" : "Connect")
+									.setIcon("satellite")
+									.onClick(() => {
+										folder.toggleConnection();
+										this._liveViews.refresh("folder connection toggle");
+									});
+							});
+						}
+					}),
+				);
+			});
+
 			this.setup();
 			this.settingsFileLocked = false;
 			this._liveViews.refresh("init");
