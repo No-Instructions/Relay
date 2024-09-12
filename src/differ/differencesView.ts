@@ -43,7 +43,7 @@ export interface ViewState {
 	file1: TFile;
 	file2: TFile;
 	showMergeOption: boolean;
-	continueCallback?: (shouldContinue: boolean) => Promise<void>;
+	onResolve?: () => Promise<void>;
 }
 
 export async function openDiffView(
@@ -121,7 +121,7 @@ export class DifferencesView extends ItemView {
 	}
 
 	async onunload(): Promise<void> {
-		this.state?.continueCallback?.(false);
+		this.state?.onResolve?.();
 	}
 
 	private async updateState(): Promise<void> {

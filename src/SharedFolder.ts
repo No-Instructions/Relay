@@ -25,6 +25,9 @@ import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
 import { curryLog } from "./debug";
+import { withFlag } from "./flagManager";
+import { flag } from "./flags";
+import { DiskBufferStore } from "./DiskBuffer";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -100,6 +103,7 @@ export class SharedFolder extends HasProvider {
 	private unsubscribes: Unsubscriber[] = [];
 
 	private _persistence: IndexeddbPersistence;
+	diskBufferStore: DiskBufferStore;
 
 	private addLocalDocs = () => {
 		const files = this.vault.getFiles();
@@ -167,6 +171,7 @@ export class SharedFolder extends HasProvider {
 		this.relayManager = relayManager;
 		this._awaitingUpdates = awaitingUpdates;
 		this.relayId = relayId;
+		this.diskBufferStore = new DiskBufferStore();
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
@@ -632,6 +637,7 @@ export class SharedFolder extends HasProvider {
 				}
 				this.docs.delete(guid);
 			}, this);
+			this.diskBufferStore.removeDiskBuffer(guid);
 		}
 	}
 
@@ -702,6 +708,13 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
+		this.diskBufferStore.close();
+		this.diskBufferStore = null as any;
+		this.relayManager = null as any;
+		this.loginManager = null as any;
+		this.tokenStore = null as any;
+		this.fileManager = null as any;
+		this.vault = null as any;
 	}
 }
 export class SharedFolders extends ObservableSet<SharedFolder> {

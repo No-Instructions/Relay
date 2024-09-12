@@ -147,10 +147,17 @@ export class LiveView implements S3View {
 			"Merge conflict -- click to resolve",
 			async () => {
 				const diskBuffer = await this.document.diskBuffer();
+				const stale = await this.document.checkStale();
+				if (!stale) {
+					return true;
+				}
 				this._parent.openDiffView({
 					file1: this.document,
 					file2: diskBuffer,
 					showMergeOption: true,
+					onResolve: async () => {
+						this.document.clearDiskBuffer();
+					},
 				});
 				return true;
 			},

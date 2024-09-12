@@ -48,3 +48,69 @@ export class DiskBuffer implements TFile {
 		return this.path.substring(0, this.path.lastIndexOf("/"));
 	}
 }
+export class DiskBufferStore {
+	private dbName = "RelayDiskBuffer";
+	private storeName = "diskBuffers";
+	private dbPromise: Promise<IDBDatabase> | null = null;
+
+	private async getDB(): Promise<IDBDatabase> {
+		if (!this.dbPromise) {
+			this.dbPromise = this.openDB();
+		}
+		return this.dbPromise;
+	}
+
+	private async openDB(): Promise<IDBDatabase> {
+		return new Promise((resolve, reject) => {
+			const request = indexedDB.open(this.dbName, 1);
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => resolve(request.result);
+			request.onupgradeneeded = (event) => {
+				const db = (event.target as IDBOpenDBRequest).result;
+				db.createObjectStore(this.storeName, { keyPath: "guid" });
+			};
+		});
+	}
+
+	async saveDiskBuffer(guid: string, contents: string): Promise<void> {
+		const db = await this.getDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.storeName, "readwrite");
+			const store = transaction.objectStore(this.storeName);
+			const request = store.put({ guid, contents });
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => resolve();
+		});
+	}
+
+	async loadDiskBuffer(guid: string): Promise<string | null> {
+		const db = await this.getDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.storeName, "readonly");
+			const store = transaction.objectStore(this.storeName);
+			const request = store.get(guid);
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () =>
+				resolve(request.result ? request.result.contents : null);
+		});
+	}
+
+	async removeDiskBuffer(guid: string): Promise<void> {
+		const db = await this.getDB();
+		return new Promise((resolve, reject) => {
+			const transaction = db.transaction(this.storeName, "readwrite");
+			const store = transaction.objectStore(this.storeName);
+			const request = store.delete(guid);
+			request.onerror = () => reject(request.error);
+			request.onsuccess = () => resolve();
+		});
+	}
+
+	async close(): Promise<void> {
+		if (this.dbPromise) {
+			const db = await this.dbPromise;
+			db.close();
+			this.dbPromise = null;
+		}
+	}
+}

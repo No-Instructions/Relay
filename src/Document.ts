@@ -134,7 +134,15 @@ export class Document extends HasProvider implements TFile {
 
 	public async diskBuffer(read = false): Promise<TFile> {
 		if (read || this._diskBuffer === undefined) {
-			const fileContents = await this._parent.read(this);
+			let fileContents: string;
+			const storedContents = await this._parent.diskBufferStore.loadDiskBuffer(
+				this.guid,
+			);
+			if (storedContents !== null) {
+				fileContents = storedContents;
+			} else {
+				fileContents = await this._parent.read(this);
+			}
 			return this.setDiskBuffer(fileContents);
 		}
 		return this._diskBuffer;
@@ -150,13 +158,22 @@ export class Document extends HasProvider implements TFile {
 				contents,
 			);
 		}
+		this._parent.diskBufferStore.saveDiskBuffer(this.guid, contents);
 		return this._diskBuffer;
+	}
+
+	async clearDiskBuffer(): Promise<void> {
+		if (this._diskBuffer) {
+			this._diskBuffer.contents = "";
+			this._diskBuffer = undefined;
+		}
+		await this._parent.diskBufferStore.removeDiskBuffer(this.guid);
 	}
 
 	public async checkStale(): Promise<boolean> {
 		await this.whenReady();
 		const diskBuffer = await this.diskBuffer();
-		return this.text !== (diskBuffer as DiskBuffer).contents;
+		return this.text.trim() !== (diskBuffer as DiskBuffer).contents.trim();
 	}
 
 	connect(): Promise<boolean> {
