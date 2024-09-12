@@ -322,6 +322,7 @@ export class LiveViewManager {
 
 	goOnline() {
 		this.log("[System 3][Relay][Live Views] going online");
+		this.refresh("[NetworkStatus]");
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
 			folder.connect();
 		});
