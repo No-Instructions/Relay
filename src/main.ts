@@ -20,7 +20,7 @@ import { RelayException } from "./Exceptions";
 import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
-import { auditTeardown } from "./observable/Observable";
+import { auditTeardown, type Unsubscriber } from "./observable/Observable";
 import { updateYDocFromDiskBuffer } from "./BackgroundSync";
 import { Plugin } from "obsidian";
 
@@ -32,6 +32,7 @@ import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
+import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -59,6 +60,7 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	_offSaveSettings!: () => void;
+	_offFlagUpdates!: Unsubscriber;
 	relayManager!: RelayManager;
 	settingsTab!: LiveSettingsTab;
 	_extensions!: [];
@@ -100,14 +102,31 @@ export default class Live extends Plugin {
 	}
 
 	async onload() {
+		this.log = curryLog("[System 3][Relay]", "log");
+		this.warn = curryLog("[System 3][Relay]", "warn");
+
 		await this.loadSettings();
-		FeatureFlagManager.getInstance().setFlags(this.settings);
+		const flagManager = FeatureFlagManager.getInstance();
+		flagManager.setFlags(this.settings);
+		this._offFlagUpdates = flagManager.subscribe((flagManager) => {
+			this.settings = {
+				...this.settings,
+				...flagManager.flags,
+			};
+			this.saveSettings();
+		});
 
 		if (this.settings.debugging) {
 			this.enableDebugging();
+			this.addCommand({
+				id: "toggle-feature-flags",
+				name: "Feature Flags",
+				callback: () => {
+					const modal = new FeatureFlagToggleModal(this.app);
+					modal.open();
+				},
+			});
 		}
-		this.log = curryLog("[System 3][Relay]", "log");
-		this.warn = curryLog("[System 3][Relay]", "warn");
 
 		this.vault = new VaultFacade(this.app);
 		const vaultName = this.vault.getName();
@@ -464,6 +483,7 @@ export default class Live extends Plugin {
 		// We want to unload the visual components but not the data
 		this.settingsFileLocked = true;
 
+		this._offFlagUpdates();
 		if (this._offSaveSettings) {
 			this._offSaveSettings();
 		}
