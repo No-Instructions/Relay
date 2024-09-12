@@ -63,6 +63,7 @@ export interface S3View {
 	attach: () => Promise<S3View>;
 	document: Document | null;
 	destroy: () => void;
+	canConnect: boolean;
 }
 
 export class LoggedOutView implements S3View {
@@ -70,6 +71,7 @@ export class LoggedOutView implements S3View {
 	login: () => Promise<boolean>;
 	banner?: Banner;
 	document = null;
+	canConnect = false;
 
 	private _parent: LiveViewManager;
 
@@ -271,11 +273,14 @@ export class LiveView implements S3View {
 				.whenReady()
 				.then((doc) => {
 					if (
+						this._parent.networkStatus.online &&
+						this.document.sharedFolder.shouldConnect &&
 						this.shouldConnect &&
-						this.canConnect &&
-						this._parent.networkStatus.online
+						this.canConnect
 					) {
 						this.connect();
+					} else {
+						this.document.disconnect();
 					}
 					resolve(this);
 				})
@@ -548,13 +553,18 @@ export class LiveViewManager {
 			(a, b) =>
 				(b.view.leaf as any).activeTime - (a.view.leaf as any).activeTime,
 		);
+		const connectedDocuments = new Set<Document>();
 		for (const view of viewHistory) {
 			if (view instanceof LiveView) {
-				if (view.view === activeView) {
+				if (view.view === activeView || connectedDocuments.has(view.document)) {
 					view.canConnect = true;
-				} else {
-					view.canConnect = attemptedConnections < backgroundConnections;
+					connectedDocuments.add(view.document);
+				} else if (attemptedConnections < backgroundConnections) {
+					view.canConnect = true;
+					connectedDocuments.add(view.document);
 					attemptedConnections++;
+				} else {
+					view.canConnect = false;
 				}
 			}
 		}
@@ -615,6 +625,7 @@ export class LiveViewManager {
 				views.map((view) => ({
 					type: view.constructor.name,
 					file: view.document?.path,
+					canConnect: view.canConnect,
 				})),
 			);
 		};

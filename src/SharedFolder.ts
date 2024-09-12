@@ -13,7 +13,7 @@ import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
 import { dirname, join, sep } from "path-browserify";
 import { Doc } from "yjs";
-import { HasProvider } from "./HasProvider";
+import { HasProvider, type ConnectionIntent } from "./HasProvider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
@@ -96,6 +96,7 @@ export class SharedFolder extends HasProvider {
 	docset: Documents;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
+	shouldConnect: boolean;
 	public vault: Vault;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
@@ -163,6 +164,7 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(s3rn, tokenStore, loginManager);
+		this.shouldConnect = true;
 
 		this.log = curryLog("[SharedFolder]", "log");
 		this.warn = curryLog("[SharedFolder]", "warn");
@@ -227,7 +229,9 @@ export class SharedFolder extends HasProvider {
 	}
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
-			return super.connect();
+			if (this.connected || this.shouldConnect) {
+				return super.connect();
+			}
 		}
 		return Promise.resolve(false);
 	}
@@ -331,6 +335,20 @@ export class SharedFolder extends HasProvider {
 		return new Promise((resolve) => {
 			this._persistence.once("synced", resolve);
 		});
+	}
+
+	toggleConnection(): void {
+		if (this.shouldConnect) {
+			this.shouldConnect = false;
+			this.disconnect();
+		} else {
+			this.shouldConnect = true;
+			this.connect();
+		}
+	}
+
+	public get intent(): ConnectionIntent {
+		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
 	async _handleServerRename(

@@ -3,7 +3,6 @@ export interface FeatureFlags {
 	enableDownloadOnAddToVault: boolean;
 	enableUploadOnShare: boolean;
 	enableDocumentStatus: boolean;
-	enableFolderConnectionToggle: boolean;
 	enableNewLinkFormat: boolean;
 }
 
@@ -12,7 +11,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDownloadOnAddToVault: false,
 	enableUploadOnShare: false,
 	enableDocumentStatus: false,
-	enableFolderConnectionToggle: false,
 	enableNewLinkFormat: false,
 };
 

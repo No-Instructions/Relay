@@ -8,6 +8,7 @@ import { SharedFolder } from "./SharedFolder";
 import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer } from "./DiskBuffer";
+import type { Unsubscriber } from "./observable/Observable";
 
 export class Document extends HasProvider implements TFile {
 	guid: string;
@@ -26,6 +27,7 @@ export class Document extends HasProvider implements TFile {
 		size: number;
 	};
 	_diskBuffer?: DiskBuffer;
+	offFolderStatusListener: Unsubscriber;
 
 	debug!: (message?: any, ...optionalParams: any[]) => void;
 	log!: (message?: any, ...optionalParams: any[]) => void;
@@ -61,6 +63,14 @@ export class Document extends HasProvider implements TFile {
 			mtime: Date.now(),
 			size: 0,
 		};
+		this.offFolderStatusListener = this._parent.subscribe(
+			this.path,
+			(state) => {
+				if (state.status === "disconnected") {
+					this.disconnect();
+				}
+			},
+		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
 		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
@@ -157,10 +167,10 @@ export class Document extends HasProvider implements TFile {
 		return stale;
 	}
 
-	connect(): Promise<boolean> {
+	async connect(): Promise<boolean> {
 		if (this.sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
-			return Promise.resolve(false);
+			return false;
 		} else if (this.s3rn instanceof S3Document) {
 			// convert to remote document
 			if (this.sharedFolder.relayId) {
@@ -173,9 +183,12 @@ export class Document extends HasProvider implements TFile {
 				this.s3rn = new S3Document(this.sharedFolder.guid, this.guid);
 			}
 		}
-		return this.sharedFolder.connect().then((connected) => {
-			return super.connect();
-		});
+		return (
+			this.sharedFolder.shouldConnect &&
+			this.sharedFolder.connect().then((connected) => {
+				return super.connect();
+			})
+		);
 	}
 
 	public async whenReady(): Promise<Document> {
@@ -213,6 +226,7 @@ export class Document extends HasProvider implements TFile {
 	}
 
 	destroy() {
+		this.offFolderStatusListener();
 		super.destroy();
 		this.ydoc.destroy();
 		if (this._diskBuffer) {
