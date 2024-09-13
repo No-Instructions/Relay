@@ -165,7 +165,7 @@ export default class Live extends Plugin {
 			new Notice("Please sign in to use relay");
 		}
 
-		this.app.workspace.onLayoutReady(async () => {
+		this.app.workspace.onLayoutReady(() => {
 			this.loadSharedFolders(this.settings.sharedFolders);
 
 			const workspace = new WorkspaceFacade(this.app.workspace);

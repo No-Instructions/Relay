@@ -355,7 +355,6 @@ export class LiveViewManager {
 						});
 					});
 			}
-
 			return folder.docset.on(() => {
 				this.refresh("[Docset]");
 			});
@@ -421,7 +420,7 @@ export class LiveViewManager {
 				folders.add(folder);
 			}
 		});
-		if ([...folders].length == 0) {
+		if (folders.size == 0) {
 			return [];
 		}
 		return [...folders];
@@ -440,10 +439,9 @@ export class LiveViewManager {
 				folders.add(folder);
 			}
 		});
-		if ([...folders].length == 0) {
+		if (folders.size === 0) {
 			return [];
 		}
-
 		const readyFolders = [...folders].map((folder) => folder.whenReady());
 		return Promise.all(readyFolders);
 	}
@@ -462,10 +460,14 @@ export class LiveViewManager {
 						return this.loginManager.openLoginPage();
 					});
 					views.push(view);
-				} else {
+				} else if (folder.ready) {
 					const doc = folder.getFile(viewFilePath, true, true, true);
 					const view = new LiveView(this, markdownView, doc);
 					views.push(view);
+				} else {
+					console.error(
+						"[Relay][LiveViews] Unexpected error - folder was not ready.",
+					);
 				}
 			}
 		});
@@ -564,7 +566,8 @@ export class LiveViewManager {
 		const log = curryLog(ctx, "warn");
 		log("Refresh");
 
-		await this.foldersReady();
+		const folders = await this.foldersReady();
+		if (folders.length === 0) return false;
 
 		let views: S3View[] = [];
 		try {
