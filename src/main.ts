@@ -1,13 +1,11 @@
 "use strict";
 
-import { TFolder, Notice, MarkdownView } from "obsidian";
+import { TFolder, Notice, MarkdownView, Vault, FileManager } from "obsidian";
 import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
 
-import { VaultFacade } from "./obsidian-api/Vault";
-import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { LiveSettingsTab } from "./ui/SettingsTab";
@@ -17,7 +15,6 @@ import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
 import { RelayException } from "./Exceptions";
-import { FileManagerFacade } from "./obsidian-api/FileManager";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown, type Unsubscriber } from "./observable/Observable";
@@ -51,10 +48,10 @@ declare const API_URL: string;
 export default class Live extends Plugin {
 	settings!: LiveSettings;
 	sharedFolders!: SharedFolders;
-	vault!: VaultFacade;
+	vault!: Vault;
 	loginManager!: LoginManager;
 	timeProvider!: TimeProvider;
-	fileManager!: FileManagerFacade;
+	fileManager!: FileManager;
 	tokenStore!: LiveTokenStore;
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
@@ -128,9 +125,9 @@ export default class Live extends Plugin {
 			});
 		}
 
-		this.vault = new VaultFacade(this.app);
+		this.vault = this.app.vault;
 		const vaultName = this.vault.getName();
-		this.fileManager = new FileManagerFacade(this.app);
+		this.fileManager = this.app.fileManager;
 		this.timeProvider = new DefaultTimeProvider();
 		this.register(() => {
 			this.timeProvider.destroy();
@@ -167,14 +164,11 @@ export default class Live extends Plugin {
 
 		this.app.workspace.onLayoutReady(() => {
 			this.loadSharedFolders(this.settings.sharedFolders);
-
-			const workspace = new WorkspaceFacade(this.app.workspace);
 			this._liveViews = new LiveViewManager(
-				workspace,
+				this.app,
 				this.sharedFolders,
 				this.loginManager,
 				this.networkStatus,
-				this.app,
 			);
 
 			// NOTE: Extensions list should be loaded once and then mutated.
