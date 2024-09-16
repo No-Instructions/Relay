@@ -107,15 +107,12 @@ export class SharedFolder extends HasProvider {
 	diskBufferStore: DiskBufferStore;
 
 	private addLocalDocs = () => {
-		const files = this.vault.getFiles();
+		const files = this.getFiles();
 		const docs: Document[] = [];
 		const vpaths: string[] = [];
 		files.forEach((file) => {
 			// if the file is in the shared folder and not in the map, move it to the Trash
 			if (!this.checkPath(file.path)) {
-				return;
-			}
-			if (file instanceof TFolder) {
 				return;
 			}
 			if (!this.ids.has(file.path)) {
@@ -210,6 +207,21 @@ export class SharedFolder extends HasProvider {
 		);
 	}
 
+	getFiles(): TFile[] {
+		const folder = this.vault.getAbstractFileByPath(this.path);
+		if (!(folder instanceof TFolder)) {
+			throw new Error(
+				`Could not find shared folders on file system at ${this.path}`,
+			);
+		}
+		const files: TFile[] = [];
+		Vault.recurseChildren(folder, (file: TAbstractFile) => {
+			if (file instanceof TFile) {
+				files.push(file);
+			}
+		});
+		return files;
+	}
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			return super.connect();
@@ -414,7 +426,7 @@ export class SharedFolder extends HasProvider {
 		diffLog: string[],
 	): Delete[] {
 		// Delete files that are no longer shared
-		const files = this.vault.getFiles();
+		const files = this.getFiles();
 		const deletes: Delete[] = [];
 		files.forEach((file) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
