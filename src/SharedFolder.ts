@@ -1,18 +1,18 @@
 "use strict";
 import * as Y from "yjs";
 import {
+	FileManager,
 	TAbstractFile,
 	TFile,
 	TFolder,
+	Vault,
 	debounce,
 	normalizePath,
 } from "obsidian";
-import type { FileManager } from "./obsidian-api/FileManager";
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
 import { dirname, join, sep } from "path-browserify";
 import { Doc } from "yjs";
-import type { Vault } from "./obsidian-api/Vault";
 import { HasProvider } from "./HasProvider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";

@@ -2,11 +2,11 @@ import {
 	TAbstractFile,
 	TFile,
 	TFolder,
+	Vault,
 	Workspace,
 	WorkspaceLeaf,
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
-import { VaultFacade } from "src/obsidian-api/Vault";
 import type { ConnectionState } from "src/HasProvider";
 import type { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
@@ -378,7 +378,7 @@ class FileExplorerWalker {
 }
 
 export class FolderNavigationDecorations {
-	vault: VaultFacade;
+	vault: Vault;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	offFolderListener: () => void;
@@ -387,7 +387,7 @@ export class FolderNavigationDecorations {
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 
 	constructor(
-		vault: VaultFacade,
+		vault: Vault,
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
 	) {

@@ -6,8 +6,7 @@ import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import { curryLog } from "./debug";
-import type { TFile, Vault, TFolder } from "obsidian";
-import type { VaultFacade } from "./obsidian-api/Vault";
+import type { TFile, Vault, TFolder, MetadataCache } from "obsidian";
 import { DiskBuffer } from "./DiskBuffer";
 
 export class Document extends HasProvider implements TFile {
@@ -56,7 +55,7 @@ export class Document extends HasProvider implements TFile {
 		this.name = "[CRDT] " + path.split("/").pop() || "";
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
-		this.vault = (this._parent.vault as VaultFacade).app.vault; // XXX so sick of this..
+		this.vault = this._parent.vault;
 		this.stat = {
 			ctime: Date.now(),
 			mtime: Date.now(),
@@ -130,7 +129,7 @@ export class Document extends HasProvider implements TFile {
 			this._diskBuffer.contents = contents;
 		} else {
 			this._diskBuffer = new DiskBuffer(
-				(this._parent.vault as VaultFacade).app.vault,
+				this._parent.vault,
 				"local disk",
 				contents,
 			);

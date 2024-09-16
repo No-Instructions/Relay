@@ -18,7 +18,6 @@ import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog } from "./debug";
-import { WorkspaceFacade } from "./obsidian-api/Workspace";
 import { promiseWithTimeout } from "./promiseUtils";
 import { Banner } from "./ui/Banner";
 import {
@@ -33,6 +32,17 @@ import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 
 const BACKGROUND_CONNECTIONS = 20;
+
+function iterateMarkdownViews(
+	workspace: Workspace,
+	fn: (leaf: MarkdownView) => void,
+) {
+	workspace.iterateAllLeaves((leaf) => {
+		if (leaf.view instanceof MarkdownView) {
+			fn(leaf.view);
+		}
+	});
+}
 
 function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 	if (vs1.length !== vs2.length) {
@@ -304,7 +314,7 @@ export class LiveView implements S3View {
 }
 
 export class LiveViewManager {
-	workspace: WorkspaceFacade;
+	workspace: Workspace;
 	views: S3View[];
 	private _activePromise?: Promise<boolean> | null;
 	private _stale: string;
@@ -324,13 +334,12 @@ export class LiveViewManager {
 	warn: (message: string, ...args: unknown[]) => void;
 
 	constructor(
-		workspace: WorkspaceFacade,
+		private app: App,
 		sharedFolders: SharedFolders,
 		loginManager: LoginManager,
 		networkStatus: NetworkStatus,
-		private app: App,
 	) {
-		this.workspace = workspace;
+		this.workspace = app.workspace;
 		this.sharedFolders = sharedFolders;
 		this.views = [];
 		this.extensions = [];
@@ -405,7 +414,7 @@ export class LiveViewManager {
 	}
 
 	openDiffView(state: Differ.ViewState) {
-		Differ.openDiffView(this.workspace.workspace, state);
+		Differ.openDiffView(this.workspace, state);
 	}
 
 	goOffline() {
@@ -435,7 +444,7 @@ export class LiveViewManager {
 
 	private findFolders(): SharedFolder[] {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
-		this.workspace.iterateMarkdownViews((markdownView) => {
+		iterateMarkdownViews(this.workspace, (markdownView) => {
 			// Check if the view is displaying a file
 			const viewFilePath = markdownView.file?.path;
 			if (!viewFilePath) {
@@ -454,7 +463,7 @@ export class LiveViewManager {
 
 	private async foldersReady(): Promise<SharedFolder[]> {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
-		this.workspace.iterateMarkdownViews((markdownView) => {
+		iterateMarkdownViews(this.workspace, (markdownView) => {
 			// Check if the view is displaying a file
 			const viewFilePath = markdownView.file?.path;
 			if (!viewFilePath) {
@@ -475,7 +484,7 @@ export class LiveViewManager {
 
 	private getViews(): S3View[] {
 		const views: S3View[] = [];
-		this.workspace.iterateMarkdownViews((markdownView) => {
+		iterateMarkdownViews(this.workspace, (markdownView) => {
 			const viewFilePath = markdownView.file?.path;
 			if (!viewFilePath) {
 				return;
@@ -522,7 +531,7 @@ export class LiveViewManager {
 		backgroundConnections: number = BACKGROUND_CONNECTIONS,
 	): Promise<S3View[]> {
 		const activeView =
-			this.workspace.workspace.getActiveViewOfType<MarkdownView>(MarkdownView);
+			this.workspace.getActiveViewOfType<MarkdownView>(MarkdownView);
 
 		let attemptedConnections = 0;
 
