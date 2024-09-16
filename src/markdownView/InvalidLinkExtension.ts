@@ -105,7 +105,6 @@ export class InvalidLinkPluginValue {
 			to: number;
 		}[] = [];
 		const decorationSets = view.state.facet(EditorView.decorations);
-
 		decorationSets.forEach(
 			(
 				decoSetOrFunc: DecorationSet | ((view: EditorView) => DecorationSet),
