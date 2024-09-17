@@ -1,7 +1,7 @@
-.invalid-link::after {
-	content: "🔐";
-	font-size: 0.8em;
-	vertical-align: super;
+.invalid-link {
+	color: var(--link-external-color);
+	width: 0.8em;
+	margin-left: 1px;
 }
 
 .remote-caret {
