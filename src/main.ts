@@ -234,7 +234,9 @@ export default class Live extends Plugin {
 
 			this.setup();
 			this.settingsFileLocked = false;
-			this._liveViews.refresh("init");
+			this.timeProvider.setTimeout(() => {
+				this._liveViews.refresh("init");
+			}, 300);
 		});
 	}
 
