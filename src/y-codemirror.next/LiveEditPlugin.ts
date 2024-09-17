@@ -92,9 +92,7 @@ export class LiveCMPluginValue implements PluginValue {
 					if (!this.view || !isLive(this.view)) {
 						return;
 					}
-					if (FeatureFlagManager.getInstance().flags.enableDiffResolution) {
-						this.view.checkStale();
-					}
+					this.view.checkStale();
 					this.editor.dispatch({
 						changes: {
 							from: 0,
