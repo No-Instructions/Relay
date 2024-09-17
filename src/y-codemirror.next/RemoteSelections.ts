@@ -21,6 +21,7 @@ import { type S3View, LiveViewManager, LiveView } from "../LiveViews";
 import * as Y from "yjs";
 import { connectionManagerFacet } from "./LiveEditPlugin";
 import { Awareness } from "y-protocols/awareness.js";
+import { curryLog } from "src/debug";
 
 export const yRemoteSelectionsTheme = EditorView.baseTheme({
 	".cm-ySelection": {},
@@ -270,6 +271,19 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				anchor.type !== ytext ||
 				head.type !== ytext
 			) {
+				return;
+			}
+			if (
+				anchor.index > update.state.doc.length ||
+				head.index > update.state.doc.length
+			) {
+				curryLog(
+					"[RemoteSelections]",
+					"warn",
+				)(
+					`cursor positions (${anchor.index}, ${head.index}) out of range of document length: ${update.state.doc.length}`,
+				);
+				this.decorations = Decoration.none;
 				return;
 			}
 			const { color = "#30bced", name = "Anonymous" } = state.user || {};
