@@ -174,6 +174,7 @@ export default class Live extends Plugin {
 				this.sharedFolders,
 				this.loginManager,
 				this.networkStatus,
+				this.app,
 			);
 
 			// NOTE: Extensions list should be loaded once and then mutated.
