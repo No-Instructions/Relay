@@ -87,32 +87,6 @@ export class Document extends HasProvider implements TFile {
 	public get parent(): TFolder | null {
 		return this.tfile?.parent || null;
 	}
-	public getInvalidLinks(): { from: number; to: number }[] {
-		if (!this.tfile) return [];
-
-		const app = (this._parent.vault as VaultFacade).app;
-		const fileCache = app.metadataCache.getFileCache(this.tfile);
-		if (!fileCache || !fileCache.links) return [];
-
-		const invalidLinks: { from: number; to: number }[] = [];
-
-		fileCache.links.forEach((link) => {
-			const linkedFile = app.metadataCache.getFirstLinkpathDest(
-				link.link,
-				this.path,
-			);
-			if (linkedFile && !this._parent.checkPath(linkedFile.path)) {
-				const start =
-					link.position.end.offset - 2 - (link.displayText?.length || 1);
-				const end = link.position.end.offset - 2;
-				invalidLinks.push({
-					from: start,
-					to: end,
-				});
-			}
-		});
-		return invalidLinks;
-	}
 
 	public get sharedFolder(): SharedFolder {
 		return this._parent;

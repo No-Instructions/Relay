@@ -1,7 +1,15 @@
 import type { Extension } from "@codemirror/state";
 import { Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { MarkdownView, Platform, moment } from "obsidian";
+import {
+	App,
+	MarkdownView,
+	Platform,
+	TFile,
+	Workspace,
+	moment,
+	type CachedMetadata,
+} from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
 import * as Y from "yjs";
 import { Document } from "./Document";
@@ -304,6 +312,10 @@ export class LiveViewManager {
 	private loginManager: LoginManager;
 	private offListeners: (() => void)[] = [];
 	private folderListeners: Map<SharedFolder, () => void> = new Map();
+	private metadataListeners: Map<
+		TFile,
+		(data: string, cache: CachedMetadata) => void
+	>;
 	sharedFolders: SharedFolders;
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
@@ -316,6 +328,7 @@ export class LiveViewManager {
 		sharedFolders: SharedFolders,
 		loginManager: LoginManager,
 		networkStatus: NetworkStatus,
+		private app: App,
 	) {
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
@@ -330,6 +343,17 @@ export class LiveViewManager {
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
+
+		this.metadataListeners = new Map();
+		const cb = (tfile: TFile, data: string, cache: CachedMetadata) => {
+			const sub = this.metadataListeners.get(tfile);
+			sub?.(data, cache);
+		};
+
+		const offRef = this.app.metadataCache.on("changed", cb);
+		this.offListeners.push(() => {
+			this.app.metadataCache.offref(offRef);
+		});
 
 		this.offListeners.push(
 			this.loginManager.on(() => {
@@ -374,6 +398,10 @@ export class LiveViewManager {
 				});
 			}),
 		);
+	}
+
+	onMeta(tfile: TFile, cb: (data: string, cache: CachedMetadata) => void) {
+		this.metadataListeners.set(tfile, cb);
 	}
 
 	openDiffView(state: Differ.ViewState) {
@@ -680,6 +708,8 @@ export class LiveViewManager {
 		this.releaseViews(this.views);
 		this.offListeners.forEach((off) => off());
 		this.offListeners.length = 0;
+		this.metadataListeners.clear();
+		this.metadataListeners = null as any;
 		this.folderListeners.forEach((off) => off());
 		this.folderListeners.clear();
 		this.folderListeners = null as any;
