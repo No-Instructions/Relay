@@ -228,6 +228,9 @@ export default class Live extends Plugin {
 							if (!folder) {
 								return;
 							}
+							if (!folder.remote) {
+								return;
+							}
 							menu.addItem((item) => {
 								item
 									.setTitle(folder.connected ? "Disconnect" : "Connect")
