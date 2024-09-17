@@ -4,6 +4,7 @@ export interface FeatureFlags {
 	enableUploadOnShare: boolean;
 	enableDocumentStatus: boolean;
 	enableFolderConnectionToggle: boolean;
+	enableNewLinkFormat: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -12,6 +13,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableUploadOnShare: false,
 	enableDocumentStatus: false,
 	enableFolderConnectionToggle: false,
+	enableNewLinkFormat: false,
 };
 
 export type Flag = keyof FeatureFlags;

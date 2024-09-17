@@ -1,7 +1,17 @@
 "use strict";
 
-import { TFolder, Notice, MarkdownView, Vault, FileManager } from "obsidian";
+import {
+	TFolder,
+	Notice,
+	MarkdownView,
+	normalizePath,
+	MetadataCache,
+	TFile,
+	Vault,
+	FileManager,
+} from "obsidian";
 import { Platform } from "obsidian";
+import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
@@ -474,6 +484,63 @@ export default class Live extends Plugin {
 			},
 		});
 		this.register(patchOnUnloadFile);
+
+		withFlag(flag.enableNewLinkFormat, () => {
+			const patchFileToLinktext = around(MetadataCache.prototype, {
+				fileToLinktext(
+					old: (
+						file: TFile,
+						sourcePath: string,
+						omitMdExtension?: boolean | undefined,
+					) => string,
+				) {
+					return function (
+						file: TFile,
+						sourcePath: string,
+						omitMdExtension?: boolean | undefined,
+					) {
+						const folder = plugin.sharedFolders.lookup(file.path);
+						if (folder) {
+							if (omitMdExtension === void 0) {
+								omitMdExtension = true;
+							}
+
+							const fileName =
+								file.extension === "md" && omitMdExtension
+									? file.basename
+									: file.name;
+							const normalizedFileName = normalizePath(file.name);
+							const destinationFiles = (
+								app.metadataCache as any
+							).uniqueFileLookup.get(normalizedFileName.toLowerCase());
+
+							// If there are no conflicts (unique file), return the fileName
+							if (
+								destinationFiles &&
+								destinationFiles.length === 1 &&
+								destinationFiles[0] === file
+							) {
+								return fileName;
+							} else {
+								// If there are conflicts, use the relative path
+								const filePath =
+									file.extension === "md" && omitMdExtension
+										? file.path.slice(0, file.path.length - 3)
+										: file.path;
+								const rpath = relative(sourcePath, filePath);
+								if (rpath === "../" + fileName) {
+									return "./" + fileName;
+								}
+								return rpath;
+							}
+						}
+						// @ts-ignore
+						return old.call(this, file, sourcePath, omitMdExtension);
+					};
+				},
+			});
+			this.register(patchFileToLinktext);
+		});
 	}
 
 	onunload() {
