@@ -89,52 +89,31 @@ export class LiveCMPluginValue implements PluginValue {
 		this._ytext.observe(this._observer);
 	}
 
-	setBuffer(): boolean {
+	setBuffer(): void {
 		if (
 			this.view?.document &&
 			this.view?.document.text !== this.editor.state.doc.toString()
 		) {
 			this.log(`setting buffer ${this.view?.document} ${this.editor}`);
 			if (isLive(this.view) && this.editor.state.doc.toString() !== "") {
-				withFlag(
-					flag.enableDiffResolution,
-					() => {
-						if (!this.view || !isLive(this.view)) {
-							return false;
-						}
-						this.view.checkStale().then((stale) => {
-							if (!this.view || !isLive(this.view)) {
-								return false;
-							}
-							this.editor?.dispatch({
-								changes: {
-									from: 0,
-									to: this.editor.state.doc.length,
-									insert: this.view.document.text,
-								},
-								annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
-							});
-							return true;
-						});
-					},
-					() => {
-						if (!this.view || !isLive(this.view)) {
-							return false;
-						}
-						this.editor?.dispatch({
-							changes: {
-								from: 0,
-								to: this.editor.state.doc.length,
-								insert: this.view.document.text,
-							},
-							annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
-						});
-					},
-				);
+				if (!this.view || !isLive(this.view)) {
+					return;
+				}
+				this.view.checkStale().then((stale) => {
+					if (!this.view || !isLive(this.view)) {
+						return;
+					}
+					this.editor?.dispatch({
+						changes: {
+							from: 0,
+							to: this.editor.state.doc.length,
+							insert: this.view.document.text,
+						},
+						annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
+					});
+				});
 			}
-			return false;
 		}
-		return false;
 	}
 
 	update(update: ViewUpdate): void {
