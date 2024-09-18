@@ -309,7 +309,7 @@
 </SettingItem>
 
 <SettingItemHeading name="Users"
-	>{$roles.values().length} / {$relay.user_limit}</SettingItemHeading
+	>{$roles.values().length} / {$relay.userLimit}</SettingItemHeading
 >
 
 {#each $roles.values().sort(userSort) as item}
@@ -363,7 +363,7 @@
 				Manage
 			</button>
 
-			{#if $subscriptions.values()[0].active && !$subscriptions.values()[0].cancel_at}
+			{#if $subscriptions.values()[0].active && !$subscriptions.values()[0].cancelAt}
 				<button
 					class="mod-destructive"
 					on:click={debounce(() => {
@@ -374,10 +374,10 @@
 				</button>
 			{/if}
 		</SettingItem>
-		{#if !$subscriptions.values()[0].active || $subscriptions.values()[0].cancel_at}
+		{#if !$subscriptions.values()[0].active || $subscriptions.values()[0].cancelAt}
 			<SettingItem description="">
 				<span slot="name" class="mod-warning">Status: Cancelled</span>
-				{getActiveForMessage($subscriptions.values()[0].cancel_at)}
+				{getActiveForMessage($subscriptions.values()[0].cancelAt)}
 			</SettingItem>
 		{/if}
 	{:else}
@@ -400,7 +400,7 @@
 		name="Destroy relay"
 		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
 	>
-		{#if $subscriptions.values().length > 0 && !$subscriptions.values()[0].cancel_at}
+		{#if $subscriptions.values().length > 0 && !$subscriptions.values()[0].cancelAt}
 			<button
 				disabled={true}
 				class="mod-warning"

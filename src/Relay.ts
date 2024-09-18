@@ -33,7 +33,7 @@ export interface Relay
 	id: string;
 	guid: string;
 	name: string;
-	user_limit: number;
+	userLimit: number;
 	role: Role;
 	owner: boolean;
 	invitation?: RelayInvitation;
@@ -68,7 +68,7 @@ export interface RelaySubscription
 	active: boolean;
 	relay: Relay;
 	user: RelayUser;
-	cancel_at: Date | null;
+	cancelAt: Date | null;
 	quantity: number;
 	token: string;
 }
