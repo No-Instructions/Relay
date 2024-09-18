@@ -85,7 +85,12 @@
 {#each $relays.values().sort(sortFn) as relay}
 	<SettingItem description="">
 		<span slot="name" style="display: inline-flex"
-			><Satellite class="svg-icon" />{relay.name}
+			><Satellite class="svg-icon" />
+			{#if relay.name}
+				{relay.name}
+			{:else}
+				<span class="faint">(Untitled Relay)</span>
+			{/if}
 		</span>
 		<SettingsControl
 			on:settings={() => {
@@ -118,5 +123,8 @@
 <style>
 	input.system3-input-invalid {
 		border: 1px solid var(--color-red) !important;
+	}
+	span.faint {
+		color: var(--text-faint);
 	}
 </style>
