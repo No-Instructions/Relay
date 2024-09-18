@@ -124,6 +124,9 @@ export class SharedFolder extends HasProvider {
 			if (!this.checkPath(file.path)) {
 				return;
 			}
+			if (!this.checkExtension(file.path)) {
+				return;
+			}
 			if (file instanceof TFolder) {
 				return;
 			}
@@ -515,6 +518,10 @@ export class SharedFolder extends HasProvider {
 
 	checkPath(path: string): boolean {
 		return path.startsWith(this.path + sep);
+	}
+
+	checkExtension(path: string, extension = ".md"): boolean {
+		return path.endsWith(extension);
 	}
 
 	getVirtualPath(path: string): string {
