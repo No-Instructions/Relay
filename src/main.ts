@@ -122,6 +122,9 @@ export default class Live extends Plugin {
 			};
 			this.saveSettings();
 		});
+        this.addRibbonIcon("satellite", "Relay", () => {
+                this.openSettings();
+        });
 
 		if (this.settings.debugging) {
 			this.enableDebugging();
