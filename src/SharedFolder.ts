@@ -132,9 +132,7 @@ export class SharedFolder extends HasProvider {
 			const loadFromDisk = (guid && newDocs.contains(guid)) || false;
 
 			const upload = (doc: Document) => {
-				withFlag(flag.enableUploadOnShare, () => {
-					this.backgroundSync.putDocument(doc);
-				});
+				this.backgroundSync.putDocument(doc);
 			};
 			const doc = this.createFile(file.path, loadFromDisk, false, upload);
 			docs.push(doc);

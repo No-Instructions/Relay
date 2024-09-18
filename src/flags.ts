@@ -1,7 +1,5 @@
 export interface FeatureFlags {
 	enableUpdateYDocFromDiskBuffer: boolean;
-	enableDownloadOnAddToVault: boolean;
-	enableUploadOnShare: boolean;
 	enableDocumentStatus: boolean;
 	enableFolderConnectionToggle: boolean;
 	enableNewLinkFormat: boolean;
@@ -9,8 +7,6 @@ export interface FeatureFlags {
 
 export const FeatureFlagDefaults: FeatureFlags = {
 	enableUpdateYDocFromDiskBuffer: false,
-	enableDownloadOnAddToVault: false,
-	enableUploadOnShare: false,
 	enableDocumentStatus: false,
 	enableFolderConnectionToggle: false,
 	enableNewLinkFormat: false,
