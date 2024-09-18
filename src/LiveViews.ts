@@ -33,7 +33,7 @@ import {
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 
-const BACKGROUND_CONNECTIONS = 20;
+const BACKGROUND_CONNECTIONS = 3;
 
 function iterateMarkdownViews(
 	workspace: Workspace,
@@ -566,7 +566,11 @@ export class LiveViewManager {
 
 		let attemptedConnections = 0;
 
-		for (const view of views) {
+		const viewHistory = views.sort(
+			(a, b) =>
+				(b.view.leaf as any).activeTime - (a.view.leaf as any).activeTime,
+		);
+		for (const view of viewHistory) {
 			if (view instanceof LiveView) {
 				if (view.view === activeView) {
 					view.canConnect = true;
