@@ -856,7 +856,7 @@ export class RelaySubscriptionAuto
 		return this.subscription.stripe_cancel_at;
 	}
 
-	public get cancel_at(): Date | null {
+	public get cancelAt(): Date | null {
 		return this.subscription.stripe_cancel_at !== 0
 			? new Date(this.subscription.stripe_cancel_at * 1000)
 			: null;
@@ -922,7 +922,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		this.relay.name = value;
 	}
 
-	public get user_limit() {
+	public get userLimit() {
 		return this.relay.user_limit;
 	}
 
