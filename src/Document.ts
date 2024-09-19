@@ -66,7 +66,7 @@ export class Document extends HasProvider implements TFile {
 		this.offFolderStatusListener = this._parent.subscribe(
 			this.path,
 			(state) => {
-				if (state.status === "disconnected") {
+				if (state.intent === "disconnected") {
 					this.disconnect();
 				}
 			},
