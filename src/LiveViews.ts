@@ -609,8 +609,16 @@ export class LiveViewManager {
 	): Promise<boolean> {
 		const ctx = `[LiveViews][${context}]`;
 		const log = curryLog(ctx, "warn");
+		const logViews = (message: string, views: S3View[]) => {
+			log(
+				message,
+				views.map((view) => ({
+					type: view.constructor.name,
+					file: view.document?.path,
+				})),
+			);
+		};
 		log("Refresh");
-
 		const folders = await this.foldersReady();
 		if (folders.length === 0) return false;
 
@@ -627,7 +635,7 @@ export class LiveViewManager {
 				log("Unexpected plugins loaded.");
 				this.wipe();
 			}
-			log("Releasing Views", this.views);
+			logViews("Releasing Views", this.views);
 			this.releaseViews(this.views);
 			this.views = [];
 			return true; // no live views open
@@ -644,20 +652,20 @@ export class LiveViewManager {
 		}
 
 		const [matching, stale] = this.deduplicate(views);
-		log("Releasing Views", stale);
+		logViews("Releasing Views", stale);
 		this.releaseViews(stale);
 		if (stale.length === 0 && ViewsetsEqual(matching, this.views)) {
 			// We can assume all views are ready.
 			const attachedViews = await this.viewsAttachedWithConnectionPool(
 				this.views,
 			);
-			log("Attached Views", attachedViews);
+			logViews("Attached Views", attachedViews);
 		} else {
 			const readyViews = await this.viewsReady(matching);
-			log("Ready Views", readyViews);
+			logViews("Ready Views", readyViews);
 			const attachedViews =
 				await this.viewsAttachedWithConnectionPool(readyViews);
-			log("Attached Views", attachedViews);
+			logViews("Attached Views", attachedViews);
 			this.views = matching;
 		}
 		log("loading plugins");

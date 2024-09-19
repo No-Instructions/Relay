@@ -29,11 +29,11 @@ export class LoginManager extends Observable<LoginManager> {
 	constructor(vaultName: string, openSettings: () => Promise<void>) {
 		super();
 		this._log = curryLog("[LoginManager]");
-		const pbLog = curryLog("[Pocketbase]");
+		const pbLog = curryLog("[Pocketbase]", "debug");
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
 		this.pb = new PocketBase(AUTH_URL, this.authStore);
 		this.pb.beforeSend = (url, options) => {
-			pbLog(url, this.pb, options);
+			pbLog(url, options);
 			options.fetch = customFetch;
 			options.headers = Object.assign({}, options.headers, {
 				"Relay-Version": GIT_TAG,
@@ -56,7 +56,6 @@ export class LoginManager extends Observable<LoginManager> {
 			this.notifyListeners(); // notify anyway
 			return false;
 		}
-		this.log("LoginManager", this);
 		this.user = this.makeUser(this.pb.authStore);
 		this.notifyListeners();
 		if (authData) {

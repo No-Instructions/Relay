@@ -10,7 +10,13 @@ import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
-import { curryLog, toast, setDebugging, RelayInstances } from "./debug";
+import {
+	curryLog,
+	toast,
+	setDebugging,
+	RelayInstances,
+	initializeLogger,
+} from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
@@ -97,8 +103,17 @@ export default class Live extends Plugin {
 	buildApiUrl(path: string) {
 		return API_URL + path;
 	}
-
 	async onload() {
+		initializeLogger(
+			this.app.vault,
+			".obsidian/plugins/system3-relay/relay.log",
+			{
+				maxFileSize: 5 * 1024 * 1024, // 5MB
+				maxBackups: 3,
+				disableConsole: false, // Disable console logging
+			},
+		);
+
 		this.log = curryLog("[System 3][Relay]", "log");
 		this.warn = curryLog("[System 3][Relay]", "warn");
 
@@ -112,9 +127,9 @@ export default class Live extends Plugin {
 			};
 			this.saveSettings();
 		});
-        this.addRibbonIcon("satellite", "Relay", () => {
-                this.openSettings();
-        });
+		this.addRibbonIcon("satellite", "Relay", () => {
+			this.openSettings();
+		});
 
 		if (this.settings.debugging) {
 			this.enableDebugging();
@@ -350,17 +365,17 @@ export default class Live extends Plugin {
 
 		const handleErrorEvent = (event: ErrorEvent) => {
 			const error = event.error;
-			console.error(error);
-			if (error instanceof RelayException) {
-				toast(error);
+			if (error) {
+				if (error instanceof RelayException) {
+					toast(error);
+				}
 			}
 			// event.preventDefault();
 		};
 
-		const errorListener = (event: ErrorEvent) => handleErrorEvent(event);
-		window.addEventListener("error", errorListener, true);
+		window.addEventListener("error", handleErrorEvent, true);
 		this.register(() =>
-			window.removeEventListener("error", errorListener, true),
+			window.removeEventListener("error", handleErrorEvent, true),
 		);
 
 		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {

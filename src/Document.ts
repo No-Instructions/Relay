@@ -212,7 +212,7 @@ export class Document extends HasProvider implements TFile {
 		return this.whenSynced().then(async () => {
 			await fetchUpdates(this._persistence);
 			this._hasKnownPeers = this._persistence._dbsize > 3;
-			this.log("update count", this.path, this._persistence._dbsize);
+			this.debug("update count", this.path, this._persistence._dbsize);
 			return this._hasKnownPeers;
 		});
 	}

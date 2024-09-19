@@ -109,7 +109,7 @@ export class PostOffice {
 		for (const [recipient, senders] of this.mailboxes) {
 			for (const sender of senders) {
 				recipient(sender);
-				log("send", sender, recipient);
+				log("send", sender.constructor.name, recipient);
 				this.deliveredMailLog.push({
 					sender,
 					recipient,
