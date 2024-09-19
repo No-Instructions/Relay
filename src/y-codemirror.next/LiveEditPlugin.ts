@@ -9,7 +9,8 @@ import type { PluginValue } from "@codemirror/view";
 import { type S3View, LiveViewManager, isLive } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
-import { FeatureFlagManager } from "src/flagManager";
+import { FeatureFlagManager, withFlag } from "src/flagManager";
+import { flag } from "src/flags";
 
 export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 	Facet.define({
@@ -88,22 +89,37 @@ export class LiveCMPluginValue implements PluginValue {
 		) {
 			this.log(`setting buffer ${this.view?.document} ${this.editor}`);
 			if (isLive(this.view) && this.editor.state.doc.toString() !== "") {
-				this.view.document.diskBuffer(true).then(() => {
-					if (!this.view || !isLive(this.view)) {
-						return;
-					}
-					if (FeatureFlagManager.getInstance().flags.enableDiffResolution) {
-						this.view.checkStale();
-					}
-					this.editor.dispatch({
-						changes: {
-							from: 0,
-							to: this.editor.state.doc.length,
-							insert: this.view.document.text,
-						},
-						annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
-					});
-				});
+				withFlag(
+					flag.enableDiffResolution,
+					async () => {
+						if (!this.view || !isLive(this.view)) {
+							return false;
+						}
+						await this.view.checkStale();
+						this.editor.dispatch({
+							changes: {
+								from: 0,
+								to: this.editor.state.doc.length,
+								insert: this.view.document.text,
+							},
+							annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
+						});
+						return true;
+					},
+					() => {
+						if (!this.view || !isLive(this.view)) {
+							return false;
+						}
+						this.editor.dispatch({
+							changes: {
+								from: 0,
+								to: this.editor.state.doc.length,
+								insert: this.view.document.text,
+							},
+							annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
+						});
+					},
+				);
 			}
 			return false;
 		}
