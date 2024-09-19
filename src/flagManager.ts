@@ -5,9 +5,15 @@ import { PostOffice } from "./observable/Postie";
 export function flags(): FeatureFlags {
 	return { ...FeatureFlagManager.getInstance().flags };
 }
-export function withFlag(flag: Flag, fn: () => void): void {
+export function withFlag(
+	flag: Flag,
+	fn: () => void,
+	otherwise: () => void = () => {},
+): void {
 	if (FeatureFlagManager.getInstance().flags[flag]) {
 		fn();
+	} else {
+		otherwise();
 	}
 }
 

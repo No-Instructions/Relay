@@ -158,8 +158,13 @@ export class Document extends HasProvider implements TFile {
 
 	public async checkStale(): Promise<boolean> {
 		await this.whenReady();
-		const diskBuffer = await this.diskBuffer();
-		return this.text.trim() !== (diskBuffer as DiskBuffer).contents.trim();
+		const diskBuffer = await this.diskBuffer(true);
+		const stale =
+			this.text.trim() !== (diskBuffer as DiskBuffer).contents.trim();
+		if (!stale) {
+			this.clearDiskBuffer();
+		}
+		return stale;
 	}
 
 	connect(): Promise<boolean> {

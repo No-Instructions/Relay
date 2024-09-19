@@ -536,6 +536,8 @@ export default class Live extends Plugin {
 
 		this.loginManager.destroy();
 
+		this.app.workspace.updateOptions();
+
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();
 		auditTeardown();
