@@ -256,15 +256,15 @@ export class LiveView implements S3View {
 		}
 	}
 
-	checkStale() {
-		this.document.checkStale().then((stale) => {
-			if (stale && this.document._diskBuffer?.contents && this.document.text) {
-				this.mergeBanner();
-			} else {
-				this._banner?.destroy();
-				this._banner = undefined;
-			}
-		});
+	async checkStale() {
+		const stale = await this.document.checkStale();
+		if (stale && this.document._diskBuffer?.contents && this.document.text) {
+			this.mergeBanner();
+		} else {
+			this._banner?.destroy();
+			this._banner = undefined;
+		}
+		return stale;
 	}
 
 	_workaroundCM6StateFieldInitialization() {

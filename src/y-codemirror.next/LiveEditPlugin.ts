@@ -16,6 +16,7 @@ import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import { withFlag } from "src/flagManager";
 import { flag } from "src/flags";
+
 export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 	Facet.define({
 		combine(inputs) {
@@ -95,25 +96,41 @@ export class LiveCMPluginValue implements PluginValue {
 		) {
 			this.log(`setting buffer ${this.view?.document} ${this.editor}`);
 			if (isLive(this.view) && this.editor.state.doc.toString() !== "") {
-				this.view.document.diskBuffer(true).then(() => {
-					if (!this.view || !isLive(this.view)) {
-						return;
-					}
-					withFlag(flag.enableDiffResolution, () => {
+				withFlag(
+					flag.enableDiffResolution,
+					() => {
 						if (!this.view || !isLive(this.view)) {
-							return;
+							return false;
 						}
-						this.view.checkStale();
-					});
-					this.editor.dispatch({
-						changes: {
-							from: 0,
-							to: this.editor.state.doc.length,
-							insert: this.view.document.text,
-						},
-						annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
-					});
-				});
+						this.view.checkStale().then((stale) => {
+							if (!this.view || !isLive(this.view)) {
+								return false;
+							}
+							this.editor?.dispatch({
+								changes: {
+									from: 0,
+									to: this.editor.state.doc.length,
+									insert: this.view.document.text,
+								},
+								annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
+							});
+							return true;
+						});
+					},
+					() => {
+						if (!this.view || !isLive(this.view)) {
+							return false;
+						}
+						this.editor?.dispatch({
+							changes: {
+								from: 0,
+								to: this.editor.state.doc.length,
+								insert: this.view.document.text,
+							},
+							annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
+						});
+					},
+				);
 			}
 			return false;
 		}
