@@ -63,7 +63,11 @@ export const customFetch = async (
 	});
 
 	const level =
-		response.status >= 500 ? "error" : response.status >= 400 ? "warn" : "log";
+		response.status >= 500
+			? "error"
+			: response.status >= 400
+				? "warn"
+				: "debug";
 	const response_text = response.text;
 	curryLog("[CustomFetch]", level)(
 		response.status.toString(),

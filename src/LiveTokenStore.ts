@@ -31,9 +31,9 @@ async function refresh(
 	onSuccess: (clientToken: ClientToken) => void,
 	onError: (err: Error) => void,
 ) {
-	const log = curryLog("[TokenStore][Refresh]", "log");
+	const debug = curryLog("[TokenStore][Refresh]", "debug");
 	const error = curryLog("[TokenStore][Refresh]", "error");
-	log(`${documentId}`);
+	debug(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
 	let payload: string;
 	if (entity instanceof S3RemoteDocument) {
@@ -65,7 +65,7 @@ async function refresh(
 	})
 		.then((response) => {
 			if (response.status !== 200) {
-				log(response.status, response.text);
+				debug(response.status, response.text);
 				onError(Error(`Received status code ${response.status} from an API.`));
 			}
 			const clientToken = response.json as ClientToken;
@@ -86,7 +86,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 	) {
 		super(
 			{
-				log: curryLog("[LiveTokenStore]"),
+				log: curryLog("[LiveTokenStore]", "debug"),
 				refresh: withLoginManager(loginManager, refresh),
 				getJwtExpiry: getJwtExpiryFromClientToken,
 				getStorage: function () {
