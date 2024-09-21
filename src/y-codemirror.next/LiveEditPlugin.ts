@@ -6,11 +6,16 @@ import { Facet, Annotation } from "@codemirror/state";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import { type S3View, LiveViewManager, isLive } from "../LiveViews";
+import {
+	type S3View,
+	LiveViewManager,
+	isLive,
+	ConnectionManagerStateField,
+} from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
-import { FeatureFlagManager } from "src/flagManager";
-
+import { withFlag } from "src/flagManager";
+import { flag } from "src/flags";
 export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 	Facet.define({
 		combine(inputs) {
@@ -23,7 +28,7 @@ export const ySyncAnnotation = Annotation.define();
 export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
 	view?: S3View;
-	connectionManager: LiveViewManager;
+	connectionManager?: LiveViewManager;
 	initialSet = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
@@ -31,8 +36,10 @@ export class LiveCMPluginValue implements PluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
-		this.view = this.connectionManager.findView(editor);
+		this.connectionManager = this.editor.state.field(
+			ConnectionManagerStateField,
+		);
+		this.view = this.connectionManager?.findView(editor);
 		if (!this.view) {
 			return;
 		}
@@ -92,9 +99,12 @@ export class LiveCMPluginValue implements PluginValue {
 					if (!this.view || !isLive(this.view)) {
 						return;
 					}
-					if (FeatureFlagManager.getInstance().flags.enableDiffResolution) {
+					withFlag(flag.enableDiffResolution, () => {
+						if (!this.view || !isLive(this.view)) {
+							return;
+						}
 						this.view.checkStale();
-					}
+					});
 					this.editor.dispatch({
 						changes: {
 							from: 0,
@@ -120,7 +130,7 @@ export class LiveCMPluginValue implements PluginValue {
 			return;
 		}
 		const editor: EditorView = update.view;
-		this.view = this.connectionManager.findView(editor);
+		this.view = this.connectionManager?.findView(editor);
 		const ytext = this.view?.document?.ytext;
 		if (!ytext) {
 			return;

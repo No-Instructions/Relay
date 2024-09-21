@@ -1,5 +1,6 @@
 "use strict";
 
+import { type Extension, StateField, EditorState } from "@codemirror/state";
 import { TFolder, Notice, MarkdownView, Vault, FileManager } from "obsidian";
 import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";
@@ -60,7 +61,6 @@ export default class Live extends Plugin {
 	_offFlagUpdates!: Unsubscriber;
 	relayManager!: RelayManager;
 	settingsTab!: LiveSettingsTab;
-	_extensions!: [];
 	log!: (message: string, ...args: unknown[]) => void;
 	warn!: (message: string, ...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
@@ -453,18 +453,20 @@ export default class Live extends Plugin {
 		// We want to unload the visual components but not the data
 		this.settingsFileLocked = true;
 
-		this._offFlagUpdates();
-		if (this._offSaveSettings) {
-			this._offSaveSettings();
-		}
+		this._offFlagUpdates?.();
+		this._offFlagUpdates = null as any;
 
-		this.timeProvider.destroy();
+		this._offSaveSettings?.();
+		this._offSaveSettings = null as any;
+
+		this.timeProvider?.destroy();
 
 		this.folderNavDecorations?.destroy();
 
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
-		this.backgroundSync.destroy();
+		this.backgroundSync?.destroy();
+		this.backgroundSync = null as any;
 
 		this._liveViews?.destroy();
 		this._liveViews = null as any;
@@ -484,9 +486,11 @@ export default class Live extends Plugin {
 		this.sharedFolders.destroy();
 		this.sharedFolders = null as any;
 
-		this.settingsTab.destroy();
+		this.settingsTab?.destroy();
+		this.settingsTab = null as any;
 
-		this.loginManager.destroy();
+		this.loginManager?.destroy();
+		this.loginManager = null as any;
 
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();

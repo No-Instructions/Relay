@@ -8,7 +8,11 @@ import {
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
 import { connectionManagerFacet } from "src/y-codemirror.next/LiveEditPlugin";
-import { type S3View, LiveViewManager } from "../LiveViews";
+import {
+	type S3View,
+	LiveViewManager,
+	ConnectionManagerStateField,
+} from "../LiveViews";
 import { curryLog } from "src/debug";
 import type { CachedMetadata, MetadataCache } from "obsidian";
 
@@ -40,15 +44,16 @@ export class InvalidLinkPluginValue {
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
 	view?: S3View;
-	connectionManager: LiveViewManager | null;
+	connectionManager?: LiveViewManager;
 	decorationAnchors: number[];
 	decorations: DecorationSet;
 	log: (message: string) => void = (message: string) => {};
-	offMetadataUpdates = () => {};
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
+		this.connectionManager = this.editor.state.field(
+			ConnectionManagerStateField,
+		);
 		this.decorations = Decoration.none;
 		this.decorationAnchors = [];
 		this.metadata = new Map();
@@ -277,6 +282,14 @@ export class InvalidLinkPluginValue {
 			this.updateDecorations();
 		}
 		return this.decorations;
+	}
+
+	destroy() {
+		this.connectionManager = null as any;
+		this.view = undefined;
+		this.editor = null as any;
+		this.metadata.clear();
+		this.metadata = null as any;
 	}
 }
 

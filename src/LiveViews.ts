@@ -1,5 +1,10 @@
 import type { Extension } from "@codemirror/state";
-import { Compartment } from "@codemirror/state";
+import {
+	StateEffect,
+	StateField,
+	EditorState,
+	Compartment,
+} from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -20,10 +25,7 @@ import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog } from "./debug";
 import { promiseWithTimeout } from "./promiseUtils";
 import { Banner } from "./ui/Banner";
-import {
-	LiveEdit,
-	connectionManagerFacet,
-} from "./y-codemirror.next/LiveEditPlugin";
+import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
@@ -265,9 +267,19 @@ export class LiveView implements S3View {
 		});
 	}
 
+	_workaroundCM6StateFieldInitialization() {
+		const editorView = (this.view.editor as any).cm as EditorView;
+		const field = editorView.state.field(ConnectionManagerStateField, false);
+		if (field === undefined) {
+			this._parent.reconfigure(editorView);
+		}
+	}
+
 	attach(): Promise<LiveView> {
 		// can be called multiple times, whereas release is only ever called once
 		this.setConnectionDot();
+		this._workaroundCM6StateFieldInitialization();
+
 		return new Promise((resolve) => {
 			return this.document
 				.whenReady()
@@ -304,9 +316,20 @@ export class LiveView implements S3View {
 		this.document.disconnect();
 	}
 
+	_workaroundCM6MemoryLeak() {
+		// CM6 memory leak
+		// CM6 will hold references to state fields in config.dynamicSlots
+		// for us this is a big problem because LiveViewManager has references
+		// to basically everything.
+		const editor = this.view.editor;
+		const editorView = (editor as any).cm as EditorView;
+		(editorView.state as any).config.dynamicSlots.length = 0;
+	}
+
 	destroy() {
 		this.release();
 		this.clearViewActions();
+		this._workaroundCM6MemoryLeak();
 		this._parent = null as any;
 		this.view = null as any;
 		this.document = null as any;
@@ -317,8 +340,7 @@ export class LiveViewManager {
 	workspace: Workspace;
 	views: S3View[];
 	private _activePromise?: Promise<boolean> | null;
-	private _stale: string;
-	private _compartment: Compartment;
+	_compartment: Compartment;
 	private loginManager: LoginManager;
 	private offListeners: (() => void)[] = [];
 	private folderListeners: Map<SharedFolder, () => void> = new Map();
@@ -343,12 +365,11 @@ export class LiveViewManager {
 		this.sharedFolders = sharedFolders;
 		this.views = [];
 		this.extensions = [];
-		this._compartment = new Compartment();
 		this._activePromise = null;
-		this._stale = "";
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
+		this._compartment = new Compartment();
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -407,6 +428,16 @@ export class LiveViewManager {
 				});
 			}),
 		);
+	}
+
+	reconfigure(editorView: EditorView) {
+		editorView.dispatch({
+			effects: this._compartment.reconfigure([
+				ConnectionManagerStateField.init(() => {
+					return this;
+				}),
+			]),
+		});
 	}
 
 	onMeta(tfile: TFile, cb: (data: string, cache: CachedMetadata) => void) {
@@ -703,7 +734,11 @@ export class LiveViewManager {
 		this.wipe();
 		if (this.views.length > 0) {
 			this.extensions.push([
-				this._compartment.of(connectionManagerFacet.of(this)),
+				this._compartment.of(
+					ConnectionManagerStateField.init(() => {
+						return this;
+					}),
+				),
 				LiveEdit,
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
@@ -726,9 +761,19 @@ export class LiveViewManager {
 		this.views = [];
 		this.wipe();
 		this.sharedFolders = null as any;
-		this._compartment = null as any;
 		this.refreshQueue = null as any;
 		this.networkStatus = null as any;
 		this._activePromise = null as any;
 	}
 }
+
+export const ConnectionManagerStateField = StateField.define<
+	LiveViewManager | undefined
+>({
+	create(state: EditorState) {
+		return undefined;
+	},
+	update(currentManager, transaction) {
+		return currentManager;
+	},
+});
