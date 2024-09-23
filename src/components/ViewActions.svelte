@@ -52,7 +52,7 @@
 	</button>
 {:else}
 	<button
-		class="notebook clickable-icon view-action"
+		class="notebook clickable-icon view-action system3-view-action"
 		aria-label="Tracking Changes"
 		tabindex="0"
 		data-filename={view.view.file?.name}
