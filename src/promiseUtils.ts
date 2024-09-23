@@ -2,19 +2,25 @@
 
 import { curryLog } from "./debug";
 
+export class TimeoutError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "TimeoutError";
+		// Fix for extending built-in classes in TypeScript
+		Object.setPrototypeOf(this, TimeoutError.prototype);
+	}
+}
+
 export function promiseWithTimeout<T>(
+	name: string,
 	promise: Promise<T>,
 	ms: number,
 ): Promise<T> {
 	let timeoutId: number;
 	const timeout = new Promise<T>((_, reject) => {
 		timeoutId = window.setTimeout(() => {
-			try {
-				throw new Error("Timeout");
-			} catch (error) {
-				curryLog("[Promise]", "error")("Timeout on promise", promise);
-			}
-			reject("Timeout after " + ms + " ms");
+			curryLog("[Promise]", "error")(`[${name}] Timeout on promise`, promise);
+			reject(new TimeoutError(`[${name}]: Timeout after ${ms} ms`));
 		}, ms);
 	});
 

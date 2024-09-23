@@ -169,7 +169,11 @@ export class HasProvider {
 		if (Platform.isIosApp) {
 			return tokenPromise;
 		}
-		const timeoutPromise = promiseWithTimeout<ClientToken>(tokenPromise, 10000);
+		const timeoutPromise = promiseWithTimeout<ClientToken>(
+			"getProviderToken",
+			tokenPromise,
+			10000,
+		);
 		return timeoutPromise;
 	}
 

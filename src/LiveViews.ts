@@ -1,10 +1,5 @@
 import type { Extension } from "@codemirror/state";
-import {
-	StateEffect,
-	StateField,
-	EditorState,
-	Compartment,
-} from "@codemirror/state";
+import { StateField, EditorState, Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -23,7 +18,7 @@ import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog } from "./debug";
-import { promiseWithTimeout } from "./promiseUtils";
+import { promiseWithTimeout, TimeoutError } from "./promiseUtils";
 import { Banner } from "./ui/Banner";
 import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
 import {
@@ -718,16 +713,20 @@ export class LiveViewManager {
 				await this._activePromise;
 			} else {
 				this._activePromise = promiseWithTimeout<boolean>(
+					"Refresh Views",
 					this.refreshQueue.pop()!(),
 					timeout,
 				)
 					.catch((e) => {
-						this.warn(
-							`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
-							e,
-						);
-						this._activePromise = null;
-						return false;
+						if (e instanceof TimeoutError) {
+							this.warn(
+								`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
+								e,
+							);
+							this._activePromise = null;
+							return false;
+						}
+						throw e;
 					})
 					.finally(() => {
 						this._activePromise = null;
