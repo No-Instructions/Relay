@@ -234,8 +234,12 @@ export class HasProvider {
 				readyStateMap[
 					(this._provider.ws?.readyState || readyState.CLOSED) as readyState
 				],
-			intent: this._provider.shouldConnect ? "connected" : "disconnected",
+			intent: this.intent,
 		};
+	}
+
+	get intent(): ConnectionIntent {
+		return this._provider.shouldConnect ? "connected" : "disconnected";
 	}
 
 	public get synced(): boolean {
@@ -288,10 +292,7 @@ export class HasProvider {
 		f: (state: ConnectionState) => void,
 	): (state: ConnectionState) => void {
 		const inner = (state: ConnectionState) => {
-			const intent = this._provider?.shouldConnect
-				? "connected"
-				: "disconnected";
-			f({ status: state.status, intent: intent });
+			f({ status: state.status, intent: this.intent });
 		};
 		return inner;
 	}
