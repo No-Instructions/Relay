@@ -26,6 +26,7 @@ import {
 	setDebugging,
 	RelayInstances,
 	initializeLogger,
+	flushLogs,
 } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
@@ -606,6 +607,7 @@ export default class Live extends Plugin {
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();
 		auditTeardown();
+		flushLogs();
 	}
 
 	async loadSettings() {

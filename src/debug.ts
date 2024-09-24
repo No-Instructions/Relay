@@ -56,7 +56,7 @@ export function initializeLogger(
 	timeProvider.setInterval(flushLogs, logConfig.batchInterval);
 }
 
-async function flushLogs() {
+export async function flushLogs() {
 	if (logBuffer.length === 0) return;
 
 	const entries = [...logBuffer];
