@@ -19,8 +19,7 @@ class SiblingWatcher {
 
 	constructor(el: HTMLElement, onceSibling: (el: HTMLElement) => void) {
 		this.el = el;
-
-		const observer = new MutationObserver((mutationsList, observer) => {
+		this.mutationObserver = new MutationObserver((mutationsList, observer) => {
 			for (const mutation of mutationsList) {
 				if (mutation.type === "childList") {
 					if (el.nextSibling) {
@@ -30,11 +29,10 @@ class SiblingWatcher {
 				}
 			}
 		});
-		observer.observe(el.parentElement as HTMLElement, {
+		this.mutationObserver.observe(el.parentElement as HTMLElement, {
 			childList: true,
 			subtree: true,
 		});
-		this.mutationObserver = observer;
 	}
 
 	destroy() {

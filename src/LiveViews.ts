@@ -262,18 +262,9 @@ export class LiveView implements S3View {
 		return stale;
 	}
 
-	_workaroundCM6StateFieldInitialization() {
-		const editorView = (this.view.editor as any).cm as EditorView;
-		const field = editorView.state.field(ConnectionManagerStateField, false);
-		if (field === undefined) {
-			this._parent.reconfigure(editorView);
-		}
-	}
-
 	attach(): Promise<LiveView> {
 		// can be called multiple times, whereas release is only ever called once
 		this.setConnectionDot();
-		this._workaroundCM6StateFieldInitialization();
 
 		return new Promise((resolve) => {
 			return this.document
@@ -311,20 +302,10 @@ export class LiveView implements S3View {
 		this.document.disconnect();
 	}
 
-	_workaroundCM6MemoryLeak() {
-		// CM6 memory leak
-		// CM6 will hold references to state fields in config.dynamicSlots
-		// for us this is a big problem because LiveViewManager has references
-		// to basically everything.
-		const editor = this.view.editor;
-		const editorView = (editor as any).cm as EditorView;
-		(editorView.state as any).config.dynamicSlots.length = 0;
-	}
-
 	destroy() {
 		this.release();
 		this.clearViewActions();
-		this._workaroundCM6MemoryLeak();
+		(this.view.leaf as any).rebuildView();
 		this._parent = null as any;
 		this.view = null as any;
 		this.document = null as any;
@@ -522,10 +503,12 @@ export class LiveViewManager {
 						return this.loginManager.openLoginPage();
 					});
 					views.push(view);
-				} else {
+				} else if (folder.ready) {
 					const doc = folder.getFile(viewFilePath, true, true, true);
 					const view = new LiveView(this, markdownView, doc);
 					views.push(view);
+				} else {
+					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
 			}
 		});
