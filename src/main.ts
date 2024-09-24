@@ -104,8 +104,14 @@ export default class Live extends Plugin {
 		return API_URL + path;
 	}
 	async onload() {
+		this.timeProvider = new DefaultTimeProvider();
+		this.register(() => {
+			this.timeProvider.destroy();
+		});
+
 		initializeLogger(
 			this.app.vault,
+			this.timeProvider,
 			".obsidian/plugins/system3-relay/relay.log",
 			{
 				maxFileSize: 5 * 1024 * 1024, // 5MB
@@ -146,10 +152,6 @@ export default class Live extends Plugin {
 		this.vault = this.app.vault;
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
-		this.timeProvider = new DefaultTimeProvider();
-		this.register(() => {
-			this.timeProvider.destroy();
-		});
 
 		this.loginManager = new LoginManager(
 			this.vault.getName(),

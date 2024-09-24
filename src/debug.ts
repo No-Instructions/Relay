@@ -1,5 +1,6 @@
 // CurryLog is a way to add tagged logging that is stripped in production
 import { Notice, Vault } from "obsidian";
+import type { TimeProvider } from "./TimeProvider";
 
 type LogLevel = "debug" | "warn" | "log" | "error";
 type LogWriter = (message: string) => Promise<void>;
@@ -13,63 +14,94 @@ let debugging = false;
 export function setDebugging(debug: boolean) {
 	debugging = debug;
 }
+
 interface LogConfig {
 	maxFileSize: number;
 	maxBackups: number;
 	disableConsole: boolean;
+	batchInterval: number;
+	maxRetries: number;
 }
 
 let logConfig: LogConfig = {
 	maxFileSize: 1024 * 1024, // 1MB
 	maxBackups: 5,
 	disableConsole: false,
+	batchInterval: 1000, // 1 second
+	maxRetries: 3,
 };
+
 let currentLogFile: string;
+let vault: Vault;
+const logBuffer: LogEntry[] = [];
+
+type LogEntry = {
+	timestamp: string;
+	level: LogLevel;
+	message: string;
+	callerInfo: string;
+};
 
 export function initializeLogger(
-	vault: Vault,
+	vaultInstance: Vault,
+	timeProvider: TimeProvider,
 	logFilePath: string,
 	config?: Partial<LogConfig>,
 ) {
+	vault = vaultInstance;
 	currentLogFile = logFilePath;
 	if (config) {
 		logConfig = { ...logConfig, ...config };
 	}
-
-	logWriter = async (message: string) => {
-		try {
-			await rotateLogIfNeeded(vault);
-			await vault.adapter.append(currentLogFile, message + "\n");
-		} catch (error) {
-			console.error("Failed to write to log file:", error);
-		}
-	};
+	timeProvider.setInterval(flushLogs, logConfig.batchInterval);
 }
-async function rotateLogIfNeeded(vault: Vault): Promise<void> {
-	try {
-		const stat = await vault.adapter.stat(currentLogFile);
-		if (stat && stat.size > logConfig.maxFileSize) {
-			for (let i = logConfig.maxBackups; i > 0; i--) {
-				const oldFile = `${currentLogFile}.${i}`;
-				const newFile = `${currentLogFile}.${i + 1}`;
-				if (await vault.adapter.exists(oldFile)) {
-					if (i === logConfig.maxBackups) {
-						await vault.adapter.remove(oldFile);
-					} else {
-						await vault.adapter.rename(oldFile, newFile);
-					}
+
+async function flushLogs() {
+	if (logBuffer.length === 0) return;
+
+	const entries = [...logBuffer];
+	logBuffer.length = 0;
+
+	for (let retry = 0; retry < logConfig.maxRetries; retry++) {
+		try {
+			await rotateLogIfNeeded();
+			const logContent = entries.map(formatLogEntry).join("\n") + "\n";
+			await vault.adapter.append(currentLogFile, logContent);
+			return;
+		} catch (error) {
+			console.error(`Failed to write logs (attempt ${retry + 1}):`, error);
+			if (retry === logConfig.maxRetries - 1) {
+				console.error("Max retries reached. Discarding log entries.");
+			}
+		}
+	}
+}
+
+async function rotateLogIfNeeded(): Promise<void> {
+	const stat = await vault.adapter.stat(currentLogFile);
+	if (stat && stat.size > logConfig.maxFileSize) {
+		for (let i = logConfig.maxBackups; i > 0; i--) {
+			const oldFile = `${currentLogFile}.${i}`;
+			const newFile = `${currentLogFile}.${i + 1}`;
+			if (await vault.adapter.exists(oldFile)) {
+				if (i === logConfig.maxBackups) {
+					await vault.adapter.remove(oldFile);
+				} else {
+					await vault.adapter.rename(oldFile, newFile);
 				}
 			}
-			await vault.adapter.rename(currentLogFile, `${currentLogFile}.1`);
-
-			// Instead of write, use append with an empty string to create the file if it doesn't exist
-			// or do nothing if it does exist
-			await vault.adapter.append(currentLogFile, "");
 		}
-	} catch (error) {
-		console.error("Error during log rotation:", error);
-		// If rotation fails, we'll continue using the current log file
+
+		if (await vault.adapter.exists(currentLogFile)) {
+			await vault.adapter.rename(currentLogFile, `${currentLogFile}.1`);
+		}
+
+		await vault.adapter.write(currentLogFile, "");
 	}
+}
+
+function formatLogEntry(entry: LogEntry): string {
+	return `[${entry.timestamp}] [${entry.level.toUpperCase()}] ${entry.message}\n    at ${entry.callerInfo}`;
 }
 
 function toastDebug(error: Error): Error {
