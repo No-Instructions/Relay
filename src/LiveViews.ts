@@ -608,7 +608,7 @@ export class LiveViewManager {
 		queuedAt: moment.Moment,
 	): Promise<boolean> {
 		const ctx = `[LiveViews][${context}]`;
-		const log = curryLog(ctx, "warn");
+		const log = curryLog(ctx, "debug");
 		const logViews = (message: string, views: S3View[]) => {
 			log(
 				message,
