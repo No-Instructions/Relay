@@ -1,6 +1,5 @@
 "use strict";
 
-import { type Extension, StateField, EditorState } from "@codemirror/state";
 import { TFolder, Notice, MarkdownView, Vault, FileManager } from "obsidian";
 import { Platform } from "obsidian";
 import { SharedFolder } from "./SharedFolder";

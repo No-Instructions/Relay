@@ -7,14 +7,13 @@ import {
 	type DecorationSet,
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
-import { connectionManagerFacet } from "src/y-codemirror.next/LiveEditPlugin";
 import {
 	type S3View,
 	LiveViewManager,
 	ConnectionManagerStateField,
 } from "../LiveViews";
 import { curryLog } from "src/debug";
-import type { CachedMetadata, MetadataCache } from "obsidian";
+import type { CachedMetadata } from "obsidian";
 
 export const invalidLinkSyncAnnotation = Annotation.define();
 

@@ -157,7 +157,6 @@ export class BackgroundSync {
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
-			const update = Y.decodeUpdate(updateBytes);
 			Y.applyUpdate(doc.ydoc, updateBytes);
 			doc.sharedFolder.flush(doc, doc.text);
 		} catch (e) {

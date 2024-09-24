@@ -1,6 +1,5 @@
 import { type FeatureFlags, type Flag, FeatureFlagDefaults } from "./flags";
 import { Observable } from "./observable/Observable";
-import { PostOffice } from "./observable/Postie";
 
 export function flags(): FeatureFlags {
 	return { ...FeatureFlagManager.getInstance().flags };

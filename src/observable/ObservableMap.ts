@@ -1,7 +1,7 @@
 "use strict";
 
-import type { Subscriber, Unsubscriber } from "svelte/store";
-import { Observable, type IObservable } from "./Observable";
+import type { Unsubscriber } from "svelte/store";
+import { Observable } from "./Observable";
 
 export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	protected _map: Map<K, V>;

@@ -24,7 +24,6 @@ import {
 } from "../LiveViews";
 
 import * as Y from "yjs";
-import { connectionManagerFacet } from "./LiveEditPlugin";
 import { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
 

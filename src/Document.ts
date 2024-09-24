@@ -6,7 +6,7 @@ import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import { curryLog } from "./debug";
-import type { TFile, Vault, TFolder, MetadataCache } from "obsidian";
+import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer } from "./DiskBuffer";
 
 export class Document extends HasProvider implements TFile {
