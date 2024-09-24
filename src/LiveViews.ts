@@ -467,7 +467,7 @@ export class LiveViewManager {
 				folders.add(folder);
 			}
 		});
-		if ([...folders].length == 0) {
+		if (folders.size == 0) {
 			return [];
 		}
 		return [...folders];
@@ -486,10 +486,9 @@ export class LiveViewManager {
 				folders.add(folder);
 			}
 		});
-		if ([...folders].length == 0) {
+		if (folders.size === 0) {
 			return [];
 		}
-
 		const readyFolders = [...folders].map((folder) => folder.whenReady());
 		return Promise.all(readyFolders);
 	}

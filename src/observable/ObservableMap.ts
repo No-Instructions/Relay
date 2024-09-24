@@ -131,7 +131,7 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 
 	unsubscribe(run: (value: ObservableMap<K, V>) => unknown): void {
 		super.unsubscribe(run);
-		if ([...this._listeners.values()].length === 0 && this.unsub) {
+		if (this._listeners.size === 0 && this.unsub) {
 			this.unsub();
 			this.unsub = undefined;
 		}

@@ -492,7 +492,7 @@ export class SharedFolder extends HasProvider {
 
 		const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
 
-		if ([...renames, ...creates, ...deletes].length > 0) {
+		if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
 			this.docset.update();
 		}
 		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
