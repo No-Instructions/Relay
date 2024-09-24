@@ -213,9 +213,6 @@ export class Document extends HasProvider implements TFile {
 	}
 
 	destroy() {
-		if (this._persistence) {
-			this._persistence.destroy();
-		}
 		super.destroy();
 		this.ydoc.destroy();
 		if (this._diskBuffer) {
