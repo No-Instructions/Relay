@@ -130,9 +130,7 @@ export class DifferencesView extends ItemView {
 		}
 
 		this.file1Content = await this.getContent(this.state.file1);
-		console.log("file 1 content", this.file1Content);
 		this.file2Content = await this.getContent(this.state.file2);
-		console.log("file 2 content", this.file2Content);
 
 		this.file1Lines = this.file1Content
 			// Add trailing new line as this removes edge cases
