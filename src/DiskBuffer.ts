@@ -75,34 +75,46 @@ export class DiskBufferStore {
 	async saveDiskBuffer(guid: string, contents: string): Promise<void> {
 		const db = await this.getDB();
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, "readwrite");
-			const store = transaction.objectStore(this.storeName);
-			const request = store.put({ guid, contents });
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () => resolve();
+			try {
+				const transaction = db.transaction(this.storeName, "readwrite");
+				const store = transaction.objectStore(this.storeName);
+				const request = store.put({ guid, contents });
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () => resolve();
+			} catch (e) {
+				reject(e);
+			}
 		});
 	}
 
 	async loadDiskBuffer(guid: string): Promise<string | null> {
 		const db = await this.getDB();
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, "readonly");
-			const store = transaction.objectStore(this.storeName);
-			const request = store.get(guid);
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () =>
-				resolve(request.result ? request.result.contents : null);
+			try {
+				const transaction = db.transaction(this.storeName, "readonly");
+				const store = transaction.objectStore(this.storeName);
+				const request = store.get(guid);
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () =>
+					resolve(request.result ? request.result.contents : null);
+			} catch (e) {
+				reject(e);
+			}
 		});
 	}
 
 	async removeDiskBuffer(guid: string): Promise<void> {
 		const db = await this.getDB();
 		return new Promise((resolve, reject) => {
-			const transaction = db.transaction(this.storeName, "readwrite");
-			const store = transaction.objectStore(this.storeName);
-			const request = store.delete(guid);
-			request.onerror = () => reject(request.error);
-			request.onsuccess = () => resolve();
+			try {
+				const transaction = db.transaction(this.storeName, "readwrite");
+				const store = transaction.objectStore(this.storeName);
+				const request = store.delete(guid);
+				request.onerror = () => reject(request.error);
+				request.onsuccess = () => resolve();
+			} catch (e) {
+				reject(e);
+			}
 		});
 	}
 
