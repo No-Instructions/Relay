@@ -32,8 +32,10 @@ export class LiveCMPluginValue implements PluginValue {
 	connectionManager?: LiveViewManager;
 	initialSet = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
+	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
 	log: (message: string) => void = (message: string) => {};
+	bufferStale = true;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -49,15 +51,25 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!this.view.document) {
 			return;
 		}
-		this.view.document.whenSynced().then(() => {
-			this.setBuffer();
+		this.view.document.whenSynced().then(async () => {
+			if (isLive(this.view) && this.bufferStale) {
+				this.editor.dispatch({
+					changes: await this.getKeyFrame(),
+					annotations: [ySyncAnnotation.of(this)],
+				});
+			}
 		});
 
-		this._observer = (event, tr) => {
+		this._observer = async (event, tr) => {
+			if (!isLive(this.view)) {
+				this.log("Recived yjs event against a non-live view");
+				return;
+			}
+
 			// Called when a yjs event is received. Results in updates to codemirror.
 			if (tr.origin !== this) {
 				const delta = event.delta;
-				const changes: ChangeSpec[] = [];
+				let changes: ChangeSpec[] = [];
 				let pos = 0;
 				for (let i = 0; i < delta.length; i++) {
 					const d = delta[i];
@@ -78,42 +90,67 @@ export class LiveCMPluginValue implements PluginValue {
 						pos += d.retain;
 					}
 				}
-				this.log("dispatch");
+				if (this.bufferStale) {
+					changes = await this.getKeyFrame();
+					this.log(`dispatch (full)`);
+				} else {
+					this.log("dispatch (incremental)");
+				}
 				editor.dispatch({
 					changes,
 					annotations: [ySyncAnnotation.of(this)],
 				});
+				this.view.tracking = true;
+			}
+		};
+
+		this.observer = (event, tr) => {
+			try {
+				this._observer?.(event, tr);
+			} catch (e) {
+				if (e instanceof RangeError) {
+					this.bufferStale = true;
+					this._observer?.(event, tr);
+				}
 			}
 		};
 		this._ytext = this.view.document.ytext;
-		this._ytext.observe(this._observer);
+		this._ytext.observe(this.observer);
 	}
 
-	setBuffer(): void {
-		if (
-			this.view?.document &&
-			this.view?.document.text !== this.editor.state.doc.toString()
-		) {
-			this.log(`setting buffer ${this.view?.document} ${this.editor}`);
-			if (isLive(this.view) && this.editor.state.doc.toString() !== "") {
-				if (!this.view || !isLive(this.view)) {
-					return;
-				}
-				this.view.checkStale().then((stale) => {
-					if (!this.view || !isLive(this.view)) {
-						return;
-					}
-					this.editor?.dispatch({
-						changes: {
-							from: 0,
-							to: this.editor.state.doc.length,
-							insert: this.view.document.text,
-						},
-						annotations: [ySyncAnnotation.of(this)], // this should be ignored by the update handler
-					});
-				});
-			}
+	public getBufferChange(buffer: string) {
+		return {
+			from: 0,
+			to: this.editor.state.doc.length,
+			insert: buffer,
+		};
+	}
+
+	async getKeyFrame(): Promise<ChangeSpec[]> {
+		// goal: sync editor state to ytext state so we can accept delta edits.
+		if (!isLive(this.view)) {
+			return [];
 		}
+		const contents = this.editor.state.doc.toString();
+		if (this.view.document.text === contents) {
+			// disk and ytext were already the same.
+			this.view.tracking = true;
+			return [];
+		}
+
+		this.log(`ytext and editor buffer need syncing`);
+		if (!this.view.document.hasLocalDB() && this.view.document.text === "") {
+			this.log("local db missing, not setting buffer");
+			return [];
+		}
+
+		// disk and ytext differ
+		await this.view.document.checkStale();
+
+		if (isLive(this.view)) {
+			return [this.getBufferChange(this.view.document.text)];
+		}
+		return [];
 	}
 
 	update(update: ViewUpdate): void {
@@ -150,8 +187,8 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	destroy() {
-		if (this._observer) {
-			this._ytext?.unobserve(this._observer);
+		if (this.observer) {
+			this._ytext?.unobserve(this.observer);
 		}
 		this.connectionManager = null as any;
 		this.view = undefined;

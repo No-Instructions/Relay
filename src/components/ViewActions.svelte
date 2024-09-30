@@ -6,7 +6,6 @@
 	import { Layers, Satellite } from "lucide-svelte";
 
 	export let view: LiveView;
-	export let document: Document;
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
 
@@ -30,8 +29,12 @@
 
 {#if remote}
 	<button
-		class="hidden notebook clickable-icon view-action system3-view-action"
-		aria-label="Tracking Changes"
+		class="clickable-icon view-action system3-view-action {view.tracking
+			? 'notebook-synced'
+			: 'notebook'}"
+		aria-label={view.tracking
+			? "Tracking Changes"
+			: "Database Corrupted. Connect to Relay servers to resolve."}
 		tabindex="0"
 		data-filename={view.view.file?.name}
 	>
@@ -48,8 +51,12 @@
 	</button>
 {:else}
 	<button
-		class="notebook clickable-icon view-action system3-view-action"
-		aria-label="Tracking Changes"
+		class="clickable-icon view-action system3-view-action {view.tracking
+			? 'notebook-synced'
+			: 'notebook'}"
+		aria-label={view.tracking
+			? "Tracking Changes"
+			: "Database Corrupted. Connect to Relay servers to resolve."}
 		tabindex="0"
 		data-filename={view.view.file?.name}
 	>
@@ -58,14 +65,17 @@
 {/if}
 
 <style>
+	button.notebook {
+		color: var(--color-base-30);
+		background-color: transparent;
+	}
+	button.notebook-synced {
+		color: var(--color-accent);
+	}
 	button.system3-connected {
 		color: var(--color-accent);
 	}
 	button.system3-disconnected {
 		color: var(--color-base-40);
-	}
-	button.notebook {
-		color: var(--color-base-30);
-		background-color: transparent;
 	}
 </style>

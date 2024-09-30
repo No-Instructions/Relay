@@ -107,8 +107,12 @@ export class LoggedOutView implements S3View {
 	}
 }
 
-export function isLive(view: S3View): view is LiveView {
-	return view instanceof LiveView;
+export function isLive(view?: S3View): view is LiveView {
+	return (
+		view instanceof LiveView &&
+		view.document !== undefined &&
+		view.document.text !== undefined
+	);
 }
 
 export class LiveView implements S3View {
@@ -121,6 +125,7 @@ export class LiveView implements S3View {
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	_tracking: boolean;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -132,6 +137,7 @@ export class LiveView implements S3View {
 		this._parent = connectionManager; // for debug
 		this.view = view;
 		this.document = document;
+		this._tracking = false;
 
 		this.shouldConnect = shouldConnect;
 		this.canConnect = canConnect;
@@ -151,6 +157,18 @@ export class LiveView implements S3View {
 			});
 		} else {
 			this.document.disconnect();
+		}
+	}
+
+	public get tracking() {
+		return this._tracking;
+	}
+
+	public set tracking(value: boolean) {
+		const old = this._tracking;
+		this._tracking = value;
+		if (this._tracking !== old) {
+			this.attach();
 		}
 	}
 
@@ -215,7 +233,6 @@ export class LiveView implements S3View {
 					anchor: viewActionsElement.firstChild as Element,
 					props: {
 						view: this,
-						document: this.document,
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
 					},
@@ -225,7 +242,6 @@ export class LiveView implements S3View {
 					(state: ConnectionState) => {
 						this._viewActions?.$set({
 							view: this,
-							document: this.document,
 							state: state,
 							remote: this.document.sharedFolder.remote,
 						});
@@ -234,7 +250,6 @@ export class LiveView implements S3View {
 			}
 			this._viewActions.$set({
 				view: this,
-				document: this.document,
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
 			});

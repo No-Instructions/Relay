@@ -219,6 +219,14 @@ export class Document extends HasProvider implements TFile {
 		});
 	}
 
+	public get persistenceSynced(): boolean {
+		return this._persistence.synced;
+	}
+
+	hasLocalDB() {
+		return this._persistence._dbsize > 3;
+	}
+
 	hasKnownPeers(): Promise<boolean> {
 		if (this._hasKnownPeers !== undefined) {
 			return Promise.resolve(this._hasKnownPeers);
