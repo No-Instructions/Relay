@@ -8,11 +8,7 @@
 	export let view: LiveView;
 	export let document: Document;
 	export let state: ConnectionState;
-	let remote: RemoteSharedFolder;
-
-	if (document?.sharedFolder?.remote) {
-		remote = document.sharedFolder.remote;
-	}
+	export let remote: RemoteSharedFolder;
 
 	const ariaLabels: Record<ConnectionStatus, string> = {
 		connected: "connected: click to go offline",

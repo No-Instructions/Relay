@@ -217,6 +217,7 @@ export class LiveView implements S3View {
 						view: this,
 						document: this.document,
 						state: this.document.state,
+						remote: this.document.sharedFolder.remote,
 					},
 				});
 				this.offConnectionStatusSubscription = this.document.subscribe(
@@ -226,6 +227,7 @@ export class LiveView implements S3View {
 							view: this,
 							document: this.document,
 							state: state,
+							remote: this.document.sharedFolder.remote,
 						});
 					},
 				);
@@ -234,6 +236,7 @@ export class LiveView implements S3View {
 				view: this,
 				document: this.document,
 				state: this.document.state,
+				remote: this.document.sharedFolder.remote,
 			});
 		}
 	}
