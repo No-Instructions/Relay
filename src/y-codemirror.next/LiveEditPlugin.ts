@@ -35,7 +35,6 @@ export class LiveCMPluginValue implements PluginValue {
 	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
 	log: (message: string) => void = (message: string) => {};
-	bufferStale = true;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -52,7 +51,7 @@ export class LiveCMPluginValue implements PluginValue {
 			return;
 		}
 		this.view.document.whenSynced().then(async () => {
-			if (isLive(this.view) && this.bufferStale) {
+			if (isLive(this.view) && !this.view.tracking) {
 				this.editor.dispatch({
 					changes: await this.getKeyFrame(),
 					annotations: [ySyncAnnotation.of(this)],
@@ -90,7 +89,7 @@ export class LiveCMPluginValue implements PluginValue {
 						pos += d.retain;
 					}
 				}
-				if (this.bufferStale) {
+				if (!this.view.tracking) {
 					changes = await this.getKeyFrame();
 					this.log(`dispatch (full)`);
 				} else {
@@ -109,8 +108,10 @@ export class LiveCMPluginValue implements PluginValue {
 				this._observer?.(event, tr);
 			} catch (e) {
 				if (e instanceof RangeError) {
-					this.bufferStale = true;
-					this._observer?.(event, tr);
+					if (isLive(this.view)) {
+						this.view.tracking = false;
+						this._observer?.(event, tr);
+					}
 				}
 			}
 		};
@@ -137,6 +138,12 @@ export class LiveCMPluginValue implements PluginValue {
 			this.view.tracking = true;
 			return [];
 		}
+		console.log("editor", contents, contents.length);
+		console.log(
+			"ydoc",
+			this.view.document.text,
+			this.view.document.text.length,
+		);
 
 		this.log(`ytext and editor buffer need syncing`);
 		if (!this.view.document.hasLocalDB() && this.view.document.text === "") {
@@ -145,7 +152,9 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		// disk and ytext differ
-		await this.view.document.checkStale();
+		if (!this.view.tracking) {
+			await this.view.checkStale();
+		}
 
 		if (isLive(this.view)) {
 			return [this.getBufferChange(this.view.document.text)];
