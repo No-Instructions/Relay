@@ -145,7 +145,9 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		// disk and ytext differ
-		await this.view.document.checkStale();
+		if (!this.view.tracking) {
+			await this.view.checkStale();
+		}
 
 		if (isLive(this.view)) {
 			return [this.getBufferChange(this.view.document.text)];
