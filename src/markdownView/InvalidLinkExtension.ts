@@ -46,6 +46,7 @@ export class InvalidLinkPluginValue {
 	connectionManager?: LiveViewManager;
 	decorationAnchors: number[];
 	decorations: DecorationSet;
+	cb: (data: string, cache: CachedMetadata) => void;
 	log: (message: string) => void = (message: string) => {};
 
 	constructor(editor: EditorView) {
@@ -56,7 +57,7 @@ export class InvalidLinkPluginValue {
 		this.decorations = Decoration.none;
 		this.decorationAnchors = [];
 		this.metadata = new Map();
-		const cb = (data: string, cache: CachedMetadata) => {
+		this.cb = (data: string, cache: CachedMetadata) => {
 			this.updateFromMetadata(cache);
 			this.editor.dispatch({
 				effects: metadataChangeEffect.of(null),
@@ -86,7 +87,7 @@ export class InvalidLinkPluginValue {
 		if (this.view.document) {
 			this.view.document.whenSynced().then(() => {
 				if (this.connectionManager && this.view?.document?.tfile) {
-					this.connectionManager.onMeta(this.view.document.tfile, cb);
+					this.connectionManager.onMeta(this.view.document.tfile, this.cb);
 					const fileCache = app.metadataCache.getFileCache(
 						this.view.document.tfile,
 					);
@@ -284,11 +285,14 @@ export class InvalidLinkPluginValue {
 	}
 
 	destroy() {
+		if (this.connectionManager && this.view?.document?.tfile) {
+			this.connectionManager.offMeta(this.view.document.tfile);
+		}
 		this.connectionManager = null as any;
 		this.view = undefined;
-		this.editor = null as any;
 		this.metadata.clear();
 		this.metadata = null as any;
+		this.editor = null as any;
 	}
 }
 

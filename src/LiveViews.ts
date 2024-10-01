@@ -443,6 +443,10 @@ export class LiveViewManager {
 		this.metadataListeners.set(tfile, cb);
 	}
 
+	offMeta(tfile: TFile) {
+		this.metadataListeners.delete(tfile);
+	}
+
 	openDiffView(state: Differ.ViewState) {
 		Differ.openDiffView(this.workspace, state);
 	}
