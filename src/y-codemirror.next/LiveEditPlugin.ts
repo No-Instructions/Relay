@@ -31,8 +31,6 @@ export class LiveCMPluginValue implements PluginValue {
 	view?: S3View;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
-	_observer?: (event: YTextEvent, tr: Transaction) => void;
-	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
 	log: (message: string) => void = (message: string) => {};
 	bufferStale = true;
@@ -59,63 +57,63 @@ export class LiveCMPluginValue implements PluginValue {
 				});
 			}
 		});
-
-		this._observer = async (event, tr) => {
-			if (!isLive(this.view)) {
-				this.log("Recived yjs event against a non-live view");
-				return;
-			}
-
-			// Called when a yjs event is received. Results in updates to codemirror.
-			if (tr.origin !== this) {
-				const delta = event.delta;
-				let changes: ChangeSpec[] = [];
-				let pos = 0;
-				for (let i = 0; i < delta.length; i++) {
-					const d = delta[i];
-					if (d.insert != null) {
-						changes.push({
-							from: pos,
-							to: pos,
-							insert: d.insert as string,
-						});
-					} else if (d.delete != null) {
-						changes.push({
-							from: pos,
-							to: pos + d.delete,
-							insert: "",
-						});
-						pos += d.delete;
-					} else if (d.retain != null) {
-						pos += d.retain;
-					}
-				}
-				if (this.bufferStale) {
-					changes = await this.getKeyFrame();
-					this.log(`dispatch (full)`);
-				} else {
-					this.log("dispatch (incremental)");
-				}
-				editor.dispatch({
-					changes,
-					annotations: [ySyncAnnotation.of(this)],
-				});
-				this.view.tracking = true;
-			}
-		};
-
-		this.observer = (event, tr) => {
-			try {
-				this._observer?.(event, tr);
-			} catch (e) {
-				if (e instanceof RangeError) {
-					this.bufferStale = true;
-					this._observer?.(event, tr);
-				}
-			}
-		};
 		this._ytext = this.view.document.ytext;
 		this._ytext.observe(this.observer);
+	}
+
+	async _observer(event: YTextEvent, tr: Transaction): Promise<void> {
+		if (!isLive(this.view)) {
+			this.log("Recived yjs event against a non-live view");
+			return;
+		}
+
+		// Called when a yjs event is received. Results in updates to codemirror.
+		if (tr.origin !== this) {
+			const delta = event.delta;
+			let changes: ChangeSpec[] = [];
+			let pos = 0;
+			for (let i = 0; i < delta.length; i++) {
+				const d = delta[i];
+				if (d.insert != null) {
+					changes.push({
+						from: pos,
+						to: pos,
+						insert: d.insert as string,
+					});
+				} else if (d.delete != null) {
+					changes.push({
+						from: pos,
+						to: pos + d.delete,
+						insert: "",
+					});
+					pos += d.delete;
+				} else if (d.retain != null) {
+					pos += d.retain;
+				}
+			}
+			if (this.bufferStale) {
+				changes = await this.getKeyFrame();
+				this.log(`dispatch (full)`);
+			} else {
+				this.log("dispatch (incremental)");
+			}
+			this.editor.dispatch({
+				changes,
+				annotations: [ySyncAnnotation.of(this)],
+			});
+			this.view.tracking = true;
+		}
+	}
+
+	async observer(event: YTextEvent, tr: Transaction): Promise<void> {
+		try {
+			await this._observer(event, tr);
+		} catch (e) {
+			if (e instanceof RangeError) {
+				this.bufferStale = true;
+				await this._observer(event, tr);
+			}
+		}
 	}
 
 	public getBufferChange(buffer: string) {
@@ -145,7 +143,7 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		// disk and ytext differ
-		await this.view.document.checkStale();
+		await this.view.checkStale();
 
 		if (isLive(this.view)) {
 			return [this.getBufferChange(this.view.document.text)];
@@ -187,6 +185,7 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	destroy() {
+		this.log("destroying plugin");
 		if (this.observer) {
 			this._ytext?.unobserve(this.observer);
 		}
