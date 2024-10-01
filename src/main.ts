@@ -424,7 +424,7 @@ export default class Live extends Plugin {
 				}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
-					vaultLog("Delete", file);
+					vaultLog("Delete", file.path);
 					folder.whenReady().then((folder) => {
 						folder.deleteFile(file.path);
 					});
@@ -466,7 +466,7 @@ export default class Live extends Plugin {
 			this.app.vault.on("modify", (file) => {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
-					vaultLog("Modify", file);
+					vaultLog("Modify", file.path);
 					withFlag(flag.enableUpdateYDocFromDiskBuffer, () => {
 						try {
 							const doc = folder.getFile(file.path, false, false);
