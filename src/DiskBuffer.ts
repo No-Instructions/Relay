@@ -117,12 +117,4 @@ export class DiskBufferStore {
 			}
 		});
 	}
-
-	async close(): Promise<void> {
-		if (this.dbPromise) {
-			const db = await this.dbPromise;
-			db.close();
-			this.dbPromise = null;
-		}
-	}
 }

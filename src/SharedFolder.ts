@@ -759,7 +759,6 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
-		this.diskBufferStore.close();
 		this.diskBufferStore = null as any;
 		this.relayManager = null as any;
 		this.backgroundSync = null as any;
