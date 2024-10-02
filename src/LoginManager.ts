@@ -41,9 +41,31 @@ export class LoginManager extends Observable<LoginManager> {
 			return { url, options };
 		};
 		this.openSettings = openSettings;
-		this.user = this.pb.authStore.isValid
-			? this.makeUser(this.pb.authStore)
-			: undefined;
+		if (this.pb.authStore.isValid) {
+			this.user = this.makeUser(this.pb.authStore);
+			this.pb
+				.collection("users")
+				.authRefresh()
+				.then((authData) => {
+					const token = authData.token;
+					const [, payload] = token.split(".");
+					const decodedPayload = JSON.parse(atob(payload));
+
+					const expiryDate = new Date(decodedPayload.exp * 1000);
+					const now = new Date();
+					const daysUntilExpiry = Math.ceil(
+						(expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+					);
+
+					this._log("Token Refreshed");
+					this._log("JWT Info:", {
+						expiresAt: expiryDate.toLocaleString(),
+						expiresIn: `${daysUntilExpiry} days`,
+						userId: decodedPayload.id,
+						email: decodedPayload.email,
+					});
+				});
+		}
 		RelayInstances.set(this, "loginManager");
 	}
 
