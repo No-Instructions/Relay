@@ -82,12 +82,16 @@
 		if (!plugin.loginManager?.user) {
 			return;
 		}
-		window.open(
-			plugin.buildApiUrl(
-				`/subscribe?relay=${relay.id}&quantity=10&user_email=${plugin.loginManager.user.name}`,
-			),
-			"_blank",
-		);
+		const payload = {
+			relay: relay.id,
+			quantity: 10,
+			user_email: plugin.loginManager.user.name,
+		};
+		const encodedPayload = btoa(JSON.stringify(payload))
+			.replace(/\+/g, "-")
+			.replace(/\//g, "_")
+			.replace(/=+$/, "");
+		window.open(plugin.buildApiUrl(`/subscribe/${encodedPayload}`), "_blank");
 	}
 
 	async function handleManage(subscription: RelaySubscription) {
