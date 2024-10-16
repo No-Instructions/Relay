@@ -3,12 +3,14 @@
 	"version": "1.0.0",
 	"description": "Real-time collaborative workspace for Obsidian.",
 	"main": "main.js",
+	"type": "module",
 	"scripts": {
 		"dev": "node esbuild.config.mjs watch",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"beta": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs debug",
 		"staging": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs staging",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"debugger": "NODE_OPTIONS=--experimental-specifier-resolution=node ts-node --esm crdt.ts",
 		"test": "jest",
 		"lint": "npx eslint . --ext .ts"
 	},
@@ -17,6 +19,7 @@
 	"license": "MIT",
 	"devDependencies": {
 		"@tsconfig/svelte": "^5.0.4",
+		"@types/blessed": "^0.1.25",
 		"@types/diff": "^5.0.9",
 		"@types/diff-match-patch": "^1.0.36",
 		"@types/eventsource": "^1.1.15",
@@ -40,6 +43,8 @@
 	},
 	"dependencies": {
 		"@y-sweet/client": "^0.1.0",
+		"blessed": "^0.1.81",
+		"crdt-debugger": "file:debugger",
 		"diff": "^5.2.0",
 		"diff-match-patch": "^1.0.5",
 		"eventsource": "^2.0.2",
@@ -51,6 +56,7 @@
 		"path-browserify": "^1.0.1",
 		"pocketbase": "^0.20.3",
 		"svelte-step-wizard": "^0.0.2",
+		"ts-node": "^10.9.2",
 		"tslib": "2.4.0",
 		"uuid": "^9.0.1",
 		"y-indexeddb": "^9.0.9",

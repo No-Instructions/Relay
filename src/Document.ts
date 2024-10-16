@@ -5,12 +5,12 @@ import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
-import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
+import type { IFile } from "./SyncFile";
 
-export class Document extends HasProvider implements TFile {
+export class Document extends HasProvider implements IFile {
 	guid: string;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
@@ -28,18 +28,6 @@ export class Document extends HasProvider implements TFile {
 	};
 	_diskBuffer?: DiskBuffer;
 	offFolderStatusListener: Unsubscriber;
-
-	debug!: (message?: any, ...optionalParams: any[]) => void;
-	log!: (message?: any, ...optionalParams: any[]) => void;
-	warn!: (message?: any, ...optionalParams: any[]) => void;
-	error!: (message?: any, ...optionalParams: any[]) => void;
-
-	setLoggers(context: string) {
-		this.debug = curryLog(context, "debug");
-		this.log = curryLog(context, "log");
-		this.warn = curryLog(context, "warn");
-		this.error = curryLog(context, "error");
-	}
 
 	constructor(
 		path: string,
@@ -73,7 +61,6 @@ export class Document extends HasProvider implements TFile {
 			},
 		);
 
-		this.setLoggers(`[SharedDoc](${this.path})`);
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 		} catch (e) {
@@ -98,6 +85,11 @@ export class Document extends HasProvider implements TFile {
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
 		this.updateStats();
+	}
+
+	async pull() {
+		console.log("pulling document contents");
+		await this.sharedFolder.backgroundSync.getDocument(this);
 	}
 
 	public get parent(): TFolder | null {
