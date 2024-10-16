@@ -13,6 +13,8 @@
 	import Satellite from "./Satellite.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
+	import type { SyncFlags } from "src/SyncSettings";
+	import { flags } from "src/flagManager";
 
 	export let plugin: Live;
 	export let sharedFolder: SharedFolder;
@@ -31,6 +33,12 @@
 			)?.relay;
 		},
 	);
+
+	let syncSettings = sharedFolder.syncSettingsManager;
+	let settingEntries = derived(syncSettings, () => {
+		console.warn(syncSettings.getCategories());
+		return Object.entries(syncSettings.getCategories());
+	});
 
 	let nameInput: HTMLInputElement;
 	onMount(() => {
@@ -76,6 +84,50 @@
 <Breadcrumbs category={Folder} categoryText="Shared Folders" on:goBack={goBack}>
 	{sharedFolder.name}
 </Breadcrumbs>
+
+<SettingItemHeading name="Relay Server"></SettingItemHeading>
+{#if $relayStore}
+	<SlimSettingItem>
+		<Satellite slot="name" on:manageRelay relay={$relayStore}
+			>{$relayStore.name}</Satellite
+		>
+		<SettingsControl
+			on:settings={debounce(() => {
+				handleManageRelay($relayStore);
+			})}
+		></SettingsControl>
+	</SlimSettingItem>
+{:else}
+	<SettingItem
+		description="This folder is tracking edits, but is not connected to a Relay Server."
+	/>
+{/if}
+
+{#if flags().enableAttachmentSync}
+	<SettingItemHeading name="Sync Settings"></SettingItemHeading>
+	{#each $settingEntries as [name, category]}
+		<SettingItem name={category.name} description={category.description}>
+			<div class="setting-item-control">
+				<div
+					role="checkbox"
+					aria-checked={$syncSettings[name]}
+					tabindex="0"
+					on:keypress={() => {
+						syncSettings.toggleCategory(name, !$syncSettings[name]);
+					}}
+					class="checkbox-container"
+					class:is-enabled={$syncSettings[name]}
+					on:click={() =>
+						syncSettings.toggleCategory(name, !$syncSettings[name])}
+				>
+					<input type="checkbox" checked={$syncSettings[name]} />
+					<div class="checkbox-toggle"></div>
+				</div>
+			</div>
+		</SettingItem>
+	{/each}
+{/if}
+
 <SettingItemHeading name="Local folder"></SettingItemHeading>
 <SettingItem
 	name="Delete from vault"
@@ -119,22 +171,4 @@
 			</button>
 		</SettingItem>
 	{/if}
-{/if}
-
-<SettingItemHeading name="Relay Server"></SettingItemHeading>
-{#if $relayStore}
-	<SlimSettingItem>
-		<Satellite slot="name" on:manageRelay relay={$relayStore}
-			>{$relayStore.name}</Satellite
-		>
-		<SettingsControl
-			on:settings={debounce(() => {
-				handleManageRelay($relayStore);
-			})}
-		></SettingsControl>
-	</SlimSettingItem>
-{:else}
-	<SettingItem
-		description="This folder is tracking edits, but is not connected to a Relay Server."
-	/>
 {/if}

@@ -1,13 +1,13 @@
 "use strict";
 
-import { requestUrl } from "obsidian";
-import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
 	type AuthProviderInfo,
 	type RecordAuthResponse,
 	type RecordModel,
 } from "pocketbase";
+import { requestUrl } from "obsidian";
+import { User } from "./User";
 import { RelayInstances, curryLog } from "./debug";
 import { Observable } from "./observable/Observable";
 
@@ -30,7 +30,7 @@ interface GoogleUser {
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private openSettings: () => Promise<void>;
-	private authStore: LocalAuthStore;
+	authStore: LocalAuthStore;
 	user?: User;
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 

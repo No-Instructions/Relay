@@ -5,6 +5,7 @@ export interface FeatureFlags {
 	enableDocumentStatus: boolean;
 	enableDebugFileTag: boolean;
 	enableNewLinkFormat: boolean;
+	enableAttachmentSync: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -14,6 +15,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDocumentStatus: false,
 	enableDebugFileTag: false,
 	enableNewLinkFormat: false,
+	enableAttachmentSync: false,
 };
 
 export type Flag = keyof FeatureFlags;
