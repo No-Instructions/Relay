@@ -47,6 +47,7 @@ import { FeatureFlagManager, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
+import { SyncFile } from "./SyncFile";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -400,9 +401,9 @@ export default class Live extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
 				// NOTE: this is called on every file at startup...
-				if (file instanceof TFolder) {
-					return;
-				}
+				//if (file instanceof TFolder) {
+				//	return;
+				//}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					folder.whenReady().then((folder) => {
@@ -420,8 +421,8 @@ export default class Live extends Plugin {
 					);
 					if (folder) {
 						this.sharedFolders.delete(folder);
+						return;
 					}
-					return;
 				}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
@@ -443,8 +444,8 @@ export default class Live extends Plugin {
 					if (sharedFolder) {
 						sharedFolder.path = file.path;
 						this.sharedFolders.update();
+						return;
 					}
-					return;
 				}
 				const fromFolder = this.sharedFolders.lookup(oldPath);
 				const toFolder = this.sharedFolders.lookup(file.path);
@@ -454,11 +455,11 @@ export default class Live extends Plugin {
 					vaultLog("Rename", file, oldPath);
 					fromFolder.renameFile(file.path, oldPath);
 					toFolder.renameFile(file.path, oldPath);
-					this._liveViews.refresh("rename");
+					//this._liveViews.refresh("rename");
 				} else if (folder) {
 					vaultLog("Rename", file, oldPath);
 					folder.renameFile(file.path, oldPath);
-					this._liveViews.refresh("rename");
+					//this._liveViews.refresh("rename");
 				}
 			}),
 		);
@@ -468,20 +469,15 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					vaultLog("Modify", file.path);
-					withFlag(flag.enableUpdateYDocFromDiskBuffer, () => {
-						try {
-							const doc = folder.getFile(file.path, false, false);
-							if (!this._liveViews.docIsOpen(doc)) {
-								folder.read(doc).then((contents) => {
-									if (contents.length !== 0) {
-										updateYDocFromDiskBuffer(doc.ydoc, contents);
-									}
-								});
-							}
-						} catch (e) {
-							// fall back to differ
+					const syncfile = folder.getFile(file.path, false, true, false);
+					if (syncfile instanceof SyncFile && syncfile.ready) {
+						// either this modify was due to pulling the desired hash, or it was due to an edit.
+						// if the hash is wrong, then we push...
+						if (syncfile.isStale) {
+							syncfile.synctime = Date.now();
 						}
-					});
+						syncfile.sync();
+					}
 					this.app.metadataCache.trigger("resolve", file);
 				}
 			}),
@@ -570,10 +566,7 @@ export default class Live extends Plugin {
 		this._offSaveSettings?.();
 		this._offSaveSettings = null as any;
 
-		this.timeProvider?.destroy();
-
 		this.folderNavDecorations?.destroy();
-
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
 		this.backgroundSync?.destroy();
@@ -594,7 +587,7 @@ export default class Live extends Plugin {
 		this.networkStatus?.destroy();
 		this.networkStatus = null as any;
 
-		this.sharedFolders.destroy();
+		this.sharedFolders?.destroy();
 		this.sharedFolders = null as any;
 
 		this.settingsTab?.destroy();
