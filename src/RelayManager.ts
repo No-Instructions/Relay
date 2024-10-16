@@ -10,6 +10,7 @@ import {
 	type RelayUser,
 	type RelaySubscription,
 	type RemoteSharedFolder,
+	type FileInfo,
 } from "./Relay";
 import PocketBase, {
 	type AuthModel,
@@ -25,6 +26,7 @@ import type { LoginManager } from "./LoginManager";
 import type { Unsubscriber } from "svelte/motion";
 import { Observable } from "./observable/Observable";
 import { PostOffice } from "./observable/Postie";
+import { requestUrl } from "obsidian";
 
 interface Identified {
 	id: string;
@@ -77,6 +79,26 @@ interface RelayRoleDAO extends RecordModel {
 	user: string;
 	role: string;
 	relay: string;
+}
+
+export interface FileInfoDAO<AttachmentType = string> extends RecordModel {
+	id: string;
+	guid: string;
+	relay: string;
+	shared_folder: string;
+	synchash: string;
+	synctime: number;
+	updated: string;
+	created: string;
+	mtime: number;
+	ctime: number;
+	type: string;
+	name: string;
+	parent: string | null;
+	attachment: AttachmentType;
+	deleted_at: number | null;
+	last_parent_id: string | null;
+	is_directory: boolean;
 }
 
 interface RelayRoleDAOExpandingRelayRole extends RelayRoleDAO {
@@ -170,6 +192,162 @@ class Auto implements hasRoot, hasACL {
 
 	public get acl(): [string, string] | undefined {
 		return;
+	}
+}
+
+class FileInfoAuto extends Auto implements FileInfo {
+	constructor(
+		private fileInfo: FileInfoDAO,
+		private relays: ObservableMap<string, Relay>,
+		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		private pb: PocketBase,
+	) {
+		super();
+	}
+
+	public get id() {
+		return this.fileInfo.id;
+	}
+
+	public get guid() {
+		return this.fileInfo.guid;
+	}
+
+	public get synchash() {
+		return this.fileInfo.synchash;
+	}
+
+	public get synctime(): number {
+		return this.fileInfo.synctime;
+	}
+
+	public get relay(): Relay {
+		const relay = this.relays.get(this.fileInfo.relay);
+		if (!relay) {
+			throw new Error("invalid file info");
+		}
+		return relay;
+	}
+
+	public get sharedFolder(): RemoteFolder {
+		const folder = this.remoteFolders.get(this.fileInfo.shared_folder);
+		if (!folder) {
+			throw new Error("invalid file info");
+		}
+		return folder;
+	}
+
+	public get updated(): string {
+		return this.fileInfo.updated;
+	}
+
+	public get created(): string {
+		return this.fileInfo.created;
+	}
+
+	public get mtime(): number {
+		return this.fileInfo.mtime;
+	}
+
+	public get ctime(): number {
+		return this.fileInfo.ctime;
+	}
+
+	public get name(): string {
+		return this.fileInfo.name;
+	}
+
+	public get parent(): string | null {
+		return this.fileInfo.parent;
+	}
+
+	public get type(): string {
+		return this.fileInfo.type;
+	}
+
+	public get deletedAt(): number | null {
+		return this.fileInfo.deleted_at;
+	}
+
+	public get lastParentId(): string | null {
+		return this.fileInfo.last_parent_id;
+	}
+
+	public get isDirectory(): boolean {
+		return this.fileInfo.is_directory;
+	}
+
+	public async attachmentUrl(): Promise<string> {
+		const fileToken = await this.pb.files.getToken();
+		return this.pb.getFileUrl(this.fileInfo, this.fileInfo.attachment, {
+			token: fileToken,
+		});
+	}
+
+	public async getAttachment() {
+		const url = await this.attachmentUrl();
+		return requestUrl(url);
+	}
+
+	public toDict(): FileInfoDAO {
+		return this.fileInfo;
+	}
+
+	public update(update: FileInfoDAO): FileInfo {
+		this.fileInfo = update;
+		return this as unknown as FileInfo;
+	}
+
+	public get aggregate_root(): [string, string] {
+		return ["shared_folders", this.fileInfo.shared_folder];
+	}
+
+	public get acl(): [string, string] {
+		return ["relays", this.fileInfo.relay];
+	}
+}
+
+class FileInfoCollection implements Collection<FileInfoDAO, FileInfo> {
+	collectionName: string = "file_info";
+
+	constructor(
+		public fileInfo: ObservableMap<string, FileInfo>,
+		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		private relays: ObservableMap<string, Relay>,
+		private pb: PocketBase,
+	) {}
+
+	items(): FileInfo[] {
+		return this.fileInfo.values();
+	}
+
+	clear() {
+		this.fileInfo.clear();
+	}
+
+	get(id: string) {
+		return this.fileInfo.get(id);
+	}
+
+	ingest(update: FileInfoDAO): FileInfo {
+		const existingFileInfo = this.fileInfo.get(update.id);
+		if (existingFileInfo) {
+			existingFileInfo.update(update);
+			this.fileInfo.notifyListeners();
+			return existingFileInfo;
+		}
+		const fileInfo = new FileInfoAuto(
+			update,
+			this.relays,
+			this.remoteFolders,
+			this.pb,
+		);
+		this.fileInfo.set(update.id, fileInfo);
+		return fileInfo;
+	}
+
+	delete(id: string) {
+		this.remoteFolders.delete(id);
 	}
 }
 
@@ -977,6 +1155,7 @@ export class RelayManager {
 	roles: ObservableMap<string, RoleDAO>;
 	remoteFolders: ObservableMap<string, RemoteFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
+	fileInfo: ObservableMap<string, FileInfo>;
 	authUser?: AuthModel;
 	user?: RelayUser;
 	store?: Store;
@@ -1014,6 +1193,7 @@ export class RelayManager {
 		this.subscriptions = new ObservableMap<string, RelaySubscription>(
 			"subscriptions",
 		);
+		this.fileInfo = new ObservableMap<string, FileInfo>("file info");
 
 		// Subscribe to logout/login
 		this._offLoginManager = this.loginManager.subscribe(() => {
@@ -1036,6 +1216,10 @@ export class RelayManager {
 
 	buildGraph() {
 		if (!this.user) {
+			return;
+		}
+		if (!this.pb) {
+			console.warn("no pb!");
 			return;
 		}
 		if (this.store) {
@@ -1074,6 +1258,12 @@ export class RelayManager {
 			this.relays,
 			this.users,
 		);
+		const fileInfoCollection = new FileInfoCollection(
+			this.fileInfo,
+			this.remoteFolders,
+			this.relays,
+			this.pb,
+		);
 		this.store = new Store([
 			roleCollection,
 			userCollection,
@@ -1082,6 +1272,7 @@ export class RelayManager {
 			relayInvitationsCollection,
 			sharedFolderCollection,
 			subscriptionCollection,
+			fileInfoCollection,
 		]);
 	}
 
@@ -1155,6 +1346,7 @@ export class RelayManager {
 			{ name: "relay_roles", expand: ["user", "relay"] },
 			{ name: "shared_folders", expand: ["relay", "creator"] },
 			{ name: "subscriptions", expand: ["user", "relay"] },
+			{ name: "file_info", expand: ["relay", "shared_folder"] },
 		];
 
 		const handleEvent = (
@@ -1179,10 +1371,6 @@ export class RelayManager {
 		}
 	}
 
-	collection(collectionName: string) {
-		if (!this.pb) return;
-	}
-
 	async update() {
 		if (
 			!this.pb ||
@@ -1204,6 +1392,7 @@ export class RelayManager {
 				})
 				.catch((e) => {
 					if (e.status === 404) {
+						console.warn("got 404 for self");
 						this.loginManager.logout();
 					}
 				});
@@ -1247,6 +1436,17 @@ export class RelayManager {
 						this.store?.ingest(record);
 					});
 				});
+			await this.pb
+				.collection("file_info")
+				.getFullList<FileInfoDAO>({
+					expand: "relay,shared_folder",
+					fetch: customFetch,
+				})
+				.then((file_info) => {
+					file_info.forEach((record) => {
+						this.store?.ingest(record);
+					});
+				});
 		} catch (e) {
 			this.warn("error during update()", e);
 		}
@@ -1273,11 +1473,14 @@ export class RelayManager {
 
 	async createRelay(name: string): Promise<Relay> {
 		const guid = uuid();
-		const record = await this.pb?.collection("relays").create<RelayDAO>({
-			guid: guid,
-			name: name,
-			path: null,
-		});
+		const record = await this.pb?.collection("relays").create<RelayDAO>(
+			{
+				guid: guid,
+				name: name,
+				path: null,
+			},
+			{ expand: "relay_roles_via_relay,relay_invitations_via_relay" },
+		);
 		if (!record) {
 			throw new Error("Failed to create Relay");
 		}
@@ -1348,8 +1551,8 @@ export class RelayManager {
 	}
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
-		await this.pb?.collection("relays").delete(relay.id);
 		this.store?.cascade("relays", relay.id);
+		await this.pb?.collection("relays").delete(relay.id);
 		return true;
 	}
 

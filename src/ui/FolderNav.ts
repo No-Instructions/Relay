@@ -8,7 +8,7 @@ import {
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
-import type { Document } from "src/Document";
+import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import { withFlag } from "src/flagManager";
 import { flag } from "src/flags";
@@ -247,6 +247,7 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 				);
 				if (!guid) return null;
 				const document = sharedFolder.docs.get(guid);
+				if (!(document instanceof Document)) return null;
 				if (!document) return null;
 				return storage || new DocumentStatus(item.el, document, file);
 			} catch (e) {

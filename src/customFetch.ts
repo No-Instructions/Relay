@@ -37,8 +37,6 @@ export const customFetch = async (
 		"Relay-Version": GIT_TAG,
 	}) as Record<string, string>;
 
-	console.debug("headers", headers);
-
 	// Prepare the request parameters
 	const requestParams: RequestUrlParam = {
 		url: urlString,
@@ -77,11 +75,18 @@ export const customFetch = async (
 				? "warn"
 				: "debug";
 	const response_text = response.text;
+	let response_json;
+	try {
+		response_json = JSON.stringify(JSON.parse(response_text));
+	} catch (e) {
+		// pass
+	}
+
 	curryLog("[CustomFetch]", level)(
 		response.status.toString(),
 		method,
 		urlString,
-		response_text,
+		response_json || response_text,
 	);
 	if (response.status >= 500) {
 		throw new Error(response_text);

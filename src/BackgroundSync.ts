@@ -4,11 +4,12 @@ import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
 import { S3RN, S3RemoteDocument, S3RemoteFolder } from "./S3RN";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
-import type { Document } from "./Document";
+import { Document } from "./Document";
 import type { TimeProvider } from "./TimeProvider";
 import { RelayInstances, curryLog } from "./debug";
 import type { Unsubscriber } from "./observable/Observable";
 import { diff_match_patch, type Diff } from "diff-match-patch";
+import { SyncFile } from "./SyncFile";
 
 declare const API_URL: string;
 
@@ -76,6 +77,7 @@ export class BackgroundSync {
 	log = curryLog("[BackgroundSync]", "log");
 	debug = curryLog("[BackgroundSync]", "debug");
 	error = curryLog("[BackgroundSync]", "error");
+
 	constructor(
 		private loginManager: LoginManager,
 		private timeProvider: TimeProvider,
@@ -183,13 +185,15 @@ export class BackgroundSync {
 		await folder.whenReady();
 		this.log("[putFolderFiles]", `Uploading ${folder.docset.size} items`);
 		let i = 1;
-		for (const doc of folder.docset.items()) {
-			await doc.whenReady();
-			if (doc.text) {
-				await this.uploadItem(doc);
+		for (const file of folder.docset.items()) {
+			if (file instanceof Document) {
+				await file.whenReady();
+				if (file.text) {
+					await this.uploadItem(file);
+				}
+				this.log("[putFolderFiles]", `${i}/${folder.docset.size}`);
+				i++;
 			}
-			this.log("[putFolderFiles]", `${i}/${folder.docset.size}`);
-			i++;
 		}
 	}
 
@@ -202,12 +206,20 @@ export class BackgroundSync {
 
 	async getFolderFiles(folder: SharedFolder) {
 		await folder.whenReady();
+		if (!folder.shouldConnect) {
+			return;
+		}
 		this.log("[getFolderFiles]", `Downloading ${folder.docset.size} files`);
 		let i = 1;
-		for (const doc of folder.docset.items()) {
-			await this.getDocument(doc);
-			this.log("[getFolderFiles]", `${i}/${folder.docset.size}`);
-			i++;
+		for (const file of folder.docset.items()) {
+			if (file instanceof Document) {
+				await this.getDocument(file);
+				this.log("[getFolderFiles]", `${i}/${folder.docset.size}`);
+				i++;
+			} else if (file instanceof SyncFile) {
+				file.sync();
+				i++;
+			}
 		}
 	}
 
