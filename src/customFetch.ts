@@ -3,6 +3,8 @@ import { requestUrl } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog } from "./debug";
 
+declare const GIT_TAG: string;
+
 if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 	// Fetch API is broken for some versions of Electron
 	// https://github.com/electron/electron/pull/42419
@@ -31,12 +33,18 @@ export const customFetch = async (
 
 	const method = config?.method || "GET";
 
+	const headers = Object.assign({}, config?.headers, {
+		"Relay-Version": GIT_TAG,
+	}) as Record<string, string>;
+
+	console.debug("headers", headers);
+
 	// Prepare the request parameters
 	const requestParams: RequestUrlParam = {
 		url: urlString,
 		method: method,
 		body: config?.body as string | ArrayBuffer,
-		headers: config?.headers as Record<string, string>,
+		headers: headers,
 		throw: false,
 	};
 

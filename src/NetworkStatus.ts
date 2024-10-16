@@ -4,6 +4,8 @@ import type { TimeProvider } from "./TimeProvider";
 
 type Callback = () => void;
 
+declare const GIT_TAG: string;
+
 class NetworkStatus {
 	private url: string;
 	private interval: number;
@@ -60,7 +62,11 @@ class NetworkStatus {
 	}
 
 	private async _checkStatus(): Promise<void> {
-		return requestUrl({ url: this.url, method: "HEAD" })
+		return requestUrl({
+			url: this.url,
+			method: "HEAD",
+			headers: { "Relay-Version": GIT_TAG },
+		})
 			.then((response) => {
 				if (response.status === 200 && !this.online) {
 					this.log("back online");
