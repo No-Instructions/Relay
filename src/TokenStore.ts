@@ -3,6 +3,7 @@
 import { decodeJwt } from "jose";
 import type { TimeProvider } from "./TimeProvider";
 import { RelayException } from "./Exceptions";
+import { RelayInstances } from "./debug";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
@@ -94,6 +95,8 @@ export class TokenStore<TokenType extends HasToken> {
 		}
 		this.maxConnections = maxConnections;
 		this.refreshInterval = null;
+
+		RelayInstances.set(this, "TokenStore");
 	}
 
 	onRefresh(documentId: string): Promise<TokenType> {
