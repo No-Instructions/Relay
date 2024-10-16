@@ -166,6 +166,7 @@ export default class Live extends Plugin {
 		this.loginManager = new LoginManager(
 			this.vault.getName(),
 			this.openSettings.bind(this),
+			this.timeProvider,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
