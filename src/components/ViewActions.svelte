@@ -33,8 +33,8 @@
 			? 'notebook-synced'
 			: 'notebook'}"
 		aria-label={view.tracking
-			? "Tracking Changes"
-			: "Database Corrupted. Connect to Relay servers to resolve."}
+			? "Tracking changes: local file and update log are in sync"
+			: "Not tracking changes: local file and update log are not in sync"}
 		tabindex="0"
 		data-filename={view.view.file?.name}
 	>
@@ -55,8 +55,8 @@
 			? 'notebook-synced'
 			: 'notebook'}"
 		aria-label={view.tracking
-			? "Tracking Changes"
-			: "Database Corrupted. Connect to Relay servers to resolve."}
+			? "Tracking changes: local file and update log are in sync"
+			: "Not tracking changes: local file and update log are not in sync"}
 		tabindex="0"
 		data-filename={view.view.file?.name}
 	>
