@@ -10,6 +10,7 @@ import { LocalStorage } from "./LocalStorage";
 import { S3RN, S3RemoteDocument, type S3RNType, S3RemoteFolder } from "./S3RN";
 
 declare const API_URL: string;
+declare const GIT_TAG: string;
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	// lol this is so fake
@@ -56,6 +57,7 @@ async function refresh(
 	}
 	const headers = {
 		Authorization: `Bearer ${loginManager.user?.token}`,
+		"Relay-Version": GIT_TAG,
 	};
 	requestUrl({
 		url: `${API_URL}/token`,
