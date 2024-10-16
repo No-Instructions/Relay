@@ -17,6 +17,7 @@ declare const GIT_TAG: string;
 
 import { customFetch } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
+import type { TimeProvider } from "./TimeProvider";
 
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
@@ -26,7 +27,11 @@ export class LoginManager extends Observable<LoginManager> {
 	user?: User;
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 
-	constructor(vaultName: string, openSettings: () => Promise<void>) {
+	constructor(
+		vaultName: string,
+		openSettings: () => Promise<void>,
+		timeProvider: TimeProvider,
+	) {
 		super();
 		this._log = curryLog("[LoginManager]");
 		const pbLog = curryLog("[Pocketbase]", "debug");
@@ -40,7 +45,17 @@ export class LoginManager extends Observable<LoginManager> {
 			});
 			return { url, options };
 		};
+		this.refreshToken();
+		timeProvider.setInterval(() => this.refreshToken(), 86400000);
 		this.openSettings = openSettings;
+		RelayInstances.set(this, "loginManager");
+	}
+
+	log(message: string, ...args: unknown[]) {
+		this._log(message, ...args);
+	}
+
+	refreshToken() {
 		if (this.pb.authStore.isValid) {
 			this.user = this.makeUser(this.pb.authStore);
 			this.pb
@@ -66,11 +81,6 @@ export class LoginManager extends Observable<LoginManager> {
 					});
 				});
 		}
-		RelayInstances.set(this, "loginManager");
-	}
-
-	log(message: string, ...args: unknown[]) {
-		this._log(message, ...args);
 	}
 
 	setup(authData?: RecordAuthResponse<RecordModel> | undefined): boolean {
