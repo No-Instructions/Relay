@@ -2,6 +2,7 @@ export interface FeatureFlags {
 	enableUpdateYDocFromDiskBuffer: boolean;
 	enableUploadOnShare: boolean;
 	enableDocumentStatus: boolean;
+	enableDocumentIdTag: boolean;
 	enableNewLinkFormat: boolean;
 }
 
@@ -9,6 +10,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableUpdateYDocFromDiskBuffer: false,
 	enableUploadOnShare: false,
 	enableDocumentStatus: false,
+	enableDocumentIdTag: false,
 	enableNewLinkFormat: false,
 };
 
