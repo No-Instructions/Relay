@@ -20,5 +20,5 @@ jobs:
     - run: npm run beta
     - uses: ncipollo/release-action@v1
       with:
-        artifacts: "main.js,styles.css,manifest.json"
+        artifacts: "main.js,styles.css,manifest.json,manifest-beta.json"
         prerelease: true

@@ -107,12 +107,17 @@ const watchAndMove = (fnames, mapping) => {
 	});
 };
 
-const updateManifest = () => {
-	const manifestPath = path.join(out, path.basename("manifest.json"));
+const mapping = debug ? { "manifest-beta.json": "manifest.json" } : {};
+const manifest = debug ? "manifest-beta.json" : "manifest.json";
+const files = ["styles.css", manifest];
+
+const updateManifest = (manifest) => {
+	const manifestPath = path.join(out, path.basename(manifest));
 	const raw_manifest = fs.readFileSync(manifestPath);
 	const parsed = JSON.parse(raw_manifest);
 	parsed.version = gitTag;
-	const new_manifest = JSON.stringify(parsed);
+	const new_manifest = JSON.stringify(parsed, null, 2);
+    console.log(`Set ${manifest} version to ${gitTag}`)
 	fs.writeFileSync(manifestPath, new_manifest);
 };
 
@@ -126,17 +131,15 @@ const move = (fnames, mapping) => {
 	}
 };
 
-const mapping = debug ? { "manifest-beta.json": "manifest.json" } : {};
-const manifest = debug ? "manifest-beta.json" : "manifest.json";
-const files = ["styles.css", manifest];
 
 if (watch) {
 	await context.watch();
+	updateManifest(manifest);
 	move(files, mapping);
 	watchAndMove(files, mapping);
-	updateManifest();
 } else {
 	await context.rebuild();
+	updateManifest(manifest);
 	move(files, mapping);
 	process.exit(0);
 }
