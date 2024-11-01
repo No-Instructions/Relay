@@ -10,6 +10,7 @@ import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
 import type { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
+import TextPill from "src/components/TextPill.svelte";
 import { withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 
@@ -47,6 +48,7 @@ interface TreeNode {
 
 interface FileItem extends TreeNode {
 	el: HTMLElement;
+	selfEl: HTMLElement;
 }
 
 interface FolderItem extends TreeNode {
@@ -130,7 +132,7 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 		storage: FolderBar,
 		sharedFolder?: SharedFolder,
 	): FolderBar | null {
-		if (sharedFolder) {
+		if (sharedFolder && sharedFolder.path === folder.path) {
 			return storage || new FolderBar(item.selfEl, sharedFolder);
 		}
 		if (storage) {
@@ -141,6 +143,7 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 }
 
 type Unsubscribe = () => void;
+
 class PillDecoration {
 	el: HTMLElement;
 	sharedFolder: SharedFolder;
@@ -184,8 +187,51 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 		storage?: PillDecoration,
 		sharedFolder?: SharedFolder,
 	): PillDecoration | null {
-		if (sharedFolder) {
+		if (sharedFolder && sharedFolder.path === folder.path) {
 			return storage || new PillDecoration(item.selfEl, sharedFolder);
+		}
+		if (storage) {
+			storage.destroy();
+		}
+		return null;
+	}
+}
+
+class FilePillDecoration {
+	el: HTMLElement;
+	pill: TextPill;
+	guid: string;
+
+	constructor(el: HTMLElement, guid: string) {
+		this.el = el;
+		this.el.addClass("system3-filepill");
+		this.guid = guid;
+
+		this.pill = new TextPill({
+			target: this.el,
+			props: {
+				text: this.guid.slice(0, 4),
+			},
+		});
+	}
+
+	destroy() {
+		this.pill.$destroy();
+		this.el.removeClass("system3-filepill");
+	}
+}
+
+class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
+	visitFile(
+		file: TFile,
+		item: FileItem,
+		storage?: FilePillDecoration,
+		sharedFolder?: SharedFolder,
+	): FilePillDecoration | null {
+		if (sharedFolder) {
+			const guid = sharedFolder.ids.get(sharedFolder.getVirtualPath(file.path));
+			if (!guid) return null;
+			return storage || new FilePillDecoration(item.selfEl, guid);
 		}
 		if (storage) {
 			storage.destroy();
@@ -316,15 +362,16 @@ class FileExplorerWalker {
 		if (this.fileExplorer.view.getViewType() !== "file-explorer") {
 			return;
 		}
-		const sharedFolder = this.sharedFolders.find(
-			(sharedFolder) => sharedFolder.path === folder.path,
-		);
+		const sharedFolder =
+			this.sharedFolders.find(
+				(sharedFolder) => sharedFolder.path === folder.path,
+			) || _sharedFolder;
+
 		const folderItem = this.getFileExplorerItem<FolderItem>(
 			this.fileExplorer,
 			folder,
 		);
 		if (folderItem) {
-			// XXX cache this
 			this.storage.forEach((store, visitor) => {
 				const stored = store.get(folderItem);
 				const update = visitor.visitFolder(
@@ -354,7 +401,7 @@ class FileExplorerWalker {
 						child,
 						fileItem,
 						stored,
-						sharedFolder || _sharedFolder,
+						sharedFolder,
 					);
 					if (stored && !update) {
 						store.delete(fileItem);
@@ -426,6 +473,9 @@ export class FolderNavigationDecorations {
 		visitors.push(new FolderPillVisitor());
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
+		});
+		withFlag(flag.enableDocumentIdTag, () => {
+			visitors.push(new FilePillVisitor());
 		});
 		return visitors;
 	}
