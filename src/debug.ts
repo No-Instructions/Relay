@@ -3,12 +3,10 @@ import { Notice, Vault } from "obsidian";
 import type { TimeProvider } from "./TimeProvider";
 
 type LogLevel = "debug" | "warn" | "log" | "error";
-type LogWriter = (message: string) => Promise<void>;
 
 declare const BUILD_TYPE: string;
 
 export const RelayInstances = new WeakMap();
-let logWriter: LogWriter | undefined;
 let debugging = false;
 
 export function setDebugging(debug: boolean) {
@@ -168,17 +166,19 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 			const stack = new Error().stack;
 			const callerInfo = stack ? stack.split("\n")[2].trim() : "";
 			const serializedArgs = args.map(serializeArg).join(" ");
-			const message = `[${timestamp}] [${level.toUpperCase()}] ${initialText}: ${serializedArgs}\n    at ${callerInfo}`;
+
+			const logEntry: LogEntry = {
+				timestamp,
+				level,
+				message: `${initialText}: ${serializedArgs}`,
+				callerInfo,
+			};
 
 			if (!logConfig.disableConsole) {
-				console[level](message);
+				console[level](formatLogEntry(logEntry));
 			}
 
-			if (logWriter) {
-				logWriter(message).catch((err) =>
-					console.error("Failed to write log:", err),
-				);
-			}
+			logBuffer.push(logEntry);
 		}
 	};
 }
