@@ -112,7 +112,7 @@ const updateManifest = () => {
 	const raw_manifest = fs.readFileSync(manifestPath);
 	const parsed = JSON.parse(raw_manifest);
 	parsed.version = gitTag;
-	const new_manifest = JSON.stringify(parsed);
+	const new_manifest = JSON.stringify(parsed, null, 2);
 	fs.writeFileSync(manifestPath, new_manifest);
 };
 
@@ -138,5 +138,6 @@ if (watch) {
 } else {
 	await context.rebuild();
 	move(files, mapping);
+	updateManifest();
 	process.exit(0);
 }
