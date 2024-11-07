@@ -7,7 +7,6 @@ import { getMimeType } from "./mimetypes";
 import PocketBase from "pocketbase";
 
 declare const AUTH_URL: string;
-declare const GIT_TAG: string;
 
 export class ContentAddressedStore {
 	private pb: PocketBase;
@@ -98,6 +97,7 @@ export class ContentAddressedStore {
 	}
 
 	public destroy() {
+		this.pb.cancelAllRequests();
 		this.pb = null as any;
 		this.relayManager = null as any;
 		this.loginManager = null as any;

@@ -6,7 +6,7 @@ import {
 	S3Folder,
 	type S3RNType,
 } from "./S3RN";
-import { SharedFolder } from "./SharedFolder";
+import { SharedFolder, isFileMeta, type SyncFileMeta } from "./SharedFolder";
 import { curryLog } from "./debug";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
@@ -130,17 +130,27 @@ export class SyncFile implements TFile, IFile {
 		//return Math.max(this.stat.mtime, this.stat.ctime);
 	}
 
+	public get meta(): SyncFileMeta | undefined {
+		const meta = this.sharedFolder.meta.get(this.guid);
+		if (meta && isFileMeta(meta)) {
+			return meta;
+		}
+	}
+
+	public set meta(value: SyncFileMeta) {
+		this.sharedFolder.meta.set(this.guid, value);
+	}
+
 	public get shouldPull() {
-		return (this.sharedFolder.synctimes.get(this.guid) || 0) > this.synctime;
+		return (this.meta?.synctime || 0) > this.synctime;
 	}
 
 	public get shouldPush() {
-		const serverOutOfDate =
-			(this.sharedFolder.synctimes.get(this.guid) || 0) < this.synctime;
+		const serverOutOfDate = (this.meta?.synctime || 0) < this.synctime;
 		const serverHasContent = !!this.getRemote();
 		this.warn(
 			"should push?",
-			this.sharedFolder.synctimes.get(this.guid) || 0,
+			this.meta?.synctime || 0,
 			this.synctime,
 			serverOutOfDate,
 		);
@@ -148,7 +158,7 @@ export class SyncFile implements TFile, IFile {
 	}
 
 	public get serverHash() {
-		return this.sharedFolder.hashes.get(this.guid);
+		return this.meta?.hash;
 	}
 
 	public async getRemote() {
@@ -188,11 +198,15 @@ export class SyncFile implements TFile, IFile {
 		//} else {
 		//	this.warn("content already on server", byHash);
 		//}
-		if (this.sharedFolder.hashes.get(this.guid) !== hash) {
+		const meta = this.meta;
+		if (isFileMeta(meta) && meta.hash !== hash) {
 			this.warn("updating hashes map", hash);
 			this.sharedFolder.ydoc.transact(() => {
-				this.sharedFolder.hashes.set(this.guid, hash);
-				this.sharedFolder.synctimes.set(this.guid, this.synctime);
+				this.meta = {
+					...meta,
+					hash: hash,
+					synctime: this.synctime,
+				};
 			});
 		}
 		return hash;
@@ -223,9 +237,8 @@ export class SyncFile implements TFile, IFile {
 
 	public get isStale() {
 		const hash = this._filehash;
-		const serverHash = this.sharedFolder.hashes.get(this.guid);
-		this.log("hash state ", hash, serverHash);
-		return hash !== serverHash;
+		this.log("hash state ", hash, this.serverHash);
+		return hash !== this.serverHash;
 	}
 
 	async sync() {

@@ -33,37 +33,79 @@ import { ContentAddressedStore } from "./CAS";
 import { getMimeType } from "./mimetypes";
 import { SyncFolder } from "./SyncFolder";
 
+export interface MetaV0 {
+	id: UUID;
+	version: 0;
+	type: "folder" | "markdown" | "octet-stream";
+	hash?: string;
+	synctime?: number;
+	mimetype?: string;
+}
+
+export interface SyncFolderMeta extends MetaV0 {
+	type: "folder";
+}
+
+export interface DocumentMeta extends MetaV0 {
+	type: "markdown";
+}
+
+export interface SyncFileMeta extends MetaV0 {
+	type: "octet-stream";
+	mimetype: string;
+	hash?: string;
+	synctime?: number;
+}
+
+type SyncMeta = SyncFolderMeta | DocumentMeta | SyncFileMeta;
+
+export function isFileMeta(meta?: MetaV0): meta is SyncFileMeta {
+	return (
+		meta !== undefined &&
+		meta.type === "octet-stream" &&
+		typeof meta.mimetype === "string"
+	);
+}
+
+export function isFolderMeta(meta: MetaV0): meta is SyncFolderMeta {
+	return meta.type === "folder";
+}
+
+export function isDocumentMeta(meta: MetaV0): meta is DocumentMeta {
+	return meta.type === "markdown";
+}
+
 export interface SharedFolderSettings {
 	guid: string;
 	path: string;
 	relay?: string;
 }
 
-interface Operation {
+interface FileSyncOperation {
 	op: "create" | "rename" | "delete" | "noop" | "pull" | "push";
 	path: string;
 	promise: Promise<void> | Promise<IFile>;
 }
 
-interface Create extends Operation {
+interface Create extends FileSyncOperation {
 	op: "create";
 	path: string;
 	promise: Promise<IFile>;
 }
 
-interface Pull extends Operation {
+interface Pull extends FileSyncOperation {
 	op: "pull";
 	path: string;
 	promise: Promise<IFile>;
 }
 
-interface Push extends Operation {
+interface Push extends FileSyncOperation {
 	op: "push";
 	path: string;
 	promise: Promise<IFile>;
 }
 
-interface Rename extends Operation {
+interface Rename extends FileSyncOperation {
 	op: "rename";
 	path: string;
 	from: string;
@@ -71,13 +113,13 @@ interface Rename extends Operation {
 	promise: Promise<void>;
 }
 
-interface Delete extends Operation {
+interface Delete extends FileSyncOperation {
 	op: "delete";
 	path: string;
 	promise: Promise<void>;
 }
 
-interface Noop extends Operation {
+interface Noop extends FileSyncOperation {
 	op: "noop";
 	path: string;
 	promise: Promise<void>;
@@ -107,9 +149,7 @@ export class SharedFolder extends HasProvider {
 	path: string;
 	guid: string;
 	ids: Y.Map<string>; // Maps document paths to guids
-	hashes: Y.Map<string>;
-	synctimes: Y.Map<number>;
-	types: Y.Map<string>;
+	meta: Y.Map<SyncMeta>;
 	docs: Map<string, IFile>; // Maps guids to SharedDocs
 	docset: Files;
 	cas: ContentAddressedStore;
@@ -211,9 +251,7 @@ export class SharedFolder extends HasProvider {
 		this.vault = vault;
 		this.path = path;
 		this.ids = this.ydoc.getMap("docs");
-		this.hashes = this.ydoc.getMap("files");
-		this.synctimes = this.ydoc.getMap("synctimes");
-		this.types = this.ydoc.getMap("types");
+		this.meta = this.ydoc.getMap("filemeta_v0");
 		this.docs = new Map();
 		this.docset = new Files();
 		this.relayManager = relayManager;
@@ -241,19 +279,20 @@ export class SharedFolder extends HasProvider {
 		);
 
 		this.whenReady().then(() => {
+			this.migrateUp(this.ydoc);
 			this.addLocalDocs();
+			this.syncFileTree(this.ydoc);
+			this.ydoc.on(
+				"update",
+				async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
+					if (origin == this) {
+						return;
+					}
+					this.log("file tree", this._debugFileTree());
+					await this.syncFileTree(doc);
+				},
+			);
 		});
-
-		this.ydoc.on(
-			"update",
-			async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-				if (origin == this) {
-					return;
-				}
-				this.log("file tree", this._debugFileTree());
-				await this.syncFileTree(doc);
-			},
-		);
 	}
 
 	getFiles(): TAbstractFile[] {
@@ -464,9 +503,9 @@ export class SharedFolder extends HasProvider {
 		diffLog: string[],
 	): OperationType {
 		const file = this.docs.get(guid);
-		const hash = this.hashes.get(guid);
+		const fileMeta = this.meta.get(guid);
 		const synctype = this.getSyncType(path, guid);
-		if (synctype === SyncFile && !hash) {
+		if (synctype === SyncFile && fileMeta && !fileMeta.hash) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -553,7 +592,7 @@ export class SharedFolder extends HasProvider {
 	async syncByType(
 		map: Y.Map<string>,
 		diffLog: string[],
-		ops: Operation[],
+		ops: FileSyncOperation[],
 		types: (typeof SyncFolder | typeof SyncFile | typeof Document)[],
 	) {
 		this.ydoc.transact(() => {
@@ -570,8 +609,38 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
+	async migrateUp(doc: Y.Doc) {
+		doc.transact(() => {
+			this.ids.forEach((guid, path, _) => {
+				if (!this.meta.get(guid)) {
+					const syncType = this.getSyncType(path, guid);
+					if (syncType === SyncFile) {
+						this.meta.set(guid, {
+							version: 0,
+							id: guid,
+							type: "octet-stream",
+							mimetype: getMimeType(path),
+						});
+					} else if (syncType === Document) {
+						this.meta.set(guid, {
+							version: 0,
+							id: guid,
+							type: "markdown",
+						});
+					} else if (syncType === SyncFolder) {
+						this.meta.set(guid, {
+							version: 0,
+							id: guid,
+							type: "folder",
+						});
+					}
+				}
+			});
+		}, this);
+	}
+
 	async syncFileTree(doc: Doc) {
-		const ops: Operation[] = [];
+		const ops: FileSyncOperation[] = [];
 		const map = doc.getMap<string>("docs");
 		const diffLog: string[] = [];
 
@@ -593,6 +662,12 @@ export class SharedFolder extends HasProvider {
 		if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
 			this.docset.update();
 		}
+		this.log(
+			"files",
+			Array.from(this.ids.entries()).map(([path, guid]) => {
+				return { path, ...this.meta.get(guid) };
+			}),
+		);
 		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
 	}
 
@@ -641,19 +716,20 @@ export class SharedFolder extends HasProvider {
 	}
 
 	isFolder(guid: string) {
-		return this.types.get(guid) === "folder";
+		return this.meta.get(guid)?.type === "folder";
 	}
 
 	getSyncType(
 		path: string,
 		guid?: string,
 	): typeof Document | typeof SyncFile | typeof SyncFolder {
+		// if we only have the path, lookup the guid
 		if (!guid) {
 			guid = this.ids.get(path);
 		}
 		if (guid) {
-			const type = this.types.get(guid);
-			if (!type) {
+			const meta = this.meta.get(guid);
+			if (!meta?.type) {
 				const tabstractfile = this.vault.getAbstractFileByPath(
 					this.getPath(path),
 				);
@@ -661,7 +737,7 @@ export class SharedFolder extends HasProvider {
 					return SyncFolder;
 				}
 			}
-			if (type === "folder") {
+			if (meta?.type === "folder") {
 				return SyncFolder;
 			}
 		}
@@ -771,7 +847,11 @@ export class SharedFolder extends HasProvider {
 			const guid = uuidv4();
 			this.ydoc.transact(() => {
 				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
-				this.types.set(guid, "folder");
+				this.meta.set(guid, {
+					version: 0,
+					id: guid,
+					type: "folder",
+				});
 			}, this);
 			const file = SyncFolder.fromTFolder(this.relayManager, this, tfolder);
 			this.docs.set(guid, file);
@@ -797,7 +877,7 @@ export class SharedFolder extends HasProvider {
 			this.warn(`potential for document split at ${vpath}`);
 		}
 		const guid = this.ids.get(vpath);
-		const hash = guid ? this.hashes.get(guid) : undefined;
+		const hash = guid ? this.meta.get(guid)?.hash : undefined;
 		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 		if (guid) {
 			this.warn(`create pulling from server ${vpath}`);
@@ -823,14 +903,25 @@ export class SharedFolder extends HasProvider {
 			const guid = uuidv4();
 			this.ydoc.transact(() => {
 				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
-				this.types.set(guid, getMimeType(vpath));
+				this.meta.set(vpath, {
+					version: 0,
+					id: guid,
+					type: "octet-stream",
+					mimetype: getMimeType(vpath),
+				});
 			}, this);
 			const file = SyncFile.fromTFile(this.relayManager, this, tfile);
 			file.push().then(async () => {
 				this.ydoc.transact(async () => {
 					this.ids.set(vpath, guid);
-					this.hashes.set(guid, await file.getHash());
-					this.synctimes.set(guid, Date.now());
+					this.meta.set(vpath, {
+						version: 0,
+						type: "octet-stream",
+						id: guid,
+						hash: await file.getHash(),
+						synctime: Date.now(),
+						mimetype: getMimeType(vpath),
+					});
 				}, this);
 				onSync(file);
 			});
@@ -854,13 +945,26 @@ export class SharedFolder extends HasProvider {
 					newDocs.push(guid);
 					const syncType = this.getSyncType(vpath, guid);
 					if (syncType === SyncFile) {
-						this.synctimes.set(guid, 0);
-						this.hashes.set(guid, "");
-						this.types.set(guid, getMimeType(vpath));
+						this.meta.set(guid, {
+							id: guid,
+							version: 0,
+							synctime: 0,
+							hash: "",
+							mimetype: getMimeType(vpath),
+							type: "octet-stream",
+						});
 					} else if (syncType === SyncFolder) {
-						this.types.set(guid, "folder");
+						this.meta.set(guid, {
+							id: guid,
+							version: 0,
+							type: "folder",
+						});
 					} else {
-						this.types.set(guid, "md");
+						this.meta.set(guid, {
+							id: guid,
+							version: 0,
+							type: "markdown",
+						});
 					}
 					this.ids.set(vpath, guid);
 				}
@@ -892,7 +996,11 @@ export class SharedFolder extends HasProvider {
 			guid = uuidv4();
 			this.ydoc.transact(() => {
 				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
-				this.types.set(guid, "md");
+				this.meta.set(guid, {
+					id: guid,
+					version: 0,
+					type: "markdown",
+				});
 			}, this);
 		} else {
 			guid = maybeGuid;
@@ -997,9 +1105,7 @@ export class SharedFolder extends HasProvider {
 				// moving out of shared folder.. destroy the live doc.
 				this.ydoc.transact(() => {
 					this.ids.delete(oldVPath);
-					this.hashes.delete(guid);
-					this.types.delete(guid);
-					this.synctimes.delete(guid);
+					this.meta.delete(guid);
 				}, this);
 				if (doc) {
 					doc.destroy();

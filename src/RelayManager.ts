@@ -1578,8 +1578,8 @@ export class RelayManager {
 		}
 		this.pb?.cancelAllRequests();
 		this.loginManager = null as any;
-		this.pb = null as any;
 		this.store?.destroy();
+		this.pb = null as any;
 		this.authUser = null;
 		this.store = null as any;
 	}
