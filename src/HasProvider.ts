@@ -9,6 +9,7 @@ import type { ClientToken } from "./y-sweet";
 import { promiseWithTimeout } from "./promiseUtils";
 import { S3RN, type S3RNType } from "./S3RN";
 import { Platform } from "obsidian";
+import { encodeClientToken } from "./y-sweet";
 
 export type ConnectionStatus =
 	| "connected"
@@ -138,6 +139,11 @@ export class HasProvider {
 	public set s3rn(value: S3RNType) {
 		this._s3rn = value;
 		this.refreshProvider(this.clientToken);
+	}
+
+	public get debuggerUrl(): string {
+		const payload = encodeClientToken(this.clientToken);
+		return `https://debugger.y-sweet.dev/?payload=${payload}`;
 	}
 
 	notifyListeners() {
