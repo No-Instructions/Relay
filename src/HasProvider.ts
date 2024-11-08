@@ -2,7 +2,7 @@
 import { Doc } from "yjs";
 import { YSweetProvider } from "@y-sweet/client";
 import { User } from "./User";
-import { curryLog } from "./debug";
+import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
@@ -73,7 +73,7 @@ function makeProvider(
 
 type Listener = (state: ConnectionState) => void;
 
-export class HasProvider {
+export class HasProvider extends HasLogging {
 	_provider: YSweetProvider;
 	_s3rn: S3RNType;
 	path?: string;
@@ -84,10 +84,6 @@ export class HasProvider {
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
-	debug = curryLog("[HasProvider]", "debug");
-	log = curryLog("[HasProvider]", "log");
-	warn = curryLog("[HasProvider]", "warn");
-	error = curryLog("[HasProvider]", "error");
 	listeners: Map<unknown, Listener>;
 
 	constructor(
@@ -95,6 +91,7 @@ export class HasProvider {
 		tokenStore: LiveTokenStore,
 		loginManager: LoginManager,
 	) {
+		super();
 		this._s3rn = s3rn;
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;

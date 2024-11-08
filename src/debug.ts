@@ -183,5 +183,20 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 	};
 }
 
+export class HasLogging {
+	protected debug;
+	protected log;
+	protected warn;
+	protected error;
+
+	constructor(context?: string) {
+		const logContext = context || this.constructor.name;
+		this.debug = curryLog(`[${logContext}]`, "debug");
+		this.log = curryLog(`[${logContext}]`, "log");
+		this.warn = curryLog(`[${logContext}]`, "warn");
+		this.error = curryLog(`[${logContext}]`, "error");
+	}
+}
+
 const debug = BUILD_TYPE === "debug";
 export const toast = debug ? toastDebug : toastProd;
