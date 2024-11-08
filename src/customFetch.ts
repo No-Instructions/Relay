@@ -46,8 +46,11 @@ export const customFetch = async (
 		throw: false,
 	};
 
+	const startTime = performance.now();
 	let response: RequestUrlResponse | undefined = undefined;
 	response = await requestUrl(requestParams);
+	const endTime = performance.now();
+	const duration = endTime - startTime;
 
 	if (!response.arrayBuffer.byteLength) {
 		return new Response(null, {
@@ -83,6 +86,7 @@ export const customFetch = async (
 	}
 
 	curryLog("[CustomFetch]", level)(
+		`${duration.toFixed(2)}ms`,
 		response.status.toString(),
 		method,
 		urlString,

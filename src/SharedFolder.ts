@@ -23,7 +23,7 @@ import { S3Folder, S3RemoteFolder, type UUID } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import { curryLog } from "./debug";
+import { RelayInstances, curryLog } from "./debug";
 import { withFlag } from "./flagManager";
 import { flag } from "./flags";
 import { DiskBufferStore } from "./DiskBuffer";
@@ -148,7 +148,8 @@ class Files extends ObservableSet<IFile> {
 export class SharedFolder extends HasProvider {
 	path: string;
 	guid: string;
-	ids: Y.Map<string>; // Maps document paths to guids
+	legacy_ids: Y.Map<string>; // Maps file paths to Document guids
+	ids: Y.Map<string>; // Maps document paths to IFile guids
 	meta: Y.Map<SyncMeta>;
 	docs: Map<string, IFile>; // Maps guids to SharedDocs
 	docset: Files;
@@ -250,7 +251,8 @@ export class SharedFolder extends HasProvider {
 		this.fileManager = fileManager;
 		this.vault = vault;
 		this.path = path;
-		this.ids = this.ydoc.getMap("docs");
+		this.legacy_ids = this.ydoc.getMap("docs");
+		this.ids = this.ydoc.getMap("docs_v0");
 		this.meta = this.ydoc.getMap("filemeta_v0");
 		this.docs = new Map();
 		this.docset = new Files();
@@ -292,6 +294,7 @@ export class SharedFolder extends HasProvider {
 					await this.syncFileTree(doc);
 				},
 			);
+			RelayInstances.set(this, `[Shared Fodler](${this.path})`);
 		});
 	}
 
@@ -478,7 +481,11 @@ export class SharedFolder extends HasProvider {
 		// Pull from remote as authoratative
 		if (doc instanceof SyncFile || doc instanceof Document) {
 			await folderPromise;
-			doc.pull();
+			try {
+				doc.pull();
+			} catch (e) {
+				//pass
+			}
 			diffLog?.push(`created local file for remotely added doc ${path}`);
 		}
 
@@ -611,7 +618,17 @@ export class SharedFolder extends HasProvider {
 
 	async migrateUp(doc: Y.Doc) {
 		doc.transact(() => {
-			this.ids.forEach((guid, path, _) => {
+			const folders = new Set<string>();
+			this.legacy_ids.forEach((guid, path, _) => {
+				// Build set of folders from path components
+				const parts = path.split(sep);
+				let currentPath = "";
+				for (let i = 0; i < parts.length - 1; i++) {
+					currentPath = parts.slice(0, i + 1).join(sep);
+					folders.add(currentPath);
+				}
+
+				this.ids.set(path, guid);
 				if (!this.meta.get(guid)) {
 					const syncType = this.getSyncType(path, guid);
 					if (syncType === SyncFile) {
@@ -636,6 +653,20 @@ export class SharedFolder extends HasProvider {
 					}
 				}
 			});
+
+			// Create folder entries for any missing folders
+			folders.forEach((folderPath) => {
+				if (folderPath && !this.ids.has(folderPath)) {
+					const guid = uuidv4();
+					console.log("creating folder path", folderPath, guid);
+					this.ids.set(folderPath, guid);
+					this.meta.set(guid, {
+						version: 0,
+						id: guid,
+						type: "folder",
+					});
+				}
+			});
 		}, this);
 	}
 
@@ -643,6 +674,8 @@ export class SharedFolder extends HasProvider {
 		const ops: FileSyncOperation[] = [];
 		const map = doc.getMap<string>("docs");
 		const diffLog: string[] = [];
+
+		this.migrateUp(this.ydoc);
 
 		// Sync folder operations first because renames/moves also affect files
 		this.syncByType(map, diffLog, ops, [SyncFolder]);
@@ -965,6 +998,7 @@ export class SharedFolder extends HasProvider {
 							version: 0,
 							type: "markdown",
 						});
+						this.legacy_ids.set(vpath, guid);
 					}
 					this.ids.set(vpath, guid);
 				}
@@ -1055,6 +1089,7 @@ export class SharedFolder extends HasProvider {
 		const guid = this.ids.get(vPath);
 		if (guid) {
 			this.ydoc.transact(() => {
+				this.legacy_ids.delete(vPath);
 				this.ids.delete(vPath);
 				const doc = this.docs.get(guid)?.destroy();
 				if (doc) {
@@ -1135,6 +1170,10 @@ export class SharedFolder extends HasProvider {
 						const [guid, oldVPath, newVPath] = move;
 						this.ids.set(newVPath, guid);
 						this.ids.delete(oldVPath);
+						if (this.legacy_ids.has(oldVPath)) {
+							this.legacy_ids.set(newVPath, guid);
+							this.legacy_ids.delete(oldVPath);
+						}
 						const subdoc = this.docs.get(guid);
 						if (subdoc) {
 							subdoc.move(newVPath);

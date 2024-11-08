@@ -1381,7 +1381,7 @@ export class RelayManager {
 		}
 
 		try {
-			await this.pb
+			this.pb
 				.collection("users")
 				.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
 					expand:
@@ -1397,7 +1397,7 @@ export class RelayManager {
 					}
 				});
 
-			await this.pb
+			this.pb
 				.collection("relay_roles")
 				.getFullList<RelayRoleDAOExpandingRelayUser>({
 					expand: "user",
@@ -1407,7 +1407,7 @@ export class RelayManager {
 						this.store?.ingest(record);
 					});
 				});
-			await this.pb
+			this.pb
 				.collection("relay_invitations")
 				.getFullList<RelayInvitationDAO>()
 				.then((relayInvitations) => {
@@ -1415,7 +1415,7 @@ export class RelayManager {
 						this.store?.ingest(record);
 					});
 				});
-			await this.pb
+			this.pb
 				.collection("shared_folders")
 				.getFullList<RemoteFolderDAO>({
 					expand: "relay,creator",
@@ -1425,7 +1425,7 @@ export class RelayManager {
 						this.store?.ingest(record);
 					});
 				});
-			await this.pb
+			this.pb
 				.collection("subscriptions")
 				.getFullList<RemoteFolderDAO>({
 					expand: "relay,user",
@@ -1436,7 +1436,7 @@ export class RelayManager {
 						this.store?.ingest(record);
 					});
 				});
-			await this.pb
+			this.pb
 				.collection("file_info")
 				.getFullList<FileInfoDAO>({
 					expand: "relay,shared_folder",

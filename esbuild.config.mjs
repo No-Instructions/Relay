@@ -133,8 +133,8 @@ const files = ["styles.css", manifest];
 if (watch) {
 	await context.watch();
 	move(files, mapping);
-	watchAndMove(files, mapping);
 	updateManifest();
+	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
 	move(files, mapping);
