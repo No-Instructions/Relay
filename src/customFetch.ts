@@ -1,5 +1,6 @@
 "use strict";
 import { requestUrl } from "obsidian";
+import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog } from "./debug";
 
@@ -23,6 +24,17 @@ if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 		console.error(e);
 	}
 }
+
+if (globalThis.EventSource === undefined) {
+    if (Platform.isMobile) {
+	    console.warn("[Relay] Polyfilling EventSource API required, but unable to polyfill on Mobile");
+    } else {
+	    console.warn("[Relay] Polyfilling EventSource API");
+	    // @ts-ignore
+	    globalThis.EventSource = require("eventsource");
+    }
+}
+
 
 export const customFetch = async (
 	url: RequestInfo | URL,
