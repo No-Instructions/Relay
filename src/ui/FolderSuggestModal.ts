@@ -45,10 +45,10 @@ export class FolderSuggestModal extends SuggestModal<Suggestion> {
 	sortFn(a: Suggestion, b: Suggestion): number {
 		// Always put current input first
 		if (a.exists && !b.exists) {
-			return -1;
+			return 1;
 		}
 		if (!a.exists && b.exists) {
-			return 1;
+			return -1;
 		}
 		// Then put shared folders first
 		if (a.shared && !b.shared) {
