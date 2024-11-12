@@ -231,16 +231,10 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	async login(): Promise<boolean> {
-		try {
-			const authData = await this.pb.collection("users").authWithOAuth2({
-				provider: "google",
-			});
-			return this.setup(authData);
-		} catch (e) {
-			this.log("request failed", e);
-			console.error("Authenticating failed", e);
-			return false;
-		}
+		const authData = await this.pb.collection("users").authWithOAuth2({
+			provider: "google",
+		});
+		return this.setup(authData);
 	}
 
 	async openLoginPage() {
