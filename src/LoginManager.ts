@@ -19,6 +19,14 @@ import { customFetch } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 
+interface GoogleUser {
+	email: string;
+	family_name: string;
+	given_name: string;
+	name: string;
+	picture: string;
+}
+
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private _log: (message: string, ...args: unknown[]) => void;
@@ -88,7 +96,7 @@ export class LoginManager extends Observable<LoginManager> {
 			this.notifyListeners(); // notify anyway
 			return false;
 		}
-		this.user = this.makeUser(this.pb.authStore);
+		this.user = this.makeUser(this.pb.authStore, authData?.meta?.rawUser);
 		this.notifyListeners();
 		if (authData) {
 			this.pb
@@ -132,16 +140,14 @@ export class LoginManager extends Observable<LoginManager> {
 		return this.user !== undefined;
 	}
 
-	private makeUser(authStore: BaseAuthStore): User {
+	private makeUser(authStore: BaseAuthStore, rawUser?: GoogleUser): User {
 		return new User(
 			authStore.model?.id,
+			authStore.model?.name || rawUser?.name,
 			authStore.model?.email,
+			authStore.model?.picture || rawUser?.picture,
 			authStore.token,
 		);
-	}
-
-	public get anon(): User {
-		return new User("", "Anonymous", "");
 	}
 
 	logout() {

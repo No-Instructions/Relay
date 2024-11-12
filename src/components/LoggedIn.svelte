@@ -2,6 +2,7 @@
 	import { debounce, Notice } from "obsidian";
 	import type Live from "../main";
 	import SettingItem from "./SettingItem.svelte";
+	import AccountSettingItem from "./AccountSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import Callout from "./Callout.svelte";
 	import Discord from "./Discord.svelte";
@@ -145,20 +146,17 @@
 	}
 </script>
 
-{#if $lm.hasUser}
+{#if $lm.hasUser && $lm.user}
 	<RelayText />
 	<Discord />
 	<SettingItemHeading name="Account"></SettingItemHeading>
-	<SettingItem
-		name="Your account"
-		description="You are currently logged in as: {$lm.user?.name}."
-	>
+	<AccountSettingItem user={$lm.user}>
 		<button
 			on:click={debounce(() => {
 				logout();
 			})}>Logout</button
 		>
-	</SettingItem>
+	</AccountSettingItem>
 	<slot></slot>
 {:else}
 	<SettingItemHeading name="Account">
@@ -224,13 +222,6 @@
 			</SettingItem>
 		{/if}
 	{:else}
-		<Callout title="Get Help">
-			<p>
-				We're working on improving the login process. Please <a
-					href="https://discord.system3.md">join our Discord</a
-				> and we will help you.
-			</p>
-		</Callout>
 		{#if $error}
 			<Callout title="Error">
 				<p>{$error}</p>
@@ -250,21 +241,6 @@
 				>
 			</a>
 		</SettingItem>
-		<SettingItem
-			name=""
-			description="If your browser doesn't open, you can login manually by
-			visiting this URL in your browser. Clicking will copy the link to your clipboard."
-		>
-			<input
-				type="text"
-				value={$url}
-				readonly
-				style="width: 100%"
-				on:click={debounce(selectText)}
-				id="system3AuthUrl"
-			/>
-		</SettingItem>
-
 		{#if $timedOut}
 			<SettingItem
 				name="Check"
