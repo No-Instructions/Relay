@@ -30,9 +30,7 @@
 
 	let url = writable<string>("please wait...");
 	let provider: AuthProviderInfo | undefined;
-	let authWithCode: (
-		code: string,
-	) => Promise<RecordAuthResponse<RecordModel>>;
+	let authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 	let error = writable<string>("");
 	let debugLogs = writable<boolean>(plugin.settings.debugging);
 
@@ -41,7 +39,7 @@
 	}
 
 	async function logout() {
-		await plugin.loginManager.logout();
+		plugin.loginManager.logout();
 		success.set(false);
 		timedOut.set(false);
 	}
@@ -267,51 +265,6 @@
 			/>
 		</SettingItem>
 
-		<SettingItemHeading name="Environment">
-			<button
-				on:click={debounce(() => {
-					refresh();
-				})}>Refresh</button
-			>
-		</SettingItemHeading>
-		<SettingItem name="User Agent" description="">
-			{navigator.userAgent}
-		</SettingItem>
-		<SettingItem name="Fetch" description="">{$fetchImpl}</SettingItem>
-		<SettingItem name="Response" description="">{$responseImpl}</SettingItem
-		>
-		<SettingItem name="Blink Fetch" description="">
-			{$usingBlink}
-		</SettingItem>
-		<SettingItemHeading name="Connections" />
-		<ObjectState object={$anyPb.cancelControllers} />
-		<SettingItemHeading name="Advanced" />
-
-		<SettingItem
-			name="Debug logs"
-			description="Enable debug logs to help diagnose issues."
-		>
-			<div
-				aria-label="custom fetch can help avoid some network restrictions"
-				on:click={() => {
-					toggleDebug();
-				}}
-				role="checkbox"
-				aria-checked={$debugLogs}
-				tabindex="0"
-				on:keydown={debounce((e) => {
-					if (e.key === "Enter") {
-						toggleDebug();
-					}
-				})}
-				class="checkbox-container mod-small {$debugLogs
-					? 'is-enabled'
-					: ''}"
-			>
-				<input type="checkbox" tabindex="0" bind:checked={$debugLogs} />
-			</div>
-		</SettingItem>
-
 		{#if $timedOut}
 			<SettingItem
 				name="Check"
@@ -328,7 +281,4 @@
 {/if}
 
 <style>
-	#login-issues {
-		color: var(--color-base-40);
-	}
 </style>
