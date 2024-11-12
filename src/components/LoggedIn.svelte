@@ -16,7 +16,6 @@
 		RecordModel,
 	} from "pocketbase";
 	import { customFetch } from "src/customFetch";
-	import ObjectState from "./ObjectState.svelte";
 
 	export let plugin: Live;
 
@@ -51,6 +50,10 @@
 		} catch (e) {
 			automaticFlow.set(false);
 			success.set(false);
+			if ($url && $url !== "please wait...") {
+				window.open($url, "_blank");
+				poll();
+			}
 		}
 	}
 
@@ -160,41 +163,7 @@
 	<slot></slot>
 {:else}
 	<SettingItemHeading name="Account">
-		{#if $automaticFlow}
-			<span id="login-issues"
-				>login issues? try the <a
-					href="#debug"
-					role="button"
-					tabindex="0"
-					on:keypress={(e) => {
-						if (e.key === "Enter") {
-							$automaticFlow = !$automaticFlow;
-						}
-					}}
-					on:click={() => {
-						$automaticFlow = !$automaticFlow;
-					}}>debug flow.</a
-				>
-			</span>
-			|
-			<Discord />
-		{:else}
-			<a
-				href="#standard"
-				role="button"
-				tabindex="0"
-				on:keydown={(e) => {
-					if (e.key === "Enter") {
-						$automaticFlow = !$automaticFlow;
-					}
-				}}
-				on:click={() => {
-					$automaticFlow = !$automaticFlow;
-				}}><span>Back</span></a
-			>
-			|
-			<Discord />
-		{/if}
+		<Discord />
 	</SettingItemHeading>
 	{#if $automaticFlow}
 		{#if !$pending}
@@ -237,7 +206,7 @@
 					on:click={() => {
 						showLink.set(true);
 						poll();
-					}}>Login</button
+					}}>Login with Google</button
 				>
 			</a>
 		</SettingItem>
