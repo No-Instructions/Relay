@@ -2,7 +2,7 @@ import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
 
-type Callback = () => void;
+type Callback = (status?: string) => void;
 
 declare const GIT_TAG: string;
 
@@ -14,6 +14,7 @@ class NetworkStatus {
 	private onOffline: Callback[] = [];
 	private timer?: number;
 	private _log: (message: string, ...args: unknown[]) => void;
+	status?: string;
 	online = true;
 
 	constructor(
@@ -68,12 +69,15 @@ class NetworkStatus {
 			headers: { "Relay-Version": GIT_TAG },
 		})
 			.then((response) => {
+				if (response.text) {
+					this.status = response.text;
+				}
 				if (response.status === 200 && !this.online) {
 					this.log("back online");
 					this.online = true;
-					this.onOnline.forEach((callback) => callback());
+					this.onOnline.forEach((callback) => callback(this.status));
 
-					this._onceOnline.forEach((callback) => callback());
+					this._onceOnline.forEach((callback) => callback(this.status));
 					this._onceOnline.clear();
 
 					return;
@@ -89,7 +93,7 @@ class NetworkStatus {
 					return;
 				}
 				this.online = false;
-				this.onOffline.forEach((callback) => callback());
+				this.onOffline.forEach((callback) => callback(this.status));
 			});
 	}
 
