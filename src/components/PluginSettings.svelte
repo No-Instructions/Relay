@@ -15,10 +15,7 @@
 	interface View {
 		currentRelay?: Relay;
 		sharedFolder?: SharedFolder;
-		component:
-			| typeof Relays
-			| typeof ManageRelay
-			| typeof ManageSharedFolder;
+		component: typeof Relays | typeof ManageRelay | typeof ManageSharedFolder;
 	}
 
 	interface SharedFolderEventDetail {
@@ -99,10 +96,7 @@
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
 					currentComponent = view.component;
-				} else if (
-					view.sharedFolder &&
-					sharedFolders.has(view.sharedFolder)
-				) {
+				} else if (view.sharedFolder && sharedFolders.has(view.sharedFolder)) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
 					currentComponent = view.component;
@@ -152,6 +146,12 @@
 
 {#if currentRelay || sharedFolder}
 	<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
+{:else if plugin.networkStatus.status}
+	<div class="modal-setting-nav-bar system3-announcement-banner">
+		<span class="system3-announcement">
+			{plugin.networkStatus.status}
+		</span>
+	</div>
 {/if}
 <div class="vertical-tab-content">
 	{#if sharedFolder}
@@ -191,5 +191,12 @@
 <style>
 	.vertical-tab-content {
 		max-height: var(--modal-max-height);
+	}
+	.system3-announcement-banner {
+		padding-left: 48px !important;
+		background-color: var(--color-red) !important;
+	}
+	.system3-announcement {
+		color: var(--text-on-accent);
 	}
 </style>
