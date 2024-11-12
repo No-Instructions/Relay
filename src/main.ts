@@ -47,6 +47,7 @@ import { FeatureFlagManager, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
+import { DebugModal } from "./ui/DebugModal";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -154,6 +155,14 @@ export default class Live extends Plugin {
 				name: "Feature Flags",
 				callback: () => {
 					const modal = new FeatureFlagToggleModal(this.app);
+					modal.open();
+				},
+			});
+			this.addCommand({
+				id: "show-debug-info",
+				name: "Show Debug Information",
+				callback: () => {
+					const modal = new DebugModal(this.app, this);
 					modal.open();
 				},
 			});
