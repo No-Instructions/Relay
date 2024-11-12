@@ -3,6 +3,7 @@
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
+	import HelpPopover from "./HelpPopover.svelte";
 	import { type Relay, type RelayRole } from "../Relay";
 	import type Live from "src/main";
 	import { Satellite } from "lucide-svelte";
@@ -62,7 +63,7 @@
 	}
 </script>
 
-<SettingItemHeading name="Join a relay" description=""></SettingItemHeading>
+<SettingItemHeading name="Join a relay"></SettingItemHeading>
 <SettingItem
 	name="Share key"
 	description="Enter the code that was shared with you."
@@ -81,7 +82,12 @@
 	>
 </SettingItem>
 
-<SettingItemHeading name="Relays"></SettingItemHeading>
+<SettingItemHeading>
+	<span slot="name" style="display: inline-flex; align-items: center">
+		Relay servers
+		<HelpPopover helpText="A relay server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay settings page." />
+	</span>
+</SettingItemHeading>
 {#each $relays.values().sort(sortFn) as relay}
 	<SettingItem description="">
 		<span slot="name" style="display: inline-flex"
@@ -106,6 +112,11 @@
 </SettingItem>
 
 <SettingItemHeading name="Shared folders"></SettingItemHeading>
+{#if $sharedFolders.items().length === 0}
+	<SettingItem
+		description="Go to a Relay server's setting page above to share existing folders, or add shared folders to your vault."
+	/>
+{/if}
 {#each $sharedFolders.items() as folder}
 	<SettingItem description="">
 		<SharedFolderSpan {folder} slot="name" />
