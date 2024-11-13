@@ -8,7 +8,10 @@
 
 <div class="setting-item">
 	<div class="setting-item-info" style="display: grid">
-		<div class="setting-item-name" style="display: grid; align-items: center">
+		<div
+			class="setting-item-name truncate"
+			style="display: grid; align-items: center"
+		>
 			<slot name="name">{name}</slot>
 		</div>
 		<div class="setting-item-description">
@@ -36,5 +39,16 @@
 	.setting-item {
 		flex-direction: unset !important;
 		align-items: flex-start;
+	}
+	.setting-item-info {
+		min-width: 0;
+	}
+	.setting-item-name {
+		min-width: 0;
+	}
+	.truncate :global(*) {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 </style>
