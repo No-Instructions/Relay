@@ -142,6 +142,15 @@
 			currentComponent = Relays;
 		}
 	}
+
+	$: if (currentComponent || currentRelay || sharedFolder) {
+		setTimeout(() => {
+			const content = document.querySelector(".vertical-tab-content");
+			if (content) {
+				content.scrollTop = 0;
+			}
+		}, 0);
+	}
 </script>
 
 {#if currentRelay || sharedFolder}
