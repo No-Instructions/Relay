@@ -6,6 +6,6 @@
   "author": "System 3",
   "authorUrl": "https://system3.md",
   "fundingUrl": "https://www.buymeacoffee.com/dtkav",
-  "isDesktopOnly": true,
+  "isDesktopOnly": false,
   "version": "0.3.3"
 }
