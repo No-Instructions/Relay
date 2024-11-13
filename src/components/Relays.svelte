@@ -4,12 +4,10 @@
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
-	import HelpPopover from "./HelpPopover.svelte";
-	import { type Relay, type RelayRole } from "../Relay";
+	import { type Relay } from "../Relay";
 	import type Live from "src/main";
 	import { Satellite } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
-	import { derived } from "svelte/store";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
 	import { debounce } from "obsidian";
@@ -83,10 +81,11 @@
 	>
 </SettingItem>
 
-<SettingItemHeading>
+<SettingItemHeading
+	helpText="A relay server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay settings page."
+>
 	<span slot="name" style="display: inline-flex; align-items: center">
 		Relay servers
-		<HelpPopover helpText="A relay server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay settings page." />
 	</span>
 </SettingItemHeading>
 {#each $relays.values().sort(sortFn) as relay}
