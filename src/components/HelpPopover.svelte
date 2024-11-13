@@ -76,6 +76,7 @@
 		background: transparent;
 		border: none;
 		color: var(--text-muted);
+		box-shadow: none;
 		border-radius: 50%;
 	}
 
@@ -97,6 +98,7 @@
 		border-radius: 4px;
 		box-shadow: var(--shadow-s);
 		top: 32px;
+		transition-delay: 0.1s;
 	}
 
 	.popover.left {
