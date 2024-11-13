@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { createEventDispatcher } from "svelte";
 	import SettingItem from "./SettingItem.svelte";
+	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 	import HelpPopover from "./HelpPopover.svelte";
@@ -89,7 +90,7 @@
 	</span>
 </SettingItemHeading>
 {#each $relays.values().sort(sortFn) as relay}
-	<SettingItem description="">
+	<SlimSettingItem description="">
 		<span slot="name" style="display: inline-flex"
 			><Satellite class="svg-icon" />
 			{#if relay.name}
@@ -103,7 +104,7 @@
 				handleManageRelay(relay);
 			}}
 		></SettingsControl>
-	</SettingItem>
+	</SlimSettingItem>
 {/each}
 <SettingItem name="" description="">
 	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}
@@ -118,7 +119,7 @@
 	/>
 {/if}
 {#each $sharedFolders.items() as folder}
-	<SettingItem description="">
+	<SlimSettingItem description="">
 		<SharedFolderSpan {folder} slot="name" />
 		<SettingsControl
 			on:settings={debounce(() => {
@@ -128,7 +129,7 @@
 				handleManageSharedFolder(folder, relay);
 			})}
 		></SettingsControl>
-	</SettingItem>
+	</SlimSettingItem>
 {/each}
 
 <style>
