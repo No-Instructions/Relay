@@ -19,6 +19,7 @@
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
+	import SlimSettingItem from "./SlimSettingItem.svelte";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
@@ -277,7 +278,7 @@
 <SettingItemHeading name="Shared folders"></SettingItemHeading>
 {#each $remoteFolders.values() as remote}
 	{#if $sharedFolders.find((local) => local.remote === remote)}
-		<SettingItem description=""
+		<SlimSettingItem description=""
 			><Folder folder={remote} slot="name" />
 			<SettingsControl
 				on:settings={debounce(() => {
@@ -287,7 +288,7 @@
 					}
 				})}
 			></SettingsControl>
-		</SettingItem>
+		</SlimSettingItem>
 	{:else}
 		<SettingItem description="">
 			<Folder folder={remote} slot="name" />
@@ -319,7 +320,7 @@
 >
 
 {#each $roles.values().sort(userSort) as item}
-	<SettingItem name={item.user.name} description={item.role}>
+	<SlimSettingItem name={item.user.name} description={item.role}>
 		{#if item.role === "Member" && $relay.owner}
 			<button
 				class="mod-destructive"
@@ -330,7 +331,7 @@
 				Kick
 			</button>
 		{/if}
-	</SettingItem>
+	</SlimSettingItem>
 {/each}
 
 <!--

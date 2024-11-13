@@ -7,11 +7,21 @@
 
 <span style="display: inline-flex; align-items: center">
 	<Folder
+		size={16}
 		class="svg-icon"
-		style="margin-right: .2em; width: 1em;"
-	/>{folder.name}
+		style="margin-right: .2em; flex-shrink: 0;"
+	/>
+	{folder.name}
+
 	{#if folder.remote}
-		<ArrowRightLeft class="svg-icon" style="margin: 0 1em" />
-		<Satellite class="svg-icon" />{folder.remote.relay.name}
+		<ArrowRightLeft
+			size={16}
+			class="svg-icon"
+			style="margin: 0 1em; flex-shrink: 0;"
+		/>
+		<Satellite size={16} class="svg-icon" style="flex-shrink: 0;" />
+		<span>
+			{folder.remote.relay.name}
+		</span>
 	{/if}
 </span>

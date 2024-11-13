@@ -2,6 +2,7 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import { type Relay, type RelayRole } from "../Relay";
 	import SettingItem from "./SettingItem.svelte";
+	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import { debounce } from "obsidian";
@@ -106,10 +107,7 @@
 			name="Remove from relay"
 			description={`Deletes the remote folder from the relay. Local files will be preserved.`}
 		>
-			<button
-				class="mod-destructive"
-				on:click={debounce(handleDeleteRemote)}
-			>
+			<button class="mod-destructive" on:click={debounce(handleDeleteRemote)}>
 				Delete remote
 			</button>
 		</SettingItem>
@@ -118,7 +116,7 @@
 
 <SettingItemHeading name="Relay"></SettingItemHeading>
 {#if $relayStore}
-	<SettingItem description="">
+	<SlimSettingItem description="">
 		<span slot="name" style="display: inline-flex"
 			><Satellite class="svg-icon" />{$relayStore.name}
 		</span>
@@ -127,5 +125,5 @@
 				handleManageRelay($relayStore);
 			})}
 		></SettingsControl>
-	</SettingItem>
+	</SlimSettingItem>
 {/if}
