@@ -82,9 +82,16 @@
 
 	button:hover {
 		box-shadow: none;
-		color: var(--text-normal);
-		background: transparent;
+		color: var(--icon-color-hover);
+		opacity: var(--icon-opacity-hover);
+		background-color: transparent;
 		border-radius: 0;
+	}
+
+	button:focus {
+		outline: none;
+		box-shadow: none;
+		color: var(--icon-color-focus);
 	}
 
 	.popover {
