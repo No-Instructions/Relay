@@ -76,6 +76,7 @@
 		background: transparent;
 		border: none;
 		color: var(--text-muted);
+		box-shadow: none;
 		border-radius: 50%;
 	}
 
