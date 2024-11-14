@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { debounce, Notice, Platform } from "obsidian";
 	import type Live from "../main";
+	import GetInTouch from "./GetInTouch.svelte";
 	import SettingItem from "./SettingItem.svelte";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
@@ -149,9 +150,11 @@
 	}
 </script>
 
+<SettingItemHeading>
+	<RelayText slot="name" />
+	<GetInTouch />
+</SettingItemHeading>
 {#if $lm.hasUser && $lm.user}
-	<RelayText />
-	<Discord />
 	<SettingItemHeading name="Account"></SettingItemHeading>
 	<AccountSettingItem user={$lm.user}>
 		<button
@@ -162,9 +165,10 @@
 	</AccountSettingItem>
 	<slot></slot>
 {:else}
-	<SettingItemHeading name="Account">
-		<Discord />
-	</SettingItemHeading>
+	<SettingItemHeading
+		name="Account"
+		helpText="We use Google login to help prevent spam sign-ups."
+	></SettingItemHeading>
 	{#if $automaticFlow}
 		{#if !$pending}
 			<SettingItem
