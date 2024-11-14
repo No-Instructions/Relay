@@ -70,8 +70,14 @@
 		padding: 8px;
 		border: none;
 		background: transparent;
-		cursor: pointer;
 		color: var(--text-muted);
+	}
+
+	.menu-button:hover {
+		color: var(--icon-color-hover);
+	}
+	.menu-button:focus {
+		color: var(--icon-color-focus);
 	}
 
 	.menu-dropdown {
@@ -120,6 +126,10 @@
 	}
 
 	.menu-item:hover {
-		background-color: rgba(0, 0, 0, 0.05);
+		background-color: var(--background-modifier-hover);
+	}
+
+	.menu-item:focus {
+		background-color: var(--background-modifier-hover);
 	}
 </style>
