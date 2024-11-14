@@ -10,7 +10,8 @@
 	import { derived } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import Folder from "./Folder.svelte";
-	import { Satellite } from "lucide-svelte";
+	import Satellite from "./Satellite.svelte";
+	import { ChevronRight } from "lucide-svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 
 	export let plugin: Live;
@@ -40,6 +41,10 @@
 
 	const dispatch = createEventDispatcher();
 
+	async function goBack() {
+		dispatch("goBack", { clear: true });
+	}
+
 	function handleManageRelay(relay?: Relay) {
 		if (!relay) {
 			return;
@@ -68,7 +73,15 @@
 	}
 </script>
 
-<h3><Folder folder={sharedFolder} /></h3>
+<h3>
+	<Folder center={true}>
+		<span on:click={goBack} on:keypress={goBack} tabindex="0" role="button">
+			Shared folders
+		</span>
+		<ChevronRight size={16} />
+		{sharedFolder.name}
+	</Folder>
+</h3>
 <SettingItemHeading name="Local folder"></SettingItemHeading>
 <SettingItem
 	name="Delete from vault"
@@ -114,16 +127,20 @@
 	{/if}
 {/if}
 
-<SettingItemHeading name="Relay"></SettingItemHeading>
+<SettingItemHeading name="Relay Server"></SettingItemHeading>
 {#if $relayStore}
-	<SlimSettingItem description="">
-		<span slot="name" style="display: inline-flex"
-			><Satellite class="svg-icon" />{$relayStore.name}
-		</span>
+	<SlimSettingItem>
+		<Satellite slot="name" on:manageRelay relay={$relayStore}
+			>{$relayStore.name}</Satellite
+		>
 		<SettingsControl
 			on:settings={debounce(() => {
 				handleManageRelay($relayStore);
 			})}
 		></SettingsControl>
 	</SlimSettingItem>
+{:else}
+	<SettingItem
+		description="This folder is tracking edits, but is not connected to a Relay Server."
+	/>
 {/if}
