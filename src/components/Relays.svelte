@@ -6,7 +6,7 @@
 	import SettingsControl from "./SettingsControl.svelte";
 	import { type Relay } from "../Relay";
 	import type Live from "src/main";
-	import { Satellite } from "lucide-svelte";
+	import Satellite from "./Satellite.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
@@ -62,7 +62,7 @@
 	}
 </script>
 
-<SettingItemHeading name="Join a relay"></SettingItemHeading>
+<SettingItemHeading name="Join a Relay Server"></SettingItemHeading>
 <SettingItem
 	name="Share key"
 	description="Enter the code that was shared with you."
@@ -77,27 +77,27 @@
 	<button
 		class="mod-cta"
 		on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
-		>Join relay</button
 	>
+		Join
+	</button>
 </SettingItem>
 
 <SettingItemHeading
-	helpText="A relay server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay settings page."
+	helpText="A Relay Server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay Server's settings page."
 >
 	<span slot="name" style="display: inline-flex; align-items: center">
-		Relay servers
+		Relay Servers
 	</span>
 </SettingItemHeading>
 {#each $relays.values().sort(sortFn) as relay}
-	<SlimSettingItem description="">
-		<span slot="name" style="display: inline-flex"
-			><Satellite class="svg-icon" />
+	<SlimSettingItem>
+		<Satellite slot="name" {relay} on:manageRelay t="name">
 			{#if relay.name}
 				{relay.name}
 			{:else}
-				<span class="faint">(Untitled Relay)</span>
+				<span class="faint">(Untitled Relay Server)</span>
 			{/if}
-		</span>
+		</Satellite>
 		<SettingsControl
 			on:settings={() => {
 				handleManageRelay(relay);
@@ -106,20 +106,29 @@
 	</SlimSettingItem>
 {/each}
 <SettingItem name="" description="">
-	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}
-		>New relay</button
-	>
+	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}>
+		Create
+	</button>
 </SettingItem>
 
-<SettingItemHeading name="Shared folders"></SettingItemHeading>
+<SettingItemHeading
+	name="Shared Folders"
+	helpText="Shared Folders enhance local folders by tracking edits. You can see what Relay Server a Shared Folder is connected to below."
+></SettingItemHeading>
 {#if $sharedFolders.items().length === 0}
 	<SettingItem
-		description="Go to a Relay server's setting page above to share existing folders, or add shared folders to your vault."
+		description="Go to a Relay Server's settings page above to share existing folders, or add Shared Folders to your vault."
 	/>
 {/if}
 {#each $sharedFolders.items() as folder}
-	<SlimSettingItem description="">
-		<SharedFolderSpan {folder} slot="name" />
+	<SlimSettingItem>
+		<SharedFolderSpan
+			on:manageRelay
+			on:manageSharedFolder
+			{folder}
+			relay={folder.remote?.relay}
+			slot="name"
+		/>
 		<SettingsControl
 			on:settings={debounce(() => {
 				const relay = $relays.values().find((relay) => {

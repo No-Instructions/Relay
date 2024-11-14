@@ -11,11 +11,13 @@
 	import Folder from "./Folder.svelte";
 	import { Notice, debounce, normalizePath } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
-	import { derived, writable, type Readable } from "svelte/store";
+	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
+	import Satellite from "./Satellite.svelte";
+	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
@@ -28,7 +30,7 @@
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	import moment from "moment";
-	import { FeatureFlagManager, withFlag } from "src/flagManager";
+	import { withFlag } from "src/flagManager";
 	import { flag } from "src/flags";
 
 	function getActiveForMessage(cancelAtDate: Date | null): string {
@@ -115,6 +117,10 @@
 
 	async function handleLeaveRelay() {
 		plugin.relayManager.leaveRelay(relay);
+		dispatch("goBack", { clear: true });
+	}
+
+	async function goBack() {
 		dispatch("goBack", { clear: true });
 	}
 
@@ -259,9 +265,19 @@
 	);
 </script>
 
-<h3>{relay.name}</h3>
+<Breadcrumbs
+	category={Satellite}
+	categoryText="Relay Servers"
+	on:goBack={goBack}
+>
+	{#if relay.name}
+		{relay.name}
+	{:else}
+		<span class="faint">(Untitled Relay Server)</span>
+	{/if}
+</Breadcrumbs>
 {#if relay.owner}
-	<SettingItem name="Relay name" description="Set the relay name.">
+	<SettingItem name="Name" description="Set the Relay Server's name.">
 		<input
 			type="text"
 			spellcheck="false"
@@ -275,11 +291,15 @@
 	</SettingItem>
 {/if}
 
-<SettingItemHeading name="Shared folders"></SettingItemHeading>
+<SettingItemHeading name="Folders on this Relay Server"></SettingItemHeading>
 {#each $remoteFolders.values() as remote}
 	{#if $sharedFolders.find((local) => local.remote === remote)}
-		<SlimSettingItem description=""
-			><Folder folder={remote} slot="name" />
+		<SlimSettingItem>
+			<Folder
+				on:manageSharedFolder
+				folder={$sharedFolders.find((local) => local.remote === remote)}
+				slot="name">{remote.name}</Folder
+			>
 			<SettingsControl
 				on:settings={debounce(() => {
 					const local = $sharedFolders.find((local) => local.remote === remote);
@@ -290,8 +310,8 @@
 			></SettingsControl>
 		</SlimSettingItem>
 	{:else}
-		<SettingItem description="">
-			<Folder folder={remote} slot="name" />
+		<SlimSettingItem>
+			<Folder slot="name">{remote.name}</Folder>
 			<button
 				class="mod-cta"
 				aria-label="Add shared folder to vault"
@@ -301,17 +321,17 @@
 			>
 				Add to Vault
 			</button>
-		</SettingItem>
+		</SlimSettingItem>
 	{/if}
 {/each}
 
 <SettingItem description="" name="">
 	<button
 		class="mod-cta"
-		aria-label="Select a folder to add to the relay"
+		aria-label="Select a folder to share it with this Relay Server"
 		on:click={debounce(() => {
 			folderSelect.open();
-		})}>Add</button
+		})}>Share a folder</button
 	>
 </SettingItem>
 
@@ -320,7 +340,7 @@
 >
 
 {#each $roles.values().sort(userSort) as item}
-	<SlimSettingItem name={item.user.name} description={item.role}>
+	<SettingItem name={item.user.name} description={item.role}>
 		{#if item.role === "Member" && $relay.owner}
 			<button
 				class="mod-destructive"
@@ -331,7 +351,7 @@
 				Kick
 			</button>
 		{/if}
-	</SlimSettingItem>
+	</SettingItem>
 {/each}
 
 <!--
@@ -345,7 +365,7 @@
 <SettingItemHeading name="Sharing"></SettingItemHeading>
 
 <SettingItem
-	name="Share key"
+	name="Share Key"
 	description="Share this key with your collaborators."
 >
 	<input
@@ -402,16 +422,16 @@
 			</button>
 		</SettingItem>
 	{/if}
-	<SettingItemHeading name="Storage" description=""></SettingItemHeading>
+	<SettingItemHeading name="Storage"></SettingItemHeading>
 	<SettingItem
-		name="Destroy relay"
-		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
+		name="Destroy Relay Server"
+		description="This will destroy the Relay Server (deleting all data on the server). Local data is preserved."
 	>
 		{#if $subscriptions.values().length > 0 && !$subscriptions.values()[0].cancelAt}
 			<button
 				disabled={true}
 				class="mod-warning"
-				aria-label="Cancel subscription to destroy relay."
+				aria-label="Cancel subscription to destroy Relay Server."
 			>
 				Destroy
 			</button>
@@ -422,10 +442,10 @@
 		{/if}
 	</SettingItem>
 {:else}
-	<SettingItemHeading name="Membership" description=""></SettingItemHeading>
+	<SettingItemHeading name="Membership"></SettingItemHeading>
 	<SettingItem
-		name="Leave relay"
-		description="Leave the relay. Local data is preserved."
+		name="Leave Relay Server"
+		description="Leave the Relay Server. Local data is preserved."
 	>
 		<button
 			class="mod-warning"
@@ -458,5 +478,9 @@
 
 	input.system3-input-invalid {
 		border: 1px solid var(--color-red) !important;
+	}
+
+	.faint {
+		color: var(--text-faint);
 	}
 </style>
