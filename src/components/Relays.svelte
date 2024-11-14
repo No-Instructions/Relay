@@ -6,7 +6,7 @@
 	import SettingsControl from "./SettingsControl.svelte";
 	import { type Relay } from "../Relay";
 	import type Live from "src/main";
-	import { Satellite } from "lucide-svelte";
+	import Satellite from "./Satellite.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
@@ -62,7 +62,7 @@
 	}
 </script>
 
-<SettingItemHeading name="Join a relay"></SettingItemHeading>
+<SettingItemHeading name="Join a Relay Server"></SettingItemHeading>
 <SettingItem
 	name="Share key"
 	description="Enter the code that was shared with you."
@@ -77,27 +77,27 @@
 	<button
 		class="mod-cta"
 		on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
-		>Join relay</button
 	>
+		Join
+	</button>
 </SettingItem>
 
 <SettingItemHeading
 	helpText="A relay server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay settings page."
 >
 	<span slot="name" style="display: inline-flex; align-items: center">
-		Relay servers
+		Relay Servers
 	</span>
 </SettingItemHeading>
 {#each $relays.values().sort(sortFn) as relay}
 	<SlimSettingItem description="">
-		<span slot="name" style="display: inline-flex"
-			><Satellite class="svg-icon" />
+		<Satellite slot="name">
 			{#if relay.name}
 				{relay.name}
 			{:else}
-				<span class="faint">(Untitled Relay)</span>
+				<span class="faint">(Untitled Relay Server)</span>
 			{/if}
-		</span>
+		</Satellite>
 		<SettingsControl
 			on:settings={() => {
 				handleManageRelay(relay);
@@ -106,15 +106,15 @@
 	</SlimSettingItem>
 {/each}
 <SettingItem name="" description="">
-	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}
-		>New relay</button
-	>
+	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}>
+		Create
+	</button>
 </SettingItem>
 
 <SettingItemHeading name="Shared folders"></SettingItemHeading>
 {#if $sharedFolders.items().length === 0}
 	<SettingItem
-		description="Go to a Relay server's setting page above to share existing folders, or add shared folders to your vault."
+		description="Go to a Relay Server's setting page above to share existing folders, or add shared folders to your vault."
 	/>
 {/if}
 {#each $sharedFolders.items() as folder}

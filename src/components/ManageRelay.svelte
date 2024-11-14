@@ -16,6 +16,8 @@
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
+	import Satellite from "./Satellite.svelte";
+	import { ChevronRight } from "lucide-svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
@@ -115,6 +117,10 @@
 
 	async function handleLeaveRelay() {
 		plugin.relayManager.leaveRelay(relay);
+		dispatch("goBack", { clear: true });
+	}
+
+	async function goBack() {
 		dispatch("goBack", { clear: true });
 	}
 
@@ -259,7 +265,15 @@
 	);
 </script>
 
-<h3>{relay.name}</h3>
+<h3>
+	<Satellite center={true}>
+		<span on:click={goBack} on:keypress={goBack} tabindex="0" role="button">
+			Relay Servers
+		</span>
+		<ChevronRight size={16} />
+		{relay.name}
+	</Satellite>
+</h3>
 {#if relay.owner}
 	<SettingItem name="Relay name" description="Set the relay name.">
 		<input
@@ -275,11 +289,11 @@
 	</SettingItem>
 {/if}
 
-<SettingItemHeading name="Shared folders"></SettingItemHeading>
+<SettingItemHeading name="Folders on this Relay Server"></SettingItemHeading>
 {#each $remoteFolders.values() as remote}
 	{#if $sharedFolders.find((local) => local.remote === remote)}
-		<SlimSettingItem description=""
-			><Folder folder={remote} slot="name" />
+		<SlimSettingItem description="">
+			<Folder center={true} slot="name">{remote.name}</Folder>
 			<SettingsControl
 				on:settings={debounce(() => {
 					const local = $sharedFolders.find((local) => local.remote === remote);
@@ -290,8 +304,8 @@
 			></SettingsControl>
 		</SlimSettingItem>
 	{:else}
-		<SettingItem description="">
-			<Folder folder={remote} slot="name" />
+		<SlimSettingItem description="">
+			<Folder center={true} slot="name">{remote.name}</Folder>
 			<button
 				class="mod-cta"
 				aria-label="Add shared folder to vault"
@@ -301,17 +315,17 @@
 			>
 				Add to Vault
 			</button>
-		</SettingItem>
+		</SlimSettingItem>
 	{/if}
 {/each}
 
 <SettingItem description="" name="">
 	<button
 		class="mod-cta"
-		aria-label="Select a folder to add to the relay"
+		aria-label="Select a folder to share it with this Relay Server"
 		on:click={debounce(() => {
 			folderSelect.open();
-		})}>Add</button
+		})}>Share a folder</button
 	>
 </SettingItem>
 
@@ -402,7 +416,7 @@
 			</button>
 		</SettingItem>
 	{/if}
-	<SettingItemHeading name="Storage" description=""></SettingItemHeading>
+	<SettingItemHeading name="Storage"></SettingItemHeading>
 	<SettingItem
 		name="Destroy relay"
 		description="This will destroy the relay (deleting all data on the server). Local data is preserved."
@@ -422,7 +436,7 @@
 		{/if}
 	</SettingItem>
 {:else}
-	<SettingItemHeading name="Membership" description=""></SettingItemHeading>
+	<SettingItemHeading name="Membership"></SettingItemHeading>
 	<SettingItem
 		name="Leave relay"
 		description="Leave the relay. Local data is preserved."
