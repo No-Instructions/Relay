@@ -1,16 +1,28 @@
 <script lang="ts">
 	import { Folder } from "lucide-svelte";
+	import { createEventDispatcher } from "svelte";
+	import { type SharedFolder } from "../SharedFolder";
 
-	interface hasName {
-		name: string;
+	export let folder: SharedFolder | undefined = undefined;
+
+	const dispatch = createEventDispatcher();
+	function manageSharedFolder(): void {
+		if (folder) {
+			dispatch("manageSharedFolder", {
+				folder: folder,
+				relay: folder.remote?.relay,
+			});
+		}
 	}
-
-	export let folder: hasName;
 </script>
 
-<span style="display: inline-flex; align-items: center">
-	<Folder
-		class="svg-icon"
-		style="margin-right: .2em; width: 1em;"
-	/>{folder.name}
+<span
+	role="button"
+	tabindex="0"
+	on:keypress={manageSharedFolder}
+	on:click={manageSharedFolder}
+	style="display: inline-flex; align-items: center"
+>
+	<Folder class="svg-icon" style="margin-right: .2em;" />
+	<slot></slot>
 </span>

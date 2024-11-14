@@ -28,3 +28,18 @@
 		props={{ class: "svg-icon lucide-settings" }}
 	/>
 </div>
+
+<style>
+	.extra-setting-button:focus {
+		outline: none;
+		box-shadow: none;
+		color: var(--icon-color-focus);
+	}
+
+	.extra-setting-button:hover {
+		box-shadow: none;
+		opacity: var(--icon-opacity-hover);
+		color: var(--icon-color-hover);
+		background-color: var(--background-modifier-hover);
+	}
+</style>
