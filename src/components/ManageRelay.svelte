@@ -11,13 +11,13 @@
 	import Folder from "./Folder.svelte";
 	import { Notice, debounce, normalizePath } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
-	import { derived, writable, type Readable } from "svelte/store";
+	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
 	import Satellite from "./Satellite.svelte";
-	import { ChevronRight } from "lucide-svelte";
+	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
@@ -30,7 +30,7 @@
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	import moment from "moment";
-	import { FeatureFlagManager, withFlag } from "src/flagManager";
+	import { withFlag } from "src/flagManager";
 	import { flag } from "src/flags";
 
 	function getActiveForMessage(cancelAtDate: Date | null): string {
@@ -265,19 +265,17 @@
 	);
 </script>
 
-<h3>
-	<Satellite center={true}>
-		<span on:click={goBack} on:keypress={goBack} tabindex="0" role="button">
-			Relay Servers
-		</span>
-		<ChevronRight size={16} />
-		{#if relay.name}
-			{relay.name}
-		{:else}
-			<span class="faint">(Untitled Relay Server)</span>
-		{/if}
-	</Satellite>
-</h3>
+<Breadcrumbs
+	category={Satellite}
+	categoryText="Relay Servers"
+	on:goBack={goBack}
+>
+	{#if relay.name}
+		{relay.name}
+	{:else}
+		<span class="faint">(Untitled Relay Server)</span>
+	{/if}
+</Breadcrumbs>
 {#if relay.owner}
 	<SettingItem name="Name" description="Set the Relay Server's name.">
 		<input

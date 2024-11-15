@@ -17,8 +17,8 @@
 	tabindex="0"
 	on:keypress={manageRelay}
 	on:click={manageRelay}
-	style="display: inline-flex; align-items:center; "
+	style="display: flex; align-items: center; width: 100%;"
 >
-	<Satellite class="svg-icon" style="margin-right: .2em;" />
+	<Satellite class="svg-icon" style="margin-right: .2em; flex-shrink: 0;" />
 	<slot></slot>
 </span>
