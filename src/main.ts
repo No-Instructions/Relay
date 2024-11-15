@@ -62,6 +62,7 @@ const DEFAULT_SETTINGS: LiveSettings = {
 
 declare const HEALTH_URL: string;
 declare const API_URL: string;
+declare const GIT_TAG: string;
 
 export default class Live extends Plugin {
 	settings!: LiveSettings;
@@ -83,6 +84,7 @@ export default class Live extends Plugin {
 	private _liveViews!: LiveViewManager;
 	private settingsFileLocked = true;
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
+	version = GIT_TAG;
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -115,6 +117,7 @@ export default class Live extends Plugin {
 		return API_URL + path;
 	}
 	async onload() {
+		RelayInstances.set(this, "plugin");
 		this.timeProvider = new DefaultTimeProvider();
 		this.register(() => {
 			this.timeProvider.destroy();
