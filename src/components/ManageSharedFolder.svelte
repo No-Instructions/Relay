@@ -11,7 +11,7 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import Folder from "./Folder.svelte";
 	import Satellite from "./Satellite.svelte";
-	import { ChevronRight } from "lucide-svelte";
+	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 
 	export let plugin: Live;
@@ -73,15 +73,9 @@
 	}
 </script>
 
-<h3>
-	<Folder center={true}>
-		<span on:click={goBack} on:keypress={goBack} tabindex="0" role="button">
-			Shared folders
-		</span>
-		<ChevronRight size={16} />
-		{sharedFolder.name}
-	</Folder>
-</h3>
+<Breadcrumbs category={Folder} categoryText="Shared folders" on:goBack={goBack}>
+	{sharedFolder.name}
+</Breadcrumbs>
 <SettingItemHeading name="Local folder"></SettingItemHeading>
 <SettingItem
 	name="Delete from vault"
