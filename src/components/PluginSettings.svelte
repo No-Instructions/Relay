@@ -197,9 +197,29 @@
 	{/if}
 </div>
 
+{#if plugin.manifest.version !== plugin.version}
+	<span class="relay-version">
+		{plugin.version}
+	</span>
+{/if}
+
 <style>
+	.relay-version {
+		user-select: auto;
+		background: var(--color-base-10);
+		color: var(--text-faint);
+		position: absolute;
+		bottom: 0;
+		right: 0;
+		font-size: xx-small;
+		padding-right: 1em;
+		padding-top: 0.3em;
+		padding-left: 1em;
+		border-top-left-radius: 1em;
+	}
 	.vertical-tab-content {
 		max-height: var(--modal-max-height);
+		position: relative;
 	}
 	.system3-announcement-banner {
 		padding-left: 48px !important;
