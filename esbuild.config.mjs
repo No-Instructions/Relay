@@ -112,7 +112,7 @@ const manifest = debug ? "manifest-beta.json" : "manifest.json";
 const files = ["styles.css", manifest];
 
 const updateManifest = (manifest) => {
-	const manifestPath = path.join(out, path.basename(manifest));
+	const manifestPath = path.join(out, path.basename('manifest.json'));
 	const raw_manifest = fs.readFileSync(manifestPath);
 	const parsed = JSON.parse(raw_manifest);
 	parsed.version = gitTag;
@@ -134,12 +134,12 @@ const move = (fnames, mapping) => {
 
 if (watch) {
 	await context.watch();
-	updateManifest(manifest);
 	move(files, mapping);
+	updateManifest();
 	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
-	updateManifest(manifest);
 	move(files, mapping);
+	updateManifest();
 	process.exit(0);
 }
