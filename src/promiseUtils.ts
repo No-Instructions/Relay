@@ -17,10 +17,12 @@ export function promiseWithTimeout<T>(
 	ms: number,
 ): Promise<T> {
 	let timeoutId: number;
+	const start = performance.now();
 	const timeout = new Promise<T>((_, reject) => {
 		timeoutId = window.setTimeout(() => {
 			curryLog("[Promise]", "error")(`[${name}] Timeout on promise`, promise);
-			reject(new TimeoutError(`[${name}]: Timeout after ${ms} ms`));
+			const end = performance.now();
+			reject(new TimeoutError(`[${name}]: Timeout after ${end - start} ms`));
 		}, ms);
 	});
 
