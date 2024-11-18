@@ -742,6 +742,7 @@ export class LiveViewManager {
 							this._activePromise = null;
 							return false;
 						}
+						console.error(e);
 						throw e;
 					})
 					.finally(() => {
