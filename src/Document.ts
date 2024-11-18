@@ -73,7 +73,13 @@ export class Document extends HasProvider implements TFile {
 		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
-		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+		try {
+			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+		} catch (e) {
+			console.error(e);
+			throw e;
+		}
+
 		this.ydoc.on(
 			"update",
 			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
@@ -121,17 +127,22 @@ export class Document extends HasProvider implements TFile {
 	public async diskBuffer(read = false): Promise<TFile> {
 		if (read || this._diskBuffer === undefined) {
 			let fileContents: string;
-			const storedContents = await this._parent.diskBufferStore
-				.loadDiskBuffer(this.guid)
-				.catch((e) => {
-					return null;
-				});
-			if (storedContents !== null && storedContents !== "") {
-				fileContents = storedContents;
-			} else {
-				fileContents = await this._parent.read(this);
+			try {
+				const storedContents = await this._parent.diskBufferStore
+					.loadDiskBuffer(this.guid)
+					.catch((e) => {
+						return null;
+					});
+				if (storedContents !== null && storedContents !== "") {
+					fileContents = storedContents;
+				} else {
+					fileContents = await this._parent.read(this);
+				}
+				return this.setDiskBuffer(fileContents);
+			} catch (e) {
+				console.error(e);
+				throw e;
 			}
-			return this.setDiskBuffer(fileContents);
 		}
 		return this._diskBuffer;
 	}
