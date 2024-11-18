@@ -187,10 +187,17 @@ export class SharedFolder extends HasProvider {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
 			}),
 		);
-		this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
-		this._persistence.once("synced", () => {
-			this.log("", this.ids);
-		});
+
+		try {
+			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			this._persistence.once("synced", () => {
+			    this.log("", this.ids);
+			});
+		} catch (e) {
+            this.warn("Unable to open persistence.")
+			console.error(e);
+			throw e;
+		}
 
 		if (loginManager.loggedIn) {
 			this.connect();
