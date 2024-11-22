@@ -24,7 +24,6 @@ import { S3Folder, S3RemoteFolder } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import { curryLog } from "./debug";
 import { withFlag } from "./flagManager";
 import { flag } from "./flags";
 import { DiskBufferStore } from "./DiskBuffer";
@@ -165,12 +164,6 @@ export class SharedFolder extends HasProvider {
 
 		super(s3rn, tokenStore, loginManager);
 		this.shouldConnect = true;
-
-		this.log = curryLog("[SharedFolder]", "log");
-		this.warn = curryLog("[SharedFolder]", "warn");
-		this.debug = curryLog("[SharedFolder]", "debug");
-		this.error = curryLog("[SharedFolder]", "error");
-
 		this.guid = guid;
 		this.fileManager = fileManager;
 		this.vault = vault;
