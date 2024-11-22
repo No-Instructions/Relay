@@ -55,6 +55,7 @@ export class Document extends HasProvider implements TFile {
 		this._parent = parent;
 		this.path = path;
 		this.name = "[CRDT] " + path.split("/").pop() || "";
+		this.setLoggers(this.name);
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
 		this.vault = this._parent.vault;
@@ -76,7 +77,7 @@ export class Document extends HasProvider implements TFile {
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 		} catch (e) {
-            this.warn("Unable to open persistence.", this.guid)
+			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
 			throw e;
 		}
@@ -96,7 +97,6 @@ export class Document extends HasProvider implements TFile {
 		this.name = newPath.split("/").pop() || "";
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
-		this.setLoggers(`[SharedDoc](${this.path})`);
 		this.updateStats();
 	}
 
