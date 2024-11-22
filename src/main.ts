@@ -616,6 +616,10 @@ export default class Live extends Plugin {
 		this.loginManager = null as any;
 
 		this.app.workspace.updateOptions();
+		this.app = null as any;
+		this.fileManager = null as any;
+		this.manifest = null as any;
+		this.vault = null as any;
 
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();
