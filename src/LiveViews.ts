@@ -796,6 +796,9 @@ export class LiveViewManager {
 		this.refreshQueue = null as any;
 		this.networkStatus = null as any;
 		this._activePromise = null as any;
+		this.loginManager = null as any;
+		this.app = null as any;
+		this.workspace = null as any;
 	}
 }
 
