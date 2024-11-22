@@ -23,7 +23,10 @@ export class DefaultTimeProvider implements TimeProvider {
 	}
 
 	setTimeout(callback: () => void, ms: number): number {
-		const timer = window.setTimeout(callback, ms);
+		const timer = window.setTimeout(() => {
+			this.timeouts.remove(timer);
+			callback();
+		}, ms);
 		this.timeouts.push(timer);
 		return timer;
 	}
