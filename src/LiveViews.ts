@@ -17,7 +17,7 @@ import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
-import { curryLog } from "./debug";
+import { curryLog, RelayInstances } from "./debug";
 import { promiseWithTimeout, TimeoutError } from "./promiseUtils";
 import { Banner } from "./ui/Banner";
 import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
@@ -393,18 +393,20 @@ export class LiveViewManager {
 
 		const folderSub = (folder: SharedFolder) => {
 			if (!folder.ready) {
-				folder
-					.whenReady()
-					.then(() => {
-						this.refresh("[Shared Folder Ready]");
-					})
-					.catch((_) => {
-						this.views.forEach((view) => {
-							if (view.document?.sharedFolder === folder) {
-								(view as LiveView).offlineBanner();
-							}
+				(async () => {
+					folder
+						.whenReady()
+						.then(() => {
+							this.refresh("[Shared Folder Ready]");
+						})
+						.catch((_) => {
+							this.views.forEach((view) => {
+								if (view.document?.sharedFolder === folder) {
+									(view as LiveView).offlineBanner();
+								}
+							});
 						});
-					});
+				})();
 			}
 
 			return folder.docset.on(() => {
@@ -413,7 +415,7 @@ export class LiveViewManager {
 		};
 
 		this.offListeners.push(
-			this.sharedFolders.on(() => {
+			this.sharedFolders.subscribe(() => {
 				this.refresh("[Shared Folders]");
 				this.folderListeners.forEach((off, folder) => {
 					if (!this.sharedFolders.has(folder)) {
@@ -428,6 +430,7 @@ export class LiveViewManager {
 				});
 			}),
 		);
+		RelayInstances.set(this, "LiveViewManager");
 	}
 
 	reconfigure(editorView: EditorView) {
