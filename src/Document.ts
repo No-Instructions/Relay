@@ -255,6 +255,10 @@ export class Document extends HasProvider implements TFile {
 		});
 	}
 
+	public get dbsize() {
+		return this._persistence._dbsize;
+	}
+
 	destroy() {
 		this.offFolderStatusListener();
 		super.destroy();
