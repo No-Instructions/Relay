@@ -111,7 +111,7 @@ export class BackgroundSync {
 			headers: headers,
 		});
 		if (response.status === 200) {
-			this.debug("[downloadItem]", docId, response.status, response.text);
+			this.debug("[downloadItem]", docId, response.status);
 		} else {
 			this.error("[downloadItem]", docId, response.status, response.text);
 		}
@@ -154,11 +154,39 @@ export class BackgroundSync {
 
 	async getDocument(doc: Document) {
 		try {
+			// Get the current contents before applying the update
+			const currentText = doc.text;
+			let currentFileContents = "";
+			try {
+				currentFileContents = await doc.sharedFolder.read(doc);
+			} catch (e) {
+				// File doesn't exist
+			}
+
+			// Only proceed with update if file matches current ydoc state
+			const contentsMatch = currentText.trim() === currentFileContents.trim();
+			const hasContents = currentFileContents !== "";
+
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
+
+			// Check for newly created documents without content, and reject them
+			const newDoc = new Y.Doc();
+			Y.applyUpdate(newDoc, updateBytes);
+			if (!newDoc.getText("contents").toString() && hasContents) {
+				this.log("[getDocument] server contents empty document, not overwriting local file.");
+				return;
+			}
+
+			this.log("[getDocument] got content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
-			doc.sharedFolder.flush(doc, doc.text);
+
+			if (hasContents && !contentsMatch) {
+				this.log("Skipping flush - file requires merge conflict resolution.");
+				return;
+			}
+            doc.sharedFolder.flush(doc, doc.text);
 		} catch (e) {
 			console.error(e);
 			return;
