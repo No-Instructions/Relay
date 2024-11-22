@@ -11,7 +11,7 @@ import type { ConnectionState } from "src/HasProvider";
 import type { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
-import { withFlag } from "src/flagManager";
+import { withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 
 class SiblingWatcher {
@@ -198,26 +198,42 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 }
 
 class FilePillDecoration {
-	el: HTMLElement;
 	pill: TextPill;
-	guid: string;
+	unsubscribe?: () => void;
 
-	constructor(el: HTMLElement, guid: string) {
-		this.el = el;
-		this.el.addClass("system3-filepill");
-		this.guid = guid;
-
+	constructor(
+		private el: HTMLElement,
+		private doc: Document,
+	) {
+		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
+			el.remove();
+		});
 		this.pill = new TextPill({
 			target: this.el,
 			props: {
-				text: this.guid.slice(0, 4),
+				text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
 			},
 		});
+		const onUpdate = () => {
+			this.pill.$set({
+				text: `${doc.guid.slice(0, 3)} ${doc.dbsize} ${doc._hasKnownPeers ? "!" : ""}`,
+			});
+		};
+		doc.ydoc.on("update", onUpdate);
+		doc.hasKnownPeers().then((hasKnownPeers) => {
+			onUpdate();
+		});
+		this.unsubscribe = () => {
+			doc.ydoc.off("update", onUpdate);
+		};
 	}
 
 	destroy() {
 		this.pill.$destroy();
-		this.el.removeClass("system3-filepill");
+		this.unsubscribe?.();
+		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
+			el.remove();
+		});
 	}
 }
 
@@ -228,10 +244,10 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		storage?: FilePillDecoration,
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
-		if (sharedFolder) {
-			const guid = sharedFolder.ids.get(sharedFolder.getVirtualPath(file.path));
-			if (!guid) return null;
-			return storage || new FilePillDecoration(item.selfEl, guid);
+		if (sharedFolder && sharedFolder.ready) {
+			const doc = sharedFolder.getFile(file.path, false, false);
+			if (!doc) return null;
+			return storage || new FilePillDecoration(item.selfEl, doc);
 		}
 		if (storage) {
 			storage.destroy();
@@ -430,6 +446,7 @@ export class FolderNavigationDecorations {
 	offDocumentListeners: Map<SharedFolder, () => void>;
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
+	layoutReady: boolean = false;
 
 	constructor(
 		vault: Vault,
@@ -440,17 +457,21 @@ export class FolderNavigationDecorations {
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
-		this.workspace.onLayoutReady(() => this.refresh());
+		this.workspace.onLayoutReady(() => {
+			this.layoutReady = true;
+			this.refresh();
+		});
 		this.offDocumentListeners = new Map();
 		this.offFolderListener = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
-				// XXX a full refresh is only needed when a document is moved outside of a shared folder.
-				withFlag(flag.enableDocumentStatus, () => {
+				withAnyOf([flag.enableDocumentStatus, flag.enableDebugFileTag], () => {
 					const docsetListener = this.offDocumentListeners.get(folder);
 					if (!docsetListener) {
 						this.offDocumentListeners.set(
 							folder,
 							folder.docset.on(() => {
+								// XXX a full refresh is only needed when a document is moved
+								// outside of a shared folder.
 								this.refresh();
 							}),
 						);
@@ -474,7 +495,7 @@ export class FolderNavigationDecorations {
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
 		});
-		withFlag(flag.enableDocumentIdTag, () => {
+		withFlag(flag.enableDebugFileTag, () => {
 			visitors.push(new FilePillVisitor());
 		});
 		return visitors;
@@ -517,6 +538,7 @@ export class FolderNavigationDecorations {
 	}
 
 	refresh() {
+		if (!this.layoutReady) return;
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
