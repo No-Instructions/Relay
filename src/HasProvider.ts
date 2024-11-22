@@ -1,5 +1,5 @@
 "use strict";
-import { Doc } from "yjs";
+import * as Y from "yjs";
 import { YSweetProvider } from "@y-sweet/client";
 import { User } from "./User";
 import { HasLogging } from "./debug";
@@ -44,7 +44,7 @@ export interface Subscription {
 
 function makeProvider(
 	clientToken: ClientToken,
-	ydoc: Doc,
+	ydoc: Y.Doc,
 	user?: User,
 ): YSweetProvider {
 	const params = {
@@ -77,7 +77,7 @@ export class HasProvider extends HasLogging {
 	_provider: YSweetProvider;
 	_s3rn: S3RNType;
 	path?: string;
-	ydoc: Doc;
+	ydoc: Y.Doc;
 	loginManager: LoginManager;
 	tokenStore: LiveTokenStore;
 	clientToken: ClientToken;
@@ -95,12 +95,18 @@ export class HasProvider extends HasLogging {
 		this._s3rn = s3rn;
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
-		this.ydoc = new Doc();
+		const user = this.loginManager?.user;
+		this.ydoc = new Y.Doc();
+		this.ydoc.gc = false;
+		if (user) {
+			const permanentUserData = new Y.PermanentUserData(this.ydoc);
+			permanentUserData.setUserMapping(this.ydoc, this.ydoc.clientID, user.id);
+		}
+
 		this.tokenStore = tokenStore;
 		this.clientToken =
 			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
 			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
-		const user = this.loginManager?.user;
 
 		this._provider = makeProvider(this.clientToken, this.ydoc, user);
 
@@ -192,7 +198,7 @@ export class HasProvider extends HasLogging {
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
 		this.clientToken = clientToken;
-		const tempDoc = new Doc();
+		const tempDoc = new Y.Doc();
 		const tempProvider = makeProvider(clientToken, tempDoc);
 		const newUrl = tempProvider.url;
 
