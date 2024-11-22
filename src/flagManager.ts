@@ -16,6 +16,20 @@ export function withFlag(
 	}
 }
 
+export function withAnyOf(
+	flags: Flag[],
+	fn: () => void,
+	otherwise: () => void = () => {},
+) {
+	flags.forEach((flag) => {
+		if (FeatureFlagManager.getInstance().flags[flag]) {
+			fn();
+			return;
+		}
+	});
+	otherwise();
+}
+
 export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	private static instance: FeatureFlagManager | null;
 	public flags: FeatureFlags;
