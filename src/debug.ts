@@ -1,6 +1,14 @@
-// CurryLog is a way to add tagged logging that is stripped in production
-import { Notice, Vault } from "obsidian";
-import type { TimeProvider } from "./TimeProvider";
+// Check if we're running in Node.js
+const isNode = typeof window === "undefined";
+
+// Only import Obsidian types/modules if we're in Obsidian
+let ObsidianNotice: any;
+let ObsidianVault: any;
+if (!isNode) {
+	const obsidian = require("obsidian");
+	ObsidianNotice = obsidian.Notice;
+	ObsidianVault = obsidian.Vault;
+}
 
 type LogLevel = "debug" | "warn" | "log" | "error";
 
@@ -22,15 +30,15 @@ interface LogConfig {
 }
 
 let logConfig: LogConfig = {
-	maxFileSize: 1024 * 1024, // 1MB
+	maxFileSize: 1024 * 1024,
 	maxBackups: 5,
 	disableConsole: false,
-	batchInterval: 1000, // 1 second
+	batchInterval: 1000,
 	maxRetries: 3,
 };
 
 let currentLogFile: string;
-let vault: Vault;
+let vault: typeof ObsidianVault;
 const logBuffer: LogEntry[] = [];
 
 type LogEntry = {
@@ -41,21 +49,23 @@ type LogEntry = {
 };
 
 export function initializeLogger(
-	vaultInstance: Vault,
-	timeProvider: TimeProvider,
+	vaultInstance: typeof ObsidianVault,
+	timeProvider: any,
 	logFilePath: string,
 	config?: Partial<LogConfig>,
 ) {
-	vault = vaultInstance;
-	currentLogFile = logFilePath;
-	if (config) {
-		logConfig = { ...logConfig, ...config };
+	if (!isNode) {
+		vault = vaultInstance;
+		currentLogFile = logFilePath;
+		if (config) {
+			logConfig = { ...logConfig, ...config };
+		}
+		timeProvider.setInterval(flushLogs, logConfig.batchInterval);
 	}
-	timeProvider.setInterval(flushLogs, logConfig.batchInterval);
 }
 
 export async function flushLogs() {
-	if (logBuffer.length === 0) return;
+	if (isNode || logBuffer.length === 0) return;
 
 	const entries = [...logBuffer];
 	logBuffer.length = 0;
@@ -76,6 +86,8 @@ export async function flushLogs() {
 }
 
 async function rotateLogIfNeeded(): Promise<void> {
+	if (isNode) return;
+
 	const stat = await vault.adapter.stat(currentLogFile);
 	if (stat && stat.size > logConfig.maxFileSize) {
 		for (let i = logConfig.maxBackups; i > 0; i--) {
@@ -102,14 +114,24 @@ function formatLogEntry(entry: LogEntry): string {
 	return `[${entry.timestamp}] [${entry.level.toUpperCase()}] ${entry.message}\n    at ${entry.callerInfo}`;
 }
 
+function showNotice(message: string) {
+	if (isNode) {
+		console.log(`Notice: ${message}`);
+	} else {
+		new ObsidianNotice(message);
+	}
+}
+
 function toastDebug(error: Error): Error {
-	new Notice(error.name + "\n" + error.message);
+	showNotice(error.name + "\n" + error.message);
 	return error;
 }
+
 function toastProd(error: Error): Error {
-	new Notice(error.name + ":\nAn error has occurred, please reload Obsidian.");
+	showNotice(error.name + ":\nAn error has occurred, please reload Obsidian.");
 	return error;
 }
+
 function serializeArg(arg: unknown): string {
 	if (typeof arg === "object" && arg !== null) {
 		const seen = new WeakSet();
@@ -123,7 +145,6 @@ function serializeArg(arg: unknown): string {
 						}
 						seen.add(value);
 					}
-					// Filter out sensitive information
 					if (
 						typeof key === "string" &&
 						(key.toLowerCase().includes("authorization") ||
@@ -148,7 +169,6 @@ function serializeArg(arg: unknown): string {
 		} catch (error) {
 			if (error instanceof Error) {
 				if (error instanceof RangeError) {
-					// Handle stack overflow
 					return `[Complex Object: ${Object.prototype.toString.call(arg)}]`;
 				}
 				return `[Unserializable: ${error.message}]`;
@@ -166,28 +186,42 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 			const stack = new Error().stack;
 			const callerInfo = stack ? stack.split("\n")[2].trim() : "";
 			const serializedArgs = args.map(serializeArg).join(" ");
+			const message = `${initialText}: ${serializedArgs}`;
 
-			const logEntry: LogEntry = {
-				timestamp,
-				level,
-				message: `${initialText}: ${serializedArgs}`,
-				callerInfo,
-			};
+			if (isNode) {
+				// Simple console logging for Node.js
+				console[level](`[${timestamp}] ${message}`);
+			} else {
+				// Full logging for Obsidian
+				const logEntry: LogEntry = {
+					timestamp,
+					level,
+					message,
+					callerInfo,
+				};
 
-			if (!logConfig.disableConsole) {
-				console[level](formatLogEntry(logEntry));
+				if (!logConfig.disableConsole) {
+					console[level](formatLogEntry(logEntry));
+				}
+
+				logBuffer.push(logEntry);
 			}
-
-			logBuffer.push(logEntry);
 		}
 	};
 }
 
 export class HasLogging {
-	protected debug;
+	protected debug: (...args: unknown[]) => void;
 	protected log;
 	protected warn;
 	protected error;
+
+	protected setLoggers(context: string) {
+		this.debug = curryLog(`[${context}]`, "debug");
+		this.log = curryLog(`[${context}]`, "log");
+		this.warn = curryLog(`[${context}]`, "warn");
+		this.error = curryLog(`[${context}]`, "error");
+	}
 
 	constructor(context?: string) {
 		const logContext = context || this.constructor.name;
@@ -198,5 +232,5 @@ export class HasLogging {
 	}
 }
 
-const debug = BUILD_TYPE === "debug";
+const debug = BUILD_TYPE === "debug" || process.env.NODE_ENV === "development";
 export const toast = debug ? toastDebug : toastProd;

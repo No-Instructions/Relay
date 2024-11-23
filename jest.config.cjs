@@ -10,6 +10,9 @@ module.exports = {
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
 	},
+    globals: {
+        "BUILD_TYPE": "debug",
+    },
 	transform: {
 		".ts": [
 			"ts-jest",

@@ -8,11 +8,13 @@ import {
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
-import type { Document } from "src/Document";
+import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import { withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
+import { isDocMeta, isDocument } from "src/SyncStore";
+import type { IFile } from "src/SyncFile";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -203,30 +205,39 @@ class FilePillDecoration {
 
 	constructor(
 		private el: HTMLElement,
-		private doc: Document,
+		private doc: IFile,
 	) {
 		this.el = el;
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
 		});
-		this.pill = new TextPill({
-			target: this.el,
-			props: {
-				text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
-			},
-		});
-		const onUpdate = () => {
-			this.pill.$set({
-				text: `${doc.guid.slice(0, 3)} ${doc.dbsize} ${doc._hasKnownPeers ? "!" : ""}`,
+		if (doc instanceof Document) {
+			this.pill = new TextPill({
+				target: this.el,
+				props: {
+					text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
+				},
 			});
-		};
-		doc.ydoc.on("update", onUpdate);
-		doc.hasKnownPeers().then((hasKnownPeers) => {
-			onUpdate();
-		});
-		this.unsubscribe = () => {
-			doc.ydoc.off("update", onUpdate);
-		};
+			const onUpdate = () => {
+				this.pill.$set({
+					text: `${doc.guid.slice(0, 3)} ${doc.dbsize} ${doc._hasKnownPeers ? "!" : ""}`,
+				});
+			};
+			doc.ydoc.on("update", onUpdate);
+			doc.hasKnownPeers().then((hasKnownPeers) => {
+				onUpdate();
+			});
+			this.unsubscribe = () => {
+				doc.ydoc.off("update", onUpdate);
+			};
+		} else {
+			this.pill = new TextPill({
+				target: this.el,
+				props: {
+					text: `${doc.guid.slice(0, 4)}`,
+				},
+			});
+		}
 	}
 
 	destroy() {
@@ -246,7 +257,10 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
 		if (sharedFolder) {
-			const doc = sharedFolder.getFile(file.path);
+			const vpath = sharedFolder.getVirtualPath(file.path);
+			const meta = sharedFolder.syncStore.get(vpath);
+			if (!meta) return null;
+			const doc = sharedFolder.docs.get(meta.id);
 			if (!doc) return null;
 			return storage || new FilePillDecoration(item.selfEl, doc);
 		}
@@ -305,11 +319,12 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	): DocumentStatus | null {
 		if (sharedFolder) {
 			try {
-				const guid = sharedFolder.ids.get(
+				const meta = sharedFolder.syncStore.get(
 					sharedFolder.getVirtualPath(file.path),
 				);
-				if (!guid) return null;
-				const document = sharedFolder.docs.get(guid);
+				if (!meta) return null;
+				const document = sharedFolder.docs.get(meta.id);
+				if (!(document instanceof Document)) return null;
 				if (!document) return null;
 				return storage || new DocumentStatus(item.el, document, file);
 			} catch (e) {

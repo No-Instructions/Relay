@@ -58,8 +58,11 @@ export const customFetch = async (
 		throw: false,
 	};
 
+	const startTime = performance.now();
 	let response: RequestUrlResponse | undefined = undefined;
 	response = await requestUrl(requestParams);
+	const endTime = performance.now();
+	const duration = endTime - startTime;
 
 	if (!response.arrayBuffer.byteLength) {
 		return new Response(null, {
@@ -87,11 +90,19 @@ export const customFetch = async (
 				? "warn"
 				: "debug";
 	const response_text = response.text;
+	let response_json;
+	try {
+		response_json = JSON.stringify(JSON.parse(response_text));
+	} catch (e) {
+		// pass
+	}
+
 	curryLog("[CustomFetch]", level)(
+		`${duration.toFixed(2)}ms`,
 		response.status.toString(),
 		method,
 		urlString,
-		response_text,
+		response_json || response_text,
 	);
 	if (response.status >= 500) {
 		throw new Error(response_text);
