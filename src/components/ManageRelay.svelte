@@ -88,7 +88,7 @@
 		const payload = {
 			relay: relay.id,
 			quantity: 10,
-			user_email: plugin.loginManager.user.name,
+			user_email: plugin.loginManager.user.email,
 		};
 		const encodedPayload = btoa(JSON.stringify(payload))
 			.replace(/\+/g, "-")
