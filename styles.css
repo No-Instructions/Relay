@@ -97,7 +97,7 @@
 	width: 32em;
 }
 
-.banner {
+.system3-banner {
 	border-color: var(--pill-border-color-hover);
 	cursor: pointer;
 	box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
@@ -109,7 +109,7 @@
 	background: var(--interactive-accent);
 }
 
-.banner > span {
+.system3-banner > span {
 	font-weight: bold;
 	display: flex;
 	flex-grow: 1;
