@@ -164,7 +164,7 @@ Right now the whole operation is two people:
 
 ## Do you have a privacy policy?
 
-Yes: [https://system3.md/Privacy+policy](https://system3.md/Privacy+policy).
+Yes: [https://system3.md/privacy](https://system3.md/privacy).
 
 
 ## Installing Relay
