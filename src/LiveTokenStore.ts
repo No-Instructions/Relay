@@ -41,11 +41,13 @@ async function refresh(
 		payload = JSON.stringify({
 			docId: entity.documentId,
 			relay: entity.relayId,
+			folder: entity.folderId,
 		});
 	} else if (entity instanceof S3RemoteFolder) {
 		payload = JSON.stringify({
 			docId: entity.folderId,
 			relay: entity.relayId,
+			folder: entity.folderId,
 		});
 	} else {
 		onError(new Error("No remote to connect to"));
