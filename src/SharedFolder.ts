@@ -89,7 +89,6 @@ class Documents extends ObservableSet<Document> {
 
 export class SharedFolder extends HasProvider {
 	path: string;
-	guid: string;
 	ids: Y.Map<string>; // Maps document paths to guids
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	docset: Documents;
@@ -162,9 +161,8 @@ export class SharedFolder extends HasProvider {
 			? new S3RemoteFolder(relayId, guid)
 			: new S3Folder(guid);
 
-		super(s3rn, tokenStore, loginManager);
+		super(guid, s3rn, tokenStore, loginManager);
 		this.shouldConnect = true;
-		this.guid = guid;
 		this.fileManager = fileManager;
 		this.vault = vault;
 		this.path = path;

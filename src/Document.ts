@@ -11,7 +11,6 @@ import { DiskBuffer } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 
 export class Document extends HasProvider implements TFile {
-	guid: string;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
 	_hasKnownPeers?: boolean;
@@ -50,8 +49,7 @@ export class Document extends HasProvider implements TFile {
 		const s3rn = parent.relayId
 			? new S3RemoteDocument(parent.relayId, parent.guid, guid)
 			: new S3Document(parent.guid, guid);
-		super(s3rn, parent.tokenStore, loginManager);
-		this.guid = guid;
+		super(guid, s3rn, parent.tokenStore, loginManager);
 		this._parent = parent;
 		this.path = path;
 		this.name = "[CRDT] " + path.split("/").pop() || "";

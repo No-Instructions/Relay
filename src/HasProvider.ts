@@ -75,11 +75,8 @@ type Listener = (state: ConnectionState) => void;
 
 export class HasProvider extends HasLogging {
 	_provider: YSweetProvider;
-	_s3rn: S3RNType;
 	path?: string;
 	ydoc: Y.Doc;
-	loginManager: LoginManager;
-	tokenStore: LiveTokenStore;
 	clientToken: ClientToken;
 	private _offConnectionError: () => void;
 	private _offState: () => void;
@@ -87,12 +84,12 @@ export class HasProvider extends HasLogging {
 	listeners: Map<unknown, Listener>;
 
 	constructor(
-		s3rn: S3RNType,
-		tokenStore: LiveTokenStore,
-		loginManager: LoginManager,
+		public guid: string,
+		private _s3rn: S3RNType,
+		public tokenStore: LiveTokenStore,
+		public loginManager: LoginManager,
 	) {
 		super();
-		this._s3rn = s3rn;
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
 		const user = this.loginManager?.user;
