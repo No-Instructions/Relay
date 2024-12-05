@@ -257,6 +257,7 @@ export class HasProvider extends HasLogging {
 		this._provider.shouldConnect = false;
 		this._provider.ws?.close();
 		this._provider.ws = null;
+		this.tokenStore.removeFromRefreshQueue(this.guid);
 		this.notifyListeners();
 	}
 

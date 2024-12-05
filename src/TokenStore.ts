@@ -102,6 +102,7 @@ export class TokenStore<TokenType extends HasToken> {
 				resolve(token);
 			};
 			const onError = (error: Error) => {
+				this.removeFromRefreshQueue(documentId);
 				reject(error);
 			};
 			this.refresh(documentId, onSuccess, onError);
@@ -186,6 +187,15 @@ export class TokenStore<TokenType extends HasToken> {
 			this.log(`enqueued refresh of ${documentId}`);
 			this.refreshQueue.add(documentId);
 		}
+	}
+
+	removeFromRefreshQueue(documentId: string) {
+		this.log(`removing ${documentId} from refresh queue`);
+		if (this.refreshQueue.has(documentId)) {
+			this.refreshQueue.delete(documentId);
+			return true;
+		}
+		return false;
 	}
 
 	log(text: string) {
