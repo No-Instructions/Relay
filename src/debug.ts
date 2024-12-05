@@ -110,6 +110,9 @@ function toastProd(error: Error): Error {
 	new Notice(error.name + ":\nAn error has occurred, please reload Obsidian.");
 	return error;
 }
+
+const SENSITIVE_KEYS = ["token", "authorization", "email"];
+
 function serializeArg(arg: unknown): string {
 	if (typeof arg === "object" && arg !== null) {
 		const seen = new WeakSet();
@@ -126,8 +129,9 @@ function serializeArg(arg: unknown): string {
 					// Filter out sensitive information
 					if (
 						typeof key === "string" &&
-						(key.toLowerCase().includes("authorization") ||
-							key.toLowerCase().includes("token"))
+						SENSITIVE_KEYS.some((sk) =>
+							key.toLowerCase().includes(sk.toLowerCase()),
+						)
 					) {
 						return "[REDACTED]";
 					}
