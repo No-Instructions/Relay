@@ -44,6 +44,7 @@ export interface ViewState {
 	file2: TFile;
 	showMergeOption: boolean;
 	onResolve?: () => Promise<void>;
+	[key: string]: unknown;
 }
 
 export async function openDiffView(
@@ -212,7 +213,7 @@ export class DifferencesView extends ItemView {
 		difference: Difference,
 	): void {
 		if (this.state?.showMergeOption) {
-			new ActionLine({
+			new ActionLine(this.app, {
 				difference,
 				file1: this.state.file1,
 				file2: this.state.file2,

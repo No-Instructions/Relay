@@ -30,18 +30,22 @@ import { ActionLineDivider } from "./actionLineDivider";
 import { Document } from "src/Document";
 import { DiskBuffer } from "src/DiskBuffer";
 import * as bg from "src/BackgroundSync";
+import type { App } from "obsidian";
 
 type VoidCallback = () => void;
 
 export class ActionLine {
-	constructor(args: {
-		difference: Difference;
-		file1: TFile;
-		file2: TFile;
-		file1Content: string;
-		file2Content: string;
-		triggerRebuild: VoidCallback;
-	}) {
+	constructor(
+		private app: App,
+		args: {
+			difference: Difference;
+			file1: TFile;
+			file2: TFile;
+			file1Content: string;
+			file2Content: string;
+			triggerRebuild: VoidCallback;
+		},
+	) {
 		this.difference = args.difference;
 		this.file1 = args.file1;
 		this.file2 = args.file2;
@@ -70,7 +74,7 @@ export class ActionLine {
 			file.contents = newContent;
 			return;
 		}
-		await app.vault.modify(file, newContent);
+		await this.app.vault.modify(file, newContent);
 	}
 
 	build(container: HTMLDivElement): void {

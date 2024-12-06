@@ -13,7 +13,7 @@ import {
 	ConnectionManagerStateField,
 } from "../LiveViews";
 import { curryLog } from "src/debug";
-import type { CachedMetadata } from "obsidian";
+import type { App, CachedMetadata } from "obsidian";
 
 export const invalidLinkSyncAnnotation = Annotation.define();
 
@@ -40,6 +40,7 @@ interface CacheLink {
 const metadataChangeEffect = StateEffect.define();
 
 export class InvalidLinkPluginValue {
+	app?: App;
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
 	view?: S3View;
@@ -71,7 +72,7 @@ export class InvalidLinkPluginValue {
 			)("ConnectionManager not found in InvalidLinkPlugin");
 			return;
 		}
-
+		this.app = this.connectionManager.app;
 		this.view = this.connectionManager.findView(editor);
 
 		if (!this.view) {
@@ -86,9 +87,9 @@ export class InvalidLinkPluginValue {
 
 		if (this.view.document) {
 			this.view.document.whenSynced().then(() => {
-				if (this.connectionManager && this.view?.document?.tfile) {
+				if (this.connectionManager && this.app && this.view?.document?.tfile) {
 					this.connectionManager.onMeta(this.view.document.tfile, this.cb);
-					const fileCache = app.metadataCache.getFileCache(
+					const fileCache = this.app.metadataCache.getFileCache(
 						this.view.document.tfile,
 					);
 					if (fileCache) {
@@ -143,7 +144,7 @@ export class InvalidLinkPluginValue {
 		if (this.connectionManager) {
 			this.view = this.connectionManager.findView(this.editor);
 		}
-		if (!this.view || !this.view.document) return;
+		if (!this.view || !this.view.document || !this.app) return;
 		if (!this.view?.document?.sharedFolder) {
 			return;
 		}
@@ -152,7 +153,7 @@ export class InvalidLinkPluginValue {
 		}
 		const cacheLinks = new Map();
 		for (const link of cache?.links || []) {
-			const linkedFile = app.metadataCache.getFirstLinkpathDest(
+			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				link.link,
 				this.view.document.path,
 			);
@@ -169,7 +170,7 @@ export class InvalidLinkPluginValue {
 			}
 		}
 		for (const embed of cache?.embeds || []) {
-			const linkedFile = app.metadataCache.getFirstLinkpathDest(
+			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				embed.link,
 				this.view.document.path,
 			);
@@ -210,7 +211,7 @@ export class InvalidLinkPluginValue {
 		if (this.connectionManager) {
 			this.view = this.connectionManager.findView(this.editor);
 		}
-		if (!this.view || !this.view.document) return;
+		if (!this.view || !this.view.document || !this.app) return;
 		if (!this.view?.document?.sharedFolder) {
 			return;
 		}
@@ -234,7 +235,7 @@ export class InvalidLinkPluginValue {
 			if (!_cacheLink) {
 				continue;
 			}
-			const linkedFile = app.metadataCache.getFirstLinkpathDest(
+			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				_cacheLink.link,
 				this.view.document.path,
 			);

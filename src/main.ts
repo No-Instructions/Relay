@@ -540,7 +540,7 @@ export default class Live extends Plugin {
 									: file.name;
 							const normalizedFileName = normalizePath(file.name);
 							const destinationFiles = (
-								app.metadataCache as any
+								plugin.app.metadataCache as any
 							).uniqueFileLookup.get(normalizedFileName.toLowerCase());
 
 							// If there are no conflicts (unique file), return the fileName
