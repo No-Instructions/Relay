@@ -75,7 +75,16 @@
 	color: var(--color-red);
 }
 
+.workspace-split.mod-root
+	.workspace-leaf:nth-child(n)
+	.workspace-leaf-content[data-type="markdown"]:has(
+		.system3-banner-box
+	)::before {
+	top: 4em !important;
+}
+
 .obsidian-live-banner {
+	position: relative;
 	align-items: center;
 	justify-content: space-between;
 	display: flex;
