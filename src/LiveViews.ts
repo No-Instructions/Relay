@@ -356,7 +356,7 @@ export class LiveViewManager {
 	warn: (message: string, ...args: unknown[]) => void;
 
 	constructor(
-		private app: App,
+		public app: App,
 		sharedFolders: SharedFolders,
 		loginManager: LoginManager,
 		networkStatus: NetworkStatus,
