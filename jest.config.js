@@ -10,6 +10,7 @@ module.exports = {
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
 	},
+	testPathIgnorePatterns: ["/__tests__/mocks/"],
 	transform: {
 		".ts": [
 			"ts-jest",
