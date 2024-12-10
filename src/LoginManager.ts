@@ -29,7 +29,6 @@ interface GoogleUser {
 
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
-	private _log: (message: string, ...args: unknown[]) => void;
 	private openSettings: () => Promise<void>;
 	private authStore: LocalAuthStore;
 	user?: User;
@@ -41,7 +40,6 @@ export class LoginManager extends Observable<LoginManager> {
 		timeProvider: TimeProvider,
 	) {
 		super();
-		this._log = curryLog("[LoginManager]");
 		const pbLog = curryLog("[Pocketbase]", "debug");
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
 		this.pb = new PocketBase(AUTH_URL, this.authStore);
@@ -57,10 +55,6 @@ export class LoginManager extends Observable<LoginManager> {
 		timeProvider.setInterval(() => this.refreshToken(), 86400000);
 		this.openSettings = openSettings;
 		RelayInstances.set(this, "loginManager");
-	}
-
-	log(message: string, ...args: unknown[]) {
-		this._log(message, ...args);
 	}
 
 	refreshToken() {
@@ -80,8 +74,8 @@ export class LoginManager extends Observable<LoginManager> {
 						(expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
 					);
 
-					this._log("Token Refreshed");
-					this._log("JWT Info:", {
+					this.log("Token Refreshed");
+					this.log("JWT Info:", {
 						expiresAt: expiryDate.toLocaleString(),
 						expiresIn: `${daysUntilExpiry} days`,
 						userId: decodedPayload.id,

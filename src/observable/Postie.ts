@@ -1,6 +1,6 @@
 "use strict";
 
-import { DefaultTimeProvider, type TimeProvider } from "src/TimeProvider";
+import { DefaultTimeProvider, type TimeProvider } from "../TimeProvider";
 import { RelayInstances, curryLog } from "../debug";
 import type { IObservable } from "./Observable";
 

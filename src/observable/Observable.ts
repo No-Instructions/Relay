@@ -1,6 +1,6 @@
 "use strict";
 
-import { curryLog } from "src/debug";
+import { HasLogging, curryLog } from "../debug";
 import { PostOffice } from "./Postie";
 
 /** Callback to inform of a value updates. */
@@ -25,14 +25,14 @@ export interface IObservable<T> {
 	unsubscribe(run: Subscriber<T>): void;
 }
 
-export class Observable<T> implements IObservable<T> {
+export class Observable<T> extends HasLogging implements IObservable<T> {
 	protected _listeners: Set<Subscriber<T>>;
 
 	constructor(public observableName?: string) {
-		const warn = curryLog("[Observable]", "warn");
+		super();
 		observables.set(this, () => {
 			if (this._listeners && this._listeners.size > 0) {
-				warn(
+				this.warn(
 					`Missing tear down of ${this._listeners.size} listeners`,
 					this,
 					this._listeners,
