@@ -28,6 +28,7 @@ import { withFlag } from "./flagManager";
 import { flag } from "./flags";
 import { DiskBufferStore } from "./DiskBuffer";
 import { BackgroundSync } from "./BackgroundSync";
+import type { NamespacedSettings } from "./SettingsStorage";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -153,7 +154,8 @@ export class SharedFolder extends HasProvider {
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
-		private backgroundSync: BackgroundSync,
+		public backgroundSync: BackgroundSync,
+		private _settings: NamespacedSettings<SharedFolderSettings>,
 		relayId?: string,
 		awaitingUpdates: boolean = true,
 	) {
@@ -173,19 +175,26 @@ export class SharedFolder extends HasProvider {
 		this._awaitingUpdates = awaitingUpdates;
 		this.relayId = relayId;
 		this.diskBufferStore = new DiskBufferStore();
+
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
 			}),
 		);
 
+		this._settings.set({
+			guid,
+			path,
+			relay: relayId,
+		});
+
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 			this._persistence.once("synced", () => {
-			    this.log("", this.ids);
+				this.log("", this.ids);
 			});
 		} catch (e) {
-            this.warn("Unable to open persistence.", this.guid)
+			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
 			throw e;
 		}
@@ -208,6 +217,10 @@ export class SharedFolder extends HasProvider {
 				await this.syncFileTree(doc);
 			},
 		);
+	}
+
+	public get settings(): SharedFolderSettings {
+		return this._settings.get();
 	}
 
 	getFiles(): TFile[] {
@@ -240,14 +253,6 @@ export class SharedFolder extends HasProvider {
 
 	public get location(): string {
 		return this.path.split("/").slice(0, -1).join("/");
-	}
-
-	public get settings(): SharedFolderSettings {
-		return {
-			guid: this.guid,
-			path: this.path,
-			relay: this.relayId,
-		};
 	}
 
 	public get remote(): RemoteSharedFolder | undefined {
@@ -494,6 +499,14 @@ export class SharedFolder extends HasProvider {
 			this.docset.update();
 		}
 		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
+	}
+
+	move(path: string) {
+		this.path = path;
+		this._settings.update((current) => ({
+			...current,
+			path,
+		}));
 	}
 
 	read(doc: Document): Promise<string> {
@@ -757,6 +770,8 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
+		this._settings.destroy();
+		this._settings = null as any;
 		this.diskBufferStore = null as any;
 		this.relayManager = null as any;
 		this.backgroundSync = null as any;
@@ -774,6 +789,48 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		awaitingUpdates?: boolean,
 	) => Promise<SharedFolder>;
 	private _offRemoteUpdates?: () => void;
+	private unsubscribes: Unsubscriber[] = [];
+
+	constructor(
+		private relayManager: RelayManager,
+		private vault: Vault,
+		folderBuilder: (
+			path: string,
+			guid: string,
+			relayId?: string,
+			awaitingUpdates?: boolean,
+		) => Promise<SharedFolder>,
+		private settings: NamespacedSettings<SharedFolderSettings[]>,
+	) {
+		super();
+		this.folderBuilder = folderBuilder;
+
+		if (!this._offRemoteUpdates) {
+			this._offRemoteUpdates = this.relayManager.remoteFolders.subscribe(
+				(remotes) => {
+					let updated = false;
+					let relayGuid: string | undefined = undefined;
+					this.items().forEach((folder) => {
+						const remote = remotes.find((remote) => remote.guid == folder.guid);
+						if (folder.remote != remote) {
+							updated = true;
+							relayGuid = folder.remote?.relay.guid;
+						}
+						folder.remote = remote;
+					});
+					if (relayGuid) {
+						this.settings.update((current) => ({
+							...current,
+							relay: relayGuid,
+						}));
+					}
+					if (updated) {
+						this.update();
+					}
+				},
+			);
+		}
+	}
 
 	public toSettings(): SharedFolderSettings[] {
 		return this.items().map((folder) => folder.settings);
@@ -805,42 +862,36 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		if (this._offRemoteUpdates) {
 			this._offRemoteUpdates();
 		}
+		this.unsubscribes.forEach((unsub) => {
+			unsub();
+		});
 		this.relayManager = null as any;
 		this.folderBuilder = null as any;
 	}
 
-	constructor(
-		private relayManager: RelayManager,
-		folderBuilder: (
-			guid: string,
-			path: string,
-			relayId?: string,
-			awaitingUpdates?: boolean,
-		) => Promise<SharedFolder>,
-	) {
-		super();
-		this.folderBuilder = folderBuilder;
+	load() {
+		this._load(this.settings.get());
+	}
 
-		if (!this._offRemoteUpdates) {
-			this._offRemoteUpdates = this.relayManager.remoteFolders.subscribe(
-				(remotes) => {
-					let updated = false;
-					this.items().forEach((folder) => {
-						const remote = remotes.find((remote) => remote.guid == folder.guid);
-						if (folder.remote != remote) {
-							updated = true;
-						}
-						folder.remote = remote;
-					});
-					if (updated) {
-						this.update();
-					}
-				},
-			);
+	private _load(folders: SharedFolderSettings[]) {
+		let updated = false;
+		console.log("loading ", folders);
+		folders.forEach((folder: SharedFolderSettings) => {
+			const tFolder = this.vault.getFolderByPath(folder.path);
+			if (!tFolder) {
+				this.warn(`Invalid settings, ${folder.path} does not exist`);
+				return;
+			}
+			this._new(folder.path, folder.guid, folder?.relay);
+			updated = true;
+		});
+
+		if (updated) {
+			this.notifyListeners();
 		}
 	}
 
-	async _new(
+	private async _new(
 		path: string,
 		guid: string,
 		relayId?: string,
