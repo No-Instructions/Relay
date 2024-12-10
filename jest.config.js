@@ -11,6 +11,9 @@ module.exports = {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
 	},
 	testPathIgnorePatterns: ["/__tests__/mocks/"],
+    globals: {
+        "BUILD_TYPE": "production",
+    },
 	transform: {
 		".ts": [
 			"ts-jest",
