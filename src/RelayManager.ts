@@ -18,7 +18,7 @@ import PocketBase, {
 	type RecordSubscription,
 } from "pocketbase";
 import { ObservableMap } from "./observable/ObservableMap";
-import { RelayInstances, curryLog } from "./debug";
+import { RelayInstances, HasLogging } from "./debug";
 import { customFetch } from "./customFetch";
 import type { SharedFolder } from "./SharedFolder";
 import type { LoginManager } from "./LoginManager";
@@ -512,20 +512,17 @@ class RelaySubscriptionCollection
 	}
 }
 
-class Store {
+class Store extends HasLogging {
 	collections: Map<string, Collection<unknown, unknown>>;
 	relationships: Map<string, Set<string>>;
-	warn: (message: string, ...args: unknown[]) => void;
-	error: (message: string, ...args: unknown[]) => void;
 
 	constructor(collections: Collection<unknown, unknown>[]) {
+        super();
 		this.collections = new Map();
 		this.relationships = new Map();
 		for (const collection of collections) {
 			this.collections.set(collection.collectionName, collection);
 		}
-		this.error = curryLog("[Store]", "error");
-		this.warn = curryLog("[Store]", "warn");
 		RelayInstances.set(this, "Store");
 	}
 
@@ -876,8 +873,6 @@ export class RelaySubscriptionAuto
 }
 
 class RelayAuto extends Observable<Relay> implements Relay, hasACL {
-	log: (message: string, ...args: unknown[]) => void;
-	warn: (message: string, ...args: unknown[]) => void;
 
 	constructor(
 		private relay: RelayDAO,
@@ -888,8 +883,6 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		private user: RelayUser,
 	) {
 		super();
-		this.log = curryLog("[RelayAuto]", "log");
-		this.warn = curryLog("[RelayAuto]", "warn");
 	}
 
 	update(update: RelayDAO): Relay {
@@ -969,7 +962,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 	}
 }
 
-export class RelayManager {
+export class RelayManager extends HasLogging {
 	relays: ObservableMap<string, Relay>;
 	relayRoles: ObservableMap<string, RelayRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
@@ -981,15 +974,10 @@ export class RelayManager {
 	user?: RelayUser;
 	store?: Store;
 	_offLoginManager: Unsubscriber;
-	log: (message: string, ...args: unknown[]) => void;
-	debug: (message: string, ...args: unknown[]) => void;
-	warn: (message: string, ...args: unknown[]) => void;
 	private pb: PocketBase | null;
 
 	constructor(private loginManager: LoginManager) {
-		this.log = curryLog("[RelayManager]", "log");
-		this.debug = curryLog("[RelayManager]", "debug");
-		this.warn = curryLog("[RelayManager]", "warn");
+        super();
 		this.pb = this.loginManager.pb;
 
 		// Build the NodeLists
