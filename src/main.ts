@@ -35,7 +35,7 @@ import NetworkStatus from "./NetworkStatus";
 import { RelayException } from "./Exceptions";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
-import { auditTeardown, type Unsubscriber } from "./observable/Observable";
+import { auditTeardown } from "./observable/Observable";
 import { updateYDocFromDiskBuffer } from "./BackgroundSync";
 import { Plugin } from "obsidian";
 
@@ -49,17 +49,25 @@ import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
+import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 
-interface LiveSettings extends FeatureFlags {
-	sharedFolders: SharedFolderSettings[];
+interface DebugSettings {
 	debugging: boolean;
 }
 
-const DEFAULT_SETTINGS: LiveSettings = {
-	sharedFolders: [],
+const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 	debugging: false,
+};
+
+interface RelaySettings extends FeatureFlags, DebugSettings {
+	sharedFolders: SharedFolderSettings[];
+}
+
+const DEFAULT_SETTINGS: RelaySettings = {
+	sharedFolders: [],
 	...FeatureFlagDefaults,
+	...DEFAULT_DEBUG_SETTINGS,
 };
 
 declare const HEALTH_URL: string;
@@ -67,7 +75,6 @@ declare const API_URL: string;
 declare const GIT_TAG: string;
 
 export default class Live extends Plugin {
-	settings!: LiveSettings;
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
 	notifier!: ObsidianNotifier;
@@ -79,14 +86,15 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
-	_offSaveSettings!: () => void;
-	_offFlagUpdates!: Unsubscriber;
 	relayManager!: RelayManager;
 	settingsTab!: LiveSettingsTab;
+	settings!: Settings<RelaySettings>;
+	private featureSettings!: NamespacedSettings<FeatureFlags>;
+	private debugSettings!: NamespacedSettings<DebugSettings>;
+	private folderSettings!: NamespacedSettings<SharedFolderSettings[]>;
 	log!: (message: string, ...args: unknown[]) => void;
 	warn!: (message: string, ...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
-	private settingsFileLocked = true;
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 
@@ -94,25 +102,31 @@ export default class Live extends Plugin {
 		setDebugging(true);
 		console.warn("RelayInstances", RelayInstances);
 		if (save) {
-			this.settings.debugging = false;
-			this.saveSettings();
+			this.debugSettings.update((settings) => ({
+				...settings,
+				debugging: true,
+			}));
 		}
 	}
 
 	disableDebugging(save?: boolean) {
 		setDebugging(false);
 		if (save) {
-			this.settings.debugging = false;
-			this.saveSettings();
+			this.debugSettings.update((settings) => ({
+				...settings,
+				debugging: false,
+			}));
 		}
 	}
 
 	toggleDebugging(save?: boolean): boolean {
-		const setTo = !this.settings.debugging;
+		const setTo = !this.debugSettings.get().debugging;
 		setDebugging(setTo);
 		if (save) {
-			this.settings.debugging = setTo;
-			this.saveSettings();
+			this.debugSettings.update((settings) => ({
+				...settings,
+				debugging: setTo,
+			}));
 		}
 		return setTo;
 	}
@@ -143,39 +157,48 @@ export default class Live extends Plugin {
 		this.log = curryLog("[System 3][Relay]", "log");
 		this.warn = curryLog("[System 3][Relay]", "warn");
 
-		await this.loadSettings();
+		this.settings = new Settings(this, DEFAULT_SETTINGS);
+		await this.settings.load();
+
+		this.featureSettings = new NamespacedSettings(this.settings, "(enable*)");
+		this.debugSettings = new NamespacedSettings(this.settings, "(debugging)");
+		this.folderSettings = new NamespacedSettings(
+			this.settings,
+			"sharedFolders",
+		);
+
 		const flagManager = FeatureFlagManager.getInstance();
-		flagManager.setFlags(this.settings);
-		this._offFlagUpdates = flagManager.subscribe((flagManager) => {
-			this.settings = {
-				...this.settings,
-				...flagManager.flags,
-			};
-			this.saveSettings();
-		});
+		flagManager.setSettings(this.featureSettings);
+
 		this.addRibbonIcon("satellite", "Relay", () => {
 			this.openSettings();
 		});
 
-		if (this.settings.debugging) {
-			this.enableDebugging();
-			this.addCommand({
-				id: "toggle-feature-flags",
-				name: "Feature Flags",
-				callback: () => {
-					const modal = new FeatureFlagToggleModal(this.app);
-					modal.open();
-				},
-			});
-			this.addCommand({
-				id: "show-debug-info",
-				name: "Show Debug Information",
-				callback: () => {
-					const modal = new DebugModal(this.app, this);
-					modal.open();
-				},
-			});
-		}
+		this.debugSettings.subscribe((settings) => {
+			if (settings.debugging) {
+				this.enableDebugging();
+				this.addCommand({
+					id: "toggle-feature-flags",
+					name: "Feature Flags",
+					callback: () => {
+						const modal = new FeatureFlagToggleModal(this.app);
+						modal.open();
+					},
+				});
+				this.addCommand({
+					id: "show-debug-info",
+					name: "Show Debug Information",
+					callback: () => {
+						const modal = new DebugModal(this.app, this);
+						modal.open();
+					},
+				});
+			} else {
+				this.disableDebugging();
+				this.removeCommand("toggle-feature-flags");
+				this.removeCommand("show-debug-info");
+			}
+		});
 
 		this.vault = this.app.vault;
 		const vaultName = this.vault.getName();
@@ -189,7 +212,9 @@ export default class Live extends Plugin {
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
+			this.vault,
 			this._createSharedFolder.bind(this),
+			this.folderSettings,
 		);
 
 		this.tokenStore = new LiveTokenStore(
@@ -212,7 +237,7 @@ export default class Live extends Plugin {
 		}
 
 		this.app.workspace.onLayoutReady(() => {
-			this.loadSharedFolders(this.settings.sharedFolders);
+			this.sharedFolders.load();
 			this._liveViews = new LiveViewManager(
 				this.app,
 				this.sharedFolders,
@@ -280,50 +305,22 @@ export default class Live extends Plugin {
 			);
 
 			this.setup();
-			this.settingsFileLocked = false;
 			this._liveViews.refresh("init");
 		});
 	}
-
-	private loadSharedFolders(sharedFolderSettings: SharedFolderSettings[]) {
-		this.log("Loading shared folders");
-		const beforeLock = this.settingsFileLocked;
-		this.settingsFileLocked = true;
-		let updated = false;
-		sharedFolderSettings.forEach(
-			(sharedFolderSetting: SharedFolderSettings) => {
-				const tFolder = this.vault.getFolderByPath(sharedFolderSetting.path);
-				if (!tFolder) {
-					this.warn(
-						`[System 3][Relay][Shared Folder]: Invalid settings, ${sharedFolderSetting.path} does not exist`,
-					);
-					return;
-				}
-				this.sharedFolders._new(
-					sharedFolderSetting.path,
-					sharedFolderSetting.guid,
-					sharedFolderSetting?.relay,
-				);
-				updated = true;
-			},
-		);
-		if (!this._offSaveSettings) {
-			this._offSaveSettings = this.sharedFolders.subscribe(() => {
-				this.saveSettings();
-			});
-		}
-		this.settingsFileLocked = beforeLock;
-		if (updated) {
-			this.sharedFolders.notifyListeners();
-		}
-	}
-
 	private async _createSharedFolder(
 		path: string,
 		guid: string,
 		relayId?: string,
 		awaitingUpdates?: boolean,
 	): Promise<SharedFolder> {
+		// Initialize settings with pattern matching syntax
+		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
+			this.settings,
+			`sharedFolders/[guid=${guid}]`,
+		);
+		await folderSettings.flush();
+
 		const folder = new SharedFolder(
 			guid,
 			path,
@@ -333,6 +330,7 @@ export default class Live extends Plugin {
 			this.tokenStore,
 			this.relayManager,
 			this.backgroundSync,
+			folderSettings,
 			relayId,
 			awaitingUpdates,
 		);
@@ -346,7 +344,7 @@ export default class Live extends Plugin {
 	}
 
 	private _onLogin() {
-		this.loadSharedFolders(this.settings.sharedFolders);
+		this.sharedFolders.load();
 		this.relayManager?.login();
 		this._liveViews.refresh("login");
 	}
@@ -459,7 +457,7 @@ export default class Live extends Plugin {
 						return folder.path == oldPath;
 					});
 					if (sharedFolder) {
-						sharedFolder.path = file.path;
+						sharedFolder.move(file.path);
 						this.sharedFolders.update();
 					}
 					return;
@@ -598,15 +596,6 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
-		// We want to unload the visual components but not the data
-		this.settingsFileLocked = true;
-
-		this._offFlagUpdates?.();
-		this._offFlagUpdates = null as any;
-
-		this._offSaveSettings?.();
-		this._offSaveSettings = null as any;
-
 		this.timeProvider?.destroy();
 
 		this.folderNavDecorations?.destroy();
@@ -646,6 +635,13 @@ export default class Live extends Plugin {
 		this.manifest = null as any;
 		this.vault = null as any;
 
+		this.debugSettings.destroy();
+		this.debugSettings = null as any;
+		this.folderSettings.destroy();
+		this.folderSettings = null as any;
+		this.featureSettings.destroy();
+		this.featureSettings = null as any;
+
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();
 
@@ -657,17 +653,10 @@ export default class Live extends Plugin {
 	}
 
 	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		this.settings.load();
 	}
 
 	async saveSettings() {
-		if (!this.settingsFileLocked) {
-			this.settings.sharedFolders = this.sharedFolders.toSettings();
-			this.log("Saving settings", this.settings);
-			await this.saveData(this.settings);
-			FeatureFlagManager.getInstance().setFlags(this.settings);
-		} else {
-			this.log("Saving settings: settings file locked");
-		}
+		await this.settings.save();
 	}
 }
