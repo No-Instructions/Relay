@@ -138,16 +138,18 @@
 		if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
 			await plugin.vault.createFolder(vaultRelativePath);
 		}
-		return plugin.sharedFolders
-			.new(vaultRelativePath, remoteFolder.guid, relay.guid, true)
-			.then((folder) => {
-				folder.remote = remoteFolder;
-				plugin.sharedFolders.notifyListeners();
-				withFlag(flag.enableDownloadOnAddToVault, () => {
-					plugin.backgroundSync.getFolderFiles(folder);
-				});
-				return folder;
-			});
+		const folder = plugin.sharedFolders.new(
+			vaultRelativePath,
+			remoteFolder.guid,
+			relay.guid,
+			true,
+		);
+		folder.remote = remoteFolder;
+		plugin.sharedFolders.notifyListeners();
+		withFlag(flag.enableDownloadOnAddToVault, () => {
+			plugin.backgroundSync.getFolderFiles(folder);
+		});
+		return folder;
 	}
 
 	let updating = writable(false);
@@ -247,7 +249,7 @@
 
 			// create new shared folder
 			const guid = uuidv4();
-			const sharedFolder = await plugin.sharedFolders.new(
+			const sharedFolder = plugin.sharedFolders.new(
 				normalizePath(path),
 				guid,
 				relay.guid,

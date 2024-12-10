@@ -1,3 +1,4 @@
+import type { NamespacedSettings } from "./SettingsStorage";
 import { type FeatureFlags, type Flag, FeatureFlagDefaults } from "./flags";
 import { Observable } from "./observable/Observable";
 
@@ -32,6 +33,7 @@ export function withAnyOf(
 
 export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	private static instance: FeatureFlagManager | null;
+	private settings?: NamespacedSettings<FeatureFlags>;
 	public flags: FeatureFlags;
 
 	private constructor() {
@@ -46,36 +48,28 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 		return FeatureFlagManager.instance;
 	}
 
-	public async setFlags(flags: FeatureFlags, notify = false): Promise<void> {
-		const validFlags = Object.keys(this.flags).reduce((acc, key) => {
-			if (key in flags) {
-				acc[key as keyof FeatureFlags] = flags[key as keyof FeatureFlags]!;
-			}
-			return acc;
-		}, {} as FeatureFlags);
-
-		if (this.flags === validFlags) {
-			return;
-		}
-		this.flags = { ...this.flags, ...validFlags };
-		if (notify) {
+	public setSettings(settings: NamespacedSettings<FeatureFlags>) {
+		this.settings = settings;
+		this.settings.subscribe((newFlags) => {
+			this.flags = {
+				...this.flags,
+				...newFlags,
+			};
 			this.notifyListeners();
-		}
+		});
 	}
 
 	public getFlag(flagName: keyof FeatureFlags): boolean {
 		return this.flags[flagName];
 	}
 
-	public setFlag(
-		flagName: keyof FeatureFlags,
-		value: boolean,
-		notify = false,
-	): void {
-		this.flags[flagName] = value;
-		if (notify) {
-			this.notifyListeners();
-		}
+	public setFlag(flagName: keyof FeatureFlags, value: boolean): void {
+		if (!this.settings) return;
+
+		this.settings.update((current) => ({
+			...current,
+			[flagName]: value,
+		}));
 	}
 
 	public static destroy() {
