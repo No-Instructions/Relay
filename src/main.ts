@@ -22,11 +22,11 @@ import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager } from "./LoginManager";
 import {
 	curryLog,
-	toast,
 	setDebugging,
 	RelayInstances,
 	initializeLogger,
 	flushLogs,
+	createToast,
 } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
@@ -48,6 +48,7 @@ import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
+import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 
 interface LiveSettings extends FeatureFlags {
 	sharedFolders: SharedFolderSettings[];
@@ -68,6 +69,8 @@ export default class Live extends Plugin {
 	settings!: LiveSettings;
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
+	notifier!: ObsidianNotifier;
+	toast!: (error: Error) => Error;
 	loginManager!: LoginManager;
 	timeProvider!: TimeProvider;
 	fileManager!: FileManager;
@@ -124,7 +127,7 @@ export default class Live extends Plugin {
 		});
 
 		initializeLogger(
-			this.app.vault,
+			new ObsidianFileAdapter(this.app.vault),
 			this.timeProvider,
 			".obsidian/plugins/system3-relay/relay.log",
 			{
@@ -133,6 +136,8 @@ export default class Live extends Plugin {
 				disableConsole: false, // Disable console logging
 			},
 		);
+		this.notifier = new ObsidianNotifier();
+		this.toast = createToast(this.notifier);
 
 		this.log = curryLog("[System 3][Relay]", "log");
 		this.warn = curryLog("[System 3][Relay]", "warn");
@@ -385,7 +390,7 @@ export default class Live extends Plugin {
 			const error = event.error;
 			if (error) {
 				if (error instanceof RelayException) {
-					toast(error);
+					this.toast(error);
 				}
 			}
 			// event.preventDefault();
@@ -398,7 +403,7 @@ export default class Live extends Plugin {
 
 		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {
 			if (event.reason instanceof RelayException) {
-				toast(event.reason);
+				this.toast(event.reason);
 			}
 			//event.preventDefault();
 		};
@@ -623,6 +628,10 @@ export default class Live extends Plugin {
 
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();
+
+		this.notifier = null as any;
+		this.toast = null as any;
+
 		auditTeardown();
 		flushLogs();
 	}

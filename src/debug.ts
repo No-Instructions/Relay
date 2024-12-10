@@ -1,10 +1,22 @@
-// CurryLog is a way to add tagged logging that is stripped in production
-import { Notice, Vault } from "obsidian";
 import type { TimeProvider } from "./TimeProvider";
 
 type LogLevel = "debug" | "warn" | "log" | "error";
 
 declare const BUILD_TYPE: string;
+
+// Interfaces for dependency injection
+export interface INotifier {
+	notify(message: string): void;
+}
+
+export interface IFileAdapter {
+	append(path: string, content: string): Promise<void>;
+	stat(path: string): Promise<{ size: number } | null>;
+	exists(path: string): Promise<boolean>;
+	remove(path: string): Promise<void>;
+	rename(oldPath: string, newPath: string): Promise<void>;
+	write(path: string, content: string): Promise<void>;
+}
 
 export const RelayInstances = new WeakMap();
 let debugging = false;
@@ -30,7 +42,7 @@ let logConfig: LogConfig = {
 };
 
 let currentLogFile: string;
-let vault: Vault;
+let fileAdapter: IFileAdapter;
 const logBuffer: LogEntry[] = [];
 
 type LogEntry = {
@@ -41,12 +53,12 @@ type LogEntry = {
 };
 
 export function initializeLogger(
-	vaultInstance: Vault,
+	adapter: IFileAdapter,
 	timeProvider: TimeProvider,
 	logFilePath: string,
 	config?: Partial<LogConfig>,
 ) {
-	vault = vaultInstance;
+	fileAdapter = adapter;
 	currentLogFile = logFilePath;
 	if (config) {
 		logConfig = { ...logConfig, ...config };
@@ -64,7 +76,7 @@ export async function flushLogs() {
 		try {
 			await rotateLogIfNeeded();
 			const logContent = entries.map(formatLogEntry).join("\n") + "\n";
-			await vault.adapter.append(currentLogFile, logContent);
+			await fileAdapter.append(currentLogFile, logContent);
 			return;
 		} catch (error) {
 			console.error(`Failed to write logs (attempt ${retry + 1}):`, error);
@@ -76,25 +88,25 @@ export async function flushLogs() {
 }
 
 async function rotateLogIfNeeded(): Promise<void> {
-	const stat = await vault.adapter.stat(currentLogFile);
+	const stat = await fileAdapter.stat(currentLogFile);
 	if (stat && stat.size > logConfig.maxFileSize) {
 		for (let i = logConfig.maxBackups; i > 0; i--) {
 			const oldFile = `${currentLogFile}.${i}`;
 			const newFile = `${currentLogFile}.${i + 1}`;
-			if (await vault.adapter.exists(oldFile)) {
+			if (await fileAdapter.exists(oldFile)) {
 				if (i === logConfig.maxBackups) {
-					await vault.adapter.remove(oldFile);
+					await fileAdapter.remove(oldFile);
 				} else {
-					await vault.adapter.rename(oldFile, newFile);
+					await fileAdapter.rename(oldFile, newFile);
 				}
 			}
 		}
 
-		if (await vault.adapter.exists(currentLogFile)) {
-			await vault.adapter.rename(currentLogFile, `${currentLogFile}.1`);
+		if (await fileAdapter.exists(currentLogFile)) {
+			await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
 		}
 
-		await vault.adapter.write(currentLogFile, "");
+		await fileAdapter.write(currentLogFile, "");
 	}
 }
 
@@ -102,13 +114,18 @@ function formatLogEntry(entry: LogEntry): string {
 	return `[${entry.timestamp}] [${entry.level.toUpperCase()}] ${entry.message}\n    at ${entry.callerInfo}`;
 }
 
-function toastDebug(error: Error): Error {
-	new Notice(error.name + "\n" + error.message);
-	return error;
-}
-function toastProd(error: Error): Error {
-	new Notice(error.name + ":\nAn error has occurred, please reload Obsidian.");
-	return error;
+function createToastFunction(notifier: INotifier, debug: boolean) {
+	return debug
+		? (error: Error): Error => {
+				notifier.notify(error.name + "\n" + error.message);
+				return error;
+			}
+		: (error: Error): Error => {
+				notifier.notify(
+					error.name + ":\nAn error has occurred, please reload Obsidian.",
+				);
+				return error;
+			};
 }
 
 const SENSITIVE_KEYS = ["token", "authorization", "email"];
@@ -203,4 +220,6 @@ export class HasLogging {
 }
 
 const debug = BUILD_TYPE === "debug";
-export const toast = debug ? toastDebug : toastProd;
+export function createToast(notifier: INotifier) {
+	return createToastFunction(notifier, debug);
+}
