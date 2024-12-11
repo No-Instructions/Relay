@@ -33,6 +33,7 @@
 	interface JoinRelayEvent extends CustomEvent<RelayEventDetail> {}
 
 	export let plugin: Live;
+	export let path: string | undefined = undefined;
 	const app = plugin.app;
 	const relayManager = plugin.relayManager;
 	const relayRoles = relayManager.relayRoles;
@@ -49,6 +50,58 @@
 	const history: View[] = [{ component: Relays }];
 
 	export let close: () => void;
+
+	// function getPath(): string {
+	// 	if (sharedFolder) {
+	// 		const relayParam = currentRelay ? `&relay=${currentRelay.guid}` : "";
+	// 		return `/shared-folders?id=${sharedFolder.guid}${relayParam}`;
+	// 	}
+	// 	if (currentRelay) {
+	// 		return `/relays?id=${currentRelay.guid}`;
+	// 	}
+	// 	return "/";
+	// }
+
+	function setPath(path: string) {
+		currentRelay = undefined;
+		sharedFolder = undefined;
+
+		if (path === "/") {
+			currentComponent = Relays;
+			return;
+		}
+
+		const urlParams = new URLSearchParams(path.split("?")[1] || "");
+		const id = urlParams.get("id");
+
+		if (path.startsWith("/relays")) {
+			if (id) {
+				currentRelay = relayManager.relays.find((relay) => relay.guid === id);
+				currentComponent = ManageRelay;
+			} else {
+				currentComponent = Relays;
+			}
+			return;
+		}
+
+		if (path.startsWith("/shared-folders")) {
+			if (id) {
+				sharedFolder = sharedFolders.find((f) => f.guid === id);
+				const relayId = urlParams.get("relay");
+				if (relayId) {
+					currentRelay = relayManager.relays.get(relayId);
+				}
+				currentComponent = ManageSharedFolder;
+			}
+			return;
+		}
+	}
+
+	$: {
+		if (path) {
+			setPath(path);
+		}
+	}
 
 	function handleManageRelayEvent(event: ManageRelayEvent) {
 		history.push({
