@@ -51,6 +51,7 @@ import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
+import { URLSearchParams } from "url";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -349,11 +350,12 @@ export default class Live extends Plugin {
 		this._liveViews.refresh("login");
 	}
 
-	async openSettings() {
+	async openSettings(path: string = "/") {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const setting = (this.app as any).setting;
 		await setting.open();
-		setting.openTabById("system3-relay");
+		await setting.openTabById("system3-relay");
+		this.settingsTab.navigateTo(path);
 	}
 
 	setup() {
@@ -574,6 +576,32 @@ export default class Live extends Plugin {
 			});
 			this.register(patchFileToLinktext);
 		});
+
+		interface Parameters {
+			action: string;
+			relay?: string;
+			id?: string;
+		}
+
+		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
+			console.warn("yo!");
+			const parameters = e as unknown as Parameters;
+			const query = new URLSearchParams({ ...parameters }).toString();
+			const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
+			console.log(path);
+			this.openSettings(path);
+		});
+
+		this.registerObsidianProtocolHandler(
+			"relay/settings/shared-folders",
+			async (e) => {
+				const parameters = e as unknown as Parameters;
+				const query = new URLSearchParams({ ...parameters }).toString();
+				const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
+				console.log(path);
+				this.openSettings(path);
+			},
+		);
 	}
 
 	removeCommand(command: string): void {
