@@ -29,6 +29,12 @@ export class LiveSettingsTab extends PluginSettingTab {
 		});
 	}
 
+	navigateTo(path: string) {
+		this.component?.$set({
+			path: path,
+		});
+	}
+
 	hide(): void {
 		try {
 			this.component?.$destroy();
