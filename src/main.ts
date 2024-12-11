@@ -309,6 +309,16 @@ export default class Live extends Plugin {
 									this._liveViews.refresh("folder connection toggle");
 								});
 						});
+						menu.addItem((item) => {
+							item
+								.setTitle("Folder settings")
+								.setIcon("gear")
+								.onClick(() => {
+									this.openSettings(
+										`/shared-folders?id=${folder.guid}&relay=${folder.relayId}`,
+									);
+								});
+						});
 					}
 				}),
 			);
