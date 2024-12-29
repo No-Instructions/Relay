@@ -43,6 +43,17 @@ export class S3RemoteDocument {
 	) {}
 }
 
+export class S3RemoteFile {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(
+		public relayId: UUID,
+		public folderId: UUID,
+		public fileId: UUID,
+	) {}
+}
+
 export class S3Folder {
 	platform: string = "s3rn";
 	product: string = "relay";
@@ -60,11 +71,22 @@ export class S3Document {
 	) {}
 }
 
+export class S3File {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(
+		public folderId: UUID,
+		public fileId: UUID,
+	) {}
+}
+
 export type S3RNType =
 	| S3RelayProduct
 	| S3Relay
 	| S3RemoteFolder
-	| S3RemoteDocument;
+	| S3RemoteDocument
+	| S3RemoteFile;
 
 export class S3RN {
 	static validateUUID(uuid: UUID): boolean {
@@ -96,6 +118,14 @@ export class S3RN {
 			}
 			s3rn += `:doc:${entity.documentId}`;
 		}
+
+		if ("fileId" in entity) {
+			if (!this.validateUUID(entity.fileId)) {
+				throw new Error("Invalid document UUID");
+			}
+			s3rn += `:file:${entity.fileId}`;
+		}
+
 		return s3rn;
 	}
 
@@ -123,6 +153,13 @@ export class S3RN {
 			type2 === "doc"
 		) {
 			return new S3RemoteDocument(item0, item1, item2);
+		} else if (
+			product === "relay" &&
+			type0 === "relay" &&
+			type1 === "folder" &&
+			type2 === "file"
+		) {
+			return new S3RemoteFile(item0, item1, item2);
 		} else if (product === "relay" && type0 === "relay" && type1 == "folder") {
 			return new S3RemoteFolder(item0, item1);
 		} else if (
