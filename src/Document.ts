@@ -9,11 +9,13 @@ import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
+import { SharedPromise } from "./promiseUtils";
 
 export class Document extends HasProvider implements TFile {
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
 	_hasKnownPeers?: boolean;
+	_hasKnownPeersPromise?: SharedPromise<boolean>;
 	path: string;
 	_tfile: TFile | null;
 	name: string;
@@ -241,16 +243,24 @@ export class Document extends HasProvider implements TFile {
 		return this._persistence._dbsize > 3;
 	}
 
-	hasKnownPeers(): Promise<boolean> {
+	async hasKnownPeers(): Promise<boolean> {
 		if (this._hasKnownPeers !== undefined) {
 			return Promise.resolve(this._hasKnownPeers);
 		}
-		return this.whenSynced().then(async () => {
-			await fetchUpdates(this._persistence);
-			this._hasKnownPeers = this._persistence._dbsize > 3;
-			this.debug("update count", this.path, this._persistence._dbsize);
-			return this._hasKnownPeers;
-		});
+		const promiseFn = async (): Promise<boolean> => {
+			return this.whenSynced().then(async () => {
+				await fetchUpdates(this._persistence);
+				this._hasKnownPeers = this._persistence._dbsize > 3;
+				this.debug("update count", this.path, this._persistence._dbsize);
+				return this._hasKnownPeers;
+			});
+		};
+		this._hasKnownPeersPromise =
+			this._hasKnownPeersPromise ||
+			new SharedPromise<boolean>(promiseFn, (): [boolean, boolean] => {
+				return [!!this._hasKnownPeers, !!this._hasKnownPeers];
+			});
+		return this._hasKnownPeersPromise.getPromise();
 	}
 
 	public get dbsize() {
