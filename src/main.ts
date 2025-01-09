@@ -194,10 +194,21 @@ export default class Live extends Plugin {
 						modal.open();
 					},
 				});
+				this.addCommand({
+					id: "reload",
+					name: "Reload Relay",
+					callback: async () => {
+						const pluginId = this.manifest.id;
+						const plugins = (this.app as any).plugins;
+						await plugins.disablePlugin(pluginId);
+						await plugins.enablePlugin(pluginId);
+					},
+				});
 			} else {
 				this.disableDebugging();
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("show-debug-info");
+				this.removeCommand("reload");
 			}
 		});
 
