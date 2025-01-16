@@ -4,7 +4,10 @@ import FeatureFlagModalContent from "../components/FeatureFlagModalContent.svelt
 export class FeatureFlagToggleModal extends Modal {
 	private component?: FeatureFlagModalContent;
 
-	constructor(app: App) {
+	constructor(
+		app: App,
+		private reload: () => void,
+	) {
 		super(app);
 	}
 
@@ -13,6 +16,9 @@ export class FeatureFlagToggleModal extends Modal {
 
 		this.component = new FeatureFlagModalContent({
 			target: contentEl,
+			props: {
+				reload: this.reload,
+			},
 		});
 	}
 
