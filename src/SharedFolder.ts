@@ -96,6 +96,7 @@ export class SharedFolder extends HasProvider {
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
 	shouldConnect: boolean;
+	destroyed: boolean = false;
 	public vault: Vault;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
@@ -203,7 +204,9 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.whenReady().then(() => {
-			this.addLocalDocs();
+			if (!this.destroyed) {
+				this.addLocalDocs();
+			}
 		});
 
 		this.ydoc.on(
@@ -772,6 +775,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	destroy() {
+		this.destroyed = true;
 		this.docs.forEach((doc: Document) => {
 			doc.destroy();
 			this.docs.delete(doc.guid);
