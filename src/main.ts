@@ -54,6 +54,7 @@ import { DebugModal } from "./ui/DebugModal";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { URLSearchParams } from "url";
+import { BugReportModal } from "./ui/BugReportModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -196,8 +197,17 @@ export default class Live extends Plugin {
 					},
 				});
 				this.addCommand({
+					id: "send-bug-report",
+					name: "Send bug report",
+					callback: () => {
+						const modal = new BugReportModal(this.app, this);
+						this.openModals.push(modal);
+						modal.open();
+					},
+				});
+				this.addCommand({
 					id: "show-debug-info",
-					name: "Show Debug Information",
+					name: "Show debug info",
 					callback: () => {
 						const modal = new DebugModal(this.app, this);
 						this.openModals.push(modal);
@@ -213,6 +223,7 @@ export default class Live extends Plugin {
 				});
 			} else {
 				this.removeCommand("toggle-feature-flags");
+				this.removeCommand("send-bug-report");
 				this.removeCommand("show-debug-info");
 				this.removeCommand("disable-debugging");
 				this.addCommand({

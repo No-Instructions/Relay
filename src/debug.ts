@@ -16,6 +16,7 @@ export interface IFileAdapter {
 	remove(path: string): Promise<void>;
 	rename(oldPath: string, newPath: string): Promise<void>;
 	write(path: string, content: string): Promise<void>;
+	read(path: string): Promise<string>;
 }
 
 export const RelayInstances = new WeakMap();
@@ -202,6 +203,42 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 			logBuffer.push(logEntry);
 		}
 	};
+}
+
+export async function getAllLogFiles(): Promise<string[]> {
+	const logFiles: string[] = [];
+
+	if (await fileAdapter.exists(currentLogFile)) {
+		logFiles.push(currentLogFile);
+	}
+
+	for (let i = 1; i <= logConfig.maxBackups; i++) {
+		const backupFile = `${currentLogFile}.${i}`;
+		if (await fileAdapter.exists(backupFile)) {
+			logFiles.push(backupFile);
+		}
+	}
+
+	return logFiles;
+}
+
+export async function getAllLogs(): Promise<string> {
+	const logs: string[] = [];
+
+	if (await fileAdapter.exists(currentLogFile)) {
+		const currentContent = await fileAdapter.read(currentLogFile);
+		logs.push(currentContent);
+	}
+
+	for (let i = 1; i <= logConfig.maxBackups; i++) {
+		const backupFile = `${currentLogFile}.${i}`;
+		if (await fileAdapter.exists(backupFile)) {
+			const backupContent = await fileAdapter.read(backupFile);
+			logs.push(backupContent);
+		}
+	}
+
+	return logs.reverse().join("\n");
 }
 
 export class HasLogging {
