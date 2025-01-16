@@ -337,6 +337,7 @@ export class LiveView implements S3View {
 }
 
 export class LiveViewManager {
+	destroyed = false;
 	workspace: Workspace;
 	views: S3View[];
 	private _activePromise?: Promise<boolean> | null;
@@ -656,6 +657,8 @@ export class LiveViewManager {
 		};
 		log("Refresh");
 
+		if (this.destroyed) return false;
+
 		await this.foldersReady();
 
 		let views: S3View[] = [];
@@ -712,6 +715,7 @@ export class LiveViewManager {
 	}
 
 	async refresh(context: string, timeout = 3000) {
+		if (this.destroyed) return false;
 		const log = curryLog(context, "warn");
 		const queuedAt = moment.utc();
 		this.refreshQueue.push(() => {
@@ -721,6 +725,7 @@ export class LiveViewManager {
 			return false;
 		}
 		while (this.refreshQueue.length > 0) {
+			if (this.destroyed) return false;
 			if (this.refreshQueue.length > 2) {
 				log("refreshQueue size:", this.refreshQueue.length);
 				this.refreshQueue.slice(-2);
@@ -781,6 +786,7 @@ export class LiveViewManager {
 	}
 
 	public destroy() {
+		this.destroyed = true;
 		this.releaseViews(this.views);
 		this.offListeners.forEach((off) => off());
 		this.offListeners.length = 0;
