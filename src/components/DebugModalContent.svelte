@@ -2,9 +2,10 @@
 	import { writable } from "svelte/store";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import ObjectState from "./ObjectState.svelte";
-	import { debounce } from "obsidian";
+	import { debounce, requestUrl } from "obsidian";
 	import type Live from "../main";
+	import { getAllLogFiles, getAllLogs } from "src/debug";
+	import { Bug } from "lucide-svelte";
 
 	export let plugin: Live;
 
@@ -12,6 +13,11 @@
 	let fetchImpl = writable<string>(getFetch());
 	let usingBlink = writable<string>(getUsingBlink());
 	let anyPb = writable<any>(plugin.loginManager.pb as any);
+	let logFiles = writable<string[]>([]);
+
+	getAllLogFiles().then((files) => {
+		logFiles.set(files);
+	});
 
 	function getResponse() {
 		try {
@@ -45,8 +51,7 @@
 	}
 </script>
 
-<div class="modal-title">Debug Information</div>
-
+<div class="modal-title">Debug Info</div>
 <div class="modal-content">
 	<SettingItemHeading name="Environment">
 		<button
@@ -72,6 +77,29 @@
 		{$usingBlink}
 	</SettingItem>
 
+	<SettingItem name="Startup Time" description="">
+		{plugin.loadTime ? `${plugin.loadTime}ms` : "unknown"}
+	</SettingItem>
+
 	<SettingItemHeading name="Connections" />
-	<ObjectState object={$anyPb.cancelControllers} />
+	<SettingItem name="" description="">
+		<div slot="description">
+			{#each Object.keys($anyPb.cancelControllers) as connection}
+				<div>
+					{`${connection}`}
+				</div>
+			{/each}
+		</div>
+	</SettingItem>
+
+	<SettingItemHeading name="Log Files" />
+	<SettingItem name="" description="">
+		<div slot="description">
+			{#each $logFiles as lfile}
+				<div>
+					{`${lfile}`}
+				</div>
+			{/each}
+		</div>
+	</SettingItem>
 </div>
