@@ -4,12 +4,21 @@
 	import { setIcon } from "obsidian";
 	import { onMount } from "svelte";
 
-	let flagManager = FeatureFlagManager.getInstance();
-	let flags: FeatureFlags = { ...flagManager.flags };
+	export let reload: () => void;
 
-	function toggleFlag(flagName: string) {
-		flags[flagName] = !flags[flagName];
-		flagManager.setFlag(flagName as keyof FeatureFlags, flags[flagName], true);
+	let flagManager = FeatureFlagManager.getInstance();
+	$: flags = { ...$flagManager.flags };
+
+	console.log(flags);
+
+	function toggleFlag(flagName: keyof FeatureFlags) {
+		const flagValue = !flags[flagName];
+		flags[flagName] = flagValue;
+		flagManager.setFlag(flagName as keyof FeatureFlags, flags[flagName]);
+	}
+
+	function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
+		return key in flags;
 	}
 
 	onMount(() => {
@@ -24,7 +33,6 @@
 
 <div class="feature-flag-toggle-modal">
 	<h2>Feature Flags</h2>
-	<p>Make sure you reload obsidian after changing the flags below.</p>
 	{#each Object.entries(flags) as [flagName, value]}
 		<div class="feature-flag-item setting-item">
 			<div class="setting-item-info">
@@ -37,18 +45,37 @@
 					aria-checked={value}
 					tabindex="0"
 					on:keypress={() => {
+						if (!isKeyOfFeatureFlags(flagName))
+							throw new Error("Unexpected feature flag!");
 						toggleFlag(flagName);
 					}}
 					class="checkbox-container"
 					class:is-enabled={value}
-					on:click={() => toggleFlag(flagName)}
+					on:click={() => {
+						if (!isKeyOfFeatureFlags(flagName))
+							throw new Error("Unexpected feature flag!");
+						toggleFlag(flagName);
+					}}
 				>
-					<input type="checkbox" checked={value} />
+					<input type="checkbox" tabindex="-1" checked={value} />
 					<div class="checkbox-toggle"></div>
 				</div>
 			</div>
 		</div>
 	{/each}
+
+	<div class="setting-item">
+		<div class="setting-item-control">
+			<button
+				aria-label="apply flag settings"
+				on:click={reload}
+				on:keypress={reload}
+				tabindex="0"
+			>
+				Apply
+			</button>
+		</div>
+	</div>
 </div>
 
 <style>

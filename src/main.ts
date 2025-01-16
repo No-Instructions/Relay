@@ -9,6 +9,8 @@ import {
 	TFile,
 	Vault,
 	FileManager,
+	Modal,
+	moment,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -75,6 +77,8 @@ declare const API_URL: string;
 declare const GIT_TAG: string;
 
 export default class Live extends Plugin {
+	openModals: Modal[] = [];
+	loadTime?: number;
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
 	notifier!: ObsidianNotifier;
@@ -135,6 +139,7 @@ export default class Live extends Plugin {
 		return API_URL + path;
 	}
 	async onload() {
+		const start = moment.now();
 		RelayInstances.set(this, "plugin");
 		this.timeProvider = new DefaultTimeProvider();
 		this.register(() => {
@@ -181,7 +186,10 @@ export default class Live extends Plugin {
 					id: "toggle-feature-flags",
 					name: "Feature Flags",
 					callback: () => {
-						const modal = new FeatureFlagToggleModal(this.app);
+						const modal = new FeatureFlagToggleModal(this.app, () => {
+							this.reload();
+						});
+						this.openModals.push(modal);
 						modal.open();
 					},
 				});
@@ -190,25 +198,23 @@ export default class Live extends Plugin {
 					name: "Show Debug Information",
 					callback: () => {
 						const modal = new DebugModal(this.app, this);
+						this.openModals.push(modal);
 						modal.open();
-					},
-				});
-				this.addCommand({
-					id: "reload",
-					name: "Reload Relay",
-					callback: async () => {
-						const pluginId = this.manifest.id;
-						const plugins = (this.app as any).plugins;
-						await plugins.disablePlugin(pluginId);
-						await plugins.enablePlugin(pluginId);
 					},
 				});
 			} else {
 				this.disableDebugging();
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("show-debug-info");
-				this.removeCommand("reload");
 			}
+		});
+
+		this.addCommand({
+			id: "reload",
+			name: "Reload Relay",
+			callback: () => {
+				this.reload();
+			},
 		});
 
 		this.vault = this.app.vault;
@@ -327,8 +333,17 @@ export default class Live extends Plugin {
 
 			this.setup();
 			this._liveViews.refresh("init");
+			this.loadTime = moment.now() - start;
 		});
 	}
+
+	async reload() {
+		const pluginId = this.manifest.id;
+		const plugins = (this.app as any).plugins;
+		await plugins.disablePlugin(pluginId);
+		await plugins.enablePlugin(pluginId);
+	}
+
 	private async _createSharedFolder(
 		path: string,
 		guid: string,
@@ -604,11 +619,9 @@ export default class Live extends Plugin {
 		}
 
 		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
-			console.warn("yo!");
 			const parameters = e as unknown as Parameters;
 			const query = new URLSearchParams({ ...parameters }).toString();
 			const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
-			console.log(path);
 			this.openSettings(path);
 		});
 
@@ -618,7 +631,6 @@ export default class Live extends Plugin {
 				const parameters = e as unknown as Parameters;
 				const query = new URLSearchParams({ ...parameters }).toString();
 				const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
-				console.log(path);
 				this.openSettings(path);
 			},
 		);
@@ -676,6 +688,11 @@ export default class Live extends Plugin {
 
 		this.notifier = null as any;
 		this.toast = null as any;
+
+		this.openModals.forEach((modal) => {
+			modal.close();
+		});
+		this.openModals.length = 0;
 
 		auditTeardown();
 		flushLogs();
