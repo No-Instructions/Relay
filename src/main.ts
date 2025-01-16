@@ -182,6 +182,7 @@ export default class Live extends Plugin {
 		this.debugSettings.subscribe((settings) => {
 			if (settings.debugging) {
 				this.enableDebugging();
+				this.removeCommand("enable-debugging");
 				this.addCommand({
 					id: "toggle-feature-flags",
 					name: "Feature Flags",
@@ -202,10 +203,24 @@ export default class Live extends Plugin {
 						modal.open();
 					},
 				});
+				this.addCommand({
+					id: "disable-debugging",
+					name: "Disable debugging",
+					callback: () => {
+						this.disableDebugging(true);
+					},
+				});
 			} else {
-				this.disableDebugging();
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("show-debug-info");
+				this.removeCommand("disable-debugging");
+				this.addCommand({
+					id: "enable-debugging",
+					name: "Enable debugging",
+					callback: () => {
+						this.enableDebugging(true);
+					},
+				});
 			}
 		});
 
