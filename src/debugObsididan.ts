@@ -33,4 +33,8 @@ export class ObsidianFileAdapter implements IFileAdapter {
 	async write(path: string, content: string) {
 		return this.vault.adapter.write(path, content);
 	}
+
+	async read(path: string) {
+		return this.vault.adapter.read(path);
+	}
 }
