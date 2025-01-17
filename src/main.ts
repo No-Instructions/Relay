@@ -54,6 +54,7 @@ import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { URLSearchParams } from "url";
 import { BugReportModal } from "./ui/BugReportModal";
+import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -78,6 +79,7 @@ declare const API_URL: string;
 declare const GIT_TAG: string;
 
 export default class Live extends Plugin {
+	appId!: string;
 	openModals: Modal[] = [];
 	loadTime?: number;
 	sharedFolders!: SharedFolders;
@@ -140,6 +142,7 @@ export default class Live extends Plugin {
 		return API_URL + path;
 	}
 	async onload() {
+		this.appId = (this.app as any).appId;
 		const start = moment.now();
 		RelayInstances.set(this, "plugin");
 		this.timeProvider = new DefaultTimeProvider();
@@ -209,6 +212,15 @@ export default class Live extends Plugin {
 					name: "Show debug info",
 					callback: () => {
 						const modal = new DebugModal(this.app, this);
+						this.openModals.push(modal);
+						modal.open();
+					},
+				});
+				this.addCommand({
+					id: "analyze-indexeddb",
+					name: "Analyze Database",
+					callback: () => {
+						const modal = new IndexedDBAnalysisModal(this.app, this);
 						this.openModals.push(modal);
 						modal.open();
 					},
@@ -384,6 +396,7 @@ export default class Live extends Plugin {
 		await folderSettings.flush();
 
 		const folder = new SharedFolder(
+			this.appId,
 			guid,
 			path,
 			this.loginManager,
