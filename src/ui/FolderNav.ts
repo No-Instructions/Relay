@@ -5,6 +5,7 @@ import {
 	Vault,
 	Workspace,
 	WorkspaceLeaf,
+	debounce,
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
@@ -537,7 +538,11 @@ export class FolderNavigationDecorations {
 		}
 	}
 
-	refresh() {
+	refresh = debounce(() => {
+		this._refresh();
+	}, 100);
+
+	_refresh() {
 		if (!this.layoutReady) return;
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {

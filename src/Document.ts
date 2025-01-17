@@ -3,7 +3,7 @@ import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
-import { S3Document, S3Folder, S3RemoteDocument } from "./S3RN";
+import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
@@ -76,6 +76,10 @@ export class Document extends HasProvider implements TFile {
 		this.setLoggers(`[SharedDoc](${this.path})`);
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			this._persistence.set("path", this.path);
+			this._persistence.set("relay", this.sharedFolder.relayId || "");
+			this._persistence.set("appId", this.sharedFolder.appId);
+			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
