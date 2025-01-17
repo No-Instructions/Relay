@@ -20,7 +20,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import { moment } from "obsidian";
 import { SharedPromise } from "./promiseUtils";
-import { S3Folder, S3RemoteFolder } from "./S3RN";
+import { S3Folder, S3RN, S3RemoteFolder } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
@@ -147,6 +147,7 @@ export class SharedFolder extends HasProvider {
 	};
 
 	constructor(
+		public appId: string,
 		guid: string,
 		path: string,
 		loginManager: LoginManager,
@@ -184,6 +185,10 @@ export class SharedFolder extends HasProvider {
 
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			this._persistence.set("path", this.path);
+			this._persistence.set("relay", this.relayId || "");
+			this._persistence.set("appId", this.appId);
+			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 			this._persistence.once("synced", () => {
 				this.log("", this.ids);
 			});
