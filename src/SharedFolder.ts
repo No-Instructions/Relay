@@ -12,43 +12,72 @@ import {
 import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
 import { v4 as uuidv4 } from "uuid";
 import { dirname, join, sep } from "path-browserify";
-import { Doc } from "yjs";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { moment } from "obsidian";
 import { SharedPromise } from "./promiseUtils";
 import { S3Folder, S3RN, S3RemoteFolder } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import { withFlag } from "./flagManager";
+import { RelayInstances } from "./debug";
+import { flags, withFlag } from "./flagManager";
 import { flag } from "./flags";
 import { DiskBufferStore } from "./DiskBuffer";
 import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
+import { SyncFile } from "./SyncFile";
+import { ContentAddressedStore } from "./CAS";
+import { getMimeType } from "./mimetypes";
+import { SyncFolder } from "./SyncFolder";
+import {
+	SyncStore,
+	SyncType,
+	isDocument,
+	isSyncFile,
+	isSyncFolder,
+	makeFileMeta,
+	type Meta,
+} from "./SyncStore";
+import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
+import { SyncNothing } from "./SyncNothing";
+import type { IFile } from "./IFile";
+import type { TimeProvider } from "./TimeProvider";
 
 export interface SharedFolderSettings {
 	guid: string;
 	path: string;
 	relay?: string;
+	sync?: SyncFlags;
 }
 
-interface Operation {
-	op: "create" | "rename" | "delete" | "noop";
+interface FileSyncOperation {
+	op: "create" | "rename" | "delete" | "noop" | "pull" | "push";
 	path: string;
-	promise: Promise<void> | Promise<Document>;
+	promise: Promise<void> | Promise<IFile>;
 }
 
-interface Create extends Operation {
+interface Create extends FileSyncOperation {
 	op: "create";
 	path: string;
-	promise: Promise<Document>;
+	promise: Promise<IFile>;
 }
 
-interface Rename extends Operation {
+interface Pull extends FileSyncOperation {
+	op: "pull";
+	path: string;
+	promise: Promise<IFile>;
+}
+
+interface Push extends FileSyncOperation {
+	op: "push";
+	path: string;
+	promise: Promise<IFile>;
+}
+
+interface Rename extends FileSyncOperation {
 	op: "rename";
 	path: string;
 	from: string;
@@ -56,21 +85,21 @@ interface Rename extends Operation {
 	promise: Promise<void>;
 }
 
-interface Delete extends Operation {
+interface Delete extends FileSyncOperation {
 	op: "delete";
 	path: string;
 	promise: Promise<void>;
 }
 
-interface Noop extends Operation {
+interface Noop extends FileSyncOperation {
 	op: "noop";
 	path: string;
 	promise: Promise<void>;
 }
 
-type OperationType = Create | Rename | Delete | Noop;
+type OperationType = Create | Rename | Delete | Noop | Push | Pull;
 
-class Documents extends ObservableSet<Document> {
+class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(super.notifyListeners, 100);
 
@@ -79,7 +108,7 @@ class Documents extends ObservableSet<Document> {
 		return;
 	}
 
-	add(item: Document, update = true): ObservableSet<Document> {
+	add(item: IFile, update = true): ObservableSet<IFile> {
 		this._set.add(item);
 		if (update) {
 			this.notifyListeners();
@@ -90,16 +119,18 @@ class Documents extends ObservableSet<Document> {
 
 export class SharedFolder extends HasProvider {
 	path: string;
-	ids: Y.Map<string>; // Maps document paths to guids
-	docs: Map<string, Document>; // Maps guids to SharedDocs
-	docset: Documents;
+	docs: Map<string, IFile>; // Maps guids to SharedDocs
+	docset: Files;
+	cas: ContentAddressedStore;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
 	shouldConnect: boolean;
 	destroyed: boolean = false;
 	public vault: Vault;
+	syncStore: SyncStore;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
+	syncSettingsManager: SyncSettingsManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
 	private _awaitingUpdates: boolean;
 	private unsubscribes: Unsubscriber[] = [];
@@ -109,35 +140,41 @@ export class SharedFolder extends HasProvider {
 
 	private addLocalDocs = () => {
 		const files = this.getFiles();
-		const docs: Document[] = [];
-		const vpaths: string[] = [];
+		const docs: IFile[] = [];
+		const newFiles: TAbstractFile[] = [];
 		files.forEach((file) => {
 			// if the file is in the shared folder and not in the map, move it to the Trash
 			if (!this.checkPath(file.path)) {
 				return;
 			}
-			if (!this.ids.has(file.path)) {
-				vpaths.push(this.getVirtualPath(file.path));
+			if (!this.syncSettingsManager.isExtensionEnabled(file.path)) {
+				return;
+			}
+			if (!this.syncStore.has(this.getVirtualPath(file.path))) {
+				newFiles.push(file);
 			}
 		});
-		const newDocs = this.placeHold(vpaths);
+		const newDocs = this.placeHold(newFiles);
 		files.forEach((file) => {
 			if (!this.checkPath(file.path)) {
 				return;
 			}
-			if (!this.checkExtension(file.path)) {
-				return;
-			}
-			if (file instanceof TFolder) {
-				return;
-			}
-			const guid = this.ids.get(this.getVirtualPath(file.path));
-			const loadFromDisk = (guid && newDocs.contains(guid)) || false;
+			const meta = this.syncStore.get(this.getVirtualPath(file.path));
+			const loadFromDisk = (meta && newDocs.contains(meta.id)) || false;
 
-			const upload = (doc: Document) => {
+			const upload = (file: IFile) => {
 				withFlag(flag.enableUploadOnShare, () => {
-					this.backgroundSync.putDocument(doc);
+					if (file instanceof Document) {
+						file.getProviderToken().then(() => {
+							this.backgroundSync.putDocument(file);
+						});
+					}
 				});
+				if (file instanceof SyncFile) {
+					if (!file.getRemote()) {
+						file.push();
+					}
+				}
 			};
 			const doc = this.createFile(file.path, loadFromDisk, false, upload);
 			docs.push(doc);
@@ -146,6 +183,14 @@ export class SharedFolder extends HasProvider {
 			this.docset.update();
 		}
 	};
+
+	public get tfolder(): TFolder {
+		const folder = this.vault.getAbstractFileByPath(this.path);
+		if (!(folder instanceof TFolder)) {
+			throw new Error("tfolder is not a folder");
+		}
+		return folder;
+	}
 
 	constructor(
 		public appId: string,
@@ -166,13 +211,13 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
+		this.setLoggers(`[SharedFolder][${path}]`);
 		this.shouldConnect = true;
 		this.fileManager = fileManager;
 		this.vault = vault;
 		this.path = path;
-		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
-		this.docset = new Documents();
+		this.docset = new Files();
 		this.relayManager = relayManager;
 		this._awaitingUpdates = awaitingUpdates;
 		this.relayId = relayId;
@@ -184,6 +229,12 @@ export class SharedFolder extends HasProvider {
 			}),
 		);
 
+		this.syncSettingsManager = this._settings.getChild<
+			SyncFlags,
+			SyncSettingsManager
+		>("sync", (settings, path) => new SyncSettingsManager(settings, path));
+		this.warn(`sync settings`, this.syncSettingsManager.get());
+
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
 			this._persistence.set("path", this.path);
@@ -191,7 +242,7 @@ export class SharedFolder extends HasProvider {
 			this._persistence.set("appId", this.appId);
 			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 			this._persistence.once("synced", () => {
-				this.log("", this.ids);
+				this.syncStore.print();
 			});
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
@@ -203,43 +254,70 @@ export class SharedFolder extends HasProvider {
 			this.connect();
 		}
 
+		this.syncStore = new SyncStore(
+			this.ydoc,
+			this.path,
+			this.syncSettingsManager,
+		);
+
+		this.cas = new ContentAddressedStore(
+			this,
+			this.relayManager,
+			this.loginManager,
+		);
+
 		this.whenReady().then(() => {
+			this.ydoc.transact(() => {
+				this.syncStore.migrateUp();
+				this.syncStore.commit();
+			}, this);
 			if (!this.destroyed) {
 				this.addLocalDocs();
+				this.syncFileTree(this.syncStore);
 			}
+			this.ydoc.on(
+				"update",
+				async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
+					if (origin == this) {
+						return;
+					}
+					await this.syncFileTree(this.syncStore);
+				},
+			);
+			RelayInstances.set(this, `[Shared Folder](${this.path})`);
 		});
-
-		this.ydoc.on(
-			"update",
-			async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-				if (origin == this) {
-					return;
-				}
-				this.log("file tree", this._debugFileTree());
-				await this.syncFileTree(doc);
-			},
-		);
 	}
 
 	public get settings(): SharedFolderSettings {
 		return this._settings.get();
 	}
 
-	getFiles(): TFile[] {
+	sync() {
+		this.syncFileTree(this.syncStore);
+	}
+
+	getFiles(): TAbstractFile[] {
 		const folder = this.vault.getAbstractFileByPath(this.path);
 		if (!(folder instanceof TFolder)) {
 			throw new Error(
 				`Could not find shared folders on file system at ${this.path}`,
 			);
 		}
-		const files: TFile[] = [];
+		const files: TAbstractFile[] = [];
 		Vault.recurseChildren(folder, (file: TAbstractFile) => {
-			if (file instanceof TFile) {
+			if (file !== folder) {
 				files.push(file);
 			}
 		});
 		return files;
 	}
+
+	getSyncableTAbstractFiles(): TAbstractFile[] {
+		return this.getFiles().filter((file) => {
+			return this.syncSettingsManager.isExtensionEnabled(file.path);
+		});
+	}
+
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
@@ -277,19 +355,10 @@ export class SharedFolder extends HasProvider {
 		this.s3rn = this.relayId
 			? new S3RemoteFolder(this.relayId, this.guid)
 			: new S3Folder(this.guid);
-		this._settings.update((current) => {
-			if (this.relayId) {
-				return {
-					guid: this.guid,
-					path: this.path,
-					relay: this.relayId,
-				};
-			}
-			return {
-				guid: this.guid,
-				path: this.path,
-			};
-		});
+		this._settings.update((current) => ({
+			...current,
+			...{ relay: this.relayId },
+		}));
 		this.notifyListeners();
 	}
 
@@ -332,18 +401,6 @@ export class SharedFolder extends HasProvider {
 		return this.readyPromise.getPromise();
 	}
 
-	_debugFileTree() {
-		const ids = new Map();
-		this.ydoc.getMap("docs")._map.forEach((item, path) => {
-			if (item.content instanceof Y.ContentAny) {
-				ids.set(path, item.content.arr[0]);
-			} else {
-				ids.set(path, item.content);
-			}
-		});
-		return ids;
-	}
-
 	whenSynced(): Promise<void> {
 		if (this._persistence.synced) {
 			return new Promise((resolve) => {
@@ -370,30 +427,29 @@ export class SharedFolder extends HasProvider {
 	}
 
 	async _handleServerRename(
-		doc: Document,
+		doc: IFile,
 		path: string,
 		file: TAbstractFile,
 		diffLog?: string[],
 	): Promise<void> {
 		// take a doc and it's new path.
-		diffLog?.push(`${file.path} was renamed to ${path}`);
-		const dir = dirname(path);
-		if (!this.existsSync(dir)) {
-			await this.mkdir(dir);
-			diffLog?.push(`creating directory ${dir}`);
+		diffLog?.push(`${file.path} was renamed to ${this.getPath(path)}`);
+		if (file instanceof TFile) {
+			const dir = dirname(path);
+			if (!this.existsSync(dir)) {
+				await this.mkdir(dir);
+				diffLog?.push(`creating directory ${dir}`);
+			}
 		}
-		this.fileManager
+		await this.fileManager
 			.renameFile(file, normalizePath(this.getPath(path)))
 			.then(() => {
 				doc.move(path);
 			});
 	}
 
-	async _handleServerCreate(
-		path: string,
-		diffLog?: string[],
-	): Promise<Document> {
-		const doc = this.createDoc(path, false, false);
+	async _handleServerCreate(path: string, diffLog?: string[]): Promise<IFile> {
+		const doc = this.createFile(this.getPath(path), false, false, () => {});
 
 		// Create directories as needed
 		let folderPromise: Promise<void> = Promise.resolve();
@@ -403,17 +459,17 @@ export class SharedFolder extends HasProvider {
 			diffLog?.push(`creating directory ${dir}`);
 		}
 
-		// Receive content, then flush to disk
-		const start = moment.now();
-		await doc.whenReady();
-		const end = moment.now();
-		this.debug(
-			`receive delay: received content for ${doc.path} after ${end - start}ms`,
-			doc.text.toString(),
-		);
-		await folderPromise;
-		this.flush(doc, doc.text.toString());
-		diffLog?.push(`created local file for remotely added doc ${path}`);
+		// Pull from remote as authoratative
+		if (doc instanceof SyncFile || doc instanceof Document) {
+			await folderPromise;
+			try {
+				doc.pull();
+			} catch (e) {
+				//pass
+			}
+			diffLog?.push(`created local file for remotely added doc ${path}`);
+		}
+
 		return doc;
 	}
 
@@ -423,7 +479,7 @@ export class SharedFolder extends HasProvider {
 			this.assertPath(this.path + path);
 		} catch {
 			this.error("Deleting doc (somehow moved outside of shared folder)", path);
-			this.ids.delete(path);
+			this.syncStore.delete(path);
 			return;
 		}
 	}
@@ -434,16 +490,48 @@ export class SharedFolder extends HasProvider {
 		remoteIds: Set<string>,
 		diffLog: string[],
 	): OperationType {
-		const doc = this.docs.get(guid);
+		const file = this.docs.get(guid);
+		const meta = this.syncStore.get(path);
+		if (!meta) {
+			console.warn("unknown sync type", path);
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+		if (meta && isSyncFile(meta) && !meta.hash) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+
+		if (file instanceof SyncFile) {
+			if (file.isStale && file.shouldPush) {
+				diffLog.push(`pushing ${path}`);
+				return {
+					op: "push",
+					path,
+					promise: (async () => {
+						await file.push();
+						return file;
+					})(),
+				};
+			} else if (file.isStale && file.shouldPull) {
+				diffLog.push(`pulling ${path}`);
+				return {
+					op: "pull",
+					path,
+					promise: (async () => {
+						await file.pull();
+						return file;
+					})(),
+				};
+			}
+		}
 		if (this.existsSync(path)) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
-		if (remoteIds.has(guid) && doc) {
-			const oldPath = this.getPath(doc.path);
-			const file = this.vault.getAbstractFileByPath(oldPath);
-			if (file) {
-				const promise = this._handleServerRename(doc, path, file, diffLog);
+		if (remoteIds.has(guid) && file) {
+			const oldPath = this.getPath(file.path);
+			const tfile = this.vault.getAbstractFileByPath(oldPath);
+			if (tfile) {
+				const promise = this._handleServerRename(file, path, tfile, diffLog);
 				return {
 					op: "rename",
 					path: path,
@@ -465,41 +553,67 @@ export class SharedFolder extends HasProvider {
 		diffLog: string[],
 	): Delete[] {
 		// Delete files that are no longer shared
-		const files = this.getFiles();
+		const ffiles = this.getSyncableTAbstractFiles();
 		const deletes: Delete[] = [];
-		files.forEach((file) => {
+		const folders = ffiles.filter((file) => file instanceof TFolder);
+		const files = ffiles.filter((file) => file instanceof TFile);
+		const sync = (file: TAbstractFile) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const fileInFolder = this.checkPath(file.path);
 			const fileInMap = remotePaths.contains(file.path.slice(this.path.length));
 			const synced = this._provider?.synced && this._persistence?.synced;
+			const vpath = this.getVirtualPath(file.path);
 			if (fileInFolder && !fileInMap) {
 				if (synced) {
-					diffLog.push(
-						`deleted local file ${file.path} for remotely deleted doc`,
-					);
+					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
 					const promise = this.vault.adapter.trashLocal(file.path);
-					deletes.push({ op: "delete", path: file.path, promise });
+					deletes.push({
+						op: "delete",
+						path: vpath,
+						promise,
+					});
 				}
 			}
-		});
+		};
+		files.forEach(sync);
+		folders.forEach(sync);
 		return deletes;
 	}
 
-	async syncFileTree(doc: Doc) {
-		const ops: Operation[] = [];
-		const map = doc.getMap<string>("docs");
+	syncByType(
+		syncStore: SyncStore,
+		diffLog: string[],
+		ops: FileSyncOperation[],
+		types: (SyncType.Folder | SyncType.File | SyncType.Document)[],
+	) {
+		syncStore.forEach((meta, path) => {
+			this._assertNamespacing(path);
+			if (types.contains(meta.type)) {
+				this._assertNamespacing(path);
+				ops.push(
+					this.applyRemoteState(meta.id, path, syncStore.remoteIds, diffLog),
+				);
+			}
+		});
+	}
+
+	async syncFileTree(syncStore: SyncStore) {
+		const ops: FileSyncOperation[] = [];
 		const diffLog: string[] = [];
 
-		this.ydoc.transact(() => {
-			map.forEach((_, path) => {
-				this._assertNamespacing(path);
-			});
-			const remoteIds = new Set(this.ids.values());
-			map.forEach((guid, path) => {
-				this._assertNamespacing(path);
-				ops.push(this.applyRemoteState(guid, path, remoteIds, diffLog));
-			});
-		});
+		this.ydoc.transact(async () => {
+			// Sync folder operations first because renames/moves also affect files
+			this.syncStore.migrateUp();
+			this.syncByType(syncStore, diffLog, ops, [SyncType.Folder]);
+		}, this);
+		await Promise.all(ops.map((op) => op.promise));
+		this.ydoc.transact(async () => {
+			this.syncByType(syncStore, diffLog, ops, [
+				SyncType.File,
+				SyncType.Document,
+			]);
+			this.syncStore.commit();
+		}, this);
 
 		const creates = ops.filter((op) => op.op === "create");
 		const renames = ops.filter((op) => op.op === "rename");
@@ -510,10 +624,19 @@ export class SharedFolder extends HasProvider {
 
 		const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
 
+		if ([...ops, ...deletes].every((op) => op.op === "noop")) {
+			this.debug("sync: noop");
+		} else {
+			this.log("remote paths", remotePaths);
+			this.log("operations", [...ops, ...deletes]);
+		}
 		if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
 			this.docset.update();
 		}
-		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
+
+		if (diffLog.length > 0) {
+			this.log("syncFileTree diff:\n" + diffLog.join("\n"));
+		}
 	}
 
 	move(path: string) {
@@ -564,10 +687,6 @@ export class SharedFolder extends HasProvider {
 		return path.startsWith(this.path + sep);
 	}
 
-	checkExtension(path: string, extension = ".md"): boolean {
-		return path.endsWith(extension);
-	}
-
 	getVirtualPath(path: string): string {
 		this.assertPath(path);
 
@@ -580,9 +699,9 @@ export class SharedFolder extends HasProvider {
 		create = true,
 		loadFromDisk = false,
 		update = true,
-	): Document {
+	): IFile {
 		const vPath = this.getVirtualPath(path);
-		return this.getDoc(vPath, create, loadFromDisk, update);
+		return this.getVFile(vPath, create, loadFromDisk, update);
 	}
 
 	getTFile(doc: Document): TFile | null {
@@ -593,29 +712,39 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	getDoc(
-		vPath: string,
+	getVFile(
+		vpath: string,
 		create = true,
 		loadFromDisk = false,
 		update = true,
-	): Document {
-		const id = this.ids.get(vPath);
-		if (id !== undefined) {
-			const doc = this.docs.get(id);
+	): IFile {
+		this.log("getting vfile", create, loadFromDisk, vpath);
+		const meta = this.syncStore.get(vpath);
+		if (meta && meta.id !== undefined) {
+			const doc = this.docs.get(meta.id);
 			if (doc !== undefined) {
-				doc.move(vPath);
+				doc.move(vpath);
 				return doc;
 			} else {
 				// the ID exists, but the file doesn't
-				this.log("[getDoc]: creating doc for shared ID");
-				return this.createDoc(vPath, false, update);
+				this.log("[getVFile]: creating doc for shared ID");
+				return this.createFile(this.getPath(vpath), false, update, () => {});
 			}
 		} else if (create) {
 			// the File exists, but the ID doesn't
 			this.log("[getDoc]: creating new shared ID for existing file");
-			return this.createDoc(vPath, loadFromDisk, update);
+			return this.createFile(
+				this.getPath(vpath),
+				loadFromDisk,
+				update,
+				() => {},
+			);
 		} else {
-			throw new Error("No shared doc for vpath: " + vPath);
+			const syncObject = this.getSyncObjectByPath(vpath);
+			if (syncObject instanceof SyncNothing) {
+				return syncObject;
+			}
+			throw new Error("No shared doc for vpath: " + vpath);
 		}
 	}
 
@@ -623,22 +752,142 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		loadFromDisk = false,
 		update = true,
-		onSync = (doc: Document) => {},
-	): Document {
-		const vPath = this.getVirtualPath(path);
-		return this.createDoc(vPath, loadFromDisk, update, onSync);
+		onSync = (file: IFile) => {},
+	): IFile {
+		const vpath = this.getVirtualPath(path);
+		const meta = this.syncStore.get(vpath);
+		const isFolder = this.vault.getAbstractFileByPath(path) instanceof TFolder;
+
+		if (isSyncFolder(meta) || isFolder) {
+			return this.createSyncFolder(vpath, update);
+		}
+
+		if (!this.syncSettingsManager.isExtensionEnabled(vpath)) {
+			this.warn("sync nothing for ", vpath, this.syncSettingsManager.get());
+			return this.createSyncNothing(vpath);
+		}
+
+		if (isDocument(meta) || this.syncStore.checkExtension(vpath, "md")) {
+			return this.createDoc(vpath, loadFromDisk, update, onSync);
+		}
+
+		return this.createSyncFile(vpath, loadFromDisk, update, onSync);
 	}
 
-	placeHold(vpaths: string[]): string[] {
+	getSyncObjectByPath(vpath: string): IFile | undefined {
+		let ifile: IFile | undefined;
+		for (const [, file] of this.docs) {
+			if (file.path === vpath) {
+				ifile = file;
+			}
+		}
+		return ifile;
+	}
+
+	createSyncNothing(vpath: string) {
+		const file = new SyncNothing(vpath);
+		this.docs.set(file.guid, file);
+		this.docset.add(file, false);
+		return file;
+	}
+
+	createSyncFolder(vpath: string, update: boolean) {
+		this.log("[createSyncFolder]", `creating syncfolder`);
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			this.warn(`potential for document split at ${vpath}`);
+		}
+
+		const meta = this.syncStore.get(vpath);
+		const tfolder = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		if (isSyncFolder(meta)) {
+			const file = (this.docs.get(meta.id) ||
+				new SyncFolder(vpath, meta.id, this.relayManager, this)) as SyncFolder;
+			this.docs.set(meta.id, file);
+			this.docset.add(file, update);
+			file.ready = true;
+			return file;
+		} else if (tfolder instanceof TFolder) {
+			this.log(`create pushing new file ${vpath}`);
+			const guid = uuidv4();
+			this.ydoc.transact(() => {
+				this.syncStore.new(vpath, tfolder instanceof TFolder);
+			}, this);
+			const file = SyncFolder.fromTFolder(this.relayManager, this, tfolder);
+			this.docs.set(guid, file);
+			this.docset.add(file, update);
+			file.ready = true;
+			return file;
+		} else {
+			throw new Error("missing a guid and a tfolder");
+		}
+	}
+
+	createSyncFile(
+		vpath: string,
+		loadFromDisk: boolean,
+		update: boolean,
+		onSync = (file: IFile) => {},
+	) {
+		this.log(
+			"[createSyncFile]",
+			`creating syncfile, loadFromDisk=${loadFromDisk}`,
+		);
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			this.warn(`potential for document split at ${vpath}`);
+		}
+		const meta = this.syncStore.get(vpath);
+		const hash = meta?.hash;
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		if (meta?.id) {
+			this.log(`create pulling from server ${vpath}`);
+			const file =
+				(this.docs.get(meta.id) as SyncFile) ||
+				new SyncFile(vpath, hash, meta.id, this.relayManager, this);
+			if (loadFromDisk) {
+				file.push();
+			} else if (tfile) {
+				file.sync();
+			}
+			this.docs.set(meta.id, file);
+			this.docset.add(file, update);
+			file.ready = true;
+			return file;
+		} else if (tfile instanceof TFile) {
+			this.log(`create pushing new file ${vpath}`);
+			const guid = uuidv4();
+			this.ydoc.transact(() => {
+				this.syncStore.set(vpath, makeFileMeta(guid, getMimeType(vpath)));
+			}, this);
+			const file = SyncFile.fromTFile(this.relayManager, this, tfile);
+			file.push().then(async () => {
+				this.ydoc.transact(async () => {
+					const hash = await file.sha256();
+					this.syncStore.set(
+						vpath,
+						makeFileMeta(guid, getMimeType(vpath), hash, Date.now()),
+					);
+				}, this);
+				onSync(file);
+			});
+
+			this.docs.set(guid, file);
+			this.docset.add(file, update);
+			file.ready = true;
+			return file;
+		} else {
+			throw new Error("missing a guid and a tfile");
+		}
+	}
+
+	placeHold(newFiles: TAbstractFile[]): string[] {
 		const newDocs: string[] = [];
 		this.ydoc.transact(() => {
-			vpaths.forEach((vpath) => {
-				if (!this.ids.has(vpath)) {
-					this.debug("creating entirely new doc for", vpath);
-					const guid = uuidv4();
-					newDocs.push(guid);
-					this.ids.set(vpath, guid);
-				}
+			newFiles.forEach((file) => {
+				const meta = this.syncStore.new(
+					this.getVirtualPath(file.path),
+					file instanceof TFolder,
+				);
+				newDocs.push(meta.id);
 			});
 		}, this);
 		return newDocs;
@@ -650,24 +899,30 @@ export class SharedFolder extends HasProvider {
 		update = true,
 		onSync = (doc: Document) => {},
 	): Document {
-		if (!this.synced && !this.ids.get(vpath)) {
+		if (!this.synced && !this.syncStore.has(vpath)) {
 			this.warn(`potential for document split at ${vpath}`);
 		}
-		const maybeGuid: string | undefined = this.ids.get(vpath);
-		let guid: string;
-		if (maybeGuid === undefined) {
-			if (!loadFromDisk) {
+		let meta = this.syncStore.get(vpath);
+
+		if (!isDocument(meta)) {
+			this.warn(`called createDoc on ${vpath}`);
+		}
+
+		if (!meta) {
+			const file = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			if (!loadFromDisk || !file) {
 				throw new Error("attempting to create a new doc without a local file");
 			}
-			guid = uuidv4();
-			this.ydoc.transact(() => {
-				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
+			meta = this.ydoc.transact<Meta>(() => {
+				return this.syncStore.new(vpath, file instanceof TFolder);
 			}, this);
-		} else {
-			guid = maybeGuid;
 		}
 		const doc =
-			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
+			this.docs.get(meta.id) ||
+			new Document(vpath, meta.id, this.loginManager, this);
+		if (!(doc instanceof Document)) {
+			throw new Error("unexpected wrong document type");
+		}
 		const knownPeersPromise = doc.hasKnownPeers();
 		const awaitingUpdatesPromise = this.awaitingUpdates();
 		if (loadFromDisk) {
@@ -694,8 +949,11 @@ export class SharedFolder extends HasProvider {
 				}
 			})();
 		}
+		//else if (doc instanceof Document) {
+		//	this.backgroundSync.getDocument(doc);
+		//}
 
-		this.docs.set(guid, doc);
+		this.docs.set(meta.id, doc);
 		this.docset.add(doc, update);
 
 		return doc;
@@ -707,17 +965,17 @@ export class SharedFolder extends HasProvider {
 	}
 
 	deleteDoc(vPath: string) {
-		const guid = this.ids.get(vPath);
-		if (guid) {
+		const meta = this.syncStore.get(vPath);
+		if (meta) {
 			this.ydoc.transact(() => {
-				this.ids.delete(vPath);
-				const doc = this.docs.get(guid)?.destroy();
+				this.syncStore.delete(vPath);
+				const doc = this.docs.get(meta.id)?.destroy();
 				if (doc) {
 					this.docset.delete(doc);
 				}
-				this.docs.delete(guid);
+				this.docs.delete(meta.id);
 			}, this);
-			this.diskBufferStore.removeDiskBuffer(guid);
+			this.diskBufferStore.removeDiskBuffer(meta.id);
 		}
 	}
 
@@ -741,34 +999,66 @@ export class SharedFolder extends HasProvider {
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			this.createDoc(newVPath, true, true);
+
+			const upload = (file: IFile) => {
+				withFlag(flag.enableUploadOnShare, () => {
+					if (file instanceof Document) {
+						file.getProviderToken().then(() => {
+							this.backgroundSync.putDocument(file);
+						});
+					}
+				});
+				if (file instanceof SyncFile) {
+					if (!file.getRemote()) {
+						file.push();
+					}
+				}
+			};
+			this.createFile(newPath, true, true, upload);
 		} else {
 			// live doc exists
-			const guid = this.ids.get(oldVPath);
-			if (!guid) return;
-			const doc = this.docs.get(guid);
+			const meta = this.syncStore.get(oldVPath);
+			if (!meta) return;
+			const doc = this.docs.get(meta.id);
 			if (!newVPath) {
 				// moving out of shared folder.. destroy the live doc.
 				this.ydoc.transact(() => {
-					this.ids.delete(oldVPath);
+					this.syncStore.delete(oldVPath);
 				}, this);
 				if (doc) {
 					doc.destroy();
 					this.docset.delete(doc);
 				}
-				this.docs.delete(guid);
+				this.docs.delete(meta.id);
 			} else {
 				// moving within shared folder.. move the live doc.
-				const guid = this.ids.get(oldVPath);
-				if (!guid) {
+				const meta = this.syncStore.get(oldVPath);
+				if (!meta) {
 					return;
 				}
+				const toMove: [string, string, string][] = [
+					[meta.id, oldVPath, newVPath],
+				];
+				if (doc instanceof SyncFolder) {
+					this.syncStore.forEach((meta, path) => {
+						if (path.startsWith(oldVPath + sep)) {
+							const destination = path.replace(oldVPath, newVPath);
+							toMove.push([meta.id, path, destination]);
+						}
+					});
+				}
+				if (doc) {
+					doc.move(newVPath);
+				}
 				this.ydoc.transact(() => {
-					this.ids.set(newVPath, guid);
-					this.ids.delete(oldVPath);
-					if (doc) {
-						doc.move(newVPath);
-					}
+					toMove.forEach((move) => {
+						const [guid, oldVPath, newVPath] = move;
+						this.syncStore.move(oldVPath, newVPath);
+						const subdoc = this.docs.get(guid);
+						if (subdoc) {
+							subdoc.move(newVPath);
+						}
+					});
 				}, this);
 			}
 		}
@@ -776,7 +1066,7 @@ export class SharedFolder extends HasProvider {
 
 	destroy() {
 		this.destroyed = true;
-		this.docs.forEach((doc: Document) => {
+		this.docs.forEach((doc: IFile) => {
 			doc.destroy();
 			this.docs.delete(doc.guid);
 		});
@@ -788,6 +1078,8 @@ export class SharedFolder extends HasProvider {
 		});
 		this._settings.destroy();
 		this._settings = null as any;
+		this.cas.destroy();
+		this.cas = null as any;
 		this.diskBufferStore = null as any;
 		this.relayManager = null as any;
 		this.backgroundSync = null as any;
@@ -816,6 +1108,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			relayId?: string,
 			awaitingUpdates?: boolean,
 		) => Promise<SharedFolder>,
+		private timeProvider: TimeProvider,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
 	) {
 		super();
@@ -838,6 +1131,11 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				},
 			);
 		}
+		this.timeProvider.setInterval(() => {
+			this.forEach((folder) => {
+				folder.sync();
+			});
+		}, 10000);
 	}
 
 	public toSettings(): SharedFolderSettings[] {
@@ -879,6 +1177,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		});
 		this.relayManager = null as any;
 		this.folderBuilder = null as any;
+		this.timeProvider = null as any;
 	}
 
 	load() {

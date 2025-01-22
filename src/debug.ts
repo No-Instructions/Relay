@@ -254,6 +254,13 @@ export class HasLogging {
 		this.warn = curryLog(`[${logContext}]`, "warn");
 		this.error = curryLog(`[${logContext}]`, "error");
 	}
+
+	protected setLoggers(context: string) {
+		this.debug = curryLog(`[${context}]`, "debug");
+		this.log = curryLog(`[${context}]`, "log");
+		this.warn = curryLog(`[${context}]`, "warn");
+		this.error = curryLog(`[${context}]`, "error");
+	}
 }
 
 const debug = BUILD_TYPE === "debug";

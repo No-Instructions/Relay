@@ -535,9 +535,11 @@ export class LiveViewManager {
 					});
 					views.push(view);
 				} else if (folder.ready) {
-					const doc = folder.getFile(viewFilePath, true, true, true);
-					const view = new LiveView(this, markdownView, doc);
-					views.push(view);
+					const file = folder.getFile(viewFilePath, true, true, true);
+					if (file instanceof Document) {
+						const view = new LiveView(this, markdownView, file);
+						views.push(view);
+					}
 				} else {
 					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
