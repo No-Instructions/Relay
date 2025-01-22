@@ -204,9 +204,12 @@ export class HasProvider extends HasLogging {
 		} else if (this._provider.url !== newUrl) {
 			this._provider.url = newUrl;
 			this._provider.wsUnsuccessfulReconnects = 0;
-			this.log(
-				`Token Refreshed: setting new provider url, ${this._provider.url}`,
+
+			const maskedUrl = this._provider.url.replace(
+				/token=[^&]+/,
+				"token=[REDACTED]",
 			);
+			this.log(`Token Refreshed: setting new provider url, ${maskedUrl}`);
 			this._provider.ws?.close();
 		}
 		tempProvider.awareness.destroy();
