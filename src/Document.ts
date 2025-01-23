@@ -78,7 +78,8 @@ export class Document extends HasProvider implements TFile {
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
 		try {
-			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
+			this._persistence = new IndexeddbPersistence(key, this.ydoc);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);

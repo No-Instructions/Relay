@@ -191,7 +191,8 @@ export class SharedFolder extends HasProvider {
 		);
 
 		try {
-			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			const key = `${this.appId}-relay-folder-${this.guid}`;
+			this._persistence = new IndexeddbPersistence(key, this.ydoc);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
