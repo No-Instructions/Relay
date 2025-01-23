@@ -246,7 +246,11 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		storage?: FilePillDecoration,
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
-		if (sharedFolder && sharedFolder.ready) {
+		if (
+			sharedFolder &&
+			sharedFolder.ready &&
+			sharedFolder.checkExtension(file.path)
+		) {
 			const doc = sharedFolder.getFile(file.path, false, false);
 			if (!doc) return null;
 			return storage || new FilePillDecoration(item.selfEl, doc);
@@ -431,7 +435,7 @@ class FileExplorerWalker {
 		});
 	}
 
-	destory() {
+	destroy() {
 		this.storage.forEach((store) => {
 			store.forEach((item) => {
 				item.destroy();
@@ -563,11 +567,11 @@ export class FolderNavigationDecorations {
 	}
 
 	destroy() {
-		this.offFolderListener();
+		this.offFolderListener?.();
 		this.offDocumentListeners.forEach((off) => off());
 		this.offDocumentListeners.clear();
 		this.treeState.forEach((walker) => {
-			walker.destory();
+			walker.destroy();
 		});
 		this.treeState.clear();
 		this.offLayoutChange();
@@ -575,5 +579,6 @@ export class FolderNavigationDecorations {
 		this.vault = null as any;
 		this.workspace = null as any;
 		this.sharedFolders = null as any;
+		this.offFolderListener = null as any;
 	}
 }
