@@ -212,16 +212,17 @@ class FilePillDecoration {
 		this.pill = new TextPill({
 			target: this.el,
 			props: {
-				text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
+				text: `${doc.guid.slice(0, 3)}`,
 			},
 		});
-		const onUpdate = () => {
+		const onUpdate = async () => {
+			await doc.count();
 			this.pill.$set({
-				text: `${doc.guid.slice(0, 3)} ${doc.dbsize} ${doc._hasKnownPeers ? "!" : ""}`,
+				text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
 			});
 		};
-		doc.ydoc.on("update", onUpdate);
-		doc.hasKnownPeers().then((hasKnownPeers) => {
+		doc.whenReady().then(() => {
+			doc.ydoc.on("update", onUpdate);
 			onUpdate();
 		});
 		this.unsubscribe = () => {
