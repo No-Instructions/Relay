@@ -9,7 +9,8 @@ import {
 	debounce,
 	normalizePath,
 } from "obsidian";
-import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
+import { IndexeddbPersistence } from "y-indexeddb";
+import * as idb from "lib0/indexeddb";
 import { v4 as uuidv4 } from "uuid";
 import { dirname, join, sep } from "path-browserify";
 import { Doc } from "yjs";
@@ -94,6 +95,7 @@ export class SharedFolder extends HasProvider {
 	docs: Map<string, Document>; // Maps guids to SharedDocs
 	docset: Documents;
 	relayId?: string;
+	_dbsize?: number;
 	_remote?: RemoteSharedFolder;
 	shouldConnect: boolean;
 	destroyed: boolean = false;
@@ -186,13 +188,6 @@ export class SharedFolder extends HasProvider {
 
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
-			this._persistence.set("path", this.path);
-			this._persistence.set("relay", this.relayId || "");
-			this._persistence.set("appId", this.appId);
-			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			this._persistence.once("synced", () => {
-				this.log("", this.ids);
-			});
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
@@ -209,16 +204,49 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 
-		this.ydoc.on(
-			"update",
-			async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-				if (origin == this) {
-					return;
-				}
-				this.log("file tree", this._debugFileTree());
-				await this.syncFileTree(doc);
-			},
-		);
+		//const logObserver = (event: Y.YMapEvent<string>) => {
+		//	let log = "";
+		//	log += `Transaction origin: ${event.transaction.origin.constructor.name}\n`;
+		//	event.changes.keys.forEach((change, key) => {
+		//		if (change.action === "add") {
+		//			log += `Added ${key}: ${this.ids.get(key)}\n`;
+		//		}
+		//		if (change.action === "update") {
+		//			log += `Updated ${key}: ${this.ids.get(key)}\n`;
+		//		}
+		//		if (change.action === "delete") {
+		//			log += `Deleted ${key}\n`;
+		//		}
+		//	});
+		//	this.debug(log);
+		//};
+		//this.ids.observe(logObserver);
+		//this.unsubscribes.push(() => {
+		//	this.ids.unobserve(logObserver);
+		//});
+
+		this.whenSynced().then(() => {
+			this._persistence.set("path", this.path);
+			this._persistence.set("relay", this.relayId || "");
+			this._persistence.set("appId", this.appId);
+			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+			this.ydoc.on(
+				"update",
+				async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
+					if (origin == this) {
+						return;
+					}
+					if (origin == this._persistence) {
+						this.warn("ignoring update from persistence");
+						return;
+					}
+
+					this.log("file tree", this._debugFileTree());
+					await this.syncFileTree(doc);
+				},
+			);
+		});
+
 	}
 
 	public get settings(): SharedFolderSettings {
@@ -299,13 +327,37 @@ export class SharedFolder extends HasProvider {
 		return persistenceSynced && (!this._awaitingUpdates || serverSynced);
 	}
 
-	async awaitingUpdates(): Promise<boolean> {
-		await this.whenSynced();
-		if (this._awaitingUpdates) {
-			await fetchUpdates(this._persistence);
-			this.log("update count", this.path, this._persistence._dbsize);
-			this._awaitingUpdates = this._persistence._dbsize < 3;
+	async count(): Promise<number> {
+		// XXX this is to workaround the y-indexeddb not counting records until after the synced event
+		if (this._persistence.db === null) {
+			throw new Error("unexpected missing database");
 		}
+		if (this._persistence._dbsize > 3) {
+			this._dbsize = this._persistence._dbsize;
+			return this._dbsize;
+		}
+		const [updatesStore] = idb.transact(
+			this._persistence.db,
+			["updates"],
+			"readonly",
+		);
+		const cnt = await idb.count(updatesStore);
+		this._dbsize = cnt;
+		return this._dbsize;
+	}
+
+	hasLocalDB() {
+		return (
+			this._persistence._dbsize > 3 || !!(this._dbsize && this._dbsize > 3)
+		);
+	}
+
+	async awaitingUpdates(): Promise<boolean> {
+		if (this._awaitingUpdates === false) {
+			return false;
+		}
+		await this.whenSynced();
+		this._awaitingUpdates = !this.hasLocalDB();
 		return this._awaitingUpdates;
 	}
 
@@ -314,6 +366,7 @@ export class SharedFolder extends HasProvider {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				this.connect();
 				await this.onceConnected();
 				await this.onceProviderSynced();
 				return this;
@@ -351,7 +404,10 @@ export class SharedFolder extends HasProvider {
 			});
 		}
 		return new Promise((resolve) => {
-			this._persistence.once("synced", resolve);
+			this._persistence.once("synced", async () => {
+				await this.count();
+				resolve();
+			});
 		});
 	}
 
