@@ -767,13 +767,14 @@ export class SharedFolder extends HasProvider {
 		if (guid) {
 			this.ydoc.transact(() => {
 				this.ids.delete(vPath);
-				const doc = this.docs.get(guid)?.destroy();
+				const doc = this.docs.get(guid);
 				if (doc) {
+					doc._diskBufferStore?.removeDiskBuffer(guid);
+					doc.destroy();
 					this.docset.delete(doc);
 				}
 				this.docs.delete(guid);
 			}, this);
-			this.diskBufferStore.removeDiskBuffer(guid);
 		}
 	}
 
