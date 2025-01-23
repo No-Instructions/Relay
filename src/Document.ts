@@ -1,5 +1,6 @@
 "use strict";
-import { IndexeddbPersistence, fetchUpdates } from "y-indexeddb";
+import { IndexeddbPersistence } from "y-indexeddb";
+import * as idb from "lib0/indexeddb";
 import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
@@ -12,10 +13,11 @@ import type { Unsubscriber } from "./observable/Observable";
 import { SharedPromise } from "./promiseUtils";
 
 export class Document extends HasProvider implements TFile {
+	_dbsize?: number;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
-	_hasKnownPeers?: boolean;
-	_hasKnownPeersPromise?: SharedPromise<boolean>;
+	_awaitingUpdates?: boolean;
+	readyPromise?: SharedPromise<Document>;
 	path: string;
 	_tfile: TFile | null;
 	name: string;
@@ -28,7 +30,7 @@ export class Document extends HasProvider implements TFile {
 		size: number;
 	};
 	_diskBuffer?: DiskBuffer;
-	offFolderStatusListener: Unsubscriber;
+	unsubscribes: Unsubscriber[] = [];
 
 	debug!: (message?: any, ...optionalParams: any[]) => void;
 	log!: (message?: any, ...optionalParams: any[]) => void;
@@ -64,35 +66,49 @@ export class Document extends HasProvider implements TFile {
 			mtime: Date.now(),
 			size: 0,
 		};
-		this.offFolderStatusListener = this._parent.subscribe(
-			this.path,
-			(state) => {
+		this.unsubscribes.push(
+			this._parent.subscribe(this.path, (state) => {
 				if (state.intent === "disconnected") {
 					this.disconnect();
 				}
-			},
+			}),
 		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
-			this._persistence.set("path", this.path);
-			this._persistence.set("relay", this.sharedFolder.relayId || "");
-			this._persistence.set("appId", this.sharedFolder.appId);
-			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
 			throw e;
 		}
 
-		this.ydoc.on(
-			"update",
-			(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-				//this.log(`Update from origin`, origin, update);
-				this.updateStats();
-			},
-		);
+		this.whenSynced().then(() => {
+			this._persistence.set("path", this.path);
+			this._persistence.set("relay", this.sharedFolder.relayId || "");
+			this._persistence.set("appId", this.sharedFolder.appId);
+			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+			this.ydoc.on(
+				"update",
+				(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
+					this.updateStats();
+				},
+			);
+		});
+
+		//const logObserver = (event: Y.YTextEvent) => {
+		//	let log = "";
+		//	log += `Transaction origin: ${event.transaction.origin.constructor.name}\n`;
+		//	for (const delta of event.changes.delta) {
+		//		log += `insert: ${delta.insert}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
+		//	}
+		//	this.debug(log);
+		//};
+		//this.ytext.observe(logObserver);
+		//this.unsubscribes.push(() => {
+		//	this.ytext.unobserve(logObserver);
+		//});
+
 		this._tfile = null;
 	}
 
@@ -217,17 +233,43 @@ export class Document extends HasProvider implements TFile {
 		);
 	}
 
-	public async whenReady(): Promise<Document> {
-		const dependencies = [];
-		if (!this._persistence.synced) {
-			dependencies.push(this.whenSynced());
-		}
-		if (!this._provider) {
-			dependencies.push(this.withActiveProvider());
-		}
-		return Promise.all(dependencies).then((_) => {
+	public get ready(): boolean {
+		const persistenceSynced = this._persistence.synced;
+		const serverSynced = this.synced && this.connected;
+		return persistenceSynced && (!this._awaitingUpdates || serverSynced);
+	}
+
+	hasLocalDB() {
+		return (
+			this._persistence._dbsize > 3 || !!(this._dbsize && this._dbsize > 3)
+		);
+	}
+
+	async awaitingUpdates(): Promise<boolean> {
+		await this.whenSynced();
+		this._awaitingUpdates = !this.hasLocalDB();
+		return this._awaitingUpdates;
+	}
+
+	async whenReady(): Promise<Document> {
+		const promiseFn = async (): Promise<Document> => {
+			const awaitingUpdates = await this.awaitingUpdates();
+			if (awaitingUpdates) {
+				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				this.connect();
+				await this.onceConnected();
+				await this.onceProviderSynced();
+				return this;
+			}
+			// If this is a shared folder with edits, then we can behave as though we're just offline.
 			return this;
-		});
+		};
+		this.readyPromise =
+			this.readyPromise ||
+			new SharedPromise<Document>(promiseFn, (): [boolean, Document] => {
+				return [this.ready, this];
+			});
+		return this.readyPromise.getPromise();
 	}
 
 	whenSynced(): Promise<void> {
@@ -235,7 +277,10 @@ export class Document extends HasProvider implements TFile {
 			return Promise.resolve();
 		}
 		return new Promise((resolve) => {
-			this._persistence.once("synced", resolve);
+			this._persistence.once("synced", async () => {
+				await this.count();
+				resolve();
+			});
 		});
 	}
 
@@ -243,36 +288,43 @@ export class Document extends HasProvider implements TFile {
 		return this._persistence.synced;
 	}
 
-	hasLocalDB() {
-		return this._persistence._dbsize > 3;
+	async hasKnownPeers(): Promise<boolean> {
+		await this.whenSynced();
+		return this.hasLocalDB();
 	}
 
-	async hasKnownPeers(): Promise<boolean> {
-		if (this._hasKnownPeers !== undefined) {
-			return Promise.resolve(this._hasKnownPeers);
+	async count(): Promise<number> {
+		// XXX this is to workaround the y-indexeddb not counting records until after the synced event
+		if (this._persistence.db === null) {
+			throw new Error("database not ready yet");
 		}
-		const promiseFn = async (): Promise<boolean> => {
-			return this.whenSynced().then(async () => {
-				await fetchUpdates(this._persistence);
-				this._hasKnownPeers = this._persistence._dbsize > 3;
-				this.debug("update count", this.path, this._persistence._dbsize);
-				return this._hasKnownPeers;
-			});
-		};
-		this._hasKnownPeersPromise =
-			this._hasKnownPeersPromise ||
-			new SharedPromise<boolean>(promiseFn, (): [boolean, boolean] => {
-				return [!!this._hasKnownPeers, !!this._hasKnownPeers];
-			});
-		return this._hasKnownPeersPromise.getPromise();
+		if (this._persistence._dbsize > 3) {
+			this._dbsize = this._persistence._dbsize;
+			return this._dbsize;
+		}
+		const [updatesStore] = idb.transact(
+			this._persistence.db,
+			["updates"],
+			"readonly",
+		);
+		const cnt = await idb.count(updatesStore);
+		this._dbsize = cnt;
+		return this._dbsize;
 	}
 
 	public get dbsize() {
-		return this._persistence._dbsize;
+		if (!this._dbsize) {
+			throw new Error("dbsize accessed before count");
+		}
+		return this._persistence._dbsize === 0 && this._dbsize
+			? this._dbsize
+			: this._persistence._dbsize;
 	}
 
 	destroy() {
-		this.offFolderStatusListener();
+		this.unsubscribes.forEach((unsubscribe) => {
+			unsubscribe();
+		});
 		super.destroy();
 		this.ydoc.destroy();
 		if (this._diskBuffer) {
