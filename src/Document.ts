@@ -8,7 +8,7 @@ import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
-import { DiskBuffer } from "./DiskBuffer";
+import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 import { SharedPromise } from "./promiseUtils";
 
@@ -30,6 +30,7 @@ export class Document extends HasProvider implements TFile {
 		size: number;
 	};
 	_diskBuffer?: DiskBuffer;
+	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
 
 	debug!: (message?: any, ...optionalParams: any[]) => void;
@@ -66,6 +67,7 @@ export class Document extends HasProvider implements TFile {
 			mtime: Date.now(),
 			size: 0,
 		};
+		this._diskBufferStore = this.sharedFolder.diskBufferStore;
 		this.unsubscribes.push(
 			this._parent.subscribe(this.path, (state) => {
 				if (state.intent === "disconnected") {
@@ -195,14 +197,14 @@ export class Document extends HasProvider implements TFile {
 	}
 
 	public async checkStale(): Promise<boolean> {
-		await this.whenReady();
+		await this.whenSynced();
 		const hasKnownPeers = await this.hasKnownPeers();
 		const diskBuffer = await this.diskBuffer(true);
-		if (!hasKnownPeers && this.text.trim() === "") {
+		if (!hasKnownPeers && this.text === "") {
 			return false;
 		}
 		const contents = (diskBuffer as DiskBuffer).contents;
-		const stale = this.text.trim() !== contents.trim();
+		const stale = this.text !== contents;
 		if (!stale) {
 			this.clearDiskBuffer();
 		}
@@ -331,6 +333,7 @@ export class Document extends HasProvider implements TFile {
 			this._diskBuffer.contents = "";
 			this._diskBuffer = undefined;
 		}
+		this._diskBufferStore = null as any;
 	}
 
 	public async read(): Promise<string> {
