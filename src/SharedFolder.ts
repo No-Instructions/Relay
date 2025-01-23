@@ -451,26 +451,21 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		diffLog?: string[],
 	): Promise<Document> {
-		const doc = this.createDoc(path, false, false);
+		const doc = this.createDoc(path, false, false, async (doc) => {
+			this.log("server created doc, now running onSync to download.");
+			// Create directories as needed
+			let folderPromise: Promise<void> = Promise.resolve();
+			const dir = dirname(path);
+			if (!this.existsSync(dir)) {
+				folderPromise = this.mkdir(dir);
+				diffLog?.push(`creating directory ${dir}`);
+			}
+			await folderPromise;
 
-		// Create directories as needed
-		let folderPromise: Promise<void> = Promise.resolve();
-		const dir = dirname(path);
-		if (!this.existsSync(dir)) {
-			folderPromise = this.mkdir(dir);
-			diffLog?.push(`creating directory ${dir}`);
-		}
-
-		// Receive content, then flush to disk
-		const start = moment.now();
-		await doc.whenReady();
-		const end = moment.now();
-		this.debug(
-			`receive delay: received content for ${doc.path} after ${end - start}ms`,
-			doc.text.toString(),
-		);
-		await folderPromise;
-		this.flush(doc, doc.text.toString());
+			// Receive content, then flush to disk
+			await doc.whenReady();
+			await this.backgroundSync.getDocument(doc);
+		});
 		diffLog?.push(`created local file for remotely added doc ${path}`);
 		return doc;
 	}
