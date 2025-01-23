@@ -133,6 +133,8 @@ export class LiveCMPluginValue implements PluginValue {
 			return [];
 		}
 		const contents = this.editor.state.doc.toString();
+		await this.view.document.whenSynced();
+
 		if (this.view.document.text === contents) {
 			// disk and ytext were already the same.
 			this.view.tracking = true;
