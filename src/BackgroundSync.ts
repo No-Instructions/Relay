@@ -64,7 +64,7 @@ export function updateYDocFromDiskBuffer(
 					break;
 			}
 		}
-	});
+	}, diskBuffer);
 
 	// Log the final state
 	log("Update complete. New content length:", ytext.toString().length);
