@@ -30,6 +30,7 @@ import { flag } from "./flags";
 import { DiskBufferStore } from "./DiskBuffer";
 import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
+import { RelayInstances } from "./debug";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -247,6 +248,7 @@ export class SharedFolder extends HasProvider {
 			);
 		});
 
+		RelayInstances.set(this, this.path);
 	}
 
 	public get settings(): SharedFolderSettings {
