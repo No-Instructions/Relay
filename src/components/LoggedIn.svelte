@@ -211,6 +211,7 @@
 						class="link link-button"
 						on:click={() => {
 							pending.set(false);
+							automaticFlow.set(false);
 						}}>(try again)</button
 					>
 				</p>
