@@ -34,7 +34,7 @@ export class LiveCMPluginValue implements PluginValue {
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
-	log: (message: string) => void = (message: string) => {};
+	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
