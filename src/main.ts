@@ -700,7 +700,7 @@ export default class Live extends Plugin {
 		this.networkStatus?.destroy();
 		this.networkStatus = null as any;
 
-		this.sharedFolders.destroy();
+		this.sharedFolders?.destroy();
 		this.sharedFolders = null as any;
 
 		this.settingsTab?.destroy();
@@ -709,7 +709,7 @@ export default class Live extends Plugin {
 		this.loginManager?.destroy();
 		this.loginManager = null as any;
 
-		this.app.workspace.updateOptions();
+		this.app?.workspace.updateOptions();
 		this.app = null as any;
 		this.fileManager = null as any;
 		this.manifest = null as any;
