@@ -26,6 +26,8 @@ export type ClientToken = {
 	/** The bare URL of the WebSocket endpoint to connect to. The `doc` string will be appended to this. */
 	url: string;
 
+	baseUrl?: string;
+
 	/** A unique identifier for the document that the token connects to. */
 	docId: string;
 
