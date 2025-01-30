@@ -150,6 +150,15 @@ export class LoginManager extends Observable<LoginManager> {
 		this.user = undefined;
 		this.notifyListeners();
 	}
+	webviewIntercept(): RegExp {
+		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
+		const authProvider =
+			"https:\\/\\/accounts\\.google\\.com\\/o\\/oauth2\\/auth";
+		return new RegExp(
+			`^${authProvider}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
+			"i",
+		);
+	}
 
 	async initiateManualOAuth2CodeFlow(
 		whichFetch: typeof fetch | typeof customFetch,
@@ -200,7 +209,7 @@ export class LoginManager extends Observable<LoginManager> {
 		return new Promise((resolve, reject) => {
 			const timer = setInterval(() => {
 				counter += 1;
-				if (counter > 30) {
+				if (counter >= 30) {
 					clearInterval(timer);
 					return reject(
 						new Error(
