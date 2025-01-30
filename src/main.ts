@@ -81,6 +81,7 @@ declare const GIT_TAG: string;
 
 export default class Live extends Plugin {
 	appId!: string;
+	webviewerPatched = false;
 	openModals: Modal[] = [];
 	loadTime?: number;
 	sharedFolders!: SharedFolders;
@@ -91,6 +92,7 @@ export default class Live extends Plugin {
 	timeProvider!: TimeProvider;
 	fileManager!: FileManager;
 	tokenStore!: LiveTokenStore;
+	interceptedUrls: Array<string | RegExp> = [];
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
@@ -100,8 +102,10 @@ export default class Live extends Plugin {
 	private featureSettings!: NamespacedSettings<FeatureFlags>;
 	private debugSettings!: NamespacedSettings<DebugSettings>;
 	private folderSettings!: NamespacedSettings<SharedFolderSettings[]>;
-	log!: (message: string, ...args: unknown[]) => void;
-	warn!: (message: string, ...args: unknown[]) => void;
+	debug!: (...args: unknown[]) => void;
+	log!: (...args: unknown[]) => void;
+	warn!: (...args: unknown[]) => void;
+	error!: (...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
@@ -164,8 +168,10 @@ export default class Live extends Plugin {
 		this.notifier = new ObsidianNotifier();
 		this.toast = createToast(this.notifier);
 
+		this.debug = curryLog("[System 3][Relay]", "debug");
 		this.log = curryLog("[System 3][Relay]", "log");
 		this.warn = curryLog("[System 3][Relay]", "warn");
+		this.error = curryLog("[System 3][Relay]", "error");
 
 		this.settings = new Settings(this, DEFAULT_SETTINGS);
 		await this.settings.load();
@@ -264,6 +270,7 @@ export default class Live extends Plugin {
 			this.vault.getName(),
 			this.openSettings.bind(this),
 			this.timeProvider,
+			this.patchWebviewer.bind(this),
 		);
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
@@ -433,6 +440,73 @@ export default class Live extends Plugin {
 		this.settingsTab.navigateTo(path);
 	}
 
+	patchWebviewer(): void {
+		// eslint-disable-next-line
+		const plugin = this;
+		try {
+			if (this.webviewerPatched) {
+				return;
+			}
+
+			const webviewer = (this.app as any).internalPlugins?.plugins?.webviewer;
+			if (!webviewer?.instance?.options || !webviewer.enabled) {
+				this.warn("Webviewer plugin not found or not initialized");
+				return;
+			}
+
+			const options = webviewer.instance.options;
+			const originalDesc = Object.getOwnPropertyDescriptor(
+				options,
+				"openExternalURLs",
+			);
+
+			if (!originalDesc) {
+				this.warn("Could not find openExternalURLs property");
+				return;
+			}
+
+			Object.defineProperty(options, "openExternalURLs", {
+				get() {
+					const currentEvent = window.event as any;
+					if (currentEvent?.type === "open-url" && currentEvent?.detail?.url) {
+						const url = currentEvent.detail.url;
+						for (const pattern of plugin.interceptedUrls) {
+							if (
+								(typeof pattern === "string" && url.startsWith(pattern)) ||
+								(pattern instanceof RegExp && pattern.test(url))
+							) {
+								plugin.log(
+									"Intercepted webviewer, opening in default browser",
+									currentEvent.detail.url,
+								);
+								return false;
+							}
+						}
+					}
+					return originalDesc.value;
+				},
+				set(value) {
+					originalDesc.value = value;
+				},
+				configurable: true,
+			});
+
+			this.register(() => {
+				Object.defineProperty(options, "openExternalURLs", originalDesc);
+			});
+
+			// Add default google auth URL
+			const re = this.loginManager.webviewIntercept();
+			this.debug("Intercepting Webviewer for URL pattern", re.source);
+			this.interceptedUrls.push(re);
+
+			this.webviewerPatched = true;
+			this.debug("patched webviewer options");
+		} catch (error) {
+			this.error("Failed to patch webviewer:", error);
+		}
+	}
+
 	setup() {
 		this.folderNavDecorations = new FolderNavigationDecorations(
 			this.vault,
@@ -595,6 +669,8 @@ export default class Live extends Plugin {
 		});
 		this.register(patchOnUnloadFile);
 
+		this.patchWebviewer();
+
 		withFlag(flag.enableNewLinkFormat, () => {
 			const patchFileToLinktext = around(MetadataCache.prototype, {
 				fileToLinktext(
@@ -741,6 +817,8 @@ export default class Live extends Plugin {
 		this.folderSettings = null as any;
 		this.featureSettings.destroy();
 		this.featureSettings = null as any;
+
+		this.interceptedUrls.length = 0;
 
 		FeatureFlagManager.destroy();
 		PostOffice.destroy();
