@@ -38,6 +38,7 @@ export class LoginManager extends Observable<LoginManager> {
 		vaultName: string,
 		openSettings: () => Promise<void>,
 		timeProvider: TimeProvider,
+		private beforeLogin: () => void,
 	) {
 		super();
 		const pbLog = curryLog("[Pocketbase]", "debug");
@@ -151,6 +152,16 @@ export class LoginManager extends Observable<LoginManager> {
 		this.notifyListeners();
 	}
 
+	webviewIntercept(): RegExp {
+		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
+		const authProvider =
+			"https:\\/\\/accounts\\.google\\.com\\/o\\/oauth2\\/auth";
+		return new RegExp(
+			`^${authProvider}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
+			"i",
+		);
+	}
+
 	async initiateManualOAuth2CodeFlow(
 		whichFetch: typeof fetch | typeof customFetch,
 	): Promise<
@@ -160,6 +171,7 @@ export class LoginManager extends Observable<LoginManager> {
 			(code: string) => Promise<RecordAuthResponse<RecordModel>>,
 		]
 	> {
+		this.beforeLogin();
 		const authMethods = await this.pb
 			.collection("users")
 			.listAuthMethods({ fetch: whichFetch })
@@ -200,7 +212,7 @@ export class LoginManager extends Observable<LoginManager> {
 		return new Promise((resolve, reject) => {
 			const timer = setInterval(() => {
 				counter += 1;
-				if (counter > 30) {
+				if (counter >= 30) {
 					clearInterval(timer);
 					return reject(
 						new Error(
@@ -225,6 +237,7 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	async login(): Promise<boolean> {
+		this.beforeLogin();
 		const authData = await this.pb.collection("users").authWithOAuth2({
 			provider: "google",
 		});
