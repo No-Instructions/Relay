@@ -1,7 +1,7 @@
 import { requestUrl, type RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
-import { S3RN, S3RemoteDocument, S3RemoteFolder } from "./S3RN";
+import { S3RN, S3RemoteDocument } from "./S3RN";
 import type { SharedFolders } from "./SharedFolder";
 import type { Document } from "./Document";
 import type { TimeProvider } from "./TimeProvider";
@@ -12,6 +12,7 @@ import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder } from "./SharedFolder";
 import { compareFilePaths } from "./FolderSort";
+import type { ClientToken } from "./y-sweet";
 import { flags } from "./flagManager";
 
 declare const API_URL: string;
@@ -431,33 +432,62 @@ export class BackgroundSync {
 		this.syncGroups.set(sharedFolder, group);
 	}
 
+	private getAuthHeader(clientToken: ClientToken) {
+		return {
+			Authorization: flags().enableDocumentServer
+				? `Bearer ${clientToken.token}`
+				: `Bearer ${this.loginManager.user?.token}`,
+		};
+	}
+
+	private getBaseUrl(
+		clientToken: ClientToken,
+		entity: S3RemoteDocument,
+	): string {
+		const urlObj = new URL(clientToken.url);
+		urlObj.protocol = "https:";
+		const parts = urlObj.pathname.split("/");
+		parts.pop();
+		parts.push(clientToken.docId);
+		const baseUrl =
+			clientToken.baseUrl?.replace(/\/$/, "") || urlObj.toString();
+
+		if (flags().enableDocumentServer) {
+			return baseUrl;
+		} else {
+			return `${API_URL}/relay/${entity.relayId}/doc/${entity.documentId}`;
+		}
+	}
+
 	async downloadItem(item: Document): Promise<RequestUrlResponse> {
 		const entity = item.s3rn;
-		this.log("[downloadItem]", `${S3RN.encode(entity)}`);
-		let docId: string;
-		if (entity instanceof S3RemoteDocument) {
-			docId = entity.documentId;
-		} else if (entity instanceof S3RemoteFolder) {
-			docId = entity.folderId;
-		} else {
+		this.log("[downloadItem]", item.path, `${S3RN.encode(entity)}`);
+
+		if (!(entity instanceof S3RemoteDocument)) {
 			throw new Error("Unable to decode S3RN");
 		}
-		if (!this.loginManager.loggedIn) {
-			throw new Error("Not logged in");
-		}
-		await item.getProviderToken(0);
-		const headers = {
-			Authorization: `Bearer ${this.loginManager.user?.token}`,
-		};
+
+		const clientToken = await item.getProviderToken(0);
+		const headers = this.getAuthHeader(clientToken);
+		const baseUrl = this.getBaseUrl(clientToken, entity);
+		const url = `${baseUrl}/as-update`;
+
 		const response = await requestUrl({
-			url: `${API_URL}/relay/${entity.relayId}/doc/${docId}/as-update`,
+			url: url,
 			method: "GET",
 			headers: headers,
 		});
+
 		if (response.status === 200) {
-			this.debug("[downloadItem]", docId, response.status);
+			this.debug("[downloadItem]", entity.documentId, response.status);
 		} else {
-			this.error("[downloadItem]", docId, response.status, response.text);
+			this.error(
+				"[downloadItem]",
+				entity.documentId,
+				baseUrl,
+				response.status,
+				response.text,
+			);
 		}
 		return response;
 	}
@@ -497,33 +527,45 @@ export class BackgroundSync {
 	async uploadItem(item: Document): Promise<RequestUrlResponse> {
 		const entity = item.s3rn;
 		this.log("[uploadItem]", `${S3RN.encode(entity)}`);
-		let docId: string;
-		if (entity instanceof S3RemoteDocument) {
-			docId = entity.documentId;
-		} else {
+		if (!(entity instanceof S3RemoteDocument)) {
 			throw new Error("Unable to decode S3RN");
 		}
+
 		if (!this.loginManager.loggedIn) {
 			throw new Error("Not logged in");
 		}
-		await item.getProviderToken(0);
+
+		const clientToken = await item.getProviderToken(0);
 		const headers = {
-			Authorization: `Bearer ${this.loginManager.user?.token}`,
 			"Content-Type": "application/octet-stream",
+			...this.getAuthHeader(clientToken),
 		};
 		const update = Y.encodeStateAsUpdate(item.ydoc);
 
+        const baseUrl = this.getBaseUrl(clientToken, entity);
+        const updateUrl = `${baseUrl}/update`;
 		const response = await requestUrl({
-			url: `${API_URL}/relay/${entity.relayId}/doc/${docId}/update`,
+			url: updateUrl,
 			method: "POST",
 			headers: headers,
 			body: update.buffer,
 			throw: false,
 		});
 		if (response.status === 200) {
-			this.debug("[uploadItem]", docId, response.status, response.text);
+			this.debug(
+				"[uploadItem]",
+				entity.documentId,
+				response.status,
+				response.text,
+			);
 		} else {
-			this.error("[uploadItem]", docId, response.status, response.text);
+			this.error(
+				"[uploadItem]",
+				entity.documentId,
+				updateUrl,
+				response.status,
+				response.text,
+			);
 		}
 		return response;
 	}
