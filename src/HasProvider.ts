@@ -164,7 +164,7 @@ export class HasProvider extends HasLogging {
 		this.listeners.delete(el);
 	}
 
-	async getProviderToken(): Promise<ClientToken> {
+	async getProviderToken(timeout = 10000): Promise<ClientToken> {
 		this.log("get provider token");
 
 		const tokenPromise = this.tokenStore.getToken(
@@ -172,13 +172,13 @@ export class HasProvider extends HasLogging {
 			this.path || "unknown",
 			this.refreshProvider.bind(this),
 		);
-		if (Platform.isIosApp) {
+		if (Platform.isIosApp || timeout === 0) {
 			return tokenPromise;
 		}
 		const timeoutPromise = promiseWithTimeout<ClientToken>(
 			"getProviderToken",
 			tokenPromise,
-			10000,
+			timeout,
 		);
 		return timeoutPromise;
 	}
