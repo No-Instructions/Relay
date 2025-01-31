@@ -143,9 +143,6 @@
 			.then((folder) => {
 				folder.remote = remoteFolder;
 				plugin.sharedFolders.notifyListeners();
-				withFlag(flag.enableDownloadOnAddToVault, () => {
-					plugin.backgroundSync.getFolderFiles(folder);
-				});
 				return folder;
 			});
 	}

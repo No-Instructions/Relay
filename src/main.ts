@@ -381,6 +381,16 @@ export default class Live extends Plugin {
 									);
 								});
 						});
+						withFlag(flag.enableUploadOnShare, () => {
+							menu.addItem((item) => {
+								item
+									.setTitle("Sync")
+									.setIcon("folder-sync")
+									.onClick(() => {
+										folder.netSync();
+									});
+							});
+						});
 					}
 				}),
 			);
@@ -523,6 +533,7 @@ export default class Live extends Plugin {
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders,
+			this.backgroundSync,
 		);
 		this.folderNavDecorations.refresh();
 
