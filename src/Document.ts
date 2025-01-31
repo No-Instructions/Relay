@@ -86,16 +86,20 @@ export class Document extends HasProvider implements TFile {
 		}
 
 		this.whenSynced().then(() => {
-			this._persistence.set("path", this.path);
-			this._persistence.set("relay", this.sharedFolder.relayId || "");
-			this._persistence.set("appId", this.sharedFolder.appId);
-			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 			this.ydoc.on(
 				"update",
 				(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
 					this.updateStats();
 				},
 			);
+			try {
+				this._persistence.set("path", this.path);
+				this._persistence.set("relay", this.sharedFolder.relayId || "");
+				this._persistence.set("appId", this.sharedFolder.appId);
+				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+			} catch (e) {
+				// pass
+			}
 		});
 
 		//const logObserver = (event: Y.YTextEvent) => {
@@ -249,6 +253,9 @@ export class Document extends HasProvider implements TFile {
 
 	async awaitingUpdates(): Promise<boolean> {
 		await this.whenSynced();
+		if (!this._awaitingUpdates) {
+			return false;
+		}
 		this._awaitingUpdates = !this.hasLocalDB();
 		return this._awaitingUpdates;
 	}
@@ -258,9 +265,12 @@ export class Document extends HasProvider implements TFile {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				this.log("awaiting updates");
 				this.connect();
 				await this.onceConnected();
+				this.log("connected");
 				await this.onceProviderSynced();
+				this.log("synced");
 				return this;
 			}
 			// If this is a shared folder with edits, then we can behave as though we're just offline.
