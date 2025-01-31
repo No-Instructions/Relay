@@ -46,7 +46,7 @@ import {
 	VIEW_TYPE_DIFFERENCES,
 } from "./differ/differencesView";
 import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
-import { FeatureFlagManager, withFlag } from "./flagManager";
+import { FeatureFlagManager, flags, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
@@ -381,10 +381,19 @@ export default class Live extends Plugin {
 									);
 								});
 						});
+						if (flags().enableSyncMenu && folder.relayId && folder.connected) {
+							menu.addItem((item) => {
+								item
+									.setTitle("Sync")
+									.setIcon("folder-sync")
+									.onClick(() => {
+										folder.netSync();
+									});
+							});
+						}
 					}
 				}),
 			);
-
 			this.setup();
 			this._liveViews.refresh("init");
 			this.loadTime = moment.now() - start;
@@ -523,6 +532,7 @@ export default class Live extends Plugin {
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders,
+			this.backgroundSync,
 		);
 		this.folderNavDecorations.refresh();
 
