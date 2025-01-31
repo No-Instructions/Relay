@@ -25,6 +25,7 @@ export class Document extends HasProvider implements TFile {
 	path: string;
 	_tfile: TFile | null;
 	name: string;
+	userLock: boolean = false;
 	extension: string;
 	basename: string;
 	vault: Vault;
@@ -264,6 +265,9 @@ export class Document extends HasProvider implements TFile {
 
 	async awaitingUpdates(): Promise<boolean> {
 		await this.whenSynced();
+		if (!this._awaitingUpdates) {
+			return false;
+		}
 		this._awaitingUpdates = !this.hasLocalDB();
 		return this._awaitingUpdates;
 	}
@@ -273,9 +277,12 @@ export class Document extends HasProvider implements TFile {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				this.log("awaiting updates");
 				this.connect();
 				await this.onceConnected();
+				this.log("connected");
 				await this.onceProviderSynced();
+				this.log("synced");
 				return this;
 			}
 			// If this is a shared folder with edits, then we can behave as though we're just offline.

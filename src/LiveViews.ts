@@ -299,6 +299,7 @@ export class LiveView implements S3View {
 						this.connect();
 					} else {
 						this.document.disconnect();
+						this.document.userLock = false;
 					}
 					resolve(this);
 				})
@@ -309,6 +310,7 @@ export class LiveView implements S3View {
 	}
 
 	connect() {
+		this.document.userLock = true;
 		this.document.connect();
 	}
 
