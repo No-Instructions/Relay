@@ -128,6 +128,45 @@
 	text-shadow: var(--input-shadow);
 }
 
+.system3-syncing:not(.is-active) {
+	animation: system3-glow-sync 1.5s ease-in-out;
+	transition: background-color 2s ease-in-out;
+}
+
+.system3-downloading:not(.is-active) {
+	animation: system3-glow-download 1.5s ease-in-out;
+	transition: background-color 2s ease-in-out;
+}
+@keyframes system3-glow-sync {
+	0% {
+		background-color: transparent;
+	}
+	20% {
+		background-color: hsla(var(--color-accent-hsl), 0.1);
+	}
+	80% {
+		background-color: hsla(var(--color-accent-hsl), 0.1);
+	}
+	100% {
+		background-color: transparent;
+	}
+}
+
+@keyframes system3-glow-download {
+	0% {
+		background-color: transparent;
+	}
+	20% {
+		background-color: hsla(var(--color-accent-hsl), 0.1);
+	}
+	80% {
+		background-color: hsla(var(--color-accent-hsl), 0.1);
+	}
+	100% {
+		background-color: transparent;
+	}
+}
+
 .nav-folder > .nav-folder-children.system3-live {
 	border-inline-start: var(--nav-indentation-guide-width) solid
 		var(--color-accent) !important;
