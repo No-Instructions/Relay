@@ -1,16 +1,39 @@
 import { requestUrl, type RequestUrlResponse } from "obsidian";
-import type { HasProvider } from "./HasProvider";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
 import { S3RN, S3RemoteDocument, S3RemoteFolder } from "./S3RN";
-import type { SharedFolder, SharedFolders } from "./SharedFolder";
+import type { SharedFolders } from "./SharedFolder";
 import type { Document } from "./Document";
 import type { TimeProvider } from "./TimeProvider";
 import { RelayInstances, curryLog } from "./debug";
-import type { Unsubscriber } from "./observable/Observable";
+import type { Subscriber, Unsubscriber } from "./observable/Observable";
 import { diff_match_patch, type Diff } from "diff-match-patch";
+import { ObservableSet } from "./observable/ObservableSet";
+import { ObservableMap } from "./observable/ObservableMap";
+import type { SharedFolder } from "./SharedFolder";
+import { compareFilePaths } from "./FolderSort";
 
 declare const API_URL: string;
+
+export interface QueueItem {
+	guid: string;
+	path: string;
+	doc: Document;
+	status: "pending" | "running" | "completed" | "failed";
+	merge: boolean;
+	sharedFolder: SharedFolder;
+}
+
+export interface SyncGroup {
+	sharedFolder: SharedFolder;
+	total: number; // Total operations (syncs + downloads)
+	completed: number; // Total completed operations
+	status: "pending" | "running" | "completed" | "failed";
+	downloads: number;
+	syncs: number;
+	completedDownloads: number;
+	completedSyncs: number;
+}
 
 export function updateYDocFromDiskBuffer(
 	ydoc: Y.Doc,
@@ -71,24 +94,236 @@ export function updateYDocFromDiskBuffer(
 }
 
 export class BackgroundSync {
+	public activeSync = new ObservableSet<QueueItem>();
+	public activeDownloads = new ObservableSet<QueueItem>();
+	public syncGroups = new ObservableMap<SharedFolder, SyncGroup>();
+	private syncQueue: QueueItem[] = [];
+	private downloadQueue: QueueItem[] = [];
+	private isProcessingSync = false;
+	private isProcessingDownloads = false;
+	private isPaused = false;
+
 	subscriptions: Unsubscriber[] = [];
-	downloadQueue: HasProvider[] = [];
 	log = curryLog("[BackgroundSync]", "log");
 	debug = curryLog("[BackgroundSync]", "debug");
 	error = curryLog("[BackgroundSync]", "error");
+
 	constructor(
 		private loginManager: LoginManager,
 		private timeProvider: TimeProvider,
 		private sharedFolders: SharedFolders,
+		private concurrency: number = 1,
 	) {
 		RelayInstances.set(this, "BackgroundSync");
 	}
 
-	enqueueDownload(item: HasProvider) {
-		this.downloadQueue.push(item);
+	private async processSyncQueue() {
+		if (this.isPaused || this.isProcessingSync) return;
+		this.isProcessingSync = true;
+
+		while (
+			this.syncQueue.length > 0 &&
+			this.activeSync.size < this.concurrency
+		) {
+			const item = this.syncQueue.shift();
+			if (!item) break;
+
+			item.status = "running";
+			this.activeSync.add(item);
+
+			try {
+				const doc = item.doc as Document;
+				await this.syncDocument(doc, item.merge);
+				item.status = "completed";
+
+				const group = this.syncGroups.get(item.sharedFolder);
+				if (group) {
+					this.debug(
+						`[Sync Progress] Before: completed=${group.completed}, total=${group.total}, ` +
+							`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
+					);
+
+					group.completedSyncs++;
+					group.completed++;
+
+					this.debug(
+						`[Sync Progress] After: completed=${group.completed}, total=${group.total}, ` +
+							`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
+					);
+
+					if (group.completed === group.total) {
+						group.status = "completed";
+						this.debug("[Sync Progress] Group completed!");
+					}
+
+					this.syncGroups.set(item.sharedFolder, group);
+				}
+			} catch (error) {
+				item.status = "failed";
+				const group = this.syncGroups.get(item.sharedFolder);
+				if (group) {
+					this.error("[Sync Failed]", error);
+					group.status = "failed";
+					this.syncGroups.set(item.sharedFolder, group);
+				}
+			} finally {
+				this.activeSync.delete(item);
+			}
+		}
+
+		this.isProcessingSync = false;
+		if (this.syncQueue.length > 0) {
+			this.processSyncQueue();
+		}
 	}
 
-	async downloadItem(item: HasProvider): Promise<RequestUrlResponse> {
+	private async processDownloadQueue() {
+		if (this.isPaused || this.isProcessingDownloads) return;
+		this.isProcessingDownloads = true;
+
+		while (
+			this.downloadQueue.length > 0 &&
+			this.activeDownloads.size < this.concurrency
+		) {
+			const item = this.downloadQueue.shift();
+			if (!item) break;
+
+			item.status = "running";
+			this.activeDownloads.add(item);
+
+			try {
+				await this.getDocument(item.doc);
+				item.status = "completed";
+
+				const group = this.syncGroups.get(item.sharedFolder);
+				if (group) {
+					group.completedDownloads++;
+					group.completed++;
+					if (group.completed === group.total) {
+						group.status = "completed";
+					}
+					this.syncGroups.set(item.sharedFolder, group);
+				}
+			} catch (error) {
+				item.status = "failed";
+				const group = this.syncGroups.get(item.sharedFolder);
+				if (group) {
+					group.status = "failed";
+					this.syncGroups.set(item.sharedFolder, group);
+				}
+				this.error("[processDownloadQueue]", error);
+			} finally {
+				this.activeDownloads.delete(item);
+			}
+		}
+
+		this.isProcessingDownloads = false;
+		if (this.downloadQueue.length > 0) {
+			this.processDownloadQueue();
+		}
+	}
+
+	enqueueSync(item: Document, merge: boolean = true) {
+		const sharedFolder = item.sharedFolder;
+
+		let group = this.syncGroups.get(sharedFolder);
+		if (!group) {
+			group = {
+				sharedFolder,
+				total: 0,
+				completed: 0,
+				status: "pending",
+				downloads: 0,
+				syncs: 0,
+				completedDownloads: 0,
+				completedSyncs: 0,
+			};
+		}
+		group.syncs++;
+		group.total++;
+		this.syncGroups.set(sharedFolder, group);
+
+		const queueItem: QueueItem = {
+			guid: item.guid,
+			path: sharedFolder.getPath(item.path),
+			doc: item,
+			status: "pending",
+			merge,
+			sharedFolder,
+		};
+
+		this.syncQueue.push(queueItem);
+		this.syncQueue.sort(compareFilePaths);
+		this.processSyncQueue();
+	}
+
+	enqueueDownload(item: Document) {
+		const sharedFolder = item.sharedFolder;
+
+		let group = this.syncGroups.get(sharedFolder);
+		if (!group) {
+			group = {
+				sharedFolder,
+				total: 0,
+				completed: 0,
+				status: "pending",
+				downloads: 0,
+				syncs: 0,
+				completedDownloads: 0,
+				completedSyncs: 0,
+			};
+		}
+		group.downloads++;
+		group.total++;
+		this.syncGroups.set(sharedFolder, group);
+
+		const queueItem: QueueItem = {
+			guid: item.guid,
+			path: sharedFolder.getPath(item.path),
+			doc: item,
+			status: "pending",
+			merge: true,
+			sharedFolder,
+		};
+
+		this.downloadQueue.push(queueItem);
+		this.downloadQueue.sort(compareFilePaths);
+		this.processDownloadQueue();
+	}
+
+	enqueueSharedFolderSync(sharedFolder: SharedFolder) {
+		// Get all documents in the shared folder
+		const docs = [...sharedFolder.docs.values()];
+
+		// Create sync group to track progress
+		const group: SyncGroup = {
+			sharedFolder,
+			total: 0,
+			completed: 0,
+			status: "pending",
+			downloads: 0,
+			syncs: docs.length,
+			completedDownloads: 0,
+			completedSyncs: 0,
+		};
+
+		// Set the group before enqueueing items
+		this.syncGroups.set(sharedFolder, group);
+
+		// Sort items by path for consistent sync order
+		const sortedDocs = [...docs].sort(compareFilePaths);
+
+		// Enqueue all items
+		for (const doc of sortedDocs) {
+			this.enqueueSync(doc, true);
+		}
+
+		// Update group status to running
+		group.status = "running";
+		this.syncGroups.set(sharedFolder, group);
+	}
+
+	async downloadItem(item: Document): Promise<RequestUrlResponse> {
 		const entity = item.s3rn;
 		this.log("[downloadItem]", `${S3RN.encode(entity)}`);
 		let docId: string;
@@ -102,6 +337,7 @@ export class BackgroundSync {
 		if (!this.loginManager.loggedIn) {
 			throw new Error("Not logged in");
 		}
+		await item.getProviderToken(0);
 		const headers = {
 			Authorization: `Bearer ${this.loginManager.user?.token}`,
 		};
@@ -118,7 +354,23 @@ export class BackgroundSync {
 		return response;
 	}
 
-	async uploadItem(item: Document): Promise<RequestUrlResponse> {
+	async syncDocumentWebsocket(item: Document): Promise<void> {
+		const promise = item.onceProviderSynced();
+		const wasConnected = item.connected;
+		item.connect();
+		await promise;
+		if (!wasConnected) {
+			item.disconnect();
+			item.sharedFolder.tokenStore.removeFromRefreshQueue(
+				S3RN.encode(item.s3rn),
+			);
+		}
+	}
+
+	async uploadItem(
+		item: Document,
+		merge: boolean = true,
+	): Promise<RequestUrlResponse> {
 		const entity = item.s3rn;
 		this.log("[uploadItem]", `${S3RN.encode(entity)}`);
 		let docId: string;
@@ -132,11 +384,32 @@ export class BackgroundSync {
 		if (!this.loginManager.loggedIn) {
 			throw new Error("Not logged in");
 		}
+		await item.getProviderToken(0);
 		const headers = {
 			Authorization: `Bearer ${this.loginManager.user?.token}`,
 			"Content-Type": "application/octet-stream",
 		};
-		const update = Y.encodeStateAsUpdate(item.ydoc);
+		const updateResponse = await requestUrl({
+			url: `${API_URL}/relay/${entity.relayId}/doc/${docId}/as-update`,
+			method: "GET",
+			headers: headers,
+		});
+		if (updateResponse.status !== 200) {
+			throw new Error("unable to get server-side code to align push");
+		}
+		const rawUpdate = updateResponse.arrayBuffer;
+		const updateBytes = new Uint8Array(rawUpdate);
+		const newDoc = new Y.Doc();
+		Y.applyUpdate(newDoc, updateBytes);
+		if (!merge && newDoc.getText("contents").toString() !== "") {
+			newDoc.destroy();
+			throw new Error(
+				`[UploadItem][${item.path}] Server has contents -- cancelling upload`,
+			);
+		}
+
+		const stateVector = Y.encodeStateVectorFromUpdate(updateBytes);
+		const update = Y.encodeStateAsUpdate(item.ydoc, stateVector);
 		const response = await requestUrl({
 			url: `${API_URL}/relay/${entity.relayId}/doc/${docId}/update`,
 			method: "POST",
@@ -152,7 +425,7 @@ export class BackgroundSync {
 		return response;
 	}
 
-	async getDocument(doc: Document) {
+	private async getDocument(doc: Document) {
 		try {
 			// Get the current contents before applying the update
 			const currentText = doc.text;
@@ -175,7 +448,9 @@ export class BackgroundSync {
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
 			if (!newDoc.getText("contents").toString() && hasContents) {
-				this.log("[getDocument] server contents empty document, not overwriting local file.");
+				this.log(
+					"[getDocument] server contents empty document, not overwriting local file.",
+				);
 				return;
 			}
 
@@ -186,63 +461,70 @@ export class BackgroundSync {
 				this.log("Skipping flush - file requires merge conflict resolution.");
 				return;
 			}
-            doc.sharedFolder.flush(doc, doc.text);
+			doc.sharedFolder.flush(doc, doc.text);
 		} catch (e) {
 			console.error(e);
 			return;
 		}
 	}
 
-	async putDocument(doc: Document) {
+	private async syncDocument(doc: Document, merge: boolean = true) {
 		try {
-			const response = await this.uploadItem(doc);
-			if (response.status !== 200) {
-				throw new Error(
-					`Failed to upload document: ${response.status} ${response.text}`,
-				);
-			}
+			await this.uploadItem(doc, merge);
+			//await this.syncDocumentWebsocket(doc);
 		} catch (e) {
 			console.error(e);
 			return;
 		}
 	}
 
-	async putFolderFiles(folder: SharedFolder) {
-		await folder.whenReady();
-		this.log("[putFolderFiles]", `Uploading ${folder.docset.size} items`);
-		let i = 1;
-		for (const doc of folder.docset.items()) {
-			await doc.whenReady();
-			if (doc.text) {
-				await this.uploadItem(doc);
-			}
-			this.log("[putFolderFiles]", `${i}/${folder.docset.size}`);
-			i++;
-		}
+	subscribeToSync(
+		callback: Subscriber<ObservableSet<QueueItem>>,
+	): Unsubscriber {
+		return this.activeSync.subscribe(callback);
 	}
 
-	async getFolder(folder: SharedFolder) {
-		const response = await this.downloadItem(folder);
-		const rawUpdate = response.arrayBuffer;
-		const updateBytes = new Uint8Array(rawUpdate);
-		Y.applyUpdate(folder.ydoc, updateBytes);
+	subscribeToDownloads(
+		callback: Subscriber<ObservableSet<QueueItem>>,
+	): Unsubscriber {
+		return this.activeDownloads.subscribe(callback);
 	}
 
-	async getFolderFiles(folder: SharedFolder) {
-		await folder.whenReady();
-		this.log("[getFolderFiles]", `Downloading ${folder.docset.size} files`);
-		let i = 1;
-		for (const doc of folder.docset.items()) {
-			await this.getDocument(doc);
-			this.log("[getFolderFiles]", `${i}/${folder.docset.size}`);
-			i++;
-		}
+	subscribeToSyncGroups(
+		callback: Subscriber<ObservableMap<SharedFolder, SyncGroup>>,
+	): Unsubscriber {
+		return this.syncGroups.subscribe(callback);
+	}
+
+	pause() {
+		this.isPaused = true;
+	}
+
+	resume() {
+		this.isPaused = false;
+		this.processSyncQueue();
+		this.processDownloadQueue();
+	}
+
+	getQueueStatus() {
+		return {
+			syncsQueued: this.syncQueue.length,
+			syncsActive: this.activeSync.size,
+			downloadsQueued: this.downloadQueue.length,
+			downloadsActive: this.activeDownloads.size,
+			isPaused: this.isPaused,
+		};
 	}
 
 	destroy() {
+		this.activeSync.destroy();
+		this.activeDownloads.destroy();
+		this.syncGroups.destroy();
+		this.syncQueue = [];
+		this.downloadQueue = [];
 		this.loginManager = null as any;
 		this.sharedFolders = null as any;
+		this.timeProvider = null as any;
 		this.subscriptions.forEach((off) => off());
-		this.downloadQueue = [];
 	}
 }

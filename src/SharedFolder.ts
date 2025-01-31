@@ -139,7 +139,9 @@ export class SharedFolder extends HasProvider {
 
 			const upload = (doc: Document) => {
 				withFlag(flag.enableUploadOnShare, () => {
-					this.backgroundSync.putDocument(doc);
+					if (loadFromDisk) {
+						this.backgroundSync.enqueueSync(doc, false);
+					}
 				});
 			};
 			const doc = this.createFile(file.path, loadFromDisk, false, upload);
@@ -199,9 +201,10 @@ export class SharedFolder extends HasProvider {
 			this.connect();
 		}
 
-		this.whenReady().then(() => {
+		this.whenReady().then(async () => {
 			if (!this.destroyed) {
 				this.addLocalDocs();
+				await this.syncFileTree(this.ydoc);
 			}
 		});
 
@@ -226,11 +229,7 @@ export class SharedFolder extends HasProvider {
 		//	this.ids.unobserve(logObserver);
 		//});
 
-		this.whenSynced().then(() => {
-			this._persistence.set("path", this.path);
-			this._persistence.set("relay", this.relayId || "");
-			this._persistence.set("appId", this.appId);
-			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+		this.whenSynced().then(async () => {
 			this.ydoc.on(
 				"update",
 				async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
@@ -246,9 +245,23 @@ export class SharedFolder extends HasProvider {
 					await this.syncFileTree(doc);
 				},
 			);
+			try {
+				this._persistence.set("path", this.path);
+				this._persistence.set("relay", this.relayId || "");
+				this._persistence.set("appId", this.appId);
+				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+			} catch (e) {
+				// pass
+			}
 		});
 
 		RelayInstances.set(this, this.path);
+	}
+
+	async netSync() {
+		await this.whenReady();
+		this.addLocalDocs();
+		this.backgroundSync.enqueueSharedFolderSync(this);
 	}
 
 	public get settings(): SharedFolderSettings {
@@ -463,8 +476,8 @@ export class SharedFolder extends HasProvider {
 			await folderPromise;
 
 			// Receive content, then flush to disk
-			await doc.whenReady();
-			await this.backgroundSync.getDocument(doc);
+			await doc.whenSynced();
+			this.backgroundSync.enqueueDownload(doc);
 		});
 		diffLog?.push(`created local file for remotely added doc ${path}`);
 		return doc;
@@ -635,6 +648,9 @@ export class SharedFolder extends HasProvider {
 		update = true,
 	): Document {
 		const vPath = this.getVirtualPath(path);
+		if (!this.checkExtension(path)) {
+			throw new Error("bad extension!");
+		}
 		return this.getDoc(vPath, create, loadFromDisk, update);
 	}
 
@@ -746,6 +762,8 @@ export class SharedFolder extends HasProvider {
 					onSync(doc);
 				}
 			})();
+		} else {
+			onSync(doc);
 		}
 
 		this.docs.set(guid, doc);

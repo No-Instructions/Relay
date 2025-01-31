@@ -14,6 +14,9 @@ import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import { withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
+import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
+import type { Unsubscriber } from "src/observable/Observable";
+import type { ObservableSet } from "src/observable/ObservableSet";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -161,17 +164,34 @@ class PillDecoration {
 			props: {
 				status: this.sharedFolder.state.status,
 				remote: this.sharedFolder.remote,
+				progress: 0,
 			},
 		});
-		this.unsubscribe = this.sharedFolder.subscribe(
-			this.el,
-			(state: ConnectionState) => {
+
+		const unsubs: Unsubscribe[] = [];
+		unsubs.push(
+			this.sharedFolder.subscribe(this.el, (state: ConnectionState) => {
 				this.pill.$set({
 					status: state.status,
 					remote: this.sharedFolder.remote,
 				});
-			},
+			}),
 		);
+
+		unsubs.push(
+			this.sharedFolder.backgroundSync.syncGroups.subscribe((groups) => {
+				const folderGroup = Array.from(groups.values()).find(
+					(group) => group.sharedFolder === this.sharedFolder,
+				);
+				if (folderGroup) {
+					this.pill.$set({
+						progress: (folderGroup.completed / folderGroup.total) % 1,
+					});
+				}
+			}),
+		);
+
+		this.unsubscribe = () => unsubs.forEach((u) => u());
 	}
 
 	destroy() {
@@ -198,6 +218,88 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 	}
 }
 
+class QueueWatcher implements Destroyable {
+	private unsubscribers: Unsubscriber[] = [];
+	private titleEl: HTMLElement;
+
+	constructor(
+		private el: HTMLElement,
+		private path: string,
+		private activeSync: ObservableSet<QueueItem>,
+		private activeDownloads: ObservableSet<QueueItem>,
+	) {
+		this.titleEl = el.querySelector(".nav-file-title") || el;
+
+		this.unsubscribers.push(
+			this.activeSync.subscribe(() => this.checkStatus()),
+			this.activeDownloads.subscribe(() => this.checkStatus()),
+		);
+		this.checkStatus();
+	}
+
+	private checkStatus() {
+		const isSyncing = this.activeSync.some((item) => item.path === this.path);
+		const isDownloading = this.activeDownloads.some(
+			(item) => item.path === this.path,
+		);
+
+		if (isSyncing) {
+			this.titleEl.addClass("system3-syncing");
+		} else {
+			this.titleEl.removeClass("system3-syncing");
+		}
+
+		if (isDownloading) {
+			this.titleEl.addClass("system3-downloading");
+		} else {
+			this.titleEl.removeClass("system3-downloading");
+		}
+	}
+
+	destroy() {
+		this.titleEl.removeClass("system3-uploading");
+		this.titleEl.removeClass("system3-downloading");
+		this.unsubscribers.forEach((unsub) => unsub());
+	}
+}
+
+class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
+	constructor(
+		private activeSync: ObservableSet<QueueItem>,
+		private activeDownloads: ObservableSet<QueueItem>,
+	) {
+		super();
+	}
+
+	visitFile(
+		file: TFile,
+		item: FileItem,
+		storage?: QueueWatcher,
+		sharedFolder?: SharedFolder,
+	): QueueWatcher | null {
+		if (
+			sharedFolder &&
+			sharedFolder.ready &&
+			sharedFolder.checkExtension(file.path) &&
+			sharedFolder.checkPath(file.path)
+		) {
+			return (
+				storage ||
+				new QueueWatcher(
+					item.el,
+					file.path,
+					this.activeSync,
+					this.activeDownloads,
+				)
+			);
+		}
+		if (storage) {
+			storage.destroy();
+		}
+		return null;
+	}
+}
+
 class FilePillDecoration {
 	pill: TextPill;
 	unsubscribe?: () => void;
@@ -216,6 +318,7 @@ class FilePillDecoration {
 			},
 		});
 		const onUpdate = async () => {
+			await doc.whenSynced();
 			await doc.count();
 			this.pill.$set({
 				text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
@@ -253,6 +356,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		) {
 			const doc = sharedFolder.getFile(file.path, false, false);
 			if (!doc) return null;
+			if (!doc.ready) return null;
 			return storage || new FilePillDecoration(item.selfEl, doc);
 		}
 		if (storage) {
@@ -448,25 +552,37 @@ export class FolderNavigationDecorations {
 	vault: Vault;
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
+	backgroundSync: BackgroundSync;
 	offFolderListener: () => void;
 	offDocumentListeners: Map<SharedFolder, () => void>;
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 	layoutReady: boolean = false;
+	private queueSubscriptions: Unsubscriber[] = [];
 
 	constructor(
 		vault: Vault,
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
+		backgroundSync: BackgroundSync,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
+		this.backgroundSync = backgroundSync;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => {
 			this.layoutReady = true;
 			this.refresh();
 		});
+
+		// Subscribe to queue changes once at the top level
+		this.queueSubscriptions.push(
+			backgroundSync.activeSync.subscribe(() => this.quickRefresh()),
+			backgroundSync.activeDownloads.subscribe(() => this.quickRefresh()),
+			backgroundSync.syncGroups.subscribe(() => this.quickRefresh()),
+		);
+
 		this.offDocumentListeners = new Map();
 		this.offFolderListener = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
@@ -482,6 +598,9 @@ export class FolderNavigationDecorations {
 							}),
 						);
 					}
+				});
+				folder.whenReady().then(() => {
+					this.refresh();
 				});
 			});
 			this.refresh();
@@ -500,6 +619,12 @@ export class FolderNavigationDecorations {
 		visitors.push(new FolderPillVisitor());
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
+			visitors.push(
+				new QueueWatcherVisitor(
+					this.backgroundSync.activeSync,
+					this.backgroundSync.activeDownloads,
+				),
+			);
 		});
 		withFlag(flag.enableDebugFileTag, () => {
 			visitors.push(new FilePillVisitor());
@@ -515,6 +640,7 @@ export class FolderNavigationDecorations {
 			const viewType = leaf.view.getViewType();
 			if (viewType === "file-explorer") {
 				if (!fileExplorers.includes(leaf)) {
+					leaf.loadIfDeferred?.();
 					fileExplorers.push(leaf);
 				}
 			}
@@ -575,10 +701,13 @@ export class FolderNavigationDecorations {
 		});
 		this.treeState.clear();
 		this.offLayoutChange();
+		this.queueSubscriptions.forEach((unsub) => unsub());
+		this.queueSubscriptions = [];
 
 		this.vault = null as any;
 		this.workspace = null as any;
 		this.sharedFolders = null as any;
+		this.backgroundSync = null as any;
 		this.offFolderListener = null as any;
 	}
 }
