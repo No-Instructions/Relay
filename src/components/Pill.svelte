@@ -2,11 +2,20 @@
 	import { Satellite, Layers } from "lucide-svelte";
 	import type { ConnectionStatus } from "src/HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
+	import type { SyncGroup } from "src/BackgroundSync";
 	export let status: ConnectionStatus = "disconnected";
 	export let remote: RemoteSharedFolder | undefined;
+	export let progress = 0;
+
+	$: showProgress = progress > 0;
 </script>
 
 <div class="folder-icons">
+	{#if showProgress}
+		<span class="progress-text">
+			{Math.round(progress * 100)}%
+		</span>
+	{/if}
 	{#if remote}
 		<span class="notebook icon hidden" aria-label="Tracking Changes">
 			<Layers class="inline-icon" style="width: 0.8em" />
@@ -35,6 +44,7 @@
 		padding-left: 0.2em;
 		padding-right: 0.2em;
 		background-color: var(--color-base-05);
+		position: relative;
 	}
 
 	.icon {
@@ -57,5 +67,20 @@
 
 	span.hidden {
 		display: none;
+	}
+
+	.progress-text {
+		margin-right: 0.4em;
+		font-size: 0.8em;
+		color: var(--color-accent);
+		opacity: 1;
+		transition: opacity 0.3s ease;
+	}
+	.progress-text.completed {
+		color: var(--color-green);
+		opacity: 0;
+	}
+	.progress-text.failed {
+		color: var(--color-red);
 	}
 </style>
