@@ -36,6 +36,9 @@ import { preventEmptyString } from "./stringUtils";
 import { ActionLine } from "./actionLine";
 import { Document } from "src/Document";
 import { DiskBuffer } from "src/DiskBuffer";
+import * as bg from "src/BackgroundSync";
+import { ActionLineButton } from "./actionLineButton";
+import { ActionLineDivider } from "./actionLineDivider";
 
 export const VIEW_TYPE_DIFFERENCES = "system3-differences-view";
 
@@ -75,17 +78,16 @@ export class DifferencesView extends ItemView {
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
 
-		// XXX register modify listener for doc contents also...
-		this.registerEvent(
-			this.app.vault.on("modify", async (file) => {
-				if (file !== this.state?.file1 && file !== this.state?.file2) {
-					return;
-				}
+		//this.registerEvent(
+		//	this.app.vault.on("modify", async (file) => {
+		//		if (file !== this.state?.file1 && file !== this.state?.file2) {
+		//			return;
+		//		}
 
-				await this.updateState();
-				this.build();
-			}),
-		);
+		//		await this.updateState();
+		//		this.update();
+		//	}),
+		//);
 	}
 
 	async getContent(file: TFile): Promise<string> {
@@ -122,7 +124,7 @@ export class DifferencesView extends ItemView {
 	}
 
 	async onunload(): Promise<void> {
-		this.state?.onResolve?.();
+		await this.state?.onResolve?.();
 	}
 
 	private async updateState(): Promise<void> {
@@ -167,9 +169,83 @@ export class DifferencesView extends ItemView {
 			cls: "file-diff__container",
 		});
 
+		this.buildHeader(container);
+		this.buildLines(container);
+		this.scrollToFirstDifference();
+	}
+
+	private update(): void {
+		const scrollTop = this.contentEl.scrollTop;
+
+		this.contentEl.empty();
+
+		const container = this.contentEl.createDiv({
+			cls: "file-diff__container",
+		});
+
+		this.buildHeader(container);
 		this.buildLines(container);
 
-		this.scrollToFirstDifference();
+		this.contentEl.scrollTop = scrollTop;
+	}
+
+	private buildHeader(container: HTMLDivElement): void {
+		// Create action line similar to the existing ones
+		const actionLine = container.createDiv({
+			cls: "flex flex-row gap-1 py-0-5",
+		});
+
+		// Left file (top)
+		new ActionLineButton({
+			text: `Keep Editor Contents`,
+			onClick: async (e) => {
+				e.preventDefault();
+				await this.acceptAllFromLeft();
+			},
+		}).build(actionLine);
+
+		ActionLineDivider.build(actionLine);
+
+		// Right file (bottom)
+		new ActionLineButton({
+			text: `Accept All from Local Disk`,
+			onClick: async (e) => {
+				e.preventDefault();
+				await this.acceptAllFromRight();
+			},
+		}).build(actionLine);
+	}
+
+	private async acceptAllFromLeft(): Promise<void> {
+		if (!this.state || !this.fileDifferences) return;
+
+		if (this.state.file2 instanceof Document) {
+			bg.updateYDocFromDiskBuffer(
+				this.state.file2.ydoc,
+				this.file1Content || "",
+			);
+		} else if (this.state.file2 instanceof DiskBuffer) {
+			this.state.file2.contents = this.file1Content || "";
+		} else {
+			await this.app.vault.modify(this.state.file2, this.file1Content || "");
+		}
+		this.leaf.detach();
+	}
+
+	private async acceptAllFromRight(): Promise<void> {
+		if (!this.state || !this.fileDifferences) return;
+
+		if (this.state.file1 instanceof Document) {
+			bg.updateYDocFromDiskBuffer(
+				this.state.file1.ydoc,
+				this.file2Content || "",
+			);
+		} else if (this.state.file1 instanceof DiskBuffer) {
+			this.state.file1.contents = this.file2Content || "";
+		} else {
+			await this.app.vault.modify(this.state.file1, this.file2Content || "");
+		}
+		this.leaf.detach();
 	}
 
 	private buildLines(container: HTMLDivElement): void {
@@ -221,7 +297,7 @@ export class DifferencesView extends ItemView {
 				file2Content: this.file2Content || "",
 				triggerRebuild: async (): Promise<void> => {
 					await this.updateState();
-					this.build();
+					this.update();
 				},
 			}).build(container);
 		}
