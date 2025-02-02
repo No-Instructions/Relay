@@ -87,12 +87,12 @@ export class ActionLine {
 
 		if (hasPlusLines && hasMinusLines) {
 			new ActionLineButton({
-				text: "Accept Top",
+				text: "Accept Top (Editor)",
 				onClick: (e) => this.acceptTopClick(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
 			new ActionLineButton({
-				text: "Accept Bottom",
+				text: "Accept Bottom (Local Disk)",
 				onClick: (e) => this.acceptBottomClick(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
@@ -107,22 +107,22 @@ export class ActionLine {
 			}).build(actionLine);
 		} else if (hasMinusLines) {
 			new ActionLineButton({
-				text: `Accept from ${this.file1.name}`,
+				text: `Keep in Editor`,
 				onClick: (e) => this.insertFile1Difference(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
 			new ActionLineButton({
-				text: "Discard",
+				text: "Discard in Editor",
 				onClick: (e) => this.discardFile1Difference(e, this.difference),
 			}).build(actionLine);
 		} else if (hasPlusLines) {
 			new ActionLineButton({
-				text: `Accept from ${this.file2.name}`,
+				text: `Accept from Local Disk`,
 				onClick: (e) => this.insertFile2Difference(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
 			new ActionLineButton({
-				text: "Discard",
+				text: "Discard on Disk",
 				onClick: (e) => this.discardFile2Difference(e, this.difference),
 			}).build(actionLine);
 		}
