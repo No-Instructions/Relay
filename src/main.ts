@@ -630,10 +630,12 @@ export default class Live extends Plugin {
 					fromFolder.renameFile(file.path, oldPath);
 					toFolder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
+					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
 					vaultLog("Rename", file, oldPath);
 					folder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
+					this.folderNavDecorations.quickRefresh();
 				}
 			}),
 		);
