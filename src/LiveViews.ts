@@ -4,7 +4,6 @@ import { EditorView } from "@codemirror/view";
 import {
 	App,
 	MarkdownView,
-	Platform,
 	TFile,
 	Workspace,
 	moment,
@@ -18,7 +17,6 @@ import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, RelayInstances } from "./debug";
-import { promiseWithTimeout, TimeoutError } from "./promiseUtils";
 import { Banner } from "./ui/Banner";
 import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
 import {
@@ -714,7 +712,7 @@ export class LiveViewManager {
 		return true;
 	}
 
-	async refresh(context: string, timeout = 3000) {
+	async refresh(context: string) {
 		if (this.destroyed) return false;
 		const log = curryLog(context, "warn");
 		const queuedAt = moment.utc();
@@ -728,36 +726,13 @@ export class LiveViewManager {
 			if (this.destroyed) return false;
 			if (this.refreshQueue.length > 2) {
 				log("refreshQueue size:", this.refreshQueue.length);
-				this.refreshQueue.slice(-2);
 			}
-			if (Platform.isIosApp) {
-				this._activePromise = this.refreshQueue.pop()!().finally(() => {
-					this._activePromise = null;
-				});
-				await this._activePromise;
-			} else {
-				this._activePromise = promiseWithTimeout<boolean>(
-					"Refresh Views",
-					this.refreshQueue.pop()!(),
-					timeout,
-				)
-					.catch((e) => {
-						if (e instanceof TimeoutError) {
-							this.warn(
-								`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
-								e,
-							);
-							this._activePromise = null;
-							return false;
-						}
-						console.error(e);
-						throw e;
-					})
-					.finally(() => {
-						this._activePromise = null;
-					});
-				await this._activePromise;
-			}
+			const job = this.refreshQueue.pop()!;
+			this.refreshQueue.length = 0;
+			this._activePromise = job().finally(() => {
+				this._activePromise = null;
+			});
+			await this._activePromise;
 		}
 		return true;
 	}
