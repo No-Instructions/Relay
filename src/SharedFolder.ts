@@ -707,6 +707,9 @@ export class SharedFolder extends HasProvider {
 		update = true,
 		onSync = (doc: Document) => {},
 	): Document {
+		if (!this.checkExtension(vpath)) {
+			throw new Error("unexpected extension");
+		}
 		if (!this.synced && !this.ids.get(vpath)) {
 			this.warn(`potential for document split at ${vpath}`);
 		}
