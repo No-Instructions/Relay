@@ -151,8 +151,10 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!isLive(this.view)) {
 			return [];
 		}
-		const contents = this.editor.state.doc.toString();
+
+		// XXX race condition here?
 		await this.view.document.whenSynced();
+		const contents = this.editor.state.doc.toString();
 
 		if (this.view.document.text === contents) {
 			// disk and ytext were already the same.
