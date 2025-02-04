@@ -36,6 +36,7 @@ export interface SharedFolderSettings {
 	guid: string;
 	path: string;
 	relay?: string;
+	connect?: boolean;
 }
 
 interface Operation {
@@ -98,7 +99,7 @@ export class SharedFolder extends HasProvider {
 	relayId?: string;
 	_dbsize?: number;
 	_remote?: RemoteSharedFolder;
-	shouldConnect: boolean;
+	_shouldConnect: boolean;
 	destroyed: boolean = false;
 	public vault: Vault;
 	private fileManager: FileManager;
@@ -169,7 +170,6 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
-		this.shouldConnect = true;
 		this.fileManager = fileManager;
 		this.vault = vault;
 		this.path = path;
@@ -180,6 +180,7 @@ export class SharedFolder extends HasProvider {
 		this._awaitingUpdates = awaitingUpdates;
 		this.relayId = relayId;
 		this.diskBufferStore = new DiskBufferStore();
+		this._shouldConnect = this.settings.connect ?? true;
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
@@ -251,6 +252,18 @@ export class SharedFolder extends HasProvider {
 		RelayInstances.set(this, this.path);
 	}
 
+	public get shouldConnect(): boolean {
+		return this._shouldConnect;
+	}
+
+	public set shouldConnect(connect: boolean) {
+		this._settings.update((current) => ({
+			...current,
+			connect,
+		}));
+		this._shouldConnect = connect;
+	}
+
 	public get settings(): SharedFolderSettings {
 		return this._settings.get();
 	}
@@ -270,6 +283,7 @@ export class SharedFolder extends HasProvider {
 		});
 		return files;
 	}
+
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
@@ -411,16 +425,6 @@ export class SharedFolder extends HasProvider {
 				resolve();
 			});
 		});
-	}
-
-	toggleConnection(): void {
-		if (this.shouldConnect) {
-			this.shouldConnect = false;
-			this.disconnect();
-		} else {
-			this.shouldConnect = true;
-			this.connect();
-		}
 	}
 
 	public get intent(): ConnectionIntent {

@@ -354,21 +354,23 @@ export default class Live extends Plugin {
 						if (!folder) {
 							return;
 						}
-						menu.addItem((item) => {
-							item
-								.setTitle(folder.connected ? "Disconnect" : "Connect")
-								.setIcon("satellite")
-								.onClick(() => {
-									if (folder.connected) {
-										folder.shouldConnect = false;
-										folder.disconnect();
-									} else {
-										folder.shouldConnect = true;
-										folder.connect();
-									}
-									this._liveViews.refresh("folder connection toggle");
-								});
-						});
+						if (folder.relayId) {
+							menu.addItem((item) => {
+								item
+									.setTitle(folder.connected ? "Disconnect" : "Connect")
+									.setIcon("satellite")
+									.onClick(() => {
+										if (folder.connected) {
+											folder.shouldConnect = false;
+											folder.disconnect();
+										} else {
+											folder.shouldConnect = true;
+											folder.connect();
+										}
+										this._liveViews.refresh("folder connection toggle");
+									});
+							});
+						}
 						menu.addItem((item) => {
 							item
 								.setTitle("Folder settings")
