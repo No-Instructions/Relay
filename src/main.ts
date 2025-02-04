@@ -518,6 +518,9 @@ export default class Live extends Plugin {
 			const re = this.loginManager.webviewIntercept();
 			this.debug("Intercepting Webviewer for URL pattern", re.source);
 			this.interceptedUrls.push(re);
+			const apiRegExp = new RegExp(API_URL.replace("/", "\\/") + ".*");
+			this.debug("Intercepting Webviewer for URL pattern", apiRegExp.source);
+			this.interceptedUrls.push(apiRegExp);
 
 			this.webviewerPatched = true;
 			this.debug("patched webviewer options");
