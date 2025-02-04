@@ -366,6 +366,48 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 	}
 }
 
+class NotSyncedPillDecoration {
+	pill: TextPill;
+	unsubscribe?: () => void;
+
+	constructor(private el: HTMLElement) {
+		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
+			el.remove();
+		});
+		this.pill = new TextPill({
+			target: this.el,
+			props: {
+				text: "NOT SYNCED",
+				label: "Relay does not support this file type.",
+			},
+		});
+	}
+
+	destroy() {
+		this.pill.$destroy();
+		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
+			el.remove();
+		});
+	}
+}
+
+class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
+	visitFile(
+		file: TFile,
+		item: FileItem,
+		storage?: NotSyncedPillDecoration,
+		sharedFolder?: SharedFolder,
+	): NotSyncedPillDecoration | null {
+		if (sharedFolder && !sharedFolder.checkExtension(file.path)) {
+			return storage || new NotSyncedPillDecoration(item.selfEl);
+		}
+		if (storage) {
+			storage.destroy();
+		}
+		return null;
+	}
+}
+
 class DocumentStatus implements Destroyable {
 	el: HTMLElement;
 	document?: Document;
@@ -629,6 +671,7 @@ export class FolderNavigationDecorations {
 		withFlag(flag.enableDebugFileTag, () => {
 			visitors.push(new FilePillVisitor());
 		});
+		visitors.push(new NotSyncedPillVisitor());
 		return visitors;
 	}
 
