@@ -728,36 +728,11 @@ export class LiveViewManager {
 			if (this.destroyed) return false;
 			if (this.refreshQueue.length > 2) {
 				log("refreshQueue size:", this.refreshQueue.length);
-				this.refreshQueue.slice(-2);
 			}
-			if (Platform.isIosApp) {
-				this._activePromise = this.refreshQueue.pop()!().finally(() => {
-					this._activePromise = null;
-				});
-				await this._activePromise;
-			} else {
-				this._activePromise = promiseWithTimeout<boolean>(
-					"Refresh Views",
-					this.refreshQueue.pop()!(),
-					timeout,
-				)
-					.catch((e) => {
-						if (e instanceof TimeoutError) {
-							this.warn(
-								`[System 3][Relay][Live Views] refresh views timed out... timeout=${timeout}`,
-								e,
-							);
-							this._activePromise = null;
-							return false;
-						}
-						console.error(e);
-						throw e;
-					})
-					.finally(() => {
-						this._activePromise = null;
-					});
-				await this._activePromise;
-			}
+			this._activePromise = this.refreshQueue.pop()!().finally(() => {
+				this._activePromise = null;
+			});
+			await this._activePromise;
 		}
 		return true;
 	}
