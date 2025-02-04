@@ -65,22 +65,24 @@ class NetworkStatus {
 	private async _checkStatus(): Promise<void> {
 		return requestUrl({
 			url: this.url,
-			method: "HEAD",
+			method: "GET",
 			headers: { "Relay-Version": GIT_TAG },
 		})
 			.then((response) => {
-				if (response.text) {
-					this.status = response.text;
-				}
-				if (response.status === 200 && !this.online) {
-					this.log("back online");
-					this.online = true;
-					this.onOnline.forEach((callback) => callback(this.status));
+				if (response.status === 200) {
+					if (response.json && response.json.status) {
+						this.status = response.json.status;
+					}
+					if (!this.online) {
+						this.log("back online");
+						this.online = true;
+						this.onOnline.forEach((callback) => callback(this.status));
 
-					this._onceOnline.forEach((callback) => callback(this.status));
-					this._onceOnline.clear();
+						this._onceOnline.forEach((callback) => callback(this.status));
+						this._onceOnline.clear();
 
-					return;
+						return;
+					}
 				} else if (response.status !== 200 && this.online) {
 					throw new Error("disconnected");
 				}
