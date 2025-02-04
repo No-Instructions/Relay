@@ -221,10 +221,14 @@ export class HasProvider extends HasLogging {
 		return this.state.status === "connected";
 	}
 
-	connect(): Promise<boolean> {
+	// override this to avoid connecting until we're synced
+	async whenSynced(): Promise<void> {}
+
+	async connect(): Promise<boolean> {
 		if (this.connected) {
 			return Promise.resolve(true);
 		}
+		await this.whenSynced();
 		return this.getProviderToken()
 			.then((clientToken) => {
 				this.refreshProvider(clientToken); // XXX is this still needed?
