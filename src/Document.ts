@@ -87,12 +87,21 @@ export class Document extends HasProvider implements TFile {
 		}
 
 		this.whenSynced().then(() => {
-			this.ydoc.on(
-				"update",
-				(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-					this.updateStats();
-				},
-			);
+			const statsObserver = (event: Y.YTextEvent) => {
+				const origin = event.transaction.origin;
+				console.warn("key size", event.changes.keys);
+				if (event.changes.keys.size === 0) return;
+				if (origin == this) return;
+				if (origin == this._persistence) {
+					this.warn("ignoring update from persistence");
+					return;
+				}
+				this.updateStats();
+			};
+			this.ytext.observe(statsObserver);
+			this.unsubscribes.push(() => {
+				this.ytext?.unobserve(statsObserver);
+			});
 			try {
 				this._persistence.set("path", this.path);
 				this._persistence.set("relay", this.sharedFolder.relayId || "");
