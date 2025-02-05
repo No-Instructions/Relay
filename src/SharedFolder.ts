@@ -231,26 +231,28 @@ export class SharedFolder extends HasProvider {
 		//	this.ids.unobserve(logObserver);
 		//});
 
-		this.whenSynced().then(() => {
-			this._persistence.set("path", this.path);
-			this._persistence.set("relay", this.relayId || "");
-			this._persistence.set("appId", this.appId);
-			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			this.ydoc.on(
-				"update",
-				async (update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-					if (origin == this) {
-						return;
-					}
-					if (origin == this._persistence) {
-						this.warn("ignoring update from persistence");
-						return;
-					}
+		this.whenSynced().then(async () => {
+			const syncFileObserver = async (event: Y.YMapEvent<string>) => {
+				if (event.changes.keys.size === 0) return;
+				const origin = event.transaction.origin;
+				if (origin == this) return;
 
-					this.log("file tree", this._debugFileTree());
-					await this.syncFileTree(doc);
-				},
-			);
+				this.log("file tree", this._debugFileTree());
+				// TODO use event changes to simplify
+				await this.syncFileTree(this.ydoc);
+			};
+			this.ids.observe(syncFileObserver);
+			this.unsubscribes.push(() => {
+				this.ids.unobserve(syncFileObserver);
+			});
+			try {
+				this._persistence.set("path", this.path);
+				this._persistence.set("relay", this.relayId || "");
+				this._persistence.set("appId", this.appId);
+				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+			} catch (e) {
+				// pass
+			}
 		});
 
 		RelayInstances.set(this, this.path);
