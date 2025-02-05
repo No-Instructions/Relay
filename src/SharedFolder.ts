@@ -105,6 +105,8 @@ export class SharedFolder extends HasProvider {
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
+	private whenSyncedPromise: SharedPromise<void> | null = null;
+	private persistenceSynced: boolean = false;
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
 	private _awaitingUpdates: boolean;
@@ -430,18 +432,24 @@ export class SharedFolder extends HasProvider {
 		return ids;
 	}
 
-	whenSynced(): Promise<void> {
-		if (this._persistence.synced) {
-			return new Promise((resolve) => {
-				resolve();
+	async whenSynced(): Promise<void> {
+		const promiseFn = async (): Promise<void> => {
+			if (this._persistence.synced) {
+				return;
+			}
+
+			await new Promise<void>((resolve) => {
+				this._persistence.once("synced", resolve);
 			});
-		}
-		return new Promise((resolve) => {
-			this._persistence.once("synced", async () => {
-				await this.count();
-				resolve();
+			await this.count();
+			this.persistenceSynced = true;
+		};
+
+		this.whenSyncedPromise =
+			this.whenSyncedPromise ||
+			new SharedPromise<void>(promiseFn, (): [boolean, void] => {
+				return [this.persistenceSynced, undefined];
 			});
-		});
 	}
 
 	public get intent(): ConnectionIntent {
