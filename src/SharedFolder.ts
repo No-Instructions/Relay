@@ -105,6 +105,8 @@ export class SharedFolder extends HasProvider {
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
 	private readyPromise: SharedPromise<SharedFolder> | null = null;
+	private syncFileTreePromise: SharedPromise<void> | null = null;
+	private syncRequestedDuringSync: boolean = false;
 	private _awaitingUpdates: boolean;
 	private unsubscribes: Unsubscriber[] = [];
 
@@ -557,35 +559,63 @@ export class SharedFolder extends HasProvider {
 		return deletes;
 	}
 
-	async syncFileTree(doc: Doc) {
-		const ops: Operation[] = [];
-		const map = doc.getMap<string>("docs");
-		const diffLog: string[] = [];
-
-		this.ydoc.transact(() => {
-			map.forEach((_, path) => {
-				this._assertNamespacing(path);
+	async syncFileTree(doc: Doc): Promise<void> {
+		// If a sync is already running, mark that we want another sync after
+		if (this.syncFileTreePromise) {
+			this.syncRequestedDuringSync = true;
+			return this.syncFileTreePromise.getPromise().then(() => {
+				// If we requested a sync during the previous sync, run one more time
+				if (this.syncRequestedDuringSync) {
+					this.syncRequestedDuringSync = false;
+					return this.syncFileTree(doc);
+				}
 			});
-			const remoteIds = new Set(this.ids.values());
-			map.forEach((guid, path) => {
-				this._assertNamespacing(path);
-				ops.push(this.applyRemoteState(guid, path, remoteIds, diffLog));
-			});
-		});
-
-		const creates = ops.filter((op) => op.op === "create");
-		const renames = ops.filter((op) => op.op === "rename");
-		const remotePaths = ops.map((op) => op.path);
-
-		// Ensure these complete before checking for deletions
-		await Promise.all([...creates, ...renames].map((op) => op.promise));
-
-		const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
-
-		if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
-			this.docset.update();
 		}
-		this.log("syncFileTree diff:\n" + diffLog.join("\n"));
+
+		const promiseFn = async (): Promise<void> => {
+			try {
+				const ops: Operation[] = [];
+				const map = doc.getMap<string>("docs");
+				const diffLog: string[] = [];
+
+				this.ydoc.transact(() => {
+					map.forEach((_, path) => {
+						this._assertNamespacing(path);
+					});
+					const remoteIds = new Set(this.ids.values());
+					map.forEach((guid, path) => {
+						this._assertNamespacing(path);
+						ops.push(this.applyRemoteState(guid, path, remoteIds, diffLog));
+					});
+				});
+
+				const creates = ops.filter((op) => op.op === "create");
+				const renames = ops.filter((op) => op.op === "rename");
+				const remotePaths = ops.map((op) => op.path);
+
+				// Ensure these complete before checking for deletions
+				await Promise.all([...creates, ...renames].map((op) => op.promise));
+
+				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
+
+				if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
+					this.docset.update();
+				}
+				this.log("syncFileTree diff:\n" + diffLog.join("\n"));
+			} finally {
+				// Reset the promise after completion (success or failure)
+				this.syncFileTreePromise = null;
+			}
+		};
+
+		this.syncFileTreePromise = new SharedPromise<void>(
+			promiseFn,
+			(): [boolean, void] => {
+				return [false, undefined];
+			},
+		);
+
+		return this.syncFileTreePromise.getPromise();
 	}
 
 	move(path: string) {
