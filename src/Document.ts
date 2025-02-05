@@ -80,7 +80,8 @@ export class Document extends HasProvider implements TFile {
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
 		try {
-			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
+			this._persistence = new IndexeddbPersistence(key, this.ydoc);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
@@ -88,16 +89,25 @@ export class Document extends HasProvider implements TFile {
 		}
 
 		this.whenSynced().then(() => {
-			this._persistence.set("path", this.path);
-			this._persistence.set("relay", this.sharedFolder.relayId || "");
-			this._persistence.set("appId", this.sharedFolder.appId);
-			this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			this.ydoc.on(
-				"update",
-				(update: Uint8Array, origin: unknown, doc: Y.Doc) => {
-					this.updateStats();
-				},
-			);
+			const statsObserver = (event: Y.YTextEvent) => {
+				const origin = event.transaction.origin;
+				console.warn("key size", event.changes.keys);
+				if (event.changes.keys.size === 0) return;
+				if (origin == this) return;
+				this.updateStats();
+			};
+			this.ytext.observe(statsObserver);
+			this.unsubscribes.push(() => {
+				this.ytext?.unobserve(statsObserver);
+			});
+			try {
+				this._persistence.set("path", this.path);
+				this._persistence.set("relay", this.sharedFolder.relayId || "");
+				this._persistence.set("appId", this.sharedFolder.appId);
+				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+			} catch (e) {
+				// pass
+			}
 		});
 
 		//const logObserver = (event: Y.YTextEvent) => {
