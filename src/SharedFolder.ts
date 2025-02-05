@@ -210,29 +210,28 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 
-		//const logObserver = (event: Y.YMapEvent<string>) => {
-		//	let log = "";
-		//	log += `Transaction origin: ${event.transaction.origin.constructor.name}\n`;
-		//	event.changes.keys.forEach((change, key) => {
-		//		if (change.action === "add") {
-		//			log += `Added ${key}: ${this.ids.get(key)}\n`;
-		//		}
-		//		if (change.action === "update") {
-		//			log += `Updated ${key}: ${this.ids.get(key)}\n`;
-		//		}
-		//		if (change.action === "delete") {
-		//			log += `Deleted ${key}\n`;
-		//		}
-		//	});
-		//	this.debug(log);
-		//};
-		//this.ids.observe(logObserver);
-		//this.unsubscribes.push(() => {
-		//	this.ids.unobserve(logObserver);
-		//});
-
+		withFlag(flag.enableDeltaLogging, () => {
+			const logObserver = (event: Y.YMapEvent<string>) => {
+				let log = "";
+				log += `Transaction origin: ${event.transaction.origin}${event.transaction.origin?.constructor?.name}\n`;
+				event.changes.keys.forEach((change, key) => {
+					if (change.action === "add") {
+						log += `Added ${key}: ${this.ids.get(key)}\n`;
 					}
+					if (change.action === "update") {
+						log += `Updated ${key}: ${this.ids.get(key)}\n`;
 					}
+					if (change.action === "delete") {
+						log += `Deleted ${key}\n`;
+					}
+				});
+				this.debug(log);
+			};
+			this.ids.observe(logObserver);
+			this.unsubscribes.push(() => {
+				this.ids.unobserve(logObserver);
+			});
+		});
 
 		this.whenSynced().then(async () => {
 			const syncFileObserver = async (event: Y.YMapEvent<string>) => {
