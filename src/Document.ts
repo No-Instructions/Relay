@@ -16,7 +16,9 @@ export class Document extends HasProvider implements TFile {
 	_dbsize?: number;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
-	_awaitingUpdates?: boolean;
+	whenSyncedPromise: SharedPromise<void> | null = null;
+	persistenceSynced: boolean = false;
+    _awaitingUpdates?: boolean;
 	readyPromise?: SharedPromise<Document>;
 	path: string;
 	_tfile: TFile | null;
@@ -275,19 +277,30 @@ export class Document extends HasProvider implements TFile {
 	}
 
 	whenSynced(): Promise<void> {
-		if (this._persistence.synced) {
-			return Promise.resolve();
-		}
-		return new Promise((resolve) => {
-			this._persistence.once("synced", async () => {
+		const promiseFn = async (): Promise<void> => {
+			await this.sharedFolder.whenSynced();
+			// Check if already synced first
+			if (this._persistence.synced) {
 				await this.count();
-				resolve();
-			});
-		});
-	}
+				this.persistenceSynced = true;
+				return;
+			}
 
-	public get persistenceSynced(): boolean {
-		return this._persistence.synced;
+			return new Promise<void>((resolve) => {
+				this._persistence.once("synced", async () => {
+					await this.count();
+					this.persistenceSynced = true;
+					resolve();
+				});
+			});
+		};
+
+		this.whenSyncedPromise =
+			this.whenSyncedPromise ||
+			new SharedPromise<void>(promiseFn, (): [boolean, void] => {
+				return [this.persistenceSynced, undefined];
+			});
+		return this.whenSyncedPromise.getPromise();
 	}
 
 	async hasKnownPeers(): Promise<boolean> {
@@ -334,6 +347,10 @@ export class Document extends HasProvider implements TFile {
 			this._diskBuffer = undefined;
 		}
 		this._diskBufferStore = null as any;
+		this.whenSyncedPromise?.destroy();
+		this.whenSyncedPromise = null as any;
+		this.readyPromise?.destroy();
+		this.readyPromise = null as any;
 	}
 
 	public async read(): Promise<string> {

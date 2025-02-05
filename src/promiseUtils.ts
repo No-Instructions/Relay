@@ -38,6 +38,8 @@ export class SharedPromise<T> {
 	private currentPromise: Promise<T> | null = null;
 	private promiseFunction: PromiseFunction<T>;
 	private checkFunction: CheckFunction<T>;
+	private resolver?: (value: T) => void;
+	private timeoutId?: number;
 
 	constructor(
 		promiseFunction: PromiseFunction<T>,
@@ -50,21 +52,58 @@ export class SharedPromise<T> {
 	public getPromise(): Promise<T> {
 		const [success, result] = this.checkFunction();
 		if (success) {
+			if (this.currentPromise && this.resolver) {
+				curryLog("[Promise]", "error")(
+					"resolved through additional checking",
+					this.promiseFunction.toString(),
+				);
+				const resolve = this.resolver;
+				resolve(result);
+				this.currentPromise = null;
+				if (this.timeoutId) {
+					clearTimeout(this.timeoutId);
+				}
+				this.resolver = undefined;
+			}
 			return Promise.resolve(result);
 		}
 
 		if (!this.currentPromise) {
-			this.currentPromise = this.promiseFunction().then(
-				(result) => {
-					this.currentPromise = null; // Reset on success
-					return result;
-				},
-				(error) => {
-					this.currentPromise = null; // Reset on failure
-					throw error;
-				},
-			);
+			this.currentPromise = new Promise((resolve, reject) => {
+				this.resolver = resolve;
+				this.timeoutId = window.setTimeout(() => {
+					curryLog("[Promise]", "error")(
+						"SharedPromise stuck after 3s:",
+						this.promiseFunction.toString(),
+					);
+				}, 3000);
+				this.promiseFunction().then(
+					(result) => {
+						if (this.timeoutId) {
+							clearTimeout(this.timeoutId);
+						}
+						this.currentPromise = null; // Reset on success
+						resolve(result);
+					},
+					(error) => {
+						if (this.timeoutId) {
+							clearTimeout(this.timeoutId);
+						}
+						this.currentPromise = null; // Reset on failure
+						reject(error);
+					},
+				);
+			});
 		}
 		return this.currentPromise;
+	}
+
+	public destroy(): void {
+		if (this.timeoutId) {
+			clearTimeout(this.timeoutId);
+			this.timeoutId = undefined;
+		}
+		this.currentPromise = null;
+		this.resolver = undefined;
 	}
 }
