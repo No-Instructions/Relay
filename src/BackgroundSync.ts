@@ -174,8 +174,10 @@ export class BackgroundSync {
 			// Check for newly created documents without content, and reject them
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
-			if (!newDoc.getText("contents").toString() && hasContents) {
-				this.log("[getDocument] server contents empty document, not overwriting local file.");
+			if (!newDoc.getText("contents").toString()) {
+				this.log(
+					"[getDocument] server contents empty document, not overwriting local file.",
+				);
 				return;
 			}
 
