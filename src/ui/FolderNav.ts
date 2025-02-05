@@ -6,6 +6,7 @@ import {
 	Workspace,
 	WorkspaceLeaf,
 	debounce,
+	requireApiVersion,
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
@@ -683,7 +684,10 @@ export class FolderNavigationDecorations {
 			const viewType = leaf.view.getViewType();
 			if (viewType === "file-explorer") {
 				if (!fileExplorers.includes(leaf)) {
-					leaf.loadIfDeferred?.();
+					if (requireApiVersion("1.7.2")) {
+						// @ts-ignore
+						leaf.loadIfDeferred?.();
+					}
 					fileExplorers.push(leaf);
 				}
 			}

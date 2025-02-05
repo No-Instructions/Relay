@@ -5,6 +5,7 @@ export interface FeatureFlags {
 	enableDebugFileTag: boolean;
 	enableNewLinkFormat: boolean;
 	enableDocumentServer: boolean;
+	enableDeltaLogging: false;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -14,6 +15,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDebugFileTag: false,
 	enableNewLinkFormat: false,
 	enableDocumentServer: false,
+	enableDeltaLogging: false,
 };
 
 export type Flag = keyof FeatureFlags;
