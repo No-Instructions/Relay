@@ -659,14 +659,14 @@ export class FolderNavigationDecorations {
 		const visitors = [];
 		visitors.push(new FolderBarVisitor());
 		visitors.push(new FolderPillVisitor());
-		visitors.push(
-			new QueueWatcherVisitor(
-				this.backgroundSync.activeSync,
-				this.backgroundSync.activeDownloads,
-			),
-		);
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
+			visitors.push(
+				new QueueWatcherVisitor(
+					this.backgroundSync.activeSync,
+					this.backgroundSync.activeDownloads,
+				),
+			);
 		});
 		withFlag(flag.enableDebugFileTag, () => {
 			visitors.push(new FilePillVisitor());
