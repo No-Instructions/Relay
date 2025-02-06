@@ -14,8 +14,7 @@ import {
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
-import { withFlag } from "src/flagManager";
-import { flag } from "src/flags";
+import { around } from "monkey-around";
 
 const TWEENS = 25;
 
@@ -33,10 +32,12 @@ export class LiveCMPluginValue implements PluginValue {
 	view?: S3View;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
+	private destroyed = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
 	keyFrameCounter = 0;
+	private uninstallMonkeyPatch?: () => void;
 	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
@@ -67,18 +68,46 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!this.view.document) {
 			return;
 		}
-		this.view.document.whenSynced().then(async () => {
-			if (isLive(this.view) && !this.view.tracking) {
-				this.editor.dispatch({
-					changes: await this.getKeyFrame(),
-					annotations: [ySyncAnnotation.of(this)],
-				});
-			}
+
+		if (this.view.view.file !== this.view.document.tfile) {
+			console.error("file mismatch!!!");
+		}
+
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		const liveEditPlugin = this;
+
+		this.uninstallMonkeyPatch = around(this.view.view, {
+			setViewData(old) {
+				return function (data: string, clear: boolean) {
+					if (clear) {
+						if (isLive(liveEditPlugin.view)) {
+							liveEditPlugin.view.contents = data;
+						}
+						liveEditPlugin.resync();
+					} else {
+						console.warn("setViewData", data);
+					}
+					// @ts-ignore
+					return old.call(this, data, clear);
+				};
+			},
+		});
+
+		this.view.document.whenSynced().then(() => {
+			this.resync();
+		});
+
+		this.view.document.onceConnected().then(() => {
+			this.resync();
 		});
 
 		this._observer = async (event, tr) => {
 			if (!isLive(this.view)) {
 				this.debug("Recived yjs event against a non-live view");
+				return;
+			}
+			if (this.destroyed) {
+				this.debug("Recived yjs event but editor was destroyed");
 				return;
 			}
 
@@ -146,25 +175,41 @@ export class LiveCMPluginValue implements PluginValue {
 		};
 	}
 
+	async resync() {
+		if (isLive(this.view) && !this.view.tracking && !this.destroyed) {
+			await this.view.document.whenSynced();
+			const keyFrame = await this.getKeyFrame();
+			if (isLive(this.view) && !this.view.tracking && !this.destroyed) {
+				this.editor.dispatch({
+					changes: keyFrame,
+					annotations: [ySyncAnnotation.of(this)],
+				});
+			}
+		}
+	}
+
 	async getKeyFrame(): Promise<ChangeSpec[]> {
 		// goal: sync editor state to ytext state so we can accept delta edits.
-		if (!isLive(this.view)) {
+		if (!isLive(this.view) || this.destroyed) {
 			return [];
 		}
 
-		// XXX race condition here?
-		await this.view.document.whenSynced();
-		const contents = this.editor.state.doc.toString();
+		if (this.view.contents === undefined) {
+			this.view.contents = this.view.view.getViewData();
+			return [];
+		}
 
-		if (this.view.document.text === contents) {
+		if (this.view.document.text === this.view.contents) {
 			// disk and ytext were already the same.
 			this.view.tracking = true;
 			return [];
+		} else {
+			this.warn(`|${this.view.document.text}|\n|${this.view.contents}|`);
 		}
 
-		this.log(`ytext and editor buffer need syncing`);
+		this.warn(`ytext and editor buffer need syncing`);
 		if (!this.view.document.hasLocalDB() && this.view.document.text === "") {
-			this.log("local db missing, not setting buffer");
+			this.warn("local db missing, not setting buffer");
 			return [];
 		}
 
@@ -173,7 +218,7 @@ export class LiveCMPluginValue implements PluginValue {
 			await this.view.checkStale();
 		}
 
-		if (isLive(this.view)) {
+		if (isLive(this.view) && !this.destroyed) {
 			return [this.getBufferChange(this.view.document.text)];
 		}
 		return [];
@@ -213,8 +258,13 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	destroy() {
+		this.destroyed = true;
 		if (this.observer) {
 			this._ytext?.unobserve(this.observer);
+		}
+		if (this.uninstallMonkeyPatch) {
+			this.uninstallMonkeyPatch();
+			this.uninstallMonkeyPatch = undefined;
 		}
 		this.connectionManager = null as any;
 		this.view = undefined;
