@@ -511,7 +511,7 @@ export class SharedFolder extends HasProvider {
 		diffLog: string[],
 	): OperationType {
 		const doc = this.docs.get(guid);
-		if (this.existsSync(path)) {
+		if (this.existsSync(path) || !this.checkExtension(path)) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -545,10 +545,11 @@ export class SharedFolder extends HasProvider {
 		const deletes: Delete[] = [];
 		files.forEach((file) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
+			const isMarkdown = this.checkExtension(file.path);
 			const fileInFolder = this.checkPath(file.path);
 			const fileInMap = remotePaths.contains(file.path.slice(this.path.length));
 			const synced = this._provider?.synced && this._persistence?.synced;
-			if (fileInFolder && !fileInMap) {
+			if (fileInFolder && !fileInMap && isMarkdown) {
 				if (synced) {
 					diffLog.push(
 						`deleted local file ${file.path} for remotely deleted doc`,
