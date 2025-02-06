@@ -511,7 +511,7 @@ export class SharedFolder extends HasProvider {
 		diffLog: string[],
 	): OperationType {
 		const doc = this.docs.get(guid);
-		if (this.existsSync(path)) {
+		if (this.existsSync(path) || !this.checkExtension(path)) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
