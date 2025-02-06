@@ -118,6 +118,7 @@ export class LiveView implements S3View {
 	document: Document;
 	shouldConnect: boolean;
 	canConnect: boolean;
+	contents?: string;
 
 	private _viewActions?: ViewActions;
 	private offConnectionStatusSubscription?: () => void;
