@@ -17,6 +17,8 @@ import { curryLog } from "src/debug";
 import { withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 
+const TWEENS = 25;
+
 export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 	Facet.define({
 		combine(inputs) {
@@ -34,6 +36,7 @@ export class LiveCMPluginValue implements PluginValue {
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
+	keyFrameCounter = 0;
 	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
@@ -103,11 +106,13 @@ export class LiveCMPluginValue implements PluginValue {
 						pos += d.retain;
 					}
 				}
-				if (!this.view.tracking) {
+				if (!this.view.tracking || this.keyFrameCounter > TWEENS) {
+					this.keyFrameCounter = 0;
 					changes = await this.getKeyFrame();
-					this.log(`dispatch (full)`);
+					this.debug(`dispatch (full)`);
 				} else {
-					this.log("dispatch (incremental)");
+					this.keyFrameCounter += 1;
+					this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
 				}
 				editor.dispatch({
 					changes,
