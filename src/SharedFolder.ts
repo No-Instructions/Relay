@@ -173,9 +173,10 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
+		this.path = path;
+		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
 		this.vault = vault;
-		this.path = path;
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
 		this.docset = new Documents();
@@ -619,6 +620,7 @@ export class SharedFolder extends HasProvider {
 
 	move(path: string) {
 		this.path = path;
+		this.setLoggers(`[SharedFile](${this.path})`);
 		this._settings.update((current) => ({
 			...current,
 			path,
