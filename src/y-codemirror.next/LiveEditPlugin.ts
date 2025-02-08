@@ -34,7 +34,9 @@ export class LiveCMPluginValue implements PluginValue {
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
+	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
+	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -45,8 +47,20 @@ export class LiveCMPluginValue implements PluginValue {
 		if (!this.view) {
 			return;
 		}
-		this.log = curryLog(`[LiveCMPluginValue][${this.view.view.file?.path}]`);
-		this.log("created");
+		this.log = curryLog(
+			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
+			"log",
+		);
+		this.warn = curryLog(
+			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
+			"warn",
+		);
+		this.debug = curryLog(
+			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
+			"debug",
+		);
+
+		this.debug("created");
 		if (!this.view.document) {
 			return;
 		}
@@ -61,7 +75,7 @@ export class LiveCMPluginValue implements PluginValue {
 
 		this._observer = async (event, tr) => {
 			if (!isLive(this.view)) {
-				this.log("Recived yjs event against a non-live view");
+				this.debug("Recived yjs event against a non-live view");
 				return;
 			}
 
