@@ -716,11 +716,7 @@ export class FolderNavigationDecorations {
 		}
 	}
 
-	refresh = debounce(() => {
-		this._refresh();
-	}, 100);
-
-	_refresh() {
+	refresh() {
 		if (!this.layoutReady) return;
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
