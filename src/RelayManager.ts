@@ -61,6 +61,7 @@ interface RelayDAO extends RecordModel {
 	creator: string;
 	cta: string;
 	plan: string;
+	provider?: string;
 }
 
 interface RemoteFolderDAO extends RecordModel {
@@ -517,7 +518,7 @@ class Store extends HasLogging {
 	relationships: Map<string, Set<string>>;
 
 	constructor(collections: Collection<unknown, unknown>[]) {
-        super();
+		super();
 		this.collections = new Map();
 		this.relationships = new Map();
 		for (const collection of collections) {
@@ -873,7 +874,6 @@ export class RelaySubscriptionAuto
 }
 
 class RelayAuto extends Observable<Relay> implements Relay, hasACL {
-
 	constructor(
 		private relay: RelayDAO,
 		private relayRoles: ObservableMap<string, RelayRole>,
@@ -960,6 +960,10 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 			return ["relay_roles", id];
 		}
 	}
+
+	public get provider(): string | undefined {
+		return this.relay.provider;
+	}
 }
 
 export class RelayManager extends HasLogging {
@@ -977,7 +981,7 @@ export class RelayManager extends HasLogging {
 	private pb: PocketBase | null;
 
 	constructor(private loginManager: LoginManager) {
-        super();
+		super();
 		this.pb = this.loginManager.pb;
 
 		// Build the NodeLists
