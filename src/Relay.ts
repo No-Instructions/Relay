@@ -41,6 +41,7 @@ export interface Relay
 	subscriptions: ObservableMap<string, RelaySubscription>;
 	cta: string;
 	plan: string;
+	provider?: string;
 }
 
 export interface RelayRole extends Identified, Updatable<RelayRole> {
