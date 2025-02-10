@@ -10,7 +10,7 @@ export interface FeatureFlags {
 
 export const FeatureFlagDefaults: FeatureFlags = {
 	enableUpdateYDocFromDiskBuffer: false,
-	enableUploadOnShare: false,
+	enableUploadOnShare: true,
 	enableDocumentStatus: false,
 	enableDebugFileTag: false,
 	enableNewLinkFormat: false,
