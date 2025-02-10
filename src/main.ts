@@ -9,6 +9,7 @@ import {
 	TFile,
 	Vault,
 	FileManager,
+	requireApiVersion,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -575,6 +576,25 @@ export default class Live extends Plugin {
 			});
 			this.register(patchFileToLinktext);
 		});
+	}
+
+	removeCommand(command: string): void {
+		// [Polyfill] removeCommand was added in 1.7.2
+		if (requireApiVersion("1.7.2")) {
+			// @ts-ignore
+			super.removeCommand(command);
+		} else {
+			const appAny = this.app as any;
+			const appCommands = appAny.commands;
+			const qualifiedCommand = `system3-relay:${command}`;
+			if (
+				appCommands.commands.hasOwnProperty(qualifiedCommand) ||
+				appAny.hotkeyManager.removeDefaultHotkeys(qualifiedCommand)
+			) {
+				delete appCommands.commands[qualifiedCommand];
+				delete appCommands.editorCommands[qualifiedCommand];
+			}
+		}
 	}
 
 	onunload() {
