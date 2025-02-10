@@ -497,7 +497,6 @@ export class SharedFolder extends HasProvider {
 				}
 			}
 
-			// Receive content, then flush to disk
 			await doc.whenSynced();
 			this.backgroundSync.enqueueDownload(doc);
 		});
@@ -868,7 +867,13 @@ export class SharedFolder extends HasProvider {
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			this.createDoc(newVPath, true, true);
+
+			const upload = (doc: Document) => {
+				withFlag(flag.enableUploadOnShare, () => {
+					this.backgroundSync.enqueueSync(doc, false);
+				});
+			};
+			this.createDoc(newVPath, true, true, upload);
 		} else {
 			// live doc exists
 			const guid = this.ids.get(oldVPath);
