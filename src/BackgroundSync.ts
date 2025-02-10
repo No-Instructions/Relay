@@ -24,6 +24,7 @@ export interface QueueItem {
 	status: "pending" | "running" | "completed" | "failed";
 	merge: boolean;
 	sharedFolder: SharedFolder;
+	retryAttempt?: number;
 }
 
 export interface SyncGroup {
@@ -194,13 +195,15 @@ export class BackgroundSync {
 			this.activeDownloads.add(item);
 
 			try {
-				await this.getDocument(item.doc);
+				await this.getDocument(item);
 				item.status = "completed";
 
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
-					group.completedDownloads++;
-					group.completed++;
+					if (!item.retryAttempt) {
+						group.completedDownloads++;
+						group.completed++;
+					}
 					if (group.completed === group.total) {
 						group.status = "completed";
 					}
@@ -252,6 +255,7 @@ export class BackgroundSync {
 			status: "pending",
 			merge,
 			sharedFolder,
+			retryAttempt: 0,
 		};
 
 		this.syncQueue.push(queueItem);
@@ -286,6 +290,7 @@ export class BackgroundSync {
 			status: "pending",
 			merge: true,
 			sharedFolder,
+			retryAttempt: 0,
 		};
 
 		this.downloadQueue.push(queueItem);
@@ -469,7 +474,12 @@ export class BackgroundSync {
 		return response;
 	}
 
-	private async getDocument(doc: Document) {
+	private async getDocument(item: QueueItem) {
+		const maxAttempts = 3;
+		const retryDelays = [1000, 5000, 15000]; // Delays in milliseconds
+		const doc = item.doc;
+		const attemptCount = item.retryAttempt || 0;
+
 		try {
 			// Get the current contents before applying the update
 			const currentText = doc.text;
@@ -488,14 +498,35 @@ export class BackgroundSync {
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
-			// Check for newly created documents without content, and reject them
+			// Check for newly created documents without content
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
 			if (!newDoc.getText("contents").toString()) {
-				this.log(
-					"[getDocument] server contents empty document, not overwriting local file.",
-				);
-				return;
+				if (attemptCount < maxAttempts) {
+					const delay = retryDelays[attemptCount];
+					this.log(
+						`[getDocument] server contents empty, re-enqueueing in ${delay / 1000} seconds (attempt ${attemptCount + 1}/${maxAttempts})`,
+					);
+
+					// Schedule re-enqueueing after delay
+					setTimeout(() => {
+						const newQueueItem: QueueItem = {
+							...item,
+							status: "pending",
+							retryAttempt: attemptCount + 1,
+						};
+						this.downloadQueue.push(newQueueItem);
+						this.downloadQueue.sort(compareFilePaths);
+						this.processDownloadQueue();
+					}, delay);
+
+					return;
+				} else {
+					this.log(
+						"[getDocument] server contents still empty after all attempts, not overwriting local file.",
+					);
+					return;
+				}
 			}
 
 			this.log("[getDocument] got content from server");
