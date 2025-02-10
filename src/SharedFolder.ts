@@ -483,13 +483,19 @@ export class SharedFolder extends HasProvider {
 		const doc = this.createDoc(path, false, false, async (doc) => {
 			this.log("server created doc, now running onSync to download.");
 			// Create directories as needed
-			let folderPromise: Promise<void> = Promise.resolve();
 			const dir = dirname(path);
 			if (!this.existsSync(dir)) {
-				folderPromise = this.mkdir(dir);
-				diffLog?.push(`creating directory ${dir}`);
+				// Create all parent directories recursively
+				const dirs = dir.split(sep);
+				let currentPath = "";
+				for (const d of dirs) {
+					currentPath += sep + d;
+					if (!this.existsSync(currentPath)) {
+						await this.mkdir(currentPath);
+						diffLog?.push(`creating directory ${currentPath}`);
+					}
+				}
 			}
-			await folderPromise;
 
 			// Receive content, then flush to disk
 			await doc.whenSynced();
