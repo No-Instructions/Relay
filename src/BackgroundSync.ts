@@ -514,8 +514,12 @@ export class BackgroundSync {
 
 	private async syncDocument(doc: Document, merge: boolean = true) {
 		try {
-			await this.uploadItem(doc, merge);
-			//await this.syncDocumentWebsocket(doc);
+			if (doc.sharedFolder.remote?.relay.provider) {
+				await this.uploadItem(doc, merge);
+			} else {
+				this.debug("fallback to websocket sync");
+				await this.syncDocumentWebsocket(doc);
+			}
 		} catch (e) {
 			console.error(e);
 			return;
