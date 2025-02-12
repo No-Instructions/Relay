@@ -176,7 +176,7 @@ export class Document extends HasProvider implements TFile {
 				} else {
 					fileContents = await this._parent.read(this);
 				}
-				return this.setDiskBuffer(fileContents);
+				return this.setDiskBuffer(fileContents.replace("\r\n", "\n"));
 			} catch (e) {
 				console.error(e);
 				throw e;
