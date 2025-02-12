@@ -272,7 +272,7 @@ export class LiveView implements S3View {
 
 	async checkStale() {
 		const stale = await this.document.checkStale();
-		if (stale && this.document._diskBuffer?.contents && this.document.text) {
+		if (stale && this.document._diskBuffer?.contents) {
 			this.mergeBanner();
 		} else {
 			this._banner?.destroy();
