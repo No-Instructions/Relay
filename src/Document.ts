@@ -110,6 +110,14 @@ export class Document extends HasProvider implements TFile {
 			} catch (e) {
 				// pass
 			}
+
+			(async () => {
+				const serverSynced = await this.getServerSynced();
+				if (!serverSynced) {
+					await this.onceProviderSynced();
+					await this.markSynced();
+				}
+			})();
 		});
 
 		withFlag(flag.enableDeltaLogging, () => {
@@ -214,11 +222,7 @@ export class Document extends HasProvider implements TFile {
 
 	public async checkStale(): Promise<boolean> {
 		await this.whenSynced();
-		const hasKnownPeers = await this.hasKnownPeers();
 		const diskBuffer = await this.diskBuffer(true);
-		if (!hasKnownPeers && this.text === "") {
-			return false;
-		}
 		const contents = (diskBuffer as DiskBuffer).contents;
 		const stale = this.text !== contents;
 		if (!stale) {
@@ -253,18 +257,23 @@ export class Document extends HasProvider implements TFile {
 
 	public get ready(): boolean {
 		const persistenceSynced = this._persistence.synced;
-		const serverSynced = this.synced && this.connected;
-		return persistenceSynced && (!this._awaitingUpdates || serverSynced);
+		return (
+			persistenceSynced &&
+			(this.synced || !!this._serverSynced || this._origin === "local")
+		);
 	}
 
 	hasLocalDB() {
 		return (
-			this._persistence._dbsize > 3 || !!(this._dbsize && this._dbsize > 3)
+			!!this._serverSynced ||
+			this._persistence._dbsize > 3 ||
+			!!(this._dbsize && this._dbsize > 3)
 		);
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
 		await this.whenSynced();
+		await this.getServerSynced();
 		if (!this._awaitingUpdates) {
 			return false;
 		}
@@ -285,7 +294,6 @@ export class Document extends HasProvider implements TFile {
 				this.log("synced");
 				return this;
 			}
-			// If this is a shared folder with edits, then we can behave as though we're just offline.
 			return this;
 		};
 		this.readyPromise =
@@ -300,13 +308,16 @@ export class Document extends HasProvider implements TFile {
 		const promiseFn = async (): Promise<void> => {
 			await this.sharedFolder.whenSynced();
 			// Check if already synced first
-			if (this._persistence.synced) {
+			if (this._persistence.synced && !this.persistenceSynced) {
 				await this.count();
 				this.persistenceSynced = true;
-				return;
+				return Promise.resolve();
 			}
 
 			return new Promise<void>((resolve) => {
+				if (this.persistenceSynced) {
+					resolve();
+				}
 				this._persistence.once("synced", async () => {
 					await this.count();
 					this.persistenceSynced = true;
@@ -328,10 +339,46 @@ export class Document extends HasProvider implements TFile {
 		return this.hasLocalDB();
 	}
 
+	private _origin?: string;
+
+	async markOrigin(origin: "local" | "remote"): Promise<void> {
+		this._origin = origin;
+		await this._persistence.set("origin", origin);
+	}
+
+	async getOrigin(): Promise<string | undefined> {
+		if (this._origin !== undefined) {
+			return this._origin;
+		}
+		this._origin = await this._persistence.get("origin");
+		return this._origin;
+	}
+
+	_serverSynced?: boolean;
+	async markSynced(): Promise<void> {
+		this._serverSynced = true;
+		await this._persistence.set("serverSync", 1);
+	}
+
+	async getServerSynced(): Promise<boolean> {
+		if (this._serverSynced !== undefined) {
+			return this._serverSynced;
+		}
+		const serverSync = await this._persistence.get("serverSync");
+		if (serverSync === 1) {
+			this._serverSynced = true;
+			return this._serverSynced;
+		}
+		return false;
+	}
+
 	async count(): Promise<number> {
 		// XXX this is to workaround the y-indexeddb not counting records until after the synced event
 		if (this._persistence.db === null) {
 			throw new Error("database not ready yet");
+		}
+		if (this._dbsize) {
+			return this._dbsize;
 		}
 		if (this._persistence._dbsize > 3) {
 			this._dbsize = this._persistence._dbsize;
