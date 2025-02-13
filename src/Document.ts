@@ -11,6 +11,8 @@ import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
+import { withFlag } from "./flagManager";
+import { flag } from "./flags";
 
 export class Document extends HasProvider implements TFile {
 	_dbsize?: number;
@@ -91,7 +93,6 @@ export class Document extends HasProvider implements TFile {
 		this.whenSynced().then(() => {
 			const statsObserver = (event: Y.YTextEvent) => {
 				const origin = event.transaction.origin;
-				console.warn("key size", event.changes.keys);
 				if (event.changes.keys.size === 0) return;
 				if (origin == this) return;
 				this.updateStats();
@@ -110,18 +111,20 @@ export class Document extends HasProvider implements TFile {
 			}
 		});
 
-		//const logObserver = (event: Y.YTextEvent) => {
-		//	let log = "";
-		//	log += `Transaction origin: ${event.transaction.origin.constructor.name}\n`;
-		//	for (const delta of event.changes.delta) {
-		//		log += `insert: ${delta.insert}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
-		//	}
-		//	this.debug(log);
-		//};
-		//this.ytext.observe(logObserver);
-		//this.unsubscribes.push(() => {
-		//	this.ytext.unobserve(logObserver);
-		//});
+		withFlag(flag.enableDeltaLogging, () => {
+			const logObserver = (event: Y.YTextEvent) => {
+				let log = "";
+				log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
+				for (const delta of event.changes.delta) {
+					log += `insert: ${delta.insert}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
+				}
+				this.debug(log);
+			};
+			this.ytext.observe(logObserver);
+			this.unsubscribes.push(() => {
+				this.ytext.unobserve(logObserver);
+			});
+		});
 
 		this._tfile = null;
 	}
