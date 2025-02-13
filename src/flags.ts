@@ -6,6 +6,7 @@ export interface FeatureFlags {
 	enableDeltaLogging: boolean;
 	enableHTTPSync: boolean;
 	enableDocumentServer: boolean;
+	storePermanentUserData: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -16,6 +17,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDeltaLogging: false,
 	enableHTTPSync: false,
 	enableDocumentServer: false,
+	storePermanentUserData: false,
 };
 
 export type Flag = keyof FeatureFlags;

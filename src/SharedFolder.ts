@@ -241,6 +241,20 @@ export class SharedFolder extends HasProvider {
 			});
 		});
 
+		withFlag(flag.storePermanentUserData, () => {
+			this.whenReady().then(() => {
+				const user = this.loginManager.user;
+				if (user) {
+					const permanentUserData = new Y.PermanentUserData(this.ydoc);
+					permanentUserData.setUserMapping(
+						this.ydoc,
+						this.ydoc.clientID,
+						user.id,
+					);
+				}
+			});
+		});
+
 		this.whenSynced().then(async () => {
 			const syncFileObserver = async (event: Y.YMapEvent<string>) => {
 				if (event.changes.keys.size === 0) {

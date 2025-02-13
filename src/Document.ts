@@ -136,6 +136,20 @@ export class Document extends HasProvider implements TFile {
 			});
 		});
 
+		withFlag(flag.storePermanentUserData, () => {
+			this.whenReady().then(() => {
+				const user = this.loginManager.user;
+				if (user) {
+					const permanentUserData = new Y.PermanentUserData(this.ydoc);
+					permanentUserData.setUserMapping(
+						this.ydoc,
+						this.ydoc.clientID,
+						user.id,
+					);
+				}
+			});
+		});
+
 		this._tfile = null;
 	}
 

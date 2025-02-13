@@ -10,6 +10,7 @@ import { promiseWithTimeout } from "./promiseUtils";
 import { S3RN, type S3RNType } from "./S3RN";
 import { Platform } from "obsidian";
 import { encodeClientToken } from "./y-sweet";
+import { flags } from "./flagManager";
 
 export type ConnectionStatus =
 	| "connected"
@@ -95,10 +96,8 @@ export class HasProvider extends HasLogging {
 		this.loginManager = loginManager;
 		const user = this.loginManager?.user;
 		this.ydoc = new Y.Doc();
-		this.ydoc.gc = false;
-		if (user) {
-			const permanentUserData = new Y.PermanentUserData(this.ydoc);
-			permanentUserData.setUserMapping(this.ydoc, this.ydoc.clientID, user.id);
+		if (flags().storePermanentUserData) {
+			this.ydoc.gc = false;
 		}
 
 		this.tokenStore = tokenStore;
