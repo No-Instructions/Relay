@@ -250,7 +250,7 @@
 				normalizePath(path),
 				guid,
 				relay.guid,
-				false,
+				true,
 			);
 
 			// create remote folder
