@@ -108,7 +108,7 @@ export class SharedFolder extends HasProvider {
 	private persistenceSynced: boolean = false;
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
-	private _awaitingUpdates: boolean;
+	private authoritative: boolean;
 	private unsubscribes: Unsubscriber[] = [];
 
 	private _persistence: IndexeddbPersistence;
@@ -183,10 +183,11 @@ export class SharedFolder extends HasProvider {
 		this.docs = new Map();
 		this.docset = new Documents();
 		this.relayManager = relayManager;
-		this._awaitingUpdates = awaitingUpdates;
 		this.relayId = relayId;
 		this.diskBufferStore = new DiskBufferStore();
 		this._shouldConnect = this.settings.connect ?? true;
+
+		this.authoritative = !awaitingUpdates;
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
@@ -260,6 +261,14 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 
+		(async () => {
+			const serverSynced = await this.getServerSynced();
+			if (!serverSynced) {
+				await this.onceProviderSynced();
+				await this.markSynced();
+			}
+		})();
+
 		RelayInstances.set(this, this.path);
 	}
 
@@ -278,6 +287,7 @@ export class SharedFolder extends HasProvider {
 	async netSync() {
 		await this.whenReady();
 		this.addLocalDocs();
+		await this.syncFileTree(this.ydoc);
 		this.backgroundSync.enqueueSharedFolderSync(this);
 	}
 
@@ -355,15 +365,19 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public get ready(): boolean {
-		const persistenceSynced = this._persistence.synced;
-		const serverSynced = this.synced && this.connected;
-		return persistenceSynced && (!this._awaitingUpdates || serverSynced);
+		return (
+			this.persistenceSynced &&
+			(this.authoritative || this._serverSynced || this.synced)
+		);
 	}
 
 	async count(): Promise<number> {
 		// XXX this is to workaround the y-indexeddb not counting records until after the synced event
 		if (this._persistence.db === null) {
 			throw new Error("unexpected missing database");
+		}
+		if (this._dbsize) {
+			return this._dbsize;
 		}
 		if (this._persistence._dbsize > 3) {
 			this._dbsize = this._persistence._dbsize;
@@ -379,19 +393,41 @@ export class SharedFolder extends HasProvider {
 		return this._dbsize;
 	}
 
-	hasLocalDB() {
+	private _serverSynced?: boolean;
+	async markSynced(): Promise<void> {
+		this._serverSynced = true;
+		await this._persistence.set("serverSync", 1);
+	}
+
+	async getServerSynced(): Promise<boolean> {
+		if (this._serverSynced !== undefined) {
+			return this._serverSynced;
+		}
+		const serverSync = await this._persistence.get("serverSync");
+		if (serverSync === 1) {
+			this._serverSynced = true;
+			return this._serverSynced;
+		}
+		return false;
+	}
+
+	private hasLocalDB() {
+		// This is a bad hueristic
 		return (
 			this._persistence._dbsize > 3 || !!(this._dbsize && this._dbsize > 3)
 		);
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
-		if (this._awaitingUpdates === false) {
+		await this.whenSynced();
+		if (this.authoritative) {
 			return false;
 		}
-		await this.whenSynced();
-		this._awaitingUpdates = !this.hasLocalDB();
-		return this._awaitingUpdates;
+		const serverSynced = await this.getServerSynced();
+		if (serverSynced) {
+			return false;
+		}
+		return !this.hasLocalDB();
 	}
 
 	whenReady(): Promise<SharedFolder> {
