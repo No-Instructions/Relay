@@ -353,7 +353,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 			sharedFolder.ready &&
 			sharedFolder.checkExtension(file.path)
 		) {
-			const doc = sharedFolder.getFile(file.path, false, false);
+			const doc = sharedFolder.viewFile(file.path);
 			if (!doc) return null;
 			if (!doc.ready) return null;
 			return storage || new FilePillDecoration(item.selfEl, doc);
