@@ -31,6 +31,7 @@ import { DiskBufferStore } from "./DiskBuffer";
 import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances } from "./debug";
+import { LocalStorage } from "./LocalStorage";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -83,6 +84,7 @@ class Documents extends ObservableSet<Document> {
 	}
 
 	add(item: Document, update = true): ObservableSet<Document> {
+		update = update && !this._set.has(item);
 		this._set.add(item);
 		if (update) {
 			this.notifyListeners();
@@ -110,6 +112,7 @@ export class SharedFolder extends HasProvider {
 	private syncFileTreePromise: SharedPromise<void> | null = null;
 	private syncRequestedDuringSync: boolean = false;
 	private authoritative: boolean;
+	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
 
 	private _persistence: IndexeddbPersistence;
@@ -139,18 +142,15 @@ export class SharedFolder extends HasProvider {
 			if (file instanceof TFolder) {
 				return;
 			}
-			const guid = this.ids.get(this.getVirtualPath(file.path));
-			const loadFromDisk = (guid && newDocs.contains(guid)) || false;
-
-			const upload = (doc: Document) => {
-				withFlag(flag.enableUploadOnShare, () => {
-					if (loadFromDisk) {
-						this.backgroundSync.enqueueSync(doc);
-					}
-				});
-			};
-			const doc = this.createFile(file.path, loadFromDisk, false, upload);
-			docs.push(doc);
+			const vpath = this.getVirtualPath(file.path);
+			const upload = newDocs.contains(vpath);
+			if (upload) {
+				const doc = this.uploadDoc(vpath, false);
+				docs.push(doc);
+			} else {
+				const doc = this.getDoc(vpath, false);
+				docs.push(doc);
+			}
 		});
 		if (docs.length > 0) {
 			this.docset.update();
@@ -183,6 +183,9 @@ export class SharedFolder extends HasProvider {
 		this.ids = this.ydoc.getMap("docs");
 		this.docs = new Map();
 		this.docset = new Documents();
+		this.pendingUpload = new LocalStorage<string>(
+			`${appId}-system3-relay-pendingUploads`,
+		);
 		this.relayManager = relayManager;
 		this.relayId = relayId;
 		this.diskBufferStore = new DiskBufferStore();
@@ -240,7 +243,11 @@ export class SharedFolder extends HasProvider {
 
 		this.whenSynced().then(async () => {
 			const syncFileObserver = async (event: Y.YMapEvent<string>) => {
-				if (event.changes.keys.size === 0) return;
+				if (event.changes.keys.size === 0) {
+					this.log("no changes detected");
+					return;
+				}
+
 				const origin = event.transaction.origin;
 				if (origin == this) return;
 
@@ -518,31 +525,16 @@ export class SharedFolder extends HasProvider {
 	}
 
 	async _handleServerCreate(
-		path: string,
+		vpath: string,
 		diffLog?: string[],
 	): Promise<Document> {
-		const doc = this.createDoc(path, false, false, async (doc) => {
-			this.log("server created doc, now running onSync to download.");
-			// Create directories as needed
-			const dir = dirname(path);
-			if (!this.existsSync(dir)) {
-				// Create all parent directories recursively
-				const dirs = dir.split(sep);
-				let currentPath = "";
-				for (const d of dirs) {
-					currentPath += sep + d;
-					if (!this.existsSync(currentPath)) {
-						await this.mkdir(currentPath);
-						diffLog?.push(`creating directory ${currentPath}`);
-					}
-				}
-			}
-
-			// Receive content, then flush to disk
-			await doc.whenSynced();
-			this.backgroundSync.enqueueDownload(doc);
-		});
-		diffLog?.push(`created local file for remotely added doc ${path}`);
+		const dir = dirname(vpath);
+		if (!this.existsSync(dir)) {
+			await this.mkdir(dir);
+			diffLog?.push(`creating directory ${dir}`);
+		}
+		const doc = await this.downloadDoc(vpath, false);
+		diffLog?.push(`created local file for remotely added doc ${vpath}`);
 		return doc;
 	}
 
@@ -600,8 +592,11 @@ export class SharedFolder extends HasProvider {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const fileInFolder = this.checkPath(file.path);
 			const fileInMap = remotePaths.contains(file.path.slice(this.path.length));
+			const filePending = this.pendingUpload.has(
+				this.getVirtualPath(file.path),
+			);
 			const synced = this._provider?.synced && this._persistence?.synced;
-			if (fileInFolder && !fileInMap) {
+			if (fileInFolder && !fileInMap && !filePending) {
 				if (synced) {
 					diffLog.push(
 						`deleted local file ${file.path} for remotely deleted doc`,
@@ -701,6 +696,7 @@ export class SharedFolder extends HasProvider {
 
 	flush(doc: Document, content: string): Promise<void> {
 		const vaultPath = join(this.path, doc.path);
+		this.log("writing to ", normalizePath(vaultPath));
 		return this.vault.adapter.write(normalizePath(vaultPath), content);
 	}
 
@@ -734,17 +730,13 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
-	getFile(
-		path: string,
-		create = true,
-		loadFromDisk = false,
-		update = true,
-	): Document {
+	public async getFile(path: string): Promise<Document> {
+		// Get a file from disk for immediate use (in the editor, or on create)
 		const vPath = this.getVirtualPath(path);
 		if (!this.checkExtension(path)) {
 			throw new Error("bad extension!");
 		}
-		return this.getDoc(vPath, create, loadFromDisk, update);
+		return this.getDoc(vPath, true);
 	}
 
 	getTFile(doc: Document): TFile | null {
@@ -755,112 +747,157 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	getDoc(
-		vPath: string,
-		create = true,
-		loadFromDisk = false,
-		update = true,
-	): Document {
-		const id = this.ids.get(vPath);
+	private getDoc(vpath: string, update = true): Document {
+		const id = this.ids.get(vpath);
 		if (id !== undefined) {
 			const doc = this.docs.get(id);
 			if (doc !== undefined) {
-				doc.move(vPath);
+				doc.move(vpath);
 				return doc;
 			} else {
 				// the ID exists, but the file doesn't
 				this.log("[getDoc]: creating doc for shared ID");
-				return this.createDoc(vPath, false, update);
+				return this.createDoc(vpath, update);
 			}
-		} else if (create) {
-			// the File exists, but the ID doesn't
-			this.log("[getDoc]: creating new shared ID for existing file");
-			return this.createDoc(vPath, loadFromDisk, update);
 		} else {
-			throw new Error("No shared doc for vpath: " + vPath);
+			// the File exists, but the ID doesn't
+			this.warn("[getDoc]: creating new shared ID for existing file");
+			this.placeHold([vpath]);
+			return this.createDoc(vpath, update);
 		}
-	}
-
-	createFile(
-		path: string,
-		loadFromDisk = false,
-		update = true,
-		onSync = (doc: Document) => {},
-	): Document {
-		const vPath = this.getVirtualPath(path);
-		return this.createDoc(vPath, loadFromDisk, update, onSync);
 	}
 
 	placeHold(vpaths: string[]): string[] {
 		const newDocs: string[] = [];
-		this.ydoc.transact(() => {
-			vpaths.forEach((vpath) => {
-				if (!this.ids.has(vpath)) {
-					this.debug("creating entirely new doc for", vpath);
-					const guid = uuidv4();
-					newDocs.push(guid);
-					this.ids.set(vpath, guid);
-				}
-			});
-		}, this);
+		vpaths.forEach((vpath) => {
+			if (!this.ids.has(vpath) && !this.pendingUpload.has(vpath)) {
+				this.debug("creating entirely new doc for", vpath);
+				const guid = uuidv4();
+				newDocs.push(vpath);
+				this.pendingUpload.set(vpath, guid);
+			}
+		});
 		return newDocs;
 	}
 
-	createDoc(
-		vpath: string,
-		loadFromDisk = false,
-		update = true,
-		onSync = (doc: Document) => {},
-	): Document {
+	public viewFile(path: string): Document | undefined {
+		const vPath = this.getVirtualPath(path);
+		if (!this.checkExtension(path)) {
+			throw new Error("bad extension!");
+		}
+		return this.viewDoc(vPath);
+	}
+
+	private viewDoc(vpath: string): Document | undefined {
+		const guid = this.ids.get(vpath) || this.pendingUpload.get(vpath);
+		if (!guid) return;
+		const doc = this.docs.get(guid);
+		return doc;
+	}
+
+	async downloadDoc(vpath: string, update = true): Promise<Document> {
 		if (!this.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
-		if (!this.synced && !this.ids.get(vpath)) {
-			this.warn(`potential for document split at ${vpath}`);
+		if (!this.synced && !this.ids.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
 		}
-		const maybeGuid: string | undefined = this.ids.get(vpath);
-		let guid: string;
-		if (maybeGuid === undefined) {
-			if (!loadFromDisk) {
-				throw new Error("attempting to create a new doc without a local file");
-			}
-			guid = uuidv4();
-			this.ydoc.transact(() => {
-				this.ids.set(vpath, guid); // Register the doc as soon as possible to avoid a race condition
-			}, this);
-		} else {
-			guid = maybeGuid;
+		const guid = this.ids.get(vpath);
+		if (!guid) {
+			throw new Error(`called download on item that is not in ids ${vpath}`);
+		}
+
+		const doc =
+			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
+		doc.markOrigin("remote");
+
+		// XXX
+		this.backgroundSync.enqueueDownload(doc);
+
+		this.docs.set(guid, doc);
+		this.docset.add(doc, update);
+
+		return doc;
+	}
+
+	uploadDoc(vpath: string, update = true): Document {
+		if (!this.checkExtension(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (
+			!this.synced &&
+			!this.ids.has(vpath) &&
+			!this.pendingUpload.has(vpath)
+		) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid: string | undefined =
+			this.ids.get(vpath) || this.pendingUpload.get(vpath);
+		if (!guid) {
+			throw new Error("missing guid");
 		}
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
-		const knownPeersPromise = doc.hasKnownPeers();
+
+		const originPromise = doc.getOrigin();
 		const awaitingUpdatesPromise = this.awaitingUpdates();
-		if (loadFromDisk) {
-			(async () => {
-				const exists = await this.exists(doc);
-				if (!exists) {
-					return;
-				}
-				const [contents, hasKnownPeers, awaitingUpdates] = await Promise.all([
-					this.read(doc),
-					knownPeersPromise,
-					awaitingUpdatesPromise,
-				]);
-				const text = doc.ydoc.getText("contents");
-				if (
-					!awaitingUpdates &&
-					!hasKnownPeers &&
-					contents &&
-					text.toString() != contents
-				) {
-					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
+
+		(async () => {
+			const exists = await this.exists(doc);
+			if (!exists) {
+				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
+			}
+			const [contents, origin, awaitingUpdates] = await Promise.all([
+				this.read(doc),
+				originPromise,
+				awaitingUpdatesPromise,
+			]);
+			const text = doc.ydoc.getText("contents");
+			if (!awaitingUpdates && origin === undefined) {
+				this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
+				this.ydoc.transact(() => {
 					text.insert(0, contents);
-					onSync(doc);
+				}, this._persistence);
+				doc.markOrigin("local");
+				this.log(`[${doc.path}] Uploading file`);
+				this.backgroundSync.enqueueSync(doc);
+			}
+		})();
+
+		this.docs.set(guid, doc);
+		this.docset.add(doc, update);
+		return doc;
+	}
+
+	markUploaded(doc: Document) {
+		if (!this.ids.has(doc.path)) {
+			this.ydoc.transact(() => {
+				if (doc._serverSynced) {
+					this.log(`[${doc.path}] File uploaded: adding to set`);
+					this.ids.set(doc.path, doc.guid);
+					this.pendingUpload.delete(doc.path);
 				}
-			})();
-		} else {
-			onSync(doc);
+			}, this);
 		}
+	}
+
+	createDoc(vpath: string, update = true): Document {
+		if (!this.checkExtension(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (
+			!this.synced &&
+			!this.ids.has(vpath) &&
+			!this.pendingUpload.get(vpath)
+		) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid = this.ids.get(vpath) || this.pendingUpload.get(vpath);
+		if (!guid) {
+			throw new Error("expected guid");
+		}
+		const doc =
+			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
@@ -878,6 +915,7 @@ export class SharedFolder extends HasProvider {
 		if (guid) {
 			this.ydoc.transact(() => {
 				this.ids.delete(vPath);
+				this.pendingUpload.delete(vPath);
 				const doc = this.docs.get(guid);
 				if (doc) {
 					doc._diskBufferStore?.removeDiskBuffer(guid);
@@ -909,7 +947,9 @@ export class SharedFolder extends HasProvider {
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			this.createDoc(newVPath, true, true);
+			if (!this.checkExtension(newPath)) return;
+			this.placeHold([newVPath]);
+			this.uploadDoc(newVPath);
 		} else {
 			// live doc exists
 			const guid = this.ids.get(oldVPath);
