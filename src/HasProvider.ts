@@ -78,6 +78,7 @@ export class HasProvider extends HasLogging {
 	path?: string;
 	ydoc: Y.Doc;
 	clientToken: ClientToken;
+	_providerSynced: boolean = false;
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	PROVIDER_MAX_ERRORS = 3;
@@ -252,7 +253,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	public get synced(): boolean {
-		return this._provider.synced;
+		return this._providerSynced;
 	}
 
 	disconnect() {
@@ -288,13 +289,16 @@ export class HasProvider extends HasLogging {
 	}
 
 	onceProviderSynced(): Promise<void> {
-		if (this._provider?.synced) {
+		if (this.synced) {
 			return new Promise((resolve) => {
 				resolve();
 			});
 		}
 		return new Promise((resolve) => {
-			this._provider.once("synced", resolve);
+			this._provider.once("synced", () => {
+				this._providerSynced = true;
+				resolve();
+			});
 		});
 	}
 
