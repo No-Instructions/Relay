@@ -38,7 +38,6 @@ import { RelayException } from "./Exceptions";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
-import { updateYDocFromDiskBuffer } from "./BackgroundSync";
 import { Plugin } from "obsidian";
 
 import {
@@ -594,7 +593,7 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					folder.whenReady().then((folder) => {
-						folder.getFile(file.path, true, true);
+						folder.getFile(file.path);
 					});
 				}
 			}),
@@ -658,20 +657,6 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					vaultLog("Modify", file.path);
-					withFlag(flag.enableUpdateYDocFromDiskBuffer, () => {
-						try {
-							const doc = folder.getFile(file.path, false, false);
-							if (!this._liveViews.docIsOpen(doc)) {
-								folder.read(doc).then((contents) => {
-									if (contents.length !== 0) {
-										updateYDocFromDiskBuffer(doc.ydoc, contents);
-									}
-								});
-							}
-						} catch (e) {
-							// fall back to differ
-						}
-					});
 					this.app.metadataCache.trigger("resolve", file);
 				}
 			}),
