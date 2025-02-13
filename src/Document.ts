@@ -117,6 +117,7 @@ export class Document extends HasProvider implements TFile {
 					await this.onceProviderSynced();
 					await this.markSynced();
 				}
+				this.sharedFolder.markUploaded(this);
 			})();
 		});
 

@@ -521,9 +521,9 @@ export class LiveViewManager {
 		return Promise.all(readyFolders);
 	}
 
-	private getViews(): S3View[] {
+	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
-		iterateMarkdownViews(this.workspace, (markdownView) => {
+		iterateMarkdownViews(this.workspace, async (markdownView) => {
 			const viewFilePath = markdownView.file?.path;
 			if (!viewFilePath) {
 				return;
@@ -536,7 +536,7 @@ export class LiveViewManager {
 					});
 					views.push(view);
 				} else if (folder.ready) {
-					const doc = folder.getFile(viewFilePath, true, true, true);
+					const doc = await folder.getFile(viewFilePath);
 					const view = new LiveView(this, markdownView, doc);
 					views.push(view);
 				} else {
@@ -664,7 +664,7 @@ export class LiveViewManager {
 
 		let views: S3View[] = [];
 		try {
-			views = this.getViews();
+			views = await this.getViews();
 		} catch (e) {
 			this.warn("[System 3][Relay][Live Views] error getting views", e);
 			return false;

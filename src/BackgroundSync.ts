@@ -460,8 +460,8 @@ export class BackgroundSync {
 		};
 		const update = Y.encodeStateAsUpdate(item.ydoc);
 
-        const baseUrl = this.getBaseUrl(clientToken, entity);
-        const updateUrl = `${baseUrl}/update`;
+		const baseUrl = this.getBaseUrl(clientToken, entity);
+		const updateUrl = `${baseUrl}/update`;
 		const response = await requestUrl({
 			url: updateUrl,
 			method: "POST",
