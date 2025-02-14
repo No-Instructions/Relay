@@ -18,7 +18,7 @@ export class Document extends HasProvider implements TFile {
 	private _persistence: IndexeddbPersistence;
 	whenSyncedPromise: SharedPromise<void> | null = null;
 	persistenceSynced: boolean = false;
-    _awaitingUpdates?: boolean;
+	_awaitingUpdates?: boolean;
 	readyPromise?: SharedPromise<Document>;
 	path: string;
 	_tfile: TFile | null;
