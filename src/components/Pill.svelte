@@ -2,8 +2,8 @@
 	import { Satellite, Layers } from "lucide-svelte";
 	import type { ConnectionStatus } from "src/HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
-	import type { SyncGroup } from "src/BackgroundSync";
 	export let status: ConnectionStatus = "disconnected";
+	export let relayId: string | undefined;
 	export let remote: RemoteSharedFolder | undefined;
 	export let progress = 0;
 
@@ -16,13 +16,13 @@
 			{Math.round(progress * 100)}%
 		</span>
 	{/if}
-	{#if remote}
+	{#if relayId}
 		<span class="notebook icon hidden" aria-label="Tracking Changes">
 			<Layers class="inline-icon" style="width: 0.8em" />
 		</span>
 		<span
 			class="satellite icon system3-{status}"
-			aria-label={`${remote.relay.name} (${status})`}
+			aria-label={`${remote?.relay.name || "Relay Server"} (${status})`}
 		>
 			<Satellite class="inline-icon" />
 		</span>
