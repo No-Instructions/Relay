@@ -162,6 +162,7 @@ class PillDecoration {
 			target: this.el,
 			props: {
 				status: this.sharedFolder.state.status,
+				relayId: this.sharedFolder.relayId,
 				remote: this.sharedFolder.remote,
 				progress: 0,
 			},
@@ -172,6 +173,7 @@ class PillDecoration {
 			this.sharedFolder.subscribe(this.el, (state: ConnectionState) => {
 				this.pill.$set({
 					status: state.status,
+					relayId: this.sharedFolder.relayId,
 					remote: this.sharedFolder.remote,
 				});
 			}),
