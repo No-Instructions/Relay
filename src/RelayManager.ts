@@ -14,6 +14,7 @@ import {
 import PocketBase, {
 	type AuthModel,
 	type ListResult,
+	type RecordFullListOptions,
 	type RecordModel,
 	type RecordSubscription,
 } from "pocketbase";
@@ -979,6 +980,7 @@ export class RelayManager extends HasLogging {
 	store?: Store;
 	_offLoginManager: Unsubscriber;
 	private pb: PocketBase | null;
+	destroyed = false;
 
 	constructor(private loginManager: LoginManager) {
 		super();
@@ -1008,7 +1010,7 @@ export class RelayManager extends HasLogging {
 		);
 
 		// Subscribe to logout/login
-		this._offLoginManager = this.loginManager.subscribe(() => {
+		this._offLoginManager = this.loginManager.on(() => {
 			this.login();
 		});
 
@@ -1176,72 +1178,50 @@ export class RelayManager extends HasLogging {
 	}
 
 	async update() {
-		if (
-			!this.pb ||
-			!this.pb.authStore.isValid ||
-			this.pb.authStore.model?.id === undefined
-		) {
-			return;
-		}
+		const withPb = (
+			collection: string,
+			options:
+				| ((userId: string) => RecordFullListOptions)
+				| RecordFullListOptions = {},
+		): Promise<RecordModel[]> => {
+			if (
+				!this.pb ||
+				!this.pb.authStore.isValid ||
+				this.pb.authStore.model?.id === undefined
+			) {
+				return Promise.resolve([]);
+			}
+			if (typeof options === "function") {
+				options = options(this.pb.authStore.model.id);
+			}
+			return this.pb.collection(collection).getFullList<RecordModel>(options);
+		};
 
-		try {
-			await this.pb
-				.collection("users")
-				.getOne<UserDAOExpandingRelayRoles>(this.pb.authStore.model.id, {
-					expand:
-						"relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role,subscriptions_via_user,subscriptions_via_user.relay",
-				})
-				.then((user) => {
-					this.store?.ingest(user);
-				})
-				.catch((e) => {
-					if (e.status === 404) {
-						this.loginManager.logout();
-					}
-				});
-
-			await this.pb
-				.collection("relay_roles")
-				.getFullList<RelayRoleDAOExpandingRelayUser>({
-					expand: "user",
-				})
-				.then((roles) => {
-					roles.forEach((record) => {
-						this.store?.ingest(record);
-					});
-				});
-			await this.pb
-				.collection("relay_invitations")
-				.getFullList<RelayInvitationDAO>()
-				.then((relayInvitations) => {
-					relayInvitations.forEach((record) => {
-						this.store?.ingest(record);
-					});
-				});
-			await this.pb
-				.collection("shared_folders")
-				.getFullList<RemoteFolderDAO>({
-					expand: "relay,creator",
-				})
-				.then((remoteFolders) => {
-					remoteFolders.forEach((record) => {
-						this.store?.ingest(record);
-					});
-				});
-			await this.pb
-				.collection("subscriptions")
-				.getFullList<RemoteFolderDAO>({
-					expand: "relay,user",
-					fetch: customFetch,
-				})
-				.then((subscriptions) => {
-					subscriptions.forEach((record) => {
-						this.store?.ingest(record);
-					});
-				});
-		} catch (e) {
-			this.warn("error during update()", e);
-		}
+		const promises = [
+			withPb("users", (userId) => ({
+				filter: `id="${userId}"`,
+				expand:
+					"relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role",
+			})),
+			withPb("relay_roles", {
+				expand: "user",
+			}),
+			withPb("relay_invitations"),
+			withPb("shared_folders", {
+				expand: "relay,creator",
+			}),
+			withPb("subscriptions", {
+				expand: "relay,user",
+			}),
+		];
+		promises.forEach(async (promise) => {
+			const result = await promise;
+			for (const record of result) {
+				if (!this.destroyed && this.store) {
+					this.store.ingest(record);
+				}
+			}
+		});
 	}
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
@@ -1362,6 +1342,7 @@ export class RelayManager extends HasLogging {
 	}
 
 	destroy(): void {
+		this.destroyed = true;
 		if (this._offLoginManager) {
 			this._offLoginManager();
 		}
