@@ -1125,6 +1125,20 @@ export class RelayManager extends HasLogging {
 			});
 	}
 
+	async getSubscriptionToken(subscription: RelaySubscription): Promise<string> {
+		if (!this.pb || !this.pb.authStore.isValid) {
+			throw new Error("Auth is not valid");
+		}
+		const url = `/api/subscription/${subscription.id}/token`;
+		const response = await this.pb.send(url, {
+			method: "POST",
+		});
+		if (response !== 200) {
+			throw new Error("Token API failed");
+		}
+		return response.json()["token"];
+	}
+
 	async subscribe() {
 		if (
 			!this.pb ||
