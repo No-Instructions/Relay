@@ -65,7 +65,13 @@
 		if ($subscriptions.values().length === 0) {
 			return undefined;
 		}
-		return $subscriptions.values()[0];
+		const subscription = $subscriptions.values()[0];
+		if (!subscription.token) {
+			plugin.relayManager.getSubscriptionToken(subscription).then((token) => {
+				subscription.token = token;
+			});
+		}
+		return subscription;
 	});
 
 	const roles = $relayRoles.filter((role: RelayRole) => {
