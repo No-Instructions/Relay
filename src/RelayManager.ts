@@ -728,7 +728,9 @@ class RelayRoleAuto extends Auto implements RelayRole {
 	public get relay(): Relay {
 		const relay = this.relays.get(this.relayRole.relay);
 		if (!relay) {
-			throw new Error("invalid role");
+			throw new Error(
+				`invalid role: unable to find relay ${this.relayRole.relay} on role ${this.relayRole.id}`,
+			);
 		}
 		return relay;
 	}
@@ -923,8 +925,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 	public get role(): Role {
 		const isCreator = this.relay.creator === this.user.id;
 		const role = this.relayRoles.find(
-			(role) =>
-				role.relay?.id === this.relay.id && role.user.id === this.user.id,
+			(role) => role.relayId === this.relay.id && role.userId === this.user.id,
 		)?.role;
 		if (role) {
 			return role;
@@ -955,7 +956,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 
 	public get acl(): [string, string] | undefined {
 		const id = this.relayRoles.find((role) => {
-			return role.relay.id === this.id && role.user.id === this.user.id;
+			return role.relayId === this.id && role.userId === this.user.id;
 		})?.id;
 		if (id) {
 			return ["relay_roles", id];
@@ -1341,7 +1342,7 @@ export class RelayManager extends HasLogging {
 
 	async leaveRelay(relay: Relay): Promise<void> {
 		const role = this.relayRoles.find((role) => {
-			return role.user.id === this.user?.id && role.relay?.id === relay.id;
+			return role.userId === this.user?.id && role.relayId === relay.id;
 		});
 		if (role) {
 			await this.pb?.collection("relay_roles").delete(role.id);

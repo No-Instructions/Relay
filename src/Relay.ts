@@ -50,6 +50,7 @@ export interface RelayRole extends Identified, Updatable<RelayRole> {
 	userId: string;
 	role: Role;
 	relay: Relay;
+	relayId: string;
 }
 
 export interface RelayInvitation
