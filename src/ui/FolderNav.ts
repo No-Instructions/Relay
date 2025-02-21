@@ -165,6 +165,7 @@ class PillDecoration {
 				relayId: this.sharedFolder.relayId,
 				remote: this.sharedFolder.remote,
 				progress: 0,
+				syncStatus: "pending",
 			},
 		});
 
@@ -185,8 +186,14 @@ class PillDecoration {
 					(group) => group.sharedFolder === this.sharedFolder,
 				);
 				if (folderGroup) {
+					const progress =
+						folderGroup.total > 0
+							? folderGroup.completed / folderGroup.total
+							: 0;
+
 					this.pill.$set({
-						progress: (folderGroup.completed / folderGroup.total) % 1,
+						progress: progress,
+						syncStatus: folderGroup.status,
 					});
 				}
 			}),

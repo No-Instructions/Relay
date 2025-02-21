@@ -6,13 +6,21 @@
 	export let relayId: string | undefined;
 	export let remote: RemoteSharedFolder | undefined;
 	export let progress = 0;
+	export let syncStatus: "pending" | "running" | "completed" | "failed" =
+		"pending";
 
 	$: showProgress = progress > 0;
+	$: progressClass =
+		syncStatus === "completed"
+			? "completed"
+			: syncStatus === "failed"
+				? "failed"
+				: "";
 </script>
 
 <div class="folder-icons">
-	{#if showProgress}
-		<span class="progress-text">
+	{#if showProgress && syncStatus !== "completed"}
+		<span class="progress-text {progressClass}">
 			{Math.round(progress * 100)}%
 		</span>
 	{/if}
@@ -76,11 +84,24 @@
 		opacity: 1;
 		transition: opacity 0.3s ease;
 	}
+
 	.progress-text.completed {
 		color: var(--color-green);
-		opacity: 0;
+		animation: fadeOutDelay 2s ease forwards;
 	}
+
 	.progress-text.failed {
 		color: var(--color-red);
+	}
+
+	@keyframes fadeOutDelay {
+		0%,
+		50% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0;
+			display: none;
+		}
 	}
 </style>

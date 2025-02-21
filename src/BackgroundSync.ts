@@ -36,6 +36,25 @@ export interface SyncGroup {
 	completedSyncs: number;
 }
 
+export interface SyncProgress {
+	totalPercent: number;
+	syncPercent: number;
+	downloadPercent: number;
+	totalItems: number;
+	completedItems: number;
+	syncItems: number;
+	completedSyncs: number;
+	downloadItems: number;
+	completedDownloads: number;
+}
+
+export interface GroupProgress {
+	percent: number;
+	syncPercent: number;
+	downloadPercent: number;
+	sharedFolder: SharedFolder;
+}
+
 export function updateYDocFromDiskBuffer(
 	ydoc: Y.Doc,
 	diskBuffer: string,
@@ -132,6 +151,73 @@ export class BackgroundSync {
 		private concurrency: number = 1,
 	) {
 		RelayInstances.set(this, "BackgroundSync");
+	}
+
+	getOverallProgress(): SyncProgress {
+		let totalItems = 0;
+		let completedItems = 0;
+		let syncItems = 0;
+		let completedSyncs = 0;
+		let downloadItems = 0;
+		let completedDownloads = 0;
+
+		this.syncGroups.forEach((group) => {
+			totalItems += group.total;
+			completedItems += group.completed;
+			syncItems += group.syncs;
+			completedSyncs += group.completedSyncs;
+			downloadItems += group.downloads;
+			completedDownloads += group.completedDownloads;
+		});
+
+		const totalPercent =
+			totalItems > 0 ? (completedItems / totalItems) * 100 : 0;
+		const syncPercent = syncItems > 0 ? (completedSyncs / syncItems) * 100 : 0;
+		const downloadPercent =
+			downloadItems > 0 ? (completedDownloads / downloadItems) * 100 : 0;
+
+		return {
+			totalPercent: Math.round(totalPercent),
+			syncPercent: Math.round(syncPercent),
+			downloadPercent: Math.round(downloadPercent),
+			totalItems,
+			completedItems,
+			syncItems,
+			completedSyncs,
+			downloadItems,
+			completedDownloads,
+		};
+	}
+
+	getGroupProgress(sharedFolder: SharedFolder): GroupProgress | null {
+		const group = this.syncGroups.get(sharedFolder);
+		if (!group) return null;
+
+		const percent = group.total > 0 ? (group.completed / group.total) * 100 : 0;
+		const syncPercent =
+			group.syncs > 0 ? (group.completedSyncs / group.syncs) * 100 : 0;
+		const downloadPercent =
+			group.downloads > 0
+				? (group.completedDownloads / group.downloads) * 100
+				: 0;
+
+		return {
+			percent: Math.round(percent),
+			syncPercent: Math.round(syncPercent),
+			downloadPercent: Math.round(downloadPercent),
+			sharedFolder,
+		};
+	}
+
+	getAllGroupsProgress(): GroupProgress[] {
+		const progress: GroupProgress[] = [];
+		this.syncGroups.forEach((group, sharedFolder) => {
+			const groupProgress = this.getGroupProgress(sharedFolder);
+			if (groupProgress) {
+				progress.push(groupProgress);
+			}
+		});
+		return progress;
 	}
 
 	private async processSyncQueue() {
@@ -710,6 +796,31 @@ export class BackgroundSync {
 		callback: Subscriber<ObservableMap<SharedFolder, SyncGroup>>,
 	): Unsubscriber {
 		return this.syncGroups.subscribe(callback);
+	}
+
+	subscribeToProgress(callback: Subscriber<SyncProgress>): Unsubscriber {
+		const handler = () => {
+			callback(this.getOverallProgress());
+		};
+
+		const unsub1 = this.activeSync.subscribe(() => handler());
+		const unsub2 = this.activeDownloads.subscribe(() => handler());
+		const unsub3 = this.syncGroups.subscribe(() => handler());
+
+		return () => {
+			unsub1();
+			unsub2();
+			unsub3();
+		};
+	}
+
+	subscribeToGroupProgress(
+		sharedFolder: SharedFolder,
+		callback: Subscriber<GroupProgress | null>,
+	): Unsubscriber {
+		return this.syncGroups.subscribe(() => {
+			callback(this.getGroupProgress(sharedFolder));
+		});
 	}
 
 	pause() {
