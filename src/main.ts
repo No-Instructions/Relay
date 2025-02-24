@@ -56,6 +56,9 @@ import { URLSearchParams } from "url";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { SyncQueueModal } from "./ui/SyncQueueModal";
+import { UpdateManager } from "./UpdateManager";
+import type { PluginWithApp } from "./UpdateManager";
+import { ReleaseManager } from "./ui/ReleaseManager";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -99,6 +102,7 @@ export default class Live extends Plugin {
 	relayManager!: RelayManager;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
+	updateManager!: UpdateManager;
 	private featureSettings!: NamespacedSettings<FeatureFlags>;
 	private debugSettings!: NamespacedSettings<DebugSettings>;
 	private folderSettings!: NamespacedSettings<SharedFolderSettings[]>;
@@ -191,6 +195,12 @@ export default class Live extends Plugin {
 			this.openSettings();
 		});
 
+		// Initialize update manager
+		this.updateManager = new UpdateManager(
+			this as unknown as PluginWithApp,
+			this.timeProvider,
+		);
+
 		this.debugSettings.subscribe((settings) => {
 			if (settings.debugging) {
 				this.enableDebugging();
@@ -225,6 +235,15 @@ export default class Live extends Plugin {
 					},
 				});
 				this.addCommand({
+					id: "show-release-manager",
+					name: "Release Manager",
+					callback: () => {
+						const modal = new ReleaseManager(this.app, this);
+						this.openModals.push(modal);
+						modal.open();
+					},
+				});
+				this.addCommand({
 					id: "analyze-indexeddb",
 					name: "Analyze Database",
 					callback: () => {
@@ -253,12 +272,40 @@ export default class Live extends Plugin {
 						modal.open();
 					},
 				});
+
+				// Register handler for update availability changes
+				this.register(
+					this.updateManager.subscribe(() => {
+						const updateInfo = this.updateManager.getUpdateInfo();
+						this.debug("Update subscription triggered with:", updateInfo);
+
+						if (updateInfo) {
+							// Add update command when an update is available
+							this.removeCommand("update-plugin");
+							this.addCommand({
+								id: "update-plugin",
+								name: `Update Plugin (${this.manifest.version} → ${updateInfo.newVersion})`,
+								callback: async () => {
+									await this.updateManager.installUpdate();
+								},
+							});
+							this.log(
+								`Update available: v${this.manifest.version} → v${updateInfo.newVersion}`,
+							);
+						} else {
+							// Remove update command when no update is available
+							this.removeCommand("update-plugin");
+						}
+					}),
+				);
 			} else {
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("send-bug-report");
 				this.removeCommand("show-debug-info");
 				this.removeCommand("show-sync-status");
+				this.removeCommand("show-release-manager");
 				this.removeCommand("disable-debugging");
+				this.removeCommand("update-plugin");
 				this.addCommand({
 					id: "enable-debugging",
 					name: "Enable debugging",
@@ -276,6 +323,9 @@ export default class Live extends Plugin {
 				this.reload();
 			},
 		});
+
+		// Start checking for updates
+		this.updateManager.start();
 
 		this.vault = this.app.vault;
 		const vaultName = this.vault.getName();
@@ -820,6 +870,12 @@ export default class Live extends Plugin {
 		this.folderNavDecorations?.destroy();
 
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+
+		// Explicitly destroy the update manager
+		if (this.updateManager) {
+			this.updateManager.destroy();
+			this.updateManager = null as any;
+		}
 
 		this._liveViews?.destroy();
 		this._liveViews = null as any;
