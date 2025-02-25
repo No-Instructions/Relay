@@ -156,8 +156,7 @@ export class LiveCMPluginValue implements PluginValue {
 			} catch (e) {
 				if (e instanceof RangeError) {
 					if (isLive(this.view)) {
-						this.view.tracking = false;
-						this._observer?.(event, tr);
+						this.keyFrameCounter += TWEENS;
 					}
 				}
 			}
