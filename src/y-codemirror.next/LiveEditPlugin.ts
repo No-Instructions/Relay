@@ -15,6 +15,8 @@ import {
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import { around } from "monkey-around";
+import diff_match_patch from "diff-match-patch";
+import { flags } from "src/flagManager";
 
 const TWEENS = 25;
 
@@ -89,9 +91,13 @@ export class LiveCMPluginValue implements PluginValue {
 			},
 		});
 
-		this.view.document.onceConnected().then(() => {
+		if (this.view.document.connected) {
 			this.resync();
-		});
+		} else {
+			this.view.document.onceConnected().then(() => {
+				this.resync();
+			});
+		}
 
 		this._observer = async (event, tr) => {
 			if (!isLive(this.view)) {
@@ -127,9 +133,12 @@ export class LiveCMPluginValue implements PluginValue {
 						pos += d.retain;
 					}
 				}
-				if (!this.view.tracking || this.keyFrameCounter > TWEENS) {
+				if (
+					!this.view.tracking ||
+					(flags().enableEditorTweens && this.keyFrameCounter > TWEENS)
+				) {
 					this.keyFrameCounter = 0;
-					changes = await this.getKeyFrame();
+					changes = await this.getKeyFrame(true);
 					this.debug(`dispatch (full)`);
 				} else {
 					this.keyFrameCounter += 1;
@@ -152,7 +161,6 @@ export class LiveCMPluginValue implements PluginValue {
 				if (e instanceof RangeError) {
 					if (isLive(this.view)) {
 						this.view.tracking = false;
-						this._observer?.(event, tr);
 					}
 				}
 			}
@@ -161,12 +169,51 @@ export class LiveCMPluginValue implements PluginValue {
 		this._ytext.observe(this.observer);
 	}
 
-	public getBufferChange(buffer: string) {
-		return {
-			from: 0,
-			to: this.editor.state.doc.length,
-			insert: buffer,
-		};
+	public incrementalBufferChange(newBuffer: string): ChangeSpec[] {
+		const currentBuffer = this.editor.state.doc.toString();
+		const dmp = new diff_match_patch();
+		const diffs = dmp.diff_main(currentBuffer, newBuffer);
+		dmp.diff_cleanupSemantic(diffs);
+
+		const changes: ChangeSpec[] = [];
+		let currentPos = 0;
+
+		for (const [type, text] of diffs) {
+			switch (type) {
+				case 0: // EQUAL
+					currentPos += text.length;
+					break;
+				case 1: // INSERT
+					changes.push({
+						from: currentPos,
+						to: currentPos,
+						insert: text,
+					});
+					currentPos += text.length;
+					break;
+				case -1: // DELETE
+					changes.push({
+						from: currentPos,
+						to: currentPos + text.length,
+						insert: "",
+					});
+					break;
+			}
+		}
+		return changes;
+	}
+
+	public getBufferChange(newBuffer: string, incremental = false): ChangeSpec[] {
+		if (incremental) {
+			return this.incrementalBufferChange(newBuffer);
+		}
+		return [
+			{
+				from: 0,
+				to: this.editor.state.doc.length,
+				insert: newBuffer,
+			},
+		];
 	}
 
 	async resync() {
@@ -182,7 +229,7 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 	}
 
-	async getKeyFrame(): Promise<ChangeSpec[]> {
+	async getKeyFrame(incremental = false): Promise<ChangeSpec[]> {
 		// goal: sync editor state to ytext state so we can accept delta edits.
 		if (!isLive(this.view) || this.destroyed) {
 			return [];
@@ -210,7 +257,7 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		if (isLive(this.view) && !this.destroyed) {
-			return [this.getBufferChange(this.view.document.text)];
+			return [this.getBufferChange(this.view.document.text, incremental)];
 		}
 		return [];
 	}

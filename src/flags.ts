@@ -8,6 +8,7 @@ export interface FeatureFlags {
 	enableSyncMenu: boolean;
 	enableDocumentServer: boolean;
 	enableDocumentHistory: boolean;
+	enableEditorTweens: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -20,6 +21,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableSyncMenu: false,
 	enableDocumentServer: false,
 	enableDocumentHistory: false,
+	enableEditorTweens: false,
 };
 
 export type Flag = keyof FeatureFlags;
