@@ -185,6 +185,7 @@ export default class Live extends Plugin {
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
 
+		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addRibbonIcon("satellite", "Relay", () => {
 			this.openSettings();
 		});
@@ -535,7 +536,6 @@ export default class Live extends Plugin {
 		);
 		this.folderNavDecorations.refresh();
 
-		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addSettingTab(this.settingsTab);
 
 		const workspaceLog = curryLog("[Live][Workspace]", "log");
