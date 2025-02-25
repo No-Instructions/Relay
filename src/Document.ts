@@ -37,6 +37,7 @@ export class Document extends HasProvider implements TFile {
 	_diskBuffer?: DiskBuffer;
 	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
+	_tracking: boolean = false;
 
 	debug!: (message?: any, ...optionalParams: any[]) => void;
 	log!: (message?: any, ...optionalParams: any[]) => void;

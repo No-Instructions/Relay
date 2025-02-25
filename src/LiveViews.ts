@@ -123,7 +123,6 @@ export class LiveView implements S3View {
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
-	_tracking: boolean;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -135,7 +134,6 @@ export class LiveView implements S3View {
 		this._parent = connectionManager; // for debug
 		this.view = view;
 		this.document = document;
-		this._tracking = false;
 
 		this.shouldConnect = shouldConnect;
 		this.canConnect = canConnect;
@@ -159,13 +157,13 @@ export class LiveView implements S3View {
 	}
 
 	public get tracking() {
-		return this._tracking;
+		return this.document._tracking;
 	}
 
 	public set tracking(value: boolean) {
-		const old = this._tracking;
-		this._tracking = value;
-		if (this._tracking !== old) {
+		const old = this.document._tracking;
+		this.document._tracking = value;
+		if (this.document._tracking !== old) {
 			this.attach();
 		}
 	}
@@ -324,6 +322,7 @@ export class LiveView implements S3View {
 			this.offConnectionStatusSubscription = undefined;
 		}
 		this.document.disconnect();
+		this.tracking = false;
 	}
 
 	destroy() {
