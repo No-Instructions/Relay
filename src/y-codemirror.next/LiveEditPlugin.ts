@@ -15,6 +15,7 @@ import {
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import { around } from "monkey-around";
+import diff_match_patch from "diff-match-patch";
 
 const TWEENS = 25;
 
@@ -89,9 +90,13 @@ export class LiveCMPluginValue implements PluginValue {
 			},
 		});
 
-		this.view.document.onceConnected().then(() => {
+		if (this.view.document.connected) {
 			this.resync();
-		});
+		} else {
+			this.view.document.onceConnected().then(() => {
+				this.resync();
+			});
+		}
 
 		this._observer = async (event, tr) => {
 			if (!isLive(this.view)) {
@@ -161,12 +166,39 @@ export class LiveCMPluginValue implements PluginValue {
 		this._ytext.observe(this.observer);
 	}
 
-	public getBufferChange(buffer: string) {
-		return {
-			from: 0,
-			to: this.editor.state.doc.length,
-			insert: buffer,
-		};
+	public getBufferChange(newBuffer: string): ChangeSpec[] {
+		const currentBuffer = this.editor.state.doc.toString();
+		const dmp = new diff_match_patch();
+		const diffs = dmp.diff_main(currentBuffer, newBuffer);
+		dmp.diff_cleanupSemantic(diffs);
+
+		const changes: ChangeSpec[] = [];
+		let currentPos = 0;
+
+		for (const [type, text] of diffs) {
+			switch (type) {
+				case 0: // EQUAL
+					currentPos += text.length;
+					break;
+				case 1: // INSERT
+					changes.push({
+						from: currentPos,
+						to: currentPos,
+						insert: text,
+					});
+					currentPos += text.length;
+					break;
+				case -1: // DELETE
+					changes.push({
+						from: currentPos,
+						to: currentPos + text.length,
+						insert: "",
+					});
+					break;
+			}
+		}
+
+		return changes;
 	}
 
 	async resync() {
