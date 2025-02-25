@@ -190,7 +190,6 @@ export class LiveView implements S3View {
 					showMergeOption: true,
 					onResolve: async () => {
 						this.document.clearDiskBuffer();
-						this.view.requestSave();
 					},
 				});
 				return true;
