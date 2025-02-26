@@ -347,12 +347,12 @@ export class Document extends HasProvider implements TFile {
 		await this._persistence.set("origin", origin);
 	}
 
-	async getOrigin(): Promise<string | undefined> {
+	async getOrigin(): Promise<"local" | "remote" | undefined> {
 		if (this._origin !== undefined) {
-			return this._origin;
+			return this._origin as "local" | "remote";
 		}
 		this._origin = await this._persistence.get("origin");
-		return this._origin;
+		return this._origin as "local" | "remote" | undefined;
 	}
 
 	_serverSynced?: boolean;

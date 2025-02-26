@@ -55,6 +55,7 @@ import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { URLSearchParams } from "url";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
+import { SyncQueueModal } from "./ui/SyncQueueModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -239,10 +240,24 @@ export default class Live extends Plugin {
 						this.disableDebugging(true);
 					},
 				});
+				this.addCommand({
+					id: "show-sync-status",
+					name: "Sync Status",
+					callback: () => {
+						const modal = new SyncQueueModal(
+							this.app,
+							this.backgroundSync,
+							this.sharedFolders,
+						);
+						this.openModals.push(modal);
+						modal.open();
+					},
+				});
 			} else {
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("send-bug-report");
 				this.removeCommand("show-debug-info");
+				this.removeCommand("show-sync-status");
 				this.removeCommand("disable-debugging");
 				this.addCommand({
 					id: "enable-debugging",
@@ -381,6 +396,23 @@ export default class Live extends Plugin {
 									);
 								});
 						});
+						if (folder.relayId && flags().enableSyncModal) {
+							menu.addItem((item) => {
+								item
+									.setTitle("Sync Status")
+									.setIcon("list-checks")
+									.onClick(() => {
+										const modal = new SyncQueueModal(
+											this.app,
+											this.backgroundSync,
+											this.sharedFolders,
+											folder.guid,
+										);
+										this.openModals.push(modal);
+										modal.open();
+									});
+							});
+						}
 						if (flags().enableSyncMenu && folder.relayId && folder.connected) {
 							menu.addItem((item) => {
 								item
