@@ -9,7 +9,9 @@
 	export let syncStatus: "pending" | "running" | "completed" | "failed" =
 		"pending";
 
-	$: showProgress = progress > 0;
+	// Always show progress during any active state
+	$: showProgress = syncStatus === "running" || progress > 0;
+
 	$: progressClass =
 		syncStatus === "completed"
 			? "completed"
@@ -19,8 +21,9 @@
 </script>
 
 <div class="folder-icons">
-	{#if showProgress && syncStatus !== "completed"}
-		<span class="progress-text {progressClass}">
+	<!-- Always show progress while running, regardless of completion -->
+	{#if showProgress}
+		<span class="progress-text {progressClass}" style="opacity: 1">
 			{Math.round(progress * 100)}%
 		</span>
 	{/if}
@@ -86,8 +89,7 @@
 	}
 
 	.progress-text.completed {
-		color: var(--color-green);
-		animation: fadeOutDelay 2s ease forwards;
+		animation: fadeOutDelay 0.3s ease forwards;
 	}
 
 	.progress-text.failed {
