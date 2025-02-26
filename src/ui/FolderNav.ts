@@ -181,24 +181,18 @@ class PillDecoration {
 		);
 
 		unsubs.push(
-			this.sharedFolder.backgroundSync.syncGroups.subscribe((groups) => {
-				const folderGroup = Array.from(groups.values()).find(
-					(group) => group.sharedFolder === this.sharedFolder,
-				);
-				if (folderGroup) {
-					const progress =
-						folderGroup.total > 0
-							? folderGroup.completed / folderGroup.total
-							: 0;
-
-					this.pill.$set({
-						progress: progress,
-						syncStatus: folderGroup.status,
-					});
-				}
-			}),
+			this.sharedFolder.backgroundSync.subscribeToGroupProgress(
+				this.sharedFolder,
+				(progress) => {
+					if (progress) {
+						this.pill.$set({
+							progress: progress.percent,
+							syncStatus: progress.status,
+						});
+					}
+				},
+			),
 		);
-
 		this.unsubscribe = () => unsubs.forEach((u) => u());
 	}
 

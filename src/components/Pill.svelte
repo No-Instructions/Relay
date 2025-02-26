@@ -9,19 +9,15 @@
 	export let syncStatus: "pending" | "running" | "completed" | "failed" =
 		"pending";
 
-	$: showProgress = progress > 0;
-	$: progressClass =
-		syncStatus === "completed"
-			? "completed"
-			: syncStatus === "failed"
-				? "failed"
-				: "";
+	// Always show progress during any active state
+	$: showProgress = syncStatus !== "completed" || progress < 100;
 </script>
 
 <div class="folder-icons">
-	{#if showProgress && syncStatus !== "completed"}
-		<span class="progress-text {progressClass}">
-			{Math.round(progress * 100)}%
+	<!-- Always show progress while running, regardless of completion -->
+	{#if showProgress}
+		<span class="system3-progress-text system3-{syncStatus}" style="opacity: 1">
+			{progress}%
 		</span>
 	{/if}
 	{#if relayId}
@@ -77,7 +73,7 @@
 		display: none;
 	}
 
-	.progress-text {
+	.system3-progress-text {
 		margin-right: 0.4em;
 		font-size: 0.8em;
 		color: var(--color-accent);
@@ -85,12 +81,11 @@
 		transition: opacity 0.3s ease;
 	}
 
-	.progress-text.completed {
-		color: var(--color-green);
-		animation: fadeOutDelay 2s ease forwards;
+	.system3-progress-text.completed {
+		animation: fadeOutDelay 0.3s ease forwards;
 	}
 
-	.progress-text.failed {
+	.system3-progress-text.failed {
 		color: var(--color-red);
 	}
 
