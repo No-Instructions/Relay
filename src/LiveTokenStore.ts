@@ -3,11 +3,11 @@ import { TokenStore } from "./TokenStore";
 import type { TokenInfo } from "./TokenStore";
 import type { TimeProvider } from "./TimeProvider";
 import { LoginManager } from "./LoginManager";
-import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { ClientToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
 import { S3RN, S3RemoteDocument, type S3RNType, S3RemoteFolder } from "./S3RN";
+import { customFetch } from "./customFetch";
 
 declare const API_URL: string;
 declare const GIT_TAG: string;
@@ -61,24 +61,25 @@ async function refresh(
 		Authorization: `Bearer ${loginManager.user?.token}`,
 		"Relay-Version": GIT_TAG,
 	};
-	requestUrl({
-		url: `${API_URL}/token`,
-		method: "POST",
-		headers: headers,
-		body: payload,
-	})
-		.then((response) => {
-			if (response.status !== 200) {
-				debug(response.status, response.text);
-				onError(Error(`Received status code ${response.status} from an API.`));
-			}
-			const clientToken = response.json as ClientToken;
-			onSuccess(clientToken);
-		})
-		.catch((reason) => {
-			error(reason, payload);
-			onError(reason);
+	try {
+		const response = await customFetch(`${API_URL}/token`, {
+			method: "POST",
+			headers: headers,
+			body: payload,
 		});
+
+		if (!response.ok) {
+			debug(response.status, await response.text());
+			onError(Error(`Received status code ${response.status} from an API.`));
+			return;
+		}
+
+		const clientToken = (await response.json()) as ClientToken;
+		onSuccess(clientToken);
+	} catch (reason) {
+		error(reason, payload);
+		onError(reason as Error);
+	}
 }
 
 export class LiveTokenStore extends TokenStore<ClientToken> {
