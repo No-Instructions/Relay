@@ -894,6 +894,11 @@ export class SharedFolder extends HasProvider {
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 
+		if (doc.tfile?.stat.size === 0) {
+			// This might cause repeated download attempts for empty files?
+			this.backgroundSync.enqueueDownload(doc);
+		}
+
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
 
