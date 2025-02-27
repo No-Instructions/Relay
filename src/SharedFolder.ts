@@ -758,7 +758,7 @@ export class SharedFolder extends HasProvider {
 			// the File exists, but the ID doesn't
 			this.warn("[getDoc]: creating new shared ID for existing file");
 			this.placeHold([vpath]);
-			return this.createDoc(vpath, update);
+			return this.uploadDoc(vpath, update);
 		}
 	}
 
@@ -893,6 +893,11 @@ export class SharedFolder extends HasProvider {
 		}
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
+
+		if (doc.tfile?.stat.size === 0) {
+			// This might cause repeated download attempts for empty files?
+			this.backgroundSync.enqueueDownload(doc);
+		}
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
