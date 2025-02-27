@@ -147,7 +147,7 @@ export class LiveCMPluginValue implements PluginValue {
 				if (isLive(this.view)) {
 					editor.dispatch({
 						changes,
-						annotations: [ySyncAnnotation.of(this)],
+						annotations: [ySyncAnnotation.of(this.editor)],
 					});
 					this.view.tracking = true;
 				}
@@ -223,7 +223,7 @@ export class LiveCMPluginValue implements PluginValue {
 			if (isLive(this.view) && !this.view.tracking && !this.destroyed) {
 				this.editor.dispatch({
 					changes: keyFrame,
-					annotations: [ySyncAnnotation.of(this)],
+					annotations: [ySyncAnnotation.of(this.editor)],
 				});
 			}
 		}
@@ -267,7 +267,7 @@ export class LiveCMPluginValue implements PluginValue {
 		if (
 			!update.docChanged ||
 			(update.transactions.length > 0 &&
-				update.transactions[0].annotation(ySyncAnnotation) === this)
+				update.transactions[0].annotation(ySyncAnnotation) === this.editor)
 		) {
 			return;
 		}
