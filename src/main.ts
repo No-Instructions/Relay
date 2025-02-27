@@ -786,9 +786,6 @@ export default class Live extends Plugin {
 
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
-		this.backgroundSync?.destroy();
-		this.backgroundSync = null as any;
-
 		this._liveViews?.destroy();
 		this._liveViews = null as any;
 
@@ -804,6 +801,11 @@ export default class Live extends Plugin {
 		this.networkStatus?.destroy();
 		this.networkStatus = null as any;
 
+		this.openModals.forEach((modal) => {
+			modal.close();
+		});
+		this.openModals.length = 0;
+
 		this.sharedFolders?.destroy();
 		this.sharedFolders = null as any;
 
@@ -812,6 +814,9 @@ export default class Live extends Plugin {
 
 		this.loginManager?.destroy();
 		this.loginManager = null as any;
+
+		this.backgroundSync?.destroy();
+		this.backgroundSync = null as any;
 
 		this.app?.workspace.updateOptions();
 		this.app = null as any;
@@ -833,11 +838,6 @@ export default class Live extends Plugin {
 
 		this.notifier = null as any;
 		this.toast = null as any;
-
-		this.openModals.forEach((modal) => {
-			modal.close();
-		});
-		this.openModals.length = 0;
 
 		auditTeardown();
 		flushLogs();
