@@ -638,13 +638,13 @@ export default class Live extends Plugin {
 				const folder = fromFolder || toFolder;
 				if (fromFolder && toFolder) {
 					// between two shared folders
-					vaultLog("Rename", file, oldPath);
+					vaultLog("Rename", file.path, oldPath);
 					fromFolder.renameFile(file.path, oldPath);
 					toFolder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
-					vaultLog("Rename", file, oldPath);
+					vaultLog("Rename", file.path, oldPath);
 					folder.renameFile(file.path, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
