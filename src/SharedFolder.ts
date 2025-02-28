@@ -390,12 +390,14 @@ export class SharedFolder extends HasProvider {
 			this._dbsize = this._persistence._dbsize;
 			return this._dbsize;
 		}
+		console.time(`${this.path} count`);
 		const [updatesStore] = idb.transact(
 			this._persistence.db,
 			["updates"],
 			"readonly",
 		);
 		const cnt = await idb.count(updatesStore);
+		console.timeEnd(`${this.path} count`);
 		this._dbsize = cnt;
 		return this._dbsize;
 	}
@@ -894,14 +896,15 @@ export class SharedFolder extends HasProvider {
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 
-		if (doc.tfile?.stat.size === 0) {
-			// This might cause repeated download attempts for empty files?
-			this.backgroundSync.enqueueDownload(doc);
-		}
+		console.warn("createDoc file stat", doc.tfile?.stat);
 
-		if (this.pendingUpload.get(doc.path)) {
-			this.backgroundSync.enqueueSync(doc);
-		}
+		this.whenReady().then(() => {
+			if (doc.tfile?.stat.size === 0) {
+				this.backgroundSync.enqueueDownload(doc);
+			} else if (this.pendingUpload.get(doc.path)) {
+				this.backgroundSync.enqueueSync(doc);
+			}
+		});
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);

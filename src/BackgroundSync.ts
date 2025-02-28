@@ -258,12 +258,20 @@ export class BackgroundSync {
 		if (this.isPaused || this.isProcessingSync) return;
 		this.isProcessingSync = true;
 
+		// Filter for items with connected folders
+		const connectableItems = this.syncQueue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
 		while (
-			this.syncQueue.length > 0 &&
+			connectableItems.length > 0 &&
 			this.activeSync.size < this.concurrency
 		) {
-			const item = this.syncQueue.shift();
+			const item = connectableItems.shift();
 			if (!item) break;
+
+			// Remove this item from the main queue
+			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
 			item.status = "running";
 			this.activeSync.add(item);
@@ -381,12 +389,22 @@ export class BackgroundSync {
 		if (this.isPaused || this.isProcessingDownloads) return;
 		this.isProcessingDownloads = true;
 
+		// Filter for items with connected folders
+		const connectableItems = this.downloadQueue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
 		while (
-			this.downloadQueue.length > 0 &&
+			connectableItems.length > 0 &&
 			this.activeDownloads.size < this.concurrency
 		) {
-			const item = this.downloadQueue.shift();
+			const item = connectableItems.shift();
 			if (!item) break;
+
+			// Remove this item from the main queue
+			this.downloadQueue = this.downloadQueue.filter(
+				(i) => i.guid !== item.guid,
+			);
 
 			item.status = "running";
 			this.activeDownloads.add(item);
