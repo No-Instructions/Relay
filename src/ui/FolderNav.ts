@@ -566,6 +566,10 @@ class FileExplorerWalker {
 					this.fileExplorer,
 					child,
 				);
+				if (!fileItem) {
+					// Android bug?
+					return;
+				}
 				this.storage.forEach((store, visitor) => {
 					const stored = store.get(fileItem);
 					const update = visitor.visitFile(
