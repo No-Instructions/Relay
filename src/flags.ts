@@ -19,7 +19,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNewLinkFormat: false,
 	enableDeltaLogging: false,
 	enableHTTPSync: false,
-	enableSyncMenu: false,
+	enableSyncMenu: true,
 	enableDocumentServer: false,
 	enableDocumentHistory: false,
 	enableEditorTweens: false,
