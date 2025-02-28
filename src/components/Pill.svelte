@@ -10,7 +10,8 @@
 		"pending";
 
 	// Always show progress during any active state
-	$: showProgress = syncStatus !== "completed" || progress < 100;
+	$: showProgress =
+		(syncStatus !== "completed" || progress < 100) && progress > 0;
 </script>
 
 <div class="folder-icons">
