@@ -282,6 +282,7 @@ export class LiveView implements S3View {
 
 	attach(): Promise<LiveView> {
 		// can be called multiple times, whereas release is only ever called once
+		this.document.userLock = true;
 		this.setConnectionDot();
 
 		return new Promise((resolve) => {
@@ -297,7 +298,6 @@ export class LiveView implements S3View {
 						this.connect();
 					} else {
 						this.document.disconnect();
-						this.document.userLock = false;
 					}
 					resolve(this);
 				})
@@ -308,7 +308,6 @@ export class LiveView implements S3View {
 	}
 
 	connect() {
-		this.document.userLock = true;
 		this.document.connect();
 	}
 
@@ -323,6 +322,7 @@ export class LiveView implements S3View {
 			this.offConnectionStatusSubscription = undefined;
 		}
 		this.document.disconnect();
+		this.document.userLock = false;
 	}
 
 	destroy() {
