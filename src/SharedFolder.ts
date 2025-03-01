@@ -895,8 +895,9 @@ export class SharedFolder extends HasProvider {
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 
-		this.whenReady().then(() => {
-			if (doc.tfile?.stat.size === 0) {
+		this.whenReady().then(async () => {
+			const synced = await doc.getServerSynced();
+			if (doc.tfile?.stat.size === 0 && !synced) {
 				this.backgroundSync.enqueueDownload(doc);
 			} else if (this.pendingUpload.get(doc.path)) {
 				this.backgroundSync.enqueueSync(doc);

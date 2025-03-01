@@ -526,6 +526,7 @@ export class BackgroundSync {
 	 * @returns A promise that resolves when the sync completes
 	 */
 	async enqueueSync(item: Document): Promise<void> {
+		console.warn("enqueue", item.path);
 		// Skip if already in progress
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
@@ -606,6 +607,7 @@ export class BackgroundSync {
 	 * @returns A promise that resolves when the download completes
 	 */
 	enqueueDownload(item: Document): Promise<void> {
+		console.warn("enqueue", item.path);
 		// Skip if already in progress
 		if (this.inProgressDownloads.has(item.guid)) {
 			this.debug(
@@ -968,23 +970,38 @@ export class BackgroundSync {
 			Y.applyUpdate(newDoc, updateBytes);
 			const users = newDoc.getMap("users");
 			const contents = newDoc.getText("contents").toString();
-			if (users.size === 0 && contents === "") {
-				this.log(
-					"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
-					users.size,
-					retry,
-					wait,
-				);
-				// Hack for better compat with < 0.4.2.
-				if (retry > 0) {
-					this.timeProvider.setTimeout(() => {
-						this.getDocument(doc, retry - 1, wait * 2);
-					}, wait);
+
+			if (contents === "") {
+				if (users.size === 0) {
+					// Hack for better compat with < 0.4.2.
+					this.log(
+						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
+						users.size,
+						retry,
+						wait,
+					);
+					if (retry > 0) {
+						this.timeProvider.setTimeout(() => {
+							this.getDocument(doc, retry - 1, wait * 2);
+						}, wait);
+					}
+					return;
 				}
-				return;
+				if (currentFileContents === "") {
+					this.log("[getDocument] empty document");
+					return;
+				}
+
+				if (doc.text) {
+					this.log(
+						"[getDocument] local crdt has contents, but remote is empty",
+					);
+					this.enqueueSync(doc);
+					return;
+				}
 			}
 
-			this.log("[getDocument] got content from server");
+			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
 
 			if (hasContents && !contentsMatch) {
