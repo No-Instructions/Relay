@@ -128,3 +128,25 @@ export class SharedPromise<T> {
 		this.currentPromise = null;
 	}
 }
+
+export function withTimeoutWarning<T>(
+	promise: Promise<T>,
+	...logArgs: any[]
+): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const timeoutId = window.setTimeout(() => {
+			curryLog("[Promise]", "error")("Promise stuck after 3s:", ...logArgs);
+		}, 3000);
+
+		promise.then(
+			(result) => {
+				clearTimeout(timeoutId);
+				resolve(result);
+			},
+			(error) => {
+				clearTimeout(timeoutId);
+				reject(error);
+			},
+		);
+	});
+}

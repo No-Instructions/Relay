@@ -674,9 +674,18 @@ export default class Live extends Plugin {
 				}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
-					folder.whenReady().then((folder) => {
-						folder.getFile(file.path);
-					});
+					const vpath = folder.getVirtualPath(file.path);
+					if (!folder.checkExtension(vpath)) {
+						return;
+					}
+					const newDocs = folder.placeHold([vpath]);
+					if (newDocs.length > 0) {
+						folder.uploadDoc(vpath);
+					} else {
+						folder.whenReady().then((folder) => {
+							folder.getFile(file.path);
+						});
+					}
 				}
 			}),
 		);
@@ -819,6 +828,7 @@ export default class Live extends Plugin {
 				},
 			});
 			this.register(patchFileToLinktext);
+			this.backgroundSync.start();
 		});
 
 		interface Parameters {

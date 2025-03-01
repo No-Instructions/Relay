@@ -135,7 +135,7 @@ export class BackgroundSync {
 	private downloadQueue: QueueItem[] = [];
 	private isProcessingSync = false;
 	private isProcessingDownloads = false;
-	private isPaused = false;
+	private isPaused = true;
 	private inProgressSyncs = new Set<string>();
 	private inProgressDownloads = new Set<string>();
 	private syncCompletionCallbacks = new Map<
@@ -167,9 +167,13 @@ export class BackgroundSync {
 		private loginManager: LoginManager,
 		private timeProvider: TimeProvider,
 		private sharedFolders: SharedFolders,
-		private concurrency: number = 1,
+		private concurrency: number = 3,
 	) {
 		RelayInstances.set(this, "BackgroundSync");
+		this.timeProvider.setInterval(() => {
+			this.processSyncQueue();
+			this.processDownloadQueue();
+		}, 1000);
 	}
 
 	/**
@@ -258,12 +262,20 @@ export class BackgroundSync {
 		if (this.isPaused || this.isProcessingSync) return;
 		this.isProcessingSync = true;
 
+		// Filter for items with connected folders
+		const connectableItems = this.syncQueue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
 		while (
-			this.syncQueue.length > 0 &&
+			connectableItems.length > 0 &&
 			this.activeSync.size < this.concurrency
 		) {
-			const item = this.syncQueue.shift();
+			const item = connectableItems.shift();
 			if (!item) break;
+
+			// Remove this item from the main queue
+			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
 			item.status = "running";
 			this.activeSync.add(item);
@@ -372,8 +384,14 @@ export class BackgroundSync {
 		}
 
 		this.isProcessingSync = false;
-		if (this.syncQueue.length > 0) {
-			this.processSyncQueue();
+		// Only continue if there are items AND at least one is processable
+		if (this.syncQueue.length > 0 && !this.isPaused) {
+			const hasConnectedItems = this.syncQueue.some(
+				(item) => item.sharedFolder.connected,
+			);
+			if (hasConnectedItems) {
+				this.processSyncQueue();
+			}
 		}
 	}
 
@@ -381,12 +399,22 @@ export class BackgroundSync {
 		if (this.isPaused || this.isProcessingDownloads) return;
 		this.isProcessingDownloads = true;
 
+		// Filter for items with connected folders
+		const connectableItems = this.downloadQueue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
 		while (
-			this.downloadQueue.length > 0 &&
+			connectableItems.length > 0 &&
 			this.activeDownloads.size < this.concurrency
 		) {
-			const item = this.downloadQueue.shift();
+			const item = connectableItems.shift();
 			if (!item) break;
+
+			// Remove this item from the main queue
+			this.downloadQueue = this.downloadQueue.filter(
+				(i) => i.guid !== item.guid,
+			);
 
 			item.status = "running";
 			this.activeDownloads.add(item);
@@ -481,8 +509,14 @@ export class BackgroundSync {
 		}
 
 		this.isProcessingDownloads = false;
-		if (this.downloadQueue.length > 0) {
-			this.processDownloadQueue();
+		// Only continue if there are items AND at least one is processable
+		if (this.downloadQueue.length > 0 && !this.isPaused) {
+			const hasConnectedItems = this.downloadQueue.some(
+				(item) => item.sharedFolder.connected,
+			);
+			if (hasConnectedItems) {
+				this.processDownloadQueue();
+			}
 		}
 	}
 
@@ -510,6 +544,7 @@ export class BackgroundSync {
 					existingCallback.reject = reject;
 				});
 			}
+			this.processSyncQueue();
 			return Promise.resolve();
 		}
 
@@ -585,11 +620,13 @@ export class BackgroundSync {
 			// Return existing promise if already processing
 			const existingCallback = this.downloadCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
+				this.processDownloadQueue();
 				return new Promise<void>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
 				});
 			}
+			this.processDownloadQueue();
 			return Promise.resolve();
 		}
 
@@ -729,6 +766,7 @@ export class BackgroundSync {
 			// Return existing promise if already processing
 			const existingCallback = this.syncCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
+				this.processSyncQueue();
 				return new Promise<void>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
@@ -846,7 +884,7 @@ export class BackgroundSync {
 		// Only proceed with update if file matches current ydoc state
 		const contentsMatch = currentText === currentFileContents;
 
-		if (!contentsMatch) {
+		if (!contentsMatch && currentFileContents) {
 			this.log(
 				"file is not tracking local disk. resolve merge conflicts before syncing.",
 			);
@@ -938,23 +976,33 @@ export class BackgroundSync {
 			Y.applyUpdate(newDoc, updateBytes);
 			const users = newDoc.getMap("users");
 			const contents = newDoc.getText("contents").toString();
-			if (users.size === 0 && contents === "") {
-				this.log(
-					"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
-					users.size,
-					retry,
-					wait,
-				);
-				// Hack for better compat with < 0.4.2.
-				if (retry > 0) {
-					this.timeProvider.setTimeout(() => {
-						this.getDocument(doc, retry - 1, wait * 2);
-					}, wait);
+
+			if (contents === "") {
+				if (users.size === 0) {
+					// Hack for better compat with < 0.4.2.
+					this.log(
+						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
+						users.size,
+						retry,
+						wait,
+					);
+					if (retry > 0) {
+						this.timeProvider.setTimeout(() => {
+							this.getDocument(doc, retry - 1, wait * 2);
+						}, wait);
+					}
+					return;
 				}
-				return;
+				if (doc.text) {
+					this.log(
+						"[getDocument] local crdt has contents, but remote is empty",
+					);
+					this.enqueueSync(doc);
+					return;
+				}
 			}
 
-			this.log("[getDocument] got content from server");
+			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
 
 			if (hasContents && !contentsMatch) {
@@ -1277,6 +1325,7 @@ export class BackgroundSync {
 		this.processSyncQueue();
 		this.processDownloadQueue();
 	}
+	start = this.resume;
 
 	/**
 	 * Gets the current status of sync and download queues

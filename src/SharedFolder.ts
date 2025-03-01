@@ -19,7 +19,7 @@ import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import { SharedPromise, Dependency } from "./promiseUtils";
+import { SharedPromise, Dependency, withTimeoutWarning } from "./promiseUtils";
 import { S3Folder, S3RN, S3RemoteFolder } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
@@ -321,6 +321,8 @@ export class SharedFolder extends HasProvider {
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
+				// XXX group queue by folder
+				this.backgroundSync.resume();
 				return super.connect();
 			}
 		}
@@ -645,7 +647,11 @@ export class SharedFolder extends HasProvider {
 				const remotePaths = ops.map((op) => op.path);
 
 				// Ensure these complete before checking for deletions
-				await Promise.all([...creates, ...renames].map((op) => op.promise));
+				await Promise.all(
+					[...creates, ...renames].map((op) =>
+						withTimeoutWarning<Document | void>(op.promise, op),
+					),
+				);
 
 				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
 
@@ -743,7 +749,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private getDoc(vpath: string, update = true): Document {
-		const id = this.ids.get(vpath);
+		const id = this.ids.get(vpath) || this.pendingUpload.get(vpath);
 		if (id !== undefined) {
 			const doc = this.docs.get(id);
 			if (doc !== undefined) {
@@ -757,8 +763,12 @@ export class SharedFolder extends HasProvider {
 		} else {
 			// the File exists, but the ID doesn't
 			this.warn("[getDoc]: creating new shared ID for existing file");
-			this.placeHold([vpath]);
-			return this.createDoc(vpath, update);
+			const newDocs = this.placeHold([vpath]);
+			if (newDocs.length > 0) {
+				return this.uploadDoc(vpath);
+			} else {
+				return this.createDoc(vpath, update);
+			}
 		}
 	}
 
@@ -806,7 +816,10 @@ export class SharedFolder extends HasProvider {
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 		doc.markOrigin("remote");
 
-		await this.backgroundSync.enqueueDownload(doc);
+		await withTimeoutWarning(
+			this.backgroundSync.enqueueDownload(doc),
+			doc.path,
+		);
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
@@ -894,14 +907,16 @@ export class SharedFolder extends HasProvider {
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 
-		if (doc.tfile?.stat.size === 0) {
-			// This might cause repeated download attempts for empty files?
-			this.backgroundSync.enqueueDownload(doc);
-		}
-
-		if (this.pendingUpload.get(doc.path)) {
-			this.backgroundSync.enqueueSync(doc);
-		}
+		(async () => {
+			this.whenReady().then(async () => {
+				const synced = await doc.getServerSynced();
+				if (doc.tfile?.stat.size === 0 && !synced) {
+					this.backgroundSync.enqueueDownload(doc);
+				} else if (this.pendingUpload.get(doc.path)) {
+					this.backgroundSync.enqueueSync(doc);
+				}
+			});
+		})();
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
@@ -915,7 +930,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	deleteDoc(vPath: string) {
-		const guid = this.ids.get(vPath);
+		const guid = this.ids.get(vPath) || this.pendingUpload.get(vPath);
 		if (guid) {
 			this.ydoc.transact(() => {
 				this.ids.delete(vPath);
@@ -956,7 +971,7 @@ export class SharedFolder extends HasProvider {
 			this.uploadDoc(newVPath);
 		} else {
 			// live doc exists
-			const guid = this.ids.get(oldVPath);
+			const guid = this.ids.get(oldVPath) || this.pendingUpload.get(oldVPath);
 			if (!guid) return;
 			const doc = this.docs.get(guid);
 			if (!newVPath) {
@@ -972,7 +987,7 @@ export class SharedFolder extends HasProvider {
 				this.docs.delete(guid);
 			} else {
 				// moving within shared folder.. move the live doc.
-				const guid = this.ids.get(oldVPath);
+				const guid = this.ids.get(oldVPath) || this.pendingUpload.get(oldVPath);
 				if (!guid) {
 					return;
 				}
@@ -980,14 +995,17 @@ export class SharedFolder extends HasProvider {
 				if (upload) {
 					this.pendingUpload.set(newVPath, upload);
 					this.pendingUpload.delete(oldVPath);
+				} else {
+					this.ydoc.transact(() => {
+						if (this.ids.has(oldVPath)) {
+							this.ids.set(newVPath, guid);
+							this.ids.delete(oldVPath);
+						}
+					}, this);
 				}
-				this.ydoc.transact(() => {
-					this.ids.set(newVPath, guid);
-					this.ids.delete(oldVPath);
-					if (doc) {
-						doc.move(newVPath);
-					}
-				}, this);
+				if (doc) {
+					doc.move(newVPath);
+				}
 			}
 		}
 	}
