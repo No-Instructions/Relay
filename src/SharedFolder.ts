@@ -214,6 +214,7 @@ export class SharedFolder extends HasProvider {
 			if (!this.destroyed) {
 				this.addLocalDocs();
 				await this.syncFileTree(this.ydoc);
+				this.backgroundSync.resume();
 			}
 		});
 
@@ -894,14 +895,14 @@ export class SharedFolder extends HasProvider {
 		const doc =
 			this.docs.get(guid) || new Document(vpath, guid, this.loginManager, this);
 
-		if (doc.tfile?.stat.size === 0) {
-			// This might cause repeated download attempts for empty files?
-			this.backgroundSync.enqueueDownload(doc);
-		}
-
-		if (this.pendingUpload.get(doc.path)) {
-			this.backgroundSync.enqueueSync(doc);
-		}
+		this.whenReady().then(async () => {
+			const synced = await doc.getServerSynced();
+			if (doc.tfile?.stat.size === 0 && !synced) {
+				this.backgroundSync.enqueueDownload(doc);
+			} else if (this.pendingUpload.get(doc.path)) {
+				this.backgroundSync.enqueueSync(doc);
+			}
+		});
 
 		this.docs.set(guid, doc);
 		this.docset.add(doc, update);
