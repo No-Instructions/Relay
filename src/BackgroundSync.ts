@@ -135,7 +135,7 @@ export class BackgroundSync {
 	private downloadQueue: QueueItem[] = [];
 	private isProcessingSync = false;
 	private isProcessingDownloads = false;
-	private isPaused = false;
+	private isPaused = true;
 	private inProgressSyncs = new Set<string>();
 	private inProgressDownloads = new Set<string>();
 	private syncCompletionCallbacks = new Map<
@@ -258,12 +258,20 @@ export class BackgroundSync {
 		if (this.isPaused || this.isProcessingSync) return;
 		this.isProcessingSync = true;
 
+		// Filter for items with connected folders
+		const connectableItems = this.syncQueue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
 		while (
-			this.syncQueue.length > 0 &&
+			connectableItems.length > 0 &&
 			this.activeSync.size < this.concurrency
 		) {
-			const item = this.syncQueue.shift();
+			const item = connectableItems.shift();
 			if (!item) break;
+
+			// Remove this item from the main queue
+			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
 			item.status = "running";
 			this.activeSync.add(item);
@@ -372,8 +380,14 @@ export class BackgroundSync {
 		}
 
 		this.isProcessingSync = false;
-		if (this.syncQueue.length > 0) {
-			this.processSyncQueue();
+		// Only continue if there are items AND at least one is processable
+		if (this.syncQueue.length > 0 && !this.isPaused) {
+			const hasConnectedItems = this.syncQueue.some(
+				(item) => item.sharedFolder.connected,
+			);
+			if (hasConnectedItems) {
+				this.processSyncQueue();
+			}
 		}
 	}
 
@@ -381,12 +395,22 @@ export class BackgroundSync {
 		if (this.isPaused || this.isProcessingDownloads) return;
 		this.isProcessingDownloads = true;
 
+		// Filter for items with connected folders
+		const connectableItems = this.downloadQueue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
 		while (
-			this.downloadQueue.length > 0 &&
+			connectableItems.length > 0 &&
 			this.activeDownloads.size < this.concurrency
 		) {
-			const item = this.downloadQueue.shift();
+			const item = connectableItems.shift();
 			if (!item) break;
+
+			// Remove this item from the main queue
+			this.downloadQueue = this.downloadQueue.filter(
+				(i) => i.guid !== item.guid,
+			);
 
 			item.status = "running";
 			this.activeDownloads.add(item);
@@ -481,8 +505,14 @@ export class BackgroundSync {
 		}
 
 		this.isProcessingDownloads = false;
-		if (this.downloadQueue.length > 0) {
-			this.processDownloadQueue();
+		// Only continue if there are items AND at least one is processable
+		if (this.downloadQueue.length > 0 && !this.isPaused) {
+			const hasConnectedItems = this.downloadQueue.some(
+				(item) => item.sharedFolder.connected,
+			);
+			if (hasConnectedItems) {
+				this.processDownloadQueue();
+			}
 		}
 	}
 
