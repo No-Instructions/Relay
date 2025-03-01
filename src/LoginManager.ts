@@ -55,6 +55,9 @@ export class LoginManager extends Observable<LoginManager> {
 		this.refreshToken();
 		timeProvider.setInterval(() => this.refreshToken(), 86400000);
 		this.openSettings = openSettings;
+		if (!this.pb.authStore.isValid) {
+			this.logout();
+		}
 		RelayInstances.set(this, "loginManager");
 	}
 
