@@ -102,6 +102,7 @@ export class Document extends HasProvider implements TFile {
 			this.unsubscribes.push(() => {
 				this.ytext?.unobserve(statsObserver);
 			});
+			this.updateStats();
 			try {
 				this._persistence.set("path", this.path);
 				this._persistence.set("relay", this.sharedFolder.relayId || "");
