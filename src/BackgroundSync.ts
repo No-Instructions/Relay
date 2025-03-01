@@ -837,7 +837,7 @@ export class BackgroundSync {
 			throw new Error("Unable to decode S3RN");
 		}
 
-		const clientToken = await item.getProviderToken(0);
+		const clientToken = await item.getProviderToken();
 		const headers = this.getAuthHeader(clientToken);
 		const baseUrl = this.getBaseUrl(clientToken, entity);
 		const url = `${baseUrl}/as-update`;
@@ -909,7 +909,7 @@ export class BackgroundSync {
 			throw new Error("Not logged in");
 		}
 
-		const clientToken = await item.getProviderToken(0);
+		const clientToken = await item.getProviderToken();
 		const headers = {
 			"Content-Type": "application/octet-stream",
 			...this.getAuthHeader(clientToken),

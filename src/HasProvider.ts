@@ -6,9 +6,7 @@ import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./y-sweet";
-import { promiseWithTimeout } from "./promiseUtils";
 import { S3RN, type S3RNType } from "./S3RN";
-import { Platform } from "obsidian";
 import { encodeClientToken } from "./y-sweet";
 import { flags } from "./flagManager";
 
@@ -170,7 +168,7 @@ export class HasProvider extends HasLogging {
 		this.listeners.delete(el);
 	}
 
-	async getProviderToken(timeout = 10000): Promise<ClientToken> {
+	async getProviderToken(): Promise<ClientToken> {
 		this.log("get provider token");
 
 		const tokenPromise = this.tokenStore.getToken(
@@ -178,15 +176,7 @@ export class HasProvider extends HasLogging {
 			this.path || "unknown",
 			this.refreshProvider.bind(this),
 		);
-		if (Platform.isIosApp || timeout === 0) {
-			return tokenPromise;
-		}
-		const timeoutPromise = promiseWithTimeout<ClientToken>(
-			"getProviderToken",
-			tokenPromise,
-			timeout,
-		);
-		return timeoutPromise;
+		return tokenPromise;
 	}
 
 	providerActive() {
