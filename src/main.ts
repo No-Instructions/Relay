@@ -689,6 +689,9 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					vaultLog("Modify", file.path);
+					if (flags().enableDesyncPill) {
+						this.folderNavDecorations.quickRefresh();
+					}
 					this.app.metadataCache.trigger("resolve", file);
 				}
 			}),
