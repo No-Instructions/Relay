@@ -75,7 +75,7 @@
 	});
 
 	const roles = $relayRoles.filter((role: RelayRole) => {
-		return role.relay?.id === relay.id;
+		return role.relayId === relay.id;
 	});
 
 	let nameValid = writable(true);
