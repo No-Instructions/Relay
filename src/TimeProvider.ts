@@ -45,6 +45,21 @@ export class DefaultTimeProvider implements TimeProvider {
 		}
 		this.intervals = [];
 	}
+
+	debounce<T extends (...args: any[]) => void>(
+		func: T,
+		delay: number = 500,
+	): (...args: Parameters<T>) => void {
+		let timer: ReturnType<typeof setTimeout>;
+		return (...args: Parameters<T>) => {
+			if (timer) {
+				clearTimeout(timer);
+			}
+			timer = setTimeout(() => {
+				func(...args);
+			}, delay);
+		};
+	}
 }
 
 export interface TimeProvider {
@@ -54,4 +69,8 @@ export interface TimeProvider {
 	setTimeout: (callback: () => void, ms: number) => number;
 	clearTimeout: (timerId: number) => void;
 	destroy: () => void;
+	debounce: <T extends (...args: any[]) => void>(
+		func: T,
+		delay: number,
+	) => (...args: Parameters<T>) => void;
 }

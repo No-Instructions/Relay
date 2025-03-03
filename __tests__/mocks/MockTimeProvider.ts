@@ -57,6 +57,23 @@ export class MockTimeProvider implements TimeProvider {
 		return <any>timerId;
 	}
 
+	debounce<T extends (...args: any[]) => void>(
+		func: T,
+		delay: number = 500,
+	): (...args: Parameters<T>) => void {
+		let timerId: number | undefined;
+
+		return (...args: Parameters<T>) => {
+			if (timerId !== undefined) {
+				this.clearTimeout(timerId);
+			}
+
+			timerId = this.setTimeout(() => {
+				func(...args);
+			}, delay);
+		};
+	}
+
 	destroy() {
 		this.timers.forEach((timer) => clearTimeout(timer.id));
 		this.timers = [];

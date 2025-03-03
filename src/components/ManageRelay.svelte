@@ -157,14 +157,11 @@
 
 	let updating = writable(false);
 
-	const updateRelay = debounce(
-		() => {
-			plugin.relayManager.updateRelay(relay);
+	const updateRelay = plugin.timeProvider.debounce(() => {
+		plugin.relayManager.updateRelay(relay).then(() => {
 			updating.set(false);
-		},
-		500,
-		true,
-	);
+		});
+	}, 500);
 
 	const showAddToVaultModal = (remoteFolder: RemoteSharedFolder) => {
 		new AddToVaultModal(
