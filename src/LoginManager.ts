@@ -58,6 +58,16 @@ export class LoginManager extends Observable<LoginManager> {
 		if (!this.pb.authStore.isValid) {
 			this.logout();
 		}
+		if (this.pb.authStore.model?.id) {
+			this.pb
+				.collection("users")
+				.getOne(this.pb.authStore.model.id)
+				.catch((response) => {
+					if (response.status === 404) {
+						this.logout();
+					}
+				});
+		}
 		RelayInstances.set(this, "loginManager");
 	}
 
