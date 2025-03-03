@@ -1335,8 +1335,8 @@ export class RelayManager extends HasLogging {
 	}
 
 	async destroyRelay(relay: Relay): Promise<boolean> {
-		await this.pb?.collection("relays").delete(relay.id);
 		this.store?.cascade("relays", relay.id);
+		await this.pb?.collection("relays").delete(relay.id);
 		return true;
 	}
 
