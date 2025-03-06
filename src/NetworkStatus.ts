@@ -2,9 +2,20 @@ import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
 
-type Callback = (status?: string) => void;
-
 declare const GIT_TAG: string;
+
+interface ServiceStatus {
+	status: string;
+	versions?: {
+		stable: string;
+		beta: string;
+	};
+	backgroundColor?: string;
+	color?: string;
+	link?: string;
+}
+
+type Callback = (status?: ServiceStatus) => void;
 
 class NetworkStatus {
 	private url: string;
@@ -14,7 +25,7 @@ class NetworkStatus {
 	private onOffline: Callback[] = [];
 	private timer?: number;
 	private _log: (message: string, ...args: unknown[]) => void;
-	status?: string;
+	status?: ServiceStatus;
 	online = true;
 
 	constructor(
@@ -71,7 +82,7 @@ class NetworkStatus {
 			.then((response) => {
 				if (response.status === 200) {
 					if (response.json && response.json.status) {
-						this.status = response.json.status;
+						this.status = response.json;
 					}
 					if (!this.online) {
 						this.log("back online");

@@ -7,6 +7,7 @@
 	import type Live from "src/main";
 	import type { SharedFolder } from "src/SharedFolder";
 	import ManageSharedFolder from "./ManageSharedFolder.svelte";
+	import { minimark } from "src/minimark";
 
 	interface RelayEventDetail {
 		relay: Relay;
@@ -204,14 +205,52 @@
 			}
 		}, 0);
 	}
+
+	function install() {
+		if (plugin.networkStatus.status?.versions) {
+			if (plugin.releaseSettings.get().channel === "stable") {
+				plugin.installVersion(plugin.networkStatus.status.versions.stable);
+			} else if (plugin.releaseSettings.get().channel === "beta") {
+				plugin.installVersion(plugin.networkStatus.status.versions.beta);
+			}
+		}
+	}
 </script>
 
 {#if currentRelay || sharedFolder}
 	<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
 {:else if plugin.networkStatus.status}
-	<div class="modal-setting-nav-bar system3-announcement-banner">
-		<span class="system3-announcement">
-			{plugin.networkStatus.status}
+	<div
+		class="modal-setting-nav-bar system3-announcement-banner"
+		on:click={() => {
+			if (plugin.networkStatus.status?.versions) {
+				install();
+			} else if (plugin.networkStatus.status?.link) {
+				window.open(plugin.networkStatus.status.link);
+			}
+		}}
+		role="button"
+		tabindex="0"
+		on:keypress={() => {
+			if (plugin.networkStatus.status?.versions) {
+				install();
+			} else if (plugin.networkStatus.status?.link) {
+				window.open(plugin.networkStatus.status.link);
+			}
+		}}
+		style="background-color: {plugin.networkStatus.status.backgroundColor
+			? plugin.networkStatus.status.backgroundColor
+			: 'var(--color-accent)'} !important"
+	>
+		<span
+			class="system3-announcement"
+			style="color: {plugin.networkStatus.status.color
+				? plugin.networkStatus.status.color
+				: 'var(--text-on-accent)'} !important"
+		>
+			{#if plugin.networkStatus.status}
+				{@html minimark(plugin.networkStatus.status.status)}
+			{/if}
 		</span>
 	</div>
 {/if}
@@ -276,7 +315,6 @@
 	}
 	.system3-announcement-banner {
 		padding-left: 48px !important;
-		background-color: var(--color-red) !important;
 	}
 	.system3-announcement {
 		color: var(--text-on-accent);

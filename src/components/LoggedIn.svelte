@@ -33,11 +33,6 @@
 	let provider: AuthProviderInfo | undefined;
 	let authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 	let error = writable<string>("");
-	let debugLogs = writable<boolean>(plugin.settings.debugging);
-
-	function toggleDebug() {
-		debugLogs.set(plugin.toggleDebugging(true));
-	}
 
 	async function logout() {
 		plugin.loginManager.logout();
@@ -58,39 +53,9 @@
 		}
 	}
 
-	function getResponse() {
-		try {
-			return Response.toString();
-		} catch (e) {
-			return "undefined";
-		}
-	}
-
-	function getFetch() {
-		try {
-			return fetch.toString();
-		} catch (e) {
-			return "undefined";
-		}
-	}
-
-	function getUsingBlink() {
-		try {
-			return (globalThis as any)?.blinkfetch !== undefined ? "Yes" : "No";
-		} catch (e) {
-			return "No";
-		}
-	}
-
-	const responseImpl = writable<string>(getResponse());
-	const fetchImpl = writable<string>(getFetch());
-	const usingBlink = writable<string>(getUsingBlink());
 	const anyPb = writable<any>(plugin.loginManager.pb as any);
 
 	function refresh() {
-		responseImpl.set(getResponse());
-		fetchImpl.set(getFetch());
-		usingBlink.set(getUsingBlink());
 		anyPb.set(plugin.loginManager.pb as any);
 	}
 
@@ -107,8 +72,9 @@
 				})
 				.catch((e) => {
 					let message = e.message;
-					message = message + "\n" + getResponse();
+					message = message;
 					error.set(message);
+					success.set(false);
 					throw e;
 				});
 		} catch (e: any) {
@@ -202,6 +168,18 @@
 					>
 				{/if}
 			</p>
+			<p class="not-working">
+				Not working?
+				<button
+					class="link link-button"
+					on:click={() => {
+						pending.set(false);
+						automaticFlow.set(false);
+						error.set("");
+						initiate();
+					}}>(try again)</button
+				>
+			</p>
 		{:else if $pending}
 			<div>
 				<p class="continue">Continue in your browser...</p>
@@ -286,8 +264,9 @@
 		color: var(--text-color);
 		font-size: 14px;
 		font-weight: 500;
-		font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen,
-			Ubuntu, Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+		font-family:
+			-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+			Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
 		background-image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGcgZmlsbD0ibm9uZSIgZmlsbC1ydWxlPSJldmVub2RkIj48cGF0aCBkPSJNMTcuNiA5LjJsLS4xLTEuOEg5djMuNGg0LjhDMTMuNiAxMiAxMyAxMyAxMiAxMy42djIuMmgzYTguOCA4LjggMCAwIDAgMi42LTYuNnoiIGZpbGw9IiM0Mjg1RjQiIGZpbGwtcnVsZT0ibm9uemVybyIvPjxwYXRoIGQ9Ik05IDE4YzIuNCAwIDQuNS0uOCA2LTIuMmwtMy0yLjJhNS40IDUuNCAwIDAgMS04LTIuOUgxVjEzYTkgOSAwIDAgMCA4IDV6IiBmaWxsPSIjMzRBODUzIiBmaWxsLXJ1bGU9Im5vbnplcm8iLz48cGF0aCBkPSJNNCAxMC43YTUuNCA1LjQgMCAwIDEgMC0zLjRWNUgxYTkgOSAwIDAgMCAwIDhsMy0yLjN6IiBmaWxsPSIjRkJCQzA1IiBmaWxsLXJ1bGU9Im5vbnplcm8iLz48cGF0aCBkPSJNOSAzLjZjMS4zIDAgMi41LjQgMy40IDEuM0wxNSAyLjNBOSA5IDAgMCAwIDEgNWwzIDIuNGE1LjQgNS40IDAgMCAxIDUtMy43eiIgZmlsbD0iI0VBNDMzNSIgZmlsbC1ydWxlPSJub256ZXJvIi8+PHBhdGggZD0iTTAgMGgxOHYxOEgweiIvPjwvZz48L3N2Zz4=);
 		background-color: var(--background-secondary);
 		background-repeat: no-repeat;

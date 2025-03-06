@@ -2,7 +2,12 @@ import { Plugin } from "obsidian";
 import type { TimeProvider } from "./TimeProvider";
 import { Observable } from "./observable/Observable";
 import { customFetch } from "./customFetch";
+import { LocalStorage } from "./LocalStorage";
+import type { NamespacedSettings } from "./SettingsStorage";
 
+declare const REPOSITORY: string;
+
+// Private Obsidian API
 export type WithPlugins = {
 	plugins: {
 		disablePlugin(id: string): Promise<void>;
@@ -14,299 +19,289 @@ export type WithPlugins = {
 		): Promise<void>;
 	};
 };
-export type PluginWithApp = Plugin & { app: WithPlugins };
+export type PluginWithApp = Plugin & { app: WithPlugins; version: string };
 
-export interface UpdateInfo {
-	currentVersion: string;
-	newVersion: string;
-	repository: string;
-	manifest: any;
+interface Asset {
+	name: string;
+	browser_download_url: string;
 }
 
-/**
- * Manages plugin update checking and installation
- */
-export class UpdateManager extends Observable<UpdateInfo | null> {
+export interface Release {
+	tag_name: string;
+	assets: Asset[];
+	prerelease: boolean;
+	draft: boolean;
+	body: string;
+	created_at: string;
+	latest?: boolean;
+}
+
+export interface Manifest {
+	version: string;
+	name: string;
+	author: string;
+	description: string;
+	isDesktopOnly: boolean;
+	minAppVersion: string;
+}
+
+export interface ReleaseSettings {
+	channel: "stable" | "beta";
+	automaticUpdates: boolean;
+}
+
+function normalizeVersion(tag: string) {
+	if (tag.startsWith("v")) {
+		return tag.slice(1);
+	}
+	return tag;
+}
+
+function zip<T, U>(arr1: T[], arr2: U[]): [T, U][] {
+	return arr1.map((item, index) => [item, arr2[index]]);
+}
+
+function updateAvailable(versionTag: string, pluginTag: string): boolean {
+	try {
+		const updateVersion = normalizeVersion(versionTag).split(".").map(parseInt);
+		const pluginVersion = normalizeVersion(pluginTag).split(".").map(parseInt);
+		for (const [update, plugin] of zip(updateVersion, pluginVersion)) {
+			if (update > plugin) {
+				return true;
+			}
+		}
+	} catch (e) {
+		// pass
+	}
+	return false;
+}
+
+export class UpdateManager extends Observable<UpdateManager> {
 	private updateCheckInterval: number | null = null;
-	private releaseCheckInterval: number | null = null;
-	private updateInfo: UpdateInfo | null = null;
-	private githubReleases: any[] = [];
+	private githubReleases: LocalStorage<Release>;
+	private releaseChannels: LocalStorage<Release>;
 	private lastReleaseCheck: number = 0;
-	private readonly CHECK_INTERVAL = 1000 * 60 * 60 * 24; // Check once a day
-	private readonly RELEASES_CHECK_INTERVAL = 1000 * 60 * 60; // Check GitHub releases every hour
+	private lastChannelCheck: number = 0;
+	private readonly CHECK_INTERVAL = 1000 * 60 * 60 * 24;
 
 	constructor(
 		private plugin: PluginWithApp,
 		private timeProvider: TimeProvider,
+		private releaseSettings: NamespacedSettings<ReleaseSettings>,
 	) {
 		super("UpdateManager");
-		// Observable base class already implements HasLogging and initializes _listeners
+		this.githubReleases = new LocalStorage("system3-relay/releases");
+		this.releaseChannels = new LocalStorage("system3-relay/releaseChannels");
 	}
 
-	/**
-	 * Start periodic update checking and releases fetching
-	 */
-	public start(): void {
-		// Start checking for updates
-		this.checkForUpdates();
-		this.updateCheckInterval = this.timeProvider.setInterval(
-			() => this.checkForUpdates(),
-			this.CHECK_INTERVAL,
-		);
-
-		// Also fetch GitHub releases initially and start periodic checks
-		this.checkGitHubReleases();
-		this.releaseCheckInterval = this.timeProvider.setInterval(
-			() => this.checkGitHubReleases(),
-			this.RELEASES_CHECK_INTERVAL,
+	public get releases(): Release[] {
+		return [...this.githubReleases.values()].sort((a, b) =>
+			b.tag_name.localeCompare(a.tag_name, undefined, {
+				numeric: true,
+				sensitivity: "base",
+			}),
 		);
 	}
 
-	/**
-	 * Stop periodic update checking and releases fetching
-	 */
-	public stop(): void {
-		if (this.updateCheckInterval !== null) {
-			this.timeProvider.clearInterval(this.updateCheckInterval);
-			this.updateCheckInterval = null;
-		}
-
-		if (this.releaseCheckInterval !== null) {
-			this.timeProvider.clearInterval(this.releaseCheckInterval);
-			this.releaseCheckInterval = null;
-		}
+	public get beta(): Release | undefined {
+		return this.releaseChannels.get("beta");
 	}
 
-	/**
-	 * Check for available updates
-	 */
-	public async checkForUpdates(): Promise<boolean> {
+	public get stable(): Release | undefined {
+		return this.releaseChannels.get("stable");
+	}
+
+	private async fetchReleases(): Promise<Release[]> {
+		const apiUrl = `https://api.github.com/repos/${REPOSITORY}/releases`;
+
+		const response = await customFetch(apiUrl, {
+			headers: {
+				Accept: "application/vnd.github.v3+json",
+				"User-Agent": "Relay-Obsidian-Plugin",
+			},
+		});
+
+		if (!response.ok) {
+			throw new Error(`GitHub API error: ${response.status}`);
+		}
+
+		const releases = await response.json();
+		this.debug("GitHub releases fetched:", releases);
+
+		return releases;
+	}
+
+	private async fetchLatestRelease(): Promise<Release | null> {
 		try {
-			// First fetch all releases
-			await this.checkGitHubReleases();
-			if (this.githubReleases.length === 0) {
-				this.debug("No releases found");
-				return false;
+			const repoOwner = "No-Instructions";
+			const repoName = "Relay";
+			const latestUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/releases/latest`;
+
+			this.debug(`Fetching latest release from: ${latestUrl}`);
+			const response = await customFetch(latestUrl, {
+				headers: {
+					"User-Agent": "Relay-Obsidian-Plugin",
+				},
+			});
+			if (!response.ok) {
+				throw new Error(`GitHub API error: ${response.status}`);
 			}
+			const latestRelease = await response.json();
+			return latestRelease;
+		} catch (error) {
+			this.error(`Failed to fetch latest release:`, error);
+			return null;
+		}
+	}
 
-			const currentVersion = this.plugin.manifest.version;
-			let newUpdateInfo: UpdateInfo | null = null;
+	public async fetchLatestTagFromChannel(
+		channel: "beta" | "stable",
+	): Promise<string | null> {
+		try {
+			const manifestPath = {
+				beta: "manifest-beta.json",
+				stable: "manifest.json",
+			}[channel];
 
-			// Go through releases from newest to oldest
-			for (const release of this.githubReleases) {
-				// Try to fetch both stable and beta manifests from release assets
-				const stableManifest = await this.fetchReleaseManifest(release, false);
-				const betaManifest = await this.fetchReleaseManifest(release, true);
-
-				// Check stable manifest first
-				if (stableManifest && stableManifest.version !== currentVersion) {
-					newUpdateInfo = {
-						currentVersion: currentVersion,
-						newVersion: stableManifest.version,
-						repository: "No-Instructions/Relay",
-						manifest: stableManifest,
-					};
-					this.debug("Found stable update:", newUpdateInfo);
-					break;
-				}
-				// Then check beta manifest
-				else if (betaManifest && betaManifest.version !== currentVersion) {
-					newUpdateInfo = {
-						currentVersion: currentVersion,
-						newVersion: betaManifest.version,
-						repository: "No-Instructions/Relay",
-						manifest: betaManifest,
-					};
-					this.debug("Found beta update:", newUpdateInfo);
-					break;
-				}
+			const manifest = manifestPath
+				? await this.fetchRepoManifest(manifestPath)
+				: null;
+			if (!manifest) {
+				return null;
 			}
-
-			// Check if update state changed
-			const hasChanged =
-				(this.updateInfo === null && newUpdateInfo !== null) ||
-				(this.updateInfo !== null && newUpdateInfo === null) ||
-				(this.updateInfo !== null &&
-					newUpdateInfo !== null &&
-					this.updateInfo.newVersion !== newUpdateInfo.newVersion);
-
-			// Update state
-			this.updateInfo = newUpdateInfo;
-
-			// Notify only if state changed
-			if (hasChanged) {
-				this.debug("Update state changed, notifying listeners");
-				this.notifyListeners();
-			}
-
-			return newUpdateInfo !== null;
+			console.warn("repo manifest", manifest);
+			return manifest.version;
 		} catch (error) {
 			this.error("Failed to check for updates:", error);
-			return false;
 		}
+		return null;
 	}
 
-	/**
-	 * Get current update info if available
-	 */
-	public getUpdateInfo(): UpdateInfo | null {
-		return this.updateInfo;
-	}
-
-	/**
-	 * Check if an update is available
-	 */
-	public isUpdateAvailable(): boolean {
-		return this.updateInfo !== null;
-	}
-
-	/**
-	 * Install the available update
-	 */
-	public async installUpdate(): Promise<boolean> {
-		if (!this.updateInfo) {
-			this.debug("No updates available");
-			return false;
-		}
-
-		// Validate update info has all required properties
-		const { currentVersion, newVersion, repository, manifest } =
-			this.updateInfo;
-		if (!newVersion || !repository || !manifest) {
-			this.error("Update information is incomplete", this.updateInfo);
-			this.updateInfo = null; // Reset invalid state
-			this.notifyListeners();
-			return false;
-		}
-
-		try {
-			this.debug(
-				`Installing update from v${currentVersion} to v${newVersion}...`,
-			);
-
-			this.debug("Installing plugin with parameters:", {
-				repository,
-				newVersion,
-				manifest,
-			});
-
-			await this.plugin.app.plugins.installPlugin(
-				repository,
-				newVersion,
-				manifest,
-			);
-
-			this.updateInfo = null;
-			this.notifyListeners();
-
-			this.debug("Update complete. Reloading plugin...");
-
-			// Reload the plugin - use the correct plugin ID
-			const pluginId = "system3-relay";
-			const plugins = this.plugin.app.plugins;
-			await plugins.disablePlugin(pluginId);
-			await plugins.enablePlugin(pluginId);
-
-			return true;
-		} catch (error) {
-			this.error("Failed to install update:", error);
-			return false;
-		}
-	}
-
-	/**
-	 * Check for GitHub releases and cache them
-	 * This is called periodically and caches the results
-	 */
-	public async checkGitHubReleases(): Promise<boolean> {
+	public async getReleases(): Promise<Release[]> {
 		try {
 			// Only fetch if we haven't fetched in a while to avoid rate limiting
 			const now = Date.now();
 			if (
 				now - this.lastReleaseCheck < 5 * 60 * 1000 &&
-				this.githubReleases.length > 0
+				this.githubReleases.size > 0
 			) {
 				// If we've checked in the last 5 minutes and have data, just return the cached data
-				return true;
+				return [...this.githubReleases.values()];
 			}
 
 			// Update the last check timestamp
 			this.lastReleaseCheck = now;
 
-			// GitHub API endpoint for releases
-			const repoOwner = "No-Instructions";
-			const repoName = "Relay";
-			const apiUrl = `https://api.github.com/repos/${repoOwner}/${repoName}/releases`;
-
-			// Use customFetch for fetching
-			const response = await customFetch(apiUrl, {
-				headers: {
-					Accept: "application/vnd.github.v3+json",
-					"User-Agent": "Relay-Obsidian-Plugin",
-				},
+			const releases = await this.fetchReleases();
+			releases.forEach((release: Release) => {
+				this.githubReleases.set(release.tag_name, release);
 			});
 
-			if (!response.ok) {
-				throw new Error(`GitHub API error: ${response.status}`);
+			const latest = await this.fetchLatestRelease();
+			if (latest) {
+				latest.latest = true;
+				this.githubReleases.set(latest.tag_name, latest);
 			}
-
-			const releases = await response.json();
-			this.debug("GitHub releases fetched:", releases);
-
-			// Update our cached releases
-			this.githubReleases = releases;
 
 			// Notify subscribers that we have new releases data
 			this.notifyListeners();
-
-			return true;
 		} catch (error) {
 			this.error("Failed to fetch GitHub releases:", error);
-			return false;
+		}
+		return [...this.githubReleases.values()];
+	}
+
+	private async getChannelRelease(): Promise<Release | null> {
+		const now = Date.now();
+		const channelRelease = this.releaseChannels.get(
+			this.releaseSettings.get().channel,
+		);
+		if (now - this.lastChannelCheck < 5 * 60 * 1000 && channelRelease) {
+			return channelRelease;
+		}
+		this.lastReleaseCheck = now;
+
+		const releases = await this.getReleases();
+		if (releases.length === 0) {
+			this.debug("No releases found");
+			return null;
+		}
+
+		const channel = this.releaseSettings.get().channel;
+		if (!channel) return null;
+
+		const version = await this.fetchLatestTagFromChannel(channel);
+		if (!version) return null;
+
+		const release = releases.find((release) => {
+			return normalizeVersion(release.tag_name) === version;
+		});
+		if (release) {
+			this.releaseChannels.set(channel, release);
+			this.notifyListeners();
+			return release;
+		}
+		return null;
+	}
+
+	private async update() {
+		await this.getReleases();
+		await this.getChannelRelease();
+	}
+
+	public start(): void {
+		this.update();
+		this.updateCheckInterval = this.timeProvider.setInterval(
+			() => this.update(),
+			this.CHECK_INTERVAL,
+		);
+	}
+
+	public stop(): void {
+		if (this.updateCheckInterval !== null) {
+			this.timeProvider.clearInterval(this.updateCheckInterval);
+			this.updateCheckInterval = null;
 		}
 	}
 
-	/**
-	 * Fetches GitHub releases for the plugin repository
-	 * Returns cached data if available, or fetches fresh data if needed
-	 * @returns Array of release information
-	 */
-	public async fetchGitHubReleases(): Promise<any[]> {
-		// If we have cached releases, return them immediately
-		if (this.githubReleases.length > 0) {
-			return this.githubReleases;
-		}
-
-		// Otherwise fetch them (this will also update the cache)
-		await this.checkGitHubReleases();
-		return this.githubReleases;
-	}
-
-	/**
-	 * Fetches the manifest file from a release's assets
-	 * @param release The GitHub release object
-	 * @param beta Whether to fetch the beta manifest
-	 * @returns The parsed manifest object or null if not found
-	 */
-	public async fetchReleaseManifest(
-		release: any,
-		beta: boolean = false,
-	): Promise<any | null> {
+	public async fetchRepoManifest(
+		path: string,
+		branch = "main",
+	): Promise<Manifest | null> {
 		try {
-			const manifestFileName = beta ? "manifest-beta.json" : "manifest.json";
+			const repoOwner = "No-Instructions";
+			const repoName = "Relay";
+			const fileUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${path}`;
 
+			this.debug(`Fetching ${fileUrl}`);
+
+			// Fetch both manifests in parallel
+			const response = await customFetch(fileUrl);
+
+			if (!response.ok) {
+				throw new Error("unable to fetch manifest");
+			}
+			return await response.json();
+		} catch (error) {
+			this.error("Failed to fetch:", error);
+			return null;
+		}
+	}
+
+	public async fetchReleaseManifest(release: Release): Promise<any | null> {
+		try {
 			// Find the manifest asset in the release
 			const manifestAsset = release.assets.find(
-				(asset: any) => asset.name === manifestFileName,
+				(asset: any) => asset.name === "manifest.json",
 			);
 
 			if (!manifestAsset) {
-				this.debug(`No ${manifestFileName} found in release assets`);
+				this.debug("No manifest found in release assets");
 				return null;
 			}
 
 			this.debug(
-				`Fetching ${beta ? "beta" : "stable"} manifest from release asset:`,
+				`Fetching manifest from release asset:`,
 				manifestAsset.browser_download_url,
 			);
 
@@ -322,79 +317,63 @@ export class UpdateManager extends Observable<UpdateInfo | null> {
 			}
 
 			const manifest = await response.json();
-			this.debug(`${beta ? "Beta" : "Stable"} manifest fetched:`, manifest);
+			this.debug("manifest fetched:", manifest);
 			return manifest;
 		} catch (error) {
-			this.error(
-				`Failed to fetch ${beta ? "beta" : "stable"} release manifest:`,
-				error,
-			);
+			this.error("Failed to fetch manifest for release:", release, error);
 			return null;
 		}
 	}
 
-	/**
-	 * Fetches the main branch manifest files (stable and beta)
-	 * @returns Object containing both stable and beta manifest data, or null on failure
-	 */
-	public async fetchMainBranchManifests(): Promise<{
-		stable: any | null;
-		beta: any | null;
-	} | null> {
+	public getNewRelease(): Release | undefined {
+		const release = this.releaseChannels.get(
+			this.releaseSettings.get().channel,
+		);
+		if (!release) {
+			return;
+		}
+		if (updateAvailable(release.tag_name, this.plugin.version)) {
+			return release;
+		}
+	}
+
+	public async installUpdate(release: Release): Promise<boolean> {
+		const manifest = await this.fetchReleaseManifest(release);
 		try {
-			const repoOwner = "No-Instructions";
-			const repoName = "Relay";
-			const stableManifestUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/main/manifest.json`;
-			const betaManifestUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/main/manifest-beta.json`;
+			this.debug(
+				`Installing update from v${this.plugin.version} to v${manifest.version}...`,
+				manifest,
+			);
 
-			this.debug(`Fetching stable manifest from: ${stableManifestUrl}`);
-			this.debug(`Fetching beta manifest from: ${betaManifestUrl}`);
+			await this.plugin.app.plugins.installPlugin(
+				REPOSITORY,
+				manifest.version,
+				manifest,
+			);
 
-			// Fetch both manifests in parallel
-			const [stableResponse, betaResponse] = await Promise.all([
-				customFetch(stableManifestUrl, {
-					headers: {
-						"User-Agent": "Relay-Obsidian-Plugin",
-					},
-				}),
-				customFetch(betaManifestUrl, {
-					headers: {
-						"User-Agent": "Relay-Obsidian-Plugin",
-					},
-				}),
-			]);
+			this.notifyListeners();
 
-			// Parse the stable manifest
-			let stableManifest = null;
-			if (stableResponse.ok) {
-				stableManifest = await stableResponse.json();
-				this.debug("Stable manifest fetched:", stableManifest);
-			} else {
-				this.debug(`Failed to fetch stable manifest: ${stableResponse.status}`);
-			}
+			this.debug("Update complete. Reloading plugin...");
 
-			// Parse the beta manifest
-			let betaManifest = null;
-			if (betaResponse.ok) {
-				betaManifest = await betaResponse.json();
-				this.debug("Beta manifest fetched:", betaManifest);
-			} else {
-				this.debug(`Failed to fetch beta manifest: ${betaResponse.status}`);
-			}
+			const pluginId = "system3-relay";
+			const plugins = this.plugin.app.plugins;
+			await plugins.disablePlugin(pluginId);
+			await plugins.enablePlugin(pluginId);
 
-			return { stable: stableManifest, beta: betaManifest };
+			return true;
 		} catch (error) {
-			this.error("Failed to fetch main branch manifests:", error);
-			return null;
+			this.error("Failed to install update:", error);
+			return false;
 		}
 	}
 
-	/**
-	 * Get the cached GitHub releases
-	 * This can be used in UI to immediately show cached releases without waiting for async fetch
-	 */
-	public getGitHubReleases(): any[] {
-		return this.githubReleases;
+	public applyAutomaticUpdates() {
+		if (this.releaseSettings.get().automaticUpdates) {
+			const newRelease = this.getNewRelease();
+			if (newRelease) {
+				this.installUpdate(newRelease);
+			}
+		}
 	}
 
 	override destroy(): void {
@@ -402,8 +381,8 @@ export class UpdateManager extends Observable<UpdateInfo | null> {
 		this.stop();
 
 		// Set state to null before destroying
-		this.updateInfo = null;
-		this.githubReleases = [];
+		this.githubReleases = null as any;
+		this.releaseChannels = null as any;
 
 		// Let the parent class handle its own cleanup
 		super.destroy();

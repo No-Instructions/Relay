@@ -20,16 +20,15 @@ const gitTag = execSync("git describe --tags --always", {
 
 const staging = process.argv[2] === "staging";
 const watch = process.argv[2] === "watch" || staging;
-const debug = process.argv[2] === "debug" || watch || staging
+const debug = process.argv[2] === "debug" || watch || staging;
 const out = process.argv[3] || ".";
-const tld = staging ? "dev": "md"
+const tld = staging ? "dev" : "md";
 
 const apiUrl = `https://api.system3.${tld}`;
 const authUrl = `https://auth.system3.${tld}`;
 const healthUrl = `${apiUrl}/health?version=${gitTag}`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);
-
 
 const NotifyPlugin = {
 	name: "on-end",
@@ -80,6 +79,7 @@ const context = await esbuild.context({
 		HEALTH_URL: `"${healthUrl}"`,
 		API_URL: `"${apiUrl}"`,
 		AUTH_URL: `"${authUrl}"`,
+		REPOSITORY: `"No-Instructions/Relay"`,
 	},
 	treeShaking: true,
 	outfile: out + "/main.js",
@@ -112,12 +112,12 @@ const manifest = debug ? "manifest-beta.json" : "manifest.json";
 const files = ["styles.css", manifest];
 
 const updateManifest = (manifest) => {
-	const manifestPath = path.join(out, path.basename('manifest.json'));
+	const manifestPath = path.join(out, path.basename("manifest.json"));
 	const raw_manifest = fs.readFileSync(manifestPath);
 	const parsed = JSON.parse(raw_manifest);
 	parsed.version = gitTag;
 	const new_manifest = JSON.stringify(parsed, null, 2);
-    console.log(`Set ${manifest} version to ${gitTag}`)
+	console.log(`Set ${manifest} version to ${gitTag}`);
 	fs.writeFileSync(manifestPath, new_manifest);
 };
 
@@ -130,7 +130,6 @@ const move = (fnames, mapping) => {
 		copyFile(fname, destPath);
 	}
 };
-
 
 if (watch) {
 	await context.watch();

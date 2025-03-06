@@ -52,13 +52,13 @@ import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
-import { URLSearchParams } from "url";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { SyncQueueModal } from "./ui/SyncQueueModal";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
+import type { ReleaseSettings } from "./UpdateManager";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -70,9 +70,14 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 
 interface RelaySettings extends FeatureFlags, DebugSettings {
 	sharedFolders: SharedFolderSettings[];
+	release: ReleaseSettings;
 }
 
 const DEFAULT_SETTINGS: RelaySettings = {
+	release: {
+		channel: "stable",
+		automaticUpdates: false,
+	},
 	sharedFolders: [],
 	...FeatureFlagDefaults,
 	...DEFAULT_DEBUG_SETTINGS,
@@ -81,6 +86,7 @@ const DEFAULT_SETTINGS: RelaySettings = {
 declare const HEALTH_URL: string;
 declare const API_URL: string;
 declare const GIT_TAG: string;
+declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
 	appId!: string;
@@ -106,6 +112,7 @@ export default class Live extends Plugin {
 	private featureSettings!: NamespacedSettings<FeatureFlags>;
 	private debugSettings!: NamespacedSettings<DebugSettings>;
 	private folderSettings!: NamespacedSettings<SharedFolderSettings[]>;
+	public releaseSettings!: NamespacedSettings<ReleaseSettings>;
 	debug!: (...args: unknown[]) => void;
 	log!: (...args: unknown[]) => void;
 	warn!: (...args: unknown[]) => void;
@@ -113,6 +120,7 @@ export default class Live extends Plugin {
 	private _liveViews!: LiveViewManager;
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
+	repo = REPOSITORY;
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -186,6 +194,7 @@ export default class Live extends Plugin {
 			this.settings,
 			"sharedFolders",
 		);
+		this.releaseSettings = new NamespacedSettings(this.settings, "release");
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
@@ -199,7 +208,11 @@ export default class Live extends Plugin {
 		this.updateManager = new UpdateManager(
 			this as unknown as PluginWithApp,
 			this.timeProvider,
+			this.releaseSettings,
 		);
+		if (flags().enableAutomaticUpdatesOption) {
+			this.updateManager.applyAutomaticUpdates();
+		}
 
 		this.debugSettings.subscribe((settings) => {
 			if (settings.debugging) {
@@ -207,7 +220,7 @@ export default class Live extends Plugin {
 				this.removeCommand("enable-debugging");
 				this.addCommand({
 					id: "toggle-feature-flags",
-					name: "Feature Flags",
+					name: "Show feature flags",
 					callback: () => {
 						const modal = new FeatureFlagToggleModal(this.app, () => {
 							this.reload();
@@ -236,7 +249,7 @@ export default class Live extends Plugin {
 				});
 				this.addCommand({
 					id: "show-release-manager",
-					name: "Release Manager",
+					name: "Show releases",
 					callback: () => {
 						const modal = new ReleaseManager(this.app, this);
 						this.openModals.push(modal);
@@ -245,7 +258,7 @@ export default class Live extends Plugin {
 				});
 				this.addCommand({
 					id: "analyze-indexeddb",
-					name: "Analyze Database",
+					name: "Analyze database",
 					callback: () => {
 						const modal = new IndexedDBAnalysisModal(this.app, this);
 						this.openModals.push(modal);
@@ -261,7 +274,7 @@ export default class Live extends Plugin {
 				});
 				this.addCommand({
 					id: "show-sync-status",
-					name: "Sync Status",
+					name: "Sync status",
 					callback: () => {
 						const modal = new SyncQueueModal(
 							this.app,
@@ -272,32 +285,6 @@ export default class Live extends Plugin {
 						modal.open();
 					},
 				});
-
-				// Register handler for update availability changes
-				this.register(
-					this.updateManager.subscribe(() => {
-						const updateInfo = this.updateManager.getUpdateInfo();
-						this.debug("Update subscription triggered with:", updateInfo);
-
-						if (updateInfo) {
-							// Add update command when an update is available
-							this.removeCommand("update-plugin");
-							this.addCommand({
-								id: "update-plugin",
-								name: `Update Plugin (${this.manifest.version} → ${updateInfo.newVersion})`,
-								callback: async () => {
-									await this.updateManager.installUpdate();
-								},
-							});
-							this.log(
-								`Update available: v${this.manifest.version} → v${updateInfo.newVersion}`,
-							);
-						} else {
-							// Remove update command when no update is available
-							this.removeCommand("update-plugin");
-						}
-					}),
-				);
 			} else {
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("send-bug-report");
@@ -305,7 +292,6 @@ export default class Live extends Plugin {
 				this.removeCommand("show-sync-status");
 				this.removeCommand("show-release-manager");
 				this.removeCommand("disable-debugging");
-				this.removeCommand("update-plugin");
 				this.addCommand({
 					id: "enable-debugging",
 					name: "Enable debugging",
@@ -324,8 +310,25 @@ export default class Live extends Plugin {
 			},
 		});
 
-		// Start checking for updates
-		this.updateManager.start();
+		// Register handler for update availability changes
+		this.updateManager.subscribe(() => {
+			const newRelease = this.updateManager.getNewRelease();
+			if (newRelease) {
+				// Add update command when an update is available
+				this.removeCommand("update-plugin");
+				this.addCommand({
+					id: "update-plugin",
+					name: `Update Plugin (${this.version} → ${newRelease.tag_name})`,
+					callback: async () => {
+						await this.updateManager.installUpdate(newRelease);
+					},
+				});
+				this.log(`Update available: v${this.version} → ${newRelease.tag_name}`);
+			} else {
+				// Remove update command when no update is available
+				this.removeCommand("update-plugin");
+			}
+		});
 
 		this.vault = this.app.vault;
 		const vaultName = this.vault.getName();
@@ -829,12 +832,14 @@ export default class Live extends Plugin {
 			});
 			this.register(patchFileToLinktext);
 			this.backgroundSync.start();
+			this.updateManager.start();
 		});
 
 		interface Parameters {
 			action: string;
 			relay?: string;
 			id?: string;
+			version?: string;
 		}
 
 		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
@@ -853,6 +858,18 @@ export default class Live extends Plugin {
 				this.openSettings(path);
 			},
 		);
+
+		this.registerObsidianProtocolHandler("relay/upgrade", async (e) => {
+			const parameters = e as unknown as Parameters;
+			const version = parameters.version?.trim();
+			this.installVersion(version);
+		});
+	}
+
+	installVersion(version?: string) {
+		const modal = new ReleaseManager(this.app, this, version);
+		this.openModals.push(modal);
+		modal.open();
 	}
 
 	removeCommand(command: string): void {
@@ -931,6 +948,8 @@ export default class Live extends Plugin {
 		this.folderSettings = null as any;
 		this.featureSettings.destroy();
 		this.featureSettings = null as any;
+		this.releaseSettings.destroy();
+		this.releaseSettings = null as any;
 
 		this.interceptedUrls.length = 0;
 

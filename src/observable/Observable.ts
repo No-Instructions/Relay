@@ -75,7 +75,9 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 	}
 
 	unsubscribe(run: Subscriber<T>): void {
-		this._listeners.delete(run);
+		if (this._listeners) {
+			this._listeners.delete(run);
+		}
 	}
 
 	destroy() {
