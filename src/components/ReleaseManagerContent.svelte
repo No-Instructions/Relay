@@ -1,11 +1,14 @@
 <script lang="ts">
-	import { writable } from "svelte/store";
+	import { MarkdownRenderer } from "obsidian";
+	import { derived, writable } from "svelte/store";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import type Live from "../main";
+	import { flags } from "../flagManager";
 	import { onMount } from "svelte";
-	import type { AppWithPlugins, WithPlugins } from "src/UpdateManager";
+	import type { Release, WithPlugins } from "src/UpdateManager";
 
 	export let plugin: Live;
+	export let version: string | undefined;
 
 	const currentVersion = writable<string>(plugin.manifest.version);
 	const updateAvailable = writable<boolean>(false);
@@ -15,7 +18,6 @@
 	// Store for GitHub releases - we'll access cached releases directly from UpdateManager
 	const loadingReleases = writable<boolean>(false);
 	const showAllReleases = writable<boolean>(false);
-	const filteredReleases = writable<any[]>([]);
 
 	// Manifest viewing
 	const selectedManifest = writable<any | null>(null);
@@ -27,6 +29,8 @@
 	// Main branch manifests
 	const stableManifest = writable<any | null>(null);
 	const betaManifest = writable<any | null>(null);
+	const stableVersion = writable<string | null>(null);
+	const betaVersion = writable<string | null>(null);
 	const loadingMainBranchManifests = writable<boolean>(false);
 
 	// Installation status
@@ -35,7 +39,7 @@
 
 	// Keep a reference to the app for plugin installation
 	// This is important as the plugin instance may be unloaded during update
-	const app: AppWithPlugins = plugin.app as unknown as WithPlugins;
+	const app = plugin.app as unknown as WithPlugins;
 	const pluginId = "system3-relay";
 
 	// No need for unsubscriber with reactive bindings
@@ -53,27 +57,32 @@
 		return normalizedTag === normalizedGitTag;
 	}
 
-	// Check if a tag represents the available update version
-	function isUpdateVersion(tagName: string): boolean {
-		if (!$updateAvailable) return false;
-
-		const normalizedTag = normalizeVersion(tagName);
-		const normalizedUpdate = normalizeVersion($newVersion);
-		return normalizedTag === normalizedUpdate;
-	}
-
 	// Check if a release is a prerelease
 	function isPrerelease(release: any): boolean {
 		return release?.prerelease === true;
 	}
-
 	// Store for tracking manifest versions
 	const manifestVersions = writable<Record<string, string>>({});
+	const releaseChannels = writable<Record<string, string>>({});
 
 	// Store for active channel (beta, stable, development or null)
-	const activeChannel = writable<"beta" | "stable" | "development" | null>(
-		null,
+	const activeChannel = writable<"beta" | "stable" | null>(
+		plugin.releaseSettings.get().channel,
 	);
+
+	const automaticUpdates = writable<boolean>(false);
+	async function setAutomaticUpdates(value: boolean) {
+		automaticUpdates.set(value);
+		const channel = plugin.releaseSettings.get().channel;
+		activeChannel.set(channel);
+		plugin.releaseSettings.update((release) => {
+			return {
+				...release,
+				automaticUpdates: value,
+			};
+		});
+		viewMainBranchManifest(channel);
+	}
 
 	onMount(() => {
 		// Initial setup - check GitHub releases immediately
@@ -84,26 +93,48 @@
 
 		// Immediately select the development version (current version)
 		// Set development as the active channel
-		activeChannel.set("development");
+		if (
+			!version &&
+			!$githubReleases.some((release) => {
+				release.tag_name === plugin.version;
+			})
+		) {
+			plugin.releaseSettings.update((release) => {
+				return {
+					...release,
+					automaticUpdates: false,
+				};
+			});
+			activeChannel.set(null);
+		} else {
+			activeChannel.set(plugin.releaseSettings.get().channel);
+		}
 		selectedManifest.set({
-			version: plugin.manifest.version,
+			version: version || plugin.version,
 			name: plugin.manifest.name,
 			author: plugin.manifest.author,
 			description: plugin.manifest.description,
 			isDesktopOnly: plugin.manifest.isDesktopOnly,
 			minAppVersion: plugin.manifest.minAppVersion,
 		});
-		selectedManifestTag.set(plugin.version);
+		selectedManifestTag.set(version || plugin.version);
 	});
 
 	// Function to fetch main branch manifests (stable and beta)
 	async function fetchMainBranchManifests() {
 		loadingMainBranchManifests.set(true);
 		try {
-			const manifests = await plugin.updateManager.fetchMainBranchManifests();
-			if (manifests) {
-				stableManifest.set(manifests.stable);
-				betaManifest.set(manifests.beta);
+			const manifest =
+				await plugin.updateManager.fetchRepoManifest("manifest.json");
+			if (manifest) {
+				stableManifest.set(manifest);
+				stableVersion.set(manifest.version);
+			}
+			const manifestBeta =
+				await plugin.updateManager.fetchRepoManifest("manifest-beta.json");
+			if (manifestBeta) {
+				betaManifest.set(manifestBeta);
+				betaVersion.set(manifestBeta.version);
 			}
 		} catch (error) {
 			plugin.error("Error fetching main branch manifests:", error);
@@ -113,36 +144,40 @@
 	}
 
 	// Access GitHub releases directly from the UpdateManager
-	$: githubReleases = plugin.updateManager
-		? plugin.updateManager.getGitHubReleases()
-		: [];
+	const githubReleases = derived(plugin.updateManager, () => {
+		return plugin.updateManager.releases;
+	});
+
+	// Update filtered releases when githubReleases changes or when toggle changes
+	const filteredReleases = derived([githubReleases, showAllReleases], () => {
+		if ($githubReleases && $githubReleases.length > 0) {
+			return filterReleases($showAllReleases).sort();
+		} else {
+			return [];
+		}
+	});
 
 	// When releases change, fetch their manifests to check for version mismatches
-	$: {
-		if (githubReleases && githubReleases.length > 0) {
-			// Pre-fetch manifests for all releases to check for mismatches
-			githubReleases.forEach(async (release) => {
-				try {
-					const manifest =
-						await plugin.updateManager.fetchReleaseManifest(release);
-					if (manifest) {
-						manifestVersions.update((versions) => ({
-							...versions,
-							[release.tag_name]: manifest.version,
-						}));
-					}
-				} catch (e) {
-					// Just continue if we can't fetch a manifest
-				}
-			});
+	// Pre-fetch manifests for all releases to check for mismatches
+	$githubReleases.forEach(async (release: Release) => {
+		try {
+			const manifest = await plugin.updateManager.fetchReleaseManifest(release);
+			if (manifest) {
+				manifestVersions.update((versions) => ({
+					...versions,
+					[release.tag_name]: manifest.version,
+				}));
+			}
+		} catch (e) {
+			// Just continue if we can't fetch a manifest
 		}
-	}
+	});
 
 	// Refresh releases (forces a new fetch if needed)
 	async function refreshGithubReleases() {
 		loadingReleases.set(true);
 		try {
-			await plugin.updateManager.checkGitHubReleases();
+			await plugin.updateManager.getReleases();
 			filterReleases($showAllReleases);
 		} catch (error) {
 			plugin.error("Error refreshing GitHub releases:", error);
@@ -151,57 +186,44 @@
 		}
 	}
 
-	// Function to check if a version string follows semver
-	function isSemver(version: string): boolean {
-		// Remove leading 'v' if present
-		if (version.startsWith("v")) {
-			version = version.substring(1);
-		}
-
-		// Basic semver regex (Major.Minor.Patch)
-		const semverRegex = /^\d+\.\d+\.\d+$/;
-		return semverRegex.test(version);
+	async function render(md: string): Promise<string> {
+		const el = document.createElement("div");
+		await MarkdownRenderer.render(plugin.app, md, el, "", plugin);
+		return el.innerHTML;
 	}
 
 	// Filter releases based on show all toggle
-	function filterReleases(showAll: boolean) {
+	function filterReleases(showAll: boolean): Release[] {
 		if (showAll) {
 			// Show all releases
-			filteredReleases.set(githubReleases);
+			return $githubReleases;
+		} else if (version) {
+			return $githubReleases.filter((release) => {
+				return version === normalizeVersion(release.tag_name);
+			});
 		} else {
-			// Show only semver releases
-			filteredReleases.set(
-				githubReleases.filter((release) => {
-					const tagName = release.tag_name;
-					return isSemver(tagName);
-				}),
-			);
+			return $githubReleases.filter((release) => {
+				const tagName = release.tag_name;
+				return isRecentPublicRelease(release);
+			});
 		}
 	}
 
-	// Update filtered releases when githubReleases changes or when toggle changes
-	$: {
-		if (githubReleases && githubReleases.length > 0) {
-			filterReleases($showAllReleases);
-
-			// Keep the development version selected by default - no need to auto-select another release
-		} else {
-			filteredReleases.set([]);
-		}
+	function isRecentPublicRelease(release: Release): boolean {
+		if (release.prerelease || release.draft) return false;
+		if (release.latest) return true;
+		if (normalizeVersion(release.tag_name) === $stableVersion) return true;
+		if (normalizeVersion(release.tag_name) === $betaVersion) return true;
+		const createdAt = new Date(release.created_at);
+		const threeMonthsAgo = new Date();
+		threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+		return createdAt > threeMonthsAgo;
 	}
 
 	// Function to fetch and view release details for a specific release
 	async function viewReleaseManifest(tagName: string) {
 		// Reset any previous errors
 		manifestError.set(null);
-
-		// Reset active channel unless this is coming from a channel
-		if (
-			$manifestVersions[tagName] !== "beta-alias" &&
-			$manifestVersions[tagName] !== "stable-alias"
-		) {
-			activeChannel.set(null);
-		}
 
 		// Set loading state for this specific tag
 		loadingManifest.set(tagName);
@@ -249,7 +271,7 @@
 			activeChannel.set(type);
 
 			// First check if we have a matching tag directly
-			const releaseWithExactTag = githubReleases.find(
+			const releaseWithExactTag = [...$githubReleases.values()].find(
 				(r) => normalizeVersion(r.tag_name) === normalizeVersion(version),
 			);
 
@@ -257,12 +279,12 @@
 				// We found an exact match, use viewReleaseManifest to show standard release details
 				// But we'll set an alias flag first so we know where it came from
 				if (type === "stable") {
-					manifestVersions.update((v) => ({
+					releaseChannels.update((v) => ({
 						...v,
 						[releaseWithExactTag.tag_name]: "stable-alias",
 					}));
 				} else {
-					manifestVersions.update((v) => ({
+					releaseChannels.update((v) => ({
 						...v,
 						[releaseWithExactTag.tag_name]: "beta-alias",
 					}));
@@ -274,9 +296,9 @@
 				selectedManifestTag.set(version);
 				// Store which alias this is for badge display
 				if (type === "stable") {
-					manifestVersions.update((v) => ({ ...v, [version]: "stable-alias" }));
+					releaseChannels.update((v) => ({ ...v, [version]: "stable-alias" }));
 				} else {
-					manifestVersions.update((v) => ({ ...v, [version]: "beta-alias" }));
+					releaseChannels.update((v) => ({ ...v, [version]: "beta-alias" }));
 				}
 				showManifest.set(false);
 			}
@@ -294,28 +316,7 @@
 
 	// Find a GitHub release by tag
 	function findReleaseByTag(tagName: string) {
-		return githubReleases.find((r) => r.tag_name === tagName);
-	}
-
-	// Use $ syntax to access updateManager directly (reactive access)
-	// This way we automatically get updates when updateManager changes
-	$: updateInfo = plugin.updateManager
-		? plugin.updateManager.getUpdateInfo()
-		: null;
-
-	$: {
-		// Update the state whenever updateInfo changes
-		updateAvailable.set(
-			!!updateInfo && updateInfo.newVersion !== plugin.manifest.version,
-		);
-
-		if (updateInfo) {
-			newVersion.set(updateInfo.newVersion);
-			repository.set(updateInfo.repository);
-		} else {
-			newVersion.set("");
-			repository.set("");
-		}
+		return [...$githubReleases.values()].find((r) => r.tag_name === tagName);
 	}
 
 	// Function to install a specific version from GitHub release
@@ -323,10 +324,6 @@
 		try {
 			// Set installing state for this specific version
 			installingVersion.set(tagName);
-
-			// Store references to what we need before the plugin is unloaded
-			// This is crucial since the plugin instance may become null during installation
-			const repoPath = "No-Instructions/Relay";
 
 			// Find the release
 			const release = findReleaseByTag(tagName);
@@ -344,7 +341,7 @@
 			installingUpdate = true;
 
 			// Use the cached app reference instead of plugin.app which might become null
-			await app.plugins.installPlugin(repoPath, tagName, manifest);
+			await app.plugins.installPlugin(plugin.repo, tagName, manifest);
 
 			// Reload the plugin after installation
 			await app.plugins.disablePlugin(pluginId);
@@ -364,38 +361,60 @@
 	}
 </script>
 
-<div class="modal-title">Release Manager</div>
+<div class="modal-title">{version ? "Relay installer" : "Relay releases"}</div>
 <div class="modal-content">
 	<div class="settings-spacer"></div>
 
 	<div class="settings-container">
-		<SlimSettingItem name="Show All Releases">
-			<div
-				class="checkbox-container"
-				class:is-enabled={$showAllReleases}
-				role="checkbox"
-				aria-checked={$showAllReleases}
-				tabindex="0"
-				on:click={() => {
-					showAllReleases.update((v) => !v);
-					filterReleases(!$showAllReleases);
-				}}
-				on:keydown={(e) => {
-					if (e.key === "Enter" || e.key === " ") {
+		{#if flags().enableAutomaticUpdatesOption}
+			<SlimSettingItem name="Automatically install updates">
+				<div
+					class="checkbox-container"
+					class:is-enabled={$automaticUpdates}
+					role="checkbox"
+					aria-checked={$automaticUpdates}
+					tabindex="0"
+					on:click={() => {
+						setAutomaticUpdates(!$automaticUpdates);
+					}}
+					on:keydown={(e) => {
+						if (e.key === "Enter" || e.key === " ") {
+							setAutomaticUpdates(!$automaticUpdates);
+						}
+					}}
+				>
+					<input type="checkbox" checked={$automaticUpdates} />
+					<div class="checkbox-toggle"></div>
+				</div>
+			</SlimSettingItem>
+		{/if}
+		{#if !$automaticUpdates && !version}
+			<SlimSettingItem name="Show all releases">
+				<div
+					class="checkbox-container"
+					class:is-enabled={$showAllReleases}
+					role="checkbox"
+					aria-checked={$showAllReleases}
+					tabindex="0"
+					on:click={() => {
 						showAllReleases.update((v) => !v);
-						filterReleases(!$showAllReleases);
-					}
-				}}
-			>
-				<input type="checkbox" checked={$showAllReleases} />
-				<div class="checkbox-toggle"></div>
-			</div>
-		</SlimSettingItem>
+					}}
+					on:keydown={(e) => {
+						if (e.key === "Enter" || e.key === " ") {
+							showAllReleases.update((v) => !v);
+						}
+					}}
+				>
+					<input type="checkbox" checked={$showAllReleases} />
+					<div class="checkbox-toggle"></div>
+				</div>
+			</SlimSettingItem>
+		{/if}
 	</div>
 
 	{#if $loadingReleases}
 		<div class="loading-text">Loading GitHub releases...</div>
-	{:else if githubReleases.length === 0}
+	{:else if $githubReleases.length === 0}
 		<div class="no-releases-text">No GitHub releases found</div>
 	{:else if $filteredReleases.length === 0}
 		<div class="no-releases-text">
@@ -403,71 +422,86 @@
 		</div>
 	{:else}
 		<!-- Compact tag list at the top -->
-		<div class="release-tags-container">
-			<!-- Beta and Stable alias tags -->
-			{#if $betaManifest}
-				<div
-					class="release-tag-item main-branch-version beta-version"
-					role="tab"
-					aria-selected={$activeChannel === "beta"}
-					tabindex="0"
-					on:click={() => viewMainBranchManifest("beta")}
-					on:keydown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
-							viewMainBranchManifest("beta");
-						}
-					}}
-				>
-					<div class="tag-name">Beta</div>
-				</div>
-			{/if}
+		{#if !version || $automaticUpdates}
+			<div class="release-tags-container">
+				<!-- Beta and Stable alias tags -->
 
-			{#if $stableManifest}
-				<div
-					class="release-tag-item main-branch-version stable-version"
-					role="tab"
-					aria-selected={$activeChannel === "stable"}
-					tabindex="0"
-					on:click={() => viewMainBranchManifest("stable")}
-					on:keydown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
+				{#if $stableManifest}
+					<div
+						class="release-tag-item main-branch-version stable-version"
+						role="tab"
+						aria-selected={$activeChannel === "stable"}
+						tabindex="0"
+						on:click={() => {
+							plugin.releaseSettings.update((release) => {
+								return {
+									...release,
+									channel: "stable",
+								};
+							});
+							activeChannel.set("stable");
 							viewMainBranchManifest("stable");
-						}
-					}}
-				>
-					<div class="tag-name">Stable</div>
-				</div>
-			{/if}
+						}}
+						on:keydown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								plugin.releaseSettings.update((release) => {
+									return {
+										...release,
+										channel: "stable",
+									};
+								});
+								activeChannel.set("stable");
+								viewMainBranchManifest("stable");
+							}
+						}}
+					>
+						<div class="tag-name">Stable</div>
+					</div>
+				{/if}
 
-			<!-- Development version tag if not already in filtered releases -->
-			{#if !$filteredReleases.some( (release) => isCurrentVersion(release.tag_name), )}
-				<div
-					class="release-tag-item development-version"
-					role="tab"
-					aria-selected={$activeChannel === "development"}
-					tabindex="0"
-					on:click={() => {
-						// Set active channel to development
-						activeChannel.set("development");
-
-						// Show development info
-						selectedManifest.set({
-							version: plugin.manifest.version,
-							name: plugin.manifest.name,
-							author: plugin.manifest.author,
-							description: plugin.manifest.description,
-							isDesktopOnly: plugin.manifest.isDesktopOnly,
-							minAppVersion: plugin.manifest.minAppVersion,
-						});
-						selectedManifestTag.set(plugin.version);
-						showManifest.set(false);
-					}}
-					on:keydown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
-							// Set active channel to development
-							activeChannel.set("development");
-
-							// Show development info
+				{#if $betaManifest}
+					<div
+						class="release-tag-item main-branch-version beta-version"
+						role="tab"
+						aria-selected={$activeChannel === "beta"}
+						tabindex="0"
+						on:click={() => {
+							plugin.releaseSettings.update((release) => {
+								return {
+									...release,
+									channel: "beta",
+								};
+							});
+							activeChannel.set("beta");
+							viewMainBranchManifest("beta");
+						}}
+						on:keydown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								plugin.releaseSettings.update((release) => {
+									return {
+										...release,
+										channel: "beta",
+									};
+								});
+								activeChannel.set("beta");
+								viewMainBranchManifest("beta");
+							}
+						}}
+					>
+						<div class="tag-name">Beta</div>
+					</div>
+				{/if}
+				<!-- Development version tag if not already in filtered releases -->
+				{#if !$automaticUpdates && !$filteredReleases.some((release) => {
+						return isCurrentVersion(release.tag_name);
+					})}
+					<div
+						class="release-tag-item development-version"
+						role="tab"
+						aria-selected={$selectedManifestTag === plugin.version}
+						tabindex="0"
+						on:click={() => {
+							activeChannel.set(null);
 							selectedManifest.set({
 								version: plugin.manifest.version,
 								name: plugin.manifest.name,
@@ -478,37 +512,57 @@
 							});
 							selectedManifestTag.set(plugin.version);
 							showManifest.set(false);
-						}
-					}}
-				>
-					<div class="tag-name">Dev</div>
-				</div>
-			{/if}
-
-			<!-- Release tags -->
-			{#each $filteredReleases as release}
-				<div
-					class="release-tag-item {isCurrentVersion(release.tag_name)
-						? 'current-version'
-						: ''} {isUpdateVersion(release.tag_name)
-						? 'update-available'
-						: ''} {isPrerelease(release) ? 'pre-release' : ''}"
-					role="tab"
-					aria-selected={$selectedManifestTag === release.tag_name}
-					tabindex="0"
-					on:click={() => viewReleaseManifest(release.tag_name)}
-					on:keydown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
-							viewReleaseManifest(release.tag_name);
-						}
-					}}
-				>
-					<div class="tag-name">
-						{release.tag_name}
+						}}
+						on:keydown={(e) => {
+							if (e.key === "Enter" || e.key === " ") {
+								activeChannel.set(null);
+								selectedManifest.set({
+									version: plugin.manifest.version,
+									name: plugin.manifest.name,
+									author: plugin.manifest.author,
+									description: plugin.manifest.description,
+									isDesktopOnly: plugin.manifest.isDesktopOnly,
+									minAppVersion: plugin.manifest.minAppVersion,
+								});
+								selectedManifestTag.set(plugin.version);
+								showManifest.set(false);
+							}
+						}}
+					>
+						<div class="tag-name">Dev</div>
 					</div>
-				</div>
-			{/each}
-		</div>
+				{/if}
+
+				<!-- Release tags -->
+				{#if !$automaticUpdates && !version}
+					{#each $filteredReleases as release}
+						<div
+							class="release-tag-item {isCurrentVersion(release.tag_name)
+								? 'current-version'
+								: ''}
+								{isPrerelease(release) ? 'pre-release' : ''}"
+							role="tab"
+							aria-selected={$selectedManifestTag === release.tag_name}
+							tabindex="0"
+							on:click={() => {
+								activeChannel.set(null);
+								viewReleaseManifest(release.tag_name);
+							}}
+							on:keydown={(e) => {
+								if (e.key === "Enter" || e.key === " ") {
+									activeChannel.set(null);
+									viewReleaseManifest(release.tag_name);
+								}
+							}}
+						>
+							<div class="tag-name">
+								{release.tag_name}
+							</div>
+						</div>
+					{/each}
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Detail panel -->
 		{#if $selectedManifest}
@@ -519,10 +573,10 @@
 						{#if findReleaseByTag($selectedManifestTag)?.prerelease}
 							<span class="prerelease-badge">Pre-release</span>
 						{/if}
-						{#if $manifestVersions[$selectedManifestTag] === "beta-alias"}
+						{#if $releaseChannels[$selectedManifestTag] === "beta-alias"}
 							<span class="channel-badge beta-badge">Beta</span>
 						{/if}
-						{#if $manifestVersions[$selectedManifestTag] === "stable-alias"}
+						{#if $releaseChannels[$selectedManifestTag] === "stable-alias"}
 							<span class="channel-badge stable-badge">Stable</span>
 						{/if}
 					</h3>
@@ -530,7 +584,9 @@
 						{#if (findReleaseByTag($selectedManifestTag) || $manifestVersions[$selectedManifestTag] === "stable-alias" || $manifestVersions[$selectedManifestTag] === "beta-alias") && !isCurrentVersion($selectedManifestTag)}
 							<button
 								class="install-version-btn mod-cta"
-								on:click={() => installSpecificVersion($selectedManifestTag)}
+								on:click={async () => {
+									installSpecificVersion($selectedManifestTag);
+								}}
 								disabled={$installingVersion === $selectedManifestTag ||
 									installingUpdate}
 							>
@@ -548,64 +604,66 @@
 
 				<!-- Show changelog first -->
 				<div class="release-changelog">
-					<div class="release-changelog-header">Changelog:</div>
 					<div class="release-changelog-content">
 						{#if $manifestVersions[$selectedManifestTag] === "stable-alias" || $manifestVersions[$selectedManifestTag] === "beta-alias" || $activeChannel === "development"}
 							{#if $manifestVersions[$selectedManifestTag] === "stable-alias"}
 								<p>Current stable release from main branch manifest.json</p>
 							{:else if $manifestVersions[$selectedManifestTag] === "beta-alias"}
 								<p>Current beta release from main branch manifest-beta.json</p>
-							{:else if $activeChannel === "development"}
+							{:else if $selectedManifestTag === plugin.version}
 								<p>Current development version</p>
 							{/if}
+						{:else if $selectedManifestTag}
+							{#await render(findReleaseByTag($selectedManifestTag)?.body || "No changelog available")}
+								"loading..."
+							{:then renderedMarkdown}
+								{@html renderedMarkdown}
+							{/await}
 						{:else}
-							{@html $selectedManifestTag
-								? findReleaseByTag($selectedManifestTag)?.body?.replace(
-										/\n/g,
-										"<br/>",
-									) || "No changelog available"
-								: "No changelog available"}
+							"No changelog available"
 						{/if}
 					</div>
 				</div>
 
-				<!-- Manifest toggle button -->
-				<!-- Always show manifest -->
-				<div class="manifest-content">
-					<div class="manifest-field">
-						<span class="manifest-label">Version:</span>
-						<span class="manifest-value">{$selectedManifest.version}</span>
-						{#if $selectedManifestTag !== $selectedManifest.version && !$selectedManifestTag.startsWith("v" + $selectedManifest.version)}
-							<span class="manifest-version-mismatch">
-								<span class="manifest-version-mismatch-icon">⚠️</span>
-								Version mismatch
-							</span>
-						{/if}
+				{#if $showManifest}
+					<div class="manifest-content">
+						<div class="manifest-field">
+							<span class="manifest-label">Version:</span>
+							<span class="manifest-value">{$selectedManifest.version}</span>
+							{#if $selectedManifestTag !== $selectedManifest.version && !$selectedManifestTag.startsWith("v" + $selectedManifest.version)}
+								<span class="manifest-version-mismatch">
+									<span class="manifest-version-mismatch-icon">⚠️</span>
+									Version mismatch
+								</span>
+							{/if}
+						</div>
+						<div class="manifest-field">
+							<span class="manifest-label">Name:</span>
+							<span class="manifest-value">{$selectedManifest.name}</span>
+						</div>
+						<div class="manifest-field">
+							<span class="manifest-label">Author:</span>
+							<span class="manifest-value">{$selectedManifest.author}</span>
+						</div>
+						<div class="manifest-field">
+							<span class="manifest-label">Description:</span>
+							<span class="manifest-value">{$selectedManifest.description}</span
+							>
+						</div>
+						<div class="manifest-field">
+							<span class="manifest-label">isDesktopOnly:</span>
+							<span class="manifest-value"
+								>{$selectedManifest.isDesktopOnly ? "Yes" : "No"}</span
+							>
+						</div>
+						<div class="manifest-field">
+							<span class="manifest-label">minAppVersion:</span>
+							<span class="manifest-value"
+								>{$selectedManifest.minAppVersion}</span
+							>
+						</div>
 					</div>
-					<div class="manifest-field">
-						<span class="manifest-label">Name:</span>
-						<span class="manifest-value">{$selectedManifest.name}</span>
-					</div>
-					<div class="manifest-field">
-						<span class="manifest-label">Author:</span>
-						<span class="manifest-value">{$selectedManifest.author}</span>
-					</div>
-					<div class="manifest-field">
-						<span class="manifest-label">Description:</span>
-						<span class="manifest-value">{$selectedManifest.description}</span>
-					</div>
-					<div class="manifest-field">
-						<span class="manifest-label">isDesktopOnly:</span>
-						<span class="manifest-value"
-							>{$selectedManifest.isDesktopOnly ? "Yes" : "No"}</span
-						>
-					</div>
-					<div class="manifest-field">
-						<span class="manifest-label">minAppVersion:</span>
-						<span class="manifest-value">{$selectedManifest.minAppVersion}</span
-						>
-					</div>
-				</div>
+				{/if}
 			</div>
 		{:else if $manifestError}
 			<div class="manifest-error">
@@ -690,10 +748,6 @@
 	}
 
 	.release-tag-item.current-version {
-		border-width: 1px;
-	}
-
-	.release-tag-item.update-available {
 		border-width: 1px;
 	}
 
@@ -834,16 +888,7 @@
 		height: 320px;
 	}
 
-	.release-changelog-header {
-		font-weight: bold;
-		margin-bottom: 8px;
-		color: var(--text-normal);
-	}
-
 	.release-changelog-content {
-		background-color: var(--background-primary);
-		padding: 12px;
-		border-radius: 4px;
 		overflow-x: auto;
 		margin: 0;
 		font-size: 0.85em;

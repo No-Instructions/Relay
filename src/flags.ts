@@ -11,6 +11,7 @@ export interface FeatureFlags {
 	enableEditorTweens: boolean;
 	enableSyncModal: boolean;
 	enableDesyncPill: boolean;
+	enableAutomaticUpdatesOption: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -26,6 +27,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableEditorTweens: false,
 	enableSyncModal: false,
 	enableDesyncPill: false,
+	enableAutomaticUpdatesOption: false,
 };
 
 export type Flag = keyof FeatureFlags;

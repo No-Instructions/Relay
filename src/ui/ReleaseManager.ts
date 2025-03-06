@@ -8,6 +8,7 @@ export class ReleaseManager extends Modal {
 	constructor(
 		app: App,
 		private plugin: Live,
+		private version?: string,
 	) {
 		super(app);
 	}
@@ -19,6 +20,7 @@ export class ReleaseManager extends Modal {
 			target: contentEl,
 			props: {
 				plugin: this.plugin,
+				version: this.version,
 			},
 		});
 	}
