@@ -14,7 +14,7 @@
 		(syncStatus !== "completed" || progress < 100) && progress > 0;
 </script>
 
-<div class="folder-icons">
+<div class="system3-folder-icons">
 	<!-- Always show progress while running, regardless of completion -->
 	{#if showProgress}
 		<span class="system3-progress-text system3-{syncStatus}" style="opacity: 1">
@@ -22,24 +22,24 @@
 		</span>
 	{/if}
 	{#if relayId}
-		<span class="notebook icon hidden" aria-label="Tracking Changes">
+		<span class="notebook system3-icon hidden" aria-label="Tracking Changes">
 			<Layers class="inline-icon" style="width: 0.8em" />
 		</span>
 		<span
-			class="satellite icon system3-{status}"
+			class="satellite system3-icon system3-{status}"
 			aria-label={`${remote?.relay.name || "Relay Server"} (${status})`}
 		>
 			<Satellite class="inline-icon" />
 		</span>
 	{:else}
-		<span class="notebook icon" aria-label="Tracking Changes">
+		<span class="notebook system3-icon" aria-label="Tracking Changes">
 			<Layers class="inline-icon" style="width: 0.8em" />
 		</span>
 	{/if}
 </div>
 
 <style>
-	.folder-icons {
+	.system3-folder-icons {
 		display: inline-flex;
 		align-items: center;
 		vertical-align: middle;
@@ -52,7 +52,7 @@
 		position: relative;
 	}
 
-	.icon {
+	.system3-icon {
 		margin-right: 0.2em;
 		margin-left: 0.2em;
 		width: 1em;
