@@ -687,7 +687,7 @@ export default class Live extends Plugin {
 						folder.uploadDoc(vpath);
 					} else {
 						folder.whenReady().then((folder) => {
-							folder.getFile(file.path);
+							folder.proxy.getDoc(file.path);
 						});
 					}
 				}

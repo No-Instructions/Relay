@@ -534,7 +534,7 @@ export class LiveViewManager {
 					});
 					views.push(view);
 				} else if (folder.ready) {
-					const doc = await folder.getFile(viewFilePath);
+					const doc = folder.proxy.getDoc(viewFilePath);
 					const view = new LiveView(this, markdownView, doc);
 					views.push(view);
 				} else {
