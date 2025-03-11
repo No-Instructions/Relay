@@ -154,8 +154,17 @@ class PillDecoration {
 	unsubscribe: Unsubscribe;
 
 	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
-		this.el = el;
 		this.sharedFolder = sharedFolder;
+
+		// clean up failed destroys
+		const stalePills = el.querySelectorAll(".system3-folder-icons");
+		if (stalePills.length > 1) {
+			stalePills?.forEach((pill) => {
+				pill.remove();
+			});
+		}
+
+		this.el = el;
 		this.el.addClass("system3-pill");
 
 		this.pill = new Pill({
