@@ -687,7 +687,7 @@ export default class Live extends Plugin {
 						folder.uploadDoc(vpath);
 					} else {
 						folder.whenReady().then((folder) => {
-							folder.getFile(file.path);
+							folder.proxy.getDoc(file.path);
 						});
 					}
 				}
@@ -709,7 +709,7 @@ export default class Live extends Plugin {
 				if (folder) {
 					vaultLog("Delete", file.path);
 					folder.whenReady().then((folder) => {
-						folder.proxy.deleteFile(file.path);
+						folder.proxy.deleteDoc(file.path);
 					});
 				}
 			}),

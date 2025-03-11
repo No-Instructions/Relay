@@ -31,6 +31,7 @@ import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances } from "./debug";
 import { LocalStorage } from "./LocalStorage";
+import { createPathProxy } from "./pathProxy";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -116,6 +117,7 @@ export class SharedFolder extends HasProvider {
 
 	private _persistence: IndexeddbPersistence;
 	diskBufferStore: DiskBufferStore;
+	proxy: SharedFolder;
 
 	private addLocalDocs = () => {
 		const files = this.getFiles();
@@ -197,6 +199,10 @@ export class SharedFolder extends HasProvider {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
 			}),
 		);
+
+		this.proxy = createPathProxy(this, this.path, (globalPath: string) => {
+			return this.getVirtualPath(globalPath);
+		});
 
 		try {
 			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
@@ -727,15 +733,6 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
-	public async getFile(path: string): Promise<Document> {
-		// Get a file from disk for immediate use (in the editor, or on create)
-		const vPath = this.getVirtualPath(path);
-		if (!Document.checkExtension(path)) {
-			throw new Error("bad extension!");
-		}
-		return this.getDoc(vPath, true);
-	}
-
 	getTFile(doc: Document): TFile | null {
 		const maybeTFile = this.vault.getAbstractFileByPath(this.getPath(doc.path));
 		if (maybeTFile instanceof TFile) {
@@ -744,7 +741,7 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	private getDoc(vpath: string, update = true): Document {
+	public getDoc(vpath: string, update = true): Document {
 		const id = this.ids.get(vpath) || this.pendingUpload.get(vpath);
 		if (id !== undefined) {
 			const doc = this.docs.get(id);
@@ -781,15 +778,7 @@ export class SharedFolder extends HasProvider {
 		return newDocs;
 	}
 
-	public viewFile(path: string): Document | undefined {
-		const vPath = this.getVirtualPath(path);
-		if (!Document.checkExtension(path)) {
-			throw new Error("bad extension!");
-		}
-		return this.viewDoc(vPath);
-	}
-
-	private viewDoc(vpath: string): Document | undefined {
+	public viewDoc(vpath: string): Document | undefined {
 		const guid = this.ids.get(vpath) || this.pendingUpload.get(vpath);
 		if (!guid) return;
 		const doc = this.docs.get(guid);
@@ -918,11 +907,6 @@ export class SharedFolder extends HasProvider {
 		this.docset.add(doc, update);
 
 		return doc;
-	}
-
-	deleteFile(path: string) {
-		const vPath = this.getVirtualPath(path);
-		return this.deleteDoc(vPath);
 	}
 
 	deleteDoc(vPath: string) {
