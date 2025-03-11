@@ -8,7 +8,7 @@ import {
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
-import type { Document } from "src/Document";
+import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import { withAnyOf, withFlag } from "src/flagManager";
@@ -289,8 +289,8 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 		if (
 			sharedFolder &&
 			sharedFolder.ready &&
-			sharedFolder.checkExtension(file.path) &&
-			sharedFolder.checkPath(file.path)
+			sharedFolder.checkPath(file.path) &&
+			Document.checkExtension(file.path)
 		) {
 			return (
 				storage ||
@@ -361,7 +361,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		if (
 			sharedFolder &&
 			sharedFolder.ready &&
-			sharedFolder.checkExtension(file.path)
+			Document.checkExtension(file.path)
 		) {
 			const doc = sharedFolder.viewFile(file.path);
 			if (!doc) return null;
@@ -408,7 +408,7 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		storage?: NotSyncedPillDecoration,
 		sharedFolder?: SharedFolder,
 	): NotSyncedPillDecoration | null {
-		if (sharedFolder && !sharedFolder.checkExtension(file.path)) {
+		if (sharedFolder && !Document.checkExtension(file.path)) {
 			return storage || new NotSyncedPillDecoration(item.selfEl);
 		}
 		if (storage) {
@@ -517,7 +517,7 @@ class DeSyncPillVisitor extends BaseVisitor<DeSyncPillDecoration> {
 		storage?: DeSyncPillDecoration,
 		sharedFolder?: SharedFolder,
 	): DeSyncPillDecoration | null {
-		if (sharedFolder && sharedFolder.checkExtension(file.path)) {
+		if (sharedFolder && Document.checkExtension(file.path)) {
 			const doc = sharedFolder.viewFile(file.path);
 			if (!doc || !doc.ready) return null;
 
