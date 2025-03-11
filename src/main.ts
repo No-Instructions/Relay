@@ -709,7 +709,7 @@ export default class Live extends Plugin {
 				if (folder) {
 					vaultLog("Delete", file.path);
 					folder.whenReady().then((folder) => {
-						folder.deleteFile(file.path);
+						folder.proxy.deleteFile(file.path);
 					});
 				}
 			}),
