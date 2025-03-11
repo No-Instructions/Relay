@@ -1,7 +1,7 @@
 {
   "id": "system3-relay",
   "name": "Relay",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "minAppVersion": "0.15.0",
   "description": "Collaborate in real time with live cursors. Create relays, add folders, and manage user access.",
   "author": "System 3",
