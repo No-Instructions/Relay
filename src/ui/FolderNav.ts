@@ -365,7 +365,7 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 			sharedFolder.ready &&
 			Document.checkExtension(file.path)
 		) {
-			const doc = sharedFolder.viewFile(file.path);
+			const doc = sharedFolder.proxy.viewDoc(file.path);
 			if (!doc) return null;
 			if (!doc.ready) return null;
 			return storage || new FilePillDecoration(item.selfEl, doc);
@@ -520,7 +520,7 @@ class DeSyncPillVisitor extends BaseVisitor<DeSyncPillDecoration> {
 		sharedFolder?: SharedFolder,
 	): DeSyncPillDecoration | null {
 		if (sharedFolder && Document.checkExtension(file.path)) {
-			const doc = sharedFolder.viewFile(file.path);
+			const doc = sharedFolder.proxy.viewDoc(file.path);
 			if (!doc || !doc.ready) return null;
 
 			if (file.stat.size !== doc.stat.size) {
