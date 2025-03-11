@@ -405,6 +405,10 @@ export class Document extends HasProvider implements TFile {
 			: this._persistence._dbsize;
 	}
 
+	static checkExtension(vpath: string): boolean {
+		return vpath.endsWith(".md");
+	}
+
 	destroy() {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
