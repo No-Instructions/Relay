@@ -135,7 +135,7 @@ export class SharedFolder extends HasProvider {
 			if (!this.checkPath(file.path)) {
 				return;
 			}
-			if (!this.checkExtension(file.path)) {
+			if (!Document.checkExtension(file.path)) {
 				return;
 			}
 			if (file instanceof TFolder) {
@@ -557,7 +557,7 @@ export class SharedFolder extends HasProvider {
 		diffLog: string[],
 	): OperationType {
 		const doc = this.docs.get(guid);
-		if (this.existsSync(path) || !this.checkExtension(path)) {
+		if (this.existsSync(path) || !Document.checkExtension(path)) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -591,7 +591,7 @@ export class SharedFolder extends HasProvider {
 		const deletes: Delete[] = [];
 		files.forEach((file) => {
 			// If the file is in the shared folder and not in the map, move it to the Trash
-			const isMarkdown = this.checkExtension(file.path);
+			const isMarkdown = Document.checkExtension(file.path);
 			const fileInFolder = this.checkPath(file.path);
 			const fileInMap = remotePaths.contains(file.path.slice(this.path.length));
 			const filePending = this.pendingUpload.has(
@@ -720,10 +720,6 @@ export class SharedFolder extends HasProvider {
 		return path.startsWith(this.path + sep);
 	}
 
-	checkExtension(path: string, extension = ".md"): boolean {
-		return path.endsWith(extension);
-	}
-
 	getVirtualPath(path: string): string {
 		this.assertPath(path);
 
@@ -734,7 +730,7 @@ export class SharedFolder extends HasProvider {
 	public async getFile(path: string): Promise<Document> {
 		// Get a file from disk for immediate use (in the editor, or on create)
 		const vPath = this.getVirtualPath(path);
-		if (!this.checkExtension(path)) {
+		if (!Document.checkExtension(path)) {
 			throw new Error("bad extension!");
 		}
 		return this.getDoc(vPath, true);
@@ -787,7 +783,7 @@ export class SharedFolder extends HasProvider {
 
 	public viewFile(path: string): Document | undefined {
 		const vPath = this.getVirtualPath(path);
-		if (!this.checkExtension(path)) {
+		if (!Document.checkExtension(path)) {
 			throw new Error("bad extension!");
 		}
 		return this.viewDoc(vPath);
@@ -801,7 +797,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	async downloadDoc(vpath: string, update = true): Promise<Document> {
-		if (!this.checkExtension(vpath)) {
+		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
 		if (!this.synced && !this.ids.has(vpath)) {
@@ -828,7 +824,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	uploadDoc(vpath: string, update = true): Document {
-		if (!this.checkExtension(vpath)) {
+		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
 		if (
@@ -890,7 +886,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	createDoc(vpath: string, update = true): Document {
-		if (!this.checkExtension(vpath)) {
+		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
 		if (
@@ -966,7 +962,7 @@ export class SharedFolder extends HasProvider {
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			if (!this.checkExtension(newPath)) return;
+			if (!Document.checkExtension(newPath)) return;
 			this.placeHold([newVPath]);
 			this.uploadDoc(newVPath);
 		} else {

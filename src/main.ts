@@ -16,6 +16,7 @@ import {
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
+import { Document } from "./Document";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
 
@@ -678,7 +679,7 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					const vpath = folder.getVirtualPath(file.path);
-					if (!folder.checkExtension(vpath)) {
+					if (!Document.checkExtension(vpath)) {
 						return;
 					}
 					const newDocs = folder.placeHold([vpath]);
