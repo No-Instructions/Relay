@@ -27,6 +27,8 @@ export interface IObservable<T> {
 
 export class Observable<T> extends HasLogging implements IObservable<T> {
 	protected _listeners: Set<Subscriber<T>>;
+	protected unsubscribes: Unsubscriber[];
+	protected destroyed: boolean = false;
 
 	constructor(public observableName?: string) {
 		super();
@@ -40,6 +42,7 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 			}
 		});
 		this._listeners = new Set();
+		this.unsubscribes = [];
 	}
 
 	notifyListeners(): void {
@@ -81,7 +84,13 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 	}
 
 	destroy() {
-		this._listeners.clear();
+		this.destroyed = true;
+		if (this.unsubscribes) {
+			this.unsubscribes.forEach((unsub) => {
+				unsub();
+			});
+		}
+		this._listeners?.clear();
 		this._listeners = null as any;
 	}
 }

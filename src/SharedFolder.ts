@@ -1028,7 +1028,6 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		awaitingUpdates?: boolean,
 	) => SharedFolder;
 	private _offRemoteUpdates?: () => void;
-	private unsubscribes: Unsubscriber[] = [];
 
 	constructor(
 		private relayManager: RelayManager,
