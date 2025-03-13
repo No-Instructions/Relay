@@ -12,8 +12,14 @@ import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
 import { withFlag } from "./flagManager";
 import { flag } from "./flags";
+import type { HasMimeType, IFile } from "./IFile";
+import { getMimeType } from "./mimetypes";
 
-export class Document extends HasProvider implements TFile {
+export function isDocument(file?: IFile): file is Document {
+	return file instanceof Document;
+}
+
+export class Document extends HasProvider implements IFile, HasMimeType {
 	_dbsize?: number;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
@@ -328,6 +334,10 @@ export class Document extends HasProvider implements TFile {
 		return this.hasLocalDB();
 	}
 
+	public get mimetype(): string {
+		return getMimeType(this.path);
+	}
+
 	private _origin?: string;
 
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
@@ -421,8 +431,8 @@ export class Document extends HasProvider implements TFile {
 		this.move(newPath);
 	}
 
-	public async delete(): Promise<void> {
-		this.destroy();
+	public async cleanup(): Promise<void> {
+		this._diskBufferStore?.removeDiskBuffer(this.guid);
 	}
 
 	// Helper method to update file stats
