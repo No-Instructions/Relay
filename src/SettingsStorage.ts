@@ -258,7 +258,6 @@ export class NamespacedSettings<
 	private readonly basePath: string[];
 	private readonly patterns: PathPattern[] = [];
 	private unsub?: Unsubscriber;
-	private destroyed = false;
 	private lastKnown?: T;
 
 	constructor(
