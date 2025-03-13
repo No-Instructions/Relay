@@ -6,7 +6,6 @@ import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
-import { curryLog } from "./debug";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
@@ -37,18 +36,6 @@ export class Document extends HasProvider implements TFile {
 	_diskBuffer?: DiskBuffer;
 	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
-
-	debug!: (message?: any, ...optionalParams: any[]) => void;
-	log!: (message?: any, ...optionalParams: any[]) => void;
-	warn!: (message?: any, ...optionalParams: any[]) => void;
-	error!: (message?: any, ...optionalParams: any[]) => void;
-
-	setLoggers(context: string) {
-		this.debug = curryLog(context, "debug");
-		this.log = curryLog(context, "log");
-		this.warn = curryLog(context, "warn");
-		this.error = curryLog(context, "error");
-	}
 
 	constructor(
 		path: string,
