@@ -25,17 +25,6 @@ export interface QueueItem {
 	sharedFolder: SharedFolder;
 }
 
-export interface SyncLogEntry {
-	id: string;
-	timestamp: number;
-	path: string;
-	type: "sync" | "download";
-	status: "pending" | "running" | "completed" | "failed";
-	guid: string;
-	sharedFolderGuid: string;
-	error?: string;
-}
-
 export interface SyncGroup {
 	sharedFolder: SharedFolder;
 	total: number; // Total operations (syncs + downloads)
@@ -129,7 +118,6 @@ export class BackgroundSync {
 	public activeSync = new ObservableSet<QueueItem>();
 	public activeDownloads = new ObservableSet<QueueItem>();
 	public syncGroups = new ObservableMap<SharedFolder, SyncGroup>();
-	public syncLog = new ObservableSet<SyncLogEntry>();
 
 	private syncQueue: QueueItem[] = [];
 	private downloadQueue: QueueItem[] = [];
@@ -280,28 +268,10 @@ export class BackgroundSync {
 			item.status = "running";
 			this.activeSync.add(item);
 
-			// Log the item status change to running
-			this.addToLog({
-				guid: item.guid,
-				path: item.path,
-				type: "sync",
-				status: "running",
-				sharedFolderGuid: item.sharedFolder.guid,
-			});
-
 			try {
 				const doc = item.doc as Document;
 				await this.syncDocument(doc);
 				item.status = "completed";
-
-				// Log the successful completion
-				this.addToLog({
-					guid: item.guid,
-					path: item.path,
-					type: "sync",
-					status: "completed",
-					sharedFolderGuid: item.sharedFolder.guid,
-				});
 
 				const callback = this.syncCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -327,31 +297,12 @@ export class BackgroundSync {
 					if (group.completed === group.total) {
 						group.status = "completed";
 						this.debug("[Sync Progress] Group completed!");
-
-						// Log group completion
-						this.addToLog({
-							guid: group.sharedFolder.guid,
-							path: `${group.sharedFolder.path} (group)`,
-							type: "sync",
-							status: "completed",
-							sharedFolderGuid: group.sharedFolder.guid,
-						});
 					}
 
 					this.syncGroups.set(item.sharedFolder, group);
 				}
 			} catch (error) {
 				item.status = "failed";
-
-				// Log the failure with error details
-				this.addToLog({
-					guid: item.guid,
-					path: item.path,
-					type: "sync",
-					status: "failed",
-					sharedFolderGuid: item.sharedFolder.guid,
-					error: error instanceof Error ? error.message : String(error),
-				});
 
 				const callback = this.syncCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -366,16 +317,6 @@ export class BackgroundSync {
 					this.error("[Sync Failed]", error);
 					group.status = "failed";
 					this.syncGroups.set(item.sharedFolder, group);
-
-					// Log group failure
-					this.addToLog({
-						guid: group.sharedFolder.guid,
-						path: `${group.sharedFolder.path} (group)`,
-						type: "sync",
-						status: "failed",
-						sharedFolderGuid: group.sharedFolder.guid,
-						error: error instanceof Error ? error.message : String(error),
-					});
 				}
 			} finally {
 				this.activeSync.delete(item);
@@ -419,27 +360,9 @@ export class BackgroundSync {
 			item.status = "running";
 			this.activeDownloads.add(item);
 
-			// Log the item status change to running
-			this.addToLog({
-				guid: item.guid,
-				path: item.path,
-				type: "download",
-				status: "running",
-				sharedFolderGuid: item.sharedFolder.guid,
-			});
-
 			try {
 				await this.getDocument(item.doc);
 				item.status = "completed";
-
-				// Log the successful completion
-				this.addToLog({
-					guid: item.guid,
-					path: item.path,
-					type: "download",
-					status: "completed",
-					sharedFolderGuid: item.sharedFolder.guid,
-				});
 
 				const callback = this.downloadCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -453,30 +376,11 @@ export class BackgroundSync {
 					group.completed++;
 					if (group.completed === group.total) {
 						group.status = "completed";
-
-						// Log group completion
-						this.addToLog({
-							guid: group.sharedFolder.guid,
-							path: `${group.sharedFolder.path} (group)`,
-							type: "download",
-							status: "completed",
-							sharedFolderGuid: group.sharedFolder.guid,
-						});
 					}
 					this.syncGroups.set(item.sharedFolder, group);
 				}
 			} catch (error) {
 				item.status = "failed";
-
-				// Log the failure with error details
-				this.addToLog({
-					guid: item.guid,
-					path: item.path,
-					type: "download",
-					status: "failed",
-					sharedFolderGuid: item.sharedFolder.guid,
-					error: error instanceof Error ? error.message : String(error),
-				});
 
 				const callback = this.downloadCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -490,16 +394,6 @@ export class BackgroundSync {
 				if (group) {
 					group.status = "failed";
 					this.syncGroups.set(item.sharedFolder, group);
-
-					// Log group failure
-					this.addToLog({
-						guid: group.sharedFolder.guid,
-						path: `${group.sharedFolder.path} (group)`,
-						type: "download",
-						status: "failed",
-						sharedFolderGuid: group.sharedFolder.guid,
-						error: error instanceof Error ? error.message : String(error),
-					});
 				}
 				this.error("[processDownloadQueue]", error);
 			} finally {
@@ -575,15 +469,6 @@ export class BackgroundSync {
 			group.syncs++;
 		}
 		this.syncGroups.set(sharedFolder, group);
-
-		// Log the enqueued item
-		this.addToLog({
-			guid: item.guid,
-			path: queueItem.path,
-			type: "sync",
-			status: "pending",
-			sharedFolderGuid: sharedFolder.guid,
-		});
 
 		this.inProgressSyncs.add(item.guid);
 
@@ -661,15 +546,6 @@ export class BackgroundSync {
 			sharedFolder,
 		};
 
-		// Log the enqueued item
-		this.addToLog({
-			guid: item.guid,
-			path: queueItem.path,
-			type: "download",
-			status: "pending",
-			sharedFolderGuid: sharedFolder.guid,
-		});
-
 		// Mark as in progress
 		this.inProgressDownloads.add(item.guid);
 
@@ -714,15 +590,6 @@ export class BackgroundSync {
 		// Register the group before enqueueing items
 		this.syncGroups.set(sharedFolder, group);
 
-		// Log the group sync beginning
-		this.addToLog({
-			guid: sharedFolder.guid,
-			path: `${sharedFolder.path} (group sync started)`,
-			type: "sync",
-			status: "pending",
-			sharedFolderGuid: sharedFolder.guid,
-		});
-
 		// Sort items by path for consistent sync order
 		const sortedDocs = [...docs].sort(compareFilePaths);
 
@@ -734,15 +601,6 @@ export class BackgroundSync {
 		// Update group status to running
 		group.status = "running";
 		this.syncGroups.set(sharedFolder, group);
-
-		// Log the group status change
-		this.addToLog({
-			guid: sharedFolder.guid,
-			path: `${sharedFolder.path} (group sync running)`,
-			type: "sync",
-			status: "running",
-			sharedFolderGuid: sharedFolder.guid,
-		});
 	}
 
 	/**
@@ -783,15 +641,6 @@ export class BackgroundSync {
 			status: "pending",
 			sharedFolder,
 		};
-
-		// Log the enqueued item
-		this.addToLog({
-			guid: item.guid,
-			path: queueItem.path,
-			type: "sync",
-			status: "pending",
-			sharedFolderGuid: sharedFolder.guid,
-		});
 
 		this.inProgressSyncs.add(item.guid);
 
@@ -1120,175 +969,6 @@ export class BackgroundSync {
 	}
 
 	/**
-	 * Adds an entry to the sync operation log
-	 *
-	 * This method adds a new entry to the sync log with the current timestamp.
-	 * It prevents duplicate entries for the same item+status combination and
-	 * automatically trims the log if it exceeds the maximum size.
-	 *
-	 * @param entry The partial log entry to add
-	 */
-	addToLog(entry: Partial<SyncLogEntry>): void {
-		const timestamp = Date.now();
-		const id =
-			entry.id ||
-			`log-${entry.type}-${entry.guid}-${entry.status}-${timestamp}`;
-
-		// Check if we've already logged this exact item+status
-		const logKey = `${entry.type}-${entry.guid}-${entry.status}`;
-
-		// Only add if we haven't seen this exact item with this status before
-		if (!this.loggedItems.has(logKey)) {
-			this.loggedItems.set(logKey, true);
-
-			// Create the complete log entry
-			const logEntry: SyncLogEntry = {
-				id,
-				timestamp,
-				path: entry.path || "",
-				type: entry.type || "sync",
-				status: entry.status || "pending",
-				guid: entry.guid || id,
-				sharedFolderGuid: entry.sharedFolderGuid || "",
-				error: entry.error,
-			};
-
-			// Add to the observable set
-			this.syncLog.add(logEntry);
-
-			// Trim the log if it exceeds the maximum size
-			this.trimLog();
-		}
-	}
-
-	/**
-	 * Gets all sync log entries, sorted by timestamp (newest first)
-	 *
-	 * @returns Array of log entries sorted by timestamp (newest first)
-	 */
-	getSyncLog(): SyncLogEntry[] {
-		// Convert the set to an array
-		const entries: SyncLogEntry[] = [];
-		this.syncLog.forEach((entry) => entries.push(entry));
-
-		// Sort by timestamp (newest first)
-		return entries.sort((a, b) => b.timestamp - a.timestamp);
-	}
-
-	/**
-	 * Clears the sync log
-	 *
-	 * This method removes all entries from the sync log and resets
-	 * the logged items tracking.
-	 */
-	clearSyncLog(): void {
-		this.syncLog.clear();
-		this.loggedItems.clear();
-	}
-
-	/**
-	 * Trims the log to the maximum number of entries
-	 *
-	 * This method keeps only the most recent entries up to the maximum
-	 * number configured in maxLogEntries.
-	 *
-	 * @private Used internally by addToLog
-	 */
-	private trimLog(): void {
-		const entries = this.getSyncLog();
-		if (entries.length > this.maxLogEntries) {
-			// Remove oldest entries beyond the limit
-			const entriesToKeep = entries.slice(0, this.maxLogEntries);
-
-			// Clear the log and re-add only the entries to keep
-			this.syncLog.clear();
-			entriesToKeep.forEach((entry) => {
-				this.syncLog.add(entry);
-			});
-		}
-	}
-
-	/**
-	 * Retries a failed sync or download operation
-	 *
-	 * This method attempts to retry a previously failed operation by
-	 * re-enqueueing the document for sync or download.
-	 *
-	 * @param logEntry The log entry to retry
-	 * @returns A promise that resolves to true if retry was successful, false otherwise
-	 */
-	async retryLogItem(logEntry: SyncLogEntry): Promise<boolean> {
-		try {
-			// Get all shared folders
-			const foldersArray: SharedFolder[] = [];
-			this.sharedFolders.forEach((folder) => foldersArray.push(folder));
-
-			// Find the matching folder by guid
-			const sharedFolder = foldersArray.find(
-				(folder) => folder.guid === logEntry.sharedFolderGuid,
-			);
-
-			if (!sharedFolder) {
-				this.log("Retry failed: Shared folder not found");
-				return false;
-			}
-
-			// Find the document in the shared folder
-			const doc = sharedFolder.docs.get(logEntry.guid);
-			if (!doc) {
-				this.log("Retry failed: Document not found");
-				return false;
-			}
-
-			// Add entry to log showing retry attempt
-			this.addToLog({
-				guid: logEntry.guid,
-				path: logEntry.path,
-				type: logEntry.type,
-				status: "pending",
-				sharedFolderGuid: logEntry.sharedFolderGuid,
-			});
-
-			// Add to appropriate queue
-			if (logEntry.type === "sync") {
-				await this.enqueueSync(doc);
-				this.log(`Retrying sync for ${logEntry.path}`);
-			} else {
-				await this.enqueueDownload(doc);
-				this.log(`Retrying download for ${logEntry.path}`);
-			}
-
-			return true;
-		} catch (error) {
-			this.error("Error retrying item:", error);
-
-			// Log the error
-			this.addToLog({
-				guid: logEntry.guid,
-				path: logEntry.path,
-				type: logEntry.type,
-				status: "failed",
-				sharedFolderGuid: logEntry.sharedFolderGuid,
-				error: error instanceof Error ? error.message : String(error),
-			});
-
-			return false;
-		}
-	}
-
-	/**
-	 * Subscribes to sync log updates
-	 *
-	 * @param callback The function to call when the sync log changes
-	 * @returns A function to unsubscribe
-	 */
-	subscribeToSyncLog(
-		callback: Subscriber<ObservableSet<SyncLogEntry>>,
-	): Unsubscriber {
-		return this.syncLog.subscribe(callback);
-	}
-
-	/**
 	 * Subscribes to progress updates for a specific shared folder
 	 *
 	 * @param sharedFolder The shared folder to monitor
@@ -1373,7 +1053,6 @@ export class BackgroundSync {
 		this.activeSync.destroy();
 		this.activeDownloads.destroy();
 		this.syncGroups.destroy();
-		this.syncLog.destroy();
 
 		// Clear queues and tracking
 		this.syncQueue = [];
@@ -1384,7 +1063,6 @@ export class BackgroundSync {
 
 		// Clean up references
 		this.loginManager = null as any;
-		this.sharedFolders = null as any;
 		this.timeProvider = null as any;
 
 		// Unsubscribe from all subscriptions
