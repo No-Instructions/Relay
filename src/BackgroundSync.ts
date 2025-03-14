@@ -2,8 +2,7 @@ import { requestUrl, type RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
 import { S3RN, S3RemoteDocument } from "./S3RN";
-import type { SharedFolders } from "./SharedFolder";
-import type { Document } from "./Document";
+import { isDocument, type Document } from "./Document";
 import type { TimeProvider } from "./TimeProvider";
 import { RelayInstances, curryLog } from "./debug";
 import type { Subscriber, Unsubscriber } from "./observable/Observable";
@@ -573,7 +572,7 @@ export class BackgroundSync {
 	 */
 	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
 		// Get all documents in the shared folder
-		const docs = [...sharedFolder.docs.values()];
+		const docs = [...sharedFolder.files.values()].filter(isDocument);
 
 		// Create sync group with properly initialized counters
 		const group: SyncGroup = {
@@ -858,7 +857,7 @@ export class BackgroundSync {
 				this.log("Skipping flush - file requires merge conflict resolution.");
 				return;
 			}
-			if (doc.sharedFolder.ids.has(doc.path)) {
+			if (doc.sharedFolder.syncStore.has(doc.path)) {
 				doc.sharedFolder.flush(doc, doc.text);
 				this.log("[getDocument] flushed");
 			}
