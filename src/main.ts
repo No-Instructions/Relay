@@ -16,7 +16,6 @@ import {
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
-import { Document } from "./Document";
 import type { SharedFolderSettings } from "./SharedFolder";
 import { LiveViewManager } from "./LiveViews";
 
@@ -55,6 +54,7 @@ import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
+
 import { SyncQueueModal } from "./ui/SyncQueueModal";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
@@ -673,21 +673,15 @@ export default class Live extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("create", (file) => {
 				// NOTE: this is called on every file at startup...
-				if (file instanceof TFolder) {
-					return;
-				}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					const vpath = folder.getVirtualPath(file.path);
-					if (!Document.checkExtension(vpath)) {
-						return;
-					}
-					const newDocs = folder.placeHold([vpath]);
+					const newDocs = folder.placeHold([file]);
 					if (newDocs.length > 0) {
-						folder.uploadDoc(vpath);
+						folder.uploadFile(vpath);
 					} else {
 						folder.whenReady().then((folder) => {
-							folder.proxy.getDoc(file.path);
+							folder.getFile(vpath);
 						});
 					}
 				}
@@ -702,8 +696,8 @@ export default class Live extends Plugin {
 					);
 					if (folder) {
 						this.sharedFolders.delete(folder);
+						return;
 					}
-					return;
 				}
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
@@ -725,8 +719,8 @@ export default class Live extends Plugin {
 					if (sharedFolder) {
 						sharedFolder.move(file.path);
 						this.sharedFolders.update();
+						return;
 					}
-					return;
 				}
 				const fromFolder = this.sharedFolders.lookup(oldPath);
 				const toFolder = this.sharedFolders.lookup(file.path);
@@ -734,13 +728,13 @@ export default class Live extends Plugin {
 				if (fromFolder && toFolder) {
 					// between two shared folders
 					vaultLog("Rename", file.path, oldPath);
-					fromFolder.renameFile(file.path, oldPath);
-					toFolder.renameFile(file.path, oldPath);
+					fromFolder.renameFile(file, oldPath);
+					toFolder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
-					vaultLog("Rename", file.path, oldPath);
-					folder.renameFile(file.path, oldPath);
+					vaultLog("Rename", file, oldPath);
+					folder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				}
