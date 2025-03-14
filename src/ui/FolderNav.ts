@@ -8,14 +8,15 @@ import {
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
-import { Document } from "src/Document";
+import { Document, isDocument } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
-import { withAnyOf, withFlag } from "src/flagManager";
+import { withFlag, flags, withAnyOf } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
+import type { IFile } from "src/IFile";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -317,31 +318,39 @@ class FilePillDecoration {
 
 	constructor(
 		private el: HTMLElement,
-		private doc: Document,
+		private file: IFile,
 	) {
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
 		});
-		this.pill = new TextPill({
-			target: this.el,
-			props: {
-				text: `${doc.guid.slice(0, 3)}`,
-			},
-		});
-		const onUpdate = async () => {
-			await doc.whenSynced();
-			await doc.count();
-			this.pill.$set({
-				text: `${doc.guid.slice(0, 3)} ${doc.dbsize}`,
+		if (file instanceof Document) {
+			this.pill = new TextPill({
+				target: this.el,
+				props: {
+					text: `${file.guid.slice(0, 3)} ${file.dbsize}`,
+				},
 			});
-		};
-		doc.whenReady().then(() => {
-			doc.ydoc.on("update", onUpdate);
-			onUpdate();
-		});
-		this.unsubscribe = () => {
-			doc.ydoc.off("update", onUpdate);
-		};
+			const onUpdate = () => {
+				this.pill.$set({
+					text: `${file.guid.slice(0, 3)} ${file.dbsize}`,
+				});
+			};
+
+			file.whenReady().then(() => {
+				file.ydoc.on("update", onUpdate);
+				onUpdate();
+			});
+			this.unsubscribe = () => {
+				file.ydoc.off("update", onUpdate);
+			};
+		} else {
+			this.pill = new TextPill({
+				target: this.el,
+				props: {
+					text: `${file.guid.slice(0, 4)}`,
+				},
+			});
+		}
 	}
 
 	destroy() {
@@ -355,20 +364,17 @@ class FilePillDecoration {
 
 class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 	visitFile(
-		file: TFile,
+		tfile: TFile,
 		item: FileItem,
 		storage?: FilePillDecoration,
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
-		if (
-			sharedFolder &&
-			sharedFolder.ready &&
-			Document.checkExtension(file.path)
-		) {
-			const doc = sharedFolder.proxy.viewDoc(file.path);
-			if (!doc) return null;
-			if (!doc.ready) return null;
-			return storage || new FilePillDecoration(item.selfEl, doc);
+		if (sharedFolder && sharedFolder.ready) {
+			if (!flags().enableDebugFileTag) return null;
+			const file = sharedFolder.proxy.viewDoc(tfile.path);
+			if (!isDocument(file)) if (!file) return null;
+			if (!file.ready) return null;
+			return storage || new FilePillDecoration(item.selfEl, file);
 		}
 		if (storage) {
 			storage.destroy();
@@ -390,7 +396,7 @@ class NotSyncedPillDecoration {
 			target: this.el,
 			props: {
 				text: "NOT SYNCED",
-				label: "Relay does not support this file type.",
+				label: "Syncing this file type is disabled",
 			},
 		});
 	}
@@ -410,7 +416,7 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		storage?: NotSyncedPillDecoration,
 		sharedFolder?: SharedFolder,
 	): NotSyncedPillDecoration | null {
-		if (sharedFolder && !Document.checkExtension(file.path)) {
+		if (sharedFolder && !sharedFolder.isSyncableTFile(file)) {
 			return storage || new NotSyncedPillDecoration(item.selfEl);
 		}
 		if (storage) {
@@ -468,11 +474,11 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	): DocumentStatus | null {
 		if (sharedFolder) {
 			try {
-				const guid = sharedFolder.ids.get(
-					sharedFolder.getVirtualPath(file.path),
-				);
+				const vpath = sharedFolder.getVirtualPath(file.path);
+				const guid = sharedFolder.syncStore.get(vpath);
 				if (!guid) return null;
-				const document = sharedFolder.docs.get(guid);
+				const document = sharedFolder.files.get(guid);
+				if (!(document instanceof Document)) return null;
 				if (!document) return null;
 				return storage || new DocumentStatus(item.el, document, file);
 			} catch (e) {
@@ -696,7 +702,7 @@ export class FolderNavigationDecorations {
 					if (!docsetListener) {
 						this.offDocumentListeners.set(
 							folder,
-							folder.docset.on(() => {
+							folder.fset.on(() => {
 								// XXX a full refresh is only needed when a document is moved
 								// outside of a shared folder.
 								this.refresh();
