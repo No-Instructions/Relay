@@ -2,15 +2,14 @@ import { requestUrl, type RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
 import { S3RN, S3RemoteDocument } from "./S3RN";
-import type { SharedFolders } from "./SharedFolder";
-import type { Document } from "./Document";
+import { isDocument, type Document } from "./Document";
 import type { TimeProvider } from "./TimeProvider";
-import { RelayInstances, curryLog } from "./debug";
+import { HasLogging, RelayInstances, curryLog } from "./debug";
 import type { Subscriber, Unsubscriber } from "./observable/Observable";
 import { diff_match_patch, type Diff } from "diff-match-patch";
 import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
-import type { SharedFolder } from "./SharedFolder";
+import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import { compareFilePaths } from "./FolderSort";
 import type { ClientToken } from "./y-sweet";
 import { flags } from "./flagManager";
@@ -114,7 +113,7 @@ export function updateYDocFromDiskBuffer(
 	log("Update complete. New content length:", ytext.toString().length);
 }
 
-export class BackgroundSync {
+export class BackgroundSync extends HasLogging {
 	public activeSync = new ObservableSet<QueueItem>();
 	public activeDownloads = new ObservableSet<QueueItem>();
 	public syncGroups = new ObservableMap<SharedFolder, SyncGroup>();
@@ -143,13 +142,8 @@ export class BackgroundSync {
 
 	// A map to track items we've already logged to avoid duplicates
 	private loggedItems = new Map<string, boolean>();
-	// Maximum number of log entries to keep
-	private maxLogEntries = 100;
 
 	subscriptions: Unsubscriber[] = [];
-	log = curryLog("[BackgroundSync]", "log");
-	debug = curryLog("[BackgroundSync]", "debug");
-	error = curryLog("[BackgroundSync]", "error");
 
 	constructor(
 		private loginManager: LoginManager,
@@ -157,6 +151,7 @@ export class BackgroundSync {
 		private sharedFolders: SharedFolders,
 		private concurrency: number = 3,
 	) {
+		super();
 		RelayInstances.set(this, "BackgroundSync");
 		this.timeProvider.setInterval(() => {
 			this.processSyncQueue();
@@ -573,7 +568,7 @@ export class BackgroundSync {
 	 */
 	enqueueSharedFolderSync(sharedFolder: SharedFolder): void {
 		// Get all documents in the shared folder
-		const docs = [...sharedFolder.docs.values()];
+		const docs = [...sharedFolder.files.values()].filter(isDocument);
 
 		// Create sync group with properly initialized counters
 		const group: SyncGroup = {
@@ -858,7 +853,7 @@ export class BackgroundSync {
 				this.log("Skipping flush - file requires merge conflict resolution.");
 				return;
 			}
-			if (doc.sharedFolder.ids.has(doc.path)) {
+			if (doc.sharedFolder.syncStore.has(doc.path)) {
 				doc.sharedFolder.flush(doc, doc.text);
 				this.log("[getDocument] flushed");
 			}

@@ -1,5 +1,5 @@
 const mimeTypes: { [key: string]: string } = {
-	md: "text/plain",
+	md: "text/markdown",
 	txt: "text/plain",
 	json: "application/json",
 	js: "application/javascript",

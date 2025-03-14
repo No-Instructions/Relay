@@ -409,7 +409,7 @@ export class LiveViewManager {
 				})();
 			}
 
-			return folder.docset.on(() => {
+			return folder.fset.on(() => {
 				this.refresh("[Docset]");
 			});
 		};
