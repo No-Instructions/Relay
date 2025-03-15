@@ -831,8 +831,6 @@ export default class Live extends Plugin {
 				},
 			});
 			this.register(patchFileToLinktext);
-			this.backgroundSync.start();
-			this.updateManager.start();
 		});
 
 		interface Parameters {
@@ -864,6 +862,9 @@ export default class Live extends Plugin {
 			const version = parameters.version?.trim();
 			this.installVersion(version);
 		});
+
+		this.backgroundSync.start();
+		this.updateManager.start();
 	}
 
 	installVersion(version?: string) {

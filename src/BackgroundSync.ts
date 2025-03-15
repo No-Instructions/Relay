@@ -1321,6 +1321,7 @@ export class BackgroundSync {
 	 * they have been paused.
 	 */
 	resume(): void {
+		this.debug("starting");
 		this.isPaused = false;
 		this.processSyncQueue();
 		this.processDownloadQueue();
