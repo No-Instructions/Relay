@@ -992,6 +992,9 @@ export class SharedFolder extends HasProvider {
 
 	destroy() {
 		this.destroyed = true;
+		this.unsubscribes.forEach((unsub) => {
+			unsub();
+		});
 		this.docs.forEach((doc: Document) => {
 			doc.destroy();
 			this.docs.delete(doc.guid);
