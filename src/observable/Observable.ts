@@ -35,9 +35,7 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		observables.set(this, () => {
 			if (this._listeners && this._listeners.size > 0) {
 				this.warn(
-					`Missing tear down of ${this._listeners.size} listeners`,
-					this,
-					this._listeners,
+					`Missing tear down of ${this._listeners.size} listeners on ${this.observableName}`,
 				);
 			}
 		});
