@@ -1,4 +1,7 @@
+import { type SyncFlags, type SyncSettingsManager } from "./SyncSettings";
+import { flags } from "./flagManager";
 import { getMimeType } from "./mimetypes";
+import { Observable } from "./observable/Observable";
 
 export enum SyncType {
 	Folder = "folder",
@@ -64,7 +67,7 @@ export interface FileMeta extends BaseFileMeta {
 	type: SyncType.File;
 }
 
-type FileMetas = ImageMeta | PDFMeta | AudioMeta | VideoMeta | FileMeta;
+export type FileMetas = ImageMeta | PDFMeta | AudioMeta | VideoMeta | FileMeta;
 
 export type Meta = FolderMeta | DocumentMeta | FileMetas;
 
@@ -76,6 +79,24 @@ type SyncTypeToMeta = {
 	[SyncType.Audio]: AudioMeta;
 	[SyncType.Video]: VideoMeta;
 	[SyncType.File]: FileMeta;
+};
+
+export const SyncFlagToTypeMap: Record<keyof SyncFlags, SyncType> = {
+	images: SyncType.Image,
+	audio: SyncType.Audio,
+	videos: SyncType.Video,
+	pdfs: SyncType.PDF,
+	otherTypes: SyncType.File,
+};
+
+export const SyncTypeToFlagMap: Record<SyncType, keyof SyncFlags | null> = {
+	[SyncType.Document]: null, // Always enabled
+	[SyncType.Folder]: null, // Always enabled
+	[SyncType.Image]: "images",
+	[SyncType.Audio]: "audio",
+	[SyncType.Video]: "videos",
+	[SyncType.PDF]: "pdfs",
+	[SyncType.File]: "otherTypes",
 };
 
 export function isDocumentMeta(meta?: Meta): meta is DocumentMeta {
@@ -148,12 +169,21 @@ interface ProtocolSupport {
 	enabled: boolean;
 }
 
-export class TypeRegistry {
+export class TypeRegistry extends Observable<TypeRegistry> {
 	private protocols = new Map<SyncType, ProtocolSupport>();
 
-	constructor(configs?: Array<[SyncType, ProtocolSupport]>) {
+	constructor(
+		private syncSettings: SyncSettingsManager,
+		private configs?: Array<[SyncType, ProtocolSupport]>,
+	) {
+		super();
 		configs = configs || TypeRegistry.defaults;
 		configs.forEach(([type, config]) => this.protocols.set(type, config));
+		this.unsubscribes.push(
+			syncSettings.subscribe((settings) => {
+				this.updateFromSettings(settings);
+			}),
+		);
 	}
 
 	static defaults: Array<[SyncType, ProtocolSupport]> = [
@@ -173,6 +203,68 @@ export class TypeRegistry {
 				enabled: true,
 			},
 		],
+		[
+			SyncType.Image,
+			{
+				maxVersion: 0,
+				mimetypes: [
+					"image/png",
+					"image/jpeg",
+					"image/gif",
+					"image/svg+xml",
+					"image/webp",
+					"image/avif",
+					"image/bmp",
+				],
+				enabled: true,
+			},
+		],
+		[
+			SyncType.PDF,
+			{
+				maxVersion: 0,
+				mimetypes: ["application/pdf"],
+				enabled: true,
+			},
+		],
+		[
+			SyncType.Audio,
+			{
+				maxVersion: 0,
+				mimetypes: [
+					"audio/mpeg",
+					"audio/wav",
+					"audio/flac",
+					"audio/mp4",
+					"audio/x-m4a",
+					"audio/ogg",
+					"audio/opus",
+				],
+				enabled: true,
+			},
+		],
+		[
+			SyncType.Video,
+			{
+				maxVersion: 0,
+				mimetypes: [
+					"video/mp4",
+					"video/webm",
+					"video/ogg",
+					"video/quicktime",
+					"video/x-matroska",
+				],
+				enabled: true,
+			},
+		],
+		[
+			SyncType.File,
+			{
+				maxVersion: 0,
+				mimetypes: ["application/octet-stream"],
+				enabled: false,
+			},
+		],
 	];
 
 	setEnabled(type: SyncType, enabled: boolean) {
@@ -183,12 +275,7 @@ export class TypeRegistry {
 	}
 
 	canSync(vpath: string, meta?: Meta): boolean {
-		// For existing files, check meta
-		if (meta) {
-			const config = this.protocols.get(meta.type);
-			if (!config) return false;
-			return config.enabled && meta.version <= config.maxVersion;
-		}
+		if (vpath.endsWith(".md")) return true;
 
 		// For new folders
 		const hasExtension = vpath.split("/").pop()?.includes(".");
@@ -196,20 +283,46 @@ export class TypeRegistry {
 			return true;
 		}
 
-		// For new files, check path
-		const mimetype = getMimeType(vpath);
-
-		// Check if any type handles this mimetype
-		for (const [, config] of this.protocols) {
-			if (config.mimetypes.includes(mimetype)) {
-				return config.enabled;
-			}
+		if (!flags().enableAttachmentSync) {
+			return false;
 		}
 
-		return false;
+		// For existing files, check meta
+		if (meta) {
+			const config = this.protocols.get(meta.type);
+			if (!config) return false;
+			return config.enabled && meta.version <= config.maxVersion;
+		}
+
+		// For new files, check path
+		const type = this.getTypeForPath(vpath);
+		return !!this.protocols.get(type)?.enabled;
 	}
 
-	getTypeForPath(vpath: string): SyncType | null {
+	private updateFromSettings(settings: Record<keyof SyncFlags, boolean>): void {
+		Object.entries(SyncFlagToTypeMap).forEach(([flagKey, syncType]) => {
+			this.setEnabled(syncType, settings[flagKey as keyof SyncFlags]);
+		});
+	}
+
+	public getEnabledFileSyncTypes(): SyncType[] {
+		// Documents and folders are always enabled
+		const enabledTypes: SyncType[] = [SyncType.Document];
+
+		if (!flags().enableAttachmentSync) {
+			return enabledTypes;
+		}
+
+		this.protocols.forEach((proto, syncType) => {
+			if (proto?.enabled) {
+				enabledTypes.push(syncType);
+			}
+		});
+
+		return enabledTypes;
+	}
+
+	getTypeForPath(vpath: string): SyncType {
 		const mimetype = getMimeType(vpath);
 
 		for (const [type, config] of this.protocols) {
@@ -218,6 +331,6 @@ export class TypeRegistry {
 			}
 		}
 
-		return null;
+		return SyncType.File;
 	}
 }
