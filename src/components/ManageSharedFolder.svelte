@@ -6,13 +6,15 @@
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import { debounce } from "obsidian";
-	import { createEventDispatcher, onMount } from "svelte";
-	import { derived } from "svelte/store";
+	import { createEventDispatcher, onDestroy, onMount } from "svelte";
+	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import Folder from "./Folder.svelte";
 	import Satellite from "./Satellite.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
+	import { flags } from "src/flagManager";
+	import { SyncSettingsManager, type SyncFlags } from "src/SyncSettings";
 
 	export let plugin: Live;
 	export let sharedFolder: SharedFolder;
@@ -31,6 +33,32 @@
 			)?.relay;
 		},
 	);
+	let syncSettings: SyncSettingsManager = sharedFolder.syncSettingsManager;
+
+	// Type the entries
+	type CategoryEntry = [
+		keyof SyncFlags,
+		{ name: string; description: string; enabled: boolean },
+	];
+	$: settingEntries = Object.entries(
+		syncSettings.getCategories(),
+	) as CategoryEntry[];
+
+	let isUpdating = false;
+	async function handleToggle(name: keyof SyncFlags, value: boolean) {
+		if (isUpdating) return;
+		isUpdating = true;
+		try {
+			await syncSettings.toggleCategory(name, value);
+			settingEntries = Object.entries(
+				syncSettings.getCategories(),
+			) as CategoryEntry[];
+		} catch (error) {
+			// pass
+		} finally {
+			isUpdating = false;
+		}
+	}
 
 	let nameInput: HTMLInputElement;
 	onMount(() => {
@@ -76,6 +104,52 @@
 <Breadcrumbs category={Folder} categoryText="Shared Folders" on:goBack={goBack}>
 	{sharedFolder.name}
 </Breadcrumbs>
+
+<SettingItemHeading name="Relay Server"></SettingItemHeading>
+{#if $relayStore}
+	<SlimSettingItem>
+		<Satellite slot="name" on:manageRelay relay={$relayStore}
+			>{$relayStore.name}</Satellite
+		>
+		<SettingsControl
+			on:settings={debounce(() => {
+				handleManageRelay($relayStore);
+			})}
+		></SettingsControl>
+	</SlimSettingItem>
+{:else}
+	<SettingItem
+		description="This folder is tracking edits, but is not connected to a Relay Server."
+	/>
+{/if}
+
+{#if $relayStore && flags().enableAttachmentSync}
+	<SettingItemHeading name="Sync Settings"></SettingItemHeading>
+	{#each settingEntries as [name, category]}
+		<SettingItem name={category.name} description={category.description}>
+			<div class="setting-item-control">
+				<div
+					role="checkbox"
+					aria-checked={$syncSettings[name]}
+					tabindex="0"
+					on:keypress={() => handleToggle(name, !$syncSettings[name])}
+					class="checkbox-container"
+					class:is-enabled={$syncSettings[name]}
+					on:click={() => handleToggle(name, !$syncSettings[name])}
+				>
+					<input
+						type="checkbox"
+						checked={$syncSettings[name]}
+						disabled={isUpdating}
+						on:change={(e) => handleToggle(name, e.currentTarget.checked)}
+					/>
+					<div class="checkbox-toggle"></div>
+				</div>
+			</div>
+		</SettingItem>
+	{/each}
+{/if}
+
 <SettingItemHeading name="Local folder"></SettingItemHeading>
 <SettingItem
 	name="Delete from vault"
@@ -119,22 +193,4 @@
 			</button>
 		</SettingItem>
 	{/if}
-{/if}
-
-<SettingItemHeading name="Relay Server"></SettingItemHeading>
-{#if $relayStore}
-	<SlimSettingItem>
-		<Satellite slot="name" on:manageRelay relay={$relayStore}
-			>{$relayStore.name}</Satellite
-		>
-		<SettingsControl
-			on:settings={debounce(() => {
-				handleManageRelay($relayStore);
-			})}
-		></SettingsControl>
-	</SlimSettingItem>
-{:else}
-	<SettingItem
-		description="This folder is tracking edits, but is not connected to a Relay Server."
-	/>
 {/if}

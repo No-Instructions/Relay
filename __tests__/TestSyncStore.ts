@@ -9,8 +9,13 @@ import {
 	makeFolderMeta,
 } from "../src/SyncTypes";
 
-import { Settings, type StorageAdapter } from "../src/SettingsStorage";
+import {
+	NamespacedSettings,
+	Settings,
+	type StorageAdapter,
+} from "../src/SettingsStorage";
 import { describe, jest, beforeEach, test, expect } from "@jest/globals";
+import { SyncSettingsManager, type SyncFlags } from "../src/SyncSettings";
 
 jest.mock("../src/Document", () => ({
 	Document: class {},
@@ -27,6 +32,7 @@ jest.mock("../src/debug", () => ({
 		warn = console.warn;
 		error = console.error;
 	},
+	RelayInstances: new WeakMap(),
 }));
 
 class TestStorageAdapter implements StorageAdapter<any> {
@@ -41,21 +47,37 @@ class TestStorageAdapter implements StorageAdapter<any> {
 	}
 }
 
+interface TestSettings {
+	sync: SyncFlags;
+}
+
 const internal = (store: SyncStore) => store as any;
 
 describe("SyncStore", () => {
 	let ydoc: Y.Doc;
 	let store: SyncStore;
 	let storage: TestStorageAdapter;
-	let settings: Settings<any>;
+	let settings: Settings<TestSettings>;
+	let syncSettings: NamespacedSettings<SyncFlags>;
+	let syncSettingsManager: SyncSettingsManager;
 
 	beforeEach(async () => {
 		ydoc = new Y.Doc();
 		storage = new TestStorageAdapter();
 		settings = new Settings(storage, {});
+		syncSettings = new NamespacedSettings(settings, "sync");
+		syncSettingsManager = syncSettings.getChild<
+			Record<keyof SyncFlags, boolean>,
+			SyncSettingsManager
+		>("sync", (settings, path) => new SyncSettingsManager(settings, path));
 
 		await settings.load();
-		store = new SyncStore(ydoc, "/test", new Map<string, string>());
+		store = new SyncStore(
+			ydoc,
+			"/test",
+			new Map<string, string>(),
+			syncSettingsManager,
+		);
 	});
 
 	describe("Old client operations", () => {

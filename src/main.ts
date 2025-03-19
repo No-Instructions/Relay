@@ -60,6 +60,8 @@ import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
 import type { ReleaseSettings } from "./UpdateManager";
+import { SyncSettingsManager } from "./SyncSettings";
+import { isSyncFile } from "./SyncFile";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -504,6 +506,21 @@ export default class Live extends Plugin {
 			this.settings,
 			`sharedFolders/[guid=${guid}]`,
 		);
+		const settings: SharedFolderSettings = { guid: guid, path: path };
+		if (relayId) {
+			settings["relay"] = relayId;
+		}
+		folderSettings.update((current) => {
+			return {
+				...current,
+				path,
+				guid,
+				...(relayId ? { relay: relayId } : {}),
+				...{
+					sync: current.sync ? current.sync : SyncSettingsManager.defaultFlags,
+				},
+			};
+		});
 		folderSettings.flush();
 
 		const folder = new SharedFolder(
@@ -671,12 +688,12 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("create", (file) => {
+			this.app.vault.on("create", (tfile) => {
 				// NOTE: this is called on every file at startup...
-				const folder = this.sharedFolders.lookup(file.path);
+				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
-					const vpath = folder.getVirtualPath(file.path);
-					const newDocs = folder.placeHold([file]);
+					const vpath = folder.getVirtualPath(tfile.path);
+					const newDocs = folder.placeHold([tfile]);
 					if (newDocs.length > 0) {
 						folder.uploadFile(vpath);
 					} else {
@@ -742,12 +759,16 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("modify", (file) => {
-				const folder = this.sharedFolders.lookup(file.path);
+			this.app.vault.on("modify", (tfile) => {
+				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
-					vaultLog("Modify", file.path);
+					vaultLog("Modify", tfile.path);
 					if (flags().enableDesyncPill) {
 						this.folderNavDecorations.quickRefresh();
+					}
+					const file = folder.proxy.getFile(tfile.path);
+					if (file && isSyncFile(file)) {
+						file.push();
 					}
 					this.app.metadataCache.trigger("resolve", file);
 				}
