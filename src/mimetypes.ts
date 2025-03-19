@@ -13,6 +13,22 @@ const mimeTypes: { [key: string]: string } = {
 	svg: "image/svg+xml",
 	pdf: "application/pdf",
 	canvas: "application/json",
+	webp: "image/webp",
+	avif: "image/avif",
+	bmp: "image/bmp",
+	mp3: "audio/mpeg",
+	wav: "audio/wav",
+	m4a: "audio/x-m4a",
+	flac: "audio/flac",
+	ogg: "audio/ogg",
+	oga: "audio/ogg",
+	opus: "audio/opus",
+	mp4: "video/mp4",
+	webm: "video/webm",
+	ogv: "video/ogg",
+	mov: "video/quicktime",
+	mkv: "video/x-matroska",
+	"3gp": "video/3gpp",
 };
 export function getMimeType(filename: string): string {
 	const extension = filename.split(".").pop()?.toLowerCase() || "";

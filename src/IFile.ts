@@ -11,7 +11,3 @@ export interface IFile {
 export interface HasMimeType {
 	mimetype: string;
 }
-
-export interface Hashable {
-	sha256: () => Promise<string>;
-}

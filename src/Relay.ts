@@ -1,3 +1,4 @@
+import type { RequestUrlResponse } from "obsidian";
 import type { IObservable } from "./observable/Observable";
 import type { ObservableMap } from "./observable/ObservableMap";
 
@@ -8,6 +9,13 @@ interface Identified {
 }
 interface Updatable<T> {
 	update(update: unknown): T;
+}
+interface HasAttachment {
+	attachmentUrl(): Promise<string>;
+	getAttachment(): Promise<RequestUrlResponse>;
+}
+interface Serializable {
+	toDict: () => any;
 }
 
 export interface RelayUser extends Identified, Updatable<RelayUser> {
@@ -73,4 +81,31 @@ export interface RelaySubscription
 	cancelAt: Date | null;
 	quantity: number;
 	token: string;
+}
+
+export interface FileInfo
+	extends Identified,
+		Updatable<FileInfo>,
+		HasAttachment,
+		Serializable {
+	id: string;
+	guid: string;
+	relay: Relay;
+	parent: string | null;
+	sharedFolder: RemoteSharedFolder;
+	ctime: number;
+	mtime: number;
+	synchash: string;
+	synctime: number;
+	updated: string;
+	created: string;
+	type: string;
+	name: string;
+	deletedAt: number | null;
+	lastParentId: string | null;
+	isDirectory: boolean;
+}
+
+export interface FileInfoSend extends FileInfo {
+	attachment: null | Blob | File;
 }

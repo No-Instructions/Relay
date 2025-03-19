@@ -14,6 +14,7 @@ import {
 	makeFolderMeta,
 	type Meta,
 } from "./SyncTypes";
+import type { SyncSettingsManager } from "./SyncSettings";
 
 export class SyncStore extends Observable<SyncStore> {
 	private legacyIds: Y.Map<string>; // Maps file paths to Document guids
@@ -27,6 +28,7 @@ export class SyncStore extends Observable<SyncStore> {
 		public ydoc: Y.Doc,
 		private namespace: string,
 		private pendingUpload: Map<string, string>,
+		private syncSettingsManager: SyncSettingsManager,
 	) {
 		super();
 		this.legacyIds = this.ydoc.getMap("docs");
@@ -34,7 +36,7 @@ export class SyncStore extends Observable<SyncStore> {
 		this.overlay = new Map();
 		this.renames = new Map();
 		this.deleteSet = new Set();
-		this.typeRegistry = new TypeRegistry();
+		this.typeRegistry = new TypeRegistry(this.syncSettingsManager);
 	}
 
 	assertVPath(path: string) {
@@ -138,7 +140,7 @@ export class SyncStore extends Observable<SyncStore> {
 		);
 	}
 
-	set(vpath: string, meta: Meta, commit = false) {
+	set(vpath: string, meta: Meta) {
 		this.assertVPath(vpath);
 		if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
 			this.legacyIds.set(vpath, meta.id);
@@ -156,12 +158,9 @@ export class SyncStore extends Observable<SyncStore> {
 			return;
 		}
 		this.warn("metadata write (path, existing, meta)", vpath, existing, meta);
-		if (commit) {
-			this.ydoc.transact(() => {
-				this.meta.set(vpath, meta);
-			}, this);
-		} else {
-			this.meta.set(vpath, meta);
+		this.meta.set(vpath, meta);
+		if (this.pendingUpload.has(vpath)) {
+			this.pendingUpload.delete(vpath);
 		}
 	}
 
@@ -262,6 +261,12 @@ export class SyncStore extends Observable<SyncStore> {
 		this.unsubscribes.push(() => {
 			this.meta.unobserve(syncFileObserver);
 		});
+		this.unsubscribes.push(
+			this.typeRegistry.subscribe(() => {
+				this.log("type registry change");
+				this.notifyListeners();
+			}),
+		);
 	}
 
 	get(vpath: string): string | undefined {
@@ -429,10 +434,7 @@ export class SyncStore extends Observable<SyncStore> {
 		if (!this.has(vpath)) {
 			throw new Error(`unexpected vpath ${vpath} marked uploaded`);
 		}
-		if (this.pendingUpload.has(vpath)) {
-			this.set(vpath, meta);
-			this.pendingUpload.delete(vpath);
-		}
+		this.set(vpath, meta);
 	}
 
 	migrateFile(guid: string, vpath: string) {
