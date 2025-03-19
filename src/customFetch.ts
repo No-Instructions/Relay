@@ -77,7 +77,9 @@ export const customFetch = async (
 	});
 
 	// Add json method to the response
-	const json = async () => JSON.parse(response!.text);
+	const json = async () => {
+		return JSON.parse(response!.text);
+	};
 	Object.defineProperty(fetchResponse, "json", {
 		value: json,
 	});
@@ -91,10 +93,13 @@ export const customFetch = async (
 	const response_text = response.text;
 
 	let response_json;
-	try {
-		response_json = JSON.parse(response_text);
-	} catch (e) {
-		// pass
+	const contentType = response.headers["content-type"] || "";
+	if (contentType.includes("application/json")) {
+		try {
+			response_json = JSON.parse(response_text);
+		} catch (e) {
+			// pass
+		}
 	}
 
 	curryLog("[CustomFetch]", level)(

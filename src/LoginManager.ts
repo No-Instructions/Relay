@@ -30,7 +30,8 @@ interface GoogleUser {
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private openSettings: () => Promise<void>;
-	private authStore: LocalAuthStore;
+	// XXX keep this private
+	authStore: LocalAuthStore;
 	user?: User;
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 
