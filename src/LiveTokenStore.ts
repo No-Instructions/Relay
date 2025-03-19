@@ -4,9 +4,15 @@ import type { TokenInfo } from "./TokenStore";
 import type { TimeProvider } from "./TimeProvider";
 import { LoginManager } from "./LoginManager";
 import { curryLog } from "./debug";
-import type { ClientToken } from "./y-sweet";
+import type { ClientToken, FileToken } from "./y-sweet";
 import { LocalStorage } from "./LocalStorage";
-import { S3RN, S3RemoteDocument, type S3RNType, S3RemoteFolder } from "./S3RN";
+import {
+	S3RN,
+	S3RemoteDocument,
+	type S3RNType,
+	S3RemoteFolder,
+	S3RemoteFile,
+} from "./S3RN";
 import { customFetch } from "./customFetch";
 
 declare const API_URL: string;
@@ -84,7 +90,7 @@ async function refresh(
 
 export class LiveTokenStore extends TokenStore<ClientToken> {
 	constructor(
-		loginManager: LoginManager,
+		private loginManager: LoginManager,
 		timeProvider: TimeProvider,
 		vaultName: string,
 		maxConnections = 5,
@@ -104,6 +110,111 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				},
 			},
 			maxConnections,
+		);
+	}
+
+	private async getFileTokenFromNetwork(
+		documentId: string,
+		fileHash: string,
+		contentType: string,
+		contentLength: number,
+	): Promise<FileToken> {
+		const activePromise = this._activePromises.get(fileHash);
+		if (activePromise) {
+			return activePromise as Promise<FileToken>;
+		}
+		this.tokenMap.set(documentId, {
+			token: null,
+			expiryTime: 0,
+			attempts: 0,
+		} as TokenInfo<ClientToken>);
+		const sharedPromise = this.fetchFileToken(
+			documentId,
+			fileHash,
+			contentType,
+			contentLength,
+		)
+			.then((newToken: FileToken) => {
+				const expiryTime = this.getJwtExpiry(newToken);
+				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+				const existing = this.tokenMap.get(fileHash)!;
+				this.tokenMap.set(fileHash, {
+					...existing,
+					token: newToken,
+					expiryTime,
+				} as TokenInfo<FileToken>);
+				this._activePromises.delete(fileHash);
+				return newToken;
+			})
+			.catch((err: Error) => {
+				this._activePromises.delete(fileHash);
+				throw err;
+			});
+		this._activePromises.set(fileHash, sharedPromise);
+		return sharedPromise;
+	}
+
+	async fetchFileToken(
+		documentId: string,
+		fileHash: string,
+		contentType: string,
+		contentLength: number,
+	): Promise<FileToken> {
+		const debug = curryLog("[TokenStore][Fetch]", "debug");
+		debug(`${documentId}`);
+		const entity: S3RNType = S3RN.decode(documentId);
+		let payload: string;
+		if (entity instanceof S3RemoteFile) {
+			payload = JSON.stringify({
+				docId: entity.fileId,
+				relay: entity.relayId,
+				folder: entity.folderId,
+				hash: fileHash,
+				contentType,
+				contentLength,
+			});
+		} else {
+			throw new Error("No remote to connect to");
+		}
+		if (!this.loginManager.loggedIn) {
+			throw new Error("Not logged in");
+		}
+		const headers = {
+			Authorization: `Bearer ${this.loginManager.user?.token}`,
+			"Relay-Version": GIT_TAG,
+		};
+		const response = await customFetch(`${API_URL}/file-token`, {
+			method: "POST",
+			headers: headers,
+			body: payload,
+		});
+
+		if (!response.ok) {
+			debug(response.status, await response.text());
+			throw new Error("invalid server response");
+		}
+
+		const clientToken = (await response.json()) as FileToken;
+		return clientToken;
+	}
+
+	async getFileToken(
+		documentId: string,
+		fileHash: string,
+		contentType: string,
+		contentLength: number,
+	): Promise<FileToken> {
+		const tokenInfo = this.tokenMap.get(documentId);
+		if (tokenInfo && tokenInfo.token && this.isTokenValid(tokenInfo)) {
+			this.log("token was valid, cache hit!");
+			this._activePromises.delete(documentId);
+			return Promise.resolve(tokenInfo.token as FileToken);
+		}
+		return this.getFileTokenFromNetwork(
+			documentId,
+			fileHash,
+			contentType,
+			contentLength,
 		);
 	}
 }
