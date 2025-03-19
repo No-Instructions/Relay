@@ -22,7 +22,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-export type ClientToken = {
+export interface ClientToken {
 	/** The bare URL of the WebSocket endpoint to connect to. The `doc` string will be appended to this. */
 	url: string;
 
@@ -33,8 +33,24 @@ export type ClientToken = {
 
 	token: string;
 
+	authorization?: "full" | "read-only";
 	expiryTime?: number;
-};
+	contentType?: number;
+	contentLength?: number;
+	fileHash?: number;
+}
+
+export interface FileToken extends ClientToken {
+	authorization: "full" | "read-only";
+
+	docId: string;
+	token: string;
+
+	expiryTime: number;
+	contentType: number;
+	contentLength: number;
+	fileHash: number;
+}
 
 function stringToBase64(input: string) {
 	if (typeof window !== "undefined" && window.btoa) {

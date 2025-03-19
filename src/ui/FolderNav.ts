@@ -669,7 +669,7 @@ export class FolderNavigationDecorations {
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 	layoutReady: boolean = false;
-	private queueSubscriptions: Unsubscriber[] = [];
+	unsubscribes: Unsubscribe[];
 
 	constructor(
 		vault: Vault,
@@ -686,9 +686,9 @@ export class FolderNavigationDecorations {
 			this.layoutReady = true;
 			this.refresh();
 		});
+		this.unsubscribes = [];
 
-		// Subscribe to queue changes once at the top level
-		this.queueSubscriptions.push(
+		this.unsubscribes.push(
 			backgroundSync.activeSync.subscribe(() => this.quickRefresh()),
 			backgroundSync.activeDownloads.subscribe(() => this.quickRefresh()),
 			backgroundSync.syncGroups.subscribe(() => this.quickRefresh()),
@@ -713,6 +713,11 @@ export class FolderNavigationDecorations {
 				folder.whenReady().then(() => {
 					this.refresh();
 				});
+				this.unsubscribes.push(
+					folder.syncSettingsManager.subscribe((settings) => {
+						this.quickRefresh();
+					}),
+				);
 			});
 			this.refresh();
 		});
@@ -807,13 +812,13 @@ export class FolderNavigationDecorations {
 		this.offFolderListener?.();
 		this.offDocumentListeners.forEach((off) => off());
 		this.offDocumentListeners.clear();
+		this.unsubscribes.forEach((unsub) => unsub());
+		this.unsubscribes.length = 0;
 		this.treeState.forEach((walker) => {
 			walker.destroy();
 		});
 		this.treeState.clear();
 		this.offLayoutChange();
-		this.queueSubscriptions.forEach((unsub) => unsub());
-		this.queueSubscriptions = [];
 
 		this.vault = null as any;
 		this.workspace = null as any;

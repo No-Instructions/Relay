@@ -297,6 +297,16 @@ export class HasProvider extends HasLogging {
 		});
 	}
 
+	reset() {
+		this.disconnect();
+		this.clientToken = {
+			token: "",
+			url: "",
+			docId: "-",
+			expiryTime: 0,
+		} as ClientToken;
+	}
+
 	private _injectIntent(
 		f: (state: ConnectionState) => void,
 	): (state: ConnectionState) => void {

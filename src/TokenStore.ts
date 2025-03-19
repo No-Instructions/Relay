@@ -54,17 +54,18 @@ export interface TokenInfo<Token> {
 }
 
 export class TokenStore<TokenType extends HasToken> {
-	private tokenMap: Map<string, TokenInfo<TokenType>>;
-	private callbacks: Map<string, (token: TokenType) => void>;
+	protected tokenMap: Map<string, TokenInfo<TokenType>>;
+	protected callbacks: Map<string, (token: TokenType) => void>;
+	protected _activePromises: Map<string, Promise<TokenType>>;
+
 	private refreshQueue: Set<string>;
 	private timeProvider: TimeProvider;
 	private refreshInterval: number | null;
 	private readonly expiryMargin: number = 5 * 60 * 1000; // 5 minutes in milliseconds
 	private activeConnections = 0;
 	private maxConnections: number;
-	private getJwtExpiry: (token: TokenType) => number;
+	protected getJwtExpiry: (token: TokenType) => number;
 	private _log: (message: string) => void;
-	private _activePromises: Map<string, Promise<TokenType>>;
 	private refresh: (
 		documentId: string,
 		onSuccess: (token: TokenType) => void,
