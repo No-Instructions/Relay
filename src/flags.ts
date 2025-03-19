@@ -12,6 +12,7 @@ export interface FeatureFlags {
 	enableSyncModal: boolean;
 	enableDesyncPill: boolean;
 	enableAutomaticUpdatesOption: boolean;
+	enableAttachmentSync: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -28,6 +29,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableSyncModal: false,
 	enableDesyncPill: false,
 	enableAutomaticUpdatesOption: false,
+	enableAttachmentSync: false,
 };
 
 export type Flag = keyof FeatureFlags;
