@@ -219,7 +219,7 @@ export class Settings<T> extends Observable<T> {
 			this.warn("Attempted to save before loading settings from disk");
 			return;
 		}
-		this.warn("Saving settings to disk:", this.data);
+		this.log("Saving settings to disk:", this.data);
 		await this.storage.saveData(this.data);
 	}
 

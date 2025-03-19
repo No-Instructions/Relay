@@ -169,7 +169,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 			if (!manifest) {
 				return null;
 			}
-			console.warn("repo manifest", manifest);
+			this.debug("repo manifest", manifest);
 			return manifest.version;
 		} catch (error) {
 			this.error("Failed to check for updates:", error);

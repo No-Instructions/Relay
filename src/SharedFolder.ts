@@ -1,6 +1,7 @@
 "use strict";
 import {
 	FileManager,
+	MetadataCache,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -30,19 +31,30 @@ import { LocalStorage } from "./LocalStorage";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore } from "./SyncStore";
-import { SyncType, makeDocumentMeta, makeFolderMeta } from "./SyncTypes";
+import {
+	SyncType,
+	makeDocumentMeta,
+	makeFileMeta,
+	makeFolderMeta,
+	type FileMeta,
+	type SyncFileType,
+} from "./SyncTypes";
 import type { IFile } from "./IFile";
 import { createPathProxy } from "./pathProxy";
+import { ContentAddressedStore } from "./CAS";
+import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
+import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 
 export interface SharedFolderSettings {
 	guid: string;
 	path: string;
 	relay?: string;
 	connect?: boolean;
+	sync?: SyncFlags;
 }
 
 interface Operation {
-	op: "create" | "rename" | "delete" | "noop";
+	op: "create" | "rename" | "delete" | "update" | "noop";
 	path: string;
 	promise: Promise<void> | Promise<IFile>;
 }
@@ -67,13 +79,19 @@ interface Delete extends Operation {
 	promise: Promise<void>;
 }
 
+interface Update extends Operation {
+	op: "update";
+	path: string;
+	promise: Promise<void>;
+}
+
 interface Noop extends Operation {
 	op: "noop";
 	path: string;
 	promise: Promise<void>;
 }
 
-type OperationType = Create | Rename | Delete | Noop;
+type OperationType = Create | Rename | Delete | Update | Noop;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
@@ -109,6 +127,7 @@ export class SharedFolder extends HasProvider {
 	destroyed: boolean = false;
 	public vault: Vault;
 	syncStore: SyncStore;
+	private _server?: string;
 	private fileManager: FileManager;
 	private relayManager: RelayManager;
 	private readyPromise: Dependency<SharedFolder> | null = null;
@@ -123,6 +142,8 @@ export class SharedFolder extends HasProvider {
 	private _persistence: IndexeddbPersistence;
 	diskBufferStore: DiskBufferStore;
 	proxy: SharedFolder;
+	cas: ContentAddressedStore;
+	syncSettingsManager: SyncSettingsManager;
 
 	constructor(
 		public appId: string,
@@ -133,6 +154,8 @@ export class SharedFolder extends HasProvider {
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
+		private metadataCache: MetadataCache,
+		private hashStore: ContentAddressedFileStore,
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		relayId?: string,
@@ -159,6 +182,21 @@ export class SharedFolder extends HasProvider {
 
 		this.authoritative = !awaitingUpdates;
 
+		this.syncSettingsManager = this._settings.getChild<
+			Record<keyof SyncFlags, boolean>,
+			SyncSettingsManager
+		>("sync", (settings, path) => new SyncSettingsManager(settings, path));
+
+		this.syncStore = new SyncStore(
+			this.ydoc,
+			this.path,
+			this.pendingUpload,
+			this.syncSettingsManager,
+		);
+		this.syncStore.on(async () => {
+			await this.syncFileTree(this.syncStore);
+		});
+
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
@@ -181,10 +219,7 @@ export class SharedFolder extends HasProvider {
 			this.connect();
 		}
 
-		this.syncStore = new SyncStore(this.ydoc, this.path, this.pendingUpload);
-		this.syncStore.on(async () => {
-			await this.syncFileTree(this.syncStore);
-		});
+		this.cas = new ContentAddressedStore(this);
 
 		this.whenReady().then(() => {
 			if (!this.destroyed) {
@@ -227,8 +262,7 @@ export class SharedFolder extends HasProvider {
 			if (SyncFolder.checkPath(vpath)) {
 				const doc = this.getSyncFolder(vpath, false);
 				files.push(doc);
-			}
-			if (Document.checkExtension(vpath)) {
+			} else if (Document.checkExtension(vpath)) {
 				if (upload) {
 					const doc = this.uploadDoc(vpath, false);
 					files.push(doc);
@@ -236,12 +270,52 @@ export class SharedFolder extends HasProvider {
 					const doc = this.getDoc(vpath, false);
 					files.push(doc);
 				}
+			} else if (this.syncStore.canSync(vpath)) {
+				if (upload) {
+					const file = this.uploadSyncFile(vpath, false);
+					files.push(file);
+				} else {
+					const file = this.downloadSyncFile(vpath, false);
+					files.push(file);
+				}
 			}
 		});
 		if (files.length > 0) {
 			this.fset.update();
 		}
 	};
+
+	public get server(): string | undefined {
+		return this._server;
+	}
+
+	public set server(value: string | undefined) {
+		if (value === this._server) {
+			return;
+		}
+		this.warn("server changed -- reinitializing all connections");
+		const shouldConnect = this.shouldConnect;
+		this.reset();
+		const reconnect: HasProvider[] = [];
+		this.fset.forEach((file) => {
+			if (file instanceof HasProvider) {
+				if (file.connected) {
+					reconnect.push(file);
+				}
+				file.reset();
+			}
+		});
+		this.tokenStore.clear((token) => {
+			return !!(this.relayId && token.token?.docId.startsWith(this.relayId));
+		});
+		if (shouldConnect) {
+			this.connect();
+			reconnect.forEach((file) => {
+				file.connect();
+			});
+		}
+		this._server = value;
+	}
 
 	public get tfolder(): TFolder {
 		const folder = this.vault.getAbstractFileByPath(this.path);
@@ -258,7 +332,9 @@ export class SharedFolder extends HasProvider {
 		}
 		const vpath = this.getVirtualPath(tfile.path);
 		const isSupportedFileType = this.syncStore.canSync(vpath);
-		return inFolder && isSupportedFileType;
+		const isExtensionEnabled =
+			this.syncSettingsManager.isExtensionEnabled(vpath);
+		return inFolder && isSupportedFileType && isExtensionEnabled;
 	}
 
 	private getSyncFiles(): TAbstractFile[] {
@@ -347,6 +423,19 @@ export class SharedFolder extends HasProvider {
 			...current,
 			...{ relay: this.relayId },
 		}));
+
+		if (value) {
+			this._server = value.relay.provider;
+			this.unsubscribes.push(
+				value.relay.subscribe((relay) => {
+					if (relay.guid === this.relayId) {
+						this.server = relay.provider;
+					}
+				}),
+			);
+		}
+
+		this.server = value?.relay.provider;
 		this.notifyListeners();
 	}
 
@@ -507,6 +596,9 @@ export class SharedFolder extends HasProvider {
 		if (SyncFolder.checkPath(vpath)) {
 			return this.getSyncFolder(vpath, false);
 		}
+		if (this.syncStore.canSync(vpath)) {
+			return this.downloadSyncFile(vpath, false);
+		}
 		throw new Error("unexpected file");
 	}
 
@@ -535,6 +627,10 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (this.existsSync(path)) {
+			// XXX file meta typing
+			if (file && isSyncFile(file) && file.shouldPull(meta as FileMeta)) {
+				return { op: "update", path, promise: file.pull() };
+			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -638,7 +734,12 @@ export class SharedFolder extends HasProvider {
 				}, this);
 				await Promise.all(ops.map((op) => op.promise));
 				this.ydoc.transact(async () => {
-					this.syncByType(syncStore, diffLog, ops, [SyncType.Document]);
+					this.syncByType(
+						syncStore,
+						diffLog,
+						ops,
+						this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+					);
 					this.syncStore.commit();
 				}, this);
 
@@ -773,7 +874,7 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	markUploaded(file: IFile) {
+	async markUploaded(file: IFile) {
 		if (isDocument(file)) {
 			const meta = makeDocumentMeta(file.guid);
 			this.ydoc.transact(() => {
@@ -788,9 +889,33 @@ export class SharedFolder extends HasProvider {
 			}, this);
 			return;
 		}
+		if (isSyncFile(file)) {
+			const type = this.syncStore.typeRegistry.getTypeForPath(file.path);
+			if (!type) {
+				throw new Error("unexpected sync type");
+			}
+			const hash = await file.caf.hash();
+			if (!hash) {
+				throw new Error("file hash not yet computed");
+			}
+			const existingMeta = this.syncStore.getMeta(this.path);
+			if (existingMeta && file.caf.value === existingMeta.hash) return;
+			const meta = makeFileMeta(
+				type as SyncFileType,
+				file.guid,
+				file.mimetype,
+				hash,
+				file.stat.mtime,
+			);
+			this.log("new meta", meta);
+			this.ydoc.transact(() => {
+				this.syncStore.markUploaded(file.path, meta);
+			}, this);
+			return;
+		}
 	}
 
-	getFile(vpath: string, update = true): IFile {
+	getFile(vpath: string, update = true): IFile | null {
 		const guid = this.syncStore.get(vpath);
 		if (guid) {
 			const file = this.files.get(guid);
@@ -804,7 +929,10 @@ export class SharedFolder extends HasProvider {
 		if (SyncFolder.checkPath(vpath)) {
 			return this.getSyncFolder(vpath, update);
 		}
-		throw new Error("unexpectedly missing file");
+		if (this.syncStore.canSync(vpath)) {
+			return this.getSyncFile(vpath, update);
+		}
+		return null;
 	}
 
 	placeHold(newFiles: TAbstractFile[]): string[] {
@@ -813,6 +941,7 @@ export class SharedFolder extends HasProvider {
 			newFiles.forEach((file) => {
 				const vpath = this.getVirtualPath(file.path);
 				if (!this.syncStore.has(vpath)) {
+					this.log("place hold new", vpath);
 					this.syncStore.new(vpath);
 					newDocs.push(vpath);
 				}
@@ -965,12 +1094,121 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
+	getOrCreateSyncFile(
+		guid: string,
+		vpath: string,
+		hashOrTFile: TFile | string,
+	): SyncFile {
+		const file =
+			this.files.get(guid) ||
+			new SyncFile(vpath, guid, this.metadataCache, this.hashStore, this);
+		if (!isSyncFile(file)) {
+			throw new Error("unexpected ifile type");
+		}
+		file.move(vpath);
+		this.files.set(guid, file);
+		return file;
+	}
+
+	downloadSyncFile(vpath: string, update: boolean) {
+		if (!this.syncStore.canSync(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error(`called download on item that is not in ids ${vpath}`);
+		}
+		const meta = this.syncStore.getMeta(vpath);
+		if (!meta || !meta.hash) {
+			return this.uploadSyncFile(vpath, update);
+		}
+		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
+
+		withTimeoutWarning(file.pull());
+
+		this.files.set(guid, file);
+		this.fset.add(file, update);
+
+		return file;
+	}
+
+	uploadSyncFile(vpath: string, update = true): SyncFile {
+		if (!this.syncStore.canSync(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid: string | undefined = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error("missing guid");
+		}
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		if (!tfile) {
+			throw new Error(`Upload failed, file does not exist at ${vpath}`);
+		}
+		if (!(tfile instanceof TFile)) {
+			throw new Error(`Upload failed, expected file at ${vpath}`);
+		}
+		const file = this.getOrCreateSyncFile(guid, vpath, tfile);
+
+		const run = async () => {
+			if (!this.existsSync(vpath)) {
+				throw new Error(`Upload failed, file does not exist at ${vpath}`);
+			}
+			await file.push();
+		};
+		run();
+
+		this.fset.add(file, update);
+		return file;
+	}
+
+	getSyncFile(vpath: string, update = true): SyncFile {
+		if (!this.syncStore.canSync(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid: string | undefined = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error("missing guid");
+		}
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		if (!tfile) {
+			throw new Error(`Upload failed, file does not exist at ${vpath}`);
+		}
+		if (!(tfile instanceof TFile)) {
+			throw new Error(`Upload failed, expected file at ${vpath}`);
+		}
+		const file = this.getOrCreateSyncFile(guid, vpath, tfile);
+
+		const meta = this.syncStore.getMeta(vpath);
+		if (!meta) {
+			this.log("get syncfile missing meta");
+			file.push();
+		} else {
+			file.pull();
+		}
+
+		this.files.set(guid, file);
+		this.fset.add(file, update);
+		return file;
+	}
+
 	uploadFile(vpath: string, update = true): IFile {
 		if (Document.checkExtension(vpath)) {
 			return this.uploadDoc(vpath, update);
 		}
 		if (SyncFolder.checkPath(vpath)) {
 			return this.getSyncFolder(vpath, update);
+		}
+		if (this.syncStore.canSync(vpath)) {
+			return this.uploadSyncFile(vpath, update);
 		}
 		throw new Error("unexpectedly unable to upload");
 	}
@@ -1013,6 +1251,7 @@ export class SharedFolder extends HasProvider {
 			this.assertPath(newPath);
 			if (!this.syncStore.canSync(newVPath)) return;
 			this.placeHold([tfile]);
+			this.log("can I has vpath", newVPath, this.syncStore.has(newVPath));
 			this.uploadFile(newVPath);
 		} else {
 			// live doc exists
@@ -1079,6 +1318,7 @@ export class SharedFolder extends HasProvider {
 			this.files.delete(doc.guid);
 		});
 		this.syncStore.destroy();
+		this.syncSettingsManager.destroy();
 		super.destroy();
 		this.ydoc.destroy();
 		this.fset.clear();
@@ -1091,6 +1331,7 @@ export class SharedFolder extends HasProvider {
 		this.tokenStore = null as any;
 		this.fileManager = null as any;
 		this.syncStore = null as any;
+		this.syncSettingsManager = null as any;
 		this.whenSyncedPromise?.destroy();
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();

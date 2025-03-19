@@ -60,6 +60,8 @@ import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
 import type { ReleaseSettings } from "./UpdateManager";
+import { SyncSettingsManager } from "./SyncSettings";
+import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -122,6 +124,7 @@ export default class Live extends Plugin {
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 	repo = REPOSITORY;
+	hashStore!: ContentAddressedFileStore;
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -335,6 +338,8 @@ export default class Live extends Plugin {
 		const vaultName = this.vault.getName();
 		this.fileManager = this.app.fileManager;
 
+		this.hashStore = new ContentAddressedFileStore(this.appId);
+
 		this.loginManager = new LoginManager(
 			this.vault.getName(),
 			this.openSettings.bind(this),
@@ -504,6 +509,21 @@ export default class Live extends Plugin {
 			this.settings,
 			`sharedFolders/[guid=${guid}]`,
 		);
+		const settings: SharedFolderSettings = { guid: guid, path: path };
+		if (relayId) {
+			settings["relay"] = relayId;
+		}
+		folderSettings.update((current) => {
+			return {
+				...current,
+				path,
+				guid,
+				...(relayId ? { relay: relayId } : {}),
+				...{
+					sync: current.sync ? current.sync : SyncSettingsManager.defaultFlags,
+				},
+			};
+		});
 		folderSettings.flush();
 
 		const folder = new SharedFolder(
@@ -515,6 +535,8 @@ export default class Live extends Plugin {
 			this.fileManager,
 			this.tokenStore,
 			this.relayManager,
+			this.app.metadataCache,
+			this.hashStore,
 			this.backgroundSync,
 			folderSettings,
 			relayId,
@@ -671,12 +693,12 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("create", (file) => {
+			this.app.vault.on("create", (tfile) => {
 				// NOTE: this is called on every file at startup...
-				const folder = this.sharedFolders.lookup(file.path);
+				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
-					const vpath = folder.getVirtualPath(file.path);
-					const newDocs = folder.placeHold([file]);
+					const vpath = folder.getVirtualPath(tfile.path);
+					const newDocs = folder.placeHold([tfile]);
 					if (newDocs.length > 0) {
 						folder.uploadFile(vpath);
 					} else {
@@ -742,12 +764,16 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("modify", (file) => {
-				const folder = this.sharedFolders.lookup(file.path);
+			this.app.vault.on("modify", (tfile) => {
+				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
-					vaultLog("Modify", file.path);
+					vaultLog("Modify", tfile.path);
 					if (flags().enableDesyncPill) {
 						this.folderNavDecorations.quickRefresh();
+					}
+					const file = folder.proxy.getFile(tfile.path);
+					if (file && isSyncFile(file)) {
+						file.sync();
 					}
 					this.app.metadataCache.trigger("resolve", file);
 				}
@@ -931,6 +957,9 @@ export default class Live extends Plugin {
 
 		this.backgroundSync?.destroy();
 		this.backgroundSync = null as any;
+
+		this.hashStore.destroy();
+		this.hashStore = null as any;
 
 		this.app?.workspace.updateOptions();
 		this.app = null as any;
