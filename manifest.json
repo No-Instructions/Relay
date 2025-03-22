@@ -2,7 +2,7 @@
   "id": "system3-relay",
   "name": "Relay",
   "minAppVersion": "0.15.0",
-  "description": "True multiplayer: collaborate in real time with live cursors. Create relays, share folders, and manage user access.",
+  "description": "True multiplayer: collaborate in real time with live cursors. Share folders, keep others private, and manage user access.",
   "author": "System 3",
   "authorUrl": "https://system3.md",
   "fundingUrl": "https://www.buymeacoffee.com/dtkav",
