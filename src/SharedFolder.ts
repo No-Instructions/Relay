@@ -32,9 +32,11 @@ import { isDocument } from "./Document";
 import { SyncStore } from "./SyncStore";
 import {
 	SyncType,
+	isSyncFileMeta,
 	makeDocumentMeta,
 	makeFileMeta,
 	makeFolderMeta,
+	type FileMeta,
 	type SyncFileType,
 } from "./SyncTypes";
 import type { IFile } from "./IFile";
@@ -214,11 +216,7 @@ export class SharedFolder extends HasProvider {
 			this.connect();
 		}
 
-		this.cas = new ContentAddressedStore(
-			this,
-			this.relayManager,
-			this.loginManager,
-		);
+		this.cas = new ContentAddressedStore(this);
 
 		this.whenReady().then(() => {
 			if (!this.destroyed) {
@@ -579,8 +577,9 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (this.existsSync(path)) {
-			if (file && isSyncFile(file) && file.meta !== meta) {
-				return { op: "update", path, promise: file.sync() };
+			// XXX file meta typing
+			if (file && isSyncFile(file) && file.shouldPull(meta as FileMeta)) {
+				return { op: "update", path, promise: file.pull() };
 			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
@@ -849,11 +848,14 @@ export class SharedFolder extends HasProvider {
 			if (!file.caf.value) {
 				throw new Error("file hash not yet computed");
 			}
+			const existingMeta = this.syncStore.getMeta(this.path);
+			if (existingMeta && file.caf.value === existingMeta.hash) return;
 			const meta = makeFileMeta(
 				type as SyncFileType,
 				file.guid,
 				file.mimetype,
 				file.caf.value,
+				file.stat.mtime,
 			);
 			this.log("new meta", meta);
 			this.ydoc.transact(() => {

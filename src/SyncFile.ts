@@ -8,11 +8,10 @@ import {
 } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
-import { type FileMetas, type SyncFileType } from "./SyncTypes";
+import { type FileMeta, type FileMetas, type SyncFileType } from "./SyncTypes";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import type { RelayManager } from "./RelayManager";
-import { uuidv4 } from "lib0/random";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
@@ -21,8 +20,8 @@ export function isSyncFile(file: IFile): file is SyncFile {
 	return file instanceof SyncFile;
 }
 
-export class ContentAddressedFile {
-	lastCheck: number = 0;
+export class ContentAddressedFile extends HasLogging {
+	lastRead: number = 0;
 	value: string | undefined;
 	content: ArrayBuffer | null = null;
 	tfile: TFile | null = null;
@@ -31,30 +30,48 @@ export class ContentAddressedFile {
 		private vault: Vault,
 		public path: string,
 	) {
+		super();
 		const tfile = this.vault.getAbstractFileByPath(path);
 		if (tfile && tfile instanceof TFile) {
 			this.tfile = tfile;
+			this.sha256();
 		}
-		this.sha256();
 	}
 
-	public async sha256(): Promise<string> {
+	public get modifiedAt() {
+		if (!this.tfile) {
+			throw new Error("missing tfile");
+		}
+		return this.tfile.stat.mtime;
+	}
+
+	async _read() {
 		if (!this.tfile) {
 			const tfile = this.vault.getAbstractFileByPath(this.path);
 			if (tfile && tfile instanceof TFile) {
 				this.tfile = tfile;
 			} else {
-				throw new Error("file is missing from disk");
+				throw new Error("missing tfile");
 			}
 		}
-		const stat = this.tfile.stat;
-		const modifiedAt = Math.max(stat.mtime, stat.ctime);
-		if (modifiedAt > this.lastCheck || !this.value) {
+
+		const modifiedAt = this.modifiedAt;
+		if (modifiedAt > this.lastRead || this.content === null) {
+			this.warn("reading content from disk");
 			this.content = await this.vault.readBinary(this.tfile);
-			this.lastCheck = Date.now();
 			this.value = await generateHash(this.content);
+			this.lastRead = modifiedAt;
 		}
-		return this.value;
+	}
+
+	async read(): Promise<ArrayBuffer | null> {
+		await this._read();
+		return this.content;
+	}
+
+	public async sha256(): Promise<string> {
+		await this._read();
+		return this.value as string;
 	}
 
 	exists() {
@@ -163,11 +180,6 @@ export class SyncFile extends HasLogging implements TFile, IFile, HasMimeType {
 		//return Math.max(this.stat.mtime, this.stat.ctime);
 	}
 
-	public async getRemote(hash: string) {
-		await this._parent.whenSynced();
-		return await this.sharedFolder.cas.getByHash(hash);
-	}
-
 	public async push(): Promise<string> {
 		this.log("push");
 		if (!this.sharedFolder.syncStore.canSync(this.path)) {
@@ -175,42 +187,43 @@ export class SyncFile extends HasLogging implements TFile, IFile, HasMimeType {
 			return "";
 		}
 		const hash = await this.caf.sha256();
-		const fileInfo = await this.getRemote(hash);
-		if (fileInfo?.synchash !== hash) {
-			this.log("push", fileInfo, hash);
-			try {
-				await this.sharedFolder.cas.writeFile(
-					{
-						guid: fileInfo ? fileInfo.guid : uuidv4(),
-						name: this.name,
-						synchash: hash,
-						ctime: this.stat.ctime,
-						mtime: this.stat.mtime,
-						parent: null,
-						is_directory: false,
-						synctime: Date.now(),
-					},
-					this.caf.content,
-				);
-			} catch (e) {
-				// ignore duplicates
-				this.debug("push error", e);
-			}
+		const content = await this.caf.read();
+		if (!content) {
+			throw new Error("read failed");
 		}
-		this.sharedFolder.markUploaded(this);
-		return hash;
+		const meta = this.sharedFolder.syncStore.getMeta(this.path);
+		if (!meta || (hash && meta.hash !== hash)) {
+			await this.sharedFolder.cas.writeFile(this);
+			this.sharedFolder.markUploaded(this);
+		}
+		return this.caf.sha256();
 	}
 
 	public async sync() {
 		this.log("sync");
 		const meta = this.sharedFolder.syncStore.getMeta(this.path);
-		if (meta && this.meta && meta.hash !== this.meta.hash) {
-			if ((meta as FileMetas).synctime > this.meta.synctime) {
-				await this.pull();
-			} else {
-				await this.push();
+		if (!meta) {
+			await this.push();
+		} else {
+			const hash = await this.caf.sha256();
+			if (hash !== meta.hash) {
+				if ((meta as FileMetas).synctime > this.stat.mtime) {
+					this.warn(
+						"synctime",
+						meta.synctime,
+						this.meta?.synctime,
+						this.stat.mtime,
+					);
+					await this.pull();
+				} else {
+					await this.push();
+				}
 			}
 		}
+	}
+
+	shouldPull(meta: FileMeta) {
+		return !this.tfile || meta.synctime > this.stat.mtime;
 	}
 
 	public async pull() {
@@ -231,15 +244,8 @@ export class SyncFile extends HasLogging implements TFile, IFile, HasMimeType {
 				return;
 			}
 		}
-
-		const fileInfo = await this.getRemote(this.meta.hash);
-		if (!fileInfo) {
-			throw new Error(
-				`${this.path} (${this.meta.hash}) item missing from server`,
-			);
-		}
-		const content = await this.sharedFolder.cas.readFile(fileInfo.id);
-		this.vault.adapter.writeBinary(
+		const content = await this.sharedFolder.cas.readFile(this);
+		await this.vault.adapter.writeBinary(
 			this.sharedFolder.getPath(this.path),
 			content,
 		);

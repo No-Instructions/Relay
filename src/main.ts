@@ -768,7 +768,7 @@ export default class Live extends Plugin {
 					}
 					const file = folder.proxy.getFile(tfile.path);
 					if (file && isSyncFile(file)) {
-						file.push();
+						file.sync();
 					}
 					this.app.metadataCache.trigger("resolve", file);
 				}

@@ -307,14 +307,14 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 
 	public getEnabledFileSyncTypes(): SyncType[] {
 		// Documents and folders are always enabled
-		const enabledTypes: SyncType[] = [SyncType.Document];
 
 		if (!flags().enableAttachmentSync) {
-			return enabledTypes;
+			return [SyncType.Document];
 		}
 
+		const enabledTypes: SyncType[] = [];
 		this.protocols.forEach((proto, syncType) => {
-			if (proto?.enabled) {
+			if (proto?.enabled && syncType !== SyncType.Folder) {
 				enabledTypes.push(syncType);
 			}
 		});

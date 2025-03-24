@@ -125,31 +125,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 		);
 	}
 
-	// public getEnabledFileSyncTypes(): SyncType[] {
-	// 	// Documents and folders are always enabled
-	// 	const enabledTypes: SyncType[] = [SyncType.Document];
 
-	// 	if (!flags().enableAttachmentSync) {
-	// 		return enabledTypes;
-	// 	}
-
-	// 	// Get current settings
-	// 	const settings = this.get();
-
-	// 	// Check each flag and add the corresponding SyncType if enabled
-	// 	for (const [flagKey, syncType] of Object.entries(SyncFlagToTypeMap)) {
-	// 		const typeSetting = settings[flagKey as keyof SyncFlags];
-	// 		const defaultEnabled =
-	// 			SyncSettingsManager.schema[flagKey as keyof SyncFlags].defaultEnabled;
-
-	// 		// Use the current setting value or fall back to default if not set
-	// 		if (typeSetting ?? defaultEnabled) {
-	// 			enabledTypes.push(syncType);
-	// 		}
-	// 	}
-
-	// 	return enabledTypes;
-	// }
 
 	public async toggleCategory(
 		category: keyof SyncFlags,
