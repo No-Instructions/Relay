@@ -101,24 +101,21 @@ Other file types are coming soon!
 
 ### How much does Relay cost?
 
-#### Free
+Each user can create up to 25 Relay Servers.
 
--   25 Relays
-    -   3 users per Relay
--   10MiB Markdown edit history storage
+#### Free Relay Server
 
-#### Team $10/mo
+-   3 Users
+-   100MB markdown edit-history storage
 
--   Unlimited Relays
-    -   10 users per Relay
-        -   $2 per additional user up to 20 users.
--   Unlimited markdown edit history storage
--   ?? GB of Attachment Storage
+#### Team Server $10/mo
 
-#### Pro (???)
+-   Includes 10 seats ($1 per user per month)
+-   Unlimited markdown edit-history storage
 
--   Custom per-user pricing
--   BYO-storage
+#### Professional Plan
+
+-   Contact us
 
 
 ### Do I need to be online to use Relay?
@@ -129,29 +126,25 @@ Relay is local-first -- this means that all of your edits are tracked locally an
 
 We use a **Conflict-Free Replicable Data Types** (CRDTs) provided by the excellent yjs library.
 
+### Is Relay Open Source?
+
+The Obsidian plugin code is MIT licensed (this repo).
+
+The [Relay Server](https://github.com/No-Instructions/y-sweet) is a fork of y-sweet and is MIT licensed. 
+
+Our login, permissions, and billing server code is proprietary.
+
+
 ### Can I self-host?
 
-The obsidian plugin code is MIT licensed, but the code that powers our service is proprietary.
+We support "On-Prem" deployment of a Relay Server.
 
-We probably won't release the server code, but here are some things we're thinking about to make that less painful:
+If you self-host your Relay Server on a private network then your users will still perform login and permissions checks through our servers, but they will connect directly to your server. Your content will be completely private and inaccessible by us.
 
-#### Peer to Peer
+For instructions on hosting your Relay Server on fly.io, see [Relay Server Template](https://github.com/No-Instructions/relay-server-template).
 
-We'd like to eventually make Relay servers additive rather than required (support peer-to-peer connections).
+[Join our Discord](https://discord.system3.md) for help on configuring your on-prem deployment.
 
-#### Localized Pricing
-
-We hope to implement localized pricing so that the pricing is fair wherever you are. While we want to be able to fund working on this full time, we also want everyone to be able to use Relay. If the pricing is way off, or you can't afford it then please email us.
-
-#### Data Sovereignty
-
-We want to support both end-to-end encryption and bring-your-own s3-compatible storage. Let us know if either of these are a priority for you.
-
-## Latency
-
-We're working on making our service work globally with low millisecond latency. Let us know if your experience was bad.
-
-[matt@noinstructions.ai](mailto:matt@noinstructions.ai) [daniel@noinstructions.ai](mailto:daniel@noinstructions.ai) [Talk to us on Discord](https://discord.system3.md)
 
 ### Who's behind Relay?
 
@@ -162,9 +155,15 @@ Right now the whole operation is two people:
 -   Dan, a software engineer who has worked at places like [Planet](http://planet.com/) and [Benchling](https://www.benchling.com/)
 -   Matt, a product manager and psychotherapist (in training) who has worked at places like [Meta AI](https://ai.meta.com/meta-ai/), [Lumosity](https://www.lumosity.com/en/), and [Big Health](https://www.bighealth.com/)
 
+
 ## Do you have a privacy policy?
 
 Yes: [https://system3.md/Privacy+policy](https://system3.md/Privacy+policy).
+
+
+## How can I make a resonsible security disclosure?
+
+Please email security@system3.md
 
 
 ## Installing Relay
@@ -172,25 +171,6 @@ Yes: [https://system3.md/Privacy+policy](https://system3.md/Privacy+policy).
 You can search for `Relay` in the Obsidian Community plugins list,
 or click this [Obsidian Plugin Link](https://obsidian.md/plugins?search=system3-relay).
 
-
-## Installing the latest Beta Release
-
-BRAT is the **Beta Reviewer's Auto-update Tool for Obsidian**.
-
-### 1. Install BRAT
-
-First we need to install the Obsidian Plugin [BRAT](https://github.com/TfTHacker/obsidian42-brat). If you haven't yet enabled community plugins, you can follow [this guide](https://help.obsidian.md/Extending+Obsidian/Community+plugins) on help.obsidian.md.
-
-Search for "BRAT" and install the plugin by TfTHacker.
-
-### 2. Add Relay via BRAT
-
--   Once you have BRAT installed open the Settings pane by pressing on the great in the bottom left of Obsidian.
-    -   In Settings, navigate to BRAT under "community plugins" at the bottom of the right-hand section.
-    -   In the BRAT configuration page click "Add Beta plugin".
-        -   Enter in `No-Instructions/Relay`.
-        -   Ensure that `Enable after installing the plugin` is checked.
-        -   Click `Add Plugin`
 
 [Join our Discord](https://discord.system3.md)!
 
