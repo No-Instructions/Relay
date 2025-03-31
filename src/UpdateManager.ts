@@ -4,6 +4,7 @@ import { Observable } from "./observable/Observable";
 import { customFetch } from "./customFetch";
 import { LocalStorage } from "./LocalStorage";
 import type { NamespacedSettings } from "./SettingsStorage";
+import { flags } from "./flagManager";
 
 declare const REPOSITORY: string;
 
@@ -126,7 +127,10 @@ export class UpdateManager extends Observable<UpdateManager> {
 		}
 
 		const releases = await response.json();
-		this.debug("GitHub releases fetched:", releases);
+
+		if (flags().enableNetworkLogging) {
+			this.debug("GitHub releases fetched:", releases);
+		}
 
 		return releases;
 	}
@@ -317,7 +321,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 			}
 
 			const manifest = await response.json();
-			this.debug("manifest fetched:", manifest);
+			if (flags().enableNetworkLogging) {
+				this.debug("manifest fetched:", manifest);
+			}
 			return manifest;
 		} catch (error) {
 			this.error("Failed to fetch manifest for release:", release, error);
