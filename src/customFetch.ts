@@ -3,7 +3,7 @@ import { requestUrl } from "obsidian";
 import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog } from "./debug";
-import { Network } from "lucide-svelte";
+import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
 
@@ -84,32 +84,35 @@ export const customFetch = async (
 		value: json,
 	});
 
-	const level =
-		response.status >= 500
-			? "error"
-			: response.status >= 400
-				? "warn"
-				: "debug";
-	const response_text = response.text;
+	if (flags().enableNetworkLogging) {
+		const level =
+			response.status >= 500
+				? "error"
+				: response.status >= 400
+					? "warn"
+					: "debug";
+		const response_text = response.text;
 
-	let response_json;
-	const contentType = response.headers["content-type"] || "";
-	if (contentType.includes("application/json")) {
-		try {
-			response_json = JSON.parse(response_text);
-		} catch (e) {
-			// pass
+		let response_json;
+		const contentType = response.headers["content-type"] || "";
+		if (contentType.includes("application/json")) {
+			try {
+				response_json = JSON.parse(response_text);
+			} catch (e) {
+				// pass
+			}
 		}
+
+		curryLog("[CustomFetch]", level)(
+			response.status.toString(),
+			method,
+			urlString,
+			response_json || response_text,
+		);
 	}
 
-	curryLog("[CustomFetch]", level)(
-		response.status.toString(),
-		method,
-		urlString,
-		response_json || response_text,
-	);
 	if (response.status >= 500) {
-		throw new Error(response_text);
+		throw new Error(response.text);
 	}
 
 	return fetchResponse;
