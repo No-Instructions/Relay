@@ -149,7 +149,7 @@ export class BackgroundSync extends HasLogging {
 		private loginManager: LoginManager,
 		private timeProvider: TimeProvider,
 		private sharedFolders: SharedFolders,
-		private concurrency: number = 3,
+		private concurrency: number = 2,
 	) {
 		super();
 		RelayInstances.set(this, "BackgroundSync");
@@ -550,6 +550,7 @@ export class BackgroundSync extends HasLogging {
 		});
 
 		// Add to the queue and start processing
+		this.warn("download eqneueued");
 		this.downloadQueue.push(queueItem);
 		this.downloadQueue.sort(compareFilePaths);
 		this.processDownloadQueue();

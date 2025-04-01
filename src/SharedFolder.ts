@@ -1054,8 +1054,10 @@ export class SharedFolder extends HasProvider {
 			this.whenReady().then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
+					this.warn("enqueue download");
 					this.backgroundSync.enqueueDownload(doc);
 				} else if (this.pendingUpload.get(doc.path)) {
+					this.warn("enqueue sync");
 					this.backgroundSync.enqueueSync(doc);
 				}
 			});
