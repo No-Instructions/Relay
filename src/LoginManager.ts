@@ -18,6 +18,7 @@ declare const GIT_TAG: string;
 import { customFetch } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
+import { FeatureFlagManager } from "./flagManager";
 
 interface GoogleUser {
 	email: string;
@@ -63,6 +64,11 @@ export class LoginManager extends Observable<LoginManager> {
 			this.pb
 				.collection("users")
 				.getOne(this.pb.authStore.model.id)
+				.then((response) => {
+					if (response.status === 200) {
+						this.getFlags();
+					}
+				})
 				.catch((response) => {
 					if (response.status === 404) {
 						this.logout();
@@ -122,6 +128,26 @@ export class LoginManager extends Observable<LoginManager> {
 				});
 		}
 		return true;
+	}
+
+	getFlags() {
+		const headers = {
+			Authorization: `Bearer ${this.pb.authStore.token}`,
+		};
+		requestUrl({
+			url: `${API_URL}/flags`,
+			method: "GET",
+			headers: headers,
+		})
+			.then((response) => {
+				if (response.status === 200) {
+					const serverFlags = response.json;
+					FeatureFlagManager.getInstance().applyServerFlags(serverFlags);
+				}
+			})
+			.catch((reason) => {
+				this.log(reason);
+			});
 	}
 
 	whoami() {

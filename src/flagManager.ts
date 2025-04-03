@@ -31,6 +31,12 @@ export function withAnyOf(
 	otherwise();
 }
 
+interface ServerFlags {
+	name: string;
+	value: boolean;
+	override: boolean;
+}
+
 export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	private static instance: FeatureFlagManager | null;
 	private settings?: NamespacedSettings<FeatureFlags>;
@@ -39,6 +45,27 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	private constructor() {
 		super();
 		this.flags = FeatureFlagDefaults;
+	}
+
+	async applyServerFlags(serverFlags: ServerFlags[]) {
+		if (!this.settings) return;
+
+		const overrides = serverFlags.filter((flag) => flag.override);
+		const flagsMap = overrides.reduce<Partial<FeatureFlags>>((acc, flag) => {
+			acc[flag.name as keyof FeatureFlags] = flag.value;
+			return acc;
+		}, {});
+
+		this.log("applying server flags", flagsMap);
+		await this.settings.update(
+			(current) => ({
+				...current,
+				...flagsMap,
+			}),
+			true,
+		);
+
+		return;
 	}
 
 	public static getInstance(): FeatureFlagManager {
