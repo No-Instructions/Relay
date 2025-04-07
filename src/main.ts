@@ -523,8 +523,7 @@ export default class Live extends Plugin {
 					sync: current.sync ? current.sync : SyncSettingsManager.defaultFlags,
 				},
 			};
-		});
-		folderSettings.flush();
+		}, true);
 
 		const folder = new SharedFolder(
 			this.appId,
