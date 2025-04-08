@@ -960,6 +960,16 @@ export class SharedFolder extends HasProvider {
 		return doc;
 	}
 
+	public viewSyncFile(vpath: string): SyncFile | undefined {
+		const guid = this.syncStore.get(vpath);
+		if (!guid) return;
+		const file = this.files.get(guid);
+		if (!isSyncFile(file)) {
+			throw new Error("unexpected ifile type");
+		}
+		return file;
+	}
+
 	getOrCreateDoc(guid: string, vpath: string): Document {
 		const doc =
 			this.files.get(guid) ||

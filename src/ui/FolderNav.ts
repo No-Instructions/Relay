@@ -8,15 +8,16 @@ import {
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
-import { Document, isDocument } from "src/Document";
+import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
-import { withFlag, flags, withAnyOf } from "src/flagManager";
+import UploadPill from "src/components/UploadPill.svelte";
+import { withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
-import type { IFile } from "src/IFile";
+import { SyncFile, isSyncFile } from "src/SyncFile";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -313,50 +314,47 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 }
 
 class FilePillDecoration {
-	pill: TextPill;
+	pill?: TextPill;
 	unsubscribe?: () => void;
 
 	constructor(
 		private el: HTMLElement,
-		private file: IFile,
+		public file: SyncFile,
 	) {
-		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
+		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
 		});
-		if (file instanceof Document) {
-			this.pill = new TextPill({
-				target: this.el,
-				props: {
-					text: `${file.guid.slice(0, 3)} ${file.dbsize}`,
-				},
-			});
-			const onUpdate = () => {
-				this.pill.$set({
-					text: `${file.guid.slice(0, 3)} ${file.dbsize}`,
-				});
-			};
-
-			file.whenReady().then(() => {
-				file.ydoc.on("update", onUpdate);
-				onUpdate();
-			});
-			this.unsubscribe = () => {
-				file.ydoc.off("update", onUpdate);
-			};
-		} else {
-			this.pill = new TextPill({
-				target: this.el,
-				props: {
-					text: `${file.guid.slice(0, 4)}`,
-				},
-			});
-		}
+		const setText = (file: SyncFile) => {
+			if (!file.inMeta) {
+				const text = file.uploadError || "pending";
+				const color = file.uploadError ? "var(--red)" : undefined;
+				if (!this.pill) {
+					this.pill = new UploadPill({
+						target: this.el,
+						props: {
+							text: text,
+							color: color,
+						},
+					});
+				} else {
+					this.pill.$set({
+						text: text,
+						color: color,
+					});
+				}
+			} else {
+				this.pill?.$destroy();
+			}
+		};
+		this.unsubscribe = this.file.subscribe((file) => {
+			setText(file);
+		});
 	}
 
 	destroy() {
-		this.pill.$destroy();
 		this.unsubscribe?.();
-		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
+		this.pill?.$destroy();
+		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
 		});
 	}
@@ -370,11 +368,15 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
 		if (sharedFolder && sharedFolder.ready) {
-			if (!flags().enableDebugFileTag) return null;
-			const file = sharedFolder.proxy.viewDoc(tfile.path);
-			if (!isDocument(file)) if (!file) return null;
-			if (!file.ready) return null;
-			return storage || new FilePillDecoration(item.selfEl, file);
+			try {
+				const file = sharedFolder.proxy.viewSyncFile(tfile.path);
+				if (file && isSyncFile(file) && sharedFolder.isSyncableTFile(tfile)) {
+					if (storage && storage.file === file) return storage;
+					return new FilePillDecoration(item.selfEl, file);
+				}
+			} catch {
+				// pass
+			}
 		}
 		if (storage) {
 			storage.destroy();
@@ -416,7 +418,11 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		storage?: NotSyncedPillDecoration,
 		sharedFolder?: SharedFolder,
 	): NotSyncedPillDecoration | null {
-		if (sharedFolder && !sharedFolder.isSyncableTFile(file)) {
+		if (
+			sharedFolder &&
+			sharedFolder.checkPath(file.path) &&
+			!sharedFolder.isSyncableTFile(file)
+		) {
 			return storage || new NotSyncedPillDecoration(item.selfEl);
 		}
 		if (storage) {
@@ -697,7 +703,7 @@ export class FolderNavigationDecorations {
 		this.offDocumentListeners = new Map();
 		this.offFolderListener = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
-				withAnyOf([flag.enableDocumentStatus, flag.enableDebugFileTag], () => {
+				withAnyOf([flag.enableDocumentStatus], () => {
 					const docsetListener = this.offDocumentListeners.get(folder);
 					if (!docsetListener) {
 						this.offDocumentListeners.set(
@@ -742,9 +748,7 @@ export class FolderNavigationDecorations {
 				),
 			);
 		});
-		withFlag(flag.enableDebugFileTag, () => {
-			visitors.push(new FilePillVisitor());
-		});
+		visitors.push(new FilePillVisitor());
 		withFlag(flag.enableDesyncPill, () => {
 			visitors.push(new DeSyncPillVisitor());
 		});

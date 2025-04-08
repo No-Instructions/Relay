@@ -42,7 +42,7 @@ export class ContentAddressedStore extends HasLogging {
 	async writeFile(syncFile: SyncFile): Promise<void> {
 		const content = await syncFile.caf.read();
 		const hash = await syncFile.caf.hash();
-		this.warn("writeFile", hash);
+		this.log("writeFile", hash);
 		if (!(content && hash)) {
 			throw new Error("invalid caf");
 		}
@@ -57,6 +57,9 @@ export class ContentAddressedStore extends HasLogging {
 			headers: { Authorization: `Bearer ${token.token}` },
 		});
 		const responseJson = await response.json();
+		if (response.status !== 200) {
+			throw new Error(responseJson.error);
+		}
 		const presignedUrl = responseJson.uploadUrl;
 		await customFetch(presignedUrl, {
 			method: "PUT",

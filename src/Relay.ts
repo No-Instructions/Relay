@@ -45,11 +45,21 @@ export interface Relay
 	role: Role;
 	owner: boolean;
 	invitation?: RelayInvitation;
+	storageQuota?: StorageQuota;
 	folders: ObservableMap<string, RemoteSharedFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
 	cta: string;
 	plan: string;
 	provider?: string;
+}
+
+export interface StorageQuota
+	extends Identified,
+		IObservable<StorageQuota>,
+		Updatable<StorageQuota> {
+	quota: number;
+	usage: number;
+	maxFileSize: number;
 }
 
 export interface RelayRole extends Identified, Updatable<RelayRole> {

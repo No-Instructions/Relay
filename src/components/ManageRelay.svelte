@@ -50,6 +50,19 @@
 		}
 	}
 
+	function formatBytes(bytes: number, decimals = 2) {
+		if (bytes === 0) return "0 Bytes";
+
+		const k = 1024;
+		const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
+
+		const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+		return (
+			parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + " " + sizes[i]
+		);
+	}
+
 	function userSort(a: RelayRole, b: RelayRole) {
 		if (a.role === "Owner" && b.role !== "Owner") {
 			return -1;
@@ -73,6 +86,8 @@
 		}
 		return subscription;
 	});
+
+	const storageQuota = $relay.storageQuota;
 
 	const roles = $relayRoles.filter((role: RelayRole) => {
 		return role.relayId === relay.id;
@@ -424,7 +439,30 @@
 			</button>
 		</SettingItem>
 	{/if}
-	<SettingItemHeading name="Storage"></SettingItemHeading>
+	{#if $storageQuota}
+		<SettingItemHeading name="Storage"></SettingItemHeading>
+		<SettingItem
+			name="Percent usage"
+			description="Percentage of available storage used."
+		>
+			{Math.round(($storageQuota.usage * 100) / $storageQuota.quota)}%
+		</SettingItem>
+
+		<SettingItem name="Total storage" description="Total available storage.">
+			{formatBytes($storageQuota.quota)}
+		</SettingItem>
+
+		<SettingItem
+			name="File size limit"
+			description="Maximum supported file size."
+		>
+			{formatBytes($storageQuota.maxFileSize)}
+		</SettingItem>
+
+		<SettingItemHeading name="Danger zone"></SettingItemHeading>
+	{:else}
+		<SettingItemHeading name="Storage"></SettingItemHeading>
+	{/if}
 	<SettingItem
 		name="Destroy Relay Server"
 		description="This will destroy the Relay Server (deleting all data on the server). Local data is preserved."

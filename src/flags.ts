@@ -1,7 +1,6 @@
 export interface FeatureFlags {
 	enableUpdateYDocFromDiskBuffer: boolean;
 	enableDocumentStatus: boolean;
-	enableDebugFileTag: boolean;
 	enableNewLinkFormat: boolean;
 	enableDeltaLogging: boolean;
 	enableHTTPSync: boolean;
@@ -19,7 +18,6 @@ export interface FeatureFlags {
 export const FeatureFlagDefaults: FeatureFlags = {
 	enableUpdateYDocFromDiskBuffer: false,
 	enableDocumentStatus: false,
-	enableDebugFileTag: false,
 	enableNewLinkFormat: false,
 	enableDeltaLogging: false,
 	enableHTTPSync: false,

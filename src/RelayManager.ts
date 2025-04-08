@@ -10,7 +10,7 @@ import {
 	type RelayUser,
 	type RelaySubscription,
 	type RemoteSharedFolder,
-	type FileInfo,
+	type StorageQuota,
 } from "./Relay";
 import PocketBase, {
 	type AuthModel,
@@ -27,7 +27,6 @@ import type { LoginManager } from "./LoginManager";
 import type { Unsubscriber } from "svelte/motion";
 import { Observable } from "./observable/Observable";
 import { PostOffice } from "./observable/Postie";
-import { requestUrl } from "obsidian";
 
 interface Identified {
 	id: string;
@@ -65,6 +64,7 @@ interface RelayDAO extends RecordModel {
 	cta: string;
 	plan: string;
 	provider?: string;
+	storage_quota: string;
 }
 
 interface RemoteFolderDAO extends RecordModel {
@@ -83,46 +83,13 @@ interface RelayRoleDAO extends RecordModel {
 	relay: string;
 }
 
-export interface FileInfoDAO<AttachmentType = string> extends RecordModel {
+export interface StorageQuotaDAO extends RecordModel {
 	id: string;
-	guid: string;
-	relay: string;
-	shared_folder: string;
-	synchash: string;
-	synctime: number;
 	updated: string;
 	created: string;
-	mtime: number;
-	ctime: number;
-	type: string;
-	name: string;
-	parent: string | null;
-	attachment: AttachmentType;
-	deleted_at: number | null;
-	last_parent_id: string | null;
-	is_directory: boolean;
-}
-
-interface RelayRoleDAOExpandingRelayRole extends RelayRoleDAO {
-	expand?: {
-		role?: RoleDAO;
-		relay?: RelayDAO;
-	};
-}
-
-interface RelayRoleDAOExpandingRelayUser extends RelayRoleDAO {
-	expand?: {
-		user?: UserDAO;
-		relay?: RelayDAO;
-	};
-}
-
-interface UserDAOExpandingRelayRoles extends RecordModel {
-	id: string;
-	name: string;
-	expand?: {
-		relay_roles_via_user?: RelayRoleDAOExpandingRelayRole[];
-	};
+	quota: number;
+	usage: number;
+	max_file_size: number;
 }
 
 interface RelayInvitationDAO extends RecordModel {
@@ -197,159 +164,87 @@ class Auto implements hasRoot, hasACL {
 	}
 }
 
-class FileInfoAuto extends Auto implements FileInfo {
+class StorageQuotaAuto
+	extends Observable<StorageQuota>
+	implements StorageQuota
+{
 	constructor(
-		private fileInfo: FileInfoDAO,
+		private storageQuota: StorageQuotaDAO,
 		private relays: ObservableMap<string, Relay>,
-		private remoteFolders: ObservableMap<string, RemoteFolder>,
-		private pb: PocketBase,
 	) {
 		super();
 	}
 
+	update(update: StorageQuotaDAO): StorageQuota {
+		this.storageQuota = update;
+		return this;
+	}
+
 	public get id() {
-		return this.fileInfo.id;
+		return this.storageQuota.id;
 	}
 
-	public get guid() {
-		return this.fileInfo.guid;
+	public get quota() {
+		return this.storageQuota.quota;
 	}
 
-	public get synchash() {
-		return this.fileInfo.synchash;
+	public get pending() {
+		return this.storageQuota.pending;
 	}
 
-	public get synctime(): number {
-		return this.fileInfo.synctime;
+	public get usage(): number {
+		return this.storageQuota.usage;
 	}
 
-	public get relay(): Relay {
-		const relay = this.relays.get(this.fileInfo.relay);
-		if (!relay) {
-			throw new Error("invalid file info");
-		}
-		return relay;
-	}
-
-	public get sharedFolder(): RemoteFolder {
-		const folder = this.remoteFolders.get(this.fileInfo.shared_folder);
-		if (!folder) {
-			throw new Error("invalid file info");
-		}
-		return folder;
+	public get maxFileSize(): number {
+		return this.storageQuota.max_file_size;
 	}
 
 	public get updated(): string {
-		return this.fileInfo.updated;
+		return this.storageQuota.updated;
 	}
 
 	public get created(): string {
-		return this.fileInfo.created;
-	}
-
-	public get mtime(): number {
-		return this.fileInfo.mtime;
-	}
-
-	public get ctime(): number {
-		return this.fileInfo.ctime;
-	}
-
-	public get name(): string {
-		return this.fileInfo.name;
-	}
-
-	public get parent(): string | null {
-		return this.fileInfo.parent;
-	}
-
-	public get type(): string {
-		return this.fileInfo.type;
-	}
-
-	public get deletedAt(): number | null {
-		return this.fileInfo.deleted_at;
-	}
-
-	public get lastParentId(): string | null {
-		return this.fileInfo.last_parent_id;
-	}
-
-	public get isDirectory(): boolean {
-		return this.fileInfo.is_directory;
-	}
-
-	public async attachmentUrl(): Promise<string> {
-		const fileToken = await this.pb.files.getToken();
-		return this.pb.getFileUrl(this.fileInfo, this.fileInfo.attachment, {
-			token: fileToken,
-		});
-	}
-
-	public async getAttachment() {
-		const url = await this.attachmentUrl();
-		return requestUrl(url);
-	}
-
-	public toDict(): FileInfoDAO {
-		return this.fileInfo;
-	}
-
-	public update(update: FileInfoDAO): FileInfo {
-		this.fileInfo = update;
-		return this as unknown as FileInfo;
-	}
-
-	public get aggregate_root(): [string, string] {
-		return ["shared_folders", this.fileInfo.shared_folder];
-	}
-
-	public get acl(): [string, string] {
-		return ["relays", this.fileInfo.relay];
+		return this.storageQuota.created;
 	}
 }
 
-class FileInfoCollection implements Collection<FileInfoDAO, FileInfo> {
-	collectionName: string = "file_info";
+class StorageQuotaCollection
+	implements Collection<StorageQuotaDAO, StorageQuota>
+{
+	collectionName: string = "storage_quotas";
 
 	constructor(
-		public fileInfo: ObservableMap<string, FileInfo>,
-		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		public storageQuota: ObservableMap<string, StorageQuota>,
 		private relays: ObservableMap<string, Relay>,
-		private pb: PocketBase,
 	) {}
 
-	items(): FileInfo[] {
-		return this.fileInfo.values();
+	items(): StorageQuota[] {
+		return this.storageQuota.values();
 	}
 
 	clear() {
-		this.fileInfo.clear();
+		this.storageQuota.clear();
 	}
 
 	get(id: string) {
-		return this.fileInfo.get(id);
+		return this.storageQuota.get(id);
 	}
 
-	ingest(update: FileInfoDAO): FileInfo {
-		const existingFileInfo = this.fileInfo.get(update.id);
-		if (existingFileInfo) {
-			existingFileInfo.update(update);
-			this.fileInfo.notifyListeners();
-			return existingFileInfo;
+	ingest(update: StorageQuotaDAO): StorageQuota {
+		const existingStorageQuota = this.storageQuota.get(update.id);
+		if (existingStorageQuota) {
+			existingStorageQuota.update(update);
+			this.storageQuota.notifyListeners();
+			return existingStorageQuota;
 		}
-		const fileInfo = new FileInfoAuto(
-			update,
-			this.relays,
-			this.remoteFolders,
-			this.pb,
-		);
-		this.fileInfo.set(update.id, fileInfo);
-		return fileInfo;
+		const storageQuota = new StorageQuotaAuto(update, this.relays);
+		this.storageQuota.set(update.id, storageQuota);
+		return storageQuota;
 	}
 
 	delete(id: string) {
-		this.remoteFolders.delete(id);
+		this.storageQuota.delete(id);
 	}
 }
 
@@ -476,6 +371,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 		private relayInvitations: ObservableMap<string, RelayInvitation>,
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
 		private subscriptions: ObservableMap<string, RelaySubscription>,
+		private storageQuotas: ObservableMap<string, StorageQuota>,
 		private user: RelayUser,
 	) {}
 
@@ -504,6 +400,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 			this.relayInvitations,
 			this.remoteFolders,
 			this.subscriptions,
+			this.storageQuotas,
 			this.user,
 		);
 		this.relays.set(relay.id, relay);
@@ -1061,6 +958,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		private relayInvitations: ObservableMap<string, RelayInvitation>,
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
 		private _subscriptions: ObservableMap<string, RelaySubscription>,
+		private storageQuotas: ObservableMap<string, StorageQuota>,
 		private user: RelayUser,
 	) {
 		super();
@@ -1122,6 +1020,12 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		);
 	}
 
+	public get storageQuota(): StorageQuota | undefined {
+		return this.storageQuotas.find(
+			(storageQuota) => storageQuota.id === this.relay.storage_quota,
+		);
+	}
+
 	public get folders(): ObservableMap<string, RemoteFolder> {
 		return this.remoteFolders.filter((folder) => folder.relay.id === this.id);
 	}
@@ -1154,7 +1058,7 @@ export class RelayManager extends HasLogging {
 	roles: ObservableMap<string, RoleDAO>;
 	remoteFolders: ObservableMap<string, RemoteFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
-	fileInfo: ObservableMap<string, FileInfo>;
+	storageQuotas: ObservableMap<string, StorageQuota>;
 	authUser?: AuthModel;
 	user?: RelayUser;
 	store?: Store;
@@ -1188,7 +1092,9 @@ export class RelayManager extends HasLogging {
 		this.subscriptions = new ObservableMap<string, RelaySubscription>(
 			"subscriptions",
 		);
-		this.fileInfo = new ObservableMap<string, FileInfo>("file info");
+		this.storageQuotas = new ObservableMap<string, StorageQuota>(
+			"storage quotas",
+		);
 
 		// Subscribe to logout/login
 		this._offLoginManager = this.loginManager.on(() => {
@@ -1230,6 +1136,7 @@ export class RelayManager extends HasLogging {
 			this.relayInvitations,
 			this.remoteFolders,
 			this.subscriptions,
+			this.storageQuotas,
 			this.user,
 		);
 		const relayRolesCollection = new RelayRolesCollection(
@@ -1253,11 +1160,9 @@ export class RelayManager extends HasLogging {
 			this.relays,
 			this.users,
 		);
-		const fileInfoCollection = new FileInfoCollection(
-			this.fileInfo,
-			this.remoteFolders,
+		const storageQuotaCollection = new StorageQuotaCollection(
+			this.storageQuotas,
 			this.relays,
-			this.pb,
 		);
 		this.store = new Store([
 			roleCollection,
@@ -1267,7 +1172,7 @@ export class RelayManager extends HasLogging {
 			relayInvitationsCollection,
 			sharedFolderCollection,
 			subscriptionCollection,
-			fileInfoCollection,
+			storageQuotaCollection,
 		]);
 	}
 
@@ -1348,6 +1253,7 @@ export class RelayManager extends HasLogging {
 					"shared_folders_via_relay.creator",
 					"subscriptions_via_relay",
 					"subscriptions_via_relay.relay",
+					"subscriptions_via_relay.relay.storage_quota",
 					"creator",
 				],
 			},
@@ -1355,7 +1261,6 @@ export class RelayManager extends HasLogging {
 			{ name: "relay_roles", expand: ["user", "relay"] },
 			{ name: "shared_folders", expand: ["relay", "creator"] },
 			{ name: "subscriptions", expand: ["user", "relay"] },
-			{ name: "file_info", expand: ["relay", "shared_folder"] },
 		];
 
 		const handleEvent = (
@@ -1403,8 +1308,12 @@ export class RelayManager extends HasLogging {
 		const promises = [
 			withPb("users", (userId) => ({
 				filter: `id="${userId}"`,
-				expand:
-					"relay_roles_via_user,relay_roles_via_user.relay,relay_roles_via_user.role",
+				expand: [
+					"relay_roles_via_user",
+					"relay_roles_via_user.relay",
+					"relay_roles_via_user.relay.storage_quota",
+					"relay_roles_via_user.role",
+				].join(","),
 			})),
 			withPb("relay_roles", {
 				expand: "user",
@@ -1415,9 +1324,6 @@ export class RelayManager extends HasLogging {
 			}),
 			withPb("subscriptions", {
 				expand: "relay,user",
-			}),
-			withPb("file_info", {
-				expand: "relay,shared_folder",
 			}),
 		];
 		promises.forEach(async (promise) => {
@@ -1457,7 +1363,10 @@ export class RelayManager extends HasLogging {
 				name: name,
 				path: null,
 			},
-			{ expand: "relay_roles_via_relay,relay_invitations_via_relay" },
+			{
+				expand:
+					"relay_roles_via_relay,relay_invitations_via_relay,storage_quota",
+			},
 		);
 		if (!record) {
 			throw new Error("Failed to create Relay");
@@ -1471,6 +1380,7 @@ export class RelayManager extends HasLogging {
 			this.relayInvitations,
 			this.remoteFolders,
 			this.subscriptions,
+			this.storageQuotas,
 			this.user,
 		);
 		this.relays.set(relay.id, relay);
