@@ -17,6 +17,7 @@ import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import type { IFile } from "src/IFile";
+import { SyncFile, isSyncFile } from "src/SyncFile";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -313,48 +314,31 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 }
 
 class FilePillDecoration {
-	pill: TextPill;
+	pill?: TextPill;
 	unsubscribe?: () => void;
 
 	constructor(
 		private el: HTMLElement,
-		private file: IFile,
+		private file: SyncFile,
 	) {
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
 		});
-		if (file instanceof Document) {
+		if (!file.inMeta) {
+			const text = file.uploadError || "pending";
 			this.pill = new TextPill({
 				target: this.el,
 				props: {
-					text: `${file.guid.slice(0, 3)} ${file.dbsize}`,
+					text: text,
 				},
 			});
-			const onUpdate = () => {
-				this.pill.$set({
-					text: `${file.guid.slice(0, 3)} ${file.dbsize}`,
-				});
-			};
-
-			file.whenReady().then(() => {
-				file.ydoc.on("update", onUpdate);
-				onUpdate();
-			});
-			this.unsubscribe = () => {
-				file.ydoc.off("update", onUpdate);
-			};
 		} else {
-			this.pill = new TextPill({
-				target: this.el,
-				props: {
-					text: `${file.guid.slice(0, 4)}`,
-				},
-			});
+			this.pill?.$destroy();
 		}
 	}
 
 	destroy() {
-		this.pill.$destroy();
+		this.pill?.$destroy();
 		this.unsubscribe?.();
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
@@ -370,11 +354,14 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
 		if (sharedFolder && sharedFolder.ready) {
-			if (!flags().enableDebugFileTag) return null;
-			const file = sharedFolder.proxy.viewDoc(tfile.path);
-			if (!isDocument(file)) if (!file) return null;
-			if (!file.ready) return null;
-			return storage || new FilePillDecoration(item.selfEl, file);
+			try {
+				const file = sharedFolder.proxy.viewSyncFile(tfile.path);
+				if (file && isSyncFile(file)) {
+					return storage || new FilePillDecoration(item.selfEl, file);
+				}
+			} catch {
+				// pass
+			}
 		}
 		if (storage) {
 			storage.destroy();
@@ -697,7 +684,7 @@ export class FolderNavigationDecorations {
 		this.offDocumentListeners = new Map();
 		this.offFolderListener = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
-				withAnyOf([flag.enableDocumentStatus, flag.enableDebugFileTag], () => {
+				withAnyOf([flag.enableDocumentStatus], () => {
 					const docsetListener = this.offDocumentListeners.get(folder);
 					if (!docsetListener) {
 						this.offDocumentListeners.set(
@@ -742,9 +729,7 @@ export class FolderNavigationDecorations {
 				),
 			);
 		});
-		withFlag(flag.enableDebugFileTag, () => {
-			visitors.push(new FilePillVisitor());
-		});
+		visitors.push(new FilePillVisitor());
 		withFlag(flag.enableDesyncPill, () => {
 			visitors.push(new DeSyncPillVisitor());
 		});

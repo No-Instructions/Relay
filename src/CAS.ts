@@ -57,6 +57,9 @@ export class ContentAddressedStore extends HasLogging {
 			headers: { Authorization: `Bearer ${token.token}` },
 		});
 		const responseJson = await response.json();
+		if (response.status !== 200) {
+			throw new Error(responseJson.error);
+		}
 		const presignedUrl = responseJson.uploadUrl;
 		await customFetch(presignedUrl, {
 			method: "PUT",

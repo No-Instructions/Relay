@@ -191,7 +191,8 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 
 		if (!response.ok) {
 			debug(response.status, await response.text());
-			throw new Error("invalid server response");
+			const responseJSON = await response.json();
+			throw new Error(responseJSON.error);
 		}
 
 		const clientToken = (await response.json()) as FileToken;

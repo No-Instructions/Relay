@@ -21,8 +21,8 @@ import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 
-export function isSyncFile(file: IFile): file is SyncFile {
-	return file instanceof SyncFile;
+export function isSyncFile(file: IFile | undefined): file is SyncFile {
+	return !!file && file instanceof SyncFile;
 }
 
 export class ContentAddressedFileStore extends HasLogging {
@@ -268,6 +268,7 @@ export class SyncFile extends HasLogging implements TFile, IFile, HasMimeType {
 	ready: boolean = false;
 	connected: boolean = true;
 	offFileInfo: Unsubscriber = () => {};
+	uploadError?: string = undefined;
 
 	constructor(
 		public path: string,
@@ -312,6 +313,10 @@ export class SyncFile extends HasLogging implements TFile, IFile, HasMimeType {
 		// pass
 	}
 
+	public get inMeta() {
+		return !!this.sharedFolder.syncStore.getMeta(this.path);
+	}
+
 	move(newPath: string) {
 		if (newPath === this.path) {
 			return;
@@ -338,8 +343,13 @@ export class SyncFile extends HasLogging implements TFile, IFile, HasMimeType {
 		const hash = await this.caf.hash();
 		const meta = this.sharedFolder.syncStore.getMeta(this.path);
 		if (!meta || (hash && meta.hash !== hash)) {
-			await this.sharedFolder.cas.writeFile(this);
-			this.sharedFolder.markUploaded(this);
+			try {
+				await this.sharedFolder.cas.writeFile(this);
+				this.sharedFolder.markUploaded(this);
+			} catch (error) {
+				this.uploadError = (error as string) || "Failed to push file";
+				throw error;
+			}
 		}
 		return await this.caf.hash();
 	}
