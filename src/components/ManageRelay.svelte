@@ -18,6 +18,7 @@
 	import { uuidv4 } from "lib0/random";
 	import Satellite from "./Satellite.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
+	import DiskUsage from "./DiskUsage.svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
@@ -51,16 +52,14 @@
 	}
 
 	function formatBytes(bytes: number, decimals = 2) {
-		if (bytes === 0) return "0 Bytes";
+		if (bytes === 0) return "0 MB";
 
 		const k = 1024;
 		const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
 
 		const i = Math.floor(Math.log(bytes) / Math.log(k));
 
-		return (
-			parseFloat((bytes / Math.pow(k, i)).toFixed(decimals)) + " " + sizes[i]
-		);
+		return (bytes / Math.pow(k, i)).toFixed(decimals) + " " + sizes[i];
 	}
 
 	function userSort(a: RelayRole, b: RelayRole) {
@@ -335,6 +334,7 @@
 				on:click={debounce(() => {
 					showAddToVaultModal(remote);
 				})}
+				style="max-width: 8em"
 			>
 				Add to Vault
 			</button>
@@ -439,25 +439,33 @@
 			</button>
 		</SettingItem>
 	{/if}
-	{#if $storageQuota}
+	{#if $storageQuota && $storageQuota.quota > 0}
 		<SettingItemHeading name="Storage"></SettingItemHeading>
-		<SettingItem
-			name="Percent usage"
-			description="Percentage of available storage used."
+		<DiskUsage
+			diskUsagePercentage={Math.round(
+				($storageQuota.usage * 100) / $storageQuota.quota,
+			)}
+		/>
+		<SlimSettingItem
+			name="Usage"
+			description="Storage for images, audio, video, etc"
 		>
-			{Math.round(($storageQuota.usage * 100) / $storageQuota.quota)}%
-		</SettingItem>
+			{formatBytes($storageQuota.usage)}
+		</SlimSettingItem>
 
-		<SettingItem name="Total storage" description="Total available storage.">
+		<SlimSettingItem
+			name="Total storage"
+			description="Total available storage."
+		>
 			{formatBytes($storageQuota.quota)}
-		</SettingItem>
+		</SlimSettingItem>
 
-		<SettingItem
+		<SlimSettingItem
 			name="File size limit"
 			description="Maximum supported file size."
 		>
 			{formatBytes($storageQuota.maxFileSize)}
-		</SettingItem>
+		</SlimSettingItem>
 
 		<SettingItemHeading name="Danger zone"></SettingItemHeading>
 	{:else}
