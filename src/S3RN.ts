@@ -54,6 +54,20 @@ export class S3RemoteFile {
 	) {}
 }
 
+export class S3RemoteBlob {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(
+		public relayId: UUID,
+		public folderId: UUID,
+		public fileId: UUID,
+		public hash: string,
+		public contentType: string,
+		public contentLength: string,
+	) {}
+}
+
 export class S3Folder {
 	platform: string = "s3rn";
 	product: string = "relay";
@@ -124,6 +138,20 @@ export class S3RN {
 				throw new Error("Invalid document UUID");
 			}
 			s3rn += `:file:${entity.fileId}`;
+
+			if (
+				"hash" in entity &&
+				entity.hash &&
+				"contentType" in entity &&
+				"contentLength" in entity
+			) {
+				if (!this.validateUUID(entity.fileId)) {
+					throw new Error("Invalid document UUID");
+				}
+				s3rn += `:sha256:${entity.hash}`;
+				s3rn += `:contentType:${entity.contentType}`;
+				s3rn += `:contentLength:${entity.contentLength}`;
+			}
 		}
 
 		return s3rn;
@@ -135,7 +163,22 @@ export class S3RN {
 			throw new Error("Invalid s3rn format");
 		}
 
-		const [, product, type0, item0, type1, item1, type2, item2] = parts;
+		const [
+			,
+			product,
+			type0,
+			item0,
+			type1,
+			item1,
+			type2,
+			item2,
+			type3,
+			item3,
+			type4,
+			item4,
+			type5,
+			item5,
+		] = parts;
 		if (!this.validateUUID(item0)) {
 			throw new Error("Invalid UUID");
 		}
@@ -153,6 +196,16 @@ export class S3RN {
 			type2 === "doc"
 		) {
 			return new S3RemoteDocument(item0, item1, item2);
+		} else if (
+			product === "relay" &&
+			type0 === "relay" &&
+			type1 === "folder" &&
+			type2 === "file" &&
+			type3 === "hash" &&
+			type4 === "contentType" &&
+			type5 === "contentLength"
+		) {
+			return new S3RemoteBlob(item0, item1, item2, item3, item4, item5);
 		} else if (
 			product === "relay" &&
 			type0 === "relay" &&
