@@ -1261,7 +1261,6 @@ export class SharedFolder extends HasProvider {
 			this.assertPath(newPath);
 			if (!this.syncStore.canSync(newVPath)) return;
 			this.placeHold([tfile]);
-			this.log("can I has vpath", newVPath, this.syncStore.has(newVPath));
 			this.uploadFile(newVPath);
 		} else {
 			// live doc exists
