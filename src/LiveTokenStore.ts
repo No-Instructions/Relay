@@ -119,7 +119,8 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		contentType: string,
 		contentLength: number,
 	): Promise<FileToken> {
-		const activePromise = this._activePromises.get(fileHash);
+		const key = `${documentId}${fileHash}`;
+		const activePromise = this._activePromises.get(key);
 		if (activePromise) {
 			return activePromise as Promise<FileToken>;
 		}
@@ -137,20 +138,20 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			.then((newToken: FileToken) => {
 				const expiryTime = this.getJwtExpiry(newToken);
 				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-				const existing = this.tokenMap.get(fileHash)!;
+				const existing = this.tokenMap.get(key)!;
 				this.tokenMap.set(fileHash, {
 					...existing,
 					token: newToken,
 					expiryTime,
 				} as TokenInfo<FileToken>);
-				this._activePromises.delete(fileHash);
+				this._activePromises.delete(key);
 				return newToken;
 			})
 			.catch((err: Error) => {
-				this._activePromises.delete(fileHash);
+				this._activePromises.delete(key);
 				throw err;
 			});
-		this._activePromises.set(fileHash, sharedPromise);
+		this._activePromises.set(key, sharedPromise);
 		return sharedPromise;
 	}
 
@@ -204,10 +205,11 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		contentType: string,
 		contentLength: number,
 	): Promise<FileToken> {
-		const tokenInfo = this.tokenMap.get(documentId);
+		const key = `${documentId}${fileHash}`;
+		const tokenInfo = this.tokenMap.get(key);
 		if (tokenInfo && tokenInfo.token && this.isTokenValid(tokenInfo)) {
 			this.log("token was valid, cache hit!");
-			this._activePromises.delete(documentId);
+			this._activePromises.delete(key);
 			return Promise.resolve(tokenInfo.token as FileToken);
 		}
 		return this.getFileTokenFromNetwork(
