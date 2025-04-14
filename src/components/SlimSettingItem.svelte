@@ -1,5 +1,6 @@
 <script lang="ts">
 	export let name: HTMLSpanElement | string = "";
+	export let description: string = "";
 </script>
 
 <div class="setting-item">
@@ -7,8 +8,12 @@
 		<div class="setting-item-name truncate">
 			<slot name="name">{name}</slot>
 		</div>
+		<slot name="description">
+			{#if description}
+				<div class="setting-item-description">{description}</div>
+			{/if}
+		</slot>
 	</div>
-	<slot name="description"></slot>
 	<div class="setting-item-control">
 		<slot></slot>
 	</div>
