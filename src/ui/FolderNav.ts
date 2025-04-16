@@ -315,7 +315,7 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 
 class FilePillDecoration {
 	pill?: TextPill;
-	unsubscribe?: () => void;
+	unsubscribes: Unsubscriber[] = [];
 
 	constructor(
 		private el: HTMLElement,
@@ -346,13 +346,15 @@ class FilePillDecoration {
 				this.pill?.$destroy();
 			}
 		};
-		this.unsubscribe = this.file.subscribe((file) => {
-			setText(file);
-		});
+		this.unsubscribes.push(
+			this.file.subscribe((file) => {
+				setText(file);
+			}),
+		);
 	}
 
 	destroy() {
-		this.unsubscribe?.();
+		this.unsubscribes.forEach((off) => off());
 		this.pill?.$destroy();
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
@@ -370,7 +372,12 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		if (sharedFolder && sharedFolder.ready) {
 			try {
 				const file = sharedFolder.proxy.viewSyncFile(tfile.path);
-				if (file && isSyncFile(file) && sharedFolder.isSyncableTFile(tfile)) {
+				if (
+					file &&
+					isSyncFile(file) &&
+					sharedFolder.isSyncableTFile(tfile) &&
+					sharedFolder.connected
+				) {
 					if (storage && storage.file === file) return storage;
 					return new FilePillDecoration(item.selfEl, file);
 				}
@@ -721,6 +728,11 @@ export class FolderNavigationDecorations {
 				});
 				this.unsubscribes.push(
 					folder.syncSettingsManager.subscribe((settings) => {
+						this.quickRefresh();
+					}),
+				);
+				this.unsubscribes.push(
+					folder.subscribe(this, () => {
 						this.quickRefresh();
 					}),
 				);
