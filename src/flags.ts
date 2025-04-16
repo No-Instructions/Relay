@@ -28,7 +28,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableSyncModal: false,
 	enableDesyncPill: false,
 	enableAutomaticUpdatesOption: false,
-	enableAttachmentSync: false,
+	enableAttachmentSync: true,
 	enableNetworkLogging: false,
 };
 
