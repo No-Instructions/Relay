@@ -32,12 +32,12 @@
 	padding-inline-end: 0px !important;
 }
 
-.system3-pill:hover > .folder-icons {
+.system3-pill:hover > .system3-folder-icons {
 	background-color: var(--color-base-05);
 	width: auto !important;
 }
 
-.system3-pill:hover > .folder-icons > .icon {
+.system3-pill:hover > .system3-folder-icons > .system3-icon {
 	display: flex;
 }
 
