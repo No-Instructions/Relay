@@ -64,10 +64,8 @@ export class LoginManager extends Observable<LoginManager> {
 			this.pb
 				.collection("users")
 				.getOne(this.pb.authStore.model.id)
-				.then((response) => {
-					if (response.status === 200) {
-						this.getFlags();
-					}
+				.then(() => {
+					this.getFlags();
 				})
 				.catch((response) => {
 					if (response.status === 404) {
