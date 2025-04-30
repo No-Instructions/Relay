@@ -425,10 +425,10 @@
 			</SettingItem>
 		{/if}
 	{:else}
-		<SettingItem name={`Plan: ${$relay.plan}`} description="">
-			<fragment slot="description">
-				{$relay.cta || "Thanks for supporting Relay development <3"}
-			</fragment>
+		<SettingItem
+			name={`Plan: ${$relay.plan}`}
+			description={$relay.cta || "Thanks for supporting Relay development"}
+		>
 			<button
 				class="mod-cta"
 				on:click={debounce(() => {
