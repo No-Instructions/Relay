@@ -8,7 +8,7 @@ import {
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
 import {
-	type S3View,
+    LiveView,
 	LiveViewManager,
 	ConnectionManagerStateField,
 } from "../LiveViews";
@@ -43,7 +43,7 @@ export class InvalidLinkPluginValue {
 	app?: App;
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
-	view?: S3View;
+	view?: LiveView;
 	connectionManager?: LiveViewManager;
 	decorationAnchors: number[];
 	decorations: DecorationSet;

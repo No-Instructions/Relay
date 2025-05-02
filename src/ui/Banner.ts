@@ -1,13 +1,14 @@
 "use strict";
 import { MarkdownView } from "obsidian";
+import type { CanvasView } from "src/CanvasView";
 
 export class Banner {
-	view: MarkdownView;
+	view: MarkdownView | CanvasView;
 	text: string;
 	onClick: () => Promise<boolean>;
 
 	constructor(
-		view: MarkdownView,
+		view: MarkdownView | CanvasView,
 		text: string,
 		onClick: () => Promise<boolean>,
 	) {
@@ -18,6 +19,7 @@ export class Banner {
 	}
 
 	display() {
+		if (!this.view) return true;
 		const leafContentEl = this.view.containerEl;
 		const contentEl = this.view.containerEl.querySelector(".view-content");
 

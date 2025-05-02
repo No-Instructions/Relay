@@ -7,7 +7,7 @@ import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import {
-	type S3View,
+    LiveView,
 	LiveViewManager,
 	isLive,
 	ConnectionManagerStateField,
@@ -31,7 +31,7 @@ export const ySyncAnnotation = Annotation.define();
 
 export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
-	view?: S3View;
+	view?: LiveView;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
 	private destroyed = false;

@@ -82,6 +82,8 @@ export class SyncSettingsManager extends NamespacedSettings<
 
 		if (normalizedExt === "md") return true;
 
+		if (flags().enableCanvasSync && normalizedExt === "canvas") return true;
+
 		if (!this.enabled) {
 			return false;
 		}

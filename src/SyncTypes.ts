@@ -6,6 +6,7 @@ import { Observable } from "./observable/Observable";
 export enum SyncType {
 	Folder = "folder",
 	Document = "markdown",
+	Canvas = "canvas",
 	Image = "image",
 	PDF = "pdf",
 	Audio = "audio",
@@ -39,6 +40,11 @@ export interface DocumentMeta extends MetaBase {
 	type: SyncType.Document;
 }
 
+export interface CanvasMeta extends MetaBase {
+	version: 0;
+	type: SyncType.Canvas;
+}
+
 interface BaseFileMeta extends MetaBase {
 	version: 0;
 	type: SyncFileType;
@@ -69,11 +75,12 @@ export interface FileMeta extends BaseFileMeta {
 
 export type FileMetas = ImageMeta | PDFMeta | AudioMeta | VideoMeta | FileMeta;
 
-export type Meta = FolderMeta | DocumentMeta | FileMetas;
+export type Meta = FolderMeta | DocumentMeta | FileMetas | CanvasMeta;
 
 type SyncTypeToMeta = {
 	[SyncType.Folder]: FolderMeta;
-	[SyncType.Document]: FolderMeta;
+	[SyncType.Document]: DocumentMeta;
+	[SyncType.Canvas]: CanvasMeta;
 	[SyncType.PDF]: PDFMeta;
 	[SyncType.Image]: ImageMeta;
 	[SyncType.Audio]: AudioMeta;
@@ -91,6 +98,7 @@ export const SyncFlagToTypeMap: Record<keyof SyncFlags, SyncType> = {
 
 export const SyncTypeToFlagMap: Record<SyncType, keyof SyncFlags | null> = {
 	[SyncType.Document]: null, // Always enabled
+	[SyncType.Canvas]: null, // Always enabled
 	[SyncType.Folder]: null, // Always enabled
 	[SyncType.Image]: "images",
 	[SyncType.Audio]: "audio",
@@ -101,6 +109,10 @@ export const SyncTypeToFlagMap: Record<SyncType, keyof SyncFlags | null> = {
 
 export function isDocumentMeta(meta?: Meta): meta is DocumentMeta {
 	return meta?.type === SyncType.Document;
+}
+
+export function isCanvasMeta(meta?: Meta): meta is DocumentMeta {
+	return meta?.type === SyncType.Canvas;
 }
 
 export function isSyncFolderMeta(meta?: Meta): meta is FolderMeta {
@@ -132,6 +144,14 @@ export function makeDocumentMeta(guid: string): DocumentMeta {
 		version: 0,
 		id: guid,
 		type: SyncType.Document,
+	};
+}
+
+export function makeCanvasMeta(guid: string): CanvasMeta {
+	return {
+		version: 0,
+		id: guid,
+		type: SyncType.Canvas,
 	};
 }
 
@@ -258,6 +278,14 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 			},
 		],
 		[
+			SyncType.Canvas,
+			{
+				maxVersion: 0,
+				mimetypes: ["application/canvas+json"],
+				enabled: true,
+			},
+		],
+		[
 			SyncType.File,
 			{
 				maxVersion: 0,
@@ -276,6 +304,9 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 
 	canSync(vpath: string, meta?: Meta): boolean {
 		if (vpath.endsWith(".md")) return true;
+		if (flags().enableCanvasSync) {
+			if (vpath.endsWith(".canvas")) return true;
+		}
 
 		// For new folders
 		const hasExtension = vpath.split("/").pop()?.includes(".");
@@ -309,7 +340,7 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 		// Documents and folders are always enabled
 
 		if (!flags().enableAttachmentSync) {
-			return [SyncType.Document];
+			return [SyncType.Document, SyncType.Canvas];
 		}
 
 		const enabledTypes: SyncType[] = [];
@@ -327,6 +358,9 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 
 		for (const [type, config] of this.protocols) {
 			if (config.mimetypes.includes(mimetype)) {
+				if (!flags().enableCanvasSync && type === SyncType.Canvas) {
+					return SyncType.File;
+				}
 				return type;
 			}
 		}

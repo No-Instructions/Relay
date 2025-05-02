@@ -12,7 +12,7 @@ const mimeTypes: { [key: string]: string } = {
 	gif: "image/gif",
 	svg: "image/svg+xml",
 	pdf: "application/pdf",
-	canvas: "application/json",
+	canvas: "application/canvas+json",
 	webp: "image/webp",
 	avif: "image/avif",
 	bmp: "image/bmp",

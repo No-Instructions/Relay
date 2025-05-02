@@ -17,7 +17,6 @@ import {
 import type { PluginValue, DecorationSet } from "@codemirror/view";
 
 import {
-	type S3View,
 	LiveViewManager,
 	LiveView,
 	ConnectionManagerStateField,
@@ -160,7 +159,7 @@ type AwarenessChangeHandler = (
 export class YRemoteSelectionsPluginValue implements PluginValue {
 	editor: EditorView;
 	connectionManager?: LiveViewManager;
-	view?: S3View;
+	view?: LiveView;
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;

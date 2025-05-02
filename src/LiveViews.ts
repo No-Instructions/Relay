@@ -25,6 +25,11 @@ import {
 } from "./y-codemirror.next/RemoteSelections";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
+import type { CanvasView } from "./CanvasView";
+import { type Canvas } from "./Canvas";
+import { CanvasPlugin } from "./CanvasPlugin";
+import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
+import { flags } from "./flagManager";
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -35,6 +40,17 @@ function iterateMarkdownViews(
 	workspace.iterateAllLeaves((leaf) => {
 		if (leaf.view instanceof MarkdownView) {
 			fn(leaf.view);
+		}
+	});
+}
+
+function iterateCanvasViews(
+	workspace: Workspace,
+	fn: (leaf: CanvasView) => void,
+) {
+	workspace.iterateAllLeaves((leaf) => {
+		if (leaf.view.getViewType() === "canvas" && flags().enableCanvasSync) {
+			fn(leaf.view as unknown as CanvasView);
 		}
 	});
 }
@@ -56,16 +72,16 @@ function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 }
 
 export interface S3View {
-	view: MarkdownView;
+	view: MarkdownView | CanvasView;
 	release: () => void;
 	attach: () => Promise<S3View>;
-	document: Document | null;
+	document: Document | Canvas | null;
 	destroy: () => void;
 	canConnect: boolean;
 }
 
 export class LoggedOutView implements S3View {
-	view: MarkdownView;
+	view: MarkdownView | CanvasView;
 	login: () => Promise<boolean>;
 	banner?: Banner;
 	document = null;
@@ -75,7 +91,7 @@ export class LoggedOutView implements S3View {
 
 	constructor(
 		connectionManager: LiveViewManager,
-		view: MarkdownView,
+		view: MarkdownView | CanvasView,
 		login: () => Promise<boolean>,
 	) {
 		this._parent = connectionManager; // for debug
@@ -111,6 +127,204 @@ export function isLive(view?: S3View): view is LiveView {
 		view.document !== undefined &&
 		view.document.text !== undefined
 	);
+}
+
+export function isRelayCanvasView(view?: S3View): view is RelayCanvasView {
+	return view instanceof RelayCanvasView && view.document !== undefined;
+}
+
+export class RelayCanvasView implements S3View {
+	view: CanvasView;
+	canvas: Canvas;
+	shouldConnect: boolean;
+	canConnect: boolean;
+	plugin?: CanvasPlugin;
+	document: Canvas;
+
+	private _viewActions?: ViewActions;
+	private offConnectionStatusSubscription?: () => void;
+	private _parent: LiveViewManager;
+	private _banner?: Banner;
+	_tracking: boolean;
+
+	constructor(
+		connectionManager: LiveViewManager,
+		view: CanvasView,
+		canvas: Canvas,
+		shouldConnect = true,
+		canConnect = true,
+	) {
+		this._parent = connectionManager; // for debug
+		this.view = view;
+		this.canvas = canvas;
+		this.document = canvas;
+		this._tracking = false;
+
+		this.shouldConnect = shouldConnect;
+		this.canConnect = canConnect;
+		if (!connectionManager.networkStatus.online) {
+			this.offlineBanner();
+		}
+	}
+
+	toggleConnection() {
+		this.shouldConnect = !this.shouldConnect;
+		if (this.shouldConnect) {
+			this.canvas.connect().then((connected) => {
+				if (!connected) {
+					// If we couldn't connect, ensure their next press tries again.
+					this.shouldConnect = false;
+				}
+			});
+		} else {
+			this.canvas.disconnect();
+		}
+	}
+
+	public get tracking() {
+		return this._tracking;
+	}
+
+	public set tracking(value: boolean) {
+		const old = this._tracking;
+		this._tracking = value;
+		if (this._tracking !== old) {
+			this.attach();
+		}
+	}
+
+	offlineBanner(): () => void {
+		if (this.shouldConnect) {
+			const banner = new Banner(
+				this.view,
+				"You're offline -- click to reconnect",
+				async () => {
+					this._parent.networkStatus.checkStatus();
+					this.connect();
+					return this._parent.networkStatus.online;
+				},
+			);
+			this._parent.networkStatus.onceOnline(() => {
+				this.connect();
+				banner.destroy();
+			});
+		}
+		return () => {};
+	}
+
+	setConnectionDot(): void {
+		const viewActionsElement =
+			this.view.containerEl.querySelector(".view-actions");
+		if (viewActionsElement && viewActionsElement.firstChild) {
+			if (!this._viewActions) {
+				this.clearViewActions();
+				if (this.offConnectionStatusSubscription) {
+					this.offConnectionStatusSubscription();
+				}
+				this._viewActions = new ViewActions({
+					target: viewActionsElement,
+					anchor: viewActionsElement.firstChild as Element,
+					props: {
+						view: this,
+						state: this.canvas.state,
+						remote: this.canvas.sharedFolder.remote,
+					},
+				});
+				this.offConnectionStatusSubscription = this.canvas.subscribe(
+					viewActionsElement,
+					(state: ConnectionState) => {
+						this._viewActions?.$set({
+							view: this,
+							state: state,
+							remote: this.canvas.sharedFolder.remote,
+						});
+					},
+				);
+			}
+			this._viewActions.$set({
+				view: this,
+				state: this.canvas.state,
+				remote: this.canvas.sharedFolder.remote,
+			});
+		}
+	}
+
+	clearViewActions() {
+		const viewActionsElement =
+			this.view.containerEl.querySelector(".view-actions");
+		if (viewActionsElement && viewActionsElement.firstChild) {
+			const viewActions = this.view.containerEl.querySelectorAll(
+				".system3-view-action",
+			);
+			if (viewActions.length > 0) {
+				viewActions.forEach((viewAction) => {
+					viewAction.remove();
+				});
+			}
+		}
+	}
+
+	attach(): Promise<RelayCanvasView> {
+		// can be called multiple times, whereas release is only ever called once
+		this.canvas.userLock = true;
+		this.setConnectionDot();
+
+		if (!this.plugin) {
+			this.plugin = new CanvasPlugin(this);
+		}
+
+		return new Promise((resolve) => {
+			return this.canvas
+				.whenReady()
+				.then((doc) => {
+					if (
+						this._parent.networkStatus.online &&
+						this.canvas.sharedFolder.shouldConnect &&
+						this.shouldConnect &&
+						this.canConnect
+					) {
+						this.connect();
+					} else {
+						this.canvas.disconnect();
+					}
+					resolve(this);
+				})
+				.catch(() => {
+					this.offlineBanner();
+				});
+		});
+	}
+
+	connect() {
+		this.canvas.connect();
+	}
+
+	release() {
+		// Called when a view is released from management
+		this.plugin?.destroy();
+		this.plugin = undefined;
+		this._viewActions?.$destroy();
+		this._viewActions = undefined;
+		this._banner?.destroy();
+		this._banner = undefined;
+		if (this.offConnectionStatusSubscription) {
+			this.offConnectionStatusSubscription();
+			this.offConnectionStatusSubscription = undefined;
+		}
+		this.canvas.disconnect();
+		this.canvas.userLock = false;
+	}
+
+	destroy() {
+		this.plugin?.destroy();
+		this.plugin = null as any;
+		this.release();
+		this.clearViewActions();
+		(this.view.leaf as any).rebuildView();
+		this._parent = null as any;
+		this.view = null as any;
+		this.canvas = null as any;
+	}
 }
 
 export class LiveView implements S3View {
@@ -493,6 +707,17 @@ export class LiveViewManager {
 				folders.add(folder);
 			}
 		});
+		iterateCanvasViews(this.workspace, (canvasView) => {
+			// Check if the view is displaying a file
+			const viewFilePath = canvasView.file?.path;
+			if (!viewFilePath) {
+				return;
+			}
+			const folder = this.sharedFolders.lookup(viewFilePath);
+			if (folder) {
+				folders.add(folder);
+			}
+		});
 		if (folders.size == 0) {
 			return [];
 		}
@@ -504,6 +729,17 @@ export class LiveViewManager {
 		iterateMarkdownViews(this.workspace, (markdownView) => {
 			// Check if the view is displaying a file
 			const viewFilePath = markdownView.file?.path;
+			if (!viewFilePath) {
+				return;
+			}
+			const folder = this.sharedFolders.lookup(viewFilePath);
+			if (folder) {
+				folders.add(folder);
+			}
+		});
+		iterateCanvasViews(this.workspace, (canvasView) => {
+			// Check if the view is displaying a file
+			const viewFilePath = canvasView.file?.path;
 			if (!viewFilePath) {
 				return;
 			}
@@ -542,15 +778,49 @@ export class LiveViewManager {
 				}
 			}
 		});
+
+		iterateCanvasViews(this.workspace, (canvasView) => {
+			const viewFilePath = canvasView.file?.path;
+			if (!viewFilePath) {
+				return;
+			}
+			const folder = this.sharedFolders.lookup(viewFilePath);
+			if (folder) {
+				if (!this.loginManager.loggedIn) {
+					const view = new LoggedOutView(this, canvasView, () => {
+						return this.loginManager.openLoginPage();
+					});
+					views.push(view);
+				} else if (folder.ready) {
+					const doc = folder.proxy.getCanvas(viewFilePath);
+					const view = new RelayCanvasView(this, canvasView, doc);
+					views.push(view);
+				} else {
+					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+				}
+			}
+		});
+
 		return views;
 	}
 
-	findView(cmEditor: EditorView): S3View | undefined {
-		return this.views.find((view) => {
+	findView(cmEditor: EditorView): LiveView | undefined {
+		return this.views.filter(isLive).find((view) => {
+			//if (isCanvasView(view.view)) return;
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			const editor = view.view.editor as any;
 			const cm = editor.cm as EditorView;
 			return cm === cmEditor;
+		});
+	}
+
+	findCanvas(cmEditor: EditorView): RelayCanvasView | undefined {
+		const state = (cmEditor.state as any).values.find((state: any) => {
+			if (state && state.node) return state.node;
+		});
+		if (!state) return;
+		return this.views.filter(isRelayCanvasView).find((view) => {
+			return view.view.canvas === state.node.canvas;
 		});
 	}
 
@@ -753,6 +1023,7 @@ export class LiveViewManager {
 					}),
 				),
 				LiveEdit,
+				LiveNode,
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
 				InvalidLinkPlugin,

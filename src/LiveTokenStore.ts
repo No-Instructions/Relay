@@ -12,6 +12,7 @@ import {
 	type S3RNType,
 	S3RemoteFolder,
 	S3RemoteFile,
+	S3RemoteCanvas,
 } from "./S3RN";
 import { customFetch } from "./customFetch";
 
@@ -46,6 +47,12 @@ async function refresh(
 	if (entity instanceof S3RemoteDocument) {
 		payload = JSON.stringify({
 			docId: entity.documentId,
+			relay: entity.relayId,
+			folder: entity.folderId,
+		});
+	} else if (entity instanceof S3RemoteCanvas) {
+		payload = JSON.stringify({
+			docId: entity.canvasId,
 			relay: entity.relayId,
 			folder: entity.folderId,
 		});
@@ -181,7 +188,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				contentLength,
 			});
 		} else {
-			throw new Error("No remote to connect to");
+			throw new Error(`No remote to connect to for ${documentId}`);
 		}
 		if (!this.loginManager.loggedIn) {
 			throw new Error("Not logged in");

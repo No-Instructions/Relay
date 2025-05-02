@@ -33,6 +33,7 @@ import { isDocument } from "./Document";
 import { SyncStore } from "./SyncStore";
 import {
 	SyncType,
+	makeCanvasMeta,
 	makeDocumentMeta,
 	makeFileMeta,
 	makeFolderMeta,
@@ -44,6 +45,7 @@ import { createPathProxy } from "./pathProxy";
 import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
+import { Canvas, isCanvas } from "./Canvas";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -270,6 +272,14 @@ export class SharedFolder extends HasProvider {
 					const doc = this.getDoc(vpath, false);
 					files.push(doc);
 				}
+			} else if (Canvas.checkExtension(vpath)) {
+				if (upload) {
+					const doc = this.uploadCanvas(vpath, false);
+					files.push(doc);
+				} else {
+					const doc = this.getCanvas(vpath, false);
+					files.push(doc);
+				}
 			} else if (this.syncStore.canSync(vpath)) {
 				if (upload) {
 					const file = this.uploadSyncFile(vpath, false);
@@ -334,6 +344,7 @@ export class SharedFolder extends HasProvider {
 		const isSupportedFileType = this.syncStore.canSync(vpath);
 		const isExtensionEnabled =
 			this.syncSettingsManager.isExtensionEnabled(vpath);
+
 		return inFolder && isSupportedFileType && isExtensionEnabled;
 	}
 
@@ -593,6 +604,11 @@ export class SharedFolder extends HasProvider {
 			const doc = await this.downloadDoc(vpath, false);
 			return doc;
 		}
+		if (Canvas.checkExtension(vpath)) {
+			diffLog?.push(`created local file for remotely added canvas ${vpath}`);
+			const canvas = await this.downloadCanvas(vpath, false);
+			return canvas;
+		}
 		if (SyncFolder.checkPath(vpath)) {
 			return this.getSyncFolder(vpath, false);
 		}
@@ -787,7 +803,7 @@ export class SharedFolder extends HasProvider {
 		}));
 	}
 
-	read(doc: Document): Promise<string> {
+	read(doc: IFile): Promise<string> {
 		const vaultPath = join(this.path, doc.path);
 		return this.vault.adapter.read(normalizePath(vaultPath));
 	}
@@ -798,12 +814,12 @@ export class SharedFolder extends HasProvider {
 		return pathExists;
 	}
 
-	exists(doc: Document): Promise<boolean> {
+	exists(doc: IFile): Promise<boolean> {
 		const vaultPath = join(this.path, doc.path);
 		return this.vault.adapter.exists(normalizePath(vaultPath));
 	}
 
-	flush(doc: Document, content: string): Promise<void> {
+	flush(doc: IFile, content: string): Promise<void> {
 		const vaultPath = join(this.path, doc.path);
 		this.log("writing to ", normalizePath(vaultPath));
 		return this.vault.adapter.write(normalizePath(vaultPath), content);
@@ -874,9 +890,47 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	public getCanvas(vpath: string, update = true): Canvas {
+		const id = this.syncStore.get(vpath);
+		if (id !== undefined) {
+			const canvas = this.files.get(id);
+			if (canvas !== undefined) {
+				canvas.move(vpath);
+				if (!isCanvas(canvas)) {
+					throw new Error("unexpected ifile type");
+				}
+				return canvas;
+			} else {
+				// the ID exists, but the file doesn't
+				this.log("[getCanvas]: creating canvas for shared ID");
+				return this.createCanvas(vpath, update);
+			}
+		} else {
+			// the File exists, but the ID doesn't
+			this.warn("[getCanvas]: creating new shared ID for existing tfile");
+			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			if (!(tfile instanceof TFile)) {
+				throw new Error("unexpectedly missing tfile or got tfolder");
+			}
+			const newDocs = this.placeHold([tfile]);
+			if (newDocs.length > 0) {
+				return this.uploadCanvas(vpath);
+			} else {
+				return this.createCanvas(vpath, update);
+			}
+		}
+	}
+
 	async markUploaded(file: IFile) {
 		if (isDocument(file)) {
 			const meta = makeDocumentMeta(file.guid);
+			this.ydoc.transact(() => {
+				this.syncStore.markUploaded(file.path, meta);
+			}, this);
+			return;
+		}
+		if (isCanvas(file)) {
+			const meta = makeCanvasMeta(file.guid);
 			this.ydoc.transact(() => {
 				this.syncStore.markUploaded(file.path, meta);
 			}, this);
@@ -926,6 +980,9 @@ export class SharedFolder extends HasProvider {
 		if (Document.checkExtension(vpath)) {
 			return this.getDoc(vpath);
 		}
+		if (Canvas.checkExtension(vpath)) {
+			return this.getCanvas(vpath);
+		}
 		if (SyncFolder.checkPath(vpath)) {
 			return this.getSyncFolder(vpath, update);
 		}
@@ -948,6 +1005,117 @@ export class SharedFolder extends HasProvider {
 			});
 		}, this);
 		return newDocs;
+	}
+
+	getOrCreateCanvas(guid: string, vpath: string): Canvas {
+		const canvas =
+			this.files.get(guid) || new Canvas(vpath, guid, this.loginManager, this);
+		if (!isCanvas(canvas)) {
+			throw new Error("unexpected ifile type");
+		}
+		canvas.move(vpath);
+		return canvas;
+	}
+
+	async downloadCanvas(vpath: string, update = true): Promise<Canvas> {
+		if (!Canvas.checkExtension(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error(`called download on item that is not in ids ${vpath}`);
+		}
+		const canvas = this.getOrCreateCanvas(guid, vpath);
+		canvas.markOrigin("remote");
+
+		withTimeoutWarning(
+			this.backgroundSync.enqueueCanvasDownload(canvas),
+			canvas.path
+		);
+
+		this.files.set(guid, canvas);
+		this.fset.add(canvas, update);
+
+		return canvas;
+	}
+	public uploadCanvas(vpath: string, update = true): Canvas {
+		if (!Canvas.checkExtension(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error("expected guid");
+		}
+		const canvas = this.getOrCreateCanvas(guid, vpath);
+
+		const originPromise = canvas.getOrigin();
+		const awaitingUpdatesPromise = this.awaitingUpdates();
+
+		(async () => {
+			const exists = await this.exists(canvas);
+			if (!exists) {
+				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
+			}
+			const [contents, origin, awaitingUpdates] = await Promise.all([
+				this.read(canvas),
+				originPromise,
+				awaitingUpdatesPromise,
+			]);
+			if (!awaitingUpdates && origin === undefined) {
+				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
+				this.ydoc.transact(() => {
+					try {
+						canvas.applyJSON(contents);
+					} catch (e) {
+						console.warn(contents);
+						throw e;
+					}
+				}, this._persistence);
+				canvas.markOrigin("local");
+				this.log(`[${canvas.path}] Uploading file`);
+				await this.backgroundSync.enqueueSync(canvas);
+				this.markUploaded(canvas);
+			}
+		})();
+
+		this.files.set(guid, canvas);
+		this.fset.add(canvas, update);
+		return canvas;
+	}
+
+	public createCanvas(vpath: string, update: boolean): Canvas {
+		if (!Canvas.checkExtension(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error("expected guid");
+		}
+		const canvas = this.getOrCreateCanvas(guid, vpath);
+
+		(async () => {
+			this.whenReady().then(async () => {
+				const synced = await canvas.getServerSynced();
+				if (canvas.stat.size === 0 && !synced) {
+					this.backgroundSync.enqueueCanvasDownload(canvas);
+				} else if (this.pendingUpload.get(canvas.path)) {
+					this.backgroundSync.enqueueSync(canvas);
+				}
+			});
+		})();
+
+		this.files.set(guid, canvas);
+		this.fset.add(canvas, update);
+		return canvas;
 	}
 
 	public viewDoc(vpath: string): Document | undefined {
@@ -1213,6 +1381,9 @@ export class SharedFolder extends HasProvider {
 	uploadFile(vpath: string, update = true): IFile {
 		if (Document.checkExtension(vpath)) {
 			return this.uploadDoc(vpath, update);
+		}
+		if (Canvas.checkExtension(vpath)) {
+			return this.uploadCanvas(vpath, update);
 		}
 		if (SyncFolder.checkPath(vpath)) {
 			return this.getSyncFolder(vpath, update);

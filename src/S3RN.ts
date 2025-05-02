@@ -43,6 +43,17 @@ export class S3RemoteDocument {
 	) {}
 }
 
+export class S3RemoteCanvas {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(
+		public relayId: UUID,
+		public folderId: UUID,
+		public canvasId: UUID,
+	) {}
+}
+
 export class S3RemoteFile {
 	platform: string = "s3rn";
 	product: string = "relay";
@@ -85,6 +96,16 @@ export class S3Document {
 	) {}
 }
 
+export class S3Canvas {
+	platform: string = "s3rn";
+	product: string = "relay";
+
+	constructor(
+		public folderId: UUID,
+		public canvasId: UUID,
+	) {}
+}
+
 export class S3File {
 	platform: string = "s3rn";
 	product: string = "relay";
@@ -100,6 +121,7 @@ export type S3RNType =
 	| S3Relay
 	| S3RemoteFolder
 	| S3RemoteDocument
+	| S3RemoteCanvas
 	| S3RemoteFile;
 
 export class S3RN {
@@ -131,6 +153,13 @@ export class S3RN {
 				throw new Error("Invalid document UUID");
 			}
 			s3rn += `:doc:${entity.documentId}`;
+		}
+
+		if ("canvasId" in entity) {
+			if (!this.validateUUID(entity.canvasId)) {
+				throw new Error("Invalid document UUID");
+			}
+			s3rn += `:canvas:${entity.canvasId}`;
 		}
 
 		if ("fileId" in entity) {
@@ -200,6 +229,13 @@ export class S3RN {
 			product === "relay" &&
 			type0 === "relay" &&
 			type1 === "folder" &&
+			type2 === "canvas"
+		) {
+			return new S3RemoteCanvas(item0, item1, item2);
+		} else if (
+			product === "relay" &&
+			type0 === "relay" &&
+			type1 === "folder" &&
 			type2 === "file" &&
 			type3 === "hash" &&
 			type4 === "contentType" &&
@@ -221,6 +257,12 @@ export class S3RN {
 			type1 === "document"
 		) {
 			return new S3Document(item0, item1);
+		} else if (
+			product === "relay" &&
+			type0 === "folder" &&
+			type1 === "canvas"
+		) {
+			return new S3Canvas(item0, item1);
 		} else if (product === "relay" && type0 === "folder") {
 			return new S3Folder(item0);
 		} else if (product === "relay" && type0 === "relay") {

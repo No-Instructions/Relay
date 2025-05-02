@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableAutomaticUpdatesOption: boolean;
 	enableAttachmentSync: boolean;
 	enableNetworkLogging: boolean;
+	enableCanvasSync: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -30,6 +31,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableAutomaticUpdatesOption: false,
 	enableAttachmentSync: true,
 	enableNetworkLogging: false,
+	enableCanvasSync: false,
 };
 
 export type Flag = keyof FeatureFlags;
