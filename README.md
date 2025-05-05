@@ -92,12 +92,23 @@ Asked more or less frequently.
 
 ### Which file types are supported?
 
-Relay currently syncs:
+Relay currently has two types of storage, document storage and attachment storage.
+Document storage is backed by our real-time CRDT servers, while Attachments are stored as file blobs.
 
--   folders
--   markdown files
+Document storage:
+-   Folders
+-   Markdown files
 
-Other file types are coming soon!
+Attachment storage:
+-   Images
+-   Audio
+-   Video
+-   PDFs
+-   Other files (must be enabled in settings)
+
+
+You need to have available Attachment storage in order to sync images/audio/video/PDFs/etc.
+
 
 ### How much does Relay cost?
 
@@ -105,17 +116,21 @@ Each user can create up to 25 Relay Servers.
 
 #### Free Relay Server
 
--   3 Users
--   100MB markdown edit-history storage
+-   3 seats
+-   Unlimited Markdown files
 
 #### Team Server $10/mo
 
--   Includes 10 seats ($1 per user per month)
--   Unlimited markdown edit-history storage
+-   Includes 10 seats (e.g. $1 per user per month)
+-   Includes 10GB of Attachment Storage
+-   Unlimited Markdown files
 
 #### Professional Plan
 
 -   Contact us
+
+
+We offer discounts for educational use based on region and need.
 
 
 ### Do I need to be online to use Relay?
