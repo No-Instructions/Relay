@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableCanvasSync: boolean;
 	enableVerifyUploads: boolean;
 	enableAutomaticDiffResolution: boolean;
+	enableDiscordLogin: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -32,6 +33,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableCanvasSync: false,
 	enableVerifyUploads: false,
 	enableAutomaticDiffResolution: false,
+	enableDiscordLogin: false,
 };
 
 export type Flag = keyof FeatureFlags;

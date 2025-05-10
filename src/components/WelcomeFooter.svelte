@@ -7,6 +7,7 @@
 
 	let isVisible = false;
 	let isMobile = false;
+	export let isGoogle = true;
 	let buttonEl: HTMLButtonElement;
 	let popoverEl: HTMLDivElement;
 
@@ -44,7 +45,7 @@
 			on:mouseleave={handleMouseLeave}
 			on:click={handleClick}
 		>
-			Why sign in with Google?
+			{isGoogle ? "Why sign in with Google?" : "Why do I need to sign in?"}
 		</button>
 
 		{#if isMobile}
