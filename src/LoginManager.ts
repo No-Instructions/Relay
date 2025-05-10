@@ -28,6 +28,23 @@ interface GoogleUser {
 	picture: string;
 }
 
+
+export class Provider {
+	fullAuthUrl: string;
+	info: AuthProviderInfo;
+	login: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
+
+	constructor(
+		authUrl: string,
+		info: AuthProviderInfo,
+		loginFn: (code: string) => Promise<RecordAuthResponse<RecordModel>>,
+	) {
+		this.fullAuthUrl = authUrl;
+		this.info = info;
+		this.login = loginFn;
+	}
+}
+
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private openSettings: () => Promise<void>;
@@ -203,7 +220,7 @@ export class LoginManager extends Observable<LoginManager> {
 		this.notifyListeners();
 	}
 
-	webviewIntercept(): RegExp {
+	googleWebviewIntercept(): RegExp {
 		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
 		const authProvider =
 			"https:\\/\\/accounts\\.google\\.com\\/o\\/oauth2\\/auth";
@@ -213,15 +230,19 @@ export class LoginManager extends Observable<LoginManager> {
 		);
 	}
 
+	discordWebviewIntercept(): RegExp {
+		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
+		const authProvider = "https:\\/\\/discord\\.com\\/api\\/oauth2\\/authorize";
+		return new RegExp(
+			`^${authProvider}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
+			"i",
+		);
+	}
+
 	async initiateManualOAuth2CodeFlow(
 		whichFetch: typeof fetch | typeof customFetch,
-	): Promise<
-		[
-			string,
-			AuthProviderInfo,
-			(code: string) => Promise<RecordAuthResponse<RecordModel>>,
-		]
-	> {
+		providerNames: string[] = ["google"],
+	): Promise<Record<string, Provider>> {
 		this.beforeLogin();
 		const authMethods = await this.pb
 			.collection("users")
@@ -229,12 +250,21 @@ export class LoginManager extends Observable<LoginManager> {
 			.catch((e) => {
 				throw e.originalError;
 			});
-		const provider = authMethods.authProviders[0];
+
 		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
-		return [
-			provider.authUrl + redirectUrl,
-			provider,
-			async (code: string) => {
+		const providers: Record<string, Provider> = {};
+
+		for (const providerName of providerNames) {
+			const provider = authMethods.authProviders.find((provider_) => {
+				return provider_.name === providerName;
+			});
+
+			if (!provider) {
+				this.log(`Warning: unable to find provider: ${providerName}`);
+				continue;
+			}
+
+			const loginFunction = async (code: string) => {
 				return this.pb
 					.collection("users")
 					.authWithOAuth2Code(
@@ -250,14 +280,25 @@ export class LoginManager extends Observable<LoginManager> {
 						this.setup(authData);
 						return authData;
 					});
-			},
-		];
+			};
+
+			providers[providerName] = new Provider(
+				provider.authUrl + redirectUrl,
+				provider,
+				loginFunction,
+			);
+		}
+
+		if (Object.keys(providers).length === 0) {
+			throw new Error(
+				`No valid providers found from requested list: ${providerNames.join(", ")}`,
+			);
+		}
+
+		return providers;
 	}
 
-	async poll(
-		provider: AuthProviderInfo,
-		authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>,
-	): Promise<RecordAuthResponse<RecordModel>> {
+	async poll(provider: Provider): Promise<RecordAuthResponse<RecordModel>> {
 		let counter = 0;
 		const interval = 1000;
 		return new Promise((resolve, reject) => {
@@ -275,11 +316,11 @@ export class LoginManager extends Observable<LoginManager> {
 				}
 				this.pb
 					.collection("code_exchange")
-					.getOne(provider.state.slice(0, 15))
+					.getOne(provider.info.state.slice(0, 15))
 					.then((response) => {
 						if (response) {
 							clearInterval(timer);
-							return resolve(authWithCode(response.code));
+							return resolve(provider.login(response.code));
 						}
 					})
 					.catch((e) => {});
@@ -287,10 +328,10 @@ export class LoginManager extends Observable<LoginManager> {
 		});
 	}
 
-	async login(): Promise<boolean> {
+	async login(provider = "google"): Promise<boolean> {
 		this.beforeLogin();
 		const authData = await this.pb.collection("users").authWithOAuth2({
-			provider: "google",
+			provider: provider,
 		});
 		return this.setup(authData);
 	}
