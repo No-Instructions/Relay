@@ -664,21 +664,11 @@ export default class Live extends Plugin {
 				Object.defineProperty(options, "openExternalURLs", originalDesc);
 			});
 
-			// Add default google auth URL
-			const re = this.loginManager.googleWebviewIntercept();
-			this.debug("Intercepting Webviewer for URL pattern", re.source);
-			this.interceptedUrls.push(re);
-
-			const discordRegex = this.loginManager.discordWebviewIntercept();
-			this.debug("Intercepting Webviewer for URL pattern", discordRegex.source);
-			this.interceptedUrls.push(discordRegex);
-
-			const microsoftRegex = this.loginManager.microsoftWebviewIntercept();
-			this.debug(
-				"Intercepting Webviewer for URL pattern",
-				microsoftRegex.source,
-			);
-			this.interceptedUrls.push(microsoftRegex);
+			const intercepts = this.loginManager.getWebviewIntercepts();
+			intercepts.forEach((intercept) => {
+				this.debug("Intercepting Webviewer for URL pattern", intercept.source);
+				this.interceptedUrls.push(intercept);
+			});
 
 			const apiRegExp = new RegExp(API_URL.replace("/", "\\/") + ".*");
 			this.debug("Intercepting Webviewer for URL pattern", apiRegExp.source);

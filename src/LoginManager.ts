@@ -295,33 +295,27 @@ export class LoginManager extends Observable<LoginManager> {
 		this.notifyListeners();
 	}
 
-	googleWebviewIntercept(): RegExp {
+	getWebviewIntercepts(): RegExp[] {
 		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
-		const authProvider =
-			"https:\\/\\/accounts\\.google\\.com\\/o\\/oauth2\\/auth";
-		return new RegExp(
-			`^${authProvider}.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
-			"i",
-		);
-	}
+		const createIntercept = (authProviderUrl: string): RegExp => {
+			// Escape forward slashes in the auth URL
+			const escapedAuthProvider = authProviderUrl.replace(/\//g, "\\/");
+			return new RegExp(
+				`^${escapedAuthProvider}.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
+				"i",
+			);
+		};
 
-	discordWebviewIntercept(): RegExp {
-		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
-		const authProvider = "https:\\/\\/discord\\.com\\/api\\/oauth2\\/authorize";
-		return new RegExp(
-			`^${authProvider}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
-			"i",
-		);
-	}
-
-	microsoftWebviewIntercept(): RegExp {
-		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
-		const authProvider =
-			"https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
-		return new RegExp(
-			`^${authProvider.replace("/", "\/")}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
-			"i",
-		);
+		return [
+			// Google
+			createIntercept("https://accounts.google.com/o/oauth2/auth"),
+			// Discord
+			createIntercept("https://discord.com/api/oauth2/authorize"),
+			// Microsoft
+			createIntercept(
+				"https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+			),
+		];
 	}
 
 	async initiateManualOAuth2CodeFlow(
