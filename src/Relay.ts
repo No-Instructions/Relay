@@ -21,6 +21,8 @@ interface Serializable {
 export interface RelayUser extends Identified, Updatable<RelayUser> {
 	id: string;
 	name: string;
+	picture: string;
+	email: string;
 }
 
 export interface RemoteSharedFolder
