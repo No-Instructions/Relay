@@ -238,6 +238,16 @@ export class LoginManager extends Observable<LoginManager> {
 		);
 	}
 
+	microsoftWebviewIntercept(): RegExp {
+		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
+		const authProvider =
+			"https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+		return new RegExp(
+			`^${authProvider.replace("/", "\/")}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
+			"i",
+		);
+	}
+
 	async initiateManualOAuth2CodeFlow(
 		whichFetch: typeof fetch | typeof customFetch,
 		providerNames: string[] = ["google"],
