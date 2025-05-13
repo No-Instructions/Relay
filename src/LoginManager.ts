@@ -131,6 +131,7 @@ export class LoginManager extends Observable<LoginManager> {
 	getFlags() {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
+			"Relay-Version": GIT_TAG,
 		};
 		requestUrl({
 			url: `${API_URL}/flags`,
