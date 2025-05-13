@@ -15,6 +15,7 @@ export interface FeatureFlags {
 	enableCanvasSync: boolean;
 	enableShowDeviceInfo: boolean;
 	enableDiscordLogin: boolean;
+	enableMicrosoftLogin: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -34,6 +35,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableCanvasSync: false,
 	enableShowDeviceInfo: false,
 	enableDiscordLogin: false,
+	enableMicrosoftLogin: false,
 };
 
 export type Flag = keyof FeatureFlags;
