@@ -366,7 +366,7 @@ export class BackgroundSync extends HasLogging {
 				} else {
 					await this.getDocument(item.doc);
 				}
-				
+
 				item.status = "completed";
 
 				const callback = this.downloadCompletionCallbacks.get(item.guid);
@@ -605,7 +605,7 @@ export class BackgroundSync extends HasLogging {
 		for (const doc of sortedDocs) {
 			this.enqueueDocumentForGroupSync(doc);
 		}
-		
+
 		// Enqueue all canvases for sync
 		for (const canvas of sortedCanvases) {
 			this.enqueueCanvasForGroupSync(canvas, sharedFolder);
@@ -715,7 +715,7 @@ export class BackgroundSync extends HasLogging {
 		if (
 			!(entity instanceof S3RemoteDocument || entity instanceof S3RemoteCanvas)
 		) {
-			throw new Error("Unable to decode S3RN");
+			throw new Error(`Unable to decode S3RN: ${S3RN.encode(entity)}`);
 		}
 
 		const clientToken = await item.getProviderToken();
@@ -727,6 +727,7 @@ export class BackgroundSync extends HasLogging {
 			url: url,
 			method: "GET",
 			headers: headers,
+			throw: false,
 		});
 
 		if (response.status === 200) {
@@ -735,10 +736,11 @@ export class BackgroundSync extends HasLogging {
 			this.error(
 				"[downloadItem]",
 				getId(entity),
-				baseUrl,
+				url,
 				response.status,
 				response.text,
 			);
+			throw new Error(`Unable to download item: ${S3RN.encode(entity)}`);
 		}
 		return response;
 	}
@@ -747,7 +749,7 @@ export class BackgroundSync extends HasLogging {
 		// if the local file is synced, then we do the two step process
 		// check if file is tracking
 		let currentFileContents = "";
-		
+
 		// Handle different document types
 		let currentTextStr = "";
 		let currentCanvasData: CanvasData | null = null;
@@ -769,7 +771,9 @@ export class BackgroundSync extends HasLogging {
 		let contentsMatch = false;
 		if (isCanvas(doc) && currentCanvasData) {
 			// For canvas, use deep object comparison instead of string equality
-			const currentFileJson = currentFileContents ? JSON.parse(currentFileContents) : { nodes: [], edges: [] };
+			const currentFileJson = currentFileContents
+				? JSON.parse(currentFileContents)
+				: { nodes: [], edges: [] };
 			contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
 		} else {
 			contentsMatch = currentTextStr === currentFileContents;
@@ -800,7 +804,10 @@ export class BackgroundSync extends HasLogging {
 	async uploadItem(item: Document | Canvas): Promise<RequestUrlResponse> {
 		const entity = item.s3rn;
 		this.log("[uploadItem]", `${S3RN.encode(entity)}`);
-		if (!(entity instanceof S3RemoteDocument) && !(entity instanceof S3RemoteCanvas)) {
+		if (
+			!(entity instanceof S3RemoteDocument) &&
+			!(entity instanceof S3RemoteCanvas)
+		) {
 			throw new Error("Unable to decode S3RN");
 		}
 
@@ -851,7 +858,7 @@ export class BackgroundSync extends HasLogging {
 	enqueueCanvasDownload(canvas: Canvas): Promise<void> {
 		return this.enqueueDownload(canvas);
 	}
-	
+
 	/**
 	 * Enqueues a canvas for group synchronization
 	 * This is used as part of the shared folder sync process
@@ -869,7 +876,7 @@ export class BackgroundSync extends HasLogging {
 				);
 				return;
 			}
-			
+
 			await this.enqueueDownload(canvas);
 		} catch (e) {
 			this.error("[enqueueCanvasForGroupSync]", e);
@@ -986,7 +993,7 @@ export class BackgroundSync extends HasLogging {
 		// if the local file is synced, then we do the two step process
 		// check if file is tracking
 		let currentFileContents = "";
-		
+
 		// Handle different document types
 		let currentTextStr = "";
 		let currentCanvasData: CanvasData | null = null;
@@ -1008,7 +1015,9 @@ export class BackgroundSync extends HasLogging {
 		let contentsMatch = false;
 		if (isCanvas(doc) && currentCanvasData) {
 			// For canvas, use deep object comparison instead of string equality
-			const currentFileJson = currentFileContents ? JSON.parse(currentFileContents) : { nodes: [], edges: [] };
+			const currentFileJson = currentFileContents
+				? JSON.parse(currentFileContents)
+				: { nodes: [], edges: [] };
 			contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
 		} else {
 			contentsMatch = currentTextStr === currentFileContents;
@@ -1034,12 +1043,13 @@ export class BackgroundSync extends HasLogging {
 		const newDoc = new Y.Doc();
 		Y.applyUpdate(newDoc, updateBytes);
 		const users = newDoc.getMap("users");
-		
+
 		let isAlreadySynced = false;
 		if (isCanvas(doc) && currentCanvasData) {
 			const remoteCanvasData = Canvas.exportCanvasData(newDoc);
 			// Use deep object comparison for canvas data
-			isAlreadySynced = users.size > 0 && areObjectsEqual(remoteCanvasData, currentCanvasData);
+			isAlreadySynced =
+				users.size > 0 && areObjectsEqual(remoteCanvasData, currentCanvasData);
 		} else {
 			const remoteContent = newDoc.getText("contents").toString();
 			isAlreadySynced = users.size > 0 && remoteContent === currentTextStr;
