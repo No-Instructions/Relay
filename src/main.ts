@@ -673,6 +673,13 @@ export default class Live extends Plugin {
 			this.debug("Intercepting Webviewer for URL pattern", discordRegex.source);
 			this.interceptedUrls.push(discordRegex);
 
+			const microsoftRegex = this.loginManager.microsoftWebviewIntercept();
+			this.debug(
+				"Intercepting Webviewer for URL pattern",
+				microsoftRegex.source,
+			);
+			this.interceptedUrls.push(microsoftRegex);
+
 			const apiRegExp = new RegExp(API_URL.replace("/", "\\/") + ".*");
 			this.debug("Intercepting Webviewer for URL pattern", apiRegExp.source);
 			this.interceptedUrls.push(apiRegExp);

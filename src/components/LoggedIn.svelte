@@ -37,6 +37,9 @@
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			providers.push("discord");
 		}
+		if ($flagManager.getFlag("enableMicrosoftLogin")) {
+			providers.push("microsoft");
+		}
 		return providers;
 	});
 
@@ -45,6 +48,9 @@
 		const providers = ["google"];
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			providers.push("discord");
+		}
+		if ($flagManager.getFlag("enableMicrosoftLogin")) {
+			providers.push("microsoft");
 		}
 		return providers;
 	});
@@ -354,6 +360,40 @@
 	}
 
 	.discord-sign-in-button:disabled {
+		cursor: unset;
+		filter: grayscale(100%);
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 1px 1px rgba(0, 0, 0, 0.25);
+	}
+
+	.microsoft-sign-in-button {
+		height: unset;
+		padding: 12px 16px 12px 42px !important;
+		border: none;
+		border-radius: 3px;
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 1px 1px rgba(0, 0, 0, 0.25);
+		color: var(--text-color);
+		font-size: 14px;
+		font-weight: 500;
+		font-family:
+			-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+			Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+		background-image: url(data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz48c3ZnIHdpZHRoPSIxOHB4IiBoZWlnaHQ9IjE4cHgiIHZpZXdCb3g9Ii0xNSAtMTUgMjg2IDI4NiIgdmVyc2lvbj0iMS4xIiB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHByZXNlcnZlQXNwZWN0UmF0aW89InhNaWRZTWlkIj4gICAgPHRpdGxlPk1pY3Jvc29mdDwvdGl0bGU+ICAgIDxnPiAgICAgICAgPHBvbHlnb24gZmlsbD0iI0YxNTExQiIgcG9pbnRzPSIxMjEuNjY2MDk1IDEyMS42NjYwOTUgMCAxMjEuNjY2MDk1IDAgMCAxMjEuNjY2MDk1IDAiLz4gICAgICAgIDxwb2x5Z29uIGZpbGw9IiM4MENDMjgiIHBvaW50cz0iMjU2IDEyMS42NjYwOTUgMTM0LjMzNTM1NiAxMjEuNjY2MDk1IDEzNC4zMzUzNTYgMCAyNTYgMCIvPiAgICAgICAgPHBvbHlnb24gZmlsbD0iIzAwQURFRiIgcG9pbnRzPSIxMjEuNjYzMTk0IDI1Ni4wMDIxODggMCAyNTYuMDAyMTg4IDAgMTM0LjMzNjA5NSAxMjEuNjYzMTk0IDEzNC4zMzYwOTUiLz4gICAgICAgIDxwb2x5Z29uIGZpbGw9IiNGQkJDMDkiIHBvaW50cz0iMjU2IDI1Ni4wMDIxODggMTM0LjMzNTM1NiAyNTYuMDAyMTg4IDEzNC4zMzUzNTYgMTM0LjMzNjA5NSAyNTYgMTM0LjMzNjA5NSIvPiAgICA8L2c+PC9zdmc+);
+		background-color: var(--background-secondary);
+		background-repeat: no-repeat;
+		background-position: 12px 11px;
+	}
+
+	.microsoft-sign-in-button:hover {
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 2px 4px rgba(0, 0, 0, 0.25);
+	}
+
+	.microsoft-sign-in-button:disabled {
 		cursor: unset;
 		filter: grayscale(100%);
 		box-shadow:

@@ -28,6 +28,79 @@ interface GoogleUser {
 	picture: string;
 }
 
+interface MicrosoftUser {
+	mail: string;
+	surname: string;
+	givenName: string;
+	displayName: string;
+}
+
+/**
+ * Normalized OAuth user data structure that standardizes information across providers
+ */
+interface NormalizedOAuthUser {
+	name: string;
+	given_name: string;
+	family_name: string;
+	email: string;
+	picture?: string;
+}
+
+/**
+ * Normalizes OAuth2 user data from different providers into a consistent format
+ */
+function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
+	// Handle Google user
+	if ("email" in rawUser && "name" in rawUser) {
+		const googleUser = rawUser as GoogleUser;
+		return {
+			name: googleUser.name,
+			given_name: googleUser.given_name,
+			family_name: googleUser.family_name,
+			email: googleUser.email,
+			picture: googleUser.picture,
+		};
+	}
+
+	// Handle Microsoft user
+	if ("mail" in rawUser && "displayName" in rawUser) {
+		const microsoftUser = rawUser as MicrosoftUser;
+		return {
+			name: microsoftUser.displayName,
+			given_name: microsoftUser.givenName,
+			family_name: microsoftUser.surname,
+			email: microsoftUser.mail,
+			// Microsoft doesn't typically provide picture in basic profile
+		};
+	}
+
+	return null;
+}
+
+/**
+ * Creates a User object from OAuth2 payload data, supporting multiple providers
+ * @param id - User ID from the auth store
+ * @param token - Authentication token
+ * @param authStoreModel - Model data from the auth store
+ * @param rawUser - Raw OAuth user data from the provider (Google, Microsoft, etc.)
+ * @returns A new User instance with normalized data from the OAuth provider
+ */
+export function createUserFromOAuth(
+	id: string,
+	token: string,
+	authStoreModel: any,
+	rawUser?: GoogleUser | MicrosoftUser | any,
+): User {
+	const normalizedOAuth = rawUser ? normalizeOAuthUser(rawUser) : null;
+
+	return new User(
+		id,
+		authStoreModel?.name || normalizedOAuth?.name || "",
+		authStoreModel?.email || normalizedOAuth?.email || "",
+		authStoreModel?.picture || normalizedOAuth?.picture || "",
+		token,
+	);
+}
 
 export class Provider {
 	fullAuthUrl: string;
@@ -203,13 +276,15 @@ export class LoginManager extends Observable<LoginManager> {
 		return this.user !== undefined;
 	}
 
-	private makeUser(authStore: BaseAuthStore, rawUser?: GoogleUser): User {
-		return new User(
+	private makeUser(
+		authStore: BaseAuthStore,
+		rawUser?: GoogleUser | MicrosoftUser,
+	): User {
+		return createUserFromOAuth(
 			authStore.model?.id,
-			authStore.model?.name || rawUser?.name,
-			authStore.model?.email,
-			authStore.model?.picture || rawUser?.picture,
 			authStore.token,
+			authStore.model,
+			rawUser,
 		);
 	}
 
@@ -235,6 +310,16 @@ export class LoginManager extends Observable<LoginManager> {
 		const authProvider = "https:\\/\\/discord\\.com\\/api\\/oauth2\\/authorize";
 		return new RegExp(
 			`^${authProvider}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
+			"i",
+		);
+	}
+
+	microsoftWebviewIntercept(): RegExp {
+		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
+		const authProvider =
+			"https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+		return new RegExp(
+			`^${authProvider.replace("/", "\/")}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
 			"i",
 		);
 	}
