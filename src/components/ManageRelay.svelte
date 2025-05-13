@@ -33,6 +33,7 @@
 	import moment from "moment";
 	import { withFlag } from "src/flagManager";
 	import { flag } from "src/flags";
+	import AccountSettingItem from "./AccountSettingItem.svelte";
 
 	function getActiveForMessage(cancelAtDate: Date | null): string {
 		if (!cancelAtDate) {
@@ -357,7 +358,7 @@
 >
 
 {#each $roles.values().sort(userSort) as item}
-	<SettingItem name={item.user.name} description={item.role}>
+	<AccountSettingItem user={item.user}>
 		{#if item.role === "Member" && $relay.owner}
 			<button
 				class="mod-destructive"
@@ -368,7 +369,7 @@
 				Kick
 			</button>
 		{/if}
-	</SettingItem>
+	</AccountSettingItem>
 {/each}
 
 <!--

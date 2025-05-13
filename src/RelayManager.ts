@@ -261,6 +261,14 @@ class RelayUserAuto extends Auto implements RelayUser {
 		return this.user.name;
 	}
 
+	public get email() {
+		return this.user.email;
+	}
+
+	public get picture() {
+		return this.user.picture;
+	}
+
 	public update(update: UserDAO): RelayUser {
 		this.user = update;
 		return this;

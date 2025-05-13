@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { User } from "../User";
+	import type { RelayUser } from "src/Relay";
 
-	export let user: User;
+	export let user: RelayUser;
 	export let alt = "Profile picture";
 	export let size = "40px";
 
@@ -22,7 +22,12 @@
 
 <div class="avatar" style:width={size} style:height={size}>
 	{#if !imageError && user.picture}
-		<img src={user.picture} {alt} on:error={handleError} />
+		<img
+			src={user.picture}
+			{alt}
+			on:error={handleError}
+			referrerpolicy="no-referrer"
+		/>
 	{:else}
 		<span class="initial" style:font-size={fontSize}>
 			{initial}
