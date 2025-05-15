@@ -129,7 +129,7 @@ function createToastFunction(notifier: INotifier, debug: boolean) {
 			};
 }
 
-const SENSITIVE_KEYS = ["token", "authorization", "email"];
+const SENSITIVE_KEYS = ["token", "authorization", "email", "key"];
 
 function serializeArg(arg: unknown): string {
 	if (typeof arg === "object" && arg !== null) {
