@@ -3,6 +3,7 @@
 	import Avatar from "./Avatar.svelte";
 	import { createEventDispatcher } from "svelte";
 	import { debounce } from "obsidian";
+	import type { RelayUser } from "src/Relay";
 
 	export let user: RelayUser;
 </script>
@@ -19,3 +20,19 @@
 		<slot></slot>
 	</div>
 </div>
+
+<style>
+	.setting-item-control {
+		width: unset !important;
+		margin-top: unset !important;
+	}
+	.setting-item {
+		flex-direction: unset !important;
+		align-items: flex-start;
+	}
+	.setting-item-info {
+		min-width: 0;
+		margin-top: auto;
+		margin-bottom: auto;
+	}
+</style>
