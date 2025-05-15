@@ -26,7 +26,6 @@
 	}
 	.setting-item {
 		flex-direction: unset !important;
-		align-items: flex-start;
 	}
 	.setting-item-info {
 		min-width: 0;
