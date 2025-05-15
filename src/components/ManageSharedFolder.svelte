@@ -126,7 +126,7 @@
 {#if $relayStore && flags().enableAttachmentSync}
 	<SettingItemHeading name="Sync Settings"></SettingItemHeading>
 	{#each settingEntries as [name, category]}
-		<SettingItem name={category.name} description={category.description}>
+		<SlimSettingItem name={category.name} description={category.description}>
 			<div class="setting-item-control">
 				<div
 					role="checkbox"
@@ -146,7 +146,7 @@
 					<div class="checkbox-toggle"></div>
 				</div>
 			</div>
-		</SettingItem>
+		</SlimSettingItem>
 	{/each}
 {/if}
 
