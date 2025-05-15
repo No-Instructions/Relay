@@ -80,6 +80,7 @@ export interface RelayInvitation
 	role: Role;
 	relay: Relay;
 	key: string;
+	enabled: boolean;
 }
 
 export interface RelaySubscription

@@ -19,6 +19,7 @@
 
 	let shareKey = "";
 	let invalidShareKey = false;
+	let invitePending = false;
 
 	const dispatch = createEventDispatcher();
 
@@ -41,10 +42,13 @@
 
 	async function handleJoinRelayFromInvite(shareKey: string) {
 		try {
+			invitePending = true;
 			const relay = await plugin.relayManager.acceptInvitation(shareKey);
+			invitePending = false;
 			dispatch("joinRelay", { relay });
 		} catch (e) {
 			invalidShareKey = true;
+			invitePending = false;
 		}
 	}
 
@@ -72,10 +76,12 @@
 		placeholder="Enter share key"
 		bind:value={shareKey}
 		on:input={handleShareKeyInput}
+		disabled={invitePending}
 		class={invalidShareKey ? "system3-input-invalid" : ""}
 	/>
 	<button
 		class="mod-cta"
+		disabled={invitePending}
 		on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
 	>
 		Join

@@ -2,6 +2,7 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import {
 		type Relay,
+		type RelayInvitation,
 		type RelayRole,
 		type RelaySubscription,
 		type RemoteSharedFolder,
@@ -9,7 +10,7 @@
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import Folder from "./Folder.svelte";
-	import { Notice, debounce, normalizePath } from "obsidian";
+	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
@@ -50,6 +51,10 @@
 		} else {
 			return `Active for ${daysRemaining} more days`;
 		}
+	}
+
+	function preventDefault(event: Event) {
+		event.preventDefault();
 	}
 
 	function formatBytes(bytes: number, decimals = 2) {
@@ -136,6 +141,17 @@
 		);
 	}
 
+	function handleKeyToggle(checked: boolean) {
+		if (relay.owner) {
+			isShareKeyEnabled.set(checked);
+			plugin.relayManager
+				.toggleRelayInvitation(relayInvitation, $isShareKeyEnabled)
+				.then((invite) => {
+					isShareKeyEnabled.set(invite.enabled);
+				});
+		}
+	}
+
 	async function handleLeaveRelay() {
 		plugin.relayManager.leaveRelay(relay);
 		dispatch("goBack", { clear: true });
@@ -145,10 +161,46 @@
 		dispatch("goBack", { clear: true });
 	}
 
-	let relay_invitation_key: string;
-	plugin.relayManager.getRelayInvitationKey(relay).then((key) => {
-		relay_invitation_key = key;
+	let relayInvitation: RelayInvitation;
+	let showShareKey = writable(false);
+	let isShareKeyEnabled = writable(true);
+	let lockIcon: HTMLElement;
+
+	onMount(() => {
+		if (lockIcon) {
+			setIcon(lockIcon, "lock");
+		}
 	});
+
+	function setToggleIcon(node: HTMLElement) {
+		const updateIcon = () => {
+			setIcon(node, $showShareKey ? "eye-off" : "eye");
+		};
+
+		const unsubscribe = showShareKey.subscribe(() => {
+			updateIcon();
+		});
+
+		updateIcon();
+
+		return {
+			destroy() {
+				unsubscribe();
+			},
+		};
+	}
+	plugin.relayManager.getRelayInvitation(relay).then((invite) => {
+		if (invite) {
+			relayInvitation = invite;
+			isShareKeyEnabled.set(invite.enabled);
+		}
+	});
+
+	async function rotateKey() {
+		if (relayInvitation) {
+			relayInvitation = await plugin.relayManager.rotateKey(relayInvitation);
+		}
+	}
 
 	async function addToVault(
 		remoteFolder: RemoteSharedFolder,
@@ -238,6 +290,15 @@
 			.writeText(inputEl.value)
 			.then(() => new Notice("Invite link copied"))
 			.catch((err) => {});
+	}
+
+	function copyInvite(event: Event) {
+		if (relayInvitation) {
+			navigator.clipboard
+				.writeText(relayInvitation.key)
+				.then(() => new Notice("Invite link copied"))
+				.catch((err) => {});
+		}
 	}
 
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
@@ -382,19 +443,112 @@
     -->
 <SettingItemHeading name="Sharing"></SettingItemHeading>
 
-<SettingItem
-	name="Share Key"
-	description="Share this key with your collaborators."
->
-	<input
-		value={relay_invitation_key}
-		type="text"
-		readonly
-		on:click={debounce(selectText)}
-		id="system3InviteLink"
-	/>
-</SettingItem>
+<SlimSettingItem name={relay.owner ? "Enable key sharing" : "Key sharing"}>
+	<fragment slot="description">
+		{#if relay.owner}
+			<div class="setting-item-description">
+				Allow others to join this Relay Server with a Share Key.
+			</div>
+		{:else if $isShareKeyEnabled}
+			<div class="setting-item-description">
+				The owner of this Relay Server has enabled key sharing.
+			</div>
+		{:else}
+			<div class="setting-item-description mod-warning">
+				The owner of this Relay Server has disabled key sharing.
+			</div>
+		{/if}
+	</fragment>
+	<div class="setting-item-control">
+		{#if !relay.owner}
+			<div class="lock-icon" bind:this={lockIcon}></div>
+		{/if}
+		<div
+			role="checkbox"
+			aria-checked={$isShareKeyEnabled}
+			tabindex="0"
+			on:keypress={() => handleKeyToggle(!$isShareKeyEnabled)}
+			class={relay.owner
+				? "checkbox-container"
+				: "checkbox-container checkbox-locked"}
+			class:is-enabled={$isShareKeyEnabled}
+			on:click={() => handleKeyToggle(!$isShareKeyEnabled)}
+		>
+			<input
+				type="checkbox"
+				checked={$isShareKeyEnabled}
+				disabled={!relay.owner}
+				on:change={(e) => handleKeyToggle(e.currentTarget.checked)}
+			/>
+			<div class="checkbox-toggle"></div>
+		</div>
+	</div>
+</SlimSettingItem>
+
+{#if $isShareKeyEnabled}
+	<SlimSettingItem
+		name="Share Key"
+		description="Share this key with your collaborators."
+	>
+		<div class="share-key-container">
+			{#if !$isShareKeyEnabled}
+				<span
+					role="button"
+					tabindex="0"
+					class="input-like share-key-disabled-notice"
+				>
+					Share key is currently disabled
+				</span>
+			{:else}
+				<div class="input-with-icon">
+					{#if $showShareKey}
+						<input
+							value={relayInvitation.key}
+							type="text"
+							readonly
+							on:click={debounce(copyInvite)}
+							id="system3InviteLink"
+							disabled={!$isShareKeyEnabled}
+						/>
+					{:else}
+						<span
+							role="button"
+							tabindex="0"
+							class="input-like"
+							id="system3InviteSecret"
+							on:click={debounce(copyInvite)}
+							on:keypress={debounce(copyInvite)}
+						>
+							••••••••••••••••••••••••••••••••••••
+						</span>
+					{/if}
+					<div
+						class="share-key-toggle-icon"
+						role="button"
+						tabindex="0"
+						use:setToggleIcon
+						on:click={() => showShareKey.update((v) => !v)}
+						on:keypress={() => showShareKey.update((v) => !v)}
+						aria-label={$showShareKey ? "Hide share key" : "Show share key"}
+					></div>
+				</div>
+			{/if}
+		</div>
+	</SlimSettingItem>
+
+	{#if relay.owner}
+		<SettingItem
+			name="Rotate key"
+			description="Create a new share key. The old key will no longer work."
+		>
+			<button on:click={debounce(rotateKey)} class="mod-destructive">
+				Rotate key
+			</button>
+		</SettingItem>
+	{/if}
+{/if}
 {#if $relay.owner}
+	<SettingItemHeading name="Plan" />
 	{#if $subscription}
 		<SettingItem name={`Plan: ${$relay.plan}`} description="">
 			<fragment slot="description">
@@ -467,11 +621,8 @@
 		>
 			{formatBytes($storageQuota.maxFileSize)}
 		</SlimSettingItem>
-
-		<SettingItemHeading name="Danger zone"></SettingItemHeading>
-	{:else}
-		<SettingItemHeading name="Storage"></SettingItemHeading>
 	{/if}
+	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 	<SettingItem
 		name="Destroy Relay Server"
 		description="This will destroy the Relay Server (deleting all data on the server). Local data is preserved."
@@ -531,5 +682,78 @@
 
 	.faint {
 		color: var(--text-faint);
+	}
+
+	/* Share key styling */
+	.share-key-container {
+		width: 100%;
+	}
+
+	.input-with-icon {
+		position: relative;
+		width: 100%;
+	}
+
+	.lock-icon {
+		width: 16px;
+		height: 16px;
+		opacity: 0.5;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.share-key-toggle-icon {
+		position: relative;
+	}
+
+	.share-key-toggle-icon {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+		width: 24px;
+		height: 24px;
+		position: absolute;
+		right: 4px;
+		top: 50%;
+		transform: translateY(-50%);
+		border-radius: 4px;
+	}
+
+	.share-key-toggle-icon:hover {
+		background-color: var(--background-modifier-hover);
+	}
+
+	.share-key-disabled-notice {
+		color: var(--text-error) !important;
+		font-size: 0.85em !important;
+	}
+
+	.input-with-icon > input {
+		padding-right: 28px;
+	}
+
+	.input-like {
+		align-content: space-around;
+		display: inline-block;
+		border: var(--input-border-width) solid var(--background-modifier-border) !important;
+		height: var(--input-height) !important;
+		-webkit-app-region: no-drag;
+		background: var(--background-modifier-form-field);
+		color: var(--text-normal);
+		font-family: inherit;
+		padding: 4px 8px;
+		font-size: var(--font-ui-small);
+		border-radius: var(--input-radius);
+		outline: none;
+		padding-block: 1px;
+		overflow-clip-margin: 0px !important;
+		overflow: clip !important;
+	}
+
+	#system3InviteSecret {
+		padding: 4px 28px 4px 8px !important;
+		padding-inline: 2px;
 	}
 </style>

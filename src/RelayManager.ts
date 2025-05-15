@@ -97,6 +97,7 @@ interface RelayInvitationDAO extends RecordModel {
 	role: string;
 	relay: string;
 	key: string;
+	enabled: boolean;
 }
 
 interface Collection<D, A> {
@@ -871,6 +872,10 @@ class RelayInvitationAuto implements RelayInvitation {
 		return relay;
 	}
 
+	public get enabled(): boolean {
+		return this.relayInvitation.enabled;
+	}
+
 	public get aggregate_root() {
 		return ["relays", this.relayInvitation.relay];
 	}
@@ -1205,13 +1210,55 @@ export class RelayManager extends HasLogging {
 		this.store = undefined;
 	}
 
-	async getRelayInvitationKey(relay: Relay): Promise<string> {
-		if (!this.pb) return "";
+	async rotateKey(relayInvitation: RelayInvitation): Promise<RelayInvitation> {
+		if (!this.pb) {
+			throw new Error("missing pocketbase");
+		}
+		return this.pb
+			.send("/api/rotate-key", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ id: relayInvitation.id }),
+			})
+			.then((invitation: RelayInvitationDAO) => {
+				const invite = this.store?.ingest<RelayInvitation>(invitation);
+				if (!invite) {
+					throw new Error("unable to rotate key");
+				}
+				return invite;
+			});
+	}
+
+	async toggleRelayInvitation(
+		relayInvitation: RelayInvitation,
+		value: boolean,
+	): Promise<RelayInvitation> {
+		if (!this.pb) {
+			throw new Error("missing pocketbase");
+		}
+		return this.pb
+			.collection("relay_invitations")
+			.update<RelayInvitationDAO>(relayInvitation.id, {
+				enabled: value,
+			})
+			.then((invitation) => {
+				const invite = this.store?.ingest<RelayInvitation>(invitation);
+				if (!invite) {
+					throw new Error("unable to toggle invitation enable");
+				}
+				return invite;
+			});
+	}
+
+	async getRelayInvitation(relay: Relay): Promise<RelayInvitation | undefined> {
+		if (!this.pb) return undefined;
 		const relayInvitation = this.relayInvitations.find((invite) => {
 			return invite.relay.id === relay.id;
 		});
-		if (relayInvitation?.key) {
-			return relayInvitation.key;
+		if (relayInvitation) {
+			return relayInvitation;
 		}
 		return this.pb
 			.collection("relay_invitations")
@@ -1224,9 +1271,9 @@ export class RelayManager extends HasLogging {
 					return invite.relay.id === relay.id;
 				});
 				if (invite) {
-					return invite.key;
+					return invite;
 				}
-				return "";
+				return;
 			});
 	}
 
