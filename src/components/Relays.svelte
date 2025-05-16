@@ -10,7 +10,7 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
-	import { debounce } from "obsidian";
+	import { debounce, Notice } from "obsidian";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
@@ -43,7 +43,14 @@
 	async function handleJoinRelayFromInvite(shareKey: string) {
 		try {
 			invitePending = true;
-			const relay = await plugin.relayManager.acceptInvitation(shareKey);
+			const relay = await plugin.relayManager
+				.acceptInvitation(shareKey)
+				.catch((response) => {
+					if (response.status === 429) {
+						new Notice("Slow down");
+					}
+					throw response;
+				});
 			invitePending = false;
 			dispatch("joinRelay", { relay });
 		} catch (e) {

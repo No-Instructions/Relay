@@ -1393,15 +1393,19 @@ export class RelayManager extends HasLogging {
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
 		if (!this.pb) throw new Error("Failed to accept invitation");
-		const response = await this.pb.send("/api/accept-invitation", {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				key: shareKey,
-			}),
-		});
+		const response = await this.pb
+			.send("/api/accept-invitation", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					key: shareKey,
+				}),
+			})
+			.catch((response) => {
+				throw response;
+			});
 		this.debug("[InviteAccept]", response);
 		const relay = this.store?.ingest<Relay>(response);
 		if (!relay) {

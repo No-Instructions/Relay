@@ -207,7 +207,14 @@
 
 	async function rotateKey() {
 		if (relayInvitation) {
-			relayInvitation = await plugin.relayManager.rotateKey(relayInvitation);
+			relayInvitation = await plugin.relayManager
+				.rotateKey(relayInvitation)
+				.catch((response) => {
+					if (response.status === 429) {
+						new Notice("Slow down");
+					}
+					throw response;
+				});
 		}
 	}
 
