@@ -165,6 +165,8 @@
 	let showShareKey = writable(false);
 	let isShareKeyEnabled = writable(true);
 	let lockIcon: HTMLElement;
+	let toggleIcon: HTMLElement;
+	let showClipboardIcon = writable(false);
 
 	onMount(() => {
 		if (lockIcon) {
@@ -173,11 +175,23 @@
 	});
 
 	function setToggleIcon(node: HTMLElement) {
+		toggleIcon = node;
+
 		const updateIcon = () => {
-			setIcon(node, $showShareKey ? "eye-off" : "eye");
+			if ($showClipboardIcon) {
+				setIcon(node, "clipboard-check");
+				node.addClass("mod-success");
+			} else {
+				setIcon(node, $showShareKey ? "eye-off" : "eye");
+				node.removeClass("mod-success");
+			}
 		};
 
-		const unsubscribe = showShareKey.subscribe(() => {
+		const unsubscribeShareKey = showShareKey.subscribe(() => {
+			updateIcon();
+		});
+
+		const unsubscribeClipboard = showClipboardIcon.subscribe(() => {
 			updateIcon();
 		});
 
@@ -185,7 +199,8 @@
 
 		return {
 			destroy() {
-				unsubscribe();
+				unsubscribeShareKey();
+				unsubscribeClipboard();
 			},
 		};
 	}
@@ -296,7 +311,13 @@
 		if (relayInvitation) {
 			navigator.clipboard
 				.writeText(relayInvitation.key)
-				.then(() => new Notice("Invite link copied"))
+				.then(() => {
+					new Notice("Invite link copied");
+					showClipboardIcon.set(true);
+					setTimeout(() => {
+						showClipboardIcon.set(false);
+					}, 800);
+				})
 				.catch((err) => {});
 		}
 	}
