@@ -18,6 +18,7 @@
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
 	import Satellite from "./Satellite.svelte";
+	import Lock from "./Lock.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import DiskUsage from "./DiskUsage.svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
@@ -164,15 +165,8 @@
 	let relayInvitation: RelayInvitation;
 	let showShareKey = writable(false);
 	let isShareKeyEnabled = writable(true);
-	let lockIcon: HTMLElement;
 	let toggleIcon: HTMLElement;
 	let showClipboardIcon = writable(false);
-
-	onMount(() => {
-		if (lockIcon) {
-			setIcon(lockIcon, "lock");
-		}
-	});
 
 	function setToggleIcon(node: HTMLElement) {
 		toggleIcon = node;
@@ -482,7 +476,7 @@
 	</fragment>
 	<div class="setting-item-control">
 		{#if !relay.owner}
-			<div class="lock-icon" bind:this={lockIcon}></div>
+			<Lock />
 		{/if}
 		<div
 			role="checkbox"
@@ -713,15 +707,6 @@
 	.input-with-icon {
 		position: relative;
 		width: 100%;
-	}
-
-	.lock-icon {
-		width: 16px;
-		height: 16px;
-		opacity: 0.5;
-		display: flex;
-		align-items: center;
-		justify-content: center;
 	}
 
 	.share-key-toggle-icon {

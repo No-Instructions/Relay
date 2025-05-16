@@ -54,7 +54,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 			defaultEnabled: true,
 		},
 		otherTypes: {
-			name: "Other Files",
+			name: "Other files",
 			description: "Sync unsupported file types",
 			extensions: [],
 			defaultEnabled: false,

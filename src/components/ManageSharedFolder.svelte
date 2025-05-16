@@ -9,6 +9,7 @@
 	import { createEventDispatcher, onDestroy, onMount } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
+	import Lock from "./Lock.svelte";
 	import Folder from "./Folder.svelte";
 	import Satellite from "./Satellite.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
@@ -20,6 +21,25 @@
 	export let sharedFolder: SharedFolder;
 	export let sharedFolders: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
+
+	async function handleUpgrade(relay: Relay) {
+		if (!plugin.loginManager?.user) {
+			return;
+		}
+		const payload = {
+			relay: relay.id,
+			quantity: 10,
+			user_email: plugin.loginManager.user.email,
+		};
+		const encodedPayload = btoa(JSON.stringify(payload))
+			.replace(/\+/g, "-")
+			.replace(/\//g, "_")
+			.replace(/=+$/, "");
+		window.open(
+			plugin.buildApiUrl(`/subscribe/${encodedPayload}?action="buy_storage"`),
+			"_blank",
+		);
+	}
 
 	let folderStore = derived($sharedFolders, ($sharedFolders) => {
 		return $sharedFolders.find((folder) => folder === sharedFolder);
@@ -35,6 +55,16 @@
 		},
 	);
 
+	let noStorage = derived(
+		[folderStore, relayRoles],
+		([$folderStore, $relayRoles]) => {
+			return (
+				$relayRoles.find((role) => role.relay === $folderStore?.remote?.relay)
+					?.relay?.storageQuota?.quota === 0
+			);
+		},
+	);
+
 	// Type the entries
 	type CategoryEntry = [
 		keyof SyncFlags,
@@ -47,6 +77,7 @@
 	let isUpdating = false;
 	async function handleToggle(name: keyof SyncFlags, value: boolean) {
 		if (isUpdating) return;
+		if ($noStorage) return;
 		isUpdating = true;
 		try {
 			await syncSettings.toggleCategory(name, value);
@@ -124,22 +155,28 @@
 {/if}
 
 {#if $relayStore && flags().enableAttachmentSync}
-	<SettingItemHeading name="Sync Settings"></SettingItemHeading>
+	<SettingItemHeading
+		name="Sync settings"
+		helpText="You must have attachment storage available in order to sync attachments."
+	></SettingItemHeading>
 	{#each settingEntries as [name, category]}
 		<SlimSettingItem name={category.name} description={category.description}>
 			<div class="setting-item-control">
+				{#if $noStorage}
+					<Lock />
+				{/if}
 				<div
 					role="checkbox"
-					aria-checked={$syncSettings[name]}
+					aria-checked={$syncSettings[name] && !$noStorage}
 					tabindex="0"
 					on:keypress={() => handleToggle(name, !$syncSettings[name])}
 					class="checkbox-container"
-					class:is-enabled={$syncSettings[name]}
+					class:is-enabled={$syncSettings[name] && !$noStorage}
 					on:click={() => handleToggle(name, !$syncSettings[name])}
 				>
 					<input
 						type="checkbox"
-						checked={$syncSettings[name]}
+						checked={$syncSettings[name] && !$noStorage}
 						disabled={isUpdating}
 						on:change={(e) => handleToggle(name, e.currentTarget.checked)}
 					/>
@@ -148,6 +185,18 @@
 			</div>
 		</SlimSettingItem>
 	{/each}
+	{#if $noStorage && $relayStore}
+		<SlimSettingItem name="">
+			<button
+				class="mod-cta"
+				on:click={debounce(() => {
+					handleUpgrade($relayStore);
+				})}
+			>
+				Buy storage
+			</button>
+		</SlimSettingItem>
+	{/if}
 {/if}
 
 <SettingItemHeading name="Local folder"></SettingItemHeading>
