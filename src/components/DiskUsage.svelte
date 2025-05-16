@@ -4,7 +4,6 @@
 	export let text = "";
 	diskUsagePercentage = Math.max(0.0, diskUsagePercentage);
 	diskUsagePercentage = Math.min(100.0, diskUsagePercentage);
-	console.warn("diskUsage", diskUsagePercentage);
 </script>
 
 <div class="system3-disk-usage-container">
