@@ -1,9 +1,3 @@
-[![Install in Obsidian](https://img.shields.io/badge/Install%20in%20Obsidian-rgb(124%2C%2058%2C%20237)?logo=obsidian)](https://obsidian.md/plugins?id=system3-relay)
-[![Discord](https://img.shields.io/discord/1262488525404770314?logo=discord&logoColor=ffffff&label=Discord&color=7C3AED)](https://discord.gg/sMcJDrHj)
-![Downloads](https://img.shields.io/github/downloads/no-instructions/relay/total?logo=GitHub&color=7C3AED&label=Downloads)
-[![Latest Release](https://img.shields.io/github/v/release/no-instructions/relay?color=7C3AED&label=Latest%20Release)](https://github.com/no-instructions/relay/releases/latest)
-
-
 # Relay 🛰️
 
 True **multiplayer mode** for Obsidian. 💃🕺
@@ -16,8 +10,10 @@ True **multiplayer mode** for Obsidian. 💃🕺
 
 Relay is a collaborative editing plugin for Obsidian by [System 3](https://system3.md/). It uses CRDTs to enable snappy, local-first, real-time and asynchronous collaboration.
 
-[Join our Discord](https://discord.system3.md) for support and a good time.
-
+[![Install in Obsidian](https://img.shields.io/badge/Install%20in%20Obsidian-rgb(124%2C%2058%2C%20237)?logo=obsidian)](https://obsidian.md/plugins?id=system3-relay)
+[![Discord](https://img.shields.io/discord/1262488525404770314?logo=discord&logoColor=ffffff&label=Discord&color=7C3AED)](https://discord.gg/sMcJDrHj)
+![Downloads](https://img.shields.io/github/downloads/no-instructions/relay/total?logo=GitHub&color=7C3AED&label=Downloads)
+[![Latest Release](https://img.shields.io/github/v/release/no-instructions/relay?color=7C3AED&label=Latest%20Release)](https://github.com/no-instructions/relay/releases/latest)
 
 
 ### How does Relay work?
