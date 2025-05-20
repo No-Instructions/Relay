@@ -298,7 +298,7 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 	setEnabled(type: SyncType, enabled: boolean) {
 		const config = this.protocols.get(type);
 		if (config) {
-			config.enabled = enabled;
+			this.protocols.set(type, { ...config, enabled: enabled });
 		}
 	}
 
