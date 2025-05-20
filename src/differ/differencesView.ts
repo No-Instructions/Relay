@@ -30,6 +30,7 @@ import {
 	type ViewStateResult,
 	WorkspaceLeaf,
 } from "obsidian";
+import * as bg from "src/BackgroundSync";
 import { Difference } from "./difference";
 import { FileDifferences } from "./fileDifferences";
 import { preventEmptyString } from "./stringUtils";
@@ -204,15 +205,26 @@ export class DifferencesView extends ItemView {
 		}).build(actionLine);
 	}
 
+	async modify(file: TFile, newContent: string): Promise<void> {
+		if (file instanceof Document) {
+			bg.updateYDocFromDiskBuffer(file.ydoc, newContent);
+			return;
+		} else if (file instanceof DiskBuffer) {
+			file.contents = newContent;
+			return;
+		}
+		await this.app.vault.modify(file, newContent);
+	}
+
 	private async acceptAllFromLeft(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
-		await this.app.vault.modify(this.state.file2, this.file1Content || "");
+		await this.modify(this.state.file2, this.file1Content || "");
 		this.leaf.detach();
 	}
 
 	private async acceptAllFromRight(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
-		await this.app.vault.modify(this.state.file1, this.file2Content || "");
+		await this.modify(this.state.file1, this.file2Content || "");
 		this.leaf.detach();
 	}
 
