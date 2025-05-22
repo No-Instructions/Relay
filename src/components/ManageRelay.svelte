@@ -16,6 +16,7 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
+	import DeviceLogo from "./DeviceLogo.svelte";
 	import { uuidv4 } from "lib0/random";
 	import Satellite from "./Satellite.svelte";
 	import Lock from "./Lock.svelte";
@@ -25,6 +26,10 @@
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
+	import type { Device } from "src/device";
+	import { minimark } from "src/minimark";
+	import moment from "moment";
+	import AccountSettingItem from "./AccountSettingItem.svelte";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
@@ -32,18 +37,17 @@
 	export let sharedFolders!: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
-	import moment from "moment";
-	import { withFlag } from "src/flagManager";
-	import { flag } from "src/flags";
-	import AccountSettingItem from "./AccountSettingItem.svelte";
-	import { minimark } from "src/minimark";
-
 	async function checkRelayHost(relay: Relay) {
 		const response = await plugin.loginManager.checkRelayHost(relay.guid);
 		if (response.status === 200) {
 			return response.json;
 		}
 	}
+
+	let userDevices = new Map<string, Device[]>();
+	plugin.loginManager.getRelayUserDevices(relay.guid).then((userDevices_) => {
+		userDevices = userDevices_;
+	});
 
 	function getActiveForMessage(cancelAtDate: Date | null): string {
 		if (!cancelAtDate) {
@@ -60,10 +64,6 @@
 		} else {
 			return `Active for ${daysRemaining} more days`;
 		}
-	}
-
-	function preventDefault(event: Event) {
-		event.preventDefault();
 	}
 
 	function formatBytes(bytes: number, decimals = 2) {
@@ -449,18 +449,36 @@
 >
 
 {#each $roles.values().sort(userSort) as item}
-	<AccountSettingItem user={item.user}>
-		{#if item.role === "Member" && $relay.owner}
-			<button
-				class="mod-destructive"
-				on:click={debounce(() => {
-					handleKick(item);
-				})}
-			>
-				Kick
-			</button>
-		{/if}
-	</AccountSettingItem>
+	{#if relay.owner}
+		<AccountSettingItem
+			user={item.user}
+			devices={userDevices.get(item.user.id)}
+		>
+			{#if item.role === "Member" && $relay.owner}
+				<button
+					class="mod-destructive"
+					on:click={debounce(() => {
+						handleKick(item);
+					})}
+				>
+					Kick
+				</button>
+			{/if}
+		</AccountSettingItem>
+	{:else}
+		<AccountSettingItem user={item.user}>
+			{#if item.role === "Member" && $relay.owner}
+				<button
+					class="mod-destructive"
+					on:click={debounce(() => {
+						handleKick(item);
+					})}
+				>
+					Kick
+				</button>
+			{/if}
+		</AccountSettingItem>
+	{/if}
 {/each}
 
 <!--
