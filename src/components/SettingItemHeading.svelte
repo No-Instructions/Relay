@@ -19,7 +19,7 @@
 	}
 </script>
 
-<div class="setting-item setting-item-heading">
+<div class="setting-item setting-item-heading mod-list-item">
 	<div class="setting-item-info">
 		<div class="setting-item-name">
 			<slot name="name">{name}</slot>
