@@ -19,6 +19,7 @@ import { customFetch } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
+import type { Device } from "./device";
 
 interface GoogleUser {
 	email: string;
@@ -28,12 +29,18 @@ interface GoogleUser {
 	picture: string;
 }
 
+interface UserDevices {
+	devices: Device[];
+	id: string;
+}
+
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private openSettings: () => Promise<void>;
 	// XXX keep this private
 	authStore: LocalAuthStore;
 	user?: User;
+	devices: Device[] = [];
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 
 	constructor(
@@ -66,6 +73,7 @@ export class LoginManager extends Observable<LoginManager> {
 				.getOne(this.pb.authStore.model.id)
 				.then(() => {
 					this.getFlags();
+					this.getDevices();
 				})
 				.catch((response) => {
 					if (response.status === 404) {
@@ -138,6 +146,56 @@ export class LoginManager extends Observable<LoginManager> {
 			method: "GET",
 			headers: headers,
 		});
+    }
+
+	async getRelayUserDevices(
+		relay_guid: string,
+	): Promise<Map<string, Device[]>> {
+		const headers = {
+			Authorization: `Bearer ${this.pb.authStore.token}`,
+			"Relay-Version": GIT_TAG,
+		};
+		return requestUrl({
+			url: `${API_URL}/relay/${relay_guid}/devices`,
+			method: "GET",
+			headers: headers,
+		})
+			.then((response) => {
+				if (response.status === 200) {
+					const devicesByUser = new Map<string, Device[]>();
+					const user_devices: UserDevices[] = response.json.users;
+					user_devices.forEach((user: UserDevices) => {
+						devicesByUser.set(user.id, user.devices);
+					});
+					return devicesByUser;
+				}
+				return new Map<string, Device[]>();
+			})
+			.catch((reason) => {
+				this.warn(reason);
+				return new Map<string, Device[]>();
+			});
+	}
+
+	getDevices() {
+		const headers = {
+			Authorization: `Bearer ${this.pb.authStore.token}`,
+			"Relay-Version": GIT_TAG,
+		};
+		requestUrl({
+			url: `${API_URL}/my-devices`,
+			method: "GET",
+			headers: headers,
+		})
+			.then((response) => {
+				if (response.status === 200) {
+					const devices = response.json;
+					this.devices = devices.devices;
+				}
+			})
+			.catch((reason) => {
+				this.log(reason);
+			});
 	}
 
 	getFlags() {
