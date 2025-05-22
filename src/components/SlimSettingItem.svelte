@@ -3,7 +3,7 @@
 	export let description: string = "";
 </script>
 
-<div class="setting-item">
+<div class="setting-item mod-list-item">
 	<div class="setting-item-info">
 		<div class="setting-item-name truncate">
 			<slot name="name">{name}</slot>
