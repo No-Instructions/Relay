@@ -508,7 +508,7 @@
 </SlimSettingItem>
 
 {#if $isShareKeyEnabled}
-	<SlimSettingItem
+	<SettingItem
 		name="Share Key"
 		description="Share this key with your collaborators."
 	>
@@ -523,26 +523,24 @@
 				</span>
 			{:else}
 				<div class="input-with-icon">
-					{#if $showShareKey}
+					{#if $showShareKey && relayInvitation}
 						<input
 							value={relayInvitation.key}
 							type="text"
 							readonly
 							on:click={debounce(copyInvite)}
-							id="system3InviteLink"
+							class="system3-invite"
 							disabled={!$isShareKeyEnabled}
 						/>
 					{:else}
-						<span
-							role="button"
-							tabindex="0"
-							class="input-like"
-							id="system3InviteSecret"
+						<input
+							value={relayInvitation ? relayInvitation.key : "please wait..."}
+							type="password"
+							readonly
 							on:click={debounce(copyInvite)}
-							on:keypress={debounce(copyInvite)}
-						>
-							••••••••••••••••••••••••••••••••••••
-						</span>
+							class="system3-invite"
+							disabled={!$isShareKeyEnabled}
+						/>
 					{/if}
 					<div
 						class="share-key-toggle-icon"
@@ -556,7 +554,7 @@
 				</div>
 			{/if}
 		</div>
-	</SlimSettingItem>
+	</SettingItem>
 
 	{#if relay.owner}
 		<SettingItem
@@ -690,18 +688,6 @@
 		</SettingItem-->
 
 <style>
-	.system3-settings-danger-zone {
-		margin-top: 6em;
-	}
-
-	input.system3-updating {
-		border: 1px solid var(--color-accent) !important;
-	}
-
-	input.system3-input-invalid {
-		border: 1px solid var(--color-red) !important;
-	}
-
 	.faint {
 		color: var(--text-faint);
 	}
@@ -747,26 +733,9 @@
 		padding-right: 28px;
 	}
 
-	.input-like {
-		align-content: space-around;
-		display: inline-block;
-		border: var(--input-border-width) solid var(--background-modifier-border) !important;
-		height: var(--input-height) !important;
-		-webkit-app-region: no-drag;
-		background: var(--background-modifier-form-field);
-		color: var(--text-normal);
-		font-family: inherit;
-		padding: 4px 8px;
-		font-size: var(--font-ui-small);
-		border-radius: var(--input-radius);
-		outline: none;
-		padding-block: 1px;
-		overflow-clip-margin: 0px !important;
-		overflow: clip !important;
-	}
-
-	#system3InviteSecret {
+	.system3-invite {
 		padding: 4px 28px 4px 8px !important;
 		padding-inline: 2px;
+		font-family: monospace;
 	}
 </style>
