@@ -124,7 +124,7 @@
 		<GetInTouch />
 	</SettingItemHeading>
 	<SettingItemHeading name="Account"></SettingItemHeading>
-	<AccountSettingItem user={$lm.user}>
+	<AccountSettingItem user={$lm.user} devices={plugin.loginManager.devices}>
 		<button
 			on:click={debounce(() => {
 				logout();
