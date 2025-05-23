@@ -349,7 +349,9 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			const ynode = ynodes.get(node.id);
 			if (!ynode) {
 				changed_nodes.set(node.id, node);
-				this.textNode(node);
+				if (node.type === "text") {
+					this.textNode(node);
+				}
 			} else if (!areObjectsEqual(ynode, node)) {
 				changed_nodes.set(node.id, node);
 			}
