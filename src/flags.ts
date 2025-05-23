@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableToasts: boolean;
 	enableKanbanView: boolean;
 	enableDeviceRegistration: boolean;
+	enableLiveEmbeds: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -32,6 +33,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableToasts: false,
 	enableKanbanView: false,
 	enableDeviceRegistration: false,
+	enableLiveEmbeds: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

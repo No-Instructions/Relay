@@ -8,10 +8,11 @@ import type {
 	CanvasView,
 	ObsidianCanvas,
 } from "src/CanvasView";
-import type { RelayCanvasView } from "src/LiveViews";
+import { LiveViewManager, type RelayCanvasView } from "src/LiveViews";
 import { HasLogging } from "src/debug";
 
 import * as Y from "yjs";
+import { PreviewPlugin } from "./PreviewPlugin";
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -21,7 +22,10 @@ export class CanvasPlugin extends HasLogging {
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
 
-	constructor(relayCanvasView: RelayCanvasView) {
+	constructor(
+		private connectionManager: LiveViewManager,
+		relayCanvasView: RelayCanvasView,
+	) {
 		super();
 		this.view = relayCanvasView.view;
 		this.canvas = relayCanvasView.view.canvas;
@@ -30,6 +34,23 @@ export class CanvasPlugin extends HasLogging {
 		this.relayCanvasView = relayCanvasView;
 		this.observedTextNodes = new Set();
 		this.install();
+
+		for (const node of this.getEmbedViews()) {
+			if (!node.file) {
+				continue;
+			}
+			this.unsubscribes.push(
+				(() => {
+					const plugin = new PreviewPlugin(
+						node,
+						this.relayCanvas.sharedFolder.proxy.getDoc(node.file.path),
+					);
+					return () => {
+						plugin.destroy();
+					};
+				})(),
+			);
+		}
 	}
 
 	destroy() {
@@ -62,6 +83,15 @@ export class CanvasPlugin extends HasLogging {
 				this.observedTextNodes.delete(nodeId);
 			});
 		}
+	}
+
+	public getEmbedViews() {
+		return [...this.canvas.nodes.values()]
+			.map((nodeData) => {
+				//@ts-ignore
+				return nodeData.child;
+			})
+			.filter((x) => !!x);
 	}
 
 	public markDirty(node: CanvasNodeData) {
