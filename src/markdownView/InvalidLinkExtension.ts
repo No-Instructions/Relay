@@ -7,6 +7,7 @@ import {
 	type DecorationSet,
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
+import { TextFileView } from "obsidian";
 import {
     LiveView,
 	LiveViewManager,
@@ -43,7 +44,7 @@ export class InvalidLinkPluginValue {
 	app?: App;
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
-	view?: LiveView;
+	view?: LiveView<TextFileView>;
 	connectionManager?: LiveViewManager;
 	decorationAnchors: number[];
 	decorations: DecorationSet;

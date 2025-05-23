@@ -17,6 +17,7 @@ export interface FeatureFlags {
 	enableGitHubLogin: boolean;
 	enableSelfManageHosts: boolean;
 	enableKanbanView: boolean;
+	enableLiveEmbeds: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -38,6 +39,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableGitHubLogin: false,
 	enableSelfManageHosts: false,
 	enableKanbanView: false,
+	enableLiveEmbeds: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

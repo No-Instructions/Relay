@@ -10,6 +10,7 @@ import {
 	LiveView,
 	LiveViewManager,
 	ConnectionManagerStateField,
+	type S3View,
 	isLiveMd,
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
@@ -17,7 +18,11 @@ import { curryLog } from "src/debug";
 import { around } from "monkey-around";
 import diff_match_patch from "diff-match-patch";
 import { flags } from "src/flagManager";
-import { MarkdownView } from "obsidian";
+import { MarkdownView, editorInfoField } from "obsidian";
+import { Document } from "src/Document";
+import { EmbedBanner } from "src/ui/EmbedBanner";
+import { MetadataEditorPlugin } from "src/MetadataEditorPlugin";
+import { PreviewPlugin } from "src/PreviewPlugin";
 
 const TWEENS = 25;
 
@@ -30,11 +35,13 @@ export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 
 export const ySyncAnnotation = Annotation.define();
 
-export class LiveCMPluginValue implements PluginValue {
+export class LiveCMPluginValueV2 implements PluginValue {
 	editor: EditorView;
 	view?: LiveView<MarkdownView>;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
+	sourceView: Element | null;
+	banner?: EmbedBanner;
 	private destroyed = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
@@ -44,104 +51,156 @@ export class LiveCMPluginValue implements PluginValue {
 	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
+	document?: Document;
+	embed = false;
+	previewPlugin?: PreviewPlugin;
+	metadataEditorPlugin?: MetadataEditorPlugin;
+
+	getDocument(): Document | undefined {
+		const fileInfo = this.editor.state.field(editorInfoField);
+		const file = fileInfo.file;
+		if (file) {
+			if (this.document?._tfile === file) {
+				return this.document;
+			}
+			const folder = this.connectionManager?.sharedFolders.lookup(file.path);
+			if (folder) {
+				this.document = folder.proxy.getDoc(file.path);
+				return this.document;
+			}
+		}
+		this.view = this.connectionManager?.findView(this.editor);
+		if (this.view && this.view.document instanceof Document) {
+			return this.view.document;
+		}
+	}
+
+	active(view?: S3View) {
+		const live = isLiveMd(view);
+		return live || (this.embed && this.document);
+	}
+
+	mergeBanner(): () => void {
+		this.banner = new EmbedBanner(
+			this.sourceView,
+			this.editor.dom,
+			"Merge conflict -- click to resolve",
+			async () => {
+				if (!this.document) return true;
+				const diskBuffer = await this.document.diskBuffer();
+				const stale = await this.document.checkStale();
+				if (!stale) {
+					return true;
+				}
+				this.connectionManager?.openDiffView({
+					file1: this.document,
+					file2: diskBuffer,
+					showMergeOption: true,
+					onResolve: async () => {
+						if (this.document) {
+							this.document.clearDiskBuffer();
+							this.resync();
+						}
+					},
+				});
+				return true;
+			},
+		);
+		return () => {};
+	}
 
 	constructor(editor: EditorView) {
 		this.unsubscribes = [];
 		this.editor = editor;
+		this.sourceView = this.editor.dom.closest(".markdown-source-view");
 		this.connectionManager = this.editor.state.field(
 			ConnectionManagerStateField,
 		);
-		this.view = this.connectionManager?.findView(editor);
-		if (!this.view) {
+		this.view = this.connectionManager?.findView(this.editor);
+		this.document = this.getDocument();
+		if (!this.document) {
 			return;
 		}
-		this.log = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
-			"log",
-		);
-		this.warn = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
-			"warn",
-		);
+		if (!this.view) {
+			this.embed = true;
+		} else {
+			this.previewPlugin = new PreviewPlugin(this.view.view, this.document);
+		}
+		this.log = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "log");
+		this.warn = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "warn");
 		this.debug = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
+			`[LiveCMPluginValue][${this.document.path}]`,
 			"debug",
 		);
-
 		this.debug("created");
-		if (!this.view.document) {
-			return;
-		}
-
-		let fmSave: boolean = false;
 
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const liveEditPlugin = this;
+		let fmSave = false;
 
-		this.unsubscribes.push(
-			around(this.view.view, {
-				setViewData(old) {
-					return function (data: string, clear: boolean) {
-						if (clear) {
-							if (isLiveMd(liveEditPlugin.view)) {
-								if (liveEditPlugin.view.document.text === data) {
-									liveEditPlugin.view.tracking = true;
+		if (this.view?.view) {
+			this.unsubscribes.push(
+				around(this.view.view, {
+					setViewData(old) {
+						return function (data: string, clear: boolean) {
+							if (clear) {
+								if (isLiveMd(liveEditPlugin.view)) {
+									if (liveEditPlugin.view.document.text === data) {
+										liveEditPlugin.view.tracking = true;
+									}
 								}
+								liveEditPlugin.resync();
+							} else if (fmSave) {
+								const changes = liveEditPlugin.incrementalBufferChange(data);
+								editor.dispatch({
+									changes,
+								});
 							}
-							liveEditPlugin.resync();
-						} else if (fmSave) {
-							const changes = liveEditPlugin.incrementalBufferChange(data);
-							editor.dispatch({
-								changes,
-							});
-						}
-						// @ts-ignore
-						return old.call(this, data, clear);
-					};
-				},
-				// @ts-ignore
-				saveFrontmatter(old) {
-					return function (data: any) {
-						fmSave = true;
-						// @ts-ignore
-						const result = old.call(this, data);
-						fmSave = false;
-						return result;
-					};
-				},
-			}),
-		);
-		this.unsubscribes.push(
-			around(this.view.view.previewMode as any, {
-				edit(old) {
-					return function (data: string) {
-						if (
-							isLiveMd(liveEditPlugin.view) &&
-							liveEditPlugin.view.view.getMode() === "preview"
-						) {
-							const changes = liveEditPlugin.incrementalBufferChange(data);
-							editor.dispatch({
-								changes,
-							});
-						}
+							// @ts-ignore
+							return old.call(this, data, clear);
+						};
+					},
+					// @ts-ignore
+					saveFrontmatter(old) {
+						return function (data: any) {
+							fmSave = true;
+							// @ts-ignore
+							const result = old.call(this, data);
+							fmSave = false;
+							return result;
+						};
+					},
+					requestSave(old) {
+						return function () {
+							// @ts-ignore
+							const result = old.call(this);
+							try {
+								// @ts-ignore
+								this.app.metadataCache.trigger("resolve", this.file);
+							} catch (e) {
+								// pass
+							}
+							return result;
+						};
+					},
+				}),
+			);
+		} else {
+			this.document.connect();
+		}
 
-						// @ts-ignore
-						return old.call(this, data);
-					};
-				},
-			}),
-		);
-
-		if (this.view.document.connected) {
+		if (this.document.connected) {
 			this.resync();
 		} else {
-			this.view.document.onceConnected().then(() => {
+			this.document.onceConnected().then(() => {
 				this.resync();
 			});
 		}
 
 		this._observer = async (event, tr) => {
-			if (!isLiveMd(this.view)) {
+			this.document = this.getDocument();
+
+			if (!this.active(this.view)) {
 				this.debug("Recived yjs event against a non-live view");
 				return;
 			}
@@ -175,7 +234,7 @@ export class LiveCMPluginValue implements PluginValue {
 					}
 				}
 				if (
-					!this.view.tracking ||
+					(isLiveMd(this.view) && !this.view.tracking) ||
 					(flags().enableEditorTweens && this.keyFrameCounter > TWEENS)
 				) {
 					this.keyFrameCounter = 0;
@@ -185,15 +244,16 @@ export class LiveCMPluginValue implements PluginValue {
 					this.keyFrameCounter += 1;
 					this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
 				}
-				if (isLiveMd(this.view)) {
+				if (this.active(this.view)) {
 					editor.dispatch({
 						changes,
 						annotations: [ySyncAnnotation.of(this.editor)],
 					});
-					this.view.tracking = true;
+					if (isLiveMd(this.view)) {
+						this.view.tracking = true;
+					}
 				}
 			}
-			this.render();
 		};
 
 		this.observer = (event, tr) => {
@@ -207,17 +267,8 @@ export class LiveCMPluginValue implements PluginValue {
 				}
 			}
 		};
-		this._ytext = this.view.document.ytext;
+		this._ytext = this.document.ytext;
 		this._ytext.observe(this.observer);
-	}
-
-	public render() {
-		if (this.view?.view.getMode() === "preview") {
-			// @ts-ignore
-			this.view.view.previewMode.renderer.set(this.editor.state.doc.toString());
-			// @ts-ignore
-			this.view.view.onInternalDataChange();
-		}
 	}
 
 	public incrementalBufferChange(newBuffer: string): ChangeSpec[] {
@@ -277,38 +328,59 @@ export class LiveCMPluginValue implements PluginValue {
 					annotations: [ySyncAnnotation.of(this.editor)],
 				});
 			}
+		} else if (this.active(this.view) && this.document) {
+			await this.document.whenSynced();
+			const keyFrame = await this.getKeyFrame();
+			if (this.active(this.view) && !this.destroyed) {
+				this.editor.dispatch({
+					changes: keyFrame,
+					annotations: [ySyncAnnotation.of(this.editor)],
+				});
+			}
 		}
 	}
 
 	async getKeyFrame(incremental = false): Promise<ChangeSpec[]> {
 		// goal: sync editor state to ytext state so we can accept delta edits.
-		if (!isLiveMd(this.view) || this.destroyed) {
+		if (!this.active(this.view) || this.destroyed) {
 			return [];
 		}
 
-		if (this.view.document.text === this.view.view.getViewData()) {
+		if (this.document?.text === this.editor.state.doc.toString()) {
 			// disk and ytext were already the same.
-			this.view.tracking = true;
+			if (isLiveMd(this.view)) {
+				this.view.tracking = true;
+			}
 			return [];
-		} else {
+		} else if (flags().enableDeltaLogging) {
 			this.warn(
-				`|${this.view.document.text}|\n|${this.view.view.getViewData()}|`,
+				`|${this.document?.text}|\n|${this.editor.state.doc.toString()}|`,
 			);
 		}
 
+		if (!this.document) {
+			this.warn("no document");
+			return [];
+		}
+
 		this.warn(`ytext and editor buffer need syncing`);
-		if (!this.view.document.hasLocalDB() && this.view.document.text === "") {
+		if (!this.document.hasLocalDB() && this.document.text === "") {
 			this.warn("local db missing, not setting buffer");
 			return [];
 		}
 
 		// disk and ytext differ
-		if (!this.view.tracking) {
+		if (isLiveMd(this.view) && !this.view.tracking) {
 			this.view.checkStale();
+		} else if (this.document) {
+			const stale = await this.document.checkStale();
+			if (stale) {
+				this.mergeBanner();
+			}
 		}
 
-		if (isLiveMd(this.view) && !this.destroyed) {
-			return [this.getBufferChange(this.view.document.text, incremental)];
+		if (this.active(this.view) && !this.destroyed) {
+			return [this.getBufferChange(this.document.text, incremental)];
 		}
 		return [];
 	}
@@ -322,9 +394,8 @@ export class LiveCMPluginValue implements PluginValue {
 		) {
 			return;
 		}
-		const editor: EditorView = update.view;
-		this.view = this.connectionManager?.findView(editor);
-		const ytext = this.view?.document?.ytext;
+		this.document = this.getDocument();
+		const ytext = this.document?.ytext;
 		if (!ytext) {
 			return;
 		}
@@ -355,6 +426,7 @@ export class LiveCMPluginValue implements PluginValue {
 			unsub();
 		});
 		this.unsubscribes.length = 0;
+		this.metadataEditorPlugin?.destroy();
 		this.connectionManager = null as any;
 		this.view = undefined;
 		this._ytext = undefined;
@@ -362,4 +434,4 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 }
 
-export const LiveEdit = ViewPlugin.fromClass(LiveCMPluginValue);
+export const LiveEditV2 = ViewPlugin.fromClass(LiveCMPluginValueV2);
