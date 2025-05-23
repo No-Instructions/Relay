@@ -1,6 +1,6 @@
-import type { TFile, WorkspaceLeaf } from "obsidian";
+import type { TFile, TextFileView, WorkspaceLeaf } from "obsidian";
 
-export interface ObsidianCanvas {
+export interface ObsidianCanvas extends TextFileView {
 	__proto__: any;
 	importData(data: CanvasData, noclue: boolean): void;
 	requestSave(): void;
@@ -47,6 +47,8 @@ export interface CanvasNodeData {
 	y: number;
 	width: number;
 	height: number;
+	file?: TFile;
+	child?: TextFileView;
 }
 
 export interface CanvasEdgeData {

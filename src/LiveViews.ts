@@ -20,6 +20,7 @@ import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, RelayInstances } from "./debug";
 import { Banner } from "./ui/Banner";
 import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
+import { LiveEditV2 } from "./y-codemirror.next/LiveEditPluginV2";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
@@ -61,6 +62,25 @@ function iterateTextFileViews(
 			if (ALLOWED_TEXT_FILE_VIEWS.contains(viewType)) {
 				fn(leaf.view);
 			}
+		}
+	});
+}
+
+function iterateEmbeddedViews(
+	workspace: Workspace,
+	fn: (leaf: TextFileView) => void,
+) {
+	workspace.iterateAllLeaves((leaf) => {
+		if (leaf.view.getViewType() === "canvas" && flags().enableCanvasSync) {
+			const canvasView = leaf.view as unknown as CanvasView;
+			[...canvasView.canvas.nodes.values()].map((node) => {
+				//@ts-ignore
+				const embedView = node.child as unknown as TextFileView;
+				//@ts-ignore
+				embedView.leaf = leaf;
+				console.warn("embedView", embedView);
+				fn(embedView);
+			});
 		}
 	});
 }
@@ -279,7 +299,7 @@ export class RelayCanvasView implements S3View {
 		this.setConnectionDot();
 
 		if (!this.plugin) {
-			this.plugin = new CanvasPlugin(this);
+			this.plugin = new CanvasPlugin(this._parent, this);
 		}
 
 		return new Promise((resolve) => {
@@ -329,7 +349,7 @@ export class RelayCanvasView implements S3View {
 		this.plugin = null as any;
 		this.release();
 		this.clearViewActions();
-		(this.view.leaf as any).rebuildView();
+		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
 		this.canvas = null as any;
@@ -562,7 +582,7 @@ export class LiveView<ViewType extends TextFileView> implements S3View {
 	destroy() {
 		this.release();
 		this.clearViewActions();
-		(this.view.leaf as any).rebuildView();
+		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
 		this.document = null as any;
@@ -861,7 +881,7 @@ export class LiveViewManager {
 		backgroundConnections: number = BACKGROUND_CONNECTIONS,
 	): Promise<S3View[]> {
 		const activeView =
-			this.workspace.getActiveViewOfType<MarkdownView>(MarkdownView);
+			this.workspace.getActiveViewOfType<TextFileView>(TextFileView);
 
 		let attemptedConnections = 0;
 
@@ -1043,7 +1063,7 @@ export class LiveViewManager {
 						return this;
 					}),
 				),
-				LiveEdit,
+				flags().enableLiveEmbeds ? LiveEditV2 : LiveEdit,
 				LiveNode,
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
