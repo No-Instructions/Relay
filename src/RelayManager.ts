@@ -11,6 +11,7 @@ import {
 	type RelaySubscription,
 	type RemoteSharedFolder,
 	type StorageQuota,
+	type Provider,
 } from "./Relay";
 import PocketBase, {
 	type AuthModel,
@@ -65,6 +66,13 @@ interface RelayDAO extends RecordModel {
 	plan: string;
 	provider?: string;
 	storage_quota: string;
+}
+
+interface ProviderDAO extends RecordModel {
+	id: string;
+	url: string;
+	name: string;
+	self_hosted: boolean;
 }
 
 interface RemoteFolderDAO extends RecordModel {
@@ -276,6 +284,67 @@ class RelayUserAuto extends Auto implements RelayUser {
 	}
 }
 
+class ProviderAuto extends Observable<Provider> implements Provider {
+	constructor(private provider: ProviderDAO) {
+		super();
+	}
+
+	public get id() {
+		return this.provider.id;
+	}
+
+	public get name() {
+		return this.provider.name;
+	}
+
+	public get url() {
+		return this.provider.url;
+	}
+
+	public get selfHosted() {
+		return this.provider.self_hosted;
+	}
+
+	public update(update: ProviderDAO): Provider {
+		this.provider = update;
+		return this;
+	}
+}
+
+class ProviderCollection implements Collection<ProviderDAO, Provider> {
+	collectionName: string = "providers";
+
+	constructor(public providers: ObservableMap<string, Provider>) {}
+
+	items(): Provider[] {
+		return this.providers.values();
+	}
+
+	clear() {
+		this.providers.clear();
+	}
+
+	get(id: string) {
+		return this.providers.get(id);
+	}
+
+	ingest(update: ProviderDAO): Provider {
+		const existingProvider = this.providers.get(update.id);
+		if (existingProvider) {
+			existingProvider.update(update);
+			this.providers.notifyListeners();
+			return existingProvider;
+		}
+		const provider = new ProviderAuto(update);
+		this.providers.set(update.id, provider);
+		return provider;
+	}
+
+	delete(id: string) {
+		this.providers.delete(id);
+	}
+}
+
 class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 	constructor(
 		private remoteFolder: RemoteFolderDAO,
@@ -381,6 +450,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
 		private subscriptions: ObservableMap<string, RelaySubscription>,
 		private storageQuotas: ObservableMap<string, StorageQuota>,
+		private providers: ObservableMap<string, Provider>,
 		private user: RelayUser,
 	) {}
 
@@ -410,6 +480,7 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 			this.remoteFolders,
 			this.subscriptions,
 			this.storageQuotas,
+			this.providers,
 			this.user,
 		);
 		this.relays.set(relay.id, relay);
@@ -972,6 +1043,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
 		private _subscriptions: ObservableMap<string, RelaySubscription>,
 		private storageQuotas: ObservableMap<string, StorageQuota>,
+		private providers: ObservableMap<string, Provider>,
 		private user: RelayUser,
 	) {
 		super();
@@ -1058,12 +1130,19 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		}
 	}
 
-	public get provider(): string | undefined {
+	public get provider(): Provider | undefined {
+		if (this.relay.provider) {
+			return this.providers.get(this.relay.provider);
+		}
+	}
+
+	public get providerId(): string | undefined {
 		return this.relay.provider;
 	}
 }
 
 export class RelayManager extends HasLogging {
+	providers: ObservableMap<string, Provider>;
 	relays: ObservableMap<string, Relay>;
 	relayRoles: ObservableMap<string, RelayRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
@@ -1086,6 +1165,7 @@ export class RelayManager extends HasLogging {
 		// Build the NodeLists
 		this.users = new ObservableMap<string, RelayUser>("users");
 		this.relays = new ObservableMap<string, Relay>("relays");
+		this.providers = new ObservableMap<string, Provider>("providers");
 		this.remoteFolders = new ObservableMap<string, RemoteFolder>(
 			"remote folders",
 		);
@@ -1142,6 +1222,7 @@ export class RelayManager extends HasLogging {
 		// Build the AdapterGraph
 		const roleCollection = new RoleCollection(this.roles);
 		const userCollection = new UserCollection(this.users);
+		const providerCollection = new ProviderCollection(this.providers);
 		const relayCollection = new RelayCollection(
 			this.relays,
 			this.roles,
@@ -1150,6 +1231,7 @@ export class RelayManager extends HasLogging {
 			this.remoteFolders,
 			this.subscriptions,
 			this.storageQuotas,
+			this.providers,
 			this.user,
 		);
 		const relayRolesCollection = new RelayRolesCollection(
@@ -1186,6 +1268,7 @@ export class RelayManager extends HasLogging {
 			sharedFolderCollection,
 			subscriptionCollection,
 			storageQuotaCollection,
+			providerCollection,
 		]);
 	}
 
@@ -1313,6 +1396,7 @@ export class RelayManager extends HasLogging {
 				],
 			},
 			{ name: "relay_invitations", expand: ["relay"] },
+			{ name: "providers", expand: [] },
 			{ name: "relay_roles", expand: ["user", "relay"] },
 			{ name: "shared_folders", expand: ["relay", "creator"] },
 			{ name: "subscriptions", expand: ["user", "relay"] },
@@ -1373,6 +1457,7 @@ export class RelayManager extends HasLogging {
 			withPb("relay_roles", {
 				expand: "user",
 			}),
+			withPb("providers"),
 			withPb("relay_invitations"),
 			withPb("shared_folders", {
 				expand: "relay,creator",
@@ -1440,6 +1525,7 @@ export class RelayManager extends HasLogging {
 			this.remoteFolders,
 			this.subscriptions,
 			this.storageQuotas,
+			this.providers,
 			this.user,
 		);
 		this.relays.set(relay.id, relay);
