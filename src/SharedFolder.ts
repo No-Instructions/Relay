@@ -436,17 +436,17 @@ export class SharedFolder extends HasProvider {
 		}));
 
 		if (value) {
-			this._server = value.relay.provider;
+			this._server = value.relay.providerId;
 			this.unsubscribes.push(
 				value.relay.subscribe((relay) => {
 					if (relay.guid === this.relayId) {
-						this.server = relay.provider;
+						this.server = relay.providerId;
 					}
 				}),
 			);
 		}
 
-		this.server = value?.relay.provider;
+		this.server = value?.relay.providerId;
 		this.notifyListeners();
 	}
 

@@ -52,7 +52,18 @@ export interface Relay
 	subscriptions: ObservableMap<string, RelaySubscription>;
 	cta: string;
 	plan: string;
-	provider?: string;
+	provider?: Provider;
+	providerId?: string;
+}
+
+export interface Provider
+	extends Identified,
+		Updatable<Provider>,
+		IObservable<Provider> {
+	name: string;
+	id: string;
+	url: string;
+	selfHosted: boolean;
 }
 
 export interface StorageQuota
