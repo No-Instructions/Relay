@@ -36,6 +36,14 @@
 	import { withFlag } from "src/flagManager";
 	import { flag } from "src/flags";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
+	import { minimark } from "src/minimark";
+
+	async function checkRelayHost(relay: Relay) {
+		const response = await plugin.loginManager.checkRelayHost(relay.guid);
+		if (response.status === 200) {
+			return response.json;
+		}
+	}
 
 	function getActiveForMessage(cancelAtDate: Date | null): string {
 		if (!cancelAtDate) {
@@ -642,6 +650,37 @@
 			{formatBytes($storageQuota.maxFileSize)}
 		</SlimSettingItem>
 	{/if}
+
+	{#if relay.provider}
+		{#if relay.provider.selfHosted}
+			<SettingItemHeading name="Self hosting"></SettingItemHeading>
+		{:else}
+			<SettingItemHeading name="Host"></SettingItemHeading>
+		{/if}
+		<SettingItem name="Name" description="">
+			{relay.provider.name}
+		</SettingItem>
+		<SettingItem name="Domain" description="">
+			{relay.provider.url}
+		</SettingItem>
+		{#if relay.provider.selfHosted}
+			{#await checkRelayHost(relay) then response}
+				{#if response.level === "warning"}
+					<p class="mod-warning relay-host-check">
+						{@html minimark(response.status)}
+
+						{#if response.link}
+							<br />
+							<a href={response.link.url}>
+								{@html minimark(response.link.text)}
+							</a>
+						{/if}
+					</p>
+				{/if}
+			{/await}
+		{/if}
+	{/if}
+
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 	<SettingItem
 		name="Destroy Relay Server"
@@ -737,5 +776,9 @@
 		padding: 4px 28px 4px 8px !important;
 		padding-inline: 2px;
 		font-family: monospace;
+	}
+
+	.relay-host-check {
+		text-align: right;
 	}
 </style>
