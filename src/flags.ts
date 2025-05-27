@@ -10,7 +10,6 @@ export interface FeatureFlags {
 	enableEditorTweens: boolean;
 	enableSyncModal: boolean;
 	enableDesyncPill: boolean;
-	enableAutomaticUpdatesOption: boolean;
 	enableAttachmentSync: boolean;
 	enableNetworkLogging: boolean;
 	enableCanvasSync: boolean;
@@ -28,7 +27,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableEditorTweens: false,
 	enableSyncModal: false,
 	enableDesyncPill: false,
-	enableAutomaticUpdatesOption: false,
 	enableAttachmentSync: true,
 	enableNetworkLogging: false,
 	enableCanvasSync: false,

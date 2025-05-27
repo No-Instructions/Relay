@@ -48,7 +48,6 @@ export interface Manifest {
 
 export interface ReleaseSettings {
 	channel: "stable" | "beta";
-	automaticUpdates: boolean;
 }
 
 function normalizeVersion(tag: string) {
@@ -370,15 +369,6 @@ export class UpdateManager extends Observable<UpdateManager> {
 		} catch (error) {
 			this.error("Failed to install update:", error);
 			return false;
-		}
-	}
-
-	public applyAutomaticUpdates() {
-		if (this.releaseSettings.get().automaticUpdates) {
-			const newRelease = this.getNewRelease();
-			if (newRelease) {
-				this.installUpdate(newRelease);
-			}
 		}
 	}
 
