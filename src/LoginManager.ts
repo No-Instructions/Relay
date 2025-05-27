@@ -1,6 +1,6 @@
 "use strict";
 
-import { requestUrl } from "obsidian";
+import { requestUrl, type RequestUrlResponsePromise } from "obsidian";
 import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
@@ -126,6 +126,18 @@ export class LoginManager extends Observable<LoginManager> {
 				});
 		}
 		return true;
+	}
+
+	async checkRelayHost(relay_guid: string): Promise<RequestUrlResponsePromise> {
+		const headers = {
+			Authorization: `Bearer ${this.pb.authStore.token}`,
+			"Relay-Version": GIT_TAG,
+		};
+		return requestUrl({
+			url: `${API_URL}/relay/${relay_guid}/check-host`,
+			method: "GET",
+			headers: headers,
+		});
 	}
 
 	getFlags() {
