@@ -214,9 +214,6 @@ export default class Live extends Plugin {
 			this.timeProvider,
 			this.releaseSettings,
 		);
-		if (flags().enableAutomaticUpdatesOption) {
-			this.updateManager.applyAutomaticUpdates();
-		}
 
 		this.debugSettings.subscribe((settings) => {
 			if (settings.debugging) {
