@@ -41,6 +41,10 @@
 	display: flex;
 }
 
+.nav-file-tag .nav-file-title:not(:first-child) .system3-pill {
+	margin-inline-start: 1em;
+}
+
 .nav-file-title,
 .nav-folder-title {
 	display: flex;
