@@ -32,32 +32,47 @@
 	let selectedProvider = writable<string>("");
 	let flagManager = FeatureFlagManager.getInstance();
 
+	let providers: Record<string, Provider> = {};
+	let hasProviderInfo = writable<boolean>(false);
+
 	const enabledProviders = derived([selectedProvider, flagManager], () => {
-		const providers = ["google"];
-		if ($flagManager.getFlag("enableDiscordLogin")) {
-			providers.push("discord");
-		}
+		const availableProviders = ["google"];
+
 		if ($flagManager.getFlag("enableMicrosoftLogin")) {
-			providers.push("microsoft");
+			availableProviders.push("microsoft");
 		}
-		return providers;
+
+		if ($flagManager.getFlag("enableDiscordLogin")) {
+			availableProviders.push("discord");
+		}
+		return availableProviders;
 	});
 
 	const visibleProviders = derived([selectedProvider, flagManager], () => {
-		if ($selectedProvider) return [$selectedProvider];
-		const providers = ["google"];
-		if ($flagManager.getFlag("enableDiscordLogin")) {
-			providers.push("discord");
-		}
+		if ($selectedProvider !== "") return [$selectedProvider];
+		const visible = ["google"];
+
 		if ($flagManager.getFlag("enableMicrosoftLogin")) {
-			providers.push("microsoft");
+			visible.push("microsoft");
 		}
-		return providers;
+
+		if ($flagManager.getFlag("enableDiscordLogin")) {
+			visible.push("discord");
+		}
+
+		return visible;
 	});
+
+	const configuredProviders = derived(
+		[selectedProvider, flagManager, hasProviderInfo],
+		() => {
+			if ($selectedProvider) return [$selectedProvider];
+			return Object.keys(providers);
+		},
+	);
 
 	let authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 	let error = writable<string>("");
-	let providers: Record<string, Provider> = {};
 
 	async function logout() {
 		plugin.loginManager.logout();
@@ -97,6 +112,7 @@
 			lm.initiateManualOAuth2CodeFlow(whichFetch, $enabledProviders)
 				.then((providers_) => {
 					providers = providers_;
+					hasProviderInfo.set(true);
 				})
 				.catch((e) => {
 					let message = e.message;
@@ -176,7 +192,7 @@
 				{#each $visibleProviders as provider}
 					<button
 						class={`${provider}-sign-in-button`}
-						disabled={$pending}
+						disabled={$pending || !$configuredProviders.contains(provider)}
 						on:click={debounce(async () => {
 							pending.set(true);
 							await login(provider);
@@ -187,16 +203,22 @@
 		{:else}
 			<div class="login-buttons">
 				{#each $visibleProviders as provider}
-					<a href={providers[provider].fullAuthUrl} target="_blank">
-						<button
-							class={`${provider}-sign-in-button`}
-							disabled={$pending}
-							on:click={() => {
-								pending.set(true);
-								poll();
-							}}>Sign in with {`${capitalize(provider)}`}</button
+					{#if providers[provider]}
+						<a href={providers[provider].fullAuthUrl} target="_blank">
+							<button
+								class={`${provider}-sign-in-button`}
+								disabled={$pending || !providers[provider]}
+								on:click={() => {
+									pending.set(true);
+									poll();
+								}}>Sign in with {`${capitalize(provider)}`}</button
+							>
+						</a>
+					{:else}
+						<button class={`${provider}-sign-in-button`} disabled={true}
+							>Sign in with {`${capitalize(provider)}`}</button
 						>
-					</a>
+					{/if}
 				{/each}
 			</div>
 		{/if}
@@ -221,6 +243,7 @@
 						automaticFlow.set(false);
 						error.set("");
 						selectedProvider.set("");
+						hasProviderInfo.set(false);
 						initiate();
 					}}>(try again)</button
 				>
@@ -235,6 +258,7 @@
 						on:click={() => {
 							pending.set(false);
 							automaticFlow.set(false);
+							error.set("");
 							selectedProvider.set("");
 						}}>(try again)</button
 					>
@@ -300,6 +324,7 @@
 	}
 
 	.google-sign-in-button {
+		width: 100%;
 		height: unset;
 		padding: 12px 16px 12px 42px !important;
 		border: none;
@@ -334,6 +359,7 @@
 	}
 
 	.discord-sign-in-button {
+		width: 100%;
 		height: unset;
 		padding: 12px 16px 12px 42px !important;
 		border: none;
@@ -368,6 +394,7 @@
 	}
 
 	.microsoft-sign-in-button {
+		width: 100%;
 		height: unset;
 		padding: 12px 16px 12px 42px !important;
 		border: none;
@@ -404,6 +431,9 @@
 	.login-buttons {
 		display: flex;
 		flex-direction: column;
-		gap: 1rem;
+		gap: 0.85rem;
+		padding: 1rem;
+		background: var(--background-modifier-border-hover);
+		border-radius: 0.5rem;
 	}
 </style>
