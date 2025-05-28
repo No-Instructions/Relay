@@ -196,8 +196,18 @@ export class UpdateManager extends Observable<UpdateManager> {
 			this.lastReleaseCheck = now;
 
 			const releases = await this.fetchReleases();
+			const localReleases = new Set<string>([...this.githubReleases.keys()]);
+			const remoteReleases = new Set<string>();
 			releases.forEach((release: Release) => {
 				this.githubReleases.set(release.tag_name, release);
+				remoteReleases.add(release.tag_name);
+			});
+
+			// Cleanup deleted releases
+			localReleases.forEach((releaseTag) => {
+				if (!remoteReleases.has(releaseTag)) {
+					this.githubReleases.delete(releaseTag);
+				}
 			});
 
 			const latest = await this.fetchLatestRelease();
