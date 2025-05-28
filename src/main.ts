@@ -885,6 +885,11 @@ export default class Live extends Plugin {
 
 	installVersion(version?: string) {
 		const modal = new ReleaseManager(this.app, this, version);
+
+		const app = this.app as any;
+		const setting = app.setting;
+		setting.close();
+
 		this.openModals.push(modal);
 		modal.open();
 	}
