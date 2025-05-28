@@ -208,7 +208,7 @@ export class LoginManager extends Observable<LoginManager> {
 		const authProvider =
 			"https:\\/\\/accounts\\.google\\.com\\/o\\/oauth2\\/auth";
 		return new RegExp(
-			`^${authProvider}.*?[?&]redirect_uri=${encodeURIComponent(redirectUrl)}`,
+			`^${authProvider}.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
 			"i",
 		);
 	}
