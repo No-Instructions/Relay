@@ -461,18 +461,17 @@ export class BackgroundSync extends HasLogging {
 		if (!group) {
 			group = {
 				sharedFolder,
-				total: 1,
+				total: 0,
 				completed: 0,
 				status: "pending",
 				downloads: 0,
-				syncs: 1,
+				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
 			};
-		} else {
-			group.total++;
-			group.syncs++;
 		}
+		group.total++;
+		group.syncs++;
 		this.syncGroups.set(sharedFolder, group);
 
 		this.inProgressSyncs.add(item.guid);
