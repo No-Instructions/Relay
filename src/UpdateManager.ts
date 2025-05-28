@@ -360,10 +360,16 @@ export class UpdateManager extends Observable<UpdateManager> {
 
 			this.debug("Update complete. Reloading plugin...");
 
+			const app = this.plugin.app as any;
+
 			const pluginId = "system3-relay";
 			const plugins = this.plugin.app.plugins;
 			await plugins.disablePlugin(pluginId);
 			await plugins.enablePlugin(pluginId);
+
+			const setting = app.setting;
+			await setting.open();
+			await setting.openTabById("system3-relay");
 
 			return true;
 		} catch (error) {
