@@ -22,7 +22,7 @@ import { LiveViewManager } from "./LiveViews";
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { LiveSettingsTab } from "./ui/SettingsTab";
-import { LoginManager } from "./LoginManager";
+import { LoginManager, type LoginSettings } from "./LoginManager";
 import {
 	curryLog,
 	setDebugging,
@@ -116,6 +116,7 @@ export default class Live extends Plugin {
 	private debugSettings!: NamespacedSettings<DebugSettings>;
 	private folderSettings!: NamespacedSettings<SharedFolderSettings[]>;
 	public releaseSettings!: NamespacedSettings<ReleaseSettings>;
+	public loginSettings!: NamespacedSettings<LoginSettings>;
 	debug!: (...args: unknown[]) => void;
 	log!: (...args: unknown[]) => void;
 	warn!: (...args: unknown[]) => void;
@@ -199,6 +200,7 @@ export default class Live extends Plugin {
 			"sharedFolders",
 		);
 		this.releaseSettings = new NamespacedSettings(this.settings, "release");
+		this.loginSettings = new NamespacedSettings(this.settings, "login");
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
@@ -347,6 +349,7 @@ export default class Live extends Plugin {
 			this.openSettings.bind(this),
 			this.timeProvider,
 			this.patchWebviewer.bind(this),
+			this.loginSettings,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(

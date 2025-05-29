@@ -19,6 +19,7 @@ import { customFetch } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
+import type { NamespacedSettings } from "./SettingsStorage";
 
 interface GoogleUser {
 	email: string;
@@ -118,6 +119,10 @@ export class Provider {
 	}
 }
 
+export interface LoginSettings {
+	provider: string | undefined;
+}
+
 export class LoginManager extends Observable<LoginManager> {
 	pb: PocketBase;
 	private openSettings: () => Promise<void>;
@@ -131,6 +136,7 @@ export class LoginManager extends Observable<LoginManager> {
 		openSettings: () => Promise<void>,
 		timeProvider: TimeProvider,
 		private beforeLogin: () => void,
+		public loginSettings: NamespacedSettings<LoginSettings>,
 	) {
 		super();
 		const pbLog = curryLog("[Pocketbase]", "debug");
@@ -194,7 +200,10 @@ export class LoginManager extends Observable<LoginManager> {
 		}
 	}
 
-	setup(authData?: RecordAuthResponse<RecordModel> | undefined): boolean {
+	setup(
+		authData?: RecordAuthResponse<RecordModel> | undefined,
+		provider?: string,
+	): boolean {
 		if (!this.pb.authStore.isValid) {
 			this.notifyListeners(); // notify anyway
 			return false;
@@ -215,7 +224,14 @@ export class LoginManager extends Observable<LoginManager> {
 					this.log(reason);
 				});
 		}
+		if (provider) {
+			this.loginSettings.set({ provider });
+		}
 		return true;
+	}
+
+	clearPreferredProvider() {
+		this.loginSettings.set({ provider: undefined });
 	}
 
 	async checkRelayHost(relay_guid: string): Promise<RequestUrlResponsePromise> {
@@ -356,7 +372,7 @@ export class LoginManager extends Observable<LoginManager> {
 						},
 					)
 					.then((authData) => {
-						this.setup(authData);
+						this.setup(authData, provider.name);
 						return authData;
 					});
 			};
@@ -412,7 +428,7 @@ export class LoginManager extends Observable<LoginManager> {
 		const authData = await this.pb.collection("users").authWithOAuth2({
 			provider: provider,
 		});
-		return this.setup(authData);
+		return this.setup(authData, provider);
 	}
 
 	async openLoginPage() {

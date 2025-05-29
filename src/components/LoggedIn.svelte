@@ -18,7 +18,7 @@
 		RecordModel,
 	} from "pocketbase";
 	import { customFetch } from "src/customFetch";
-	import { FeatureFlagManager } from "src/flagManager";
+	import { FeatureFlagManager, flags } from "src/flagManager";
 
 	export let plugin: Live;
 
@@ -34,6 +34,7 @@
 
 	let providers: Record<string, Provider> = {};
 	let hasProviderInfo = writable<boolean>(false);
+	const loginSettings = lm.loginSettings;
 
 	const enabledProviders = derived([selectedProvider, flagManager], () => {
 		const availableProviders = ["google"];
@@ -48,23 +49,37 @@
 		return availableProviders;
 	});
 
-	const visibleProviders = derived([selectedProvider, flagManager], () => {
-		if ($selectedProvider !== "") return [$selectedProvider];
-		const visible = ["google"];
+	const visibleProviders = derived(
+		[selectedProvider, lm.loginSettings, flagManager],
+		() => {
+			// First check the loginSettings store
+			if ($loginSettings && $loginSettings.provider)
+				return [$loginSettings.provider];
 
-		if ($flagManager.getFlag("enableMicrosoftLogin")) {
-			visible.push("microsoft");
-		}
+			// Fall back to selectedProvider for compatibility
+			if ($selectedProvider !== "") return [$selectedProvider];
+			const visible = ["google"];
 
-		if ($flagManager.getFlag("enableDiscordLogin")) {
-			visible.push("discord");
-		}
+			if ($flagManager.getFlag("enableMicrosoftLogin")) {
+				visible.push("microsoft");
+			}
 
-		return visible;
-	});
+			if ($flagManager.getFlag("enableDiscordLogin")) {
+				visible.push("discord");
+			}
+
+			return visible;
+		},
+	);
+
+	function clearPreferredProvider() {
+		lm.clearPreferredProvider();
+		selectedProvider.set("");
+		initiate();
+	}
 
 	const configuredProviders = derived(
-		[selectedProvider, flagManager, hasProviderInfo],
+		[selectedProvider, plugin.loginSettings, flagManager, hasProviderInfo],
 		() => {
 			if ($selectedProvider) return [$selectedProvider];
 			return Object.keys(providers);
@@ -266,7 +281,19 @@
 			</div>
 		{/if}
 	</div>
-	<WelcomeFooter isGoogle={!$flagManager.getFlag("enableDiscordLogin")} />
+	{#if $loginSettings.provider && !$pending}
+		<p class="choose-another">
+			<button
+				class="link link-button"
+				on:click={debounce(() => {
+					clearPreferredProvider();
+				})}>(choose another provider)</button
+			>
+		</p>
+	{/if}
+	<WelcomeFooter
+		isGoogle={!flags().enableDiscordLogin || !flags().enableMicrosoftLogin}
+	/>
 {/if}
 
 <style>
@@ -308,7 +335,6 @@
 	button.link.link-button {
 		height: auto;
 		padding: 0;
-		color: var(--text-faint);
 	}
 
 	.welcome {
@@ -435,5 +461,13 @@
 		padding: 1rem;
 		background: var(--background-modifier-border-hover);
 		border-radius: 0.5rem;
+	}
+
+	.choose-another {
+		text-align: center;
+		margin-top: 0.25rem;
+		margin-bottom: 1rem;
+		font-size: 0.85em;
+		color: var(--text-normal);
 	}
 </style>
