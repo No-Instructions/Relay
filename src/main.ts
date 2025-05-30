@@ -692,13 +692,12 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
-					const vpath = folder.getVirtualPath(tfile.path);
 					const newDocs = folder.placeHold([tfile]);
 					if (newDocs.length > 0) {
-						folder.uploadFile(vpath);
+						folder.uploadFile(tfile);
 					} else {
 						folder.whenReady().then((folder) => {
-							folder.getFile(vpath);
+							folder.getFile(tfile);
 						});
 					}
 				}
@@ -766,7 +765,7 @@ export default class Live extends Plugin {
 					if (flags().enableDesyncPill) {
 						this.folderNavDecorations.quickRefresh();
 					}
-					const file = folder.proxy.getFile(tfile.path);
+					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
 						file.sync();
 					}
