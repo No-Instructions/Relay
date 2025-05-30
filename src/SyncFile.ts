@@ -374,23 +374,37 @@ export class SyncFile
 	public async sync() {
 		this.log("sync");
 		const meta = this.sharedFolder.syncStore.getMeta(this.path);
+
 		if (!meta) {
 			await this.push();
-		} else {
+			return;
+		}
+
+		this.meta = meta as FileMetas;
+		if (!this.caf.exists()) {
+			await this.pull();
+		}
+		try {
 			const hash = await this.caf.hash();
 			if (hash !== meta.hash) {
-				if ((meta as FileMetas).synctime > this.stat.mtime) {
-					this.warn(
-						"synctime",
-						meta.synctime,
-						this.meta?.synctime,
-						this.stat.mtime,
-					);
-					await this.pull();
-				} else {
+				// local is newer
+				if (this.stat.mtime > (meta as FileMetas).synctime) {
 					await this.push();
+					return;
 				}
+				// remote is newer
+				this.warn(
+					"synctime",
+					meta.synctime,
+					this.meta?.synctime,
+					this.stat.mtime,
+				);
+				await this.pull();
+				return;
 			}
+		} catch (err) {
+			this.warn("unable to compute hash");
+			return;
 		}
 	}
 

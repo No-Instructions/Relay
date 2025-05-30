@@ -97,11 +97,6 @@ export class SyncFolder extends HasLogging implements IFile {
 		this.setLoggers(`[SharedFolder](${this.path})`);
 	}
 
-	static checkPath(vpath: string): boolean {
-		const hasExtension = vpath.split("/").pop()?.includes(".");
-		return !hasExtension;
-	}
-
 	public get tfolder(): TFolder {
 		const abstractFile = this.vault.getAbstractFileByPath(
 			this.sharedFolder.getPath(this.path),
