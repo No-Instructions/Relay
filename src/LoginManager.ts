@@ -1,6 +1,6 @@
 "use strict";
 
-import { requestUrl, type RequestUrlResponsePromise } from "obsidian";
+import { Platform, requestUrl, type RequestUrlResponsePromise } from "obsidian";
 import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
@@ -16,8 +16,9 @@ declare const GIT_TAG: string;
 import { customFetch } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
-import { FeatureFlagManager } from "./flagManager";
+import { FeatureFlagManager, flags } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
+import type { Device } from "./device";
 import { type EndpointManager, type EndpointSettings } from "./EndpointManager";
 
 interface GoogleUser {
@@ -160,6 +161,71 @@ export class Provider {
 
 export interface LoginSettings {
 	provider: string | undefined;
+	hostname: string | undefined;
+}
+
+export class DeviceManager {
+	private static readonly DEVICE_ID_KEY = "obsidian-device-id";
+	private static readonly HOSTNAME_KEY = "obsidian-hostname";
+
+	static getDeviceId(): string {
+		// Check if we already have a device ID
+		const stored = localStorage.getItem(this.DEVICE_ID_KEY);
+		if (stored) return stored;
+
+		// Generate new device ID
+		const deviceId = this.generateDeviceId();
+		localStorage.setItem(this.DEVICE_ID_KEY, deviceId);
+		return deviceId;
+	}
+
+	static getHostname(): string | null {
+		// Try to get real hostname on desktop
+		if (Platform.isDesktop && flags().enableDeviceRegistration) {
+			try {
+				// eslint-disable-next-line @typescript-eslint/no-var-requires
+				const os = require("os");
+				const hostname = os.hostname();
+				// Cache it for consistency
+				localStorage.setItem(this.HOSTNAME_KEY, hostname);
+				return hostname;
+			} catch (error) {
+				console.warn("Could not get system hostname:", error);
+			}
+		}
+
+		// Return cached hostname if available
+		return localStorage.getItem(this.HOSTNAME_KEY);
+	}
+
+	private static generateDeviceId(): string {
+		const hostname = this.getHostname();
+		if (Platform.isDesktop && hostname && flags().enableDeviceRegistration) {
+			// eslint-disable-next-line @typescript-eslint/no-var-requires
+			const crypto = require("crypto");
+			return crypto.createHash("sha256").update(hostname).digest("hex");
+		}
+		const platform = Platform.isMobile ? "mobile" : "desktop";
+		const timestamp = Date.now().toString(36);
+		const random = Math.random().toString(36).substr(2, 8);
+		return `obsidian-${platform}-${timestamp}-${random}`;
+	}
+
+	// Utility methods
+	static clearDeviceId(): void {
+		localStorage.removeItem(this.DEVICE_ID_KEY);
+	}
+
+	static clearHostname(): void {
+		localStorage.removeItem(this.HOSTNAME_KEY);
+	}
+
+	static getDeviceInfo(): { deviceId: string; hostname: string | null } {
+		return {
+			deviceId: this.getDeviceId(),
+			hostname: this.getHostname(),
+		};
+	}
 }
 
 export class LoginManager extends Observable<LoginManager> {
@@ -168,6 +234,9 @@ export class LoginManager extends Observable<LoginManager> {
 	// XXX keep this private
 	authStore: LocalAuthStore;
 	user?: User;
+	devices: Device[] = [];
+	hostname: string;
+	deviceId: string;
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 	private endpointManager: EndpointManager;
 
@@ -178,9 +247,26 @@ export class LoginManager extends Observable<LoginManager> {
 		private beforeLogin: () => void,
 		public loginSettings: NamespacedSettings<LoginSettings>,
 		endpointManager: EndpointManager,
+		private appId: string,
 	) {
 		super();
 		const pbLog = curryLog("[Pocketbase]", "debug");
+
+		const hostname = DeviceManager.getHostname();
+		if (!loginSettings.get().hostname) {
+			if (hostname) {
+				loginSettings.update((current) => {
+					return {
+						...current,
+						hostname: hostname,
+					};
+				});
+			}
+		}
+
+		this.hostname = loginSettings.get().hostname || "Unknown";
+		this.deviceId = DeviceManager.getDeviceId();
+
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
 		this.endpointManager = endpointManager;
 		this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
@@ -267,13 +353,22 @@ export class LoginManager extends Observable<LoginManager> {
 				});
 		}
 		if (provider) {
-			this.loginSettings.set({ provider });
+			this.loginSettings.update((current) => {
+				return {
+					...current,
+					provider,
+				};
+			});
 		}
 		return true;
 	}
 
 	clearPreferredProvider() {
-		this.loginSettings.set({ provider: undefined });
+        const loginSettings = this.loginSettings.get()
+		this.loginSettings.set({
+            ... loginSettings,
+            provider: undefined
+        });
 	}
 
 	async checkRelayHost(relay_guid: string): Promise<RequestUrlResponsePromise> {
@@ -312,7 +407,14 @@ export class LoginManager extends Observable<LoginManager> {
 	whoami() {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
+			"Relay-Version": GIT_TAG,
 		};
+		if (flags().enableDeviceRegistration) {
+			Object.assign(headers, {
+				"Relay-Device": this.deviceId,
+				"Relay-Vault": this.appId,
+			});
+		}
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/whoami`,
 			method: "GET",

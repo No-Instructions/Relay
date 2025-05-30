@@ -536,6 +536,7 @@ export default class Live extends Plugin {
 			this.patchWebviewer.bind(this),
 			this.loginSettings,
 			endpointManager,
+			this.appId,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(

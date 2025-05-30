@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
 	enableKanbanView: boolean;
+	enableDeviceRegistration: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -30,11 +31,12 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableSelfManageHosts: true,
 	enableToasts: false,
 	enableKanbanView: false,
+	enableDeviceRegistration: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
 	return key in FeatureFlagDefaults;
-}
+};
 
 export type Flag = keyof FeatureFlags;
 
