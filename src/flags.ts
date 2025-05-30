@@ -12,6 +12,7 @@ export interface FeatureFlags {
 	enableDiscordLogin: boolean;
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
+	enableDeviceRegistration: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -28,11 +29,12 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDiscordLogin: false,
 	enableSelfManageHosts: false,
 	enableToasts: false,
+	enableDeviceRegistration: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
 	return key in FeatureFlagDefaults;
-}
+};
 
 export type Flag = keyof FeatureFlags;
 
