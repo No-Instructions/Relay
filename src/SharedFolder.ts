@@ -38,6 +38,7 @@ import {
 	makeFileMeta,
 	makeFolderMeta,
 	type FileMeta,
+	type Meta,
 	type SyncFileType,
 } from "./SyncTypes";
 import type { IFile } from "./IFile";
@@ -261,7 +262,7 @@ export class SharedFolder extends HasProvider {
 			const vpath = this.getVirtualPath(tfile.path);
 			const upload = newPaths.contains(vpath);
 
-			if (SyncFolder.checkPath(vpath)) {
+			if (tfile instanceof TFolder) {
 				const doc = this.getSyncFolder(vpath, false);
 				files.push(doc);
 			} else if (Document.checkExtension(vpath)) {
@@ -337,9 +338,6 @@ export class SharedFolder extends HasProvider {
 
 	public isSyncableTFile(tfile: TAbstractFile): boolean {
 		const inFolder = this.checkPath(tfile.path);
-		if (tfile instanceof TFolder && !SyncFolder.checkPath) {
-			throw new Error("logical error");
-		}
 		const vpath = this.getVirtualPath(tfile.path);
 		const isSupportedFileType = this.syncStore.canSync(vpath);
 		const isExtensionEnabled =
@@ -592,27 +590,35 @@ export class SharedFolder extends HasProvider {
 			});
 	}
 
-	async _handleServerCreate(vpath: string, diffLog?: string[]): Promise<IFile> {
+	async _handleServerCreate(
+		vpath: string,
+		meta: Meta,
+		diffLog?: string[],
+	): Promise<IFile> {
 		// Create directories as needed
 		const dir = dirname(vpath);
 		if (!this.existsSync(dir)) {
 			await this.mkdir(dir);
 			diffLog?.push(`creating directory ${dir}`);
 		}
-		if (Document.checkExtension(vpath)) {
-			diffLog?.push(`created local file for remotely added doc ${vpath}`);
+		if (meta.type === "markdown") {
+			diffLog?.push(`created local .md file for remotely added doc ${vpath}`);
 			const doc = await this.downloadDoc(vpath, false);
 			return doc;
 		}
-		if (Canvas.checkExtension(vpath)) {
-			diffLog?.push(`created local file for remotely added canvas ${vpath}`);
+		if (meta.type === "canvas") {
+			diffLog?.push(
+				`created local .canvas file for remotely added canvas ${vpath}`,
+			);
 			const canvas = await this.downloadCanvas(vpath, false);
 			return canvas;
 		}
-		if (SyncFolder.checkPath(vpath)) {
+		if (meta.type === "folder") {
+			diffLog?.push(`created local folder for remotely added folder ${vpath}`);
 			return this.getSyncFolder(vpath, false);
 		}
-		if (this.syncStore.canSync(vpath)) {
+		if (meta.type === "file" && this.syncStore.canSync(vpath)) {
+			diffLog?.push(`created local file for remotely added file ${vpath}`);
 			return this.downloadSyncFile(vpath, false);
 		}
 		throw new Error("unexpected file");
@@ -667,7 +673,7 @@ export class SharedFolder extends HasProvider {
 
 		// write will trigger `create` which will read the file from disk by default.
 		// so we need to pre-empt that by loading the file into docs.
-		const promise = this._handleServerCreate(path, diffLog);
+		const promise = this._handleServerCreate(path, meta, diffLog);
 		return { op: "create", path, promise };
 	}
 
@@ -969,7 +975,8 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	getFile(vpath: string, update = true): IFile | null {
+	getFile(tfile: TAbstractFile, update = true): IFile | null {
+		const vpath = this.getVirtualPath(tfile.path);
 		const guid = this.syncStore.get(vpath);
 		if (guid) {
 			const file = this.files.get(guid);
@@ -977,17 +984,18 @@ export class SharedFolder extends HasProvider {
 				return file;
 			}
 		}
-		if (Document.checkExtension(vpath)) {
-			return this.getDoc(vpath);
-		}
-		if (Canvas.checkExtension(vpath)) {
-			return this.getCanvas(vpath);
-		}
-		if (SyncFolder.checkPath(vpath)) {
+		if (tfile instanceof TFolder) {
 			return this.getSyncFolder(vpath, update);
-		}
-		if (this.syncStore.canSync(vpath)) {
-			return this.getSyncFile(vpath, update);
+		} else if (tfile instanceof TFile) {
+			if (Document.checkExtension(vpath)) {
+				return this.getDoc(vpath);
+			}
+			if (Canvas.checkExtension(vpath)) {
+				return this.getCanvas(vpath);
+			}
+			if (this.syncStore.canSync(vpath)) {
+				return this.getSyncFile(vpath, update);
+			}
 		}
 		return null;
 	}
@@ -1033,7 +1041,7 @@ export class SharedFolder extends HasProvider {
 
 		withTimeoutWarning(
 			this.backgroundSync.enqueueCanvasDownload(canvas),
-			canvas.path
+			canvas.path,
 		);
 
 		this.files.set(guid, canvas);
@@ -1378,18 +1386,20 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	uploadFile(vpath: string, update = true): IFile {
-		if (Document.checkExtension(vpath)) {
-			return this.uploadDoc(vpath, update);
-		}
-		if (Canvas.checkExtension(vpath)) {
-			return this.uploadCanvas(vpath, update);
-		}
-		if (SyncFolder.checkPath(vpath)) {
+	uploadFile(tfile: TAbstractFile, update = true): IFile {
+		const vpath = this.getVirtualPath(tfile.path);
+		if (tfile instanceof TFolder) {
 			return this.getSyncFolder(vpath, update);
-		}
-		if (this.syncStore.canSync(vpath)) {
-			return this.uploadSyncFile(vpath, update);
+		} else if (tfile instanceof TFile) {
+			if (Document.checkExtension(vpath)) {
+				return this.uploadDoc(vpath, update);
+			}
+			if (Canvas.checkExtension(vpath)) {
+				return this.uploadCanvas(vpath, update);
+			}
+			if (this.syncStore.canSync(vpath)) {
+				return this.uploadSyncFile(vpath, update);
+			}
 		}
 		throw new Error("unexpectedly unable to upload");
 	}
@@ -1432,7 +1442,7 @@ export class SharedFolder extends HasProvider {
 			this.assertPath(newPath);
 			if (!this.syncStore.canSync(newVPath)) return;
 			this.placeHold([tfile]);
-			this.uploadFile(newVPath);
+			this.uploadFile(tfile);
 		} else {
 			// live doc exists
 			const guid = this.syncStore.get(oldVPath);
