@@ -176,7 +176,7 @@ Right now the whole operation is two people:
 Yes: [https://system3.md/Privacy+policy](https://system3.md/Privacy+policy).
 
 
-## How can I make a resonsible security disclosure?
+## How can I make a responsible security disclosure?
 
 Please email security@system3.md
 
