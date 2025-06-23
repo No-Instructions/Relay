@@ -1313,7 +1313,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		withTimeoutWarning(file.pull());
+		withTimeoutWarning(file.sync());
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
