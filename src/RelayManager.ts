@@ -1191,7 +1191,11 @@ export class RelayManager extends HasLogging {
 
 		// Subscribe to logout/login
 		this._offLoginManager = this.loginManager.on(() => {
-			this.login();
+			if (this.loginManager.loggedIn) {
+				this.login();
+			} else {
+				this.logout();
+			}
 		});
 
 		// XXX this is so akward that the class behaves poorly if a user is unset.
