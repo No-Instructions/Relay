@@ -542,13 +542,11 @@ export default class Live extends Plugin {
 
 	private _onLogout() {
 		this.tokenStore?.clear();
-		this.relayManager?.logout();
 		this._liveViews.refresh("logout");
 	}
 
 	private _onLogin() {
 		this.sharedFolders.load();
-		this.relayManager?.login();
 		this._liveViews.refresh("login");
 	}
 
