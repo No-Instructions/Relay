@@ -70,20 +70,6 @@
 		plugin.releaseSettings.get().channel,
 	);
 
-	const automaticUpdates = writable<boolean>(false);
-	async function setAutomaticUpdates(value: boolean) {
-		automaticUpdates.set(value);
-		const channel = plugin.releaseSettings.get().channel;
-		activeChannel.set(channel);
-		plugin.releaseSettings.update((release) => {
-			return {
-				...release,
-				automaticUpdates: value,
-			};
-		});
-		viewMainBranchManifest(channel);
-	}
-
 	onMount(() => {
 		// Initial setup - check GitHub releases immediately
 		refreshGithubReleases();
@@ -99,12 +85,6 @@
 				release.tag_name === plugin.version;
 			})
 		) {
-			plugin.releaseSettings.update((release) => {
-				return {
-					...release,
-					automaticUpdates: false,
-				};
-			});
 			activeChannel.set(null);
 		} else {
 			activeChannel.set(plugin.releaseSettings.get().channel);
@@ -366,29 +346,7 @@
 	<div class="settings-spacer"></div>
 
 	<div class="settings-container">
-		{#if flags().enableAutomaticUpdatesOption}
-			<SlimSettingItem name="Automatically install updates">
-				<div
-					class="checkbox-container"
-					class:is-enabled={$automaticUpdates}
-					role="checkbox"
-					aria-checked={$automaticUpdates}
-					tabindex="0"
-					on:click={() => {
-						setAutomaticUpdates(!$automaticUpdates);
-					}}
-					on:keydown={(e) => {
-						if (e.key === "Enter" || e.key === " ") {
-							setAutomaticUpdates(!$automaticUpdates);
-						}
-					}}
-				>
-					<input type="checkbox" checked={$automaticUpdates} />
-					<div class="checkbox-toggle"></div>
-				</div>
-			</SlimSettingItem>
-		{/if}
-		{#if !$automaticUpdates && !version}
+		{#if !version}
 			<SlimSettingItem name="Show all releases">
 				<div
 					class="checkbox-container"
@@ -422,7 +380,7 @@
 		</div>
 	{:else}
 		<!-- Compact tag list at the top -->
-		{#if !version || $automaticUpdates}
+		{#if !version }
 			<div class="release-tags-container">
 				<!-- Beta and Stable alias tags -->
 
@@ -492,7 +450,7 @@
 					</div>
 				{/if}
 				<!-- Development version tag if not already in filtered releases -->
-				{#if !$automaticUpdates && !$filteredReleases.some((release) => {
+				{#if !$filteredReleases.some((release) => {
 						return isCurrentVersion(release.tag_name);
 					})}
 					<div
@@ -534,7 +492,7 @@
 				{/if}
 
 				<!-- Release tags -->
-				{#if !$automaticUpdates && !version}
+				{#if !version}
 					{#each $filteredReleases as release}
 						<div
 							class="release-tag-item {isCurrentVersion(release.tag_name)
