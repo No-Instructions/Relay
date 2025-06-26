@@ -20,6 +20,13 @@
 	let showClipboardIcon = writable(false);
 	let toggleIcon: HTMLElement;
 
+	// Handle key press events
+	function handleKeyDown(event: KeyboardEvent) {
+		if (event.key === "Enter" && !disabled) {
+			dispatch("enter");
+		}
+	}
+
 	// Toggle icon handler
 	function setToggleIcon(node: HTMLElement) {
 		toggleIcon = node;
@@ -83,6 +90,7 @@
 				value = e.currentTarget.value;
 				dispatch("input", e);
 			}}
+			on:keydown={handleKeyDown}
 			class={`system3-secret-text ${invalid ? "system3-input-invalid" : ""}`}
 			{disabled}
 		/>
@@ -97,6 +105,7 @@
 				value = e.currentTarget.value;
 				dispatch("input", e);
 			}}
+			on:keydown={handleKeyDown}
 			class={`system3-secret-text ${invalid ? "system3-input-invalid" : ""}`}
 			{disabled}
 		/>
