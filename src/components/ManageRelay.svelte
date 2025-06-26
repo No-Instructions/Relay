@@ -1,4 +1,5 @@
 <script lang="ts">
+	import SecretText from "./SecretText.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import {
 		type Relay,
@@ -171,41 +172,7 @@
 	}
 
 	let relayInvitation: RelayInvitation;
-	let showShareKey = writable(false);
 	let isShareKeyEnabled = writable(true);
-	let toggleIcon: HTMLElement;
-	let showClipboardIcon = writable(false);
-
-	function setToggleIcon(node: HTMLElement) {
-		toggleIcon = node;
-
-		const updateIcon = () => {
-			if ($showClipboardIcon) {
-				setIcon(node, "clipboard-check");
-				node.addClass("mod-success");
-			} else {
-				setIcon(node, $showShareKey ? "eye-off" : "eye");
-				node.removeClass("mod-success");
-			}
-		};
-
-		const unsubscribeShareKey = showShareKey.subscribe(() => {
-			updateIcon();
-		});
-
-		const unsubscribeClipboard = showClipboardIcon.subscribe(() => {
-			updateIcon();
-		});
-
-		updateIcon();
-
-		return {
-			destroy() {
-				unsubscribeShareKey();
-				unsubscribeClipboard();
-			},
-		};
-	}
 	plugin.relayManager.getRelayInvitation(relay).then((invite) => {
 		if (invite) {
 			relayInvitation = invite;
@@ -314,21 +281,6 @@
 			.writeText(inputEl.value)
 			.then(() => new Notice("Invite link copied"))
 			.catch((err) => {});
-	}
-
-	function copyInvite(event: Event) {
-		if (relayInvitation) {
-			navigator.clipboard
-				.writeText(relayInvitation.key)
-				.then(() => {
-					new Notice("Invite link copied");
-					showClipboardIcon.set(true);
-					setTimeout(() => {
-						showClipboardIcon.set(false);
-					}, 800);
-				})
-				.catch((err) => {});
-		}
 	}
 
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
@@ -530,36 +482,14 @@
 					Share key is currently disabled
 				</span>
 			{:else}
-				<div class="input-with-icon">
-					{#if $showShareKey && relayInvitation}
-						<input
-							value={relayInvitation.key}
-							type="text"
-							readonly
-							on:click={debounce(copyInvite)}
-							class="system3-invite"
-							disabled={!$isShareKeyEnabled}
-						/>
-					{:else}
-						<input
-							value={relayInvitation ? relayInvitation.key : "please wait..."}
-							type="password"
-							readonly
-							on:click={debounce(copyInvite)}
-							class="system3-invite"
-							disabled={!$isShareKeyEnabled}
-						/>
-					{/if}
-					<div
-						class="share-key-toggle-icon"
-						role="button"
-						tabindex="0"
-						use:setToggleIcon
-						on:click={() => showShareKey.update((v) => !v)}
-						on:keypress={() => showShareKey.update((v) => !v)}
-						aria-label={$showShareKey ? "Hide share key" : "Show share key"}
-					></div>
-				</div>
+				<SecretText
+					value={relayInvitation ? relayInvitation.key : "please wait..."}
+					disabled={!$isShareKeyEnabled}
+					placeholder="please wait..."
+					readonly={true}
+					copyOnClick={true}
+					successMessage="Invite link copied"
+				/>
 			{/if}
 		</div>
 	</SettingItem>
@@ -736,46 +666,9 @@
 		width: 100%;
 	}
 
-	.input-with-icon {
-		position: relative;
-		width: 100%;
-	}
-
-	.share-key-toggle-icon {
-		position: relative;
-	}
-
-	.share-key-toggle-icon {
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		cursor: pointer;
-		width: 24px;
-		height: 24px;
-		position: absolute;
-		right: 4px;
-		top: 50%;
-		transform: translateY(-50%);
-		border-radius: 4px;
-	}
-
-	.share-key-toggle-icon:hover {
-		background-color: var(--background-modifier-hover);
-	}
-
 	.share-key-disabled-notice {
 		color: var(--text-error) !important;
 		font-size: 0.85em !important;
-	}
-
-	.input-with-icon > input {
-		padding-right: 28px;
-	}
-
-	.system3-invite {
-		padding: 4px 28px 4px 8px !important;
-		padding-inline: 2px;
-		font-family: monospace;
 	}
 
 	.relay-host-check {
