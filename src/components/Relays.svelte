@@ -11,6 +11,7 @@
 	import type { SharedFolder } from "src/SharedFolder";
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
 	import { debounce, Notice } from "obsidian";
+	import SecretText from "./SecretText.svelte";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
@@ -78,13 +79,15 @@
 	name="Share key"
 	description="Enter the code that was shared with you."
 >
-	<input
-		type="text"
-		placeholder="Enter share key"
+	<SecretText
 		bind:value={shareKey}
-		on:input={handleShareKeyInput}
 		disabled={invitePending}
-		class={invalidShareKey ? "system3-input-invalid" : ""}
+		placeholder="Enter share key"
+		readonly={false}
+		copyOnClick={false}
+		on:input={handleShareKeyInput}
+		on:enter={debounce(() => handleJoinRelayFromInvite(shareKey))}
+		invalid={invalidShareKey}
 	/>
 	<button
 		class="mod-cta"
@@ -154,9 +157,6 @@
 {/each}
 
 <style>
-	input.system3-input-invalid {
-		border: 1px solid var(--color-red) !important;
-	}
 	span.faint {
 		color: var(--text-faint);
 	}
