@@ -177,6 +177,8 @@ class StorageQuotaAuto
 	extends Observable<StorageQuota>
 	implements StorageQuota
 {
+	public offRecordSubscription?: Unsubscriber;
+
 	constructor(
 		private storageQuota: StorageQuotaDAO,
 		private relays: ObservableMap<string, Relay>,
@@ -224,6 +226,11 @@ class StorageQuotaCollection
 	collectionName: string = "storage_quotas";
 
 	constructor(
+		private subscribeRecord: (
+			collectionName: string,
+			recordId: string,
+			expand: string[],
+		) => Promise<Unsubscriber | undefined>,
 		public storageQuota: ObservableMap<string, StorageQuota>,
 		private relays: ObservableMap<string, Relay>,
 	) {}
@@ -248,11 +255,16 @@ class StorageQuotaCollection
 			return existingStorageQuota;
 		}
 		const storageQuota = new StorageQuotaAuto(update, this.relays);
+		this.subscribeRecord(this.collectionName, update.id, []).then((unsub) => {
+			storageQuota.offRecordSubscription = unsub;
+		});
 		this.storageQuota.set(update.id, storageQuota);
 		return storageQuota;
 	}
 
 	delete(id: string) {
+		const quota = this.storageQuota.get<StorageQuotaAuto>(id);
+		quota?.offRecordSubscription?.();
 		this.storageQuota.delete(id);
 	}
 }
@@ -1260,6 +1272,7 @@ export class RelayManager extends HasLogging {
 			this.users,
 		);
 		const storageQuotaCollection = new StorageQuotaCollection(
+			this.subscribeRecord.bind(this),
 			this.storageQuotas,
 			this.relays,
 		);
@@ -1378,12 +1391,25 @@ export class RelayManager extends HasLogging {
 		return response.json()["token"];
 	}
 
+	_handleEvent = (
+		collectionName: string,
+		e: RecordSubscription<RecordModel>,
+	) => {
+		this.debug(`[Event]: ${collectionName}`, e.action, e.record);
+		if (e.action === "delete") {
+			this.store?.delete(e.record);
+		} else {
+			this.store?.ingest(e.record);
+		}
+	};
+
 	async subscribe() {
 		if (
 			!this.pb ||
 			!this.pb.authStore.isValid ||
 			this.pb.authStore.model?.id === undefined
 		) {
+			this.warn("unable to subscribe, pocketbase client is not ready");
 			return;
 		}
 		const collections = [
@@ -1406,26 +1432,35 @@ export class RelayManager extends HasLogging {
 			{ name: "subscriptions", expand: ["user", "relay"] },
 		];
 
-		const handleEvent = (
-			collectionName: string,
-			e: RecordSubscription<RecordModel>,
-		) => {
-			this.debug(`[Event]: ${collectionName}`, e.action, e.record);
-			if (e.action === "delete") {
-				this.store?.delete(e.record);
-			} else {
-				this.store?.ingest(e.record);
-			}
-		};
-
 		for (const collection of collections) {
 			this.pb
 				.collection(collection.name)
-				.subscribe("*", (e) => handleEvent(collection.name, e), {
+				.subscribe("*", (e) => this._handleEvent(collection.name, e), {
 					expand: collection.expand.join(","),
 					fetch: customFetch,
 				});
 		}
+	}
+
+	async subscribeRecord(
+		collectionName: string,
+		recordId: string,
+		expand: string[],
+	): Promise<Unsubscriber | undefined> {
+		if (
+			!this.pb ||
+			!this.pb.authStore.isValid ||
+			this.pb.authStore.model?.id === undefined
+		) {
+			this.warn("unable to subscribe, pocketbase client is not ready");
+			return;
+		}
+		return this.pb
+			.collection(collectionName)
+			.subscribe(recordId, (e) => this._handleEvent(collectionName, e), {
+				expand: expand.join(","),
+				fetch: customFetch,
+			});
 	}
 
 	async update() {
