@@ -146,7 +146,7 @@ export class LoginManager extends Observable<LoginManager> {
 			method: "GET",
 			headers: headers,
 		});
-    }
+	}
 
 	async getRelayUserDevices(
 		relay_guid: string,
@@ -163,7 +163,7 @@ export class LoginManager extends Observable<LoginManager> {
 			.then((response) => {
 				if (response.status === 200) {
 					const devicesByUser = new Map<string, Device[]>();
-					const user_devices: UserDevices[] = response.json.users;
+					const user_devices: UserDevices[] = response.json.users || [];
 					user_devices.forEach((user: UserDevices) => {
 						devicesByUser.set(user.id, user.devices);
 					});
