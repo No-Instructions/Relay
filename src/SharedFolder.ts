@@ -141,6 +141,7 @@ export class SharedFolder extends HasProvider {
 	private authoritative: boolean;
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
+	private storageQuota?: number;
 
 	private _persistence: IndexeddbPersistence;
 	diskBufferStore: DiskBufferStore;
@@ -203,6 +204,33 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
+			}),
+		);
+
+		this.unsubscribes.push(
+			this.relayManager.storageQuotas.subscribe(async (storageQuotas) => {
+				const quota = storageQuotas.find((quota) => {
+					return quota.id === this._remote?.relay.storageQuotaId;
+				});
+				if (quota === undefined) {
+					return;
+				}
+				if (this.storageQuota !== quota.quota) {
+					if (
+						this.storageQuota !== undefined &&
+						quota.quota !== undefined &&
+						quota.quota > this.storageQuota
+					) {
+						this.debug(
+							"storage quota increase",
+							this.storageQuota,
+							quota.quota,
+						);
+						await this.netSync();
+					}
+					this.debug("storage quota update", this.storageQuota, quota.quota);
+					this.storageQuota = quota.quota;
+				}
 			}),
 		);
 
