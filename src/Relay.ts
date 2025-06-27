@@ -48,6 +48,7 @@ export interface Relay
 	owner: boolean;
 	invitation?: RelayInvitation;
 	storageQuota?: StorageQuota;
+	storageQuotaId: string;
 	folders: ObservableMap<string, RemoteSharedFolder>;
 	subscriptions: ObservableMap<string, RelaySubscription>;
 	cta: string;

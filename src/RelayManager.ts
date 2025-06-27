@@ -1111,6 +1111,10 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		);
 	}
 
+	public get storageQuotaId(): string {
+		return this.relay.storage_quota;
+	}
+
 	public get folders(): ObservableMap<string, RemoteFolder> {
 		return this.remoteFolders.filter((folder) => folder.relay.id === this.id);
 	}
