@@ -427,6 +427,24 @@ export default class Live extends Plugin {
 						if (folder.relayId) {
 							menu.addItem((item) => {
 								item
+									.setTitle("Relay settings")
+									.setIcon("gear")
+									.onClick(() => {
+										this.openSettings(`/relays?id=${folder.relayId}`);
+									});
+							});
+							menu.addItem((item) => {
+								item
+									.setTitle("Folder settings")
+									.setIcon("gear")
+									.onClick(() => {
+										this.openSettings(
+											`/shared-folders?id=${folder.guid}&relay=${folder.relayId}`,
+										);
+									});
+							});
+							menu.addItem((item) => {
+								item
 									.setTitle(folder.connected ? "Disconnect" : "Connect")
 									.setIcon("satellite")
 									.onClick(() => {
@@ -441,16 +459,6 @@ export default class Live extends Plugin {
 									});
 							});
 						}
-						menu.addItem((item) => {
-							item
-								.setTitle("Folder settings")
-								.setIcon("gear")
-								.onClick(() => {
-									this.openSettings(
-										`/shared-folders?id=${folder.guid}&relay=${folder.relayId}`,
-									);
-								});
-						});
 						if (folder.relayId && flags().enableSyncModal) {
 							menu.addItem((item) => {
 								item
