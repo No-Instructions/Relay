@@ -12,7 +12,7 @@ export class ContentAddressedStore extends HasLogging {
 	private pb: PocketBase;
 	private tokenStore: LiveTokenStore;
 
-	constructor(sharedFolder: SharedFolder) {
+	constructor(private sharedFolder: SharedFolder) {
 		super();
 		this.pb = new PocketBase(AUTH_URL, sharedFolder.loginManager.authStore);
 		this.tokenStore = sharedFolder.tokenStore;
@@ -33,6 +33,11 @@ export class ContentAddressedStore extends HasLogging {
 			method: "GET",
 			headers: { Authorization: `Bearer ${token.token}` },
 		});
+		if (response.status === 404) {
+			throw new Error(
+				`[${this.sharedFolder.path}] File is missing: ${syncFile.guid} ${syncFile.meta.hash} ${syncFile.meta.type}`,
+			);
+		}
 		const responseJson = await response.json();
 		const presignedUrl = responseJson.downloadUrl;
 		const downloadResponse = await customFetch(presignedUrl);
@@ -73,5 +78,6 @@ export class ContentAddressedStore extends HasLogging {
 		this.pb.cancelAllRequests();
 		this.pb = null as any;
 		this.tokenStore = null as any;
+		this.sharedFolder = null as any;
 	}
 }

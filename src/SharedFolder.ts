@@ -286,7 +286,7 @@ export class SharedFolder extends HasProvider {
 					const file = this.uploadSyncFile(vpath, false);
 					files.push(file);
 				} else {
-					const file = this.downloadSyncFile(vpath, false);
+					const file = this.syncFile(vpath, false);
 					files.push(file);
 				}
 			}
@@ -617,11 +617,13 @@ export class SharedFolder extends HasProvider {
 			diffLog?.push(`created local folder for remotely added folder ${vpath}`);
 			return this.getSyncFolder(vpath, false);
 		}
-		if (meta.type === "file" && this.syncStore.canSync(vpath)) {
+		if (this.syncStore.canSync(vpath)) {
 			diffLog?.push(`created local file for remotely added file ${vpath}`);
 			return this.downloadSyncFile(vpath, false);
 		}
-		throw new Error("unexpected file");
+		throw new Error(
+			`${vpath}: Unexpected file type ${meta.type} ${meta.mimetype}`,
+		);
 	}
 
 	private _assertNamespacing(path: string) {
@@ -1296,6 +1298,31 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
+	syncFile(vpath: string, update: boolean) {
+		if (!this.syncStore.canSync(vpath)) {
+			throw new Error("unexpected extension");
+		}
+		if (!this.synced && !this.syncStore.has(vpath)) {
+			throw new Error(`potential for document split at ${vpath}`);
+		}
+		const guid = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error(`called sync on item that is not in ids ${vpath}`);
+		}
+		const meta = this.syncStore.getMeta(vpath);
+		if (!meta || !meta.hash) {
+			return this.uploadSyncFile(vpath, update);
+		}
+		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
+
+		withTimeoutWarning(file.sync());
+
+		this.files.set(guid, file);
+		this.fset.add(file, update);
+
+		return file;
+	}
+
 	downloadSyncFile(vpath: string, update: boolean) {
 		if (!this.syncStore.canSync(vpath)) {
 			throw new Error("unexpected extension");
@@ -1313,7 +1340,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		withTimeoutWarning(file.sync());
+		withTimeoutWarning(file.pull());
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
