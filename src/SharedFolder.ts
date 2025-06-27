@@ -683,6 +683,9 @@ export class SharedFolder extends HasProvider {
 			if (file && isSyncFile(file) && file.shouldPull(meta as FileMeta)) {
 				return { op: "update", path, promise: file.pull() };
 			}
+			if (file && isSyncFile(file) && file.uploadError) {
+				return { op: "update", path, promise: file.push() };
+			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
