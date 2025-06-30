@@ -339,19 +339,19 @@ export class SyncFile
 		//return Math.max(this.stat.mtime, this.stat.ctime);
 	}
 
-	public async push(): Promise<string> {
+	public async push(force = false) {
 		this.log("push");
 		if (!this.sharedFolder.connected) {
 			this.log("skipping push -- folder is disconnected");
-			return "";
+			return;
 		}
 		if (!this.sharedFolder.syncStore.canSync(this.path)) {
 			this.log("skipping push -- filetype is disabled");
-			return "";
+			return;
 		}
 		const hash = await this.caf.hash();
 		const meta = this.sharedFolder.syncStore.getMeta(this.path);
-		if (!meta || (hash && meta.hash !== hash)) {
+		if (!meta || (hash && meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
 				this.sharedFolder.markUploaded(this);
@@ -368,7 +368,8 @@ export class SyncFile
 				this.notifyListeners();
 			}
 		}
-		return await this.caf.hash();
+		await this.caf.hash();
+		return;
 	}
 
 	public async sync() {
@@ -416,10 +417,7 @@ export class SyncFile
 		this.log("pull");
 		const meta = this.sharedFolder.syncStore.getMeta(this.path);
 		if (meta) {
-			// XXX type casting
 			this.meta = meta as FileMetas;
-		} else {
-			this.warn("meta fail", meta);
 		}
 		if (!this.meta) {
 			throw new Error("cannot pull without meta");
