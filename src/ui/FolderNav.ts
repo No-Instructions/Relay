@@ -324,41 +324,43 @@ class FilePillDecoration {
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
 		});
-		const setText = (file: SyncFile) => {
-			if (!file.inMeta) {
-				const text = file.uploadError || "pending";
-				const color = file.uploadError ? "var(--red)" : undefined;
-				if (!this.pill) {
-					this.pill = new UploadPill({
-						target: this.el,
-						props: {
-							text: text,
-							color: color,
-						},
-					});
-				} else {
-					this.pill.$set({
-						text: text,
-						color: color,
-					});
-				}
-			} else {
-				this.pill?.$destroy();
-			}
-		};
+
 		this.unsubscribes.push(
-			this.file.subscribe((file) => {
-				setText(file);
+			this.file.subscribe(() => {
+				this.setText();
 			}),
 		);
 	}
 
+	setText() {
+		if (!this.file) {
+			return;
+		}
+		if (this.file.inMeta) {
+			this.pill?.destroy();
+			return;
+		}
+		if (!this.pill) {
+			this.pill = new UploadPill({
+				target: this.el,
+				props: {
+					text: this.file.tag,
+				},
+			});
+		} else {
+			this.pill.$set({
+				text: this.file.tag,
+			});
+		}
+	}
+
 	destroy() {
 		this.unsubscribes.forEach((off) => off());
-		this.pill?.$destroy();
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
 		});
+		this.pill?.$destroy();
+		this.file = null as any;
 	}
 }
 
@@ -373,12 +375,16 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 			try {
 				const file = sharedFolder.proxy.viewSyncFile(tfile.path);
 				if (
+					sharedFolder.connected &&
 					file &&
 					isSyncFile(file) &&
 					sharedFolder.isSyncableTFile(tfile) &&
-					sharedFolder.connected
+					!file.inMeta
 				) {
-					if (storage && storage.file === file) return storage;
+					if (storage && storage.file === file) {
+						storage.setText();
+						return storage;
+					}
 					return new FilePillDecoration(item.selfEl, file);
 				}
 			} catch {
@@ -733,6 +739,11 @@ export class FolderNavigationDecorations {
 				);
 				this.unsubscribes.push(
 					folder.subscribe(this, () => {
+						this.quickRefresh();
+					}),
+				);
+				this.unsubscribes.push(
+					folder.syncStore.subscribe((syncStore) => {
 						this.quickRefresh();
 					}),
 				);

@@ -321,6 +321,20 @@ export class SyncFile
 		return !!this.sharedFolder.syncStore.getMeta(this.path);
 	}
 
+	public get pending() {
+		return !!this.sharedFolder.syncStore.pendingUpload.has(this.path);
+	}
+
+	public get tag() {
+		return this.inMeta
+			? ""
+			: this.uploadError
+				? this.uploadError
+				: this.pending
+					? "pending"
+					: "unknown";
+	}
+
 	move(newPath: string) {
 		if (newPath === this.path) {
 			return;
@@ -353,7 +367,7 @@ export class SyncFile
 		if (!meta || (hash && meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
-				this.sharedFolder.markUploaded(this);
+				await this.sharedFolder.markUploaded(this);
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} catch (error) {
@@ -367,7 +381,6 @@ export class SyncFile
 				this.notifyListeners();
 			}
 		}
-		await this.caf.hash();
 		return;
 	}
 
