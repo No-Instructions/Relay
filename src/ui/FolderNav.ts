@@ -324,33 +324,32 @@ class FilePillDecoration {
 		this.el.querySelectorAll(".system3-uploadpill").forEach((el) => {
 			el.remove();
 		});
-		const setText = (file: SyncFile) => {
-			if (!file.inMeta) {
-				const text = file.uploadError || "pending";
-				const color = file.uploadError ? "var(--red)" : undefined;
-				if (!this.pill) {
-					this.pill = new UploadPill({
-						target: this.el,
-						props: {
-							text: text,
-							color: color,
-						},
-					});
-				} else {
-					this.pill.$set({
-						text: text,
-						color: color,
-					});
-				}
-			} else {
-				this.pill?.$destroy();
-			}
-		};
+
 		this.unsubscribes.push(
 			this.file.subscribe((file) => {
-				setText(file);
+				this.setText(file);
 			}),
 		);
+	}
+
+	setText(file: SyncFile) {
+		if (!file.inMeta) {
+			const text = file.uploadError || "pending";
+			if (!this.pill) {
+				this.pill = new UploadPill({
+					target: this.el,
+					props: {
+						text: text,
+					},
+				});
+			} else {
+				this.pill.$set({
+					text: text,
+				});
+			}
+		} else {
+			this.pill?.$destroy();
+		}
 	}
 
 	destroy() {
@@ -378,7 +377,10 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 					sharedFolder.isSyncableTFile(tfile) &&
 					sharedFolder.connected
 				) {
-					if (storage && storage.file === file) return storage;
+					if (storage && storage.file === file) {
+						storage.setText(storage.file);
+						return storage;
+					}
 					return new FilePillDecoration(item.selfEl, file);
 				}
 			} catch {
