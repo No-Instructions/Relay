@@ -359,11 +359,11 @@ export class SyncFile
 			} catch (error) {
 				let errorMessage = "Failed to push file";
 				try {
-					errorMessage = (error as string).toString().slice(7);
+					errorMessage = (error as string).toString();
 				} catch (e) {
 					//pass
 				}
-				this.uploadError = errorMessage;
+				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
 				this.notifyListeners();
 			}
 		}
