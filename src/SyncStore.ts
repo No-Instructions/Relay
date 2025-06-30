@@ -27,7 +27,7 @@ export class SyncStore extends Observable<SyncStore> {
 	constructor(
 		public ydoc: Y.Doc,
 		private namespace: string,
-		private pendingUpload: Map<string, string>,
+		public pendingUpload: Map<string, string>,
 		private syncSettingsManager: SyncSettingsManager,
 	) {
 		super();
