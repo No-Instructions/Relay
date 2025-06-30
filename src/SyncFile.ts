@@ -353,9 +353,8 @@ export class SyncFile
 		if (!meta || (hash && meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
-				this.sharedFolder.markUploaded(this);
+				await this.sharedFolder.markUploaded(this);
 				this.uploadError = undefined;
-				this.notifyListeners();
 			} catch (error) {
 				let errorMessage = "Failed to push file";
 				try {
@@ -364,9 +363,9 @@ export class SyncFile
 					//pass
 				}
 				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
-				this.notifyListeners();
 			}
 		}
+		this.notifyListeners();
 		await this.caf.hash();
 		return;
 	}
