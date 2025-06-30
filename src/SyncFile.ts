@@ -20,8 +20,7 @@ import { Observable, type Unsubscriber } from "./observable/Observable";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
-import type { ClientToken } from "./y-sweet";
-import type { TokenInfo } from "./TokenStore";
+import { flags } from "./flagManager";
 
 export function isSyncFile(file: IFile | undefined): file is SyncFile {
 	return !!file && file instanceof SyncFile;
@@ -387,6 +386,17 @@ export class SyncFile
 		}
 		try {
 			const hash = await this.caf.hash();
+			if (flags().enableVerifyUploads) {
+				// Not remote
+				try {
+					if (!this.verifyUpload()) {
+						this.warn("file in metadata, but not on the server!");
+						await this.push();
+					}
+				} catch (err) {
+					// pass
+				}
+			}
 			if (hash !== meta.hash) {
 				// local is newer
 				if (this.stat.mtime > (meta as FileMetas).synctime) {
@@ -411,6 +421,18 @@ export class SyncFile
 
 	shouldPull(meta: FileMeta) {
 		return !this.tfile || meta.synctime > this.stat.mtime;
+	}
+
+	public async verifyUpload() {
+		this.log("verify upload");
+		const meta = this.sharedFolder.syncStore.getMeta(this.path);
+		if (meta) {
+			this.meta = meta as FileMetas;
+		}
+		if (!this.meta) {
+			throw new Error("cannot verify upload without meta");
+		}
+		return this.sharedFolder.cas.verify(this);
 	}
 
 	public async pull() {

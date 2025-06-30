@@ -499,6 +499,19 @@ export default class Live extends Plugin {
 										new Notice(`Download complete: ${ifile.name}`);
 									});
 							});
+							if (this.debugSettings.get().debugging) {
+								menu.addItem((item) => {
+									item
+										.setTitle("Verify upload")
+										.setIcon("search-check")
+										.onClick(async () => {
+											const present = await ifile.verifyUpload();
+											new Notice(
+												`${ifile.name} ${present ? "on server" : "missing from server"}`,
+											);
+										});
+								});
+							}
 							menu.addItem((item) => {
 								item
 									.setTitle("Upload")
