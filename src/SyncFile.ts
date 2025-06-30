@@ -20,8 +20,6 @@ import { Observable, type Unsubscriber } from "./observable/Observable";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
-import type { ClientToken } from "./y-sweet";
-import type { TokenInfo } from "./TokenStore";
 
 export function isSyncFile(file: IFile | undefined): file is SyncFile {
 	return !!file && file instanceof SyncFile;
@@ -360,11 +358,11 @@ export class SyncFile
 			} catch (error) {
 				let errorMessage = "Failed to push file";
 				try {
-					errorMessage = (error as string).toString().slice(7);
+					errorMessage = (error as string).toString();
 				} catch (e) {
 					//pass
 				}
-				this.uploadError = errorMessage;
+				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
 				this.notifyListeners();
 			}
 		}
