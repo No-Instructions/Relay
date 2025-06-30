@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableNetworkLogging: boolean;
 	enableCanvasSync: boolean;
 	enableShowDeviceInfo: boolean;
+	enableVerifyUploads: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -32,6 +33,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNetworkLogging: false,
 	enableCanvasSync: false,
 	enableShowDeviceInfo: false,
+	enableVerifyUploads: false,
 };
 
 export type Flag = keyof FeatureFlags;

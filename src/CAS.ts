@@ -18,6 +18,24 @@ export class ContentAddressedStore extends HasLogging {
 		this.tokenStore = sharedFolder.tokenStore;
 	}
 
+	async verify(syncFile: SyncFile): Promise<boolean> {
+		if (!syncFile.meta) {
+			throw new Error("cannot head file with missing hash");
+		}
+		const sha256 = syncFile.meta.hash;
+		const token = await this.tokenStore.getFileToken(
+			S3RN.encode(syncFile.s3rn),
+			sha256,
+			syncFile.mimetype,
+			0,
+		);
+		const response = await customFetch(token.baseUrl!, {
+			method: "HEAD",
+			headers: { Authorization: `Bearer ${token.token}` },
+		});
+		return response.status === 200;
+	}
+
 	async readFile(syncFile: SyncFile): Promise<ArrayBuffer> {
 		if (!syncFile.meta) {
 			throw new Error("cannot pull file with missing hash");
