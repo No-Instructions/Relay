@@ -486,6 +486,32 @@ export default class Live extends Plugin {
 									});
 							});
 						}
+					} else if (file instanceof TFile) {
+						const folder = this.sharedFolders.lookup(file.path);
+						const ifile = folder?.getFile(file);
+						if (ifile && isSyncFile(ifile)) {
+							menu.addItem((item) => {
+								item
+									.setTitle("Download")
+									.setIcon("cloud-download")
+									.onClick(async () => {
+										await ifile.pull();
+										new Notice(`Download complete: ${ifile.name}`);
+									});
+							});
+							menu.addItem((item) => {
+								item
+									.setTitle("Upload")
+									.setIcon("cloud-upload")
+									.onClick(async () => {
+										await ifile.push(true);
+										const present = await ifile.verifyUpload();
+										new Notice(
+											`${present ? "File uploaded:" : "File upload failed:"} ${ifile.name}`,
+										);
+									});
+							});
+						}
 					}
 				}),
 			);
