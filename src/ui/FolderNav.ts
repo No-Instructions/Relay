@@ -327,19 +327,16 @@ class FilePillDecoration {
 		const setText = (file: SyncFile) => {
 			if (!file.inMeta) {
 				const text = file.uploadError || "pending";
-				const color = file.uploadError ? "var(--red)" : undefined;
 				if (!this.pill) {
 					this.pill = new UploadPill({
 						target: this.el,
 						props: {
 							text: text,
-							color: color,
 						},
 					});
 				} else {
 					this.pill.$set({
 						text: text,
-						color: color,
 					});
 				}
 			} else {
@@ -733,6 +730,11 @@ export class FolderNavigationDecorations {
 				);
 				this.unsubscribes.push(
 					folder.subscribe(this, () => {
+						this.quickRefresh();
+					}),
+				);
+				this.unsubscribes.push(
+					folder.syncStore.subscribe((syncStore) => {
 						this.quickRefresh();
 					}),
 				);
