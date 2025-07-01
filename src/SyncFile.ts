@@ -398,7 +398,7 @@ export class SyncFile
 		try {
 			hash = await this.caf.hash();
 		} catch (err) {
-			// err
+			return;
 		}
 		// Not local
 		if (!hash) {
@@ -465,11 +465,16 @@ export class SyncFile
 				return;
 			}
 		}
-		const content = await this.sharedFolder.cas.readFile(this);
-		await this.vault.adapter.writeBinary(
-			this.sharedFolder.getPath(this.path),
-			content,
-		);
+		try {
+			const content = await this.sharedFolder.cas.readFile(this);
+			await this.vault.adapter.writeBinary(
+				this.sharedFolder.getPath(this.path),
+				content,
+			);
+		} catch (e) {
+			this.error(e);
+			return;
+		}
 		await this.caf.hash();
 	}
 
