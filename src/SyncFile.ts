@@ -394,9 +394,11 @@ export class SyncFile
 		}
 
 		this.meta = meta as FileMetas;
+
 		if (!this.caf.exists()) {
 			await this.pull();
 		}
+
 		try {
 			const hash = await this.caf.hash();
 			if (flags().enableVerifyUploads) {
@@ -463,11 +465,16 @@ export class SyncFile
 				return;
 			}
 		}
-		const content = await this.sharedFolder.cas.readFile(this);
-		await this.vault.adapter.writeBinary(
-			this.sharedFolder.getPath(this.path),
-			content,
-		);
+		try {
+			const content = await this.sharedFolder.cas.readFile(this);
+			await this.vault.adapter.writeBinary(
+				this.sharedFolder.getPath(this.path),
+				content,
+			);
+		} catch (e) {
+			this.error(e);
+			return;
+		}
 		await this.caf.hash();
 	}
 
