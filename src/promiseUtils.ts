@@ -135,7 +135,7 @@ export function withTimeoutWarning<T>(
 ): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timeoutId = window.setTimeout(() => {
-			curryLog("[Promise]", "error")("Promise stuck after 3s:", ...logArgs);
+			curryLog("[Promise]", "debug")("Promise stuck after 3s:", ...logArgs);
 		}, 3000);
 
 		promise.then(
