@@ -140,6 +140,30 @@ export class SyncStore extends Observable<SyncStore> {
 		);
 	}
 
+	willSet(vpath: string, meta: Meta): boolean {
+		this.assertVPath(vpath);
+		if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
+			this.log(
+				"legacy vpath set to a different ID",
+				this.legacyIds.get(vpath),
+				meta.id,
+			);
+			return true;
+		}
+		const existing = this.meta.get(vpath);
+		if (
+			existing &&
+			existing.id === meta.id &&
+			existing.mimetype == meta.mimetype &&
+			existing.type === meta.type &&
+			existing.hash === meta.hash
+		) {
+			return false;
+		}
+		this.log("new meta diff", existing, meta);
+		return true;
+	}
+
 	set(vpath: string, meta: Meta) {
 		this.assertVPath(vpath);
 		if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
