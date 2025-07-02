@@ -32,20 +32,30 @@ export class SyncFolder extends HasLogging implements IFile {
 		this._parent = parent;
 		this.name = this.path.split("/").pop() || "";
 		this.vault = this._parent.vault;
-		const tfolder = this.vault.getAbstractFileByPath(
-			this.sharedFolder.getPath(path),
-		);
-		if (tfolder instanceof TFolder) {
-			this._tfolder = tfolder;
-			this.ready = true;
-		} else {
+		const fromVault = () => {
+			const tfolder = this.vault.getAbstractFileByPath(
+				this.sharedFolder.getPath(path),
+			);
+			if (tfolder instanceof TFolder) {
+				this._tfolder = tfolder;
+				this.ready = true;
+				return true;
+			}
+			return false;
+		};
+		if (!fromVault()) {
 			this.createPromise = this.vault.createFolder(
 				this.sharedFolder.getPath(path),
 			);
-			this.createPromise.then((tfolder) => {
-				this._tfolder = tfolder;
-				this.ready = true;
-			});
+			this.createPromise
+				.then((tfolder) => {
+					this._tfolder = tfolder;
+					this.ready = true;
+				})
+				.catch(() => {
+					// folder exists, retry
+					fromVault();
+				});
 		}
 		this.synctime = 0;
 		this.setLoggers(`[SyncFolder](${this.path})`);
