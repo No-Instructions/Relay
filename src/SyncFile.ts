@@ -177,7 +177,7 @@ export class ContentAddressedFile extends HasLogging {
 			if (tfile && tfile instanceof TFile) {
 				this._tfile = tfile;
 			} else {
-				throw new Error("missing tfile");
+				throw new Error(`missing tfile: ${this.path}`);
 			}
 		}
 		return this._tfile;
@@ -215,6 +215,18 @@ export class ContentAddressedFile extends HasLogging {
 		return content;
 	}
 
+	async _hash(): Promise<string> {
+		const mtime = this.tfile.stat.mtime;
+		const content = await this.vault.readBinary(this.tfile);
+		const hash = await generateHash(content);
+		try {
+			await this.store.saveHash(this.path, hash, mtime);
+		} catch (error) {
+			this.warn("Failed to save hash to store:", error);
+		}
+		return hash;
+	}
+
 	exists() {
 		if (this._tfile) {
 			return true;
@@ -240,11 +252,7 @@ export class ContentAddressedFile extends HasLogging {
 		if (hash) {
 			return hash;
 		}
-		await this.read();
-		hash = await this.loadHashFromStore();
-		if (!hash) {
-			throw new Error("missing hash");
-		}
+		hash = await this._hash();
 		return hash;
 	}
 
@@ -352,6 +360,12 @@ export class SyncFile
 		//return Math.max(this.stat.mtime, this.stat.ctime);
 	}
 
+	_refreshMeta() {
+		const meta = this.sharedFolder.syncStore.getMeta(this.path);
+		this.meta = meta as FileMetas;
+		return meta;
+	}
+
 	public async push(force = false) {
 		this.log("push");
 		if (!this.sharedFolder.connected) {
@@ -363,8 +377,8 @@ export class SyncFile
 			return;
 		}
 		const hash = await this.caf.hash();
-		const meta = this.sharedFolder.syncStore.getMeta(this.path);
-		if (!meta || (hash && meta.hash !== hash) || force) {
+		this._refreshMeta();
+		if (!this.meta || (hash && this.meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
 				await this.sharedFolder.markUploaded(this);
@@ -386,17 +400,17 @@ export class SyncFile
 
 	public async sync() {
 		this.log("sync");
-		const meta = this.sharedFolder.syncStore.getMeta(this.path);
-
-		if (!meta) {
-			await this.push();
-			return;
-		}
-
-		this.meta = meta as FileMetas;
+		this._refreshMeta();
 
 		if (!this.caf.exists()) {
+			if (!this.meta) {
+				throw new Error("unexpected case");
+			}
 			await this.pull();
+			return;
+		} else if (!this.meta) {
+			await this.push();
+			return;
 		}
 
 		try {
@@ -412,16 +426,16 @@ export class SyncFile
 					// pass
 				}
 			}
-			if (hash !== meta.hash) {
+			if (hash !== this.meta.hash) {
 				// local is newer
-				if (this.stat.mtime > (meta as FileMetas).synctime) {
+				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
 					await this.push();
 					return;
 				}
 				// remote is newer
 				this.warn(
 					"synctime",
-					meta.synctime,
+					this.meta.synctime,
 					this.meta?.synctime,
 					this.stat.mtime,
 				);
@@ -429,8 +443,7 @@ export class SyncFile
 				return;
 			}
 		} catch (err) {
-			this.warn("unable to compute hash");
-			return;
+			this.warn("unable to compute hash", err);
 		}
 	}
 
@@ -440,10 +453,7 @@ export class SyncFile
 
 	public async verifyUpload() {
 		this.log("verify upload");
-		const meta = this.sharedFolder.syncStore.getMeta(this.path);
-		if (meta) {
-			this.meta = meta as FileMetas;
-		}
+		this._refreshMeta();
 		if (!this.meta) {
 			throw new Error("cannot verify upload without meta");
 		}
@@ -452,10 +462,7 @@ export class SyncFile
 
 	public async pull() {
 		this.log("pull");
-		const meta = this.sharedFolder.syncStore.getMeta(this.path);
-		if (meta) {
-			this.meta = meta as FileMetas;
-		}
+		this._refreshMeta();
 		if (!this.meta) {
 			throw new Error("cannot pull without meta");
 		}
@@ -471,11 +478,11 @@ export class SyncFile
 				this.sharedFolder.getPath(this.path),
 				content,
 			);
+			await this.caf.hash();
 		} catch (e) {
 			this.error(e);
 			return;
 		}
-		await this.caf.hash();
 	}
 
 	public get tfile(): TFile {
