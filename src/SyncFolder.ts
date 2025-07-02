@@ -25,7 +25,6 @@ export class SyncFolder extends HasLogging implements IFile {
 	constructor(
 		public path: string,
 		public guid: string,
-		private relayManager: RelayManager,
 		parent: SharedFolder,
 	) {
 		super();
@@ -76,11 +75,7 @@ export class SyncFolder extends HasLogging implements IFile {
 		this.log("created");
 	}
 
-	static fromTFolder(
-		relayManager: RelayManager,
-		sharedFolder: SharedFolder,
-		tfolder: TFolder,
-	) {
+	static fromTFolder(sharedFolder: SharedFolder, tfolder: TFolder) {
 		console.log(
 			"virtualpath for new syncfolder",
 			sharedFolder.getVirtualPath(tfolder.path),
@@ -88,7 +83,6 @@ export class SyncFolder extends HasLogging implements IFile {
 		return new SyncFolder(
 			sharedFolder.getVirtualPath(tfolder.path),
 			uuidv4(),
-			relayManager,
 			sharedFolder,
 		);
 	}
@@ -149,7 +143,6 @@ export class SyncFolder extends HasLogging implements IFile {
 		this.offFolderStatusListener?.();
 		this.offFolderStatusListener = null as any;
 		this._parent = null as any;
-		this.relayManager = null as any;
 		this._tfolder = null as any;
 	}
 }

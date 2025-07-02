@@ -1291,9 +1291,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private getOrCreateSyncFolder(guid: string, vpath: string) {
-		const file =
-			this.files.get(guid) ||
-			new SyncFolder(vpath, guid, this.relayManager, this);
+		const file = this.files.get(guid) || new SyncFolder(vpath, guid, this);
 		if (!isSyncFolder(file)) {
 			throw new Error("unexpected ifile type");
 		}
