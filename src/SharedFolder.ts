@@ -179,6 +179,16 @@ export class SharedFolder extends HasProvider {
 		this.pendingUpload = new LocalStorage<string>(
 			`${appId}-system3-relay/folders/${this.guid}/pendingUploads`,
 		);
+		this.pendingUpload.forEach((guid, vpath) => {
+			if (!this.existsSync(vpath)) {
+				this.warn(
+					"deleting pending upload record because file is missing",
+					vpath,
+					guid,
+				);
+				this.pendingUpload.delete(vpath);
+			}
+		});
 		this.relayManager = relayManager;
 		this.relayId = relayId;
 		this.diskBufferStore = new DiskBufferStore();
