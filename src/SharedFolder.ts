@@ -968,25 +968,30 @@ export class SharedFolder extends HasProvider {
 	}
 
 	async markUploaded(file: IFile) {
+		const mark = (file: IFile, meta: Meta) => {
+			if (!this.syncStore) {
+				return;
+			}
+			if (this.syncStore.willSet(file.path, meta)) {
+				this.log("new meta", file.path, meta);
+				this.ydoc.transact(() => {
+					this.syncStore.markUploaded(file.path, meta);
+				}, this);
+			}
+		};
 		if (isDocument(file)) {
 			const meta = makeDocumentMeta(file.guid);
-			this.ydoc.transact(() => {
-				this.syncStore.markUploaded(file.path, meta);
-			}, this);
+			mark(file, meta);
 			return;
 		}
 		if (isCanvas(file)) {
 			const meta = makeCanvasMeta(file.guid);
-			this.ydoc.transact(() => {
-				this.syncStore.markUploaded(file.path, meta);
-			}, this);
+			mark(file, meta);
 			return;
 		}
 		if (isSyncFolder(file)) {
 			const meta = makeFolderMeta(file.guid);
-			this.ydoc.transact(() => {
-				this.syncStore.markUploaded(file.path, meta);
-			}, this);
+			mark(file, meta);
 			return;
 		}
 		if (isSyncFile(file)) {
@@ -998,8 +1003,6 @@ export class SharedFolder extends HasProvider {
 			if (!hash) {
 				throw new Error("file hash not yet computed");
 			}
-			const existingMeta = this.syncStore.getMeta(this.path);
-			if (existingMeta && file.caf.value === existingMeta.hash) return;
 			const meta = makeFileMeta(
 				type as SyncFileType,
 				file.guid,
@@ -1007,10 +1010,7 @@ export class SharedFolder extends HasProvider {
 				hash,
 				file.stat.mtime,
 			);
-			this.log("new meta", meta);
-			this.ydoc.transact(() => {
-				this.syncStore.markUploaded(file.path, meta);
-			}, this);
+			mark(file, meta);
 			return;
 		}
 	}
