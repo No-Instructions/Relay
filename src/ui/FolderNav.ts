@@ -18,6 +18,7 @@ import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import { SyncFile, isSyncFile } from "src/SyncFile";
+import { Canvas } from "src/Canvas";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -371,24 +372,20 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 		storage?: FilePillDecoration,
 		sharedFolder?: SharedFolder,
 	): FilePillDecoration | null {
-		if (sharedFolder && sharedFolder.ready) {
-			try {
+		if (
+			sharedFolder &&
+			!Document.checkExtension(tfile.path) &&
+			!Canvas.checkExtension(tfile.path) &&
+			sharedFolder.isSyncableTFile(tfile)
+		) {
+			if (sharedFolder.ready && sharedFolder.connected) {
 				const file = sharedFolder.proxy.viewSyncFile(tfile.path);
-				if (
-					sharedFolder.connected &&
-					file &&
-					isSyncFile(file) &&
-					sharedFolder.isSyncableTFile(tfile) &&
-					!file.inMeta
-				) {
+				if (file && isSyncFile(file)) {
 					if (storage && storage.file === file) {
-						storage.setText();
 						return storage;
 					}
 					return new FilePillDecoration(item.selfEl, file);
 				}
-			} catch {
-				// pass
 			}
 		}
 		if (storage) {
