@@ -1079,10 +1079,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		withTimeoutWarning(
-			this.backgroundSync.enqueueCanvasDownload(canvas),
-			canvas.path,
-		);
+		this.backgroundSync.enqueueCanvasDownload(canvas);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas, update);
@@ -1211,7 +1208,7 @@ export class SharedFolder extends HasProvider {
 		const doc = this.getOrCreateDoc(guid, vpath);
 		doc.markOrigin("remote");
 
-		withTimeoutWarning(this.backgroundSync.enqueueDownload(doc), doc.path);
+		this.backgroundSync.enqueueDownload(doc);
 
 		this.files.set(guid, doc);
 		this.fset.add(doc, update);
@@ -1353,7 +1350,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		withTimeoutWarning(file.sync());
+		this.backgroundSync.enqueueSync(file);
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
@@ -1378,7 +1375,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		withTimeoutWarning(file.sync());
+		this.backgroundSync.enqueueDownload(file);
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
@@ -1406,13 +1403,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, tfile);
 
-		const run = async () => {
-			if (!this.existsSync(vpath)) {
-				throw new Error(`Upload failed, file does not exist at ${vpath}`);
-			}
-			await file.push();
-		};
-		run();
+		this.backgroundSync.enqueueSync(file);
 
 		this.fset.add(file, update);
 		return file;
