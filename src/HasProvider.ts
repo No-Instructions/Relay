@@ -63,6 +63,7 @@ function makeProvider(
 	if (user) {
 		provider.awareness.setLocalStateField("user", {
 			name: user.name,
+			id: user.id,
 			color: user.color.color,
 			colorLight: user.color.light,
 		});
