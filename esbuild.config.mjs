@@ -47,6 +47,7 @@ const context = await esbuild.context({
 	bundle: true,
 	external: [
 		"obsidian",
+        "moment",
 		"electron",
 		"@codemirror/autocomplete",
 		"@codemirror/collab",

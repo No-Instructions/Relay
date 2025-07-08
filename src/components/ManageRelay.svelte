@@ -33,7 +33,7 @@
 	export let sharedFolders!: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
-	import moment from "moment";
+	import { moment } from "obsidian";
 	import { withFlag } from "src/flagManager";
 	import { flag } from "src/flags";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
@@ -50,8 +50,8 @@
 		if (!cancelAtDate) {
 			return "Active";
 		}
-		const now = moment();
-		const cancelAt = moment(cancelAtDate);
+		const now = moment.utc();
+		const cancelAt = moment.utc(cancelAtDate);
 		const daysRemaining = cancelAt.diff(now, "days");
 
 		if (daysRemaining <= 0) {
