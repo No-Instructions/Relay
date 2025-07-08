@@ -1,7 +1,6 @@
 "use strict";
 import {
 	FileManager,
-	MetadataCache,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -158,7 +157,6 @@ export class SharedFolder extends HasProvider {
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
-		private metadataCache: MetadataCache,
 		private hashStore: ContentAddressedFileStore,
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
@@ -1321,8 +1319,7 @@ export class SharedFolder extends HasProvider {
 		hashOrTFile: TFile | string,
 	): SyncFile {
 		const file =
-			this.files.get(guid) ||
-			new SyncFile(vpath, guid, this.metadataCache, this.hashStore, this);
+			this.files.get(guid) || new SyncFile(vpath, guid, this.hashStore, this);
 		if (!isSyncFile(file)) {
 			throw new Error("unexpected ifile type");
 		}

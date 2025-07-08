@@ -9,13 +9,7 @@ import {
 import { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
 import { type FileMeta, type FileMetas, type SyncFileType } from "./SyncTypes";
-import {
-	TFile,
-	type Vault,
-	type TFolder,
-	type FileStats,
-	MetadataCache,
-} from "obsidian";
+import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
 import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
@@ -161,7 +155,6 @@ export class ContentAddressedFile extends HasLogging {
 	constructor(
 		private vault: Vault,
 		public path: string,
-		private metadataCache: MetadataCache,
 		private store: ContentAddressedFileStore,
 	) {
 		super();
@@ -259,7 +252,6 @@ export class ContentAddressedFile extends HasLogging {
 	destroy() {
 		this.vault = null as any;
 		this._tfile = null as any;
-		this.metadataCache = null as any;
 		// Don't destroy store as it might be shared
 	}
 }
@@ -285,7 +277,6 @@ export class SyncFile
 	constructor(
 		public path: string,
 		public guid: string,
-		private metadataCache: MetadataCache,
 		private hashStore: ContentAddressedFileStore,
 		parent: SharedFolder,
 	) {
@@ -310,7 +301,6 @@ export class SyncFile
 		this.caf = new ContentAddressedFile(
 			this.vault,
 			this.sharedFolder.getPath(path),
-			this.metadataCache,
 			this.hashStore,
 		);
 
@@ -562,7 +552,6 @@ export class SyncFile
 		this.offFileInfo = null as any;
 
 		this._parent = null as any;
-		this.metadataCache = null as any;
 		this.caf.destroy();
 	}
 }

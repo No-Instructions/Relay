@@ -579,7 +579,6 @@ export default class Live extends Plugin {
 			this.fileManager,
 			this.tokenStore,
 			this.relayManager,
-			this.app.metadataCache,
 			this.hashStore,
 			this.backgroundSync,
 			folderSettings,
