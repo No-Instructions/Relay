@@ -302,12 +302,17 @@ export default class Live extends Plugin {
 			}
 		});
 
+		const code = `async function() {
+			const app = window.app;
+			await app.plugins.disablePlugin("system3-relay");
+			await app.plugins.enablePlugin("system3-relay");
+		}`;
+		(this.app as any).reloadRelay = new Function("return " + code);
+
 		this.addCommand({
 			id: "reload",
 			name: "Reload Relay",
-			callback: () => {
-				this.reload();
-			},
+			callback: (this.app as any).reloadRelay(),
 		});
 
 		// Register handler for update availability changes
@@ -535,10 +540,7 @@ export default class Live extends Plugin {
 	}
 
 	async reload() {
-		const pluginId = this.manifest.id;
-		const plugins = (this.app as any).plugins;
-		await plugins.disablePlugin(pluginId);
-		await plugins.enablePlugin(pluginId);
+		(this.app as any).reloadRelay()();
 	}
 
 	private _createSharedFolder(
@@ -1008,6 +1010,7 @@ export default class Live extends Plugin {
 		this.hashStore = null as any;
 
 		this.app?.workspace.updateOptions();
+		(this.app as any).reloadRelay = undefined;
 		this.app = null as any;
 		this.fileManager = null as any;
 		this.manifest = null as any;
