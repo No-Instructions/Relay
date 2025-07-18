@@ -74,8 +74,36 @@ async function _testTokenStore() {
 }
 
 describe("token store", () => {
-	test("simple test", async () => {
-		await _testTokenStore();
-		expect(true).toBe(true);
+	test("refresh failures increment attempts", async () => {
+		const tp = new MockTimeProvider();
+		const failingRefresh = (
+			_id: string,
+			_cb: (tok: TestToken) => void,
+			errCb: (err: Error) => void,
+		) => {
+			errCb(new Error("fail"));
+		};
+		const store = new TokenStore<TestToken>(
+			{
+				log: () => undefined,
+				refresh: failingRefresh,
+				getTimeProvider: () => tp,
+				getJwtExpiry: () => tp.getTime() + 1000,
+			},
+			1,
+		);
+
+		try {
+			await store.getToken("doc1", "doc1", () => undefined);
+		} catch (_) {}
+		expect((store as any).tokenMap.get("doc1").attempts).toBe(1);
+
+		try {
+			await store.getToken("doc1", "doc1", () => undefined);
+		} catch (_) {}
+
+		expect((store as any).tokenMap.get("doc1").attempts).toBe(2);
+
+		store.destroy();
 	});
 });
