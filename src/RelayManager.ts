@@ -93,6 +93,7 @@ interface RelayRoleDAO extends RecordModel {
 
 export interface StorageQuotaDAO extends RecordModel {
 	id: string;
+	name: string;
 	updated: string;
 	created: string;
 	quota: number;
@@ -191,6 +192,10 @@ class StorageQuotaAuto
 		return this;
 	}
 
+	public get name() {
+		return this.storageQuota.name;
+	}
+
 	public get id() {
 		return this.storageQuota.id;
 	}
@@ -217,6 +222,14 @@ class StorageQuotaAuto
 
 	public get created(): string {
 		return this.storageQuota.created;
+	}
+
+	public get aggregate_root() {
+		return [
+			"relays",
+			this.relays.find((relay) => relay.storageQuotaId === this.storageQuota.id)
+				?.id,
+		];
 	}
 }
 

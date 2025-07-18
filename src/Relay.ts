@@ -71,6 +71,7 @@ export interface StorageQuota
 	extends Identified,
 		IObservable<StorageQuota>,
 		Updatable<StorageQuota> {
+	name: string;
 	quota: number;
 	usage: number;
 	maxFileSize: number;
