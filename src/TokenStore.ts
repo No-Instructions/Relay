@@ -227,7 +227,7 @@ export class TokenStore<TokenType extends HasToken> {
 	private onRefreshFailure(documentId: string) {
 		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 		const existing = this.tokenMap.get(documentId)!;
-		const attempts = existing?.attempts || 0 + 1;
+		const attempts = (existing?.attempts ?? 0) + 1;
 		if (attempts <= 3) {
 			this.tokenMap.set(documentId, {
 				...existing,
@@ -261,11 +261,12 @@ export class TokenStore<TokenType extends HasToken> {
 		if (activePromise) {
 			return activePromise;
 		}
+		const existing = this.tokenMap.get(documentId);
 		this.tokenMap.set(documentId, {
 			token: null,
 			friendlyName: friendlyName,
 			expiryTime: 0,
-			attempts: 0,
+			attempts: existing?.attempts ?? 0,
 		} as TokenInfo<TokenType>);
 		this.callbacks.set(documentId, callback);
 		const sharedPromise = this.onRefresh(documentId)
