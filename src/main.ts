@@ -62,6 +62,7 @@ import { ReleaseManager } from "./ui/ReleaseManager";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
+import { isDocument } from "./Document";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -836,6 +837,28 @@ export default class Live extends Plugin {
 			},
 		});
 		this.register(patchOnUnloadFile);
+
+		const patchProcess = around(this.app.vault, {
+			process(old) {
+				return function (tfile, fn: (data: string) => string, options: any) {
+					try {
+						const folder = plugin.sharedFolders.lookup(tfile.path);
+						if (folder) {
+							const file = folder.proxy.getFile(tfile);
+							if (tfile instanceof TFile && file && isDocument(file)) {
+								file.process(fn);
+							}
+						}
+					} catch (e: any) {
+						console.warn(e);
+					}
+
+					// @ts-ignore
+					return old.call(this, tfile, fn, options);
+				};
+			},
+		});
+		this.register(patchProcess);
 
 		this.patchWebviewer();
 

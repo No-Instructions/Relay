@@ -1,5 +1,4 @@
 export interface FeatureFlags {
-	enableUpdateYDocFromDiskBuffer: boolean;
 	enableDocumentStatus: boolean;
 	enableNewLinkFormat: boolean;
 	enableDeltaLogging: boolean;
@@ -14,10 +13,10 @@ export interface FeatureFlags {
 	enableNetworkLogging: boolean;
 	enableCanvasSync: boolean;
 	enableVerifyUploads: boolean;
+	enableAutomaticDiffResolution: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
-	enableUpdateYDocFromDiskBuffer: false,
 	enableDocumentStatus: false,
 	enableNewLinkFormat: false,
 	enableDeltaLogging: false,
@@ -32,6 +31,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNetworkLogging: false,
 	enableCanvasSync: false,
 	enableVerifyUploads: false,
+	enableAutomaticDiffResolution: false,
 };
 
 export type Flag = keyof FeatureFlags;
