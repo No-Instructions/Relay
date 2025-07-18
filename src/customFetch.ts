@@ -14,8 +14,8 @@ if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 		console.warn(
 			"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
 		);
-		if ((globalThis as any).blinkfetch) {
-			globalThis.fetch = (globalThis as any).blinkFetch;
+                if ((globalThis as any).blinkfetch) {
+                        globalThis.fetch = (globalThis as any).blinkfetch;
 			const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
 			for (const key of keys) {
 				(globalThis as any)[key] = (globalThis as any)[`blink${key}`];
