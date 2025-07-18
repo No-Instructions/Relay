@@ -29,7 +29,7 @@ import { ActionLineButton } from "./actionLineButton";
 import { ActionLineDivider } from "./actionLineDivider";
 import { Document } from "src/Document";
 import { DiskBuffer } from "src/DiskBuffer";
-import * as bg from "src/BackgroundSync";
+import { diffMatchPatch } from "src/y-diffMatchPatch";
 import type { App } from "obsidian";
 
 type VoidCallback = () => void;
@@ -68,7 +68,7 @@ export class ActionLine {
 
 	async modify(file: TFile, newContent: string): Promise<void> {
 		if (file instanceof Document) {
-			bg.updateYDocFromDiskBuffer(file.ydoc, newContent);
+			diffMatchPatch(file.ydoc, newContent, file);
 			return;
 		} else if (file instanceof DiskBuffer) {
 			file.contents = newContent;

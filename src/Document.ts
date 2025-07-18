@@ -10,10 +10,11 @@ import type { TFile, Vault, TFolder } from "obsidian";
 import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
-import { withFlag } from "./flagManager";
+import { flags, withFlag } from "./flagManager";
 import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
+import { diffMatchPatch } from "./y-diffMatchPatch";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -42,6 +43,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	_diskBuffer?: DiskBuffer;
 	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
+	pendingOps: ((data: string) => string)[] = [];
 
 	constructor(
 		path: string,
@@ -66,6 +68,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			size: 0,
 		};
 		this._diskBufferStore = this.sharedFolder.diskBufferStore;
+
 		this.unsubscribes.push(
 			this._parent.subscribe(this.path, (state) => {
 				if (state.intent === "disconnected") {
@@ -139,6 +142,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
 		this.updateStats();
+	}
+
+	async process(fn: (data: string) => string) {
+		if (flags().enableUpdateYDocFromDiskBuffer && this._tfile) {
+			this.pendingOps.push(fn);
+		}
 	}
 
 	public get parent(): TFolder | null {
@@ -219,7 +228,31 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		await this.whenSynced();
 		const diskBuffer = await this.diskBuffer(true);
 		const contents = (diskBuffer as DiskBuffer).contents;
+		const response = await this.sharedFolder.backgroundSync.downloadItem(this);
+		const updateBytes = new Uint8Array(response.arrayBuffer);
+		Y.applyUpdate(this.ydoc, updateBytes);
 		const stale = this.text !== contents;
+		const og = this.text;
+		let text = og;
+
+		const applied: ((data: string) => string)[] = [];
+		for (const fn of this.pendingOps) {
+			text = fn(text);
+			applied.push(fn);
+
+			if (text == contents) {
+				this.clearDiskBuffer();
+				if (og == this.text) {
+					diffMatchPatch(this.ydoc, text, this);
+				} else {
+					console.warn("solution is stale", text, this.ytext);
+					return true;
+				}
+				this.pendingOps = [];
+				return true;
+			}
+		}
+		this.pendingOps = [];
 		if (!stale) {
 			this.clearDiskBuffer();
 		}

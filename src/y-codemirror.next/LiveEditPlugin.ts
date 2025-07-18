@@ -7,7 +7,7 @@ import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import {
-    LiveView,
+	LiveView,
 	LiveViewManager,
 	isLive,
 	ConnectionManagerStateField,
