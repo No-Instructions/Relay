@@ -39,12 +39,13 @@ export class LiveCMPluginValue implements PluginValue {
 	observer?: (event: YTextEvent, tr: Transaction) => void;
 	_ytext?: YText;
 	keyFrameCounter = 0;
-	private uninstallMonkeyPatch?: () => void;
+	unsubscribes: Array<() => void>;
 	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
 
 	constructor(editor: EditorView) {
+		this.unsubscribes = [];
 		this.editor = editor;
 		this.connectionManager = this.editor.state.field(
 			ConnectionManagerStateField,
@@ -71,25 +72,64 @@ export class LiveCMPluginValue implements PluginValue {
 			return;
 		}
 
+		let fmSave: boolean = false;
+
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const liveEditPlugin = this;
 
-		this.uninstallMonkeyPatch = around(this.view.view, {
-			setViewData(old) {
-				return function (data: string, clear: boolean) {
-					if (clear) {
-						if (isLive(liveEditPlugin.view)) {
-							if (liveEditPlugin.view.document.text === data) {
-								liveEditPlugin.view.tracking = true;
+		this.unsubscribes.push(
+			around(this.view.view, {
+				setViewData(old) {
+					return function (data: string, clear: boolean) {
+						if (clear) {
+							if (isLive(liveEditPlugin.view)) {
+								if (liveEditPlugin.view.document.text === data) {
+									liveEditPlugin.view.tracking = true;
+								}
 							}
+							liveEditPlugin.resync();
+						} else if (fmSave) {
+							const changes = liveEditPlugin.incrementalBufferChange(data);
+							editor.dispatch({
+								changes,
+							});
 						}
-						liveEditPlugin.resync();
-					}
-					// @ts-ignore
-					return old.call(this, data, clear);
-				};
-			},
-		});
+						// @ts-ignore
+						return old.call(this, data, clear);
+					};
+				},
+				// @ts-ignore
+				saveFrontmatter(old) {
+					return function (data: any) {
+						fmSave = true;
+						// @ts-ignore
+						const result = old.call(this, data);
+						fmSave = false;
+						return result;
+					};
+				},
+			}),
+		);
+		this.unsubscribes.push(
+			around(this.view.view.previewMode as any, {
+				edit(old) {
+					return function (data: string) {
+						if (
+							isLive(liveEditPlugin.view) &&
+							liveEditPlugin.view.view.getMode() === "preview"
+						) {
+							const changes = liveEditPlugin.incrementalBufferChange(data);
+							editor.dispatch({
+								changes,
+							});
+						}
+
+						// @ts-ignore
+						return old.call(this, data);
+					};
+				},
+			}),
+		);
 
 		if (this.view.document.connected) {
 			this.resync();
@@ -152,6 +192,7 @@ export class LiveCMPluginValue implements PluginValue {
 					this.view.tracking = true;
 				}
 			}
+			this.render();
 		};
 
 		this.observer = (event, tr) => {
@@ -167,6 +208,15 @@ export class LiveCMPluginValue implements PluginValue {
 		};
 		this._ytext = this.view.document.ytext;
 		this._ytext.observe(this.observer);
+	}
+
+	public render() {
+		if (this.view?.view.getMode() === "preview") {
+			// @ts-ignore
+			this.view.view.previewMode.renderer.set(this.editor.state.doc.toString());
+			// @ts-ignore
+			this.view.view.onInternalDataChange();
+		}
 	}
 
 	public incrementalBufferChange(newBuffer: string): ChangeSpec[] {
@@ -300,10 +350,10 @@ export class LiveCMPluginValue implements PluginValue {
 		if (this.observer) {
 			this._ytext?.unobserve(this.observer);
 		}
-		if (this.uninstallMonkeyPatch) {
-			this.uninstallMonkeyPatch();
-			this.uninstallMonkeyPatch = undefined;
-		}
+		this.unsubscribes.forEach((unsub) => {
+			unsub();
+		});
+		this.unsubscribes.length = 0;
 		this.connectionManager = null as any;
 		this.view = undefined;
 		this._ytext = undefined;

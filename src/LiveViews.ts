@@ -472,6 +472,9 @@ export class LiveView implements S3View {
 	}
 
 	async checkStale() {
+		if (this.view.getMode() === "preview") {
+			return false;
+		}
 		const stale = await this.document.checkStale();
 		if (stale && this.document._diskBuffer?.contents) {
 			this.mergeBanner();
