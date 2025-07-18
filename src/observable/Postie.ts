@@ -132,18 +132,21 @@ export class PostOffice {
 
 	prettyPrintAllMailLog(): void {
 		const log = curryLog("[postie]", "warn");
-		log("All Mail Log:");
-		this.prettyPrintMailLog(this.allMailLog);
+		log("All Mail Log:\n" + this.prettyPrintMailLog(this.allMailLog));
 	}
 
 	prettyPrintDeliveredMailLog(): void {
 		const log = curryLog("[postie]", "warn");
-		log("Delivered Mail Log:");
-		this.prettyPrintMailLog(this.deliveredMailLog);
+		log(
+			"Delivered Mail Log:\n" + this.prettyPrintMailLog(this.deliveredMailLog),
+		);
 	}
 
-	private prettyPrintMailLog(log: Mail<any>[]): void {
-		const _log = curryLog("[postie]", "warn");
+	private prettyPrintMailLog(log: Mail<any>[]): string {
+		let text = "";
+		const _log = (msg: string) => {
+			text += `${msg}\n`;
+		};
 		log.forEach((mail, index) => {
 			_log(`Mail #${index + 1}:`);
 			_log(`  Timestamp: ${new Date(mail.timestamp).toISOString()}`);
@@ -157,7 +160,9 @@ export class PostOffice {
 			_log(`  Recipient Origin: ${mail.recipientOrigin || "Unknown"}`);
 			_log("---");
 		});
+		return text;
 	}
+
 	getFunctionOrigin(func: (...args: any[]) => any): string {
 		// If the function has a name, return it
 		if (func.name) {
