@@ -39,6 +39,8 @@ import { Document } from "src/Document";
 import { DiskBuffer } from "src/DiskBuffer";
 import { ActionLineButton } from "./actionLineButton";
 import { ActionLineDivider } from "./actionLineDivider";
+import { flags } from "src/flagManager";
+import { curryLog } from "src/debug";
 
 export const VIEW_TYPE_DIFFERENCES = "system3-differences-view";
 
@@ -74,9 +76,12 @@ export class DifferencesView extends ItemView {
 	private fileDifferences?: FileDifferences;
 	private file1Lines: string[] = [];
 	private file2Lines: string[] = [];
+	protected log;
 
 	constructor(leaf: WorkspaceLeaf) {
 		super(leaf);
+		const logContext = this.constructor.name;
+		this.log = curryLog(`[${logContext}]`, "log");
 	}
 
 	async getContent(file: TFile): Promise<string> {
@@ -147,6 +152,41 @@ export class DifferencesView extends ItemView {
 		this.fileDifferences = FileDifferences.fromParsedDiff(parsedDiff);
 
 		if (this.fileDifferences.differences.length === 0) {
+			if (this.file1Content !== this.file2Content) {
+				this.log(
+					"byte level difference with differ equivalence",
+					this.file1Content.length,
+					this.file2Content.length,
+				);
+				if (flags().enableDeltaLogging) {
+					// Iterate through each byte and print location and byte if they don't match
+					const content1 = this.file1Content || "";
+					const content2 = this.file2Content || "";
+					const maxLength = Math.max(content1.length, content2.length);
+
+					for (let i = 0; i < maxLength; i++) {
+						const byte1 =
+							i < content1.length ? content1.charCodeAt(i) : undefined;
+						const byte2 =
+							i < content2.length ? content2.charCodeAt(i) : undefined;
+
+						if (byte1 !== byte2) {
+							const hex1 =
+								byte1 !== undefined
+									? `0x${byte1.toString(16).padStart(2, "0")}`
+									: "EOF";
+							const hex2 =
+								byte2 !== undefined
+									? `0x${byte2.toString(16).padStart(2, "0")}`
+									: "EOF";
+							this.log(
+								`Byte difference at position ${i}: file1=${byte1} (${hex1}), file2=${byte2} (${hex2})`,
+							);
+						}
+					}
+				}
+				await this.modify(this.state.file2, this.file1Content || "");
+			}
 			this.leaf.detach();
 		}
 	}
