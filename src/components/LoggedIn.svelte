@@ -292,7 +292,7 @@
 		</p>
 	{/if}
 	<WelcomeFooter
-		isGoogle={!flags().enableDiscordLogin || !flags().enableMicrosoftLogin}
+		isGoogle={!flags().enableDiscordLogin && !flags().enableMicrosoftLogin}
 	/>
 {/if}
 
