@@ -397,7 +397,7 @@
 </SettingItem>
 
 <SettingItemHeading name="Users"
-	>{$roles.values().length} / {$relay.userLimit}</SettingItemHeading
+	>{$roles.values().length} of {$relay.userLimit} seats used</SettingItemHeading
 >
 
 {#each $roles.values().sort(userSort) as item}
