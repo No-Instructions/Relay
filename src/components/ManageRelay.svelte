@@ -7,6 +7,7 @@
 		type RelayRole,
 		type RelaySubscription,
 		type RemoteSharedFolder,
+		type Role,
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
@@ -14,6 +15,7 @@
 	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
 	import { derived, writable } from "svelte/store";
+	import { Edit, Check } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
@@ -34,8 +36,6 @@
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	import { moment } from "obsidian";
-	import { withFlag } from "src/flagManager";
-	import { flag } from "src/flags";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
 	import { minimark } from "src/minimark";
 
@@ -79,6 +79,9 @@
 	}
 
 	function userSort(a: RelayRole, b: RelayRole) {
+		if (a.role === "Owner" && b.role === "Owner") {
+			return a.userId === plugin.loginManager.user?.id ? -1 : 1;
+		}
 		if (a.role === "Owner" && b.role !== "Owner") {
 			return -1;
 		}
@@ -173,6 +176,7 @@
 
 	let relayInvitation: RelayInvitation;
 	let isShareKeyEnabled = writable(true);
+	let isEditingMembers = writable(false);
 	plugin.relayManager.getRelayInvitation(relay).then((invite) => {
 		if (invite) {
 			relayInvitation = invite;
@@ -266,6 +270,24 @@
 		plugin.relayManager.kick(relay_role);
 	}
 
+	async function handleRoleChange(relay_role: RelayRole, newRole: Role) {
+		await plugin.relayManager.updateRelayRole(relay_role, newRole);
+	}
+
+	async function handleRoleChangeEvent(event: Event) {
+		const target = event.target as HTMLSelectElement;
+		const relayRole = $roles.get(target.dataset.roleId!);
+		if (relayRole) {
+			const originalRole = relayRole.role;
+			try {
+				await handleRoleChange(relayRole, target.value as Role);
+			} catch (e) {
+				// Revert dropdown to the original role value
+				target.value = originalRole;
+			}
+		}
+	}
+
 	function handleManageSharedFolder(folder: SharedFolder, relay?: Relay) {
 		if (!folder) {
 			return;
@@ -281,6 +303,16 @@
 			.writeText(inputEl.value)
 			.then(() => new Notice("Invite link copied"))
 			.catch((err) => {});
+	}
+
+	function handleEditMembersToggle(event: KeyboardEvent | MouseEvent) {
+		if (
+			event instanceof MouseEvent ||
+			(event instanceof KeyboardEvent &&
+				(event.key === "Enter" || event.key === " "))
+		) {
+			isEditingMembers.update((value) => !value);
+		}
 	}
 
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
@@ -396,24 +428,71 @@
 	>
 </SettingItem>
 
-<SettingItemHeading name="Users"
-	>{$roles.values().length} of {$relay.userLimit} seats used</SettingItemHeading
->
+<div class="users-header">
+	<SettingItemHeading name="Users">
+		{#if $relay.owner}
+			<div
+				class="edit-members-button"
+				role="button"
+				tabindex="0"
+				aria-label={$isEditingMembers
+					? "Cancel editing members"
+					: "Edit members"}
+				on:click={handleEditMembersToggle}
+				on:keypress={handleEditMembersToggle}
+			>
+				{#if $isEditingMembers}
+					<Check class="svg-icon" />
+				{:else}
+					<Edit class="svg-icon" />
+				{/if}
+			</div>
+		{/if}
+	</SettingItemHeading>
+</div>
 
 {#each $roles.values().sort(userSort) as item}
 	<AccountSettingItem user={item.user}>
-		{#if item.role === "Member" && $relay.owner}
-			<button
-				class="mod-destructive"
-				on:click={debounce(() => {
-					handleKick(item);
-				})}
-			>
-				Kick
-			</button>
+		{#if $relay.owner}
+			{#if $isEditingMembers}
+				{#if item.userId !== plugin.loginManager.user?.id}
+					<button
+						class="mod-destructive"
+						on:click={debounce(() => {
+							handleKick(item);
+						})}
+					>
+						Kick
+					</button>
+				{/if}
+			{:else}
+				<div style="display: flex; gap: 8px; align-items: center;">
+					<select
+						class="dropdown"
+						disabled={item.userId === plugin.loginManager.user?.id}
+						aria-label={item.userId === plugin.loginManager.user?.id
+							? "Cannot modify your own role"
+							: undefined}
+						value={item.role}
+						data-role-id={item.id}
+						on:change={handleRoleChangeEvent}
+					>
+						<option value="Owner">Owner</option>
+						<option value="Member">Member</option>
+					</select>
+				</div>
+			{/if}
+		{:else}
+			<span class="role-label">{item.role}</span>
 		{/if}
 	</AccountSettingItem>
 {/each}
+
+<SettingItem description="" name="">
+	<span class="faint"
+		>{$roles.values().length} of {$relay.userLimit} seats used
+	</span>
+</SettingItem>
 
 <!--
 
@@ -610,7 +689,28 @@
 			{/await}
 		{/if}
 	{/if}
+{/if}
 
+{#if !$relay.owner || $relayRoles
+		.filter((role) => role.role === "Owner")
+		.values().length > 1}
+	<SettingItemHeading name="Membership"></SettingItemHeading>
+	<SettingItem
+		name="Leave Relay Server"
+		description="Leave the Relay Server. Local data is preserved."
+	>
+		<button
+			class="mod-warning"
+			on:click={debounce(() => {
+				handleLeaveRelay();
+			})}
+		>
+			Leave
+		</button>
+	</SettingItem>
+{/if}
+
+{#if $relay.owner}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 	<SettingItem
 		name="Destroy Relay Server"
@@ -630,21 +730,6 @@
 			</button>
 		{/if}
 	</SettingItem>
-{:else}
-	<SettingItemHeading name="Membership"></SettingItemHeading>
-	<SettingItem
-		name="Leave Relay Server"
-		description="Leave the Relay Server. Local data is preserved."
-	>
-		<button
-			class="mod-warning"
-			on:click={debounce(() => {
-				handleLeaveRelay();
-			})}
-		>
-			Leave
-		</button>
-	</SettingItem>
 {/if}
 
 <!--SettingItem
@@ -658,7 +743,29 @@
 
 <style>
 	.faint {
-		color: var(--text-faint);
+		color: var(--text-faint) !important;
+	}
+
+	.edit-members-button {
+		display: flex;
+		cursor: pointer;
+		padding: 4px;
+		margin-bottom: -4px;
+		border-radius: var(--radius-s);
+		color: var(--icon-color);
+		transition:
+			color 0.15s ease-in-out,
+			background-color 0.15s ease-in-out;
+	}
+
+	.edit-members-button:hover {
+		color: var(--icon-color-hover);
+		background-color: var(--background-modifier-hover);
+	}
+
+	.edit-members-button:focus {
+		outline: none;
+		color: var(--icon-color-focus);
 	}
 
 	/* Share key styling */

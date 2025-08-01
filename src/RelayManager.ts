@@ -1657,6 +1657,27 @@ export class RelayManager extends HasLogging {
 		return this.pb?.collection("relay_roles").delete(relay_role.id);
 	}
 
+	async updateRelayRole(
+		relayRole: RelayRole,
+		roleName: Role,
+	): Promise<RelayRole> {
+		if (!this.pb) throw new Error("Failed to update relay role");
+		const newRole = this.roles.find((role) => role.name === roleName);
+		if (!newRole) {
+			throw new Error("Failed to update relay role");
+		}
+		const record = await this.pb
+			.collection("relay_roles")
+			.update<RelayRoleDAO>(relayRole.id, {
+				role: newRole.id,
+			});
+		const updated = this.store?.ingest<RelayRole>(record);
+		if (!updated) {
+			throw new Error("Failed to update relay role");
+		}
+		return updated;
+	}
+
 	destroy(): void {
 		this.destroyed = true;
 		this._offLoginManager?.();
