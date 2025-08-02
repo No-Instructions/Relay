@@ -470,7 +470,7 @@ export class SyncFile
 			);
 			await this.caf.hash();
 		} catch (e) {
-			this.error(e);
+			this.log(e);
 			return;
 		}
 	}

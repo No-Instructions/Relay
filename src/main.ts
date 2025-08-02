@@ -29,12 +29,10 @@ import {
 	RelayInstances,
 	initializeLogger,
 	flushLogs,
-	createToast,
 } from "./debug";
 import { around } from "monkey-around";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
-import { RelayException } from "./Exceptions";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
@@ -99,7 +97,6 @@ export default class Live extends Plugin {
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
 	notifier!: ObsidianNotifier;
-	toast!: (error: Error) => Error;
 	loginManager!: LoginManager;
 	timeProvider!: TimeProvider;
 	fileManager!: FileManager;
@@ -183,7 +180,6 @@ export default class Live extends Plugin {
 			},
 		);
 		this.notifier = new ObsidianNotifier();
-		this.toast = createToast(this.notifier);
 
 		this.debug = curryLog("[System 3][Relay]", "debug");
 		this.log = curryLog("[System 3][Relay]", "log");
@@ -713,25 +709,7 @@ export default class Live extends Plugin {
 
 		const vaultLog = curryLog("[System 3][Relay][Vault]", "log");
 
-		const handleErrorEvent = (event: ErrorEvent) => {
-			const error = event.error;
-			if (error) {
-				if (error instanceof RelayException) {
-					this.toast(error);
-				}
-			}
-			// event.preventDefault();
-		};
-
-		window.addEventListener("error", handleErrorEvent, true);
-		this.register(() =>
-			window.removeEventListener("error", handleErrorEvent, true),
-		);
-
 		const handlePromiseRejection = (event: PromiseRejectionEvent): void => {
-			if (event.reason instanceof RelayException) {
-				this.toast(event.reason);
-			}
 			//event.preventDefault();
 		};
 		const rejectionListener = (event: PromiseRejectionEvent) =>
@@ -1058,7 +1036,6 @@ export default class Live extends Plugin {
 		PostOffice.destroy();
 
 		this.notifier = null as any;
-		this.toast = null as any;
 
 		auditTeardown();
 		flushLogs();

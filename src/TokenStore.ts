@@ -2,7 +2,6 @@
 
 import { decodeJwt } from "jose";
 import type { TimeProvider } from "./TimeProvider";
-import { RelayException } from "./Exceptions";
 import { RelayInstances } from "./debug";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
@@ -292,7 +291,7 @@ export class TokenStore<TokenType extends HasToken> {
 		this.log(`getting token ${friendlyName}`);
 		if (!this.tokenMap) {
 			Promise.reject(
-				new RelayException(
+				new Error(
 					"attempted to get token after TokenStore was destroyed.",
 				),
 			);
