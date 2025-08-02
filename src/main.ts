@@ -833,7 +833,7 @@ export default class Live extends Plugin {
 							}
 						}
 					} catch (e: any) {
-						console.warn(e);
+						plugin.log(e);
 					}
 
 					// @ts-ignore

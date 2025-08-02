@@ -145,7 +145,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	async process(fn: (data: string) => string) {
-		if (this._tfile && flags().enableAutomaticDiffResolution) {
+		if (this.tfile && flags().enableAutomaticDiffResolution) {
 			this.pendingOps.push(fn);
 		}
 	}
