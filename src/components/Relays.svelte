@@ -4,7 +4,7 @@
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
-	import { type Relay } from "../Relay";
+	import { type Provider, type Relay } from "../Relay";
 	import type Live from "src/main";
 	import Satellite from "./Satellite.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
@@ -12,9 +12,11 @@
 	import SharedFolderSpan from "./SharedFolderSpan.svelte";
 	import { debounce, Notice } from "obsidian";
 	import SecretText from "./SecretText.svelte";
+	import { flags } from "src/flagManager";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
+	export let providers: ObservableMap<string, Provider>;
 
 	const sharedFolders = plugin.sharedFolders;
 
@@ -155,6 +157,21 @@
 		></SettingsControl>
 	</SlimSettingItem>
 {/each}
+
+
+{#if flags().enableSelfManageHosts}
+	<SettingItemHeading name="Hosts" helpText="Manage self-hosted Relay Servers"
+	></SettingItemHeading>
+	{#if $providers.values().length === 0}
+		<SettingItem
+			description="See our documentation for how to host a Relay Server."
+		/>
+	{/if}
+	{#each $providers.values() as provider}
+		<SlimSettingItem name={provider?.name} description={provider?.url}
+		></SlimSettingItem>
+	{/each}
+{/if}
 
 <style>
 	span.faint {
