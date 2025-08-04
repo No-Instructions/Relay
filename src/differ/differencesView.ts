@@ -90,7 +90,7 @@ export class DifferencesView extends ItemView {
 		} else if (file instanceof DiskBuffer) {
 			return file.contents;
 		}
-		return await this.app.vault.cachedRead(file);
+		return await this.app.vault.read(file);
 	}
 
 	override getViewType(): string {
