@@ -36,7 +36,6 @@ export class CanvasPlugin extends HasLogging {
 		if (this.canvas) {
 			this.unsubscribes.forEach((unsubscribe) => unsubscribe());
 			this.unsubscribes = [];
-			console.log("uninstall successful");
 		}
 		this.relayCanvasView.tracking = false;
 		this.canvas = null as any;
@@ -95,7 +94,7 @@ export class CanvasPlugin extends HasLogging {
 						try {
 							that.relayCanvas.importFromView(that.view);
 						} catch (e) {
-							console.error(e);
+							that.log(e);
 						}
 						return res;
 					};
@@ -107,7 +106,7 @@ export class CanvasPlugin extends HasLogging {
 						try {
 							that.relayCanvas.importFromView(that.view);
 						} catch (e) {
-							console.error(e);
+							that.log(e);
 						}
 						return res;
 					};
@@ -122,11 +121,11 @@ export class CanvasPlugin extends HasLogging {
 			let log = "";
 			log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
 			if (!this.relayCanvas) {
-				this.warn("relay canvas is already destroyed");
+				this.log("relay canvas is already destroyed");
 			}
 
 			if (!this.canvas) {
-				this.warn("canvas is already destroyed");
+				this.log("canvas is already destroyed");
 				return;
 			}
 			if (!this.view.file?.path.endsWith(this.relayCanvas.path)) {

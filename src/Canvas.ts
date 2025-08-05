@@ -330,8 +330,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			this.sharedFolder.getVirtualPath(view.file.path) === this.path
 		) {
 			return await this.applyData(view.canvas.getData());
-		} else {
-			console.warn("tried to apply updates from another file", this.path);
 		}
 	}
 
