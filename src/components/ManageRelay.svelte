@@ -58,13 +58,11 @@
 			return "Subscription has ended";
 		} else if (daysRemaining === 1) {
 			return "Active for 1 more day";
+		} else if (daysRemaining > 31) {
+			return `Ends on ${cancelAt.format("YYYY-MM-DD")}`;
 		} else {
 			return `Active for ${daysRemaining} more days`;
 		}
-	}
-
-	function preventDefault(event: Event) {
-		event.preventDefault();
 	}
 
 	function formatBytes(bytes: number, decimals = 2) {
@@ -293,16 +291,6 @@
 			return;
 		}
 		dispatch("manageSharedFolder", { folder, relay, mount: false });
-	}
-
-	function selectText(event: Event) {
-		const inputEl = event.target as HTMLInputElement;
-		inputEl.focus();
-		inputEl.select();
-		navigator.clipboard
-			.writeText(inputEl.value)
-			.then(() => new Notice("Invite link copied"))
-			.catch((err) => {});
 	}
 
 	function handleEditMembersToggle(event: KeyboardEvent | MouseEvent) {

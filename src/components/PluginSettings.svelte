@@ -39,6 +39,7 @@
 	const relayManager = plugin.relayManager;
 	const relayRoles = relayManager.relayRoles;
 	const relays = relayManager.relays;
+	const subscriptions = relayManager.subscriptions;
 	const providers = relayManager.providers;
 	const sharedFolders = plugin.sharedFolders;
 	let sharedFolder: SharedFolder | undefined;
@@ -280,6 +281,7 @@
 		<LoggedIn {plugin}>
 			<Relays
 				{relays}
+				{subscriptions}
 				{providers}
 				{plugin}
 				on:manageRelay={handleManageRelayEvent}
