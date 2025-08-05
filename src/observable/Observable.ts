@@ -1,6 +1,6 @@
 "use strict";
 
-import { HasLogging, curryLog } from "../debug";
+import { HasLogging } from "../debug";
 import { PostOffice } from "./Postie";
 
 /** Callback to inform of a value updates. */
