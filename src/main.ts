@@ -801,7 +801,10 @@ export default class Live extends Plugin {
 					if (file && isSyncFile(file)) {
 						file.sync();
 					}
-					this.app.metadataCache.trigger("resolve", file);
+					// Dataview race condition
+					this.timeProvider.setTimeout(() => {
+						this.app.metadataCache.trigger("resolve", file);
+					}, 10);
 				}
 			}),
 		);
