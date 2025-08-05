@@ -680,7 +680,7 @@
 {/if}
 
 {#if !$relay.owner || $relayRoles
-		.filter((role) => role.role === "Owner")
+		.filter((role) => role.role === "Owner" && role.relayId === relay.id)
 		.values().length > 1}
 	<SettingItemHeading name="Membership"></SettingItemHeading>
 	<SettingItem
