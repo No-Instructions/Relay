@@ -130,7 +130,10 @@
 		Relay Servers
 	</span>
 </SettingItemHeading>
-{#each $relays.values().sort(sortFn) as relay}
+{#each $relays
+	.values()
+	.filter((relay) => !!relay.acl)
+	.sort(sortFn) as relay}
 	<SlimSettingItem>
 		<Satellite slot="name" {relay} on:manageRelay t="name">
 			{#if relay.name}
