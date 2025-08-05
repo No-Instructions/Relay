@@ -4,7 +4,8 @@
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
-	import { type Provider, type Relay } from "../Relay";
+	import ExternalLink from "./ExternalLink.svelte";
+	import { type Provider, type Relay, type RelaySubscription } from "../Relay";
 	import type Live from "src/main";
 	import Satellite from "./Satellite.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
@@ -13,10 +14,12 @@
 	import { debounce, Notice } from "obsidian";
 	import SecretText from "./SecretText.svelte";
 	import { flags } from "src/flagManager";
+	import { moment } from "obsidian";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
 	export let providers: ObservableMap<string, Provider>;
+	export let subscriptions: ObservableMap<string, RelaySubscription>;
 
 	const sharedFolders = plugin.sharedFolders;
 
@@ -32,6 +35,26 @@
 		}
 		dispatch("manageRelay", { relay });
 	}
+
+	function getActiveForMessage(cancelAtDate: Date | null): string {
+		if (!cancelAtDate) {
+			return "Active";
+		}
+		const now = moment.utc();
+		const cancelAt = moment.utc(cancelAtDate);
+		const daysRemaining = cancelAt.diff(now, "days");
+
+		if (daysRemaining <= 0) {
+			return "Subscription has ended";
+		} else if (daysRemaining === 1) {
+			return "Active for 1 more day";
+		} else if (daysRemaining > 31) {
+			return `Ends on ${cancelAt.format("YYYY-MM-DD")}`;
+		} else {
+			return `Active for ${daysRemaining} more days`;
+		}
+	}
+
 	function handleManageSharedFolder(folder: SharedFolder, relay?: Relay) {
 		if (!folder) {
 			return;
@@ -158,6 +181,49 @@
 	</SlimSettingItem>
 {/each}
 
+{#if subscriptions.values().length > 0}
+	<div class="spacer"></div>
+	<SettingItemHeading
+		name="Subscriptions"
+		helpText="Subscriptions are tied to each Relay Server, not to your user account. Modify and cancel your subscription via our payment processor Stripe."
+	></SettingItemHeading>
+
+	{#each $subscriptions.values() as subscription}
+		<SlimSettingItem
+			name=""
+			description={subscription.cancelAt
+				? getActiveForMessage(subscription.cancelAt)
+				: ""}
+		>
+			<Satellite slot="name" relay={subscription.relay} on:manageRelay>
+				{#if subscription.relay.name}
+					{subscription.relay.name}
+				{:else}
+					<span class="faint">(Untitled Relay Server)</span>
+				{/if}
+			</Satellite>
+			<button
+				on:click={debounce(async () => {
+					if (!subscription.token) {
+						const token =
+							await plugin.relayManager.getSubscriptionToken(subscription);
+						subscription.token = token;
+					}
+					const sub_id = subscription.id;
+					const token = subscription.token;
+					window.open(
+						plugin.buildApiUrl(
+							`/subscriptions/${sub_id}/manage?token=${token}`,
+						),
+						"_blank",
+					);
+				})}
+			>
+				Manage
+			</button>
+		</SlimSettingItem>
+	{/each}
+{/if}
 
 {#if flags().enableSelfManageHosts}
 	<SettingItemHeading name="Hosts" helpText="Manage self-hosted Relay Servers"
@@ -176,5 +242,8 @@
 <style>
 	span.faint {
 		color: var(--text-faint);
+	}
+	div.spacer {
+		height: 3em;
 	}
 </style>
