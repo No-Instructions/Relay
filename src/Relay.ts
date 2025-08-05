@@ -55,6 +55,7 @@ export interface Relay
 	plan: string;
 	provider?: Provider;
 	providerId?: string;
+	acl?: [string, string];
 }
 
 export interface Provider
