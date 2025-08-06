@@ -94,9 +94,9 @@
 		color: var(--icon-color-focus);
 	}
 
-	.popover {
+	.help-container > .popover {
 		position: absolute;
-		z-index: 50;
+		z-index: 70;
 		width: 256px;
 		padding: 8px;
 		font-size: 0.875rem;
@@ -108,12 +108,12 @@
 		transition-delay: 0.1s;
 	}
 
-	.popover.left {
+	.help-container > .popover.left {
 		right: 100%;
 		margin-right: 8px;
 	}
 
-	.popover.right {
+	.help-container > .popover.right {
 		left: 0;
 	}
 

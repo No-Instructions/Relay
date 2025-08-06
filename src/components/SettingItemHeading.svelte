@@ -58,6 +58,7 @@
 		display: flex;
 		align-items: center;
 		gap: 8px;
+		overflow: unset;
 	}
 
 	.help-button {
