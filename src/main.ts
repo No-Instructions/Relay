@@ -1032,6 +1032,8 @@ export default class Live extends Plugin {
 		this.featureSettings = null as any;
 		this.releaseSettings.destroy();
 		this.releaseSettings = null as any;
+		this.loginSettings.destroy();
+		this.loginSettings = null as any;
 
 		this.interceptedUrls.length = 0;
 

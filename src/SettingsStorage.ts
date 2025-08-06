@@ -264,7 +264,7 @@ export class NamespacedSettings<
 		public readonly settings: Settings<any>,
 		namespace: string,
 	) {
-		super();
+		super(`NamespacedSettings[${namespace}]`);
 		this.validatePath(namespace);
 		[this.path, this.basePath, this.patterns] = this.processPath(namespace);
 		this.lastKnown = this.getNestedValue(this.settings.get());

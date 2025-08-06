@@ -66,6 +66,10 @@
 		invalidShareKey = false;
 	}
 
+	function hasACL(relay: Relay) {
+		return !!relay.acl;
+	}
+
 	async function handleJoinRelayFromInvite(shareKey: string) {
 		try {
 			invitePending = true;
@@ -130,12 +134,9 @@
 		Relay Servers
 	</span>
 </SettingItemHeading>
-{#each $relays
-	.values()
-	.filter((relay) => !!relay.acl)
-	.sort(sortFn) as relay}
+{#each $relays.values().filter(hasACL).sort(sortFn) as relay}
 	<SlimSettingItem>
-		<Satellite slot="name" {relay} on:manageRelay t="name">
+		<Satellite slot="name" {relay} on:manageRelay>
 			{#if relay.name}
 				{relay.name}
 			{:else}
