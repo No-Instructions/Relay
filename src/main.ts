@@ -54,6 +54,7 @@ import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { SyncQueueModal } from "./ui/SyncQueueModal";
+import { testWorkerDownloadAndSave } from "./simple-download-test";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
@@ -284,6 +285,23 @@ export default class Live extends Plugin {
 						modal.open();
 					},
 				});
+				this.addCommand({
+					id: "test-worker-download",
+					name: "Test worker download",
+					callback: async () => {
+						try {
+							await testWorkerDownloadAndSave(
+								"https://httpbin.org/json",
+								"worker-test-result.json",
+								this.vault
+							);
+							new Notice("Worker download test completed successfully!");
+						} catch (error) {
+							new Notice(`Worker download test failed: ${error}`);
+							console.error("Worker test failed:", error);
+						}
+					},
+				});
 			} else {
 				this.removeCommand("toggle-feature-flags");
 				this.removeCommand("send-bug-report");
@@ -291,6 +309,7 @@ export default class Live extends Plugin {
 				this.removeCommand("show-sync-status");
 				this.removeCommand("show-release-manager");
 				this.removeCommand("disable-debugging");
+				this.removeCommand("test-worker-download");
 				this.addCommand({
 					id: "enable-debugging",
 					name: "Enable debugging",
