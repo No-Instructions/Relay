@@ -794,9 +794,6 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					vaultLog("Modify", tfile.path);
-					if (flags().enableDesyncPill) {
-						this.folderNavDecorations.quickRefresh();
-					}
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
 						file.sync();

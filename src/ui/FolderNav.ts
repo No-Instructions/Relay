@@ -509,53 +509,6 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	}
 }
 
-class DeSyncPillDecoration {
-	pill: TextPill;
-	unsubscribe?: () => void;
-
-	constructor(private el: HTMLElement) {
-		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
-			el.remove();
-		});
-		this.pill = new TextPill({
-			target: this.el,
-			props: {
-				text: "DESYNC",
-				label: "File content does not match document content",
-			},
-		});
-	}
-
-	destroy() {
-		this.pill.$destroy();
-		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
-			el.remove();
-		});
-	}
-}
-
-class DeSyncPillVisitor extends BaseVisitor<DeSyncPillDecoration> {
-	visitFile(
-		file: TFile,
-		item: FileItem,
-		storage?: DeSyncPillDecoration,
-		sharedFolder?: SharedFolder,
-	): DeSyncPillDecoration | null {
-		if (sharedFolder && Document.checkExtension(file.path)) {
-			const doc = sharedFolder.proxy.viewDoc(file.path);
-			if (!doc || !doc.ready) return null;
-
-			if (file.stat.size !== doc.stat.size) {
-				return storage || new DeSyncPillDecoration(item.selfEl);
-			}
-		}
-		if (storage) {
-			storage.destroy();
-		}
-		return null;
-	}
-}
-
 class FileExplorerWalker {
 	fileExplorer: WorkspaceLeaf;
 	sharedFolders: SharedFolders;
@@ -769,9 +722,6 @@ export class FolderNavigationDecorations {
 			);
 		});
 		visitors.push(new FilePillVisitor());
-		withFlag(flag.enableDesyncPill, () => {
-			visitors.push(new DeSyncPillVisitor());
-		});
 		visitors.push(new NotSyncedPillVisitor());
 		return visitors;
 	}
