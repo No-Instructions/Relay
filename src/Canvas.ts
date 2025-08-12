@@ -402,8 +402,9 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
-	move(newPath: string) {
+	move(newPath: string, sharedFolder: SharedFolder) {
 		this.path = newPath;
+		this._parent = sharedFolder;
 		this.name = newPath.split("/").pop() || "";
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
