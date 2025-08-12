@@ -145,7 +145,7 @@ export class RelayCanvasView implements S3View {
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
-	_tracking: boolean;
+	tracking: boolean;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -158,7 +158,7 @@ export class RelayCanvasView implements S3View {
 		this.view = view;
 		this.canvas = canvas;
 		this.document = canvas;
-		this._tracking = false;
+		this.tracking = false;
 
 		this.shouldConnect = shouldConnect;
 		this.canConnect = canConnect;
@@ -178,18 +178,6 @@ export class RelayCanvasView implements S3View {
 			});
 		} else {
 			this.canvas.disconnect();
-		}
-	}
-
-	public get tracking() {
-		return this._tracking;
-	}
-
-	public set tracking(value: boolean) {
-		const old = this._tracking;
-		this._tracking = value;
-		if (this._tracking !== old) {
-			this.attach();
 		}
 	}
 
