@@ -112,22 +112,37 @@ You need to have available Attachment storage in order to sync images/audio/vide
 
 ### How much does Relay cost?
 
-Each user can create up to 25 Relay Servers.
-
 #### Free Relay Server
+- Up to 3 seats
+- Unlimited markdown files
+- No attachment storage
+- Encryption in transit and at rest
 
--   3 seats
--   Unlimited Markdown files
+#### Teams ($10 per month)
+- Everything in Free, plus:
+- 10 seats included (+$2/mo per additional seat)
+- 10GB storage included (+100GB for $10/mo)
+- Additional storage available
 
-#### Team Server $10/mo
+#### Pro ($120 per month)
+- 10 seats included (+$5/mo per additional seat)
+- 250GB storage included (+100GB for $10/mo)
+- BYO storage available
+- Dedicated cloud tenant
+- On-premise Relay Server deployment available
+- Integrate with Github, Mintlify, etc.
+- API access
+- Granular folder permissions
 
--   Includes 10 seats (e.g. $1 per user per month)
--   Includes 10GB of Attachment Storage
--   Unlimited Markdown files
-
-#### Professional Plan
-
--   Contact us
+#### Enterprise
+- Everything in Pro, plus:
+- 30+ seats
+- Flexible storage included
+- Full on-premise deployment available
+- Setup consulting
+- Single sign-on
+- Dedicated phone support
+- Talk to us for pricing
 
 
 We offer discounts for educational use based on region and need.
