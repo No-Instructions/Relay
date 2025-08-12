@@ -298,6 +298,12 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
+	public get tfile(): TFile | null {
+		if (!this._tfile) {
+			this._tfile = this._parent.getTFile(this);
+		}
+		return this._tfile;
+	}
 
 	static checkExtension(vpath: string): boolean {
 		return vpath.endsWith(".canvas") && flags().enableCanvasSync;
@@ -325,10 +331,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	async importFromView(view: CanvasView) {
-		if (
-			view.file &&
-			this.sharedFolder.getVirtualPath(view.file.path) === this.path
-		) {
+		if (view.file && view.file === this.tfile) {
 			return await this.applyData(view.canvas.getData());
 		}
 	}
