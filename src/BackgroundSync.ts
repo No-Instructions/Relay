@@ -797,7 +797,7 @@ export class BackgroundSync extends HasLogging {
 		const promise = doc.onceProviderSynced();
 		const intent = doc.intent;
 		doc.connect();
-		if (intent === "disconnected" && !doc.userLock) {
+		if (intent === "disconnected") {
 			await promise;
 		}
 
