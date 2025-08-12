@@ -83,7 +83,13 @@ export class CanvasPlugin extends HasLogging {
 		// eslint-disable-next-line
 		const that = this;
 		const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
-		this.canvas.importData(exported, true);
+		const hasCanvasData =
+			exported.nodes.length > 0 || exported.edges.length > 0;
+		const hasLocalDB = this.relayCanvas.hasLocalDB();
+
+		if (hasLocalDB && hasCanvasData) {
+			this.canvas.importData(exported, true);
+		}
 
 		this.unsubscribes.push(
 			around(this.canvas, {
