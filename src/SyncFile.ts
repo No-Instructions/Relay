@@ -333,10 +333,11 @@ export class SyncFile
 					: "unknown";
 	}
 
-	move(newPath: string) {
+	move(newPath: string, sharedFolder: SharedFolder) {
 		if (newPath === this.path) {
 			return;
 		}
+		this._parent = sharedFolder;
 		this.debug("setting new path", newPath);
 		this.path = newPath;
 		this.name = newPath.split("/").pop() || "";
@@ -524,10 +525,6 @@ export class SyncFile
 
 	public async read(): Promise<string> {
 		return this.vault.read(this.tfile);
-	}
-
-	public async rename(newPath: string): Promise<void> {
-		this.move(newPath);
 	}
 
 	public async delete(): Promise<void> {

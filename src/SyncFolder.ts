@@ -91,10 +91,11 @@ export class SyncFolder extends HasLogging implements IFile {
 		this.connected = false;
 	}
 
-	move(newPath: string) {
+	move(newPath: string, sharedFolder: SharedFolder) {
 		if (newPath === this.path) {
 			return;
 		}
+		this._parent = sharedFolder;
 		this.log("setting new path", newPath);
 		this.path = newPath;
 		this.name = newPath.split("/").pop() || "";
@@ -127,10 +128,6 @@ export class SyncFolder extends HasLogging implements IFile {
 				return this.connected;
 			})
 		);
-	}
-
-	public async rename(newPath: string): Promise<void> {
-		this.move(newPath);
 	}
 
 	public async delete(): Promise<void> {

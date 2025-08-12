@@ -136,8 +136,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this._tfile = null;
 	}
 
-	move(newPath: string) {
+	move(newPath: string, sharedFolder: SharedFolder) {
 		this.path = newPath;
+		this._parent = sharedFolder;
 		this.name = newPath.split("/").pop() || "";
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
@@ -466,10 +467,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	public async read(): Promise<string> {
 		return this.text;
-	}
-
-	public async rename(newPath: string): Promise<void> {
-		this.move(newPath);
 	}
 
 	public async cleanup(): Promise<void> {

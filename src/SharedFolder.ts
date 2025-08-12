@@ -622,7 +622,7 @@ export class SharedFolder extends HasProvider {
 		await this.fileManager
 			.renameFile(file, normalizePath(this.getPath(path)))
 			.then(() => {
-				doc.move(path);
+				doc.move(path, this);
 			});
 	}
 
@@ -895,8 +895,10 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
-	getTFile(doc: Document): TFile | null {
-		const maybeTFile = this.vault.getAbstractFileByPath(this.getPath(doc.path));
+	getTFile(file: IFile): TFile | null {
+		const maybeTFile = this.vault.getAbstractFileByPath(
+			this.getPath(file.path),
+		);
 		if (maybeTFile instanceof TFile) {
 			return maybeTFile;
 		}
@@ -908,7 +910,7 @@ export class SharedFolder extends HasProvider {
 		if (id !== undefined) {
 			const doc = this.files.get(id);
 			if (doc !== undefined) {
-				doc.move(vpath);
+				doc.move(vpath, this);
 				if (!isDocument(doc)) {
 					throw new Error("unexpected ifile type");
 				}
@@ -939,7 +941,7 @@ export class SharedFolder extends HasProvider {
 		if (id !== undefined) {
 			const canvas = this.files.get(id);
 			if (canvas !== undefined) {
-				canvas.move(vpath);
+				canvas.move(vpath, this);
 				if (!isCanvas(canvas)) {
 					throw new Error("unexpected ifile type");
 				}
@@ -1059,7 +1061,7 @@ export class SharedFolder extends HasProvider {
 		if (!isCanvas(canvas)) {
 			throw new Error("unexpected ifile type");
 		}
-		canvas.move(vpath);
+		canvas.move(vpath, this);
 		return canvas;
 	}
 
@@ -1188,7 +1190,7 @@ export class SharedFolder extends HasProvider {
 		if (!isDocument(doc)) {
 			throw new Error("unexpected ifile type");
 		}
-		doc.move(vpath);
+		doc.move(vpath, this);
 		return doc;
 	}
 
@@ -1293,7 +1295,7 @@ export class SharedFolder extends HasProvider {
 		if (!isSyncFolder(file)) {
 			throw new Error("unexpected ifile type");
 		}
-		file.move(vpath);
+		file.move(vpath, this);
 		return file;
 	}
 
@@ -1323,7 +1325,7 @@ export class SharedFolder extends HasProvider {
 		if (!isSyncFile(file)) {
 			throw new Error("unexpected ifile type");
 		}
-		file.move(vpath);
+		file.move(vpath, this);
 		this.files.set(guid, file);
 		return file;
 	}
@@ -1528,7 +1530,7 @@ export class SharedFolder extends HasProvider {
 				this.ydoc.transact(() => {
 					this.syncStore.move(oldVPath, newVPath);
 					if (file) {
-						file.move(newVPath);
+						file.move(newVPath, this);
 					}
 					toMove.forEach((move) => {
 						const [guid, oldVPath, newVPath] = move;
@@ -1536,7 +1538,7 @@ export class SharedFolder extends HasProvider {
 						const subdoc = this.files.get(guid);
 						if (subdoc) {
 							// it is critical that this happens within the transaction
-							subdoc.move(newVPath);
+							subdoc.move(newVPath, this);
 						}
 					});
 				}, this);
