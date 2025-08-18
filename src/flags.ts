@@ -16,6 +16,7 @@ export interface FeatureFlags {
 	enableOIDCLogin: boolean;
 	enableGitHubLogin: boolean;
 	enableSelfManageHosts: boolean;
+	enableKanbanView: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -36,6 +37,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableOIDCLogin: false,
 	enableGitHubLogin: false,
 	enableSelfManageHosts: false,
+	enableKanbanView: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

@@ -5,6 +5,7 @@ import {
 	App,
 	MarkdownView,
 	TFile,
+	TextFileView,
 	Workspace,
 	moment,
 	type CachedMetadata,
@@ -30,19 +31,9 @@ import { type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
+import { TextFileViewPlugin } from "./TextViewPlugin";
 
 const BACKGROUND_CONNECTIONS = 3;
-
-function iterateMarkdownViews(
-	workspace: Workspace,
-	fn: (leaf: MarkdownView) => void,
-) {
-	workspace.iterateAllLeaves((leaf) => {
-		if (leaf.view instanceof MarkdownView) {
-			fn(leaf.view);
-		}
-	});
-}
 
 function iterateCanvasViews(
 	workspace: Workspace,
@@ -51,6 +42,25 @@ function iterateCanvasViews(
 	workspace.iterateAllLeaves((leaf) => {
 		if (leaf.view.getViewType() === "canvas" && flags().enableCanvasSync) {
 			fn(leaf.view as unknown as CanvasView);
+		}
+	});
+}
+
+function iterateTextFileViews(
+	workspace: Workspace,
+	fn: (leaf: TextFileView) => void,
+) {
+	const ALLOWED_TEXT_FILE_VIEWS = ["markdown"];
+	if (flags().enableKanbanView) {
+		ALLOWED_TEXT_FILE_VIEWS.push("kanban");
+	}
+	workspace.iterateAllLeaves((leaf) => {
+		if (leaf.view instanceof TextFileView) {
+			const viewType = leaf.view.getViewType();
+			if (viewType === "canvas") return;
+			if (ALLOWED_TEXT_FILE_VIEWS.contains(viewType)) {
+				fn(leaf.view);
+			}
 		}
 	});
 }
@@ -72,16 +82,17 @@ function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 }
 
 export interface S3View {
-	view: MarkdownView | CanvasView;
+	view: TextFileView | CanvasView;
 	release: () => void;
 	attach: () => Promise<S3View>;
 	document: Document | Canvas | null;
 	destroy: () => void;
 	canConnect: boolean;
+	offlineBanner?: () => () => void;
 }
 
 export class LoggedOutView implements S3View {
-	view: MarkdownView | CanvasView;
+	view: TextFileView | CanvasView;
 	login: () => Promise<boolean>;
 	banner?: Banner;
 	document = null;
@@ -91,7 +102,7 @@ export class LoggedOutView implements S3View {
 
 	constructor(
 		connectionManager: LiveViewManager,
-		view: MarkdownView | CanvasView,
+		view: TextFileView | CanvasView,
 		login: () => Promise<boolean>,
 	) {
 		this._parent = connectionManager; // for debug
@@ -121,7 +132,16 @@ export class LoggedOutView implements S3View {
 	}
 }
 
-export function isLive(view?: S3View): view is LiveView {
+export function isLiveMd(view?: S3View): view is LiveView<MarkdownView> {
+	return (
+		view instanceof LiveView &&
+		view.view instanceof MarkdownView &&
+		view.document !== undefined &&
+		view.document.text !== undefined
+	);
+}
+
+export function isLive(view?: S3View): view is LiveView<TextFileView> {
 	return (
 		view instanceof LiveView &&
 		view.document !== undefined &&
@@ -315,11 +335,12 @@ export class RelayCanvasView implements S3View {
 	}
 }
 
-export class LiveView implements S3View {
-	view: MarkdownView;
+export class LiveView<ViewType extends TextFileView> implements S3View {
+	view: ViewType;
 	document: Document;
 	shouldConnect: boolean;
 	canConnect: boolean;
+	private _plugin?: TextFileViewPlugin;
 
 	private _viewActions?: ViewActions;
 	private offConnectionStatusSubscription?: () => void;
@@ -329,7 +350,7 @@ export class LiveView implements S3View {
 
 	constructor(
 		connectionManager: LiveViewManager,
-		view: MarkdownView,
+		view: ViewType,
 		document: Document,
 		shouldConnect = true,
 		canConnect = true,
@@ -343,6 +364,9 @@ export class LiveView implements S3View {
 		this.canConnect = canConnect;
 		if (!connectionManager.networkStatus.online) {
 			this.offlineBanner();
+		}
+		if (!(view instanceof MarkdownView)) {
+			this._plugin = new TextFileViewPlugin(this);
 		}
 	}
 
@@ -472,7 +496,10 @@ export class LiveView implements S3View {
 	}
 
 	async checkStale() {
-		if (this.view.getMode() === "preview") {
+		if (
+			this.view instanceof MarkdownView &&
+			this.view.getMode() === "preview"
+		) {
 			return false;
 		}
 		const stale = await this.document.checkStale();
@@ -485,7 +512,7 @@ export class LiveView implements S3View {
 		return stale;
 	}
 
-	attach(): Promise<LiveView> {
+	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
 		this.document.userLock = true;
 		this.setConnectionDot();
@@ -526,6 +553,7 @@ export class LiveView implements S3View {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
 		}
+		this._plugin?.destroy();
 		this.document.disconnect();
 		this.document.userLock = false;
 	}
@@ -537,6 +565,7 @@ export class LiveView implements S3View {
 		this._parent = null as any;
 		this.view = null as any;
 		this.document = null as any;
+		this._plugin = null as any;
 	}
 }
 
@@ -607,7 +636,7 @@ export class LiveViewManager {
 						.catch((_) => {
 							this.views.forEach((view) => {
 								if (view.document?.sharedFolder === folder) {
-									(view as LiveView).offlineBanner();
+									view.offlineBanner?.();
 								}
 							});
 						});
@@ -687,9 +716,9 @@ export class LiveViewManager {
 
 	private findFolders(): SharedFolder[] {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
-		iterateMarkdownViews(this.workspace, (markdownView) => {
+		iterateTextFileViews(this.workspace, (textFileView) => {
 			// Check if the view is displaying a file
-			const viewFilePath = markdownView.file?.path;
+			const viewFilePath = textFileView.file?.path;
 			if (!viewFilePath) {
 				return;
 			}
@@ -717,9 +746,9 @@ export class LiveViewManager {
 
 	private async foldersReady(): Promise<SharedFolder[]> {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
-		iterateMarkdownViews(this.workspace, (markdownView) => {
+		iterateTextFileViews(this.workspace, (textFileViews) => {
 			// Check if the view is displaying a file
-			const viewFilePath = markdownView.file?.path;
+			const viewFilePath = textFileViews.file?.path;
 			if (!viewFilePath) {
 				return;
 			}
@@ -748,21 +777,25 @@ export class LiveViewManager {
 
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
-		iterateMarkdownViews(this.workspace, async (markdownView) => {
-			const viewFilePath = markdownView.file?.path;
+		iterateTextFileViews(this.workspace, async (textFileView) => {
+			const viewFilePath = textFileView.file?.path;
 			if (!viewFilePath) {
 				return;
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
 				if (!this.loginManager.loggedIn) {
-					const view = new LoggedOutView(this, markdownView, () => {
+					const view = new LoggedOutView(this, textFileView, () => {
 						return this.loginManager.openLoginPage();
 					});
 					views.push(view);
 				} else if (folder.ready) {
 					const doc = folder.proxy.getDoc(viewFilePath);
-					const view = new LiveView(this, markdownView, doc);
+					const view = new LiveView<typeof textFileView>(
+						this,
+						textFileView,
+						doc,
+					);
 					views.push(view);
 				} else {
 					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
@@ -795,9 +828,8 @@ export class LiveViewManager {
 		return views;
 	}
 
-	findView(cmEditor: EditorView): LiveView | undefined {
-		return this.views.filter(isLive).find((view) => {
-			//if (isCanvasView(view.view)) return;
+	findView(cmEditor: EditorView): LiveView<MarkdownView> | undefined {
+		return this.views.filter(isLiveMd).find((view) => {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 			const editor = view.view.editor as any;
 			const cm = editor.cm as EditorView;
@@ -815,14 +847,11 @@ export class LiveViewManager {
 		});
 	}
 
-	private async viewsReady(views: S3View[]): Promise<LiveView[]> {
-		// XXX yeesh
+	private async viewsReady(views: S3View[]): Promise<LiveView<TextFileView>[]> {
 		return await Promise.all(
 			views
-				.filter((view) => view instanceof LiveView)
-				.map(async (view) =>
-					(view as LiveView).document.whenReady().then((_) => view as LiveView),
-				),
+				.filter(isLive)
+				.map(async (view) => view.document.whenReady().then((_) => view)),
 		);
 	}
 
