@@ -8,7 +8,7 @@ import type {
 	CanvasView,
 	ObsidianCanvas,
 } from "src/CanvasView";
-import type { RelayCanvasView } from "src/LiveViews";
+import type { RelayCanvasView, LiveViewManager } from "src/LiveViews";
 import { HasLogging } from "src/debug";
 
 import * as Y from "yjs";
@@ -21,7 +21,10 @@ export class CanvasPlugin extends HasLogging {
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
 
-	constructor(relayCanvasView: RelayCanvasView) {
+	constructor(
+		private connectionManager: LiveViewManager,
+		relayCanvasView: RelayCanvasView,
+	) {
 		super();
 		this.view = relayCanvasView.view;
 		this.canvas = relayCanvasView.view.canvas;
