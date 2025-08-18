@@ -36,7 +36,11 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDiscordLogin: false,
 	enableMicrosoftLogin: false,
 	enableSelfManageHosts: false,
-};
+} as const;
+
+export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
+	return key in FeatureFlagDefaults;
+}
 
 export type Flag = keyof FeatureFlags;
 

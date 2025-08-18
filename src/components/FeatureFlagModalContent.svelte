@@ -1,26 +1,22 @@
 <script lang="ts">
-	import { FeatureFlagManager } from "../flagManager";
-	import type { FeatureFlags } from "../flags";
+	import { FeatureFlagManager, flags } from "../flagManager";
+	import { isKeyOfFeatureFlags, type FeatureFlags } from "../flags";
 	import { setIcon } from "obsidian";
 	import { onMount } from "svelte";
 
 	export let reload: () => void;
 
 	let flagManager = FeatureFlagManager.getInstance();
-	$: flags = { ...$flagManager.flags };
+	$: settings = { ...$flagManager.flags };
 
 	function toggleFlag(flagName: keyof FeatureFlags) {
-		const flagValue = !flags[flagName];
-		flags[flagName] = flagValue;
-		flagManager.setFlag(flagName as keyof FeatureFlags, flags[flagName]);
-	}
-
-	function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
-		return key in flags;
+		const flagValue = !settings[flagName];
+		settings[flagName] = flagValue;
+		flagManager.setFlag(flagName as keyof FeatureFlags, settings[flagName]);
 	}
 
 	onMount(() => {
-		Object.keys(flags).forEach((flagName) => {
+		Object.keys(settings).forEach((flagName) => {
 			const toggleEl = document.getElementById(`toggle-${flagName}`);
 			if (toggleEl) {
 				setIcon(toggleEl, "check");
@@ -31,7 +27,9 @@
 
 <div class="feature-flag-toggle-modal">
 	<h2>Feature Flags</h2>
-	{#each Object.entries(flags) as [flagName, value]}
+	{#each Object.entries(settings)
+		.filter(([k, v]) => isKeyOfFeatureFlags(k))
+		.sort() as [flagName, value]}
 		<div class="feature-flag-item setting-item">
 			<div class="setting-item-info">
 				<div class="setting-item-name">{flagName}</div>
