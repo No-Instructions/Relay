@@ -16,6 +16,7 @@ export interface FeatureFlags {
 	enableDiscordLogin: boolean;
 	enableMicrosoftLogin: boolean;
 	enableSelfManageHosts: boolean;
+	enableKanbanView: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -36,6 +37,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDiscordLogin: false,
 	enableMicrosoftLogin: false,
 	enableSelfManageHosts: false,
+	enableKanbanView: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
