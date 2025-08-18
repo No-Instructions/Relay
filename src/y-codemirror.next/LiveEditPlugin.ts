@@ -108,6 +108,19 @@ export class LiveCMPluginValue implements PluginValue {
 						return result;
 					};
 				},
+				requestSave(old) {
+					return function () {
+						// @ts-ignore
+						const result = old.call(this);
+						try {
+							// @ts-ignore
+							this.app.metadataCache.trigger("resolve", this.file);
+						} catch (e) {
+							// pass
+						}
+						return result;
+					};
+				},
 			}),
 		);
 		this.unsubscribes.push(
