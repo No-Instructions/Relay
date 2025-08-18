@@ -1,6 +1,7 @@
 import { Annotation, ChangeSet } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
+import { TextFileView } from "obsidian";
 import { LiveView, LiveViewManager } from "./LiveViews";
 import { connectionManagerFacet } from "./y-codemirror.next/LiveEditPlugin";
 import { hasKey, updateFrontMatter } from "./Frontmatter";
@@ -53,7 +54,7 @@ function diffToChangeSet(originalText: string, newText: string): ChangeSet {
 
 export class ShareLinkPluginValue implements PluginValue {
 	editor: EditorView;
-	view?: LiveView;
+	view?: LiveView<TextFileView>;
 	connectionManager: LiveViewManager;
 
 	constructor(editor: EditorView) {

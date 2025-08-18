@@ -25,6 +25,7 @@ import {
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
+import { TextFileView } from "obsidian";
 
 export const yRemoteSelectionsTheme = EditorView.baseTheme({
 	".cm-ySelection": {},
@@ -159,7 +160,7 @@ type AwarenessChangeHandler = (
 export class YRemoteSelectionsPluginValue implements PluginValue {
 	editor: EditorView;
 	connectionManager?: LiveViewManager;
-	view?: LiveView;
+	view?: LiveView<TextFileView>;
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
