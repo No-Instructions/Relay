@@ -34,7 +34,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableVerifyUploads: false,
 	enableAutomaticDiffResolution: false,
 	enableDiscordLogin: false,
-	enableMicrosoftLogin: false,
+	enableMicrosoftLogin: true,
 	enableSelfManageHosts: false,
 } as const;
 
