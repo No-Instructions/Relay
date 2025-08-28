@@ -9,7 +9,8 @@ export class AddToVaultModal extends Modal {
 	constructor(
 		app: App,
 		private sharedFolders: SharedFolders,
-		public remoteFolder: RemoteSharedFolder,
+		public remoteFolder: RemoteSharedFolder | undefined,
+		private availableFolders: RemoteSharedFolder[],
 		private onConfirm: (
 			remoteFolder: RemoteSharedFolder,
 			folderName: string,
@@ -27,6 +28,7 @@ export class AddToVaultModal extends Modal {
 			target: contentEl,
 			props: {
 				remoteFolder: this.remoteFolder,
+				availableFolders: this.availableFolders,
 				sharedFolders: this.sharedFolders,
 				onConfirm: async (
 					remoteFolder: RemoteSharedFolder,

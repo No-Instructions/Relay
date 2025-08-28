@@ -8,10 +8,11 @@
 		type RelaySubscription,
 		type RemoteSharedFolder,
 		type Role,
+		type FolderRole,
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
-	import Folder from "./Folder.svelte";
+	import RemoteFolder from "./RemoteFolder.svelte";
 	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
 	import { derived, writable } from "svelte/store";
@@ -25,6 +26,8 @@
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import DiskUsage from "./DiskUsage.svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
+	import { ShareFolderModal } from "src/ui/ShareFolderModal";
+	import { FolderCreateModal } from "src/ui/FolderCreateModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
@@ -34,6 +37,7 @@
 	export let plugin!: Live;
 	export let sharedFolders!: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
+	export let folderRoles: ObservableMap<string, FolderRole>;
 
 	import { moment } from "obsidian";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
@@ -108,6 +112,56 @@
 	const roles = $relayRoles.filter((role: RelayRole) => {
 		return role.relayId === relay.id;
 	});
+
+	// Filter folders available for device sync (both local and available to add)
+	const deviceSyncFolders = derived(
+		[remoteFolders, folderRoles, sharedFolders],
+		([$remoteFolders, $folderRoles, $sharedFolders]) => {
+			const currentUserId = plugin.relayManager.user?.id;
+			if (!currentUserId) return [];
+
+			return $remoteFolders.values().filter((remoteFolder) => {
+				// Apply permission logic to determine if user can access this folder
+				if (!remoteFolder.private) return true;
+				if (remoteFolder.creator?.id === currentUserId) return true;
+
+				const userHasRole = $folderRoles
+					.values()
+					.some(
+						(role) =>
+							role.sharedFolderId === remoteFolder.id &&
+							role.userId === currentUserId,
+					);
+
+				return userHasRole;
+			});
+		},
+	);
+
+	// Filter folders that user can admin (for Folder Admin section)
+	const adminableFolders = derived(
+		[remoteFolders, folderRoles],
+		([$remoteFolders, $folderRoles]) => {
+			const currentUserId = plugin.relayManager.user?.id;
+			if (!currentUserId) return [];
+
+			return $remoteFolders.values().filter((remoteFolder) => {
+				// User can admin ONLY if they are the creator
+				if (remoteFolder.creator?.id === currentUserId) return true;
+
+				// OR if they have Owner role for this specific folder
+				const userRole = $folderRoles
+					.values()
+					.find(
+						(role) =>
+							role.sharedFolderId === remoteFolder.id &&
+							role.userId === currentUserId,
+					);
+
+				return userRole?.role === "Owner";
+			});
+		},
+	);
 
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
@@ -228,6 +282,7 @@
 			plugin.app,
 			sharedFolders,
 			remoteFolder,
+			[], // No other available folders since this one is pre-selected
 			addToVault,
 		).open();
 	};
@@ -303,6 +358,56 @@
 		}
 	}
 
+	function handleShareExistingFolder() {
+		const modal = new ShareFolderModal(
+			plugin.app,
+			relay,
+			sharedFolders,
+			plugin.relayManager,
+			async (folderPath, folderName, isPrivate, userIds) => {
+				const normalizedPath = normalizePath(folderPath);
+				let folder = sharedFolders.find(
+					(folder) => folder.path == normalizedPath,
+				);
+
+				// If folder doesn't exist as shared folder yet, create it
+				if (!folder) {
+					const guid = uuidv4();
+					folder = sharedFolders.new(normalizedPath, guid, relay.guid, true);
+				}
+
+				// Create remote folder with privacy settings
+				const remote = await plugin.relayManager.createRemoteFolder(
+					folder,
+					relay,
+					isPrivate,
+				);
+
+				// Add users to the private folder if it's private
+				if (isPrivate) {
+					for (const userId of userIds) {
+						await plugin.relayManager.addFolderRole(remote, userId, "Member");
+					}
+				}
+
+				folder.remote = remote;
+				folder.connect();
+				plugin.sharedFolders.notifyListeners();
+
+				// Navigate to the remote folder after successful creation
+				setTimeout(() => {
+					dispatch("manageSharedFolder", {
+						remoteFolder: remote,
+						relay: remote.relay,
+					});
+				}, 100);
+
+				return folder;
+			},
+		);
+		modal.open();
+	}
+
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
 		plugin.app,
 		sharedFolders,
@@ -319,10 +424,6 @@
 				folder.connect();
 				plugin.sharedFolders.notifyListeners();
 				return;
-			}
-			// ensure folder exists in vault
-			if (plugin.vault.getFolderByPath(normalizedPath) === null) {
-				await plugin.vault.createFolder(normalizedPath);
 			}
 
 			// create new shared folder
@@ -343,19 +444,35 @@
 			plugin.sharedFolders.notifyListeners();
 		},
 	);
+
+	function openFolderCreateModal() {
+		const modal = new FolderCreateModal(
+			plugin.app,
+			sharedFolders,
+			plugin.relayManager,
+			relay,
+			() => {
+				// Refresh the component after successful creation
+				plugin.sharedFolders.notifyListeners();
+			},
+		);
+		modal.open();
+	}
 </script>
 
 <Breadcrumbs
-	category={Satellite}
-	categoryText="Relay Servers"
-	on:goBack={goBack}
->
-	{#if relay.name}
-		{relay.name}
-	{:else}
-		<span class="faint">(Untitled Relay Server)</span>
-	{/if}
-</Breadcrumbs>
+	items={[
+		{
+			type: "text",
+			text: "Relay Servers",
+			onClick: () => dispatch("goBack", { clear: true })
+		},
+		{
+			type: "satellite",
+			relay: relay
+		}
+	]}
+/>
 {#if relay.owner}
 	<SettingItem name="Name" description="Set the Relay Server's name.">
 		<input
@@ -373,37 +490,22 @@
 
 <SettingItemHeading name="Folders on this Relay Server"></SettingItemHeading>
 {#each $remoteFolders.values() as remote}
-	{#if $sharedFolders.find((local) => local.remote === remote)}
-		<SlimSettingItem>
-			<Folder
-				on:manageSharedFolder
-				folder={$sharedFolders.find((local) => local.remote === remote)}
-				slot="name">{remote.name}</Folder
-			>
-			<SettingsControl
-				on:settings={debounce(() => {
-					const local = $sharedFolders.find((local) => local.remote === remote);
-					if (local) {
-						handleManageSharedFolder(local, remote.relay);
-					}
-				})}
-			></SettingsControl>
-		</SlimSettingItem>
-	{:else}
-		<SlimSettingItem>
-			<Folder slot="name">{remote.name}</Folder>
-			<button
-				class="mod-cta"
-				aria-label="Add shared folder to vault"
-				on:click={debounce(() => {
-					showAddToVaultModal(remote);
-				})}
-				style="max-width: 8em"
-			>
-				Add to Vault
-			</button>
-		</SlimSettingItem>
-	{/if}
+	<SlimSettingItem>
+		<RemoteFolder remoteFolder={remote} slot="name" on:manageRemoteFolder={() => {
+			dispatch("manageRemoteFolder", {
+				remoteFolder: remote,
+			});
+		}}
+			>{remote.name}</RemoteFolder
+		>
+		<SettingsControl
+			on:settings={debounce(() => {
+				dispatch("manageRemoteFolder", {
+					remoteFolder: remote,
+				});
+			})}
+		></SettingsControl>
+	</SlimSettingItem>
 {/each}
 
 <SettingItem description="" name="">
@@ -411,7 +513,7 @@
 		class="mod-cta"
 		aria-label="Select a folder to share it with this Relay Server"
 		on:click={debounce(() => {
-			folderSelect.open();
+			handleShareExistingFolder();
 		})}>Share a folder</button
 	>
 </SettingItem>
@@ -654,25 +756,25 @@
 		{:else}
 			<SettingItemHeading name="Host"></SettingItemHeading>
 		{/if}
-		<SettingItem name="Name" description="">
+		<SlimSettingItem name="Name">
 			{relay.provider.name}
-		</SettingItem>
-		<SettingItem name="Domain" description="">
+		</SlimSettingItem>
+		<SlimSettingItem name="Domain">
 			{relay.provider.url}
-		</SettingItem>
+		</SlimSettingItem>
 		{#if relay.provider.selfHosted}
 			{#await checkRelayHost(relay) then response}
 				{#if response.level === "warning"}
-					<p class="mod-warning relay-host-check">
-						{@html minimark(response.status)}
-
+					<SlimSettingItem>
+						<div slot="name" class="mod-warning relay-host-warning">
+							{@html minimark(response.status)}
+						</div>
 						{#if response.link}
-							<br />
 							<a href={response.link.url}>
 								{@html minimark(response.link.text)}
 							</a>
 						{/if}
-					</p>
+					</SlimSettingItem>
 				{/if}
 			{/await}
 		{/if}
@@ -766,7 +868,7 @@
 		font-size: 0.85em !important;
 	}
 
-	.relay-host-check {
-		text-align: right;
+	.relay-host-warning {
+		text-align: left;
 	}
 </style>

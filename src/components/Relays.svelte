@@ -5,7 +5,12 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 	import ExternalLink from "./ExternalLink.svelte";
-	import { type Provider, type Relay, type RelaySubscription } from "../Relay";
+	import {
+		type Provider,
+		type Relay,
+		type RelaySubscription,
+		type RemoteSharedFolder,
+	} from "../Relay";
 	import type Live from "src/main";
 	import Satellite from "./Satellite.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
@@ -15,6 +20,9 @@
 	import SecretText from "./SecretText.svelte";
 	import { flags } from "src/flagManager";
 	import { moment } from "obsidian";
+	import { AddToVaultModal } from "src/ui/AddToVaultModal";
+	import { normalizePath } from "obsidian";
+	import { join } from "path-browserify";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
@@ -92,6 +100,66 @@
 	function handleCreateRelay() {
 		dispatch("createRelay");
 	}
+
+	async function addFolderToVault(
+		remoteFolder: RemoteSharedFolder,
+		folderName: string,
+		folderLocation: string,
+	): Promise<SharedFolder> {
+		// Create the folder path
+		const vaultRelativePath = normalizePath(join(folderLocation, folderName));
+		if (plugin.app.vault.getFolderByPath(vaultRelativePath) === null) {
+			await plugin.app.vault.createFolder(vaultRelativePath);
+		}
+
+		// Add the folder to SharedFolders
+		const folder = plugin.sharedFolders.new(
+			vaultRelativePath,
+			remoteFolder.guid,
+			remoteFolder.relay.guid,
+		);
+
+		return folder;
+	}
+
+	function handleAddFolder() {
+		// Get all available remote folders that aren't already in vault
+		const availableFolders: RemoteSharedFolder[] = [];
+
+		$relays.values().forEach((relay) => {
+			if (relay.folders) {
+				relay.folders.values().forEach((remoteFolder) => {
+					// Check if user has permission to access this folder
+					const currentUserId = plugin.relayManager.user?.id;
+					if (!currentUserId) return;
+
+					const canAccess =
+						!remoteFolder.private ||
+						remoteFolder.creator?.id === currentUserId ||
+						// Check if user has role for this folder (would need folder roles here)
+						false; // TODO: Add folder roles check if needed
+
+					// Check if folder isn't already in vault
+					const alreadyInVault = $sharedFolders
+						.items()
+						.some((local) => local.remote?.id === remoteFolder.id);
+
+					if (canAccess && !alreadyInVault) {
+						availableFolders.push(remoteFolder);
+					}
+				});
+			}
+		});
+
+		const modal = new AddToVaultModal(
+			plugin.app,
+			plugin.sharedFolders,
+			undefined, // No pre-selected remote folder
+			availableFolders,
+			addFolderToVault,
+		);
+		modal.open();
+	}
 	function sortFn(a: Relay, b: Relay): number {
 		if (a.owner && !b.owner) {
 			return -1;
@@ -157,21 +225,20 @@
 </SettingItem>
 
 <SettingItemHeading
-	name="Shared Folders"
-	helpText="Shared Folders enhance local folders by tracking edits. You can see what Relay Server a Shared Folder is connected to below."
+	name="My vault"
+	helpText="Manage local shared folders on this device. Configure sync settings and local storage for folders that are connected to Relay Servers."
 ></SettingItemHeading>
 {#if $sharedFolders.items().length === 0}
 	<SettingItem
-		description="Go to a Relay Server's settings page above to share existing folders, or add Shared Folders to your vault."
+		description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
 	/>
 {/if}
 {#each $sharedFolders.items() as folder}
 	<SlimSettingItem>
 		<SharedFolderSpan
-			on:manageRelay
 			on:manageSharedFolder
+			on:manageRemoteFolder
 			{folder}
-			relay={folder.remote?.relay}
 			slot="name"
 		/>
 		<SettingsControl
@@ -185,6 +252,16 @@
 	</SlimSettingItem>
 {/each}
 
+<SlimSettingItem name="">
+	<button
+		class="mod-cta"
+		aria-label="Add shared folder to vault"
+		on:click={debounce(handleAddFolder)}
+		style="max-width: 8em"
+	>
+		Add Folder
+	</button>
+</SlimSettingItem>
 {#if subscriptions.values().length > 0}
 	<div class="spacer"></div>
 	<SettingItemHeading

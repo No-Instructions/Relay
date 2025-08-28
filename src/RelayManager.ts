@@ -3,6 +3,7 @@
 import { v4 as uuid } from "uuid";
 import {
 	type RelayRole,
+	type FolderRole,
 	type Relay,
 	type RelayInvitation,
 	type Role,
@@ -89,6 +90,13 @@ interface RelayRoleDAO extends RecordModel {
 	user: string;
 	role: string;
 	relay: string;
+}
+
+interface FolderRoleDAO extends RecordModel {
+	id: string;
+	user: string;
+	role: string;
+	shared_folder: string;
 }
 
 export interface StorageQuotaDAO extends RecordModel {
@@ -408,6 +416,10 @@ class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 		return user;
 	}
 
+	public get creatorId() {
+		return this.remoteFolder.creator;
+	}
+
 	public get relay(): Relay {
 		const relay = this.relays.get(this.remoteFolder.relay);
 		if (!relay) {
@@ -566,6 +578,50 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 			return;
 		}
 		this.relayRoles.delete(id);
+	}
+}
+
+class FolderRolesCollection implements Collection<FolderRoleDAO, FolderRole> {
+	collectionName: string = "shared_folder_roles";
+
+	constructor(
+		private folderRoles: ObservableMap<string, FolderRole>,
+		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		private users: ObservableMap<string, RelayUser>,
+		private roles: ObservableMap<string, RoleDAO>,
+	) {}
+
+	items(): FolderRole[] {
+		return this.folderRoles.values();
+	}
+
+	clear() {
+		this.folderRoles.clear();
+	}
+
+	get(id: string) {
+		return this.folderRoles.get(id);
+	}
+
+	ingest(update: FolderRoleDAO): FolderRole {
+		const existingRole = this.folderRoles.get<FolderRoleAuto>(update.id);
+		if (existingRole) {
+			existingRole.update(update);
+			this.folderRoles.notifyListeners();
+			return existingRole;
+		}
+		const role = new FolderRoleAuto(
+			update,
+			this.remoteFolders,
+			this.users,
+			this.roles,
+		);
+		this.folderRoles.set(role.id, role);
+		return role;
+	}
+
+	delete(id: string) {
+		this.folderRoles.delete(id);
 	}
 }
 
@@ -924,6 +980,64 @@ class RelayRoleAuto extends Auto implements RelayRole {
 	}
 }
 
+class FolderRoleAuto extends Auto implements FolderRole {
+	constructor(
+		private folderRole: FolderRoleDAO,
+		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		private users: ObservableMap<string, RelayUser>,
+		private roles: ObservableMap<string, RoleDAO>,
+	) {
+		super();
+	}
+
+	update(folderRole: FolderRoleDAO) {
+		this.folderRole = folderRole;
+		return this;
+	}
+
+	public get id() {
+		return this.folderRole.id;
+	}
+
+	public get userId() {
+		return this.folderRole.user;
+	}
+
+	public get user(): RelayUser {
+		const user = this.users.get(this.folderRole.user);
+		if (!user) {
+			throw new Error(`Unable to find user: ${this.folderRole.user}`);
+		}
+		return user;
+	}
+
+	public get role(): Role {
+		return this.roles.get(this.folderRole.role)?.name as Role;
+	}
+
+	public get sharedFolderId(): string {
+		return this.folderRole.shared_folder;
+	}
+
+	public get sharedFolder(): RemoteSharedFolder {
+		const folder = this.remoteFolders.get(this.folderRole.shared_folder);
+		if (!folder) {
+			throw new Error(
+				`invalid role: unable to find folder ${this.folderRole.shared_folder} on role ${this.folderRole.id}`,
+			);
+		}
+		return folder;
+	}
+
+	public get aggregate_root(): [string, string] {
+		return ["shared_folders", this.folderRole.shared_folder];
+	}
+
+	public get acl(): [string, string] {
+		return ["shared_folders", this.folderRole.shared_folder];
+	}
+}
+
 class RelayInvitationAuto implements RelayInvitation {
 	relayInvitation: RelayInvitationDAO;
 	roles: ObservableMap<string, RoleDAO>;
@@ -1174,6 +1288,7 @@ export class RelayManager extends HasLogging {
 	providers: ObservableMap<string, Provider>;
 	relays: ObservableMap<string, Relay>;
 	relayRoles: ObservableMap<string, RelayRole>;
+	folderRoles: ObservableMap<string, FolderRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
 	users: ObservableMap<string, RelayUser>;
 	roles: ObservableMap<string, RoleDAO>;
@@ -1202,6 +1317,7 @@ export class RelayManager extends HasLogging {
 			"relay invitations",
 		);
 		this.relayRoles = new ObservableMap<string, RelayRole>("relay roles");
+		this.folderRoles = new ObservableMap<string, FolderRole>("folder roles");
 		this.roles = new ObservableMap<string, RoleDAO>("roles");
 		this.roles.set("2arnubkcv7jpce8", {
 			name: "Owner",
@@ -1273,6 +1389,12 @@ export class RelayManager extends HasLogging {
 			this.users,
 			this.roles,
 		);
+		const folderRolesCollection = new FolderRolesCollection(
+			this.folderRoles,
+			this.remoteFolders,
+			this.users,
+			this.roles,
+		);
 		const relayInvitationsCollection = new RelayInvitationsCollection(
 			this.relayInvitations,
 			this.relays,
@@ -1298,6 +1420,7 @@ export class RelayManager extends HasLogging {
 			userCollection,
 			relayCollection,
 			relayRolesCollection,
+			folderRolesCollection,
 			relayInvitationsCollection,
 			sharedFolderCollection,
 			subscriptionCollection,
@@ -1449,6 +1572,10 @@ export class RelayManager extends HasLogging {
 			{ name: "providers", expand: [] },
 			{ name: "relay_roles", expand: ["user", "relay"] },
 			{ name: "shared_folders", expand: ["relay", "creator"] },
+			{
+				name: "shared_folder_roles",
+				expand: ["user", "shared_folder", "role"],
+			},
 			{ name: "subscriptions", expand: ["user", "relay"] },
 		];
 
@@ -1520,6 +1647,9 @@ export class RelayManager extends HasLogging {
 			withPb("relay_invitations"),
 			withPb("shared_folders", {
 				expand: "relay,creator",
+			}),
+			withPb("shared_folder_roles", {
+				expand: "user",
 			}),
 			withPb("subscriptions", {
 				expand: "relay,user",
@@ -1621,6 +1751,7 @@ export class RelayManager extends HasLogging {
 	async createRemoteFolder(
 		sharedFolder: SharedFolder,
 		relay: Relay,
+		isPrivate: boolean = false,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to create folder");
 		const record = await this.pb
@@ -1631,7 +1762,7 @@ export class RelayManager extends HasLogging {
 					guid: sharedFolder.guid,
 					relay: relay.id,
 					creator: this.user?.id,
-					private: false,
+					private: isPrivate,
 				},
 				{ expand: "relay" },
 			);
@@ -1681,6 +1812,73 @@ export class RelayManager extends HasLogging {
 		const updated = this.store?.ingest<RelayRole>(record);
 		if (!updated) {
 			throw new Error("Failed to update relay role");
+		}
+		return updated;
+	}
+
+	async addFolderRole(
+		folder: RemoteFolder,
+		userId: string,
+		roleName: Role,
+	): Promise<FolderRole> {
+		if (!this.pb) throw new Error("Failed to add folder role");
+		const role = this.roles.find((r) => r.name === roleName);
+		if (!role) {
+			throw new Error("Failed to find role");
+		}
+		const record = await this.pb
+			.collection("shared_folder_roles")
+			.create<FolderRoleDAO>({
+				user: userId,
+				shared_folder: folder.id,
+				role: role.id,
+			});
+		const folderRole = this.store?.ingest<FolderRole>(record);
+		if (!folderRole) {
+			throw new Error("Failed to add folder role");
+		}
+		return folderRole;
+	}
+
+	async removeFolderRole(folderRole: FolderRole): Promise<void> {
+		if (!this.pb) throw new Error("Failed to remove folder role");
+		await this.pb.collection("shared_folder_roles").delete(folderRole.id);
+	}
+
+	async updateFolderRole(
+		folderRole: FolderRole,
+		roleName: Role,
+	): Promise<FolderRole> {
+		if (!this.pb) throw new Error("Failed to update folder role");
+		const newRole = this.roles.find((role) => role.name === roleName);
+		if (!newRole) {
+			throw new Error("Failed to update folder role");
+		}
+		const record = await this.pb
+			.collection("shared_folder_roles")
+			.update<FolderRoleDAO>(folderRole.id, {
+				role: newRole.id,
+			});
+		const updated = this.store?.ingest<FolderRole>(record);
+		if (!updated) {
+			throw new Error("Failed to update folder role");
+		}
+		return updated;
+	}
+
+	async updateFolderPrivacy(
+		folder: RemoteFolder,
+		isPrivate: boolean,
+	): Promise<RemoteFolder> {
+		if (!this.pb) throw new Error("Failed to update folder privacy");
+		const record = await this.pb
+			.collection("shared_folders")
+			.update<RemoteFolderDAO>(folder.id, {
+				private: isPrivate,
+			});
+		const updated = this.store?.ingest<RemoteFolder>(record);
+		if (!updated) {
+			throw new Error("Failed to update folder privacy");
 		}
 		return updated;
 	}
