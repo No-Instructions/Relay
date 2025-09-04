@@ -37,11 +37,7 @@
 	const loginSettings = lm.loginSettings;
 
 	const enabledProviders = derived([selectedProvider, flagManager], () => {
-		const availableProviders = ["google"];
-
-		if ($flagManager.getFlag("enableMicrosoftLogin")) {
-			availableProviders.push("microsoft");
-		}
+		const availableProviders = ["google", "microsoft"];
 
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			availableProviders.push("discord");
@@ -66,11 +62,7 @@
 
 			// Fall back to selectedProvider for compatibility
 			if ($selectedProvider !== "") return [$selectedProvider];
-			const visible = ["google"];
-
-			if ($flagManager.getFlag("enableMicrosoftLogin")) {
-				visible.push("microsoft");
-			}
+			const visible = ["google", "microsoft"];
 
 			if ($flagManager.getFlag("enableDiscordLogin")) {
 				visible.push("discord");
@@ -327,7 +319,7 @@
 		</p>
 	{/if}
 	<WelcomeFooter
-		isGoogle={!flags().enableDiscordLogin && !flags().enableMicrosoftLogin}
+		isGoogle={!flags().enableDiscordLogin}
 	/>
 {/if}
 
