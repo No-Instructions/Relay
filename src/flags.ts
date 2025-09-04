@@ -14,7 +14,6 @@ export interface FeatureFlags {
 	enableVerifyUploads: boolean;
 	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
-	enableMicrosoftLogin: boolean;
 	enableOIDCLogin: boolean;
 	enableGitHubLogin: boolean;
 	enableSelfManageHosts: boolean;
@@ -36,7 +35,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableVerifyUploads: false,
 	enableAutomaticDiffResolution: false,
 	enableDiscordLogin: false,
-	enableMicrosoftLogin: true,
 	enableOIDCLogin: false,
 	enableGitHubLogin: false,
 	enableSelfManageHosts: false,

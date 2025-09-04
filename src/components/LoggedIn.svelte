@@ -37,11 +37,7 @@
 	const loginSettings = lm.loginSettings;
 
 	const enabledProviders = derived([selectedProvider, flagManager], () => {
-		const availableProviders = ["google"];
-
-		if ($flagManager.getFlag("enableMicrosoftLogin")) {
-			availableProviders.push("microsoft");
-		}
+		const availableProviders = ["google", "microsoft"];
 
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			availableProviders.push("discord");
