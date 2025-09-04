@@ -47,6 +47,10 @@
 			availableProviders.push("discord");
 		}
 
+		if ($flagManager.getFlag("enableGitHubLogin")) {
+			availableProviders.push("github");
+		}
+
 		if ($flagManager.getFlag("enableOIDCLogin")) {
 			availableProviders.push("oidc");
 		}
@@ -70,6 +74,10 @@
 
 			if ($flagManager.getFlag("enableDiscordLogin")) {
 				visible.push("discord");
+			}
+
+			if ($flagManager.getFlag("enableGitHubLogin")) {
+				visible.push("github");
 			}
 
 			if ($flagManager.getFlag("enableOIDCLogin")) {
@@ -206,6 +214,7 @@
 	function capitalize(s: string): string {
 		if (!s) return "";
         if (s == "oidc") return "OIDC";
+        if (s == "github") return "GitHub";
 		return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 	}
 
@@ -473,6 +482,41 @@
 	}
 
 	.microsoft-sign-in-button:disabled {
+		cursor: unset;
+		filter: grayscale(100%);
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 1px 1px rgba(0, 0, 0, 0.25);
+	}
+
+	.github-sign-in-button {
+		width: 100%;
+		height: unset;
+		padding: 12px 16px 12px 42px !important;
+		border: none;
+		border-radius: 3px;
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 1px 1px rgba(0, 0, 0, 0.25);
+		color: var(--text-color);
+		font-size: 14px;
+		font-weight: 500;
+		font-family:
+			-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+			Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+		background-image: url(data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjxzdmcKICAgd2lkdGg9IjE2LjE5NjU4NSIKICAgaGVpZ2h0PSIxNS42NTQ3NjgiCiAgIGZpbGw9Im5vbmUiCiAgIHZlcnNpb249IjEuMSIKICAgaWQ9InN2ZzQiCiAgIHNvZGlwb2RpOmRvY25hbWU9ImdoLnN2ZyIKICAgaW5rc2NhcGU6dmVyc2lvbj0iMS4xLjIgKDBhMDBjZjUzMzksIDIwMjItMDItMDQpIgogICB4bWxuczppbmtzY2FwZT0iaHR0cDovL3d3dy5pbmtzY2FwZS5vcmcvbmFtZXNwYWNlcy9pbmtzY2FwZSIKICAgeG1sbnM6c29kaXBvZGk9Imh0dHA6Ly9zb2RpcG9kaS5zb3VyY2Vmb3JnZS5uZXQvRFREL3NvZGlwb2RpLTAuZHRkIgogICB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciCiAgIHhtbG5zOnN2Zz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPgogIDxkZWZzCiAgICAgaWQ9ImRlZnM4IiAvPgogIDxzb2RpcG9kaTpuYW1lZHZpZXcKICAgICBpZD0ibmFtZWR2aWV3NiIKICAgICBwYWdlY29sb3I9IiNmZmZmZmYiCiAgICAgYm9yZGVyY29sb3I9IiM2NjY2NjYiCiAgICAgYm9yZGVyb3BhY2l0eT0iMS4wIgogICAgIGlua3NjYXBlOnBhZ2VzaGFkb3c9IjIiCiAgICAgaW5rc2NhcGU6cGFnZW9wYWNpdHk9IjAuMCIKICAgICBpbmtzY2FwZTpwYWdlY2hlY2tlcmJvYXJkPSIwIgogICAgIHNob3dncmlkPSJmYWxzZSIKICAgICBmaXQtbWFyZ2luLXRvcD0iMCIKICAgICBmaXQtbWFyZ2luLWxlZnQ9IjAiCiAgICAgZml0LW1hcmdpbi1yaWdodD0iMCIKICAgICBmaXQtbWFyZ2luLWJvdHRvbT0iMCIKICAgICBpbmtzY2FwZTp6b29tPSI0OC41IgogICAgIGlua3NjYXBlOmN4PSI4IgogICAgIGlua3NjYXBlOmN5PSI4LjAxMDMwOTMiCiAgICAgaW5rc2NhcGU6d2luZG93LXdpZHRoPSIzNzY0IgogICAgIGlua3NjYXBlOndpbmRvdy1oZWlnaHQ9IjIxMTIiCiAgICAgaW5rc2NhcGU6d2luZG93LXg9IjgiCiAgICAgaW5rc2NhcGU6d2luZG93LXk9IjQwIgogICAgIGlua3NjYXBlOndpbmRvdy1tYXhpbWl6ZWQ9IjAiCiAgICAgaW5rc2NhcGU6Y3VycmVudC1sYXllcj0ic3ZnNCIgLz4KICA8cGF0aAogICAgIGZpbGwtcnVsZT0iZXZlbm9kZCIKICAgICBjbGlwLXJ1bGU9ImV2ZW5vZGQiCiAgICAgZD0ibSA4LjAwMTc3OTksMC4wMDIzNzIxNiBhIDgsOCAwIDAgMCAtMi41MywxNS41ODk5OTk4NCBjIDAuNCwwLjA3IDAuNTUsLTAuMTcgMC41NSwtMC4zOCB2IC0xLjMzIGMgLTIuMjIsMC40OCAtMi42OSwtMS4wNyAtMi42OSwtMS4wNyAtMC4zNiwtMC45MiAtMC44OCwtMS4xNyAtMC44OCwtMS4xNyAtMC43MywtMC40OSAwLjA1LC0wLjQ4IDAuMDUsLTAuNDggMC44LDAuMDYgMS4yMywwLjgzIDEuMjMsMC44MyAwLjcyLDEuMjMgMS44OCwwLjg3IDIuMzMsMC42NiAwLjA3LC0wLjUyIDAuMjgsLTAuODcgMC41MSwtMS4wNyAtMS43OCwtMC4yIC0zLjY1LC0wLjg5IC0zLjY1LC0zLjk0OTk5OTggMCwtMC44NyAwLjMxLC0xLjU4IDAuODIsLTIuMTQgLTAuMDgsLTAuMiAtMC4zNiwtMS4wMSAwLjA4LC0yLjEgMCwwIDAuNjcsLTAuMjIgMi4yLDAuODIgYSA3LjY1LDcuNjUgMCAwIDEgNC4wMDAwMDAxLDAgYyAxLjUzLC0xLjA0IDIuMiwtMC44MiAyLjIsLTAuODIgMC40NCwxLjA5IDAuMTYsMS45IDAuMDgsMi4xIDAuNTEsMC41NiAwLjgyLDEuMjcgMC44MiwyLjE0IDAsMy4wNjk5OTk4IC0xLjg3LDMuNzQ5OTk5OCAtMy42NTAwMDAxLDMuOTQ5OTk5OCAwLjI5LDAuMjUgMC41NDAwMDAxLDAuNzQgMC41NDAwMDAxLDEuNDggdiAyLjIgYyAwLDAuMjEgMC4xNSwwLjQ1IDAuNTUsMC4zOCBBIDgsOCAwIDAgMCA4LjAwMTc3OTksMC4wMDIzNzIxNiBaIgogICAgIGZpbGw9IiMyNDI5MmYiCiAgICAgaWQ9InBhdGgyIiAvPgo8L3N2Zz4K);
+		background-color: var(--background-secondary);
+		background-repeat: no-repeat;
+		background-position: 12px 11px;
+	}
+
+	.github-sign-in-button:hover {
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 2px 4px rgba(0, 0, 0, 0.25);
+	}
+
+	.github-sign-in-button:disabled {
 		cursor: unset;
 		filter: grayscale(100%);
 		box-shadow:

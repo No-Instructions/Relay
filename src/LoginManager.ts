@@ -29,6 +29,13 @@ interface GoogleUser {
 	picture: string;
 }
 
+interface GitHubUser {
+	email: string;
+	name: string;
+	login: string;
+	avatar_url: string;
+}
+
 interface MicrosoftUser {
 	mail: string;
 	surname: string;
@@ -60,7 +67,7 @@ interface NormalizedOAuthUser {
  */
 function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 	// Handle Google user
-	if ("email" in rawUser && "name" in rawUser) {
+	if ("email" in rawUser && "name" in rawUser && "given_name" in rawUser && "family_name" in rawUser) {
 		const googleUser = rawUser as GoogleUser;
 		return {
 			name: googleUser.name,
@@ -68,6 +75,19 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 			family_name: googleUser.family_name,
 			email: googleUser.email,
 			picture: googleUser.picture,
+		};
+	}
+
+	// Handle GitHub user
+	if ("email" in rawUser && "login" in rawUser && "avatar_url" in rawUser) {
+		const githubUser = rawUser as GitHubUser;
+		const nameParts = (githubUser.name || githubUser.login).split(' ');
+		return {
+			name: githubUser.name || githubUser.login,
+			given_name: nameParts[0] || githubUser.login,
+			family_name: nameParts.slice(1).join(' ') || '',
+			email: githubUser.email,
+			picture: githubUser.avatar_url,
 		};
 	}
 
@@ -103,14 +123,14 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
  * @param id - User ID from the auth store
  * @param token - Authentication token
  * @param authStoreModel - Model data from the auth store
- * @param rawUser - Raw OAuth user data from the provider (Google, Microsoft, OIDC, etc.)
+ * @param rawUser - Raw OAuth user data from the provider (Google, GitHub, Microsoft, OIDC, etc.)
  * @returns A new User instance with normalized data from the OAuth provider
  */
 export function createUserFromOAuth(
 	id: string,
 	token: string,
 	authStoreModel: any,
-	rawUser?: GoogleUser | MicrosoftUser | OIDCUser | any,
+	rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser | any,
 ): User {
 	const normalizedOAuth = rawUser ? normalizeOAuthUser(rawUser) : null;
 
@@ -314,7 +334,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	private makeUser(
 		authStore: BaseAuthStore,
-		rawUser?: GoogleUser | MicrosoftUser | OIDCUser,
+		rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser,
 	): User {
 		return createUserFromOAuth(
 			authStore.model?.id,
@@ -359,6 +379,8 @@ export class LoginManager extends Observable<LoginManager> {
 		const intercepts = [
 			// Google
 			createIntercept("https://accounts.google.com/o/oauth2/auth"),
+			// GitHub
+			createIntercept("https://github.com/login/oauth/authorize"),
 			// Discord
 			createIntercept("https://discord.com/api/oauth2/authorize"),
 			// Microsoft

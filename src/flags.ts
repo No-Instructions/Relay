@@ -16,6 +16,7 @@ export interface FeatureFlags {
 	enableDiscordLogin: boolean;
 	enableMicrosoftLogin: boolean;
 	enableOIDCLogin: boolean;
+	enableGitHubLogin: boolean;
 	enableSelfManageHosts: boolean;
 }
 
@@ -37,6 +38,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDiscordLogin: false,
 	enableMicrosoftLogin: true,
 	enableOIDCLogin: false,
+	enableGitHubLogin: false,
 	enableSelfManageHosts: false,
 } as const;
 
