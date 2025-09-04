@@ -15,6 +15,7 @@ export interface FeatureFlags {
 	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
 	enableMicrosoftLogin: boolean;
+	enableOIDCLogin: boolean;
 	enableSelfManageHosts: boolean;
 }
 
@@ -35,6 +36,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableAutomaticDiffResolution: false,
 	enableDiscordLogin: false,
 	enableMicrosoftLogin: true,
+	enableOIDCLogin: false,
 	enableSelfManageHosts: false,
 } as const;
 

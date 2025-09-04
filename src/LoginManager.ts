@@ -36,6 +36,14 @@ interface MicrosoftUser {
 	displayName: string;
 }
 
+interface OIDCUser {
+	email: string;
+	given_name: string;
+	family_name: string;
+	name?: string;
+	picture?: string;
+}
+
 /**
  * Normalized OAuth user data structure that standardizes information across providers
  */
@@ -75,6 +83,18 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 		};
 	}
 
+	// Handle OIDC user (standard OpenID Connect claims)
+	if ("email" in rawUser && "given_name" in rawUser && "family_name" in rawUser) {
+		const oidcUser = rawUser as OIDCUser;
+		return {
+			name: oidcUser.name || `${oidcUser.given_name} ${oidcUser.family_name}`,
+			given_name: oidcUser.given_name,
+			family_name: oidcUser.family_name,
+			email: oidcUser.email,
+			picture: oidcUser.picture,
+		};
+	}
+
 	return null;
 }
 
@@ -83,14 +103,14 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
  * @param id - User ID from the auth store
  * @param token - Authentication token
  * @param authStoreModel - Model data from the auth store
- * @param rawUser - Raw OAuth user data from the provider (Google, Microsoft, etc.)
+ * @param rawUser - Raw OAuth user data from the provider (Google, Microsoft, OIDC, etc.)
  * @returns A new User instance with normalized data from the OAuth provider
  */
 export function createUserFromOAuth(
 	id: string,
 	token: string,
 	authStoreModel: any,
-	rawUser?: GoogleUser | MicrosoftUser | any,
+	rawUser?: GoogleUser | MicrosoftUser | OIDCUser | any,
 ): User {
 	const normalizedOAuth = rawUser ? normalizeOAuthUser(rawUser) : null;
 
@@ -294,7 +314,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	private makeUser(
 		authStore: BaseAuthStore,
-		rawUser?: GoogleUser | MicrosoftUser,
+		rawUser?: GoogleUser | MicrosoftUser | OIDCUser,
 	): User {
 		return createUserFromOAuth(
 			authStore.model?.id,
@@ -311,7 +331,7 @@ export class LoginManager extends Observable<LoginManager> {
 		this.notifyListeners();
 	}
 
-	getWebviewIntercepts(): RegExp[] {
+	getWebviewIntercepts(providers?: Record<string, Provider>): RegExp[] {
 		const redirectUrl = this.pb.buildUrl("/api/oauth2-redirect");
 		const createIntercept = (authProviderUrl: string): RegExp => {
 			// Escape forward slashes in the auth URL
@@ -322,7 +342,21 @@ export class LoginManager extends Observable<LoginManager> {
 			);
 		};
 
-		return [
+		const createInterceptFromAuthUrl = (authUrl: string): RegExp => {
+			// Extract the base authorization URL (everything before the query parameters)
+			const url = new URL(authUrl);
+			const baseUrl = `${url.protocol}//${url.host}${url.pathname}`;
+			
+			// Escape special regex characters
+			const escapedBaseUrl = baseUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+			
+			return new RegExp(
+				`^${escapedBaseUrl}.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
+				"i",
+			);
+		};
+
+		const intercepts = [
 			// Google
 			createIntercept("https://accounts.google.com/o/oauth2/auth"),
 			// Discord
@@ -332,6 +366,31 @@ export class LoginManager extends Observable<LoginManager> {
 				"https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
 			),
 		];
+
+		// Add dynamic OIDC intercepts if provider info is available
+		if (providers) {
+			const oidcProvider = providers["oidc"];
+			if (oidcProvider?.info?.authUrl) {
+				console.log("[OIDC Provider] Creating dynamic intercept for authUrl:", oidcProvider.info.authUrl);
+				intercepts.push(createInterceptFromAuthUrl(oidcProvider.info.authUrl));
+			}
+		} else {
+			// Fallback generic OIDC pattern when no provider info is available
+			intercepts.push(new RegExp(
+				`.*?/auth.*?[?&]redirect_uri=(${redirectUrl}|${encodeURIComponent(redirectUrl)})`,
+				"i",
+			));
+		}
+
+		return intercepts;
+	}
+
+	updateWebviewIntercepts(providers: Record<string, Provider>) {
+		// This method can be called to update webview intercepts with provider info
+		// Implementation depends on how the main plugin handles intercept updates
+		const newIntercepts = this.getWebviewIntercepts(providers);
+		console.log("[OIDC Provider] Updated webview intercepts:", newIntercepts.map(r => r.source));
+		return newIntercepts;
 	}
 
 	async initiateManualOAuth2CodeFlow(

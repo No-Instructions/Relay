@@ -46,6 +46,10 @@
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			availableProviders.push("discord");
 		}
+
+		if ($flagManager.getFlag("enableOIDCLogin")) {
+			availableProviders.push("oidc");
+		}
 		return availableProviders;
 	});
 
@@ -68,6 +72,10 @@
 				visible.push("discord");
 			}
 
+			if ($flagManager.getFlag("enableOIDCLogin")) {
+				visible.push("oidc");
+			}
+
 			return visible;
 		},
 	);
@@ -85,6 +93,20 @@
 			return Object.keys(providers);
 		},
 	);
+
+	const providerDisplayNames = derived([hasProviderInfo], () => {
+		const names: Record<string, string> = {};
+		for (const providerName of Object.keys(providers)) {
+			const provider = providers[providerName];
+			
+			if (provider?.info?.displayName) {
+				names[providerName] = provider.info.displayName;
+			} else {
+				names[providerName] = capitalize(providerName);
+			}
+		}
+		return names;
+	});
 
 	let authWithCode: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
 	let error = writable<string>("");
@@ -128,6 +150,8 @@
 				.then((providers_) => {
 					providers = providers_;
 					hasProviderInfo.set(true);
+					// Update webview intercepts with the loaded provider info
+					lm.updateWebviewIntercepts(providers_);
 				})
 				.catch((e) => {
 					let message = e.message;
@@ -181,8 +205,10 @@
 
 	function capitalize(s: string): string {
 		if (!s) return "";
+        if (s == "oidc") return "OIDC";
 		return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 	}
+
 </script>
 
 {#if $lm.hasUser && $lm.user}
@@ -211,7 +237,7 @@
 						on:click={debounce(async () => {
 							pending.set(true);
 							await login(provider);
-						})}>Sign in with {`${capitalize(provider)}`}</button
+						})}>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
 					>
 				{/each}
 			</div>
@@ -226,12 +252,12 @@
 								on:click={() => {
 									pending.set(true);
 									poll();
-								}}>Sign in with {`${capitalize(provider)}`}</button
+								}}>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
 							>
 						</a>
 					{:else}
 						<button class={`${provider}-sign-in-button`} disabled={true}
-							>Sign in with {`${capitalize(provider)}`}</button
+							>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
 						>
 					{/if}
 				{/each}
@@ -447,6 +473,41 @@
 	}
 
 	.microsoft-sign-in-button:disabled {
+		cursor: unset;
+		filter: grayscale(100%);
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 1px 1px rgba(0, 0, 0, 0.25);
+	}
+
+	.oidc-sign-in-button {
+		width: 100%;
+		height: unset;
+		padding: 12px 16px 12px 42px !important;
+		border: none;
+		border-radius: 3px;
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 1px 1px rgba(0, 0, 0, 0.25);
+		color: var(--text-color);
+		font-size: 14px;
+		font-weight: 500;
+		font-family:
+			-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu,
+			Cantarell, "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+		background-image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTgiIGhlaWdodD0iMTgiIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMkM2LjQ4IDIgMiA2LjQ4IDIgMTJzNC40OCAxMCAxMCAxMCAxMC00LjQ4IDEwLTEwUzE3LjUyIDIgMTIgMnoiIHN0cm9rZT0iIzYzNjM2MyIgc3Ryb2tlLXdpZHRoPSIyIi8+PHBhdGggZD0iTTggMTJoOE0xMiA4bDQgNC00IDQiIHN0cm9rZT0iIzYzNjM2MyIgc3Ryb2tlLXdpZHRoPSIyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=);
+		background-color: var(--background-secondary);
+		background-repeat: no-repeat;
+		background-position: 12px 11px;
+	}
+
+	.oidc-sign-in-button:hover {
+		box-shadow:
+			0 -1px 0 rgba(0, 0, 0, 0.04),
+			0 2px 4px rgba(0, 0, 0, 0.25);
+	}
+
+	.oidc-sign-in-button:disabled {
 		cursor: unset;
 		filter: grayscale(100%);
 		box-shadow:
