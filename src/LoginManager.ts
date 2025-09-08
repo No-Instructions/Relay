@@ -11,8 +11,6 @@ import PocketBase, {
 import { RelayInstances, curryLog } from "./debug";
 import { Observable } from "./observable/Observable";
 
-declare const AUTH_URL: string;
-declare const API_URL: string;
 declare const GIT_TAG: string;
 
 import { customFetch } from "./customFetch";
@@ -20,6 +18,7 @@ import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
+import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 
 interface GoogleUser {
 	email: string;
@@ -170,6 +169,7 @@ export class LoginManager extends Observable<LoginManager> {
 	authStore: LocalAuthStore;
 	user?: User;
 	resolve?: (code: string) => Promise<RecordAuthResponse<RecordModel>>;
+	private endpointManager: EndpointManager;
 
 	constructor(
 		vaultName: string,
@@ -177,11 +177,13 @@ export class LoginManager extends Observable<LoginManager> {
 		timeProvider: TimeProvider,
 		private beforeLogin: () => void,
 		public loginSettings: NamespacedSettings<LoginSettings>,
+		endpointSettings: NamespacedSettings<EndpointSettings>,
 	) {
 		super();
 		const pbLog = curryLog("[Pocketbase]", "debug");
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
-		this.pb = new PocketBase(AUTH_URL, this.authStore);
+		this.endpointManager = new EndpointManager(endpointSettings);
+		this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
 		this.pb.beforeSend = (url, options) => {
 			pbLog(url, options);
 			options.fetch = customFetch;
@@ -280,7 +282,7 @@ export class LoginManager extends Observable<LoginManager> {
 			"Relay-Version": GIT_TAG,
 		};
 		return requestUrl({
-			url: `${API_URL}/relay/${relay_guid}/check-host`,
+			url: `${this.endpointManager.getApiUrl()}/relay/${relay_guid}/check-host`,
 			method: "GET",
 			headers: headers,
 		});
@@ -292,7 +294,7 @@ export class LoginManager extends Observable<LoginManager> {
 			"Relay-Version": GIT_TAG,
 		};
 		requestUrl({
-			url: `${API_URL}/flags`,
+			url: `${this.endpointManager.getApiUrl()}/flags`,
 			method: "GET",
 			headers: headers,
 		})
@@ -312,7 +314,7 @@ export class LoginManager extends Observable<LoginManager> {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 		};
 		requestUrl({
-			url: `${API_URL}/whoami`,
+			url: `${this.endpointManager.getApiUrl()}/whoami`,
 			method: "GET",
 			headers: headers,
 		})
@@ -326,6 +328,41 @@ export class LoginManager extends Observable<LoginManager> {
 
 	public get loggedIn() {
 		return this.user !== undefined;
+	}
+
+	/**
+	 * Get the endpoint manager for endpoint configuration
+	 */
+	getEndpointManager(): EndpointManager {
+		return this.endpointManager;
+	}
+
+	/**
+	 * Validate and apply custom endpoints
+	 */
+	async validateAndApplyEndpoints(timeoutMs?: number): Promise<{
+		success: boolean;
+		error?: string;
+		licenseInfo?: any;
+	}> {
+		const result = await this.endpointManager.validateAndSetEndpoints(timeoutMs);
+		
+		if (result.success && this.endpointManager.hasValidatedEndpoints()) {
+			// Recreate PocketBase instance with new auth URL
+			const pbLog = curryLog("[Pocketbase]", "debug");
+			this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
+			this.pb.beforeSend = (url, options) => {
+				pbLog(url, options);
+				options.fetch = customFetch;
+				options.headers = Object.assign({}, options.headers, {
+					"Relay-Version": GIT_TAG,
+				});
+				return { url, options };
+			};
+			this.log("Updated PocketBase instance with validated endpoints");
+		}
+		
+		return result;
 	}
 
 	get hasUser() {

@@ -16,7 +16,6 @@ import {
 } from "./S3RN";
 import { customFetch } from "./customFetch";
 
-declare const API_URL: string;
 declare const GIT_TAG: string;
 
 function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
@@ -81,7 +80,8 @@ async function refresh(
 		"Relay-Version": GIT_TAG,
 	};
 	try {
-		const response = await customFetch(`${API_URL}/token`, {
+		const apiUrl = loginManager.getEndpointManager().getApiUrl();
+		const response = await customFetch(`${apiUrl}/token`, {
 			method: "POST",
 			headers: headers,
 			body: payload,
@@ -197,7 +197,8 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			Authorization: `Bearer ${this.loginManager.user?.token}`,
 			"Relay-Version": GIT_TAG,
 		};
-		const response = await customFetch(`${API_URL}/file-token`, {
+		const apiUrl = this.loginManager.getEndpointManager().getApiUrl();
+		const response = await customFetch(`${apiUrl}/file-token`, {
 			method: "POST",
 			headers: headers,
 			body: payload,

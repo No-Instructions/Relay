@@ -18,7 +18,6 @@ import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
 
-declare const API_URL: string;
 
 export interface QueueItem {
 	guid: string;
