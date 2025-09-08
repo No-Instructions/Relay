@@ -6,7 +6,6 @@ import { customFetch } from "./customFetch";
 import PocketBase from "pocketbase";
 import { HasLogging } from "./debug";
 
-declare const AUTH_URL: string;
 
 export class ContentAddressedStore extends HasLogging {
 	private pb: PocketBase;
@@ -14,7 +13,8 @@ export class ContentAddressedStore extends HasLogging {
 
 	constructor(private sharedFolder: SharedFolder) {
 		super();
-		this.pb = new PocketBase(AUTH_URL, sharedFolder.loginManager.authStore);
+		const authUrl = sharedFolder.loginManager.getEndpointManager().getAuthUrl();
+		this.pb = new PocketBase(authUrl, sharedFolder.loginManager.authStore);
 		this.tokenStore = sharedFolder.tokenStore;
 	}
 
