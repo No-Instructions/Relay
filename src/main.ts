@@ -12,6 +12,8 @@ import {
 	requireApiVersion,
 	Modal,
 	moment,
+	Setting,
+	ButtonComponent,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -23,6 +25,7 @@ import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
+import { EndpointConfigModal } from "./ui/EndpointConfigModal";
 import {
 	curryLog,
 	setDebugging,
@@ -61,6 +64,7 @@ import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
+import type { EndpointSettings } from "./EndpointManager";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -73,6 +77,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 interface RelaySettings extends FeatureFlags, DebugSettings {
 	sharedFolders: SharedFolderSettings[];
 	release: ReleaseSettings;
+	endpoints: EndpointSettings;
 }
 
 const DEFAULT_SETTINGS: RelaySettings = {
@@ -80,12 +85,12 @@ const DEFAULT_SETTINGS: RelaySettings = {
 		channel: "stable",
 	},
 	sharedFolders: [],
+	endpoints: {},
 	...FeatureFlagDefaults,
 	...DEFAULT_DEBUG_SETTINGS,
 };
 
 declare const HEALTH_URL: string;
-declare const API_URL: string;
 declare const GIT_TAG: string;
 declare const REPOSITORY: string;
 
@@ -114,6 +119,7 @@ export default class Live extends Plugin {
 	private folderSettings!: NamespacedSettings<SharedFolderSettings[]>;
 	public releaseSettings!: NamespacedSettings<ReleaseSettings>;
 	public loginSettings!: NamespacedSettings<LoginSettings>;
+	public endpointSettings!: NamespacedSettings<EndpointSettings>;
 	debug!: (...args: unknown[]) => void;
 	log!: (...args: unknown[]) => void;
 	warn!: (...args: unknown[]) => void;
@@ -158,7 +164,137 @@ export default class Live extends Plugin {
 	}
 
 	buildApiUrl(path: string) {
-		return API_URL + path;
+		return this.loginManager.getEndpointManager().getApiUrl() + path;
+	}
+
+	/**
+	 * Open endpoint configuration modal
+	 */
+	openEndpointConfigurationModal() {
+		const modal = new EndpointConfigModal(this.app, this, () => {
+			this.reload();
+		});
+		modal.open();
+	}
+
+	/**
+	 * Validate and apply custom endpoints
+	 */
+	async validateAndApplyEndpoints() {
+		const settings = this.endpointSettings.get();
+		
+		if (!settings.activeTenantId || !settings.tenants?.length) {
+			new Notice("Please configure an enterprise tenant first", 4000);
+			return;
+		}
+
+		const notice = new Notice("Validating endpoints...", 0);
+		
+		try {
+			const result = await this.loginManager.validateAndApplyEndpoints();
+			notice.hide();
+			
+			if (result.success) {
+				// Clear any previous validation errors on success
+				await this.endpointSettings.update((current) => ({
+					...current,
+					_lastValidationError: undefined,
+					_lastValidationAttempt: undefined
+				}));
+				new Notice("✓ Endpoints validated and applied successfully!", 5000);
+				if (result.licenseInfo) {
+					console.log("License validation successful:", result.licenseInfo);
+				}
+			} else {
+				// Store validation error for display in settings
+				await this.endpointSettings.update((current) => ({
+					...current,
+					_lastValidationError: result.error,
+					_lastValidationAttempt: Date.now()
+				}));
+				new Notice(`❌ Validation failed: ${result.error}`, 8000);
+			}
+		} catch (error) {
+			notice.hide();
+			const errorMessage = error instanceof Error ? error.message : "Unknown error";
+			// Store validation error for display in settings
+			await this.endpointSettings.update((current) => ({
+				...current,
+				_lastValidationError: errorMessage,
+				_lastValidationAttempt: Date.now()
+			}));
+			new Notice(`❌ Validation error: ${errorMessage}`, 8000);
+		}
+	}
+
+	/**
+	 * Reset to default endpoints
+	 */
+	resetToDefaultEndpoints() {
+		this.loginManager.getEndpointManager().clearValidatedEndpoints();
+		this.endpointSettings.update(() => ({}));
+		new Notice("Reset to default endpoints", 3000);
+	}
+
+	/**
+	 * Validate custom endpoints on startup if configured
+	 */
+	private async validateEndpointsOnStartup(): Promise<void> {
+		const settings = this.endpointSettings.get();
+		
+		// Skip if no active tenant configured
+		if (!settings.activeTenantId || !settings.tenants?.length) {
+			this.log("No active enterprise tenant configured, using defaults");
+			return;
+		}
+
+		const activeTenant = settings.tenants.find(t => t.id === settings.activeTenantId);
+		if (!activeTenant) {
+			this.log("Active tenant not found, using defaults");
+			return;
+		}
+
+		this.log("Enterprise tenant configured, validating on startup...", {
+			tenantId: activeTenant.id,
+			tenantUrl: activeTenant.tenantUrl,
+			tenantName: activeTenant.name
+		});
+
+		try {
+			// Use shorter timeout for startup validation to avoid blocking startup
+			const result = await this.loginManager.validateAndApplyEndpoints(5000);
+			
+			if (result.success) {
+				// Clear any previous validation errors on successful startup validation
+				await this.endpointSettings.update((current) => ({
+					...current,
+					_lastValidationError: undefined,
+					_lastValidationAttempt: undefined
+				}));
+				this.log("✓ Enterprise tenant validated and applied on startup", {
+					licenseInfo: result.licenseInfo
+				});
+			} else {
+				this.error("❌ Enterprise tenant validation failed on startup", result.error);
+				// Store the error for display in settings
+				await this.endpointSettings.update((current) => ({
+					...current,
+					_lastValidationError: result.error,
+					_lastValidationAttempt: Date.now()
+				}));
+				new Notice(`❌ Custom endpoints failed validation: ${result.error}`, 8000);
+			}
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : "Unknown error";
+			this.error("Startup endpoint validation error:", errorMessage);
+			// Store the error for display in settings
+			await this.endpointSettings.update((current) => ({
+				...current,
+				_lastValidationError: errorMessage,
+				_lastValidationAttempt: Date.now()
+			}));
+			new Notice(`❌ Endpoint validation error: ${errorMessage}`, 8000);
+		}
 	}
 	async onload() {
 		this.appId = (this.app as any).appId;
@@ -197,6 +333,7 @@ export default class Live extends Plugin {
 		);
 		this.releaseSettings = new NamespacedSettings(this.settings, "release");
 		this.loginSettings = new NamespacedSettings(this.settings, "login");
+		this.endpointSettings = new NamespacedSettings(this.settings, "endpoints");
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
@@ -314,6 +451,14 @@ export default class Live extends Plugin {
 			callback: (this.app as any).reloadRelay(),
 		});
 
+		this.addCommand({
+			id: "configure-endpoints",
+			name: "Configure enterprise tenant",
+			callback: () => {
+				this.openEndpointConfigurationModal();
+			},
+		});
+
 		// Register handler for update availability changes
 		this.updateManager.subscribe(() => {
 			const newRelease = this.updateManager.getNewRelease();
@@ -346,7 +491,11 @@ export default class Live extends Plugin {
 			this.timeProvider,
 			this.patchWebviewer.bind(this),
 			this.loginSettings,
+			this.endpointSettings,
 		);
+
+		// Validate custom endpoints on startup if configured
+		await this.validateEndpointsOnStartup();
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
@@ -669,7 +818,8 @@ export default class Live extends Plugin {
 				this.interceptedUrls.push(intercept);
 			});
 
-			const apiRegExp = new RegExp(API_URL.replace("/", "\\/") + ".*");
+			const apiUrl = this.loginManager.getEndpointManager().getApiUrl();
+			const apiRegExp = new RegExp(apiUrl.replace("/", "\\/") + ".*");
 			this.debug("Intercepting Webviewer for URL pattern", apiRegExp.source);
 			this.interceptedUrls.push(apiRegExp);
 
