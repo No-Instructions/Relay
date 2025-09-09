@@ -931,7 +931,7 @@ export default class Live extends Plugin {
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
-					vaultLog("Rename", file, oldPath);
+					vaultLog("Rename", file.path, oldPath);
 					folder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.refresh();
