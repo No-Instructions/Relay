@@ -11,8 +11,11 @@ export class ObservableSet<T> extends Observable<ObservableSet<T>> {
 	}
 
 	add(item: T): ObservableSet<T> {
+		const sizeBefore = this._set.size;
 		this._set.add(item);
-		this.notifyListeners();
+		if (this._set.size > sizeBefore) {
+			this.notifyListeners();
+		}
 		return this;
 	}
 
