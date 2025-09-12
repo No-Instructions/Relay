@@ -21,6 +21,10 @@ interface Serializable {
 	toDict: () => any;
 }
 
+export function hasACL(item: HasACL) {
+	return !!item.acl;
+}
+
 export interface RelayUser extends Identified, Updatable<RelayUser> {
 	id: string;
 	name: string;
