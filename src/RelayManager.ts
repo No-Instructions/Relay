@@ -411,6 +411,10 @@ class RemoteFolderAuto
 		return this.remoteFolder.name;
 	}
 
+	public set name(value: string) {
+		this.remoteFolder.name = value;
+	}
+
 	public get private() {
 		return this.remoteFolder.private;
 	}
@@ -1801,16 +1805,8 @@ export class RelayManager extends HasLogging {
 		return updated;
 	}
 
-	async deleteRemote(folder: SharedFolder): Promise<boolean> {
-		folder.remote = undefined;
-		const remote = this.remoteFolders.find(
-			(remote) => remote.guid === folder.guid,
-		);
-		if (!remote) {
-			return false;
-		}
-		await this.pb?.collection("shared_folders").delete(remote.id);
-		folder.remote = undefined;
+	async deleteRemote(remoteFolder: RemoteSharedFolder): Promise<boolean> {
+		await this.pb?.collection("shared_folders").delete(remoteFolder.id);
 		return true;
 	}
 
