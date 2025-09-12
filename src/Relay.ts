@@ -27,14 +27,18 @@ export interface RelayUser extends Identified, Updatable<RelayUser> {
 
 export interface RemoteSharedFolder
 	extends Identified,
-		Updatable<RemoteSharedFolder> {
+		Updatable<RemoteSharedFolder>,
+		IObservable<RemoteSharedFolder> {
 	id: string;
 	guid: string;
 	name: string;
 	private: boolean;
+	role: Role;
+	owner: boolean;
 	relay: Relay;
 	creator: RelayUser;
 	creatorId: string;
+	acl?: [string, string];
 }
 
 export interface Relay

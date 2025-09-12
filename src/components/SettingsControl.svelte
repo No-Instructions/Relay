@@ -23,10 +23,12 @@
 	on:click={handleSettingsClick}
 	on:keydown={handleSettingsClick}
 >
-	<Settings
-		class="svg-icon lucide-settings"
-		props={{ class: "svg-icon lucide-settings" }}
-	/>
+	<slot>
+		<Settings
+			class="svg-icon lucide-settings"
+			props={{ class: "svg-icon lucide-settings" }}
+		/>
+	</slot>
 </div>
 
 <style>
