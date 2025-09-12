@@ -1,38 +1,131 @@
 <script lang="ts">
-	import { ChevronRight } from "lucide-svelte";
+	import {
+		ChevronRight,
+		Layers,
+		Home as HomeIcon,
+		Folder as FolderIcon,
+		FolderLock,
+		Satellite as SatelliteIcon,
+	} from "lucide-svelte";
+	import type { Relay, RemoteSharedFolder } from "src/Relay";
+	import type { SharedFolder } from "src/SharedFolder";
 	import { createEventDispatcher } from "svelte";
-	import Satellite from "./Satellite.svelte";
-	import Folder from "./Folder.svelte";
 
-	export let category: typeof Satellite | typeof Folder;
-	export let categoryText: string;
+	interface HomeBreadcrumb {
+		type: "home";
+		onClick?: () => void;
+	}
 
-	const dispatch = createEventDispatcher<{
-		goBack: void;
-	}>();
+	interface TextBreadcrumb {
+		type: "text";
+		text: string;
+		onClick?: () => void;
+	}
 
-	function handleGoBack() {
-		dispatch("goBack");
+	interface RelayBreadcrumb {
+		type: "relay";
+		relay: Relay;
+		onClick?: () => void;
+	}
+
+	interface FolderBreadcrumb {
+		type: "folder";
+		folder: SharedFolder;
+		onClick?: () => void;
+	}
+
+	interface RemoteFolderBreadcrumb {
+		type: "remoteFolder";
+		remoteFolder: RemoteSharedFolder;
+		onClick?: () => void;
+	}
+
+	type BreadcrumbItem =
+		| HomeBreadcrumb
+		| TextBreadcrumb
+		| RelayBreadcrumb
+		| FolderBreadcrumb
+		| RemoteFolderBreadcrumb;
+
+	export let items: BreadcrumbItem[];
+	export let element: string = "h4";
+
+	const dispatch = createEventDispatcher();
+
+	function handleClick(item: BreadcrumbItem) {
+		if (item.onClick) {
+			item.onClick();
+		}
+	}
+
+	function getIcon(item: BreadcrumbItem) {
+		switch (item.type) {
+			case "home":
+				return HomeIcon;
+			case "relay":
+				return SatelliteIcon;
+			case "folder":
+				return Layers;
+			case "remoteFolder":
+				return item.remoteFolder?.private ? FolderLock : FolderIcon;
+			default:
+				return null;
+		}
 	}
 </script>
 
-<h4>
-	<svelte:component this={category}>
-		<span
-			on:click={handleGoBack}
-			on:keypress={handleGoBack}
-			tabindex="0"
-			role="button"
-		>
-			{categoryText}
-		</span>
+<svelte:element
+	this={element}
+	style="display: flex; align-items: center; gap: 8px;"
+>
+	{#each items as item, index}
+		{#if index > 0}
+			<ChevronRight size={16} />
+		{/if}
 
-		<ChevronRight size={16} />
-
-		<span
-			style="flex: 1; min-width: 0; text-overflow: ellipsis; white-space: nowrap; overflow: hidden;"
-		>
-			<slot />
+		<span style="display: flex; align-items: center; gap: 0.3em;">
+			<span
+				on:click={() => handleClick(item)}
+				on:keypress={(e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						handleClick(item);
+					}
+				}}
+				tabindex="0"
+				role="button"
+				style="display: flex; align-items: center; gap: 0.3em;"
+			>
+				{#if getIcon(item)}
+					<svelte:component
+						this={getIcon(item)}
+						class="svg-icon"
+						style="margin-right: .2em; flex-shrink: 0"
+					/>
+				{/if}
+				{#if item.type === "text"}
+					{item.text}
+				{:else if item.type === "relay"}
+					{#if item.relay.name}
+						{item.relay.name}
+					{:else}
+						<span class="faint">(Untitled Relay Server)</span>
+					{/if}
+				{:else if item.type === "folder"}
+					{item.folder.name}
+				{:else if item.type === "remoteFolder"}
+					{#if item.remoteFolder.name}
+						{item.remoteFolder.name}
+					{:else}
+						<span class="faint">(Untitled folder)</span>
+					{/if}
+				{/if}
+			</span>
 		</span>
-	</svelte:component>
-</h4>
+	{/each}
+</svelte:element>
+
+<style>
+	.faint {
+		color: var(--text-faint);
+	}
+</style>
