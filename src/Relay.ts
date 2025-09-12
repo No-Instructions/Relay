@@ -34,6 +34,7 @@ export interface RemoteSharedFolder
 	private: boolean;
 	relay: Relay;
 	creator: RelayUser;
+	creatorId: string;
 }
 
 export interface Relay

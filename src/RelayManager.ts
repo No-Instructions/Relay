@@ -408,6 +408,10 @@ class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 		return user;
 	}
 
+	public get creatorId() {
+		return this.remoteFolder.creator;
+	}
+
 	public get relay(): Relay {
 		const relay = this.relays.get(this.remoteFolder.relay);
 		if (!relay) {
