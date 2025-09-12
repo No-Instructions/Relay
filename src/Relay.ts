@@ -44,6 +44,7 @@ export interface Relay
 	id: string;
 	guid: string;
 	name: string;
+	version: number;
 	userLimit: number;
 	role: Role;
 	owner: boolean;

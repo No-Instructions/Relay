@@ -59,6 +59,7 @@ interface RelayDAO extends RecordModel {
 	id: string;
 	guid: string;
 	name: string;
+	version: number;
 	path: string;
 	user_limit: number;
 	creator: string;
@@ -1106,6 +1107,10 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 
 	public set name(value: string) {
 		this.relay.name = value;
+	}
+
+	public get version() {
+		return this.relay.version;
 	}
 
 	public get userLimit() {
