@@ -82,6 +82,9 @@ interface ProviderDAO extends RecordModel {
 	url: string;
 	name: string;
 	self_hosted: boolean;
+	public_key: string;
+	key_type: string;
+	key_id: string;
 }
 
 interface RemoteFolderDAO extends RecordModel {
@@ -114,6 +117,7 @@ export interface StorageQuotaDAO extends RecordModel {
 	created: string;
 	quota: number;
 	usage: number;
+	metered: boolean;
 	max_file_size: number;
 }
 
@@ -232,6 +236,10 @@ class StorageQuotaAuto
 		return this.storageQuota.max_file_size;
 	}
 
+	public get metered(): boolean {
+		return this.storageQuota.metered;
+	}
+
 	public get updated(): string {
 		return this.storageQuota.updated;
 	}
@@ -344,6 +352,18 @@ class ProviderAuto extends Observable<Provider> implements Provider {
 
 	public get selfHosted() {
 		return this.provider.self_hosted;
+	}
+
+	public get publicKey() {
+		return this.provider.public_key;
+	}
+
+	public get keyType() {
+		return this.provider.key_type;
+	}
+
+	public get keyId() {
+		return this.provider.key_id;
 	}
 
 	public update(update: ProviderDAO): Provider {
@@ -1892,6 +1912,52 @@ export class RelayManager extends HasLogging {
 		if (!relay) {
 			throw new Error("Failed to create relay");
 		}
+		return relay;
+	}
+
+	async createSelfHostedRelay(
+		url?: string,
+		providerId?: string,
+		organizationId?: string,
+	): Promise<Relay> {
+		if (!this.pb) {
+			throw new Error("Not connected to relay service");
+		}
+
+		// Prepare request body - either url for new host or provider for existing
+		const requestBody: {
+			url?: string;
+			provider?: string;
+			organization?: string;
+		} = {};
+		if (providerId) {
+			requestBody.provider = providerId;
+		} else if (url) {
+			requestBody.url = url;
+		} else {
+			throw new Error("Either URL or provider ID must be provided");
+		}
+
+		// Add organization if provided
+		if (organizationId) {
+			requestBody.organization = organizationId;
+		}
+
+		// Call the self-host endpoint
+		const response = await this.pb.send("/api/collections/relays/self-host", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(requestBody),
+		});
+
+		// Ingest the response into the store
+		const relay = this.store?.ingest<Relay>(response);
+		if (!relay) {
+			throw new Error("Failed to create self-hosted relay");
+		}
+
 		return relay;
 	}
 

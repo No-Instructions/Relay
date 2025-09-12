@@ -50,6 +50,11 @@ export interface RelayUser extends Identified, Updatable<RelayUser> {
 	email: string;
 }
 
+export interface Organization extends Identified, Updatable<Organization> {
+	id: string;
+	name: string;
+}
+
 export interface RemoteSharedFolder
 	extends Identified,
 		Updatable<RemoteSharedFolder>,
@@ -100,6 +105,9 @@ export interface Provider
 	id: string;
 	url: string;
 	selfHosted: boolean;
+	publicKey: string;
+	keyType: string;
+	keyId: string;
 }
 
 export interface StorageQuota
@@ -110,6 +118,7 @@ export interface StorageQuota
 	quota: number;
 	usage: number;
 	maxFileSize: number;
+	metered: boolean;
 }
 
 export interface RelayRole extends Identified, Updatable<RelayRole> {
