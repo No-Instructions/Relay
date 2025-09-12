@@ -12,8 +12,6 @@ import {
 	requireApiVersion,
 	Modal,
 	moment,
-	Setting,
-	ButtonComponent,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -65,6 +63,7 @@ import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { SelfHostModal } from "./ui/SelfHostModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -466,12 +465,39 @@ export default class Live extends Plugin {
 		});
 
 		this.addCommand({
+			id: "open-settings",
+			name: "Open settings",
+			callback: () => {
+				this.openSettings();
+			},
+		});
+
+		this.addCommand({
 			id: "configure-endpoints",
 			name: "Configure enterprise tenant",
 			callback: () => {
 				this.openEndpointConfigurationModal();
 			},
 		});
+
+		if (flags().enableSelfManageHosts) {
+			this.addCommand({
+				id: "register-host",
+				name: "Register self-hosted Relay Server",
+				callback: () => {
+					const modal = new SelfHostModal(
+						this.app,
+						this.relayManager,
+						(relay) => {
+							// Open relay settings after successful creation
+							this.openSettings(`/relays?id=${relay.id}`);
+						},
+					);
+					this.openModals.push(modal);
+					modal.open();
+				},
+			});
+		}
 
 		// Register handler for update availability changes
 		this.register(this.updateManager.subscribe(() => {
@@ -604,7 +630,7 @@ export default class Live extends Plugin {
 							});
 							menu.addItem((item) => {
 								item
-									.setTitle("Relay: Folder settings")
+									.setTitle("Relay: Local folder settings")
 									.setIcon("gear")
 									.onClick(() => {
 										this.openSettings(`/shared-folders?id=${folder.guid}`);

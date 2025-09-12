@@ -1,6 +1,7 @@
 <script lang="ts">
 	import SecretText from "./SecretText.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
+	import { customFetch } from "../customFetch";
 	import {
 		hasPermissionParents,
 		type Relay,
@@ -29,11 +30,15 @@
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
+	import RelayConfigBlock from "./RelayConfigBlock.svelte";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
 	let viewAsAdmin = writable(false);
 	export let plugin!: Live;
+	let loadingRelayConfig = false;
+	let relayConfigError: string | null = null;
+	let relayConfigToml = "";
 	const shouldShowToggle = derived(
 		[
 			remoteFolders,
@@ -151,6 +156,59 @@
 		}
 	});
 	const dispatch = createEventDispatcher();
+
+	async function fetchRelayConfig() {
+		if (!plugin.relayManager?.pb) {
+			relayConfigError = "Not connected to relay service";
+			return;
+		}
+
+		loadingRelayConfig = true;
+		relayConfigError = null;
+
+		try {
+			// Use customFetch directly since PocketBase's .send() tries to parse as JSON
+			const fullUrl =
+				plugin.relayManager.pb.baseUrl +
+				`/api/collections/relays/records/${relay.id}/relay.toml`;
+			const response = await customFetch(fullUrl, {
+				method: "GET",
+				headers: {
+					Authorization: plugin.relayManager.pb.authStore.token
+						? `Bearer ${plugin.relayManager.pb.authStore.token}`
+						: "",
+				},
+			});
+
+			// Get the text from the response
+			const tomlTemplate = await response.text();
+
+			// Replace {url} placeholder with actual provider URL
+			relayConfigToml = tomlTemplate.replace(
+				/\{url\}/g,
+				relay.provider?.url || "",
+			);
+		} catch (err) {
+			relayConfigError =
+				err instanceof Error
+					? err.message
+					: "Failed to fetch relay configuration";
+		} finally {
+			loadingRelayConfig = false;
+		}
+	}
+
+	// Fetch config when component mounts
+	onMount(() => {
+		if (nameInput && nameInput.value === "") {
+			nameInput.focus();
+		}
+
+		// Fetch relay config if it's a self-hosted relay
+		if (relay.provider?.selfHosted) {
+			fetchRelayConfig();
+		}
+	});
 
 	async function handleUpgrade(relay: Relay) {
 		if (!plugin.loginManager?.user) {
@@ -358,6 +416,8 @@
 		if (!folder) {
 			const guid = uuidv4();
 			folder = sharedFolders.new(normalizedPath, guid, relay.guid, true);
+		} else {
+			folder.relayId = relay.guid;
 		}
 
 		// Create remote folder with privacy settings
@@ -742,24 +802,33 @@
 	{/if}
 	{#if $storageQuota && $storageQuota.quota > 0}
 		<SettingItemHeading name="Storage"></SettingItemHeading>
-		<DiskUsage
-			diskUsagePercentage={Math.round(
-				($storageQuota.usage * 100) / $storageQuota.quota,
-			)}
-		/>
-		<SlimSettingItem
-			name="Usage"
-			description="Storage for images, audio, video, etc"
-		>
-			{formatBytes($storageQuota.usage)}
-		</SlimSettingItem>
+		{#if $storageQuota.metered}
+			<DiskUsage
+				diskUsagePercentage={Math.round(
+					($storageQuota.usage * 100) / $storageQuota.quota,
+				)}
+			/>
+			<SlimSettingItem
+				name="Usage"
+				description="Storage for images, audio, video, etc"
+			>
+				{formatBytes($storageQuota.usage)}
+			</SlimSettingItem>
 
-		<SlimSettingItem
-			name="Total storage"
-			description="Total available storage."
-		>
-			{formatBytes($storageQuota.quota)}
-		</SlimSettingItem>
+			<SlimSettingItem
+				name="Total storage"
+				description="Total available storage."
+			>
+				{formatBytes($storageQuota.quota)}
+			</SlimSettingItem>
+		{:else}
+			<SlimSettingItem
+				name="Total storage"
+				description="Total available storage."
+			>
+				Unmetered by Relay
+			</SlimSettingItem>
+		{/if}
 
 		<SlimSettingItem
 			name="File size limit"
@@ -769,21 +838,14 @@
 		</SlimSettingItem>
 	{/if}
 
-	{#if relay.provider}
-		{#if relay.provider.selfHosted}
-			<SettingItemHeading name="Self hosting"></SettingItemHeading>
-		{:else}
-			<SettingItemHeading name="Host"></SettingItemHeading>
-		{/if}
-		<SettingItem name="Name" description="">
-			{relay.provider.name}
-		</SettingItem>
-		<SettingItem name="Domain" description="">
+	{#if relay.provider && relay.provider.selfHosted}
+		<SettingItemHeading name="Host"></SettingItemHeading>
+		<SettingItem name="URL" description="">
 			{relay.provider.url}
 		</SettingItem>
-		{#if relay.provider.selfHosted}
-			{#await checkRelayHost(relay) then response}
-				{#if response.level === "warning"}
+		{#await checkRelayHost(relay) then response}
+			{#if response.level === "warning"}
+				<SettingItem name="Status" description="">
 					<p class="mod-warning relay-host-check">
 						{@html minimark(response.status)}
 
@@ -794,8 +856,25 @@
 							</a>
 						{/if}
 					</p>
+				</SettingItem>
+			{/if}
+		{/await}
+		{#if relay.provider.publicKey}
+			<div class="relay-auth-section">
+				<div class="setting-item-name">Relay Server Configuration</div>
+				<div class="setting-item-description">
+					Copy this configuration to your Relay Server's TOML file.
+				</div>
+				{#if loadingRelayConfig}
+					<div class="loading-message">Loading configuration...</div>
+				{:else if relayConfigError}
+					<div class="error-message">{relayConfigError}</div>
+				{:else if relayConfigToml}
+					<RelayConfigBlock toml={relayConfigToml} />
+				{:else}
+					<div class="error-message">No configuration available</div>
 				{/if}
-			{/await}
+			</div>
 		{/if}
 	{/if}
 {/if}
@@ -916,5 +995,30 @@
 	.admin-toggle-btn:hover {
 		color: var(--text-normal);
 		text-decoration: underline;
+	}
+
+	.relay-auth-section {
+		margin: 16px 0;
+	}
+
+	.loading-message {
+		background: var(--background-secondary);
+		color: var(--text-muted);
+		border: 1px solid var(--background-modifier-border);
+		border-radius: var(--radius-s);
+		padding: 12px;
+		margin: 16px 0;
+		font-size: 0.9em;
+		text-align: center;
+	}
+
+	.error-message {
+		background: var(--background-secondary);
+		color: var(--text-error);
+		border: 1px solid var(--text-error);
+		border-radius: var(--radius-s);
+		padding: 12px;
+		margin: 16px 0;
+		font-size: 0.9em;
 	}
 </style>

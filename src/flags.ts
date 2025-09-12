@@ -26,7 +26,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableVerifyUploads: false,
 	enableAutomaticDiffResolution: false,
 	enableDiscordLogin: false,
-	enableSelfManageHosts: false,
+	enableSelfManageHosts: true,
 	enableToasts: false,
 } as const;
 

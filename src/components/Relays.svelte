@@ -27,7 +27,6 @@
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
-	export let providers: ObservableMap<string, Provider>;
 	export let subscriptions: ObservableMap<string, RelaySubscription>;
 
 	const sharedFolders = plugin.sharedFolders;
@@ -319,20 +318,6 @@
 				Manage
 			</button>
 		</SlimSettingItem>
-	{/each}
-{/if}
-
-{#if flags().enableSelfManageHosts}
-	<SettingItemHeading name="Hosts" helpText="Manage self-hosted Relay Servers"
-	></SettingItemHeading>
-	{#if $providers.values().length === 0}
-		<SettingItem
-			description="See our documentation for how to host a Relay Server."
-		/>
-	{/if}
-	{#each $providers.values() as provider}
-		<SlimSettingItem name={provider?.name} description={provider?.url}
-		></SlimSettingItem>
 	{/each}
 {/if}
 
