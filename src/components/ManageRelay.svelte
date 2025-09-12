@@ -765,6 +765,19 @@
 					</p>
 				{/if}
 			{/await}
+		    {#if relay.provider.publicKey}
+		    	<SettingItem
+		    		name="Relay Auth Token"
+		    		description="Copy this key to your Relay Server's TOML configuration."
+		    	>
+		    		<SecretText
+		    			value={relay.provider.publicKey}
+		    			readonly={true}
+		    			copyOnClick={true}
+		    			successMessage="Public key copied"
+		    		/>
+		    	</SettingItem>
+		    {/if}
 		{/if}
 	{/if}
 {/if}
