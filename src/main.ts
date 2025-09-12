@@ -612,6 +612,15 @@ export default class Live extends Plugin {
 										this._liveViews.refresh("folder connection toggle");
 									});
 							});
+						} else {
+							menu.addItem((item) => {
+								item
+									.setTitle("Relay: Local folder settings")
+									.setIcon("gear")
+									.onClick(() => {
+										this.openSettings(`/shared-folders?id=${folder.guid}`);
+									});
+							});
 						}
 						if (folder.relayId && flags().enableSyncModal) {
 							menu.addItem((item) => {

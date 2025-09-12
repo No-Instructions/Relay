@@ -7,7 +7,9 @@
 	import type Live from "src/main";
 	import type { SharedFolder } from "src/SharedFolder";
 	import ManageSharedFolder from "./ManageSharedFolder.svelte";
+	import ManageRemoteFolder from "./ManageRemoteFolder.svelte";
 	import { minimark } from "src/minimark";
+	import type { RemoteSharedFolder } from "src/Relay";
 
 	interface RelayEventDetail {
 		relay: Relay;
@@ -16,11 +18,17 @@
 	interface View {
 		currentRelay?: Relay;
 		sharedFolder?: SharedFolder;
-		component: typeof Relays | typeof ManageRelay | typeof ManageSharedFolder;
+		remoteFolder?: RemoteSharedFolder;
+		component:
+			| typeof Relays
+			| typeof ManageRelay
+			| typeof ManageSharedFolder
+			| typeof ManageRemoteFolder;
 	}
 
 	interface SharedFolderEventDetail {
-		folder: SharedFolder;
+		folder?: SharedFolder;
+		remoteFolder?: RemoteSharedFolder;
 		relay?: Relay;
 	}
 	interface ManageRelayEvent extends CustomEvent<RelayEventDetail> {}
@@ -47,9 +55,11 @@
 	let currentComponent:
 		| typeof Relays
 		| typeof ManageRelay
-		| typeof ManageSharedFolder = Relays;
+		| typeof ManageSharedFolder
+		| typeof ManageRemoteFolder = Relays;
 
 	let currentRelay: Relay | undefined;
+	let remoteFolder: RemoteSharedFolder | undefined;
 	const history: View[] = [{ component: Relays }];
 
 	export let close: () => void;
@@ -68,6 +78,7 @@
 	function setPath(path: string) {
 		currentRelay = undefined;
 		sharedFolder = undefined;
+		remoteFolder = undefined;
 
 		if (path === "/") {
 			currentComponent = Relays;
@@ -79,7 +90,9 @@
 
 		if (path.startsWith("/relays")) {
 			if (id) {
-				currentRelay = relayManager.relays.find((relay) => relay.guid === id);
+				currentRelay = relayManager.relays.find(
+					(relay) => relay.guid === id || relay.id === id,
+				);
 				currentComponent = ManageRelay;
 			} else {
 				currentComponent = Relays;
@@ -92,9 +105,16 @@
 				sharedFolder = sharedFolders.find((f) => f.guid === id);
 				const relayId = urlParams.get("relay");
 				if (relayId) {
-					currentRelay = relayManager.relays.get(relayId);
+					currentRelay = relayManager.relays.find(
+						(relay) => relay.guid === relayId || relay.id === relayId,
+					);
 				}
-				currentComponent = ManageSharedFolder;
+				if (sharedFolder?.remote) {
+					remoteFolder = sharedFolder.remote;
+					currentComponent = ManageRemoteFolder;
+				} else {
+					currentComponent = ManageSharedFolder;
+				}
 			}
 			return;
 		}
@@ -110,26 +130,45 @@
 		history.push({
 			currentRelay,
 			sharedFolder,
+			remoteFolder,
 			component: currentComponent,
 		});
 		currentRelay = event.detail.relay;
 		sharedFolder = undefined;
+		remoteFolder = undefined;
 		currentComponent = ManageRelay;
 	}
 	function handleManageSharedFolderEvent(event: ManageSharedFolderEvent) {
 		history.push({
 			currentRelay,
 			sharedFolder,
+			remoteFolder,
 			component: currentComponent,
 		});
 		sharedFolder = event.detail.folder;
+		remoteFolder = event.detail.remoteFolder;
 		currentRelay = event.detail.relay;
+		currentComponent = ManageSharedFolder;
+	}
+
+	function handleManageRemoteFolderEvent(event: ManageSharedFolderEvent) {
+		history.push({
+			currentRelay,
+			sharedFolder,
+			remoteFolder,
+			component: currentComponent,
+		});
+		sharedFolder = undefined; // No local folder
+		remoteFolder = event.detail.remoteFolder;
+		currentRelay = event.detail.relay;
+		currentComponent = ManageRemoteFolder;
 	}
 
 	async function handleCreateRelayEvent(event: CreateRelayEvent) {
 		history.push({
 			currentRelay,
 			sharedFolder,
+			remoteFolder,
 			component: currentComponent,
 		});
 		currentRelay = await plugin.relayManager.createRelay("");
@@ -141,6 +180,7 @@
 			history.length = 0;
 			currentRelay = undefined;
 			sharedFolder = undefined;
+			remoteFolder = undefined;
 			currentComponent = Relays;
 			return;
 		}
@@ -148,13 +188,21 @@
 		let view = history.pop();
 		if (view) {
 			while (view) {
-				if (!view.currentRelay && !view.sharedFolder) {
+				if (!view.currentRelay && !view.sharedFolder && !view.remoteFolder) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
+					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
 				} else if (view.sharedFolder && sharedFolders.has(view.sharedFolder)) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
+					remoteFolder = view.remoteFolder;
+					currentComponent = view.component;
+					break;
+				} else if (view.remoteFolder) {
+					currentRelay = view.currentRelay;
+					sharedFolder = view.sharedFolder;
+					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
 					break;
 				} else if (
@@ -163,6 +211,7 @@
 				) {
 					currentRelay = view.currentRelay;
 					sharedFolder = view.sharedFolder;
+					remoteFolder = view.remoteFolder;
 					currentComponent = view.component;
 					break;
 				}
@@ -171,6 +220,7 @@
 		} else {
 			currentRelay = undefined;
 			sharedFolder = undefined;
+			remoteFolder = undefined;
 			currentComponent = Relays;
 		}
 	}
@@ -195,11 +245,12 @@
 	$: {
 		if (sharedFolder && !sharedFolders.has(sharedFolder)) {
 			sharedFolder = undefined;
+			remoteFolder = undefined;
 			currentComponent = Relays;
 		}
 	}
 
-	$: if (currentComponent || currentRelay || sharedFolder) {
+	$: if (currentComponent || currentRelay || sharedFolder || remoteFolder) {
 		setTimeout(() => {
 			const content = document.querySelector(".vertical-tab-content");
 			if (content) {
@@ -219,7 +270,7 @@
 	}
 </script>
 
-{#if currentRelay || sharedFolder}
+{#if currentRelay || sharedFolder || remoteFolder}
 	<ModalSettingsNav on:goBack={handleGoBack}></ModalSettingsNav>
 {:else if plugin.networkStatus.status}
 	<div
@@ -260,13 +311,22 @@
 	{#if sharedFolder}
 		<ManageSharedFolder
 			{plugin}
-			{relayRoles}
 			{sharedFolder}
+			on:goBack={handleGoBack}
+			on:close={handleClose}
+		></ManageSharedFolder>
+	{:else if remoteFolder}
+		<ManageRemoteFolder
+			{plugin}
+			{remoteFolder}
 			{sharedFolders}
+			{relayRoles}
+			folderRoles={relayManager.folderRoles}
 			on:goBack={handleGoBack}
 			on:close={handleClose}
 			on:manageRelay={handleManageRelayEvent}
-		></ManageSharedFolder>
+			on:manageSharedFolder={handleManageSharedFolderEvent}
+		></ManageRemoteFolder>
 	{:else if currentRelay}
 		<ManageRelay
 			{plugin}
@@ -276,6 +336,7 @@
 			on:goBack={handleGoBack}
 			on:close={handleClose}
 			on:manageSharedFolder={handleManageSharedFolderEvent}
+			on:manageRemoteFolder={handleManageRemoteFolderEvent}
 		></ManageRelay>
 	{:else}
 		<LoggedIn {plugin}>
@@ -286,6 +347,7 @@
 				{plugin}
 				on:manageRelay={handleManageRelayEvent}
 				on:manageSharedFolder={handleManageSharedFolderEvent}
+				on:manageRemoteFolder={handleManageRemoteFolderEvent}
 				on:createRelay={handleCreateRelayEvent}
 				on:joinRelay={handleJoinRelay}
 			></Relays>
