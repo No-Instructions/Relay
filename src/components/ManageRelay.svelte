@@ -228,6 +228,7 @@
 			plugin.app,
 			sharedFolders,
 			remoteFolder,
+			[],
 			addToVault,
 		).open();
 	};
@@ -369,6 +370,7 @@
 			plugin.app,
 			plugin.sharedFolders,
 			remoteFolder,
+			[],
 			addToVault,
 		).open();
 	}
