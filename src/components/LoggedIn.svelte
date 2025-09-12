@@ -347,7 +347,7 @@
 								transition:slide={{ duration: $shouldAnimate ? 300 : 0, easing: quintOut }}
 								on:click={() => {
 									pending.set(true);
-									poll();
+									poll(provider);
 								}}>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
 							>
 						</a>
