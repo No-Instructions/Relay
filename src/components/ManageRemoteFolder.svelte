@@ -21,6 +21,7 @@
 	import SettingsControl from "./SettingsControl.svelte";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
 	import { Edit, Check } from "lucide-svelte";
+	import { UserSelectModal } from "src/ui/UserSelectModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import { normalizePath } from "obsidian";
 	import { join } from "path-browserify";
@@ -83,6 +84,7 @@
 		isOwner.set(isRelayOwner);
 	}
 
+	let isEditingUsers = writable(false);
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
 	let updating = writable(false);
@@ -132,6 +134,65 @@
 		} catch (error) {
 			console.error("Failed to delete remote folder:", error);
 			// Could show an error notification here if needed
+		}
+	}
+
+	function handleEditUsersToggle(event: KeyboardEvent | MouseEvent) {
+		if (
+			event instanceof MouseEvent ||
+			(event instanceof KeyboardEvent &&
+				(event.key === "Enter" || event.key === " "))
+		) {
+			isEditingUsers.update((value) => !value);
+		}
+	}
+
+	async function handleRemoveFolderUser(folderRole: FolderRole) {
+		await plugin.relayManager.removeFolderRole(folderRole);
+	}
+
+	async function handleMakePrivate() {
+		// Make the folder private
+		const updated = await plugin.relayManager.updateFolderPrivacy(
+			remoteFolder,
+			true,
+		);
+		// Update the local remoteFolder to trigger reactivity
+		remoteFolder = updated;
+		// Open the add users modal
+		handleAddUser();
+	}
+
+	function handleAddUser() {
+		const modal = new UserSelectModal(
+			plugin.app,
+			plugin.relayManager,
+			remoteFolder,
+			async (userIds: string[], role) => {
+				// Add all selected users
+				for (const userId of userIds) {
+					await plugin.relayManager.addFolderRole(remoteFolder, userId, role);
+				}
+			},
+		);
+		modal.open();
+	}
+
+	async function handleFolderRoleChange(folderRole: FolderRole, newRole: Role) {
+		await plugin.relayManager.updateFolderRole(folderRole, newRole);
+	}
+
+	async function handleFolderRoleChangeEvent(event: Event) {
+		const target = event.target as HTMLSelectElement;
+		const folderRole = $currentFolderRoles.get(target.dataset.roleId!);
+		if (folderRole) {
+			const originalRole = folderRole.role;
+			try {
+				await handleFolderRoleChange(folderRole, target.value as Role);
+			} catch (e) {
+				// Revert dropdown to the original role value
+				target.value = originalRole;
+			}
 		}
 	}
 
@@ -279,31 +340,80 @@
 
 {#if $relayStore && remoteFolder?.private && $isOwner}
 	<SettingItemHeading name="Users with access">
+		<div
+			class="edit-members-button"
+			role="button"
+			tabindex="0"
+			aria-label={$isEditingUsers ? "Cancel editing users" : "Edit users"}
+			on:click={handleEditUsersToggle}
+			on:keypress={handleEditUsersToggle}
+		>
+			{#if $isEditingUsers}
+				<Check class="svg-icon" />
+			{:else}
+				<Edit class="svg-icon" />
+			{/if}
+		</div>
 	</SettingItemHeading>
 
 	{#each $currentFolderRoles.values() as folderRole}
 		<AccountSettingItem user={folderRole.user}>
-			<div style="display: flex; gap: 8px; align-items: center;">
-				<select
-					class="dropdown"
-					disabled={true}
-					aria-label={folderRole.userId === plugin.relayManager.user?.id
-						? "Cannot modify your own role"
-						: undefined}
-					value={folderRole.role}
-					data-role-id={folderRole.id}
-				>
-					<option value="Owner">Owner</option>
-					<option value="Member">Member</option>
-				</select>
-			</div>
+			{#if $isEditingUsers}
+				{#if folderRole.userId !== plugin.relayManager.user?.id}
+					<button
+						class="mod-destructive"
+						on:click={debounce(() => {
+							handleRemoveFolderUser(folderRole);
+						})}
+					>
+						Remove
+					</button>
+				{/if}
+			{:else}
+				<div style="display: flex; gap: 8px; align-items: center;">
+					<select
+						class="dropdown"
+						disabled={folderRole.userId === plugin.relayManager.user?.id}
+						aria-label={folderRole.userId === plugin.relayManager.user?.id
+							? "Cannot modify your own role"
+							: undefined}
+						value={folderRole.role}
+						data-role-id={folderRole.id}
+						on:change={handleFolderRoleChangeEvent}
+					>
+						<option value="Owner">Owner</option>
+						<option value="Member">Member</option>
+					</select>
+				</div>
+			{/if}
 		</AccountSettingItem>
 	{/each}
+
+	<SettingItem description="" name="">
+		<button
+			class="mod-cta"
+			aria-label="Add user to private folder"
+			disabled={$isEditingUsers}
+			on:click={debounce(handleAddUser)}
+		>
+			Add User
+		</button>
+	</SettingItem>
 {/if}
 
 {#if $relayStore}
 	{#if $relayStore?.owner}
 		<SettingItemHeading name="Danger zone"></SettingItemHeading>
+		{#if !remoteFolder?.private && remoteFolder?.relay.version > 0}
+			<SettingItem
+				name="Make private"
+				description="Convert this folder to a private folder and manage access"
+			>
+				<button class="mod-warning" on:click={debounce(handleMakePrivate)}>
+					Make private
+				</button>
+			</SettingItem>
+		{/if}
 		<SettingItem
 			name="Remove from Relay Server"
 			description={`Deletes the remote folder from the Relay Server. Local files will be preserved.`}
@@ -318,9 +428,38 @@
 <style>
 	.system3-input-invalid {
 		border: 1px solid var(--color-red) !important;
+    }
+
+	.edit-members-button {
+		display: flex;
+		cursor: pointer;
+		padding: 4px;
+		margin-bottom: -4px;
+		border-radius: var(--radius-s);
+		color: var(--icon-color);
+		transition:
+			color 0.15s ease-in-out,
+			background-color 0.15s ease-in-out;
+	}
+
+	.edit-members-button:hover {
+		color: var(--icon-color-hover);
+		background-color: var(--background-modifier-hover);
 	}
 
     input.system3-updating {
         border: 1px solid var(--color-accent) !important;
     }
+
+	.edit-members-button:focus {
+		outline: none;
+		color: var(--icon-color-focus);
+	}
+	
+	/* Fix for invisible text in disabled dropdown */
+	select.dropdown:disabled {
+		opacity: 1 !important;
+		color: var(--text-muted) !important;
+		-webkit-text-fill-color: var(--text-muted) !important;
+	}
 </style>
