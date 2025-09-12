@@ -454,7 +454,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	async initiateManualOAuth2CodeFlow(
 		whichFetch: typeof fetch | typeof customFetch,
-		providerNames: string[] = ["google"],
+		providerNames: string[],
 	): Promise<Record<string, Provider>> {
 		this.beforeLogin();
 		const authMethods = await this.pb
@@ -541,7 +541,7 @@ export class LoginManager extends Observable<LoginManager> {
 		});
 	}
 
-	async login(provider = "google"): Promise<boolean> {
+	async login(provider: string): Promise<boolean> {
 		this.beforeLogin();
 		const authData = await this.pb.collection("users").authWithOAuth2({
 			provider: provider,

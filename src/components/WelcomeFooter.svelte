@@ -2,12 +2,11 @@
 	import Discord from "./Discord.svelte";
 	import { Platform } from "obsidian";
 
-	const googleHelpText =
-		"We require sign-in because your vault needs to communicate securely with Relay servers for syncing. An identity provider like Google helps to prevent spam accounts. We may add more sign-in options based on user feedback — let us know in Discord.";
+	const helpText =
+		"We require sign-in because your vault needs to communicate securely with Relay servers for syncing. Using an identity provider helps to prevent spam accounts and ensures secure authentication.";
 
 	let isVisible = false;
 	let isMobile = false;
-	export let isGoogle = true;
 	let buttonEl: HTMLButtonElement;
 	let popoverEl: HTMLDivElement;
 
@@ -38,26 +37,26 @@
 <div class="help-section">
 	<div class="help-container">
 		<button
-			class="why-google"
+			class="why-signin"
 			class:mobile={isMobile}
 			bind:this={buttonEl}
 			on:mouseenter={handleMouseEnter}
 			on:mouseleave={handleMouseLeave}
 			on:click={handleClick}
 		>
-			{isGoogle ? "Why sign in with Google?" : "Why do I need to sign in?"}
+			Why do I need to sign in?
 		</button>
 
 		{#if isMobile}
 			{#if isVisible}
 				<div class="help-content">
-					<p>{googleHelpText}</p>
+					<p>{helpText}</p>
 				</div>
 			{/if}
 		{:else}
 			<div bind:this={popoverEl} class="popover" class:visible={isVisible}>
 				<div class="arrow" />
-				<p>{googleHelpText}</p>
+				<p>{helpText}</p>
 			</div>
 		{/if}
 	</div>
@@ -87,12 +86,12 @@
 		max-width: 640px;
 		margin: 0 auto;
 	}
-	.why-google:hover {
+	.why-signin:hover {
 		background-color: transparent !important;
 		box-shadow: none;
 		color: var(--text-modifier-hover);
 	}
-	.why-google {
+	.why-signin {
 		outline: 0;
 		color: var(--text-muted);
 		font-size: 0.875rem;
@@ -106,7 +105,7 @@
 		width: 100%;
 		text-align: left;
 	}
-	.why-google:hover {
+	.why-signin:hover {
 		color: var(--text-normal);
 	}
 	.help-content {

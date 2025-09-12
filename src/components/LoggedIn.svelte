@@ -209,7 +209,7 @@
 		timedOut.set(false);
 	}
 
-	async function login(providerName = "google") {
+	async function login(providerName: string) {
 		try {
 			selectedProvider.set(providerName);
 			const loginSuccess = await plugin.loginManager.login(providerName);
@@ -264,7 +264,7 @@
 		initiate();
 	});
 
-	async function poll(providerName = "google") {
+	async function poll(providerName: string) {
 		const provider = providers[providerName];
 		if (!provider) {
 			return;
@@ -365,11 +365,11 @@
 		{#if $error}
 			<p>
 				{$error}.<br />
-				{#if $timedOut}
+				{#if $timedOut && $selectedProvider}
 					Already logged in? <button
 						class="link link-button"
 						on:click={debounce(() => {
-							poll($selectedProvider || "google");
+							poll($selectedProvider);
 						})}>(click here)</button
 					>
 				{/if}
@@ -416,9 +416,7 @@
 			>
 		</p>
 	{/if}
-	<WelcomeFooter
-		isGoogle={!flags().enableDiscordLogin}
-	/>
+	<WelcomeFooter />
 {/if}
 
 <style>
