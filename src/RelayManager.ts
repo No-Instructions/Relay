@@ -1790,6 +1790,52 @@ export class RelayManager extends HasLogging {
 		return relay;
 	}
 
+	async createSelfHostedRelay(
+		url?: string,
+		providerId?: string,
+		organizationId?: string,
+	): Promise<Relay> {
+		if (!this.pb) {
+			throw new Error("Not connected to relay service");
+		}
+
+		// Prepare request body - either url for new host or provider for existing
+		const requestBody: {
+			url?: string;
+			provider?: string;
+			organization?: string;
+		} = {};
+		if (providerId) {
+			requestBody.provider = providerId;
+		} else if (url) {
+			requestBody.url = url;
+		} else {
+			throw new Error("Either URL or provider ID must be provided");
+		}
+
+		// Add organization if provided
+		if (organizationId) {
+			requestBody.organization = organizationId;
+		}
+
+		// Call the self-host endpoint
+		const response = await this.pb.send("/api/collections/relays/self-host", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(requestBody),
+		});
+
+		// Ingest the response into the store
+		const relay = this.store?.ingest<Relay>(response);
+		if (!relay) {
+			throw new Error("Failed to create self-hosted relay");
+		}
+
+		return relay;
+	}
+
 	async updateRelay(relay: Relay): Promise<Relay> {
 		if (!this.pb) throw new Error("Failed to update relay");
 		const record = await this.pb

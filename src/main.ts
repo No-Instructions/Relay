@@ -12,8 +12,6 @@ import {
 	requireApiVersion,
 	Modal,
 	moment,
-	Setting,
-	ButtonComponent,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -65,6 +63,7 @@ import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { SelfHostModal } from "./ui/SelfHostModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -470,6 +469,25 @@ export default class Live extends Plugin {
 				this.openEndpointConfigurationModal();
 			},
 		});
+
+		if (flags().enableSelfManageHosts) {
+			this.addCommand({
+				id: "self-host",
+				name: "Self Host",
+				callback: () => {
+					const modal = new SelfHostModal(
+						this.app,
+						this.relayManager,
+						(relay) => {
+							// Open relay settings after successful creation
+							this.openSettings(`/relays?id=${relay.id}`);
+						}
+					);
+					this.openModals.push(modal);
+					modal.open();
+				},
+			});
+		}
 
 		// Register handler for update availability changes
 		this.updateManager.subscribe(() => {
