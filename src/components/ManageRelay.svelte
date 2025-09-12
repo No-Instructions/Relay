@@ -8,6 +8,7 @@
 		type RelaySubscription,
 		type RemoteSharedFolder,
 		type Role,
+		type FolderRole,
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
@@ -34,6 +35,7 @@
 	export let plugin!: Live;
 	export let sharedFolders!: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
+	export let folderRoles: ObservableMap<string, FolderRole>;
 
 	import { moment } from "obsidian";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
@@ -108,6 +110,56 @@
 	const roles = $relayRoles.filter((role: RelayRole) => {
 		return role.relayId === relay.id;
 	});
+
+	// Filter folders available for device sync (both local and available to add)
+	const deviceSyncFolders = derived(
+		[remoteFolders, folderRoles, sharedFolders],
+		([$remoteFolders, $folderRoles, $sharedFolders]) => {
+			const currentUserId = plugin.relayManager.user?.id;
+			if (!currentUserId) return [];
+
+			return $remoteFolders.values().filter((remoteFolder) => {
+				// Apply permission logic to determine if user can access this folder
+				if (!remoteFolder.private) return true;
+				if (remoteFolder.creator?.id === currentUserId) return true;
+
+				const userHasRole = $folderRoles
+					.values()
+					.some(
+						(role) =>
+							role.sharedFolderId === remoteFolder.id &&
+							role.userId === currentUserId,
+					);
+
+				return userHasRole;
+			});
+		},
+	);
+
+	// Filter folders that user can admin (for Folder Admin section)
+	const adminableFolders = derived(
+		[remoteFolders, folderRoles],
+		([$remoteFolders, $folderRoles]) => {
+			const currentUserId = plugin.relayManager.user?.id;
+			if (!currentUserId) return [];
+
+			return $remoteFolders.values().filter((remoteFolder) => {
+				// User can admin ONLY if they are the creator
+				if (remoteFolder.creator?.id === currentUserId) return true;
+
+				// OR if they have Owner role for this specific folder
+				const userRole = $folderRoles
+					.values()
+					.find(
+						(role) =>
+							role.sharedFolderId === remoteFolder.id &&
+							role.userId === currentUserId,
+					);
+
+				return userRole?.role === "Owner";
+			});
+		},
+	);
 
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
