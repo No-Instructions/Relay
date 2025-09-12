@@ -26,6 +26,8 @@
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import DiskUsage from "./DiskUsage.svelte";
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
+	import { ShareFolderModal } from "src/ui/ShareFolderModal";
+	import { FolderCreateModal } from "src/ui/FolderCreateModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
@@ -280,6 +282,7 @@
 			plugin.app,
 			sharedFolders,
 			remoteFolder,
+			[], // No other available folders since this one is pre-selected
 			addToVault,
 		).open();
 	};
@@ -355,6 +358,56 @@
 		}
 	}
 
+	function handleShareExistingFolder() {
+		const modal = new ShareFolderModal(
+			plugin.app,
+			relay,
+			sharedFolders,
+			plugin.relayManager,
+			async (folderPath, folderName, isPrivate, userIds) => {
+				const normalizedPath = normalizePath(folderPath);
+				let folder = sharedFolders.find(
+					(folder) => folder.path == normalizedPath,
+				);
+
+				// If folder doesn't exist as shared folder yet, create it
+				if (!folder) {
+					const guid = uuidv4();
+					folder = sharedFolders.new(normalizedPath, guid, relay.guid, true);
+				}
+
+				// Create remote folder with privacy settings
+				const remote = await plugin.relayManager.createRemoteFolder(
+					folder,
+					relay,
+					isPrivate,
+				);
+
+				// Add users to the private folder if it's private
+				if (isPrivate) {
+					for (const userId of userIds) {
+						await plugin.relayManager.addFolderRole(remote, userId, "Member");
+					}
+				}
+
+				folder.remote = remote;
+				folder.connect();
+				plugin.sharedFolders.notifyListeners();
+
+				// Navigate to the remote folder after successful creation
+				setTimeout(() => {
+					dispatch("manageSharedFolder", {
+						remoteFolder: remote,
+						relay: remote.relay,
+					});
+				}, 100);
+
+				return folder;
+			},
+		);
+		modal.open();
+	}
+
 	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
 		plugin.app,
 		sharedFolders,
@@ -395,6 +448,20 @@
 			plugin.sharedFolders.notifyListeners();
 		},
 	);
+
+	function openFolderCreateModal() {
+		const modal = new FolderCreateModal(
+			plugin.app,
+			sharedFolders,
+			plugin.relayManager,
+			relay,
+			() => {
+				// Refresh the component after successful creation
+				plugin.sharedFolders.notifyListeners();
+			},
+		);
+		modal.open();
+	}
 </script>
 
 <Breadcrumbs
@@ -450,7 +517,11 @@
 		class="mod-cta"
 		aria-label="Select a folder to share it with this Relay Server"
 		on:click={debounce(() => {
-			folderSelect.open();
+			if (relay.version === 0) {
+				folderSelect.open();
+			} else {
+				handleShareExistingFolder();
+			}
 		})}>Share a folder</button
 	>
 </SettingItem>
