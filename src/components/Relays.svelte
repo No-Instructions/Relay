@@ -100,6 +100,56 @@
 	function handleCreateRelay() {
 		dispatch("createRelay");
 	}
+
+	async function addFolderToVault(
+		remoteFolder: RemoteSharedFolder,
+		folderName: string,
+		folderLocation: string,
+	): Promise<SharedFolder> {
+		// Create the folder path
+		const vaultRelativePath = normalizePath(join(folderLocation, folderName));
+		if (plugin.app.vault.getFolderByPath(vaultRelativePath) === null) {
+			await plugin.app.vault.createFolder(vaultRelativePath);
+		}
+
+		// Add the folder to SharedFolders
+		const folder = plugin.sharedFolders.new(
+			vaultRelativePath,
+			remoteFolder.guid,
+			remoteFolder.relay.guid,
+		);
+
+		return folder;
+	}
+
+	function handleAddFolder() {
+		// Get all available remote folders that aren't already in vault
+		const availableFolders: RemoteSharedFolder[] = [];
+
+		$relays.values().forEach((relay) => {
+			if (relay.folders) {
+				relay.folders.values().forEach((remoteFolder) => {
+					// Check if folder isn't already in vault
+					const alreadyInVault = $sharedFolders
+						.items()
+						.some((local) => local.remote?.id === remoteFolder.id);
+
+					if (!alreadyInVault) {
+						availableFolders.push(remoteFolder);
+					}
+				});
+			}
+		});
+
+		const modal = new AddToVaultModal(
+			plugin.app,
+			plugin.sharedFolders,
+			undefined, // No pre-selected remote folder
+			availableFolders,
+			addFolderToVault,
+		);
+		modal.open();
+	}
 	function sortFn(a: Relay, b: Relay): number {
 		if (a.owner && !b.owner) {
 			return -1;
@@ -192,6 +242,16 @@
 	</SlimSettingItem>
 {/each}
 
+<SlimSettingItem name="">
+	<button
+		class="mod-cta"
+		aria-label="Add shared folder to vault"
+		on:click={debounce(handleAddFolder)}
+		style="max-width: 8em"
+	>
+		Add Folder
+	</button>
+</SlimSettingItem>
 {#if subscriptions.values().length > 0}
 	<div class="spacer"></div>
 	<SettingItemHeading
