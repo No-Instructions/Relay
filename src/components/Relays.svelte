@@ -5,7 +5,12 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 	import ExternalLink from "./ExternalLink.svelte";
-	import { type Provider, type Relay, type RelaySubscription } from "../Relay";
+	import {
+		type Provider,
+		type Relay,
+		type RelaySubscription,
+		type RemoteSharedFolder,
+	} from "../Relay";
 	import type Live from "src/main";
 	import Satellite from "./Satellite.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
@@ -15,6 +20,9 @@
 	import SecretText from "./SecretText.svelte";
 	import { flags } from "src/flagManager";
 	import { moment } from "obsidian";
+	import { AddToVaultModal } from "src/ui/AddToVaultModal";
+	import { normalizePath } from "obsidian";
+	import { join } from "path-browserify";
 
 	export let plugin: Live;
 	export let relays: ObservableMap<string, Relay>;
@@ -157,21 +165,20 @@
 </SettingItem>
 
 <SettingItemHeading
-	name="Shared Folders"
-	helpText="Shared Folders enhance local folders by tracking edits. You can see what Relay Server a Shared Folder is connected to below."
+	name="My vault"
+	helpText="Manage local shared folders on this device and the remote folders they are connected to."
 ></SettingItemHeading>
 {#if $sharedFolders.items().length === 0}
 	<SettingItem
-		description="Go to a Relay Server's settings page above to share existing folders, or add Shared Folders to your vault."
+		description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
 	/>
 {/if}
 {#each $sharedFolders.items() as folder}
 	<SlimSettingItem>
 		<SharedFolderSpan
-			on:manageRelay
 			on:manageSharedFolder
+			on:manageRemoteFolder
 			{folder}
-			relay={folder.remote?.relay}
 			slot="name"
 		/>
 		<SettingsControl

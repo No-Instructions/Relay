@@ -405,6 +405,10 @@ class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 		return this.remoteFolder.name;
 	}
 
+	public set name(value: string) {
+		this.remoteFolder.name = value;
+	}
+
 	public get private() {
 		return this.remoteFolder.private;
 	}
