@@ -3,6 +3,7 @@
 import { v4 as uuid } from "uuid";
 import {
 	type RelayRole,
+	type FolderRole,
 	type Relay,
 	type RelayInvitation,
 	type Role,
@@ -90,6 +91,13 @@ interface RelayRoleDAO extends RecordModel {
 	user: string;
 	role: string;
 	relay: string;
+}
+
+interface FolderRoleDAO extends RecordModel {
+	id: string;
+	user: string;
+	role: string;
+	shared_folder: string;
 }
 
 export interface StorageQuotaDAO extends RecordModel {
@@ -371,11 +379,17 @@ class ProviderCollection implements Collection<ProviderDAO, Provider> {
 	}
 }
 
-class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
+class RemoteFolderAuto
+	extends Observable<RemoteFolder>
+	implements RemoteFolder, hasACL
+{
 	constructor(
 		private remoteFolder: RemoteFolderDAO,
 		private relays: ObservableMap<string, Relay>,
+		private relayRoles: ObservableMap<string, RelayRole>,
+		private folderRoles: ObservableMap<string, FolderRole>,
 		private users: ObservableMap<string, RelayUser>,
+		private user: RelayUser,
 	) {
 		super();
 	}
@@ -425,12 +439,51 @@ class RemoteFolderAuto extends Auto implements RemoteSharedFolder {
 		return this.remoteFolder.relay;
 	}
 
+	public get role(): Role {
+		const isCreator = this.remoteFolder.creator === this.user.id;
+		const relayRole = this.relayRoles.find(
+			(role) => role.relayId === this.relay.id && role.userId === this.user.id,
+		)?.role;
+		const role = this.folderRoles.find(
+			(role) =>
+				role.sharedFolderId === this.remoteFolder.id &&
+				role.userId === this.user.id,
+		)?.role;
+		if (!this.remoteFolder.private) {
+			if (!relayRole) {
+				this.warn("couldn't find role", this.relay.id, this.user, isCreator);
+			}
+			return isCreator ? "Owner" : relayRole || "Member";
+		} else if (role) {
+			return role;
+		}
+		this.warn("couldn't find role", this.relay.id, this.user, isCreator);
+		return isCreator ? "Owner" : "Member";
+	}
+
+	public get owner() {
+		return this.role === "Owner";
+	}
+
 	public get aggregate_root(): [string, string] {
 		return ["relays", this.remoteFolder.relay];
 	}
 
-	public get acl(): [string, string] {
-		return ["relays", this.remoteFolder.relay];
+	public get acl(): [string, string] | undefined {
+		if (this.remoteFolder.private) {
+			const id = this.folderRoles.find((role) => {
+				return role.sharedFolderId === this.id && role.userId === this.user.id;
+			})?.id;
+			if (id) {
+				return ["shared_folder_roles", id];
+			}
+		}
+		const id = this.relayRoles.find((role) => {
+			return role.relayId === this.relayId && role.userId === this.user.id;
+		})?.id;
+		if (id) {
+			return ["relay_roles", id];
+		}
 	}
 }
 
@@ -442,7 +495,10 @@ class RemoteFolderCollection
 	constructor(
 		public remoteFolders: ObservableMap<string, RemoteFolder>,
 		private relays: ObservableMap<string, Relay>,
+		private folderRoles: ObservableMap<string, FolderRole>,
+		private relayRoles: ObservableMap<string, RelayRole>,
 		private users: ObservableMap<string, RelayUser>,
+		private user: RelayUser,
 	) {}
 
 	items(): RemoteFolder[] {
@@ -464,7 +520,14 @@ class RemoteFolderCollection
 			this.remoteFolders.notifyListeners();
 			return existingFolder;
 		}
-		const folder = new RemoteFolderAuto(update, this.relays, this.users);
+		const folder = new RemoteFolderAuto(
+			update,
+			this.relays,
+			this.relayRoles,
+			this.folderRoles,
+			this.users,
+			this.user,
+		);
 		this.remoteFolders.set(update.id, folder);
 		return folder;
 	}
@@ -478,7 +541,6 @@ class RelayCollection implements Collection<RelayDAO, Relay> {
 	collectionName: string = "relays";
 	constructor(
 		private relays: ObservableMap<string, Relay>,
-		private roles: ObservableMap<string, RoleDAO>,
 		private relayRoles: ObservableMap<string, RelayRole>,
 		private relayInvitations: ObservableMap<string, RelayInvitation>,
 		private remoteFolders: ObservableMap<string, RemoteFolder>,
@@ -575,6 +637,50 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 			return;
 		}
 		this.relayRoles.delete(id);
+	}
+}
+
+class FolderRolesCollection implements Collection<FolderRoleDAO, FolderRole> {
+	collectionName: string = "shared_folder_roles";
+
+	constructor(
+		private folderRoles: ObservableMap<string, FolderRole>,
+		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		private users: ObservableMap<string, RelayUser>,
+		private roles: ObservableMap<string, RoleDAO>,
+	) {}
+
+	items(): FolderRole[] {
+		return this.folderRoles.values();
+	}
+
+	clear() {
+		this.folderRoles.clear();
+	}
+
+	get(id: string) {
+		return this.folderRoles.get(id);
+	}
+
+	ingest(update: FolderRoleDAO): FolderRole {
+		const existingRole = this.folderRoles.get<FolderRoleAuto>(update.id);
+		if (existingRole) {
+			existingRole.update(update);
+			this.folderRoles.notifyListeners();
+			return existingRole;
+		}
+		const role = new FolderRoleAuto(
+			update,
+			this.remoteFolders,
+			this.users,
+			this.roles,
+		);
+		this.folderRoles.set(role.id, role);
+		return role;
+	}
+
+	delete(id: string) {
+		this.folderRoles.delete(id);
 	}
 }
 
@@ -933,6 +1039,64 @@ class RelayRoleAuto extends Auto implements RelayRole {
 	}
 }
 
+class FolderRoleAuto extends Auto implements FolderRole {
+	constructor(
+		private folderRole: FolderRoleDAO,
+		private remoteFolders: ObservableMap<string, RemoteFolder>,
+		private users: ObservableMap<string, RelayUser>,
+		private roles: ObservableMap<string, RoleDAO>,
+	) {
+		super();
+	}
+
+	update(folderRole: FolderRoleDAO) {
+		this.folderRole = folderRole;
+		return this;
+	}
+
+	public get id() {
+		return this.folderRole.id;
+	}
+
+	public get userId() {
+		return this.folderRole.user;
+	}
+
+	public get user(): RelayUser {
+		const user = this.users.get(this.folderRole.user);
+		if (!user) {
+			throw new Error(`Unable to find user: ${this.folderRole.user}`);
+		}
+		return user;
+	}
+
+	public get role(): Role {
+		return this.roles.get(this.folderRole.role)?.name as Role;
+	}
+
+	public get sharedFolderId(): string {
+		return this.folderRole.shared_folder;
+	}
+
+	public get sharedFolder(): RemoteSharedFolder {
+		const folder = this.remoteFolders.get(this.folderRole.shared_folder);
+		if (!folder) {
+			throw new Error(
+				`invalid role: unable to find folder ${this.folderRole.shared_folder} on role ${this.folderRole.id}`,
+			);
+		}
+		return folder;
+	}
+
+	public get aggregate_root(): [string, string] {
+		return ["shared_folders", this.folderRole.shared_folder];
+	}
+
+	public get acl(): [string, string] {
+		return ["shared_folders", this.folderRole.shared_folder];
+	}
+}
+
 class RelayInvitationAuto implements RelayInvitation {
 	relayInvitation: RelayInvitationDAO;
 	roles: ObservableMap<string, RoleDAO>;
@@ -1154,7 +1318,11 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 	}
 
 	public get folders(): ObservableMap<string, RemoteFolder> {
-		return this.remoteFolders.filter((folder) => folder.relay.id === this.id);
+		return this.remoteFolders.filter((folder) => {
+			const onRelay = folder.relayId === this.id;
+			const hasACL = !!folder.acl;
+			return onRelay && hasACL;
+		});
 	}
 
 	public get subscriptions(): ObservableMap<string, RelaySubscription> {
@@ -1187,6 +1355,7 @@ export class RelayManager extends HasLogging {
 	providers: ObservableMap<string, Provider>;
 	relays: ObservableMap<string, Relay>;
 	relayRoles: ObservableMap<string, RelayRole>;
+	folderRoles: ObservableMap<string, FolderRole>;
 	relayInvitations: ObservableMap<string, RelayInvitation>;
 	users: ObservableMap<string, RelayUser>;
 	roles: ObservableMap<string, RoleDAO>;
@@ -1215,6 +1384,7 @@ export class RelayManager extends HasLogging {
 			"relay invitations",
 		);
 		this.relayRoles = new ObservableMap<string, RelayRole>("relay roles");
+		this.folderRoles = new ObservableMap<string, FolderRole>("folder roles");
 		this.roles = new ObservableMap<string, RoleDAO>("roles");
 		this.roles.set("2arnubkcv7jpce8", {
 			name: "Owner",
@@ -1271,7 +1441,6 @@ export class RelayManager extends HasLogging {
 		const providerCollection = new ProviderCollection(this.providers);
 		const relayCollection = new RelayCollection(
 			this.relays,
-			this.roles,
 			this.relayRoles,
 			this.relayInvitations,
 			this.remoteFolders,
@@ -1286,6 +1455,12 @@ export class RelayManager extends HasLogging {
 			this.users,
 			this.roles,
 		);
+		const folderRolesCollection = new FolderRolesCollection(
+			this.folderRoles,
+			this.remoteFolders,
+			this.users,
+			this.roles,
+		);
 		const relayInvitationsCollection = new RelayInvitationsCollection(
 			this.relayInvitations,
 			this.relays,
@@ -1294,7 +1469,10 @@ export class RelayManager extends HasLogging {
 		const sharedFolderCollection = new RemoteFolderCollection(
 			this.remoteFolders,
 			this.relays,
+			this.folderRoles,
+			this.relayRoles,
 			this.users,
+			this.user,
 		);
 		const subscriptionCollection = new RelaySubscriptionCollection(
 			this.subscriptions,
@@ -1311,6 +1489,7 @@ export class RelayManager extends HasLogging {
 			userCollection,
 			relayCollection,
 			relayRolesCollection,
+			folderRolesCollection,
 			relayInvitationsCollection,
 			sharedFolderCollection,
 			subscriptionCollection,
@@ -1462,6 +1641,7 @@ export class RelayManager extends HasLogging {
 			{ name: "providers", expand: [] },
 			{ name: "relay_roles", expand: ["user", "relay"] },
 			{ name: "shared_folders", expand: ["relay", "creator"] },
+			{ name: "shared_folder_roles", expand: ["user", "shared_folder"] },
 			{ name: "subscriptions", expand: ["user", "relay"] },
 		];
 
@@ -1533,6 +1713,9 @@ export class RelayManager extends HasLogging {
 			withPb("relay_invitations"),
 			withPb("shared_folders", {
 				expand: "relay,creator",
+			}),
+			withPb("shared_folder_roles", {
+				expand: "user",
 			}),
 			withPb("subscriptions", {
 				expand: "relay,user",

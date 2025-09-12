@@ -14,6 +14,9 @@ interface HasAttachment {
 	attachmentUrl(): Promise<string>;
 	getAttachment(): Promise<RequestUrlResponse>;
 }
+interface HasACL {
+	acl?: [string, string];
+}
 interface Serializable {
 	toDict: () => any;
 }
@@ -27,21 +30,27 @@ export interface RelayUser extends Identified, Updatable<RelayUser> {
 
 export interface RemoteSharedFolder
 	extends Identified,
-		Updatable<RemoteSharedFolder> {
+		Updatable<RemoteSharedFolder>,
+		IObservable<RemoteSharedFolder>,
+		HasACL {
 	id: string;
 	guid: string;
 	name: string;
 	private: boolean;
+	role: Role;
+	owner: boolean;
 	relay: Relay;
 	relayId: string;
 	creator: RelayUser;
 	creatorId: string;
+	acl?: [string, string];
 }
 
 export interface Relay
 	extends Identified,
 		Updatable<Relay>,
-		IObservable<Relay> {
+		IObservable<Relay>,
+		HasACL {
 	id: string;
 	guid: string;
 	name: string;
@@ -88,6 +97,15 @@ export interface RelayRole extends Identified, Updatable<RelayRole> {
 	role: Role;
 	relay: Relay;
 	relayId: string;
+}
+
+export interface FolderRole extends Identified, Updatable<FolderRole> {
+	id: string;
+	user: RelayUser;
+	userId: string;
+	role: Role;
+	sharedFolder: RemoteSharedFolder;
+	sharedFolderId: string;
 }
 
 export interface RelayInvitation
