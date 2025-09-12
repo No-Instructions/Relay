@@ -11,11 +11,13 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import Lock from "./Lock.svelte";
 	import Folder from "./Folder.svelte";
+	import RemoteFolder from "./RemoteFolder.svelte";
 	import Satellite from "./Satellite.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { flags } from "src/flagManager";
 	import { SyncSettingsManager, type SyncFlags } from "src/SyncSettings";
+	import { ArrowRightLeft, ChevronRight } from "lucide-svelte";
 
 	export let plugin: Live;
 	export let sharedFolder: SharedFolder;
@@ -70,9 +72,9 @@
 		keyof SyncFlags,
 		{ name: string; description: string; enabled: boolean },
 	];
-	$: settingEntries = Object.entries(
-		syncSettings.getCategories(),
-	) as CategoryEntry[];
+	$: settingEntries = syncSettings
+		? (Object.entries(syncSettings.getCategories()) as CategoryEntry[])
+		: [];
 
 	let isUpdating = false;
 	async function handleToggle(name: keyof SyncFlags, value: boolean) {
@@ -111,9 +113,11 @@
 		dispatch("manageRelay", { relay });
 	}
 
-	async function handleDeleteRemote() {
-		await plugin.relayManager.deleteRemote(sharedFolder);
-		plugin.sharedFolders.notifyListeners();
+	function handleManageRemoteFolder(event: any) {
+		dispatch("manageSharedFolder", { 
+			remoteFolder: event.detail.remoteFolder || sharedFolder.remote, 
+			relay: sharedFolder.remote?.relay 
+		});
 	}
 
 	async function handleDeleteMetadata() {
@@ -132,31 +136,69 @@
 	}
 </script>
 
-<Breadcrumbs category={Folder} categoryText="Shared Folders" on:goBack={goBack}>
-	{sharedFolder.name}
-</Breadcrumbs>
+<Breadcrumbs
+	items={[
+		{
+			type: "text",
+			text: "My Vault",
+			onClick: () => dispatch("goBack", { clear: true })
+		},
+		{
+			type: "folder",
+			folder: sharedFolder
+		}
+	]}
+/>
 
-<SettingItemHeading name="Relay Server"></SettingItemHeading>
 {#if $relayStore}
-	<SlimSettingItem>
-		<Satellite slot="name" on:manageRelay relay={$relayStore}
-			>{$relayStore.name}</Satellite
-		>
-		<SettingsControl
-			on:settings={debounce(() => {
-				handleManageRelay($relayStore);
-			})}
-		></SettingsControl>
-	</SlimSettingItem>
-{:else}
-	<SettingItem
-		description="This folder is tracking edits, but is not connected to a Relay Server."
-	/>
+	{#if sharedFolder?.remote?.relay}
+		<SettingItemHeading name="Connected to"></SettingItemHeading>
+		<SlimSettingItem>
+			<span
+				slot="name"
+				style="display: inline-flex; align-items: center; width: 100%; gap: 8px;"
+			>
+				<span
+					style="display: inline-flex; align-items: center; flex-shrink: 0;"
+				>
+					<Satellite relay={sharedFolder.remote.relay} on:manageRelay>
+						<span
+							style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+						>
+							{sharedFolder.remote.relay.name}
+						</span>
+					</Satellite>
+				</span>
+
+				<span
+					style="width: 16px; flex-shrink: 0; display: flex; justify-content: center;"
+				>
+					<ChevronRight size={16} class="svg-icon" />
+				</span>
+
+				<RemoteFolder remoteFolder={sharedFolder.remote} on:manageRemoteFolder={handleManageRemoteFolder}>
+					<span
+						style="flex: 1; min-width: 0; text-overflow: ellipsis; white-space: nowrap;"
+					>
+						{sharedFolder.remote.name}
+					</span>
+				</RemoteFolder>
+			</span>
+			<SettingsControl
+				on:settings={debounce(() => {
+					dispatch("manageSharedFolder", {
+						remoteFolder: sharedFolder.remote,
+						relay: $relayStore,
+					});
+				})}
+			></SettingsControl>
+		</SlimSettingItem>
+	{/if}
 {/if}
 
-{#if $relayStore && flags().enableAttachmentSync}
+{#if sharedFolder && syncSettings && $relayStore && flags().enableAttachmentSync}
 	<SettingItemHeading
-		name="Sync settings"
+		name="Device sync settings"
 		helpText="You must have attachment storage available in order to sync attachments."
 	></SettingItemHeading>
 	{#each settingEntries as [name, category]}
@@ -199,46 +241,34 @@
 	{/if}
 {/if}
 
-<SettingItemHeading name="Local folder"></SettingItemHeading>
-<SettingItem
-	name="Delete from vault"
-	description="Delete the local Shared Folder and all of its contents."
->
-	<button
-		class="mod-warning"
-		on:click={debounce(() => {
-			handleDeleteLocal();
-		})}
+{#if sharedFolder}
+	<SettingItemHeading name="Danger zone"></SettingItemHeading>
+	<SettingItem
+		name="Delete from vault"
+		description="Delete the local Shared Folder and all of its contents."
 	>
-		Delete local
-	</button>
-</SettingItem>
-
-<SettingItem
-	name="Delete metadata"
-	description="Deletes edit history and disables change tracking."
->
-	<button
-		class={$relayStore ? "mod-disabled" : "mod-warning"}
-		disabled={$relayStore ? true : false}
-		aria-label={$relayStore ? "Metadata is required for sharing." : ""}
-		on:click={debounce(() => {
-			handleDeleteMetadata();
-		})}
-	>
-		Delete metadata
-	</button>
-</SettingItem>
-
-{#if $relayStore}
-	{#if $relayStore?.owner || $folderStore?.remote?.creator?.id === plugin.relayManager.user?.id}
-		<SettingItemHeading name="Remote Folder"></SettingItemHeading>
-		<SettingItem
-			name="Remove from relay"
-			description={`Deletes the remote folder from the relay. Local files will be preserved.`}
+		<button
+			class="mod-warning"
+			on:click={debounce(() => {
+				handleDeleteLocal();
+			})}
 		>
-			<button class="mod-destructive" on:click={debounce(handleDeleteRemote)}>
-				Delete remote
+			Move to Trash
+		</button>
+	</SettingItem>
+
+	{#if !$relayStore}
+		<SettingItem
+			name="Delete metadata"
+			description="Deletes edit history and disables change tracking."
+		>
+			<button
+				class="mod-warning"
+				on:click={debounce(() => {
+					handleDeleteMetadata();
+				})}
+			>
+				Delete metadata
 			</button>
 		</SettingItem>
 	{/if}

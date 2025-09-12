@@ -12,7 +12,7 @@
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
-	import Folder from "./Folder.svelte";
+	import RemoteFolder from "./RemoteFolder.svelte";
 	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount } from "svelte";
 	import { derived, writable } from "svelte/store";
@@ -398,16 +398,18 @@
 </script>
 
 <Breadcrumbs
-	category={Satellite}
-	categoryText="Relay Servers"
-	on:goBack={goBack}
->
-	{#if relay.name}
-		{relay.name}
-	{:else}
-		<span class="faint">(Untitled Relay Server)</span>
-	{/if}
-</Breadcrumbs>
+	items={[
+		{
+			type: "text",
+			text: "Relay Servers",
+			onClick: () => dispatch("goBack", { clear: true })
+		},
+		{
+			type: "satellite",
+			relay: relay
+		}
+	]}
+/>
 {#if relay.owner}
 	<SettingItem name="Name" description="Set the Relay Server's name.">
 		<input
@@ -425,37 +427,22 @@
 
 <SettingItemHeading name="Folders on this Relay Server"></SettingItemHeading>
 {#each $remoteFolders.values() as remote}
-	{#if $sharedFolders.find((local) => local.remote === remote)}
-		<SlimSettingItem>
-			<Folder
-				on:manageSharedFolder
-				folder={$sharedFolders.find((local) => local.remote === remote)}
-				slot="name">{remote.name}</Folder
-			>
-			<SettingsControl
-				on:settings={debounce(() => {
-					const local = $sharedFolders.find((local) => local.remote === remote);
-					if (local) {
-						handleManageSharedFolder(local, remote.relay);
-					}
-				})}
-			></SettingsControl>
-		</SlimSettingItem>
-	{:else}
-		<SlimSettingItem>
-			<Folder slot="name">{remote.name}</Folder>
-			<button
-				class="mod-cta"
-				aria-label="Add shared folder to vault"
-				on:click={debounce(() => {
-					showAddToVaultModal(remote);
-				})}
-				style="max-width: 8em"
-			>
-				Add to Vault
-			</button>
-		</SlimSettingItem>
-	{/if}
+	<SlimSettingItem>
+		<RemoteFolder remoteFolder={remote} slot="name" on:manageRemoteFolder={() => {
+			dispatch("manageRemoteFolder", {
+				remoteFolder: remote,
+			});
+		}}
+			>{remote.name}</RemoteFolder
+		>
+		<SettingsControl
+			on:settings={debounce(() => {
+				dispatch("manageRemoteFolder", {
+					remoteFolder: remote,
+				});
+			})}
+		></SettingsControl>
+	</SlimSettingItem>
 {/each}
 
 <SettingItem description="" name="">
@@ -821,4 +808,12 @@
 	.relay-host-check {
 		text-align: right;
 	}
+    input.system3-updating {
+            border: 1px solid var(--color-accent) !important;
+    }
+
+    input.system3-input-invalid {
+            border: 1px solid var(--color-red) !important;
+    }
+
 </style>
