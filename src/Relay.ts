@@ -89,6 +89,15 @@ export interface RelayRole extends Identified, Updatable<RelayRole> {
 	relayId: string;
 }
 
+export interface FolderRole extends Identified, Updatable<FolderRole> {
+	id: string;
+	user: RelayUser;
+	userId: string;
+	role: Role;
+	sharedFolder: RemoteSharedFolder;
+	sharedFolderId: string;
+}
+
 export interface RelayInvitation
 	extends Identified,
 		Updatable<RelayInvitation> {
