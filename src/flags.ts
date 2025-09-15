@@ -4,7 +4,6 @@ export interface FeatureFlags {
 	enableDeltaLogging: boolean;
 	enableHTTPSync: boolean;
 	enableSyncMenu: boolean;
-	enableDocumentServer: boolean;
 	enableDocumentHistory: boolean;
 	enableEditorTweens: boolean;
 	enableSyncModal: boolean;
@@ -25,7 +24,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDeltaLogging: false,
 	enableHTTPSync: false,
 	enableSyncMenu: true,
-	enableDocumentServer: false,
 	enableDocumentHistory: false,
 	enableEditorTweens: false,
 	enableSyncModal: false,

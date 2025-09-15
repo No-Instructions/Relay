@@ -681,9 +681,7 @@ export class BackgroundSync extends HasLogging {
 
 	private getAuthHeader(clientToken: ClientToken) {
 		return {
-			Authorization: flags().enableDocumentServer
-				? `Bearer ${clientToken.token}`
-				: `Bearer ${this.loginManager.user?.token}`,
+			Authorization: `Bearer ${clientToken.token}`,
 		};
 	}
 
@@ -700,14 +698,7 @@ export class BackgroundSync extends HasLogging {
 		const baseUrl =
 			clientToken.baseUrl?.replace(/\/$/, "") || urlObj.toString();
 
-		if (flags().enableDocumentServer) {
-			return baseUrl;
-		} else if (entity instanceof S3RemoteDocument) {
-			return `${API_URL}/relay/${entity.relayId}/doc/${entity.documentId}`;
-		} else if (entity instanceof S3RemoteCanvas) {
-			return `${API_URL}/relay/${entity.relayId}/doc/${entity.canvasId}`;
-		}
-		throw new Error("unexpected case");
+		return baseUrl;
 	}
 
 	async downloadItem(item: Document | Canvas): Promise<RequestUrlResponse> {
