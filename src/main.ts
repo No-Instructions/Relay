@@ -64,7 +64,7 @@ import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
-import type { EndpointSettings } from "./EndpointManager";
+import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -239,7 +239,7 @@ export default class Live extends Plugin {
 	/**
 	 * Validate custom endpoints on startup if configured
 	 */
-	private async validateEndpointsOnStartup(): Promise<void> {
+	private async validateEndpointsOnStartup(endpointManager: EndpointManager): Promise<void> {
 		const settings = this.endpointSettings.get();
 		
 		// Skip if no active tenant configured
@@ -262,7 +262,7 @@ export default class Live extends Plugin {
 
 		try {
 			// Use shorter timeout for startup validation to avoid blocking startup
-			const result = await this.loginManager.validateAndApplyEndpoints(5000);
+			const result = await endpointManager.validateAndSetEndpoints(5000);
 			
 			if (result.success) {
 				// Clear any previous validation errors on successful startup validation
@@ -485,17 +485,18 @@ export default class Live extends Plugin {
 
 		this.hashStore = new ContentAddressedFileStore(this.appId);
 
+		// Initialize and validate endpoints before creating LoginManager
+		const endpointManager = new EndpointManager(this.endpointSettings);
+		await this.validateEndpointsOnStartup(endpointManager);
+
 		this.loginManager = new LoginManager(
 			this.vault.getName(),
 			this.openSettings.bind(this),
 			this.timeProvider,
 			this.patchWebviewer.bind(this),
 			this.loginSettings,
-			this.endpointSettings,
+			endpointManager,
 		);
-
-		// Validate custom endpoints on startup if configured
-		await this.validateEndpointsOnStartup();
 		this.relayManager = new RelayManager(this.loginManager);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
