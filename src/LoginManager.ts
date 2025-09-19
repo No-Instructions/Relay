@@ -18,7 +18,7 @@ import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
-import { EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { type EndpointManager, type EndpointSettings } from "./EndpointManager";
 
 interface GoogleUser {
 	email: string;
@@ -177,12 +177,12 @@ export class LoginManager extends Observable<LoginManager> {
 		timeProvider: TimeProvider,
 		private beforeLogin: () => void,
 		public loginSettings: NamespacedSettings<LoginSettings>,
-		endpointSettings: NamespacedSettings<EndpointSettings>,
+		endpointManager: EndpointManager,
 	) {
 		super();
 		const pbLog = curryLog("[Pocketbase]", "debug");
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
-		this.endpointManager = new EndpointManager(endpointSettings);
+		this.endpointManager = endpointManager;
 		this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
 		this.pb.beforeSend = (url, options) => {
 			pbLog(url, options);
