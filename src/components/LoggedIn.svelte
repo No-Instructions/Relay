@@ -20,9 +20,12 @@
 		RecordModel,
 	} from "pocketbase";
 	import { customFetch } from "src/customFetch";
+	import { curryLog } from "src/debug";
 	import { FeatureFlagManager, flags } from "src/flagManager";
 
 	export let plugin: Live;
+
+	let errorLog = curryLog("LoggedIn.svelte", "error");
 
 	let lm: LoginManager;
 	let automaticFlow = writable<boolean>(!Platform.isIosApp);
@@ -37,21 +40,21 @@
 	let providers: Record<string, Provider> = {};
 	let hasProviderInfo = writable<boolean>(false);
 	const loginSettings = lm.loginSettings;
-	
+
 	// Load cached providers from localStorage, keyed by auth URL
 	let cachedProviders = writable<string[]>([]);
 	let shouldAnimate = writable<boolean>(false);
-	const PROVIDERS_CACHE_PREFIX = 'system3-relay-auth-providers-';
-	
+	const PROVIDERS_CACHE_PREFIX = "system3-relay-auth-providers-";
+
 	function getCacheKey(): string {
 		// Use the PocketBase URL as the cache key
-		const pbUrl = lm.pb?.baseUrl || 'default';
+		const pbUrl = lm.pb?.baseUrl || "default";
 		return `${PROVIDERS_CACHE_PREFIX}${pbUrl}`;
 	}
-	
+
 	function getDefaultProviders(): string[] {
 		const defaults = ["google", "microsoft"];
-		
+
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			defaults.push("discord");
 		}
@@ -59,7 +62,7 @@
 			defaults.push("github");
 		}
 		// OIDC is intentionally excluded from defaults
-		
+
 		return defaults;
 	}
 
@@ -71,18 +74,18 @@
 				return JSON.parse(cached);
 			}
 		} catch (e) {
-			console.error("Failed to load cached providers:", e);
+			errorLog("Failed to load cached providers:", e);
 		}
 		// Return default providers if no cache exists
 		return getDefaultProviders();
 	}
-	
+
 	function saveCachedProviders(providerList: string[]) {
 		try {
 			const cacheKey = getCacheKey();
 			localStorage.setItem(cacheKey, JSON.stringify(providerList));
 		} catch (e) {
-			console.error("Failed to save cached providers:", e);
+			errorLog("Failed to save cached providers:", e);
 		}
 	}
 
@@ -104,7 +107,13 @@
 	});
 
 	const visibleProviders = derived(
-		[selectedProvider, lm.loginSettings, flagManager, hasProviderInfo, cachedProviders],
+		[
+			selectedProvider,
+			lm.loginSettings,
+			flagManager,
+			hasProviderInfo,
+			cachedProviders,
+		],
 		() => {
 			// First check the loginSettings store
 			if ($loginSettings && $loginSettings.provider)
@@ -112,13 +121,13 @@
 
 			// Fall back to selectedProvider for compatibility
 			if ($selectedProvider !== "") return [$selectedProvider];
-			
+
 			// If we have provider info from the API, only show those that are available
 			if ($hasProviderInfo && Object.keys(providers).length > 0) {
 				// Filter to only show providers that were returned from the API
 				const availableFromApi = Object.keys(providers);
 				const visible = [];
-				
+
 				// Check each provider in preferred order
 				if (availableFromApi.includes("google")) {
 					visible.push("google");
@@ -126,35 +135,46 @@
 				if (availableFromApi.includes("microsoft")) {
 					visible.push("microsoft");
 				}
-				if (availableFromApi.includes("discord") && $flagManager.getFlag("enableDiscordLogin")) {
+				if (
+					availableFromApi.includes("discord") &&
+					$flagManager.getFlag("enableDiscordLogin")
+				) {
 					visible.push("discord");
 				}
-				if (availableFromApi.includes("github") && $flagManager.getFlag("enableGitHubLogin")) {
+				if (
+					availableFromApi.includes("github") &&
+					$flagManager.getFlag("enableGitHubLogin")
+				) {
 					visible.push("github");
 				}
-				
+
 				// Include any OIDC providers (oidc, oidc2, oidc-custom, etc.) if feature flag is enabled
-				availableFromApi.forEach(provider => {
-					if (provider.startsWith("oidc") && $flagManager.getFlag("enableOIDCLogin")) {
+				availableFromApi.forEach((provider) => {
+					if (
+						provider.startsWith("oidc") &&
+						$flagManager.getFlag("enableOIDCLogin")
+					) {
 						visible.push(provider);
 					}
 				});
-				
+
 				// Check if the list has changed from what we expected (cached or defaults)
-				const hasChanged = JSON.stringify(visible.sort()) !== JSON.stringify($cachedProviders.sort());
+				const hasChanged =
+					JSON.stringify(visible.sort()) !==
+					JSON.stringify($cachedProviders.sort());
 				shouldAnimate.set(hasChanged);
-				
+
 				// Save to cache for next time
 				saveCachedProviders(visible);
-				
+
 				return visible;
 			}
-			
+
 			// If we have cached providers and no API info yet, use the cache
 			if ($cachedProviders.length > 0 && !$hasProviderInfo) {
 				return $cachedProviders;
 			}
-			
+
 			// Default behavior if no provider info yet or request failed
 			const visible = ["google", "microsoft"];
 
@@ -188,7 +208,7 @@
 		const names: Record<string, string> = {};
 		for (const providerName of Object.keys(providers)) {
 			const provider = providers[providerName];
-			
+
 			if (provider?.info?.displayName) {
 				names[providerName] = provider.info.displayName;
 			} else {
@@ -298,11 +318,10 @@
 
 	function capitalize(s: string): string {
 		if (!s) return "";
-        if (s == "oidc") return "OIDC";
-        if (s == "github") return "GitHub";
+		if (s == "oidc") return "OIDC";
+		if (s == "github") return "GitHub";
 		return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 	}
-
 </script>
 
 {#if $lm.hasUser && $lm.user}
@@ -326,13 +345,18 @@
 			<div class="login-buttons">
 				{#each $visibleProviders as provider (provider)}
 					<button
-						class={`${provider.startsWith('oidc') ? 'oidc' : provider}-sign-in-button`}
+						class={`${provider.startsWith("oidc") ? "oidc" : provider}-sign-in-button`}
 						disabled={$pending || !$configuredProviders.contains(provider)}
-						transition:slide={{ duration: $shouldAnimate ? 300 : 0, easing: quintOut }}
+						transition:slide={{
+							duration: $shouldAnimate ? 300 : 0,
+							easing: quintOut,
+						}}
 						on:click={debounce(async () => {
 							pending.set(true);
 							await login(provider);
-						})}>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
+						})}
+						>Sign in with {$providerDisplayNames[provider] ||
+							capitalize(provider)}</button
 					>
 				{/each}
 			</div>
@@ -342,21 +366,30 @@
 					{#if providers[provider]}
 						<a href={providers[provider].fullAuthUrl} target="_blank">
 							<button
-								class={`${provider.startsWith('oidc') ? 'oidc' : provider}-sign-in-button`}
+								class={`${provider.startsWith("oidc") ? "oidc" : provider}-sign-in-button`}
 								disabled={$pending || !providers[provider]}
-								transition:slide={{ duration: $shouldAnimate ? 300 : 0, easing: quintOut }}
+								transition:slide={{
+									duration: $shouldAnimate ? 300 : 0,
+									easing: quintOut,
+								}}
 								on:click={() => {
 									pending.set(true);
 									poll(provider);
-								}}>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
+								}}
+								>Sign in with {$providerDisplayNames[provider] ||
+									capitalize(provider)}</button
 							>
 						</a>
 					{:else}
-						<button 
-							class={`${provider.startsWith('oidc') ? 'oidc' : provider}-sign-in-button`} 
+						<button
+							class={`${provider.startsWith("oidc") ? "oidc" : provider}-sign-in-button`}
 							disabled={true}
-							transition:slide={{ duration: $shouldAnimate ? 300 : 0, easing: quintOut }}
-							>Sign in with {$providerDisplayNames[provider] || capitalize(provider)}</button
+							transition:slide={{
+								duration: $shouldAnimate ? 300 : 0,
+								easing: quintOut,
+							}}
+							>Sign in with {$providerDisplayNames[provider] ||
+								capitalize(provider)}</button
 						>
 					{/if}
 				{/each}
