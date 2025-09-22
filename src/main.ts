@@ -182,24 +182,24 @@ export default class Live extends Plugin {
 	 */
 	async validateAndApplyEndpoints() {
 		const settings = this.endpointSettings.get();
-		
+
 		if (!settings.activeTenantId || !settings.tenants?.length) {
 			new Notice("Please configure an enterprise tenant first", 4000);
 			return;
 		}
 
 		const notice = new Notice("Validating endpoints...", 0);
-		
+
 		try {
 			const result = await this.loginManager.validateAndApplyEndpoints();
 			notice.hide();
-			
+
 			if (result.success) {
 				// Clear any previous validation errors on success
 				await this.endpointSettings.update((current) => ({
 					...current,
 					_lastValidationError: undefined,
-					_lastValidationAttempt: undefined
+					_lastValidationAttempt: undefined,
 				}));
 				new Notice("✓ Endpoints validated and applied successfully!", 5000);
 				if (result.licenseInfo) {
@@ -210,18 +210,19 @@ export default class Live extends Plugin {
 				await this.endpointSettings.update((current) => ({
 					...current,
 					_lastValidationError: result.error,
-					_lastValidationAttempt: Date.now()
+					_lastValidationAttempt: Date.now(),
 				}));
 				new Notice(`❌ Validation failed: ${result.error}`, 8000);
 			}
 		} catch (error) {
 			notice.hide();
-			const errorMessage = error instanceof Error ? error.message : "Unknown error";
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
 			// Store validation error for display in settings
 			await this.endpointSettings.update((current) => ({
 				...current,
 				_lastValidationError: errorMessage,
-				_lastValidationAttempt: Date.now()
+				_lastValidationAttempt: Date.now(),
 			}));
 			new Notice(`❌ Validation error: ${errorMessage}`, 8000);
 		}
@@ -239,16 +240,20 @@ export default class Live extends Plugin {
 	/**
 	 * Validate custom endpoints on startup if configured
 	 */
-	private async validateEndpointsOnStartup(endpointManager: EndpointManager): Promise<void> {
+	private async validateEndpointsOnStartup(
+		endpointManager: EndpointManager,
+	): Promise<void> {
 		const settings = this.endpointSettings.get();
-		
+
 		// Skip if no active tenant configured
 		if (!settings.activeTenantId || !settings.tenants?.length) {
 			this.log("No active enterprise tenant configured, using defaults");
 			return;
 		}
 
-		const activeTenant = settings.tenants.find(t => t.id === settings.activeTenantId);
+		const activeTenant = settings.tenants.find(
+			(t) => t.id === settings.activeTenantId,
+		);
 		if (!activeTenant) {
 			this.log("Active tenant not found, using defaults");
 			return;
@@ -257,41 +262,48 @@ export default class Live extends Plugin {
 		this.log("Enterprise tenant configured, validating on startup...", {
 			tenantId: activeTenant.id,
 			tenantUrl: activeTenant.tenantUrl,
-			tenantName: activeTenant.name
+			tenantName: activeTenant.name,
 		});
 
 		try {
 			// Use shorter timeout for startup validation to avoid blocking startup
 			const result = await endpointManager.validateAndSetEndpoints(5000);
-			
+
 			if (result.success) {
 				// Clear any previous validation errors on successful startup validation
 				await this.endpointSettings.update((current) => ({
 					...current,
 					_lastValidationError: undefined,
-					_lastValidationAttempt: undefined
+					_lastValidationAttempt: undefined,
 				}));
 				this.log("✓ Enterprise tenant validated and applied on startup", {
-					licenseInfo: result.licenseInfo
+					licenseInfo: result.licenseInfo,
 				});
 			} else {
-				this.error("❌ Enterprise tenant validation failed on startup", result.error);
+				this.error(
+					"❌ Enterprise tenant validation failed on startup",
+					result.error,
+				);
 				// Store the error for display in settings
 				await this.endpointSettings.update((current) => ({
 					...current,
 					_lastValidationError: result.error,
-					_lastValidationAttempt: Date.now()
+					_lastValidationAttempt: Date.now(),
 				}));
-				new Notice(`❌ Custom endpoints failed validation: ${result.error}`, 8000);
+				new Notice(
+					`❌ Custom endpoints failed validation: ${result.error}`,
+					8000,
+				);
 			}
 		} catch (error) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error";
+			const errorMessage =
+				error instanceof Error ? error.message : "Unknown error";
 			this.error("Startup endpoint validation error:", errorMessage);
 			// Store the error for display in settings
 			await this.endpointSettings.update((current) => ({
 				...current,
 				_lastValidationError: errorMessage,
-				_lastValidationAttempt: Date.now()
+				_lastValidationAttempt: Date.now(),
 			}));
 			new Notice(`❌ Endpoint validation error: ${errorMessage}`, 8000);
 		}
@@ -582,7 +594,7 @@ export default class Live extends Plugin {
 						if (folder.relayId) {
 							menu.addItem((item) => {
 								item
-									.setTitle("Relay settings")
+									.setTitle("Relay: Relay settings")
 									.setIcon("gear")
 									.onClick(() => {
 										this.openSettings(`/relays?id=${folder.relayId}`);
@@ -590,7 +602,7 @@ export default class Live extends Plugin {
 							});
 							menu.addItem((item) => {
 								item
-									.setTitle("Folder settings")
+									.setTitle("Relay: Folder settings")
 									.setIcon("gear")
 									.onClick(() => {
 										this.openSettings(`/shared-folders?id=${folder.guid}`);
@@ -598,7 +610,9 @@ export default class Live extends Plugin {
 							});
 							menu.addItem((item) => {
 								item
-									.setTitle(folder.connected ? "Disconnect" : "Connect")
+									.setTitle(
+										folder.connected ? "Relay: Disconnect" : "Relay: Connect",
+									)
 									.setIcon("satellite")
 									.onClick(() => {
 										if (folder.connected) {
@@ -641,7 +655,7 @@ export default class Live extends Plugin {
 						if (flags().enableSyncMenu && folder.relayId && folder.connected) {
 							menu.addItem((item) => {
 								item
-									.setTitle("Sync")
+									.setTitle("Relay: Sync")
 									.setIcon("folder-sync")
 									.onClick(() => {
 										folder.netSync();
@@ -654,7 +668,7 @@ export default class Live extends Plugin {
 						if (ifile && isSyncFile(ifile)) {
 							menu.addItem((item) => {
 								item
-									.setTitle("Download")
+									.setTitle("Relay: Download")
 									.setIcon("cloud-download")
 									.onClick(async () => {
 										await ifile.pull();
@@ -664,7 +678,7 @@ export default class Live extends Plugin {
 							if (this.debugSettings.get().debugging) {
 								menu.addItem((item) => {
 									item
-										.setTitle("Verify upload")
+										.setTitle("Relay: Verify upload")
 										.setIcon("search-check")
 										.onClick(async () => {
 											const present = await ifile.verifyUpload();
@@ -676,7 +690,7 @@ export default class Live extends Plugin {
 							}
 							menu.addItem((item) => {
 								item
-									.setTitle("Upload")
+									.setTitle("Relay: Upload")
 									.setIcon("cloud-upload")
 									.onClick(async () => {
 										await ifile.push(true);
