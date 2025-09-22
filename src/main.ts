@@ -203,7 +203,7 @@ export default class Live extends Plugin {
 				}));
 				new Notice("✓ Endpoints validated and applied successfully!", 5000);
 				if (result.licenseInfo) {
-					console.log("License validation successful:", result.licenseInfo);
+					this.log("License validation successful:", result.licenseInfo);
 				}
 			} else {
 				// Store validation error for display in settings
