@@ -88,6 +88,7 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 		}
 		const derivedMap = new DerivedMap<K, V>(this, predicate);
 		this._derivedMaps.set(predicate, derivedMap);
+		this.unsubscribes.push(derivedMap.destroy);
 		return derivedMap;
 	}
 }
