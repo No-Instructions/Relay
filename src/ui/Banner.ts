@@ -63,6 +63,7 @@ export class Banner {
 		if (bannerBox) {
 			bannerBox.replaceChildren();
 		}
+		this.onClick = async () => true;
 		return true;
 	}
 }
