@@ -116,6 +116,7 @@ export class LoggedOutView implements S3View {
 
 	destroy() {
 		this.release();
+		this.banner?.destroy();
 		this.banner = undefined;
 		this.view = null as any;
 	}
