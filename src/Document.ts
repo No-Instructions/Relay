@@ -160,9 +160,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
-			this._tfile = this._parent.getTFile(this);
+			this._tfile = this.getTFile();
 		}
 		return this._tfile;
+	}
+
+	getTFile(): TFile | null {
+		return this._parent.getTFile(this);
 	}
 
 	public get ytext(): Y.Text {
@@ -463,6 +467,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();
 		this.readyPromise = null as any;
+		this._parent = null as any;
 	}
 
 	public async read(): Promise<string> {
