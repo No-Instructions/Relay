@@ -8,7 +8,7 @@ import {
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
 import {
-    LiveView,
+	LiveView,
 	LiveViewManager,
 	ConnectionManagerStateField,
 } from "../LiveViews";
@@ -87,11 +87,10 @@ export class InvalidLinkPluginValue {
 
 		if (this.view.document) {
 			this.view.document.whenSynced().then(() => {
-				if (this.connectionManager && this.app && this.view?.document?.tfile) {
-					this.connectionManager.onMeta(this.view.document.tfile, this.cb);
-					const fileCache = this.app.metadataCache.getFileCache(
-						this.view.document.tfile,
-					);
+				const tfile = this.view?.document?.getTFile();
+				if (this.connectionManager && this.app && tfile) {
+					this.connectionManager.onMeta(tfile, this.cb);
+					const fileCache = this.app.metadataCache.getFileCache(tfile);
 					if (fileCache) {
 						this.updateFromMetadata(fileCache);
 						this.editor.dispatch({
