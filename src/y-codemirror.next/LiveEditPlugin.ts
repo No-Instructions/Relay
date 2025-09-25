@@ -9,14 +9,15 @@ import type { PluginValue } from "@codemirror/view";
 import {
 	LiveView,
 	LiveViewManager,
-	isLive,
 	ConnectionManagerStateField,
+	isLiveMd,
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import { around } from "monkey-around";
 import diff_match_patch from "diff-match-patch";
 import { flags } from "src/flagManager";
+import { MarkdownView } from "obsidian";
 
 const TWEENS = 25;
 
@@ -31,7 +32,7 @@ export const ySyncAnnotation = Annotation.define();
 
 export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
-	view?: LiveView;
+	view?: LiveView<MarkdownView>;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
 	private destroyed = false;
@@ -82,7 +83,7 @@ export class LiveCMPluginValue implements PluginValue {
 				setViewData(old) {
 					return function (data: string, clear: boolean) {
 						if (clear) {
-							if (isLive(liveEditPlugin.view)) {
+							if (isLiveMd(liveEditPlugin.view)) {
 								if (liveEditPlugin.view.document.text === data) {
 									liveEditPlugin.view.tracking = true;
 								}
@@ -115,7 +116,7 @@ export class LiveCMPluginValue implements PluginValue {
 				edit(old) {
 					return function (data: string) {
 						if (
-							isLive(liveEditPlugin.view) &&
+							isLiveMd(liveEditPlugin.view) &&
 							liveEditPlugin.view.view.getMode() === "preview"
 						) {
 							const changes = liveEditPlugin.incrementalBufferChange(data);
@@ -140,7 +141,7 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		this._observer = async (event, tr) => {
-			if (!isLive(this.view)) {
+			if (!isLiveMd(this.view)) {
 				this.debug("Recived yjs event against a non-live view");
 				return;
 			}
@@ -184,7 +185,7 @@ export class LiveCMPluginValue implements PluginValue {
 					this.keyFrameCounter += 1;
 					this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
 				}
-				if (isLive(this.view)) {
+				if (isLiveMd(this.view)) {
 					editor.dispatch({
 						changes,
 						annotations: [ySyncAnnotation.of(this.editor)],
@@ -200,7 +201,7 @@ export class LiveCMPluginValue implements PluginValue {
 				this._observer?.(event, tr);
 			} catch (e) {
 				if (e instanceof RangeError) {
-					if (isLive(this.view)) {
+					if (isLiveMd(this.view)) {
 						this.view.tracking = false;
 					}
 				}
@@ -267,10 +268,10 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	async resync() {
-		if (isLive(this.view) && !this.view.tracking && !this.destroyed) {
+		if (isLiveMd(this.view) && !this.view.tracking && !this.destroyed) {
 			await this.view.document.whenSynced();
 			const keyFrame = await this.getKeyFrame();
-			if (isLive(this.view) && !this.view.tracking && !this.destroyed) {
+			if (isLiveMd(this.view) && !this.view.tracking && !this.destroyed) {
 				this.editor.dispatch({
 					changes: keyFrame,
 					annotations: [ySyncAnnotation.of(this.editor)],
@@ -281,7 +282,7 @@ export class LiveCMPluginValue implements PluginValue {
 
 	async getKeyFrame(incremental = false): Promise<ChangeSpec[]> {
 		// goal: sync editor state to ytext state so we can accept delta edits.
-		if (!isLive(this.view) || this.destroyed) {
+		if (!isLiveMd(this.view) || this.destroyed) {
 			return [];
 		}
 

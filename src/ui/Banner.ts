@@ -1,14 +1,14 @@
 "use strict";
-import { MarkdownView } from "obsidian";
+import { TextFileView } from "obsidian";
 import type { CanvasView } from "src/CanvasView";
 
 export class Banner {
-	view: MarkdownView | CanvasView;
+	view: TextFileView | CanvasView;
 	text: string;
 	onClick: () => Promise<boolean>;
 
 	constructor(
-		view: MarkdownView | CanvasView,
+		view: TextFileView | CanvasView,
 		text: string,
 		onClick: () => Promise<boolean>,
 	) {
