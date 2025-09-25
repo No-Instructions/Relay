@@ -33,6 +33,7 @@ export interface RemoteSharedFolder
 	name: string;
 	private: boolean;
 	relay: Relay;
+	relayId: string;
 	creator: RelayUser;
 	creatorId: string;
 }
@@ -104,6 +105,7 @@ export interface RelayInvitation
 	id: string;
 	role: Role;
 	relay: Relay;
+	relayId: string;
 	key: string;
 	enabled: boolean;
 }
@@ -115,6 +117,7 @@ export interface RelaySubscription
 	id: string;
 	active: boolean;
 	relay: Relay;
+	relayId: string;
 	user: RelayUser;
 	cancelAt: Date | null;
 	quantity: number;
