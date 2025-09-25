@@ -1760,17 +1760,19 @@ export class RelayManager extends HasLogging {
 	async createRemoteFolder(
 		sharedFolder: SharedFolder,
 		relay: Relay,
+		isPrivate: boolean = false,
+		name: string | undefined = undefined,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to create folder");
 		const record = await this.pb
 			.collection("shared_folders")
 			.create<RemoteFolderDAO>(
 				{
-					name: sharedFolder.name,
+					name: name || sharedFolder.name,
 					guid: sharedFolder.guid,
 					relay: relay.id,
 					creator: this.user?.id,
-					private: false,
+					private: isPrivate,
 				},
 				{ expand: "relay" },
 			);
@@ -1820,6 +1822,73 @@ export class RelayManager extends HasLogging {
 		const updated = this.store?.ingest<RelayRole>(record);
 		if (!updated) {
 			throw new Error("Failed to update relay role");
+		}
+		return updated;
+	}
+
+	async addFolderRole(
+		folder: RemoteFolder,
+		userId: string,
+		roleName: Role,
+	): Promise<FolderRole> {
+		if (!this.pb) throw new Error("Failed to add folder role");
+		const role = this.roles.find((r) => r.name === roleName);
+		if (!role) {
+			throw new Error("Failed to find role");
+		}
+		const record = await this.pb
+			.collection("shared_folder_roles")
+			.create<FolderRoleDAO>({
+				user: userId,
+				shared_folder: folder.id,
+				role: role.id,
+			});
+		const folderRole = this.store?.ingest<FolderRole>(record);
+		if (!folderRole) {
+			throw new Error("Failed to add folder role");
+		}
+		return folderRole;
+	}
+
+	async removeFolderRole(folderRole: FolderRole): Promise<void> {
+		if (!this.pb) throw new Error("Failed to remove folder role");
+		await this.pb.collection("shared_folder_roles").delete(folderRole.id);
+	}
+
+	async updateFolderRole(
+		folderRole: FolderRole,
+		roleName: Role,
+	): Promise<FolderRole> {
+		if (!this.pb) throw new Error("Failed to update folder role");
+		const newRole = this.roles.find((role) => role.name === roleName);
+		if (!newRole) {
+			throw new Error("Failed to update folder role");
+		}
+		const record = await this.pb
+			.collection("shared_folder_roles")
+			.update<FolderRoleDAO>(folderRole.id, {
+				role: newRole.id,
+			});
+		const updated = this.store?.ingest<FolderRole>(record);
+		if (!updated) {
+			throw new Error("Failed to update folder role");
+		}
+		return updated;
+	}
+
+	async updateFolderPrivacy(
+		folder: RemoteFolder,
+		isPrivate: boolean,
+	): Promise<RemoteFolder> {
+		if (!this.pb) throw new Error("Failed to update folder privacy");
+		const record = await this.pb
+			.collection("shared_folders")
+			.update<RemoteFolderDAO>(folder.id, {
+				private: isPrivate,
+			});
+		const updated = this.store?.ingest<RemoteFolder>(record);
+		if (!updated) {
+			throw new Error("Failed to update folder privacy");
 		}
 		return updated;
 	}
