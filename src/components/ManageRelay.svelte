@@ -14,19 +14,19 @@
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import RemoteFolder from "./RemoteFolder.svelte";
 	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
-	import { createEventDispatcher, onMount } from "svelte";
+	import { createEventDispatcher, onMount, onDestroy } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import { Edit, Check, Download } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
 	import { uuidv4 } from "lib0/random";
-	import Satellite from "./Satellite.svelte";
 	import Lock from "./Lock.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import DiskUsage from "./DiskUsage.svelte";
-	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
+	import { ShareFolderModal } from "src/ui/ShareFolderModal";
 	import { AddToVaultModal } from "src/ui/AddToVaultModal";
+	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 
@@ -247,26 +247,6 @@
 		}
 	}
 
-	async function addToVault(
-		remoteFolder: RemoteSharedFolder,
-		name: string,
-		location: string,
-	): Promise<SharedFolder> {
-		const vaultRelativePath = normalizePath(join(location, name));
-		if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
-			await plugin.vault.createFolder(vaultRelativePath);
-		}
-		const folder = plugin.sharedFolders.new(
-			vaultRelativePath,
-			remoteFolder.guid,
-			relay.guid,
-			true,
-		);
-		folder.remote = remoteFolder;
-		plugin.sharedFolders.notifyListeners();
-		return folder;
-	}
-
 	let updating = writable(false);
 
 	const updateRelay = plugin.timeProvider.debounce(() => {
@@ -274,15 +254,6 @@
 			updating.set(false);
 		});
 	}, 500);
-
-	const showAddToVaultModal = (remoteFolder: RemoteSharedFolder) => {
-		new AddToVaultModal(
-			plugin.app,
-			sharedFolders,
-			remoteFolder,
-			addToVault,
-		).open();
-	};
 
 	function isValidObsidianFolderName(path: string): boolean {
 		// Obsidian restricted characters in folder and file names
@@ -338,13 +309,6 @@
 		}
 	}
 
-	function handleManageSharedFolder(folder: SharedFolder, relay?: Relay) {
-		if (!folder) {
-			return;
-		}
-		dispatch("manageSharedFolder", { folder, relay, mount: false });
-	}
-
 	function handleEditMembersToggle(event: KeyboardEvent | MouseEvent) {
 		if (
 			event instanceof MouseEvent ||
@@ -355,76 +319,107 @@
 		}
 	}
 
-	const folderSelect: FolderSuggestModal = new FolderSuggestModal(
-		plugin.app,
-		sharedFolders,
-		async (path: string) => {
-			const normalizedPath = normalizePath(path);
-			const folder = sharedFolders.find((folder) => folder.path == path);
-			// shared folder exists, but remote does not
-			if (folder) {
-				const remote = await plugin.relayManager.createRemoteFolder(
-					folder,
-					relay,
-				);
-				folder.remote = remote;
-				folder.connect();
-				plugin.sharedFolders.notifyListeners();
-				return;
-			}
-			// ensure folder exists in vault
-			if (plugin.vault.getFolderByPath(normalizedPath) === null) {
-				await plugin.vault.createFolder(normalizedPath);
-			}
+	async function onChooseV1(
+		folderPath: string,
+		folderName: string,
+		isPrivate: boolean,
+		userIds: string[],
+	) {
+		const normalizedPath = normalizePath(folderPath);
+		let folder = sharedFolders.find((folder) => folder.path == normalizedPath);
 
-			// create new shared folder
+		// If folder doesn't exist as shared folder yet, create it
+		if (!folder) {
 			const guid = uuidv4();
-			const sharedFolder = plugin.sharedFolders.new(
-				normalizePath(path),
-				guid,
-				relay.guid,
-				true,
-			);
+			folder = sharedFolders.new(normalizedPath, guid, relay.guid, true);
+		}
 
-			// create remote folder
-			const remote = await plugin.relayManager.createRemoteFolder(
-				sharedFolder,
-				relay,
-			);
-			sharedFolder.remote = remote;
-			plugin.sharedFolders.notifyListeners();
-		},
+		// Create remote folder with privacy settings
+		const remote = await plugin.relayManager.createRemoteFolder(
+			folder,
+			relay,
+			isPrivate,
+			folderName,
+		);
+
+		// Add users to the private folder if it's private
+		if (isPrivate) {
+			for (const userId of userIds) {
+				await plugin.relayManager.addFolderRole(remote, userId, "Member");
+			}
+		}
+
+		folder.remote = remote;
+		folder.connect();
+		plugin.sharedFolders.notifyListeners();
+
+		// Navigate to the remote folder after successful creation
+		setTimeout(() => {
+			dispatch("manageSharedFolder", {
+				remoteFolder: remote,
+				relay: remote.relay,
+			});
+		}, 100);
+
+		return folder;
+	}
+
+	const shareFolderModal = new ShareFolderModal(
+		plugin.app,
+		relay,
+		sharedFolders,
+		plugin.relayManager,
+		onChooseV1,
 	);
 
-	async function handleAddToVault(remoteFolder: RemoteSharedFolder) {
-		async function addToVault(
-			remoteFolder: RemoteSharedFolder,
-			name: string,
-			location: string,
-		): Promise<SharedFolder> {
-			const vaultRelativePath = normalizePath(join(location, name));
-			if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
-				await plugin.vault.createFolder(vaultRelativePath);
-			}
-			const folder = plugin.sharedFolders.new(
-				vaultRelativePath,
-				remoteFolder.guid,
-				remoteFolder.relay.guid,
-				true,
+	async function onChooseV0(path: string) {
+		const normalizedPath = normalizePath(path);
+		const folder = sharedFolders.find((folder) => folder.path == path);
+		// shared folder exists, but remote does not
+		if (folder) {
+			const remote = await plugin.relayManager.createRemoteFolder(
+				folder,
+				relay,
 			);
-			folder.remote = remoteFolder;
+			folder.remote = remote;
+			folder.connect();
 			plugin.sharedFolders.notifyListeners();
-			dispatch("manageSharedFolder", { folder });
-			return folder;
 		}
-		new AddToVaultModal(
-			plugin.app,
-			plugin.sharedFolders,
-			remoteFolder,
-			[], // No other available folders since this one is pre-selected
-			addToVault,
-		).open();
 	}
+
+    async function handleAddToVault(remoteFolder: RemoteSharedFolder) {
+        async function addToVault(
+            remoteFolder: RemoteSharedFolder,
+            name: string,
+            location: string,
+        ): Promise<SharedFolder> {
+            const vaultRelativePath = normalizePath(join(location, name));
+            if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
+                await plugin.vault.createFolder(vaultRelativePath);
+            }
+            const folder = plugin.sharedFolders.new(
+                vaultRelativePath,
+                remoteFolder.guid,
+                remoteFolder.relay.guid,
+                true,
+            );
+            folder.remote = remoteFolder;
+            plugin.sharedFolders.notifyListeners();
+            dispatch("manageSharedFolder", { folder });
+            return folder;
+        }
+        new AddToVaultModal(
+            plugin.app,
+            plugin.sharedFolders,
+            remoteFolder,
+            [], // No other available folders since this one is pre-selected
+            addToVault,
+        ).open();
+    }
+
+	onDestroy(() => {
+		shareFolderModal?.destroy();
+	});
 </script>
 
 <Breadcrumbs
@@ -494,7 +489,21 @@
 		class="mod-cta"
 		aria-label="Select a folder to share it with this Relay Server"
 		on:click={debounce(() => {
-			folderSelect.open();
+			if (relay.version === 0) {
+				// For relay version 0, go directly to folder selection
+				const folderModal = new FolderSuggestModal(
+					plugin.app,
+					"Choose or create folder...",
+					new Set(
+						sharedFolders.filter((f) => !!f.relayId).map((f) => f.path),
+					).add("/"),
+					onChooseV0,
+				);
+				folderModal.open();
+			} else {
+				// For relay version > 0, use the full modal with privacy settings
+				shareFolderModal.open();
+			}
 		})}>Share a folder</button
 	>
 </SettingItem>
@@ -506,9 +515,7 @@
 				class="edit-members-button"
 				role="button"
 				tabindex="0"
-				aria-label={$isEditingMembers
-					? "Cancel editing members"
-					: "Edit members"}
+				aria-label={$isEditingMembers ? "Done editing" : "Edit members"}
 				on:click={handleEditMembersToggle}
 				on:keypress={handleEditMembersToggle}
 			>
