@@ -1155,7 +1155,7 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 
 	public get subscriptions(): ObservableMap<string, RelaySubscription> {
 		return this._subscriptions.filter(
-			(subscription) => subscription.relay.id === this.id,
+			(subscription) => subscription.relayId === this.id,
 		);
 	}
 
@@ -1384,7 +1384,7 @@ export class RelayManager extends HasLogging {
 	async getRelayInvitation(relay: Relay): Promise<RelayInvitation | undefined> {
 		if (!this.pb) return undefined;
 		const relayInvitation = this.relayInvitations.find((invite) => {
-			return invite.relay.id === relay.id;
+			return invite.relayId === relay.id;
 		});
 		if (relayInvitation) {
 			return relayInvitation;
@@ -1397,7 +1397,7 @@ export class RelayManager extends HasLogging {
 					this.store?.ingest(invite);
 				});
 				const invite = this.relayInvitations.find((invite) => {
-					return invite.relay.id === relay.id;
+					return invite.relayId === relay.id;
 				});
 				if (invite) {
 					return invite;
