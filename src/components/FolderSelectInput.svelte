@@ -1,55 +1,42 @@
 <script lang="ts">
-	import { onMount, onDestroy } from "svelte";
-	import { FolderSuggest } from "../ui/FolderSuggest";
+	import TFolderSuggest from "./TFolderSuggest.svelte";
 	import type { App } from "obsidian";
-	import { writable } from "svelte/store";
+	import type { Writable } from "svelte/store";
 	import type { SharedFolders } from "src/SharedFolder";
 
 	export let app: App;
-
-	let inputEl: HTMLInputElement;
-	let folderSuggest: FolderSuggest;
 	export let sharedFolders: SharedFolders;
-	export let selectedFolder = writable<string | undefined>();
+	export let selectedFolder: Writable<string | undefined>;
+	export let placeholder = "Choose or create folder...";
 
-	onMount(() => {
-		folderSuggest = new FolderSuggest(app, sharedFolders, inputEl);
+	let currentValue = "";
 
-		// Custom event listener for folder selection
-		const handleFolderSelect = (event: CustomEvent) => {
-			selectedFolder = event.detail.folder.path;
-		};
-
-		inputEl.addEventListener(
-			"folder-selected",
-			handleFolderSelect as EventListener,
+	function getBlockedPaths() {
+		return new Set<string>(
+			sharedFolders
+				.filter((folder) => !!folder.relayId)
+				.map((folder) => folder.path),
 		);
+	}
 
-		return () => {
-			inputEl.removeEventListener(
-				"folder-selected",
-				handleFolderSelect as EventListener,
-			);
-		};
-	});
+	// Initialize from external store if it has a value
+	$: if ($selectedFolder && $selectedFolder !== currentValue) {
+		currentValue = $selectedFolder;
+	}
 
-	onDestroy(() => {
-		if (folderSuggest) {
-			folderSuggest.close();
-		}
-	});
-
-	function handleInput() {
-		// You can add additional logic here if needed
+	function handleSelect(e: CustomEvent) {
+		const folderPath = e.detail.value;
+		currentValue = folderPath;
+		selectedFolder.set(folderPath);
 	}
 </script>
 
-<div class="folder-suggest-container">
-	<input
-		bind:this={inputEl}
-		type="text"
-		placeholder="/"
-		on:input={handleInput}
-		bind:value={$selectedFolder}
+<div class="folder-select-input">
+	<TFolderSuggest
+		{app}
+		{placeholder}
+		blockedPaths={getBlockedPaths()}
+		bind:value={currentValue}
+		on:select={handleSelect}
 	/>
 </div>
