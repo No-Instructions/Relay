@@ -5,9 +5,9 @@
 		type RelayRole,
 		type FolderRole,
 		type RemoteSharedFolder,
+		type Role,
 	} from "../Relay";
 	import SettingItem from "./SettingItem.svelte";
-	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import { debounce } from "obsidian";
@@ -24,6 +24,9 @@
 
 	import Lock from "./Lock.svelte";
 	import { flags } from "src/flagManager";
+	import SlimSettingItem from "./SlimSettingItem.svelte";
+	import { Check, Edit } from "lucide-svelte";
+	import { UserSelectModal } from "src/ui/UserSelectModal";
 	export let plugin: Live;
 	export let remoteFolder: RemoteSharedFolder;
 	export let sharedFolders: SharedFolders;
@@ -67,6 +70,7 @@
 		},
 	);
 
+	let isEditingUsers = writable(false);
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
 	let updating = writable(false);
@@ -181,6 +185,65 @@
 		dispatch("goBack", {});
 	}
 
+	function handleEditUsersToggle(event: KeyboardEvent | MouseEvent) {
+		if (
+			event instanceof MouseEvent ||
+			(event instanceof KeyboardEvent &&
+				(event.key === "Enter" || event.key === " "))
+		) {
+			isEditingUsers.update((value) => !value);
+		}
+	}
+
+	async function handleRemoveFolderUser(folderRole: FolderRole) {
+		await plugin.relayManager.removeFolderRole(folderRole);
+	}
+
+	async function handleMakePrivate() {
+		// Make the folder private
+		const updated = await plugin.relayManager.updateFolderPrivacy(
+			remoteFolder,
+			true,
+		);
+		// Update the local remoteFolder to trigger reactivity
+		remoteFolder = updated;
+		// Open the add users modal
+		handleAddUser();
+	}
+
+	function handleAddUser() {
+		const modal = new UserSelectModal(
+			plugin.app,
+			plugin.relayManager,
+			remoteFolder,
+			async (userIds: string[], role) => {
+				// Add all selected users
+				for (const userId of userIds) {
+					await plugin.relayManager.addFolderRole(remoteFolder, userId, role);
+				}
+			},
+		);
+		modal.open();
+	}
+
+	async function handleFolderRoleChange(folderRole: FolderRole, newRole: Role) {
+		await plugin.relayManager.updateFolderRole(folderRole, newRole);
+	}
+
+	async function handleFolderRoleChangeEvent(event: Event) {
+		const target = event.target as HTMLSelectElement;
+		const folderRole = $virtualFolderRoles.find(role => role.id === target.dataset.roleId!);
+		if (folderRole) {
+			const originalRole = folderRole.role;
+			try {
+				await handleFolderRoleChange(folderRole, target.value as Role);
+			} catch (e) {
+				// Revert dropdown to the original role value
+				target.value = originalRole;
+			}
+		}
+	}
+
 	async function handleAddToVault() {
 		async function addToVault(
 			remoteFolder: RemoteSharedFolder,
@@ -232,19 +295,17 @@
 
 	const updateRemoteFolder = plugin.timeProvider.debounce(async () => {
 		try {
-			// Use PocketBase directly to update the folder name
-			const pb = plugin.relayManager.pb;
-			if (pb && $remoteFolder.id) {
-				const updated = await pb
-					.collection("shared_folders")
-					.update($remoteFolder.id, {
-						name: nameInput.value.trim(),
-					});
-				// Update the local remoteFolder object to reflect changes
-				if (updated) {
-					remoteFolder.update(updated);
-					currentDisplayName = updated.name;
+			// Use RelayManager to update the folder name
+			const updated = await plugin.relayManager.updateRemoteFolder(
+				$remoteFolder,
+				{
+					name: nameInput.value.trim(),
 				}
+			);
+			// Update the local remoteFolder object to reflect changes
+			if (updated) {
+				remoteFolder.update(updated);
+				currentDisplayName = updated.name;
 			}
 			updating.set(false);
 		} catch (error) {
@@ -320,21 +381,57 @@
 {/if}
 
 {#if $relayStore}
-	<SettingItemHeading name="Users with access"></SettingItemHeading>
+	<SettingItemHeading
+		name="Users with access"
+		helpText={isPrivate
+			? ""
+			: "This folder is accessible to everyone on this Relay Server."}
+	>
+		{#if $remoteFolder.private && $remoteFolder.owner}
+			<div
+				class="edit-members-button"
+				role="button"
+				tabindex="0"
+				aria-label={$isEditingUsers ? "Cancel editing users" : "Edit users"}
+				on:click={handleEditUsersToggle}
+				on:keypress={handleEditUsersToggle}
+			>
+				{#if $isEditingUsers}
+					<Check class="svg-icon" />
+				{:else}
+					<Edit class="svg-icon" />
+				{/if}
+			</div>
+		{/if}
+	</SettingItemHeading>
 
 	{#each $virtualFolderRoles as role}
 		<AccountSettingItem user={role.user}>
 			{#if isPrivate}
-				{#if $remoteFolder.owner}
+				{#if $isEditingUsers}
+					{#if role.userId !== plugin.relayManager.user?.id}
+						<button
+							class="mod-destructive"
+							on:click={debounce(() => {
+								if ("sharedFolder" in role) {
+									handleRemoveFolderUser(role);
+								}
+							})}
+						>
+							Remove
+						</button>
+					{/if}
+				{:else if $remoteFolder.owner}
 					<div style="display: flex; gap: 8px; align-items: center;">
 						<select
 							class="dropdown"
-							disabled={true}
+							disabled={role.userId === plugin.relayManager.user?.id}
 							aria-label={role.userId === plugin.relayManager.user?.id
 								? "Cannot modify your own role"
 								: undefined}
 							value={role.role}
 							data-role-id={role.id}
+							on:change={handleFolderRoleChangeEvent}
 						>
 							<option value="Owner">Owner</option>
 							<option value="Member">Member</option>
@@ -346,6 +443,19 @@
 			{/if}
 		</AccountSettingItem>
 	{/each}
+
+	{#if isPrivate}
+		<SettingItem description="" name="">
+			<button
+				class="mod-cta"
+				aria-label="Add user to private folder"
+				disabled={$isEditingUsers}
+				on:click={debounce(handleAddUser)}
+			>
+				Add User
+			</button>
+		</SettingItem>
+	{/if}
 {/if}
 {#if $folderStore && $syncSettings && $relayStore && flags().enableAttachmentSync}
 	<div class="local-settings">
@@ -409,6 +519,16 @@
 {/if}
 {#if $relayStore}
 	{#if $remoteFolder.owner}
+		{#if !remoteFolder?.private && remoteFolder?.relay.version > 0}
+			<SettingItem
+				name="Make private"
+				description="Convert this folder to a private folder and manage access"
+			>
+				<button class="mod-destructive" on:click={debounce(handleMakePrivate)}>
+					Make private
+				</button>
+			</SettingItem>
+		{/if}
 		<SettingItem
 			name="Remove from Relay Server"
 			description={`Deletes the remote folder from the Relay Server. Local files will be preserved.`}
