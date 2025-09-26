@@ -15,12 +15,12 @@
 
 	let inputEl: HTMLInputElement;
 	let suggestions: any[] = [];
-	let selectedIndex = -1;
+	let selectedIndex = 0;
 	let inputValue = "";
 
 	function updateSuggestions() {
 		suggestions = getSuggestions(inputValue);
-		selectedIndex = -1;
+		selectedIndex = 0;
 	}
 
 	function selectSuggestion(item: any) {
@@ -119,7 +119,9 @@
 					</div>
 				</div>
 				<div class="suggestion-aux">
-					<div class="suggestion-icon"></div>
+					<slot name="suggestion-aux" {item} index={i}>
+						<div class="suggestion-icon"></div>
+					</slot>
 				</div>
 			</div>
 		{/each}
