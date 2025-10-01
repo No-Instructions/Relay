@@ -376,13 +376,13 @@ export class SharedFolder extends HasProvider {
 		const inFolder = this.checkPath(tfile.path);
 		const vpath = this.getVirtualPath(tfile.path);
 		const isSupportedFileType = this.syncStore.canSync(vpath);
-		
+
 		// For folders, we only need to check if the sync store supports them
 		// Extension preferences don't apply to folders
 		if (tfile instanceof TFolder) {
 			return inFolder && isSupportedFileType;
 		}
-		
+
 		const isExtensionEnabled =
 			this.syncSettingsManager.isExtensionEnabled(vpath);
 
@@ -1465,7 +1465,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	deleteFile(vpath: string) {
-		const guid = this.syncStore.get(vpath);
+		const guid = this.syncStore?.get(vpath);
 		if (guid) {
 			this.ydoc.transact(() => {
 				this.syncStore.delete(vpath);
