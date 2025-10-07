@@ -592,9 +592,7 @@ export default class Live extends Plugin {
 									.setTitle("Folder settings")
 									.setIcon("gear")
 									.onClick(() => {
-										this.openSettings(
-											`/shared-folders?id=${folder.guid}&relay=${folder.relayId}`,
-										);
+										this.openSettings(`/shared-folders?id=${folder.guid}`);
 									});
 							});
 							menu.addItem((item) => {

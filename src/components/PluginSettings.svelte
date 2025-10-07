@@ -111,6 +111,7 @@
 				}
 				if (sharedFolder?.remote) {
 					remoteFolder = sharedFolder.remote;
+					currentRelay = sharedFolder.remote.relay;
 					currentComponent = ManageRemoteFolder;
 				} else {
 					currentComponent = ManageSharedFolder;
@@ -308,14 +309,7 @@
 	</div>
 {/if}
 <div class="vertical-tab-content">
-	{#if sharedFolder}
-		<ManageSharedFolder
-			{plugin}
-			{sharedFolder}
-			on:goBack={handleGoBack}
-			on:close={handleClose}
-		></ManageSharedFolder>
-	{:else if remoteFolder}
+	{#if remoteFolder}
 		<ManageRemoteFolder
 			{plugin}
 			{remoteFolder}
@@ -327,6 +321,13 @@
 			on:manageRelay={handleManageRelayEvent}
 			on:manageSharedFolder={handleManageSharedFolderEvent}
 		></ManageRemoteFolder>
+	{:else if sharedFolder}
+		<ManageSharedFolder
+			{plugin}
+			{sharedFolder}
+			on:goBack={handleGoBack}
+			on:close={handleClose}
+		></ManageSharedFolder>
 	{:else if currentRelay}
 		<ManageRelay
 			{plugin}
