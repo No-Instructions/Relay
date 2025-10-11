@@ -2,6 +2,7 @@
 	import type { RelayUser, RemoteSharedFolder, Role } from "src/Relay";
 	import type { RelayManager } from "src/RelayManager";
 	import { derived, writable } from "svelte/store";
+	import { handleServerError } from "src/utils/toastStore";
 
 	export let relayManager: RelayManager;
 	export let folder: RemoteSharedFolder;
@@ -111,7 +112,12 @@
 	async function handleAdd() {
 		const currentSelectedUsers = $selectedUsers;
 		if (currentSelectedUsers.size === 0) return;
-		await onAdd(Array.from(currentSelectedUsers), "Member");
+
+		try {
+		    await onAdd(Array.from(currentSelectedUsers), "Member");
+		} catch (error) {
+			handleServerError(error);
+		}
 	}
 
 	function getInitials(name: string): string {
