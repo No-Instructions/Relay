@@ -27,6 +27,7 @@
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import { Check, Edit } from "lucide-svelte";
 	import { UserSelectModal } from "src/ui/UserSelectModal";
+	import { handleServerError } from "src/utils/toastStore";
 	export let plugin: Live;
 	export let remoteFolder: RemoteSharedFolder;
 	export let sharedFolders: SharedFolders;
@@ -219,19 +220,30 @@
 	}
 
 	async function handleRemoveFolderUser(folderRole: FolderRole) {
-		await plugin.relayManager.removeFolderRole(folderRole);
+		try {
+			await plugin.relayManager.removeFolderRole(folderRole);
+		} catch (error) {
+			handleServerError(error, "Failed to remove user from folder.");
+		}
 	}
 
 	async function handleMakePrivate() {
-		// Make the folder private
-		const updated = await plugin.relayManager.updateFolderPrivacy(
-			remoteFolder,
-			true,
-		);
-		// Update the local remoteFolder to trigger reactivity
-		remoteFolder = updated;
-		// Open the add users modal
-		handleAddUser();
+		try {
+			// Make the folder private
+			const updated = await plugin.relayManager.updateFolderPrivacy(
+				remoteFolder,
+				true,
+			);
+			// Update the local remoteFolder to trigger reactivity
+			remoteFolder = updated;
+			// Open the add users modal
+			handleAddUser();
+		} catch (error) {
+			handleServerError(
+				error,
+				"Failed to make folder private. Permission denied.",
+			);
+		}
 	}
 
 	function handleAddUser() {
@@ -240,9 +252,13 @@
 			plugin.relayManager,
 			remoteFolder,
 			async (userIds: string[], role) => {
-				// Add all selected users
-				for (const userId of userIds) {
-					await plugin.relayManager.addFolderRole(remoteFolder, userId, role);
+				try {
+					// Add all selected users
+					for (const userId of userIds) {
+						await plugin.relayManager.addFolderRole(remoteFolder, userId, role);
+					}
+				} catch (error) {
+					handleServerError(error, "Failed to add users to folder.");
 				}
 			},
 		);
@@ -250,7 +266,12 @@
 	}
 
 	async function handleFolderRoleChange(folderRole: FolderRole, newRole: Role) {
-		await plugin.relayManager.updateFolderRole(folderRole, newRole);
+		try {
+			await plugin.relayManager.updateFolderRole(folderRole, newRole);
+		} catch (error) {
+			handleServerError(error, "Failed to change user role.");
+			throw error;
+		}
 	}
 
 	async function handleFolderRoleChangeEvent(event: Event) {

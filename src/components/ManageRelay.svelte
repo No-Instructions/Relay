@@ -39,6 +39,7 @@
 	import { moment } from "obsidian";
 	import AccountSettingItem from "./AccountSettingItem.svelte";
 	import { minimark } from "src/minimark";
+	import { handleServerError } from "../utils/toastStore";
 
 	async function checkRelayHost(relay: Relay) {
 		const response = await plugin.loginManager.checkRelayHost(relay.guid);
@@ -156,10 +157,16 @@
 	function handleKeyToggle(checked: boolean) {
 		if ($canManageSharing) {
 			isShareKeyEnabled.set(checked);
+
 			plugin.relayManager
 				.toggleRelayInvitation(relayInvitation, $isShareKeyEnabled)
 				.then((invite) => {
 					isShareKeyEnabled.set(invite.enabled);
+				})
+				.catch((error) => {
+					// Revert the toggle state
+					isShareKeyEnabled.set(!checked);
+					handleServerError(error, "Failed to toggle share key");
 				});
 		}
 	}
@@ -185,14 +192,11 @@
 
 	async function rotateKey() {
 		if (relayInvitation) {
-			relayInvitation = await plugin.relayManager
-				.rotateKey(relayInvitation)
-				.catch((response) => {
-					if (response.status === 429) {
-						new Notice("Slow down");
-					}
-					throw response;
-				});
+			try {
+				relayInvitation = await plugin.relayManager.rotateKey(relayInvitation);
+			} catch (error) {
+				handleServerError(error, "Failed to rotate key.");
+			}
 		}
 	}
 
@@ -237,11 +241,18 @@
 	}
 
 	function handleKick(relay_role: RelayRole) {
-		plugin.relayManager.kick(relay_role);
+		plugin.relayManager.kick(relay_role).catch((error) => {
+			handleServerError(error, "Failed to remove user");
+		});
 	}
 
 	async function handleRoleChange(relay_role: RelayRole, newRole: Role) {
-		await plugin.relayManager.updateRelayRole(relay_role, newRole);
+		try {
+			await plugin.relayManager.updateRelayRole(relay_role, newRole);
+		} catch (error) {
+			handleServerError(error, "Failed to change user role.");
+			throw error;
+		}
 	}
 
 	async function handleRoleChangeEvent(event: Event) {

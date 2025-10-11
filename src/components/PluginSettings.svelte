@@ -11,6 +11,7 @@
 	import { minimark } from "src/minimark";
 	import type { RemoteSharedFolder } from "src/Relay";
 	import ToastManager from "./ToastManager.svelte";
+	import { handleServerError } from "../utils/toastStore";
 	import { flags } from "../flagManager";
 
 	interface RelayEventDetail {
@@ -168,14 +169,18 @@
 	}
 
 	async function handleCreateRelayEvent(event: CreateRelayEvent) {
-		history.push({
-			currentRelay,
-			sharedFolder,
-			remoteFolder,
-			component: currentComponent,
-		});
-		currentRelay = await plugin.relayManager.createRelay("");
-		currentComponent = ManageRelay;
+		try {
+			history.push({
+				currentRelay,
+				sharedFolder,
+				remoteFolder,
+				component: currentComponent,
+			});
+			currentRelay = await plugin.relayManager.createRelay("");
+			currentComponent = ManageRelay;
+		} catch (error: any) {
+			handleServerError(error, "Failed to create relay");
+		}
 	}
 
 	function handleGoBack(event: GoBackEvent) {
