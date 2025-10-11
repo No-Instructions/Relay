@@ -10,6 +10,8 @@
 	import ManageRemoteFolder from "./ManageRemoteFolder.svelte";
 	import { minimark } from "src/minimark";
 	import type { RemoteSharedFolder } from "src/Relay";
+	import ToastManager from "./ToastManager.svelte";
+	import { flags } from "../flagManager";
 
 	interface RelayEventDetail {
 		relay: Relay;
@@ -355,6 +357,10 @@
 		</LoggedIn>
 	{/if}
 </div>
+
+{#if flags().enableToasts}
+	<ToastManager />
+{/if}
 
 {#if plugin.manifest.version !== plugin.version}
 	<span class="relay-version">
