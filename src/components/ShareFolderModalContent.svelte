@@ -8,6 +8,7 @@
 	import SelectedFolder from "./SelectedFolder.svelte";
 	import { onMount, onDestroy } from "svelte";
 	import { FolderSuggestModal } from "../ui/FolderSuggestModal";
+	import { handleServerError } from "src/utils/toastStore";
 
 	export let app: App;
 	export let relay: Relay;
@@ -110,17 +111,21 @@
 			acceptedFolder = inputValue.trim();
 		}
 
-		// Filter out current user since their role is created automatically
-		const currentUserId = relayManager.user?.id;
-		const userIds = Array.from(selectedUsers).filter(
-			(id) => id !== currentUserId,
-		);
-		await onConfirm(
-			acceptedFolder,
-			acceptedFolder.split("/").pop() || "",
-			isPrivate,
-			userIds,
-		);
+		try {
+			// Filter out current user since their role is created automatically
+			const currentUserId = relayManager.user?.id;
+			const userIds = Array.from(selectedUsers).filter(
+				(id) => id !== currentUserId,
+			);
+			await onConfirm(
+				acceptedFolder,
+				acceptedFolder.split("/").pop() || "",
+				isPrivate,
+				userIds,
+			);
+		} catch (error) {
+			handleServerError(error, "Failed to share folder.");
+		}
 	}
 
 	function goBack() {
