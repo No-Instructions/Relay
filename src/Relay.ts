@@ -25,6 +25,22 @@ export function hasACL(item: HasACL) {
 	return !!item.acl;
 }
 
+export type Permission =
+	| readonly ["folder", "read_content"]
+	| readonly ["folder", "edit_content"]
+	| readonly ["folder", "manage_files"]
+	| readonly ["folder", "upload"]
+	| readonly ["folder", "download"]
+	| readonly ["folder", "manage_users"]
+	| readonly ["folder", "make_private"] // TODO
+	| readonly ["folder", "rename"]
+	| readonly ["folder", "delete"]
+	| readonly ["relay", "rename"]
+	| readonly ["relay", "manage_users"]
+	| readonly ["relay", "manage_sharing"]
+	| readonly ["relay", "delete"]
+	| readonly ["subscription", "manage"];
+
 export interface RelayUser extends Identified, Updatable<RelayUser> {
 	id: string;
 	name: string;

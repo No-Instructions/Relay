@@ -15,7 +15,7 @@
 	import RemoteFolder from "./RemoteFolder.svelte";
 	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount, onDestroy } from "svelte";
-	import { derived, writable } from "svelte/store";
+	import { derived, writable, get } from "svelte/store";
 	import { Edit, Check, Download } from "lucide-svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
@@ -154,7 +154,7 @@
 	}
 
 	function handleKeyToggle(checked: boolean) {
-		if (relay.owner) {
+		if ($canManageKeys) {
 			isShareKeyEnabled.set(checked);
 			plugin.relayManager
 				.toggleRelayInvitation(relayInvitation, $isShareKeyEnabled)
@@ -268,7 +268,28 @@
 		}
 	}
 
-	// Function overloads
+	// Permission stores - direct store subscriptions
+	const canManageUsers = plugin.relayManager.userCan(
+		["relay", "manage_users"],
+		relay,
+	);
+	const canManageSharing = plugin.relayManager.userCan(
+		["relay", "manage_sharing"],
+		relay,
+	);
+	const canRenameRelay = plugin.relayManager.userCan(
+		["relay", "rename"],
+		relay,
+	);
+	const canDeleteRelay = plugin.relayManager.userCan(
+		["relay", "delete"],
+		relay,
+	);
+	const canManageSubscription = plugin.relayManager.userCan(
+		["subscription", "manage"],
+		relay,
+	);
+
 	function onChoose(folderPath: string): Promise<SharedFolder>;
 	function onChoose(
 		folderPath: string,
@@ -381,7 +402,7 @@
 		},
 	]}
 />
-{#if relay.owner}
+{#if $canRenameRelay}
 	<SettingItem name="Name" description="Set the Relay Server's name.">
 		<input
 			type="text"
@@ -408,7 +429,7 @@
 				});
 			}}>{remote.name}</RemoteFolder
 		>
-		{#if !$sharedFolders.some((sharedFolder) => sharedFolder.guid === remote.guid)}
+		{#if !$sharedFolders.some((sharedFolder) => sharedFolder.guid === remote.guid) && get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
 			<SettingsControl
 				on:settings={debounce(() => {
 					handleAddToVault(remote);
@@ -457,7 +478,7 @@
 
 <div class="users-header">
 	<SettingItemHeading name="Users">
-		{#if $relay.owner}
+		{#if $canManageUsers}
 			<div
 				class="edit-members-button"
 				role="button"
@@ -478,7 +499,7 @@
 
 {#each $roles.values().sort(userSort) as item}
 	<AccountSettingItem user={item.user}>
-		{#if $relay.owner}
+		{#if $canManageUsers}
 			{#if $isEditingMembers}
 				{#if item.userId !== plugin.loginManager.user?.id}
 					<button
@@ -529,9 +550,11 @@
     -->
 <SettingItemHeading name="Sharing"></SettingItemHeading>
 
-<SlimSettingItem name={relay.owner ? "Enable key sharing" : "Key sharing"}>
+<SlimSettingItem
+	name={$canManageSharing ? "Enable key sharing" : "Key sharing"}
+>
 	<fragment slot="description">
-		{#if relay.owner}
+		{#if $canManageSharing}
 			<div class="setting-item-description">
 				Allow others to join this Relay Server with a Share Key.
 			</div>
@@ -546,7 +569,7 @@
 		{/if}
 	</fragment>
 	<div class="setting-item-control">
-		{#if !relay.owner}
+		{#if !$canManageSharing}
 			<Lock />
 		{/if}
 		<div
@@ -554,7 +577,7 @@
 			aria-checked={$isShareKeyEnabled}
 			tabindex="0"
 			on:keypress={() => handleKeyToggle(!$isShareKeyEnabled)}
-			class={relay.owner
+			class={$canManageSharing
 				? "checkbox-container"
 				: "checkbox-container checkbox-locked"}
 			class:is-enabled={$isShareKeyEnabled}
@@ -563,7 +586,7 @@
 			<input
 				type="checkbox"
 				checked={$isShareKeyEnabled}
-				disabled={!relay.owner}
+				disabled={!$canManageSharing}
 				on:change={(e) => handleKeyToggle(e.currentTarget.checked)}
 			/>
 			<div class="checkbox-toggle"></div>
@@ -598,7 +621,7 @@
 		</div>
 	</SettingItem>
 
-	{#if relay.owner}
+	{#if $canManageSharing}
 		<SettingItem
 			name="Rotate key"
 			description="Create a new share key. The old key will no longer work."
@@ -609,7 +632,7 @@
 		</SettingItem>
 	{/if}
 {/if}
-{#if $relay.owner}
+{#if $canManageSubscription}
 	<SettingItemHeading name="Plan" />
 	{#if $subscription}
 		<SettingItem name={`Plan: ${$relay.plan}`} description="">
@@ -735,7 +758,7 @@
 	</SettingItem>
 {/if}
 
-{#if $relay.owner}
+{#if $canDeleteRelay}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 	<SettingItem
 		name="Destroy Relay Server"
