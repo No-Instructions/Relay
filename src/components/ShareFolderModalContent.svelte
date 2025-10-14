@@ -45,15 +45,17 @@
 	let users: UserSelection[] = [];
 	let searchQuery = "";
 
-	if (relayManager.user) {
-		users = [
-			{
-				user: relayManager.user,
-				selected: true,
-				isCurrentUser: true,
-			},
-		];
-	}
+	users = Array.from(
+		relayManager.relayRoles
+			.filter((role) => role.relayId === relay.id)
+			.values(),
+	).map((role) => {
+		return {
+			user: role.user,
+			selected: role.userId === relayManager.user?.id,
+			isCurrentUser: role.userId === relayManager.user?.id,
+		};
+	});
 
 	$: filteredUsers = users.filter((userSelection) => {
 		if (!searchQuery || searchQuery.trim() === "") return true;
@@ -395,11 +397,6 @@
 	.user-item.is-current-user {
 		opacity: 0.6;
 		cursor: not-allowed;
-	}
-
-	.user-item:focus {
-		outline: 2px solid var(--interactive-accent);
-		outline-offset: -2px;
 	}
 
 	.user-checkbox {
