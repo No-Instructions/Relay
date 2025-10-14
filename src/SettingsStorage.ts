@@ -200,7 +200,7 @@ export class Settings<T> extends Observable<T> {
 		private readonly storage: StorageAdapter<T>,
 		private readonly defaults: T,
 	) {
-		super();
+		super("Settings");
 		this.data = { ...defaults };
 	}
 

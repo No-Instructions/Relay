@@ -13,6 +13,8 @@ import {
 	type RemoteSharedFolder,
 	type StorageQuota,
 	type Provider,
+	type Permission,
+	type Resource,
 } from "./Relay";
 import PocketBase, {
 	type AuthModel,
@@ -29,6 +31,11 @@ import type { LoginManager } from "./LoginManager";
 import type { Unsubscriber } from "svelte/motion";
 import { Observable } from "./observable/Observable";
 import { PostOffice } from "./observable/Postie";
+import {
+	PolicyManager,
+	type IPolicyManager,
+	ObservablePermission,
+} from "./PolicyManager";
 
 interface Identified {
 	id: string;
@@ -1369,6 +1376,7 @@ export class RelayManager extends HasLogging {
 	authUser?: AuthModel;
 	user?: RelayUser;
 	store?: Store;
+	policyManager?: IPolicyManager;
 	_offLoginManager: Unsubscriber;
 	private pb: PocketBase | null;
 	destroyed = false;
@@ -1500,6 +1508,32 @@ export class RelayManager extends HasLogging {
 			storageQuotaCollection,
 			providerCollection,
 		]);
+
+		// Initialize policy manager after store is built
+		this.policyManager = new PolicyManager(this);
+	}
+
+	public getCollectionMapByName(
+		name: string,
+	): ObservableMap<any, any> | undefined {
+		// TODO don't hardcode this
+		switch (name) {
+			case "folder_roles":
+				return this.folderRoles;
+			case "relay_roles":
+				return this.relayRoles;
+			case "shared_folders":
+				return this.remoteFolders;
+			case "relays":
+				return this.relays;
+			case "storage_quotas":
+				return this.storageQuotas;
+			case "subscriptions":
+				return this.subscriptions;
+			default:
+				console.warn(`Unknown collection name: ${name}`);
+				return undefined;
+		}
 	}
 
 	setUser() {
@@ -1959,6 +1993,54 @@ export class RelayManager extends HasLogging {
 			throw new Error("Failed to update folder");
 		}
 		return updated;
+    }
+
+	/**
+	 * Reactive permission check with explicit principal - returns observable that updates when permissions change
+	 * @param principal - User ID to check permissions for
+	 * @param permission - Permission in format [resource, action] (e.g., ["relay", "manage"], ["folder", "delete"])
+	 * @param resource - The resource object (Relay or RemoteSharedFolder)
+	 * @param context - Optional context (e.g., { fileSize: 1024 })
+	 */
+	can(
+		principal: string,
+		permission: Permission,
+		resource: Relay | RemoteSharedFolder | RelaySubscription,
+		context?: Record<string, any>,
+	): ObservablePermission {
+		if (!this.policyManager) {
+			// Return a static false observable for missing policy manager
+			return new ObservablePermission(() => false, []);
+		}
+
+		const [resourceType] = permission;
+		const resourcePointer = [resourceType, resource.id] as Resource;
+
+		return this.policyManager.can(
+			principal,
+			permission,
+			resourcePointer,
+			context,
+		);
+	}
+
+	/**
+	 * Convenience method: Check permissions for the current user
+	 * @param permission - Permission in format [resource, action] (e.g., ["relay", "manage"], ["folder", "delete"])
+	 * @param resource - The resource object (Relay or RemoteSharedFolder)
+	 * @param context - Optional context (e.g., { fileSize: 1024 })
+	 */
+	userCan(
+		permission: Permission,
+		resource: Relay | RemoteSharedFolder | RelaySubscription,
+		context?: Record<string, any>,
+	): ObservablePermission {
+		if (!this.user) {
+			// Return a static false observable for missing user
+			return new ObservablePermission(() => false, []);
+		}
+
+		return this.can(this.user.id, permission, resource, context);
 	}
 
 	destroy(): void {
@@ -1971,5 +2053,6 @@ export class RelayManager extends HasLogging {
 		this.pb = null as any;
 		this.authUser = null;
 		this.store = null as any;
+		this.policyManager = undefined;
 	}
 }
