@@ -45,28 +45,15 @@
 		isCurrentUser: boolean;
 	}
 
-	let users: UserSelection[] = [];
-	let searchQuery = "";
-
-	if (relayManager.user) {
-		users = [
-			{
-				user: relayManager.user,
-				selected: true,
-				isCurrentUser: true,
-			},
-		];
-	}
-
-	$: filteredUsers = users.filter((userSelection) => {
-		if (!searchQuery || searchQuery.trim() === "") return true;
-		const query = searchQuery.toLowerCase().trim();
-		return (
-			userSelection.user.name.toLowerCase().includes(query) ||
-			(userSelection.user.email &&
-				userSelection.user.email.toLowerCase().includes(query))
-		);
-	});
+	// Create derived store for users in this relay
+	const relayUsers = derived(
+		[relayManager.relayRoles],
+		([$relayRoles]) => {
+			return Array.from($relayRoles.values())
+				.filter((role) => role.relayId === relay.id)
+				.map((role) => role.user);
+		}
+	);
 
 	// Create derived store for user selections
 	const users = derived(
@@ -434,11 +421,6 @@
 	.user-item.is-current-user {
 		opacity: 0.6;
 		cursor: not-allowed;
-	}
-
-	.user-item:focus {
-		outline: 2px solid var(--interactive-accent);
-		outline-offset: -2px;
 	}
 
 	.user-checkbox {

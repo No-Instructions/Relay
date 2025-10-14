@@ -149,6 +149,28 @@
 
 	const dispatch = createEventDispatcher();
 
+	// Permission stores - direct store subscriptions
+	const canReadFolder = plugin.relayManager.userCan(
+		["folder", "read_content"],
+		remoteFolder,
+	);
+	const canRenameFolder = plugin.relayManager.userCan(
+		["folder", "rename"],
+		remoteFolder,
+	);
+	const canDeleteFolder = plugin.relayManager.userCan(
+		["folder", "delete"],
+		remoteFolder,
+	);
+	const canManageUsers = plugin.relayManager.userCan(
+		["folder", "manage_users"],
+		remoteFolder,
+	);
+	const canMakeFolderPrivate = plugin.relayManager.userCan(
+		["folder", "make_private"],
+		remoteFolder,
+	);
+
 	function handleManageRelay(relay?: Relay) {
 		if (!relay) {
 			return;
@@ -354,7 +376,7 @@
 	]}
 />
 
-{#if $remoteFolder.owner}
+{#if $canRenameFolder}
 	<SettingItem
 		name="Name"
 		description="Set the Shared Folder's default name. A Shared Folder can always be renamed locally."
@@ -372,7 +394,7 @@
 	</SettingItem>
 {/if}
 
-{#if !$folderStore}
+{#if !$folderStore && $canReadFolder}
 	<SettingItemHeading name="Add to vault"></SettingItemHeading>
 	<SettingItem
 		name="Add this folder to your vault"
@@ -391,7 +413,7 @@
 			? ""
 			: "This folder is accessible to everyone on this Relay Server."}
 	>
-		{#if $remoteFolder.private && $remoteFolder.owner}
+		{#if $remoteFolder.private && $canManageUsers}
 			<div
 				class="edit-members-button"
 				role="button"
@@ -425,7 +447,7 @@
 							Remove
 						</button>
 					{/if}
-				{:else if $remoteFolder.owner}
+				{:else if $canManageUsers}
 					<div style="display: flex; gap: 8px; align-items: center;">
 						<select
 							class="dropdown"
@@ -444,7 +466,7 @@
 		</AccountSettingItem>
 	{/each}
 
-	{#if isPrivate}
+	{#if isPrivate && $canManageUsers}
 		<SettingItem description="" name="">
 			<button
 				class="mod-cta"
@@ -457,6 +479,8 @@
 		</SettingItem>
 	{/if}
 {/if}
+
+<div class="spacer"></div>
 {#if $folderStore && $syncSettings && $relayStore && flags().enableAttachmentSync}
 	<div class="local-settings">
 		<SettingItemHeading
@@ -514,11 +538,11 @@
 {/if}
 
 <div class="spacer"></div>
-{#if $remoteFolder.owner || $folderStore}
+{#if $canDeleteFolder || $canMakeFolderPrivate || $folderStore}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 {/if}
 {#if $relayStore}
-	{#if $remoteFolder.owner}
+	{#if $canMakeFolderPrivate}
 		{#if !remoteFolder?.private && remoteFolder?.relay.version > 0}
 			<SettingItem
 				name="Make private"
@@ -529,6 +553,8 @@
 				</button>
 			</SettingItem>
 		{/if}
+	{/if}
+	{#if $canDeleteFolder}
 		<SettingItem
 			name="Remove from Relay Server"
 			description={`Deletes the remote folder from the Relay Server. Local files will be preserved.`}
