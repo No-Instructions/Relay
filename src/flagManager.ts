@@ -43,7 +43,7 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	public flags: FeatureFlags;
 
 	private constructor() {
-		super();
+		super("FeatureFlagManager");
 		this.flags = FeatureFlagDefaults;
 	}
 
@@ -77,13 +77,15 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 
 	public setSettings(settings: NamespacedSettings<FeatureFlags>) {
 		this.settings = settings;
-		this.settings.subscribe((newFlags) => {
-			this.flags = {
-				...this.flags,
-				...newFlags,
-			};
-			this.notifyListeners();
-		});
+		this.unsubscribes.push(
+			this.settings.subscribe((newFlags) => {
+				this.flags = {
+					...this.flags,
+					...newFlags,
+				};
+				this.notifyListeners();
+			}),
+		);
 	}
 
 	public getFlag(flagName: keyof FeatureFlags): boolean {
@@ -100,6 +102,9 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	}
 
 	public static destroy() {
+		if (FeatureFlagManager.instance) {
+			FeatureFlagManager.instance.destroy();
+		}
 		FeatureFlagManager.instance = null;
 	}
 }
