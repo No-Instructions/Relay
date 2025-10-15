@@ -4,6 +4,8 @@ import type { ObservableMap } from "./observable/ObservableMap";
 
 export type Role = "Owner" | "Member";
 
+export type Resource = [string, string];
+
 interface Identified {
 	id: string;
 }

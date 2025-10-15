@@ -2,6 +2,7 @@
 
 import type { Unsubscriber } from "svelte/store";
 import { Observable } from "./Observable";
+import type { Subscriber } from "./Observable";
 
 export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 	protected _map: Map<K, V>;
@@ -9,6 +10,8 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 		(value: V, key: K) => boolean,
 		DerivedMap<K, V>
 	>;
+	private derivedMapRefCounts = new WeakMap<DerivedMap<K, V>, number>();
+	private activeDerivedMaps = new Set<DerivedMap<K, V>>();
 
 	constructor(public observableName?: string) {
 		super();
@@ -81,36 +84,93 @@ export class ObservableMap<K, V> extends Observable<ObservableMap<K, V>> {
 		return false;
 	}
 
+	// Override subscribe to track derived map subscriptions
+	subscribe(run: Subscriber<ObservableMap<K, V>>): Unsubscriber {
+		// Check if this subscriber is from a derived map
+		let derivedMap: DerivedMap<K, V> | null = null;
+		for (const dm of this.activeDerivedMaps) {
+			if (dm && dm.parentCallback === run) {
+				derivedMap = dm;
+				break;
+			}
+		}
+
+		if (derivedMap) {
+			const current = this.derivedMapRefCounts.get(derivedMap) || 0;
+			this.derivedMapRefCounts.set(derivedMap, current + 1);
+		}
+
+		const parentUnsubscribe = super.subscribe(run);
+
+		return () => {
+			if (derivedMap) {
+				const current = this.derivedMapRefCounts.get(derivedMap) || 0;
+				const newCount = current - 1;
+
+				if (newCount <= 0) {
+					// Remove from active set and ref counts - WeakMap handles its own GC
+					this.derivedMapRefCounts.delete(derivedMap);
+					this.activeDerivedMaps.delete(derivedMap);
+					derivedMap.destroy();
+				} else {
+					this.derivedMapRefCounts.set(derivedMap, newCount);
+				}
+			}
+			parentUnsubscribe();
+		};
+	}
+
+	// Override unsubscribe to handle direct unsubscribe calls
+	unsubscribe(run: Subscriber<ObservableMap<K, V>>): void {
+		// Find and handle derived map cleanup
+		for (const dm of this.activeDerivedMaps) {
+			if (dm && dm.parentCallback === run) {
+				const current = this.derivedMapRefCounts.get(dm) || 0;
+				const newCount = current - 1;
+
+				if (newCount <= 0) {
+					// Remove from active set and ref counts - WeakMap handles its own GC
+					this.derivedMapRefCounts.delete(dm);
+					this.activeDerivedMaps.delete(dm);
+					dm.destroy();
+				} else {
+					this.derivedMapRefCounts.set(dm, newCount);
+				}
+				break;
+			}
+		}
+
+		super.unsubscribe(run);
+	}
+
 	filter(predicate: (value: V, key: K) => boolean): ObservableMap<K, V> {
 		const existing = this._derivedMaps.get(predicate);
 		if (existing) {
 			return existing;
 		}
+
 		const derivedMap = new DerivedMap<K, V>(this, predicate);
 		this._derivedMaps.set(predicate, derivedMap);
-		this.unsubscribes.push(derivedMap.destroy);
+		this.derivedMapRefCounts.set(derivedMap, 0);
+		this.activeDerivedMaps.add(derivedMap);
+
 		return derivedMap;
 	}
 }
 
 class DerivedMap<K, V> extends ObservableMap<K, V> {
 	private unsub?: Unsubscriber;
+	public parentCallback: Subscriber<ObservableMap<K, V>>;
+	private isDestroyed = false;
 
 	constructor(
 		private parentMap: ObservableMap<K, V>,
 		private predicate: (value: V, key: K) => boolean,
 	) {
 		super();
-		this.sub();
-		this.observableName =
-			parentMap.observableName + "(filter: " + predicate.toString() + ")";
-	}
 
-	private sub(): void {
-		if (this.unsub) {
-			return;
-		}
-		this.unsub = this.parentMap.subscribe(() => {
+		// Create stable callback reference for parent tracking
+		this.parentCallback = () => {
 			const newMap = new Map<K, V>();
 			this.parentMap.forEach((value, key) => {
 				if (this.predicate(value, key)) {
@@ -119,15 +179,23 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 			});
 			this._map = newMap;
 			this.notifyListeners();
-		});
+		};
+
+		this.observableName =
+			parentMap.observableName + "(filter: " + predicate.toString() + ")";
+	}
+
+	private sub(): void {
+		if (this.unsub) {
+			return;
+		}
+		// Parent will automatically track this subscription
+		this.unsub = this.parentMap.subscribe(this.parentCallback);
 	}
 
 	subscribe(run: (value: ObservableMap<K, V>) => unknown): Unsubscriber {
 		this.sub();
-		super.subscribe(run);
-		return () => {
-			this.unsubscribe(run);
-		};
+		return super.subscribe(run);
 	}
 
 	unsubscribe(run: (value: ObservableMap<K, V>) => unknown): void {
@@ -139,8 +207,15 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 	}
 
 	destroy(): void {
+		if (this.isDestroyed) return;  // Break the loop here
+		
+		this.isDestroyed = true;
+		
 		if (this.unsub) {
 			this.unsub();
+			this.unsub = undefined;
 		}
+		this._listeners?.clear();
+		this.parentCallback = null as any;
 	}
 }
