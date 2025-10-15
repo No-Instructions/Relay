@@ -425,10 +425,6 @@
 					<div style="display: flex; gap: 8px; align-items: center;">
 						<select
 							class="dropdown"
-							disabled={role.userId === plugin.relayManager.user?.id}
-							aria-label={role.userId === plugin.relayManager.user?.id
-								? "Cannot modify your own role"
-								: undefined}
 							value={role.role}
 							data-role-id={role.id}
 							on:change={handleFolderRoleChangeEvent}

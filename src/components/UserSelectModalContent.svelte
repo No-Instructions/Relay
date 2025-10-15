@@ -110,8 +110,9 @@
 	}
 
 	async function handleAdd() {
-		if (selectedUsers.size === 0) return;
-		await onAdd(Array.from(selectedUsers), "Member");
+		const currentSelectedUsers = $selectedUsers;
+		if (currentSelectedUsers.size === 0) return;
+		await onAdd(Array.from(currentSelectedUsers), "Member");
 	}
 
 	function getInitials(name: string): string {
