@@ -83,6 +83,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 	private lastReleaseCheck: number = 0;
 	private lastChannelCheck: number = 0;
 	private readonly CHECK_INTERVAL = 1000 * 60 * 60 * 24;
+	observableName = "UpdateManager";
 
 	constructor(
 		private plugin: PluginWithApp,

@@ -106,7 +106,7 @@ class NetworkStatus {
 					return;
 				}
 				this.online = false;
-				this.onOffline.forEach((callback) => callback(this.status));
+				this.onOffline?.forEach((callback) => callback(this.status));
 			});
 	}
 

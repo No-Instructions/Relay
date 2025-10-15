@@ -14,6 +14,7 @@ import {
 	type StorageQuota,
 	type Provider,
 	type Permission,
+	type Resource,
 } from "./Relay";
 import PocketBase, {
 	type AuthModel,
@@ -1512,6 +1513,29 @@ export class RelayManager extends HasLogging {
 		this.policyManager = new PolicyManager(this);
 	}
 
+	public getCollectionMapByName(
+		name: string,
+	): ObservableMap<any, any> | undefined {
+		// TODO don't hardcode this
+		switch (name) {
+			case "folder_roles":
+				return this.folderRoles;
+			case "relay_roles":
+				return this.relayRoles;
+			case "shared_folders":
+				return this.remoteFolders;
+			case "relays":
+				return this.relays;
+			case "storage_quotas":
+				return this.storageQuotas;
+			case "subscriptions":
+				return this.subscriptions;
+			default:
+				console.warn(`Unknown collection name: ${name}`);
+				return undefined;
+		}
+	}
+
 	setUser() {
 		this.authUser = this.pb?.authStore.model;
 		if (this.authUser) {
@@ -1981,7 +2005,7 @@ export class RelayManager extends HasLogging {
 	can(
 		principal: string,
 		permission: Permission,
-		resource: Relay | RemoteSharedFolder,
+		resource: Relay | RemoteSharedFolder | RelaySubscription,
 		context?: Record<string, any>,
 	): ObservablePermission {
 		if (!this.policyManager) {
@@ -1989,26 +2013,26 @@ export class RelayManager extends HasLogging {
 			return new ObservablePermission(() => false, []);
 		}
 
-		const [resourceType, action] = permission;
-		const resourceIdentifier = `${resourceType}:${resource.id}`;
+		const [resourceType] = permission;
+		const resourcePointer = [resourceType, resource.id] as Resource;
 
 		return this.policyManager.can(
 			principal,
-			action,
-			resourceIdentifier,
+			permission,
+			resourcePointer,
 			context,
 		);
 	}
 
 	/**
 	 * Convenience method: Check permissions for the current user
-	 * @param permission - Permission in format "resource:action" (e.g., "relay:manage", "folder:delete")
+	 * @param permission - Permission in format [resource, action] (e.g., ["relay", "manage"], ["folder", "delete"])
 	 * @param resource - The resource object (Relay or RemoteSharedFolder)
 	 * @param context - Optional context (e.g., { fileSize: 1024 })
 	 */
 	userCan(
 		permission: Permission,
-		resource: Relay | RemoteSharedFolder,
+		resource: Relay | RemoteSharedFolder | RelaySubscription,
 		context?: Record<string, any>,
 	): ObservablePermission {
 		if (!this.user) {

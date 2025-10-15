@@ -362,93 +362,95 @@ export default class Live extends Plugin {
 			this.releaseSettings,
 		);
 
-		this.debugSettings.subscribe((settings) => {
-			if (settings.debugging) {
-				this.enableDebugging();
-				this.removeCommand("enable-debugging");
-				this.addCommand({
-					id: "toggle-feature-flags",
-					name: "Show feature flags",
-					callback: () => {
-						const modal = new FeatureFlagToggleModal(this.app, () => {
-							this.reload();
-						});
-						this.openModals.push(modal);
-						modal.open();
-					},
-				});
-				this.addCommand({
-					id: "send-bug-report",
-					name: "Send bug report",
-					callback: () => {
-						const modal = new BugReportModal(this.app, this);
-						this.openModals.push(modal);
-						modal.open();
-					},
-				});
-				this.addCommand({
-					id: "show-debug-info",
-					name: "Show debug info",
-					callback: () => {
-						const modal = new DebugModal(this.app, this);
-						this.openModals.push(modal);
-						modal.open();
-					},
-				});
-				this.addCommand({
-					id: "show-release-manager",
-					name: "Show releases",
-					callback: () => {
-						const modal = new ReleaseManager(this.app, this);
-						this.openModals.push(modal);
-						modal.open();
-					},
-				});
-				this.addCommand({
-					id: "analyze-indexeddb",
-					name: "Analyze database",
-					callback: () => {
-						const modal = new IndexedDBAnalysisModal(this.app, this);
-						this.openModals.push(modal);
-						modal.open();
-					},
-				});
-				this.addCommand({
-					id: "disable-debugging",
-					name: "Disable debugging",
-					callback: () => {
-						this.disableDebugging(true);
-					},
-				});
-				this.addCommand({
-					id: "show-sync-status",
-					name: "Sync status",
-					callback: () => {
-						const modal = new SyncQueueModal(
-							this.app,
-							this.backgroundSync,
-							this.sharedFolders,
-						);
-						this.openModals.push(modal);
-						modal.open();
-					},
-				});
-			} else {
-				this.removeCommand("toggle-feature-flags");
-				this.removeCommand("send-bug-report");
-				this.removeCommand("show-debug-info");
-				this.removeCommand("show-sync-status");
-				this.removeCommand("show-release-manager");
-				this.removeCommand("disable-debugging");
-				this.addCommand({
-					id: "enable-debugging",
-					name: "Enable debugging",
-					callback: () => {
-						this.enableDebugging(true);
-					},
-				});
-			}
-		});
+		this.register(
+			this.debugSettings.subscribe((settings) => {
+				if (settings.debugging) {
+					this.enableDebugging();
+					this.removeCommand("enable-debugging");
+					this.addCommand({
+						id: "toggle-feature-flags",
+						name: "Show feature flags",
+						callback: () => {
+							const modal = new FeatureFlagToggleModal(this.app, () => {
+								this.reload();
+							});
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
+						id: "send-bug-report",
+						name: "Send bug report",
+						callback: () => {
+							const modal = new BugReportModal(this.app, this);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
+						id: "show-debug-info",
+						name: "Show debug info",
+						callback: () => {
+							const modal = new DebugModal(this.app, this);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
+						id: "show-release-manager",
+						name: "Show releases",
+						callback: () => {
+							const modal = new ReleaseManager(this.app, this);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
+						id: "analyze-indexeddb",
+						name: "Analyze database",
+						callback: () => {
+							const modal = new IndexedDBAnalysisModal(this.app, this);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
+						id: "disable-debugging",
+						name: "Disable debugging",
+						callback: () => {
+							this.disableDebugging(true);
+						},
+					});
+					this.addCommand({
+						id: "show-sync-status",
+						name: "Sync status",
+						callback: () => {
+							const modal = new SyncQueueModal(
+								this.app,
+								this.backgroundSync,
+								this.sharedFolders,
+							);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+				} else {
+					this.removeCommand("toggle-feature-flags");
+					this.removeCommand("send-bug-report");
+					this.removeCommand("show-debug-info");
+					this.removeCommand("show-sync-status");
+					this.removeCommand("show-release-manager");
+					this.removeCommand("disable-debugging");
+					this.addCommand({
+						id: "enable-debugging",
+						name: "Enable debugging",
+						callback: () => {
+							this.enableDebugging(true);
+						},
+					});
+				}
+			}),
+		);
 
 		const code = `async function() {
 			const app = window.app;
@@ -472,7 +474,7 @@ export default class Live extends Plugin {
 		});
 
 		// Register handler for update availability changes
-		this.updateManager.subscribe(() => {
+		this.register(this.updateManager.subscribe(() => {
 			const newRelease = this.updateManager.getNewRelease();
 			if (newRelease) {
 				// Add update command when an update is available
@@ -489,7 +491,7 @@ export default class Live extends Plugin {
 				// Remove update command when no update is available
 				this.removeCommand("update-plugin");
 			}
-		});
+		}));
 
 		this.vault = this.app.vault;
 		const vaultName = this.vault.getName();
@@ -1197,16 +1199,20 @@ export default class Live extends Plugin {
 		this.debugSettings = null as any;
 		this.folderSettings.destroy();
 		this.folderSettings = null as any;
+
+		// Destroy FeatureFlagManager before destroying featureSettings
+		FeatureFlagManager.destroy();
+
 		this.featureSettings.destroy();
 		this.featureSettings = null as any;
 		this.releaseSettings.destroy();
 		this.releaseSettings = null as any;
 		this.loginSettings.destroy();
 		this.loginSettings = null as any;
+		this.endpointSettings.destroy();
+		this.endpointSettings = null as any;
 
 		this.interceptedUrls.length = 0;
-
-		FeatureFlagManager.destroy();
 		PostOffice.destroy();
 
 		this.notifier = null as any;
