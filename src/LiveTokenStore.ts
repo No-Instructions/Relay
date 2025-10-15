@@ -78,6 +78,7 @@ async function refresh(
 	const headers = {
 		Authorization: `Bearer ${loginManager.user?.token}`,
 		"Relay-Version": GIT_TAG,
+		"Content-Type": "application/json",
 	};
 	try {
 		const apiUrl = loginManager.getEndpointManager().getApiUrl();
@@ -196,6 +197,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		const headers = {
 			Authorization: `Bearer ${this.loginManager.user?.token}`,
 			"Relay-Version": GIT_TAG,
+			"Content-Type": "application/json",
 		};
 		const apiUrl = this.loginManager.getEndpointManager().getApiUrl();
 		const response = await customFetch(`${apiUrl}/file-token`, {
