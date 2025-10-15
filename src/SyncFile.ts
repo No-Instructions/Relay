@@ -273,6 +273,7 @@ export class SyncFile
 	connected: boolean = true;
 	offFileInfo: Unsubscriber = () => {};
 	uploadError?: string = undefined;
+	private lastNotifiedState?: string;
 
 	constructor(
 		public path: string,
@@ -305,6 +306,17 @@ export class SyncFile
 		);
 
 		this.log("created");
+	}
+
+	private hasStateChanged(): boolean {
+		return this.lastNotifiedState !== this.tag;
+	}
+
+	notifyListeners(): void {
+		if (this.hasStateChanged()) {
+			this.lastNotifiedState = this.tag;
+			super.notifyListeners();
+		}
 	}
 
 	public get mimetype(): string {
@@ -358,7 +370,7 @@ export class SyncFile
 	}
 
 	public async push(force = false) {
-		this.log("push");
+		this.log("push", force ? "(forced)" : "");
 		if (!this.sharedFolder.connected) {
 			this.log("skipping push -- folder is disconnected");
 			return;
@@ -406,6 +418,10 @@ export class SyncFile
 
 		try {
 			const hash = await this.caf.hash();
+			if (hash === this.meta.hash) {
+				return;
+			}
+
 			if (flags().enableVerifyUploads) {
 				// Not remote
 				try {
