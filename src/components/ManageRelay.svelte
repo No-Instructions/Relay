@@ -91,6 +91,16 @@
 		return a.user.name > b.user.name ? 1 : -1;
 	}
 
+	// Dynamic role loading for forwards compatibility
+	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
+		return $roles.values().sort(rolePrioritySort);
+	});
+
+	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
+		const priority: Record<Role, number> = { "Owner": 0, "Member": 1, "Reader": 2 };
+		return (priority[a.name] ?? 999) - (priority[b.name] ?? 999);
+	}
+
 	const subscriptions = $relay.subscriptions;
 	const subscription = derived($subscriptions, ($subscriptions) => {
 		if ($subscriptions.values().length === 0) {
@@ -532,8 +542,9 @@
 						data-role-id={item.id}
 						on:change={handleRoleChangeEvent}
 					>
-						<option value="Owner">Owner</option>
-						<option value="Member">Member</option>
+						{#each $availableRoles as role}
+							<option value={role.name}>{role.name}</option>
+						{/each}
 					</select>
 				</div>
 			{/if}
