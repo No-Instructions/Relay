@@ -45,6 +45,16 @@
 		return $sharedFolders.find((folder) => folder.guid === remoteFolder.guid);
 	});
 
+	// Dynamic role loading for forwards compatibility
+	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
+		return $roles.values().sort(rolePrioritySort);
+	});
+
+	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
+		const priority: Record<Role, number> = { Owner: 0, Member: 1, Reader: 2 };
+		return (priority[a.name] ?? 999) - (priority[b.name] ?? 999);
+	}
+
 	// Get folder roles for this specific folder
 	let virtualFolderRoles = derived(
 		[folderRoles, relayRoles],
@@ -478,8 +488,9 @@
 							data-role-id={role.id}
 							on:change={handleFolderRoleChangeEvent}
 						>
-							<option value="Owner">Owner</option>
-							<option value="Member">Member</option>
+							{#each $availableRoles as role}
+								<option value={role.name}>{role.name}</option>
+							{/each}
 						</select>
 					</div>
 				{:else}
