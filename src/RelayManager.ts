@@ -1745,7 +1745,7 @@ export class RelayManager extends HasLogging {
 				].join(","),
 			})),
 			withPb("relay_roles", {
-				expand: "user",
+				expand: "user,role",
 			}),
 			withPb("providers"),
 			withPb("relay_invitations"),
@@ -1753,7 +1753,7 @@ export class RelayManager extends HasLogging {
 				expand: "relay,creator",
 			}),
 			withPb("shared_folder_roles", {
-				expand: "user",
+				expand: "user,role",
 			}),
 			withPb("subscriptions", {
 				expand: "relay,user",

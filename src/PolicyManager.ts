@@ -583,26 +583,38 @@ export class PolicyManager implements IPolicyManager {
 		const folder = this.relayManager.remoteFolders.get(folderId);
 		if (!folder) return false;
 
-		// For private folders, only explicit folder roles matter
-		if (folder.private) {
-			return this.hasFolderRole(userId, folderId, ["Owner", "Member"]);
+		// Check if user has any folder role - all assigned roles grant at least read access
+		const userRole = this.getUserFolderRole(userId, folderId);
+		if (userRole) return true;
+
+		// For public folders, check if user has relay access
+		if (!folder.private) {
+			const relayRole = this.getUserRelayRole(userId, folder.relayId);
+			return !!relayRole;
 		}
 
-		// For public folders, any relay member has access
-		return this.hasRelayRole(userId, folder.relayId, ["Owner", "Member"]);
+		return false;
 	}
 
 	private hasFolderWriteAccess(userId: string, folderId: string): boolean {
 		const folder = this.relayManager.remoteFolders.get(folderId);
 		if (!folder) return false;
 
-		// For private folders, only explicit folder roles matter
-		if (folder.private) {
-			return this.hasFolderRole(userId, folderId, ["Owner", "Member"]);
+		// Check folder role first (for both private and public folders)
+		const folderRole = this.getUserFolderRole(userId, folderId);
+		if (folderRole && this.roleHasWritePermission(folderRole)) {
+			return true;
 		}
 
-		// For public folders, any relay member has write access
-		return this.hasRelayRole(userId, folder.relayId, ["Owner", "Member"]);
+		// For public folders, check relay role
+		if (!folder.private) {
+			const relayRole = this.getUserRelayRole(userId, folder.relayId);
+			if (relayRole && this.roleHasWritePermission(relayRole)) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private hasFolderManagementAccess(userId: string, folderId: string): boolean {
@@ -621,6 +633,30 @@ export class PolicyManager implements IPolicyManager {
 
 		// For public folders, creator can manage
 		return this.isFolderCreator(userId, folderId);
+	}
+
+	private getUserFolderRole(userId: string, folderId: string): string | null {
+		const folderRole = this.relayManager.folderRoles.find(
+			(role) =>
+				role.sharedFolderId === folderId &&
+				role.userId === userId
+		);
+		return folderRole?.role || null;
+	}
+
+	private getUserRelayRole(userId: string, relayId: string): string | null {
+		const relayRole = this.relayManager.relayRoles.find(
+			(role) =>
+				role.relayId === relayId &&
+				role.userId === userId
+		);
+		return relayRole?.role || null;
+	}
+
+	private roleHasWritePermission(roleName: string): boolean {
+		// Explicit write permission mapping - extensible for future roles
+		const writeRoles = ["Owner", "Member"]; // Reader deliberately excluded
+		return writeRoles.includes(roleName);
 	}
 
 	private hasStorageQuota(folderId: string, fileSize: number): boolean {

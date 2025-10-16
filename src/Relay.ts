@@ -2,7 +2,7 @@ import type { RequestUrlResponse } from "obsidian";
 import type { IObservable } from "./observable/Observable";
 import type { ObservableMap } from "./observable/ObservableMap";
 
-export type Role = "Owner" | "Member";
+export type Role = "Owner" | "Member" | "Reader";
 
 export type Resource = [string, string];
 
