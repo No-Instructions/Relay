@@ -1811,17 +1811,10 @@ export class RelayManager extends HasLogging {
 		if (!this.user) {
 			throw new Error("Not Logged In");
 		}
-		const relay = new RelayAuto(
-			record,
-			this.relayRoles,
-			this.relayInvitations,
-			this.remoteFolders,
-			this.subscriptions,
-			this.storageQuotas,
-			this.providers,
-			this.user,
-		);
-		this.relays.set(relay.id, relay);
+		const relay = this.store?.ingest<Relay>(record);
+		if (!relay) {
+			throw new Error("Failed to create relay");
+		}
 		return relay;
 	}
 
