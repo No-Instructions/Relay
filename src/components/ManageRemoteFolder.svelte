@@ -36,6 +36,8 @@
 
 	export let errorLog = curryLog("ManageRemoveFolder.svelte", "error");
 
+	plugin.relayManager.refreshRemoteFolder(remoteFolder);
+
 	let relayStore = derived([relayRoles], ([$relayRoles]) => {
 		return $relayRoles.find((role) => role.relay === $remoteFolder.relay)
 			?.relay;
