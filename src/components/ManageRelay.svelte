@@ -41,6 +41,8 @@
 	import { minimark } from "src/minimark";
 	import { handleServerError } from "../utils/toastStore";
 
+	plugin.relayManager.refreshRelay(relay);
+
 	async function checkRelayHost(relay: Relay) {
 		const response = await plugin.loginManager.checkRelayHost(relay.guid);
 		if (response.status === 200) {
