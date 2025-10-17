@@ -1714,6 +1714,40 @@ export class RelayManager extends HasLogging {
 			});
 	}
 
+	async refreshRemoteFolder(remoteFolder: RemoteFolder) {
+		if (
+			!this.pb ||
+			!this.pb.authStore.isValid ||
+			this.pb.authStore.model?.id === undefined
+		) {
+			return Promise.resolve([]);
+		}
+		const record = await this.pb
+			.collection("shared_folders")
+			.getOne(remoteFolder.id, {
+				expand: "shared_folder_roles_via_shared_folder",
+			});
+		if (!this.destroyed && this.store) {
+			this.store.ingest(record);
+		}
+	}
+
+	async refreshRelay(relay: Relay) {
+		if (
+			!this.pb ||
+			!this.pb.authStore.isValid ||
+			this.pb.authStore.model?.id === undefined
+		) {
+			return Promise.resolve([]);
+		}
+		const record = await this.pb.collection("relays").getOne(relay.id, {
+			expand: "relay_roles_via_relay,shared_folders_via_relay,storage_quota",
+		});
+		if (!this.destroyed && this.store) {
+			this.store.ingest(record);
+		}
+	}
+
 	async update() {
 		const withPb = (
 			collection: string,
@@ -1986,7 +2020,7 @@ export class RelayManager extends HasLogging {
 			throw new Error("Failed to update folder");
 		}
 		return updated;
-    }
+	}
 
 	/**
 	 * Reactive permission check with explicit principal - returns observable that updates when permissions change
