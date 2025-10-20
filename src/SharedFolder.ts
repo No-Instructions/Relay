@@ -919,7 +919,7 @@ export class SharedFolder extends HasProvider {
 			if (doc !== undefined) {
 				doc.move(vpath, this);
 				if (!isDocument(doc)) {
-					throw new Error("unexpected ifile type");
+					throw new Error("getDoc(): unexpected ifile type");
 				}
 				return doc;
 			} else {
@@ -950,7 +950,7 @@ export class SharedFolder extends HasProvider {
 			if (canvas !== undefined) {
 				canvas.move(vpath, this);
 				if (!isCanvas(canvas)) {
-					throw new Error("unexpected ifile type");
+					throw new Error("getCanvas(): unexpected ifile type");
 				}
 				return canvas;
 			} else {
@@ -1066,7 +1066,7 @@ export class SharedFolder extends HasProvider {
 		const canvas =
 			this.files.get(guid) || new Canvas(vpath, guid, this.loginManager, this);
 		if (!isCanvas(canvas)) {
-			throw new Error("unexpected ifile type");
+			throw new Error("getOrCreateCanvas(): unexpected ifile type");
 		}
 		canvas.move(vpath, this);
 		return canvas;
@@ -1175,7 +1175,7 @@ export class SharedFolder extends HasProvider {
 		if (!guid) return;
 		const doc = this.files.get(guid);
 		if (!isDocument(doc)) {
-			throw new Error("unexpected ifile type");
+			throw new Error("viewDoc(): unexpected ifile type");
 		}
 		return doc;
 	}
@@ -1185,7 +1185,9 @@ export class SharedFolder extends HasProvider {
 		if (!guid) return;
 		const file = this.files.get(guid);
 		if (!isSyncFile(file)) {
-			throw new Error("unexpected ifile type");
+			throw new Error(
+				`viewSyncFile(): unexpected ifile type, guid=${guid}, vpath=${vpath}`,
+			);
 		}
 		return file;
 	}
@@ -1330,7 +1332,9 @@ export class SharedFolder extends HasProvider {
 		const file =
 			this.files.get(guid) || new SyncFile(vpath, guid, this.hashStore, this);
 		if (!isSyncFile(file)) {
-			throw new Error("unexpected ifile type");
+			throw new Error(
+				`getOrCreateSyncFile(): unexpected ifile type, guid=${guid}`,
+			);
 		}
 		file.move(vpath, this);
 		this.files.set(guid, file);
