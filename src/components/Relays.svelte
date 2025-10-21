@@ -6,7 +6,7 @@
 	import SettingsControl from "./SettingsControl.svelte";
 	import ExternalLink from "./ExternalLink.svelte";
 	import {
-		hasACL,
+		hasPermissionParents,
 		type Provider,
 		type Relay,
 		type RelaySubscription,
@@ -209,7 +209,7 @@
 		Relay Servers
 	</span>
 </SettingItemHeading>
-{#each $relays.values().filter(hasACL).sort(sortFn) as relay}
+{#each $relays.values().filter(hasPermissionParents).sort(sortFn) as relay}
 	<SlimSettingItem>
 		<Satellite slot="name" {relay} on:manageRelay>
 			{#if relay.name}

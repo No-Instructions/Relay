@@ -172,21 +172,21 @@ function hasRoot(obj: any): obj is hasRoot {
 	return typeof obj.aggregate_root === "object";
 }
 
-interface hasACL {
-	acl: [string, string] | undefined;
+interface hasPermissionParents {
+	permissionParents: [string, string][];
 }
 
-function hasACL(obj: any): obj is hasACL {
-	return typeof obj.acl === "object";
+function hasPermissionParents(obj: any): obj is hasPermissionParents {
+	return Array.isArray(obj.permissionParents);
 }
 
-class Auto implements hasRoot, hasACL {
+class Auto implements hasRoot, hasPermissionParents {
 	public get aggregate_root(): [string, string] | undefined {
 		return;
 	}
 
-	public get acl(): [string, string] | undefined {
-		return;
+	public get permissionParents(): [string, string][] {
+		return [];
 	}
 }
 
@@ -388,7 +388,7 @@ class ProviderCollection implements Collection<ProviderDAO, Provider> {
 
 class RemoteFolderAuto
 	extends Observable<RemoteFolder>
-	implements RemoteFolder, hasACL
+	implements RemoteFolder, hasPermissionParents
 {
 	constructor(
 		private remoteFolder: RemoteFolderDAO,
@@ -480,21 +480,28 @@ class RemoteFolderAuto
 		return ["relays", this.remoteFolder.relay];
 	}
 
-	public get acl(): [string, string] | undefined {
-		if (this.remoteFolder.private) {
-			const id = this.folderRoles.find((role) => {
-				return role.sharedFolderId === this.id && role.userId === this.user.id;
-			})?.id;
-			if (id) {
-				return ["shared_folder_roles", id];
-			}
-		}
-		const id = this.relayRoles.find((role) => {
+	public get permissionParents(): [string, string][] {
+		const parents: [string, string][] = [];
+
+		// Always include relay role parent if it exists
+		const relayRoleId = this.relayRoles.find((role) => {
 			return role.relayId === this.relayId && role.userId === this.user.id;
 		})?.id;
-		if (id) {
-			return ["relay_roles", id];
+		if (relayRoleId) {
+			parents.push(["relay_roles", relayRoleId]);
 		}
+
+		// For private folders, also include folder role parent if it exists
+		if (this.remoteFolder.private) {
+			const folderRoleId = this.folderRoles.find((role) => {
+				return role.sharedFolderId === this.id && role.userId === this.user.id;
+			})?.id;
+			if (folderRoleId) {
+				parents.push(["shared_folder_roles", folderRoleId]);
+			}
+		}
+
+		return parents;
 	}
 }
 
@@ -904,13 +911,14 @@ class Store extends HasLogging {
 				this.relationships.set(aggregate_root.join(":"), refs);
 			}
 		}
-		if (hasACL(result)) {
-			const acl = result.acl;
-			if (acl) {
+		if (hasPermissionParents(result)) {
+			const parentList = result.permissionParents;
+			for (const parent of parentList) {
 				const pointer = record.id;
-				const refs = this.relationships.get(acl.join(":")) || new Set<string>();
+				const refs =
+					this.relationships.get(parent.join(":")) || new Set<string>();
 				refs.add([record.collectionName, pointer].join(":"));
-				this.relationships.set(acl.join(":"), refs);
+				this.relationships.set(parent.join(":"), refs);
 			}
 		}
 		if (record.expand) {
@@ -949,10 +957,10 @@ class Store extends HasLogging {
 						dot += `  ${collectionName}_${record.id} -> ${rootCollection}_${rootId};\n`;
 					}
 				}
-				if (hasId(record) && hasACL(record)) {
-					if (record.acl) {
-						const [aclCollection, aclId] = record.acl;
-						dot += `  ${collectionName}_${record.id} -> ${aclCollection}_${aclId} [style=dotted];\n`;
+				if (hasId(record) && hasPermissionParents(record)) {
+					for (const parent of record.permissionParents) {
+						const [parentCollection, parentId] = parent;
+						dot += `  ${collectionName}_${record.id} -> ${parentCollection}_${parentId} [style=dotted];\n`;
 					}
 				}
 			}
@@ -966,16 +974,47 @@ class Store extends HasLogging {
 		const children = this.relationships.get([collectionName, id].join(":"));
 		const postie = PostOffice.getInstance();
 		postie.beginTransaction();
+
+		// Delete the parent
 		if (collection) {
 			this.warn("cascade delete parent", collectionName, id);
 			collection.delete(id);
 		}
 		this.relationships.delete([collectionName, id].join(":"));
+
+		// Process children
 		for (const fqid of children || []) {
 			const [childCollection, childId] = fqid.split(":");
-			this.warn("cascade delete child", childCollection, childId);
-			const collection = this.getCollection(childCollection);
-			if (collection) {
+			const childCollectionObj = this.getCollection(childCollection);
+			const item = childCollectionObj?.get(childId);
+
+			if (hasPermissionParents(item)) {
+				// Check if any permission parents are still valid
+				const validParents = item.permissionParents.filter((parent) => {
+					const [parentCollection, parentId] = parent;
+					const parentItem = this.getCollection(parentCollection).get(parentId);
+					return !!parentItem; // Parent is valid if the referenced item still exists
+				});
+
+				// Only delete if NO valid permission parents remain
+				if (validParents.length === 0) {
+					this.warn(
+						"cascade delete child (no valid permission parents)",
+						childCollection,
+						childId,
+					);
+					this.cascade(childCollection, childId);
+				} else {
+					this.warn(
+						"preserving child with valid permission parents",
+						childCollection,
+						childId,
+						validParents,
+					);
+				}
+			} else {
+				// Non-permission-parent objects use existing cascade logic
+				this.warn("cascade delete child", childCollection, childId);
 				this.cascade(childCollection, childId);
 			}
 		}
@@ -1045,8 +1084,8 @@ class RelayRoleAuto extends Auto implements RelayRole {
 		return ["relays", this.relayRole.relay];
 	}
 
-	public get acl(): [string, string] {
-		return ["users", this.relayRole.user];
+	public get permissionParents(): [string, string][] {
+		return [["users", this.relayRole.user]];
 	}
 }
 
@@ -1103,8 +1142,8 @@ class FolderRoleAuto extends Auto implements FolderRole {
 		return ["shared_folders", this.folderRole.shared_folder];
 	}
 
-	public get acl(): [string, string] {
-		return ["shared_folders", this.folderRole.shared_folder];
+	public get permissionParents(): [string, string][] {
+		return [["shared_folders", this.folderRole.shared_folder]];
 	}
 }
 
@@ -1239,12 +1278,15 @@ export class RelaySubscriptionAuto
 		return ["relays", this.subscription.relay];
 	}
 
-	public get acl() {
-		return ["users", this.subscription.user];
+	public get permissionParents(): [string, string][] {
+		return [["users", this.subscription.user]];
 	}
 }
 
-class RelayAuto extends Observable<Relay> implements Relay, hasACL {
+class RelayAuto
+	extends Observable<Relay>
+	implements Relay, hasPermissionParents
+{
 	constructor(
 		private relay: RelayDAO,
 		private relayRoles: ObservableMap<string, RelayRole>,
@@ -1331,8 +1373,8 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 	public get folders(): ObservableMap<string, RemoteFolder> {
 		return this.remoteFolders.filter((folder) => {
 			const onRelay = folder.relayId === this.id;
-			const hasACL = !!folder.acl;
-			return onRelay && hasACL;
+			const hasPermissionParents = folder.permissionParents.length > 0;
+			return onRelay && hasPermissionParents;
 		});
 	}
 
@@ -1342,13 +1384,14 @@ class RelayAuto extends Observable<Relay> implements Relay, hasACL {
 		);
 	}
 
-	public get acl(): [string, string] | undefined {
+	public get permissionParents(): [string, string][] {
 		const id = this.relayRoles.find((role) => {
 			return role.relayId === this.id && role.userId === this.user.id;
 		})?.id;
 		if (id) {
-			return ["relay_roles", id];
+			return [["relay_roles", id]];
 		}
+		return [];
 	}
 
 	public get provider(): Provider | undefined {

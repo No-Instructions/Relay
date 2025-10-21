@@ -16,15 +16,15 @@ interface HasAttachment {
 	attachmentUrl(): Promise<string>;
 	getAttachment(): Promise<RequestUrlResponse>;
 }
-interface HasACL {
-	acl?: [string, string];
+interface HasPermissionParents {
+	permissionParents: [string, string][];
 }
 interface Serializable {
 	toDict: () => any;
 }
 
-export function hasACL(item: HasACL) {
-	return !!item.acl;
+export function hasPermissionParents(item: HasPermissionParents) {
+	return Array.isArray(item.permissionParents);
 }
 
 export type Permission =
@@ -54,7 +54,7 @@ export interface RemoteSharedFolder
 	extends Identified,
 		Updatable<RemoteSharedFolder>,
 		IObservable<RemoteSharedFolder>,
-		HasACL {
+		HasPermissionParents {
 	id: string;
 	guid: string;
 	name: string;
@@ -65,14 +65,14 @@ export interface RemoteSharedFolder
 	relayId: string;
 	creator: RelayUser;
 	creatorId: string;
-	acl?: [string, string];
+	permissionParents: [string, string][];
 }
 
 export interface Relay
 	extends Identified,
 		Updatable<Relay>,
 		IObservable<Relay>,
-		HasACL {
+		HasPermissionParents {
 	id: string;
 	guid: string;
 	name: string;
@@ -89,7 +89,7 @@ export interface Relay
 	plan: string;
 	provider?: Provider;
 	providerId?: string;
-	acl?: [string, string];
+	permissionParents: [string, string][];
 }
 
 export interface Provider
