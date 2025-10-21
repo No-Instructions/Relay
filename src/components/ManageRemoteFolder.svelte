@@ -411,6 +411,17 @@
 	]}
 />
 
+{#if $canManageUsers && !$canReadFolder}
+	<div
+		style="padding: 1em; margin: 1em; background: var(--background-secondary)"
+	>
+		<p style="margin: 1em; text-align: center">
+			You are viewing this folder as a Relay Owner. You must be added to this
+			folder in order to collaborate.
+		</p>
+	</div>
+{/if}
+
 {#if $canRenameFolder}
 	<SettingItem
 		name="Name"
@@ -470,18 +481,16 @@
 		<AccountSettingItem user={role.user}>
 			{#if isPrivate}
 				{#if $isEditingUsers}
-					{#if role.userId !== plugin.relayManager.user?.id}
-						<button
-							class="mod-destructive"
-							on:click={debounce(() => {
-								if ("sharedFolder" in role) {
-									handleRemoveFolderUser(role);
-								}
-							})}
-						>
-							Remove
-						</button>
-					{/if}
+					<button
+						class="mod-destructive"
+						on:click={debounce(() => {
+							if ("sharedFolder" in role) {
+								handleRemoveFolderUser(role);
+							}
+						})}
+					>
+						Remove
+					</button>
 				{:else if $canManageUsers}
 					<div style="display: flex; gap: 8px; align-items: center;">
 						<select
