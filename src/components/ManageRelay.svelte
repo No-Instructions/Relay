@@ -32,7 +32,27 @@
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
+	let viewAsAdmin = writable(false);
 	export let plugin!: Live;
+	const shouldShowToggle = derived(
+		[
+			remoteFolders,
+			plugin.relayManager.relayRoles,
+			plugin.relayManager.folderRoles,
+		],
+		([$remoteFolders, $relayRoles, $folderRoles]) => {
+			const allFolders = Array.from($remoteFolders.values());
+			const readableFolders = allFolders.filter((folder) =>
+				get(plugin.relayManager.userCan(["folder", "read_content"], folder)),
+			);
+			const manageableFolders = allFolders.filter((folder) =>
+				get(plugin.relayManager.userCan(["folder", "manage_users"], folder)),
+			);
+			// Show toggle only if the lists would be different
+			return readableFolders.length !== manageableFolders.length;
+		},
+	);
+
 	export let sharedFolders!: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
@@ -440,39 +460,50 @@
 	</SettingItem>
 {/if}
 
-<SettingItemHeading name="Folders on this Relay Server"></SettingItemHeading>
-{#each $remoteFolders.values().filter(hasPermissionParents) as remote}
-	<SlimSettingItem>
-		<RemoteFolder
-			remoteFolder={remote}
-			slot="name"
-			on:manageRemoteFolder={() => {
-				dispatch("manageRemoteFolder", {
-					remoteFolder: remote,
-				});
-			}}>{remote.name}</RemoteFolder
+<SettingItemHeading name="Shared Folders on this Relay Server">
+	{#if $canManageUsers && $shouldShowToggle}
+		<button
+			class="admin-toggle-btn"
+			on:click={() => viewAsAdmin.update((v) => !v)}
 		>
-		{#if !$sharedFolders.some((sharedFolder) => sharedFolder.guid === remote.guid) && get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
+			{$viewAsAdmin ? "View as member" : "View as admin"}
+		</button>
+	{/if}
+</SettingItemHeading>
+{#each $remoteFolders.values() as remote}
+	{#if $viewAsAdmin ? get(plugin.relayManager.userCan(["folder", "manage_users"], remote)) : get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
+		<SlimSettingItem>
+			<RemoteFolder
+				remoteFolder={remote}
+				slot="name"
+				on:manageRemoteFolder={() => {
+					dispatch("manageRemoteFolder", {
+						remoteFolder: remote,
+					});
+				}}>{remote.name}</RemoteFolder
+			>
+			{#if !$sharedFolders.some((sharedFolder) => sharedFolder.guid === remote.guid) && get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
+				<SettingsControl
+					on:settings={debounce(() => {
+						handleAddToVault(remote);
+					})}
+					label="Add to vault"
+				>
+					<Download
+						class="svg-icon lucide-settings"
+						props={{ class: "svg-icon lucide-settings" }}
+					/>
+				</SettingsControl>
+			{/if}
 			<SettingsControl
 				on:settings={debounce(() => {
-					handleAddToVault(remote);
+					dispatch("manageRemoteFolder", {
+						remoteFolder: remote,
+					});
 				})}
-				label="Add to vault"
-			>
-				<Download
-					class="svg-icon lucide-settings"
-					props={{ class: "svg-icon lucide-settings" }}
-				/>
-			</SettingsControl>
-		{/if}
-		<SettingsControl
-			on:settings={debounce(() => {
-				dispatch("manageRemoteFolder", {
-					remoteFolder: remote,
-				});
-			})}
-		></SettingsControl>
-	</SlimSettingItem>
+			></SettingsControl>
+		</SlimSettingItem>
+	{/if}
 {/each}
 
 <SettingItem description="" name="">
@@ -869,5 +900,21 @@
 
 	input.system3-input-invalid {
 		border: 1px solid var(--color-red) !important;
+	}
+
+	.admin-toggle-btn {
+		background: none;
+		border: none;
+		box-shadow: none;
+		color: var(--text-muted);
+		font-size: 0.9em;
+		cursor: pointer;
+		padding: 0;
+		margin-left: 8px;
+	}
+
+	.admin-toggle-btn:hover {
+		color: var(--text-normal);
+		text-decoration: underline;
 	}
 </style>

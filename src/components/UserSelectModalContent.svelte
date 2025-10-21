@@ -96,7 +96,6 @@
 
 	function toggleUser(userSelection: UserSelection) {
 		if (userSelection.hasAccess) return;
-		if (userSelection.isCurrentUser) return;
 
 		selectedUsers.update(current => {
 			const newSet = new Set(current);
@@ -167,7 +166,7 @@
 					<input
 						type="checkbox"
 						checked={userSelection.selected}
-						disabled={userSelection.hasAccess || userSelection.isCurrentUser}
+						disabled={userSelection.hasAccess}
 						class="user-checkbox"
 						on:click={(e) => {
 							e.stopPropagation();
@@ -250,12 +249,11 @@
 		border-bottom: none;
 	}
 
-	.user-item:hover:not(.has-access):not(.is-current-user) {
+	.user-item:hover:not(.has-access) {
 		background: var(--background-modifier-hover);
 	}
 
-	.user-item.has-access,
-	.user-item.is-current-user {
+	.user-item.has-access {
 		opacity: 0.6;
 		cursor: not-allowed;
 	}

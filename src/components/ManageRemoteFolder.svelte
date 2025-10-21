@@ -414,8 +414,9 @@
 		style="padding: 1em; margin: 1em; background: var(--background-secondary)"
 	>
 		<p style="margin: 1em; text-align: center">
-			You are viewing this folder as a Relay Owner. You must be added to this
-			folder in order to collaborate.
+			As Relay Server owner, you can manage this Shared Folder but cannot access
+			its contents. You must be added to the Shared Folder in order to
+			collaborate.
 		</p>
 	</div>
 {/if}
@@ -524,6 +525,7 @@
 {/if}
 
 <div class="spacer"></div>
+
 {#if $folderStore && $syncSettings && $relayStore && flags().enableAttachmentSync}
 	<div class="local-settings">
 		<SettingItemHeading
@@ -581,6 +583,7 @@
 {/if}
 
 <div class="spacer"></div>
+
 {#if $canDeleteFolder || $canMakeFolderPrivate || $folderStore}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 {/if}
@@ -629,6 +632,7 @@
 	div.spacer {
 		height: 3em;
 	}
+
 	.local-settings {
 		margin-left: -1em;
 		padding-left: 1em;
