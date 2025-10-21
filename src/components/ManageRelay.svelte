@@ -500,6 +500,8 @@
 	>
 </SettingItem>
 
+<div class="spacer"></div>
+
 <div class="users-header">
 	<SettingItemHeading name="Users">
 		{#if $canManageUsers}
@@ -573,7 +575,10 @@
 		</button>
 	</SettingItem>
     -->
-<SettingItemHeading name="Sharing"></SettingItemHeading>
+<SettingItemHeading
+	name="Sharing"
+	helpText="Share keys can be shared with collaborators so that they can join the Relay Server. Once you have added all of your collaborators, you can disable the share key to prevent anyone from joining, even if they have the key."
+></SettingItemHeading>
 
 <SlimSettingItem
 	name={$canManageSharing ? "Enable key sharing" : "Key sharing"}
@@ -815,6 +820,10 @@
 		</SettingItem-->
 
 <style>
+	div.spacer {
+		height: 3em;
+	}
+
 	.faint {
 		color: var(--text-faint) !important;
 	}
