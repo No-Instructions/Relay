@@ -33,7 +33,7 @@
 	export let errorLog = curryLog("ManageRemoveFolder.svelte", "error");
 
 	let relayStore = derived([relayRoles], ([$relayRoles]) => {
-		return $relayRoles.find((role) => role.relay === $remoteFolder.relay)
+		return $relayRoles.find((role) => role.relayId === $remoteFolder.relayId)
 			?.relay;
 	});
 
@@ -72,8 +72,7 @@
 	let nameValid = writable(true);
 	let nameInput: HTMLInputElement;
 	let updating = writable(false);
-	// Track current display name for breadcrumbs (shows what user is typing)
-	let currentDisplayName = $remoteFolder.name || "";
+	let lastSavedName = remoteFolder.name;
 
 	// Create a reactive variable for the private flag to ensure breadcrumbs update
 	$: isPrivate = $remoteFolder?.private || false;
@@ -233,19 +232,18 @@
 
 	const updateRemoteFolder = plugin.timeProvider.debounce(async () => {
 		try {
-			// Use PocketBase directly to update the folder name
-			const pb = plugin.relayManager.pb;
-			if (pb && $remoteFolder.id) {
-				const updated = await pb
-					.collection("shared_folders")
-					.update($remoteFolder.id, {
-						name: nameInput.value.trim(),
-					});
-				// Update the local remoteFolder object to reflect changes
-				if (updated) {
-					remoteFolder.update(updated);
-					currentDisplayName = updated.name;
-				}
+			const trimmedName = remoteFolder.name.trim();
+			// Use RelayManager to update the folder name
+			const updated = await plugin.relayManager.updateRemoteFolder(
+				remoteFolder,
+				{
+					name: trimmedName,
+				},
+			);
+			// Update the local remoteFolder object to reflect changes
+			if (updated) {
+				remoteFolder.update(updated);
+				lastSavedName = updated.name;
 			}
 			updating.set(false);
 		} catch (error) {
@@ -259,9 +257,11 @@
 	}, 500);
 
 	function handleNameChange() {
-		currentDisplayName = nameInput.value;
 		nameValid.set(isValidObsidianFolderName(nameInput.value));
-		if ($nameValid && nameInput.value !== "") {
+		const currentName = nameInput.value.trim();
+		
+		// Only update if the value has actually changed and is valid
+		if ($nameValid && currentName !== "" && currentName !== lastSavedName) {
 			updating.set(true);
 			updateRemoteFolder();
 		}
@@ -282,8 +282,8 @@
 		{
 			type: "remoteFolder",
 			remoteFolder: {
-				...remoteFolder,
-				name: currentDisplayName,
+				...$remoteFolder,
+				name: $remoteFolder.name,
 				private: isPrivate,
 			},
 		},
@@ -299,7 +299,7 @@
 			type="text"
 			spellcheck="false"
 			placeholder="Example: Shared Notes"
-			bind:value={$remoteFolder.name}
+			bind:value={remoteFolder.name}
 			bind:this={nameInput}
 			on:input={handleNameChange}
 			class={($updating ? "system3-updating" : "") +
