@@ -2,7 +2,7 @@
 	import SecretText from "./SecretText.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import {
-		hasACL,
+		hasPermissionParents,
 		type Relay,
 		type RelayInvitation,
 		type RelayRole,
@@ -441,7 +441,7 @@
 {/if}
 
 <SettingItemHeading name="Folders on this Relay Server"></SettingItemHeading>
-{#each $remoteFolders.values().filter(hasACL) as remote}
+{#each $remoteFolders.values().filter(hasPermissionParents) as remote}
 	<SlimSettingItem>
 		<RemoteFolder
 			remoteFolder={remote}
