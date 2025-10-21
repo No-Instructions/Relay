@@ -19,6 +19,7 @@ import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
+import { curryLog } from "src/debug";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -379,12 +380,17 @@ class FilePillVisitor extends BaseVisitor<FilePillDecoration> {
 			sharedFolder.isSyncableTFile(tfile)
 		) {
 			if (sharedFolder.ready && sharedFolder.connected) {
-				const file = sharedFolder.proxy.viewSyncFile(tfile.path);
-				if (file && isSyncFile(file)) {
-					if (storage && storage.file === file) {
-						return storage;
+				try {
+					const file = sharedFolder.proxy.viewSyncFile(tfile.path);
+					if (file && isSyncFile(file)) {
+						if (storage && storage.file === file) {
+							return storage;
+						}
+						return new FilePillDecoration(item.selfEl, file);
 					}
-					return new FilePillDecoration(item.selfEl, file);
+				} catch (e) {
+					const error = curryLog("FilePillVisitor.visitFile", "error");
+					error(e);
 				}
 			}
 		}
