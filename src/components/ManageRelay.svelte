@@ -457,6 +457,7 @@
 				on:settings={debounce(() => {
 					handleAddToVault(remote);
 				})}
+				label="Add to vault"
 			>
 				<Download
 					class="svg-icon lucide-settings"
