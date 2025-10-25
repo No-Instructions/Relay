@@ -88,10 +88,6 @@ export class SyncSettingsManager extends NamespacedSettings<
 			return false;
 		}
 
-		if (!flags().enableAttachmentSync) {
-			return false;
-		}
-
 		for (const [key, schema] of Object.entries(SyncSettingsManager.schema)) {
 			const flagKey = key as keyof SyncFlags;
 			const enabled = this.get()[flagKey] ?? schema.defaultEnabled;

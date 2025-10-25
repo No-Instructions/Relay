@@ -2,19 +2,14 @@ export interface FeatureFlags {
 	enableDocumentStatus: boolean;
 	enableNewLinkFormat: boolean;
 	enableDeltaLogging: boolean;
-	enableHTTPSync: boolean;
-	enableSyncMenu: boolean;
 	enableDocumentHistory: boolean;
 	enableEditorTweens: boolean;
 	enableSyncModal: boolean;
-	enableAttachmentSync: boolean;
 	enableNetworkLogging: boolean;
 	enableCanvasSync: boolean;
 	enableVerifyUploads: boolean;
 	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
-	enableOIDCLogin: boolean;
-	enableGitHubLogin: boolean;
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
 }
@@ -23,19 +18,14 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDocumentStatus: false,
 	enableNewLinkFormat: false,
 	enableDeltaLogging: false,
-	enableHTTPSync: false,
-	enableSyncMenu: true,
 	enableDocumentHistory: false,
 	enableEditorTweens: false,
 	enableSyncModal: false,
-	enableAttachmentSync: true,
 	enableNetworkLogging: false,
 	enableCanvasSync: false,
 	enableVerifyUploads: false,
 	enableAutomaticDiffResolution: false,
 	enableDiscordLogin: false,
-	enableOIDCLogin: false,
-	enableGitHubLogin: false,
 	enableSelfManageHosts: false,
 	enableToasts: false,
 } as const;

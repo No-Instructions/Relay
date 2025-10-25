@@ -654,7 +654,7 @@ export default class Live extends Plugin {
 									});
 							});
 						}
-						if (flags().enableSyncMenu && folder.relayId && folder.connected) {
+						if (folder.relayId && folder.connected) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Sync")

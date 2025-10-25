@@ -799,55 +799,6 @@ export class BackgroundSync extends HasLogging {
 		return true;
 	}
 
-	async uploadItem(item: Document | Canvas): Promise<RequestUrlResponse> {
-		const entity = item.s3rn;
-		this.log("[uploadItem]", `${S3RN.encode(entity)}`);
-		if (
-			!(entity instanceof S3RemoteDocument) &&
-			!(entity instanceof S3RemoteCanvas)
-		) {
-			throw new Error("Unable to decode S3RN");
-		}
-
-		if (!this.loginManager.loggedIn) {
-			throw new Error("Not logged in");
-		}
-
-		const clientToken = await item.getProviderToken();
-		const headers = {
-			"Content-Type": "application/octet-stream",
-			...this.getAuthHeader(clientToken),
-		};
-		const update = Y.encodeStateAsUpdate(item.ydoc);
-
-		const baseUrl = this.getBaseUrl(clientToken, entity);
-		const updateUrl = `${baseUrl}/update`;
-		const response = await requestUrl({
-			url: updateUrl,
-			method: "POST",
-			headers: headers,
-			body: update.buffer,
-			throw: false,
-		});
-		if (response.status === 200) {
-			this.debug(
-				"[uploadItem]",
-				entity instanceof S3RemoteCanvas ? entity.canvasId : entity.documentId,
-				response.status,
-				response.text,
-			);
-		} else {
-			this.error(
-				"[uploadItem]",
-				entity instanceof S3RemoteCanvas ? entity.canvasId : entity.documentId,
-				updateUrl,
-				response.status,
-				response.text,
-			);
-		}
-		return response;
-	}
-
 	/**
 	 * Enqueues a document to be downloaded from the server
 	 * @param canvas The canvas to download
@@ -987,92 +938,6 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
-	private async syncItem(doc: Document | Canvas): Promise<boolean> {
-		// if the local file is synced, then we do the two step process
-		// check if file is tracking
-		let currentFileContents = "";
-
-		// Handle different document types
-		let currentTextStr = "";
-		let currentCanvasData: CanvasData | null = null;
-
-		if (isCanvas(doc)) {
-			// Store the exported canvas data rather than a stringified version
-			currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
-			currentTextStr = JSON.stringify(currentCanvasData);
-		} else if (isDocument(doc)) {
-			currentTextStr = doc.text;
-		}
-		try {
-			currentFileContents = await doc.sharedFolder.read(doc);
-		} catch (e) {
-			// File does not exist
-		}
-
-		// Only proceed with update if file matches current ydoc state
-		let contentsMatch = false;
-		if (isCanvas(doc) && currentCanvasData) {
-			// For canvas, use deep object comparison instead of string equality
-			const currentFileJson = currentFileContents
-				? JSON.parse(currentFileContents)
-				: { nodes: [], edges: [] };
-			contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
-		} else {
-			contentsMatch = currentTextStr === currentFileContents;
-		}
-
-		if (!contentsMatch) {
-			this.log(
-				"file is not tracking local disk. resolve merge conflicts before syncing.",
-			);
-			return false;
-		}
-
-		// get the server updates
-		const response = await this.downloadItem(doc);
-		if (response.status !== 200) {
-			this.log("server returned an error.");
-			return false;
-		}
-		const rawUpdate = response.arrayBuffer;
-		const updateBytes = new Uint8Array(rawUpdate);
-
-		// Check for newly created documents without content
-		const newDoc = new Y.Doc();
-		Y.applyUpdate(newDoc, updateBytes);
-		const users = newDoc.getMap("users");
-
-		let isAlreadySynced = false;
-		if (isCanvas(doc) && currentCanvasData) {
-			const remoteCanvasData = Canvas.exportCanvasData(newDoc);
-			// Use deep object comparison for canvas data
-			isAlreadySynced =
-				users.size > 0 && areObjectsEqual(remoteCanvasData, currentCanvasData);
-		} else {
-			const remoteContent = newDoc.getText("contents").toString();
-			isAlreadySynced = users.size > 0 && remoteContent === currentTextStr;
-		}
-
-		if (isAlreadySynced) {
-			// already synced
-			return true;
-		}
-
-		Y.applyUpdate(doc.ydoc, updateBytes);
-
-		// apply edits to local file
-		if (isCanvas(doc)) {
-			doc.sharedFolder.flush(doc, doc.json);
-		} else if (isDocument(doc)) {
-			doc.sharedFolder.flush(doc, doc.text);
-		}
-
-		// now upload our state
-		this.uploadItem(doc);
-
-		return true;
-	}
-
 	private async syncFile(file: SyncFile) {
 		file.sync();
 	}
@@ -1083,15 +948,10 @@ export class BackgroundSync extends HasLogging {
 
 	private async syncDocument(doc: Document | Canvas) {
 		try {
-			if (flags().enableHTTPSync && doc.sharedFolder.remote?.relay.provider) {
-				await this.syncItem(doc);
-			} else {
-				this.debug("fallback to websocket sync");
-				if (isDocument(doc)) {
-					await this.syncDocumentWebsocket(doc);
-				} else if (isCanvas(doc)) {
-					await this.syncDocumentWebsocket(doc);
-				}
+			if (isDocument(doc)) {
+				await this.syncDocumentWebsocket(doc);
+			} else if (isCanvas(doc)) {
+				await this.syncDocumentWebsocket(doc);
 			}
 		} catch (e) {
 			console.error(e);

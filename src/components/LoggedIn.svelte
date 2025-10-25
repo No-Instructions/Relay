@@ -53,13 +53,10 @@
 	}
 
 	function getDefaultProviders(): string[] {
-		const defaults = ["google", "microsoft"];
+		const defaults = ["github", "google", "microsoft"];
 
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			defaults.push("discord");
-		}
-		if ($flagManager.getFlag("enableGitHubLogin")) {
-			defaults.push("github");
 		}
 		// OIDC is intentionally excluded from defaults
 
@@ -90,19 +87,12 @@
 	}
 
 	const enabledProviders = derived([selectedProvider, flagManager], () => {
-		const availableProviders = ["google", "microsoft"];
+		const availableProviders = ["github", "google", "microsoft", "oidc"];
 
 		if ($flagManager.getFlag("enableDiscordLogin")) {
 			availableProviders.push("discord");
 		}
 
-		if ($flagManager.getFlag("enableGitHubLogin")) {
-			availableProviders.push("github");
-		}
-
-		if ($flagManager.getFlag("enableOIDCLogin")) {
-			availableProviders.push("oidc");
-		}
 		return availableProviders;
 	});
 
@@ -141,19 +131,13 @@
 				) {
 					visible.push("discord");
 				}
-				if (
-					availableFromApi.includes("github") &&
-					$flagManager.getFlag("enableGitHubLogin")
-				) {
+				if (availableFromApi.includes("github")) {
 					visible.push("github");
 				}
 
-				// Include any OIDC providers (oidc, oidc2, oidc-custom, etc.) if feature flag is enabled
+				// Include any OIDC providers (oidc, oidc2, oidc-custom, etc.)
 				availableFromApi.forEach((provider) => {
-					if (
-						provider.startsWith("oidc") &&
-						$flagManager.getFlag("enableOIDCLogin")
-					) {
+					if (provider.startsWith("oidc")) {
 						visible.push(provider);
 					}
 				});
@@ -176,14 +160,10 @@
 			}
 
 			// Default behavior if no provider info yet or request failed
-			const visible = ["google", "microsoft"];
+			const visible = ["github", "google", "microsoft"];
 
 			if ($flagManager.getFlag("enableDiscordLogin")) {
 				visible.push("discord");
-			}
-
-			if ($flagManager.getFlag("enableGitHubLogin")) {
-				visible.push("github");
 			}
 
 			return visible;

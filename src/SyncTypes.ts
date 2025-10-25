@@ -314,10 +314,6 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 			return true;
 		}
 
-		if (!flags().enableAttachmentSync) {
-			return false;
-		}
-
 		// For existing files, check meta
 		if (meta) {
 			const config = this.protocols.get(meta.type);
@@ -338,10 +334,6 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 
 	public getEnabledFileSyncTypes(): SyncType[] {
 		// Documents and folders are always enabled
-
-		if (!flags().enableAttachmentSync) {
-			return [SyncType.Document, SyncType.Canvas];
-		}
 
 		const enabledTypes: SyncType[] = [];
 		this.protocols.forEach((proto, syncType) => {

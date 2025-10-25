@@ -380,7 +380,7 @@
 	function handleNameChange() {
 		nameValid.set(isValidObsidianFolderName(nameInput.value));
 		const currentName = nameInput.value.trim();
-		
+
 		// Only update if the value has actually changed and is valid
 		if ($nameValid && currentName !== "" && currentName !== lastSavedName) {
 			updating.set(true);
@@ -528,7 +528,7 @@
 
 <div class="spacer"></div>
 
-{#if $folderStore && $syncSettings && $relayStore && flags().enableAttachmentSync}
+{#if $folderStore && $syncSettings && $relayStore}
 	<div class="local-settings">
 		<SettingItemHeading
 			name="Sync settings for this device"
