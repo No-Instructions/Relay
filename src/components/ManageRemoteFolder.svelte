@@ -23,7 +23,6 @@
 	import type { SyncFlags, SyncSettingsManager } from "src/SyncSettings";
 
 	import Lock from "./Lock.svelte";
-	import { flags } from "src/flagManager";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import { Check, Edit } from "lucide-svelte";
 	import { UserSelectModal } from "src/ui/UserSelectModal";
@@ -33,6 +32,8 @@
 	export let sharedFolders: SharedFolders;
 	export let relayRoles: ObservableMap<string, RelayRole>;
 	export let folderRoles: ObservableMap<string, FolderRole>;
+
+	let displayName: string = remoteFolder.name;
 
 	export let errorLog = curryLog("ManageRemoveFolder.svelte", "error");
 
@@ -44,7 +45,9 @@
 	});
 
 	let folderStore = derived($sharedFolders, ($sharedFolders) => {
-		return $sharedFolders.find((folder) => folder.guid === remoteFolder.guid);
+		return $sharedFolders
+			.items()
+			.find((folder) => folder.guid === remoteFolder.guid);
 	});
 
 	// Dynamic role loading for forwards compatibility
@@ -246,8 +249,6 @@
 				remoteFolder,
 				true,
 			);
-			// Update the local remoteFolder to trigger reactivity
-			remoteFolder = updated;
 			// Open the add users modal
 			handleAddUser();
 		} catch (error) {
@@ -351,21 +352,17 @@
 		return true;
 	}
 
-	const updateRemoteFolder = plugin.timeProvider.debounce(async () => {
+	const updateRemoteFolder = plugin.timeProvider.debounce(async (name) => {
 		try {
-			const trimmedName = remoteFolder.name.trim();
 			// Use RelayManager to update the folder name
 			const updated = await plugin.relayManager.updateRemoteFolder(
 				remoteFolder,
 				{
-					name: trimmedName,
+					name: name,
 				},
 			);
-			// Update the local remoteFolder object to reflect changes
-			if (updated) {
-				remoteFolder.update(updated);
-				lastSavedName = updated.name;
-			}
+			lastSavedName = updated.name;
+			displayName = updated.name;
 			updating.set(false);
 		} catch (error) {
 			errorLog("Failed to update folder name:", error);
@@ -384,7 +381,7 @@
 		// Only update if the value has actually changed and is valid
 		if ($nameValid && currentName !== "" && currentName !== lastSavedName) {
 			updating.set(true);
-			updateRemoteFolder();
+			updateRemoteFolder(currentName);
 		}
 	}
 </script>
@@ -404,7 +401,7 @@
 			type: "remoteFolder",
 			remoteFolder: {
 				...$remoteFolder,
-				name: $remoteFolder.name,
+				name: displayName,
 				private: isPrivate,
 			},
 		},
@@ -432,7 +429,7 @@
 			type="text"
 			spellcheck="false"
 			placeholder="Example: Shared Notes"
-			bind:value={remoteFolder.name}
+			bind:value={displayName}
 			bind:this={nameInput}
 			on:input={handleNameChange}
 			class={($updating ? "system3-updating" : "") +
@@ -535,7 +532,7 @@
 			helpText="You must have attachment storage available in order to sync attachments."
 		></SettingItemHeading>
 
-		{#if $remoteFolder.name !== $folderStore.name}
+		{#if displayName !== $folderStore.name}
 			<SettingItem
 				name="Local path"
 				description="This folder has a different name in your Vault"
