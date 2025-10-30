@@ -276,14 +276,14 @@ export class SyncFile
 
 	constructor(
 		public path: string,
-		public guid: string,
+		private _guid: string,
 		private hashStore: ContentAddressedFileStore,
 		parent: SharedFolder,
 	) {
 		super();
 		this.s3rn = parent.relayId
-			? new S3RemoteFile(parent.relayId, parent.guid, guid)
-			: new S3File(parent.guid, guid);
+			? new S3RemoteFile(parent.relayId, parent.guid, _guid)
+			: new S3File(parent.guid, _guid);
 		this._parent = parent;
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.name = this.path.split("/").pop() || "";
@@ -305,6 +305,17 @@ export class SyncFile
 		);
 
 		this.log("created");
+	}
+
+	public get guid(): string {
+		return this._guid;
+	}
+
+	public set guid(guid: string) {
+		this._guid = guid;
+		this.s3rn = this._parent.relayId
+			? new S3RemoteFile(this._parent.relayId, this._parent.guid, guid)
+			: new S3File(this._parent.guid, guid);
 	}
 
 	public get mimetype(): string {
