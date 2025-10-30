@@ -36,6 +36,7 @@ import {
 	makeDocumentMeta,
 	makeFileMeta,
 	makeFolderMeta,
+	isSyncFileMeta,
 	type FileMeta,
 	type Meta,
 	type SyncFileType,
@@ -698,6 +699,25 @@ export class SharedFolder extends HasProvider {
 			if (file && isSyncFile(file) && file.shouldPull(meta as FileMeta)) {
 				return { op: "update", path, promise: file.pull() };
 			}
+
+			// Check for GUID mismatch - file exists but not mapped to remote GUID
+			if (!file && isSyncFileMeta(meta)) {
+				const localGuid = this.syncStore.get(path);
+				const localFile = localGuid ? this.files.get(localGuid) : null;
+
+				if (localGuid && localFile && isSyncFile(localFile)) {
+					// We have a local file with different GUID - check if content matches
+					const promise = this.remapIfHashMatches(
+						localFile,
+						localGuid,
+						guid,
+						path,
+						meta,
+					);
+					return { op: "update", path, promise };
+				}
+			}
+
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -720,6 +740,31 @@ export class SharedFolder extends HasProvider {
 		// so we need to pre-empt that by loading the file into docs.
 		const promise = this._handleServerCreate(path, meta, diffLog);
 		return { op: "create", path, promise };
+	}
+
+	private async remapIfHashMatches(
+		localFile: SyncFile,
+		localGuid: string,
+		remoteGuid: string,
+		path: string,
+		remoteMeta: Meta,
+	): Promise<void> {
+		try {
+			const localHash = await localFile.caf.hash();
+			if (localHash === remoteMeta.hash) {
+				// Same content! Remap to use remote GUID
+				this.files.delete(localGuid);
+				this.pendingUpload.delete(path);
+				this.files.set(remoteGuid, localFile);
+				localFile.guid = remoteGuid;
+				this.log(
+					`Remapped file ${path} from local GUID ${localGuid} to remote GUID ${remoteGuid}`,
+				);
+			}
+		} catch (error) {
+			this.error("Error during GUID remapping:", error);
+			throw error;
+		}
 	}
 
 	private cleanupExtraLocalFiles(
