@@ -181,7 +181,7 @@ interface hasPermissionParents {
 }
 
 function hasPermissionParents(obj: any): obj is hasPermissionParents {
-	return Array.isArray(obj.permissionParents);
+	return obj && Array.isArray(obj.permissionParents);
 }
 
 class Auto implements hasRoot, hasPermissionParents {
@@ -861,11 +861,11 @@ class Store extends HasLogging {
 		RelayInstances.set(this, "Store");
 	}
 
-	getCollection(collecitonName: string): Collection<unknown, unknown> {
-		const collection = this.collections.get(collecitonName);
+	getCollection(collectionName: string): Collection<unknown, unknown> {
+		const collection = this.collections.get(collectionName);
 		if (!collection) {
-			this.error("No collection found for", collecitonName);
-			throw new Error("No collection found for " + collecitonName);
+			this.error("No collection found for", collectionName);
+			throw new Error("No collection found for " + collectionName);
 		}
 		return collection;
 	}
@@ -1005,37 +1005,57 @@ class Store extends HasLogging {
 		// Process children
 		for (const fqid of children || []) {
 			const [childCollection, childId] = fqid.split(":");
-			const childCollectionObj = this.getCollection(childCollection);
-			const item = childCollectionObj?.get(childId);
+			try {
+				const childCollectionObj = this.getCollection(childCollection);
+				const item = childCollectionObj.get(childId);
 
-			if (hasPermissionParents(item)) {
-				// Check if any permission parents are still valid
-				const validParents = item.permissionParents.filter((parent) => {
-					const [parentCollection, parentId] = parent;
-					const parentItem = this.getCollection(parentCollection).get(parentId);
-					return !!parentItem; // Parent is valid if the referenced item still exists
-				});
+				if (hasPermissionParents(item)) {
+					// Check if any permission parents are still valid
+					const validParents = item.permissionParents.filter((parent) => {
+						const [parentCollection, parentId] = parent;
+						try {
+							const parentItem =
+								this.getCollection(parentCollection).get(parentId);
+							return !!parentItem;
+						} catch (error) {
+							this.warn(
+								"Parent collection not found during validation",
+								parentCollection,
+								error,
+							);
+							return false; // Treat missing collection as invalid parent
+						}
+					});
 
-				// Only delete if NO valid permission parents remain
-				if (validParents.length === 0) {
-					this.warn(
-						"cascade delete child (no valid permission parents)",
-						childCollection,
-						childId,
-					);
-					this.cascade(childCollection, childId);
+					// Only delete if NO valid permission parents remain
+					if (validParents.length === 0) {
+						this.warn(
+							"cascade delete child (no valid permission parents)",
+							childCollection,
+							childId,
+						);
+						this.cascade(childCollection, childId);
+					} else {
+						this.warn(
+							"preserving child with valid permission parents",
+							childCollection,
+							childId,
+							validParents,
+						);
+					}
 				} else {
-					this.warn(
-						"preserving child with valid permission parents",
-						childCollection,
-						childId,
-						validParents,
-					);
+					// Non-permission-parent objects use existing cascade logic
+					this.warn("cascade delete child", childCollection, childId);
+					this.cascade(childCollection, childId);
 				}
-			} else {
-				// Non-permission-parent objects use existing cascade logic
-				this.warn("cascade delete child", childCollection, childId);
-				this.cascade(childCollection, childId);
+			} catch (error) {
+				this.warn(
+					"Failed to process child during cascade",
+					childCollection,
+					childId,
+					error,
+				);
+				// Continue processing other children even if one fails
 			}
 		}
 		postie.commitTransaction();
