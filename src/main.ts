@@ -64,6 +64,8 @@ import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { SelfHostModal } from "./ui/SelfHostModal";
+import { WebWorkerTestModal } from "./ui/WebWorkerTestModal";
+import { OPFSTestModal } from "./ui/OPFSTestModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -414,6 +416,24 @@ export default class Live extends Plugin {
 						},
 					});
 					this.addCommand({
+						id: "test-web-worker",
+						name: "Test Web Worker",
+						callback: () => {
+							const modal = new WebWorkerTestModal(this.app, this);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
+						id: "test-opfs",
+						name: "Test OPFS",
+						callback: () => {
+							const modal = new OPFSTestModal(this.app, this);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+					this.addCommand({
 						id: "disable-debugging",
 						name: "Disable debugging",
 						callback: () => {
@@ -439,6 +459,8 @@ export default class Live extends Plugin {
 					this.removeCommand("show-debug-info");
 					this.removeCommand("show-sync-status");
 					this.removeCommand("show-release-manager");
+					this.removeCommand("test-web-worker");
+					this.removeCommand("test-opfs");
 					this.removeCommand("disable-debugging");
 					this.addCommand({
 						id: "enable-debugging",
