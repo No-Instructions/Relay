@@ -194,7 +194,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				} else {
 					fileContents = await this._parent.read(this);
 				}
-				return this.setDiskBuffer(fileContents.replace("\r\n", "\n"));
+				return this.setDiskBuffer(fileContents.replace(/\r\n/g, "\n"));
 			} catch (e) {
 				console.error(e);
 				throw e;
