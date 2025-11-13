@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
 	enableKanbanView: boolean;
+	enableLiveEmbeds: boolean; // Controls embedded document synchronization (e.g., canvas embeds)
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -30,6 +31,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableSelfManageHosts: true,
 	enableToasts: false,
 	enableKanbanView: true,
+	enableLiveEmbeds: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

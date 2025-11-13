@@ -65,6 +65,25 @@ function iterateTextFileViews(
 	});
 }
 
+function iterateEmbeddedViews(
+	workspace: Workspace,
+	fn: (leaf: TextFileView) => void,
+) {
+	workspace.iterateAllLeaves((leaf) => {
+		if (leaf.view.getViewType() === "canvas" && flags().enableCanvasSync) {
+			const canvasView = leaf.view as unknown as CanvasView;
+			[...canvasView.canvas.nodes.values()].map((node) => {
+				//@ts-ignore
+				const embedView = node.child as unknown as TextFileView;
+				//@ts-ignore
+				embedView.leaf = leaf;
+				console.warn("embedView", embedView);
+				fn(embedView);
+			});
+		}
+	});
+}
+
 function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 	if (vs1.length !== vs2.length) {
 		return false;

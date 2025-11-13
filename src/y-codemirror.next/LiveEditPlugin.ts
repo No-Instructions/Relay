@@ -10,6 +10,7 @@ import {
 	LiveView,
 	LiveViewManager,
 	ConnectionManagerStateField,
+	type S3View,
 	isLiveMd,
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
@@ -19,6 +20,7 @@ import diff_match_patch from "diff-match-patch";
 import { flags } from "src/flagManager";
 import { MarkdownView, editorInfoField } from "obsidian";
 import { Document } from "src/Document";
+import { EmbedBanner } from "src/ui/EmbedBanner";
 
 const TWEENS = 25;
 
@@ -31,12 +33,13 @@ export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 
 export const ySyncAnnotation = Annotation.define();
 
-export class LiveCMPluginValue implements PluginValue {
+export class LiveCMPluginValueV2 implements PluginValue {
 	editor: EditorView;
 	view?: LiveView<MarkdownView>;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
 	sourceView: Element | null;
+	banner?: EmbedBanner;
 	private destroyed = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
@@ -48,6 +51,7 @@ export class LiveCMPluginValue implements PluginValue {
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	error: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	document?: Document;
+	embed = false;
 
 	getDocument(): Document | undefined {
 		const fileInfo = this.editor.state.field(editorInfoField);
@@ -68,6 +72,40 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 	}
 
+	active(view?: S3View) {
+		const live = isLiveMd(view);
+		return live || (this.embed && this.document);
+	}
+
+	mergeBanner(): () => void {
+		this.banner = new EmbedBanner(
+			this.sourceView,
+			this.editor.dom,
+			"Merge conflict -- click to resolve",
+			async () => {
+				if (!this.document) return true;
+				const diskBuffer = await this.document.diskBuffer();
+				const stale = await this.document.checkStale();
+				if (!stale) {
+					return true;
+				}
+				this.connectionManager?.openDiffView({
+					file1: this.document,
+					file2: diskBuffer,
+					showMergeOption: true,
+					onResolve: async () => {
+						if (this.document) {
+							this.document.clearDiskBuffer();
+							this.resync();
+						}
+					},
+				});
+				return true;
+			},
+		);
+		return () => {};
+	}
+
 	constructor(editor: EditorView) {
 		this.unsubscribes = [];
 		this.editor = editor;
@@ -79,6 +117,9 @@ export class LiveCMPluginValue implements PluginValue {
 		this.document = this.getDocument();
 		if (!this.document) {
 			return;
+		}
+		if (!this.view) {
+			this.embed = true;
 		}
 		this.log = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "log");
 		this.warn = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "warn");
@@ -143,6 +184,8 @@ export class LiveCMPluginValue implements PluginValue {
 					},
 				}),
 			);
+		} else {
+			this.document.connect();
 		}
 
 		if (this.document.connected) {
@@ -156,7 +199,7 @@ export class LiveCMPluginValue implements PluginValue {
 		this._observer = async (event, tr) => {
 			this.document = this.getDocument();
 
-			if (!isLiveMd(this.view)) {
+			if (!this.active(this.view)) {
 				this.debug("Recived yjs event against a non-live view");
 				return;
 			}
@@ -200,7 +243,7 @@ export class LiveCMPluginValue implements PluginValue {
 					this.keyFrameCounter += 1;
 					this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
 				}
-				if (isLiveMd(this.view)) {
+				if (this.active(this.view)) {
 					editor.dispatch({
 						changes,
 						annotations: [ySyncAnnotation.of(this.editor)],
@@ -294,12 +337,21 @@ export class LiveCMPluginValue implements PluginValue {
 					annotations: [ySyncAnnotation.of(this.editor)],
 				});
 			}
+		} else if (this.active(this.view) && this.document) {
+			await this.document.whenSynced();
+			const keyFrame = await this.getKeyFrame();
+			if (this.active(this.view) && !this.destroyed) {
+				this.editor.dispatch({
+					changes: keyFrame,
+					annotations: [ySyncAnnotation.of(this.editor)],
+				});
+			}
 		}
 	}
 
 	async getKeyFrame(incremental = false): Promise<ChangeSpec[]> {
 		// goal: sync editor state to ytext state so we can accept delta edits.
-		if (!isLiveMd(this.view) || this.destroyed) {
+		if (!this.active(this.view) || this.destroyed) {
 			return [];
 		}
 
@@ -329,9 +381,14 @@ export class LiveCMPluginValue implements PluginValue {
 		// disk and ytext differ
 		if (isLiveMd(this.view) && !this.view.tracking) {
 			this.view.checkStale();
+		} else if (this.document) {
+			const stale = await this.document.checkStale();
+			if (stale) {
+				this.mergeBanner();
+			}
 		}
 
-		if (isLiveMd(this.view) && !this.destroyed) {
+		if (this.active(this.view) && !this.destroyed) {
 			return [this.getBufferChange(this.document.text, incremental)];
 		}
 		return [];
@@ -385,4 +442,4 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 }
 
-export const LiveEdit = ViewPlugin.fromClass(LiveCMPluginValue);
+export const LiveEditV2 = ViewPlugin.fromClass(LiveCMPluginValueV2);
