@@ -21,6 +21,7 @@ import { flags } from "src/flagManager";
 import { MarkdownView, editorInfoField } from "obsidian";
 import { Document } from "src/Document";
 import { EmbedBanner } from "src/ui/EmbedBanner";
+import { ViewHookPlugin } from "src/plugins/ViewHookPlugin";
 
 const TWEENS = 25;
 
@@ -33,7 +34,7 @@ export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 
 export const ySyncAnnotation = Annotation.define();
 
-export class LiveCMPluginValueV2 implements PluginValue {
+export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
 	view?: LiveView<MarkdownView>;
 	connectionManager?: LiveViewManager;
@@ -52,6 +53,7 @@ export class LiveCMPluginValueV2 implements PluginValue {
 	error: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	document?: Document;
 	embed = false;
+	viewHookPlugin?: ViewHookPlugin;
 
 	getDocument(): Document | undefined {
 		const fileInfo = this.editor.state.field(editorInfoField);
@@ -120,6 +122,8 @@ export class LiveCMPluginValueV2 implements PluginValue {
 		}
 		if (!this.view) {
 			this.embed = true;
+		} else {
+			this.viewHookPlugin = new ViewHookPlugin(this.view.view, this.document);
 		}
 		this.log = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "log");
 		this.warn = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "warn");
@@ -196,6 +200,13 @@ export class LiveCMPluginValueV2 implements PluginValue {
 			});
 		}
 
+		// Initialize ViewHookPlugin
+		if (this.viewHookPlugin) {
+			this.viewHookPlugin.initialize().catch((error) => {
+				this.error("Error initializing ViewHookPlugin:", error);
+			});
+		}
+
 		this._observer = async (event, tr) => {
 			this.document = this.getDocument();
 
@@ -253,7 +264,6 @@ export class LiveCMPluginValueV2 implements PluginValue {
 					}
 				}
 			}
-			this.render();
 		};
 
 		this.observer = (event, tr) => {
@@ -269,15 +279,6 @@ export class LiveCMPluginValueV2 implements PluginValue {
 		};
 		this._ytext = this.document.ytext;
 		this._ytext.observe(this.observer);
-	}
-
-	public render() {
-		if (this.view?.view.getMode() === "preview") {
-			// @ts-ignore
-			this.view.view.previewMode.renderer.set(this.editor.state.doc.toString());
-			// @ts-ignore
-			this.view.view.onInternalDataChange();
-		}
 	}
 
 	public incrementalBufferChange(newBuffer: string): ChangeSpec[] {
@@ -435,6 +436,7 @@ export class LiveCMPluginValueV2 implements PluginValue {
 			unsub();
 		});
 		this.unsubscribes.length = 0;
+		this.viewHookPlugin?.destroy();
 		this.connectionManager = null as any;
 		this.view = undefined;
 		this._ytext = undefined;
@@ -442,4 +444,4 @@ export class LiveCMPluginValueV2 implements PluginValue {
 	}
 }
 
-export const LiveEditV2 = ViewPlugin.fromClass(LiveCMPluginValueV2);
+export const LiveEdit = ViewPlugin.fromClass(LiveCMPluginValue);
