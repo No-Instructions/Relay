@@ -4,6 +4,7 @@ import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { PreviewRenderer } from "./PreviewRenderer";
+import { MetadataRenderer } from "./MetadataRenderer";
 import { diffMatchPatch } from "../y-diffMatchPatch";
 import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
@@ -48,6 +49,56 @@ export class ViewHookPlugin extends HasLogging {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const that = this;
 
+		// Hook 1: Track metadata saves (if enableMetadataViewHooks)
+		if (flags().enableMetadataViewHooks) {
+			this.unsubscribes.push(
+				around(this.view, {
+					// @ts-ignore
+					saveFrontmatter(old) {
+						return function (data: any) {
+							that.debug("saveFrontmatter hook triggered");
+							that.saving = true;
+							// @ts-ignore
+							const result = old.call(this, data);
+							that.saving = false;
+							return result;
+						};
+					},
+				}),
+			);
+		}
+
+		// Hook 2: Coordinate saves between pathways
+		this.unsubscribes.push(
+			around(this.view, {
+				// @ts-ignore
+				save(old: any) {
+					return function (data: any) {
+						// @ts-ignore
+						const result = old.call(this, data);
+						try {
+							if (
+								that.view.getMode() === "preview" &&
+								that.saving
+							) {
+								that.debug("Syncing metadata changes to CRDT during save");
+								diffMatchPatch(
+									that.document.ydoc,
+									// @ts-ignore
+									that.view.text,
+									that.document,
+								);
+							}
+						} catch (e) {
+							that.error("Error syncing during save:", e);
+						}
+						return result;
+					};
+				},
+			}),
+		);
+
+		// Hook 3: Preview mode direct edits (if enablePreviewViewHooks)
 		if (flags().enablePreviewViewHooks) {
 			this.unsubscribes.push(
 				around(this.view.previewMode as any, {

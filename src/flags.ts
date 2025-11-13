@@ -15,6 +15,7 @@ export interface FeatureFlags {
 	enableKanbanView: boolean;
 	enableLiveEmbeds: boolean; // Controls embedded document synchronization (e.g., canvas embeds)
 	enablePreviewViewHooks: boolean;
+	enableMetadataViewHooks: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -34,6 +35,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableKanbanView: true,
 	enableLiveEmbeds: false,
 	enablePreviewViewHooks: true,
+	enableMetadataViewHooks: true,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
