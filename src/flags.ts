@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
 	enablePresenceAvatars: boolean;
+	enableLiveEmbeds: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -30,6 +31,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableSelfManageHosts: true,
 	enableToasts: true,
 	enablePresenceAvatars: true,
+	enableLiveEmbeds: true,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

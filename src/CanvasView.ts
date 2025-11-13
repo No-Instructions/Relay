@@ -47,6 +47,8 @@ export interface CanvasNodeData {
 	y: number;
 	width: number;
 	height: number;
+	file?: TFile;
+	child?: TextFileView;
 }
 
 export interface CanvasEdgeData {

@@ -10,6 +10,7 @@ import {
 	LiveView,
 	LiveViewManager,
 	ConnectionManagerStateField,
+	type S3View,
 	isLiveMd,
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
@@ -19,6 +20,8 @@ import diff_match_patch from "diff-match-patch";
 import { flags } from "src/flagManager";
 import { MarkdownView, editorInfoField } from "obsidian";
 import { Document } from "src/Document";
+import { EmbedBanner } from "src/ui/EmbedBanner";
+import { ViewHookPlugin } from "src/plugins/ViewHookPlugin";
 
 const TWEENS = 25;
 
@@ -37,6 +40,7 @@ export class LiveCMPluginValue implements PluginValue {
 	connectionManager?: LiveViewManager;
 	initialSet = false;
 	sourceView: Element | null;
+	banner?: EmbedBanner;
 	private destroyed = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
@@ -48,6 +52,8 @@ export class LiveCMPluginValue implements PluginValue {
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	error: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	document?: Document;
+	embed = false;
+	viewHookPlugin?: ViewHookPlugin;
 
 	getDocument(): Document | undefined {
 		const fileInfo = this.editor.state.field(editorInfoField);
@@ -68,6 +74,40 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 	}
 
+	active(view?: S3View) {
+		const live = isLiveMd(view);
+		return live || (this.embed && this.document);
+	}
+
+	mergeBanner(): () => void {
+		this.banner = new EmbedBanner(
+			this.sourceView,
+			this.editor.dom,
+			"Merge conflict -- click to resolve",
+			async () => {
+				if (!this.document) return true;
+				const diskBuffer = await this.document.diskBuffer();
+				const stale = await this.document.checkStale();
+				if (!stale) {
+					return true;
+				}
+				this.connectionManager?.openDiffView({
+					file1: this.document,
+					file2: diskBuffer,
+					showMergeOption: true,
+					onResolve: async () => {
+						if (this.document) {
+							this.document.clearDiskBuffer();
+							this.resync();
+						}
+					},
+				});
+				return true;
+			},
+		);
+		return () => {};
+	}
+
 	constructor(editor: EditorView) {
 		this.unsubscribes = [];
 		this.editor = editor;
@@ -75,10 +115,31 @@ export class LiveCMPluginValue implements PluginValue {
 		this.connectionManager = this.editor.state.field(
 			ConnectionManagerStateField,
 		);
+
+		// Allowlist: Check for live editing markers
+		const isLiveEditor = this.editor.dom.closest(".relay-live-editor");
+		const hasIframeClass =
+			this.sourceView?.classList.contains("mod-inside-iframe");
+
+		// For embedded canvas editors, we can't always find the canvas via ConnectionManager
+		// but if it has mod-inside-iframe, it's likely a legitimate embedded editor
+		const isEmbeddedInCanvas = hasIframeClass;
+
+		if (!isLiveEditor && !isEmbeddedInCanvas) {
+			this.destroyed = true;
+			return;
+		}
+
 		this.view = this.connectionManager?.findView(this.editor);
 		this.document = this.getDocument();
 		if (!this.document) {
+			this.destroyed = true;
 			return;
+		}
+		if (!this.view) {
+			this.embed = true;
+		} else {
+			this.viewHookPlugin = new ViewHookPlugin(this.view.view, this.document);
 		}
 		this.log = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "log");
 		this.warn = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "warn");
@@ -99,7 +160,7 @@ export class LiveCMPluginValue implements PluginValue {
 		if (this.view?.view) {
 			this.unsubscribes.push(
 				around(this.view.view, {
-					setViewData(old) {
+					setViewData(old: any) {
 						return function (data: string, clear: boolean) {
 							if (clear) {
 								if (isLiveMd(liveEditPlugin.view)) {
@@ -119,7 +180,7 @@ export class LiveCMPluginValue implements PluginValue {
 						};
 					},
 					// @ts-ignore
-					saveFrontmatter(old) {
+					saveFrontmatter(old: any) {
 						return function (data: any) {
 							fmSave = true;
 							// @ts-ignore
@@ -128,7 +189,7 @@ export class LiveCMPluginValue implements PluginValue {
 							return result;
 						};
 					},
-					requestSave(old) {
+					requestSave(old: any) {
 						return function () {
 							// @ts-ignore
 							const result = old.call(this);
@@ -143,6 +204,8 @@ export class LiveCMPluginValue implements PluginValue {
 					},
 				}),
 			);
+		} else {
+			this.document.connect();
 		}
 
 		if (this.document.connected) {
@@ -153,10 +216,17 @@ export class LiveCMPluginValue implements PluginValue {
 			});
 		}
 
+		// Initialize ViewHookPlugin
+		if (this.viewHookPlugin) {
+			this.viewHookPlugin.initialize().catch((error) => {
+				this.error("Error initializing ViewHookPlugin:", error);
+			});
+		}
+
 		this._observer = async (event, tr) => {
 			this.document = this.getDocument();
 
-			if (!isLiveMd(this.view)) {
+			if (!this.active(this.view)) {
 				this.debug("Recived yjs event against a non-live view");
 				return;
 			}
@@ -200,7 +270,7 @@ export class LiveCMPluginValue implements PluginValue {
 					this.keyFrameCounter += 1;
 					this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
 				}
-				if (isLiveMd(this.view)) {
+				if (this.active(this.view)) {
 					editor.dispatch({
 						changes,
 						annotations: [ySyncAnnotation.of(this.editor)],
@@ -210,7 +280,6 @@ export class LiveCMPluginValue implements PluginValue {
 					}
 				}
 			}
-			this.render();
 		};
 
 		this.observer = (event, tr) => {
@@ -226,15 +295,6 @@ export class LiveCMPluginValue implements PluginValue {
 		};
 		this._ytext = this.document.ytext;
 		this._ytext.observe(this.observer);
-	}
-
-	public render() {
-		if (this.view?.view.getMode() === "preview") {
-			// @ts-ignore
-			this.view.view.previewMode.renderer.set(this.editor.state.doc.toString());
-			// @ts-ignore
-			this.view.view.onInternalDataChange();
-		}
 	}
 
 	public incrementalBufferChange(newBuffer: string): ChangeSpec[] {
@@ -294,12 +354,21 @@ export class LiveCMPluginValue implements PluginValue {
 					annotations: [ySyncAnnotation.of(this.editor)],
 				});
 			}
+		} else if (this.active(this.view) && this.document) {
+			await this.document.whenSynced();
+			const keyFrame = await this.getKeyFrame();
+			if (this.active(this.view) && !this.destroyed) {
+				this.editor.dispatch({
+					changes: keyFrame,
+					annotations: [ySyncAnnotation.of(this.editor)],
+				});
+			}
 		}
 	}
 
 	async getKeyFrame(incremental = false): Promise<ChangeSpec[]> {
 		// goal: sync editor state to ytext state so we can accept delta edits.
-		if (!isLiveMd(this.view) || this.destroyed) {
+		if (!this.active(this.view) || this.destroyed) {
 			return [];
 		}
 
@@ -329,9 +398,14 @@ export class LiveCMPluginValue implements PluginValue {
 		// disk and ytext differ
 		if (isLiveMd(this.view) && !this.view.tracking) {
 			this.view.checkStale();
+		} else if (this.document) {
+			const stale = await this.document.checkStale();
+			if (stale) {
+				this.mergeBanner();
+			}
 		}
 
-		if (isLiveMd(this.view) && !this.destroyed) {
+		if (this.active(this.view) && !this.destroyed) {
 			return [this.getBufferChange(this.document.text, incremental)];
 		}
 		return [];
@@ -342,7 +416,8 @@ export class LiveCMPluginValue implements PluginValue {
 		if (
 			!update.docChanged ||
 			(update.transactions.length > 0 &&
-				update.transactions[0].annotation(ySyncAnnotation) === this.editor)
+				update.transactions[0].annotation(ySyncAnnotation) === this.editor) ||
+			this.destroyed
 		) {
 			return;
 		}
@@ -367,6 +442,10 @@ export class LiveCMPluginValue implements PluginValue {
 				adj += insertText.length - (toA - fromA);
 			});
 		}, this);
+
+		if (this.embed && this.document) {
+			this.document.requestSave();
+		}
 	}
 
 	destroy() {
@@ -378,6 +457,7 @@ export class LiveCMPluginValue implements PluginValue {
 			unsub();
 		});
 		this.unsubscribes.length = 0;
+		this.viewHookPlugin?.destroy();
 		this.connectionManager = null as any;
 		this.view = undefined;
 		this._ytext = undefined;

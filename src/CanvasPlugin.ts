@@ -12,6 +12,8 @@ import type { RelayCanvasView, LiveViewManager } from "src/LiveViews";
 import { HasLogging } from "src/debug";
 
 import * as Y from "yjs";
+import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
+import { flags } from "./flagManager";
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -33,6 +35,32 @@ export class CanvasPlugin extends HasLogging {
 		this.relayCanvasView = relayCanvasView;
 		this.observedTextNodes = new Set();
 		this.install();
+
+		// Enable embedded view synchronization if enableLiveEmbeds is true
+		if (flags().enableLiveEmbeds) {
+			for (const node of this.getEmbedViews()) {
+				if (!node.file) {
+					continue;
+				}
+				this.unsubscribes.push(
+					(() => {
+						const plugin = new ViewHookPlugin(
+							node,
+							this.relayCanvas.sharedFolder.proxy.getDoc(node.file.path),
+						);
+						plugin.initialize().catch((error) => {
+							this.error(
+								"Error initializing ViewHookPlugin for canvas embed:",
+								error,
+							);
+						});
+						return () => {
+							plugin.destroy();
+						};
+					})(),
+				);
+			}
+		}
 	}
 
 	destroy() {
@@ -65,6 +93,15 @@ export class CanvasPlugin extends HasLogging {
 				this.observedTextNodes.delete(nodeId);
 			});
 		}
+	}
+
+	public getEmbedViews() {
+		return [...this.canvas.nodes.values()]
+			.map((nodeData) => {
+				//@ts-ignore
+				return nodeData.child;
+			})
+			.filter((x) => !!x);
 	}
 
 	public markDirty(node: CanvasNodeData) {
