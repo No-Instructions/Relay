@@ -17,7 +17,8 @@ import { curryLog } from "src/debug";
 import { around } from "monkey-around";
 import diff_match_patch from "diff-match-patch";
 import { flags } from "src/flagManager";
-import { MarkdownView } from "obsidian";
+import { MarkdownView, editorInfoField } from "obsidian";
+import { Document } from "src/Document";
 
 const TWEENS = 25;
 
@@ -35,6 +36,7 @@ export class LiveCMPluginValue implements PluginValue {
 	view?: LiveView<MarkdownView>;
 	connectionManager?: LiveViewManager;
 	initialSet = false;
+	sourceView: Element | null;
 	private destroyed = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
 	observer?: (event: YTextEvent, tr: Transaction) => void;
@@ -44,103 +46,116 @@ export class LiveCMPluginValue implements PluginValue {
 	debug: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	log: (...args: unknown[]) => void = (...args: unknown[]) => {};
 	warn: (...args: unknown[]) => void = (...args: unknown[]) => {};
+	error: (...args: unknown[]) => void = (...args: unknown[]) => {};
+	document?: Document;
+
+	getDocument(): Document | undefined {
+		const fileInfo = this.editor.state.field(editorInfoField);
+		const file = fileInfo.file;
+		if (file) {
+			if (this.document?._tfile === file) {
+				return this.document;
+			}
+			const folder = this.connectionManager?.sharedFolders.lookup(file.path);
+			if (folder) {
+				this.document = folder.proxy.getDoc(file.path);
+				return this.document;
+			}
+		}
+		this.view = this.connectionManager?.findView(this.editor);
+		if (this.view && this.view.document instanceof Document) {
+			return this.view.document;
+		}
+	}
 
 	constructor(editor: EditorView) {
 		this.unsubscribes = [];
 		this.editor = editor;
+		this.sourceView = this.editor.dom.closest(".markdown-source-view");
 		this.connectionManager = this.editor.state.field(
 			ConnectionManagerStateField,
 		);
-		this.view = this.connectionManager?.findView(editor);
-		if (!this.view) {
+		this.view = this.connectionManager?.findView(this.editor);
+		this.document = this.getDocument();
+		if (!this.document) {
 			return;
 		}
-		this.log = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
-			"log",
-		);
-		this.warn = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
-			"warn",
+		this.log = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "log");
+		this.warn = curryLog(`[LiveCMPluginValue][${this.document.path}]`, "warn");
+		this.error = curryLog(
+			`[LiveCMPluginValue][${this.document.path}]`,
+			"error",
 		);
 		this.debug = curryLog(
-			`[LiveCMPluginValue][${this.view.view.file?.path}]`,
+			`[LiveCMPluginValue][${this.document.path}]`,
 			"debug",
 		);
-
 		this.debug("created");
-		if (!this.view.document) {
-			return;
-		}
-
-		let fmSave: boolean = false;
 
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const liveEditPlugin = this;
+		let fmSave = false;
 
-		this.unsubscribes.push(
-			around(this.view.view, {
-				setViewData(old) {
-					return function (data: string, clear: boolean) {
-						if (clear) {
-							if (isLiveMd(liveEditPlugin.view)) {
-								if (liveEditPlugin.view.document.text === data) {
-									liveEditPlugin.view.tracking = true;
+		if (this.view?.view) {
+			this.unsubscribes.push(
+				around(this.view.view, {
+					setViewData(old) {
+						return function (data: string, clear: boolean) {
+							if (clear) {
+								if (isLiveMd(liveEditPlugin.view)) {
+									if (liveEditPlugin.view.document.text === data) {
+										liveEditPlugin.view.tracking = true;
+									}
 								}
+								liveEditPlugin.resync();
+							} else if (fmSave) {
+								const changes = liveEditPlugin.incrementalBufferChange(data);
+								editor.dispatch({
+									changes,
+								});
 							}
-							liveEditPlugin.resync();
-						} else if (fmSave) {
-							const changes = liveEditPlugin.incrementalBufferChange(data);
-							editor.dispatch({
-								changes,
-							});
-						}
-						// @ts-ignore
-						return old.call(this, data, clear);
-					};
-				},
-				// @ts-ignore
-				saveFrontmatter(old) {
-					return function (data: any) {
-						fmSave = true;
-						// @ts-ignore
-						const result = old.call(this, data);
-						fmSave = false;
-						return result;
-					};
-				},
-			}),
-		);
-		this.unsubscribes.push(
-			around(this.view.view.previewMode as any, {
-				edit(old) {
-					return function (data: string) {
-						if (
-							isLiveMd(liveEditPlugin.view) &&
-							liveEditPlugin.view.view.getMode() === "preview"
-						) {
-							const changes = liveEditPlugin.incrementalBufferChange(data);
-							editor.dispatch({
-								changes,
-							});
-						}
+							// @ts-ignore
+							return old.call(this, data, clear);
+						};
+					},
+					// @ts-ignore
+					saveFrontmatter(old) {
+						return function (data: any) {
+							fmSave = true;
+							// @ts-ignore
+							const result = old.call(this, data);
+							fmSave = false;
+							return result;
+						};
+					},
+					requestSave(old) {
+						return function () {
+							// @ts-ignore
+							const result = old.call(this);
+							try {
+								// @ts-ignore
+								this.app.metadataCache.trigger("resolve", this.file);
+							} catch (e) {
+								// pass
+							}
+							return result;
+						};
+					},
+				}),
+			);
+		}
 
-						// @ts-ignore
-						return old.call(this, data);
-					};
-				},
-			}),
-		);
-
-		if (this.view.document.connected) {
+		if (this.document.connected) {
 			this.resync();
 		} else {
-			this.view.document.onceConnected().then(() => {
+			this.document.onceConnected().then(() => {
 				this.resync();
 			});
 		}
 
 		this._observer = async (event, tr) => {
+			this.document = this.getDocument();
+
 			if (!isLiveMd(this.view)) {
 				this.debug("Recived yjs event against a non-live view");
 				return;
@@ -175,7 +190,7 @@ export class LiveCMPluginValue implements PluginValue {
 					}
 				}
 				if (
-					!this.view.tracking ||
+					(isLiveMd(this.view) && !this.view.tracking) ||
 					(flags().enableEditorTweens && this.keyFrameCounter > TWEENS)
 				) {
 					this.keyFrameCounter = 0;
@@ -190,7 +205,9 @@ export class LiveCMPluginValue implements PluginValue {
 						changes,
 						annotations: [ySyncAnnotation.of(this.editor)],
 					});
-					this.view.tracking = true;
+					if (isLiveMd(this.view)) {
+						this.view.tracking = true;
+					}
 				}
 			}
 			this.render();
@@ -207,7 +224,7 @@ export class LiveCMPluginValue implements PluginValue {
 				}
 			}
 		};
-		this._ytext = this.view.document.ytext;
+		this._ytext = this.document.ytext;
 		this._ytext.observe(this.observer);
 	}
 
@@ -286,29 +303,36 @@ export class LiveCMPluginValue implements PluginValue {
 			return [];
 		}
 
-		if (this.view.document.text === this.view.view.getViewData()) {
+		if (this.document?.text === this.editor.state.doc.toString()) {
 			// disk and ytext were already the same.
-			this.view.tracking = true;
+			if (isLiveMd(this.view)) {
+				this.view.tracking = true;
+			}
 			return [];
-		} else {
+		} else if (flags().enableDeltaLogging) {
 			this.warn(
-				`|${this.view.document.text}|\n|${this.view.view.getViewData()}|`,
+				`|${this.document?.text}|\n|${this.editor.state.doc.toString()}|`,
 			);
 		}
 
+		if (!this.document) {
+			this.warn("no document");
+			return [];
+		}
+
 		this.warn(`ytext and editor buffer need syncing`);
-		if (!this.view.document.hasLocalDB() && this.view.document.text === "") {
+		if (!this.document.hasLocalDB() && this.document.text === "") {
 			this.warn("local db missing, not setting buffer");
 			return [];
 		}
 
 		// disk and ytext differ
-		if (!this.view.tracking) {
+		if (isLiveMd(this.view) && !this.view.tracking) {
 			this.view.checkStale();
 		}
 
 		if (isLiveMd(this.view) && !this.destroyed) {
-			return [this.getBufferChange(this.view.document.text, incremental)];
+			return [this.getBufferChange(this.document.text, incremental)];
 		}
 		return [];
 	}
@@ -322,9 +346,8 @@ export class LiveCMPluginValue implements PluginValue {
 		) {
 			return;
 		}
-		const editor: EditorView = update.view;
-		this.view = this.connectionManager?.findView(editor);
-		const ytext = this.view?.document?.ytext;
+		this.document = this.getDocument();
+		const ytext = this.document?.ytext;
 		if (!ytext) {
 			return;
 		}
