@@ -21,7 +21,7 @@ export class EndpointManager {
    * Get the base URL for the control plane API
    */
   getApiUrl(): string {
-    return `${this.settings.controlPlaneUrl}/api/trpc`;
+    return `${this.settings.controlPlaneUrl}/api`;
   }
 
   /**
@@ -32,11 +32,11 @@ export class EndpointManager {
   }
 
   /**
-   * Get the OAuth login URL
+   * Get the OAuth/OIDC login URL
    */
   getLoginUrl(): string {
     const redirectUri = 'obsidian://relay-callback';
-    return `${this.getAuthUrl()}/api/oauth/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
+    return `${this.getAuthUrl()}/api/auth/oidc/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
   }
 
   /**

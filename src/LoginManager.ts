@@ -80,7 +80,7 @@ export class LoginManager {
    */
   private async exchangeCodeForToken(code: string): Promise<void> {
     try {
-      const response = await fetch(`${this.endpointManager.getAuthUrl()}/api/oauth/callback?code=${code}`, {
+      const response = await fetch(`${this.endpointManager.getAuthUrl()}/api/auth/oidc/callback?code=${code}`, {
         method: 'GET',
         credentials: 'include', // Important for session cookies
       });
