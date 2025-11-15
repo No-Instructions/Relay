@@ -25,6 +25,7 @@ export default class RelayPlugin extends Plugin {
   endpointManager: EndpointManager;
   loginManager: LoginManager;
   tokenStore: TokenStore;
+  relayManager?: any; // Optional for compatibility with settings UI
 
   async onload() {
     console.log('Loading Relay plugin (self-hosted version)');

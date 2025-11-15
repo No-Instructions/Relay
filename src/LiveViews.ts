@@ -786,8 +786,9 @@ export class LiveViewManager {
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
 				if (!this.loginManager.loggedIn) {
-					const view = new LoggedOutView(this, textFileView, () => {
-						return this.loginManager.openLoginPage();
+					const view = new LoggedOutView(this, textFileView, async () => {
+						await this.loginManager.openLoginPage();
+						return true;
 					});
 					views.push(view);
 				} else if (folder.ready) {
@@ -812,8 +813,9 @@ export class LiveViewManager {
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
 				if (!this.loginManager.loggedIn) {
-					const view = new LoggedOutView(this, canvasView, () => {
-						return this.loginManager.openLoginPage();
+					const view = new LoggedOutView(this, canvasView, async () => {
+						await this.loginManager.openLoginPage();
+						return true;
 					});
 					views.push(view);
 				} else if (folder.ready) {

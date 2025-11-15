@@ -14,12 +14,20 @@ export interface AuthToken {
   expiresAt: number;
 }
 
+export interface User {
+  token?: string;
+  id?: string;
+  email?: string;
+}
+
 export class LoginManager {
   private app: App;
   private endpointManager: EndpointManager;
   private authToken: AuthToken | null = null;
   private callbackResolver: ((token: AuthToken) => void) | null = null;
   private callbackRejecter: ((error: Error) => void) | null = null;
+  private _user: User | null = null;
+  private listeners: (() => void)[] = [];
 
   constructor(app: App, endpointManager: EndpointManager) {
     this.app = app;
@@ -33,10 +41,13 @@ export class LoginManager {
    * Register the Obsidian protocol handler for OAuth callbacks
    */
   private registerProtocolHandler(): void {
-    this.app.registerObsidianProtocolHandler('relay-callback', async (params) => {
+    // Check if the protocol handler method is available
+    if (typeof (this.app as any).registerObsidianProtocolHandler === 'function') {
       try {
-        const code = params.code;
-        const error = params.error;
+        (this.app as any).registerObsidianProtocolHandler('relay-callback', async (params: any) => {
+          try {
+            const code = params.code;
+            const error = params.error;
 
         if (error) {
           const errorMsg = params.error_description || error;
@@ -49,12 +60,19 @@ export class LoginManager {
           return;
         }
 
-        // Exchange code for token
-        await this.exchangeCodeForToken(code);
+            // Exchange code for token
+            await this.exchangeCodeForToken(code);
+          } catch (error) {
+            this.handleCallbackError(error as Error);
+          }
+        });
       } catch (error) {
-        this.handleCallbackError(error as Error);
+        console.error('Failed to register protocol handler:', error);
+        // Protocol handler registration failed - this might be an older Obsidian version
       }
-    });
+    } else {
+      console.warn('Protocol handler not available in this Obsidian version. OAuth callback may not work.');
+    }
   }
 
   /**
@@ -74,6 +92,7 @@ export class LoginManager {
       // The control plane sets a session cookie, so we don't need to store the token
       // We just need to verify we're authenticated
       const userInfo = await this.fetchUserInfo();
+      this._user = userInfo; // Store user info
       
       const authToken: AuthToken = {
         accessToken: 'session', // Using session cookies instead
@@ -82,6 +101,7 @@ export class LoginManager {
 
       this.authToken = authToken;
       await this.saveToken(authToken);
+      this.notifyListeners(); // Notify auth state change
 
       if (this.callbackResolver) {
         this.callbackResolver(authToken);
@@ -164,7 +184,9 @@ export class LoginManager {
     }
 
     this.authToken = null;
+    this._user = null;
     await this.clearToken();
+    this.notifyListeners(); // Notify auth state change
     new Notice('Signed out successfully');
   }
 
@@ -228,5 +250,79 @@ export class LoginManager {
    */
   private async clearToken(): Promise<void> {
     localStorage.removeItem('relay_auth_token');
+  }
+
+  // Additional methods expected by other components
+
+  /**
+   * Get the endpoint manager
+   */
+  getEndpointManager(): EndpointManager {
+    return this.endpointManager;
+  }
+
+  /**
+   * Check if logged in (alias for isAuthenticated)
+   */
+  get loggedIn(): boolean {
+    return this.isAuthenticated();
+  }
+
+  /**
+   * Get current user
+   */
+  get user(): User | null {
+    if (this.isAuthenticated() && !this._user) {
+      // Create a basic user object if authenticated but no user info
+      this._user = {
+        token: this.authToken?.accessToken,
+      };
+    }
+    return this._user;
+  }
+
+  /**
+   * Add authentication state listener
+   */
+  on(callback: () => void): () => void {
+    this.listeners.push(callback);
+    // Return unsubscribe function
+    return () => {
+      const index = this.listeners.indexOf(callback);
+      if (index > -1) {
+        this.listeners.splice(index, 1);
+      }
+    };
+  }
+
+  /**
+   * Notify listeners of auth state changes
+   */
+  private notifyListeners(): void {
+    this.listeners.forEach(listener => listener());
+  }
+
+  /**
+   * Open login page (alias for login)
+   */
+  async openLoginPage(): Promise<AuthToken> {
+    return this.login();
+  }
+
+  /**
+   * Auth store compatibility (for PocketBase-style usage)
+   */
+  get authStore(): any {
+    return {
+      token: this.authToken?.accessToken,
+      isValid: this.isAuthenticated(),
+    };
+  }
+
+  /**
+   * PocketBase instance (for compatibility)
+   */
+  get pb(): any {
+    return null; // Not using PocketBase in simplified version
   }
 }

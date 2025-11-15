@@ -100,7 +100,7 @@ export class HasProvider extends HasLogging {
 			this.ydoc.gc = false;
 		}
 
-		if (user) {
+		if (user && user.id) {
 			const permanentUserData = new Y.PermanentUserData(this.ydoc);
 			permanentUserData.setUserMapping(this.ydoc, this.ydoc.clientID, user.id);
 		}
@@ -110,7 +110,18 @@ export class HasProvider extends HasLogging {
 			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
 			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
 
-		this._provider = makeProvider(this.clientToken, this.ydoc, user);
+		// Convert LoginManager User to HasProvider User if needed
+		let providerUser: User | undefined = undefined;
+		if (user && user.id) {
+			providerUser = new User(
+				user.id,
+				user.email || 'Unknown',
+				user.email || '',
+				'', // picture
+				user.token || ''
+			);
+		}
+		this._provider = makeProvider(this.clientToken, this.ydoc, providerUser);
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {

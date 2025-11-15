@@ -104,7 +104,7 @@ async function refresh(
 
 export class LiveTokenStore extends TokenStore<ClientToken> {
 	constructor(
-		private loginManager: LoginManager,
+		private liveLoginManager: LoginManager,
 		timeProvider: TimeProvider,
 		vaultName: string,
 		maxConnections = 5,
@@ -112,7 +112,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		super(
 			{
 				log: curryLog("[LiveTokenStore]", "debug"),
-				refresh: withLoginManager(loginManager, refresh),
+				refresh: withLoginManager(liveLoginManager, refresh),
 				getJwtExpiry: getJwtExpiryFromClientToken,
 				getStorage: function () {
 					return new LocalStorage<TokenInfo<ClientToken>>(
@@ -150,7 +150,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			contentLength,
 		)
 			.then((newToken: FileToken) => {
-				const expiryTime = this.getJwtExpiry(newToken);
+				const expiryTime = this.getJwtExpiry ? this.getJwtExpiry(newToken) : Date.now() + 3600000;
 				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 				const existing = this.tokenMap.get(key)!;
 				this.tokenMap.set(fileHash, {
@@ -191,15 +191,15 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		} else {
 			throw new Error(`No remote to connect to for ${documentId}`);
 		}
-		if (!this.loginManager.loggedIn) {
+		if (!this.liveLoginManager.loggedIn) {
 			throw new Error("Not logged in");
 		}
 		const headers = {
-			Authorization: `Bearer ${this.loginManager.user?.token}`,
+			Authorization: `Bearer ${this.liveLoginManager.user?.token}`,
 			"Relay-Version": GIT_TAG,
 			"Content-Type": "application/json",
 		};
-		const apiUrl = this.loginManager.getEndpointManager().getApiUrl();
+		const apiUrl = this.liveLoginManager.getEndpointManager().getApiUrl();
 		const response = await customFetch(`${apiUrl}/file-token`, {
 			method: "POST",
 			headers: headers,
