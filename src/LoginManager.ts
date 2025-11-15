@@ -80,7 +80,9 @@ export class LoginManager {
    */
   private async exchangeCodeForToken(code: string): Promise<void> {
     try {
-      const response = await fetch(`${this.endpointManager.getAuthUrl()}/api/oauth/callback?code=${code}`, {
+      // Auth.js handles the callback automatically, we just need to check if we're authenticated
+      // by fetching user info
+      const response = await fetch(`${this.endpointManager.getApiUrl()}/whoami`, {
         method: 'GET',
         credentials: 'include', // Important for session cookies
       });
