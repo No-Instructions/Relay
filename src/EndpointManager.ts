@@ -32,11 +32,11 @@ export class EndpointManager {
   }
 
   /**
-   * Get the OAuth/OIDC login URL
+   * Get the OAuth/OIDC login URL (Auth.js standard endpoint)
    */
   getLoginUrl(): string {
-    const redirectUri = 'obsidian://relay-callback';
-    return `${this.getAuthUrl()}/api/auth/oidc/login?redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const callbackUrl = 'obsidian://relay-callback';
+    return `${this.getAuthUrl()}/api/auth/signin/oidc?callbackUrl=${encodeURIComponent(callbackUrl)}`;
   }
 
   /**
