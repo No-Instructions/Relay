@@ -262,7 +262,7 @@ export class DifferencesView extends ItemView {
 
 	async modify(file: TFile, newContent: string): Promise<void> {
 		if (file instanceof Document) {
-			diffMatchPatch(file.ydoc, newContent, file);
+			diffMatchPatch(file.ydoc, newContent, this);
 			return;
 		} else if (file instanceof DiskBuffer) {
 			file.contents = newContent;

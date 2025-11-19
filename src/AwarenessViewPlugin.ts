@@ -1,10 +1,11 @@
 import { HasLogging } from "./debug";
+import { MarkdownView } from "obsidian";
 import { Document } from "./Document";
 import { type LiveView } from "./LiveViews";
 import UserAwareness from "./components/UserAwareness.svelte";
 import type { RelayUser } from "./Relay";
 export class AwarenessViewPlugin extends HasLogging {
-	view: LiveView;
+	view: LiveView<MarkdownView>;
 	doc: Document;
 	private destroyed = false;
 	private awarenessComponent?: UserAwareness;
@@ -12,7 +13,7 @@ export class AwarenessViewPlugin extends HasLogging {
 	private awarenessElement?: HTMLElement;
 	private relayUsersStore: any;
 
-	constructor(view: LiveView, relayUsersStore: any) {
+	constructor(view: LiveView<MarkdownView>, relayUsersStore: any) {
 		super();
 		this.view = view;
 		this.doc = view.document;

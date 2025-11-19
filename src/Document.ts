@@ -7,6 +7,7 @@ import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
+import { debounce } from "obsidian";
 import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
@@ -235,8 +236,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const contents = (diskBuffer as DiskBuffer).contents;
 		const response = await this.sharedFolder.backgroundSync.downloadItem(this);
 		const updateBytes = new Uint8Array(response.arrayBuffer);
+
 		Y.applyUpdate(this.ydoc, updateBytes);
 		const stale = this.text !== contents;
+
 		const og = this.text;
 		let text = og;
 
@@ -383,6 +386,16 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	public get mimetype(): string {
 		return getMimeType(this.path);
 	}
+
+	save() {
+		if (!this.tfile) {
+			return;
+		}
+		this.vault.modify(this.tfile, this.text);
+		this.warn("file saved", this.path);
+	}
+
+	requestSave = debounce(this.save, 2000);
 
 	private _origin?: string;
 
