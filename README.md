@@ -112,40 +112,42 @@ You need to have available Attachment storage in order to sync images/audio/vide
 
 ### How much does Relay cost?
 
-#### Free Relay Server
-- Up to 3 seats
+#### Free ($0)
+- Up to 3 users
+- 2 devices per user
 - Unlimited markdown files
-- No attachment storage
-- Encryption in transit and at rest
+- No cloud storage (0 MB)
+- Self-hosted deployment
+- Cloud deployment (.md only)
+- BYO Relay Server
+- BYO storage (unmetered, self-host only)
+- Community support
 
-#### Teams ($10 per month)
-- Everything in Free, plus:
-- 10 seats included (+$2/mo per additional seat)
-- 10GB storage included (+100GB for $10/mo)
-- Additional storage available
+#### Hobby ($5 per month total)
+- Up to 6 users
+- 3 devices per user
+- Unlimited markdown files
+- 10GB cloud storage included
+- Self-hosted deployment
+- BYO Relay Server
+- BYO storage (unmetered, self-host only)
+- Community support
 
-#### Pro ($120 per month)
-- 10 seats included (+$5/mo per additional seat)
-- 250GB storage included (+100GB for $10/mo)
-- BYO storage available
-- Dedicated cloud tenant
-- On-premise Relay Server deployment available
-- Integrate with Github, Mintlify, etc.
-- API access
-- Granular folder permissions
-
-#### Enterprise
-- Everything in Pro, plus:
-- 30+ seats
-- Flexible storage included
-- Full on-premise deployment available
-- Setup consulting
+#### Starter ($6 per user per month)
+- Unlimited users
+- 6 devices per user
+- Unlimited markdown files
+- 20GB + 5GB/user cloud storage included
+- Self-hosted deployment
+- BYO Relay Server
+- BYO storage (unmetered)
+- Role-based access control
 - Single sign-on
-- Dedicated phone support
-- Talk to us for pricing
+- Private Discord
+- Email support
 
 
-We offer discounts for educational use based on region and need.
+We offer discounts for educational use.
 
 
 ### Do I need to be online to use Relay?
