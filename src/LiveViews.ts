@@ -30,6 +30,7 @@ import { type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
+import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -327,6 +328,7 @@ export class LiveView implements S3View {
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
 	_tracking: boolean;
+	private _awarenessPlugin?: AwarenessViewPlugin;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -491,6 +493,11 @@ export class LiveView implements S3View {
 		this.document.userLock = true;
 		this.setConnectionDot();
 
+		// Initialize awareness plugin if not already created and feature flag is enabled
+		if (!this._awarenessPlugin && flags().enablePresenceAvatars) {
+			this._awarenessPlugin = new AwarenessViewPlugin(this, this._parent.sharedFolders.manager.users);
+		}
+
 		return new Promise((resolve) => {
 			return this.document
 				.whenReady()
@@ -527,6 +534,8 @@ export class LiveView implements S3View {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
 		}
+		this._awarenessPlugin?.destroy();
+		this._awarenessPlugin = undefined;
 		this.document.disconnect();
 		this.document.userLock = false;
 	}
