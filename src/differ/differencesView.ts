@@ -29,6 +29,7 @@ import {
 	TFile,
 	type ViewStateResult,
 	WorkspaceLeaf,
+	TextFileView,
 } from "obsidian";
 import { diffMatchPatch } from "src/y-diffMatchPatch";
 import { Difference } from "./difference";
@@ -49,6 +50,7 @@ export interface ViewState {
 	file2: TFile;
 	showMergeOption: boolean;
 	onResolve?: () => Promise<void>;
+	originalLeaf?: WorkspaceLeaf;
 	[key: string]: unknown;
 }
 
@@ -56,6 +58,11 @@ export async function openDiffView(
 	workspace: Workspace,
 	state: ViewState,
 ): Promise<void> {
+	// Capture the currently active leaf to return to it later
+	if (!state.originalLeaf) {
+		state.originalLeaf = workspace.activeLeaf || undefined;
+	}
+
 	// Closes all leafs (views) of the type VIEW_TYPE_DIFFERENCES
 	workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
@@ -119,6 +126,14 @@ export class DifferencesView extends ItemView {
 
 	async onunload(): Promise<void> {
 		this.state?.onResolve?.();
+	}
+
+	private closeAndReturnToOriginal(): void {
+		// Return to original leaf if available and still valid
+		if (this.state?.originalLeaf && this.state.originalLeaf.parent) {
+			this.app.workspace.setActiveLeaf(this.state.originalLeaf, { focus: true });
+		}
+		this.leaf.detach();
 	}
 
 	private async updateState(): Promise<void> {
@@ -187,7 +202,7 @@ export class DifferencesView extends ItemView {
 				}
 				await this.modify(this.state.file2, this.file1Content || "");
 			}
-			this.leaf.detach();
+			this.closeAndReturnToOriginal();
 		}
 	}
 
@@ -259,13 +274,15 @@ export class DifferencesView extends ItemView {
 	private async acceptAllFromLeft(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
 		await this.modify(this.state.file2, this.file1Content || "");
-		this.leaf.detach();
+		await this.state.onResolve?.();
+		this.closeAndReturnToOriginal();
 	}
 
 	private async acceptAllFromRight(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
 		await this.modify(this.state.file1, this.file2Content || "");
-		this.leaf.detach();
+		await this.state.onResolve?.();
+		this.closeAndReturnToOriginal();
 	}
 
 	private buildLines(container: HTMLDivElement): void {
