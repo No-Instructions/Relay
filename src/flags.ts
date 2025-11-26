@@ -24,7 +24,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNetworkLogging: false,
 	enableCanvasSync: false,
 	enableVerifyUploads: false,
-	enableAutomaticDiffResolution: false,
+	enableAutomaticDiffResolution: true,
 	enableDiscordLogin: false,
 	enableSelfManageHosts: true,
 	enableToasts: true,
