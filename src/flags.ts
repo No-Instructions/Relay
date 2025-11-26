@@ -27,7 +27,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableAutomaticDiffResolution: false,
 	enableDiscordLogin: false,
 	enableSelfManageHosts: true,
-	enableToasts: false,
+	enableToasts: true,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
