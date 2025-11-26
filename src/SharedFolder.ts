@@ -1693,6 +1693,10 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 
 	update = debounce(this.notifyListeners, 100);
 
+	public get manager(): RelayManager {
+		return this.relayManager;
+	}
+
 	lookup(path: string): SharedFolder | null {
 		// Return the shared folder that contains the file -- agnostic of whether the file actually exists
 		const folder = this.find((sharedFolder: SharedFolder) => {
