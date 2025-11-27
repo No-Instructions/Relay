@@ -39,6 +39,17 @@ const NotifyPlugin = {
 	},
 };
 
+const YjsInternalsPlugin = {
+	name: "yjs-internals",
+	setup(build) {
+		build.onResolve({ filter: /^yjs\/dist\/src\/internals$/ }, args => {
+			return {
+				path: path.resolve("node_modules/yjs/src/internals.js"),
+			};
+		});
+	},
+};
+
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -68,6 +79,7 @@ const context = await esbuild.context({
 			compilerOptions: { css: true },
 			preprocess: sveltePreprocess(),
 		}),
+		YjsInternalsPlugin,
 		NotifyPlugin,
 	],
 	target: "es2018",
