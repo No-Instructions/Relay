@@ -25,7 +25,8 @@ import {
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
-import { TextFileView } from "obsidian";
+import { TextFileView, editorInfoField } from "obsidian";
+import { Document } from "../Document";
 
 export const yRemoteSelectionsTheme = EditorView.baseTheme({
 	".cm-ySelection": {},
@@ -164,6 +165,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
+	document?: Document;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -172,9 +174,19 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			ConnectionManagerStateField,
 		);
 
-		const view = this.connectionManager?.findView(editor);
-		if (view && view instanceof LiveView) {
-			this.view = view;
+		// Add same allowlist checks as LiveEditPlugin for embedded editor support
+		const sourceView = this.editor.dom.closest(".markdown-source-view");
+		const isLiveEditor = this.editor.dom.closest(".relay-live-editor");
+		const hasIframeClass = sourceView?.classList.contains("mod-inside-iframe");
+		const isEmbeddedInCanvas = hasIframeClass;
+
+		if (!isLiveEditor && !isEmbeddedInCanvas) {
+			// Skip remote selections for non-live editors
+			return;
+		}
+
+		this.view = this.connectionManager?.findView(editor);
+		if (this.view && this.view instanceof LiveView) {
 			const provider = this.view.document?._provider;
 			this._listener = ({ added, updated, removed }, s, t) => {
 				const clients = added.concat(updated).concat(removed);
@@ -193,6 +205,26 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		}
 	}
 
+	getDocument(): Document | undefined {
+		const fileInfo = this.editor.state.field(editorInfoField);
+		const file = fileInfo.file;
+		
+		if (file) {
+			if (this.document?._tfile === file) {
+				return this.document;
+			}
+			const folder = this.connectionManager?.sharedFolders.lookup(file.path);
+			if (folder) {
+				this.document = folder.proxy.getDoc(file.path);
+				return this.document;
+			}
+		}
+		
+		// Fallback to using view
+		this.view = this.connectionManager?.findView(this.editor);
+		return this.view?.document;
+	}
+
 	destroy() {
 		if (this._listener) {
 			this._awareness?.off("change", this._listener);
@@ -205,12 +237,12 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 
 	update(update: ViewUpdate) {
 		const editor: EditorView = update.view;
-		this.view = this.connectionManager?.findView(editor);
-		const ytext = this.view?.document?.ytext;
-		if (!(this.view && ytext && ytext.doc)) {
+		this.document = this.getDocument();
+		const ytext = this.document?.ytext;
+		if (!(this.document && ytext && ytext.doc)) {
 			return;
 		}
-		const provider = this.view.document?._provider;
+		const provider = this.document._provider;
 		if (!provider) {
 			return;
 		}
