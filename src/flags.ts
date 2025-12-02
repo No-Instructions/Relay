@@ -16,6 +16,7 @@ export interface FeatureFlags {
 	enableLiveEmbeds: boolean;
 	enablePreviewViewHooks: boolean;
 	enableMetadataViewHooks: boolean;
+	enableKanbanView: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -36,6 +37,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableLiveEmbeds: true,
 	enablePreviewViewHooks: true,
 	enableMetadataViewHooks: true,
+	enableKanbanView: true,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

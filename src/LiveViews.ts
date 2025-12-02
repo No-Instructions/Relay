@@ -52,6 +52,9 @@ function iterateTextFileViews(
 	fn: (leaf: TextFileView) => void,
 ) {
 	const ALLOWED_TEXT_FILE_VIEWS = ["markdown"];
+	if (flags().enableKanbanView) {
+		ALLOWED_TEXT_FILE_VIEWS.push("kanban");
+	}
 	const allLeaves: any[] = [];
 
 	workspace.iterateAllLeaves((leaf) => {
@@ -566,7 +569,11 @@ export class LiveView<ViewType extends TextFileView>
 		this.setConnectionDot();
 
 		// Initialize awareness plugin if not already created and feature flag is enabled
-		if (isLiveMd(this) && !this._awarenessPlugin && flags().enablePresenceAvatars) {
+		if (
+			isLiveMd(this) &&
+			!this._awarenessPlugin &&
+			flags().enablePresenceAvatars
+		) {
 			this._awarenessPlugin = new AwarenessViewPlugin(
 				this,
 				this._parent.sharedFolders.manager.users,

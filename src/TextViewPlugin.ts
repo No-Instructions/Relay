@@ -132,7 +132,11 @@ export class TextFileViewPlugin extends HasLogging {
 			const stale = await this.doc.checkStale();
 			if (stale) {
 				this.warn("Document is stale - showing merge banner");
-				this.view.checkStale(); // This will show the merge banner
+				this.view.checkStale().then(async (stale) => {
+					if (!stale) {
+						await this.syncViewToCRDT();
+					}
+				}); // This will show the merge banner
 			} else {
 				// Document is authoritative, force view to match CRDT state (like getKeyFrame in LiveEditPlugin)
 				this.warn("Document is authoritative - syncing view to CRDT state");
@@ -264,14 +268,13 @@ export class TextFileViewPlugin extends HasLogging {
 				if (!this.view.tracking) {
 					this.warn("resync from update, not tracking");
 					this.resync();
-				} else {
-					this.warn("setting view data");
-					this.saving = true;
-					this.view.view.setViewData(this.doc.text, false);
-					this.view.view.requestSave();
-					this.saving = false;
-					this.view.tracking = true;
 				}
+				this.warn("setting view data");
+				this.saving = true;
+				this.view.view.setViewData(this.doc.text, false);
+				this.view.view.requestSave();
+				this.saving = false;
+				this.view.tracking = true;
 			}
 		};
 
@@ -304,6 +307,8 @@ export class TextFileViewPlugin extends HasLogging {
 		// Clean up ViewHookPlugin
 		this.viewHookPlugin?.destroy();
 
+		this.observer = null as any;
+		this._ytext = null as any;
 		this.view = null as any;
 		this.doc = null as any;
 	}
