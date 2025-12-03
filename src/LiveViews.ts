@@ -41,7 +41,7 @@ function iterateCanvasViews(
 	fn: (leaf: CanvasView) => void,
 ) {
 	workspace.iterateAllLeaves((leaf) => {
-		if (leaf.view.getViewType() === "canvas" && flags().enableCanvasSync) {
+		if (leaf.view.getViewType() === "canvas") {
 			fn(leaf.view as unknown as CanvasView);
 		}
 	});
@@ -882,17 +882,27 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder) {
-				if (!this.loginManager.loggedIn) {
-					const view = new LoggedOutView(this, canvasView, () => {
-						return this.loginManager.openLoginPage();
-					});
-					views.push(view);
-				} else if (folder.ready) {
-					const doc = folder.proxy.getCanvas(viewFilePath);
-					const view = new RelayCanvasView(this, canvasView, doc);
-					views.push(view);
+				// Check if this canvas file should actually be treated as a Canvas
+				const vpath = folder.getVirtualPath(viewFilePath);
+				const meta = folder.syncStore.getMeta(vpath);
+				
+				// Only connect if it's actually a Canvas type in the sync store
+				if (meta?.type === "canvas") {
+					if (!this.loginManager.loggedIn) {
+						const view = new LoggedOutView(this, canvasView, () => {
+							return this.loginManager.openLoginPage();
+						});
+						views.push(view);
+					} else if (folder.ready) {
+						const doc = folder.proxy.getCanvas(viewFilePath);
+						const view = new RelayCanvasView(this, canvasView, doc);
+						views.push(view);
+					} else {
+						this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+					}
 				} else {
-					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+					// File is a .canvas file but should be treated as SyncFile - don't connect
+					this.log(`Skipping canvas view connection for ${viewFilePath} - sync store type is ${meta?.type || 'unknown'}`);
 				}
 			}
 		});

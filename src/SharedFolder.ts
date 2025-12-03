@@ -37,6 +37,7 @@ import {
 	makeFileMeta,
 	makeFolderMeta,
 	isSyncFileMeta,
+	isCanvasMeta,
 	type FileMeta,
 	type Meta,
 	type SyncFileType,
@@ -47,6 +48,7 @@ import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
+import { flags } from "./flagManager";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -57,7 +59,7 @@ export interface SharedFolderSettings {
 }
 
 interface Operation {
-	op: "create" | "rename" | "delete" | "update" | "noop";
+	op: "create" | "rename" | "delete" | "update" | "upgrade" | "noop";
 	path: string;
 	promise: Promise<void> | Promise<IFile>;
 }
@@ -88,13 +90,19 @@ interface Update extends Operation {
 	promise: Promise<void>;
 }
 
+interface Upgrade extends Operation {
+	op: "upgrade";
+	path: string;
+	promise: Promise<void>;
+}
+
 interface Noop extends Operation {
 	op: "noop";
 	path: string;
 	promise: Promise<void>;
 }
 
-type OperationType = Create | Rename | Delete | Update | Noop;
+type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
@@ -299,10 +307,20 @@ export class SharedFolder extends HasProvider {
 			const vpath = this.getVirtualPath(tfile.path);
 			const upload = newPaths.contains(vpath);
 
+			// Check if file already exists with correct type based on metadata
+			const existingFile = this.getFile(tfile, false);
+			if (existingFile) {
+				files.push(existingFile);
+				return;
+			}
+
+			// For new files, use upload/create logic based on extension and feature flags
 			if (tfile instanceof TFolder) {
 				const doc = this.getSyncFolder(vpath, false);
 				files.push(doc);
-			} else if (Document.checkExtension(vpath)) {
+				return;
+			}
+			if (Document.checkExtension(vpath)) {
 				if (upload) {
 					const doc = this.uploadDoc(vpath, false);
 					files.push(doc);
@@ -310,15 +328,25 @@ export class SharedFolder extends HasProvider {
 					const doc = this.getDoc(vpath, false);
 					files.push(doc);
 				}
-			} else if (Canvas.checkExtension(vpath)) {
+				return;
+			}
+			if (Canvas.checkExtension(vpath)) {
 				if (upload) {
-					const doc = this.uploadCanvas(vpath, false);
-					files.push(doc);
+					if (flags().enableCanvasSync) {
+						const doc = this.uploadCanvas(vpath, false);
+						files.push(doc);
+						return;
+					}
+					// fall through to syncFile
 				} else {
-					const doc = this.getCanvas(vpath, false);
-					files.push(doc);
+					const doc = this.getFile(tfile, false);
+					if (doc) {
+						files.push(doc);
+						return;
+					}
 				}
-			} else if (this.syncStore.canSync(vpath)) {
+			}
+			if (this.syncStore.canSync(vpath)) {
 				if (upload) {
 					const file = this.uploadSyncFile(vpath, false);
 					files.push(file);
@@ -695,6 +723,13 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (this.existsSync(path)) {
+			// Check for type mismatch: local SyncFile vs remote Canvas
+			if (file && isSyncFile(file) && isCanvasMeta(meta)) {
+				// Upgrade SyncFile to Canvas type
+				const promise = this._upgradeToCanvas(file, guid, path, diffLog);
+				return { op: "upgrade", path, promise };
+			}
+
 			// XXX file meta typing
 			if (file && isSyncFile(file) && file.shouldPull(meta as FileMeta)) {
 				return { op: "update", path, promise: file.pull() };
@@ -763,6 +798,33 @@ export class SharedFolder extends HasProvider {
 			}
 		} catch (error) {
 			this.error("Error during GUID remapping:", error);
+			throw error;
+		}
+	}
+
+	private async _upgradeToCanvas(
+		syncFile: SyncFile,
+		remoteGuid: string,
+		path: string,
+		diffLog?: string[],
+	): Promise<void> {
+		try {
+			// Remove the old SyncFile
+			const localGuid = syncFile.guid;
+			this.files.delete(localGuid);
+			this.fset.delete(syncFile);
+			syncFile.destroy();
+
+			diffLog?.push(`Upgrading ${path} from SyncFile to Canvas`);
+			this.log(
+				`Upgrading ${path} from SyncFile to Canvas (GUID: ${localGuid} → ${remoteGuid})`,
+			);
+
+			// downloadCanvas will handle adding to files and fset
+			await this.downloadCanvas(path, false);
+			this.log(`Successfully upgraded ${path} to Canvas`);
+		} catch (error) {
+			this.error("Error during SyncFile to Canvas upgrade:", error);
 			throw error;
 		}
 	}
@@ -1070,19 +1132,41 @@ export class SharedFolder extends HasProvider {
 	getFile(tfile: TAbstractFile, update = true): IFile | null {
 		const vpath = this.getVirtualPath(tfile.path);
 		const guid = this.syncStore.get(vpath);
+
+		// If file exists in sync store, use its metadata type to determine what to return
 		if (guid) {
 			const file = this.files.get(guid);
 			if (file) {
 				return file;
 			}
+
+			// File exists in sync store but not loaded - check its type from metadata
+			const meta = this.syncStore.getMeta(vpath);
+			if (meta) {
+				if (meta.type === "markdown") {
+					return this.getDoc(vpath);
+				}
+				if (meta.type === "canvas") {
+					return this.getCanvas(vpath);
+				}
+				if (meta.type === "folder") {
+					return this.getSyncFolder(vpath, update);
+				}
+				// Default to sync file for other types
+				if (this.syncStore.canSync(vpath)) {
+					return this.getSyncFile(vpath, update);
+				}
+			}
 		}
+
+		// Fallback to extension-based detection for new files
 		if (tfile instanceof TFolder) {
 			return this.getSyncFolder(vpath, update);
 		} else if (tfile instanceof TFile) {
 			if (Document.checkExtension(vpath)) {
 				return this.getDoc(vpath);
 			}
-			if (Canvas.checkExtension(vpath)) {
+			if (Canvas.checkExtension(vpath) && flags().enableCanvasSync) {
 				return this.getCanvas(vpath);
 			}
 			if (this.syncStore.canSync(vpath)) {
@@ -1229,10 +1313,22 @@ export class SharedFolder extends HasProvider {
 		const guid = this.syncStore.get(vpath);
 		if (!guid) return;
 		const file = this.files.get(guid);
-		if (!isSyncFile(file)) {
-			throw new Error(
-				`viewSyncFile(): unexpected ifile type, guid=${guid}, vpath=${vpath}`,
+
+		if (!file) {
+			// File exists in sync store but not loaded yet
+			this.debug(
+				`viewSyncFile(): file not loaded yet, guid=${guid}, vpath=${vpath}`,
 			);
+			return undefined;
+		}
+
+		if (!isSyncFile(file)) {
+			// File exists but is not a SyncFile (could be Canvas, Document, etc.)
+			// This can happen when file types change due to feature flags or server metadata
+			this.debug(
+				`viewSyncFile(): file exists but is not SyncFile, guid=${guid}, vpath=${vpath}, actual type=${file.constructor.name}`,
+			);
+			return undefined;
 		}
 		return file;
 	}
@@ -1503,7 +1599,7 @@ export class SharedFolder extends HasProvider {
 			if (Document.checkExtension(vpath)) {
 				return this.uploadDoc(vpath, update);
 			}
-			if (Canvas.checkExtension(vpath)) {
+			if (Canvas.checkExtension(vpath) && flags().enableCanvasSync) {
 				return this.uploadCanvas(vpath, update);
 			}
 			if (this.syncStore.canSync(vpath)) {

@@ -306,7 +306,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	static checkExtension(vpath: string): boolean {
-		return vpath.endsWith(".canvas") && flags().enableCanvasSync;
+		return vpath.endsWith(".canvas");
 	}
 
 	private _origin?: string;
