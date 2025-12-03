@@ -1,5 +1,5 @@
-import { around } from "monkey-around";
 import { MarkdownView, type TextFileView } from "obsidian";
+import { getPatcher } from "./Patcher";
 import { HasLogging } from "src/debug";
 import { Document } from "./Document";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
@@ -183,7 +183,7 @@ export class TextFileViewPlugin extends HasLogging {
 		const that = this;
 
 		this.unsubscribes.push(
-			around(this.view.view, {
+			getPatcher().patch(this.view.view, {
 				setViewData(old: any) {
 					return function (this: any, data: string, clear: boolean) {
 						that.warn("instance hook: setViewData", this.getViewType());

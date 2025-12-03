@@ -31,7 +31,7 @@ import {
 	initializeLogger,
 	flushLogs,
 } from "./debug";
-import { around } from "monkey-around";
+import { getPatcher, Patcher } from "./Patcher";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
 import { RelayManager } from "./RelayManager";
@@ -1009,21 +1009,24 @@ export default class Live extends Plugin {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
-		const patchOnUnloadFile = around(MarkdownView.prototype, {
+		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
-			onUnloadFile(old) {
-				return function (file) {
+			onUnloadFile(old: any) {
+				return function (file: any) {
 					plugin._liveViews.wipe();
 					// @ts-ignore
 					return old.call(this, file);
 				};
 			},
 		});
-		this.register(patchOnUnloadFile);
 
-		const patchProcess = around(this.app.vault, {
-			process(old) {
-				return function (tfile, fn: (data: string) => string, options: any) {
+		getPatcher().patch(this.app.vault, {
+			process(old: any) {
+				return function (
+					tfile: any,
+					fn: (data: string) => string,
+					options: any,
+				) {
 					try {
 						const folder = plugin.sharedFolders.lookup(tfile.path);
 						if (folder) {
@@ -1041,12 +1044,11 @@ export default class Live extends Plugin {
 				};
 			},
 		});
-		this.register(patchProcess);
 
 		this.patchWebviewer();
 
 		withFlag(flag.enableNewLinkFormat, () => {
-			const patchFileToLinktext = around(MetadataCache.prototype, {
+			getPatcher().patch(MetadataCache.prototype, {
 				fileToLinktext(
 					old: (
 						file: TFile,
@@ -1099,7 +1101,6 @@ export default class Live extends Plugin {
 					};
 				},
 			});
-			this.register(patchFileToLinktext);
 		});
 
 		interface Parameters {
@@ -1167,6 +1168,9 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
+		// Cleanup all monkeypatches and destroy the singleton
+		Patcher.destroy();
+
 		this.timeProvider?.destroy();
 
 		this.folderNavDecorations?.destroy();

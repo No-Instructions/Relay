@@ -1,4 +1,4 @@
-import { around } from "monkey-around";
+import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
 import type {
 	CanvasEdge,
@@ -132,7 +132,7 @@ export class CanvasPlugin extends HasLogging {
 		}
 
 		this.unsubscribes.push(
-			around(this.canvas, {
+			getPatcher().patch(this.canvas, {
 				requestSave(old: any) {
 					return function () {
 						// @ts-ignore

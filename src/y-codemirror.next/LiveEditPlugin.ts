@@ -15,7 +15,7 @@ import {
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
-import { around } from "monkey-around";
+import { getPatcher } from "../Patcher";
 import diff_match_patch from "diff-match-patch";
 import { flags } from "src/flagManager";
 import { MarkdownView, editorInfoField } from "obsidian";
@@ -159,7 +159,7 @@ export class LiveCMPluginValue implements PluginValue {
 
 		if (this.view?.view) {
 			this.unsubscribes.push(
-				around(this.view.view, {
+				getPatcher().patch(this.view.view, {
 					setViewData(old: any) {
 						return function (data: string, clear: boolean) {
 							if (clear) {

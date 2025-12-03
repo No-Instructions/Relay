@@ -1,4 +1,5 @@
 import { MarkdownView } from "obsidian";
+import { getPatcher } from "../Patcher";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
