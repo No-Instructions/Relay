@@ -30,6 +30,7 @@ export interface ClientToken {
 
 	/** A unique identifier for the document that the token connects to. */
 	docId: string;
+	folder: string;
 
 	token: string;
 
@@ -44,6 +45,8 @@ export interface FileToken extends ClientToken {
 	authorization: "full" | "read-only";
 
 	docId: string;
+	folder: string;
+
 	token: string;
 
 	expiryTime: number;

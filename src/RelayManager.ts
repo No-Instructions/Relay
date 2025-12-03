@@ -503,21 +503,21 @@ class RemoteFolderAuto
 	public get permissionParents(): [string, string][] {
 		const parents: [string, string][] = [];
 
-		// Always include relay role parent if it exists
-		const relayRoleId = this.relayRoles.find((role) => {
-			return role.relayId === this.relayId && role.userId === this.user.id;
-		})?.id;
-		if (relayRoleId) {
-			parents.push(["relay_roles", relayRoleId]);
-		}
-
-		// For private folders, also include folder role parent if it exists
 		if (this.remoteFolder.private) {
+			// For private folders, only folder role grants access
 			const folderRoleId = this.folderRoles.find((role) => {
 				return role.sharedFolderId === this.id && role.userId === this.user.id;
 			})?.id;
 			if (folderRoleId) {
 				parents.push(["shared_folder_roles", folderRoleId]);
+			}
+		} else {
+			// For public folders, relay role grants access
+			const relayRoleId = this.relayRoles.find((role) => {
+				return role.relayId === this.relayId && role.userId === this.user.id;
+			})?.id;
+			if (relayRoleId) {
+				parents.push(["relay_roles", relayRoleId]);
 			}
 		}
 

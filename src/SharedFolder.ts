@@ -354,7 +354,7 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 		this.tokenStore.clear((token) => {
-			return !!(this.relayId && token.token?.docId.startsWith(this.relayId));
+			return token.token?.folder === this.guid;
 		});
 		if (shouldConnect) {
 			this.connect();
