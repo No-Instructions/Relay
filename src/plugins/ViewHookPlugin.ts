@@ -3,7 +3,11 @@ import { getPatcher } from "../Patcher";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
+import { PreviewRenderer } from "./PreviewRenderer";
+import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
+import type { ChangeSpec } from "@codemirror/state";
+import diff_match_patch from "diff-match-patch";
 
 /**
  * Centralized Obsidian UI hooks coordinator.
@@ -28,6 +32,7 @@ export class ViewHookPlugin extends HasLogging {
 
 		// Initialize renderers
 		this.renderers = [];
+		this.renderers.push(new PreviewRenderer(view));
 
 		this._ytext = this.document.ytext;
 		this.installMarkdownHooks(this.view);
@@ -41,6 +46,38 @@ export class ViewHookPlugin extends HasLogging {
 	private installMarkdownHooks(view: MarkdownView): void {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const that = this;
+		if (flags().enablePreviewViewHooks) {
+			this.unsubscribes.push(
+				getPatcher().patch(view.previewMode as any, {
+					edit(old: any) {
+						return function (data: string) {
+							that.debug("Preview edit hook triggered");
+							//@ts-ignore
+							if (that.view.getMode?.() === "preview") {
+								//@ts-ignore
+								if (that.view.editor) {
+									// If CodeMirror editor is available, dispatch changes there
+									const changes = that.incrementalBufferChange(data);
+									// @ts-ignore
+									that.view.editor.cm.dispatch({
+										changes,
+									});
+									that.debug("Dispatched preview edit to CodeMirror");
+								} else {
+									// Otherwise sync directly to CRDT
+									diffMatchPatch(that.document.ydoc, data, that.document);
+									that.debug("Synced preview edit directly to CRDT");
+								}
+								return;
+							}
+
+							// @ts-ignore
+							return old.call(this, data);
+						};
+					},
+				}),
+			);
+		}
 	}
 
 	/**
@@ -88,7 +125,43 @@ export class ViewHookPlugin extends HasLogging {
 			}
 		});
 	}
+	/**
+	 * Calculate incremental buffer changes using diff-match-patch
+	 */
+	private incrementalBufferChange(newBuffer: string): ChangeSpec[] {
+		// @ts-ignore
+		const currentBuffer = this.view.editor.cm.state.doc.toString();
+		const dmp = new diff_match_patch();
+		const diffs = dmp.diff_main(currentBuffer, newBuffer);
+		dmp.diff_cleanupSemantic(diffs);
 
+		const changes: ChangeSpec[] = [];
+		let currentPos = 0;
+
+		for (const [type, text] of diffs) {
+			switch (type) {
+				case 0: // EQUAL
+					currentPos += text.length;
+					break;
+				case 1: // INSERT
+					changes.push({
+						from: currentPos,
+						to: currentPos,
+						insert: text,
+					});
+					currentPos += text.length;
+					break;
+				case -1: // DELETE
+					changes.push({
+						from: currentPos,
+						to: currentPos + text.length,
+						insert: "",
+					});
+					break;
+			}
+		}
+		return changes;
+	}
 	/**
 	 * Initialize the plugin after document is ready
 	 */
