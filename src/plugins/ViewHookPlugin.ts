@@ -4,10 +4,12 @@ import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { PreviewRenderer } from "./PreviewRenderer";
+import { diffMatchPatch } from "../y-diffMatchPatch";
 import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 import type { ChangeSpec } from "@codemirror/state";
 import diff_match_patch from "diff-match-patch";
+import { MetadataRenderer } from "./MetadataRenderer";
 
 /**
  * Centralized Obsidian UI hooks coordinator.
@@ -33,6 +35,7 @@ export class ViewHookPlugin extends HasLogging {
 		// Initialize renderers
 		this.renderers = [];
 		this.renderers.push(new PreviewRenderer(view));
+		this.renderers.push(new MetadataRenderer(view));
 
 		this._ytext = this.document.ytext;
 		this.installMarkdownHooks(this.view);
@@ -46,6 +49,55 @@ export class ViewHookPlugin extends HasLogging {
 	private installMarkdownHooks(view: MarkdownView): void {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const that = this;
+
+		// Hook 1: Track metadata saves (if enableMetadataViewHooks)
+		if (flags().enableMetadataViewHooks) {
+			this.unsubscribes.push(
+				getPatcher().patch(view, {
+					// @ts-ignore
+					saveFrontmatter(old: any) {
+						return function (data: any) {
+							that.debug("saveFrontmatter hook triggered");
+							that.saving = true;
+							// @ts-ignore
+							const result = old.call(this, data);
+							that.saving = false;
+							return result;
+						};
+					},
+				}),
+			);
+		}
+
+		// Hook 2: Coordinate saves between pathways
+		this.unsubscribes.push(
+			getPatcher().patch(view, {
+				// @ts-ignore
+				save(old: any) {
+					return function (data: any) {
+						// @ts-ignore
+						const result = old.call(this, data);
+						try {
+							// @ts-ignore
+							if (that.view.getMode?.() === "preview" && that.saving) {
+								that.debug("Syncing metadata changes to CRDT during save");
+								diffMatchPatch(
+									that.document.ydoc,
+									// @ts-ignore
+									that.view.text,
+									that.document,
+								);
+							}
+						} catch (e) {
+							that.error("Error syncing during save:", e);
+						}
+						return result;
+					};
+				},
+			}),
+		);
+
+		// Hook 3: Preview mode direct edits (if enablePreviewViewHooks)
 		if (flags().enablePreviewViewHooks) {
 			this.unsubscribes.push(
 				getPatcher().patch(view.previewMode as any, {
