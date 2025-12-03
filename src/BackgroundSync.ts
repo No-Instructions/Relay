@@ -85,10 +85,94 @@ export class BackgroundSync extends HasLogging {
 		}
 	>();
 
-	// A map to track items we've already logged to avoid duplicates
-	private loggedItems = new Map<string, boolean>();
 
 	subscriptions: Unsubscriber[] = [];
+
+	/**
+	 * Common queue processor that handles the shared pattern for both sync and download queues
+	 */
+	private async processQueue(config: {
+		queue: QueueItem[];
+		setQueue: (queue: QueueItem[]) => void;
+		activeItems: ObservableSet<QueueItem>;
+		processingFlag: boolean;
+		setProcessingFlag: (value: boolean) => void;
+		callbacks: Map<string, { resolve: () => void; reject: (error: Error) => void }>;
+		inProgressSet: Set<string>;
+		processor: (item: QueueItem) => Promise<void>;
+		updateGroupOnSuccess: (group: SyncGroup) => void;
+		debugPrefix: string;
+		recursiveCall: () => void;
+	}): Promise<void> {
+		if (this.isPaused || config.processingFlag) return;
+		config.setProcessingFlag(true);
+
+		// Filter for items with connected folders
+		const connectableItems = config.queue.filter(
+			(item) => item.sharedFolder.connected,
+		);
+
+		while (
+			connectableItems.length > 0 &&
+			config.activeItems.size < this.concurrency
+		) {
+			const item = connectableItems.shift();
+			if (!item) break;
+
+			// Remove this item from the main queue
+			config.setQueue(config.queue.filter((i) => i.guid !== item.guid));
+
+			item.status = "running";
+			config.activeItems.add(item);
+
+			try {
+				await config.processor(item);
+				item.status = "completed";
+
+				const callback = config.callbacks.get(item.guid);
+				if (callback) {
+					callback.resolve();
+					config.callbacks.delete(item.guid);
+				}
+
+				const group = this.syncGroups.get(item.sharedFolder);
+				if (group) {
+					config.updateGroupOnSuccess(group);
+					if (group.completed === group.total) {
+						group.status = "completed";
+					}
+					this.syncGroups.set(item.sharedFolder, group);
+				}
+			} catch (error) {
+				item.status = "failed";
+
+				const callback = config.callbacks.get(item.guid);
+				if (callback) {
+					callback.reject(
+						error instanceof Error ? error : new Error(String(error)),
+					);
+					config.callbacks.delete(item.guid);
+				}
+
+				// Log the error but don't fail the entire group yet
+				this.error(`[${config.debugPrefix}] Item failed: ${item.path}`, error);
+			} finally {
+				config.activeItems.delete(item);
+				config.inProgressSet.delete(item.guid);
+			}
+		}
+
+		config.setProcessingFlag(false);
+		// Only continue if there are items AND at least one is processable
+		if (config.queue.length > 0 && !this.isPaused) {
+			const hasConnectedItems = config.queue.some(
+				(item) => item.sharedFolder.connected,
+			);
+			if (hasConnectedItems) {
+				config.recursiveCall();
+			}
+		}
+	}
 
 	constructor(
 		private loginManager: LoginManager,
@@ -186,125 +270,56 @@ export class BackgroundSync extends HasLogging {
 		return progress;
 	}
 
-	private async processSyncQueue() {
-		if (this.isPaused || this.isProcessingSync) return;
-		this.isProcessingSync = true;
-
-		// Filter for items with connected folders
-		const connectableItems = this.syncQueue.filter(
-			(item) => item.sharedFolder.connected,
-		);
-
-		while (
-			connectableItems.length > 0 &&
-			this.activeSync.size < this.concurrency
-		) {
-			const item = connectableItems.shift();
-			if (!item) break;
-
-			// Remove this item from the main queue
-			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
-
-			item.status = "running";
-			this.activeSync.add(item);
-
-			try {
+	private async processSyncQueue(): Promise<void> {
+		return this.processQueue({
+			queue: this.syncQueue,
+			setQueue: (queue) => { this.syncQueue = queue; },
+			activeItems: this.activeSync,
+			processingFlag: this.isProcessingSync,
+			setProcessingFlag: (value) => { this.isProcessingSync = value; },
+			callbacks: this.syncCompletionCallbacks,
+			inProgressSet: this.inProgressSyncs,
+			processor: async (item) => {
 				const doc = item.doc;
 				if (doc instanceof SyncFile) {
 					await this.syncFile(doc);
 				} else {
 					await this.syncDocument(doc);
 				}
-				item.status = "completed";
+			},
+			updateGroupOnSuccess: (group) => {
+				this.debug(
+					`[Sync Progress] Before: completed=${group.completed}, total=${group.total}, ` +
+						`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
+				);
 
-				const callback = this.syncCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.resolve();
-					this.syncCompletionCallbacks.delete(item.guid);
+				group.completedSyncs++;
+				group.completed++;
+
+				this.debug(
+					`[Sync Progress] After: completed=${group.completed}, total=${group.total}, ` +
+						`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
+				);
+
+				if (group.completed === group.total) {
+					this.debug("[Sync Progress] Group completed!");
 				}
-
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					this.debug(
-						`[Sync Progress] Before: completed=${group.completed}, total=${group.total}, ` +
-							`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
-					);
-
-					group.completedSyncs++;
-					group.completed++;
-
-					this.debug(
-						`[Sync Progress] After: completed=${group.completed}, total=${group.total}, ` +
-							`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
-					);
-
-					if (group.completed === group.total) {
-						group.status = "completed";
-						this.debug("[Sync Progress] Group completed!");
-					}
-
-					this.syncGroups.set(item.sharedFolder, group);
-				}
-			} catch (error) {
-				item.status = "failed";
-
-				const callback = this.syncCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.reject(
-						error instanceof Error ? error : new Error(String(error)),
-					);
-					this.syncCompletionCallbacks.delete(item.guid);
-				}
-
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					this.error("[Sync Failed]", error);
-					group.status = "failed";
-					this.syncGroups.set(item.sharedFolder, group);
-				}
-			} finally {
-				this.activeSync.delete(item);
-				this.inProgressSyncs.delete(item.guid);
-			}
-		}
-
-		this.isProcessingSync = false;
-		// Only continue if there are items AND at least one is processable
-		if (this.syncQueue.length > 0 && !this.isPaused) {
-			const hasConnectedItems = this.syncQueue.some(
-				(item) => item.sharedFolder.connected,
-			);
-			if (hasConnectedItems) {
-				this.processSyncQueue();
-			}
-		}
+			},
+			debugPrefix: "Sync Failed",
+			recursiveCall: () => this.processSyncQueue(),
+		});
 	}
 
-	private async processDownloadQueue() {
-		if (this.isPaused || this.isProcessingDownloads) return;
-		this.isProcessingDownloads = true;
-
-		// Filter for items with connected folders
-		const connectableItems = this.downloadQueue.filter(
-			(item) => item.sharedFolder.connected,
-		);
-
-		while (
-			connectableItems.length > 0 &&
-			this.activeDownloads.size < this.concurrency
-		) {
-			const item = connectableItems.shift();
-			if (!item) break;
-
-			// Remove this item from the main queue
-			this.downloadQueue = this.downloadQueue.filter(
-				(i) => i.guid !== item.guid,
-			);
-
-			item.status = "running";
-			this.activeDownloads.add(item);
-
-			try {
+	private async processDownloadQueue(): Promise<void> {
+		return this.processQueue({
+			queue: this.downloadQueue,
+			setQueue: (queue) => { this.downloadQueue = queue; },
+			activeItems: this.activeDownloads,
+			processingFlag: this.isProcessingDownloads,
+			setProcessingFlag: (value) => { this.isProcessingDownloads = value; },
+			callbacks: this.downloadCompletionCallbacks,
+			inProgressSet: this.inProgressDownloads,
+			processor: async (item) => {
 				// Choose the appropriate download method based on the document type
 				if (item.doc instanceof Canvas) {
 					await this.getCanvas(item.doc);
@@ -313,57 +328,14 @@ export class BackgroundSync extends HasLogging {
 				} else {
 					await this.getDocument(item.doc);
 				}
-
-				item.status = "completed";
-
-				const callback = this.downloadCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.resolve();
-					this.downloadCompletionCallbacks.delete(item.guid);
-				}
-
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					group.completedDownloads++;
-					group.completed++;
-					if (group.completed === group.total) {
-						group.status = "completed";
-					}
-					this.syncGroups.set(item.sharedFolder, group);
-				}
-			} catch (error) {
-				item.status = "failed";
-
-				const callback = this.downloadCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.reject(
-						error instanceof Error ? error : new Error(String(error)),
-					);
-					this.downloadCompletionCallbacks.delete(item.guid);
-				}
-
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					group.status = "failed";
-					this.syncGroups.set(item.sharedFolder, group);
-				}
-				this.error("[processDownloadQueue]", error);
-			} finally {
-				this.activeDownloads.delete(item);
-				this.inProgressDownloads.delete(item.guid);
-			}
-		}
-
-		this.isProcessingDownloads = false;
-		// Only continue if there are items AND at least one is processable
-		if (this.downloadQueue.length > 0 && !this.isPaused) {
-			const hasConnectedItems = this.downloadQueue.some(
-				(item) => item.sharedFolder.connected,
-			);
-			if (hasConnectedItems) {
-				this.processDownloadQueue();
-			}
-		}
+			},
+			updateGroupOnSuccess: (group) => {
+				group.completedDownloads++;
+				group.completed++;
+			},
+			debugPrefix: "processDownloadQueue",
+			recursiveCall: () => this.processDownloadQueue(),
+		});
 	}
 
 	/**
@@ -431,7 +403,6 @@ export class BackgroundSync extends HasLogging {
 		});
 
 		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
 		this.processSyncQueue();
 
 		return syncPromise;
@@ -507,7 +478,6 @@ export class BackgroundSync extends HasLogging {
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
-		this.downloadQueue.sort(compareFilePaths);
 		this.processDownloadQueue();
 
 		return downloadPromise;
@@ -544,23 +514,10 @@ export class BackgroundSync extends HasLogging {
 		// Register the group before enqueueing items
 		this.syncGroups.set(sharedFolder, group);
 
-		// Sort items by path for consistent sync order
-		const sortedDocs = [...docs].sort(compareFilePaths);
-		const sortedCanvases = [...canvases].sort(compareFilePaths);
-		const sortedSyncFiles = [...syncFiles].sort(compareFilePaths);
-
-		// Enqueue all items for sync without incrementing counters
-		for (const doc of sortedDocs) {
-			this.enqueueDocumentForGroupSync(doc);
-		}
-
-		// Enqueue all canvases for sync
-		for (const canvas of sortedCanvases) {
-			this.enqueueCanvasForGroupSync(canvas, sharedFolder);
-		}
-
-		for (const syncFile of sortedSyncFiles) {
-			this.enqueueSyncFileForGroupSync(syncFile);
+		// Sort all items together by path for consistent sync order
+		const sortedItems = allItems.sort(compareFilePaths);
+		for (const item of sortedItems) {
+			this.enqueueItemForGroupSync(item);
 		}
 
 		// Update group status to running
@@ -569,21 +526,21 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	/**
-	 * Enqueues a document for synchronization as part of a group sync operation
+	 * Enqueues an item for synchronization as part of a group sync operation
 	 *
 	 * This method is similar to enqueueSync() but doesn't increment any counters
 	 * since they're already properly initialized in enqueueSharedFolderSync().
 	 * This prevents double-counting of operations in progress tracking.
 	 *
-	 * @param item The document to synchronize
+	 * @param item The item to synchronize
 	 * @returns A promise that resolves when the sync completes
 	 * @private Used internally by enqueueSharedFolderSync
 	 */
-	private async enqueueDocumentForGroupSync(item: Document): Promise<void> {
+	private async enqueueItemForGroupSync(item: Document | Canvas | SyncFile): Promise<void> {
 		// Skip if already in progress
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
-				`[enqueueDocumentForGroupSync] Item ${item.guid} already in progress, skipping`,
+				`Item ${item.guid} already in progress, skipping`,
 			);
 
 			// Return existing promise if already processing
@@ -617,66 +574,11 @@ export class BackgroundSync extends HasLogging {
 		});
 
 		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
 		this.processSyncQueue();
 
 		return syncPromise;
 	}
 
-	/**
-	 * Enqueues a document for synchronization as part of a group sync operation
-	 *
-	 * This method is similar to enqueueSync() but doesn't increment any counters
-	 * since they're already properly initialized in enqueueSharedFolderSync().
-	 * This prevents double-counting of operations in progress tracking.
-	 *
-	 * @param item The document to synchronize
-	 * @returns A promise that resolves when the sync completes
-	 * @private Used internally by enqueueSharedFolderSync
-	 */
-	private async enqueueSyncFileForGroupSync(item: SyncFile): Promise<void> {
-		// Skip if already in progress
-		if (this.inProgressSyncs.has(item.guid)) {
-			this.debug(
-				`[enqueueSyncFileForGroupSync] Item ${item.guid} already in progress, skipping`,
-			);
-
-			// Return existing promise if already processing
-			const existingCallback = this.syncCompletionCallbacks.get(item.guid);
-			if (existingCallback) {
-				this.processSyncQueue();
-				return new Promise<void>((resolve, reject) => {
-					existingCallback.resolve = resolve;
-					existingCallback.reject = reject;
-				});
-			}
-			return Promise.resolve();
-		}
-
-		const sharedFolder = item.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-		};
-
-		this.inProgressSyncs.add(item.guid);
-
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(item.guid, {
-				resolve,
-				reject,
-			});
-		});
-
-		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
-		this.processSyncQueue();
-
-		return syncPromise;
-	}
 
 	private getAuthHeader(clientToken: ClientToken) {
 		return {
@@ -808,29 +710,6 @@ export class BackgroundSync extends HasLogging {
 		return this.enqueueDownload(canvas);
 	}
 
-	/**
-	 * Enqueues a canvas for group synchronization
-	 * This is used as part of the shared folder sync process
-	 */
-	private async enqueueCanvasForGroupSync(
-		canvas: Canvas,
-		sharedFolder: SharedFolder,
-	): Promise<void> {
-		try {
-			// Skip this canvas if it's not in the sync store
-			if (!sharedFolder.syncStore.has(canvas.path)) {
-				this.debug(
-					"[enqueueCanvasForGroupSync] Skipping canvas, not in sync list",
-					canvas.path,
-				);
-				return;
-			}
-
-			await this.enqueueDownload(canvas);
-		} catch (e) {
-			this.error("[enqueueCanvasForGroupSync]", e);
-		}
-	}
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
 		try {
@@ -858,7 +737,7 @@ export class BackgroundSync extends HasLogging {
 			Y.applyUpdate(canvas.ydoc, updateBytes);
 
 			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
+				this.log(`Skipping flush - file requires merge conflict resolution: ${canvas.path}`);
 				return;
 			}
 			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
@@ -925,7 +804,7 @@ export class BackgroundSync extends HasLogging {
 			Y.applyUpdate(doc.ydoc, updateBytes);
 
 			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
+				this.log(`Skipping flush - file requires merge conflict resolution: ${doc.path}`);
 				return;
 			}
 			if (doc.sharedFolder.syncStore.has(doc.path)) {
@@ -1084,7 +963,6 @@ export class BackgroundSync extends HasLogging {
 		this.downloadQueue = [];
 		this.inProgressSyncs.clear();
 		this.inProgressDownloads.clear();
-		this.loggedItems.clear();
 
 		// Clean up references
 		this.loginManager = null as any;
