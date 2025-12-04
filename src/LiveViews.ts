@@ -327,6 +327,7 @@ export class RelayCanvasView implements S3View {
 	release() {
 		// Called when a view is released from management
 
+
 		// Remove the live editor class
 		this.view.containerEl.removeClass("relay-live-editor");
 
@@ -608,6 +609,11 @@ export class LiveView<ViewType extends TextFileView>
 
 	release() {
 		// Called when a view is released from management
+
+		// Save document if view was tracking changes
+		if (this.tracking) {
+			this.document.save();
+		}
 
 		// Remove the live editor class
 		if (this.view instanceof MarkdownView) {
