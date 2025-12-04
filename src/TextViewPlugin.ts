@@ -127,10 +127,9 @@ export class TextFileViewPlugin extends HasLogging {
 				this.warn("local db missing, not setting buffer");
 				return;
 			}
-
 			// Check if document is stale before overwriting view content
 			const stale = await this.doc.checkStale();
-			if (stale) {
+			if (stale && this.view) {
 				this.warn("Document is stale - showing merge banner");
 				this.view.checkStale().then(async (stale) => {
 					if (!stale) {
