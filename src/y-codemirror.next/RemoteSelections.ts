@@ -166,6 +166,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
 	document?: Document;
+	private destroyed = false;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -174,14 +175,17 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			ConnectionManagerStateField,
 		);
 
-		// Add same allowlist checks as LiveEditPlugin for embedded editor support
+		// Allowlist: Check for live editing markers (same as LiveEditPlugin)
 		const sourceView = this.editor.dom.closest(".markdown-source-view");
 		const isLiveEditor = this.editor.dom.closest(".relay-live-editor");
 		const hasIframeClass = sourceView?.classList.contains("mod-inside-iframe");
+
+		// For embedded canvas editors, we can't always find the canvas via ConnectionManager
+		// but if it has mod-inside-iframe, it's likely a legitimate embedded editor
 		const isEmbeddedInCanvas = hasIframeClass;
 
 		if (!isLiveEditor && !isEmbeddedInCanvas) {
-			// Skip remote selections for non-live editors
+			this.destroyed = true;
 			return;
 		}
 
@@ -226,6 +230,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	}
 
 	destroy() {
+		this.destroyed = true;
 		if (this._listener) {
 			this._awareness?.off("change", this._listener);
 			this._listener = undefined;
@@ -236,6 +241,9 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	}
 
 	update(update: ViewUpdate) {
+		if (this.destroyed) {
+			return;
+		}
 		const editor: EditorView = update.view;
 		this.document = this.getDocument();
 		const ytext = this.document?.ytext;
