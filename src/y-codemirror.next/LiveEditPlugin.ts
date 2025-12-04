@@ -174,6 +174,7 @@ export class LiveCMPluginValue implements PluginValue {
 								editor.dispatch({
 									changes,
 								});
+								return;
 							}
 							// @ts-ignore
 							return old.call(this, data, clear);
