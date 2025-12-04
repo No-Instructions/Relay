@@ -22,6 +22,7 @@ export class CanvasPlugin extends HasLogging {
 	unsubscribes: Array<() => void>;
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
+	trackedEmbedViews: Set<any>;
 
 	constructor(
 		private connectionManager: LiveViewManager,
@@ -34,6 +35,7 @@ export class CanvasPlugin extends HasLogging {
 		this.unsubscribes = [];
 		this.relayCanvasView = relayCanvasView;
 		this.observedTextNodes = new Set();
+		this.trackedEmbedViews = new Set();
 		this.install();
 
 		// Enable embedded view synchronization if enableLiveEmbeds is true
@@ -42,23 +44,7 @@ export class CanvasPlugin extends HasLogging {
 				if (!node.file) {
 					continue;
 				}
-				this.unsubscribes.push(
-					(() => {
-						const plugin = new ViewHookPlugin(
-							node,
-							this.relayCanvas.sharedFolder.proxy.getDoc(node.file.path),
-						);
-						plugin.initialize().catch((error) => {
-							this.error(
-								"Error initializing ViewHookPlugin for canvas embed:",
-								error,
-							);
-						});
-						return () => {
-							plugin.destroy();
-						};
-					})(),
-				);
+				this.connectEmbedView(node);
 			}
 		}
 	}
@@ -109,6 +95,36 @@ export class CanvasPlugin extends HasLogging {
 		if (fullNode) {
 			this.canvas.markDirty(fullNode);
 		}
+	}
+
+	private isEmbedAlreadyTracked(embedView: any): boolean {
+		return this.trackedEmbedViews.has(embedView);
+	}
+
+	private connectEmbedView(embedView: any): void {
+		if (!embedView.file) {
+			return;
+		}
+
+		this.trackedEmbedViews.add(embedView);
+		this.unsubscribes.push(
+			(() => {
+				const plugin = new ViewHookPlugin(
+					embedView,
+					this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path),
+				);
+				plugin.initialize().catch((error) => {
+					this.error(
+						"Error initializing ViewHookPlugin for canvas embed:",
+						error,
+					);
+				});
+				return () => {
+					this.trackedEmbedViews.delete(embedView);
+					plugin.destroy();
+				};
+			})(),
+		);
 	}
 
 	private install() {
@@ -200,6 +216,15 @@ export class CanvasPlugin extends HasLogging {
 				if (node) {
 					if (this.canvas.nodes.has(node.id)) {
 						this.observeNode((node as CanvasNode).getData());
+						
+						// Check if this is a newly created embed node that needs ViewHookPlugin
+						if (flags().enableLiveEmbeds) {
+							//@ts-ignore
+							const embedView = node.child;
+							if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
+								this.connectEmbedView(embedView);
+							}
+						}
 					}
 					this.canvas.markMoved(node);
 					this.canvas.markDirty(node);
