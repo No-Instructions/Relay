@@ -18,7 +18,6 @@ import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
 
-
 export interface QueueItem {
 	guid: string;
 	path: string;
@@ -545,22 +544,12 @@ export class BackgroundSync extends HasLogging {
 		this.syncGroups.set(sharedFolder, group);
 
 		// Sort items by path for consistent sync order
-		const sortedDocs = [...docs].sort(compareFilePaths);
-		const sortedCanvases = [...canvases].sort(compareFilePaths);
-		const sortedSyncFiles = [...syncFiles].sort(compareFilePaths);
+		const sortedDocs = [...docs, ...canvases, ...syncFiles].sort(
+			compareFilePaths,
+		);
 
-		// Enqueue all items for sync without incrementing counters
 		for (const doc of sortedDocs) {
-			this.enqueueDocumentForGroupSync(doc);
-		}
-
-		// Enqueue all canvases for sync
-		for (const canvas of sortedCanvases) {
-			this.enqueueCanvasForGroupSync(canvas, sharedFolder);
-		}
-
-		for (const syncFile of sortedSyncFiles) {
-			this.enqueueSyncFileForGroupSync(syncFile);
+			this.enqueueForGroupSync(doc);
 		}
 
 		// Update group status to running
@@ -569,76 +558,23 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	/**
-	 * Enqueues a document for synchronization as part of a group sync operation
+	 * Enqueues an item for synchronization as part of a group sync operation
 	 *
 	 * This method is similar to enqueueSync() but doesn't increment any counters
 	 * since they're already properly initialized in enqueueSharedFolderSync().
 	 * This prevents double-counting of operations in progress tracking.
 	 *
-	 * @param item The document to synchronize
+	 * @param item The item to synchronize (Document, Canvas, or SyncFile)
 	 * @returns A promise that resolves when the sync completes
 	 * @private Used internally by enqueueSharedFolderSync
 	 */
-	private async enqueueDocumentForGroupSync(item: Document): Promise<void> {
+	private async enqueueForGroupSync(
+		item: Document | Canvas | SyncFile,
+	): Promise<void> {
 		// Skip if already in progress
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
-				`[enqueueDocumentForGroupSync] Item ${item.guid} already in progress, skipping`,
-			);
-
-			// Return existing promise if already processing
-			const existingCallback = this.syncCompletionCallbacks.get(item.guid);
-			if (existingCallback) {
-				this.processSyncQueue();
-				return new Promise<void>((resolve, reject) => {
-					existingCallback.resolve = resolve;
-					existingCallback.reject = reject;
-				});
-			}
-			return Promise.resolve();
-		}
-
-		const sharedFolder = item.sharedFolder;
-		const queueItem: QueueItem = {
-			guid: item.guid,
-			path: sharedFolder.getPath(item.path),
-			doc: item,
-			status: "pending",
-			sharedFolder,
-		};
-
-		this.inProgressSyncs.add(item.guid);
-
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(item.guid, {
-				resolve,
-				reject,
-			});
-		});
-
-		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
-		this.processSyncQueue();
-
-		return syncPromise;
-	}
-
-	/**
-	 * Enqueues a document for synchronization as part of a group sync operation
-	 *
-	 * This method is similar to enqueueSync() but doesn't increment any counters
-	 * since they're already properly initialized in enqueueSharedFolderSync().
-	 * This prevents double-counting of operations in progress tracking.
-	 *
-	 * @param item The document to synchronize
-	 * @returns A promise that resolves when the sync completes
-	 * @private Used internally by enqueueSharedFolderSync
-	 */
-	private async enqueueSyncFileForGroupSync(item: SyncFile): Promise<void> {
-		// Skip if already in progress
-		if (this.inProgressSyncs.has(item.guid)) {
-			this.debug(
-				`[enqueueSyncFileForGroupSync] Item ${item.guid} already in progress, skipping`,
+				`[enqueueForGroupSync] Item ${item.guid} already in progress, skipping`,
 			);
 
 			// Return existing promise if already processing
@@ -806,30 +742,6 @@ export class BackgroundSync extends HasLogging {
 	 */
 	enqueueCanvasDownload(canvas: Canvas): Promise<void> {
 		return this.enqueueDownload(canvas);
-	}
-
-	/**
-	 * Enqueues a canvas for group synchronization
-	 * This is used as part of the shared folder sync process
-	 */
-	private async enqueueCanvasForGroupSync(
-		canvas: Canvas,
-		sharedFolder: SharedFolder,
-	): Promise<void> {
-		try {
-			// Skip this canvas if it's not in the sync store
-			if (!sharedFolder.syncStore.has(canvas.path)) {
-				this.debug(
-					"[enqueueCanvasForGroupSync] Skipping canvas, not in sync list",
-					canvas.path,
-				);
-				return;
-			}
-
-			await this.enqueueDownload(canvas);
-		} catch (e) {
-			this.error("[enqueueCanvasForGroupSync]", e);
-		}
 	}
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
