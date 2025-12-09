@@ -12,7 +12,6 @@ import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import { compareFilePaths } from "./FolderSort";
 import type { ClientToken } from "./y-sweet";
-import { flags } from "./flagManager";
 import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
@@ -209,41 +208,73 @@ export class BackgroundSync extends HasLogging {
 
 			try {
 				const doc = item.doc;
+				let syncPromise: Promise<any>;
+
 				if (doc instanceof SyncFile) {
-					await this.syncFile(doc);
+					syncPromise = this.syncFile(doc);
 				} else {
-					await this.syncDocument(doc);
-				}
-				item.status = "completed";
-
-				const callback = this.syncCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.resolve();
-					this.syncCompletionCallbacks.delete(item.guid);
+					syncPromise = this.syncDocument(doc);
 				}
 
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					this.debug(
-						`[Sync Progress] Before: completed=${group.completed}, total=${group.total}, ` +
-							`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
-					);
+				syncPromise
+					.then(() => {
+						item.status = "completed";
+						const callback = this.syncCompletionCallbacks.get(item.guid);
+						if (callback) {
+							callback.resolve();
+							this.syncCompletionCallbacks.delete(item.guid);
+						}
 
-					group.completedSyncs++;
-					group.completed++;
+						const group = this.syncGroups.get(item.sharedFolder);
+						if (group) {
+							this.debug(
+								`[Sync Progress] Before: completed=${group.completed}, total=${group.total}, ` +
+									`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
+							);
 
-					this.debug(
-						`[Sync Progress] After: completed=${group.completed}, total=${group.total}, ` +
-							`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
-					);
+							group.completedSyncs++;
+							group.completed++;
 
-					if (group.completed === group.total) {
-						group.status = "completed";
-						this.debug("[Sync Progress] Group completed!");
-					}
+							this.debug(
+								`[Sync Progress] After: completed=${group.completed}, total=${group.total}, ` +
+									`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
+							);
 
-					this.syncGroups.set(item.sharedFolder, group);
-				}
+							if (group.completed === group.total) {
+								group.status = "completed";
+								this.debug("[Sync Progress] Group completed!");
+							}
+
+							this.syncGroups.set(item.sharedFolder, group);
+						}
+					})
+					.catch((error) => {
+						item.status = "failed";
+
+						const callback = this.syncCompletionCallbacks.get(item.guid);
+						if (callback) {
+							callback.reject(
+								error instanceof Error ? error : new Error(String(error)),
+							);
+							this.syncCompletionCallbacks.delete(item.guid);
+						}
+
+						const group = this.syncGroups.get(item.sharedFolder);
+						if (group) {
+							this.error("[Sync Failed]", error);
+							group.status = "failed";
+							this.syncGroups.set(item.sharedFolder, group);
+						}
+					})
+					.finally(() => {
+						this.activeSync.delete(item);
+						this.inProgressSyncs.delete(item.guid);
+
+						// Unwind the call stack before checking for more work
+						this.timeProvider.setTimeout(() => {
+							this.processSyncQueue();
+						}, 0);
+					});
 			} catch (error) {
 				item.status = "failed";
 
@@ -257,26 +288,17 @@ export class BackgroundSync extends HasLogging {
 
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
-					this.error("[Sync Failed]", error);
+					this.error("[Sync Startup Failed]", error);
 					group.status = "failed";
 					this.syncGroups.set(item.sharedFolder, group);
 				}
-			} finally {
+
 				this.activeSync.delete(item);
 				this.inProgressSyncs.delete(item.guid);
 			}
 		}
 
 		this.isProcessingSync = false;
-		// Only continue if there are items AND at least one is processable
-		if (this.syncQueue.length > 0 && !this.isPaused) {
-			const hasConnectedItems = this.syncQueue.some(
-				(item) => item.sharedFolder.connected,
-			);
-			if (hasConnectedItems) {
-				this.processSyncQueue();
-			}
-		}
 	}
 
 	private async processDownloadQueue() {
@@ -304,32 +326,64 @@ export class BackgroundSync extends HasLogging {
 			this.activeDownloads.add(item);
 
 			try {
+				let downloadPromise: Promise<any>;
+
 				// Choose the appropriate download method based on the document type
 				if (item.doc instanceof Canvas) {
-					await this.getCanvas(item.doc);
+					downloadPromise = this.getCanvas(item.doc);
 				} else if (item.doc instanceof SyncFile) {
-					await this.getSyncFile(item.doc);
+					downloadPromise = this.getSyncFile(item.doc);
 				} else {
-					await this.getDocument(item.doc);
+					downloadPromise = this.getDocument(item.doc);
 				}
 
-				item.status = "completed";
+				downloadPromise
+					.then(() => {
+						item.status = "completed";
 
-				const callback = this.downloadCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.resolve();
-					this.downloadCompletionCallbacks.delete(item.guid);
-				}
+						const callback = this.downloadCompletionCallbacks.get(item.guid);
+						if (callback) {
+							callback.resolve();
+							this.downloadCompletionCallbacks.delete(item.guid);
+						}
 
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					group.completedDownloads++;
-					group.completed++;
-					if (group.completed === group.total) {
-						group.status = "completed";
-					}
-					this.syncGroups.set(item.sharedFolder, group);
-				}
+						const group = this.syncGroups.get(item.sharedFolder);
+						if (group) {
+							group.completedDownloads++;
+							group.completed++;
+							if (group.completed === group.total) {
+								group.status = "completed";
+							}
+							this.syncGroups.set(item.sharedFolder, group);
+						}
+					})
+					.catch((error) => {
+						item.status = "failed";
+
+						const callback = this.downloadCompletionCallbacks.get(item.guid);
+						if (callback) {
+							callback.reject(
+								error instanceof Error ? error : new Error(String(error)),
+							);
+							this.downloadCompletionCallbacks.delete(item.guid);
+						}
+
+						const group = this.syncGroups.get(item.sharedFolder);
+						if (group) {
+							group.status = "failed";
+							this.syncGroups.set(item.sharedFolder, group);
+						}
+						this.error("[processDownloadQueue]", error);
+					})
+					.finally(() => {
+						this.activeDownloads.delete(item);
+						this.inProgressDownloads.delete(item.guid);
+
+						// Unwind the call stack before checking for more work
+						this.timeProvider.setTimeout(() => {
+							this.processDownloadQueue();
+						}, 0);
+					});
 			} catch (error) {
 				item.status = "failed";
 
@@ -343,11 +397,11 @@ export class BackgroundSync extends HasLogging {
 
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
+					this.error("[Download Startup Failed]", error);
 					group.status = "failed";
 					this.syncGroups.set(item.sharedFolder, group);
 				}
-				this.error("[processDownloadQueue]", error);
-			} finally {
+
 				this.activeDownloads.delete(item);
 				this.inProgressDownloads.delete(item.guid);
 			}
@@ -851,11 +905,11 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private async syncFile(file: SyncFile) {
-		file.sync();
+		await file.sync();
 	}
 
 	private async getSyncFile(file: SyncFile) {
-		file.pull();
+		await file.pull();
 	}
 
 	private async syncDocument(doc: Document | Canvas) {
