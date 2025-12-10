@@ -617,20 +617,22 @@ export class YSweetProvider extends Observable<string> {
 	}
 
 	/**
-	 * Updates the provider URL with new parameters (typically for token refresh)
-	 * @param serverUrl - new server URL (base URL)
+	 * Refresh the connection token and update URL if needed
+	 * @param serverUrl - new server URL (base URL)  
 	 * @param roomname - room/document ID
-	 * @param params - new parameters (including token)
+	 * @param token - new token
+	 * @returns whether the URL actually changed
 	 */
-	updateUrl(
+	refreshToken(
 		serverUrl: string,
 		roomname: string,
-		params: { [x: string]: string } = {},
-	) {
+		token: string,
+	): { urlChanged: boolean; newUrl: string } {
 		// ensure that url is always ends with /
 		while (serverUrl[serverUrl.length - 1] === "/") {
 			serverUrl = serverUrl.slice(0, serverUrl.length - 1);
 		}
+		const params = { token };
 		const encodedParams = url.encodeQueryParams(params);
 		const newUrl =
 			serverUrl +
@@ -638,7 +640,9 @@ export class YSweetProvider extends Observable<string> {
 			roomname +
 			(encodedParams.length === 0 ? "" : "?" + encodedParams);
 
-		if (this.url !== newUrl) {
+		const urlChanged = this.url !== newUrl;
+		
+		if (urlChanged) {
 			this.url = newUrl;
 			this.wsUnsuccessfulReconnects = 0;
 
@@ -647,5 +651,12 @@ export class YSweetProvider extends Observable<string> {
 				this.ws.close();
 			}
 		}
+
+		return { urlChanged, newUrl };
 	}
+
+	hasUrl(expectedUrl: string): boolean {
+		return this.url === expectedUrl;
+	}
+
 }

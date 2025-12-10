@@ -158,7 +158,7 @@ export class HasProvider extends HasLogging {
 
 	providerActive() {
 		if (this.clientToken) {
-			const tokenIsSet = this._provider.url == this.clientToken.url;
+			const tokenIsSet = this._provider.hasUrl(this.clientToken.url);
 			const expired = Date.now() > (this.clientToken?.expiryTime || 0);
 			return tokenIsSet && !expired;
 		}
@@ -173,15 +173,14 @@ export class HasProvider extends HasLogging {
 			throw new Error("missing provider!");
 		}
 
-		const oldUrl = this._provider.url;
-		const params = {
-			token: clientToken.token,
-		};
+		const result = this._provider.refreshToken(
+			clientToken.url,
+			clientToken.docId,
+			clientToken.token,
+		);
 
-		this._provider.updateUrl(clientToken.url, clientToken.docId, params);
-
-		if (this._provider.url !== oldUrl) {
-			const maskedUrl = this._provider.url.replace(
+		if (result.urlChanged) {
+			const maskedUrl = result.newUrl.replace(
 				/token=[^&]+/,
 				"token=[REDACTED]",
 			);
