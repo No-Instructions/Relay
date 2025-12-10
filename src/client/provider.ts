@@ -165,14 +165,16 @@ const setupWS = (provider: YSweetProvider) => {
 			}
 			// Start with no reconnect timeout and increase timeout by
 			// using exponential backoff starting with 100ms
-			setTimeout(
-				setupWS,
-				math.min(
-					math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
-					provider.maxBackoffTime,
-				),
-				provider,
-			);
+			if (provider.canReconnect()) {
+				setTimeout(
+					setupWS,
+					math.min(
+						math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
+						provider.maxBackoffTime,
+					),
+					provider,
+				);
+			}
 		};
 		websocket.onopen = () => {
 			provider.wsLastMessageReceived = time.getUnixTime();
@@ -241,6 +243,7 @@ export type YSweetProviderParams = {
 	resyncInterval?: number;
 	maxBackoffTime?: number;
 	disableBc?: boolean;
+	maxConnectionErrors?: number;
 };
 
 export type ConnectionStatus =
@@ -296,6 +299,7 @@ export class YSweetProvider extends Observable<string> {
 	_awarenessUpdateHandler: Function;
 	_unloadHandler: Function;
 	_checkInterval: ReturnType<typeof setInterval> | number;
+	maxConnectionErrors: number;
 
 	/**
 	 * @param serverUrl - server url
@@ -322,6 +326,7 @@ export class YSweetProvider extends Observable<string> {
 			resyncInterval = -1,
 			maxBackoffTime = 2500,
 			disableBc = false,
+			maxConnectionErrors = 3,
 		}: YSweetProviderParams = {},
 	) {
 		super();
@@ -351,6 +356,7 @@ export class YSweetProvider extends Observable<string> {
 		this.ws = null;
 		this.wsLastMessageReceived = 0;
 		this.shouldConnect = connect;
+		this.maxConnectionErrors = maxConnectionErrors;
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -477,6 +483,14 @@ export class YSweetProvider extends Observable<string> {
 			status,
 			intent: this.intent,
 		};
+	}
+
+	canReconnect(): boolean {
+		return (
+			!!this.url &&
+			this.shouldConnect &&
+			this.wsUnsuccessfulReconnects < this.maxConnectionErrors
+		);
 	}
 
 	destroy() {

@@ -36,6 +36,7 @@ function makeProvider(
 			connect: false,
 			params: params,
 			disableBc: true,
+			maxConnectionErrors: 3,
 		},
 	);
 
@@ -60,7 +61,6 @@ export class HasProvider extends HasLogging {
 	_providerSynced: boolean = false;
 	private _offConnectionError: () => void;
 	private _offState: () => void;
-	PROVIDER_MAX_ERRORS = 3;
 	listeners: Map<unknown, Listener>;
 
 	constructor(
@@ -94,10 +94,7 @@ export class HasProvider extends HasLogging {
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
 				this.log(`[${this.path}] disconnection event`, event);
-				const shouldConnect =
-					this._provider.url &&
-					this._provider.shouldConnect &&
-					this._provider.wsUnsuccessfulReconnects < this.PROVIDER_MAX_ERRORS;
+				const shouldConnect = this._provider.canReconnect();
 				this.disconnect();
 				if (shouldConnect) {
 					this.connect();
@@ -276,6 +273,7 @@ export class HasProvider extends HasLogging {
 			expiryTime: 0,
 		} as ClientToken;
 	}
+
 
 	private providerConnectionErrorSubscription(
 		f: (event: Event) => void,
