@@ -157,6 +157,7 @@ const setupWS = (provider: YSweetProvider) => {
 				provider.emit("status", [
 					{
 						status: "disconnected",
+						intent: provider.intent,
 					},
 				]);
 			} else {
@@ -181,6 +182,7 @@ const setupWS = (provider: YSweetProvider) => {
 			provider.emit("status", [
 				{
 					status: "connected",
+					intent: provider.intent,
 				},
 			]);
 			// always send sync step 1 when connected
@@ -204,6 +206,7 @@ const setupWS = (provider: YSweetProvider) => {
 		provider.emit("status", [
 			{
 				status: "connecting",
+				intent: provider.intent,
 			},
 		]);
 	}
@@ -239,6 +242,18 @@ export type YSweetProviderParams = {
 	maxBackoffTime?: number;
 	disableBc?: boolean;
 };
+
+export type ConnectionStatus =
+	| "connected"
+	| "connecting"
+	| "disconnected"
+	| "unknown";
+export type ConnectionIntent = "connected" | "disconnected";
+
+export interface ConnectionState {
+	status: ConnectionStatus;
+	intent: ConnectionIntent;
+}
 
 /**
  * Websocket Provider for Yjs. Creates a websocket connection to sync the shared document.
@@ -438,6 +453,13 @@ export class YSweetProvider extends Observable<string> {
 			this.emit("synced", [state]);
 			this.emit("sync", [state]);
 		}
+	}
+
+	/**
+	 * Get the current connection intent based on shouldConnect flag
+	 */
+	get intent(): ConnectionIntent {
+		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
 	destroy() {

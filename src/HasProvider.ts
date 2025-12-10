@@ -1,6 +1,11 @@
 "use strict";
 import * as Y from "yjs";
-import { YSweetProvider } from "./client/provider";
+import {
+	YSweetProvider,
+	type ConnectionState,
+	type ConnectionIntent,
+} from "./client/provider";
+export type { ConnectionState, ConnectionIntent };
 import { User } from "./User";
 import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
@@ -9,32 +14,6 @@ import type { ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import { flags } from "./flagManager";
-
-export type ConnectionStatus =
-	| "connected"
-	| "connecting"
-	| "disconnected"
-	| "unknown";
-export type ConnectionIntent = "connected" | "disconnected";
-
-enum readyState {
-	CONNECTING = 0,
-	OPEN = 1,
-	CLOSING = 2,
-	CLOSED = 3,
-}
-
-const readyStateMap = {
-	3: "disconnected",
-	2: "disconnected",
-	1: "connected",
-	0: "connecting",
-} as const;
-
-export interface ConnectionState {
-	status: ConnectionStatus;
-	intent: ConnectionIntent;
-}
 
 export interface Subscription {
 	on: () => void;
@@ -234,17 +213,27 @@ export class HasProvider extends HasLogging {
 	}
 
 	public get state(): ConnectionState {
+		// The provider now emits status events with both status and intent
+		// But for synchronous access, we need to compute the current state
+		const wsState = this._provider.ws?.readyState;
+		let status: ConnectionState["status"];
+
+		if (wsState === WebSocket.OPEN) {
+			status = "connected";
+		} else if (wsState === WebSocket.CONNECTING) {
+			status = "connecting";
+		} else {
+			status = "disconnected";
+		}
+
 		return {
-			status:
-				readyStateMap[
-					(this._provider.ws?.readyState || readyState.CLOSED) as readyState
-				],
-			intent: this.intent,
+			status,
+			intent: this._provider.intent,
 		};
 	}
 
 	get intent(): ConnectionIntent {
-		return this._provider.shouldConnect ? "connected" : "disconnected";
+		return this._provider.intent;
 	}
 
 	public get synced(): boolean {
@@ -304,15 +293,6 @@ export class HasProvider extends HasLogging {
 		} as ClientToken;
 	}
 
-	private _injectIntent(
-		f: (state: ConnectionState) => void,
-	): (state: ConnectionState) => void {
-		const inner = (state: ConnectionState) => {
-			f({ status: state.status, intent: this.intent });
-		};
-		return inner;
-	}
-
 	private providerConnectionErrorSubscription(
 		f: (event: Event) => void,
 	): Subscription {
@@ -329,10 +309,10 @@ export class HasProvider extends HasLogging {
 		f: (state: ConnectionState) => void,
 	): Subscription {
 		const on = () => {
-			this._provider.on("status", this._injectIntent(f));
+			this._provider.on("status", f);
 		};
 		const off = () => {
-			this._provider.off("status", this._injectIntent(f));
+			this._provider.off("status", f);
 		};
 		return { on, off } as Subscription;
 	}
