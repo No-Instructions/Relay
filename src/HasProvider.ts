@@ -1,13 +1,13 @@
 "use strict";
 import * as Y from "yjs";
-import { YSweetProvider } from "@y-sweet/client";
+import { YSweetProvider } from "./client/provider";
 import { User } from "./User";
 import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import type { ClientToken } from "./y-sweet";
+import type { ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
-import { encodeClientToken } from "./y-sweet";
+import { encodeClientToken } from "./client/types";
 import { flags } from "./flagManager";
 
 export type ConnectionStatus =

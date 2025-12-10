@@ -4,7 +4,7 @@ import type { TokenInfo } from "./TokenStore";
 import type { TimeProvider } from "./TimeProvider";
 import { LoginManager } from "./LoginManager";
 import { curryLog } from "./debug";
-import type { ClientToken, FileToken } from "./y-sweet";
+import type { ClientToken, FileToken } from "./client/types";
 import { LocalStorage } from "./LocalStorage";
 import {
 	S3RN,

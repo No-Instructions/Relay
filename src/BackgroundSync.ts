@@ -11,7 +11,7 @@ import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import { compareFilePaths } from "./FolderSort";
-import type { ClientToken } from "./y-sweet";
+import type { ClientToken } from "./client/types";
 import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";

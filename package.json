@@ -39,7 +39,6 @@
 		"typescript": "^5.4.5"
 	},
 	"dependencies": {
-		"@y-sweet/client": "^0.1.0",
 		"diff": "^5.2.0",
 		"diff-match-patch": "^1.0.5",
 		"eventsource": "^2.0.2",
