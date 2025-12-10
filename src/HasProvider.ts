@@ -192,26 +192,25 @@ export class HasProvider extends HasLogging {
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
 		this.clientToken = clientToken;
-		const tempDoc = new Y.Doc();
-		const tempProvider = makeProvider(clientToken, tempDoc);
-		const newUrl = tempProvider.url;
 
 		if (!this._provider) {
 			throw new Error("missing provider!");
-		} else if (this._provider.url !== newUrl) {
-			this._provider.url = newUrl;
-			this._provider.wsUnsuccessfulReconnects = 0;
+		}
 
+		const oldUrl = this._provider.url;
+		const params = {
+			token: clientToken.token,
+		};
+
+		this._provider.updateUrl(clientToken.url, clientToken.docId, params);
+
+		if (this._provider.url !== oldUrl) {
 			const maskedUrl = this._provider.url.replace(
 				/token=[^&]+/,
 				"token=[REDACTED]",
 			);
 			this.log(`Token Refreshed: setting new provider url, ${maskedUrl}`);
-			this._provider.ws?.close();
 		}
-		tempProvider.awareness.destroy();
-		tempProvider.destroy();
-		tempDoc.destroy();
 	}
 
 	public get connected(): boolean {

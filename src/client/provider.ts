@@ -562,4 +562,37 @@ export class YSweetProvider extends Observable<string> {
 			this.connectBc();
 		}
 	}
+
+	/**
+	 * Updates the provider URL with new parameters (typically for token refresh)
+	 * @param serverUrl - new server URL (base URL)
+	 * @param roomname - room/document ID
+	 * @param params - new parameters (including token)
+	 */
+	updateUrl(
+		serverUrl: string,
+		roomname: string,
+		params: { [x: string]: string } = {},
+	) {
+		// ensure that url is always ends with /
+		while (serverUrl[serverUrl.length - 1] === "/") {
+			serverUrl = serverUrl.slice(0, serverUrl.length - 1);
+		}
+		const encodedParams = url.encodeQueryParams(params);
+		const newUrl =
+			serverUrl +
+			"/" +
+			roomname +
+			(encodedParams.length === 0 ? "" : "?" + encodedParams);
+
+		if (this.url !== newUrl) {
+			this.url = newUrl;
+			this.wsUnsuccessfulReconnects = 0;
+
+			// Close existing connection if it exists
+			if (this.ws) {
+				this.ws.close();
+			}
+		}
+	}
 }
