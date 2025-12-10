@@ -213,23 +213,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	public get state(): ConnectionState {
-		// The provider now emits status events with both status and intent
-		// But for synchronous access, we need to compute the current state
-		const wsState = this._provider.ws?.readyState;
-		let status: ConnectionState["status"];
-
-		if (wsState === WebSocket.OPEN) {
-			status = "connected";
-		} else if (wsState === WebSocket.CONNECTING) {
-			status = "connecting";
-		} else {
-			status = "disconnected";
-		}
-
-		return {
-			status,
-			intent: this._provider.intent,
-		};
+		return this._provider.connectionState;
 	}
 
 	get intent(): ConnectionIntent {

@@ -462,6 +462,23 @@ export class YSweetProvider extends Observable<string> {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
+	get connectionState(): ConnectionState {
+		let status: ConnectionStatus;
+
+		if (this.ws?.readyState === WebSocket.OPEN) {
+			status = "connected";
+		} else if (this.ws?.readyState === WebSocket.CONNECTING) {
+			status = "connecting";
+		} else {
+			status = "disconnected";
+		}
+
+		return {
+			status,
+			intent: this.intent,
+		};
+	}
+
 	destroy() {
 		if (this._resyncInterval !== 0) {
 			clearInterval(this._resyncInterval);
