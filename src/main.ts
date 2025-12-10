@@ -315,10 +315,14 @@ export default class Live extends Plugin {
 			this.timeProvider.destroy();
 		});
 
+		const logFilePath = normalizePath(
+			`${this.app.vault.configDir}/plugins/${this.manifest.id}/relay.log`,
+		);
+
 		initializeLogger(
 			new ObsidianFileAdapter(this.app.vault),
 			this.timeProvider,
-			".obsidian/plugins/system3-relay/relay.log",
+			logFilePath,
 			{
 				maxFileSize: 5 * 1024 * 1024, // 5MB
 				maxBackups: 3,
