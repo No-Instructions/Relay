@@ -408,15 +408,6 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		this.isProcessingDownloads = false;
-		// Only continue if there are items AND at least one is processable
-		if (this.downloadQueue.length > 0 && !this.isPaused) {
-			const hasConnectedItems = this.downloadQueue.some(
-				(item) => item.sharedFolder.connected,
-			);
-			if (hasConnectedItems) {
-				this.processDownloadQueue();
-			}
-		}
 	}
 
 	/**
