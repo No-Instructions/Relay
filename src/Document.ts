@@ -1,5 +1,5 @@
 "use strict";
-import { IndexeddbPersistence } from "y-indexeddb";
+import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";

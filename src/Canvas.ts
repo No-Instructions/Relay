@@ -6,7 +6,7 @@ import { S3Canvas, S3Folder, S3RN, S3RemoteCanvas } from "./S3RN";
 import * as Y from "yjs";
 import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
-import { IndexeddbPersistence } from "y-indexeddb";
+import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { Dependency } from "./promiseUtils";
 import type { Unsubscriber } from "./observable/Observable";
