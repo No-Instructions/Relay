@@ -445,9 +445,28 @@ export class YSweetProvider extends Observable<string> {
 			clearInterval(this._resyncInterval);
 		}
 		clearInterval(this._checkInterval);
+
+		if (this.ws) {
+			this.ws.onopen = null;
+			this.ws.onmessage = null;
+			this.ws.onerror = null;
+			this.ws.onclose = null;
+			if (
+				this.ws.readyState === WebSocket.OPEN ||
+				this.ws.readyState === WebSocket.CONNECTING
+			) {
+				this.ws.close(1000, "Destroyed");
+			}
+			this.ws = null;
+		}
+
 		this.disconnect();
+		this.awareness.destroy();
+		this._observers.clear();
+
 		if (typeof window !== "undefined") {
 			window.removeEventListener("unload", this._unloadHandler as any);
+			window.clearInterval(this.awareness._checkInterval);
 		} else if (typeof process !== "undefined") {
 			process.off("exit", this._unloadHandler as any);
 		}
@@ -523,6 +542,16 @@ export class YSweetProvider extends Observable<string> {
 		this.disconnectBc();
 		if (this.ws !== null) {
 			this.ws.close();
+		}
+	}
+
+	forceDisconnectImmediate() {
+		this.shouldConnect = false;
+		this.disconnectBc();
+
+		if (this.ws !== null) {
+			this.ws.close();
+			this.ws = null;
 		}
 	}
 

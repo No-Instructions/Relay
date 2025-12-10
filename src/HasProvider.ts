@@ -253,10 +253,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	disconnect() {
-		// this is cursed -- I should consider forking the ysweet provider.
-		this._provider.shouldConnect = false;
-		this._provider.ws?.close();
-		this._provider.ws = null;
+		this._provider.forceDisconnectImmediate();
 		this.tokenStore.removeFromRefreshQueue(this.guid);
 		this.notifyListeners();
 	}
@@ -349,24 +346,7 @@ export class HasProvider extends HasLogging {
 			this._offState();
 		}
 		if (this._provider) {
-			if (this._provider.ws) {
-				this._provider.ws.onopen = null;
-				this._provider.ws.onmessage = null;
-				this._provider.ws.onerror = null;
-				this._provider.ws.onclose = null;
-				if (
-					this._provider.ws.readyState === WebSocket.OPEN ||
-					this._provider.ws.readyState === WebSocket.CONNECTING
-				) {
-					this._provider.ws.close(1000, "Destroyed");
-				}
-				this._provider.ws = null;
-			}
-			this._provider.disconnect();
-			this._provider.awareness.destroy();
-			this._provider._observers.clear();
 			this._provider.destroy();
-			window.clearInterval(this._provider.awareness._checkInterval);
 		}
 		this.loginManager = null as any;
 	}
