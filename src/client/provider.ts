@@ -595,18 +595,10 @@ export class YSweetProvider extends Observable<string> {
 		this.disconnectBc();
 		if (this.ws !== null) {
 			this.ws.close();
-		}
-	}
-
-	forceDisconnectImmediate() {
-		this.shouldConnect = false;
-		this.disconnectBc();
-
-		if (this.ws !== null) {
-			this.ws.close();
 			this.ws = null;
 		}
 	}
+
 
 	connect() {
 		this.shouldConnect = true;

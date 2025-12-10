@@ -221,7 +221,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	disconnect() {
-		this._provider.forceDisconnectImmediate();
+		this._provider.disconnect();
 		this.tokenStore.removeFromRefreshQueue(this.guid);
 		this.notifyListeners();
 	}
