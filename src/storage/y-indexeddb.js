@@ -131,6 +131,20 @@ export class IndexeddbPersistence extends Observable {
     doc.on('destroy', this.destroy)
   }
 
+  /**
+   * Override once to handle race condition where event might have already fired
+   * @param {string} name
+   * @param {function} f
+   */
+  once (name, f) {
+    if (name === 'synced' && this.synced) {
+      // If already synced, call immediately in next tick
+      setTimeout(() => f(this), 0)
+      return this
+    }
+    return super.once(name, f)
+  }
+
   destroy () {
     if (this._storeTimeoutId) {
       clearTimeout(this._storeTimeoutId)
