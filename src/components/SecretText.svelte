@@ -135,7 +135,7 @@
 		width: 24px;
 		height: 24px;
 		position: absolute;
-		right: 4px;
+		right: 12px;
 		top: 50%;
 		transform: translateY(-50%);
 		border-radius: 4px;

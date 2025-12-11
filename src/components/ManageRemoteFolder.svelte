@@ -446,7 +446,7 @@
 			name="Add this folder to your vault"
 			description="Download and sync this folder to your local device"
 		>
-			<button class="mod-cta" on:click={debounce(handleAddToVault)}>
+			<button class="mod-cta system3-button" on:click={debounce(handleAddToVault)}>
 				Add to vault
 			</button>
 		</SettingItem>

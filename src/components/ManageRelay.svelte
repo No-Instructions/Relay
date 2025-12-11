@@ -666,7 +666,7 @@
 <!--
 
     <SettingItem name="" description="">
-		<button class="mod-cta" on:click={() => handleAddUser()}>
+		<button class="mod-cta system3-button" on:click={() => handleAddUser()}>
 			Add User
 		</button>
 	</SettingItem>

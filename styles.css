@@ -307,3 +307,8 @@
 .mb-20 {
 	margin-bottom: 5rem; /* 80px */
 }
+
+/* Fix button width on mobile in setting items for our components */
+.is-phone .modal .setting-item-control button.system3-button {
+	width: auto !important;
+}

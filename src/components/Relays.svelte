@@ -195,7 +195,7 @@
 			invalid={invalidShareKey}
 		/>
 		<button
-			class="mod-cta"
+			class="mod-cta system3-button"
 			disabled={invitePending}
 			on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
 		>
@@ -229,7 +229,7 @@
 		</SlimSettingItem>
 	{/each}
 	<SettingItem description="" name="">
-		<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}>
+		<button class="mod-cta system3-button" on:click={debounce(() => handleCreateRelay())}>
 			Create
 		</button>
 	</SettingItem>
@@ -275,7 +275,7 @@
 
 	<SlimSettingItem name="">
 		<button
-			class="mod-cta"
+			class="mod-cta system3-button"
 			aria-label="Add shared folder to vault"
 			on:click={debounce(handleAddFolder)}
 			style="max-width: 8em"
@@ -306,6 +306,7 @@
 					{/if}
 				</Satellite>
 				<button
+					class="mod-cta system3-button"
 					on:click={debounce(async () => {
 						if (!subscription.token) {
 							const token =
