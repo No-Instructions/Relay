@@ -35,6 +35,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	extension: string;
 	basename: string;
 	vault: Vault;
+	private _hasInitialEventSync: boolean = false;
+	private serverYdoc: Y.Doc | null = null;
 	stat: {
 		ctime: number;
 		mtime: number;
@@ -410,6 +412,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		});
 		super.destroy();
 		this.ydoc.destroy();
+		if (this.serverYdoc) {
+			this.serverYdoc.destroy();
+			this.serverYdoc = null;
+		}
 		if (this._diskBuffer) {
 			this._diskBuffer.contents = "";
 			this._diskBuffer = undefined;
@@ -446,5 +452,128 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	public async append(content: string): Promise<void> {
 		this.ytext.insert(this.ytext.length, content);
 		this.updateStats();
+	}
+
+	/**
+	 * Apply a Y.js update directly to the document's Y.Doc and persist it
+	 * @param update The Y.js update as a Uint8Array
+	 */
+	public async applyYjsUpdate(update: Uint8Array): Promise<void> {
+		this.debug(`>>> applyYjsUpdate called for ${this.path} with ${update.length} bytes`);
+		
+		// Initialize server Y.doc if needed
+		if (!this.serverYdoc) {
+			this.debug(`Initializing server Y.doc for ${this.path}`);
+			this.serverYdoc = new Y.Doc();
+			
+			try {
+				// Download current server state
+				const response = await this.sharedFolder.backgroundSync.downloadItem(this);
+				const serverState = new Uint8Array(response.arrayBuffer);
+				
+				this.debug(`Downloaded server state for ${this.path} (${serverState.length} bytes)`);
+				Y.applyUpdate(this.serverYdoc, serverState);
+				
+				const serverText = this.serverYdoc.getText('contents').toString();
+				this.debug(`Server Y.doc initialized with text length: ${serverText.length}`);
+			} catch (error) {
+				this.warn(`Failed to initialize server Y.doc for ${this.path}:`, error);
+				throw error;
+			}
+		}
+		
+		const beforeText = this.serverYdoc.getText('contents').toString();
+		const beforeLength = beforeText.length;
+		
+		this.debug(`=== APPLYING UPDATE TO SERVER Y.DOC ===`);
+		this.debug(`Document: ${this.path}`);
+		this.debug(`Update: ${update.length} bytes - ${Array.from(update).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' ')}`);
+		this.debug(`Before: length=${beforeLength}, text="${beforeText}"`);
+		
+		try {
+			// Apply the update to the server Y.doc
+			Y.applyUpdate(this.serverYdoc, update);
+			
+			const afterText = this.serverYdoc.getText('contents').toString();
+			const afterLength = afterText.length;
+			const lengthDelta = afterLength - beforeLength;
+			
+			this.debug(`After: length=${afterLength}, text="${afterText}"`);
+			this.debug(`DELTA: ${lengthDelta > 0 ? '+' : ''}${lengthDelta} characters`);
+			
+			if (lengthDelta !== 0) {
+				// Find the actual change
+				let diffStart = 0;
+				while (diffStart < Math.min(beforeText.length, afterText.length) && 
+					   beforeText[diffStart] === afterText[diffStart]) {
+					diffStart++;
+				}
+				
+				if (lengthDelta > 0) {
+					const addedText = afterText.slice(diffStart, diffStart + lengthDelta);
+					this.debug(`CHANGE: Added "${addedText}" at position ${diffStart}`);
+				} else if (lengthDelta < 0) {
+					const removedText = beforeText.slice(diffStart, diffStart - lengthDelta);
+					this.debug(`CHANGE: Removed "${removedText}" at position ${diffStart}`);
+				}
+			} else {
+				this.debug(`CHANGE: No length change (possible formatting/metadata update)`);
+			}
+			
+			this.debug(`=== UPDATE COMPLETE ===`);
+			
+		} catch (error) {
+			this.warn(`Failed to apply Y.js update to server Y.doc for ${this.path}:`, error);
+			throw error;
+		}
+		
+		// Now generate and apply a diff between server state and local state
+		this.syncLocalWithServer();
+	}
+	
+	/**
+	 * Generate a Y.js update that syncs the local document with the server state
+	 */
+	private syncLocalWithServer(): void {
+		if (!this.serverYdoc) {
+			this.debug(`No server Y.doc available for ${this.path} - cannot sync`);
+			return;
+		}
+		
+		try {
+			// Get the current state vector of the local document
+			const localStateVector = Y.encodeStateVector(this.ydoc);
+			
+			// Generate a diff from server state using local state vector
+			const serverState = Y.encodeStateAsUpdate(this.serverYdoc);
+			const diff = Y.diffUpdate(serverState, localStateVector);
+			
+			const localTextBefore = this.ytext.toString();
+			const serverText = this.serverYdoc.getText('contents').toString();
+			
+			this.debug(`=== SYNCING LOCAL WITH SERVER ===`);
+			this.debug(`Local state: length=${localTextBefore.length}, text="${localTextBefore}"`);
+			this.debug(`Server state: length=${serverText.length}, text="${serverText}"`);
+			this.debug(`Diff size: ${diff.length} bytes`);
+			
+			if (diff.length > 0) {
+				// Apply the diff to the local document
+				Y.applyUpdate(this.ydoc, diff, this._provider);
+				
+				const localTextAfter = this.ytext.toString();
+				this.debug(`Local after sync: length=${localTextAfter.length}, text="${localTextAfter}"`);
+				this.debug(`SYNC RESULT: ${localTextBefore === localTextAfter ? 'NO CHANGE' : 'DOCUMENT UPDATED'}`);
+				
+				if (localTextBefore !== localTextAfter) {
+					this.updateStats();
+				}
+			} else {
+				this.debug(`SYNC RESULT: No diff needed - documents already in sync`);
+			}
+			this.debug(`=== SYNC COMPLETE ===`);
+			
+		} catch (error) {
+			this.warn(`Failed to sync local document with server for ${this.path}:`, error);
+		}
 	}
 }

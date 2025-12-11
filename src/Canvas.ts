@@ -44,6 +44,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	unsubscribes: Unsubscriber[] = [];
 	private _awaitingUpdates: any;
 	private _canvas: any;
+	private _hasInitialEventSync: boolean = false;
 
 	constructor(
 		path: string,
@@ -371,6 +372,45 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	private updateStats(): void {
 		this.stat.mtime = Date.now();
 		this.stat.size = this.json.length;
+	}
+
+	/**
+	 * Apply a Y.js update directly to the canvas's Y.Doc and persist it
+	 * @param update The Y.js update as a Uint8Array
+	 */
+	public async applyYjsUpdate(update: Uint8Array): Promise<void> {
+		await this.whenSynced();
+		
+		// Download latest state from server once per event subscription
+		if (!this._hasInitialEventSync) {
+			this.debug(`Downloading initial state from server for ${this.path} before applying events`);
+			try {
+				const response = await this.sharedFolder.backgroundSync.downloadItem(this);
+				const serverState = new Uint8Array(response.arrayBuffer);
+				Y.applyUpdate(this.ydoc, serverState);
+				this._hasInitialEventSync = true;
+				this.debug(`Successfully downloaded initial state for ${this.path} (${serverState.length} bytes)`);
+			} catch (error) {
+				this.warn(`Failed to download initial state for ${this.path}:`, error);
+				// Continue anyway - the update might still be applicable
+			}
+		}
+		
+		this.debug(`Applying Y.js update to canvas ${this.path}`, {
+			updateLength: update.length,
+			updateFirstBytes: Array.from(update.slice(0, 10)).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' ')
+		});
+		
+		try {
+			// Apply the update directly with provider as origin (same as provider does)
+			Y.applyUpdate(this.ydoc, update, this._provider);
+			
+			this.updateStats();
+			this.debug(`Successfully applied Y.js update to canvas ${this.path}`);
+		} catch (error) {
+			this.warn(`Failed to apply Y.js update to canvas ${this.path}:`, error);
+			throw error;
+		}
 	}
 
 	destroy() {

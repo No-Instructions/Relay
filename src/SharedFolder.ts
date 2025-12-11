@@ -1694,15 +1694,70 @@ export class SharedFolder extends HasProvider {
 		});
 		
 		// Check if this is for a specific document within our folder
-		const file = this.files.get(event.doc_id);
+		// The doc_id is in format "relayId-documentId", we need just the documentId
+		const documentIdMatch = event.doc_id.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-(.+)$/i);
+		const documentId = documentIdMatch ? documentIdMatch[1] : event.doc_id;
+		const file = this.files.get(documentId);
 		if (file) {
-			this.debug(`Document ${file.path} received remote update`);
+			this.debug(`Document ${file.path} received remote update (docId: ${event.doc_id}, extracted: ${documentId})`);
 			
-			// TODO: In the future, we could apply the Yjs update directly if event.update exists
-			// For now, just log that we received the event - the Yjs sync protocol
-			// will handle applying the actual changes through the WebSocket connection
+			// Apply the Y.js update directly if available
+			if (event.update && event.update.length > 0) {
+				this.debug(`Processing Y.js update for ${file.path}:`, {
+					updateType: typeof event.update,
+					updateLength: event.update.length,
+					isUint8Array: event.update instanceof Uint8Array,
+					isArray: Array.isArray(event.update),
+					constructorName: event.update.constructor?.name,
+					fullBytes: Array.from(event.update).map(b => `0x${b.toString(16).padStart(2, '0')}`).join(' ')
+				});
+				
+				// Convert to Uint8Array - CBOR decoding might leave it as various types
+				let updateBytes: Uint8Array;
+				const update: any = event.update; // Type assertion for flexibility with CBOR decoding
+				
+				if (update instanceof Uint8Array) {
+					updateBytes = update;
+					this.debug(`Update is already Uint8Array for ${file.path}`);
+				} else if (Array.isArray(update)) {
+					updateBytes = new Uint8Array(update);
+					this.debug(`Converted array to Uint8Array for ${file.path} (${updateBytes.length} bytes)`);
+				} else if (typeof update === 'object' && update.constructor?.name === 'Uint8Array') {
+					// Handle case where CBOR decoder creates object that looks like Uint8Array but isn't instanceof Uint8Array
+					updateBytes = new Uint8Array(Object.values(update));
+					this.debug(`Converted object-like Uint8Array to real Uint8Array for ${file.path} (${updateBytes.length} bytes)`);
+				} else if (typeof update === 'object' && 'data' in update) {
+					// Handle case where update might be wrapped in an object with data property
+					updateBytes = new Uint8Array(update.data);
+					this.debug(`Extracted update from data property for ${file.path} (${updateBytes.length} bytes)`);
+				} else {
+					this.warn(`Unknown update format for ${file.path}:`, {
+						type: typeof update,
+						constructor: update.constructor?.name,
+						keys: Object.keys(update),
+						sample: update
+					});
+					return;
+				}
+				
+				if (isDocument(file)) {
+					this.debug(`Calling applyYjsUpdate on document ${file.path} with ${updateBytes.length} bytes`);
+					file.applyYjsUpdate(updateBytes).catch((error) => {
+						this.warn(`Failed to apply Y.js update to document ${file.path}:`, error);
+					});
+				} else if (isCanvas(file)) {
+					this.debug(`Calling applyYjsUpdate on canvas ${file.path} with ${updateBytes.length} bytes`);
+					file.applyYjsUpdate(updateBytes).catch((error) => {
+						this.warn(`Failed to apply Y.js update to canvas ${file.path}:`, error);
+					});
+				} else {
+					this.debug(`File ${file.path} does not support Y.js updates`);
+				}
+			} else {
+				this.debug(`No Y.js update data in event for ${file.path}`);
+			}
 		} else {
-			this.debug(`Received update for unknown document ${event.doc_id}`);
+			this.debug(`Received update for unknown document ${event.doc_id} (extracted: ${documentId})`);
 		}
 	}
 
