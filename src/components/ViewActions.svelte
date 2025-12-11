@@ -82,7 +82,7 @@
 
 <style>
 	button.notebook {
-		color: var(--color-base-30);
+		color: var(--color-base-40);
 		background-color: transparent;
 	}
 	button.notebook-synced {
