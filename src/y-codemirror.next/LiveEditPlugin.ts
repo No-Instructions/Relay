@@ -80,6 +80,10 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	mergeBanner(): () => void {
+		if (this.destroyed || !this.editor) {
+			return () => {};
+		}
+		
 		this.banner = new EmbedBanner(
 			this.sourceView,
 			this.editor.dom,
@@ -96,10 +100,11 @@ export class LiveCMPluginValue implements PluginValue {
 					file2: diskBuffer,
 					showMergeOption: true,
 					onResolve: async () => {
-						if (this.document) {
-							this.document.clearDiskBuffer();
-							this.resync();
+						if (this.destroyed || !this.editor || !this.document) {
+							return;
 						}
+						this.document.clearDiskBuffer();
+						this.resync();
 					},
 				});
 				return true;
@@ -401,7 +406,7 @@ export class LiveCMPluginValue implements PluginValue {
 			this.view.checkStale();
 		} else if (this.document) {
 			const stale = await this.document.checkStale();
-			if (stale) {
+			if (stale && !this.destroyed && this.editor) {
 				this.mergeBanner();
 			}
 		}
