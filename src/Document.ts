@@ -342,16 +342,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	whenSynced(): Promise<void> {
 		const promiseFn = async (): Promise<void> => {
 			await this.sharedFolder.whenSynced();
-			// Check if already synced first
-			if (this._persistence.synced && !this.persistenceSynced) {
-				this.persistenceSynced = true;
-				return Promise.resolve();
-			}
 
 			return new Promise<void>((resolve) => {
 				if (this.persistenceSynced) {
 					resolve();
+					return;
 				}
+				
 				this._persistence.once("synced", () => {
 					this.persistenceSynced = true;
 					resolve();
