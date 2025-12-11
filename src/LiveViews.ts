@@ -470,15 +470,29 @@ export class LiveView<ViewType extends TextFileView>
 		return this._parent;
 	}
 
-	mergeBanner(): () => void {
-		this._banner = new Banner(
-			this.view,
-			"Merge conflict -- click to resolve",
-			async () => {
+	setMergeButton(): void {
+		const viewHeaderElement =
+			this.view.containerEl.querySelector(".view-header");
+		const viewHeaderLeftElement = 
+			this.view.containerEl.querySelector(".view-header-left");
+		
+		if (viewHeaderElement && viewHeaderLeftElement) {
+			this.clearMergeButton();
+			
+			// Create merge button element
+			const mergeButton = document.createElement("button");
+			mergeButton.className = "view-header-left system3-merge-button";
+			mergeButton.textContent = "Merge conflict";
+			mergeButton.setAttribute("aria-label", "Merge conflict -- click to resolve");
+			mergeButton.setAttribute("tabindex", "0");
+			
+			// Add click handler
+			mergeButton.addEventListener("click", async () => {
 				const diskBuffer = await this.document.diskBuffer();
 				const stale = await this.document.checkStale();
 				if (!stale) {
-					return true;
+					this.clearMergeButton();
+					return;
 				}
 				this._parent.openDiffView({
 					file1: this.document,
@@ -486,6 +500,7 @@ export class LiveView<ViewType extends TextFileView>
 					showMergeOption: true,
 					onResolve: async () => {
 						this.document.clearDiskBuffer();
+						this.clearMergeButton();
 						// Force view to sync to CRDT state after differ resolution
 						if (
 							this._plugin &&
@@ -495,9 +510,53 @@ export class LiveView<ViewType extends TextFileView>
 						}
 					},
 				});
-				return true;
-			},
-		);
+			});
+			
+			// Insert after view-header-left
+			viewHeaderLeftElement.insertAdjacentElement("afterend", mergeButton);
+		}
+	}
+
+	clearMergeButton() {
+		const existingButton = this.view.containerEl.querySelector(".system3-merge-button");
+		if (existingButton) {
+			existingButton.remove();
+		}
+	}
+
+	mergeBanner(): () => void {
+		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
+		if (Platform.isMobile && requireApiVersion("1.11.0")) {
+			this.setMergeButton();
+		} else {
+			this._banner = new Banner(
+				this.view,
+				"Merge conflict -- click to resolve",
+				async () => {
+					const diskBuffer = await this.document.diskBuffer();
+					const stale = await this.document.checkStale();
+					if (!stale) {
+						return true;
+					}
+					this._parent.openDiffView({
+						file1: this.document,
+						file2: diskBuffer,
+						showMergeOption: true,
+						onResolve: async () => {
+							this.document.clearDiskBuffer();
+							// Force view to sync to CRDT state after differ resolution
+							if (
+								this._plugin &&
+								typeof this._plugin.syncViewToCRDT === "function"
+							) {
+								await this._plugin.syncViewToCRDT();
+							}
+						},
+					});
+					return true;
+				},
+			);
+		}
 		return () => {};
 	}
 
@@ -666,6 +725,7 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
+		this.clearMergeButton();
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
@@ -681,6 +741,7 @@ export class LiveView<ViewType extends TextFileView>
 	destroy() {
 		this.release();
 		this.clearViewActions();
+		this.clearMergeButton();
 		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
