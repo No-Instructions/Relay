@@ -54,7 +54,6 @@ import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
-import { SyncQueueModal } from "./ui/SyncQueueModal";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
@@ -420,24 +419,10 @@ export default class Live extends Plugin {
 							this.disableDebugging(true);
 						},
 					});
-					this.addCommand({
-						id: "show-sync-status",
-						name: "Sync status",
-						callback: () => {
-							const modal = new SyncQueueModal(
-								this.app,
-								this.backgroundSync,
-								this.sharedFolders,
-							);
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
 				} else {
 					this.removeCommand("toggle-feature-flags");
 					this.removeCommand("send-bug-report");
 					this.removeCommand("show-debug-info");
-					this.removeCommand("show-sync-status");
 					this.removeCommand("show-release-manager");
 					this.removeCommand("disable-debugging");
 					this.addCommand({
@@ -660,23 +645,6 @@ export default class Live extends Plugin {
 									.setIcon("gear")
 									.onClick(() => {
 										this.openSettings(`/shared-folders?id=${folder.guid}`);
-									});
-							});
-						}
-						if (folder.relayId && flags().enableSyncModal) {
-							menu.addItem((item) => {
-								item
-									.setTitle("Sync Status")
-									.setIcon("list-checks")
-									.onClick(() => {
-										const modal = new SyncQueueModal(
-											this.app,
-											this.backgroundSync,
-											this.sharedFolders,
-											folder.guid,
-										);
-										this.openModals.push(modal);
-										modal.open();
 									});
 							});
 						}
