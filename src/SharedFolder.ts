@@ -132,7 +132,6 @@ export class SharedFolder extends HasProvider {
 	files: Map<string, IFile>; // Maps guids to SharedDocs
 	fset: Files;
 	relayId?: string;
-	_dbsize?: number;
 	_remote?: RemoteSharedFolder;
 	_shouldConnect: boolean;
 	destroyed: boolean = false;
@@ -527,27 +526,6 @@ export class SharedFolder extends HasProvider {
 		);
 	}
 
-	async count(): Promise<number> {
-		// XXX this is to workaround the y-indexeddb not counting records until after the synced event
-		if (this._persistence.db === null) {
-			throw new Error("unexpected missing database");
-		}
-		if (this._dbsize) {
-			return this._dbsize;
-		}
-		if (this._persistence._dbsize > 3) {
-			this._dbsize = this._persistence._dbsize;
-			return this._dbsize;
-		}
-		const [updatesStore] = idb.transact(
-			this._persistence.db,
-			["updates"],
-			"readonly",
-		);
-		const cnt = await idb.count(updatesStore);
-		this._dbsize = cnt;
-		return this._dbsize;
-	}
 
 	private _serverSynced?: boolean;
 	async markSynced(): Promise<void> {
@@ -567,11 +545,8 @@ export class SharedFolder extends HasProvider {
 		return false;
 	}
 
-	private hasLocalDB() {
-		// This is a bad hueristic
-		return (
-			this._persistence._dbsize > 3 || !!(this._dbsize && this._dbsize > 3)
-		);
+	private hasLocalDB(): boolean {
+		return this._persistence.hasUserData();
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
@@ -611,14 +586,12 @@ export class SharedFolder extends HasProvider {
 		const promiseFn = async (): Promise<void> => {
 			// Check if already synced first
 			if (this._persistence.synced) {
-				await this.count();
 				this.persistenceSynced = true;
 				return;
 			}
 
 			return new Promise<void>((resolve) => {
-				this._persistence.once("synced", async () => {
-					await this.count();
+				this._persistence.once("synced", () => {
 					this.persistenceSynced = true;
 					resolve();
 				});
@@ -628,7 +601,7 @@ export class SharedFolder extends HasProvider {
 		this.whenSyncedPromise =
 			this.whenSyncedPromise ||
 			new Dependency<void>(promiseFn, (): [boolean, void] => {
-				if (this._persistence.synced && this._dbsize) {
+				if (this._persistence.synced) {
 					this.persistenceSynced = true;
 				}
 				return [this.persistenceSynced, undefined];

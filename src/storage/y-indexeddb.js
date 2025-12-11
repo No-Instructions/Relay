@@ -21,12 +21,16 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
       Y.transact(idbPersistence.doc, () => {
         updates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
       }, idbPersistence, false)
-      afterApplyUpdatesCallback(updatesStore)
     }
   })
     .then(() => idb.getLastKey(updatesStore).then(lastKey => { idbPersistence._dbref = lastKey + 1 }))
     .then(() => idb.count(updatesStore).then(cnt => { idbPersistence._dbsize = cnt }))
-    .then(() => updatesStore)
+    .then(() => {
+      if (!idbPersistence._destroyed) {
+        afterApplyUpdatesCallback(updatesStore)
+      }
+      return updatesStore
+    })
 }
 
 /**
@@ -180,5 +184,14 @@ export class IndexeddbPersistence extends Observable {
       const [custom] = idb.transact(db, [customStoreName])
       return idb.del(custom, key)
     })
+  }
+
+  /**
+   * Check if this database contains meaningful user data
+   * (more than just initial metadata)
+   * @return {boolean}
+   */
+  hasUserData () {
+    return this._dbsize > 3
   }
 }

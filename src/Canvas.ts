@@ -24,7 +24,6 @@ export function isCanvas(file?: IFile): file is Canvas {
 }
 
 export class Canvas extends HasProvider implements IFile, HasMimeType {
-	_dbsize?: number;
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
 	whenSyncedPromise: Dependency<void> | null = null;
@@ -185,36 +184,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		);
 	}
 
-	async count(): Promise<number> {
-		// XXX this is to workaround the y-indexeddb not counting records until after the synced event
-		if (this._persistence.db === null) {
-			throw new Error("database not ready yet");
-		}
-		if (this._dbsize) {
-			return this._dbsize;
-		}
-		if (this._persistence._dbsize > 3) {
-			this._dbsize = this._persistence._dbsize;
-			return this._dbsize;
-		}
-		const [updatesStore] = idb.transact(
-			this._persistence.db,
-			["updates"],
-			"readonly",
-		);
-		const cnt = await idb.count(updatesStore);
-		this._dbsize = cnt;
-		return this._dbsize;
-	}
-
-	public get dbsize() {
-		if (!this._dbsize) {
-			throw new Error("dbsize accessed before count");
-		}
-		return this._persistence._dbsize === 0 && this._dbsize
-			? this._dbsize
-			: this._persistence._dbsize;
-	}
 
 	public get ready(): boolean {
 		const persistenceSynced = this._persistence.synced;
@@ -224,12 +193,8 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		);
 	}
 
-	hasLocalDB() {
-		return (
-			!!this._serverSynced ||
-			this._persistence._dbsize > 3 ||
-			!!(this._dbsize && this._dbsize > 3)
-		);
+	hasLocalDB(): boolean {
+		return !!this._serverSynced || this._persistence.hasUserData();
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
@@ -270,7 +235,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			await this.sharedFolder.whenSynced();
 			// Check if already synced first
 			if (this._persistence.synced && !this.persistenceSynced) {
-				await this.count();
 				this.persistenceSynced = true;
 				return Promise.resolve();
 			}
@@ -279,8 +243,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				if (this.persistenceSynced) {
 					resolve();
 				}
-				this._persistence.once("synced", async () => {
-					await this.count();
+				this._persistence.once("synced", () => {
 					this.persistenceSynced = true;
 					resolve();
 				});
