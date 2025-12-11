@@ -4,6 +4,7 @@ import { EditorView } from "@codemirror/view";
 import {
 	App,
 	MarkdownView,
+	Platform,
 	TFile,
 	TextFileView,
 	Workspace,
@@ -111,6 +112,7 @@ export class LoggedOutView implements S3View {
 	canConnect = false;
 
 	private _parent: LiveViewManager;
+	private _viewActions?: ViewActions;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -122,25 +124,66 @@ export class LoggedOutView implements S3View {
 		this.login = login;
 	}
 
+	setLoginIcon(): void {
+		const viewActionsElement =
+			this.view.containerEl.querySelector(".view-actions");
+		if (viewActionsElement && viewActionsElement.firstChild) {
+			this.clearViewActions();
+			this._viewActions = new ViewActions({
+				target: viewActionsElement,
+				anchor: viewActionsElement.firstChild as Element,
+				props: {
+					view: this,
+					state: { status: "disconnected" as const },
+					remote: null,
+					isLoggedOut: true,
+					onLogin: this.login,
+				},
+			});
+		}
+	}
+
+	clearViewActions() {
+		const viewActionsElement =
+			this.view.containerEl.querySelector(".view-actions");
+		if (viewActionsElement && viewActionsElement.firstChild) {
+			const viewActions = this.view.containerEl.querySelectorAll(
+				".system3-view-action",
+			);
+			if (viewActions.length > 0) {
+				viewActions.forEach((viewAction) => {
+					viewAction.remove();
+				});
+			}
+		}
+	}
+
 	attach(): Promise<S3View> {
-		this.banner = new Banner(
-			this.view,
-			"Login to enable Live edits",
-			async () => {
-				return await this.login();
-			},
-		);
+		if (Platform.isMobile) {
+			this.setLoginIcon();
+		} else {
+			this.banner = new Banner(
+				this.view,
+				"Login to enable Live edits",
+				async () => {
+					return await this.login();
+				},
+			);
+		}
 		return Promise.resolve(this);
 	}
 
 	release() {
 		this.banner?.destroy();
+		this._viewActions?.$destroy();
+		this._viewActions = undefined;
 	}
 
 	destroy() {
 		this.release();
 		this.banner?.destroy();
 		this.banner = undefined;
+		this.clearViewActions();
 		this.view = null as any;
 	}
 }

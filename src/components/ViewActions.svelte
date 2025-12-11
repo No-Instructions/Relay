@@ -3,11 +3,13 @@
 	import type { ConnectionState, ConnectionStatus } from "../HasProvider";
 	import type { Document } from "src/Document";
 	import type { RemoteSharedFolder } from "src/Relay";
-	import { Layers, Satellite } from "lucide-svelte";
+	import { Layers, Satellite, UserRoundX } from "lucide-svelte";
 
 	export let view: LiveView;
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
+	export let isLoggedOut: boolean = false;
+	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
 
 	const ariaLabels: Record<ConnectionStatus, string> = {
 		connected: "connected: click to go offline",
@@ -17,7 +19,11 @@
 	};
 
 	const handleClick = () => {
-		view.toggleConnection();
+		if (isLoggedOut && onLogin) {
+			onLogin();
+		} else {
+			view.toggleConnection();
+		}
 	};
 
 	const handleKeyPress = (event: KeyboardEvent) => {
@@ -27,7 +33,17 @@
 	};
 </script>
 
-{#if remote}
+{#if isLoggedOut}
+	<button
+		class="clickable-icon view-action system3-view-action mod-warning"
+		aria-label="Login to enable Live edits"
+		tabindex="0"
+		on:click={handleClick}
+		on:keypress={handleKeyPress}
+	>
+		<UserRoundX class="svg-icon inline-icon" />
+	</button>
+{:else if remote}
 	<button
 		class="clickable-icon view-action system3-view-action {view.tracking
 			? 'notebook-synced'
