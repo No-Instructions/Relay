@@ -12,6 +12,7 @@ import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
+import type { EventMessage } from "./client/provider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
@@ -296,6 +297,9 @@ export class SharedFolder extends HasProvider {
 		})();
 
 		RelayInstances.set(this, this.path);
+		
+		// Set up event subscriptions for this shared folder
+		this.setupEventSubscriptions();
 	}
 
 	private addLocalDocs = () => {
@@ -465,7 +469,13 @@ export class SharedFolder extends HasProvider {
 	connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
-				return super.connect();
+				return super.connect().then((result) => {
+					// Set up event subscriptions after connection
+					if (result) {
+						this.setupEventSubscriptions();
+					}
+					return result;
+				});
 			}
 		}
 		return Promise.resolve(false);
@@ -1666,8 +1676,44 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	private setupEventSubscriptions() {
+		// Subscribe to document.updated events for this shared folder
+		if (this._provider && this._provider.wsconnected) {
+			this._provider.subscribeToEvents(['document.updated'], this.handleDocumentUpdateEvent.bind(this));
+			this.debug('Subscribed to document.updated events');
+		}
+	}
+	
+	private handleDocumentUpdateEvent(event: EventMessage) {
+		this.debug('Document update event received:', {
+			eventId: event.event_id,
+			docId: event.doc_id,
+			timestamp: new Date(Number(event.timestamp)).toISOString(),
+			user: event.user,
+			updateSize: event.update ? event.update.length : 0,
+		});
+		
+		// Check if this is for a specific document within our folder
+		const file = this.files.get(event.doc_id);
+		if (file) {
+			this.debug(`Document ${file.path} received remote update`);
+			
+			// TODO: In the future, we could apply the Yjs update directly if event.update exists
+			// For now, just log that we received the event - the Yjs sync protocol
+			// will handle applying the actual changes through the WebSocket connection
+		} else {
+			this.debug(`Received update for unknown document ${event.doc_id}`);
+		}
+	}
+
 	destroy() {
 		this.destroyed = true;
+		
+		// Unsubscribe from events before destroying
+		if (this._provider) {
+			this._provider.unsubscribeFromEvents(['document.updated']);
+		}
+		
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
