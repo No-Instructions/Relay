@@ -5,6 +5,7 @@
 	import type { SharedFolder, SharedFolders } from "../SharedFolder";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
+	import SettingGroup from "./SettingGroup.svelte";
 	import SelectedFolder from "./SelectedFolder.svelte";
 	import { onMount, onDestroy } from "svelte";
 	import { derived, writable } from "svelte/store";

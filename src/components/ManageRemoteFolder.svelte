@@ -24,6 +24,7 @@
 
 	import Lock from "./Lock.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
+	import SettingGroup from "./SettingGroup.svelte";
 	import { Check, Edit } from "lucide-svelte";
 	import { UserSelectModal } from "src/ui/UserSelectModal";
 	import { handleServerError } from "src/utils/toastStore";
@@ -440,14 +441,16 @@
 
 {#if !$folderStore && $canReadFolder}
 	<SettingItemHeading name="Add to vault"></SettingItemHeading>
-	<SettingItem
-		name="Add this folder to your vault"
-		description="Download and sync this folder to your local device"
-	>
-		<button class="mod-cta" on:click={debounce(handleAddToVault)}>
-			Add to vault
-		</button>
-	</SettingItem>
+	<SettingGroup>
+		<SettingItem
+			name="Add this folder to your vault"
+			description="Download and sync this folder to your local device"
+		>
+			<button class="mod-cta" on:click={debounce(handleAddToVault)}>
+				Add to vault
+			</button>
+		</SettingItem>
+	</SettingGroup>
 {/if}
 
 {#if $relayStore}
@@ -475,7 +478,8 @@
 		{/if}
 	</SettingItemHeading>
 
-	{#each $virtualFolderRoles as role}
+	<SettingGroup>
+		{#each $virtualFolderRoles as role}
 		<AccountSettingItem user={role.user}>
 			{#if isPrivate}
 				{#if $isEditingUsers}
@@ -521,6 +525,7 @@
 			</button>
 		</SettingItem>
 	{/if}
+	</SettingGroup>
 {/if}
 
 <div class="spacer"></div>
@@ -532,7 +537,8 @@
 			helpText="You must have attachment storage available in order to sync attachments."
 		></SettingItemHeading>
 
-		{#if displayName !== $folderStore.name}
+		<SettingGroup>
+			{#if displayName !== $folderStore.name}
 			<SettingItem
 				name="Local path"
 				description="This folder has a different name in your Vault"
@@ -578,6 +584,7 @@
 				</button>
 			</SlimSettingItem>
 		{/if}
+		</SettingGroup>
 	</div>
 {/if}
 
@@ -585,46 +592,48 @@
 
 {#if $canDeleteFolder || $canMakeFolderPrivate || $folderStore}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
-{/if}
-{#if $relayStore}
-	{#if $canMakeFolderPrivate}
-		{#if !remoteFolder?.private && remoteFolder?.relay.version > 0}
+	<SettingGroup>
+		{#if $relayStore}
+			{#if $canMakeFolderPrivate}
+				{#if !remoteFolder?.private && remoteFolder?.relay.version > 0}
+					<SettingItem
+						name="Make private"
+						description="Convert this folder to a private folder and manage access"
+					>
+						<button class="mod-destructive" on:click={debounce(handleMakePrivate)}>
+							Make private
+						</button>
+					</SettingItem>
+				{/if}
+			{/if}
+			{#if $canDeleteFolder}
+				<SettingItem
+					name="Remove from Relay Server"
+					description={`Deletes the remote folder from the Relay Server. Local files will be preserved.`}
+				>
+					<button class="mod-destructive" on:click={debounce(handleDeleteRemote)}>
+						Delete from Relay Server
+					</button>
+				</SettingItem>
+			{/if}
+		{/if}
+
+		{#if $folderStore}
 			<SettingItem
-				name="Make private"
-				description="Convert this folder to a private folder and manage access"
+				name="Delete from vault"
+				description="Delete the local Shared Folder and all of its contents."
 			>
-				<button class="mod-destructive" on:click={debounce(handleMakePrivate)}>
-					Make private
+				<button
+					class="mod-warning"
+					on:click={debounce(() => {
+						handleDeleteLocal();
+					})}
+				>
+					Move to trash
 				</button>
 			</SettingItem>
 		{/if}
-	{/if}
-	{#if $canDeleteFolder}
-		<SettingItem
-			name="Remove from Relay Server"
-			description={`Deletes the remote folder from the Relay Server. Local files will be preserved.`}
-		>
-			<button class="mod-destructive" on:click={debounce(handleDeleteRemote)}>
-				Delete from Relay Server
-			</button>
-		</SettingItem>
-	{/if}
-{/if}
-
-{#if $folderStore}
-	<SettingItem
-		name="Delete from vault"
-		description="Delete the local Shared Folder and all of its contents."
-	>
-		<button
-			class="mod-warning"
-			on:click={debounce(() => {
-				handleDeleteLocal();
-			})}
-		>
-			Move to trash
-		</button>
-	</SettingItem>
+	</SettingGroup>
 {/if}
 
 <style>

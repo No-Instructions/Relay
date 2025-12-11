@@ -2,6 +2,7 @@
 	import { writable } from "svelte/store";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
+	import SettingGroup from "./SettingGroup.svelte";
 	import { debounce, requestUrl } from "obsidian";
 	import type Live from "../main";
 	import { getAllLogFiles, getAllLogs } from "src/debug";
@@ -61,45 +62,51 @@
 		>
 	</SettingItemHeading>
 
-	<SettingItem name="User Agent" description="">
-		{navigator.userAgent}
-	</SettingItem>
+	<SettingGroup>
+		<SettingItem name="User Agent" description="">
+			{navigator.userAgent}
+		</SettingItem>
 
-	<SettingItem name="Fetch" description="">
-		{$fetchImpl}
-	</SettingItem>
+		<SettingItem name="Fetch" description="">
+			{$fetchImpl}
+		</SettingItem>
 
-	<SettingItem name="Response" description="">
-		{$responseImpl}
-	</SettingItem>
+		<SettingItem name="Response" description="">
+			{$responseImpl}
+		</SettingItem>
 
-	<SettingItem name="Blink Fetch" description="">
-		{$usingBlink}
-	</SettingItem>
+		<SettingItem name="Blink Fetch" description="">
+			{$usingBlink}
+		</SettingItem>
 
-	<SettingItem name="Startup Time" description="">
-		{plugin.loadTime ? `${plugin.loadTime}ms` : "unknown"}
-	</SettingItem>
+		<SettingItem name="Startup Time" description="">
+			{plugin.loadTime ? `${plugin.loadTime}ms` : "unknown"}
+		</SettingItem>
+	</SettingGroup>
 
 	<SettingItemHeading name="Connections" />
-	<SettingItem name="" description="">
-		<div slot="description">
-			{#each Object.keys($anyPb.cancelControllers) as connection}
-				<div>
-					{`${connection}`}
-				</div>
-			{/each}
-		</div>
-	</SettingItem>
+	<SettingGroup>
+		<SettingItem name="" description="">
+			<div slot="description">
+				{#each Object.keys($anyPb.cancelControllers) as connection}
+					<div>
+						{`${connection}`}
+					</div>
+				{/each}
+			</div>
+		</SettingItem>
+	</SettingGroup>
 
 	<SettingItemHeading name="Log Files" />
-	<SettingItem name="" description="">
-		<div slot="description">
-			{#each $logFiles as lfile}
-				<div>
-					{`${lfile}`}
-				</div>
-			{/each}
-		</div>
-	</SettingItem>
+	<SettingGroup>
+		<SettingItem name="" description="">
+			<div slot="description">
+				{#each $logFiles as lfile}
+					<div>
+						{`${lfile}`}
+					</div>
+				{/each}
+			</div>
+		</SettingItem>
+	</SettingGroup>
 </div>

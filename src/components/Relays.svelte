@@ -3,6 +3,7 @@
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
+	import SettingGroup from "./SettingGroup.svelte";
 	import SettingsControl from "./SettingsControl.svelte";
 	import ExternalLink from "./ExternalLink.svelte";
 	import {
@@ -178,28 +179,30 @@
 </script>
 
 <SettingItemHeading name="Join a Relay Server"></SettingItemHeading>
-<SettingItem
-	name="Share key"
-	description="Enter the code that was shared with you."
->
-	<SecretText
-		bind:value={shareKey}
-		disabled={invitePending}
-		placeholder="Enter share key"
-		readonly={false}
-		copyOnClick={false}
-		on:input={handleShareKeyInput}
-		on:enter={debounce(() => handleJoinRelayFromInvite(shareKey))}
-		invalid={invalidShareKey}
-	/>
-	<button
-		class="mod-cta"
-		disabled={invitePending}
-		on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
+<SettingGroup>
+	<SettingItem
+		name="Share key"
+		description="Enter the code that was shared with you."
 	>
-		Join
-	</button>
-</SettingItem>
+		<SecretText
+			bind:value={shareKey}
+			disabled={invitePending}
+			placeholder="Enter share key"
+			readonly={false}
+			copyOnClick={false}
+			on:input={handleShareKeyInput}
+			on:enter={debounce(() => handleJoinRelayFromInvite(shareKey))}
+			invalid={invalidShareKey}
+		/>
+		<button
+			class="mod-cta"
+			disabled={invitePending}
+			on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
+		>
+			Join
+		</button>
+	</SettingItem>
+</SettingGroup>
 
 <SettingItemHeading
 	helpText="A Relay Server coordinates real-time updates between collaborators. You can add collaborators and share folders on the Relay Server's settings page."
@@ -208,117 +211,122 @@
 		Relay Servers
 	</span>
 </SettingItemHeading>
-{#each $relays.values().filter(hasPermissionParents).sort(sortFn) as relay}
-	<SlimSettingItem>
-		<Satellite slot="name" {relay} on:manageRelay>
-			{#if relay.name}
-				{relay.name}
-			{:else}
-				<span class="faint">(Untitled Relay Server)</span>
-			{/if}
-		</Satellite>
-		<SettingsControl
-			on:settings={() => {
-				handleManageRelay(relay);
-			}}
-		></SettingsControl>
-	</SlimSettingItem>
-{/each}
-<SettingItem name="" description="">
-	<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}>
-		Create
-	</button>
-</SettingItem>
+<SettingGroup>
+	{#each $relays.values().filter(hasPermissionParents).sort(sortFn) as relay}
+		<SlimSettingItem>
+			<Satellite slot="name" {relay} on:manageRelay>
+				{#if relay.name}
+					{relay.name}
+				{:else}
+					<span class="faint">(Untitled Relay Server)</span>
+				{/if}
+			</Satellite>
+			<SettingsControl
+				on:settings={() => {
+					handleManageRelay(relay);
+				}}
+			></SettingsControl>
+		</SlimSettingItem>
+	{/each}
+	<SettingItem description="" name="">
+		<button class="mod-cta" on:click={debounce(() => handleCreateRelay())}>
+			Create
+		</button>
+	</SettingItem>
+</SettingGroup>
 
 <SettingItemHeading
 	name="My vault"
 	helpText="The following Shared Folders have been added to your vault. You can see what Relay Server a Shared Folder is connected to below."
 ></SettingItemHeading>
-{#if $sharedFolders.items().length === 0}
-	<SettingItem
-		description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
-	/>
-{/if}
-{#each $sharedFolders.items().sort(folderSort) as folder}
-	<SlimSettingItem>
-		<SharedFolderSpan
-			on:manageSharedFolder
-			on:manageRemoteFolder
-			on:manageRelay
-			{folder}
-			slot="name"
+<SettingGroup>
+	{#if $sharedFolders.items().length === 0}
+		<SettingItem
+			description="No shared folders on this device. Share folders from a Relay Server's settings page to begin collaboration."
 		/>
-		{#if folder.remote}
-			<SettingsControl
-				on:settings={debounce(() => {
-					handleManageRemoteFolder(folder.remote);
-				})}
-			></SettingsControl>
-		{:else}
-			<SettingsControl
-				on:settings={debounce(() => {
-					const relay = $relays.values().find((relay) => {
-						return folder.remote?.relay.guid === relay.guid;
-					});
-					handleManageSharedFolder(folder, relay);
-				})}
-			></SettingsControl>
-		{/if}
-	</SlimSettingItem>
-{/each}
+	{/if}
+	{#each $sharedFolders.items().sort(folderSort) as folder}
+		<SlimSettingItem>
+			<SharedFolderSpan
+				on:manageSharedFolder
+				on:manageRemoteFolder
+				on:manageRelay
+				{folder}
+				slot="name"
+			/>
+			{#if folder.remote}
+				<SettingsControl
+					on:settings={debounce(() => {
+						handleManageRemoteFolder(folder.remote);
+					})}
+				></SettingsControl>
+			{:else}
+				<SettingsControl
+					on:settings={debounce(() => {
+						const relay = $relays.values().find((relay) => {
+							return folder.remote?.relay.guid === relay.guid;
+						});
+						handleManageSharedFolder(folder, relay);
+					})}
+				></SettingsControl>
+			{/if}
+		</SlimSettingItem>
+	{/each}
 
-<SlimSettingItem name="">
-	<button
-		class="mod-cta"
-		aria-label="Add shared folder to vault"
-		on:click={debounce(handleAddFolder)}
-		style="max-width: 8em"
-	>
-		Add folder
-	</button>
-</SlimSettingItem>
+	<SlimSettingItem name="">
+		<button
+			class="mod-cta"
+			aria-label="Add shared folder to vault"
+			on:click={debounce(handleAddFolder)}
+			style="max-width: 8em"
+		>
+			Add folder
+		</button>
+	</SlimSettingItem>
+</SettingGroup>
 {#if subscriptions.values().length > 0}
 	<div class="spacer"></div>
 	<SettingItemHeading
 		name="Subscriptions"
 		helpText="Subscriptions are tied to each Relay Server, not to your user account. Modify and cancel your subscription via our payment processor Stripe."
 	></SettingItemHeading>
-
-	{#each $subscriptions.values() as subscription}
-		<SlimSettingItem
-			name=""
-			description={subscription.cancelAt
-				? getActiveForMessage(subscription.cancelAt)
-				: ""}
-		>
-			<Satellite slot="name" relay={subscription.relay} on:manageRelay>
-				{#if subscription.relay.name}
-					{subscription.relay.name}
-				{:else}
-					<span class="faint">(Untitled Relay Server)</span>
-				{/if}
-			</Satellite>
-			<button
-				on:click={debounce(async () => {
-					if (!subscription.token) {
-						const token =
-							await plugin.relayManager.getSubscriptionToken(subscription);
-						subscription.token = token;
-					}
-					const sub_id = subscription.id;
-					const token = subscription.token;
-					window.open(
-						plugin.buildApiUrl(
-							`/subscriptions/${sub_id}/manage?token=${token}`,
-						),
-						"_blank",
-					);
-				})}
+	<SettingGroup>
+		{#each $subscriptions.values() as subscription}
+			<SlimSettingItem
+				name=""
+				description={subscription.cancelAt
+					? getActiveForMessage(subscription.cancelAt)
+					: ""}
 			>
-				Manage
-			</button>
-		</SlimSettingItem>
-	{/each}
+				<Satellite slot="name" relay={subscription.relay} on:manageRelay>
+					{#if subscription.relay.name}
+						{subscription.relay.name}
+					{:else}
+						<span class="faint">(Untitled Relay Server)</span>
+					{/if}
+				</Satellite>
+				<button
+					on:click={debounce(async () => {
+						if (!subscription.token) {
+							const token =
+								await plugin.relayManager.getSubscriptionToken(subscription);
+							subscription.token = token;
+						}
+						const sub_id = subscription.id;
+						const token = subscription.token;
+						window.open(
+							plugin.buildApiUrl(
+								`/subscriptions/${sub_id}/manage?token=${token}`,
+							),
+							"_blank",
+						);
+					})}
+				>
+					Manage
+				</button>
+			</SlimSettingItem>
+		{/each}
+	</SettingGroup>
 {/if}
 
 <style>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingItem from "./SettingItem.svelte";
+	import SettingGroup from "./SettingGroup.svelte";
 	import type Live from "src/main";
 	import { type SharedFolder } from "src/SharedFolder";
 	import { debounce } from "obsidian";
@@ -52,32 +53,33 @@
 
 {#if sharedFolder}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
-
-	<SettingItem
-		name="Delete metadata"
-		description="Deletes edit history and disables change tracking."
-	>
-		<button
-			class="mod-destructive"
-			on:click={debounce(() => {
-				handleDeleteMetadata();
-			})}
+	<SettingGroup>
+		<SettingItem
+			name="Delete metadata"
+			description="Deletes edit history and disables change tracking."
 		>
-			Delete metadata
-		</button>
-	</SettingItem>
+			<button
+				class="mod-destructive"
+				on:click={debounce(() => {
+					handleDeleteMetadata();
+				})}
+			>
+				Delete metadata
+			</button>
+		</SettingItem>
 
-	<SettingItem
-		name="Delete from vault"
-		description="Delete the local Shared Folder and all of its contents."
-	>
-		<button
-			class="mod-warning"
-			on:click={debounce(() => {
-				handleDeleteLocal();
-			})}
+		<SettingItem
+			name="Delete from vault"
+			description="Delete the local Shared Folder and all of its contents."
 		>
-			Move to trash
-		</button>
-	</SettingItem>
+			<button
+				class="mod-warning"
+				on:click={debounce(() => {
+					handleDeleteLocal();
+				})}
+			>
+				Move to trash
+			</button>
+		</SettingItem>
+	</SettingGroup>
 {/if}

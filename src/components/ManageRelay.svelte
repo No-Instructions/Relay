@@ -30,6 +30,7 @@
 	import { FolderSuggestModal } from "src/ui/FolderSuggestModal";
 	import SettingItem from "./SettingItem.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
+	import SettingGroup from "./SettingGroup.svelte";
 	import RelayConfigBlock from "./RelayConfigBlock.svelte";
 
 	export let relay: Relay;
@@ -530,66 +531,68 @@
 		</button>
 	{/if}
 </SettingItemHeading>
-{#each $remoteFolders.values() as remote}
-	{#if $viewAsAdmin ? get(plugin.relayManager.userCan(["folder", "manage_users"], remote)) : get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
-		<SlimSettingItem>
-			<RemoteFolder
-				remoteFolder={remote}
-				slot="name"
-				on:manageRemoteFolder={() => {
-					dispatch("manageRemoteFolder", {
-						remoteFolder: remote,
-					});
-				}}>{remote.name}</RemoteFolder
-			>
-			{#if !$sharedFolders.some((sharedFolder) => sharedFolder.guid === remote.guid) && get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
+<SettingGroup>
+	{#each $remoteFolders.values() as remote}
+		{#if $viewAsAdmin ? get(plugin.relayManager.userCan(["folder", "manage_users"], remote)) : get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
+			<SlimSettingItem>
+				<RemoteFolder
+					remoteFolder={remote}
+					slot="name"
+					on:manageRemoteFolder={() => {
+						dispatch("manageRemoteFolder", {
+							remoteFolder: remote,
+						});
+					}}>{remote.name}</RemoteFolder
+				>
+				{#if !$sharedFolders.some((sharedFolder) => sharedFolder.guid === remote.guid) && get(plugin.relayManager.userCan(["folder", "read_content"], remote))}
+					<SettingsControl
+						on:settings={debounce(() => {
+							handleAddToVault(remote);
+						})}
+						label="Add to vault"
+					>
+						<Download
+							class="svg-icon lucide-settings"
+							props={{ class: "svg-icon lucide-settings" }}
+						/>
+					</SettingsControl>
+				{/if}
 				<SettingsControl
 					on:settings={debounce(() => {
-						handleAddToVault(remote);
+						dispatch("manageRemoteFolder", {
+							remoteFolder: remote,
+						});
 					})}
-					label="Add to vault"
-				>
-					<Download
-						class="svg-icon lucide-settings"
-						props={{ class: "svg-icon lucide-settings" }}
-					/>
-				</SettingsControl>
-			{/if}
-			<SettingsControl
-				on:settings={debounce(() => {
-					dispatch("manageRemoteFolder", {
-						remoteFolder: remote,
-					});
-				})}
-			></SettingsControl>
-		</SlimSettingItem>
-	{/if}
-{/each}
+				></SettingsControl>
+			</SlimSettingItem>
+		{/if}
+	{/each}
 
-<SettingItem description="" name="">
-	<button
-		class="mod-cta"
-		aria-label="Select a folder to share it with this Relay Server"
-		on:click={debounce(() => {
-			if (relay.version === 0) {
-				// For relay version 0, go directly to folder selection
-				const folderModal = new FolderSuggestModal(
-					plugin.app,
-					"Choose or create folder...",
-					new Set(
-						sharedFolders.filter((f) => !!f.relayId).map((f) => f.path),
-					).add("/"),
-					sharedFolders,
-					onChoose,
-				);
-				folderModal.open();
-			} else {
-				// For relay version > 0, use the full modal with privacy settings
-				shareFolderModal.open();
-			}
-		})}>Share a folder</button
-	>
-</SettingItem>
+	<SettingItem description="" name="">
+		<button
+			class="mod-cta"
+			aria-label="Select a folder to share it with this Relay Server"
+			on:click={debounce(() => {
+				if (relay.version === 0) {
+					// For relay version 0, go directly to folder selection
+					const folderModal = new FolderSuggestModal(
+						plugin.app,
+						"Choose or create folder...",
+						new Set(
+							sharedFolders.filter((f) => !!f.relayId).map((f) => f.path),
+						).add("/"),
+						sharedFolders,
+						onChoose,
+					);
+					folderModal.open();
+				} else {
+					// For relay version > 0, use the full modal with privacy settings
+					shareFolderModal.open();
+				}
+			})}>Share a folder</button
+		>
+	</SettingItem>
+</SettingGroup>
 
 <div class="spacer"></div>
 
@@ -614,49 +617,51 @@
 	</SettingItemHeading>
 </div>
 
-{#each $roles.values().sort(userSort) as item}
-	<AccountSettingItem user={item.user}>
-		{#if $canManageUsers}
-			{#if $isEditingMembers}
-				{#if item.userId !== plugin.loginManager.user?.id}
-					<button
-						class="mod-destructive"
-						on:click={debounce(() => {
-							handleKick(item);
-						})}
-					>
-						Kick
-					</button>
+<SettingGroup>
+	{#each $roles.values().sort(userSort) as item}
+		<AccountSettingItem user={item.user}>
+			{#if $canManageUsers}
+				{#if $isEditingMembers}
+					{#if item.userId !== plugin.loginManager.user?.id}
+						<button
+							class="mod-destructive"
+							on:click={debounce(() => {
+								handleKick(item);
+							})}
+						>
+							Kick
+						</button>
+					{/if}
+				{:else}
+					<div style="display: flex; gap: 8px; align-items: center;">
+						<select
+							class="dropdown"
+							disabled={item.userId === plugin.loginManager.user?.id}
+							aria-label={item.userId === plugin.loginManager.user?.id
+								? "Cannot modify your own role"
+								: undefined}
+							value={item.role}
+							data-role-id={item.id}
+							on:change={handleRoleChangeEvent}
+						>
+							{#each $availableRoles as role}
+								<option value={role.name}>{role.name}</option>
+							{/each}
+						</select>
+					</div>
 				{/if}
 			{:else}
-				<div style="display: flex; gap: 8px; align-items: center;">
-					<select
-						class="dropdown"
-						disabled={item.userId === plugin.loginManager.user?.id}
-						aria-label={item.userId === plugin.loginManager.user?.id
-							? "Cannot modify your own role"
-							: undefined}
-						value={item.role}
-						data-role-id={item.id}
-						on:change={handleRoleChangeEvent}
-					>
-						{#each $availableRoles as role}
-							<option value={role.name}>{role.name}</option>
-						{/each}
-					</select>
-				</div>
+				<span class="role-label">{item.role}</span>
 			{/if}
-		{:else}
-			<span class="role-label">{item.role}</span>
-		{/if}
-	</AccountSettingItem>
-{/each}
+		</AccountSettingItem>
+	{/each}
 
-<SettingItem description="" name="">
-	<span class="faint"
-		>{$roles.values().length} of {$relay.userLimit} seats used
-	</span>
-</SettingItem>
+	<SettingItem description="" name="">
+		<span class="faint"
+			>{$roles.values().length} of {$relay.userLimit} seats used
+		</span>
+	</SettingItem>
+</SettingGroup>
 
 <!--
 
@@ -671,211 +676,219 @@
 	helpText="Share keys can be shared with collaborators so that they can join the Relay Server. Once you have added all of your collaborators, you can disable the share key to prevent anyone from joining, even if they have the key."
 ></SettingItemHeading>
 
-<SlimSettingItem
-	name={$canManageSharing ? "Enable key sharing" : "Key sharing"}
->
-	<fragment slot="description">
-		{#if $canManageSharing}
-			<div class="setting-item-description">
-				Allow others to join this Relay Server with a Share Key.
-			</div>
-		{:else if $isShareKeyEnabled}
-			<div class="setting-item-description">
-				The owner of this Relay Server has enabled key sharing.
-			</div>
-		{:else}
-			<div class="setting-item-description mod-warning">
-				The owner of this Relay Server has disabled key sharing.
-			</div>
-		{/if}
-	</fragment>
-	<div class="setting-item-control">
-		{#if !$canManageSharing}
-			<Lock />
-		{/if}
-		<div
-			role="checkbox"
-			aria-checked={$isShareKeyEnabled}
-			tabindex="0"
-			on:keypress={() => handleKeyToggle(!$isShareKeyEnabled)}
-			class={$canManageSharing
-				? "checkbox-container"
-				: "checkbox-container checkbox-locked"}
-			class:is-enabled={$isShareKeyEnabled}
-			on:click={() => handleKeyToggle(!$isShareKeyEnabled)}
-		>
-			<input
-				type="checkbox"
-				checked={$isShareKeyEnabled}
-				disabled={!$canManageSharing}
-				on:change={(e) => handleKeyToggle(e.currentTarget.checked)}
-			/>
-			<div class="checkbox-toggle"></div>
-		</div>
-	</div>
-</SlimSettingItem>
-
-{#if $isShareKeyEnabled}
-	<SettingItem
-		name="Share Key"
-		description="Share this key with your collaborators."
+<SettingGroup>
+	<SlimSettingItem
+		name={$canManageSharing ? "Enable key sharing" : "Key sharing"}
 	>
-		<div class="share-key-container">
-			{#if !$isShareKeyEnabled}
-				<span
-					role="button"
-					tabindex="0"
-					class="input-like share-key-disabled-notice"
-				>
-					Share key is currently disabled
-				</span>
+		<fragment slot="description">
+			{#if $canManageSharing}
+				<div class="setting-item-description">
+					Allow others to join this Relay Server with a Share Key.
+				</div>
+			{:else if $isShareKeyEnabled}
+				<div class="setting-item-description">
+					The owner of this Relay Server has enabled key sharing.
+				</div>
 			{:else}
-				<SecretText
-					value={relayInvitation ? relayInvitation.key : "please wait..."}
-					disabled={!$isShareKeyEnabled}
-					placeholder="please wait..."
-					readonly={true}
-					copyOnClick={true}
-					successMessage="Invite link copied"
-				/>
+				<div class="setting-item-description mod-warning">
+					The owner of this Relay Server has disabled key sharing.
+				</div>
 			{/if}
-		</div>
-	</SettingItem>
-
-	{#if $canManageSharing}
-		<SettingItem
-			name="Rotate key"
-			description="Create a new share key. The old key will no longer work."
-		>
-			<button on:click={debounce(rotateKey)} class="mod-destructive">
-				Rotate key
-			</button>
-		</SettingItem>
-	{/if}
-{/if}
-{#if $canManageSubscription}
-	<SettingItemHeading name="Plan" />
-	{#if $subscription}
-		<SettingItem name={`Plan: ${$relay.plan}`} description="">
-			<fragment slot="description">
-				{$relay.cta}
-			</fragment>
-			<button
-				on:click={debounce(() => {
-					handleManage($subscription);
-				})}
+		</fragment>
+		<div class="setting-item-control">
+			{#if !$canManageSharing}
+				<Lock />
+			{/if}
+			<div
+				role="checkbox"
+				aria-checked={$isShareKeyEnabled}
+				tabindex="0"
+				on:keypress={() => handleKeyToggle(!$isShareKeyEnabled)}
+				class={$canManageSharing
+					? "checkbox-container"
+					: "checkbox-container checkbox-locked"}
+				class:is-enabled={$isShareKeyEnabled}
+				on:click={() => handleKeyToggle(!$isShareKeyEnabled)}
 			>
-				Manage
-			</button>
+				<input
+					type="checkbox"
+					checked={$isShareKeyEnabled}
+					disabled={!$canManageSharing}
+					on:change={(e) => handleKeyToggle(e.currentTarget.checked)}
+				/>
+				<div class="checkbox-toggle"></div>
+			</div>
+		</div>
+	</SlimSettingItem>
 
-			{#if $subscriptions.values()[0].active && !$subscriptions.values()[0].cancelAt}
-				<button
-					class="mod-destructive"
-					on:click={debounce(() => {
-						handleCancel($subscription);
-					})}
-				>
-					Cancel
-				</button>
-			{/if}
+	{#if $isShareKeyEnabled}
+		<SettingItem
+			name="Share Key"
+			description="Share this key with your collaborators."
+		>
+			<div class="share-key-container">
+				{#if !$isShareKeyEnabled}
+					<span
+						role="button"
+						tabindex="0"
+						class="input-like share-key-disabled-notice"
+					>
+						Share key is currently disabled
+					</span>
+				{:else}
+					<SecretText
+						value={relayInvitation ? relayInvitation.key : "please wait..."}
+						disabled={!$isShareKeyEnabled}
+						placeholder="please wait..."
+						readonly={true}
+						copyOnClick={true}
+						successMessage="Invite link copied"
+					/>
+				{/if}
+			</div>
 		</SettingItem>
-		{#if !$subscriptions.values()[0].active || $subscriptions.values()[0].cancelAt}
-			<SettingItem description="">
-				<span slot="name" class="mod-warning">Status: Cancelled</span>
-				{getActiveForMessage($subscriptions.values()[0].cancelAt)}
+
+		{#if $canManageSharing}
+			<SettingItem
+				name="Rotate key"
+				description="Create a new share key. The old key will no longer work."
+			>
+				<button on:click={debounce(rotateKey)} class="mod-destructive">
+					Rotate key
+				</button>
 			</SettingItem>
 		{/if}
-	{:else}
-		<SettingItem
-			name={`Plan: ${$relay.plan}`}
-			description={$relay.cta || "Thanks for supporting Relay development"}
-		>
-			<button
-				class="mod-cta"
-				on:click={debounce(() => {
-					handleUpgrade($relay);
-				})}
-			>
-				Upgrade
-			</button>
-		</SettingItem>
 	{/if}
+</SettingGroup>
+{#if $canManageSubscription}
+	<SettingItemHeading name="Plan" />
+	<SettingGroup>
+		{#if $subscription}
+			<SettingItem name={`Plan: ${$relay.plan}`} description="">
+				<fragment slot="description">
+					{$relay.cta}
+				</fragment>
+				<button
+					on:click={debounce(() => {
+						handleManage($subscription);
+					})}
+				>
+					Manage
+				</button>
+
+				{#if $subscriptions.values()[0].active && !$subscriptions.values()[0].cancelAt}
+					<button
+						class="mod-destructive"
+						on:click={debounce(() => {
+							handleCancel($subscription);
+						})}
+					>
+						Cancel
+					</button>
+				{/if}
+			</SettingItem>
+			{#if !$subscriptions.values()[0].active || $subscriptions.values()[0].cancelAt}
+				<SettingItem description="">
+					<span slot="name" class="mod-warning">Status: Cancelled</span>
+					{getActiveForMessage($subscriptions.values()[0].cancelAt)}
+				</SettingItem>
+			{/if}
+		{:else}
+			<SettingItem
+				name={`Plan: ${$relay.plan}`}
+				description={$relay.cta || "Thanks for supporting Relay development"}
+			>
+				<button
+					class="mod-cta"
+					on:click={debounce(() => {
+						handleUpgrade($relay);
+					})}
+				>
+					Upgrade
+				</button>
+			</SettingItem>
+		{/if}
+	</SettingGroup>
 	{#if $storageQuota && $storageQuota.quota > 0}
 		<SettingItemHeading name="Storage"></SettingItemHeading>
-		{#if $storageQuota.metered}
-			<DiskUsage
-				diskUsagePercentage={Math.round(
-					($storageQuota.usage * 100) / $storageQuota.quota,
-				)}
-			/>
-			<SlimSettingItem
-				name="Usage"
-				description="Storage for images, audio, video, etc"
-			>
-				{formatBytes($storageQuota.usage)}
-			</SlimSettingItem>
+		<SettingGroup>
+			{#if $storageQuota.metered}
+				<DiskUsage
+					diskUsagePercentage={Math.round(
+						($storageQuota.usage * 100) / $storageQuota.quota,
+					)}
+				/>
+				<SlimSettingItem
+					name="Usage"
+					description="Storage for images, audio, video, etc"
+				>
+					{formatBytes($storageQuota.usage)}
+				</SlimSettingItem>
+
+				<SlimSettingItem
+					name="Total storage"
+					description="Total available storage."
+				>
+					{formatBytes($storageQuota.quota)}
+				</SlimSettingItem>
+			{:else}
+				<SlimSettingItem
+					name="Total storage"
+					description="Total available storage."
+				>
+					Unmetered by Relay
+				</SlimSettingItem>
+			{/if}
 
 			<SlimSettingItem
-				name="Total storage"
-				description="Total available storage."
+				name="File size limit"
+				description="Maximum supported file size."
 			>
-				{formatBytes($storageQuota.quota)}
+				{formatBytes($storageQuota.maxFileSize)}
 			</SlimSettingItem>
-		{:else}
-			<SlimSettingItem
-				name="Total storage"
-				description="Total available storage."
-			>
-				Unmetered by Relay
-			</SlimSettingItem>
-		{/if}
-
-		<SlimSettingItem
-			name="File size limit"
-			description="Maximum supported file size."
-		>
-			{formatBytes($storageQuota.maxFileSize)}
-		</SlimSettingItem>
+		</SettingGroup>
 	{/if}
 
 	{#if relay.provider && relay.provider.selfHosted}
 		<SettingItemHeading name="Host"></SettingItemHeading>
-		<SettingItem name="URL" description="">
-			{relay.provider.url}
-		</SettingItem>
-		{#await checkRelayHost(relay) then response}
-			{#if response.level === "warning"}
-				<SettingItem name="Status" description="">
-					<p class="mod-warning relay-host-check">
-						{@html minimark(response.status)}
+		<SettingGroup>
+			<SettingItem name="URL" description="">
+				{relay.provider.url}
+			</SettingItem>
+			{#await checkRelayHost(relay) then response}
+				{#if response.level === "warning"}
+					<SettingItem name="Status" description="">
+						<p class="mod-warning relay-host-check">
+							{@html minimark(response.status)}
 
-						{#if response.link}
-							<br />
-							<a href={response.link.url}>
-								{@html minimark(response.link.text)}
-							</a>
-						{/if}
-					</p>
-				</SettingItem>
-			{/if}
-		{/await}
-		{#if relay.provider.publicKey}
-			<div class="relay-auth-section">
-				<div class="setting-item-name">Relay Server Configuration</div>
-				<div class="setting-item-description">
-					Copy this configuration to your Relay Server's TOML file.
-				</div>
-				{#if loadingRelayConfig}
-					<div class="loading-message">Loading configuration...</div>
-				{:else if relayConfigError}
-					<div class="error-message">{relayConfigError}</div>
-				{:else if relayConfigToml}
-					<RelayConfigBlock toml={relayConfigToml} />
-				{:else}
-					<div class="error-message">No configuration available</div>
+							{#if response.link}
+								<br />
+								<a href={response.link.url}>
+									{@html minimark(response.link.text)}
+								</a>
+							{/if}
+						</p>
+					</SettingItem>
 				{/if}
-			</div>
-		{/if}
+			{/await}
+			{#if relay.provider.publicKey}
+				<div class="relay-auth-section">
+					<div class="setting-item-name">Relay Server Configuration</div>
+					<div class="setting-item-description">
+						Copy this configuration to your Relay Server's TOML file.
+					</div>
+					{#if loadingRelayConfig}
+						<div class="loading-message">Loading configuration...</div>
+					{:else if relayConfigError}
+						<div class="error-message">{relayConfigError}</div>
+					{:else if relayConfigToml}
+						<RelayConfigBlock toml={relayConfigToml} />
+					{:else}
+						<div class="error-message">No configuration available</div>
+					{/if}
+				</div>
+			{/if}
+		</SettingGroup>
 	{/if}
 {/if}
 
@@ -883,41 +896,45 @@
 		.filter((role) => role.role === "Owner" && role.relayId === relay.id)
 		.values().length > 1}
 	<SettingItemHeading name="Membership"></SettingItemHeading>
-	<SettingItem
-		name="Leave Relay Server"
-		description="Leave the Relay Server. Local data is preserved."
-	>
-		<button
-			class="mod-warning"
-			on:click={debounce(() => {
-				handleLeaveRelay();
-			})}
+	<SettingGroup>
+		<SettingItem
+			name="Leave Relay Server"
+			description="Leave the Relay Server. Local data is preserved."
 		>
-			Leave
-		</button>
-	</SettingItem>
+			<button
+				class="mod-warning"
+				on:click={debounce(() => {
+					handleLeaveRelay();
+				})}
+			>
+				Leave
+			</button>
+		</SettingItem>
+	</SettingGroup>
 {/if}
 
 {#if $canDeleteRelay}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
-	<SettingItem
-		name="Destroy Relay Server"
-		description="This will destroy the Relay Server (deleting all data on the server). Local data is preserved."
-	>
-		{#if $subscriptions.values().length > 0 && !$subscriptions.values()[0].cancelAt}
-			<button
-				disabled={true}
-				class="mod-warning"
-				aria-label="Cancel subscription to destroy Relay Server."
-			>
-				Destroy
-			</button>
-		{:else}
-			<button class="mod-warning" on:click={debounce(handleDestroy)}>
-				Destroy
-			</button>
-		{/if}
-	</SettingItem>
+	<SettingGroup>
+		<SettingItem
+			name="Destroy Relay Server"
+			description="This will destroy the Relay Server (deleting all data on the server). Local data is preserved."
+		>
+			{#if $subscriptions.values().length > 0 && !$subscriptions.values()[0].cancelAt}
+				<button
+					disabled={true}
+					class="mod-warning"
+					aria-label="Cancel subscription to destroy Relay Server."
+				>
+					Destroy
+				</button>
+			{:else}
+				<button class="mod-warning" on:click={debounce(handleDestroy)}>
+					Destroy
+				</button>
+			{/if}
+		</SettingItem>
+	</SettingGroup>
 {/if}
 
 <!--SettingItem
