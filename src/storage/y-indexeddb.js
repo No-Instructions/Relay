@@ -6,7 +6,7 @@ import { Observable } from 'lib0/observable'
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
 
-export const PREFERRED_TRIM_SIZE = 500
+export const PREFERRED_TRIM_SIZE = 50
 
 /**
  * @param {IndexeddbPersistence} idbPersistence
