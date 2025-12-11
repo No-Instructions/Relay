@@ -39,6 +39,7 @@
 		"typescript": "^5.4.5"
 	},
 	"dependencies": {
+		"cbor-x": "^1.6.0",
 		"diff": "^5.2.0",
 		"diff-match-patch": "^1.0.5",
 		"eventsource": "^2.0.2",
