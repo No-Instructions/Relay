@@ -5,6 +5,7 @@ import {
 	App,
 	MarkdownView,
 	Platform,
+	requireApiVersion,
 	TFile,
 	TextFileView,
 	Workspace,
@@ -112,7 +113,6 @@ export class LoggedOutView implements S3View {
 	canConnect = false;
 
 	private _parent: LiveViewManager;
-	private _viewActions?: ViewActions;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -125,41 +125,41 @@ export class LoggedOutView implements S3View {
 	}
 
 	setLoginIcon(): void {
-		const viewActionsElement =
-			this.view.containerEl.querySelector(".view-actions");
-		if (viewActionsElement && viewActionsElement.firstChild) {
-			this.clearViewActions();
-			this._viewActions = new ViewActions({
-				target: viewActionsElement,
-				anchor: viewActionsElement.firstChild as Element,
-				props: {
-					view: this,
-					state: { status: "disconnected" as const },
-					remote: null,
-					isLoggedOut: true,
-					onLogin: this.login,
-				},
+		const viewHeaderElement =
+			this.view.containerEl.querySelector(".view-header");
+		const viewHeaderLeftElement = 
+			this.view.containerEl.querySelector(".view-header-left");
+		
+		if (viewHeaderElement && viewHeaderLeftElement) {
+			this.clearLoginButton();
+			
+			// Create login button element
+			const loginButton = document.createElement("button");
+			loginButton.className = "view-header-left system3-login-button";
+			loginButton.textContent = "Login to enable Live edits";
+			loginButton.setAttribute("aria-label", "Login to enable Live edits");
+			loginButton.setAttribute("tabindex", "0");
+			
+			// Add click handler
+			loginButton.addEventListener("click", async () => {
+				await this.login();
 			});
+			
+			// Insert after view-header-left
+			viewHeaderLeftElement.insertAdjacentElement("afterend", loginButton);
 		}
 	}
 
-	clearViewActions() {
-		const viewActionsElement =
-			this.view.containerEl.querySelector(".view-actions");
-		if (viewActionsElement && viewActionsElement.firstChild) {
-			const viewActions = this.view.containerEl.querySelectorAll(
-				".system3-view-action",
-			);
-			if (viewActions.length > 0) {
-				viewActions.forEach((viewAction) => {
-					viewAction.remove();
-				});
-			}
+	clearLoginButton() {
+		const existingButton = this.view.containerEl.querySelector(".system3-login-button");
+		if (existingButton) {
+			existingButton.remove();
 		}
 	}
 
 	attach(): Promise<S3View> {
-		if (Platform.isMobile) {
+		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
+		if (Platform.isMobile && requireApiVersion("1.11.0")) {
 			this.setLoginIcon();
 		} else {
 			this.banner = new Banner(
@@ -175,15 +175,14 @@ export class LoggedOutView implements S3View {
 
 	release() {
 		this.banner?.destroy();
-		this._viewActions?.$destroy();
-		this._viewActions = undefined;
+		this.clearLoginButton();
 	}
 
 	destroy() {
 		this.release();
 		this.banner?.destroy();
 		this.banner = undefined;
-		this.clearViewActions();
+		this.clearLoginButton();
 		this.view = null as any;
 	}
 }

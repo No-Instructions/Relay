@@ -132,6 +132,17 @@
 	text-shadow: var(--input-shadow);
 }
 
+.system3-login-button {
+	background: var(--interactive-accent) !important;
+	color: var(--text-on-accent) !important;
+	border: var(--modal-border-width) solid var(--pill-border-color-hover) !important;
+	cursor: pointer;
+	font-weight: bold;
+	font-size: var(--font-ui-medium);
+	font: var(--font-interface-theme);
+	text-shadow: var(--input-shadow);
+}
+
 .system3-syncing:not(.is-active) {
 	animation: system3-glow-sync 1.5s ease-in-out;
 	transition: background-color 2s ease-in-out;
