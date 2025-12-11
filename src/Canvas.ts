@@ -143,21 +143,11 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		return { edges: edges, nodes: nodes };
 	}
 
-	_serverSynced?: boolean;
 	async markSynced(): Promise<void> {
-		this._serverSynced = true;
-		await this._persistence.set("serverSync", 1);
+		await this._persistence.markServerSynced();
 	}
 	async getServerSynced(): Promise<boolean> {
-		if (this._serverSynced !== undefined) {
-			return this._serverSynced;
-		}
-		const serverSync = await this._persistence.get("serverSync");
-		if (serverSync === 1) {
-			this._serverSynced = true;
-			return this._serverSynced;
-		}
-		return false;
+		return this._persistence.getServerSynced();
 	}
 
 	async connect(): Promise<boolean> {
@@ -186,15 +176,11 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 
 
 	public get ready(): boolean {
-		const persistenceSynced = this._persistence.synced;
-		return (
-			persistenceSynced &&
-			(this.synced || !!this._serverSynced || this._origin === "local")
-		);
+		return this._persistence.isReady(this.synced);
 	}
 
 	hasLocalDB(): boolean {
-		return !!this._serverSynced || this._persistence.hasUserData();
+		return this._persistence.hasServerSync || this._persistence.hasUserData();
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
@@ -272,19 +258,12 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		return vpath.endsWith(".canvas");
 	}
 
-	private _origin?: string;
-
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
-		this._origin = origin;
-		await this._persistence.set("origin", origin);
+		await this._persistence.setOrigin(origin);
 	}
 
 	async getOrigin(): Promise<"local" | "remote" | undefined> {
-		if (this._origin !== undefined) {
-			return this._origin as "local" | "remote";
-		}
-		this._origin = await this._persistence.get("origin");
-		return this._origin as "local" | "remote" | undefined;
+		return this._persistence.getOrigin();
 	}
 
 	async applyJSON(json: string) {

@@ -522,27 +522,17 @@ export class SharedFolder extends HasProvider {
 	public get ready(): boolean {
 		return (
 			this.persistenceSynced &&
-			(this.authoritative || this._serverSynced || this.synced)
+			(this.authoritative || this._persistence.hasServerSync || this.synced)
 		);
 	}
 
 
-	private _serverSynced?: boolean;
 	async markSynced(): Promise<void> {
-		this._serverSynced = true;
-		await this._persistence.set("serverSync", 1);
+		await this._persistence.markServerSynced();
 	}
 
 	async getServerSynced(): Promise<boolean> {
-		if (this._serverSynced !== undefined) {
-			return this._serverSynced;
-		}
-		const serverSync = await this._persistence.get("serverSync");
-		if (serverSync === 1) {
-			this._serverSynced = true;
-			return this._serverSynced;
-		}
-		return false;
+		return this._persistence.getServerSynced();
 	}
 
 	private hasLocalDB(): boolean {

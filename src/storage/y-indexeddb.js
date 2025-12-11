@@ -72,6 +72,8 @@ export class IndexeddbPersistence extends Observable {
      */
     this.db = null
     this.synced = false
+    this._serverSynced = undefined
+    this._origin = undefined
     this._db = idb.openDB(name, db =>
       idb.createStores(db, [
         ['updates', { autoIncrement: true }],
@@ -193,5 +195,88 @@ export class IndexeddbPersistence extends Observable {
    */
   hasUserData () {
     return this._dbsize > 3
+  }
+
+  /**
+   * Server sync state management
+   */
+
+  /**
+   * Mark this document as synced with the server
+   * @return {Promise<any>}
+   */
+  async markServerSynced () {
+    this._serverSynced = true
+    return this.set("serverSync", 1)
+  }
+
+  /**
+   * Get server sync status
+   * @return {Promise<boolean>}
+   */
+  async getServerSynced () {
+    if (this._serverSynced !== undefined) {
+      return this._serverSynced
+    }
+    const serverSync = await this.get("serverSync")
+    this._serverSynced = serverSync === 1
+    return this._serverSynced
+  }
+
+  /**
+   * Check if document has been synced with server (synchronous)
+   * @return {boolean}
+   */
+  get hasServerSync () {
+    return this._serverSynced === true
+  }
+
+  /**
+   * Origin tracking
+   */
+
+  /**
+   * Set the origin of this document
+   * @param {"local" | "remote"} origin
+   * @return {Promise<any>}
+   */
+  async setOrigin (origin) {
+    this._origin = origin
+    return this.set("origin", origin)
+  }
+
+  /**
+   * Get the origin of this document
+   * @return {Promise<"local" | "remote" | undefined>}
+   */
+  async getOrigin () {
+    if (this._origin !== undefined) {
+      return this._origin
+    }
+    this._origin = await this.get("origin")
+    return this._origin
+  }
+
+  /**
+   * Enhanced readiness detection
+   */
+
+  /**
+   * Check if the document is ready for use
+   * @param {boolean} providerSynced - whether the provider is synced
+   * @return {boolean}
+   */
+  isReady (providerSynced = false) {
+    return this.synced && (providerSynced || this.hasServerSync || this._origin === "local")
+  }
+
+  /**
+   * Check if this document is awaiting server updates
+   * @return {Promise<boolean>}
+   */
+  async awaitingServerUpdates () {
+    const serverSynced = await this.getServerSynced()
+    const origin = await this.getOrigin()
+    return !serverSynced && origin !== "local" && !this.hasUserData()
   }
 }
