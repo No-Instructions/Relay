@@ -6,7 +6,10 @@ import { Observable } from 'lib0/observable'
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
 
-export const PREFERRED_TRIM_SIZE = 500
+// Use a higher threshold on startup to avoid slow initial compaction
+// After sync, use the lower threshold to keep the database lean
+export const STARTUP_TRIM_SIZE = 500
+export const RUNTIME_TRIM_SIZE = 50
 
 /**
  * @param {IndexeddbPersistence} idbPersistence
@@ -40,7 +43,7 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
 export const storeState = (idbPersistence, forceStore = true) =>
   fetchUpdates(idbPersistence)
     .then(updatesStore => {
-      if (forceStore || idbPersistence._dbsize >= PREFERRED_TRIM_SIZE) {
+      if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
         idb.addAutoKey(updatesStore, Y.encodeStateAsUpdate(idbPersistence.doc))
           .then(() => idb.del(updatesStore, idb.createIDBKeyRangeUpperBound(idbPersistence._dbref, true)))
           .then(() => idb.count(updatesStore).then(cnt => { idbPersistence._dbsize = cnt }))
@@ -114,7 +117,8 @@ export class IndexeddbPersistence extends Observable {
       if (this.db && origin !== this) {
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
         idb.addAutoKey(updatesStore, update)
-        if (++this._dbsize >= PREFERRED_TRIM_SIZE) {
+        const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
+        if (++this._dbsize >= trimSize) {
           // debounce store call
           if (this._storeTimeoutId !== null) {
             clearTimeout(this._storeTimeoutId)
