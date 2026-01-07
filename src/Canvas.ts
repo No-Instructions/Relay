@@ -258,6 +258,37 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		return vpath.endsWith(".canvas");
 	}
 
+	/**
+	 * Fetch canvas from server and optionally flush to disk
+	 */
+	async fetch(flush: boolean = true): Promise<void> {
+		const currentJson = Canvas.exportCanvasData(this.ydoc);
+		let currentFileContents: CanvasData = { edges: [], nodes: [] };
+		try {
+			const stringContents = await this.sharedFolder.read(this);
+			currentFileContents = JSON.parse(stringContents) as CanvasData;
+		} catch (e) {
+			// File doesn't exist
+		}
+
+		const contentsMatch =
+			areObjectsEqual(currentJson.edges, currentFileContents.edges) &&
+			areObjectsEqual(currentJson.nodes, currentFileContents.nodes);
+		const hasContents = currentFileContents.nodes.length > 0;
+
+		await super.fetch();
+
+		if (hasContents && !contentsMatch) {
+			// File requires merge conflict resolution
+			this.log("Skipping flush - file requires merge conflict resolution.");
+			return;
+		}
+
+		if (flush && this.sharedFolder.syncStore.has(this.path)) {
+			this.sharedFolder.flush(this, this.json);
+		}
+	}
+
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
 		await this._persistence.setOrigin(origin);
 	}

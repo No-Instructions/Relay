@@ -1,5 +1,6 @@
 "use strict";
 import * as Y from "yjs";
+import { requestUrl } from "obsidian";
 import {
 	YSweetProvider,
 	type ConnectionState,
@@ -11,7 +12,7 @@ import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./client/types";
-import { S3RN, type S3RNType } from "./S3RN";
+import { S3RN, S3RemoteCanvas, S3RemoteDocument, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import { flags } from "./flagManager";
 
@@ -62,6 +63,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionError: () => void;
 	private _offState: () => void;
 	listeners: Map<unknown, Listener>;
+	private _downloading: boolean = false;
 
 	constructor(
 		public guid: string,
@@ -208,7 +210,14 @@ export class HasProvider extends HasLogging {
 			});
 	}
 
+	public get downloading(): boolean {
+		return this._downloading;
+	}
+
 	public get state(): ConnectionState {
+		if (this._downloading) {
+			return { status: "downloading", intent: this.intent };
+		}
 		return this._provider.connectionState;
 	}
 
@@ -296,6 +305,71 @@ export class HasProvider extends HasLogging {
 			this._provider.off("status", f);
 		};
 		return { on, off } as Subscription;
+	}
+
+	/**
+	 * Fetch document state from server via HTTP (not WebSocket)
+	 * Updates state and notifies listeners before and after download
+	 */
+	async fetch(): Promise<void> {
+		this._downloading = true;
+		this.notifyListeners();
+
+		try {
+			const response = await this.downloadFromServer();
+			this.applyUpdate(response);
+		} finally {
+			this._downloading = false;
+			this.notifyListeners();
+		}
+	}
+
+	protected async downloadFromServer(): Promise<Uint8Array> {
+		const clientToken = await this.getProviderToken();
+		const headers = this.getAuthHeader(clientToken);
+		const baseUrl = this.getBaseUrl(clientToken);
+		const url = `${baseUrl}/as-update`;
+
+		const response = await requestUrl({
+			url: url,
+			method: "GET",
+			headers: headers,
+			throw: false,
+		});
+
+		if (response.status !== 200) {
+			throw new Error(`Download failed: ${response.status}`);
+		}
+
+		return new Uint8Array(response.arrayBuffer);
+	}
+
+	protected applyUpdate(update: Uint8Array): void {
+		Y.applyUpdate(this.ydoc, update);
+	}
+
+	protected getAuthHeader(clientToken: ClientToken): Record<string, string> {
+		return { Authorization: `Bearer ${clientToken.token}` };
+	}
+
+	protected getBaseUrl(clientToken: ClientToken): string {
+		const entity = this.s3rn;
+		if (
+			!(entity instanceof S3RemoteDocument || entity instanceof S3RemoteCanvas)
+		) {
+			throw new Error(`Unable to get base URL for S3RN: ${S3RN.encode(entity)}`);
+		}
+
+		const urlObj = new URL(clientToken.url);
+		urlObj.protocol = "https:";
+		const parts = urlObj.pathname.split("/");
+		parts.pop();
+		parts.push(clientToken.docId);
+		urlObj.pathname = parts.join("/");
+		const baseUrl =
+			clientToken.baseUrl?.replace(/\/$/, "") || urlObj.toString();
+
+		return baseUrl;
 	}
 
 	destroy() {

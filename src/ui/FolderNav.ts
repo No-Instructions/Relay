@@ -14,9 +14,8 @@ import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
 import { withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
-import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
+import type { BackgroundSync } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
-import type { ObservableSet } from "src/observable/ObservableSet";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog } from "src/debug";
@@ -233,88 +232,6 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 	}
 }
 
-class QueueWatcher implements Destroyable {
-	private unsubscribers: Unsubscriber[] = [];
-	private titleEl: HTMLElement;
-
-	constructor(
-		private el: HTMLElement,
-		private path: string,
-		private activeSync: ObservableSet<QueueItem>,
-		private activeDownloads: ObservableSet<QueueItem>,
-	) {
-		this.titleEl = el.querySelector(".nav-file-title") || el;
-
-		this.unsubscribers.push(
-			this.activeSync.subscribe(() => this.checkStatus()),
-			this.activeDownloads.subscribe(() => this.checkStatus()),
-		);
-		this.checkStatus();
-	}
-
-	private checkStatus() {
-		const isSyncing = this.activeSync.some((item) => item.path === this.path);
-		const isDownloading = this.activeDownloads.some(
-			(item) => item.path === this.path,
-		);
-
-		if (isSyncing) {
-			this.titleEl.addClass("system3-syncing");
-		} else {
-			this.titleEl.removeClass("system3-syncing");
-		}
-
-		if (isDownloading) {
-			this.titleEl.addClass("system3-downloading");
-		} else {
-			this.titleEl.removeClass("system3-downloading");
-		}
-	}
-
-	destroy() {
-		this.titleEl.removeClass("system3-uploading");
-		this.titleEl.removeClass("system3-downloading");
-		this.unsubscribers.forEach((unsub) => unsub());
-	}
-}
-
-class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
-	constructor(
-		private activeSync: ObservableSet<QueueItem>,
-		private activeDownloads: ObservableSet<QueueItem>,
-	) {
-		super();
-	}
-
-	visitFile(
-		file: TFile,
-		item: FileItem,
-		storage?: QueueWatcher,
-		sharedFolder?: SharedFolder,
-	): QueueWatcher | null {
-		if (
-			sharedFolder &&
-			sharedFolder.ready &&
-			sharedFolder.checkPath(file.path) &&
-			Document.checkExtension(file.path)
-		) {
-			return (
-				storage ||
-				new QueueWatcher(
-					item.el,
-					file.path,
-					this.activeSync,
-					this.activeDownloads,
-				)
-			);
-		}
-		if (storage) {
-			storage.destroy();
-		}
-		return null;
-	}
-}
-
 class FilePillDecoration {
 	pill?: TextPill;
 	unsubscribes: Unsubscriber[] = [];
@@ -464,19 +381,28 @@ class DocumentStatus implements Destroyable {
 	docStatus(status?: ConnectionState) {
 		if (status?.status === "connected") {
 			this.el.removeClass("system3-connecting");
+			this.el.removeClass("system3-downloading");
 			this.el.addClass("system3-connected");
 			this.el.addClass("system3-live");
 		} else if (status?.status === "connecting") {
 			this.el.removeClass("system3-connected");
+			this.el.removeClass("system3-downloading");
 			this.el.addClass("system3-connecting");
+			this.el.addClass("system3-live");
+		} else if (status?.status === "downloading") {
+			this.el.removeClass("system3-connected");
+			this.el.removeClass("system3-connecting");
+			this.el.addClass("system3-downloading");
 			this.el.addClass("system3-live");
 		} else if (status?.status === "disconnected") {
 			this.el.addClass("system3-live");
 			this.el.removeClass("system3-connected");
 			this.el.removeClass("system3-connecting");
+			this.el.removeClass("system3-downloading");
 		} else {
 			this.el.removeClass("system3-connected");
 			this.el.removeClass("system3-connecting");
+			this.el.removeClass("system3-downloading");
 			this.el.removeClass("system3-live");
 		}
 	}
@@ -720,12 +646,6 @@ export class FolderNavigationDecorations {
 		visitors.push(new FolderPillVisitor());
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
-			visitors.push(
-				new QueueWatcherVisitor(
-					this.backgroundSync.activeSync,
-					this.backgroundSync.activeDownloads,
-				),
-			);
 		});
 		visitors.push(new FilePillVisitor());
 		visitors.push(new NotSyncedPillVisitor());

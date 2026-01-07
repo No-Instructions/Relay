@@ -281,6 +281,7 @@ export type ConnectionStatus =
 	| "connected"
 	| "connecting"
 	| "disconnected"
+	| "downloading"
 	| "unknown";
 export type ConnectionIntent = "connected" | "disconnected";
 

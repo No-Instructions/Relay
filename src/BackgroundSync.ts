@@ -1,6 +1,5 @@
 import { requestUrl, type RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
-import * as Y from "yjs";
 import { S3RN, S3RemoteCanvas, S3RemoteDocument } from "./S3RN";
 import { isDocument, type Document } from "./Document";
 import { isCanvas } from "./Canvas";
@@ -329,12 +328,11 @@ export class BackgroundSync extends HasLogging {
 				let downloadPromise: Promise<any>;
 
 				// Choose the appropriate download method based on the document type
-				if (item.doc instanceof Canvas) {
-					downloadPromise = this.getCanvas(item.doc);
-				} else if (item.doc instanceof SyncFile) {
+				if (item.doc instanceof SyncFile) {
 					downloadPromise = this.getSyncFile(item.doc);
 				} else {
-					downloadPromise = this.getDocument(item.doc);
+					// Document and Canvas now have fetch() method
+					downloadPromise = item.doc.fetch();
 				}
 
 				downloadPromise
@@ -787,112 +785,6 @@ export class BackgroundSync extends HasLogging {
 	 */
 	enqueueCanvasDownload(canvas: Canvas): Promise<void> {
 		return this.enqueueDownload(canvas);
-	}
-
-	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
-		try {
-			// Get the current contents before applying the update
-			const currentJson = Canvas.exportCanvasData(canvas.ydoc);
-			let currentFileContents: CanvasData = { edges: [], nodes: [] };
-			try {
-				const stringContents = await canvas.sharedFolder.read(canvas);
-				currentFileContents = JSON.parse(stringContents) as CanvasData;
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch =
-				areObjectsEqual(currentJson.edges, currentFileContents.edges) &&
-				areObjectsEqual(currentJson.nodes, currentFileContents.nodes);
-			const hasContents = currentFileContents.nodes.length > 0;
-
-			const response = await this.downloadItem(canvas);
-			const rawUpdate = response.arrayBuffer;
-			const updateBytes = new Uint8Array(rawUpdate);
-
-			this.log("[getCanvas] applying content from server");
-			Y.applyUpdate(canvas.ydoc, updateBytes);
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
-				canvas.sharedFolder.flush(canvas, canvas.json);
-				this.log("[getCanvas] flushed");
-			}
-		} catch (e) {
-			this.error(e);
-			throw e;
-		}
-	}
-
-	private async getDocument(doc: Document, retry = 3, wait = 3000) {
-		try {
-			// Get the current contents before applying the update
-			const currentText = doc.text;
-			let currentFileContents = "";
-			try {
-				currentFileContents = await doc.sharedFolder.read(doc);
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = currentText === currentFileContents;
-			const hasContents = currentFileContents !== "";
-
-			const response = await this.downloadItem(doc);
-			const rawUpdate = response.arrayBuffer;
-			const updateBytes = new Uint8Array(rawUpdate);
-
-			// Check for newly created documents without content, and reject them
-			const newDoc = new Y.Doc();
-			Y.applyUpdate(newDoc, updateBytes);
-			const users = newDoc.getMap("users");
-			const contents = newDoc.getText("contents").toString();
-
-			if (contents === "") {
-				if (users.size === 0) {
-					// Hack for better compat with < 0.4.2.
-					this.log(
-						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
-						users.size,
-						retry,
-						wait,
-					);
-					if (retry > 0) {
-						this.timeProvider.setTimeout(() => {
-							this.getDocument(doc, retry - 1, wait * 2);
-						}, wait);
-					}
-					return;
-				}
-				if (doc.text) {
-					this.log(
-						"[getDocument] local crdt has contents, but remote is empty",
-					);
-					this.enqueueSync(doc);
-					return;
-				}
-			}
-
-			this.log("[getDocument] applying content from server");
-			Y.applyUpdate(doc.ydoc, updateBytes);
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (doc.sharedFolder.syncStore.has(doc.path)) {
-				doc.sharedFolder.flush(doc, doc.text);
-				this.log("[getDocument] flushed");
-			}
-		} catch (e) {
-			this.error(e);
-			throw e;
-		}
 	}
 
 	private async syncFile(file: SyncFile) {

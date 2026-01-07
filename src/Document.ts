@@ -404,6 +404,42 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return vpath.endsWith(".md");
 	}
 
+	/**
+	 * Fetch document from server and optionally flush to disk
+	 */
+	async fetch(flush: boolean = true): Promise<void> {
+		const currentText = this.text;
+		let currentFileContents = "";
+		try {
+			currentFileContents = await this.sharedFolder.read(this);
+		} catch (e) {
+			// File doesn't exist
+		}
+
+		const contentsMatch = currentText === currentFileContents;
+		const hasContents = currentFileContents !== "";
+
+		await super.fetch();
+
+		// Validate the downloaded content
+		const contents = this.ydoc.getText("contents").toString();
+		const users = this.ydoc.getMap("users");
+
+		if (contents === "" && users.size === 0) {
+			throw new Error("Server contains uninitialized document");
+		}
+
+		if (hasContents && !contentsMatch) {
+			// File requires merge conflict resolution
+			this.log("Skipping flush - file requires merge conflict resolution.");
+			return;
+		}
+
+		if (flush && this.sharedFolder.syncStore.has(this.path)) {
+			this.sharedFolder.flush(this, this.text);
+		}
+	}
+
 	destroy() {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
