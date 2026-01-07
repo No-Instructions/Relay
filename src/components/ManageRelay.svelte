@@ -17,7 +17,8 @@
 	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount, onDestroy } from "svelte";
 	import { derived, writable, get } from "svelte/store";
-	import { Edit, Check, Download } from "lucide-svelte";
+	import { Edit, Check, Download, X } from "lucide-svelte";
+	import Callout from "./Callout.svelte";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
@@ -36,6 +37,7 @@
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
 	let viewAsAdmin = writable(false);
+	let hintDismissed = writable(false);
 	export let plugin!: Live;
 	let loadingRelayConfig = false;
 	let relayConfigError: string | null = null;
@@ -60,6 +62,29 @@
 	);
 
 	export let sharedFolders!: SharedFolders;
+
+	const hasDownloadedFolders = derived(
+		[remoteFolders, sharedFolders, plugin.relayManager.folderRoles],
+		([$remoteFolders, $sharedFolders]) => {
+			const readableFolders = Array.from($remoteFolders.values()).filter(
+				(folder) =>
+					get(
+						plugin.relayManager.userCan(["folder", "read_content"], folder),
+					),
+			);
+			return readableFolders.some((remote) =>
+				$sharedFolders.some((sf) => sf.guid === remote.guid),
+			);
+		},
+	);
+
+	function isNewUser(): boolean {
+		const created = plugin.loginManager.pb.authStore.model?.created;
+		if (!created) return false;
+		const createdDate = new Date(created);
+		const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+		return createdDate > oneDayAgo;
+	}
 	export let relayRoles: ObservableMap<string, RelayRole>;
 
 	import { moment } from "obsidian";
@@ -506,6 +531,29 @@
 		},
 	]}
 />
+
+{#if !$hintDismissed && isNewUser() && relay.name}
+	{#if $remoteFolders.values().length > 0 && !$hasDownloadedFolders && !$relay.owner}
+		<div class="hint-callout-wrapper">
+			<Callout title="Hint">
+				Click the <Download class="svg-icon hint-icon" /> button below to add a Shared Folder to your vault and start collaborating.
+			</Callout>
+			<button class="hint-dismiss" on:click={() => hintDismissed.set(true)} aria-label="Dismiss hint">
+				<X class="svg-icon" />
+			</button>
+		</div>
+	{:else if $remoteFolders.values().length === 0 && $relay.owner}
+		<div class="hint-callout-wrapper">
+			<Callout title="Hint">
+				Add a Shared Folder to this Relay.
+			</Callout>
+			<button class="hint-dismiss" on:click={() => hintDismissed.set(true)} aria-label="Dismiss hint">
+				<X class="svg-icon" />
+			</button>
+		</div>
+	{/if}
+{/if}
+
 {#if $canRenameRelay}
 	<SettingItem name="Name" description="Set the Relay Server's name.">
 		<input
@@ -1037,5 +1085,35 @@
 		padding: 12px;
 		margin: 16px 0;
 		font-size: 0.9em;
+	}
+
+	.hint-callout-wrapper {
+		position: relative;
+		margin-bottom: 16px;
+	}
+
+	.hint-callout-wrapper :global(.hint-icon) {
+		display: inline;
+		vertical-align: middle;
+		width: 16px;
+		height: 16px;
+	}
+
+	.hint-dismiss {
+		position: absolute;
+		top: 8px;
+		right: 8px;
+		background: none;
+		border: none;
+		box-shadow: none;
+		padding: 4px;
+		cursor: pointer;
+		color: var(--text-muted);
+		border-radius: var(--radius-s);
+	}
+
+	.hint-dismiss:hover {
+		color: var(--text-normal);
+		background-color: var(--background-modifier-hover);
 	}
 </style>
