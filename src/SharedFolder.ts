@@ -150,6 +150,7 @@ export class SharedFolder extends HasProvider {
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
+	private pendingDeletes: Set<string> = new Set();
 
 	private _persistence: IndexeddbPersistence;
 	diskBufferStore: DiskBufferStore;
@@ -1154,6 +1155,10 @@ export class SharedFolder extends HasProvider {
 		this.ydoc.transact(() => {
 			newFiles.forEach((file) => {
 				const vpath = this.getVirtualPath(file.path);
+				if (this.isPendingDelete(vpath)) {
+					this.log("skipping place hold for pending delete", vpath);
+					return;
+				}
 				if (!this.syncStore.has(vpath)) {
 					this.log("place hold new", vpath);
 					this.syncStore.new(vpath);
@@ -1580,6 +1585,20 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		throw new Error("unexpectedly unable to upload");
+	}
+
+	markPendingDelete(vpath: string) {
+		this.pendingDeletes.add(vpath);
+		this.log("marked pending delete", vpath);
+	}
+
+	clearPendingDelete(vpath: string) {
+		this.pendingDeletes.delete(vpath);
+		this.log("cleared pending delete", vpath);
+	}
+
+	isPendingDelete(vpath: string): boolean {
+		return this.pendingDeletes.has(vpath);
 	}
 
 	deleteFile(vpath: string) {
