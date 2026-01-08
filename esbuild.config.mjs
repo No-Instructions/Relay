@@ -18,9 +18,10 @@ const gitTag = execSync("git describe --tags --always", {
 	encoding: "utf8",
 }).trim();
 
+const develop = process.argv[2] === "develop";
 const staging = process.argv[2] === "staging";
 const watch = process.argv[2] === "watch" || staging;
-const debug = process.argv[2] === "debug" || watch || staging;
+const debug = process.argv[2] === "debug" || watch || staging || develop;
 const out = process.argv[3] || ".";
 const tld = staging ? "dev" : "md";
 
@@ -147,11 +148,15 @@ const move = (fnames, mapping) => {
 if (watch) {
 	await context.watch();
 	move(files, mapping);
-	updateManifest();
+	if (!develop) {
+		updateManifest();
+	}
 	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
 	move(files, mapping);
-	updateManifest();
+	if (!develop) {
+		updateManifest();
+	}
 	process.exit(0);
 }
