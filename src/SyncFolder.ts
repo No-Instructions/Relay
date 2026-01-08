@@ -42,22 +42,26 @@ export class SyncFolder extends HasLogging implements IFile {
 			}
 			return false;
 		};
-		if (!fromVault()) {
-			this.createPromise = this.vault.createFolder(
-				this.sharedFolder.getPath(path),
-			);
-			this.createPromise
-				.then((tfolder) => {
-					this._tfolder = tfolder;
-					this.ready = true;
-				})
-				.catch(() => {
-					// folder exists, retry
-					fromVault();
-				});
-		}
 		this.synctime = 0;
 		this.setLoggers(`[SyncFolder](${this.path})`);
+		if (!fromVault()) {
+			if (this._parent.isPendingDelete(path)) {
+				this.warn("skipping folder creation for pending delete", path);
+			} else {
+				this.createPromise = this.vault.createFolder(
+					this.sharedFolder.getPath(path),
+				);
+				this.createPromise
+					.then((tfolder) => {
+						this._tfolder = tfolder;
+						this.ready = true;
+					})
+					.catch(() => {
+						// folder exists, retry
+						fromVault();
+					});
+			}
+		}
 		this.offFolderStatusListener = this._parent.subscribe(
 			this.path,
 			(state) => {

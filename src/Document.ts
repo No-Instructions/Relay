@@ -377,6 +377,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!this.tfile) {
 			return;
 		}
+		if (this.sharedFolder.isPendingDelete(this.path)) {
+			this.warn("skipping save for pending delete", this.path);
+			return;
+		}
 		this.vault.modify(this.tfile, this.text);
 		this.warn("file saved", this.path);
 	}

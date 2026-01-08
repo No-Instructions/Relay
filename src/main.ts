@@ -922,8 +922,12 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(file.path);
 				if (folder) {
 					vaultLog("Delete", file.path);
+					const vpath = folder.getVirtualPath(file.path);
+					folder.markPendingDelete(vpath);
 					folder.whenReady().then((folder) => {
 						folder.proxy.deleteFile(file.path);
+					}).finally(() => {
+						folder.clearPendingDelete(vpath);
 					});
 				}
 			}),
