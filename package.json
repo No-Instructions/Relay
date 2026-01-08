@@ -5,7 +5,8 @@
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs watch",
-		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs develop",
+		"release": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"beta": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs debug",
 		"staging": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs staging",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
