@@ -16,6 +16,7 @@ export class AddToVaultModal extends Modal {
 			folderName: string,
 			folderLocation: string,
 		) => Promise<SharedFolder>,
+		private noFoldersMessage?: string,
 	) {
 		super(app);
 		this.onConfirm = onConfirm;
@@ -30,6 +31,7 @@ export class AddToVaultModal extends Modal {
 				remoteFolder: this.remoteFolder,
 				availableFolders: this.availableFolders,
 				sharedFolders: this.sharedFolders,
+				noFoldersMessage: this.noFoldersMessage,
 				onConfirm: async (
 					remoteFolder: RemoteSharedFolder,
 					folderName: string,

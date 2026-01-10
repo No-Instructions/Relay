@@ -8,6 +8,7 @@
 	export let sharedFolders: SharedFolders;
 	export let selectedFolder: Writable<string | undefined>;
 	export let placeholder = "Choose or create folder...";
+	export let disabled: boolean = false;
 
 	let currentValue = "";
 
@@ -35,6 +36,7 @@
 	<TFolderSuggest
 		{app}
 		{placeholder}
+		{disabled}
 		blockedPaths={getBlockedPaths()}
 		bind:value={currentValue}
 		on:select={handleSelect}

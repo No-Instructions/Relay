@@ -13,6 +13,7 @@
 	export let app: App;
 	export let remoteFolder: RemoteSharedFolder | undefined;
 	export let availableFolders: RemoteSharedFolder[] = [];
+	export let noFoldersMessage: string = "No remote folders available to add.";
 	export let sharedFolders: SharedFolders;
 	export let onConfirm: (
 		remoteFolder: RemoteSharedFolder,
@@ -60,12 +61,14 @@
 <div class="modal-title">Add to vault</div>
 
 <div class="modal-content">
-	{#if !remoteFolder && availableFolders.length > 0}
+	{#if !remoteFolder}
 		<div class="section">
 			<SettingItemHeading name="Remote folder" />
 			<SelectedFolder
 				selectedItem={selectedRemoteFolder}
 				selectButtonText="Choose a folder..."
+				disabled={availableFolders.length === 0}
+				disabledMessage={availableFolders.length === 0 ? noFoldersMessage : ""}
 				on:clear={() => {
 					selectedRemoteFolder = undefined;
 					folderName = "";
@@ -92,7 +95,12 @@
 		name="Folder location"
 		description="Set the location in your vault."
 	>
-		<FolderSelectInput {app} {sharedFolders} selectedFolder={folderLocation} />
+		<FolderSelectInput
+			{app}
+			{sharedFolders}
+			selectedFolder={folderLocation}
+			disabled={availableFolders.length === 0}
+		/>
 	</SettingItem>
 
 	<div class="modal-button-container">

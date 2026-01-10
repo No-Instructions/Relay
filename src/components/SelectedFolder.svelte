@@ -9,6 +9,8 @@
 	export let showTransformation: boolean = false; // For share folder modal
 	export let selectButtonText: string = "Choose a folder...";
 	export let readonly: boolean = false; // For users step in share modal
+	export let disabled: boolean = false;
+	export let disabledMessage: string = "";
 
 	const dispatch = createEventDispatcher();
 
@@ -67,9 +69,18 @@
 		</div>
 	{:else}
 		<div class="folder-suggest-container">
-			<button class="mod-cta folder-select-button" on:click={handleSelect}>
-				{selectButtonText}
-			</button>
+			{#if disabled}
+				<button class="mod-cta folder-select-button" disabled>
+					{selectButtonText}
+				</button>
+				{#if disabledMessage}
+					<p class="mod-warning disabled-message">{disabledMessage}</p>
+				{/if}
+			{:else}
+				<button class="mod-cta folder-select-button" on:click={handleSelect}>
+					{selectButtonText}
+				</button>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -127,5 +138,11 @@
 		width: 100%;
 		min-height: 3em;
 		text-align: left;
+	}
+
+	.disabled-message {
+		margin: 8px 0 0 0;
+		color: var(--text-warning);
+		font-size: var(--font-ui-smaller);
 	}
 </style>

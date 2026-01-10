@@ -132,10 +132,12 @@
 	function handleAddFolder() {
 		// Get all available remote folders that aren't already in vault
 		const availableFolders: RemoteSharedFolder[] = [];
+		let totalRemoteFolders = 0;
 
 		$relays.values().forEach((relay) => {
 			if (relay.folders) {
 				relay.folders.values().forEach((remoteFolder) => {
+					totalRemoteFolders++;
 					// Check if folder isn't already in vault
 					const alreadyInVault = $sharedFolders
 						.items()
@@ -148,12 +150,23 @@
 			}
 		});
 
+		// Determine why there are no folders available
+		let noFoldersMessage: string | undefined;
+		if (availableFolders.length === 0) {
+			if (totalRemoteFolders === 0) {
+				noFoldersMessage = "Join a Relay Server, or add a Shared Folder on another device.";
+			} else {
+				noFoldersMessage = "All remote folders are already in your vault.";
+			}
+		}
+
 		const modal = new AddToVaultModal(
 			plugin.app,
 			plugin.sharedFolders,
 			undefined, // No pre-selected remote folder
 			availableFolders,
 			addFolderToVault,
+			noFoldersMessage,
 		);
 		modal.open();
 	}
@@ -229,7 +242,10 @@
 		</SlimSettingItem>
 	{/each}
 	<SettingItem description="" name="">
-		<button class="mod-cta system3-button" on:click={debounce(() => handleCreateRelay())}>
+		<button
+			class="mod-cta system3-button"
+			on:click={debounce(() => handleCreateRelay())}
+		>
 			Create
 		</button>
 	</SettingItem>

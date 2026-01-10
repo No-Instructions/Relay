@@ -29,6 +29,7 @@
 	export let value: string = "";
 	export let placeholder: string = "Choose or create folder...";
 	export let blockedPaths: Set<string> = new Set();
+	export let disabled: boolean = false;
 
 	const dispatch = createEventDispatcher();
 
@@ -309,6 +310,7 @@
 		on:blur={handleBlur}
 		type="text"
 		{placeholder}
+		{disabled}
 		class="folder-suggest-input"
 	/>
 </div>
