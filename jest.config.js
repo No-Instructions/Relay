@@ -9,6 +9,7 @@ module.exports = {
 	preset: "ts-jest/presets/default-esm", // or other ESM presets
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
+		"^src/(.*)$": "<rootDir>/src/$1",
 	},
 	testPathIgnorePatterns: ["/__tests__/mocks/"],
     globals: {

@@ -217,4 +217,20 @@ export class PostOffice {
 			PostOffice.instance = undefined as any;
 		}
 	}
+
+	/**
+	 * Reset PostOffice for testing with a custom TimeProvider.
+	 * This clears any existing instance and allows a new one to be created.
+	 */
+	static _resetForTesting(timeProvider?: TimeProvider): void {
+		if (PostOffice.instance) {
+			PostOffice.instance.timeProvider?.destroy();
+		}
+		PostOffice._destroyed = false;
+		PostOffice.instance = undefined as any;
+		if (timeProvider) {
+			PostOffice.instance = new PostOffice(timeProvider);
+			RelayInstances.set(PostOffice.instance, "postie");
+		}
+	}
 }

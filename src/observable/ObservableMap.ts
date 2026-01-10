@@ -182,6 +182,9 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 
 		this.observableName =
 			parentMap.observableName + "(filter: " + predicate.toString() + ")";
+
+		// Eagerly populate the map so .values() works without subscribing
+		this.parentCallback(this.parentMap);
 	}
 
 	private sub(): void {
