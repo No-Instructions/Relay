@@ -186,6 +186,9 @@ export class LoginManager extends Observable<LoginManager> {
 		this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
 		this.pb.beforeSend = (url, options) => {
 			pbLog(url, options);
+			if (!this.pb.authStore.isValid && this.user) {
+				this.logout();
+			}
 			options.fetch = customFetch;
 			options.headers = Object.assign({}, options.headers, {
 				"Relay-Version": GIT_TAG,
@@ -353,6 +356,9 @@ export class LoginManager extends Observable<LoginManager> {
 			this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
 			this.pb.beforeSend = (url, options) => {
 				pbLog(url, options);
+				if (!this.pb.authStore.isValid && this.user) {
+					this.logout();
+				}
 				options.fetch = customFetch;
 				options.headers = Object.assign({}, options.headers, {
 					"Relay-Version": GIT_TAG,
