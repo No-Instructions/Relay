@@ -27,17 +27,23 @@ export class AwarenessViewPlugin extends HasLogging {
 
 		this.log("Installing awareness component for", this.view.view.file?.path);
 
+		// Wrap the title immediately to avoid focus loss later
+		this.wrapTitle();
+
 		// Wait for the document to be ready
 		await this.doc.whenReady();
 
 		if (this.destroyed) return;
 
-		// Set up the awareness component immediately - it will handle connection states
-		this.setupAwarenessComponent();
+		// Mount the Svelte component (needs awareness to be available)
+		this.mountAwarenessComponent();
 	}
 
-	private setupAwarenessComponent() {
+	private wrapTitle() {
 		if (!this.view.view.containerEl || this.destroyed) return;
+
+		// Already created
+		if (this.awarenessElement) return;
 
 		// Find the target element (inline-title) to position relative to
 		const inlineTitle = this.view.view.containerEl.querySelector(
@@ -50,24 +56,23 @@ export class AwarenessViewPlugin extends HasLogging {
 			return;
 		}
 
-		// Create a wrapper div to contain both title and avatars
-		const titleWrapper = document.createElement("div");
-		titleWrapper.className = "title-with-awareness";
-		titleWrapper.style.display = "flex";
-		titleWrapper.style.alignItems = "center";
-		titleWrapper.style.justifyContent = "space-between";
-		titleWrapper.style.width = "100%";
-
 		// Create container for the awareness component
 		this.awarenessElement = document.createElement("div");
 		this.awarenessElement.className = "user-awareness-container";
 
-		// Wrap the inline title and add the awareness container
-		if (inlineTitle.parentNode) {
-			inlineTitle.parentNode.insertBefore(titleWrapper, inlineTitle);
-			titleWrapper.appendChild(inlineTitle);
-			titleWrapper.appendChild(this.awarenessElement);
+		// Insert as sibling after the inline-title (more robust than wrapping)
+		// Use absolute positioning via CSS to place it next to the title
+		inlineTitle.insertAdjacentElement("afterend", this.awarenessElement);
+
+		// Make the parent position relative so we can position absolutely
+		const parent = inlineTitle.parentElement;
+		if (parent) {
+			parent.style.position = "relative";
 		}
+	}
+
+	private mountAwarenessComponent() {
+		if (!this.awarenessElement || this.destroyed) return;
 
 		// Get the awareness instance from the provider
 		const provider = this.doc._provider;
@@ -106,17 +111,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		}
 
 		if (this.awarenessElement) {
-			// Find the wrapper and restore the original title structure
-			const titleWrapper = this.awarenessElement.parentElement;
-			if (titleWrapper && titleWrapper.className === "title-with-awareness") {
-				const inlineTitle = titleWrapper.querySelector(".inline-title");
-				if (inlineTitle && titleWrapper.parentNode) {
-					titleWrapper.parentNode.insertBefore(inlineTitle, titleWrapper);
-					titleWrapper.remove();
-				}
-			} else {
-				this.awarenessElement.remove();
-			}
+			this.awarenessElement.remove();
 			this.awarenessElement = undefined;
 		}
 

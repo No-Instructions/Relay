@@ -174,7 +174,7 @@
 			on:click={togglePopover}
 			on:keydown={(e) => e.key === "Enter" && togglePopover()}
 			role="button"
-			tabindex="0"
+			tabindex="-1"
 		>
 			{#each $displayUsers as user, index (user.id)}
 				<div
@@ -253,11 +253,13 @@
 
 <style>
 	:global(.user-awareness-container) {
+		position: absolute;
+		top: 0;
+		right: 0;
 		display: flex;
 		align-items: center;
 		flex-shrink: 0;
-		margin-left: 12px;
-		position: relative;
+		z-index: 10;
 	}
 
 	.user-awareness {
