@@ -27,17 +27,23 @@ export class AwarenessViewPlugin extends HasLogging {
 
 		this.log("Installing awareness component for", this.view.view.file?.path);
 
+		// Wrap the title immediately to avoid focus loss later
+		this.wrapTitle();
+
 		// Wait for the document to be ready
 		await this.doc.whenReady();
 
 		if (this.destroyed) return;
 
-		// Set up the awareness component immediately - it will handle connection states
-		this.setupAwarenessComponent();
+		// Mount the Svelte component (needs awareness to be available)
+		this.mountAwarenessComponent();
 	}
 
-	private setupAwarenessComponent() {
+	private wrapTitle() {
 		if (!this.view.view.containerEl || this.destroyed) return;
+
+		// Already wrapped
+		if (this.awarenessElement) return;
 
 		// Find the target element (inline-title) to position relative to
 		const inlineTitle = this.view.view.containerEl.querySelector(
@@ -49,6 +55,9 @@ export class AwarenessViewPlugin extends HasLogging {
 			);
 			return;
 		}
+
+		// Already wrapped by another instance
+		if (inlineTitle.closest(".title-with-awareness")) return;
 
 		// Create a wrapper div to contain both title and avatars
 		const titleWrapper = document.createElement("div");
@@ -68,6 +77,10 @@ export class AwarenessViewPlugin extends HasLogging {
 			titleWrapper.appendChild(inlineTitle);
 			titleWrapper.appendChild(this.awarenessElement);
 		}
+	}
+
+	private mountAwarenessComponent() {
+		if (!this.awarenessElement || this.destroyed) return;
 
 		// Get the awareness instance from the provider
 		const provider = this.doc._provider;
