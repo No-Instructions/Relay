@@ -439,6 +439,16 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 			sharedFolder.checkPath(file.path) &&
 			!sharedFolder.isSyncableTFile(file)
 		) {
+			// Check if file is already being synced (as any type: Document, Canvas, SyncFile)
+			// If so, don't show "NOT SYNCED" since it IS synced
+			const vpath = sharedFolder.getVirtualPath(file.path);
+			const guid = sharedFolder.syncStore.get(vpath);
+			if (guid) {
+				if (storage) {
+					storage.destroy();
+				}
+				return null;
+			}
 			return storage || new NotSyncedPillDecoration(item.selfEl);
 		}
 		if (storage) {
