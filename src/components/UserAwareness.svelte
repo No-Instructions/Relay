@@ -174,7 +174,7 @@
 			on:click={togglePopover}
 			on:keydown={(e) => e.key === "Enter" && togglePopover()}
 			role="button"
-			tabindex="0"
+			tabindex="-1"
 		>
 			{#each $displayUsers as user, index (user.id)}
 				<div
