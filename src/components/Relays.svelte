@@ -154,7 +154,8 @@
 		let noFoldersMessage: string | undefined;
 		if (availableFolders.length === 0) {
 			if (totalRemoteFolders === 0) {
-				noFoldersMessage = "Join a Relay Server, or add a Shared Folder on another device.";
+				noFoldersMessage =
+					"Join a Relay Server, or add a Shared Folder on another device.";
 			} else {
 				noFoldersMessage = "All remote folders are already in your vault.";
 			}
@@ -241,14 +242,14 @@
 			></SettingsControl>
 		</SlimSettingItem>
 	{/each}
-	<SettingItem description="" name="">
+	<SlimSettingItem description="" name="">
 		<button
 			class="mod-cta system3-button"
 			on:click={debounce(() => handleCreateRelay())}
 		>
 			Create
 		</button>
-	</SettingItem>
+	</SlimSettingItem>
 </SettingGroup>
 
 <SettingItemHeading
