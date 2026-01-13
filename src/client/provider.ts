@@ -462,6 +462,17 @@ export class YSweetProvider extends Observable<string> {
 	}
 
 	/**
+	 * Override once to handle race condition where synced event already fired
+	 */
+	once(name: string, f: (...args: any[]) => void) {
+		if (name === "synced" && this._synced) {
+			setTimeout(() => f(this._synced), 0);
+			return this;
+		}
+		return super.once(name, f);
+	}
+
+	/**
 	 * Get the current connection intent based on shouldConnect flag
 	 */
 	get intent(): ConnectionIntent {
