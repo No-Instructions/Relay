@@ -8,6 +8,7 @@
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import Callout from "./Callout.svelte";
 	import Discord from "./Discord.svelte";
+	import Announcement from "./Announcement.svelte";
 	import RelayText from "./RelayText.svelte";
 	import type { LoginManager, Provider } from "src/LoginManager";
 	import { derived, writable } from "svelte/store";
@@ -319,6 +320,9 @@
 	</AccountSettingItem>
 	<slot></slot>
 {:else}
+	{#if Platform.isMobile}
+		<Announcement {plugin} />
+	{/if}
 	<div class="welcome">
 		<WelcomeHeader />
 		{#if $automaticFlow}
@@ -479,7 +483,7 @@
 		align-items: center;
 		justify-content: center;
 		text-align: center;
-		padding: 7rem 2rem 1rem 2rem;
+		padding: 10vh 2rem 1rem 2rem;
 		max-width: 640px;
 		margin: 0 auto;
 		gap: 2rem;
