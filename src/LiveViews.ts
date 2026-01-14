@@ -29,7 +29,7 @@ import {
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 import type { CanvasView } from "./CanvasView";
-import { type Canvas } from "./Canvas";
+import { isCanvas, type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
@@ -984,28 +984,22 @@ export class LiveViewManager {
 				return;
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
-			if (folder) {
-				// Check if this canvas file should actually be treated as a Canvas
-				const vpath = folder.getVirtualPath(viewFilePath);
-				const meta = folder.syncStore.getMeta(vpath);
-				
-				// Only connect if it's actually a Canvas type in the sync store
-				if (meta?.type === "canvas") {
+			if (folder && canvasView.file) {
+				const canvas = folder.getFile(canvasView.file);
+				if (isCanvas(canvas)) {
 					if (!this.loginManager.loggedIn) {
 						const view = new LoggedOutView(this, canvasView, () => {
 							return this.loginManager.openLoginPage();
 						});
 						views.push(view);
 					} else if (folder.ready) {
-						const doc = folder.proxy.getCanvas(viewFilePath);
-						const view = new RelayCanvasView(this, canvasView, doc);
+						const view = new RelayCanvasView(this, canvasView, canvas);
 						views.push(view);
 					} else {
 						this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 					}
 				} else {
-					// File is a .canvas file but should be treated as SyncFile - don't connect
-					this.log(`Skipping canvas view connection for ${viewFilePath} - sync store type is ${meta?.type || 'unknown'}`);
+					this.log(`Skipping canvas view connection for ${viewFilePath}`);
 				}
 			}
 		});

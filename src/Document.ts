@@ -114,7 +114,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					await this.onceProviderSynced();
 					await this.markSynced();
 				}
-				this.sharedFolder.markUploaded(this);
 			})();
 		});
 
@@ -348,7 +347,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					resolve();
 					return;
 				}
-				
+
 				this._persistence.once("synced", () => {
 					this.persistenceSynced = true;
 					resolve();
@@ -402,7 +401,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	async getServerSynced(): Promise<boolean> {
 		return this._persistence.getServerSynced();
 	}
-
 
 	static checkExtension(vpath: string): boolean {
 		return vpath.endsWith(".md");

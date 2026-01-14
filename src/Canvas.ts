@@ -7,7 +7,6 @@ import * as Y from "yjs";
 import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
 import { IndexeddbPersistence } from "./storage/y-indexeddb";
-import * as idb from "lib0/indexeddb";
 import { Dependency } from "./promiseUtils";
 import type { Unsubscriber } from "./observable/Observable";
 import type {
@@ -17,9 +16,8 @@ import type {
 	CanvasView,
 } from "./CanvasView";
 import { areObjectsEqual } from "./areObjectsEqual";
-import { flags } from "./flagManager";
 
-export function isCanvas(file?: IFile): file is Canvas {
+export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
 }
 
@@ -102,7 +100,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 					await this.onceProviderSynced();
 					await this.markSynced();
 				}
-				this.sharedFolder.markUploaded(this);
 			})();
 		});
 
@@ -173,7 +170,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			})
 		);
 	}
-
 
 	public get ready(): boolean {
 		return this._persistence.isReady(this.synced);

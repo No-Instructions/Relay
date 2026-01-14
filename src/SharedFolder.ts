@@ -302,58 +302,12 @@ export class SharedFolder extends HasProvider {
 	private addLocalDocs = () => {
 		const syncTFiles = this.getSyncFiles();
 		const files: IFile[] = [];
-		const newPaths = this.placeHold(syncTFiles);
+		// Reserve GUIDs for new files before processing
+		this.placeHold(syncTFiles);
 		syncTFiles.forEach((tfile) => {
-			const vpath = this.getVirtualPath(tfile.path);
-			const upload = newPaths.contains(vpath);
-
-			// Check if file already exists with correct type based on metadata
-			const existingFile = this.getFile(tfile, false);
-			if (existingFile) {
-				files.push(existingFile);
-				return;
-			}
-
-			// For new files, use upload/create logic based on extension and feature flags
-			if (tfile instanceof TFolder) {
-				const doc = this.getSyncFolder(vpath, false);
-				files.push(doc);
-				return;
-			}
-			if (Document.checkExtension(vpath)) {
-				if (upload) {
-					const doc = this.uploadDoc(vpath, false);
-					files.push(doc);
-				} else {
-					const doc = this.getDoc(vpath, false);
-					files.push(doc);
-				}
-				return;
-			}
-			if (Canvas.checkExtension(vpath)) {
-				if (upload) {
-					if (flags().enableCanvasSync) {
-						const doc = this.uploadCanvas(vpath, false);
-						files.push(doc);
-						return;
-					}
-					// fall through to syncFile
-				} else {
-					const doc = this.getFile(tfile, false);
-					if (doc) {
-						files.push(doc);
-						return;
-					}
-				}
-			}
-			if (this.syncStore.canSync(vpath)) {
-				if (upload) {
-					const file = this.uploadSyncFile(vpath, false);
-					files.push(file);
-				} else {
-					const file = this.syncFile(vpath, false);
-					files.push(file);
-				}
+			const file = this.getFile(tfile, false);
+			if (file) {
+				files.push(file);
 			}
 		});
 		if (files.length > 0) {
@@ -526,7 +480,6 @@ export class SharedFolder extends HasProvider {
 			(this.authoritative || this._persistence.hasServerSync || this.synced)
 		);
 	}
-
 
 	async markSynced(): Promise<void> {
 		await this._persistence.markServerSynced();
@@ -996,6 +949,9 @@ export class SharedFolder extends HasProvider {
 			} else {
 				// the ID exists, but the file doesn't
 				this.log("[getDoc]: creating doc for shared ID");
+				if (this.pendingUpload.has(vpath)) {
+					return this.uploadDoc(vpath, update);
+				}
 				return this.createDoc(vpath, update);
 			}
 		} else {
@@ -1027,6 +983,9 @@ export class SharedFolder extends HasProvider {
 			} else {
 				// the ID exists, but the file doesn't
 				this.log("[getCanvas]: creating canvas for shared ID");
+				if (this.pendingUpload.has(vpath)) {
+					return this.uploadCanvas(vpath, update);
+				}
 				return this.createCanvas(vpath, update);
 			}
 		} else {
