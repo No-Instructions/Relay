@@ -336,6 +336,8 @@ export default class Live extends Plugin {
 		this.warn = curryLog("[System 3][Relay]", "warn");
 		this.error = curryLog("[System 3][Relay]", "error");
 
+		this.log("Plugin started", { version: this.manifest.version });
+
 		this.settings = new Settings(this, DEFAULT_SETTINGS);
 		await this.settings.load();
 
