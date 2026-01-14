@@ -637,7 +637,7 @@
 					// For relay version > 0, use the full modal with privacy settings
 					shareFolderModal.open();
 				}
-			})}>Share a folder</button
+			})}>Share local folder</button
 		>
 	</SettingItem>
 </SettingGroup>

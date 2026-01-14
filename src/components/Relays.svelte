@@ -293,11 +293,11 @@
 	<SlimSettingItem name="">
 		<button
 			class="mod-cta system3-button"
-			aria-label="Add shared folder to vault"
+			aria-label="Add remote folder to vault"
 			on:click={debounce(handleAddFolder)}
-			style="max-width: 8em"
+			style="max-width: 11em"
 		>
-			Add folder
+			Add remote folder
 		</button>
 	</SlimSettingItem>
 </SettingGroup>

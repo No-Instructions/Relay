@@ -231,7 +231,7 @@
 </script>
 
 {#if currentStep === "main"}
-	<div class="modal-title">Share a folder</div>
+	<div class="modal-title">Share local folder</div>
 
 	<div class="modal-content share-folder-modal" bind:this={modalEl}>
 		<div class="section">
