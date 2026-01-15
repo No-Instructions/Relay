@@ -469,6 +469,12 @@ export class LiveView<ViewType extends TextFileView>
 		return this._parent;
 	}
 
+	public async syncViewToCRDT(): Promise<void> {
+		if (this._plugin && typeof this._plugin.syncViewToCRDT === "function") {
+			await this._plugin.syncViewToCRDT();
+		}
+	}
+
 	setMergeButton(): void {
 		const viewHeaderElement =
 			this.view.containerEl.querySelector(".view-header");

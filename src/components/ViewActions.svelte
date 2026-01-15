@@ -31,6 +31,25 @@
 			handleClick();
 		}
 	};
+
+	const handleLayersClick = async () => {
+		const diskBuffer = await view.document.diskBuffer();
+		view.connectionManager.openDiffView({
+			file1: view.document,
+			file2: diskBuffer,
+			showMergeOption: true,
+			onResolve: async () => {
+				view.document.clearDiskBuffer();
+				await view.syncViewToCRDT();
+			},
+		});
+	};
+
+	const handleLayersKeyPress = (event: KeyboardEvent) => {
+		if (event.key === "Enter") {
+			handleLayersClick();
+		}
+	};
 </script>
 
 {#if isLoggedOut}
@@ -50,9 +69,11 @@
 			: 'notebook'}"
 		aria-label={view.tracking
 			? "Tracking changes: local file and update log are in sync"
-			: "Not tracking changes: local file and update log are not in sync"}
+			: "Not tracking changes: local file and update log are not in sync -- click to check"}
 		tabindex="0"
 		data-filename={view.view.file?.name}
+		on:click={handleLayersClick}
+		on:keypress={handleLayersKeyPress}
 	>
 		<Layers class="svg-icon inline-icon" />
 	</button>
@@ -72,9 +93,11 @@
 			: 'notebook'}"
 		aria-label={view.tracking
 			? "Tracking changes: local file and update log are in sync"
-			: "Not tracking changes: local file and update log are not in sync"}
+			: "Not tracking changes: local file and update log are not in sync -- click to check"}
 		tabindex="0"
 		data-filename={view.view.file?.name}
+		on:click={handleLayersClick}
+		on:keypress={handleLayersKeyPress}
 	>
 		<Layers class="svg-icon inline-icon" />
 	</button>
