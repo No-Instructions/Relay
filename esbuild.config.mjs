@@ -3,6 +3,7 @@ import process from "process";
 import esbuildSvelte from "esbuild-svelte";
 import sveltePreprocess from "svelte-preprocess";
 import builtins from "builtin-modules";
+import inlineWorkerPlugin from "esbuild-plugin-inline-worker";
 import { execSync } from "child_process";
 import chokidar from "chokidar";
 import path from "path";
@@ -80,6 +81,7 @@ const context = await esbuild.context({
 			compilerOptions: { css: true },
 			preprocess: sveltePreprocess(),
 		}),
+		inlineWorkerPlugin(),
 		YjsInternalsPlugin,
 		NotifyPlugin,
 	],
@@ -110,7 +112,7 @@ const copyFile = (src, dest) => {
 const watchAndMove = (fnames, mapping) => {
 	// only usable on top level directory
 	const watcher = chokidar.watch(fnames, {
-		ignored: /(^|[\/\\])\../, // ignore dotfiles
+		ignored: /(^|[\/\\])\./, // ignore dotfiles
 		persistent: true,
 	});
 

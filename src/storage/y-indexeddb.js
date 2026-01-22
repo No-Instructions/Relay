@@ -3,6 +3,7 @@ import * as idb from 'lib0/indexeddb'
 import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
 import { metrics } from '../debug'
+import { CompactionManager } from '../workers/CompactionManager'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
@@ -25,6 +26,52 @@ const uint8ArrayEquals = (a, b) => {
 // After sync, use the lower threshold to keep the database lean
 export const STARTUP_TRIM_SIZE = 500
 export const RUNTIME_TRIM_SIZE = 50
+
+/**
+ * Check if a database needs compaction and compact it in a worker if so.
+ * This should be called BEFORE creating an IndexeddbPersistence instance.
+ * @param {string} name - The database name
+ * @returns {Promise<void>}
+ */
+export const maybeCompactDatabase = async (name) => {
+  if (!CompactionManager.instance.available) {
+    return
+  }
+
+  // Open a temporary connection just to check the count
+  const tempDb = await idb.openDB(name, db =>
+    idb.createStores(db, [
+      ['updates', { autoIncrement: true }],
+      ['custom']
+    ])
+  )
+
+  try {
+    const [checkStore] = idb.transact(tempDb, [updatesStoreName], 'readonly')
+    const count = await idb.count(checkStore)
+
+    if (count >= STARTUP_TRIM_SIZE) {
+      // Close our temp connection before worker compacts
+      tempDb.close()
+
+      try {
+        const result = await CompactionManager.instance.compact(name)
+        metrics.recordCompaction(name, 0)
+        console.log(`[y-indexeddb] Compacted ${name}: ${result.countBefore} -> ${result.countAfter}`)
+      } catch (err) {
+        console.warn(`[y-indexeddb] Background compaction failed for ${name}:`, err)
+      }
+      return
+    }
+  } finally {
+    // Close temp connection if still open
+    try {
+      tempDb.close()
+    } catch (e) {
+      // Already closed
+    }
+  }
+}
 
 /**
  * @param {IndexeddbPersistence} idbPersistence
@@ -104,11 +151,14 @@ export class IndexeddbPersistence extends Observable {
     this.synced = false
     this._serverSynced = undefined
     this._origin = undefined
-    this._db = idb.openDB(name, db =>
-      idb.createStores(db, [
-        ['updates', { autoIncrement: true }],
-        ['custom']
-      ])
+    // First check if compaction is needed, then open the DB
+    this._db = maybeCompactDatabase(name).then(() =>
+      idb.openDB(name, db =>
+        idb.createStores(db, [
+          ['updates', { autoIncrement: true }],
+          ['custom']
+        ])
+      )
     )
     /**
      * @type {Promise<IndexeddbPersistence>}
