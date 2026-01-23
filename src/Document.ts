@@ -186,12 +186,19 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				const storedContents = await this._parent.diskBufferStore
 					.loadDiskBuffer(this.guid)
 					.catch((e) => {
+						this.warn("[diskBuffer] loadDiskBuffer error:", e);
 						return null;
 					});
 				if (storedContents !== null && storedContents !== "") {
 					fileContents = storedContents;
+					this.log(
+						`[diskBuffer] loaded from IndexedDB cache (${storedContents.length} chars)`,
+					);
 				} else {
 					fileContents = await this._parent.read(this);
+					this.log(
+						`[diskBuffer] read from file (${fileContents.length} chars), cache was ${storedContents === null ? "null" : "empty"}`,
+					);
 				}
 				return this.setDiskBuffer(fileContents.replace(/\r\n/g, "\n"));
 			} catch (e) {
@@ -199,44 +206,76 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				throw e;
 			}
 		}
+		this.log("[diskBuffer] returning existing in-memory diskBuffer");
 		return this._diskBuffer;
 	}
 
 	setDiskBuffer(contents: string): TFile {
 		if (this._diskBuffer) {
 			this._diskBuffer.contents = contents;
+			this.log(`[setDiskBuffer] updated existing (${contents.length} chars)`);
 		} else {
 			this._diskBuffer = new DiskBuffer(
 				this._parent.vault,
 				"local disk",
 				contents,
 			);
+			this.log(`[setDiskBuffer] created new (${contents.length} chars)`);
 		}
 		this._parent.diskBufferStore
 			.saveDiskBuffer(this.guid, contents)
-			.catch((e) => {});
+			.then(() => {
+				this.log("[setDiskBuffer] saved to IndexedDB");
+			})
+			.catch((e) => {
+				this.warn("[setDiskBuffer] IndexedDB save error:", e);
+			});
 		return this._diskBuffer;
 	}
 
 	async clearDiskBuffer(): Promise<void> {
+		this.log("[clearDiskBuffer] called");
 		if (this._diskBuffer) {
 			this._diskBuffer.contents = "";
 			this._diskBuffer = undefined;
+			this.log("[clearDiskBuffer] cleared in-memory buffer");
 		}
 		await this._parent.diskBufferStore
 			.removeDiskBuffer(this.guid)
-			.catch((e) => {});
+			.then(() => {
+				this.log("[clearDiskBuffer] removed from IndexedDB");
+			})
+			.catch((e) => {
+				this.warn("[clearDiskBuffer] IndexedDB remove error:", e);
+			});
 	}
 
 	public async checkStale(): Promise<boolean> {
+		this.log("[checkStale] starting");
 		await this.whenSynced();
 		const diskBuffer = await this.diskBuffer(true);
 		const contents = (diskBuffer as DiskBuffer).contents;
+		this.log(
+			`[checkStale] diskBuffer contents: ${contents.length} chars, preview: "${contents.slice(0, 50).replace(/\n/g, "\\n")}..."`,
+		);
 		const response = await this.sharedFolder.backgroundSync.downloadItem(this);
 		const updateBytes = new Uint8Array(response.arrayBuffer);
 
+		const textBeforeUpdate = this.text;
 		Y.applyUpdate(this.ydoc, updateBytes);
+		const textAfterUpdate = this.text;
+		this.log(
+			`[checkStale] CRDT before update: ${textBeforeUpdate.length} chars, after: ${textAfterUpdate.length} chars`,
+		);
+		if (textBeforeUpdate !== textAfterUpdate) {
+			this.log(
+				`[checkStale] CRDT changed after server update, preview: "${textAfterUpdate.slice(0, 50).replace(/\n/g, "\\n")}..."`,
+			);
+		}
 		const stale = this.text !== contents;
+		this.log(
+			`[checkStale] stale=${stale} (CRDT ${this.text.length} chars vs diskBuffer ${contents.length} chars)`,
+		);
 
 		const og = this.text;
 		let text = og;
@@ -268,7 +307,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 		this.pendingOps = [];
 		if (!stale) {
+			this.log("[checkStale] not stale, clearing diskBuffer");
 			this.clearDiskBuffer();
+		} else {
+			this.log("[checkStale] stale! will show differ");
 		}
 		return stale;
 	}

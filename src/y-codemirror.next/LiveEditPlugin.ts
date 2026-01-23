@@ -378,8 +378,15 @@ export class LiveCMPluginValue implements PluginValue {
 			return [];
 		}
 
-		if (this.document?.text === this.editor.state.doc.toString()) {
+		const crdtText = this.document?.text;
+		const editorText = this.editor.state.doc.toString();
+		this.log(
+			`[getKeyFrame] CRDT: ${crdtText?.length ?? 0} chars, editor: ${editorText.length} chars`,
+		);
+
+		if (crdtText === editorText) {
 			// disk and ytext were already the same.
+			this.log("[getKeyFrame] CRDT === editor, setting tracking=true");
 			if (isLiveMd(this.view)) {
 				this.view.tracking = true;
 			}
@@ -396,6 +403,12 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		this.warn(`ytext and editor buffer need syncing`);
+		this.log(
+			`[getKeyFrame] CRDT preview: "${crdtText?.slice(0, 50).replace(/\n/g, "\\n")}..."`,
+		);
+		this.log(
+			`[getKeyFrame] editor preview: "${editorText.slice(0, 50).replace(/\n/g, "\\n")}..."`,
+		);
 		if (!this.document.hasLocalDB() && this.document.text === "") {
 			this.warn("local db missing, not setting buffer");
 			return [];
@@ -403,10 +416,13 @@ export class LiveCMPluginValue implements PluginValue {
 
 		// disk and ytext differ
 		if (isLiveMd(this.view) && !this.view.tracking) {
+			this.log("[getKeyFrame] calling view.checkStale() (LiveMd path)");
 			this.view.checkStale();
 		} else if (this.document) {
+			this.log("[getKeyFrame] calling document.checkStale() (embed path)");
 			const stale = await this.document.checkStale();
 			if (stale && !this.destroyed && this.editor) {
+				this.log("[getKeyFrame] stale, showing merge banner");
 				this.mergeBanner();
 			}
 		}

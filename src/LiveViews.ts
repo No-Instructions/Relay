@@ -542,10 +542,16 @@ export class LiveView<ViewType extends TextFileView>
 			this.view instanceof MarkdownView &&
 			this.view.getMode() === "preview"
 		) {
+			this.log("[LiveView.checkStale] skipping - preview mode");
 			return false;
 		}
+		this.log("[LiveView.checkStale] calling document.checkStale()");
 		const stale = await this.document.checkStale();
+		this.log(
+			`[LiveView.checkStale] result: stale=${stale}, hasDiskBuffer=${!!this.document._diskBuffer?.contents}`,
+		);
 		if (stale && this.document._diskBuffer?.contents) {
+			this.log("[LiveView.checkStale] showing merge banner");
 			this.mergeBanner();
 		} else {
 			this._banner?.destroy();
