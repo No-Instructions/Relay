@@ -64,6 +64,8 @@ import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { isHSMActiveModeEnabled } from "./merge-hsm/flags";
+import { generateHash } from "./hashing";
 import { SelfHostModal } from "./ui/SelfHostModal";
 
 interface DebugSettings {
@@ -552,6 +554,7 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.timeProvider,
 			this.sharedFolders,
+			3, // concurrency
 		);
 
 		if (!this.loginManager.setup()) {
@@ -971,7 +974,7 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("modify", (tfile) => {
+			this.app.vault.on("modify", async (tfile) => {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					vaultLog("Modify", tfile.path);
@@ -979,6 +982,32 @@ export default class Live extends Plugin {
 					if (file && isSyncFile(file)) {
 						file.sync();
 					}
+
+					// Send DISK_CHANGED to HSM for documents with active lock
+					// (but not when we're the ones doing the save)
+					if (
+						isHSMActiveModeEnabled() &&
+						file &&
+						isDocument(file) &&
+						file.hsm &&
+						!file.isSaving &&
+						tfile instanceof TFile
+					) {
+						try {
+							const contents = await this.app.vault.read(tfile);
+							const encoder = new TextEncoder();
+							const hash = await generateHash(encoder.encode(contents).buffer);
+							file.hsm.send({
+								type: 'DISK_CHANGED',
+								contents,
+								mtime: tfile.stat.mtime,
+								hash,
+							});
+						} catch (e) {
+							vaultLog("Failed to send DISK_CHANGED to HSM", e);
+						}
+					}
+
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
 						this.app.metadataCache.trigger("resolve", file);

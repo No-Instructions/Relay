@@ -7,6 +7,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { diffMatchPatch } from "./y-diffMatchPatch";
+import { isHSMConflictDetectionEnabled } from "./merge-hsm/flags";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;

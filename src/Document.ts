@@ -16,6 +16,9 @@ import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
+import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import { isHSMActiveModeEnabled } from "./merge-hsm/flags";
+import { generateHash } from "./hashing";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -23,7 +26,7 @@ export function isDocument(file?: IFile): file is Document {
 
 export class Document extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
-	private _persistence: IndexeddbPersistence;
+	private _persistence: IndexeddbPersistence | null;
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
 	_awaitingUpdates?: boolean;
@@ -44,6 +47,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
 	pendingOps: ((data: string) => string)[] = [];
+
+	/**
+	 * MergeHSM instance for this document.
+	 * Only available when HSM active mode is enabled.
+	 * Use acquireLock() to get/create the HSM.
+	 */
+	private _hsm: MergeHSM | null = null;
+
+	/**
+	 * Cleanup functions for HSM provider event subscriptions.
+	 */
+	private _hsmProviderCleanup: (() => void)[] = [];
+
+	/**
+	 * Flag to track when we're in the middle of our own save operation.
+	 * Used to distinguish our writes from external modifications.
+	 */
+	private _isSaving: boolean = false;
 
 	constructor(
 		path: string,
@@ -78,44 +99,53 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
-		try {
-			const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
-			this._persistence = new IndexeddbPersistence(key, this.ydoc);
-		} catch (e) {
-			this.warn("Unable to open persistence.", this.guid);
-			console.error(e);
-			throw e;
-		}
 
-		this.whenSynced().then(() => {
-			const statsObserver = (event: Y.YTextEvent) => {
-				const origin = event.transaction.origin;
-				if (event.changes.keys.size === 0) return;
-				if (origin == this) return;
-				this.updateStats();
-			};
-			this.ytext.observe(statsObserver);
-			this.unsubscribes.push(() => {
-				this.ytext?.unobserve(statsObserver);
-			});
-			this.updateStats();
+		// When HSM active mode is enabled, MergeHSM owns IndexeddbPersistence
+		// for localDoc. Document.ydoc becomes the ephemeral remoteDoc — no
+		// persistence here to avoid two IndexeddbPersistence on the same DB.
+		if (isHSMActiveModeEnabled()) {
+			this._persistence = null;
+			this.persistenceSynced = true;
+		} else {
 			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.sharedFolder.relayId || "");
-				this._persistence.set("appId", this.sharedFolder.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
+				this._persistence = new IndexeddbPersistence(key, this.ydoc);
 			} catch (e) {
-				// pass
+				this.warn("Unable to open persistence.", this.guid);
+				console.error(e);
+				throw e;
 			}
 
-			(async () => {
-				const serverSynced = await this.getServerSynced();
-				if (!serverSynced) {
-					await this.onceProviderSynced();
-					await this.markSynced();
+			this.whenSynced().then(() => {
+				const statsObserver = (event: Y.YTextEvent) => {
+					const origin = event.transaction.origin;
+					if (event.changes.keys.size === 0) return;
+					if (origin == this) return;
+					this.updateStats();
+				};
+				this.ytext.observe(statsObserver);
+				this.unsubscribes.push(() => {
+					this.ytext?.unobserve(statsObserver);
+				});
+				this.updateStats();
+				try {
+					this._persistence!.set("path", this.path);
+					this._persistence!.set("relay", this.sharedFolder.relayId || "");
+					this._persistence!.set("appId", this.sharedFolder.appId);
+					this._persistence!.set("s3rn", S3RN.encode(this.s3rn));
+				} catch (e) {
+					// pass
 				}
-			})();
-		});
+
+				(async () => {
+					const serverSynced = await this.getServerSynced();
+					if (!serverSynced) {
+						await this.onceProviderSynced();
+						await this.markSynced();
+					}
+				})();
+			});
+		}
 
 		withFlag(flag.enableDeltaLogging, () => {
 			const logObserver = (event: Y.YTextEvent) => {
@@ -157,6 +187,149 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
+
+	/**
+	 * Get the MergeHSM instance for this document.
+	 * Returns null if HSM active mode is not enabled or lock not acquired.
+	 */
+	public get hsm(): MergeHSM | null {
+		return this._hsm;
+	}
+
+	/**
+	 * Acquire lock on this document for active editing.
+	 * Transitions HSM from idle to active mode.
+	 * Call this when editor opens (replaces userLock = true).
+	 *
+	 * @returns The MergeHSM instance, or null if HSM is not enabled
+	 */
+	async acquireLock(): Promise<MergeHSM | null> {
+		if (!isHSMActiveModeEnabled()) {
+			this.userLock = true; // Fallback to old behavior
+			return null;
+		}
+
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager) {
+			this.userLock = true; // Fallback if MergeManager not available
+			return null;
+		}
+
+		try {
+			// MergeManager.getHSM() registers if needed and sends ACQUIRE_LOCK
+			this._hsm = await mergeManager.getHSM(
+				this.guid,
+				this.path,
+				this.ydoc,
+			);
+			this.userLock = true; // Keep for compatibility
+
+			// Wire up provider events to HSM
+			this._setupHSMProviderEvents();
+
+			return this._hsm;
+		} catch (e) {
+			this.warn("[acquireLock] Failed to acquire HSM lock:", e);
+			this.userLock = true; // Fallback
+			return null;
+		}
+	}
+
+	/**
+	 * Set up provider event forwarding to HSM.
+	 */
+	private _setupHSMProviderEvents(): void {
+		if (!this._hsm) return;
+
+		// Clean up any existing listeners to prevent accumulation
+		this._hsmProviderCleanup.forEach(cleanup => cleanup());
+		this._hsmProviderCleanup = [];
+
+		const hsm = this._hsm;
+
+		// Forward provider sync event
+		const onSynced = () => {
+			hsm.send({ type: 'PROVIDER_SYNCED' });
+		};
+		this._provider.on('synced', onSynced);
+		this._hsmProviderCleanup.push(() => this._provider.off('synced', onSynced));
+
+		// Forward connection status changes
+		let lastConnected: boolean | null = null;
+		const onStatus = (state: { status: string }) => {
+			const isConnected = state.status === 'connected';
+			if (lastConnected !== isConnected) {
+				lastConnected = isConnected;
+				if (isConnected) {
+					hsm.send({ type: 'CONNECTED' });
+				} else if (state.status === 'disconnected') {
+					hsm.send({ type: 'DISCONNECTED' });
+				}
+			}
+		};
+		this._provider.on('status', onStatus);
+		this._hsmProviderCleanup.push(() => this._provider.off('status', onStatus));
+
+		// Send initial state if already connected
+		if (this._provider.connectionState.status === 'connected') {
+			hsm.send({ type: 'CONNECTED' });
+		}
+		if (this._providerSynced) {
+			hsm.send({ type: 'PROVIDER_SYNCED' });
+		}
+	}
+
+	/**
+	 * Release lock on this document.
+	 * Transitions HSM from active back to idle mode.
+	 * Call this when editor closes (replaces userLock = false).
+	 */
+	releaseLock(): void {
+		this.userLock = false; // Keep for compatibility
+
+		if (!isHSMActiveModeEnabled() || !this._hsm) {
+			return;
+		}
+
+		// Clean up provider event subscriptions
+		this._hsmProviderCleanup.forEach(cleanup => cleanup());
+		this._hsmProviderCleanup = [];
+
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (mergeManager) {
+			// MergeManager.unload() sends RELEASE_LOCK
+			mergeManager.unload(this.guid);
+		}
+
+		this._hsm = null;
+	}
+
+	/**
+	 * Get the HSM sync status for this document.
+	 * Returns the status if HSM is available, or null otherwise.
+	 * This can be used instead of checkStale() when HSM is enabled.
+	 */
+	getHSMSyncStatus(): import("./merge-hsm/types").SyncStatus | null {
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager) {
+			return null;
+		}
+		return mergeManager.syncStatus.get(this.guid) ?? null;
+	}
+
+	/**
+	 * Check if the document has a conflict according to HSM.
+	 * Returns true if HSM indicates a conflict, false if synced/pending,
+	 * or null if HSM is not available.
+	 */
+	hasHSMConflict(): boolean | null {
+		const status = this.getHSMSyncStatus();
+		if (!status) {
+			return null;
+		}
+		return status.status === "conflict";
+	}
+
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
 			this._tfile = this.getTFile();
@@ -340,10 +513,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public get ready(): boolean {
+		if (!this._persistence) return this.synced;
 		return this._persistence.isReady(this.synced);
 	}
 
 	hasLocalDB(): boolean {
+		if (!this._persistence) return false;
 		return this._persistence.hasServerSync || this._persistence.hasUserData();
 	}
 
@@ -390,6 +565,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					return;
 				}
 
+				if (!this._persistence) {
+					this.persistenceSynced = true;
+					resolve();
+					return;
+				}
+
 				this._persistence.once("synced", () => {
 					this.persistenceSynced = true;
 					resolve();
@@ -414,7 +595,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return getMimeType(this.path);
 	}
 
-	save() {
+	async save() {
 		if (!this.tfile) {
 			return;
 		}
@@ -422,25 +603,53 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this.warn("skipping save for pending delete", this.path);
 			return;
 		}
-		this.vault.modify(this.tfile, this.text);
-		this.warn("file saved", this.path);
+
+		// Mark that we're saving to distinguish from external modifications
+		this._isSaving = true;
+		try {
+			const contents = this.text;
+			await this.vault.modify(this.tfile, contents);
+			this.warn("file saved", this.path);
+
+			// Notify HSM of save completion with new mtime and hash
+			if (this._hsm && this.tfile) {
+				const mtime = this.tfile.stat.mtime;
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				this._hsm.send({ type: 'SAVE_COMPLETE', mtime, hash });
+			}
+		} finally {
+			this._isSaving = false;
+		}
+	}
+
+	/**
+	 * Check if the document is currently being saved by us.
+	 * Used to distinguish our writes from external modifications.
+	 */
+	get isSaving(): boolean {
+		return this._isSaving;
 	}
 
 	requestSave = debounce(this.save, 2000);
 
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
+		if (!this._persistence) return;
 		await this._persistence.setOrigin(origin);
 	}
 
 	async getOrigin(): Promise<"local" | "remote" | undefined> {
+		if (!this._persistence) return undefined;
 		return this._persistence.getOrigin();
 	}
 
 	async markSynced(): Promise<void> {
+		if (!this._persistence) return;
 		await this._persistence.markServerSynced();
 	}
 
 	async getServerSynced(): Promise<boolean> {
+		if (!this._persistence) return false;
 		return this._persistence.getServerSynced();
 	}
 
@@ -452,6 +661,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
+
+		// Release HSM lock if held
+		if (this._hsm) {
+			this.releaseLock();
+		}
+
 		super.destroy();
 		this.ydoc.destroy();
 		if (this._diskBuffer) {

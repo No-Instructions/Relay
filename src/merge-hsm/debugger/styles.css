@@ -1,0 +1,242 @@
+/**
+ * HSM Debugger Styles
+ */
+
+.hsm-debugger-container {
+  padding: 8px;
+  font-size: 12px;
+}
+
+.hsm-debugger-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.hsm-debugger-header h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.hsm-debugger-refresh {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.hsm-debugger-refresh:hover {
+  background: var(--background-modifier-hover);
+}
+
+.hsm-debugger-selector {
+  margin-bottom: 12px;
+}
+
+.hsm-debugger-select {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background: var(--background-primary);
+  font-size: 12px;
+}
+
+.hsm-debugger-placeholder {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px;
+}
+
+/* State badge */
+.hsm-debugger-state-badge {
+  padding: 8px;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+
+.hsm-state-path {
+  font-family: var(--font-monospace);
+  font-weight: 600;
+}
+
+.hsm-state-active {
+  background: rgba(0, 200, 100, 0.15);
+  border: 1px solid rgba(0, 200, 100, 0.3);
+}
+
+.hsm-state-idle {
+  background: rgba(100, 150, 200, 0.15);
+  border: 1px solid rgba(100, 150, 200, 0.3);
+}
+
+.hsm-state-conflict {
+  background: rgba(255, 150, 50, 0.15);
+  border: 1px solid rgba(255, 150, 50, 0.3);
+}
+
+.hsm-state-error {
+  background: rgba(255, 80, 80, 0.15);
+  border: 1px solid rgba(255, 80, 80, 0.3);
+}
+
+.hsm-state-loading {
+  background: rgba(150, 150, 150, 0.15);
+  border: 1px solid rgba(150, 150, 150, 0.3);
+}
+
+.hsm-state-default {
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+}
+
+/* Details */
+.hsm-debugger-details {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+.hsm-detail-item {
+  padding: 2px 0;
+}
+
+.hsm-detail-item.hsm-error {
+  color: var(--text-error);
+}
+
+/* Tabs */
+.hsm-debugger-tabs {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.hsm-debugger-tab-bar {
+  display: flex;
+  background: var(--background-secondary);
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.hsm-tab-btn {
+  flex: 1;
+  padding: 6px 4px;
+  border: none;
+  background: none;
+  font-size: 11px;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.hsm-tab-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.hsm-tab-btn.active {
+  color: var(--text-normal);
+  background: var(--background-primary);
+  border-bottom: 2px solid var(--interactive-accent);
+}
+
+.hsm-debugger-tab-content {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Lists */
+.hsm-debugger-list {
+  padding: 4px;
+}
+
+.hsm-list-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 20px;
+  margin: 0;
+}
+
+.hsm-list-item {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 11px;
+}
+
+.hsm-list-item:last-child {
+  border-bottom: none;
+}
+
+.hsm-event-type,
+.hsm-effect-type {
+  font-family: var(--font-monospace);
+  font-weight: 500;
+  color: var(--text-accent);
+}
+
+.hsm-event-transition {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.hsm-event-time,
+.hsm-effect-time {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+/* Divergences */
+.hsm-divergence-type {
+  font-weight: 500;
+}
+
+.hsm-divergence-message {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.hsm-divergence-info {
+  border-left: 3px solid var(--text-muted);
+}
+
+.hsm-divergence-warning {
+  border-left: 3px solid var(--text-warning);
+}
+
+.hsm-divergence-error {
+  border-left: 3px solid var(--text-error);
+}
+
+.hsm-divergence-critical {
+  border-left: 3px solid #ff0000;
+  background: rgba(255, 0, 0, 0.05);
+}
+
+/* Violations */
+.hsm-violation-type {
+  font-weight: 500;
+}
+
+.hsm-violation-message {
+  color: var(--text-muted);
+  font-size: 10px;
+  margin-top: 2px;
+}
+
+.hsm-violation-warning {
+  border-left: 3px solid var(--text-warning);
+}
+
+.hsm-violation-error {
+  border-left: 3px solid var(--text-error);
+}
+
+.hsm-violation-critical {
+  border-left: 3px solid #ff0000;
+  background: rgba(255, 0, 0, 0.05);
+}

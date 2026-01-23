@@ -12,6 +12,7 @@ import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
+import type { EventMessage } from "./client/provider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
@@ -49,6 +50,12 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
+import { isHSMIdleModeEnabled, isHSMActiveModeEnabled, isHSMRecordingEnabled } from "./merge-hsm/flags";
+import { MergeManager } from "./merge-hsm/MergeManager";
+import { installE2ERecordingBridge } from "./merge-hsm/recording";
+import { generateHash } from "./hashing";
+import { loadState as loadMergeState, openDatabase as openMergeHSMDatabase } from "./merge-hsm/persistence";
+import * as Y from "yjs";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -156,6 +163,7 @@ export class SharedFolder extends HasProvider {
 	proxy: SharedFolder;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
+	mergeManager?: MergeManager;
 
 	constructor(
 		public appId: string,
@@ -269,6 +277,53 @@ export class SharedFolder extends HasProvider {
 
 		this.cas = new ContentAddressedStore(this);
 
+		// Create MergeManager for this SharedFolder (per-folder instance)
+		if (isHSMIdleModeEnabled()) {
+			const folderPath = this.path; // Capture for closure
+			this.mergeManager = new MergeManager({
+				getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
+				timeProvider: undefined, // Use default
+				createPersistence: (vaultId, doc) => new IndexeddbPersistence(vaultId, doc),
+				getDiskState: async (docPath: string) => {
+					// docPath is already vault-relative (e.g., "blog/note.md")
+					const tfile = this.vault.getAbstractFileByPath(docPath);
+					if (!(tfile instanceof TFile)) return null;
+					const contents = await this.vault.read(tfile);
+					const encoder = new TextEncoder();
+					const hash = await generateHash(encoder.encode(contents).buffer);
+					return { contents, mtime: tfile.stat.mtime, hash };
+				},
+				loadState: async (guid: string) => {
+					try {
+						const db = await openMergeHSMDatabase();
+						try {
+							return await loadMergeState(db, guid);
+						} finally {
+							db.close();
+						}
+					} catch {
+						return null;
+					}
+				},
+				onEffect: (guid, effect) => {
+					this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
+				},
+			});
+
+			// Install E2E recording bridge for test capture
+			if (isHSMRecordingEnabled()) {
+				installE2ERecordingBridge(this.mergeManager, {
+					captureSnapshots: true,
+				});
+				this.debug?.('[MergeHSM] E2E recording bridge installed for folder:', folderPath);
+			}
+		}
+
+		// Wire folder-level event subscriptions for idle mode remote updates
+		if (isHSMIdleModeEnabled() && this.mergeManager) {
+			this.setupEventSubscriptions();
+		}
+
 		this.whenReady().then(() => {
 			if (!this.destroyed) {
 				this.addLocalDocs();
@@ -297,6 +352,38 @@ export class SharedFolder extends HasProvider {
 		})();
 
 		RelayInstances.set(this, this.path);
+	}
+
+	private setupEventSubscriptions() {
+		if (!this._provider || !this.mergeManager) return;
+
+		this._provider.subscribeToEvents(
+			['document.updated'],
+			(event: EventMessage) => {
+				this.handleDocumentUpdateEvent(event);
+			},
+		);
+	}
+
+	private handleDocumentUpdateEvent(event: EventMessage) {
+		if (!this.mergeManager) return;
+
+		const docId = event.doc_id;
+		if (!docId) return;
+
+		// Look up the guid from the doc_id
+		// The doc_id from the server corresponds to the document's guid
+		const guid = docId;
+
+		if (!this.files.has(guid)) return;
+
+		const file = this.files.get(guid);
+		if (!file || !isDocument(file)) return;
+
+		// Forward the update to MergeManager for idle mode handling
+		if (event.update) {
+			this.mergeManager.handleIdleRemoteUpdate(guid, event.update);
+		}
 	}
 
 	private addLocalDocs = () => {
@@ -417,13 +504,17 @@ export class SharedFolder extends HasProvider {
 		await this.syncFileTree(this.syncStore);
 	}
 
-	connect(): Promise<boolean> {
+	async connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
-				return super.connect();
+				const result = await super.connect();
+				if (result && isHSMIdleModeEnabled() && this.mergeManager) {
+					this.setupEventSubscriptions();
+				}
+				return result;
 			}
 		}
-		return Promise.resolve(false);
+		return false;
 	}
 
 	public get name(): string {
@@ -1268,6 +1359,13 @@ export class SharedFolder extends HasProvider {
 			throw new Error("unexpected ifile type");
 		}
 		doc.move(vpath, this);
+
+		// Register with MergeManager for idle mode tracking
+		// Use vault-relative path (e.g., "blog/note.md") not SharedFolder-relative (e.g., "/note.md")
+		if (isHSMIdleModeEnabled()) {
+			this.mergeManager?.register(guid, this.getPath(vpath), doc.ydoc);
+		}
+
 		return doc;
 	}
 
@@ -1319,12 +1417,25 @@ export class SharedFolder extends HasProvider {
 				originPromise,
 				awaitingUpdatesPromise,
 			]);
-			const text = doc.ydoc.getText("contents");
 			if (!awaitingUpdates && origin === undefined) {
-				this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
-				this.ydoc.transact(() => {
-					text.insert(0, contents);
-				}, this._persistence);
+				if (isHSMActiveModeEnabled() && this.mergeManager) {
+					// HSM mode: insert into localDoc via MergeHSM
+					const hsm = await this.mergeManager.getHSM(guid, this.getPath(vpath), doc.ydoc);
+					const localDoc = hsm.getLocalDoc();
+					if (localDoc) {
+						const text = localDoc.getText("contents");
+						localDoc.transact(() => {
+							text.insert(0, contents);
+						});
+					}
+				} else {
+					// Legacy mode: insert into Document.ydoc directly
+					const text = doc.ydoc.getText("contents");
+					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
+					this.ydoc.transact(() => {
+						text.insert(0, contents);
+					}, this._persistence);
+				}
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(doc);
@@ -1553,6 +1664,11 @@ export class SharedFolder extends HasProvider {
 	deleteFile(vpath: string) {
 		const guid = this.syncStore?.get(vpath);
 		if (guid) {
+			// Unregister from MergeManager
+			if (isHSMIdleModeEnabled()) {
+				this.mergeManager?.unregister(guid);
+			}
+
 			this.ydoc.transact(() => {
 				this.syncStore.delete(vpath);
 				const doc = this.files.get(guid);
