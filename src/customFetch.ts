@@ -1,11 +1,42 @@
 "use strict";
-import { requestUrl } from "obsidian";
+import { apiVersion, requestUrl } from "obsidian";
 import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog } from "./debug";
 import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
+
+// Device management configuration
+let deviceManagementConfig: {
+	vaultId: string;
+	deviceId: string;
+} | null = null;
+
+/**
+ * Set device management configuration for headers.
+ * Called from main.ts after DeviceManager is initialized.
+ */
+export function setDeviceManagementConfig(config: {
+	vaultId: string;
+	deviceId: string;
+}): void {
+	deviceManagementConfig = config;
+}
+
+/**
+ * Get device management headers if enabled.
+ * Returns empty object if not enabled or not configured.
+ */
+export function getDeviceManagementHeaders(): Record<string, string> {
+	if (flags().enableDeviceManagement && deviceManagementConfig) {
+		return {
+			"Device-Id": deviceManagementConfig.deviceId,
+			"Vault-Id": deviceManagementConfig.vaultId,
+		};
+	}
+	return {};
+}
 
 if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 	// Fetch API is broken for some versions of Electron
@@ -47,9 +78,22 @@ export const customFetch = async (
 
 	const method = config?.method || "GET";
 
-	const headers = Object.assign({}, config?.headers, {
+	const baseHeaders: Record<string, string> = {
 		"Relay-Version": GIT_TAG,
-	}) as Record<string, string>;
+		"Obsidian-Version": apiVersion,
+	};
+
+	// Add device management headers if enabled
+	if (flags().enableDeviceManagement && deviceManagementConfig) {
+		baseHeaders["Device-Id"] = deviceManagementConfig.deviceId;
+		baseHeaders["Vault-Id"] = deviceManagementConfig.vaultId;
+	}
+
+	const headers = Object.assign(
+		{},
+		config?.headers,
+		baseHeaders,
+	) as Record<string, string>;
 
 	// Prepare the request parameters
 	const requestParams: RequestUrlParam = {
