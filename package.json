@@ -48,6 +48,7 @@
 		"jose": "^5.3.0",
 		"lucide-svelte": "^0.377.0",
 		"monkey-around": "^3.0.0",
+		"node-diff3": "^3.2.0",
 		"obsidian-daily-notes-interface": "^0.9.4",
 		"path-browserify": "^1.0.1",
 		"pocketbase": "^0.20.3",
