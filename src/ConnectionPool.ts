@@ -110,7 +110,7 @@ export class ConnectionPool extends HasLogging {
 	}
 
 	private processQueue(): void {
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		//this.logConnectionStatus();
 		this.enforceConnectionLimits();
 
@@ -147,7 +147,7 @@ export class ConnectionPool extends HasLogging {
 			this.connections.set(request.uuid, {
 				uuid: request.uuid,
 				disconnect: request.disconnect,
-				leaseExpiryTime: this.timeProvider.getTime() + request.lease_s * 1000,
+				leaseExpiryTime: this.timeProvider.now() + request.lease_s * 1000,
 			});
 
 			this.log(`Created queued temporary connection for ${request.uuid}`);
@@ -211,7 +211,7 @@ export class ConnectionPool extends HasLogging {
 			this.connections.set(uuid, {
 				uuid,
 				disconnect,
-				leaseExpiryTime: this.timeProvider.getTime() + lease_s * 1000,
+				leaseExpiryTime: this.timeProvider.now() + lease_s * 1000,
 			});
 			this.log(`Created temporary connection for ${uuid}`);
 			return true;

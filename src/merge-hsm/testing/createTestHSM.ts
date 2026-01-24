@@ -208,7 +208,7 @@ function createSnapshot(
 ): SerializableSnapshot {
   const state = hsm.state;
   return {
-    timestamp: time.getTime(),
+    timestamp: time.now(),
     state: {
       guid: state.guid,
       path: state.path,

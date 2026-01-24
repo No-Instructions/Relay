@@ -39,8 +39,8 @@ export interface SyncStatus {
   path: string;
   status: SyncStatusType;
   diskMtime: number;
-  localStateVector: Uint8Array | null;
-  remoteStateVector: Uint8Array | null;
+  localStateVector: Uint8Array;
+  remoteStateVector: Uint8Array;
 }
 
 export interface MergeState {
@@ -329,14 +329,43 @@ export interface StoredUpdates {
   updatedAt: number;
 }
 
+/**
+ * Folder-level sync status index.
+ * Stored in IndexedDB 'index' store.
+ */
+export interface MergeIndex {
+  folderGuid: string;
+  documents: Map<string, SyncStatus>;
+  updatedAt: number;
+}
+
+/**
+ * Lightweight idle mode state.
+ * No YDocs in memory, just state vectors and updates.
+ */
+export interface IdleModeState {
+  guid: string;
+  path: string;
+  /** Stored in IndexedDB, not loaded into memory */
+  localUpdates: Uint8Array[];
+  /** Computed from updates without loading doc */
+  localStateVector: Uint8Array;
+  /** LCA for comparison */
+  lca: LCAState;
+  /** Sync status for UI */
+  syncStatus: 'synced' | 'pending' | 'conflict';
+}
+
 // =============================================================================
 // Configuration Types
 // =============================================================================
 
 // Re-export TimeProvider from existing module for consistency
-// The existing TimeProvider uses getTime() not now()
 import type { TimeProvider } from '../TimeProvider';
 export type { TimeProvider };
+
+// Import Y.Doc type for remoteDoc
+import type * as Y from 'yjs';
 
 export interface MergeHSMConfig {
   /** Document GUID */
@@ -344,6 +373,13 @@ export interface MergeHSMConfig {
 
   /** Virtual path */
   path: string;
+
+  /**
+   * Remote YDoc - passed in, managed externally.
+   * Provider is attached by integration layer.
+   * HSM observes for remote updates.
+   */
+  remoteDoc: Y.Doc;
 
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;

@@ -6,7 +6,7 @@
 
 // Main HSM class
 export { MergeHSM } from './MergeHSM';
-export type { TestMergeHSMConfig } from './MergeHSM';
+export type { TestMergeHSMConfig, IObservable } from './MergeHSM';
 
 // Manager for multiple HSMs
 export { MergeManager } from './MergeManager';
@@ -68,4 +68,33 @@ export type {
   StoredUpdates,
   SerializableSnapshot,
   SerializableEvent,
+
+  // Idle mode and index types
+  MergeIndex,
+  IdleModeState,
 } from './types';
+
+// Persistence (IndexedDB)
+export {
+  openDatabase,
+  closeDatabase,
+  deleteDatabase,
+  clearAllData,
+  saveState,
+  loadState,
+  deleteState,
+  getAllStateGuids,
+  saveUpdates,
+  loadUpdates,
+  deleteUpdates,
+  saveIndex,
+  loadIndex,
+  deleteIndex,
+} from './persistence';
+
+// Integration classes
+export { CM6Integration } from './integration/CM6Integration';
+export { ProviderIntegration } from './integration/ProviderIntegration';
+export type { YjsProvider } from './integration/ProviderIntegration';
+export { DiskIntegration } from './integration/DiskIntegration';
+export type { Vault, HashFn } from './integration/DiskIntegration';

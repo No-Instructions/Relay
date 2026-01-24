@@ -244,6 +244,23 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('disk changes in active mode', () => {
+    test('active mode NEVER emits WRITE_DISK (Obsidian handles disk writes)', () => {
+      const t = createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello',
+        lca: createLCA('hello', 1000),
+      });
+
+      // Trigger various active mode operations
+      t.send(cm6Insert(5, ' world', 'hello world'));
+      t.send(diskChanged('hello external', 2000)); // This triggers merge
+      t.send(saveComplete(3000));
+
+      // Verify NO WRITE_DISK effects were emitted in active mode
+      const writeDiskEffects = t.effects.filter(e => e.type === 'WRITE_DISK');
+      expect(writeDiskEffects.length).toBe(0);
+    });
+
     test('DISK_CHANGED with identical content stays in tracking', () => {
       const t = createTestHSM({
         initialState: 'active.tracking',

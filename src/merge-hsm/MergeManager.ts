@@ -13,11 +13,11 @@ import { MergeHSM } from './MergeHSM';
 import type {
   SyncStatus,
   MergeEffect,
-  MergeHSMConfig,
   PersistedMergeState,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
+import { ObservableMap } from '../observable/ObservableMap';
 
 // =============================================================================
 // Types
@@ -38,6 +38,21 @@ export interface MergeManagerConfig {
 
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void;
+
+  /**
+   * Callback to get disk state for a document (for polling).
+   * Returns { contents, mtime, hash } or null if file doesn't exist.
+   */
+  getDiskState?: (path: string) => Promise<{
+    contents: string;
+    mtime: number;
+    hash: string;
+  } | null>;
+
+  /**
+   * Callback to persist the sync status index.
+   */
+  persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
 }
 
 export interface PollOptions {
@@ -56,8 +71,8 @@ export interface RegisteredDocument {
 // =============================================================================
 
 export class MergeManager {
-  // Sync status for ALL registered documents (loaded or not)
-  private _syncStatus: Map<string, SyncStatus> = new Map();
+  // Sync status for ALL registered documents (loaded or not) - Observable per spec
+  private readonly _syncStatus = new ObservableMap<string, SyncStatus>('MergeManager.syncStatus');
 
   // Loaded HSM instances (only for documents with editor open)
   private loadedHSMs: Map<string, MergeHSM> = new Map();
@@ -74,9 +89,12 @@ export class MergeManager {
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
   private loadUpdates?: (guid: string) => Promise<Uint8Array | null>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
-
-  // Listeners for sync status changes
-  private statusListeners: Array<(guid: string, status: SyncStatus) => void> = [];
+  private getDiskState?: (path: string) => Promise<{
+    contents: string;
+    mtime: number;
+    hash: string;
+  } | null>;
+  private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
 
   constructor(config: MergeManagerConfig = {}) {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
@@ -84,6 +102,8 @@ export class MergeManager {
     this.loadState = config.loadState;
     this.loadUpdates = config.loadUpdates;
     this.onEffect = config.onEffect;
+    this.getDiskState = config.getDiskState;
+    this._persistIndex = config.persistIndex;
   }
 
   // ===========================================================================
@@ -91,16 +111,19 @@ export class MergeManager {
   // ===========================================================================
 
   /**
-   * Get sync status for all registered documents.
+   * Get sync status for all registered documents (ObservableMap per spec).
    */
-  get syncStatus(): ReadonlyMap<string, SyncStatus> {
+  get syncStatus(): ObservableMap<string, SyncStatus> {
     return this._syncStatus;
   }
 
   /**
    * Get or create an HSM for a document, loading it into active mode.
+   * @param guid - Document GUID
+   * @param path - Virtual path within shared folder
+   * @param remoteDoc - Remote YDoc, managed externally with provider attached
    */
-  async getHSM(guid: string, path: string): Promise<MergeHSM> {
+  async getHSM(guid: string, path: string, remoteDoc: Y.Doc): Promise<MergeHSM> {
     // Return existing HSM if loaded
     const existing = this.loadedHSMs.get(guid);
     if (existing) {
@@ -111,6 +134,7 @@ export class MergeManager {
     const hsm = new MergeHSM({
       guid,
       path,
+      remoteDoc,
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
     });
@@ -200,8 +224,8 @@ export class MergeManager {
         path,
         status: 'synced',
         diskMtime: 0,
-        localStateVector: null,
-        remoteStateVector: null,
+        localStateVector: new Uint8Array([0]),
+        remoteStateVector: new Uint8Array([0]),
       });
     }
   }
@@ -263,18 +287,47 @@ export class MergeManager {
    * Poll for disk changes on registered documents.
    */
   async pollAll(options?: PollOptions): Promise<void> {
+    if (!this.getDiskState) {
+      return; // No disk state provider configured
+    }
+
     const guids = options?.guids ?? Array.from(this.registeredDocs.keys());
 
     for (const guid of guids) {
       const hsm = this.loadedHSMs.get(guid);
       if (hsm) {
-        // For loaded HSMs, the integration layer handles disk polling
-        // and sends DISK_CHANGED events
+        // For loaded HSMs, poll via the HSM
+        const path = this.registeredDocs.get(guid);
+        if (path) {
+          const diskState = await this.getDiskState(path);
+          if (diskState) {
+            hsm.send({
+              type: 'DISK_CHANGED',
+              contents: diskState.contents,
+              mtime: diskState.mtime,
+              hash: diskState.hash,
+            });
+          }
+        }
         continue;
       }
 
-      // For idle documents, we'd need to check disk and compare with stored state
-      // This would be handled by the integration layer which has access to the filesystem
+      // For idle documents, check if disk has changed since last known state
+      const path = this.registeredDocs.get(guid);
+      if (path) {
+        const diskState = await this.getDiskState(path);
+        if (diskState) {
+          const currentStatus = this._syncStatus.get(guid);
+          if (currentStatus && diskState.mtime !== currentStatus.diskMtime) {
+            // Disk has changed - update status to indicate pending sync
+            this.updateSyncStatus(guid, {
+              ...currentStatus,
+              status: 'pending',
+              diskMtime: diskState.mtime,
+            });
+          }
+        }
+      }
     }
   }
 
@@ -282,23 +335,34 @@ export class MergeManager {
    * Persist the sync status index.
    */
   async persistIndex(): Promise<void> {
-    // This would be implemented by the integration layer
-    // which has access to IndexedDB
+    if (!this._persistIndex) {
+      return; // No persistence provider configured
+    }
+
+    // Convert ObservableMap to regular Map for persistence
+    const statusMap = new Map<string, SyncStatus>();
+    for (const [guid, status] of this._syncStatus.entries()) {
+      statusMap.set(guid, status);
+    }
+
+    await this._persistIndex(statusMap);
   }
 
   /**
    * Subscribe to sync status changes.
+   * @deprecated Use syncStatus.subscribe() directly for ObservableMap subscription.
    */
   onStatusChange(
     listener: (guid: string, status: SyncStatus) => void
   ): () => void {
-    this.statusListeners.push(listener);
-    return () => {
-      const index = this.statusListeners.indexOf(listener);
-      if (index >= 0) {
-        this.statusListeners.splice(index, 1);
+    // Wrap the listener to work with ObservableMap subscription
+    const observableListener = () => {
+      // This gets called when any status changes - caller can check what changed
+      for (const [guid, status] of this._syncStatus.entries()) {
+        listener(guid, status);
       }
     };
+    return this._syncStatus.subscribe(observableListener);
   }
 
   /**
@@ -346,13 +410,10 @@ export class MergeManager {
   }
 
   /**
-   * Update sync status and notify listeners.
+   * Update sync status.
+   * ObservableMap automatically notifies subscribers when set() is called.
    */
   private updateSyncStatus(guid: string, status: SyncStatus): void {
     this._syncStatus.set(guid, status);
-
-    for (const listener of this.statusListeners) {
-      listener(guid, status);
-    }
   }
 }

@@ -227,7 +227,7 @@ export function expectDispatchChanges(
 
 function effectMatches(actual: MergeEffect, expected: Partial<MergeEffect>): boolean {
   for (const [key, value] of Object.entries(expected)) {
-    const actualValue = (actual as Record<string, unknown>)[key];
+    const actualValue = (actual as unknown as Record<string, unknown>)[key];
 
     if (value instanceof Uint8Array && actualValue instanceof Uint8Array) {
       if (!uint8ArrayEquals(value, actualValue)) {

@@ -5,6 +5,7 @@
 import * as Y from 'yjs';
 import { MergeManager } from '../MergeManager';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
+import { PostOffice } from '../../../src/observable/Postie';
 
 describe('MergeManager', () => {
   let manager: MergeManager;
@@ -12,7 +13,19 @@ describe('MergeManager', () => {
 
   beforeEach(() => {
     timeProvider = new MockTimeProvider();
+
+    // Initialize PostOffice with mock time provider for ObservableMap notifications
+    PostOffice.destroy();
+    // @ts-ignore - accessing private constructor for testing
+    PostOffice["instance"] = new PostOffice(timeProvider);
+    // @ts-ignore
+    PostOffice["_destroyed"] = false;
+
     manager = new MergeManager({ timeProvider });
+  });
+
+  afterEach(() => {
+    PostOffice.destroy();
   });
 
   describe('registration', () => {
@@ -42,21 +55,21 @@ describe('MergeManager', () => {
 
   describe('HSM lifecycle', () => {
     test('getHSM creates and returns HSM', async () => {
-      const hsm = await manager.getHSM('doc-1', 'test.md');
+      const hsm = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
 
       expect(hsm).toBeDefined();
       expect(manager.isLoaded('doc-1')).toBe(true);
     });
 
     test('getHSM returns same instance on second call', async () => {
-      const hsm1 = await manager.getHSM('doc-1', 'test.md');
-      const hsm2 = await manager.getHSM('doc-1', 'test.md');
+      const hsm1 = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
+      const hsm2 = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
 
       expect(hsm1).toBe(hsm2);
     });
 
     test('unload removes HSM from loaded', async () => {
-      await manager.getHSM('doc-1', 'test.md');
+      await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
       expect(manager.isLoaded('doc-1')).toBe(true);
 
       await manager.unload('doc-1');
@@ -64,7 +77,7 @@ describe('MergeManager', () => {
     });
 
     test('unload preserves registration', async () => {
-      await manager.getHSM('doc-1', 'test.md');
+      await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
       await manager.unload('doc-1');
 
       expect(manager.getRegisteredGuids()).toContain('doc-1');
@@ -84,7 +97,7 @@ describe('MergeManager', () => {
     });
 
     test('handleIdleRemoteUpdate forwards to HSM if loaded', async () => {
-      const hsm = await manager.getHSM('doc-1', 'test.md');
+      const hsm = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
 
       // Manually transition to a state where we can observe the event
       hsm.send({ type: 'LOAD', guid: 'doc-1', path: 'test.md' });
@@ -124,9 +137,13 @@ describe('MergeManager', () => {
       });
 
       manager.register('doc-1', 'test.md');
+      // Advance time to trigger PostOffice notifications
+      timeProvider.setTime(timeProvider.now() + 100);
 
       const update = createTestUpdate('hello');
       await manager.handleIdleRemoteUpdate('doc-1', update);
+      // Advance time again for the update notification
+      timeProvider.setTime(timeProvider.now() + 100);
 
       expect(statusChanges.length).toBeGreaterThan(0);
       expect(statusChanges.some(c => c.status === 'pending')).toBe(true);
@@ -140,6 +157,8 @@ describe('MergeManager', () => {
       });
 
       manager.register('doc-1', 'test.md');
+      // Advance time to trigger PostOffice notifications
+      timeProvider.setTime(timeProvider.now() + 100);
       const initialCount = callCount;
 
       unsubscribe();
@@ -162,7 +181,7 @@ describe('MergeManager', () => {
         },
       });
 
-      const hsm = await managerWithEffects.getHSM('doc-1', 'test.md');
+      const hsm = await managerWithEffects.getHSM('doc-1', 'test.md', createRemoteDoc());
 
       // Send events to trigger effects
       hsm.send({ type: 'LOAD', guid: 'doc-1', path: 'test.md' });
@@ -184,4 +203,8 @@ function createTestUpdate(content: string): Uint8Array {
   const update = Y.encodeStateAsUpdate(doc);
   doc.destroy();
   return update;
+}
+
+function createRemoteDoc(): Y.Doc {
+  return new Y.Doc();
 }
