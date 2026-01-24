@@ -399,3 +399,102 @@ export class IndexeddbPersistence extends Observable {
     return !serverSynced && origin !== "local" && !this.hasUserData()
   }
 }
+
+// =============================================================================
+// Doc-less Operations (for MergeHSM idle mode)
+// =============================================================================
+//
+// These operations allow working with Yjs updates without loading a full YDoc
+// into memory. Used by MergeHSM for lightweight idle mode.
+
+/**
+ * Load raw updates from IndexedDB without creating a YDoc.
+ * For lightweight idle mode operations.
+ * @param {string} name - Database name (e.g., `${appId}-relay-doc-${guid}`)
+ * @returns {Promise<Uint8Array[]>}
+ */
+export const loadUpdatesRaw = async (name) => {
+  const db = await idb.openDB(name, db =>
+    idb.createStores(db, [
+      ['updates', { autoIncrement: true }],
+      ['custom']
+    ])
+  )
+  try {
+    const [store] = idb.transact(db, [updatesStoreName], 'readonly')
+    const updates = await idb.getAll(store)
+    return updates
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Append a Yjs update to IndexedDB without loading a YDoc.
+ * For receiving remote updates in idle mode.
+ * @param {string} name - Database name
+ * @param {Uint8Array} update - Yjs update to store
+ * @returns {Promise<void>}
+ */
+export const appendUpdateRaw = async (name, update) => {
+  // Skip updates with empty state vectors (no actual content)
+  const stateVector = Y.encodeStateVectorFromUpdate(update)
+  if (stateVector.length === 0) {
+    return
+  }
+
+  const db = await idb.openDB(name, db =>
+    idb.createStores(db, [
+      ['updates', { autoIncrement: true }],
+      ['custom']
+    ])
+  )
+  try {
+    const [store] = idb.transact(db, [updatesStoreName], 'readwrite')
+    await idb.addAutoKey(store, update)
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Get merged update and state vector without loading a YDoc.
+ * Useful for computing state in idle mode.
+ * @param {string} name - Database name
+ * @returns {Promise<{update: Uint8Array, stateVector: Uint8Array}>}
+ */
+export const getMergedStateWithoutDoc = async (name) => {
+  const updates = await loadUpdatesRaw(name)
+  if (updates.length === 0) {
+    return { update: new Uint8Array(), stateVector: new Uint8Array() }
+  }
+  const merged = Y.mergeUpdates(updates)
+  const stateVector = Y.encodeStateVectorFromUpdate(merged)
+  return { update: merged, stateVector }
+}
+
+/**
+ * Get the state vector from stored updates without loading a YDoc.
+ * @param {string} name - Database name
+ * @returns {Promise<Uint8Array>}
+ */
+export const getStateVectorWithoutDoc = async (name) => {
+  const { stateVector } = await getMergedStateWithoutDoc(name)
+  return stateVector
+}
+
+/**
+ * Compute the diff between stored updates and a remote state vector.
+ * Returns the updates needed to bring remote up to date with local.
+ * Does not load a YDoc.
+ * @param {string} name - Database name
+ * @param {Uint8Array} remoteStateVector - Remote state vector to diff against
+ * @returns {Promise<Uint8Array>} - Update containing changes remote doesn't have
+ */
+export const diffUpdatesWithoutDoc = async (name, remoteStateVector) => {
+  const { update } = await getMergedStateWithoutDoc(name)
+  if (update.length === 0) {
+    return new Uint8Array()
+  }
+  return Y.diffUpdate(update, remoteStateVector)
+}

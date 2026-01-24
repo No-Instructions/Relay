@@ -4,14 +4,16 @@
  * Database: RelayMergeHSM
  * Stores:
  *   - states: HSM state per document (PersistedMergeState)
- *   - updates: Yjs updates per document (StoredUpdates)
  *   - index: Folder-level sync status (MergeIndex)
+ *
+ * NOTE: Yjs updates are stored in y-indexeddb (per-document databases),
+ * NOT in this database. This ensures compatibility with existing documents.
+ * Use loadUpdatesRaw/appendUpdateRaw from y-indexeddb for update storage.
  */
 
 import * as idb from 'lib0/indexeddb';
 import type {
   PersistedMergeState,
-  StoredUpdates,
   MergeIndex,
   SyncStatus,
 } from '../types';
@@ -25,8 +27,9 @@ const DB_VERSION = 1;
 
 const STORES = {
   states: 'states',
-  updates: 'updates',
   index: 'index',
+  // NOTE: No 'updates' store - Yjs updates are stored in y-indexeddb
+  // per-document databases for compatibility with existing documents.
 } as const;
 
 // =============================================================================
@@ -39,9 +42,9 @@ const STORES = {
 export async function openDatabase(): Promise<IDBDatabase> {
   return idb.openDB(DB_NAME, (db) => {
     // Create stores if they don't exist
+    // NOTE: No 'updates' store - use y-indexeddb for Yjs update storage
     idb.createStores(db, [
       [STORES.states, { keyPath: 'guid' }],
-      [STORES.updates, { keyPath: 'guid' }],
       [STORES.index, { keyPath: 'folderGuid' }],
     ]);
   });
@@ -102,42 +105,21 @@ export async function getAllStateGuids(db: IDBDatabase): Promise<string[]> {
 }
 
 // =============================================================================
-// Updates Store Operations
+// Yjs Updates Storage (via y-indexeddb)
 // =============================================================================
-
-/**
- * Save Yjs updates for a document.
- */
-export async function saveUpdates(
-  db: IDBDatabase,
-  stored: StoredUpdates
-): Promise<void> {
-  const [store] = idb.transact(db, [STORES.updates], 'readwrite');
-  await idb.put(store, stored as unknown as string);
-}
-
-/**
- * Load Yjs updates for a document.
- */
-export async function loadUpdates(
-  db: IDBDatabase,
-  guid: string
-): Promise<StoredUpdates | null> {
-  const [store] = idb.transact(db, [STORES.updates], 'readonly');
-  const result = await idb.get(store, guid);
-  return (result as unknown as StoredUpdates) ?? null;
-}
-
-/**
- * Delete Yjs updates for a document.
- */
-export async function deleteUpdates(
-  db: IDBDatabase,
-  guid: string
-): Promise<void> {
-  const [store] = idb.transact(db, [STORES.updates], 'readwrite');
-  await idb.del(store, guid);
-}
+//
+// IMPORTANT: Yjs updates are NOT stored in this database.
+// They are stored in y-indexeddb per-document databases for compatibility
+// with existing documents.
+//
+// To work with Yjs updates in idle mode (without loading a YDoc), use:
+//   - loadUpdatesRaw(dbName)         - load raw updates
+//   - appendUpdateRaw(dbName, update) - append an update
+//   - getMergedStateWithoutDoc(dbName) - get merged update + state vector
+//
+// These functions are exported from src/storage/y-indexeddb.js
+//
+// The database name convention is: `${appId}-relay-doc-${guid}`
 
 // =============================================================================
 // Index Store Operations
@@ -206,16 +188,16 @@ export async function deleteIndex(
 /**
  * Clear all data from the database.
  * Use with caution - for testing or reset scenarios.
+ * NOTE: This does NOT clear Yjs updates - those are in y-indexeddb.
  */
 export async function clearAllData(db: IDBDatabase): Promise<void> {
-  const [statesStore, updatesStore, indexStore] = idb.transact(
+  const [statesStore, indexStore] = idb.transact(
     db,
-    [STORES.states, STORES.updates, STORES.index],
+    [STORES.states, STORES.index],
     'readwrite'
   );
   await Promise.all([
     idb.del(statesStore, IDBKeyRange.lowerBound('')),
-    idb.del(updatesStore, IDBKeyRange.lowerBound('')),
     idb.del(indexStore, IDBKeyRange.lowerBound('')),
   ]);
 }

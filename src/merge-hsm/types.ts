@@ -272,10 +272,16 @@ export interface PersistStateEffect {
   state: PersistedMergeState;
 }
 
+/**
+ * Persist Yjs updates to y-indexeddb.
+ * Integration layer should use appendUpdateRaw() from y-indexeddb.
+ */
 export interface PersistUpdatesEffect {
   type: 'PERSIST_UPDATES';
-  guid: string;
-  updates: Uint8Array;
+  /** Database name for y-indexeddb: `${appId}-relay-doc-${guid}` */
+  dbName: string;
+  /** The Yjs update to persist */
+  update: Uint8Array;
 }
 
 export interface SyncToRemoteEffect {
@@ -320,14 +326,15 @@ export interface PersistedMergeState {
   persistedAt: number;
 }
 
-export interface StoredUpdates {
-  guid: string;
-  /** Merged update containing all local changes */
-  update: Uint8Array;
-  /** Computed state vector (avoids loading doc to check) */
-  stateVector: Uint8Array;
-  updatedAt: number;
-}
+// NOTE: StoredUpdates has been removed.
+// Yjs updates are stored in y-indexeddb per-document databases,
+// NOT in MergeHSMDatabase. This ensures compatibility with existing documents.
+//
+// To work with Yjs updates without loading a YDoc, use the doc-less
+// operations from y-indexeddb:
+//   - loadUpdatesRaw(dbName)
+//   - appendUpdateRaw(dbName, update)
+//   - getMergedStateWithoutDoc(dbName)
 
 /**
  * Folder-level sync status index.
@@ -342,13 +349,21 @@ export interface MergeIndex {
 /**
  * Lightweight idle mode state.
  * No YDocs in memory, just state vectors and updates.
+ *
+ * NOTE: Yjs updates (localUpdates) are stored in y-indexeddb per-document
+ * databases, NOT in MergeHSMDatabase. Access via:
+ *   - loadUpdatesRaw(dbName) - load raw updates
+ *   - getMergedStateWithoutDoc(dbName) - get merged update + state vector
  */
 export interface IdleModeState {
   guid: string;
   path: string;
-  /** Stored in IndexedDB, not loaded into memory */
-  localUpdates: Uint8Array[];
-  /** Computed from updates without loading doc */
+  /**
+   * Database name for y-indexeddb access.
+   * Convention: `${appId}-relay-doc-${guid}`
+   */
+  yIndexedDbName: string;
+  /** Computed from updates without loading doc (via getMergedStateWithoutDoc) */
   localStateVector: Uint8Array;
   /** LCA for comparison */
   lca: LCAState;

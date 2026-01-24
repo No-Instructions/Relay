@@ -65,16 +65,18 @@ export type {
   MergeFailure,
   ConflictRegion,
   PersistedMergeState,
-  StoredUpdates,
   SerializableSnapshot,
   SerializableEvent,
 
   // Idle mode and index types
   MergeIndex,
   IdleModeState,
+  // NOTE: StoredUpdates removed - Yjs updates are stored in y-indexeddb
 } from './types';
 
 // Persistence (IndexedDB)
+// NOTE: Yjs updates are stored in y-indexeddb, not here.
+// Use loadUpdatesRaw/appendUpdateRaw from src/storage/y-indexeddb.js
 export {
   openDatabase,
   closeDatabase,
@@ -84,9 +86,7 @@ export {
   loadState,
   deleteState,
   getAllStateGuids,
-  saveUpdates,
-  loadUpdates,
-  deleteUpdates,
+  // REMOVED: saveUpdates, loadUpdates, deleteUpdates - use y-indexeddb instead
   saveIndex,
   loadIndex,
   deleteIndex,
@@ -98,3 +98,108 @@ export { ProviderIntegration } from './integration/ProviderIntegration';
 export type { YjsProvider } from './integration/ProviderIntegration';
 export { DiskIntegration } from './integration/DiskIntegration';
 export type { Vault, HashFn } from './integration/DiskIntegration';
+
+// Recording infrastructure
+export {
+  RecordingMergeHSM,
+  createE2ERecorder,
+  createIntegrationRecorder,
+  createShadowRecorder,
+  replayRecording,
+  assertReplaySucceeds,
+  assertReplayDiverges,
+  loadRecordingFixture,
+  loadRecordingFixtures,
+  serializeRecording,
+  deserializeRecording,
+  serializeEvent,
+  deserializeEvent,
+  serializeEffect,
+  deserializeEffect,
+  generateTestFromRecording,
+  // E2E test integration
+  E2ERecordingBridge,
+  installE2ERecordingBridge,
+} from './recording';
+export type {
+  HSMRecording,
+  HSMTimelineEntry,
+  RecordingOptions,
+  RecordingMetadata,
+  ReplayResult,
+  ReplayDivergence,
+  ReplayOptions,
+  RecordableHSM,
+  // E2E test integration types
+  E2ERecordingBridgeConfig,
+  E2ERecordingState,
+  HSMRecordingGlobal,
+} from './recording';
+
+// Shadow mode infrastructure
+export {
+  ShadowMergeHSM,
+  ShadowManager,
+  createLoggingShadow,
+  createCallbackShadow,
+  createLoggingShadowManager,
+} from './shadow';
+export type {
+  OldSystemAction,
+  ShadowDivergence,
+  ShadowModeConfig,
+  ShadowDocumentState,
+  ShadowSessionStats,
+  ShadowManagerConfig,
+  ShadowReport,
+  DocumentShadowSummary,
+  DivergenceType,
+  DivergenceSeverity,
+  ComparisonResult,
+} from './shadow';
+
+// Invariant checking
+export {
+  InvariantChecker,
+  createLoggingChecker,
+  createStrictChecker,
+  createTestChecker,
+  STANDARD_INVARIANTS,
+  getInvariantsForState,
+  getInvariantsByTrigger,
+} from './invariants';
+export type {
+  InvariantDefinition,
+  InvariantViolation,
+  InvariantConfig,
+  InvariantCheckContext,
+  InvariantSeverity,
+  CheckableHSM,
+} from './invariants';
+
+// Feature flags
+export {
+  isHSMEnabled,
+  isHSMIdleModeEnabled,
+  isHSMConflictDetectionEnabled,
+  isHSMActiveModeEnabled,
+  isHSMShadowModeEnabled,
+  isHSMInvariantChecksEnabled,
+  isHSMRecordingEnabled,
+  isHSMDebuggerEnabled,
+  withHSM,
+  withHSMIdleMode,
+  withHSMActiveMode,
+  withHSMShadowMode,
+  hsmFlags,
+  getHSMFeatureStatus,
+  logHSMFeatureStatus,
+} from './flags';
+export type { HSMFeatureStatus } from './flags';
+
+// Visual debugger
+export {
+  HSMDebuggerView,
+  HSM_DEBUGGER_VIEW_TYPE,
+  openHSMDebugger,
+} from './debugger';
