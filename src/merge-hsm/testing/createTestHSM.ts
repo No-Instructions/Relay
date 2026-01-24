@@ -34,6 +34,9 @@ export interface TestHSMOptions {
   /** Document path (default: 'test.md') */
   path?: string;
 
+  /** Vault ID (default: 'test-${guid}') */
+  vaultId?: string;
+
   /** Initial state path to bootstrap to */
   initialState?: StatePath;
 
@@ -135,9 +138,11 @@ export function createTestHSM(options: TestHSMOptions = {}): TestHSM {
   }
 
   // Use the real MergeHSM with test configuration
+  const guid = options.guid ?? 'test-guid';
   const hsm = MergeHSM.forTesting({
-    guid: options.guid ?? 'test-guid',
+    guid,
     path: options.path ?? 'test.md',
+    vaultId: options.vaultId ?? `test-${guid}`,
     timeProvider: time,
     initialState: options.initialState,
     localDocContent: options.localDoc,

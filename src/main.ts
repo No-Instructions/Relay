@@ -564,6 +564,7 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.timeProvider,
 			this.sharedFolders,
+			3, // concurrency
 		);
 
 		if (!this.loginManager.setup()) {

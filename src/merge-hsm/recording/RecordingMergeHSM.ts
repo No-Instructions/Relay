@@ -24,6 +24,7 @@ import type {
   SerializableSnapshot,
 } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
+import { DefaultTimeProvider } from '../../TimeProvider';
 import type {
   HSMRecording,
   HSMTimelineEntry,
@@ -96,7 +97,7 @@ export class RecordingMergeHSM implements RecordableHSM {
     timeProvider?: TimeProvider
   ) {
     this.hsm = hsm;
-    this.timeProvider = timeProvider ?? { now: () => Date.now() };
+    this.timeProvider = timeProvider ?? new DefaultTimeProvider();
     this.options = {
       captureSnapshots: options.captureSnapshots ?? false,
       maxEntries: options.maxEntries ?? 10000,

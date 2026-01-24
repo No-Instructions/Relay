@@ -28,6 +28,7 @@ import type {
   MergeHSMConfig,
 } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
+import { DefaultTimeProvider } from '../../TimeProvider';
 import { MergeHSM } from '../MergeHSM';
 import type { RecordableHSM } from '../recording';
 import { serializeEffect } from '../recording';
@@ -85,7 +86,7 @@ export class ShadowMergeHSM implements RecordableHSM {
     timeProvider?: TimeProvider
   ) {
     this.config = { ...DEFAULT_CONFIG, ...shadowConfig };
-    this.timeProvider = timeProvider ?? { now: () => Date.now() };
+    this.timeProvider = timeProvider ?? new DefaultTimeProvider();
 
     // Create the underlying HSM
     this.hsm = new MergeHSM(hsmConfig);

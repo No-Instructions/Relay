@@ -451,6 +451,7 @@ export class MergeHSM implements TestableHSM {
   // Configuration
   private timeProvider: TimeProvider;
   private hashFn: (contents: string) => Promise<string>;
+  private vaultId: string;
 
   // Remote doc is passed in and managed externally
   private externalRemoteDoc: Y.Doc;
@@ -463,6 +464,7 @@ export class MergeHSM implements TestableHSM {
     this.hashFn = config.hashFn ?? defaultHashFn;
     this._guid = config.guid;
     this._path = config.path;
+    this.vaultId = config.vaultId;
     this.externalRemoteDoc = config.remoteDoc;
 
     // Create and start the XState actor
@@ -497,6 +499,7 @@ export class MergeHSM implements TestableHSM {
     const hsm = new MergeHSM({
       guid: config.guid,
       path: config.path,
+      vaultId: config.vaultId,
       remoteDoc,
       timeProvider: config.timeProvider,
       hashFn: config.hashFn,
@@ -1171,8 +1174,8 @@ export class MergeHSM implements TestableHSM {
       // Emit PERSIST_UPDATES effect for IndexedDB storage (per spec)
       this.emitEffect({
         type: 'PERSIST_UPDATES',
-        guid: this._guid,
-        updates: this.pendingIdleUpdates,
+        dbName: this.vaultId,
+        update: this.pendingIdleUpdates,
       });
 
       if (this.hasDiskChangedSinceLCA()) {

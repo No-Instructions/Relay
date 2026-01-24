@@ -18,6 +18,7 @@
 import type * as Y from 'yjs';
 import type { MergeState, StatePath, MergeEvent, SyncStatus } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
+import { DefaultTimeProvider } from '../../TimeProvider';
 import type {
   InvariantDefinition,
   InvariantViolation,
@@ -76,7 +77,7 @@ export class InvariantChecker {
     this.hsm = hsm;
     this.config = { ...DEFAULT_INVARIANT_CONFIG, ...config };
     this.invariants = invariants;
-    this.timeProvider = timeProvider ?? { now: () => Date.now() };
+    this.timeProvider = timeProvider ?? new DefaultTimeProvider();
 
     // Set up automatic state change checks
     if (this.config.enabled) {

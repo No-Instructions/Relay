@@ -390,6 +390,12 @@ export interface MergeHSMConfig {
   path: string;
 
   /**
+   * Vault ID for y-indexeddb persistence.
+   * Convention: `${appId}-relay-doc-${guid}`
+   */
+  vaultId: string;
+
+  /**
    * Remote YDoc - passed in, managed externally.
    * Provider is attached by integration layer.
    * HSM observes for remote updates.

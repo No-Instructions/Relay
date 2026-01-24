@@ -16,6 +16,7 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
+import { isHSMIdleModeEnabled } from "./merge-hsm/flags";
 
 export interface QueueItem {
 	guid: string;
@@ -100,6 +101,15 @@ export class BackgroundSync extends HasLogging {
 			this.processSyncQueue();
 			this.processDownloadQueue();
 		}, 1000);
+
+		// Add polling timer for MergeManager disk changes (poll all folders)
+		if (isHSMIdleModeEnabled()) {
+			this.timeProvider.setInterval(() => {
+				this.sharedFolders.forEach((folder) => {
+					folder.mergeManager?.pollAll();
+				});
+			}, 5000); // Poll every 5 seconds
+		}
 	}
 
 	/**

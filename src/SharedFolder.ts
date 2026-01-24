@@ -49,6 +49,10 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
+import { isHSMIdleModeEnabled, isHSMRecordingEnabled } from "./merge-hsm/flags";
+import { MergeManager } from "./merge-hsm/MergeManager";
+import { installE2ERecordingBridge } from "./merge-hsm/recording";
+import { generateHash } from "./hashing";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -156,6 +160,7 @@ export class SharedFolder extends HasProvider {
 	proxy: SharedFolder;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
+	mergeManager?: MergeManager;
 
 	constructor(
 		public appId: string,
@@ -268,6 +273,50 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.cas = new ContentAddressedStore(this);
+
+		// Create MergeManager for this SharedFolder (per-folder instance)
+		if (isHSMIdleModeEnabled()) {
+			const folderPath = this.path; // Capture for closure
+			this.mergeManager = new MergeManager({
+				getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
+				timeProvider: undefined, // Use default
+				getDiskState: async (docPath: string) => {
+					// docPath is already vault-relative (e.g., "blog/note.md")
+					const tfile = this.vault.getAbstractFileByPath(docPath);
+					if (!(tfile instanceof TFile)) return null;
+					const contents = await this.vault.read(tfile);
+					const encoder = new TextEncoder();
+					const hash = await generateHash(encoder.encode(contents).buffer);
+					return { contents, mtime: tfile.stat.mtime, hash };
+				},
+				onEffect: (guid, effect) => {
+					this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
+				},
+			});
+
+			// Install E2E recording bridge for test capture
+			if (isHSMRecordingEnabled()) {
+				installE2ERecordingBridge(this.mergeManager, {
+					captureSnapshots: true,
+				});
+				this.debug?.('[MergeHSM] E2E recording bridge installed for folder:', folderPath);
+			}
+		}
+
+		// Wire remote updates to MergeManager for idle mode tracking
+		if (isHSMIdleModeEnabled() && this.mergeManager) {
+			this.ydoc.on('update', (update: Uint8Array, origin: unknown) => {
+				// Only process remote updates (not local or persistence)
+				if (origin === 'remote' || (origin && typeof origin === 'object' && 'provider' in origin)) {
+					// Forward to MergeManager for idle documents (not actively loaded)
+					this.files.forEach((file, guid) => {
+						if (isDocument(file) && !this.mergeManager?.isLoaded(guid)) {
+							this.mergeManager?.handleIdleRemoteUpdate(guid, update);
+						}
+					});
+				}
+			});
+		}
 
 		this.whenReady().then(() => {
 			if (!this.destroyed) {
@@ -1268,6 +1317,13 @@ export class SharedFolder extends HasProvider {
 			throw new Error("unexpected ifile type");
 		}
 		doc.move(vpath, this);
+
+		// Register with MergeManager for idle mode tracking
+		// Use vault-relative path (e.g., "blog/note.md") not SharedFolder-relative (e.g., "/note.md")
+		if (isHSMIdleModeEnabled()) {
+			this.mergeManager?.register(guid, this.getPath(vpath));
+		}
+
 		return doc;
 	}
 
@@ -1553,6 +1609,11 @@ export class SharedFolder extends HasProvider {
 	deleteFile(vpath: string) {
 		const guid = this.syncStore?.get(vpath);
 		if (guid) {
+			// Unregister from MergeManager
+			if (isHSMIdleModeEnabled()) {
+				this.mergeManager?.unregister(guid);
+			}
+
 			this.ydoc.transact(() => {
 				this.syncStore.delete(vpath);
 				const doc = this.files.get(guid);

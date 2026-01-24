@@ -20,6 +20,7 @@ import type { ObservableSet } from "src/observable/ObservableSet";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog } from "src/debug";
+import { isHSMIdleModeEnabled, isHSMShadowModeEnabled } from "src/merge-hsm/flags";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -327,11 +328,51 @@ class FilePillDecoration {
 			el.remove();
 		});
 
-		this.unsubscribes.push(
-			this.file.subscribe(() => {
-				this.setText();
-			}),
-		);
+		// Subscribe to appropriate status source
+		// Get mergeManager from the file's sharedFolder (per-folder instance)
+		const mergeManager = this.file.sharedFolder?.mergeManager;
+		if (isHSMIdleModeEnabled() && mergeManager) {
+			this.unsubscribes.push(
+				mergeManager.syncStatus.subscribe(() => {
+					this.setTextFromHSM();
+				})
+			);
+		} else {
+			this.unsubscribes.push(
+				this.file.subscribe(() => {
+					this.setText();
+				}),
+			);
+		}
+	}
+
+	private setTextFromHSM() {
+		const mergeManager = this.file.sharedFolder?.mergeManager;
+		const status = mergeManager?.syncStatus.get(this.file.guid);
+		if (!status || status.status === 'synced') {
+			this.pill?.$destroy();
+			this.pill = undefined;
+			return;
+		}
+		const tag = status.status; // 'pending' | 'conflict' | 'error'
+
+		// Shadow mode validation
+		if (isHSMShadowModeEnabled()) {
+			const oldStatus = this.file.tag;
+			const newStatus = status.status;
+			if (oldStatus !== newStatus) {
+				console.warn(`[Shadow] Status divergence for ${this.file.guid}: old=${oldStatus}, new=${newStatus}`);
+			}
+		}
+
+		if (!this.pill) {
+			this.pill = new UploadPill({
+				target: this.el,
+				props: { text: tag },
+			});
+		} else {
+			this.pill.$set({ text: tag });
+		}
 	}
 
 	setText() {

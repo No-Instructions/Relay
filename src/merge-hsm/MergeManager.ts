@@ -24,6 +24,12 @@ import { ObservableMap } from '../observable/ObservableMap';
 // =============================================================================
 
 export interface MergeManagerConfig {
+  /**
+   * Function to generate vault ID for a document.
+   * Convention: `${appId}-relay-doc-${guid}`
+   */
+  getVaultId: (guid: string) => string;
+
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;
 
@@ -84,6 +90,7 @@ export class MergeManager {
   private idleUpdates: Map<string, Uint8Array> = new Map();
 
   // Configuration
+  private getVaultId: (guid: string) => string;
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
@@ -96,7 +103,8 @@ export class MergeManager {
   } | null>;
   private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
 
-  constructor(config: MergeManagerConfig = {}) {
+  constructor(config: MergeManagerConfig) {
+    this.getVaultId = config.getVaultId;
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn;
     this.loadState = config.loadState;
@@ -134,6 +142,7 @@ export class MergeManager {
     const hsm = new MergeHSM({
       guid,
       path,
+      vaultId: this.getVaultId(guid),
       remoteDoc,
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
@@ -213,17 +222,32 @@ export class MergeManager {
   /**
    * Register a document without loading its HSM.
    * Used to track documents in idle mode.
+   * Fetches actual disk mtime if getDiskState is configured.
    */
-  register(guid: string, path: string): void {
+  async register(guid: string, path: string): Promise<void> {
     this.registeredDocs.set(guid, path);
 
     // Initialize sync status if not exists
     if (!this._syncStatus.has(guid)) {
+      // Get actual disk state for mtime (if callback is configured)
+      let diskMtime = 0;
+      if (this.getDiskState) {
+        try {
+          const diskState = await this.getDiskState(path);
+          if (diskState) {
+            diskMtime = diskState.mtime;
+          }
+        } catch (e) {
+          // Failed to get disk state - use 0 as fallback
+          // This can happen if file doesn't exist yet
+        }
+      }
+
       this._syncStatus.set(guid, {
         guid,
         path,
         status: 'synced',
-        diskMtime: 0,
+        diskMtime,
         localStateVector: new Uint8Array([0]),
         remoteStateVector: new Uint8Array([0]),
       });
@@ -404,7 +428,7 @@ export class MergeManager {
 
       case 'PERSIST_UPDATES':
         // Store updates for idle mode
-        this.idleUpdates.set(guid, effect.updates);
+        this.idleUpdates.set(guid, effect.update);
         break;
     }
   }

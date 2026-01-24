@@ -20,6 +20,7 @@ import type { MergeManager } from '../MergeManager';
 import type { MergeHSM } from '../MergeHSM';
 import type { MergeEvent, MergeEffect, StatePath } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
+import { DefaultTimeProvider } from '../../TimeProvider';
 import type { HSMRecording, HSMTimelineEntry, RecordingMetadata } from './types';
 import {
   serializeEvent,
@@ -124,7 +125,7 @@ export class E2ERecordingBridge {
 
   constructor(manager: MergeManager, config: E2ERecordingBridgeConfig = {}) {
     this.manager = manager;
-    this.timeProvider = config.timeProvider ?? { now: () => Date.now() };
+    this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.maxEntriesPerDoc = config.maxEntriesPerDoc ?? 5000;
     this.captureSnapshots = config.captureSnapshots ?? false;
     this.outputDir = config.outputDir ?? '/tmp/hsm-recordings';
@@ -229,12 +230,18 @@ export class E2ERecordingBridge {
         initialState: {
           statePath: docRec.initialStatePath,
           snapshot: {
-            statePath: docRec.initialStatePath,
             timestamp: Date.parse(docRec.startedAt),
+            state: {
+              guid: docRec.guid,
+              path: docRec.path,
+              statePath: docRec.initialStatePath,
+              lca: null,
+              disk: null,
+              localStateVector: null,
+              remoteStateVector: null,
+            },
             localDocText: null,
             remoteDocText: null,
-            lca: null,
-            syncStatus: null,
           },
         },
         timeline: docRec.timeline,

@@ -23,6 +23,7 @@
 import * as Y from 'yjs';
 import type { MergeEvent, MergeHSMConfig } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
+import { DefaultTimeProvider } from '../../TimeProvider';
 import { ShadowMergeHSM } from './ShadowMergeHSM';
 import type {
   OldSystemAction,
@@ -41,8 +42,12 @@ export interface ShadowManagerConfig extends Partial<ShadowModeConfig> {
   /** Time provider for testing */
   timeProvider?: TimeProvider;
 
-  /** App ID for creating HSM configs */
-  appId?: string;
+  /**
+   * Function to generate vault ID for a document.
+   * Convention: `${appId}-relay-doc-${guid}`
+   * Default: `shadow-${guid}`
+   */
+  getVaultId?: (guid: string) => string;
 }
 
 export interface ShadowReport {
@@ -92,7 +97,7 @@ export class ShadowManager {
       ...config,
     };
 
-    this.timeProvider = config.timeProvider ?? { now: () => Date.now() };
+    this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.sessionId = this.generateSessionId();
     this.startedAt = new Date().toISOString();
   }
@@ -109,9 +114,11 @@ export class ShadowManager {
       return; // Already registered
     }
 
+    const getVaultId = this.config.getVaultId ?? ((g: string) => `shadow-${g}`);
     const hsmConfig: MergeHSMConfig = {
       guid,
       path,
+      vaultId: getVaultId(guid),
       remoteDoc,
       timeProvider: this.timeProvider,
     };
