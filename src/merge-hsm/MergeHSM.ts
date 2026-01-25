@@ -584,9 +584,11 @@ export class MergeHSM implements TestableHSM {
     this.handleEvent(event);
     const toState = this._statePath;
 
-    if (fromState !== toState) {
-      this.notifyStateChange(fromState, toState, event);
-    }
+    // Always notify state change, even if state path unchanged.
+    // This ensures subscribers (like MergeManager.syncStatus) are updated
+    // when properties like diskMtime change without a state transition.
+    // Subscribers should be idempotent.
+    this.notifyStateChange(fromState, toState, event);
   }
 
   matches(statePath: string): boolean {
@@ -594,6 +596,20 @@ export class MergeHSM implements TestableHSM {
       this._statePath === statePath ||
       this._statePath.startsWith(statePath + '.')
     );
+  }
+
+  /**
+   * Check if the HSM is in active mode (editor open, lock acquired).
+   */
+  isActive(): boolean {
+    return this._statePath.startsWith('active.');
+  }
+
+  /**
+   * Check if the HSM is in idle mode (no editor, lightweight state).
+   */
+  isIdle(): boolean {
+    return this._statePath.startsWith('idle.');
   }
 
   getLocalDoc(): Y.Doc | null {

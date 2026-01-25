@@ -35,6 +35,7 @@ import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
+import { isHSMConflictDetectionEnabled } from "./merge-hsm/flags";
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -373,6 +374,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _banner?: Banner;
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
+	private _hsmStateUnsubscribe?: () => void;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -545,6 +547,24 @@ export class LiveView<ViewType extends TextFileView>
 			this.log("[LiveView.checkStale] skipping - preview mode");
 			return false;
 		}
+
+		// Use HSM conflict detection if enabled
+		if (isHSMConflictDetectionEnabled()) {
+			const hsmConflict = this.document.hasHSMConflict();
+			this.log(`[LiveView.checkStale] HSM conflict detection: ${hsmConflict}`);
+			if (hsmConflict === true) {
+				this.log("[LiveView.checkStale] HSM reports conflict, showing merge banner");
+				this.mergeBanner();
+				return true;
+			} else if (hsmConflict === false) {
+				this._banner?.destroy();
+				this._banner = undefined;
+				return false;
+			}
+			// hsmConflict === null means HSM not available, fall through to legacy
+			this.log("[LiveView.checkStale] HSM not available, falling back to legacy checkStale()");
+		}
+
 		this.log("[LiveView.checkStale] calling document.checkStale()");
 		const stale = await this.document.checkStale();
 		this.log(
@@ -562,7 +582,29 @@ export class LiveView<ViewType extends TextFileView>
 
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
-		this.document.userLock = true;
+		// Use HSM acquireLock if available, otherwise falls back to userLock internally
+		this.document.acquireLock()
+			.then((hsm) => {
+				// Subscribe to HSM state changes for automatic conflict banner handling
+				// Must happen AFTER acquireLock completes so hsm is available
+				if (isHSMConflictDetectionEnabled() && hsm && !this._hsmStateUnsubscribe) {
+					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+						const isConflict = state.statePath.includes('conflict');
+						this.log(`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`);
+						if (isConflict && !this._banner) {
+							this.log("[LiveView.attach] HSM entered conflict state, showing merge banner");
+							this.mergeBanner();
+						} else if (!isConflict && this._banner) {
+							this.log("[LiveView.attach] HSM exited conflict state, hiding merge banner");
+							this._banner.destroy();
+							this._banner = undefined;
+						}
+					});
+				}
+			})
+			.catch((e) => {
+				this.warn("[LiveView.attach] acquireLock failed:", e);
+			});
 
 		// Add CSS class to indicate this view should have live editing
 		if (this.view instanceof MarkdownView) {
@@ -635,6 +677,11 @@ export class LiveView<ViewType extends TextFileView>
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
+		}
+		// Clean up HSM state subscription
+		if (this._hsmStateUnsubscribe) {
+			this._hsmStateUnsubscribe();
+			this._hsmStateUnsubscribe = undefined;
 		}
 		this._awarenessPlugin?.destroy();
 		this._awarenessPlugin = undefined;

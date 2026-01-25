@@ -105,6 +105,8 @@ export interface TestableHSM {
   readonly state: MergeState;
   send(event: MergeEvent): void;
   matches(statePath: string): boolean;
+  isActive(): boolean;
+  isIdle(): boolean;
   getLocalDoc(): Y.Doc | null;
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;

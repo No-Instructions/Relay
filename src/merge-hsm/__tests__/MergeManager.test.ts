@@ -1,5 +1,11 @@
 /**
  * MergeManager Tests
+ *
+ * Tests the MergeManager lifecycle with persistent HSM instances:
+ * - register(): Creates HSM in idle mode
+ * - getHSM(): Acquires lock, transitions to active mode
+ * - unload(): Releases lock, keeps HSM alive
+ * - unregister(): Destroys HSM completely
  */
 
 import * as Y from 'yjs';
@@ -32,158 +38,180 @@ describe('MergeManager', () => {
   });
 
   describe('registration', () => {
-    test('register adds document to registry', async () => {
-      await manager.register('doc-1', 'notes/test.md');
+    test('register creates HSM in idle state', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'notes/test.md', remoteDoc);
 
+      expect(manager.isRegistered('doc-1')).toBe(true);
       expect(manager.getRegisteredGuids()).toContain('doc-1');
       expect(manager.getPath('doc-1')).toBe('notes/test.md');
+
+      // HSM should exist and be in idle state
+      const hsm = manager.getIdleHSM('doc-1');
+      expect(hsm).toBeDefined();
+      expect(hsm?.state.statePath).toMatch(/^idle\./);
     });
 
-    test('register initializes sync status', async () => {
-      await manager.register('doc-1', 'notes/test.md');
+    test('register initializes sync status from HSM', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'notes/test.md', remoteDoc);
 
       const status = manager.syncStatus.get('doc-1');
       expect(status).toBeDefined();
       expect(status?.status).toBe('synced');
     });
 
-    test('register initializes diskMtime from actual file', async () => {
-      const mockGetDiskState = jest.fn();
-      mockGetDiskState.mockResolvedValue({
-        contents: 'test content',
-        mtime: 1234567890,
-        hash: 'abc123'
-      });
+    test('register is idempotent', async () => {
+      const remoteDoc1 = createRemoteDoc();
+      const remoteDoc2 = createRemoteDoc();
 
-      const managerWithDisk = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        getDiskState: mockGetDiskState,
-      });
+      await manager.register('doc-1', 'notes/test.md', remoteDoc1);
+      const hsm1 = manager.getIdleHSM('doc-1');
 
-      await managerWithDisk.register('test-guid', 'test/file.md');
+      await manager.register('doc-1', 'notes/test.md', remoteDoc2);
+      const hsm2 = manager.getIdleHSM('doc-1');
 
-      const status = managerWithDisk.syncStatus.get('test-guid');
-      expect(status?.diskMtime).toBe(1234567890);
-      expect(mockGetDiskState).toHaveBeenCalledWith('test/file.md');
+      // Same HSM instance should be returned
+      expect(hsm1).toBe(hsm2);
     });
 
-    test('register handles missing file gracefully', async () => {
-      const mockGetDiskState = jest.fn();
-      mockGetDiskState.mockResolvedValue(null);
+    test('unregister destroys HSM', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'notes/test.md', remoteDoc);
 
-      const managerWithDisk = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        getDiskState: mockGetDiskState,
-      });
+      await manager.unregister('doc-1');
 
-      await managerWithDisk.register('test-guid', 'nonexistent/file.md');
-
-      const status = managerWithDisk.syncStatus.get('test-guid');
-      expect(status?.diskMtime).toBe(0);
-    });
-
-    test('register handles getDiskState error gracefully', async () => {
-      const mockGetDiskState = jest.fn();
-      mockGetDiskState.mockRejectedValue(new Error('File read error'));
-
-      const managerWithDisk = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        getDiskState: mockGetDiskState,
-      });
-
-      // Should not throw
-      await expect(
-        managerWithDisk.register('test-guid', 'error/file.md')
-      ).resolves.toBeUndefined();
-
-      const status = managerWithDisk.syncStatus.get('test-guid');
-      expect(status?.diskMtime).toBe(0);
-    });
-
-    test('unregister removes document', async () => {
-      await manager.register('doc-1', 'notes/test.md');
-      manager.unregister('doc-1');
-
-      expect(manager.getRegisteredGuids()).not.toContain('doc-1');
+      expect(manager.isRegistered('doc-1')).toBe(false);
+      expect(manager.getIdleHSM('doc-1')).toBeUndefined();
       expect(manager.syncStatus.get('doc-1')).toBeUndefined();
+    });
+
+    test('unregister handles active documents', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'notes/test.md', remoteDoc);
+      await manager.getHSM('doc-1', 'notes/test.md', remoteDoc);
+
+      expect(manager.isLoaded('doc-1')).toBe(true);
+
+      await manager.unregister('doc-1');
+
+      expect(manager.isRegistered('doc-1')).toBe(false);
+      expect(manager.isLoaded('doc-1')).toBe(false);
     });
   });
 
   describe('HSM lifecycle', () => {
-    test('getHSM creates and returns HSM', async () => {
-      const hsm = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
+    test('getHSM returns existing HSM with lock acquired', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
 
-      expect(hsm).toBeDefined();
+      const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+
+      expect(hsm.state.statePath).toMatch(/^active\./);
       expect(manager.isLoaded('doc-1')).toBe(true);
     });
 
+    test('getHSM registers if not already registered', async () => {
+      const remoteDoc = createRemoteDoc();
+      const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+
+      expect(manager.isRegistered('doc-1')).toBe(true);
+      expect(hsm.state.statePath).toMatch(/^active\./);
+    });
+
     test('getHSM returns same instance on second call', async () => {
-      const hsm1 = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
-      const hsm2 = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
+      const remoteDoc = createRemoteDoc();
+      const hsm1 = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+      const hsm2 = await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
       expect(hsm1).toBe(hsm2);
     });
 
-    test('unload removes HSM from loaded', async () => {
-      await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
+    test('unload releases lock but keeps HSM', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
+      await manager.getHSM('doc-1', 'test.md', remoteDoc);
+
       expect(manager.isLoaded('doc-1')).toBe(true);
 
       await manager.unload('doc-1');
-      expect(manager.isLoaded('doc-1')).toBe(false);
+
+      expect(manager.isLoaded('doc-1')).toBe(false);  // Not active
+      expect(manager.isRegistered('doc-1')).toBe(true);  // Still registered
+
+      const hsm = manager.getIdleHSM('doc-1');
+      expect(hsm?.state.statePath).toMatch(/^idle\./);
     });
 
-    test('unload preserves registration', async () => {
-      await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
+    test('HSM survives multiple lock cycles', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
+
+      // First open/close cycle
+      const hsm1 = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+      expect(hsm1.isActive()).toBe(true);
+      await manager.unload('doc-1');
+      expect(hsm1.isIdle()).toBe(true);
+
+      // Second open/close cycle - should get same HSM
+      const hsm2 = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+      expect(hsm2.isActive()).toBe(true);
+
+      expect(hsm1).toBe(hsm2);  // Same instance
+    });
+
+    test('unload on non-active doc is no-op', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
+
+      // Never called getHSM, so not active
+      expect(manager.isLoaded('doc-1')).toBe(false);
+
+      // Should not throw
       await manager.unload('doc-1');
 
-      expect(manager.getRegisteredGuids()).toContain('doc-1');
+      // Still registered and idle
+      expect(manager.isRegistered('doc-1')).toBe(true);
+      const hsm = manager.getIdleHSM('doc-1');
+      expect(hsm?.state.statePath).toMatch(/^idle\./);
     });
   });
 
   describe('idle mode updates', () => {
-    test('handleIdleRemoteUpdate stores update for unloaded doc', async () => {
-      await manager.register('doc-1', 'test.md');
+    test('handleIdleRemoteUpdate forwards to HSM', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
 
       const update = createTestUpdate('hello');
       await manager.handleIdleRemoteUpdate('doc-1', update);
 
-      // Status should change to pending
-      const status = manager.syncStatus.get('doc-1');
-      expect(status?.status).toBe('pending');
+      // HSM should have processed the update
+      const hsm = manager.getIdleHSM('doc-1');
+      expect(hsm?.state.statePath).toBe('idle.remoteAhead');
     });
 
-    test('handleIdleRemoteUpdate forwards to HSM if loaded', async () => {
-      const hsm = await manager.getHSM('doc-1', 'test.md', createRemoteDoc());
+    test('handleIdleRemoteUpdate works for active HSM too', async () => {
+      const remoteDoc = createRemoteDoc();
+      const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
-      // Manually transition to a state where we can observe the event
-      hsm.send({ type: 'LOAD', guid: 'doc-1', path: 'test.md' });
-      hsm.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-
-      const beforeState = hsm.state.statePath;
+      // Send YDOCS_READY to get to tracking state
+      hsm.send({ type: 'YDOCS_READY' });
+      expect(hsm.state.statePath).toBe('active.tracking');
 
       const update = createTestUpdate('hello');
       await manager.handleIdleRemoteUpdate('doc-1', update);
 
-      // HSM should have received the update (may transition based on state)
-      // Just verify no error occurred
-      expect(hsm.state.statePath).toBeDefined();
+      // Should still be in active state (update processed)
+      expect(hsm.state.statePath).toBe('active.tracking');
     });
 
-    test('multiple idle updates are merged', async () => {
-      await manager.register('doc-1', 'test.md');
+    test('handleIdleRemoteUpdate ignores unregistered documents', async () => {
+      const update = createTestUpdate('hello');
 
-      const update1 = createTestUpdate('hello');
-      const update2 = createTestUpdate('world');
-
-      await manager.handleIdleRemoteUpdate('doc-1', update1);
-      await manager.handleIdleRemoteUpdate('doc-1', update2);
-
-      // Should have merged updates (status still pending)
-      const status = manager.syncStatus.get('doc-1');
-      expect(status?.status).toBe('pending');
+      // Should not throw
+      await expect(
+        manager.handleIdleRemoteUpdate('unknown-doc', update)
+      ).resolves.toBeUndefined();
     });
   });
 
@@ -195,7 +223,8 @@ describe('MergeManager', () => {
         statusChanges.push({ guid, status: status.status });
       });
 
-      await manager.register('doc-1', 'test.md');
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
       // Advance time to trigger PostOffice notifications
       timeProvider.setTime(timeProvider.now() + 100);
 
@@ -215,7 +244,8 @@ describe('MergeManager', () => {
         callCount++;
       });
 
-      await manager.register('doc-1', 'test.md');
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
       // Advance time to trigger PostOffice notifications
       timeProvider.setTime(timeProvider.now() + 100);
       const initialCount = callCount;
@@ -230,12 +260,9 @@ describe('MergeManager', () => {
   });
 
   describe('pollAll', () => {
-    test('pollAll detects disk changes for idle documents', async () => {
-      const mockGetDiskState = jest.fn();
-      // First call during register returns initial mtime
-      mockGetDiskState.mockResolvedValueOnce({ contents: 'old content', mtime: 1000, hash: 'old123' });
-      // Second call during pollAll returns newer mtime
-      mockGetDiskState.mockResolvedValueOnce({ contents: 'new content', mtime: 2000, hash: 'abc123' });
+    test('pollAll sends DISK_CHANGED to HSMs', async () => {
+      const mockGetDiskState = jest.fn()
+        .mockResolvedValueOnce({ contents: 'new content', mtime: 2000, hash: 'new' });
 
       const managerWithDisk = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
@@ -243,38 +270,50 @@ describe('MergeManager', () => {
         getDiskState: mockGetDiskState,
       });
 
-      // Register document with vault-relative path (like "blog/note.md")
-      await managerWithDisk.register('test-guid', 'blog/note.md');
+      const remoteDoc = createRemoteDoc();
+      await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
+      const hsm = managerWithDisk.getIdleHSM('doc-1');
 
-      // Verify initial mtime was set from first getDiskState call
-      const initialStatus = managerWithDisk.syncStatus.get('test-guid');
-      expect(initialStatus).toBeDefined();
-      expect(initialStatus?.diskMtime).toBe(1000);
+      await managerWithDisk.pollAll();
 
-      // Poll for changes (simulates external disk change)
-      await managerWithDisk.pollAll({ guids: ['test-guid'] });
+      // HSM should have received DISK_CHANGED
+      expect(hsm?.state.statePath).toBe('idle.diskAhead');
+      expect(mockGetDiskState).toHaveBeenCalledWith('test.md');
+    });
 
-      // Verify getDiskState was called with the correct vault-relative path
-      expect(mockGetDiskState).toHaveBeenCalledWith('blog/note.md');
-      expect(mockGetDiskState).toHaveBeenCalledTimes(2);
+    test('pollAll works for specific guids', async () => {
+      const mockGetDiskState = jest.fn()
+        .mockResolvedValue({ contents: 'content', mtime: 1000, hash: 'hash' });
 
-      // Should detect change and update status to pending
-      const status = managerWithDisk.syncStatus.get('test-guid');
-      expect(status?.status).toBe('pending');
-      expect(status?.diskMtime).toBe(2000);
+      const managerWithDisk = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        timeProvider,
+        getDiskState: mockGetDiskState,
+      });
+
+      const remoteDoc1 = createRemoteDoc();
+      const remoteDoc2 = createRemoteDoc();
+      await managerWithDisk.register('doc-1', 'test1.md', remoteDoc1);
+      await managerWithDisk.register('doc-2', 'test2.md', remoteDoc2);
+
+      await managerWithDisk.pollAll({ guids: ['doc-1'] });
+
+      // Should only poll doc-1
+      expect(mockGetDiskState).toHaveBeenCalledTimes(1);
+      expect(mockGetDiskState).toHaveBeenCalledWith('test1.md');
     });
 
     test('pollAll skips documents without getDiskState callback', async () => {
-      // Manager without getDiskState
-      await manager.register('doc-1', 'test.md');
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
 
       // Should not throw
       await expect(manager.pollAll()).resolves.toBeUndefined();
     });
 
-    test('pollAll uses correct path from registeredDocs', async () => {
-      const mockGetDiskState = jest.fn();
-      mockGetDiskState.mockResolvedValue({ contents: 'content', mtime: 1000, hash: 'hash' });
+    test('pollAll uses correct path from HSM state', async () => {
+      const mockGetDiskState = jest.fn()
+        .mockResolvedValue({ contents: 'content', mtime: 1000, hash: 'hash' });
 
       const managerWithDisk = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
@@ -282,8 +321,8 @@ describe('MergeManager', () => {
         getDiskState: mockGetDiskState,
       });
 
-      // Register with full vault path (as fixed in SharedFolder.ts)
-      await managerWithDisk.register('guid-1', 'shared-folder/subfolder/note.md');
+      const remoteDoc = createRemoteDoc();
+      await managerWithDisk.register('guid-1', 'shared-folder/subfolder/note.md', remoteDoc);
 
       await managerWithDisk.pollAll({ guids: ['guid-1'] });
 
@@ -304,14 +343,97 @@ describe('MergeManager', () => {
         },
       });
 
-      const hsm = await managerWithEffects.getHSM('doc-1', 'test.md', createRemoteDoc());
+      const remoteDoc = createRemoteDoc();
+      await managerWithEffects.register('doc-1', 'test.md', remoteDoc);
 
-      // Send events to trigger effects
-      hsm.send({ type: 'LOAD', guid: 'doc-1', path: 'test.md' });
-      hsm.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-
-      // Should have received STATUS_CHANGED effects
+      // Should have received STATUS_CHANGED effects during registration
       expect(effects.some(e => e.type === 'STATUS_CHANGED')).toBe(true);
+    });
+  });
+
+  describe('idle ↔ active transitions', () => {
+    test('state preserved across lock cycles', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
+
+      // Receive remote update in idle
+      const update = createTestUpdate('hello world');
+      await manager.handleIdleRemoteUpdate('doc-1', update);
+
+      let hsm = manager.getIdleHSM('doc-1');
+      expect(hsm?.state.statePath).toBe('idle.remoteAhead');
+
+      // Open editor - should be in active mode
+      hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+      expect(hsm.state.statePath).toMatch(/^active\./);
+
+      // Close editor
+      await manager.unload('doc-1');
+
+      // Should be back in idle
+      hsm = manager.getIdleHSM('doc-1');
+      expect(hsm?.state.statePath).toMatch(/^idle\./);
+    });
+
+    test('getIdleHSM returns HSM without acquiring lock', async () => {
+      const remoteDoc = createRemoteDoc();
+      await manager.register('doc-1', 'test.md', remoteDoc);
+
+      const hsm = manager.getIdleHSM('doc-1');
+
+      expect(hsm).toBeDefined();
+      expect(hsm?.isIdle()).toBe(true);
+      expect(manager.isLoaded('doc-1')).toBe(false);  // No lock acquired
+    });
+  });
+
+  describe('persistence callbacks', () => {
+    test('loadState is called during registration', async () => {
+      const mockLoadState = jest.fn().mockResolvedValue({
+        guid: 'doc-1',
+        path: 'test.md',
+        lca: {
+          contents: 'persisted content',
+          hash: 'hash123',
+          mtime: 1000,
+          stateVector: new Uint8Array([0]),
+        },
+        disk: null,
+        localStateVector: null,
+        lastStatePath: 'idle.clean',
+        persistedAt: Date.now(),
+      });
+
+      const managerWithPersistence = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        timeProvider,
+        loadState: mockLoadState,
+      });
+
+      const remoteDoc = createRemoteDoc();
+      await managerWithPersistence.register('doc-1', 'test.md', remoteDoc);
+
+      expect(mockLoadState).toHaveBeenCalledWith('doc-1');
+
+      const hsm = managerWithPersistence.getIdleHSM('doc-1');
+      expect(hsm?.state.lca?.contents).toBe('persisted content');
+    });
+
+    test('loadUpdates is called during registration', async () => {
+      const mockLoadUpdates = jest.fn().mockResolvedValue(
+        createTestUpdate('loaded content')
+      );
+
+      const managerWithUpdates = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        timeProvider,
+        loadUpdates: mockLoadUpdates,
+      });
+
+      const remoteDoc = createRemoteDoc();
+      await managerWithUpdates.register('doc-1', 'test.md', remoteDoc);
+
+      expect(mockLoadUpdates).toHaveBeenCalledWith('doc-1');
     });
   });
 });

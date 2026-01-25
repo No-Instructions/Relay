@@ -16,6 +16,8 @@ import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
+import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import { isHSMActiveModeEnabled } from "./merge-hsm/flags";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -44,6 +46,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
 	pendingOps: ((data: string) => string)[] = [];
+
+	/**
+	 * MergeHSM instance for this document.
+	 * Only available when HSM active mode is enabled.
+	 * Use acquireLock() to get/create the HSM.
+	 */
+	private _hsm: MergeHSM | null = null;
 
 	constructor(
 		path: string,
@@ -157,6 +166,97 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
+
+	/**
+	 * Get the MergeHSM instance for this document.
+	 * Returns null if HSM active mode is not enabled or lock not acquired.
+	 */
+	public get hsm(): MergeHSM | null {
+		return this._hsm;
+	}
+
+	/**
+	 * Acquire lock on this document for active editing.
+	 * Transitions HSM from idle to active mode.
+	 * Call this when editor opens (replaces userLock = true).
+	 *
+	 * @returns The MergeHSM instance, or null if HSM is not enabled
+	 */
+	async acquireLock(): Promise<MergeHSM | null> {
+		if (!isHSMActiveModeEnabled()) {
+			this.userLock = true; // Fallback to old behavior
+			return null;
+		}
+
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager) {
+			this.userLock = true; // Fallback if MergeManager not available
+			return null;
+		}
+
+		try {
+			// MergeManager.getHSM() registers if needed and sends ACQUIRE_LOCK
+			this._hsm = await mergeManager.getHSM(
+				this.guid,
+				this.path,
+				this.ydoc,
+			);
+			this.userLock = true; // Keep for compatibility
+			return this._hsm;
+		} catch (e) {
+			this.warn("[acquireLock] Failed to acquire HSM lock:", e);
+			this.userLock = true; // Fallback
+			return null;
+		}
+	}
+
+	/**
+	 * Release lock on this document.
+	 * Transitions HSM from active back to idle mode.
+	 * Call this when editor closes (replaces userLock = false).
+	 */
+	releaseLock(): void {
+		this.userLock = false; // Keep for compatibility
+
+		if (!isHSMActiveModeEnabled() || !this._hsm) {
+			return;
+		}
+
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (mergeManager) {
+			// MergeManager.unload() sends RELEASE_LOCK
+			mergeManager.unload(this.guid);
+		}
+
+		this._hsm = null;
+	}
+
+	/**
+	 * Get the HSM sync status for this document.
+	 * Returns the status if HSM is available, or null otherwise.
+	 * This can be used instead of checkStale() when HSM is enabled.
+	 */
+	getHSMSyncStatus(): import("./merge-hsm/types").SyncStatus | null {
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager) {
+			return null;
+		}
+		return mergeManager.syncStatus.get(this.guid) ?? null;
+	}
+
+	/**
+	 * Check if the document has a conflict according to HSM.
+	 * Returns true if HSM indicates a conflict, false if synced/pending,
+	 * or null if HSM is not available.
+	 */
+	hasHSMConflict(): boolean | null {
+		const status = this.getHSMSyncStatus();
+		if (!status) {
+			return null;
+		}
+		return status.status === "conflict";
+	}
+
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
 			this._tfile = this.getTFile();
@@ -452,6 +552,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
+
+		// Release HSM lock if held
+		if (this._hsm) {
+			this.releaseLock();
+		}
+
 		super.destroy();
 		this.ydoc.destroy();
 		if (this._diskBuffer) {

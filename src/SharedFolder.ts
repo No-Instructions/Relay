@@ -1321,7 +1321,7 @@ export class SharedFolder extends HasProvider {
 		// Register with MergeManager for idle mode tracking
 		// Use vault-relative path (e.g., "blog/note.md") not SharedFolder-relative (e.g., "/note.md")
 		if (isHSMIdleModeEnabled()) {
-			this.mergeManager?.register(guid, this.getPath(vpath));
+			this.mergeManager?.register(guid, this.getPath(vpath), doc.ydoc);
 		}
 
 		return doc;

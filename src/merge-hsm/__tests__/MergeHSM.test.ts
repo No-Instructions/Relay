@@ -237,6 +237,77 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.clean');
       expect(t.getLocalDocText()).toBeNull(); // YDocs should be cleaned up
     });
+
+    test('HSM continues to process events after RELEASE_LOCK', () => {
+      const t = createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello',
+        lca: createLCA('hello', 1000),
+      });
+
+      // Release lock - transition to idle
+      t.send(releaseLock());
+      expectState(t, 'idle.clean');
+      t.clearEffects();
+
+      // Should still process events in idle mode
+      // Disk change with no remote changes will auto-merge back to clean
+      t.send(diskChanged('hello world', 2000));
+
+      // Auto-merge happened - verify SYNC_TO_REMOTE was emitted
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
+      expectState(t, 'idle.clean');
+
+      // Can acquire lock again
+      t.send(acquireLock());
+      expectState(t, 'active.entering');
+    });
+
+    test('multiple ACQUIRE_LOCK/RELEASE_LOCK cycles work correctly', () => {
+      const t = createTestHSM({
+        initialState: 'idle.clean',
+        lca: createLCA('hello', 1000),
+      });
+
+      // First cycle
+      t.send(acquireLock());
+      expectState(t, 'active.entering');
+      t.send(yDocsReady());
+      expectState(t, 'active.tracking');
+      t.send(releaseLock());
+      expectState(t, 'idle.clean');
+
+      // Second cycle
+      t.send(acquireLock());
+      expectState(t, 'active.entering');
+      t.send(yDocsReady());
+      expectState(t, 'active.tracking');
+      t.send(releaseLock());
+      expectState(t, 'idle.clean');
+
+      // Third cycle - should still work
+      t.send(acquireLock());
+      expectState(t, 'active.entering');
+    });
+
+    test('isActive and isIdle helper methods work correctly', () => {
+      const t = createTestHSM({
+        initialState: 'idle.clean',
+      });
+
+      expect(t.hsm.isIdle()).toBe(true);
+      expect(t.hsm.isActive()).toBe(false);
+
+      t.send(acquireLock());
+
+      expect(t.hsm.isIdle()).toBe(false);
+      expect(t.hsm.isActive()).toBe(true);
+
+      t.send(releaseLock());
+
+      expect(t.hsm.isIdle()).toBe(true);
+      expect(t.hsm.isActive()).toBe(false);
+    });
   });
 
   // ===========================================================================
