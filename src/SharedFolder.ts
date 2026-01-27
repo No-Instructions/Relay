@@ -12,6 +12,7 @@ import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
+import type { EventMessage } from "./client/provider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
 import { LoginManager } from "./LoginManager";
@@ -303,19 +304,9 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 
-		// Wire remote updates to MergeManager for idle mode tracking
+		// Wire folder-level event subscriptions for idle mode remote updates
 		if (isHSMIdleModeEnabled() && this.mergeManager) {
-			this.ydoc.on('update', (update: Uint8Array, origin: unknown) => {
-				// Only process remote updates (not local or persistence)
-				if (origin === 'remote' || (origin && typeof origin === 'object' && 'provider' in origin)) {
-					// Forward to MergeManager for idle documents (not actively loaded)
-					this.files.forEach((file, guid) => {
-						if (isDocument(file) && !this.mergeManager?.isLoaded(guid)) {
-							this.mergeManager?.handleIdleRemoteUpdate(guid, update);
-						}
-					});
-				}
-			});
+			this.setupEventSubscriptions();
 		}
 
 		this.whenReady().then(() => {
@@ -346,6 +337,38 @@ export class SharedFolder extends HasProvider {
 		})();
 
 		RelayInstances.set(this, this.path);
+	}
+
+	private setupEventSubscriptions() {
+		if (!this._provider || !this.mergeManager) return;
+
+		this._provider.subscribeToEvents(
+			['document.updated'],
+			(event: EventMessage) => {
+				this.handleDocumentUpdateEvent(event);
+			},
+		);
+	}
+
+	private handleDocumentUpdateEvent(event: EventMessage) {
+		if (!this.mergeManager) return;
+
+		const docId = event.doc_id;
+		if (!docId) return;
+
+		// Look up the guid from the doc_id
+		// The doc_id from the server corresponds to the document's guid
+		const guid = docId;
+
+		if (!this.files.has(guid)) return;
+
+		const file = this.files.get(guid);
+		if (!file || !isDocument(file)) return;
+
+		// Forward the update to MergeManager for idle mode handling
+		if (event.update) {
+			this.mergeManager.handleIdleRemoteUpdate(guid, event.update);
+		}
 	}
 
 	private addLocalDocs = () => {
@@ -466,13 +489,17 @@ export class SharedFolder extends HasProvider {
 		await this.syncFileTree(this.syncStore);
 	}
 
-	connect(): Promise<boolean> {
+	async connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
-				return super.connect();
+				const result = await super.connect();
+				if (result && isHSMIdleModeEnabled() && this.mergeManager) {
+					this.setupEventSubscriptions();
+				}
+				return result;
 			}
 		}
-		return Promise.resolve(false);
+		return false;
 	}
 
 	public get name(): string {
