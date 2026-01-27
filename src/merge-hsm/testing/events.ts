@@ -54,16 +54,16 @@ export function releaseLock(): ReleaseLockEvent {
   return { type: 'RELEASE_LOCK' };
 }
 
-export function diskChanged(
+export async function diskChanged(
   contents: string,
   mtime: number,
   hash?: string
-): DiskChangedEvent {
+): Promise<DiskChangedEvent> {
   return {
     type: 'DISK_CHANGED',
     contents,
     mtime,
-    hash: hash ?? simpleHash(contents),
+    hash: hash ?? await sha256(contents),
   };
 }
 
@@ -196,32 +196,40 @@ export function error(err: Error): ErrorEvent {
 // Helpers
 // =============================================================================
 
-/**
- * Simple hash for testing (not cryptographic).
- * In production, use SHA-256 via SubtleCrypto.
- */
-function simpleHash(contents: string): string {
-  let hash = 0;
-  for (let i = 0; i < contents.length; i++) {
-    const char = contents.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash; // Convert to 32bit integer
+// Get crypto.subtle - works in both browser and Node.js
+const getCryptoSubtle = (): SubtleCrypto => {
+  if (globalThis.crypto?.subtle) {
+    return globalThis.crypto.subtle;
   }
-  return 'hash:' + Math.abs(hash).toString(16);
+  // Node.js fallback
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  return require('crypto').webcrypto.subtle;
+};
+
+/**
+ * SHA-256 hash using Web Crypto API.
+ * Works in both browser and Node.js (18+) environments.
+ */
+export async function sha256(contents: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(contents);
+  const hashBuffer = await getCryptoSubtle().digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
  * Create an LCAState for testing
  */
-export function createLCA(
+export async function createLCA(
   contents: string,
   mtime: number,
   stateVector?: Uint8Array
-): LCAState {
+): Promise<LCAState> {
   return {
     contents,
     meta: {
-      hash: simpleHash(contents),
+      hash: await sha256(contents),
       mtime,
     },
     stateVector: stateVector ?? new Uint8Array([0]),

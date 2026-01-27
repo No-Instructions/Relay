@@ -433,8 +433,12 @@ export class MergeHSM implements TestableHSM {
   // Track previous sync status for change detection
   private lastSyncStatus: SyncStatusType = 'synced';
 
-  // Pending updates for idle mode auto-merge
+  // Pending updates for idle mode auto-merge (received via REMOTE_UPDATE)
   private pendingIdleUpdates: Uint8Array | null = null;
+
+  // Persisted updates loaded from IndexedDB (received via PERSISTENCE_LOADED)
+  // These are applied to localDoc when transitioning to active mode
+  private persistedUpdates: Uint8Array | null = null;
 
   // Last known editor text (for drift detection)
   private lastKnownEditorText: string | null = null;
@@ -819,8 +823,10 @@ export class MergeHSM implements TestableHSM {
   }): void {
     this._lca = event.lca;
 
-    // Store local state vector if updates provided
+    // Store persisted updates for applying when entering active mode
+    // Also compute state vector for idle mode comparisons
     if (event.updates.length > 0) {
+      this.persistedUpdates = event.updates;
       this._localStateVector = Y.encodeStateVectorFromUpdate(event.updates);
     }
 
@@ -831,7 +837,9 @@ export class MergeHSM implements TestableHSM {
     if (this.pendingLockAcquisition) {
       this.pendingLockAcquisition = false;
       this.createYDocs();
+      // Per spec: auto-transition based on LOCAL state, don't wait for network
       this.transitionTo('active.entering');
+      this.transitionTo('active.tracking');
       return;
     }
 
@@ -908,21 +916,24 @@ export class MergeHSM implements TestableHSM {
 
   private attemptIdleAutoMerge(): void {
     const state = this._statePath;
+    const handleError = (err: unknown) => {
+      this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+    };
 
     if (state === 'idle.remoteAhead') {
       if (!this.hasDiskChangedSinceLCA()) {
-        this.performIdleRemoteAutoMerge();
+        this.performIdleRemoteAutoMerge(handleError);
       }
     } else if (state === 'idle.diskAhead') {
       if (!this.hasRemoteChangedSinceLCA()) {
-        this.performIdleDiskAutoMerge();
+        this.performIdleDiskAutoMerge(handleError);
       }
     } else if (state === 'idle.diverged') {
-      this.performIdleThreeWayMerge();
+      this.performIdleThreeWayMerge().catch(handleError);
     }
   }
 
-  private performIdleRemoteAutoMerge(): void {
+  private performIdleRemoteAutoMerge(handleError: (err: unknown) => void): void {
     if (!this.pendingIdleUpdates || !this._lca) return;
 
     const tempDoc = new Y.Doc();
@@ -930,31 +941,37 @@ export class MergeHSM implements TestableHSM {
       Y.applyUpdate(tempDoc, this.pendingIdleUpdates);
 
       const mergedContent = tempDoc.getText('content').toString();
+      const stateVector = Y.encodeStateVector(tempDoc);
 
+      // Emit effect synchronously
       this.emitEffect({
         type: 'WRITE_DISK',
         path: this._path,
         contents: mergedContent,
       });
 
-      this._lca = {
-        contents: mergedContent,
-        meta: {
-          hash: simpleHash(mergedContent),
-          mtime: this.timeProvider.now(),
-        },
-        stateVector: Y.encodeStateVector(tempDoc),
-      };
-
+      // Clear pending and transition synchronously
       this.pendingIdleUpdates = null;
       this.transitionTo('idle.clean');
-      this.emitPersistState();
+
+      // Update LCA asynchronously (fire-and-forget)
+      this.hashFn(mergedContent).then((hash) => {
+        this._lca = {
+          contents: mergedContent,
+          meta: {
+            hash,
+            mtime: this.timeProvider.now(),
+          },
+          stateVector,
+        };
+        this.emitPersistState();
+      }).catch(handleError);
     } finally {
       tempDoc.destroy();
     }
   }
 
-  private performIdleDiskAutoMerge(): void {
+  private performIdleDiskAutoMerge(handleError: (err: unknown) => void): void {
     if (!this.pendingDiskContents || !this._lca) return;
 
     const tempDoc = new Y.Doc();
@@ -962,27 +979,41 @@ export class MergeHSM implements TestableHSM {
       tempDoc.getText('content').insert(0, this.pendingDiskContents);
 
       const update = Y.encodeStateAsUpdate(tempDoc);
+      const stateVector = Y.encodeStateVector(tempDoc);
+      const diskContent = this.pendingDiskContents;
+      const diskHash = this._disk?.hash;
+      const diskMtime = this._disk?.mtime ?? this.timeProvider.now();
 
+      // Emit effect synchronously
       this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
 
-      this._lca = {
-        contents: this.pendingDiskContents,
-        meta: {
-          hash: this._disk?.hash ?? simpleHash(this.pendingDiskContents),
-          mtime: this._disk?.mtime ?? this.timeProvider.now(),
-        },
-        stateVector: Y.encodeStateVector(tempDoc),
-      };
-
+      // Clear pending and transition synchronously
       this.pendingDiskContents = null;
       this.transitionTo('idle.clean');
-      this.emitPersistState();
+
+      // Update LCA asynchronously (fire-and-forget)
+      // Use disk hash if available, otherwise compute
+      const hashPromise = diskHash
+        ? Promise.resolve(diskHash)
+        : this.hashFn(diskContent);
+
+      hashPromise.then((hash) => {
+        this._lca = {
+          contents: diskContent,
+          meta: {
+            hash,
+            mtime: diskMtime,
+          },
+          stateVector,
+        };
+        this.emitPersistState();
+      }).catch(handleError);
     } finally {
       tempDoc.destroy();
     }
   }
 
-  private performIdleThreeWayMerge(): void {
+  private async performIdleThreeWayMerge(): Promise<void> {
     if (!this._lca) return;
 
     const lcaContent = this._lca.contents;
@@ -1016,7 +1047,8 @@ export class MergeHSM implements TestableHSM {
         this._lca = {
           contents: mergeResult.merged,
           meta: {
-            hash: simpleHash(mergeResult.merged),
+            // Merged content is new, compute hash
+            hash: await this.hashFn(mergeResult.merged),
             mtime: this.timeProvider.now(),
           },
           stateVector: Y.encodeStateVector(tempDoc),
@@ -1066,7 +1098,14 @@ export class MergeHSM implements TestableHSM {
         this.transitionTo('active.conflict.blocked');
         this.transitionTo('active.conflict.bannerShown');
       } else {
+        // Per spec: "This transition is based entirely on LOCAL state.
+        // Provider sync happens asynchronously and does not block.
+        // The editor must be usable immediately, even when offline."
+        //
+        // We transition through active.entering briefly, then immediately
+        // to active.tracking. No waiting for YDOCS_READY or network.
         this.transitionTo('active.entering');
+        this.transitionTo('active.tracking');
       }
     }
   }
@@ -1102,6 +1141,24 @@ export class MergeHSM implements TestableHSM {
     this.localDoc = new Y.Doc();
     // remoteDoc is passed in externally, just reference it in active mode
     this.remoteDoc = this.externalRemoteDoc;
+
+    // Apply persisted updates from IndexedDB (loaded via PERSISTENCE_LOADED)
+    // This ensures localDoc has all the content from previous sessions
+    if (this.persistedUpdates && this.persistedUpdates.length > 0) {
+      Y.applyUpdate(this.localDoc, this.persistedUpdates);
+    }
+
+    // Also apply any updates received during idle mode (via REMOTE_UPDATE)
+    // These were accumulated while no editor was open
+    if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
+      Y.applyUpdate(this.localDoc, this.pendingIdleUpdates);
+      this.pendingIdleUpdates = null; // Clear after applying
+    }
+
+    // Update state vector to reflect what's in localDoc
+    if (this.localDoc) {
+      this._localStateVector = Y.encodeStateVector(this.localDoc);
+    }
   }
 
   private cleanupYDocs(): void {
@@ -1246,8 +1303,70 @@ export class MergeHSM implements TestableHSM {
     this.pendingDiskContents = event.contents;
 
     if (this._statePath === 'active.tracking') {
+      // Check synchronously if disk actually changed (comparing hashes)
+      // If disk hash matches LCA hash, no change occurred - stay in tracking
+      if (this._lca && this._lca.meta.hash === event.hash) {
+        // Disk matches LCA - no change, just update mtime
+        this._lca = {
+          ...this._lca,
+          meta: {
+            ...this._lca.meta,
+            mtime: event.mtime,
+          },
+        };
+        this.emitPersistState();
+        return;
+      }
+
+      // Check if local content matches disk content - no merge needed
+      if (this.localDoc) {
+        const localText = this.localDoc.getText('content').toString();
+        const lcaText = this._lca?.contents ?? '';
+
+        if (event.contents === localText) {
+          // Content matches - create new LCA with disk hash and stay in tracking
+          this.createLCAFromCurrent(event.contents, event.hash).then((newLCA) => {
+            this._lca = newLCA;
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+          return;
+        }
+
+        // Fast-path: if local matches LCA, disk changes can be applied directly
+        if (localText === lcaText) {
+          // Apply disk content to localDoc synchronously
+          this.localDoc.getText('content').delete(0, localText.length);
+          this.localDoc.getText('content').insert(0, event.contents);
+
+          // Emit DISPATCH_CM6 synchronously
+          this.emitEffect({
+            type: 'DISPATCH_CM6',
+            changes: this.computeDiffChanges(localText, event.contents),
+          });
+
+          // Emit PERSIST_STATE synchronously (with current state)
+          this.emitPersistState();
+
+          // Create new LCA with disk content asynchronously
+          this.createLCAFromCurrent(event.contents, event.hash).then((newLCA) => {
+            this._lca = newLCA;
+            // Emit again with updated LCA
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+          return;
+        }
+      }
+
+      // Actual merge needed - transition to merging
       this.transitionTo('active.merging');
-      this.performDiskMerge(event.contents);
+      // Fire-and-forget async merge (state transition already done)
+      this.performDiskMerge(event.contents).catch((err) => {
+        this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+      });
     } else if (this._statePath.startsWith('idle.')) {
       const remoteChanged = this.hasRemoteChangedSinceLCA();
 
@@ -1261,16 +1380,18 @@ export class MergeHSM implements TestableHSM {
     }
   }
 
-  private performDiskMerge(diskContents: string): void {
+  private async performDiskMerge(diskContents: string): Promise<void> {
     if (!this.localDoc) return;
 
     const localText = this.localDoc.getText('content').toString();
     const lcaText = this._lca?.contents ?? '';
+    // Use disk hash if available (from DISK_CHANGED event)
+    const diskHash = this._disk?.hash;
 
     if (diskContents === localText) {
       this.send({
         type: 'MERGE_SUCCESS',
-        newLCA: this.createLCAFromCurrent(diskContents),
+        newLCA: await this.createLCAFromCurrent(diskContents, diskHash),
       });
       return;
     }
@@ -1287,7 +1408,7 @@ export class MergeHSM implements TestableHSM {
       this.applyContentToLocalDoc(diskContents);
       this.send({
         type: 'MERGE_SUCCESS',
-        newLCA: this.createLCAFromCurrent(diskContents),
+        newLCA: await this.createLCAFromCurrent(diskContents, diskHash),
       });
       return;
     }
@@ -1303,7 +1424,8 @@ export class MergeHSM implements TestableHSM {
 
       this.send({
         type: 'MERGE_SUCCESS',
-        newLCA: this.createLCAFromCurrent(mergeResult.merged),
+        // Merged content is new, need to compute hash
+        newLCA: await this.createLCAFromCurrent(mergeResult.merged),
       });
     } else {
       this.send({
@@ -1331,11 +1453,11 @@ export class MergeHSM implements TestableHSM {
     this.syncLocalToRemote();
   }
 
-  private createLCAFromCurrent(contents: string): LCAState {
+  private async createLCAFromCurrent(contents: string, hash?: string): Promise<LCAState> {
     return {
       contents,
       meta: {
-        hash: simpleHash(contents),
+        hash: hash ?? await this.hashFn(contents),
         mtime: this.timeProvider.now(),
       },
       stateVector: this.localDoc
@@ -1398,69 +1520,109 @@ export class MergeHSM implements TestableHSM {
   }
 
   private handleResolve(event: MergeEvent): void {
-    if (this._statePath === 'active.conflict.resolving') {
-      switch (event.type) {
-        case 'RESOLVE_ACCEPT_DISK':
-          if (this.conflictData) {
-            const beforeText = this.localDoc?.getText('content').toString() ?? '';
-            this.applyContentToLocalDoc(this.conflictData.remote);
+    if (this._statePath !== 'active.conflict.resolving') return;
 
-            const diskChanges = computePositionedChanges(
-              beforeText,
-              this.conflictData.remote
-            );
-            if (diskChanges.length > 0) {
-              this.emitEffect({ type: 'DISPATCH_CM6', changes: diskChanges });
-            }
+    // Perform synchronous resolution work first
+    switch (event.type) {
+      case 'RESOLVE_ACCEPT_DISK':
+        if (this.conflictData) {
+          const beforeText = this.localDoc?.getText('content').toString() ?? '';
+          this.applyContentToLocalDoc(this.conflictData.remote);
 
-            this._lca = this.createLCAFromCurrent(this.conflictData.remote);
+          const diskChanges = computePositionedChanges(
+            beforeText,
+            this.conflictData.remote
+          );
+          if (diskChanges.length > 0) {
+            this.emitEffect({ type: 'DISPATCH_CM6', changes: diskChanges });
           }
-          break;
 
-        case 'RESOLVE_ACCEPT_LOCAL':
-          if (this.localDoc) {
-            const localText = this.localDoc.getText('content').toString();
-            this._lca = this.createLCAFromCurrent(localText);
+          // Async LCA creation (fire-and-forget)
+          const diskContent = this.conflictData.remote;
+          const diskHash = this._disk?.hash;
+          this.createLCAFromCurrent(diskContent, diskHash).then((lca) => {
+            this._lca = lca;
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+        }
+        break;
+
+      case 'RESOLVE_ACCEPT_LOCAL':
+        if (this.localDoc) {
+          const localText = this.localDoc.getText('content').toString();
+          // Async LCA creation (fire-and-forget)
+          this.createLCAFromCurrent(localText).then((lca) => {
+            this._lca = lca;
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+        }
+        break;
+
+      case 'RESOLVE_ACCEPT_MERGED':
+        if ('contents' in event) {
+          const beforeText = this.localDoc?.getText('content').toString() ?? '';
+          this.applyContentToLocalDoc(event.contents);
+
+          const mergedChanges = computePositionedChanges(beforeText, event.contents);
+          if (mergedChanges.length > 0) {
+            this.emitEffect({ type: 'DISPATCH_CM6', changes: mergedChanges });
           }
-          break;
 
-        case 'RESOLVE_ACCEPT_MERGED':
-          if ('contents' in event) {
-            const beforeText = this.localDoc?.getText('content').toString() ?? '';
-            this.applyContentToLocalDoc(event.contents);
-
-            const mergedChanges = computePositionedChanges(beforeText, event.contents);
-            if (mergedChanges.length > 0) {
-              this.emitEffect({ type: 'DISPATCH_CM6', changes: mergedChanges });
-            }
-
-            this._lca = this.createLCAFromCurrent(event.contents);
-          }
-          break;
-      }
-
-      this.conflictData = null;
-      this.pendingDiskContents = null;
-
-      this.transitionTo('active.tracking');
+          // Async LCA creation (fire-and-forget)
+          const mergedContent = event.contents;
+          this.createLCAFromCurrent(mergedContent).then((lca) => {
+            this._lca = lca;
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+        }
+        break;
     }
+
+    this.conflictData = null;
+    this.pendingDiskContents = null;
+
+    // Transition synchronously
+    this.transitionTo('active.tracking');
   }
 
   private handleDismissConflict(): void {
-    if (this._statePath === 'active.conflict.bannerShown') {
-      this._deferredConflict = {
-        diskHash: this._disk?.hash ?? '',
-        localHash: this.computeLocalHash(),
-      };
-      this.transitionTo('active.tracking');
-      this.emitPersistState();
-    }
+    if (this._statePath !== 'active.conflict.bannerShown') return;
+
+    // Set deferred conflict synchronously with disk hash
+    // Local hash will be computed and updated asynchronously
+    this._deferredConflict = {
+      diskHash: this._disk?.hash ?? '',
+      localHash: '', // Will be updated asynchronously
+    };
+
+    // Transition synchronously
+    this.transitionTo('active.tracking');
+
+    // Emit persist state synchronously (with partial deferred conflict)
+    this.emitPersistState();
+
+    // Async computation of local hash (fire-and-forget)
+    this.computeLocalHash().then((localHash) => {
+      if (this._deferredConflict) {
+        this._deferredConflict.localHash = localHash;
+        // Emit again with updated hash
+        this.emitPersistState();
+      }
+    }).catch((err) => {
+      this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+    });
   }
 
-  private computeLocalHash(): string {
+  private async computeLocalHash(): Promise<string> {
     if (!this.localDoc) return '';
     const text = this.localDoc.getText('content').toString();
-    return simpleHash(text);
+    return this.hashFn(text);
   }
 
   // ===========================================================================

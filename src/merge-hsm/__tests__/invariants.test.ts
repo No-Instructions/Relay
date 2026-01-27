@@ -196,8 +196,8 @@ describe('Invariant Checking', () => {
   });
 
   describe('InvariantChecker', () => {
-    it('checks all applicable invariants', () => {
-      const t = createTestHSM({
+    it('checks all applicable invariants', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -221,8 +221,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('detects violations', () => {
-      const t = createTestHSM({
+    it('detects violations', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -246,8 +246,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('records violations', () => {
-      const t = createTestHSM({
+    it('records violations', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -269,8 +269,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('clears violations', () => {
-      const t = createTestHSM({
+    it('clears violations', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -294,8 +294,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('can be enabled and disabled', () => {
-      const t = createTestHSM({
+    it('can be enabled and disabled', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -320,8 +320,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('checks specific invariant by ID', () => {
-      const t = createTestHSM({
+    it('checks specific invariant by ID', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -343,8 +343,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('filters violations by severity', () => {
-      const t = createTestHSM({
+    it('filters violations by severity', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -368,8 +368,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('filters violations by invariant', () => {
-      const t = createTestHSM({
+    it('filters violations by invariant', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -393,8 +393,8 @@ describe('Invariant Checking', () => {
   });
 
   describe('Factory Functions', () => {
-    it('createLoggingChecker creates checker with logging', () => {
-      const t = createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
+    it('createLoggingChecker creates checker with logging', async () => {
+      const t = await createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
       const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
 
       const checker = createLoggingChecker(t.hsm, timeProvider);
@@ -407,8 +407,8 @@ describe('Invariant Checking', () => {
       checker.dispose();
     });
 
-    it('createStrictChecker throws on critical violations', () => {
-      const t = createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
+    it('createStrictChecker throws on critical violations', async () => {
+      const t = await createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
 
       const checker = createStrictChecker(t.hsm, timeProvider);
 
@@ -441,8 +441,8 @@ describe('Invariant Checking', () => {
       strictChecker.dispose();
     });
 
-    it('createTestChecker throws on any violation', () => {
-      const t = createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
+    it('createTestChecker throws on any violation', async () => {
+      const t = await createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
 
       const checker = createTestChecker(t.hsm, timeProvider);
       checker.updateEditorText('different');

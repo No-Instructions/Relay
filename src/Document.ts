@@ -54,6 +54,17 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	private _hsm: MergeHSM | null = null;
 
+	/**
+	 * Cleanup functions for HSM provider event subscriptions.
+	 */
+	private _hsmProviderCleanup: (() => void)[] = [];
+
+	/**
+	 * Flag to track when we're in the middle of our own save operation.
+	 * Used to distinguish our writes from external modifications.
+	 */
+	private _isSaving: boolean = false;
+
 	constructor(
 		path: string,
 		guid: string,
@@ -202,11 +213,55 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				this.ydoc,
 			);
 			this.userLock = true; // Keep for compatibility
+
+			// Wire up provider events to HSM
+			this._setupHSMProviderEvents();
+
 			return this._hsm;
 		} catch (e) {
 			this.warn("[acquireLock] Failed to acquire HSM lock:", e);
 			this.userLock = true; // Fallback
 			return null;
+		}
+	}
+
+	/**
+	 * Set up provider event forwarding to HSM.
+	 */
+	private _setupHSMProviderEvents(): void {
+		if (!this._hsm) return;
+
+		const hsm = this._hsm;
+
+		// Forward provider sync event
+		const onSynced = () => {
+			hsm.send({ type: 'PROVIDER_SYNCED' });
+		};
+		this._provider.on('synced', onSynced);
+		this._hsmProviderCleanup.push(() => this._provider.off('synced', onSynced));
+
+		// Forward connection status changes
+		let lastConnected: boolean | null = null;
+		const onStatus = (state: { status: string }) => {
+			const isConnected = state.status === 'connected';
+			if (lastConnected !== isConnected) {
+				lastConnected = isConnected;
+				if (isConnected) {
+					hsm.send({ type: 'CONNECTED' });
+				} else if (state.status === 'disconnected') {
+					hsm.send({ type: 'DISCONNECTED' });
+				}
+			}
+		};
+		this._provider.on('status', onStatus);
+		this._hsmProviderCleanup.push(() => this._provider.off('status', onStatus));
+
+		// Send initial state if already connected
+		if (this._provider.connectionState.status === 'connected') {
+			hsm.send({ type: 'CONNECTED' });
+		}
+		if (this._providerSynced) {
+			hsm.send({ type: 'PROVIDER_SYNCED' });
 		}
 	}
 
@@ -221,6 +276,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!isHSMActiveModeEnabled() || !this._hsm) {
 			return;
 		}
+
+		// Clean up provider event subscriptions
+		this._hsmProviderCleanup.forEach(cleanup => cleanup());
+		this._hsmProviderCleanup = [];
 
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (mergeManager) {
@@ -514,7 +573,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return getMimeType(this.path);
 	}
 
-	save() {
+	async save() {
 		if (!this.tfile) {
 			return;
 		}
@@ -522,8 +581,29 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this.warn("skipping save for pending delete", this.path);
 			return;
 		}
-		this.vault.modify(this.tfile, this.text);
-		this.warn("file saved", this.path);
+
+		// Mark that we're saving to distinguish from external modifications
+		this._isSaving = true;
+		try {
+			await this.vault.modify(this.tfile, this.text);
+			this.warn("file saved", this.path);
+
+			// Notify HSM of save completion with new mtime
+			if (this._hsm && this.tfile) {
+				const mtime = this.tfile.stat.mtime;
+				this._hsm.send({ type: 'SAVE_COMPLETE', mtime });
+			}
+		} finally {
+			this._isSaving = false;
+		}
+	}
+
+	/**
+	 * Check if the document is currently being saved by us.
+	 * Used to distinguish our writes from external modifications.
+	 */
+	get isSaving(): boolean {
+		return this._isSaving;
 	}
 
 	requestSave = debounce(this.save, 2000);

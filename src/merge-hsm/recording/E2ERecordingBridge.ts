@@ -495,9 +495,9 @@ export class E2ERecordingBridge {
    * to work around this. In real integration, we'd add a method to MergeManager.
    */
   private getHSMForGuid(guid: string): MergeHSM | null {
-    // Access internal loadedHSMs map (for prototype - in real code, add public accessor)
-    const loadedHSMs = (this.manager as any).loadedHSMs as Map<string, MergeHSM>;
-    return loadedHSMs?.get(guid) ?? null;
+    // Access internal hsms map (for prototype - in real code, add public accessor)
+    const hsms = (this.manager as any).hsms as Map<string, MergeHSM>;
+    return hsms?.get(guid) ?? null;
   }
 
   /**
@@ -521,15 +521,127 @@ export class E2ERecordingBridge {
 // Factory Function
 // =============================================================================
 
+// Registry of bridges by folder path for multi-folder support
+const bridgeRegistry = new Map<string, E2ERecordingBridge>();
+
 /**
  * Create and install E2E recording bridge.
  * Call this in plugin initialization.
+ *
+ * NOTE: Multiple folders can each have their own bridge.
+ * The global __hsmRecording provides aggregate access to all bridges.
  */
 export function installE2ERecordingBridge(
   manager: MergeManager,
   config?: E2ERecordingBridgeConfig
 ): E2ERecordingBridge {
   const bridge = new E2ERecordingBridge(manager, config);
-  bridge.install();
+
+  // Register this bridge (use manager's internal identifier)
+  const folderPath = (manager as any).folderPath ?? `manager-${bridgeRegistry.size}`;
+  bridgeRegistry.set(folderPath, bridge);
+
+  // Install aggregate API that spans all registered bridges
+  installAggregateBridgeAPI();
+
   return bridge;
+}
+
+/**
+ * Install global API that aggregates across all folder bridges.
+ */
+function installAggregateBridgeAPI(): void {
+  const global = typeof window !== 'undefined' ? window : globalThis;
+
+  const api: HSMRecordingGlobal = {
+    startRecording: (name) => {
+      // Start recording on all bridges
+      const results: E2ERecordingState[] = [];
+      for (const bridge of bridgeRegistry.values()) {
+        try {
+          results.push(bridge.startRecording(name));
+        } catch (e) {
+          // Bridge might already be recording
+        }
+      }
+      // Return aggregate state
+      return {
+        recording: results.some(r => r.recording),
+        name: name ?? null,
+        id: results[0]?.id ?? null,
+        startedAt: results[0]?.startedAt ?? null,
+        documentCount: results.reduce((sum, r) => sum + r.documentCount, 0),
+        totalEntries: results.reduce((sum, r) => sum + r.totalEntries, 0),
+      };
+    },
+    stopRecording: () => {
+      // Stop recording on all bridges and combine results
+      const recordings: string[] = [];
+      for (const bridge of bridgeRegistry.values()) {
+        try {
+          recordings.push(bridge.stopRecording());
+        } catch (e) {
+          // Bridge might not be recording
+        }
+      }
+      // Combine recordings (each is a JSON array)
+      const combined = recordings.flatMap(r => {
+        try { return JSON.parse(r); } catch { return []; }
+      });
+      return JSON.stringify(combined, null, 2);
+    },
+    getState: () => {
+      // Aggregate state across all bridges
+      let totalDocs = 0;
+      let totalEntries = 0;
+      let recording = false;
+      let name: string | null = null;
+      let id: string | null = null;
+      let startedAt: string | null = null;
+
+      for (const bridge of bridgeRegistry.values()) {
+        const state = bridge.getState();
+        if (state.recording) {
+          recording = true;
+          name = name ?? state.name;
+          id = id ?? state.id;
+          startedAt = startedAt ?? state.startedAt;
+        }
+        totalDocs += state.documentCount;
+        totalEntries += state.totalEntries;
+      }
+
+      return { recording, name, id, startedAt, documentCount: totalDocs, totalEntries };
+    },
+    isRecording: () => {
+      return Array.from(bridgeRegistry.values()).some(b => b.isRecording());
+    },
+    getActiveDocuments: () => {
+      // Combine active documents from all bridges
+      const docs: string[] = [];
+      for (const bridge of bridgeRegistry.values()) {
+        docs.push(...bridge.getActiveDocuments());
+      }
+      return docs;
+    },
+    saveRecording: (recording) => {
+      // Save to first bridge (they all share localStorage)
+      const firstBridge = bridgeRegistry.values().next().value;
+      return firstBridge?.saveRecording(recording) ?? '';
+    },
+    loadRecording: (key) => {
+      const firstBridge = bridgeRegistry.values().next().value;
+      return firstBridge?.loadRecording(key) ?? null;
+    },
+    listRecordings: () => {
+      const firstBridge = bridgeRegistry.values().next().value;
+      return firstBridge?.listRecordings() ?? [];
+    },
+    clearRecordings: async () => {
+      const firstBridge = bridgeRegistry.values().next().value;
+      await firstBridge?.clearRecordings();
+    },
+  };
+
+  (global as any).__hsmRecording = api;
 }

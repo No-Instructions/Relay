@@ -119,7 +119,7 @@ export interface TestableHSM {
 // Factory Function
 // =============================================================================
 
-export function createTestHSM(options: TestHSMOptions = {}): TestHSM {
+export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestHSM> {
   const startTime = options.startTime ?? Date.now();
   const time = (options.timeProvider as MockTimeProvider) ?? new MockTimeProvider();
 
@@ -134,7 +134,7 @@ export function createTestHSM(options: TestHSMOptions = {}): TestHSM {
   let diskMeta: MergeMetadata | undefined;
   if (options.disk) {
     diskMeta = {
-      hash: simpleHash(options.disk.contents),
+      hash: await sha256(options.disk.contents),
       mtime: options.disk.mtime,
     };
   }
@@ -190,14 +190,22 @@ export function createTestHSM(options: TestHSMOptions = {}): TestHSM {
 // Helpers
 // =============================================================================
 
-function simpleHash(contents: string): string {
-  let hash = 0;
-  for (let i = 0; i < contents.length; i++) {
-    const char = contents.charCodeAt(i);
-    hash = ((hash << 5) - hash) + char;
-    hash = hash & hash;
+// Get crypto.subtle - works in both browser and Node.js
+const getCryptoSubtle = (): SubtleCrypto => {
+  if (globalThis.crypto?.subtle) {
+    return globalThis.crypto.subtle;
   }
-  return 'hash:' + Math.abs(hash).toString(16);
+  // Node.js fallback
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+  return require('crypto').webcrypto.subtle;
+};
+
+async function sha256(contents: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(contents);
+  const hashBuffer = await getCryptoSubtle().digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 function uint8ArrayToBase64(arr: Uint8Array): string {

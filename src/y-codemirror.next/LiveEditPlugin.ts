@@ -275,6 +275,15 @@ export class LiveCMPluginValue implements PluginValue {
 
 			// Called when a yjs event is received. Results in updates to codemirror.
 			if (tr.origin !== this) {
+				// When HSM active mode is enabled, let HSM control dispatching.
+				// The HSM will emit DISPATCH_CM6 effects which CM6Integration handles.
+				if (this.cm6Integration && this.document?.hsm) {
+					this.debug("Yjs event received, forwarding to HSM via REMOTE_DOC_UPDATED");
+					this.document.hsm.send({ type: 'REMOTE_DOC_UPDATED' });
+					return;
+				}
+
+				// Legacy path: direct dispatch to editor
 				const delta = event.delta;
 				let changes: ChangeSpec[] = [];
 				let pos = 0;

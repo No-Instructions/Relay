@@ -65,21 +65,21 @@ function createYjsUpdate(_fromText: string, toText: string): Uint8Array {
 
 describe('MergeHSM', () => {
   describe('loading', () => {
-    test('starts in unloaded state', () => {
-      const t = createTestHSM();
+    test('starts in unloaded state', async () => {
+      const t = await createTestHSM();
       expectState(t, 'unloaded');
     });
 
-    test('LOAD transitions to loading.loadingPersistence', () => {
-      const t = createTestHSM();
+    test('LOAD transitions to loading.loadingPersistence', async () => {
+      const t = await createTestHSM();
 
       t.send(load('doc-123', 'notes/test.md'));
 
       expectState(t, 'loading.loadingPersistence');
     });
 
-    test('PERSISTENCE_LOADED transitions through loadingLCA to idle', () => {
-      const t = createTestHSM();
+    test('PERSISTENCE_LOADED transitions through loadingLCA to idle', async () => {
+      const t = await createTestHSM();
 
       t.send(load('doc-123', 'notes/test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
@@ -88,26 +88,85 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.clean');
     });
 
-    test('PERSISTENCE_LOADED with LCA and matching disk goes to idle.clean', () => {
-      const t = createTestHSM({
+    test('PERSISTENCE_LOADED with LCA and matching disk goes to idle.clean', async () => {
+      const t = await createTestHSM({
         disk: { contents: 'hello', mtime: 1000 },
       });
 
       t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), createLCA('hello', 1000)));
+      t.send(persistenceLoaded(new Uint8Array(), await createLCA('hello', 1000)));
 
       expectState(t, 'idle.clean');
     });
 
-    test('PERSISTENCE_LOADED with disk changes goes to idle.diskAhead', () => {
-      const t = createTestHSM({
+    test('PERSISTENCE_LOADED with disk changes goes to idle.diskAhead', async () => {
+      const t = await createTestHSM({
         disk: { contents: 'hello modified', mtime: 2000 },
       });
 
       t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), createLCA('hello', 1000)));
+      t.send(persistenceLoaded(new Uint8Array(), await createLCA('hello', 1000)));
 
       expectState(t, 'idle.diskAhead');
+    });
+
+    test('persisted updates are applied to localDoc when entering active mode', async () => {
+      // Create persisted updates containing "hello world"
+      const persistedDoc = new Y.Doc();
+      persistedDoc.getText('content').insert(0, 'hello world');
+      const persistedUpdate = Y.encodeStateAsUpdate(persistedDoc);
+      const stateVector = Y.encodeStateVector(persistedDoc);
+      persistedDoc.destroy();
+
+      const t = await createTestHSM();
+
+      t.send(load('doc-123', 'notes/test.md'));
+      // Create LCA with matching state vector so we're in sync
+      t.send(persistenceLoaded(persistedUpdate, {
+        contents: 'hello world',
+        meta: { hash: 'abc123', mtime: 1000 },
+        stateVector,
+      }));
+
+      // Acquire lock - should apply persisted updates to localDoc
+      t.send(acquireLock());
+      expectState(t, 'active.tracking');
+
+      // localDoc should have the persisted content
+      expectLocalDocText(t, 'hello world');
+    });
+
+    test('pending idle updates are applied to localDoc when entering active mode', async () => {
+      // Start with persisted content
+      const persistedDoc = new Y.Doc();
+      persistedDoc.getText('content').insert(0, 'initial');
+      const persistedUpdate = Y.encodeStateAsUpdate(persistedDoc);
+      const stateVector = Y.encodeStateVector(persistedDoc);
+      persistedDoc.destroy();
+
+      const t = await createTestHSM();
+
+      t.send(load('doc-123', 'notes/test.md'));
+      t.send(persistenceLoaded(persistedUpdate, {
+        contents: 'initial',
+        meta: { hash: 'abc123', mtime: 1000 },
+        stateVector,
+      }));
+
+      // Receive remote update while in idle mode
+      const update = createYjsUpdate('initial', 'initial + remote');
+      t.send(remoteUpdate(update));
+
+      // Acquire lock - should apply both persisted AND pending idle updates
+      t.send(acquireLock());
+      expectState(t, 'active.tracking');
+
+      // localDoc should have the merged content
+      // Note: Yjs merges concurrent edits, result depends on client IDs
+      // Just verify localDoc is not empty and has content
+      const text = t.getLocalDocText();
+      expect(text).not.toBeNull();
+      expect(text!.length).toBeGreaterThan(0);
     });
   });
 
@@ -116,8 +175,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('active.tracking', () => {
-    test('user edit updates localDoc', () => {
-      const t = createTestHSM({
+    test('user edit updates localDoc', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -128,8 +187,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('user edit emits SYNC_TO_REMOTE effect', () => {
-      const t = createTestHSM({
+    test('user edit emits SYNC_TO_REMOTE effect', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -139,8 +198,8 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
-    test('user edit with isFromYjs=true does not emit SYNC_TO_REMOTE', () => {
-      const t = createTestHSM({
+    test('user edit with isFromYjs=true does not emit SYNC_TO_REMOTE', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -154,8 +213,8 @@ describe('MergeHSM', () => {
       expectNoEffect(t.effects, 'SYNC_TO_REMOTE');
     });
 
-    test('multiple edits each emit SYNC_TO_REMOTE', () => {
-      const t = createTestHSM({
+    test('multiple edits each emit SYNC_TO_REMOTE', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: '',
       });
@@ -168,8 +227,8 @@ describe('MergeHSM', () => {
       expect(t.effects.filter(e => e.type === 'SYNC_TO_REMOTE').length).toBe(3);
     });
 
-    test('remote update dispatches to editor', () => {
-      const t = createTestHSM({
+    test('remote update dispatches to editor', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -186,11 +245,11 @@ describe('MergeHSM', () => {
       expectLocalDocText(t, 'hello world');
     });
 
-    test('SAVE_COMPLETE updates LCA mtime', () => {
-      const t = createTestHSM({
+    test('SAVE_COMPLETE updates LCA mtime', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
 
       t.send(saveComplete(2000));
@@ -204,30 +263,36 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('lock management', () => {
-    test('ACQUIRE_LOCK from idle transitions to active.entering', () => {
-      const t = createTestHSM();
+    test('ACQUIRE_LOCK from idle auto-transitions to active.tracking (offline-first)', async () => {
+      const t = await createTestHSM();
 
       // Simulate going through loading to idle
       t.send(load('doc-123', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send(acquireLock());
 
-      expectState(t, 'active.entering');
+      // Per spec: "This transition is based entirely on LOCAL state.
+      // Provider sync happens asynchronously and does not block.
+      // The editor must be usable immediately, even when offline."
+      expectState(t, 'active.tracking');
     });
 
-    test('YDOCS_READY transitions to active.tracking', () => {
-      const t = createTestHSM();
+    test('YDOCS_READY is a no-op since auto-transition already happened', async () => {
+      const t = await createTestHSM();
 
       t.send(load('doc-123', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send(acquireLock());
-      t.send(yDocsReady());
+      // Already in active.tracking due to auto-transition
+      expectState(t, 'active.tracking');
 
+      // Sending YDOCS_READY should be a no-op (backward compatibility)
+      t.send(yDocsReady());
       expectState(t, 'active.tracking');
     });
 
-    test('RELEASE_LOCK transitions back to idle', () => {
-      const t = createTestHSM({
+    test('RELEASE_LOCK transitions back to idle', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -238,11 +303,11 @@ describe('MergeHSM', () => {
       expect(t.getLocalDocText()).toBeNull(); // YDocs should be cleaned up
     });
 
-    test('HSM continues to process events after RELEASE_LOCK', () => {
-      const t = createTestHSM({
+    test('HSM continues to process events after RELEASE_LOCK', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
 
       // Release lock - transition to idle
@@ -252,46 +317,42 @@ describe('MergeHSM', () => {
 
       // Should still process events in idle mode
       // Disk change with no remote changes will auto-merge back to clean
-      t.send(diskChanged('hello world', 2000));
+      t.send(await diskChanged('hello world', 2000));
 
       // Auto-merge happened - verify SYNC_TO_REMOTE was emitted
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
       expectState(t, 'idle.clean');
 
-      // Can acquire lock again
+      // Can acquire lock again - auto-transitions to tracking (offline-first)
       t.send(acquireLock());
-      expectState(t, 'active.entering');
+      expectState(t, 'active.tracking');
     });
 
-    test('multiple ACQUIRE_LOCK/RELEASE_LOCK cycles work correctly', () => {
-      const t = createTestHSM({
+    test('multiple ACQUIRE_LOCK/RELEASE_LOCK cycles work correctly', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
 
-      // First cycle
+      // First cycle - auto-transitions to tracking (offline-first)
       t.send(acquireLock());
-      expectState(t, 'active.entering');
-      t.send(yDocsReady());
       expectState(t, 'active.tracking');
       t.send(releaseLock());
       expectState(t, 'idle.clean');
 
       // Second cycle
       t.send(acquireLock());
-      expectState(t, 'active.entering');
-      t.send(yDocsReady());
       expectState(t, 'active.tracking');
       t.send(releaseLock());
       expectState(t, 'idle.clean');
 
       // Third cycle - should still work
       t.send(acquireLock());
-      expectState(t, 'active.entering');
+      expectState(t, 'active.tracking');
     });
 
-    test('isActive and isIdle helper methods work correctly', () => {
-      const t = createTestHSM({
+    test('isActive and isIdle helper methods work correctly', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
       });
 
@@ -308,6 +369,32 @@ describe('MergeHSM', () => {
       expect(t.hsm.isIdle()).toBe(true);
       expect(t.hsm.isActive()).toBe(false);
     });
+
+    test('transitions to active.tracking even when offline (offline-first)', async () => {
+      // This test ensures the HSM follows the spec's offline-first design:
+      // "Provider sync happens asynchronously and does not block.
+      //  The editor must be usable immediately, even when offline."
+      const t = await createTestHSM();
+
+      t.send(load('doc-123', 'notes/test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+
+      // Simulate going offline BEFORE acquiring lock
+      t.send(disconnected());
+
+      // Acquire lock while offline
+      t.send(acquireLock());
+
+      // Should still reach tracking state - network doesn't block
+      expectState(t, 'active.tracking');
+
+      // User can edit while offline
+      t.send(cm6Insert(0, 'hello', 'hello'));
+      expectLocalDocText(t, 'hello');
+
+      // SYNC_TO_REMOTE should still be emitted (queued for when online)
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
+    });
   });
 
   // ===========================================================================
@@ -315,16 +402,16 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('disk changes in active mode', () => {
-    test('active mode NEVER emits WRITE_DISK (Obsidian handles disk writes)', () => {
-      const t = createTestHSM({
+    test('active mode NEVER emits WRITE_DISK (Obsidian handles disk writes)', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
 
       // Trigger various active mode operations
       t.send(cm6Insert(5, ' world', 'hello world'));
-      t.send(diskChanged('hello external', 2000)); // This triggers merge
+      t.send(await diskChanged('hello external', 2000)); // This triggers merge
       t.send(saveComplete(3000));
 
       // Verify NO WRITE_DISK effects were emitted in active mode
@@ -332,41 +419,41 @@ describe('MergeHSM', () => {
       expect(writeDiskEffects.length).toBe(0);
     });
 
-    test('DISK_CHANGED with identical content stays in tracking', () => {
-      const t = createTestHSM({
+    test('DISK_CHANGED with identical content stays in tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', Date.now() - 1000),
+        lca: await createLCA('hello', Date.now() - 1000),
       });
 
-      t.send(diskChanged('hello', Date.now()));
+      t.send(await diskChanged('hello', Date.now()));
 
       // Same content - no merge needed, stay in tracking
       expectState(t, 'active.tracking');
     });
 
-    test('DISK_CHANGED with disk-only changes auto-merges', () => {
-      const t = createTestHSM({
+    test('DISK_CHANGED with disk-only changes auto-merges', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', Date.now() - 1000),
+        lca: await createLCA('hello', Date.now() - 1000),
       });
 
-      t.send(diskChanged('hello world', Date.now()));
+      t.send(await diskChanged('hello world', Date.now()));
 
       // Local matches LCA, disk has changes - auto-merge succeeds
       expectState(t, 'active.tracking');
       expectLocalDocText(t, 'hello world');
     });
 
-    test('DISK_CHANGED with conflicting changes shows conflict', () => {
-      const t = createTestHSM({
+    test('DISK_CHANGED with conflicting changes shows conflict', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello local',
-        lca: createLCA('hello', Date.now() - 1000),
+        lca: await createLCA('hello', Date.now() - 1000),
       });
 
-      t.send(diskChanged('hello disk', Date.now()));
+      t.send(await diskChanged('hello disk', Date.now()));
 
       // Both local and disk changed from LCA - conflict
       expectState(t, 'active.conflict.bannerShown');
@@ -378,8 +465,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('conflict resolution', () => {
-    test('MERGE_CONFLICT transitions to active.conflict.bannerShown', () => {
-      const t = createTestHSM({
+    test('MERGE_CONFLICT transitions to active.conflict.bannerShown', async () => {
+      const t = await createTestHSM({
         initialState: 'active.merging',
         localDoc: 'hello local',
       });
@@ -389,8 +476,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.conflict.bannerShown');
     });
 
-    test('OPEN_DIFF_VIEW transitions to active.conflict.resolving', () => {
-      const t = createTestHSM({
+    test('OPEN_DIFF_VIEW transitions to active.conflict.resolving', async () => {
+      const t = await createTestHSM({
         initialState: 'active.conflict.bannerShown',
         localDoc: 'hello local',
       });
@@ -400,8 +487,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.conflict.resolving');
     });
 
-    test('RESOLVE_ACCEPT_DISK returns to tracking', () => {
-      const t = createTestHSM({
+    test('RESOLVE_ACCEPT_DISK returns to tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.conflict.resolving',
         localDoc: 'hello local',
       });
@@ -411,8 +498,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('RESOLVE_ACCEPT_LOCAL returns to tracking', () => {
-      const t = createTestHSM({
+    test('RESOLVE_ACCEPT_LOCAL returns to tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.conflict.resolving',
         localDoc: 'hello local',
       });
@@ -422,8 +509,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('DISMISS_CONFLICT defers and returns to tracking', () => {
-      const t = createTestHSM({
+    test('DISMISS_CONFLICT defers and returns to tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.conflict.bannerShown',
         localDoc: 'hello local',
         disk: { contents: 'hello disk', mtime: 1000 },
@@ -435,11 +522,11 @@ describe('MergeHSM', () => {
       expect(t.state.deferredConflict).toBeDefined();
     });
 
-    test('RESOLVE_ACCEPT_DISK applies disk content to localDoc', () => {
-      const t = createTestHSM({
+    test('RESOLVE_ACCEPT_DISK applies disk content to localDoc', async () => {
+      const t = await createTestHSM({
         initialState: 'active.merging',
         localDoc: 'hello local',
-        lca: createLCA('hello', Date.now() - 1000),
+        lca: await createLCA('hello', Date.now() - 1000),
       });
 
       // First trigger a conflict
@@ -456,11 +543,11 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'DISPATCH_CM6' });
     });
 
-    test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged', () => {
-      const t = createTestHSM({
+    test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged', async () => {
+      const t = await createTestHSM({
         initialState: 'active.merging',
         localDoc: 'hello local',
-        lca: createLCA('hello', Date.now() - 1000),
+        lca: await createLCA('hello', Date.now() - 1000),
       });
 
       // First trigger a conflict
@@ -476,11 +563,11 @@ describe('MergeHSM', () => {
       expectNoEffect(t.effects, 'DISPATCH_CM6');
     });
 
-    test('RESOLVE_ACCEPT_MERGED applies merged content', () => {
-      const t = createTestHSM({
+    test('RESOLVE_ACCEPT_MERGED applies merged content', async () => {
+      const t = await createTestHSM({
         initialState: 'active.merging',
         localDoc: 'hello local',
-        lca: createLCA('hello', Date.now() - 1000),
+        lca: await createLCA('hello', Date.now() - 1000),
       });
 
       // First trigger a conflict
@@ -495,8 +582,8 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'DISPATCH_CM6' });
     });
 
-    test('CANCEL from resolving returns to bannerShown', () => {
-      const t = createTestHSM({
+    test('CANCEL from resolving returns to bannerShown', async () => {
+      const t = await createTestHSM({
         initialState: 'active.conflict.resolving',
         localDoc: 'hello local',
       });
@@ -506,10 +593,10 @@ describe('MergeHSM', () => {
       expectState(t, 'active.conflict.bannerShown');
     });
 
-    test('ACQUIRE_LOCK from idle.diverged goes to conflict.bannerShown', () => {
-      const t = createTestHSM({
+    test('ACQUIRE_LOCK from idle.diverged goes to conflict.bannerShown', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.diverged',
-        lca: createLCA('original', 1000),
+        lca: await createLCA('original', 1000),
         disk: { contents: 'disk changed', mtime: 2000 },
       });
 
@@ -527,8 +614,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('error handling', () => {
-    test('ERROR in idle mode transitions to idle.error', () => {
-      const t = createTestHSM({
+    test('ERROR in idle mode transitions to idle.error', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
       });
 
@@ -539,8 +626,8 @@ describe('MergeHSM', () => {
       expect(t.state.error).toBe(testError);
     });
 
-    test('ERROR in active mode stores error but stays in state', () => {
-      const t = createTestHSM({
+    test('ERROR in active mode stores error but stays in state', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -553,8 +640,8 @@ describe('MergeHSM', () => {
       expect(t.state.error).toBe(testError);
     });
 
-    test('getSyncStatus returns error status when in error state', () => {
-      const t = createTestHSM({
+    test('getSyncStatus returns error status when in error state', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
       });
 
@@ -570,8 +657,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('network events', () => {
-    test('CONNECTED event is handled in active.tracking', () => {
-      const t = createTestHSM({
+    test('CONNECTED event is handled in active.tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -582,8 +669,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('DISCONNECTED event is handled in active.tracking', () => {
-      const t = createTestHSM({
+    test('DISCONNECTED event is handled in active.tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -594,8 +681,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('PROVIDER_SYNCED event is handled in active.tracking', () => {
-      const t = createTestHSM({
+    test('PROVIDER_SYNCED event is handled in active.tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -606,8 +693,8 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('network events work in idle mode too', () => {
-      const t = createTestHSM({
+    test('network events work in idle mode too', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
       });
 
@@ -624,8 +711,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('drift detection', () => {
-    test('checkAndCorrectDrift returns false when no drift', () => {
-      const t = createTestHSM({
+    test('checkAndCorrectDrift returns false when no drift', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -641,8 +728,8 @@ describe('MergeHSM', () => {
       expectNoEffect(t.effects, 'DISPATCH_CM6');
     });
 
-    test('checkAndCorrectDrift detects and corrects drift', () => {
-      const t = createTestHSM({
+    test('checkAndCorrectDrift detects and corrects drift', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
       });
@@ -664,8 +751,8 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'DISPATCH_CM6' });
     });
 
-    test('checkAndCorrectDrift only works in active.tracking', () => {
-      const t = createTestHSM({
+    test('checkAndCorrectDrift only works in active.tracking', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
       });
 
@@ -680,8 +767,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('idle mode', () => {
-    test('REMOTE_UPDATE in idle transitions to idle.remoteAhead', () => {
-      const t = createTestHSM();
+    test('REMOTE_UPDATE in idle transitions to idle.remoteAhead', async () => {
+      const t = await createTestHSM();
 
       // Go to idle.clean first
       t.send(load('doc-123', 'test.md'));
@@ -690,7 +777,7 @@ describe('MergeHSM', () => {
       // In real impl, this would happen automatically
 
       // Create a fresh test starting in idle
-      const t2 = createTestHSM({ initialState: 'idle.clean' });
+      const t2 = await createTestHSM({ initialState: 'idle.clean' });
 
       const update = createYjsUpdate('', 'hello');
       t2.send(remoteUpdate(update));
@@ -698,16 +785,16 @@ describe('MergeHSM', () => {
       expectState(t2, 'idle.remoteAhead');
     });
 
-    test('DISK_CHANGED in idle transitions to idle.diskAhead', () => {
-      const t = createTestHSM({ initialState: 'idle.clean' });
+    test('DISK_CHANGED in idle transitions to idle.diskAhead', async () => {
+      const t = await createTestHSM({ initialState: 'idle.clean' });
 
-      t.send(diskChanged('modified content', Date.now()));
+      t.send(await diskChanged('modified content', Date.now()));
 
       expectState(t, 'idle.diskAhead');
     });
 
-    test('idle mode does not create YDocs (lightweight)', () => {
-      const t = createTestHSM({ initialState: 'idle.clean' });
+    test('idle mode does not create YDocs (lightweight)', async () => {
+      const t = await createTestHSM({ initialState: 'idle.clean' });
 
       // Verify no YDocs exist in idle mode
       expect(t.getLocalDocText()).toBeNull();
@@ -721,8 +808,8 @@ describe('MergeHSM', () => {
       expect(t.getRemoteDocText()).toBeNull();
     });
 
-    test('ACQUIRE_LOCK creates YDocs for active mode', () => {
-      const t = createTestHSM({ initialState: 'idle.clean' });
+    test('ACQUIRE_LOCK creates YDocs for active mode', async () => {
+      const t = await createTestHSM({ initialState: 'idle.clean' });
 
       // No YDocs before
       expect(t.getLocalDocText()).toBeNull();
@@ -734,10 +821,10 @@ describe('MergeHSM', () => {
       expect(t.hsm.getRemoteDoc()).not.toBeNull();
     });
 
-    test('idle.remoteAhead auto-merges when disk==lca', () => {
-      const t = createTestHSM({
+    test('idle.remoteAhead auto-merges when disk==lca', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
         disk: { contents: 'hello', mtime: 1000 }, // disk matches LCA
       });
       t.clearEffects();
@@ -751,25 +838,25 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.clean');
     });
 
-    test('idle.diskAhead auto-merges when remote==lca', () => {
-      const t = createTestHSM({
+    test('idle.diskAhead auto-merges when remote==lca', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
       t.clearEffects();
 
       // Disk changes externally
-      t.send(diskChanged('hello world', 2000));
+      t.send(await diskChanged('hello world', 2000));
 
       // Should auto-merge and emit SYNC_TO_REMOTE
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
       expectState(t, 'idle.clean');
     });
 
-    test('idle.diverged auto-merges when no conflicts', () => {
-      const t = createTestHSM({
+    test('idle.diverged auto-merges when no conflicts', async () => {
+      const t = await createTestHSM({
         initialState: 'idle.clean',
-        lca: createLCA('line1\nline2\nline3', 1000),
+        lca: await createLCA('line1\nline2\nline3', 1000),
       });
 
       // First, remote update changes line1
@@ -777,19 +864,19 @@ describe('MergeHSM', () => {
       t.send(remoteUpdate(update));
 
       // Then disk changes line3 - diverged but mergeable
-      t.send(diskChanged('line1\nline2\nDISK', 2000));
+      t.send(await diskChanged('line1\nline2\nDISK', 2000));
 
       // 3-way merge should succeed - back to clean
       expectState(t, 'idle.clean');
       expectEffect(t.effects, { type: 'WRITE_DISK' });
     });
 
-    test('idle.diverged stays diverged when merge has conflicts', () => {
+    test('idle.diverged stays diverged when merge has conflicts', async () => {
       // Start with disk already changed from LCA, so when remote arrives,
       // auto-merge won't succeed (disk != lca)
-      const t = createTestHSM({
+      const t = await createTestHSM({
         initialState: 'idle.diskAhead',
-        lca: createLCA('original line', 1000),
+        lca: await createLCA('original line', 1000),
         disk: { contents: 'disk changed this', mtime: 2000 },
       });
 
@@ -808,8 +895,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('getSyncStatus', () => {
-    test('returns synced status in idle.clean', () => {
-      const t = createTestHSM({ initialState: 'idle.clean', guid: 'doc-123', path: 'test.md' });
+    test('returns synced status in idle.clean', async () => {
+      const t = await createTestHSM({ initialState: 'idle.clean', guid: 'doc-123', path: 'test.md' });
 
       const status = t.hsm.getSyncStatus();
 
@@ -818,24 +905,24 @@ describe('MergeHSM', () => {
       expect(status.status).toBe('synced');
     });
 
-    test('returns synced status in active.tracking', () => {
-      const t = createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
+    test('returns synced status in active.tracking', async () => {
+      const t = await createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
 
       const status = t.hsm.getSyncStatus();
 
       expect(status.status).toBe('synced');
     });
 
-    test('returns pending status in idle.remoteAhead', () => {
-      const t = createTestHSM({ initialState: 'idle.remoteAhead' });
+    test('returns pending status in idle.remoteAhead', async () => {
+      const t = await createTestHSM({ initialState: 'idle.remoteAhead' });
 
       const status = t.hsm.getSyncStatus();
 
       expect(status.status).toBe('pending');
     });
 
-    test('returns conflict status in active.conflict.bannerShown', () => {
-      const t = createTestHSM({ initialState: 'active.conflict.bannerShown', localDoc: 'hello' });
+    test('returns conflict status in active.conflict.bannerShown', async () => {
+      const t = await createTestHSM({ initialState: 'active.conflict.bannerShown', localDoc: 'hello' });
 
       const status = t.hsm.getSyncStatus();
 
@@ -848,11 +935,11 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('persistence effects', () => {
-    test('SAVE_COMPLETE emits PERSIST_STATE', () => {
-      const t = createTestHSM({
+    test('SAVE_COMPLETE emits PERSIST_STATE', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
       t.clearEffects();
 
@@ -861,8 +948,8 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('DISMISS_CONFLICT emits PERSIST_STATE', () => {
-      const t = createTestHSM({
+    test('DISMISS_CONFLICT emits PERSIST_STATE', async () => {
+      const t = await createTestHSM({
         initialState: 'active.conflict.bannerShown',
         localDoc: 'hello',
         disk: { contents: 'hello disk', mtime: 1000 },
@@ -874,30 +961,30 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('successful merge emits PERSIST_STATE', () => {
-      const t = createTestHSM({
+    test('successful merge emits PERSIST_STATE', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
       t.clearEffects();
 
       // Disk change that can auto-merge (local matches LCA)
-      t.send(diskChanged('hello world', Date.now()));
+      t.send(await diskChanged('hello world', Date.now()));
 
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('STATUS_CHANGED emitted on sync status change', () => {
-      const t = createTestHSM({
+    test('STATUS_CHANGED emitted on sync status change', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello local',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
       t.clearEffects();
 
       // Trigger conflict which changes status from synced to conflict
-      t.send(diskChanged('hello disk', Date.now()));
+      t.send(await diskChanged('hello disk', Date.now()));
 
       expectEffect(t.effects, { type: 'STATUS_CHANGED' });
     });
@@ -908,11 +995,11 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('snapshot', () => {
-    test('creates serializable snapshot', () => {
-      const t = createTestHSM({
+    test('creates serializable snapshot', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
-        lca: createLCA('hello', 1000),
+        lca: await createLCA('hello', 1000),
       });
 
       const snapshot = t.snapshot();
@@ -924,8 +1011,8 @@ describe('MergeHSM', () => {
       expect(snapshot.state.lca?.contents).toBe('hello');
     });
 
-    test('snapshot is JSON serializable', () => {
-      const t = createTestHSM({
+    test('snapshot is JSON serializable', async () => {
+      const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'test content',
       });
@@ -944,8 +1031,8 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('state history', () => {
-    test('tracks state transitions (one per event)', () => {
-      const t = createTestHSM();
+    test('tracks state transitions (one per event)', async () => {
+      const t = await createTestHSM();
 
       t.send(load('doc-123', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));

@@ -81,8 +81,41 @@ export function generateTestFromRecording(
   lines.push(` * Generated at: ${new Date().toISOString()}`);
   lines.push(` */`);
   lines.push('');
-  lines.push(`import { createTestHSM } from '../testing';`);
-  lines.push(`import type { MergeEvent } from '../types';`);
+  // Collect which factories are needed
+  const usedFactories = new Set<string>();
+  const needsBase64Helper = false;
+
+  for (const entry of recording.timeline.slice(0, opts.maxEvents)) {
+    const factory = getEventFactory(entry.event.type);
+    if (factory) usedFactories.add(factory);
+  }
+
+  // Always need createTestHSM and expectState
+  const imports = ['createTestHSM', 'expectState'];
+
+  // Add used event factories
+  const factoryImports = Array.from(usedFactories).sort();
+  imports.push(...factoryImports);
+
+  lines.push(`import {`);
+  lines.push(`${i}${imports.join(',\n' + i)},`);
+  lines.push(`} from '../testing';`);
+
+  // Add base64 helper if needed for binary data
+  if (recording.timeline.some(e =>
+    e.event.type === 'REMOTE_UPDATE' || e.event.type === 'PERSISTENCE_LOADED'
+  )) {
+    lines.push('');
+    lines.push(`// Helper for binary data from recordings`);
+    lines.push(`function base64ToUint8Array(base64: string): Uint8Array {`);
+    lines.push(`${i}const binary = atob(base64);`);
+    lines.push(`${i}const bytes = new Uint8Array(binary.length);`);
+    lines.push(`${i}for (let i = 0; i < binary.length; i++) {`);
+    lines.push(`${i}${i}bytes[i] = binary.charCodeAt(i);`);
+    lines.push(`${i}}`);
+    lines.push(`${i}return bytes;`);
+    lines.push(`}`);
+  }
   lines.push('');
 
   // Test describe block
@@ -119,7 +152,7 @@ export function generateTestFromRecording(
 
     // Assert state transition
     if (opts.assertTransitions) {
-      lines.push(`${i}${i}expect(t.statePath).toBe(${JSON.stringify(entry.statePathAfter)});`);
+      lines.push(`${i}${i}expectState(t, ${JSON.stringify(entry.statePathAfter)});`);
     }
 
     // Assert effects (simplified - just count)
@@ -140,7 +173,7 @@ export function generateTestFromRecording(
   lines.push(`${i}${i}// Final state`);
   const finalEntry = timeline[timeline.length - 1];
   if (finalEntry) {
-    lines.push(`${i}${i}expect(t.statePath).toBe(${JSON.stringify(finalEntry.statePathAfter)});`);
+    lines.push(`${i}${i}expectState(t, ${JSON.stringify(finalEntry.statePathAfter)});`);
   }
 
   lines.push(`${i}});`);
@@ -151,57 +184,113 @@ export function generateTestFromRecording(
 }
 
 /**
- * Generate code for an event.
+ * Map event types to their factory function names.
+ */
+function getEventFactory(eventType: string): string | null {
+  const factoryMap: Record<string, string> = {
+    'LOAD': 'load',
+    'UNLOAD': 'unload',
+    'ACQUIRE_LOCK': 'acquireLock',
+    'RELEASE_LOCK': 'releaseLock',
+    'DISK_CHANGED': 'diskChanged',
+    'REMOTE_UPDATE': 'remoteUpdate',
+    'SAVE_COMPLETE': 'saveComplete',
+    'CM6_CHANGE': 'cm6Change',
+    'PROVIDER_SYNCED': 'providerSynced',
+    'CONNECTED': 'connected',
+    'DISCONNECTED': 'disconnected',
+    'RESOLVE_ACCEPT_DISK': 'resolveAcceptDisk',
+    'RESOLVE_ACCEPT_LOCAL': 'resolveAcceptLocal',
+    'RESOLVE_ACCEPT_MERGED': 'resolveAcceptMerged',
+    'DISMISS_CONFLICT': 'dismissConflict',
+    'OPEN_DIFF_VIEW': 'openDiffView',
+    'CANCEL': 'cancel',
+    'PERSISTENCE_LOADED': 'persistenceLoaded',
+    'YDOCS_READY': 'yDocsReady',
+    'MERGE_SUCCESS': 'mergeSuccess',
+    'MERGE_CONFLICT': 'mergeConflict',
+    'REMOTE_DOC_UPDATED': 'remoteDocUpdated',
+    'ERROR': 'error',
+  };
+  return factoryMap[eventType] || null;
+}
+
+/**
+ * Generate code for an event using factory functions.
  */
 function generateEventCode(event: SerializableEvent, indent: string): string {
   switch (event.type) {
     case 'LOAD':
-      return `{ type: 'LOAD', guid: ${JSON.stringify(event.guid)}, path: ${JSON.stringify(event.path)} }`;
+      return `load(${JSON.stringify(event.guid)}, ${JSON.stringify(event.path)})`;
 
     case 'UNLOAD':
+      return `unload()`;
+
     case 'ACQUIRE_LOCK':
+      return `acquireLock()`;
+
     case 'RELEASE_LOCK':
+      return `releaseLock()`;
+
     case 'PROVIDER_SYNCED':
+      return `providerSynced()`;
+
     case 'CONNECTED':
+      return `connected()`;
+
     case 'DISCONNECTED':
+      return `disconnected()`;
+
     case 'RESOLVE_ACCEPT_DISK':
+      return `resolveAcceptDisk()`;
+
     case 'RESOLVE_ACCEPT_LOCAL':
+      return `resolveAcceptLocal()`;
+
     case 'DISMISS_CONFLICT':
+      return `dismissConflict()`;
+
     case 'OPEN_DIFF_VIEW':
+      return `openDiffView()`;
+
     case 'CANCEL':
+      return `cancel()`;
+
     case 'YDOCS_READY':
+      return `yDocsReady()`;
+
     case 'REMOTE_DOC_UPDATED':
-      return `{ type: '${event.type}' }`;
+      return `remoteDocUpdated()`;
 
     case 'DISK_CHANGED':
-      return `{\n${indent}  type: 'DISK_CHANGED',\n${indent}  contents: ${JSON.stringify(event.contents)},\n${indent}  mtime: ${event.mtime},\n${indent}  hash: ${JSON.stringify(event.hash)}\n${indent}}`;
+      return `diskChanged(\n${indent}  ${JSON.stringify(event.contents)},\n${indent}  ${event.mtime},\n${indent}  ${JSON.stringify(event.hash)}\n${indent})`;
 
     case 'SAVE_COMPLETE':
-      return `{ type: 'SAVE_COMPLETE', mtime: ${event.mtime} }`;
+      return `saveComplete(${event.mtime})`;
 
     case 'CM6_CHANGE':
-      return `{\n${indent}  type: 'CM6_CHANGE',\n${indent}  changes: ${JSON.stringify(event.changes)},\n${indent}  docText: ${JSON.stringify(event.docText)},\n${indent}  isFromYjs: ${event.isFromYjs}\n${indent}}`;
+      return `cm6Change(\n${indent}  ${JSON.stringify(event.changes)},\n${indent}  ${JSON.stringify(event.docText)},\n${indent}  ${event.isFromYjs}\n${indent})`;
 
     case 'RESOLVE_ACCEPT_MERGED':
-      return `{ type: 'RESOLVE_ACCEPT_MERGED', contents: ${JSON.stringify(event.contents)} }`;
+      return `resolveAcceptMerged(${JSON.stringify(event.contents)})`;
 
     case 'REMOTE_UPDATE':
-      // Base64 update - need to convert back
-      return `{ type: 'REMOTE_UPDATE', update: base64ToUint8Array(${JSON.stringify(event.update)}) }`;
+      return `remoteUpdate(base64ToUint8Array(${JSON.stringify(event.update)}))`;
 
     case 'PERSISTENCE_LOADED':
-      return `{\n${indent}  type: 'PERSISTENCE_LOADED',\n${indent}  updates: base64ToUint8Array(${JSON.stringify(event.updates)}),\n${indent}  lca: ${event.lca ? JSON.stringify(event.lca) : 'null'}\n${indent}}`;
+      return `persistenceLoaded(\n${indent}  base64ToUint8Array(${JSON.stringify(event.updates)}),\n${indent}  ${event.lca ? JSON.stringify(event.lca) : 'null'}\n${indent})`;
 
     case 'MERGE_SUCCESS':
-      return `{ type: 'MERGE_SUCCESS', newLCA: ${JSON.stringify(event.newLCA)} }`;
+      return `mergeSuccess(${JSON.stringify(event.newLCA)})`;
 
     case 'MERGE_CONFLICT':
-      return `{\n${indent}  type: 'MERGE_CONFLICT',\n${indent}  base: ${JSON.stringify(event.base)},\n${indent}  local: ${JSON.stringify(event.local)},\n${indent}  remote: ${JSON.stringify(event.remote)}\n${indent}}`;
+      return `mergeConflict(\n${indent}  ${JSON.stringify(event.base)},\n${indent}  ${JSON.stringify(event.local)},\n${indent}  ${JSON.stringify(event.remote)}\n${indent})`;
 
     case 'ERROR':
-      return `{ type: 'ERROR', error: new Error(${JSON.stringify(event.error)}) }`;
+      return `error(new Error(${JSON.stringify(event.error)}))`;
 
     default:
+      // Fallback to raw object for unknown event types
       return JSON.stringify(event);
   }
 }

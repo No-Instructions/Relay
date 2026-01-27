@@ -10,6 +10,8 @@
 import type { EditorView, ViewUpdate } from '@codemirror/view';
 import type { MergeHSM } from '../MergeHSM';
 import type { PositionedChange } from '../types';
+// Import the shared annotation to prevent feedback loops
+import { ySyncAnnotation } from '../../y-codemirror.next/LiveEditPlugin';
 
 // =============================================================================
 // CM6Integration Class
@@ -35,7 +37,7 @@ export class CM6Integration {
 
   /**
    * Dispatch changes from HSM to the editor.
-   * Suppresses the next editor update to prevent feedback loop.
+   * Uses ySyncAnnotation to prevent feedback loop.
    */
   private dispatchToEditor(changes: PositionedChange[]): void {
     if (changes.length === 0) return;
@@ -52,10 +54,8 @@ export class CM6Integration {
 
     this.view.dispatch({
       changes: cmChanges,
-      annotations: [
-        // Mark as coming from YJS so CM6_CHANGE knows to ignore
-        // This is a simplified approach - in practice you'd use a proper annotation
-      ],
+      // Mark as coming from Yjs/HSM to prevent feedback loops
+      annotations: [ySyncAnnotation.of(this.view)],
     });
 
     this.suppressNextChange = false;

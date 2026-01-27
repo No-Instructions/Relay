@@ -51,6 +51,7 @@ export {
   error,
   // Helpers
   createLCA,
+  sha256,
 } from './events';
 
 // Assertions
