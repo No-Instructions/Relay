@@ -240,6 +240,20 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		return this.whenSyncedPromise.getPromise();
 	}
 
+	/**
+	 * Release lock on this canvas.
+	 * Transitions HSM from active back to idle mode.
+	 * Call this when editor closes (replaces userLock = false).
+	 */
+	releaseLock(): void {
+		this.userLock = false;
+
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (mergeManager) {
+			mergeManager.unload(this.guid);
+		}
+	}
+
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}

@@ -343,7 +343,7 @@ export class RelayCanvasView implements S3View {
 			this.offConnectionStatusSubscription = undefined;
 		}
 		this.canvas.disconnect();
-		this.canvas.userLock = false;
+		this.canvas.releaseLock();
 	}
 
 	destroy() {
