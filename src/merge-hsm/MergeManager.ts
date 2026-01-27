@@ -210,6 +210,21 @@ export class MergeManager {
     if (!this.activeDocs.has(guid)) {
       hsm.send({ type: 'ACQUIRE_LOCK' });
       this.activeDocs.add(guid);
+
+      // Seed localDoc from disk if CRDT is empty (no persisted updates)
+      const localDoc = hsm.getLocalDoc();
+      if (localDoc && localDoc.getText('content').length === 0 && this.getDiskState) {
+        const diskState = await this.getDiskState(path);
+        if (diskState && diskState.contents.length > 0) {
+          hsm.initializeLocalDoc(diskState.contents);
+          hsm.send({
+            type: 'DISK_CHANGED',
+            contents: diskState.contents,
+            mtime: diskState.mtime,
+            hash: diskState.hash,
+          });
+        }
+      }
     }
 
     return hsm;
