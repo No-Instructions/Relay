@@ -284,6 +284,7 @@ export class MergeManager {
 
   /**
    * Poll for disk changes on registered documents.
+   * Only sends DISK_CHANGED if the disk state actually differs from HSM's knowledge.
    */
   async pollAll(options?: PollOptions): Promise<void> {
     if (!this.getDiskState) {
@@ -299,14 +300,38 @@ export class MergeManager {
       const path = hsm.state.path;
       const diskState = await this.getDiskState(path);
       if (diskState) {
-        hsm.send({
-          type: 'DISK_CHANGED',
-          contents: diskState.contents,
-          mtime: diskState.mtime,
-          hash: diskState.hash,
-        });
+        // BUG-007 fix: Only send DISK_CHANGED if something actually changed
+        const currentDisk = hsm.state.disk;
+        if (this.shouldSendDiskChanged(currentDisk, diskState)) {
+          hsm.send({
+            type: 'DISK_CHANGED',
+            contents: diskState.contents,
+            mtime: diskState.mtime,
+            hash: diskState.hash,
+          });
+        }
       }
     }
+  }
+
+  /**
+   * Determine if DISK_CHANGED event should be sent based on current vs new disk state.
+   * Returns true if disk state has changed, false if unchanged.
+   */
+  private shouldSendDiskChanged(
+    currentDisk: { hash: string; mtime: number } | null,
+    newDiskState: { mtime: number; hash: string }
+  ): boolean {
+    // No current disk state - always send
+    if (!currentDisk) return true;
+
+    // Compare mtime first (fast check)
+    if (currentDisk.mtime !== newDiskState.mtime) return true;
+
+    // Compare hash as fallback (handles clock skew edge cases)
+    if (currentDisk.hash !== newDiskState.hash) return true;
+
+    return false;
   }
 
   /**

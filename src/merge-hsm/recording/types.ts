@@ -123,7 +123,7 @@ export type SerializableEvent =
   | { type: 'RELEASE_LOCK' }
   | { type: 'DISK_CHANGED'; contents: string; mtime: number; hash: string }
   | { type: 'REMOTE_UPDATE'; update: string } // base64
-  | { type: 'SAVE_COMPLETE'; mtime: number }
+  | { type: 'SAVE_COMPLETE'; mtime: number; hash: string }
   | { type: 'CM6_CHANGE'; changes: Array<{ from: number; to: number; insert: string }>; docText: string; isFromYjs: boolean }
   | { type: 'PROVIDER_SYNCED' }
   | { type: 'CONNECTED' }

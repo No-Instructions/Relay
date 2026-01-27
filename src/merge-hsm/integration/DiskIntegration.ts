@@ -113,11 +113,12 @@ export class DiskIntegration {
    * Notify HSM that a save has completed.
    * Call this after Obsidian's file save completes.
    */
-  onSaveComplete(mtime: number): void {
+  onSaveComplete(mtime: number, hash: string): void {
     this.lastKnownMtime = mtime;
     this.hsm.send({
       type: 'SAVE_COMPLETE',
       mtime,
+      hash,
     });
   }
 

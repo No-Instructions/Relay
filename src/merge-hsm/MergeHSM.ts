@@ -1466,18 +1466,27 @@ export class MergeHSM implements TestableHSM {
     };
   }
 
-  private handleSaveComplete(event: { mtime: number }): void {
+  private handleSaveComplete(event: { mtime: number; hash: string }): void {
+    // Update LCA with new mtime and hash
     if (this._lca) {
       this._lca = {
         ...this._lca,
         meta: {
           ...this._lca.meta,
           mtime: event.mtime,
+          hash: event.hash,
         },
       };
-
-      this.emitPersistState();
     }
+
+    // Update disk state to match what we just saved
+    // This prevents the next poll from seeing a "change" that is actually our own save
+    this._disk = {
+      mtime: event.mtime,
+      hash: event.hash,
+    };
+
+    this.emitPersistState();
   }
 
   // ===========================================================================

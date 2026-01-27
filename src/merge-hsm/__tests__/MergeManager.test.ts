@@ -329,6 +329,86 @@ describe('MergeManager', () => {
       // Verify correct path was used
       expect(mockGetDiskState).toHaveBeenCalledWith('shared-folder/subfolder/note.md');
     });
+
+    test('pollAll does NOT send DISK_CHANGED when disk state unchanged (BUG-007)', async () => {
+      const mockGetDiskState = jest.fn()
+        .mockResolvedValue({ contents: 'same content', mtime: 1000, hash: 'same-hash' });
+
+      const managerWithDisk = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        timeProvider,
+        getDiskState: mockGetDiskState,
+      });
+
+      const remoteDoc = createRemoteDoc();
+      await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
+      const hsm = managerWithDisk.getIdleHSM('doc-1');
+
+      // First poll - should send DISK_CHANGED since HSM has no disk state yet
+      await managerWithDisk.pollAll();
+      expect(hsm?.state.disk).toEqual({ mtime: 1000, hash: 'same-hash' });
+
+      // Track state before second poll
+      const stateBefore = hsm?.state.statePath;
+
+      // Second poll with same mtime/hash - should NOT send another DISK_CHANGED
+      mockGetDiskState.mockClear();
+      await managerWithDisk.pollAll();
+
+      // getDiskState was called but DISK_CHANGED should not have been sent
+      // HSM state should remain unchanged since disk hasn't changed
+      expect(mockGetDiskState).toHaveBeenCalledTimes(1);
+      expect(hsm?.state.statePath).toBe(stateBefore);
+      expect(hsm?.state.disk).toEqual({ mtime: 1000, hash: 'same-hash' });
+    });
+
+    test('pollAll sends DISK_CHANGED when mtime changes', async () => {
+      const mockGetDiskState = jest.fn();
+
+      const managerWithDisk = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        timeProvider,
+        getDiskState: mockGetDiskState,
+      });
+
+      const remoteDoc = createRemoteDoc();
+      await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
+      const hsm = managerWithDisk.getIdleHSM('doc-1');
+
+      // First poll
+      mockGetDiskState.mockResolvedValueOnce({ contents: 'content', mtime: 1000, hash: 'hash1' });
+      await managerWithDisk.pollAll();
+      expect(hsm?.state.disk?.mtime).toBe(1000);
+
+      // Second poll with new mtime - should send DISK_CHANGED
+      mockGetDiskState.mockResolvedValueOnce({ contents: 'content', mtime: 2000, hash: 'hash1' });
+      await managerWithDisk.pollAll();
+      expect(hsm?.state.disk?.mtime).toBe(2000);
+    });
+
+    test('pollAll sends DISK_CHANGED when hash changes', async () => {
+      const mockGetDiskState = jest.fn();
+
+      const managerWithDisk = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        timeProvider,
+        getDiskState: mockGetDiskState,
+      });
+
+      const remoteDoc = createRemoteDoc();
+      await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
+      const hsm = managerWithDisk.getIdleHSM('doc-1');
+
+      // First poll
+      mockGetDiskState.mockResolvedValueOnce({ contents: 'content', mtime: 1000, hash: 'hash1' });
+      await managerWithDisk.pollAll();
+      expect(hsm?.state.disk?.hash).toBe('hash1');
+
+      // Second poll with new hash (same mtime) - should send DISK_CHANGED
+      mockGetDiskState.mockResolvedValueOnce({ contents: 'new content', mtime: 1000, hash: 'hash2' });
+      await managerWithDisk.pollAll();
+      expect(hsm?.state.disk?.hash).toBe('hash2');
+    });
   });
 
   describe('effect handling', () => {

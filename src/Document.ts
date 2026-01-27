@@ -18,6 +18,7 @@ import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import { isHSMActiveModeEnabled } from "./merge-hsm/flags";
+import { generateHash } from "./hashing";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -585,13 +586,16 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// Mark that we're saving to distinguish from external modifications
 		this._isSaving = true;
 		try {
-			await this.vault.modify(this.tfile, this.text);
+			const contents = this.text;
+			await this.vault.modify(this.tfile, contents);
 			this.warn("file saved", this.path);
 
-			// Notify HSM of save completion with new mtime
+			// Notify HSM of save completion with new mtime and hash
 			if (this._hsm && this.tfile) {
 				const mtime = this.tfile.stat.mtime;
-				this._hsm.send({ type: 'SAVE_COMPLETE', mtime });
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				this._hsm.send({ type: 'SAVE_COMPLETE', mtime, hash });
 			}
 		} finally {
 			this._isSaving = false;

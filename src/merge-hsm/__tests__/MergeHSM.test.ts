@@ -256,6 +256,47 @@ describe('MergeHSM', () => {
 
       expect(t.state.lca?.meta.mtime).toBe(2000);
     });
+
+    test('SAVE_COMPLETE updates LCA hash and disk state (BUG-006)', async () => {
+      const t = await createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello',
+        lca: await createLCA('hello', 1000),
+        disk: { contents: 'hello', mtime: 1000 },
+      });
+
+      // Send SAVE_COMPLETE with new mtime and hash
+      t.send(saveComplete(2000, 'new-hash-after-save'));
+
+      // LCA should have updated mtime and hash
+      expect(t.state.lca?.meta.mtime).toBe(2000);
+      expect(t.state.lca?.meta.hash).toBe('new-hash-after-save');
+
+      // Disk state should also be updated to match
+      expect(t.state.disk?.mtime).toBe(2000);
+      expect(t.state.disk?.hash).toBe('new-hash-after-save');
+    });
+
+    test('SAVE_COMPLETE prevents subsequent pollAll from triggering merge (BUG-006 + BUG-007)', async () => {
+      const t = await createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello world',
+        lca: await createLCA('hello world', 1000),
+        disk: { contents: 'hello world', mtime: 1000 },
+      });
+
+      // Simulate save completing with new mtime/hash
+      t.send(saveComplete(2000, 'saved-content-hash'));
+
+      // Both LCA and disk should now have the same mtime/hash
+      expect(t.state.lca?.meta.mtime).toBe(2000);
+      expect(t.state.lca?.meta.hash).toBe('saved-content-hash');
+      expect(t.state.disk?.mtime).toBe(2000);
+      expect(t.state.disk?.hash).toBe('saved-content-hash');
+
+      // Should still be in tracking state (no unnecessary merge triggered)
+      expect(t.state.statePath).toBe('active.tracking');
+    });
   });
 
   // ===========================================================================

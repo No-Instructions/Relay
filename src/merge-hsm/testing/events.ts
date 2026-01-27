@@ -71,8 +71,8 @@ export function remoteUpdate(update: Uint8Array): RemoteUpdateEvent {
   return { type: 'REMOTE_UPDATE', update };
 }
 
-export function saveComplete(mtime: number): SaveCompleteEvent {
-  return { type: 'SAVE_COMPLETE', mtime };
+export function saveComplete(mtime: number, hash: string = 'test-hash'): SaveCompleteEvent {
+  return { type: 'SAVE_COMPLETE', mtime, hash };
 }
 
 export function cm6Change(

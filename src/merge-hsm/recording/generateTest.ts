@@ -266,7 +266,7 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
       return `diskChanged(\n${indent}  ${JSON.stringify(event.contents)},\n${indent}  ${event.mtime},\n${indent}  ${JSON.stringify(event.hash)}\n${indent})`;
 
     case 'SAVE_COMPLETE':
-      return `saveComplete(${event.mtime})`;
+      return `saveComplete(${event.mtime}, ${JSON.stringify(event.hash)})`;
 
     case 'CM6_CHANGE':
       return `cm6Change(\n${indent}  ${JSON.stringify(event.changes)},\n${indent}  ${JSON.stringify(event.docText)},\n${indent}  ${event.isFromYjs}\n${indent})`;

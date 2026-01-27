@@ -144,6 +144,7 @@ export interface RemoteUpdateEvent {
 export interface SaveCompleteEvent {
   type: 'SAVE_COMPLETE';
   mtime: number;
+  hash: string;
 }
 
 export interface CM6ChangeEvent {
