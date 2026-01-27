@@ -54,6 +54,9 @@ import { isHSMIdleModeEnabled, isHSMRecordingEnabled } from "./merge-hsm/flags";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import { installE2ERecordingBridge } from "./merge-hsm/recording";
 import { generateHash } from "./hashing";
+import { loadUpdatesRaw } from "./storage/y-indexeddb";
+import { loadState as loadMergeState, openDatabase as openMergeHSMDatabase } from "./merge-hsm/persistence";
+import * as Y from "yjs";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -289,6 +292,28 @@ export class SharedFolder extends HasProvider {
 					const encoder = new TextEncoder();
 					const hash = await generateHash(encoder.encode(contents).buffer);
 					return { contents, mtime: tfile.stat.mtime, hash };
+				},
+				loadUpdates: async (guid: string) => {
+					const dbName = `${this.appId}-relay-doc-${guid}`;
+					try {
+						const updates = await loadUpdatesRaw(dbName);
+						if (!updates || updates.length === 0) return null;
+						return Y.mergeUpdates(updates);
+					} catch {
+						return null;
+					}
+				},
+				loadState: async (guid: string) => {
+					try {
+						const db = await openMergeHSMDatabase();
+						try {
+							return await loadMergeState(db, guid);
+						} finally {
+							db.close();
+						}
+					} catch {
+						return null;
+					}
 				},
 				onEffect: (guid, effect) => {
 					this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
