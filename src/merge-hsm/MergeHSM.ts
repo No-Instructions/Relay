@@ -569,6 +569,14 @@ export class MergeHSM implements TestableHSM {
   // Public API
   // ===========================================================================
 
+  get path(): string {
+    return this._path;
+  }
+
+  get guid(): string {
+    return this._guid;
+  }
+
   get state(): MergeState {
     return {
       guid: this._guid,

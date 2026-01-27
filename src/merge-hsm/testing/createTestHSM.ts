@@ -102,6 +102,8 @@ export interface TestHSM {
  * MergeHSM implements this interface.
  */
 export interface TestableHSM {
+  readonly path: string;
+  readonly guid: string;
   readonly state: MergeState;
   send(event: MergeEvent): void;
   matches(statePath: string): boolean;
