@@ -688,7 +688,7 @@ export class LiveView<ViewType extends TextFileView>
 		this._plugin?.destroy();
 		this._plugin = undefined;
 		this.document.disconnect();
-		this.document.userLock = false;
+		this.document.releaseLock();
 	}
 
 	destroy() {

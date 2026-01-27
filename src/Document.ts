@@ -232,6 +232,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private _setupHSMProviderEvents(): void {
 		if (!this._hsm) return;
 
+		// Clean up any existing listeners to prevent accumulation
+		this._hsmProviderCleanup.forEach(cleanup => cleanup());
+		this._hsmProviderCleanup = [];
+
 		const hsm = this._hsm;
 
 		// Forward provider sync event
