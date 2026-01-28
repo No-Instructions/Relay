@@ -499,21 +499,14 @@ describe('MergeManager', () => {
       expect(hsm?.state.lca?.contents).toBe('persisted content');
     });
 
-    test('loadUpdates is called during registration', async () => {
-      const mockLoadUpdates = jest.fn().mockResolvedValue(
-        createTestUpdate('loaded content')
-      );
-
-      const managerWithUpdates = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        loadUpdates: mockLoadUpdates,
-      });
-
+    test('persistence is handled internally by IndexeddbPersistence (no loadUpdates)', async () => {
+      // loadUpdates callback has been removed. IndexeddbPersistence
+      // attached to localDoc loads updates internally.
       const remoteDoc = createRemoteDoc();
-      await managerWithUpdates.register('doc-1', 'test.md', remoteDoc);
+      await manager.register('doc-1', 'test.md', remoteDoc);
 
-      expect(mockLoadUpdates).toHaveBeenCalledWith('doc-1');
+      // HSM should be registered and in idle state
+      expect(manager.isRegistered('doc-1')).toBe(true);
     });
   });
 });
@@ -524,7 +517,7 @@ describe('MergeManager', () => {
 
 function createTestUpdate(content: string): Uint8Array {
   const doc = new Y.Doc();
-  doc.getText('content').insert(0, content);
+  doc.getText('contents').insert(0, content);
   const update = Y.encodeStateAsUpdate(doc);
   doc.destroy();
   return update;

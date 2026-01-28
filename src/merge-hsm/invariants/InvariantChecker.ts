@@ -333,8 +333,8 @@ export class InvariantChecker {
 
     return {
       statePath: state.statePath,
-      localDocText: localDoc?.getText('content').toString() ?? null,
-      remoteDocText: remoteDoc?.getText('content').toString() ?? null,
+      localDocText: localDoc?.getText('contents').toString() ?? null,
+      remoteDocText: remoteDoc?.getText('contents').toString() ?? null,
       editorText: this.lastEditorText,
       disk: {
         hash: state.disk?.hash ?? null,

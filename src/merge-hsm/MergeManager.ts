@@ -19,6 +19,7 @@ import type {
   SyncStatus,
   MergeEffect,
   PersistedMergeState,
+  CreatePersistence,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -44,9 +45,6 @@ export interface MergeManagerConfig {
   /** Callback to load persisted state for a document */
   loadState?: (guid: string) => Promise<PersistedMergeState | null>;
 
-  /** Callback to load persisted updates for a document */
-  loadUpdates?: (guid: string) => Promise<Uint8Array | null>;
-
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void;
 
@@ -64,6 +62,13 @@ export interface MergeManagerConfig {
    * Callback to persist the sync status index.
    */
   persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
+
+  /**
+   * Factory to create persistence for localDoc.
+   * Production: pass IndexeddbPersistence constructor wrapper.
+   * Tests: omit for default no-op persistence.
+   */
+  createPersistence?: CreatePersistence;
 }
 
 export interface PollOptions {
@@ -96,7 +101,6 @@ export class MergeManager {
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
-  private loadUpdates?: (guid: string) => Promise<Uint8Array | null>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
   private getDiskState?: (path: string) => Promise<{
     contents: string;
@@ -104,16 +108,17 @@ export class MergeManager {
     hash: string;
   } | null>;
   private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
+  private createPersistence?: CreatePersistence;
 
   constructor(config: MergeManagerConfig) {
     this.getVaultId = config.getVaultId;
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn;
     this.loadState = config.loadState;
-    this.loadUpdates = config.loadUpdates;
     this.onEffect = config.onEffect;
     this.getDiskState = config.getDiskState;
     this._persistIndex = config.persistIndex;
+    this.createPersistence = config.createPersistence;
   }
 
   // ===========================================================================
@@ -149,6 +154,7 @@ export class MergeManager {
       remoteDoc,
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
+      createPersistence: this.createPersistence,
     });
 
     // Subscribe to effects
@@ -167,13 +173,12 @@ export class MergeManager {
     // Initialize HSM through loading → idle
     hsm.send({ type: 'LOAD', guid, path });
 
-    // Load persisted state
+    // Load persisted state (LCA). Updates are loaded by IndexeddbPersistence internally.
     const persistedState = this.loadState ? await this.loadState(guid) : null;
-    const updates = this.loadUpdates ? await this.loadUpdates(guid) : null;
 
     hsm.send({
       type: 'PERSISTENCE_LOADED',
-      updates: updates ?? new Uint8Array(),
+      updates: new Uint8Array(),
       lca: persistedState?.lca
         ? {
             contents: persistedState.lca.contents,
@@ -210,21 +215,6 @@ export class MergeManager {
     if (!this.activeDocs.has(guid)) {
       hsm.send({ type: 'ACQUIRE_LOCK' });
       this.activeDocs.add(guid);
-
-      // Seed localDoc from disk if CRDT is empty (no persisted updates)
-      const localDoc = hsm.getLocalDoc();
-      if (localDoc && localDoc.getText('content').length === 0 && this.getDiskState) {
-        const diskState = await this.getDiskState(path);
-        if (diskState && diskState.contents.length > 0) {
-          hsm.initializeLocalDoc(diskState.contents);
-          hsm.send({
-            type: 'DISK_CHANGED',
-            contents: diskState.contents,
-            mtime: diskState.mtime,
-            hash: diskState.hash,
-          });
-        }
-      }
     }
 
     return hsm;

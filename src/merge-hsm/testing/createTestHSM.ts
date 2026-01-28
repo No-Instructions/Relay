@@ -181,8 +181,8 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     effects,
     clearEffects: () => { effects.length = 0; },
     time,
-    getLocalDocText: () => hsm.getLocalDoc()?.getText('content').toString() ?? null,
-    getRemoteDocText: () => hsm.getRemoteDoc()?.getText('content').toString() ?? null,
+    getLocalDocText: () => hsm.getLocalDoc()?.getText('contents').toString() ?? null,
+    getRemoteDocText: () => hsm.getRemoteDoc()?.getText('contents').toString() ?? null,
     snapshot: () => createSnapshot(hsm, effects, time),
     stateHistory,
   };
@@ -246,7 +246,7 @@ function createSnapshot(
       error: state.error?.message,
       deferredConflict: state.deferredConflict,
     },
-    localDocText: hsm.getLocalDoc()?.getText('content').toString() ?? null,
-    remoteDocText: hsm.getRemoteDoc()?.getText('content').toString() ?? null,
+    localDocText: hsm.getLocalDoc()?.getText('contents').toString() ?? null,
+    remoteDocText: hsm.getRemoteDoc()?.getText('contents').toString() ?? null,
   };
 }

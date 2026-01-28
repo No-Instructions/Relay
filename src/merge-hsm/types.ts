@@ -383,6 +383,22 @@ export type { TimeProvider };
 // Import Y.Doc type for remoteDoc
 import type * as Y from 'yjs';
 
+/**
+ * Minimal interface for IndexedDB-backed YDoc persistence.
+ * Allows injection for testing (mock) vs production (IndexeddbPersistence).
+ */
+export interface IYDocPersistence {
+  once(event: 'synced', cb: () => void): void;
+  destroy(): void;
+}
+
+/**
+ * Factory that creates a persistence instance for a YDoc.
+ * Production: creates IndexeddbPersistence(vaultId, doc).
+ * Testing: can return a mock that fires 'synced' synchronously.
+ */
+export type CreatePersistence = (vaultId: string, doc: Y.Doc) => IYDocPersistence;
+
 export interface MergeHSMConfig {
   /** Document GUID */
   guid: string;
@@ -408,6 +424,13 @@ export interface MergeHSMConfig {
 
   /** Hash function (default: SHA-256 via SubtleCrypto) */
   hashFn?: (contents: string) => Promise<string>;
+
+  /**
+   * Factory to create persistence for localDoc.
+   * Defaults to IndexeddbPersistence from y-indexeddb.
+   * Override in tests with a mock.
+   */
+  createPersistence?: CreatePersistence;
 }
 
 // =============================================================================

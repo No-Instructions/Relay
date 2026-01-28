@@ -29,6 +29,8 @@ import type {
   SyncStatus,
   SyncStatusType,
   PersistedMergeState,
+  IYDocPersistence,
+  CreatePersistence,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -436,9 +438,8 @@ export class MergeHSM implements TestableHSM {
   // Pending updates for idle mode auto-merge (received via REMOTE_UPDATE)
   private pendingIdleUpdates: Uint8Array | null = null;
 
-  // Persisted updates loaded from IndexedDB (received via PERSISTENCE_LOADED)
-  // These are applied to localDoc when transitioning to active mode
-  private persistedUpdates: Uint8Array | null = null;
+  // Persistence for localDoc (only in active mode)
+  private localPersistence: IYDocPersistence | null = null;
 
   // Last known editor text (for drift detection)
   private lastKnownEditorText: string | null = null;
@@ -456,12 +457,16 @@ export class MergeHSM implements TestableHSM {
   private timeProvider: TimeProvider;
   private hashFn: (contents: string) => Promise<string>;
   private vaultId: string;
+  private _createPersistence: CreatePersistence;
 
   // Remote doc is passed in and managed externally
   private externalRemoteDoc: Y.Doc;
 
   // Lock requested during loading (deferred until PERSISTENCE_LOADED)
   private pendingLockAcquisition = false;
+
+  // Whether we entered active mode from idle.diverged (for conflict handling)
+  private _enteringFromDiverged = false;
 
   constructor(config: MergeHSMConfig) {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
@@ -470,6 +475,7 @@ export class MergeHSM implements TestableHSM {
     this._path = config.path;
     this.vaultId = config.vaultId;
     this.externalRemoteDoc = config.remoteDoc;
+    this._createPersistence = config.createPersistence ?? defaultCreatePersistence;
 
     // Create and start the XState actor
     this.actor = createActor(mergeMachine, {
@@ -660,7 +666,7 @@ export class MergeHSM implements TestableHSM {
     }
 
     const editorText = this.lastKnownEditorText;
-    const yjsText = this.localDoc.getText('content').toString();
+    const yjsText = this.localDoc.getText('contents').toString();
 
     if (editorText === yjsText) {
       return false; // No drift
@@ -831,10 +837,8 @@ export class MergeHSM implements TestableHSM {
   }): void {
     this._lca = event.lca;
 
-    // Store persisted updates for applying when entering active mode
-    // Also compute state vector for idle mode comparisons
+    // Compute state vector for idle mode comparisons
     if (event.updates.length > 0) {
-      this.persistedUpdates = event.updates;
       this._localStateVector = Y.encodeStateVectorFromUpdate(event.updates);
     }
 
@@ -844,10 +848,9 @@ export class MergeHSM implements TestableHSM {
     // Check if lock was requested during loading (per spec: loadingLCA checks for lock)
     if (this.pendingLockAcquisition) {
       this.pendingLockAcquisition = false;
-      this.createYDocs();
-      // Per spec: auto-transition based on LOCAL state, don't wait for network
+      // Transition first, then create YDocs (persistence 'synced' fires YDOCS_READY)
       this.transitionTo('active.entering');
-      this.transitionTo('active.tracking');
+      this.createYDocs();
       return;
     }
 
@@ -948,7 +951,7 @@ export class MergeHSM implements TestableHSM {
     try {
       Y.applyUpdate(tempDoc, this.pendingIdleUpdates);
 
-      const mergedContent = tempDoc.getText('content').toString();
+      const mergedContent = tempDoc.getText('contents').toString();
       const stateVector = Y.encodeStateVector(tempDoc);
 
       // Emit effect synchronously
@@ -984,7 +987,7 @@ export class MergeHSM implements TestableHSM {
 
     const tempDoc = new Y.Doc();
     try {
-      tempDoc.getText('content').insert(0, this.pendingDiskContents);
+      tempDoc.getText('contents').insert(0, this.pendingDiskContents);
 
       const update = Y.encodeStateAsUpdate(tempDoc);
       const stateVector = Y.encodeStateVector(tempDoc);
@@ -1031,7 +1034,7 @@ export class MergeHSM implements TestableHSM {
       const tempDoc = new Y.Doc();
       try {
         Y.applyUpdate(tempDoc, this.pendingIdleUpdates);
-        remoteContent = tempDoc.getText('content').toString();
+        remoteContent = tempDoc.getText('contents').toString();
       } finally {
         tempDoc.destroy();
       }
@@ -1050,7 +1053,7 @@ export class MergeHSM implements TestableHSM {
 
       const tempDoc = new Y.Doc();
       try {
-        tempDoc.getText('content').insert(0, mergeResult.merged);
+        tempDoc.getText('contents').insert(0, mergeResult.merged);
 
         this._lca = {
           contents: mergeResult.merged,
@@ -1067,7 +1070,7 @@ export class MergeHSM implements TestableHSM {
 
       const syncDoc = new Y.Doc();
       try {
-        syncDoc.getText('content').insert(0, mergeResult.merged);
+        syncDoc.getText('contents').insert(0, mergeResult.merged);
         const update = Y.encodeStateAsUpdate(syncDoc);
         this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
       } finally {
@@ -1100,27 +1103,26 @@ export class MergeHSM implements TestableHSM {
     }
 
     if (this._statePath.startsWith('idle.')) {
-      this.createYDocs();
+      // Remember if we came from diverged for conflict handling in handleYDocsReady
+      this._enteringFromDiverged = this._statePath === 'idle.diverged';
 
-      if (this._statePath === 'idle.diverged') {
-        this.transitionTo('active.conflict.blocked');
-        this.transitionTo('active.conflict.bannerShown');
-      } else {
-        // Per spec: "This transition is based entirely on LOCAL state.
-        // Provider sync happens asynchronously and does not block.
-        // The editor must be usable immediately, even when offline."
-        //
-        // We transition through active.entering briefly, then immediately
-        // to active.tracking. No waiting for YDOCS_READY or network.
-        this.transitionTo('active.entering');
-        this.transitionTo('active.tracking');
-      }
+      // Transition to active.entering first — editor loads from disk and is usable
+      // immediately. Then create YDocs which attach persistence. When persistence
+      // reports 'synced', YDOCS_READY fires and transitions to active.tracking.
+      this.transitionTo('active.entering');
+      this.createYDocs();
     }
   }
 
   private handleYDocsReady(): void {
     if (this._statePath === 'active.entering') {
-      this.transitionTo('active.tracking');
+      if (this._enteringFromDiverged) {
+        this._enteringFromDiverged = false;
+        this.transitionTo('active.conflict.blocked');
+        this.transitionTo('active.conflict.bannerShown');
+      } else {
+        this.transitionTo('active.tracking');
+      }
     }
   }
 
@@ -1150,26 +1152,31 @@ export class MergeHSM implements TestableHSM {
     // remoteDoc is passed in externally, just reference it in active mode
     this.remoteDoc = this.externalRemoteDoc;
 
-    // Apply persisted updates from IndexedDB (loaded via PERSISTENCE_LOADED)
-    // This ensures localDoc has all the content from previous sessions
-    if (this.persistedUpdates && this.persistedUpdates.length > 0) {
-      Y.applyUpdate(this.localDoc, this.persistedUpdates);
-    }
+    // Attach persistence to localDoc — it loads stored updates
+    // asynchronously and fires 'synced' when done.
+    this.localPersistence = this._createPersistence(this.vaultId, this.localDoc);
+    this.localPersistence.once('synced', () => {
+      // Apply any updates received during idle mode (not yet in IndexedDB)
+      if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
+        Y.applyUpdate(this.localDoc!, this.pendingIdleUpdates);
+        this.pendingIdleUpdates = null;
+      }
 
-    // Also apply any updates received during idle mode (via REMOTE_UPDATE)
-    // These were accumulated while no editor was open
-    if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
-      Y.applyUpdate(this.localDoc, this.pendingIdleUpdates);
-      this.pendingIdleUpdates = null; // Clear after applying
-    }
+      // Update state vector to reflect what's in localDoc
+      if (this.localDoc) {
+        this._localStateVector = Y.encodeStateVector(this.localDoc);
+      }
 
-    // Update state vector to reflect what's in localDoc
-    if (this.localDoc) {
-      this._localStateVector = Y.encodeStateVector(this.localDoc);
-    }
+      // Signal that YDocs are ready
+      this.send({ type: 'YDOCS_READY' });
+    });
   }
 
   private cleanupYDocs(): void {
+    if (this.localPersistence) {
+      this.localPersistence.destroy();
+      this.localPersistence = null;
+    }
     if (this.localDoc) {
       this.localDoc.destroy();
       this.localDoc = null;
@@ -1182,7 +1189,7 @@ export class MergeHSM implements TestableHSM {
   initializeLocalDoc(content: string): void {
     if (!this.localDoc || !this.remoteDoc) return;
 
-    this.localDoc.getText('content').insert(0, content);
+    this.localDoc.getText('contents').insert(0, content);
     Y.applyUpdate(this.remoteDoc, Y.encodeStateAsUpdate(this.localDoc));
   }
 
@@ -1202,7 +1209,7 @@ export class MergeHSM implements TestableHSM {
     if (event.isFromYjs) return;
 
     if (this.localDoc) {
-      const ytext = this.localDoc.getText('content');
+      const ytext = this.localDoc.getText('contents');
       this.localDoc.transact(() => {
         for (const change of event.changes) {
           if (change.to > change.from) {
@@ -1277,7 +1284,7 @@ export class MergeHSM implements TestableHSM {
   private mergeRemoteToLocal(): void {
     if (!this.localDoc || !this.remoteDoc) return;
 
-    const beforeText = this.localDoc.getText('content').toString();
+    const beforeText = this.localDoc.getText('contents').toString();
 
     const update = Y.encodeStateAsUpdate(
       this.remoteDoc,
@@ -1286,7 +1293,7 @@ export class MergeHSM implements TestableHSM {
 
     Y.applyUpdate(this.localDoc, update, 'remote');
 
-    const afterText = this.localDoc.getText('content').toString();
+    const afterText = this.localDoc.getText('contents').toString();
 
     if (beforeText !== afterText) {
       const changes = computePositionedChanges(beforeText, afterText);
@@ -1328,7 +1335,7 @@ export class MergeHSM implements TestableHSM {
 
       // Check if local content matches disk content - no merge needed
       if (this.localDoc) {
-        const localText = this.localDoc.getText('content').toString();
+        const localText = this.localDoc.getText('contents').toString();
         const lcaText = this._lca?.contents ?? '';
 
         if (event.contents === localText) {
@@ -1345,8 +1352,8 @@ export class MergeHSM implements TestableHSM {
         // Fast-path: if local matches LCA, disk changes can be applied directly
         if (localText === lcaText) {
           // Apply disk content to localDoc synchronously
-          this.localDoc.getText('content').delete(0, localText.length);
-          this.localDoc.getText('content').insert(0, event.contents);
+          this.localDoc.getText('contents').delete(0, localText.length);
+          this.localDoc.getText('contents').insert(0, event.contents);
 
           // Emit DISPATCH_CM6 synchronously
           this.emitEffect({
@@ -1391,7 +1398,7 @@ export class MergeHSM implements TestableHSM {
   private async performDiskMerge(diskContents: string): Promise<void> {
     if (!this.localDoc) return;
 
-    const localText = this.localDoc.getText('content').toString();
+    const localText = this.localDoc.getText('contents').toString();
     const lcaText = this._lca?.contents ?? '';
     // Use disk hash if available (from DISK_CHANGED event)
     const diskHash = this._disk?.hash;
@@ -1448,7 +1455,7 @@ export class MergeHSM implements TestableHSM {
   private applyContentToLocalDoc(newContent: string): void {
     if (!this.localDoc) return;
 
-    const ytext = this.localDoc.getText('content');
+    const ytext = this.localDoc.getText('contents');
     const currentText = ytext.toString();
 
     if (currentText === newContent) return;
@@ -1543,7 +1550,7 @@ export class MergeHSM implements TestableHSM {
     switch (event.type) {
       case 'RESOLVE_ACCEPT_DISK':
         if (this.conflictData) {
-          const beforeText = this.localDoc?.getText('content').toString() ?? '';
+          const beforeText = this.localDoc?.getText('contents').toString() ?? '';
           this.applyContentToLocalDoc(this.conflictData.remote);
 
           const diskChanges = computePositionedChanges(
@@ -1568,7 +1575,7 @@ export class MergeHSM implements TestableHSM {
 
       case 'RESOLVE_ACCEPT_LOCAL':
         if (this.localDoc) {
-          const localText = this.localDoc.getText('content').toString();
+          const localText = this.localDoc.getText('contents').toString();
           // Async LCA creation (fire-and-forget)
           this.createLCAFromCurrent(localText).then((lca) => {
             this._lca = lca;
@@ -1581,7 +1588,7 @@ export class MergeHSM implements TestableHSM {
 
       case 'RESOLVE_ACCEPT_MERGED':
         if ('contents' in event) {
-          const beforeText = this.localDoc?.getText('content').toString() ?? '';
+          const beforeText = this.localDoc?.getText('contents').toString() ?? '';
           this.applyContentToLocalDoc(event.contents);
 
           const mergedChanges = computePositionedChanges(beforeText, event.contents);
@@ -1638,7 +1645,7 @@ export class MergeHSM implements TestableHSM {
 
   private async computeLocalHash(): Promise<string> {
     if (!this.localDoc) return '';
-    const text = this.localDoc.getText('content').toString();
+    const text = this.localDoc.getText('contents').toString();
     return this.hashFn(text);
   }
 
@@ -1876,6 +1883,27 @@ function simpleHash(contents: string): string {
   }
   return 'hash:' + Math.abs(hash).toString(16);
 }
+
+/**
+ * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
+ * Production code should pass a real factory that creates IndexeddbPersistence.
+ */
+/**
+ * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
+ * Production code should pass a real factory that creates IndexeddbPersistence.
+ */
+const defaultCreatePersistence: CreatePersistence = (_vaultId: string, _doc: Y.Doc): IYDocPersistence => {
+  return {
+    once(_event: 'synced', cb: () => void) {
+      // Fire synchronously — for test environments where no IndexedDB exists.
+      // Real IndexeddbPersistence fires asynchronously after loading from IDB.
+      cb();
+    },
+    destroy() {
+      // No-op
+    },
+  };
+};
 
 async function defaultHashFn(contents: string): Promise<string> {
   if (typeof crypto !== 'undefined' && crypto.subtle) {

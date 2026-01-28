@@ -53,7 +53,7 @@ function createYjsUpdate(_fromText: string, toText: string): Uint8Array {
   // This simulates receiving a state update from the server.
   // In real usage, server sends updates that can be applied to any doc.
   const doc = new Y.Doc();
-  doc.getText('content').insert(0, toText);
+  doc.getText('contents').insert(0, toText);
   const update = Y.encodeStateAsUpdate(doc);
   doc.destroy();
   return update;
@@ -110,60 +110,34 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.diskAhead');
     });
 
-    test('persisted updates are applied to localDoc when entering active mode', async () => {
-      // Create persisted updates containing "hello world"
-      const persistedDoc = new Y.Doc();
-      persistedDoc.getText('content').insert(0, 'hello world');
-      const persistedUpdate = Y.encodeStateAsUpdate(persistedDoc);
-      const stateVector = Y.encodeStateVector(persistedDoc);
-      persistedDoc.destroy();
+    test('persisted content is loaded by IndexeddbPersistence (integration)', async () => {
+      // With the new architecture, persisted updates are loaded by
+      // IndexeddbPersistence attached to localDoc in createYDocs().
+      // In unit tests (no IndexedDB), localDoc starts empty.
+      // Use forTesting() with localDocContent for pre-populated localDoc.
+      const t = await createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello world',
+      });
 
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      // Create LCA with matching state vector so we're in sync
-      t.send(persistenceLoaded(persistedUpdate, {
-        contents: 'hello world',
-        meta: { hash: 'abc123', mtime: 1000 },
-        stateVector,
-      }));
-
-      // Acquire lock - should apply persisted updates to localDoc
-      t.send(acquireLock());
-      expectState(t, 'active.tracking');
-
-      // localDoc should have the persisted content
       expectLocalDocText(t, 'hello world');
     });
 
     test('pending idle updates are applied to localDoc when entering active mode', async () => {
-      // Start with persisted content
-      const persistedDoc = new Y.Doc();
-      persistedDoc.getText('content').insert(0, 'initial');
-      const persistedUpdate = Y.encodeStateAsUpdate(persistedDoc);
-      const stateVector = Y.encodeStateVector(persistedDoc);
-      persistedDoc.destroy();
-
       const t = await createTestHSM();
 
       t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(persistedUpdate, {
-        contents: 'initial',
-        meta: { hash: 'abc123', mtime: 1000 },
-        stateVector,
-      }));
+      t.send(persistenceLoaded(new Uint8Array(), null));
 
       // Receive remote update while in idle mode
-      const update = createYjsUpdate('initial', 'initial + remote');
+      const update = createYjsUpdate('', 'remote content');
       t.send(remoteUpdate(update));
 
-      // Acquire lock - should apply both persisted AND pending idle updates
+      // Acquire lock - idle updates are applied after persistence 'synced'
       t.send(acquireLock());
       expectState(t, 'active.tracking');
 
-      // localDoc should have the merged content
-      // Note: Yjs merges concurrent edits, result depends on client IDs
-      // Just verify localDoc is not empty and has content
+      // localDoc should have the idle update content
       const text = t.getLocalDocText();
       expect(text).not.toBeNull();
       expect(text!.length).toBeGreaterThan(0);
@@ -236,7 +210,7 @@ describe('MergeHSM', () => {
       // Simulate a remote change by directly modifying remoteDoc
       // (this is what would happen when WebSocket receives an update)
       const remoteDoc = t.hsm.getRemoteDoc()!;
-      remoteDoc.getText('content').insert(5, ' world');
+      remoteDoc.getText('contents').insert(5, ' world');
 
       // Send REMOTE_DOC_UPDATED to trigger the HSM to sync and emit effects
       t.send(remoteDocUpdated());
@@ -782,8 +756,8 @@ describe('MergeHSM', () => {
       // But localDoc has different content (simulating drift/bug)
       // Manually modify localDoc without going through CM6
       const localDoc = t.hsm.getLocalDoc()!;
-      localDoc.getText('content').delete(5, 6); // Remove " world"
-      localDoc.getText('content').insert(5, ' universe');
+      localDoc.getText('contents').delete(5, 6); // Remove " world"
+      localDoc.getText('contents').insert(5, ' universe');
 
       // Now check drift - should detect and correct
       const driftDetected = t.hsm.checkAndCorrectDrift();

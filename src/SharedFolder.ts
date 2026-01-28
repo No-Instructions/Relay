@@ -50,11 +50,10 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
-import { isHSMIdleModeEnabled, isHSMRecordingEnabled } from "./merge-hsm/flags";
+import { isHSMIdleModeEnabled, isHSMActiveModeEnabled, isHSMRecordingEnabled } from "./merge-hsm/flags";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import { installE2ERecordingBridge } from "./merge-hsm/recording";
 import { generateHash } from "./hashing";
-import { loadUpdatesRaw } from "./storage/y-indexeddb";
 import { loadState as loadMergeState, openDatabase as openMergeHSMDatabase } from "./merge-hsm/persistence";
 import * as Y from "yjs";
 
@@ -284,6 +283,7 @@ export class SharedFolder extends HasProvider {
 			this.mergeManager = new MergeManager({
 				getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
 				timeProvider: undefined, // Use default
+				createPersistence: (vaultId, doc) => new IndexeddbPersistence(vaultId, doc),
 				getDiskState: async (docPath: string) => {
 					// docPath is already vault-relative (e.g., "blog/note.md")
 					const tfile = this.vault.getAbstractFileByPath(docPath);
@@ -292,16 +292,6 @@ export class SharedFolder extends HasProvider {
 					const encoder = new TextEncoder();
 					const hash = await generateHash(encoder.encode(contents).buffer);
 					return { contents, mtime: tfile.stat.mtime, hash };
-				},
-				loadUpdates: async (guid: string) => {
-					const dbName = `${this.appId}-relay-doc-${guid}`;
-					try {
-						const updates = await loadUpdatesRaw(dbName);
-						if (!updates || updates.length === 0) return null;
-						return Y.mergeUpdates(updates);
-					} catch {
-						return null;
-					}
 				},
 				loadState: async (guid: string) => {
 					try {
@@ -1427,12 +1417,25 @@ export class SharedFolder extends HasProvider {
 				originPromise,
 				awaitingUpdatesPromise,
 			]);
-			const text = doc.ydoc.getText("contents");
 			if (!awaitingUpdates && origin === undefined) {
-				this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
-				this.ydoc.transact(() => {
-					text.insert(0, contents);
-				}, this._persistence);
+				if (isHSMActiveModeEnabled() && this.mergeManager) {
+					// HSM mode: insert into localDoc via MergeHSM
+					const hsm = await this.mergeManager.getHSM(guid, this.getPath(vpath), doc.ydoc);
+					const localDoc = hsm.getLocalDoc();
+					if (localDoc) {
+						const text = localDoc.getText("contents");
+						localDoc.transact(() => {
+							text.insert(0, contents);
+						});
+					}
+				} else {
+					// Legacy mode: insert into Document.ydoc directly
+					const text = doc.ydoc.getText("contents");
+					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
+					this.ydoc.transact(() => {
+						text.insert(0, contents);
+					}, this._persistence);
+				}
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(doc);

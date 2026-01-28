@@ -26,7 +26,7 @@ export function isDocument(file?: IFile): file is Document {
 
 export class Document extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
-	private _persistence: IndexeddbPersistence;
+	private _persistence: IndexeddbPersistence | null;
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
 	_awaitingUpdates?: boolean;
@@ -99,44 +99,53 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
-		try {
-			const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
-			this._persistence = new IndexeddbPersistence(key, this.ydoc);
-		} catch (e) {
-			this.warn("Unable to open persistence.", this.guid);
-			console.error(e);
-			throw e;
-		}
 
-		this.whenSynced().then(() => {
-			const statsObserver = (event: Y.YTextEvent) => {
-				const origin = event.transaction.origin;
-				if (event.changes.keys.size === 0) return;
-				if (origin == this) return;
-				this.updateStats();
-			};
-			this.ytext.observe(statsObserver);
-			this.unsubscribes.push(() => {
-				this.ytext?.unobserve(statsObserver);
-			});
-			this.updateStats();
+		// When HSM active mode is enabled, MergeHSM owns IndexeddbPersistence
+		// for localDoc. Document.ydoc becomes the ephemeral remoteDoc — no
+		// persistence here to avoid two IndexeddbPersistence on the same DB.
+		if (isHSMActiveModeEnabled()) {
+			this._persistence = null;
+			this.persistenceSynced = true;
+		} else {
 			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.sharedFolder.relayId || "");
-				this._persistence.set("appId", this.sharedFolder.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
+				this._persistence = new IndexeddbPersistence(key, this.ydoc);
 			} catch (e) {
-				// pass
+				this.warn("Unable to open persistence.", this.guid);
+				console.error(e);
+				throw e;
 			}
 
-			(async () => {
-				const serverSynced = await this.getServerSynced();
-				if (!serverSynced) {
-					await this.onceProviderSynced();
-					await this.markSynced();
+			this.whenSynced().then(() => {
+				const statsObserver = (event: Y.YTextEvent) => {
+					const origin = event.transaction.origin;
+					if (event.changes.keys.size === 0) return;
+					if (origin == this) return;
+					this.updateStats();
+				};
+				this.ytext.observe(statsObserver);
+				this.unsubscribes.push(() => {
+					this.ytext?.unobserve(statsObserver);
+				});
+				this.updateStats();
+				try {
+					this._persistence!.set("path", this.path);
+					this._persistence!.set("relay", this.sharedFolder.relayId || "");
+					this._persistence!.set("appId", this.sharedFolder.appId);
+					this._persistence!.set("s3rn", S3RN.encode(this.s3rn));
+				} catch (e) {
+					// pass
 				}
-			})();
-		});
+
+				(async () => {
+					const serverSynced = await this.getServerSynced();
+					if (!serverSynced) {
+						await this.onceProviderSynced();
+						await this.markSynced();
+					}
+				})();
+			});
+		}
 
 		withFlag(flag.enableDeltaLogging, () => {
 			const logObserver = (event: Y.YTextEvent) => {
@@ -504,10 +513,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public get ready(): boolean {
+		if (!this._persistence) return this.synced;
 		return this._persistence.isReady(this.synced);
 	}
 
 	hasLocalDB(): boolean {
+		if (!this._persistence) return false;
 		return this._persistence.hasServerSync || this._persistence.hasUserData();
 	}
 
@@ -550,6 +561,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 			return new Promise<void>((resolve) => {
 				if (this.persistenceSynced) {
+					resolve();
+					return;
+				}
+
+				if (!this._persistence) {
+					this.persistenceSynced = true;
 					resolve();
 					return;
 				}
@@ -617,18 +634,22 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	requestSave = debounce(this.save, 2000);
 
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
+		if (!this._persistence) return;
 		await this._persistence.setOrigin(origin);
 	}
 
 	async getOrigin(): Promise<"local" | "remote" | undefined> {
+		if (!this._persistence) return undefined;
 		return this._persistence.getOrigin();
 	}
 
 	async markSynced(): Promise<void> {
+		if (!this._persistence) return;
 		await this._persistence.markServerSynced();
 	}
 
 	async getServerSynced(): Promise<boolean> {
+		if (!this._persistence) return false;
 		return this._persistence.getServerSynced();
 	}
 

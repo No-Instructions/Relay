@@ -309,8 +309,8 @@ export class RecordingMergeHSM implements RecordableHSM {
     return createSerializableSnapshot(
       state,
       this.timeProvider.now(),
-      localDoc?.getText('content').toString() ?? null,
-      remoteDoc?.getText('content').toString() ?? null
+      localDoc?.getText('contents').toString() ?? null,
+      remoteDoc?.getText('contents').toString() ?? null
     );
   }
 
