@@ -32,6 +32,14 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	_tfile: TFile | null;
 	name: string;
 	userLock: boolean = false;
+	/**
+	 * Tracks whether the user has explicitly disconnected this document via the UI toggle.
+	 * - Default: false (documents connect by default)
+	 * - Set to true: only via explicit user action in LiveView.toggleConnection()
+	 * - NOT modified by: disconnect(), release(), network issues, or connection pool limits
+	 * - Used by: LiveViews.getViews() to preserve user's disconnect intent across navigation
+	 */
+	userDisconnectedIntent: boolean = false;
 	extension: string;
 	basename: string;
 	vault: Vault;
@@ -318,8 +326,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	async whenReady(): Promise<Document> {
 		const promiseFn = async (): Promise<Document> => {
 			const awaitingUpdates = await this.awaitingUpdates();
-			if (awaitingUpdates) {
+			if (awaitingUpdates && !this.userDisconnectedIntent) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				// But respect user's explicit disconnect intent.
 				this.log("awaiting updates");
 				this.connect();
 				await this.onceConnected();

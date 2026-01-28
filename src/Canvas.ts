@@ -31,6 +31,14 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	_tfile: TFile | null;
 	name: string;
 	userLock: boolean = false;
+	/**
+	 * Tracks whether the user has explicitly disconnected this canvas via the UI toggle.
+	 * - Default: false (canvases connect by default)
+	 * - Set to true: only via explicit user action in RelayCanvasView.toggleConnection()
+	 * - NOT modified by: disconnect(), release(), network issues, or connection pool limits
+	 * - Used by: LiveViews.getViews() to preserve user's disconnect intent across navigation
+	 */
+	userDisconnectedIntent: boolean = false;
 	extension: string;
 	basename: string;
 	vault: Vault;
@@ -192,8 +200,9 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	async whenReady(): Promise<Canvas> {
 		const promiseFn = async (): Promise<Canvas> => {
 			const awaitingUpdates = await this.awaitingUpdates();
-			if (awaitingUpdates) {
+			if (awaitingUpdates && !this.userDisconnectedIntent) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
+				// But respect user's explicit disconnect intent.
 				this.log("awaiting updates");
 				this.connect();
 				await this.onceConnected();
