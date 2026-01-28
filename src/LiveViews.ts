@@ -203,6 +203,8 @@ export class RelayCanvasView implements S3View {
 
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
+		// Track explicit user disconnect intent (persists across navigation)
+		this.canvas.userDisconnectedIntent = !this.shouldConnect;
 		if (this.shouldConnect) {
 			this.canvas.connect().then((connected) => {
 				if (!connected) {
@@ -396,6 +398,8 @@ export class LiveView<ViewType extends TextFileView>
 
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
+		// Track explicit user disconnect intent (persists across navigation)
+		this.document.userDisconnectedIntent = !this.shouldConnect;
 		if (this.shouldConnect) {
 			this.document.connect().then((connected) => {
 				if (!connected) {
@@ -871,10 +875,13 @@ export class LiveViewManager {
 					views.push(view);
 				} else if (folder.ready) {
 					const doc = folder.proxy.getDoc(viewFilePath);
+					// Preserve user's explicit disconnect intent across navigation
+					const shouldConnect = !doc.userDisconnectedIntent;
 					const view = new LiveView<typeof textFileView>(
 						this,
 						textFileView,
 						doc,
+						shouldConnect,
 					);
 					views.push(view);
 				} else {
@@ -898,7 +905,14 @@ export class LiveViewManager {
 				} else if (folder.ready) {
 					const canvas = folder.getFile(canvasView.file);
 					if (isCanvas(canvas)) {
-						const view = new RelayCanvasView(this, canvasView, canvas);
+						// Preserve user's explicit disconnect intent across navigation
+						const shouldConnect = !canvas.userDisconnectedIntent;
+						const view = new RelayCanvasView(
+							this,
+							canvasView,
+							canvas,
+							shouldConnect,
+						);
 						views.push(view);
 					} else {
 						this.log(`Skipping canvas view connection for ${viewFilePath}`);
