@@ -524,6 +524,9 @@ export class E2ERecordingBridge {
 // Registry of bridges by folder path for multi-folder support
 const bridgeRegistry = new Map<string, E2ERecordingBridge>();
 
+// Track active recording state so new bridges auto-join
+let activeRecordingName: string | null = null;
+
 /**
  * Create and install E2E recording bridge.
  * Call this in plugin initialization.
@@ -544,6 +547,15 @@ export function installE2ERecordingBridge(
   // Install aggregate API that spans all registered bridges
   installAggregateBridgeAPI();
 
+  // Auto-start recording if a recording is currently active
+  if (activeRecordingName !== null) {
+    try {
+      bridge.startRecording(activeRecordingName);
+    } catch {
+      // Ignore errors (e.g., already recording)
+    }
+  }
+
   return bridge;
 }
 
@@ -555,6 +567,9 @@ function installAggregateBridgeAPI(): void {
 
   const api: HSMRecordingGlobal = {
     startRecording: (name) => {
+      // Track active recording so new bridges auto-join
+      activeRecordingName = name ?? 'E2E Recording';
+
       // Start recording on all bridges
       const results: E2ERecordingState[] = [];
       for (const bridge of bridgeRegistry.values()) {
@@ -575,6 +590,9 @@ function installAggregateBridgeAPI(): void {
       };
     },
     stopRecording: () => {
+      // Clear active recording tracking
+      activeRecordingName = null;
+
       // Stop recording on all bridges and combine results
       const recordings: string[] = [];
       for (const bridge of bridgeRegistry.values()) {

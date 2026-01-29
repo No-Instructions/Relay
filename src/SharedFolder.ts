@@ -337,6 +337,11 @@ export class SharedFolder extends HasProvider {
 				},
 		});
 
+		// Install E2E recording bridge if enabled
+		if (flags().enableMergeHSMRecording) {
+			installE2ERecordingBridge(this.mergeManager);
+		}
+
 		// Wire folder-level event subscriptions for idle mode remote updates
 		this.setupEventSubscriptions();
 
