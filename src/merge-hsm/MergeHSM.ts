@@ -488,6 +488,9 @@ export class MergeHSM implements TestableHSM {
   private _cleanupPromise: Promise<void> | null = null;
   private _cleanupResolve: (() => void) | null = null;
 
+  // Network connectivity status (does not block state transitions)
+  private _isOnline: boolean = false;
+
   constructor(config: MergeHSMConfig) {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn ?? defaultHashFn;
@@ -615,6 +618,7 @@ export class MergeHSM implements TestableHSM {
       statePath: this._statePath,
       error: this._error,
       deferredConflict: this._deferredConflict,
+      isOnline: this._isOnline,
     };
   }
 
@@ -649,6 +653,14 @@ export class MergeHSM implements TestableHSM {
    */
   isIdle(): boolean {
     return this._statePath.startsWith('idle.');
+  }
+
+  /**
+   * Check if the network is currently connected.
+   * Does not affect state transitions; local edits always work offline.
+   */
+  get isOnline(): boolean {
+    return this._isOnline;
   }
 
   getLocalDoc(): Y.Doc | null {
@@ -1959,11 +1971,19 @@ export class MergeHSM implements TestableHSM {
   }
 
   private handleConnected(): void {
-    // Network connected
+    this._isOnline = true;
+
+    // When we reconnect, flush any pending local changes to remoteDoc.
+    // This ensures edits made while offline get synced to the server.
+    if (this.localDoc && this._statePath === 'active.tracking') {
+      this.syncLocalToRemote();
+    }
   }
 
   private handleDisconnected(): void {
-    // Network disconnected
+    this._isOnline = false;
+    // Local edits continue to be applied to localDoc and persisted to IndexedDB.
+    // When connectivity returns, handleConnected() will flush pending updates.
   }
 
   // ===========================================================================

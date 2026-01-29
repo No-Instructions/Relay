@@ -26,6 +26,10 @@ export interface YjsProvider {
   connect(): void;
   disconnect(): void;
   destroy(): void;
+
+  // Optional: for checking initial state
+  synced?: boolean;
+  connectionState?: { status: string };
 }
 
 // =============================================================================
@@ -74,6 +78,15 @@ export class ProviderIntegration {
         Y.applyUpdate(this.remoteDoc, effect.update, 'local');
       }
     });
+
+    // Send initial state if already connected/synced
+    // (in case ProviderIntegration is created after provider is already connected)
+    if (provider.connectionState?.status === 'connected') {
+      hsm.send({ type: 'CONNECTED' });
+    }
+    if (provider.synced) {
+      hsm.send({ type: 'PROVIDER_SYNCED' });
+    }
   }
 
   /**
@@ -136,6 +149,7 @@ export class ProviderIntegration {
 
   /**
    * Destroy the integration and cleanup.
+   * Note: Does NOT destroy the provider - it outlives the integration.
    */
   destroy(): void {
     // Unsubscribe from HSM
@@ -152,7 +166,7 @@ export class ProviderIntegration {
     // Unobserve remoteDoc
     this.remoteDoc.off('update', this.onRemoteUpdate);
 
-    // Destroy provider
-    this.provider.destroy();
+    // NOTE: Do NOT destroy the provider - it outlives the integration.
+    // The provider is managed by HasProvider/Document and persists across lock cycles.
   }
 }

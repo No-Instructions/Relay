@@ -17,6 +17,7 @@ import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import { ProviderIntegration, type YjsProvider } from "./merge-hsm/integration/ProviderIntegration";
 import { generateHash } from "./hashing";
 
 export function isDocument(file?: IFile): file is Document {
@@ -55,9 +56,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private _hsm: MergeHSM | null = null;
 
 	/**
-	 * Cleanup functions for HSM provider event subscriptions.
+	 * ProviderIntegration instance for bridging HSM with the provider.
+	 * Created when lock is acquired, destroyed when released.
 	 */
-	private _hsmProviderCleanup: (() => void)[] = [];
+	private _providerIntegration: ProviderIntegration | null = null;
 
 	/**
 	 * Flag to track when we're in the middle of our own save operation.
@@ -213,58 +215,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 			this.userLock = true; // Keep for compatibility
 
-			// Wire up provider events to HSM
-			this._setupHSMProviderEvents();
+			// Create ProviderIntegration to bridge HSM with provider.
+			// This handles:
+			// - SYNC_TO_REMOTE effect → applies updates to remoteDoc (this.ydoc)
+			// - remoteDoc.on('update') → sends REMOTE_DOC_UPDATED to HSM
+			// - Provider events (sync, disconnect) → forwards to HSM
+			if (!this._providerIntegration) {
+				this._providerIntegration = new ProviderIntegration(
+					this._hsm,
+					this.ydoc, // remoteDoc is the same as Document.ydoc
+					this._provider as YjsProvider
+				);
+			}
 
 			return this._hsm;
 		} catch (e) {
 			this.warn("[acquireLock] Failed to acquire HSM lock:", e);
 			this.userLock = true; // Fallback
 			return null;
-		}
-	}
-
-	/**
-	 * Set up provider event forwarding to HSM.
-	 */
-	private _setupHSMProviderEvents(): void {
-		if (!this._hsm) return;
-
-		// Clean up any existing listeners to prevent accumulation
-		this._hsmProviderCleanup.forEach((cleanup) => cleanup());
-		this._hsmProviderCleanup = [];
-
-		const hsm = this._hsm;
-
-		// Forward provider sync event
-		const onSynced = () => {
-			hsm.send({ type: "PROVIDER_SYNCED" });
-		};
-		this._provider.on("synced", onSynced);
-		this._hsmProviderCleanup.push(() => this._provider.off("synced", onSynced));
-
-		// Forward connection status changes
-		let lastConnected: boolean | null = null;
-		const onStatus = (state: { status: string }) => {
-			const isConnected = state.status === "connected";
-			if (lastConnected !== isConnected) {
-				lastConnected = isConnected;
-				if (isConnected) {
-					hsm.send({ type: "CONNECTED" });
-				} else if (state.status === "disconnected") {
-					hsm.send({ type: "DISCONNECTED" });
-				}
-			}
-		};
-		this._provider.on("status", onStatus);
-		this._hsmProviderCleanup.push(() => this._provider.off("status", onStatus));
-
-		// Send initial state if already connected
-		if (this._provider.connectionState.status === "connected") {
-			hsm.send({ type: "CONNECTED" });
-		}
-		if (this._providerSynced) {
-			hsm.send({ type: "PROVIDER_SYNCED" });
 		}
 	}
 
@@ -276,9 +244,11 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	releaseLock(): void {
 		this.userLock = false; // Keep for compatibility
 
-		// Clean up provider event subscriptions
-		this._hsmProviderCleanup.forEach((cleanup) => cleanup());
-		this._hsmProviderCleanup = [];
+		// Destroy ProviderIntegration (unsubscribes from events)
+		if (this._providerIntegration) {
+			this._providerIntegration.destroy();
+			this._providerIntegration = null;
+		}
 
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (mergeManager) {
