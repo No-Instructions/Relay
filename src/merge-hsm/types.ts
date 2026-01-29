@@ -76,6 +76,12 @@ export interface MergeState {
     diskHash: string;
     localHash: string;
   };
+
+  /**
+   * Network connectivity status.
+   * Does not block state transitions; affects sync behavior only.
+   */
+  isOnline: boolean;
 }
 
 // =============================================================================
