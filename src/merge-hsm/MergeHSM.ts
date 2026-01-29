@@ -634,8 +634,40 @@ export class MergeHSM implements TestableHSM {
     return this.localDoc;
   }
 
+  getConflictData(): { base: string; local: string; remote: string } | null {
+    return this.conflictData;
+  }
+
   getRemoteDoc(): Y.Doc | null {
     return this.remoteDoc;
+  }
+
+  /**
+   * Initialize the LCA for a newly uploaded document.
+   * Call this after inserting initial content into localDoc to establish
+   * the baseline sync point. No-op if LCA already exists.
+   *
+   * @param contents - The content that was inserted
+   * @param hash - Hash of the content
+   * @param mtime - Modification time from disk
+   */
+  initializeLCA(contents: string, hash: string, mtime: number): void {
+    if (this._lca) {
+      return; // Already have an LCA, don't overwrite
+    }
+
+    this._lca = {
+      contents,
+      meta: { hash, mtime },
+      stateVector: this.localDoc
+        ? Y.encodeStateVector(this.localDoc)
+        : new Uint8Array([0]),
+    };
+
+    // Also set disk state to match, since we just read from disk
+    this._disk = { hash, mtime };
+
+    this.emitPersistState();
   }
 
   /**
@@ -1118,6 +1150,16 @@ export class MergeHSM implements TestableHSM {
     if (this._statePath === 'active.entering') {
       if (this._enteringFromDiverged) {
         this._enteringFromDiverged = false;
+        // Populate conflictData so the banner click can open the diff view.
+        // At this point localDoc has CRDT content (local+remote updates applied)
+        // and pendingDiskContents has what's on disk.
+        const localText = this.localDoc?.getText('contents').toString() ?? '';
+        const diskText = this.pendingDiskContents ?? '';
+        this.conflictData = {
+          base: this._lca?.contents ?? '',
+          local: localText,
+          remote: diskText,
+        };
         this.transitionTo('active.conflict.blocked');
         this.transitionTo('active.conflict.bannerShown');
       } else {

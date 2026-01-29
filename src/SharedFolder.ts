@@ -54,7 +54,7 @@ import { isHSMIdleModeEnabled, isHSMActiveModeEnabled, isHSMRecordingEnabled } f
 import { MergeManager } from "./merge-hsm/MergeManager";
 import { installE2ERecordingBridge } from "./merge-hsm/recording";
 import { generateHash } from "./hashing";
-import { loadState as loadMergeState, openDatabase as openMergeHSMDatabase } from "./merge-hsm/persistence";
+import { loadState as loadMergeState, saveState as saveMergeState, openDatabase as openMergeHSMDatabase } from "./merge-hsm/persistence";
 import * as Y from "yjs";
 
 export interface SharedFolderSettings {
@@ -305,8 +305,20 @@ export class SharedFolder extends HasProvider {
 						return null;
 					}
 				},
-				onEffect: (guid, effect) => {
+				onEffect: async (guid, effect) => {
 					this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
+					if (effect.type === 'PERSIST_STATE') {
+						try {
+							const db = await openMergeHSMDatabase();
+							try {
+								await saveMergeState(db, effect.state);
+							} finally {
+								db.close();
+							}
+						} catch (e) {
+							this.warn(`[MergeManager] Failed to persist state for ${guid}:`, e);
+						}
+					}
 				},
 			});
 
@@ -1427,14 +1439,31 @@ export class SharedFolder extends HasProvider {
 						localDoc.transact(() => {
 							text.insert(0, contents);
 						});
+
+						// Initialize LCA to establish the baseline sync point
+						const encoder = new TextEncoder();
+						const hash = await generateHash(encoder.encode(contents).buffer);
+						const mtime = doc.tfile?.stat.mtime ?? Date.now();
+						hsm.initializeLCA(contents, hash, mtime);
 					}
 				} else {
-					// Legacy mode: insert into Document.ydoc directly
+					// Insert into Document.ydoc directly
 					const text = doc.ydoc.getText("contents");
 					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
 					this.ydoc.transact(() => {
 						text.insert(0, contents);
 					}, this._persistence);
+
+					// Initialize LCA for idle mode conflict detection
+					if (isHSMIdleModeEnabled() && this.mergeManager) {
+						const hsm = this.mergeManager.getIdleHSM(guid);
+						if (hsm) {
+							const encoder = new TextEncoder();
+							const hash = await generateHash(encoder.encode(contents).buffer);
+							const mtime = doc.tfile?.stat.mtime ?? Date.now();
+							hsm.initializeLCA(contents, hash, mtime);
+						}
+					}
 				}
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
