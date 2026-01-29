@@ -20,7 +20,6 @@ import type { ObservableSet } from "src/observable/ObservableSet";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog } from "src/debug";
-import { isHSMIdleModeEnabled, isHSMShadowModeEnabled } from "src/merge-hsm/flags";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -328,10 +327,10 @@ class FilePillDecoration {
 			el.remove();
 		});
 
-		// Subscribe to appropriate status source
+		// Subscribe to HSM sync status for UI updates
 		// Get mergeManager from the file's sharedFolder (per-folder instance)
 		const mergeManager = this.file.sharedFolder?.mergeManager;
-		if (isHSMIdleModeEnabled() && mergeManager) {
+		if (mergeManager) {
 			this.unsubscribes.push(
 				mergeManager.syncStatus.subscribe(() => {
 					this.setTextFromHSM();
@@ -355,15 +354,6 @@ class FilePillDecoration {
 			return;
 		}
 		const tag = status.status; // 'pending' | 'conflict' | 'error'
-
-		// Shadow mode validation
-		if (isHSMShadowModeEnabled()) {
-			const oldStatus = this.file.tag;
-			const newStatus = status.status;
-			if (oldStatus !== newStatus) {
-				console.warn(`[Shadow] Status divergence for ${this.file.guid}: old=${oldStatus}, new=${newStatus}`);
-			}
-		}
 
 		if (!this.pill) {
 			this.pill = new UploadPill({

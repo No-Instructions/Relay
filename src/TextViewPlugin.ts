@@ -7,7 +7,6 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { diffMatchPatch } from "./y-diffMatchPatch";
-import { isHSMConflictDetectionEnabled } from "./merge-hsm/flags";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;
@@ -128,15 +127,11 @@ export class TextFileViewPlugin extends HasLogging {
 				this.warn("local db missing, not setting buffer");
 				return;
 			}
-			// Check if document is stale before overwriting view content
-			const stale = await this.doc.checkStale();
-			if (stale && this.view) {
-				this.warn("Document is stale - showing merge banner");
-				this.view.checkStale().then(async (stale) => {
-					if (!stale) {
-						await this.syncViewToCRDT();
-					}
-				}); // This will show the merge banner
+			// Check if document has HSM conflict before overwriting view content
+			const hasConflict = this.doc.hasHSMConflict();
+			if (hasConflict && this.view) {
+				this.warn("Document has HSM conflict - showing merge banner");
+				this.view.checkStale(); // This will show the merge banner via HSM
 			} else {
 				// Document is authoritative, force view to match CRDT state (like getKeyFrame in LiveEditPlugin)
 				this.warn("Document is authoritative - syncing view to CRDT state");

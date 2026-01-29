@@ -31,6 +31,7 @@ import type {
   PersistedMergeState,
   IYDocPersistence,
   CreatePersistence,
+  PersistenceMetadata,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -441,6 +442,9 @@ export class MergeHSM implements TestableHSM {
   // Persistence for localDoc (only in active mode)
   private localPersistence: IYDocPersistence | null = null;
 
+  // Track pending LCA creation to ensure it completes before releasing lock
+  private _pendingLCAPromise: Promise<void> | null = null;
+
   // Last known editor text (for drift detection)
   private lastKnownEditorText: string | null = null;
 
@@ -458,6 +462,7 @@ export class MergeHSM implements TestableHSM {
   private hashFn: (contents: string) => Promise<string>;
   private vaultId: string;
   private _createPersistence: CreatePersistence;
+  private _persistenceMetadata?: PersistenceMetadata;
 
   // Remote doc is passed in and managed externally
   private externalRemoteDoc: Y.Doc;
@@ -468,6 +473,10 @@ export class MergeHSM implements TestableHSM {
   // Whether we entered active mode from idle.diverged (for conflict handling)
   private _enteringFromDiverged = false;
 
+  // Promise that resolves when cleanup completes (for awaiting unload/release)
+  private _cleanupPromise: Promise<void> | null = null;
+  private _cleanupResolve: (() => void) | null = null;
+
   constructor(config: MergeHSMConfig) {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn ?? defaultHashFn;
@@ -476,6 +485,7 @@ export class MergeHSM implements TestableHSM {
     this.vaultId = config.vaultId;
     this.externalRemoteDoc = config.remoteDoc;
     this._createPersistence = config.createPersistence ?? defaultCreatePersistence;
+    this._persistenceMetadata = config.persistenceMetadata;
 
     // Create and start the XState actor
     this.actor = createActor(mergeMachine, {
@@ -640,6 +650,17 @@ export class MergeHSM implements TestableHSM {
 
   getRemoteDoc(): Y.Doc | null {
     return this.remoteDoc;
+  }
+
+  /**
+   * Wait for any in-progress cleanup to complete.
+   * Returns immediately if no cleanup is in progress.
+   * Used by MergeManager to ensure state transitions complete before returning.
+   */
+  async awaitCleanup(): Promise<void> {
+    if (this._cleanupPromise) {
+      await this._cleanupPromise;
+    }
   }
 
   /**
@@ -1118,9 +1139,22 @@ export class MergeHSM implements TestableHSM {
   }
 
   private handleUnload(): void {
+    // Set up cleanup promise for callers to await
+    this._cleanupPromise = new Promise<void>((resolve) => {
+      this._cleanupResolve = resolve;
+    });
+
     this.transitionTo('unloading');
-    this.cleanupYDocs();
-    this.transitionTo('unloaded');
+    // Await IndexedDB writes before completing unload
+    this.cleanupYDocs().then(() => {
+      this.transitionTo('unloaded');
+      // Resolve cleanup promise
+      if (this._cleanupResolve) {
+        this._cleanupResolve();
+        this._cleanupResolve = null;
+        this._cleanupPromise = null;
+      }
+    });
   }
 
   // ===========================================================================
@@ -1173,15 +1207,35 @@ export class MergeHSM implements TestableHSM {
       // Determine target idle state based on current state before cleanup
       const wasInConflict = this._statePath.includes('conflict');
 
-      this.transitionTo('unloading');
-      this.cleanupYDocs();
+      // Set up cleanup promise for callers to await
+      this._cleanupPromise = new Promise<void>((resolve) => {
+        this._cleanupResolve = resolve;
+      });
 
-      // Transition to appropriate idle state
-      if (wasInConflict) {
-        this.transitionTo('idle.diverged');
-      } else {
-        this.determineAndTransitionToIdleState();
-      }
+      this.transitionTo('unloading');
+
+      // Wait for any pending LCA creation to complete before cleanup
+      // This prevents race conditions where RELEASE_LOCK happens before
+      // LCA from RESOLVE_ACCEPT_* is persisted
+      const pendingLCA = this._pendingLCAPromise ?? Promise.resolve();
+
+      pendingLCA.then(() => {
+        // Cleanup YDocs asynchronously, awaiting IndexedDB writes to complete
+        return this.cleanupYDocs();
+      }).then(() => {
+        // Transition to appropriate idle state after cleanup completes
+        if (wasInConflict) {
+          this.transitionTo('idle.diverged');
+        } else {
+          this.determineAndTransitionToIdleState();
+        }
+        // Resolve cleanup promise
+        if (this._cleanupResolve) {
+          this._cleanupResolve();
+          this._cleanupResolve = null;
+          this._cleanupPromise = null;
+        }
+      });
     }
   }
 
@@ -1198,6 +1252,14 @@ export class MergeHSM implements TestableHSM {
     // asynchronously and fires 'synced' when done.
     this.localPersistence = this._createPersistence(this.vaultId, this.localDoc);
     this.localPersistence.once('synced', () => {
+      // Set persistence metadata for recovery/debugging
+      if (this._persistenceMetadata && this.localPersistence?.set) {
+        this.localPersistence.set('path', this._persistenceMetadata.path);
+        this.localPersistence.set('relay', this._persistenceMetadata.relay);
+        this.localPersistence.set('appId', this._persistenceMetadata.appId);
+        this.localPersistence.set('s3rn', this._persistenceMetadata.s3rn);
+      }
+
       // Apply any updates received during idle mode (not yet in IndexedDB)
       if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
         Y.applyUpdate(this.localDoc!, this.pendingIdleUpdates);
@@ -1214,9 +1276,10 @@ export class MergeHSM implements TestableHSM {
     });
   }
 
-  private cleanupYDocs(): void {
+  private async cleanupYDocs(): Promise<void> {
     if (this.localPersistence) {
-      this.localPersistence.destroy();
+      // Await destroy to ensure pending IndexedDB writes complete
+      await this.localPersistence.destroy();
       this.localPersistence = null;
     }
     if (this.localDoc) {
@@ -1603,14 +1666,16 @@ export class MergeHSM implements TestableHSM {
             this.emitEffect({ type: 'DISPATCH_CM6', changes: diskChanges });
           }
 
-          // Async LCA creation (fire-and-forget)
+          // Track LCA creation so RELEASE_LOCK can await it
           const diskContent = this.conflictData.remote;
           const diskHash = this._disk?.hash;
-          this.createLCAFromCurrent(diskContent, diskHash).then((lca) => {
+          this._pendingLCAPromise = this.createLCAFromCurrent(diskContent, diskHash).then((lca) => {
             this._lca = lca;
             this.emitPersistState();
           }).catch((err) => {
             this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          }).finally(() => {
+            this._pendingLCAPromise = null;
           });
         }
         break;
@@ -1618,12 +1683,14 @@ export class MergeHSM implements TestableHSM {
       case 'RESOLVE_ACCEPT_LOCAL':
         if (this.localDoc) {
           const localText = this.localDoc.getText('contents').toString();
-          // Async LCA creation (fire-and-forget)
-          this.createLCAFromCurrent(localText).then((lca) => {
+          // Track LCA creation so RELEASE_LOCK can await it
+          this._pendingLCAPromise = this.createLCAFromCurrent(localText).then((lca) => {
             this._lca = lca;
             this.emitPersistState();
           }).catch((err) => {
             this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          }).finally(() => {
+            this._pendingLCAPromise = null;
           });
         }
         break;
@@ -1638,13 +1705,15 @@ export class MergeHSM implements TestableHSM {
             this.emitEffect({ type: 'DISPATCH_CM6', changes: mergedChanges });
           }
 
-          // Async LCA creation (fire-and-forget)
+          // Track LCA creation so RELEASE_LOCK can await it
           const mergedContent = event.contents;
-          this.createLCAFromCurrent(mergedContent).then((lca) => {
+          this._pendingLCAPromise = this.createLCAFromCurrent(mergedContent).then((lca) => {
             this._lca = lca;
             this.emitPersistState();
           }).catch((err) => {
             this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          }).finally(() => {
+            this._pendingLCAPromise = null;
           });
         }
         break;

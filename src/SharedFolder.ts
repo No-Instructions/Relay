@@ -19,7 +19,7 @@ import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
 
 import { SharedPromise, Dependency, withTimeoutWarning } from "./promiseUtils";
-import { S3Folder, S3RN, S3RemoteFolder } from "./S3RN";
+import { S3Folder, S3RN, S3RemoteFolder, S3RemoteDocument } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
@@ -50,7 +50,6 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
-import { isHSMIdleModeEnabled, isHSMActiveModeEnabled, isHSMRecordingEnabled } from "./merge-hsm/flags";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import { installE2ERecordingBridge } from "./merge-hsm/recording";
 import { generateHash } from "./hashing";
@@ -271,6 +270,12 @@ export class SharedFolder extends HasProvider {
 			throw e;
 		}
 
+		// If folder is authoritative (local-only, not awaiting server updates),
+		// mark it as server synced so it's considered "ready" even after reload
+		if (this.authoritative) {
+			this._persistence.markServerSynced();
+		}
+
 		if (loginManager.loggedIn) {
 			this.connect();
 		}
@@ -278,9 +283,8 @@ export class SharedFolder extends HasProvider {
 		this.cas = new ContentAddressedStore(this);
 
 		// Create MergeManager for this SharedFolder (per-folder instance)
-		if (isHSMIdleModeEnabled()) {
-			const folderPath = this.path; // Capture for closure
-			this.mergeManager = new MergeManager({
+		const folderPath = this.path; // Capture for closure
+		this.mergeManager = new MergeManager({
 				getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
 				timeProvider: undefined, // Use default
 				createPersistence: (vaultId, doc) => new IndexeddbPersistence(vaultId, doc),
@@ -320,21 +324,21 @@ export class SharedFolder extends HasProvider {
 						}
 					}
 				},
-			});
-
-			// Install E2E recording bridge for test capture
-			if (isHSMRecordingEnabled()) {
-				installE2ERecordingBridge(this.mergeManager, {
-					captureSnapshots: true,
-				});
-				this.debug?.('[MergeHSM] E2E recording bridge installed for folder:', folderPath);
-			}
-		}
+				getPersistenceMetadata: (guid: string, path: string) => {
+					const s3rn = this.relayId
+						? new S3RemoteDocument(this.relayId, this.guid, guid)
+						: null;
+					return {
+						path,
+						relay: this.relayId || '',
+						appId: this.appId,
+						s3rn: s3rn ? S3RN.encode(s3rn) : '',
+					};
+				},
+		});
 
 		// Wire folder-level event subscriptions for idle mode remote updates
-		if (isHSMIdleModeEnabled() && this.mergeManager) {
-			this.setupEventSubscriptions();
-		}
+		this.setupEventSubscriptions();
 
 		this.whenReady().then(() => {
 			if (!this.destroyed) {
@@ -520,7 +524,7 @@ export class SharedFolder extends HasProvider {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected || this.shouldConnect) {
 				const result = await super.connect();
-				if (result && isHSMIdleModeEnabled() && this.mergeManager) {
+				if (result && this.mergeManager) {
 					this.setupEventSubscriptions();
 				}
 				return result;
@@ -1374,9 +1378,7 @@ export class SharedFolder extends HasProvider {
 
 		// Register with MergeManager for idle mode tracking
 		// Use vault-relative path (e.g., "blog/note.md") not SharedFolder-relative (e.g., "/note.md")
-		if (isHSMIdleModeEnabled()) {
-			this.mergeManager?.register(guid, this.getPath(vpath), doc.ydoc);
-		}
+		this.mergeManager?.register(guid, this.getPath(vpath), doc.ydoc);
 
 		return doc;
 	}
@@ -1430,7 +1432,7 @@ export class SharedFolder extends HasProvider {
 				awaitingUpdatesPromise,
 			]);
 			if (!awaitingUpdates && origin === undefined) {
-				if (isHSMActiveModeEnabled() && this.mergeManager) {
+				if (this.mergeManager) {
 					// HSM mode: insert into localDoc via MergeHSM
 					const hsm = await this.mergeManager.getHSM(guid, this.getPath(vpath), doc.ydoc);
 					const localDoc = hsm.getLocalDoc();
@@ -1447,23 +1449,12 @@ export class SharedFolder extends HasProvider {
 						hsm.initializeLCA(contents, hash, mtime);
 					}
 				} else {
-					// Insert into Document.ydoc directly
+					// Fallback: Insert into Document.ydoc directly
 					const text = doc.ydoc.getText("contents");
 					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
 					this.ydoc.transact(() => {
 						text.insert(0, contents);
 					}, this._persistence);
-
-					// Initialize LCA for idle mode conflict detection
-					if (isHSMIdleModeEnabled() && this.mergeManager) {
-						const hsm = this.mergeManager.getIdleHSM(guid);
-						if (hsm) {
-							const encoder = new TextEncoder();
-							const hash = await generateHash(encoder.encode(contents).buffer);
-							const mtime = doc.tfile?.stat.mtime ?? Date.now();
-							hsm.initializeLCA(contents, hash, mtime);
-						}
-					}
 				}
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
@@ -1694,9 +1685,7 @@ export class SharedFolder extends HasProvider {
 		const guid = this.syncStore?.get(vpath);
 		if (guid) {
 			// Unregister from MergeManager
-			if (isHSMIdleModeEnabled()) {
-				this.mergeManager?.unregister(guid);
-			}
+			this.mergeManager?.unregister(guid);
 
 			this.ydoc.transact(() => {
 				this.syncStore.delete(vpath);

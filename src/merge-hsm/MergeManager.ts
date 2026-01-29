@@ -20,6 +20,7 @@ import type {
   MergeEffect,
   PersistedMergeState,
   CreatePersistence,
+  PersistenceMetadata,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -69,6 +70,12 @@ export interface MergeManagerConfig {
    * Tests: omit for default no-op persistence.
    */
   createPersistence?: CreatePersistence;
+
+  /**
+   * Callback to get persistence metadata for a document.
+   * Metadata is set on the IndexedDB persistence for recovery/debugging.
+   */
+  getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
 }
 
 export interface PollOptions {
@@ -109,6 +116,7 @@ export class MergeManager {
   } | null>;
   private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
   private createPersistence?: CreatePersistence;
+  private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
 
   constructor(config: MergeManagerConfig) {
     this.getVaultId = config.getVaultId;
@@ -119,6 +127,7 @@ export class MergeManager {
     this.getDiskState = config.getDiskState;
     this._persistIndex = config.persistIndex;
     this.createPersistence = config.createPersistence;
+    this.getPersistenceMetadata = config.getPersistenceMetadata;
   }
 
   // ===========================================================================
@@ -155,6 +164,7 @@ export class MergeManager {
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
+      persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
     });
 
     // Subscribe to effects
@@ -237,6 +247,7 @@ export class MergeManager {
   /**
    * Release lock on an HSM, transitioning back to idle mode.
    * The HSM stays alive and continues processing events.
+   * Waits for IndexedDB writes to complete before returning.
    */
   async unload(guid: string): Promise<void> {
     const hsm = this.hsms.get(guid);
@@ -246,6 +257,8 @@ export class MergeManager {
     if (this.activeDocs.has(guid)) {
       hsm.send({ type: 'RELEASE_LOCK' });
       this.activeDocs.delete(guid);
+      // Wait for cleanup to complete (IndexedDB writes)
+      await hsm.awaitCleanup();
     }
 
     // HSM stays alive in idle.* state
@@ -255,6 +268,7 @@ export class MergeManager {
   /**
    * Fully unregister a document, destroying its HSM.
    * Use this when removing a document from sync.
+   * Waits for IndexedDB writes to complete before returning.
    */
   async unregister(guid: string): Promise<void> {
     const hsm = this.hsms.get(guid);
@@ -264,10 +278,14 @@ export class MergeManager {
     if (this.activeDocs.has(guid)) {
       hsm.send({ type: 'RELEASE_LOCK' });
       this.activeDocs.delete(guid);
+      // Wait for cleanup to complete (IndexedDB writes)
+      await hsm.awaitCleanup();
     }
 
     // Now fully unload
     hsm.send({ type: 'UNLOAD' });
+    // Wait for unload cleanup to complete
+    await hsm.awaitCleanup();
 
     // Cleanup
     this.hsms.delete(guid);

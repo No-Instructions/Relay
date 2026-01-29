@@ -17,24 +17,6 @@ export interface FeatureFlags {
 	enableMetadataViewHooks: boolean;
 	enableKanbanView: boolean;
 	enableDeviceManagement: boolean;
-
-	// MergeHSM flags for incremental rollout
-	/** Master flag: enable MergeHSM system (gates all other HSM flags) */
-	enableMergeHSM: boolean;
-	/** Enable HSM for idle mode (background sync, disk change detection) */
-	enableMergeHSMIdleMode: boolean;
-	/** Enable HSM for conflict detection (replaces checkStale) */
-	enableMergeHSMConflictDetection: boolean;
-	/** Enable HSM for active mode (editor sync) */
-	enableMergeHSMActiveMode: boolean;
-	/** Enable HSM shadow mode (run HSM in parallel, log divergences) */
-	enableMergeHSMShadowMode: boolean;
-	/** Enable HSM invariant checking (runtime validation) */
-	enableMergeHSMInvariantChecks: boolean;
-	/** Enable HSM recording (capture event traces) */
-	enableMergeHSMRecording: boolean;
-	/** Enable HSM visual debugger panel */
-	enableMergeHSMDebugger: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -56,16 +38,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableMetadataViewHooks: true,
 	enableKanbanView: true,
 	enableDeviceManagement: false,
-
-	// MergeHSM flags - all disabled by default for safe rollout
-	enableMergeHSM: false,
-	enableMergeHSMIdleMode: false,
-	enableMergeHSMConflictDetection: false,
-	enableMergeHSMActiveMode: false,
-	enableMergeHSMShadowMode: false,
-	enableMergeHSMInvariantChecks: false,
-	enableMergeHSMRecording: false,
-	enableMergeHSMDebugger: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

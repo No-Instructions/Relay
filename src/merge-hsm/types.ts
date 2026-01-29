@@ -389,7 +389,19 @@ import type * as Y from 'yjs';
  */
 export interface IYDocPersistence {
   once(event: 'synced', cb: () => void): void;
-  destroy(): void;
+  destroy(): void | Promise<void>;
+  /** Set metadata key-value pair on the persistence store */
+  set?(key: string, value: string): void;
+}
+
+/**
+ * Metadata to store on the persistence for recovery/debugging.
+ */
+export interface PersistenceMetadata {
+  path: string;
+  relay: string;
+  appId: string;
+  s3rn: string;
 }
 
 /**
@@ -431,6 +443,12 @@ export interface MergeHSMConfig {
    * Override in tests with a mock.
    */
   createPersistence?: CreatePersistence;
+
+  /**
+   * Metadata to store on the persistence for recovery/debugging.
+   * Set after persistence syncs.
+   */
+  persistenceMetadata?: PersistenceMetadata;
 }
 
 // =============================================================================

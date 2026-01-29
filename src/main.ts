@@ -64,7 +64,6 @@ import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
-import { isHSMActiveModeEnabled } from "./merge-hsm/flags";
 import { generateHash } from "./hashing";
 import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
@@ -1001,7 +1000,6 @@ export default class Live extends Plugin {
 					// Send DISK_CHANGED to HSM for documents with active lock
 					// (but not when we're the ones doing the save)
 					if (
-						isHSMActiveModeEnabled() &&
 						file &&
 						isDocument(file) &&
 						file.hsm &&

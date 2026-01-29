@@ -35,7 +35,7 @@ import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
-import { isHSMConflictDetectionEnabled } from "./merge-hsm/flags";
+import { DiskBuffer } from "./DiskBuffer";
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -411,13 +411,17 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	public get tracking() {
+		if (this.document?.hsm) {
+			return this.document.hsm.state.statePath === "active.tracking";
+		}
 		return this._tracking;
 	}
 
 	public set tracking(value: boolean) {
 		const old = this._tracking;
 		this._tracking = value;
-		if (this._tracking !== old) {
+		// Only call attach for non-HSM mode (fallback for views without HSM)
+		if (this._tracking !== old && !this.document?.hsm) {
 			this.attach();
 		}
 	}
@@ -441,28 +445,76 @@ export class LiveView<ViewType extends TextFileView>
 			this.view,
 			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
 			async () => {
-				const diskBuffer = await this.document.diskBuffer();
-				const stale = await this.document.checkStale();
-				if (!stale) {
-					return true;
+				// HSM-aware conflict resolution path
+				const hsm = this.document.hsm;
+				if (hsm) {
+					const conflictData = hsm.getConflictData();
+					const localDoc = hsm.getLocalDoc();
+					if (
+						conflictData &&
+						localDoc &&
+						hsm.state.statePath.includes("conflict")
+					) {
+						this.log("[mergeBanner] Using HSM conflict resolution path");
+
+						// Get CURRENT localDoc content (not stale conflictData.local)
+						const currentLocalContent = localDoc.getText("contents").toString();
+						const diskContent = conflictData.remote;
+
+						this.log(
+							`[mergeBanner] localDoc: ${currentLocalContent.length} chars, disk: ${diskContent.length} chars`,
+						);
+
+						// Create DiskBuffer wrappers (differ expects TFile-like objects)
+						// Use DiskBuffer for BOTH sides to ensure we show correct content
+						const localFile = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Local)",
+							currentLocalContent,
+						);
+						const diskFile = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Disk)",
+							diskContent,
+						);
+
+						// Transition HSM to resolving state
+						hsm.send({ type: "OPEN_DIFF_VIEW" });
+
+						// Open diff view: localDoc (left) vs disk (right)
+						this._parent.openDiffView({
+							file1: localFile, // Current localDoc content
+							file2: diskFile, // Disk content
+							showMergeOption: true,
+							onResolve: async () => {
+								this.log("[mergeBanner] HSM conflict resolved");
+
+								// The differ modifies file1 (localFile) in-place via its contents.
+								// Get the resolved content and apply it to HSM's localDoc.
+								const resolvedContent = localFile.contents;
+
+								if (resolvedContent === currentLocalContent) {
+									// User kept local - just update LCA
+									hsm.send({ type: "RESOLVE_ACCEPT_LOCAL" });
+								} else if (resolvedContent === diskContent) {
+									// User chose disk
+									hsm.send({ type: "RESOLVE_ACCEPT_DISK" });
+								} else {
+									// User merged - send merged content
+									hsm.send({
+										type: "RESOLVE_ACCEPT_MERGED",
+										contents: resolvedContent,
+									});
+								}
+
+								this._banner?.destroy();
+								this._banner = undefined;
+							},
+						});
+						return false; // Don't destroy banner yet - wait for resolution
+					}
 				}
-				this._parent.openDiffView({
-					file1: this.document,
-					file2: diskBuffer,
-					showMergeOption: true,
-					onResolve: async () => {
-						this.document.clearDiskBuffer();
-						this._banner?.destroy();
-						// Force view to sync to CRDT state after differ resolution
-						if (
-							this._plugin &&
-							typeof this._plugin.syncViewToCRDT === "function"
-						) {
-							await this._plugin.syncViewToCRDT();
-						}
-					},
-				});
-				return true;
+				return false;
 			},
 		);
 		return () => {};
@@ -548,54 +600,46 @@ export class LiveView<ViewType extends TextFileView>
 			return false;
 		}
 
-		// Use HSM conflict detection if enabled
-		if (isHSMConflictDetectionEnabled()) {
-			const hsmConflict = this.document.hasHSMConflict();
-			this.log(`[LiveView.checkStale] HSM conflict detection: ${hsmConflict}`);
-			if (hsmConflict === true) {
-				this.log("[LiveView.checkStale] HSM reports conflict, showing merge banner");
-				this.mergeBanner();
-				return true;
-			} else if (hsmConflict === false) {
-				this._banner?.destroy();
-				this._banner = undefined;
-				return false;
-			}
-			// hsmConflict === null means HSM not available, fall through to legacy
-			this.log("[LiveView.checkStale] HSM not available, falling back to legacy checkStale()");
-		}
-
-		this.log("[LiveView.checkStale] calling document.checkStale()");
-		const stale = await this.document.checkStale();
-		this.log(
-			`[LiveView.checkStale] result: stale=${stale}, hasDiskBuffer=${!!this.document._diskBuffer?.contents}`,
-		);
-		if (stale && this.document._diskBuffer?.contents) {
-			this.log("[LiveView.checkStale] showing merge banner");
+		// Use HSM conflict detection
+		const hsmConflict = this.document.hasHSMConflict();
+		this.log(`[LiveView.checkStale] HSM conflict detection: ${hsmConflict}`);
+		if (hsmConflict === true) {
+			this.log(
+				"[LiveView.checkStale] HSM reports conflict, showing merge banner",
+			);
 			this.mergeBanner();
+			return true;
 		} else {
 			this._banner?.destroy();
 			this._banner = undefined;
+			return false;
 		}
-		return stale;
 	}
 
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
 		// Use HSM acquireLock if available, otherwise falls back to userLock internally
-		this.document.acquireLock()
+		this.document
+			.acquireLock()
 			.then((hsm) => {
 				// Subscribe to HSM state changes for automatic conflict banner handling
 				// Must happen AFTER acquireLock completes so hsm is available
-				if (isHSMConflictDetectionEnabled() && hsm && !this._hsmStateUnsubscribe) {
+				if (hsm && !this._hsmStateUnsubscribe) {
 					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
-						const isConflict = state.statePath.includes('conflict');
-						this.log(`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`);
+						const isConflict = state.statePath.includes("conflict");
+						this.log(
+							`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
+						);
+
 						if (isConflict && !this._banner) {
-							this.log("[LiveView.attach] HSM entered conflict state, showing merge banner");
+							this.log(
+								"[LiveView.attach] HSM entered conflict state, showing merge banner",
+							);
 							this.mergeBanner();
 						} else if (!isConflict && this._banner) {
-							this.log("[LiveView.attach] HSM exited conflict state, hiding merge banner");
+							this.log(
+								"[LiveView.attach] HSM exited conflict state, hiding merge banner",
+							);
 							this._banner.destroy();
 							this._banner = undefined;
 						}

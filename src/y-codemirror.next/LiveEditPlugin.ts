@@ -22,7 +22,6 @@ import { MarkdownView, editorInfoField } from "obsidian";
 import { Document } from "src/Document";
 import { EmbedBanner } from "src/ui/EmbedBanner";
 import { ViewHookPlugin } from "src/plugins/ViewHookPlugin";
-import { isHSMConflictDetectionEnabled, isHSMActiveModeEnabled } from "src/merge-hsm/flags";
 import { CM6Integration } from "src/merge-hsm/integration/CM6Integration";
 
 const TWEENS = 25;
@@ -94,45 +93,15 @@ export class LiveCMPluginValue implements PluginValue {
 			async () => {
 				if (!this.document) return true;
 
-				// Use HSM conflict detection if enabled
-				let hasConflict = false;
-				if (isHSMConflictDetectionEnabled()) {
-					const hsmConflict = this.document.hasHSMConflict();
-					this.log(`[mergeBanner] HSM conflict detection: ${hsmConflict}`);
-					if (hsmConflict === true) {
-						hasConflict = true;
-					} else if (hsmConflict === false) {
-						return true; // No conflict, dismiss banner
-					}
-					// hsmConflict === null means HSM not available, fall through to legacy
+				// Use HSM conflict detection
+				const hsmConflict = this.document.hasHSMConflict();
+				this.log(`[mergeBanner] HSM conflict detection: ${hsmConflict}`);
+				if (hsmConflict !== true) {
+					return true; // No conflict, dismiss banner
 				}
 
-				// Legacy conflict detection
-				if (!hasConflict) {
-					const stale = await this.document.checkStale();
-					if (!stale) {
-						return true;
-					}
-				}
-
-				const diskBuffer = await this.document.diskBuffer();
-				this.connectionManager?.openDiffView({
-					file1: this.document,
-					file2: diskBuffer,
-					showMergeOption: true,
-					onResolve: async () => {
-						if (this.destroyed || !this.editor || !this.document) {
-							return;
-						}
-						this.document.clearDiskBuffer();
-						// Notify HSM of resolution if available
-						const hsm = this.document.hsm;
-						if (hsm && isHSMConflictDetectionEnabled()) {
-							hsm.send({ type: 'RESOLVE_ACCEPT_MERGED', contents: this.document.text });
-						}
-						this.resync();
-					},
-				});
+				// HSM handles conflict resolution - banner click is handled by LiveView
+				// This embed banner is just for display, actual resolution happens via HSM
 				return true;
 			},
 		);
@@ -256,7 +225,7 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		// Initialize CM6Integration for HSM Active Mode
-		if (isHSMActiveModeEnabled() && this.document?.hsm) {
+		if (this.document?.hsm) {
 			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor);
 			this.log("[LiveEditPlugin] CM6Integration initialized for HSM Active Mode");
 		}
@@ -460,33 +429,14 @@ export class LiveCMPluginValue implements PluginValue {
 			this.log("[getKeyFrame] calling view.checkStale() (LiveMd path)");
 			this.view.checkStale();
 		} else if (this.document) {
-			// Use HSM conflict detection if enabled
-			if (isHSMConflictDetectionEnabled()) {
-				const hsmConflict = this.document.hasHSMConflict();
-				this.log(`[getKeyFrame] HSM conflict detection: ${hsmConflict}`);
-				if (hsmConflict === true && !this.destroyed && this.editor) {
-					this.log("[getKeyFrame] HSM reports conflict, showing merge banner");
-					this.mergeBanner();
-				} else if (hsmConflict !== null) {
-					// HSM handled it (either conflict shown or no conflict)
-					// Skip legacy checkStale
-				} else {
-					// HSM not available, fall through to legacy
-					this.log("[getKeyFrame] HSM not available, using legacy checkStale() (embed path)");
-					const stale = await this.document.checkStale();
-					if (stale && !this.destroyed && this.editor) {
-						this.log("[getKeyFrame] stale, showing merge banner");
-						this.mergeBanner();
-					}
-				}
-			} else {
-				this.log("[getKeyFrame] calling document.checkStale() (embed path)");
-				const stale = await this.document.checkStale();
-				if (stale && !this.destroyed && this.editor) {
-					this.log("[getKeyFrame] stale, showing merge banner");
-					this.mergeBanner();
-				}
+			// Use HSM conflict detection
+			const hsmConflict = this.document.hasHSMConflict();
+			this.log(`[getKeyFrame] HSM conflict detection: ${hsmConflict}`);
+			if (hsmConflict === true && !this.destroyed && this.editor) {
+				this.log("[getKeyFrame] HSM reports conflict, showing merge banner");
+				this.mergeBanner();
 			}
+			// HSM always available - no legacy fallback needed
 		}
 
 		if (this.active(this.view) && !this.destroyed) {
@@ -508,7 +458,7 @@ export class LiveCMPluginValue implements PluginValue {
 
 		// Lazy initialization of CM6Integration: HSM might not have been available
 		// during constructor if acquireLock() hadn't completed yet
-		if (!this.cm6Integration && isHSMActiveModeEnabled() && this.document?.hsm) {
+		if (!this.cm6Integration && this.document?.hsm) {
 			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor);
 			this.log("[LiveEditPlugin] CM6Integration initialized lazily for HSM Active Mode");
 		}

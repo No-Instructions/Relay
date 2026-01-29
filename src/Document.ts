@@ -17,7 +17,6 @@ import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
-import { isHSMActiveModeEnabled } from "./merge-hsm/flags";
 import { generateHash } from "./hashing";
 
 export function isDocument(file?: IFile): file is Document {
@@ -26,7 +25,7 @@ export function isDocument(file?: IFile): file is Document {
 
 export class Document extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
-	private _persistence: IndexeddbPersistence | null;
+	private _persistence: IndexeddbPersistence | null = null;
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
 	_awaitingUpdates?: boolean;
@@ -100,52 +99,36 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
 
-		// When HSM active mode is enabled, MergeHSM owns IndexeddbPersistence
-		// for localDoc. Document.ydoc becomes the ephemeral remoteDoc — no
-		// persistence here to avoid two IndexeddbPersistence on the same DB.
-		if (isHSMActiveModeEnabled()) {
-			this._persistence = null;
-			this.persistenceSynced = true;
-		} else {
-			try {
-				const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
-				this._persistence = new IndexeddbPersistence(key, this.ydoc);
-			} catch (e) {
-				this.warn("Unable to open persistence.", this.guid);
-				console.error(e);
-				throw e;
-			}
+		// need to port this to the HSM
+		// this.whenSynced().then(() => {
+		// 	const statsObserver = (event: Y.YTextEvent) => {
+		// 		const origin = event.transaction.origin;
+		// 		if (event.changes.keys.size === 0) return;
+		// 		if (origin == this) return;
+		// 		this.updateStats();
+		// 	};
+		// 	this.ytext.observe(statsObserver);
+		// 	this.unsubscribes.push(() => {
+		// 		this.ytext?.unobserve(statsObserver);
+		// 	});
+		// 	this.updateStats();
+		// 	try {
+		// 		this._persistence!.set("path", this.path);
+		// 		this._persistence!.set("relay", this.sharedFolder.relayId || "");
+		// 		this._persistence!.set("appId", this.sharedFolder.appId);
+		// 		this._persistence!.set("s3rn", S3RN.encode(this.s3rn));
+		// 	} catch (e) {
+		// 		// pass
+		// 	}
 
-			this.whenSynced().then(() => {
-				const statsObserver = (event: Y.YTextEvent) => {
-					const origin = event.transaction.origin;
-					if (event.changes.keys.size === 0) return;
-					if (origin == this) return;
-					this.updateStats();
-				};
-				this.ytext.observe(statsObserver);
-				this.unsubscribes.push(() => {
-					this.ytext?.unobserve(statsObserver);
-				});
-				this.updateStats();
-				try {
-					this._persistence!.set("path", this.path);
-					this._persistence!.set("relay", this.sharedFolder.relayId || "");
-					this._persistence!.set("appId", this.sharedFolder.appId);
-					this._persistence!.set("s3rn", S3RN.encode(this.s3rn));
-				} catch (e) {
-					// pass
-				}
-
-				(async () => {
-					const serverSynced = await this.getServerSynced();
-					if (!serverSynced) {
-						await this.onceProviderSynced();
-						await this.markSynced();
-					}
-				})();
-			});
-		}
+		// 	(async () => {
+		// 		const serverSynced = await this.getServerSynced();
+		// 		if (!serverSynced) {
+		// 			await this.onceProviderSynced();
+		// 			await this.markSynced();
+		// 		}
+		// 	})();
+		// });
 
 		withFlag(flag.enableDeltaLogging, () => {
 			const logObserver = (event: Y.YTextEvent) => {
@@ -204,11 +187,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * @returns The MergeHSM instance, or null if HSM is not enabled
 	 */
 	async acquireLock(): Promise<MergeHSM | null> {
-		if (!isHSMActiveModeEnabled()) {
-			this.userLock = true; // Fallback to old behavior
-			return null;
-		}
-
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (!mergeManager) {
 			this.userLock = true; // Fallback if MergeManager not available
@@ -217,11 +195,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 		try {
 			// MergeManager.getHSM() registers if needed and sends ACQUIRE_LOCK
-			this._hsm = await mergeManager.getHSM(
-				this.guid,
-				this.path,
-				this.ydoc,
-			);
+			this._hsm = await mergeManager.getHSM(this.guid, this.path, this.ydoc);
 			this.userLock = true; // Keep for compatibility
 
 			// Wire up provider events to HSM
@@ -242,40 +216,40 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!this._hsm) return;
 
 		// Clean up any existing listeners to prevent accumulation
-		this._hsmProviderCleanup.forEach(cleanup => cleanup());
+		this._hsmProviderCleanup.forEach((cleanup) => cleanup());
 		this._hsmProviderCleanup = [];
 
 		const hsm = this._hsm;
 
 		// Forward provider sync event
 		const onSynced = () => {
-			hsm.send({ type: 'PROVIDER_SYNCED' });
+			hsm.send({ type: "PROVIDER_SYNCED" });
 		};
-		this._provider.on('synced', onSynced);
-		this._hsmProviderCleanup.push(() => this._provider.off('synced', onSynced));
+		this._provider.on("synced", onSynced);
+		this._hsmProviderCleanup.push(() => this._provider.off("synced", onSynced));
 
 		// Forward connection status changes
 		let lastConnected: boolean | null = null;
 		const onStatus = (state: { status: string }) => {
-			const isConnected = state.status === 'connected';
+			const isConnected = state.status === "connected";
 			if (lastConnected !== isConnected) {
 				lastConnected = isConnected;
 				if (isConnected) {
-					hsm.send({ type: 'CONNECTED' });
-				} else if (state.status === 'disconnected') {
-					hsm.send({ type: 'DISCONNECTED' });
+					hsm.send({ type: "CONNECTED" });
+				} else if (state.status === "disconnected") {
+					hsm.send({ type: "DISCONNECTED" });
 				}
 			}
 		};
-		this._provider.on('status', onStatus);
-		this._hsmProviderCleanup.push(() => this._provider.off('status', onStatus));
+		this._provider.on("status", onStatus);
+		this._hsmProviderCleanup.push(() => this._provider.off("status", onStatus));
 
 		// Send initial state if already connected
-		if (this._provider.connectionState.status === 'connected') {
-			hsm.send({ type: 'CONNECTED' });
+		if (this._provider.connectionState.status === "connected") {
+			hsm.send({ type: "CONNECTED" });
 		}
 		if (this._providerSynced) {
-			hsm.send({ type: 'PROVIDER_SYNCED' });
+			hsm.send({ type: "PROVIDER_SYNCED" });
 		}
 	}
 
@@ -287,12 +261,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	releaseLock(): void {
 		this.userLock = false; // Keep for compatibility
 
-		if (!isHSMActiveModeEnabled() || !this._hsm) {
-			return;
-		}
-
 		// Clean up provider event subscriptions
-		this._hsmProviderCleanup.forEach(cleanup => cleanup());
+		this._hsmProviderCleanup.forEach((cleanup) => cleanup());
 		this._hsmProviderCleanup = [];
 
 		const mergeManager = this.sharedFolder.mergeManager;
@@ -350,142 +320,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			return "";
 		}
 		return this.ytext.toString();
-	}
-
-	public async diskBuffer(read = false): Promise<TFile> {
-		if (read || this._diskBuffer === undefined) {
-			let fileContents: string;
-			try {
-				const storedContents = await this._parent.diskBufferStore
-					.loadDiskBuffer(this.guid)
-					.catch((e) => {
-						this.warn("[diskBuffer] loadDiskBuffer error:", e);
-						return null;
-					});
-				if (storedContents !== null && storedContents !== "") {
-					fileContents = storedContents;
-					this.log(
-						`[diskBuffer] loaded from IndexedDB cache (${storedContents.length} chars)`,
-					);
-				} else {
-					fileContents = await this._parent.read(this);
-					this.log(
-						`[diskBuffer] read from file (${fileContents.length} chars), cache was ${storedContents === null ? "null" : "empty"}`,
-					);
-				}
-				return this.setDiskBuffer(fileContents.replace(/\r\n/g, "\n"));
-			} catch (e) {
-				console.error(e);
-				throw e;
-			}
-		}
-		this.log("[diskBuffer] returning existing in-memory diskBuffer");
-		return this._diskBuffer;
-	}
-
-	setDiskBuffer(contents: string): TFile {
-		if (this._diskBuffer) {
-			this._diskBuffer.contents = contents;
-			this.log(`[setDiskBuffer] updated existing (${contents.length} chars)`);
-		} else {
-			this._diskBuffer = new DiskBuffer(
-				this._parent.vault,
-				"local disk",
-				contents,
-			);
-			this.log(`[setDiskBuffer] created new (${contents.length} chars)`);
-		}
-		this._parent.diskBufferStore
-			.saveDiskBuffer(this.guid, contents)
-			.then(() => {
-				this.log("[setDiskBuffer] saved to IndexedDB");
-			})
-			.catch((e) => {
-				this.warn("[setDiskBuffer] IndexedDB save error:", e);
-			});
-		return this._diskBuffer;
-	}
-
-	async clearDiskBuffer(): Promise<void> {
-		this.log("[clearDiskBuffer] called");
-		if (this._diskBuffer) {
-			this._diskBuffer.contents = "";
-			this._diskBuffer = undefined;
-			this.log("[clearDiskBuffer] cleared in-memory buffer");
-		}
-		await this._parent.diskBufferStore
-			.removeDiskBuffer(this.guid)
-			.then(() => {
-				this.log("[clearDiskBuffer] removed from IndexedDB");
-			})
-			.catch((e) => {
-				this.warn("[clearDiskBuffer] IndexedDB remove error:", e);
-			});
-	}
-
-	public async checkStale(): Promise<boolean> {
-		this.log("[checkStale] starting");
-		await this.whenSynced();
-		const diskBuffer = await this.diskBuffer(true);
-		const contents = (diskBuffer as DiskBuffer).contents;
-		this.log(
-			`[checkStale] diskBuffer contents: ${contents.length} chars, preview: "${contents.slice(0, 50).replace(/\n/g, "\\n")}..."`,
-		);
-		const response = await this.sharedFolder.backgroundSync.downloadItem(this);
-		const updateBytes = new Uint8Array(response.arrayBuffer);
-
-		const textBeforeUpdate = this.text;
-		Y.applyUpdate(this.ydoc, updateBytes);
-		const textAfterUpdate = this.text;
-		this.log(
-			`[checkStale] CRDT before update: ${textBeforeUpdate.length} chars, after: ${textAfterUpdate.length} chars`,
-		);
-		if (textBeforeUpdate !== textAfterUpdate) {
-			this.log(
-				`[checkStale] CRDT changed after server update, preview: "${textAfterUpdate.slice(0, 50).replace(/\n/g, "\\n")}..."`,
-			);
-		}
-		const stale = this.text !== contents;
-		this.log(
-			`[checkStale] stale=${stale} (CRDT ${this.text.length} chars vs diskBuffer ${contents.length} chars)`,
-		);
-
-		const og = this.text;
-		let text = og;
-
-		const applied: ((data: string) => string)[] = [];
-		for (const fn of this.pendingOps) {
-			text = fn(text);
-			applied.push(fn);
-
-			if (text == contents) {
-				this.clearDiskBuffer();
-				if (og == this.text) {
-					diffMatchPatch(this.ydoc, text, this);
-				} else {
-					if (flags().enableDeltaLogging) {
-						this.warn(
-							"diffMatchPatch solution is stale an cannot be applied",
-							text,
-							this.text,
-						);
-					} else {
-						this.log("diffMatchPatch solution is stale an cannot be applied");
-					}
-					return true;
-				}
-				this.pendingOps = [];
-				return true;
-			}
-		}
-		this.pendingOps = [];
-		if (!stale) {
-			this.log("[checkStale] not stale, clearing diskBuffer");
-			this.clearDiskBuffer();
-		} else {
-			this.log("[checkStale] stale! will show differ");
-		}
-		return stale;
 	}
 
 	async connect(): Promise<boolean> {
@@ -616,7 +450,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				const mtime = this.tfile.stat.mtime;
 				const encoder = new TextEncoder();
 				const hash = await generateHash(encoder.encode(contents).buffer);
-				this._hsm.send({ type: 'SAVE_COMPLETE', mtime, hash });
+				this._hsm.send({ type: "SAVE_COMPLETE", mtime, hash });
 			}
 		} finally {
 			this._isSaving = false;

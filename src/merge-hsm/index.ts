@@ -177,26 +177,6 @@ export type {
   CheckableHSM,
 } from './invariants';
 
-// Feature flags
-export {
-  isHSMEnabled,
-  isHSMIdleModeEnabled,
-  isHSMConflictDetectionEnabled,
-  isHSMActiveModeEnabled,
-  isHSMShadowModeEnabled,
-  isHSMInvariantChecksEnabled,
-  isHSMRecordingEnabled,
-  isHSMDebuggerEnabled,
-  withHSM,
-  withHSMIdleMode,
-  withHSMActiveMode,
-  withHSMShadowMode,
-  hsmFlags,
-  getHSMFeatureStatus,
-  logHSMFeatureStatus,
-} from './flags';
-export type { HSMFeatureStatus } from './flags';
-
 // Visual debugger
 export {
   HSMDebuggerView,
