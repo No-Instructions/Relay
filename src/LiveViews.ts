@@ -26,6 +26,10 @@ import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
 } from "./y-codemirror.next/RemoteSelections";
+import {
+	conflictDecorationPlugin,
+	conflictDecorationTheme,
+} from "./y-codemirror.next/ConflictDecorationPlugin";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 import type { CanvasView } from "./CanvasView";
@@ -443,7 +447,10 @@ export class LiveView<ViewType extends TextFileView>
 	mergeBanner(): () => void {
 		this._banner = new Banner(
 			this.view,
-			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
+			{
+				short: "Conflicts detected",
+				long: "Resolve conflicts inline using the buttons, or click here for diff view",
+			},
 			async () => {
 				// HSM-aware conflict resolution path
 				const hsm = this.document.hsm;
@@ -455,7 +462,19 @@ export class LiveView<ViewType extends TextFileView>
 						localDoc &&
 						hsm.state.statePath.includes("conflict")
 					) {
-						this.log("[mergeBanner] Using HSM conflict resolution path");
+						this.log("[mergeBanner] Opening diff view for conflict resolution");
+
+						// Check if there are inline conflict regions (new flow)
+						const hasInlineConflicts =
+							conflictData.conflictRegions &&
+							conflictData.conflictRegions.length > 0;
+
+						if (hasInlineConflicts) {
+							// With inline conflicts, clicking banner opens diff view as alternative
+							this.log(
+								"[mergeBanner] Inline conflicts present, opening diff view as alternative",
+							);
+						}
 
 						// Get CURRENT localDoc content (not stale conflictData.local)
 						const currentLocalContent = localDoc.getText("contents").toString();
@@ -487,7 +506,7 @@ export class LiveView<ViewType extends TextFileView>
 							file2: diskFile, // Disk content
 							showMergeOption: true,
 							onResolve: async () => {
-								this.log("[mergeBanner] HSM conflict resolved");
+								this.log("[mergeBanner] HSM conflict resolved via diff view");
 
 								// The differ modifies file1 (localFile) in-place via its contents.
 								// Get the resolved content and apply it to HSM's localDoc.
@@ -1228,6 +1247,8 @@ export class LiveViewManager {
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
 				InvalidLinkPlugin,
+				conflictDecorationPlugin,
+				conflictDecorationTheme,
 			]);
 			this.workspace.updateOptions();
 		}

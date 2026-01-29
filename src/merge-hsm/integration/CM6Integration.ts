@@ -5,6 +5,7 @@
  * - Subscribes to HSM effects and dispatches changes to editor
  * - Forwards editor changes to HSM
  * - Tracks editor state for drift detection
+ * - Connects conflict decoration plugin to HSM for inline resolution
  */
 
 import type { EditorView, ViewUpdate } from '@codemirror/view';
@@ -12,6 +13,8 @@ import type { MergeHSM } from '../MergeHSM';
 import type { PositionedChange } from '../types';
 // Import the shared annotation to prevent feedback loops
 import { ySyncAnnotation } from '../../y-codemirror.next/LiveEditPlugin';
+// Import conflict decoration plugin accessor
+import { getConflictDecorationPlugin } from '../../y-codemirror.next/ConflictDecorationPlugin';
 
 // =============================================================================
 // CM6Integration Class
@@ -22,6 +25,7 @@ export class CM6Integration {
   private view: EditorView;
   private unsubscribe: (() => void) | null = null;
   private suppressNextChange = false;
+  private conflictPluginConnected = false;
 
   constructor(hsm: MergeHSM, view: EditorView) {
     this.hsm = hsm;
@@ -33,6 +37,22 @@ export class CM6Integration {
         this.dispatchToEditor(effect.changes);
       }
     });
+
+    // Connect the conflict decoration plugin to HSM
+    this.connectConflictPlugin();
+  }
+
+  /**
+   * Connect the conflict decoration plugin to the HSM for inline resolution.
+   */
+  private connectConflictPlugin(): void {
+    if (this.conflictPluginConnected) return;
+
+    const conflictPlugin = getConflictDecorationPlugin(this.view);
+    if (conflictPlugin) {
+      conflictPlugin.setHSM(this.hsm);
+      this.conflictPluginConnected = true;
+    }
   }
 
   /**
@@ -66,6 +86,11 @@ export class CM6Integration {
    * Call this from a ViewPlugin's update method.
    */
   onEditorUpdate(update: ViewUpdate): void {
+    // Try to connect conflict plugin if not yet connected
+    if (!this.conflictPluginConnected) {
+      this.connectConflictPlugin();
+    }
+
     // Skip if this change originated from HSM (dispatched by us)
     if (this.suppressNextChange) {
       return;

@@ -89,7 +89,7 @@ export class LiveCMPluginValue implements PluginValue {
 		this.banner = new EmbedBanner(
 			this.sourceView,
 			this.editor.dom,
-			"Merge conflict -- click to resolve",
+			"Conflicts detected - resolve inline using the buttons above each conflict",
 			async () => {
 				if (!this.document) return true;
 
@@ -100,8 +100,8 @@ export class LiveCMPluginValue implements PluginValue {
 					return true; // No conflict, dismiss banner
 				}
 
-				// HSM handles conflict resolution - banner click is handled by LiveView
-				// This embed banner is just for display, actual resolution happens via HSM
+				// HSM handles conflict resolution - conflicts are shown inline
+				// Banner click dismisses (user can resolve via inline buttons)
 				return true;
 			},
 		);

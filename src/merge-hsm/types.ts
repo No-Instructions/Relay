@@ -213,6 +213,14 @@ export interface MergeConflictEvent {
   base: string;
   local: string;
   remote: string;
+  conflictRegions?: ConflictRegion[];
+}
+
+// Per-hunk conflict resolution event
+export interface ResolveHunkEvent {
+  type: 'RESOLVE_HUNK';
+  index: number;
+  resolution: 'local' | 'remote' | 'both';
 }
 
 export interface RemoteDocUpdatedEvent {
@@ -244,6 +252,7 @@ export type MergeEvent =
   | DismissConflictEvent
   | OpenDiffViewEvent
   | CancelEvent
+  | ResolveHunkEvent
   // Internal
   | PersistenceLoadedEvent
   | YDocsReadyEvent
@@ -296,13 +305,48 @@ export interface StatusChangedEffect {
   status: SyncStatus;
 }
 
+/**
+ * Positioned conflict region with character offsets for CM6 decorations.
+ */
+export interface PositionedConflict {
+  /** Index in the conflict regions array */
+  index: number;
+  /** Character position where conflict starts in editor */
+  localStart: number;
+  /** Character position where conflict ends in editor */
+  localEnd: number;
+  /** Content from local version */
+  localContent: string;
+  /** Content from remote/disk version */
+  remoteContent: string;
+}
+
+/**
+ * Effect to show inline conflict decorations in the editor.
+ */
+export interface ShowConflictDecorationsEffect {
+  type: 'SHOW_CONFLICT_DECORATIONS';
+  conflictRegions: ConflictRegion[];
+  positions: PositionedConflict[];
+}
+
+/**
+ * Effect to hide a specific conflict decoration after resolution.
+ */
+export interface HideConflictDecorationEffect {
+  type: 'HIDE_CONFLICT_DECORATION';
+  index: number;
+}
+
 export type MergeEffect =
   | DispatchCM6Effect
   | WriteDiskEffect
   | PersistStateEffect
   | PersistUpdatesEffect
   | SyncToRemoteEffect
-  | StatusChangedEffect;
+  | StatusChangedEffect
+  | ShowConflictDecorationsEffect
+  | HideConflictDecorationEffect;
 
 // =============================================================================
 // Persistence Types
