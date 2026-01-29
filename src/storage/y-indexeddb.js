@@ -204,6 +204,11 @@ export class IndexeddbPersistence extends Observable {
      */
     this._storeTimeoutId = null
     /**
+     * Track pending write operations for proper teardown.
+     * @type {Set<Promise<any>>}
+     */
+    this._pendingWrites = new Set()
+    /**
      * @param {Uint8Array} update
      * @param {any} origin
      */
@@ -215,7 +220,11 @@ export class IndexeddbPersistence extends Observable {
           return
         }
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
-        idb.addAutoKey(updatesStore, update)
+        const writePromise = idb.addAutoKey(updatesStore, update)
+        this._pendingWrites.add(writePromise)
+        writePromise.finally(() => {
+          this._pendingWrites.delete(writePromise)
+        })
         ++this._dbsize
         metrics.setDbSize(this.name, this._dbsize)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
@@ -250,16 +259,19 @@ export class IndexeddbPersistence extends Observable {
     return super.once(name, f)
   }
 
-  destroy () {
+  async destroy () {
     if (this._storeTimeoutId) {
       clearTimeout(this._storeTimeoutId)
     }
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)
     this._destroyed = true
-    return this._db.then(db => {
-      db.close()
-    })
+    // Wait for all pending writes to complete before closing
+    if (this._pendingWrites.size > 0) {
+      await Promise.all(this._pendingWrites)
+    }
+    const db = await this._db
+    db.close()
   }
 
   /**
