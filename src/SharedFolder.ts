@@ -1440,19 +1440,14 @@ export class SharedFolder extends HasProvider {
 				if (this.mergeManager) {
 					// HSM mode: insert into localDoc via MergeHSM
 					const hsm = await this.mergeManager.getHSM(guid, this.getPath(vpath), doc.ydoc);
-					const localDoc = hsm.getLocalDoc();
-					if (localDoc) {
-						const text = localDoc.getText("contents");
-						localDoc.transact(() => {
-							text.insert(0, contents);
-						});
+					// initializeLocalDoc waits for persistence to sync before inserting
+					await hsm.initializeLocalDoc(contents);
 
-						// Initialize LCA to establish the baseline sync point
-						const encoder = new TextEncoder();
-						const hash = await generateHash(encoder.encode(contents).buffer);
-						const mtime = doc.tfile?.stat.mtime ?? Date.now();
-						hsm.initializeLCA(contents, hash, mtime);
-					}
+					// Initialize LCA to establish the baseline sync point
+					const encoder = new TextEncoder();
+					const hash = await generateHash(encoder.encode(contents).buffer);
+					const mtime = doc.tfile?.stat.mtime ?? Date.now();
+					hsm.initializeLCA(contents, hash, mtime);
 				} else {
 					// Fallback: Insert into Document.ydoc directly
 					const text = doc.ydoc.getText("contents");

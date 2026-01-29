@@ -1314,8 +1314,17 @@ export class MergeHSM implements TestableHSM {
     this.remoteDoc = null;
   }
 
-  initializeLocalDoc(content: string): void {
+  /**
+   * Initialize localDoc with content for a new file.
+   * Waits for persistence to sync before inserting to ensure content is persisted.
+   */
+  async initializeLocalDoc(content: string): Promise<void> {
     if (!this.localDoc || !this.remoteDoc) return;
+
+    // Wait for persistence to be ready so _storeUpdate can persist the content
+    if (this.localPersistence) {
+      await this.localPersistence.whenSynced;
+    }
 
     this.localDoc.getText('contents').insert(0, content);
     Y.applyUpdate(this.remoteDoc, Y.encodeStateAsUpdate(this.localDoc));
