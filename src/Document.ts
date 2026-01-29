@@ -89,6 +89,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		};
 		this._diskBufferStore = this.sharedFolder.diskBufferStore;
 
+		// Initialize HSM immediately so it's always available for filtering disk changes.
+		// The HSM starts in loading state and transitions to idle once persistence loads.
+		const mergeManager = parent.mergeManager;
+		if (mergeManager) {
+			this._hsm = mergeManager.getOrRegisterHSM(guid, path, this.ydoc);
+		}
+
 		this.unsubscribes.push(
 			this._parent.subscribe(this.path, (state) => {
 				if (state.intent === "disconnected") {
@@ -188,14 +195,22 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	async acquireLock(): Promise<MergeHSM | null> {
 		const mergeManager = this.sharedFolder.mergeManager;
-		if (!mergeManager) {
-			this.userLock = true; // Fallback if MergeManager not available
+		if (!mergeManager || !this._hsm) {
+			this.userLock = true; // Fallback if MergeManager/HSM not available
 			return null;
 		}
 
 		try {
-			// MergeManager.getHSM() registers if needed and sends ACQUIRE_LOCK
-			this._hsm = await mergeManager.getHSM(this.guid, this.path, this.ydoc);
+			// Wait for HSM to finish loading before acquiring lock
+			await this._hsm.awaitIdle();
+
+			// Send ACQUIRE_LOCK to transition from idle to active
+			if (!mergeManager.isLoaded(this.guid)) {
+				this._hsm.send({ type: "ACQUIRE_LOCK" });
+				// Mark as active in MergeManager
+				mergeManager.markActive(this.guid);
+			}
+
 			this.userLock = true; // Keep for compatibility
 
 			// Wire up provider events to HSM

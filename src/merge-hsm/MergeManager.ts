@@ -206,6 +206,79 @@ export class MergeManager {
   }
 
   /**
+   * Get or create HSM for a document (synchronous).
+   * Creates the HSM in loading state and kicks off async persistence loading.
+   * Does NOT acquire lock - the HSM stays in idle mode after loading completes.
+   *
+   * Use this when you need the HSM reference immediately (e.g., in constructors).
+   * The HSM will be in loading state until persistence loads, then idle.
+   *
+   * @param guid - Document GUID
+   * @param path - Virtual path within shared folder
+   * @param remoteDoc - Remote YDoc, managed externally with provider attached
+   * @returns The HSM instance (may still be loading)
+   */
+  getOrRegisterHSM(guid: string, path: string, remoteDoc: Y.Doc): MergeHSM {
+    // Return existing HSM if already registered
+    if (this.hsms.has(guid)) {
+      return this.hsms.get(guid)!;
+    }
+
+    // Create HSM in idle mode
+    const hsm = new MergeHSM({
+      guid,
+      path,
+      vaultId: this.getVaultId(guid),
+      remoteDoc,
+      timeProvider: this.timeProvider,
+      hashFn: this.hashFn,
+      createPersistence: this.createPersistence,
+      persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
+    });
+
+    // Subscribe to effects
+    hsm.subscribe((effect) => {
+      this.handleHSMEffect(guid, effect);
+    });
+
+    // Subscribe to state changes to update sync status
+    hsm.onStateChange(() => {
+      this.updateSyncStatus(guid, hsm.getSyncStatus());
+    });
+
+    // Store HSM
+    this.hsms.set(guid, hsm);
+
+    // Initialize HSM through loading → idle
+    hsm.send({ type: 'LOAD', guid, path });
+
+    // Fire-and-forget async persistence loading
+    (async () => {
+      const persistedState = this.loadState ? await this.loadState(guid) : null;
+
+      hsm.send({
+        type: 'PERSISTENCE_LOADED',
+        updates: new Uint8Array(),
+        lca: persistedState?.lca
+          ? {
+              contents: persistedState.lca.contents,
+              meta: {
+                hash: persistedState.lca.hash,
+                mtime: persistedState.lca.mtime,
+              },
+              stateVector: persistedState.lca.stateVector,
+            }
+          : null,
+      });
+
+      // HSM is now in idle.* state - update sync status
+      this.updateSyncStatus(guid, hsm.getSyncStatus());
+    })();
+
+    return hsm;
+  }
+
+  /**
    * Get HSM for a document, acquiring lock to transition to active mode.
    * If not already registered, registers the document first.
    *
@@ -235,6 +308,14 @@ export class MergeManager {
    */
   isLoaded(guid: string): boolean {
     return this.activeDocs.has(guid);
+  }
+
+  /**
+   * Mark a document as active (lock acquired).
+   * Used by Document.acquireLock() after sending ACQUIRE_LOCK directly.
+   */
+  markActive(guid: string): void {
+    this.activeDocs.add(guid);
   }
 
   /**

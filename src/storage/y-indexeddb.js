@@ -111,7 +111,8 @@ export const storeState = (idbPersistence, forceStore = true) =>
       if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
         const compactedState = Y.encodeStateAsUpdate(idbPersistence.doc)
         const startTime = performance.now()
-        idb.addAutoKey(updatesStore, compactedState)
+        // Return the promise chain so callers can await the writes
+        return idb.addAutoKey(updatesStore, compactedState)
           .then(() => idb.del(updatesStore, idb.createIDBKeyRangeUpperBound(idbPersistence._dbref, true)))
           .then(() => idb.count(updatesStore).then(cnt => {
             idbPersistence._dbsize = cnt
@@ -209,6 +210,11 @@ export class IndexeddbPersistence extends Observable {
      */
     this._pendingWrites = new Set()
     /**
+     * Track pending compaction operation for proper teardown.
+     * @type {Promise<void>|null}
+     */
+    this._pendingCompaction = null
+    /**
      * @param {Uint8Array} update
      * @param {any} origin
      */
@@ -234,7 +240,10 @@ export class IndexeddbPersistence extends Observable {
             clearTimeout(this._storeTimeoutId)
           }
           this._storeTimeoutId = setTimeout(() => {
-            storeState(this, false)
+            // Track the compaction promise so destroy() can await it
+            this._pendingCompaction = storeState(this, false).finally(() => {
+              this._pendingCompaction = null
+            })
             this._storeTimeoutId = null
           }, this._storeTimeout)
         }
@@ -269,6 +278,10 @@ export class IndexeddbPersistence extends Observable {
     // Wait for all pending writes to complete before closing
     if (this._pendingWrites.size > 0) {
       await Promise.all(this._pendingWrites)
+    }
+    // Wait for any pending compaction to complete before closing
+    if (this._pendingCompaction) {
+      await this._pendingCompaction
     }
     const db = await this._db
     db.close()

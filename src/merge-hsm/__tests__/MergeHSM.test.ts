@@ -313,6 +313,7 @@ describe('MergeHSM', () => {
       });
 
       t.send(releaseLock());
+      await t.hsm.awaitCleanup();
 
       expectState(t, 'idle.clean');
       expect(t.getLocalDocText()).toBeNull(); // YDocs should be cleaned up
@@ -327,6 +328,7 @@ describe('MergeHSM', () => {
 
       // Release lock - transition to idle
       t.send(releaseLock());
+      await t.hsm.awaitCleanup();
       expectState(t, 'idle.clean');
       t.clearEffects();
 
@@ -353,12 +355,14 @@ describe('MergeHSM', () => {
       t.send(acquireLock());
       expectState(t, 'active.tracking');
       t.send(releaseLock());
+      await t.hsm.awaitCleanup();
       expectState(t, 'idle.clean');
 
       // Second cycle
       t.send(acquireLock());
       expectState(t, 'active.tracking');
       t.send(releaseLock());
+      await t.hsm.awaitCleanup();
       expectState(t, 'idle.clean');
 
       // Third cycle - should still work
@@ -380,6 +384,7 @@ describe('MergeHSM', () => {
       expect(t.hsm.isActive()).toBe(true);
 
       t.send(releaseLock());
+      await t.hsm.awaitCleanup();
 
       expect(t.hsm.isIdle()).toBe(true);
       expect(t.hsm.isActive()).toBe(false);
@@ -447,7 +452,7 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('DISK_CHANGED with disk-only changes auto-merges', async () => {
+    test('DISK_CHANGED with disk-only changes stays in tracking (Obsidian handles sync)', async () => {
       const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello',
@@ -456,12 +461,13 @@ describe('MergeHSM', () => {
 
       t.send(await diskChanged('hello world', Date.now()));
 
-      // Local matches LCA, disk has changes - auto-merge succeeds
+      // In active.tracking, Obsidian handles disk->editor sync via diff-match-patch.
+      // HSM stays in tracking and doesn't modify localDoc.
       expectState(t, 'active.tracking');
-      expectLocalDocText(t, 'hello world');
+      expectLocalDocText(t, 'hello'); // localDoc unchanged - Obsidian handles sync
     });
 
-    test('DISK_CHANGED with conflicting changes shows conflict', async () => {
+    test('DISK_CHANGED with conflicting changes stays in tracking (Obsidian handles sync)', async () => {
       const t = await createTestHSM({
         initialState: 'active.tracking',
         localDoc: 'hello local',
@@ -470,8 +476,9 @@ describe('MergeHSM', () => {
 
       t.send(await diskChanged('hello disk', Date.now()));
 
-      // Both local and disk changed from LCA - conflict
-      expectState(t, 'active.conflict.bannerShown');
+      // In active.tracking, Obsidian handles disk->editor sync.
+      // HSM does NOT trigger conflict - stays in tracking.
+      expectState(t, 'active.tracking');
     });
   });
 
@@ -976,30 +983,33 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('successful merge emits PERSIST_STATE', async () => {
+    test('DISK_CHANGED matching editor emits PERSIST_STATE (LCA update)', async () => {
       const t = await createTestHSM({
         initialState: 'active.tracking',
-        localDoc: 'hello',
+        localDoc: 'hello world',
         lca: await createLCA('hello', 1000),
       });
       t.clearEffects();
 
-      // Disk change that can auto-merge (local matches LCA)
+      // Disk now matches editor content - opportunistic LCA update
       t.send(await diskChanged('hello world', Date.now()));
+
+      // Wait for async LCA creation
+      await new Promise(resolve => setTimeout(resolve, 10));
 
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('STATUS_CHANGED emitted on sync status change', async () => {
+    test('STATUS_CHANGED emitted on state transition that changes sync status', async () => {
       const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello local',
+        initialState: 'idle.clean',
         lca: await createLCA('hello', 1000),
       });
       t.clearEffects();
 
-      // Trigger conflict which changes status from synced to conflict
-      t.send(await diskChanged('hello disk', Date.now()));
+      // Receiving remote update changes status from synced to pending
+      const update = createYjsUpdate('', 'hello world');
+      t.send(remoteUpdate(update));
 
       expectEffect(t.effects, { type: 'STATUS_CHANGED' });
     });

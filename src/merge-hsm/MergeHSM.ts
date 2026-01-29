@@ -293,7 +293,8 @@ const mergeMachine = setup({
         tracking: {
           on: {
             DISK_CHANGED: {
-              target: 'merging',
+              // Stay in tracking - Obsidian handles editor<->disk sync via diff-match-patch.
+              // Wrapper may opportunistically update LCA if disk matches editor.
               actions: ['setDiskMeta'],
             },
             CM6_CHANGE: {
@@ -661,6 +662,28 @@ export class MergeHSM implements TestableHSM {
     if (this._cleanupPromise) {
       await this._cleanupPromise;
     }
+  }
+
+  /**
+   * Wait for the HSM to reach an idle state.
+   * Returns immediately if already in idle state.
+   * Used to ensure HSM is ready before acquiring lock.
+   */
+  async awaitIdle(): Promise<void> {
+    // Already in idle state
+    if (this._statePath.startsWith('idle.')) {
+      return;
+    }
+
+    // Wait for state change to idle
+    return new Promise<void>((resolve) => {
+      const unsubscribe = this.stateChanges.subscribe((state) => {
+        if (state.statePath.startsWith('idle.')) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
   }
 
   /**
@@ -1423,10 +1446,11 @@ export class MergeHSM implements TestableHSM {
     this.pendingDiskContents = event.contents;
 
     if (this._statePath === 'active.tracking') {
-      // Check synchronously if disk actually changed (comparing hashes)
-      // If disk hash matches LCA hash, no change occurred - stay in tracking
+      // In active.tracking, Obsidian handles editor<->disk sync via diff-match-patch.
+      // We just opportunistically update LCA if disk matches editor content.
+
+      // If disk hash matches LCA hash, just update mtime
       if (this._lca && this._lca.meta.hash === event.hash) {
-        // Disk matches LCA - no change, just update mtime
         this._lca = {
           ...this._lca,
           meta: {
@@ -1438,55 +1462,20 @@ export class MergeHSM implements TestableHSM {
         return;
       }
 
-      // Check if local content matches disk content - no merge needed
+      // If disk content matches editor, update LCA to new baseline
       if (this.localDoc) {
         const localText = this.localDoc.getText('contents').toString();
-        const lcaText = this._lca?.contents ?? '';
-
         if (event.contents === localText) {
-          // Content matches - create new LCA with disk hash and stay in tracking
           this.createLCAFromCurrent(event.contents, event.hash).then((newLCA) => {
             this._lca = newLCA;
             this.emitPersistState();
           }).catch((err) => {
             this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
           });
-          return;
-        }
-
-        // Fast-path: if local matches LCA, disk changes can be applied directly
-        if (localText === lcaText) {
-          // Apply disk content to localDoc synchronously
-          this.localDoc.getText('contents').delete(0, localText.length);
-          this.localDoc.getText('contents').insert(0, event.contents);
-
-          // Emit DISPATCH_CM6 synchronously
-          this.emitEffect({
-            type: 'DISPATCH_CM6',
-            changes: this.computeDiffChanges(localText, event.contents),
-          });
-
-          // Emit PERSIST_STATE synchronously (with current state)
-          this.emitPersistState();
-
-          // Create new LCA with disk content asynchronously
-          this.createLCAFromCurrent(event.contents, event.hash).then((newLCA) => {
-            this._lca = newLCA;
-            // Emit again with updated LCA
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          });
-          return;
         }
       }
-
-      // Actual merge needed - transition to merging
-      this.transitionTo('active.merging');
-      // Fire-and-forget async merge (state transition already done)
-      this.performDiskMerge(event.contents).catch((err) => {
-        this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-      });
+      // Otherwise ignore - Obsidian handles disk->editor sync
+      return;
     } else if (this._statePath.startsWith('idle.')) {
       const remoteChanged = this.hasRemoteChangedSinceLCA();
 
