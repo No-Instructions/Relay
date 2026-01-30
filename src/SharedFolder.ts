@@ -1901,13 +1901,26 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	private _load(folders: SharedFolderSettings[]) {
 		let updated = false;
 		folders.forEach((folder: SharedFolderSettings) => {
+			// Validate required fields
+			if (!folder.path) {
+				this.warn(`Invalid settings: folder missing path, skipping`);
+				return;
+			}
+			if (!folder.guid || !S3RN.validateUUID(folder.guid)) {
+				this.warn(`Invalid settings: folder "${folder.path}" has invalid guid "${folder.guid}", skipping`);
+				return;
+			}
 			const tFolder = this.vault.getFolderByPath(folder.path);
 			if (!tFolder) {
 				this.warn(`Invalid settings, ${folder.path} does not exist`);
 				return;
 			}
-			this._new(folder.path, folder.guid, folder?.relay);
-			updated = true;
+			try {
+				this._new(folder.path, folder.guid, folder?.relay);
+				updated = true;
+			} catch (e) {
+				this.warn(`Failed to load folder "${folder.path}": ${e instanceof Error ? e.message : String(e)}`);
+			}
 		});
 
 		if (updated) {
@@ -1921,6 +1934,17 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		relayId?: string,
 		awaitingUpdates?: boolean,
 	): SharedFolder {
+		// Validate inputs
+		if (!path) {
+			throw new Error("Cannot create shared folder: path is required");
+		}
+		if (!guid || !S3RN.validateUUID(guid)) {
+			throw new Error(`Cannot create shared folder: invalid guid "${guid}"`);
+		}
+		if (relayId && !S3RN.validateUUID(relayId)) {
+			throw new Error(`Cannot create shared folder: invalid relayId "${relayId}"`);
+		}
+
 		const existing = this.find(
 			(folder) => folder.path == path && folder.guid == guid,
 		);

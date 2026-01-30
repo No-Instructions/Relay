@@ -17,6 +17,7 @@ import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
+import { S3RN } from "./S3RN";
 import { LiveViewManager } from "./LiveViews";
 
 import { SharedFolders } from "./SharedFolder";
@@ -739,6 +740,14 @@ export default class Live extends Plugin {
 		relayId?: string,
 		awaitingUpdates?: boolean,
 	): SharedFolder {
+		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
+		if (!guid || !S3RN.validateUUID(guid)) {
+			throw new Error(`Cannot create shared folder: invalid guid "${guid}"`);
+		}
+		if (relayId && !S3RN.validateUUID(relayId)) {
+			throw new Error(`Cannot create shared folder: invalid relayId "${relayId}"`);
+		}
+
 		// Initialize settings with pattern matching syntax
 		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
 			this.settings,
