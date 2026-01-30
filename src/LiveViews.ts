@@ -650,6 +650,13 @@ export class LiveView<ViewType extends TextFileView>
 							`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
 						);
 
+						// Update ViewActions to reflect tracking state change
+						this._viewActions?.$set({
+							view: this,
+							state: this.document.state,
+							remote: this.document.sharedFolder.remote,
+						});
+
 						if (isConflict && !this._banner) {
 							this.log(
 								"[LiveView.attach] HSM entered conflict state, showing merge banner",
