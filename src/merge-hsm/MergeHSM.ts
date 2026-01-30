@@ -2031,6 +2031,7 @@ const defaultCreatePersistence: CreatePersistence = (_vaultId: string, _doc: Y.D
     destroy() {
       // No-op
     },
+    whenSynced: Promise.resolve(),
   };
 };
 

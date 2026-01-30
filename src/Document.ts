@@ -255,8 +255,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			// MergeManager.unload() sends RELEASE_LOCK
 			mergeManager.unload(this.guid);
 		}
-
-		this._hsm = null;
 	}
 
 	/**
