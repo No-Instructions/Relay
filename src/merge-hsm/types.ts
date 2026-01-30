@@ -440,6 +440,8 @@ import type * as Y from 'yjs';
 export interface IYDocPersistence {
   once(event: 'synced', cb: () => void): void;
   destroy(): void | Promise<void>;
+  /** Promise that resolves when persistence is synced */
+  whenSynced: Promise<unknown>;
   /** Set metadata key-value pair on the persistence store */
   set?(key: string, value: string): void;
 }

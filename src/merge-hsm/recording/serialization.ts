@@ -117,7 +117,10 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'YDOCS_READY':
     case 'MERGE_CONFLICT':
     case 'REMOTE_DOC_UPDATED':
-      return event as SerializableEvent;
+      return event as unknown as SerializableEvent;
+
+    default:
+      return event as unknown as SerializableEvent;
   }
 }
 
@@ -197,7 +200,10 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
     // Effects without binary data pass through
     case 'DISPATCH_CM6':
     case 'WRITE_DISK':
-      return effect as SerializableEffect;
+      return effect as unknown as SerializableEffect;
+
+    default:
+      return effect as unknown as SerializableEffect;
   }
 }
 
