@@ -1,6 +1,6 @@
 "use strict";
 
-import { requestUrl, type RequestUrlResponsePromise } from "obsidian";
+import { apiVersion, requestUrl, type RequestUrlResponsePromise } from "obsidian";
 import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
@@ -13,7 +13,7 @@ import { Observable } from "./observable/Observable";
 
 declare const GIT_TAG: string;
 
-import { customFetch } from "./customFetch";
+import { customFetch, getDeviceManagementHeaders } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
@@ -192,6 +192,7 @@ export class LoginManager extends Observable<LoginManager> {
 			options.fetch = customFetch;
 			options.headers = Object.assign({}, options.headers, {
 				"Relay-Version": GIT_TAG,
+				"Obsidian-Version": apiVersion,
 			});
 			return { url, options };
 		};
@@ -283,6 +284,8 @@ export class LoginManager extends Observable<LoginManager> {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			"Relay-Version": GIT_TAG,
+			"Obsidian-Version": apiVersion,
+			...getDeviceManagementHeaders(),
 		};
 		return requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/relay/${relay_guid}/check-host`,
@@ -295,6 +298,8 @@ export class LoginManager extends Observable<LoginManager> {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			"Relay-Version": GIT_TAG,
+			"Obsidian-Version": apiVersion,
+			...getDeviceManagementHeaders(),
 		};
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/flags`,
@@ -315,6 +320,7 @@ export class LoginManager extends Observable<LoginManager> {
 	whoami() {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
+			...getDeviceManagementHeaders(),
 		};
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/whoami`,
@@ -366,6 +372,7 @@ export class LoginManager extends Observable<LoginManager> {
 				options.fetch = customFetch;
 				options.headers = Object.assign({}, options.headers, {
 					"Relay-Version": GIT_TAG,
+					"Obsidian-Version": apiVersion,
 				});
 				return { url, options };
 			};
