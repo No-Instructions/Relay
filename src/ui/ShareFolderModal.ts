@@ -24,6 +24,7 @@ export class ShareFolderModal extends Modal {
 
 	onOpen() {
 		const { contentEl } = this;
+		this.setTitle("Share local folder");
 
 		this.component = new ShareFolderModalContent({
 			target: contentEl,
@@ -32,6 +33,7 @@ export class ShareFolderModal extends Modal {
 				relay: this.relay,
 				relayManager: this.relayManager,
 				sharedFolders: this.sharedFolders,
+				setTitle: (title: string) => this.setTitle(title),
 				onConfirm: async (
 					folderPath: string,
 					folderName: string,

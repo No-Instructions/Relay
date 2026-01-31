@@ -17,6 +17,7 @@ import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
+import { S3RN } from "./S3RN";
 import { LiveViewManager } from "./LiveViews";
 
 import { SharedFolders } from "./SharedFolder";
@@ -58,12 +59,16 @@ import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
+import { CompactionManager } from "./workers/CompactionManager";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { generateHash } from "./hashing";
 import { SelfHostModal } from "./ui/SelfHostModal";
+import { DeviceManager } from "./DeviceManager";
+import { setDeviceManagementConfig } from "./customFetch";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -110,6 +115,7 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	relayManager!: RelayManager;
+	deviceManager!: DeviceManager;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -531,6 +537,15 @@ export default class Live extends Plugin {
 			endpointManager,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
+		this.deviceManager = new DeviceManager(
+			this.appId,
+			this.vault.getName(),
+			this.loginManager,
+		);
+		setDeviceManagementConfig({
+			vaultId: this.appId,
+			deviceId: this.deviceManager.getDeviceId(),
+		});
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this.vault,
@@ -551,6 +566,7 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.timeProvider,
 			this.sharedFolders,
+			3, // concurrency
 		);
 
 		if (!this.loginManager.setup()) {
@@ -724,6 +740,14 @@ export default class Live extends Plugin {
 		relayId?: string,
 		awaitingUpdates?: boolean,
 	): SharedFolder {
+		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
+		if (!guid || !S3RN.validateUUID(guid)) {
+			throw new Error(`Cannot create shared folder: invalid guid "${guid}"`);
+		}
+		if (relayId && !S3RN.validateUUID(relayId)) {
+			throw new Error(`Cannot create shared folder: invalid relayId "${relayId}"`);
+		}
+
 		// Initialize settings with pattern matching syntax
 		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
 			this.settings,
@@ -773,6 +797,9 @@ export default class Live extends Plugin {
 		this.sharedFolders.load();
 		this.relayManager?.login();
 		this._liveViews.refresh("login");
+		withFlag(flag.enableDeviceManagement, () => {
+			this.deviceManager.register();
+		});
 	}
 
 	async openSettings(path: string = "/") {
@@ -970,7 +997,7 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("modify", (tfile) => {
+			this.app.vault.on("modify", async (tfile) => {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					vaultLog("Modify", tfile.path);
@@ -978,6 +1005,31 @@ export default class Live extends Plugin {
 					if (file && isSyncFile(file)) {
 						file.sync();
 					}
+
+					// Send DISK_CHANGED to HSM for documents with active lock
+					// (but not when we're the ones doing the save)
+					if (
+						file &&
+						isDocument(file) &&
+						file.hsm &&
+						!file.isSaving &&
+						tfile instanceof TFile
+					) {
+						try {
+							const contents = await this.app.vault.read(tfile);
+							const encoder = new TextEncoder();
+							const hash = await generateHash(encoder.encode(contents).buffer);
+							file.hsm.send({
+								type: 'DISK_CHANGED',
+								contents,
+								mtime: tfile.stat.mtime,
+								hash,
+							});
+						} catch (e) {
+							vaultLog("Failed to send DISK_CHANGED to HSM", e);
+						}
+					}
+
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
 						this.app.metadataCache.trigger("resolve", file);
@@ -1151,6 +1203,9 @@ export default class Live extends Plugin {
 		// Cleanup all monkeypatches and destroy the singleton
 		Patcher.destroy();
 
+		// Terminate the compaction worker
+		CompactionManager.destroy();
+
 		this.timeProvider?.destroy();
 
 		this.folderNavDecorations?.destroy();
@@ -1168,6 +1223,9 @@ export default class Live extends Plugin {
 
 		this.relayManager?.destroy();
 		this.relayManager = null as any;
+
+		this.deviceManager?.destroy();
+		this.deviceManager = null as any;
 
 		this.tokenStore?.stop();
 		this.tokenStore?.clearState();

@@ -19,3 +19,15 @@ data.json
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
 vaults/
+
+# igit
+.igit
+.igitignore
+
+# developer harness
+agent-creds.toml
+.claude/
+tickets/
+specs/
+test-plans/
+test-results/

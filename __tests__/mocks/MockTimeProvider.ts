@@ -13,7 +13,7 @@ export class MockTimeProvider implements TimeProvider {
 		this.currentTime = Date.now();
 	}
 
-	getTime(): number {
+	now(): number {
 		return this.currentTime;
 	}
 

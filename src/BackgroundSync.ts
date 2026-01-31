@@ -100,6 +100,13 @@ export class BackgroundSync extends HasLogging {
 			this.processSyncQueue();
 			this.processDownloadQueue();
 		}, 1000);
+
+		// Add polling timer for MergeManager disk changes (poll all folders)
+		this.timeProvider.setInterval(() => {
+			this.sharedFolders.forEach((folder) => {
+				folder.mergeManager?.pollAll();
+			});
+		}, 5000); // Poll every 5 seconds
 	}
 
 	/**

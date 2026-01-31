@@ -243,10 +243,10 @@ export class HasProvider extends HasLogging {
 		return new Promise((resolve) => {
 			const resolveOnConnect = (state: ConnectionState) => {
 				if (state.status === "connected") {
+					this._provider.off("status", resolveOnConnect);
 					resolve();
 				}
 			};
-			// provider observers are manually cleared in destroy()
 			this._provider.on("status", resolveOnConnect);
 		});
 	}

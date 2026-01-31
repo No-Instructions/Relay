@@ -3,6 +3,7 @@ import process from "process";
 import esbuildSvelte from "esbuild-svelte";
 import sveltePreprocess from "svelte-preprocess";
 import builtins from "builtin-modules";
+import inlineWorkerPlugin from "esbuild-plugin-inline-worker";
 import { execSync } from "child_process";
 import chokidar from "chokidar";
 import path from "path";
@@ -14,9 +15,15 @@ if you want to view the source, please visit the github repository of this plugi
 */
 `;
 
-const gitTag = execSync("git describe --tags --always", {
-	encoding: "utf8",
-}).trim();
+let gitTag;
+try {
+	gitTag = execSync("git describe --tags --always", {
+		encoding: "utf8",
+	}).trim();
+} catch (e) {
+	gitTag = "dev";
+	console.log("Warning: Could not get git tag, using 'dev'");
+}
 
 const develop = process.argv[2] === "develop";
 const staging = process.argv[2] === "staging";
@@ -80,6 +87,7 @@ const context = await esbuild.context({
 			compilerOptions: { css: true },
 			preprocess: sveltePreprocess(),
 		}),
+		inlineWorkerPlugin(),
 		YjsInternalsPlugin,
 		NotifyPlugin,
 	],
@@ -110,7 +118,7 @@ const copyFile = (src, dest) => {
 const watchAndMove = (fnames, mapping) => {
 	// only usable on top level directory
 	const watcher = chokidar.watch(fnames, {
-		ignored: /(^|[\/\\])\../, // ignore dotfiles
+		ignored: /(^|[\/\\])\./, // ignore dotfiles
 		persistent: true,
 	});
 
