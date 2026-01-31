@@ -3,9 +3,8 @@
 	import type { Relay, RelayUser, Role } from "../Relay";
 	import type { RelayManager } from "../RelayManager";
 	import type { SharedFolder, SharedFolders } from "../SharedFolder";
-	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import SettingGroup from "./SettingGroup.svelte";
+	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SelectedFolder from "./SelectedFolder.svelte";
 	import { onMount, onDestroy } from "svelte";
 	import { derived, writable } from "svelte/store";
@@ -22,6 +21,7 @@
 		isPrivate: boolean,
 		userIds: string[],
 	) => Promise<SharedFolder>;
+	export let setTitle: (title: string) => void = () => {};
 
 	let currentStep: "main" | "users" = "main";
 	let isPrivate = false;
@@ -109,6 +109,7 @@
 
 		if (isPrivate) {
 			currentStep = "users";
+			setTitle("Add Users to Folder");
 		} else {
 			handleShare();
 		}
@@ -154,6 +155,7 @@
 
 	function goBack() {
 		currentStep = "main";
+		setTitle("Share local folder");
 	}
 
 	function getInitials(name: string): string {
@@ -231,9 +233,7 @@
 </script>
 
 {#if currentStep === "main"}
-	<div class="modal-title">Share local folder</div>
-
-	<div class="modal-content share-folder-modal" bind:this={modalEl}>
+	<div class="share-folder-modal" bind:this={modalEl}>
 		<div class="section">
 			<SettingItemHeading name="Folder" />
 			<SelectedFolder
@@ -247,7 +247,7 @@
 		</div>
 
 		{#if relay.version > 0}
-			<SettingItem
+			<SlimSettingItem
 				name="Private"
 				description="Only selected users can access this folder"
 			>
@@ -263,10 +263,10 @@
 					<input type="checkbox" bind:checked={isPrivate} tabindex="-1" />
 					<div class="checkbox-toggle"></div>
 				</div>
-			</SettingItem>
+			</SlimSettingItem>
 		{/if}
 
-		<div class="modal-button-container">
+		<SlimSettingItem name="">
 			<button
 				class="mod-cta"
 				disabled={!acceptedFolder && !inputValue.trim()}
@@ -274,12 +274,10 @@
 			>
 				{isPrivate ? "Add Users" : "Share"}
 			</button>
-		</div>
+		</SlimSettingItem>
 	</div>
 {:else if currentStep === "users"}
-	<div class="modal-title">Add Users to Folder</div>
-
-	<div class="modal-content share-folder-modal" bind:this={modalEl}>
+	<div class="share-folder-modal" bind:this={modalEl}>
 		<div class="section">
 			<SettingItemHeading name="Selected Folder" />
 			<SelectedFolder
@@ -363,20 +361,8 @@
 
 <style>
 	.share-folder-modal {
-		min-width: 500px;
-		max-width: 600px;
-	}
-
-	/* Mobile responsive styles */
-	@media (max-width: 768px) {
-		.share-folder-modal {
-			min-width: 100vw;
-			max-width: 100vw;
-			margin: 0;
-			border-radius: 0;
-			height: 100vh;
-			max-height: 100vh;
-		}
+		display: flex;
+		flex-direction: column;
 	}
 
 	.section {
@@ -480,9 +466,11 @@
 
 	.modal-button-container {
 		display: flex;
+		flex-direction: row;
 		justify-content: flex-end;
 		align-items: center;
-		margin-top: 24px;
+		margin-top: auto;
+		padding-top: 24px;
 		gap: 12px;
 	}
 
@@ -497,5 +485,10 @@
 
 	.checkbox-container {
 		cursor: pointer;
+		background-color: var(--background-modifier-border);
+	}
+
+	.checkbox-container.is-enabled {
+		background-color: var(--interactive-accent);
 	}
 </style>
