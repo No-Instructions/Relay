@@ -17,7 +17,7 @@ async function _testTokenStore() {
 	) => {
 		testTimeProvider.setTimeout(() => {
 			callback({
-				token: (testTimeProvider.getTime() + 30 * 60 * 1000).toString(),
+				token: (testTimeProvider.now() + 30 * 60 * 1000).toString(),
 			});
 		}, 100);
 	};
@@ -49,23 +49,23 @@ async function _testTokenStore() {
 	]);
 
 	// Advance time for response to happen
-	testTimeProvider.setTime(testTimeProvider.getTime() + 1000); // Advance time by 1 second
+	testTimeProvider.setTime(testTimeProvider.now() + 1000); // Advance time by 1 second
 
 	await tokenPromise;
 
 	tokenStore.log(tokenStore.report());
 
 	// Advance time to trigger refresh of tokens close to expiry
-	testTimeProvider.setTime(testTimeProvider.getTime() + 5 * 60 * 1000); // Advance time by 5 minutes
+	testTimeProvider.setTime(testTimeProvider.now() + 5 * 60 * 1000); // Advance time by 5 minutes
 	tokenStore.log(tokenStore.report());
 
-	testTimeProvider.setTime(testTimeProvider.getTime() + 20 * 60 * 1000); // Advance time by 20 minutes
+	testTimeProvider.setTime(testTimeProvider.now() + 20 * 60 * 1000); // Advance time by 20 minutes
 	tokenStore.log(tokenStore.report());
 	// Stop the TokenStore processing to clean up
 	tokenStore.stop();
 
-	testTimeProvider.setTime(testTimeProvider.getTime() + 1000); // Advance time by 1 second
-	testTimeProvider.setTime(testTimeProvider.getTime() + 1000); // Advance time by 1 second
+	testTimeProvider.setTime(testTimeProvider.now() + 1000); // Advance time by 1 second
+	testTimeProvider.setTime(testTimeProvider.now() + 1000); // Advance time by 1 second
 	tokenStore.log(tokenStore.report());
 
 	tokenStore.clearState();
@@ -88,7 +88,7 @@ describe("token store", () => {
 				log: () => undefined,
 				refresh: failingRefresh,
 				getTimeProvider: () => tp,
-				getJwtExpiry: () => tp.getTime() + 1000,
+				getJwtExpiry: () => tp.now() + 1000,
 			},
 			1,
 		);

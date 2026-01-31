@@ -105,12 +105,24 @@
 		display: flex;
 		align-items: center;
 		gap: 6px;
+		min-width: 0;
+	}
+
+	.folder-state:last-of-type {
+		flex: 1;
+		min-width: 0;
+	}
+
+	:global(.folder-icon) {
+		flex-shrink: 0;
 	}
 
 	.folder-name {
 		font-weight: 500;
 		color: var(--text-normal);
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 
 	.clear-button {

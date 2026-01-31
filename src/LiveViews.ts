@@ -26,6 +26,10 @@ import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
 } from "./y-codemirror.next/RemoteSelections";
+import {
+	conflictDecorationPlugin,
+	conflictDecorationTheme,
+} from "./y-codemirror.next/ConflictDecorationPlugin";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 import type { CanvasView } from "./CanvasView";
@@ -35,6 +39,7 @@ import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
+import { DiskBuffer } from "./DiskBuffer";
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -124,65 +129,24 @@ export class LoggedOutView implements S3View {
 		this.login = login;
 	}
 
-	setLoginIcon(): void {
-		const viewHeaderElement =
-			this.view.containerEl.querySelector(".view-header");
-		const viewHeaderLeftElement = 
-			this.view.containerEl.querySelector(".view-header-left");
-		
-		if (viewHeaderElement && viewHeaderLeftElement) {
-			this.clearLoginButton();
-			
-			// Create login button element
-			const loginButton = document.createElement("button");
-			loginButton.className = "view-header-left system3-login-button";
-			loginButton.textContent = "Login to enable Live edits";
-			loginButton.setAttribute("aria-label", "Login to enable Live edits");
-			loginButton.setAttribute("tabindex", "0");
-			
-			// Add click handler
-			loginButton.addEventListener("click", async () => {
-				await this.login();
-			});
-			
-			// Insert after view-header-left
-			viewHeaderLeftElement.insertAdjacentElement("afterend", loginButton);
-		}
-	}
-
-	clearLoginButton() {
-		const existingButton = this.view.containerEl.querySelector(".system3-login-button");
-		if (existingButton) {
-			existingButton.remove();
-		}
-	}
-
 	attach(): Promise<S3View> {
-		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
-		if (Platform.isMobile && requireApiVersion("1.11.0")) {
-			this.setLoginIcon();
-		} else {
-			this.banner = new Banner(
-				this.view,
-				"Login to enable Live edits",
-				async () => {
-					return await this.login();
-				},
-			);
-		}
+		this.banner = new Banner(
+			this.view,
+			{ short: "Login to Relay", long: "Login to enable Live edits" },
+			async () => {
+				return await this.login();
+			},
+		);
 		return Promise.resolve(this);
 	}
 
 	release() {
 		this.banner?.destroy();
-		this.clearLoginButton();
 	}
 
 	destroy() {
-		this.release();
 		this.banner?.destroy();
 		this.banner = undefined;
-		this.clearLoginButton();
 		this.view = null as any;
 	}
 }
@@ -260,7 +224,7 @@ export class RelayCanvasView implements S3View {
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
-				"You're offline -- click to reconnect",
+				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
@@ -383,7 +347,7 @@ export class RelayCanvasView implements S3View {
 			this.offConnectionStatusSubscription = undefined;
 		}
 		this.canvas.disconnect();
-		this.canvas.userLock = false;
+		this.canvas.releaseLock();
 	}
 
 	destroy() {
@@ -414,6 +378,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _banner?: Banner;
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
+	private _hsmStateUnsubscribe?: () => void;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -450,13 +415,17 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	public get tracking() {
+		if (this.document?.hsm) {
+			return this.document.hsm.state.statePath === "active.tracking";
+		}
 		return this._tracking;
 	}
 
 	public set tracking(value: boolean) {
 		const old = this._tracking;
 		this._tracking = value;
-		if (this._tracking !== old) {
+		// Only call attach for non-HSM mode (fallback for views without HSM)
+		if (this._tracking !== old && !this.document?.hsm) {
 			this.attach();
 		}
 	}
@@ -475,93 +444,98 @@ export class LiveView<ViewType extends TextFileView>
 		}
 	}
 
-	setMergeButton(): void {
-		const viewHeaderElement =
-			this.view.containerEl.querySelector(".view-header");
-		const viewHeaderLeftElement = 
-			this.view.containerEl.querySelector(".view-header-left");
-		
-		if (viewHeaderElement && viewHeaderLeftElement) {
-			this.clearMergeButton();
-			
-			// Create merge button element
-			const mergeButton = document.createElement("button");
-			mergeButton.className = "view-header-left system3-merge-button";
-			mergeButton.textContent = "Merge conflict";
-			mergeButton.setAttribute("aria-label", "Merge conflict -- click to resolve");
-			mergeButton.setAttribute("tabindex", "0");
-			
-			// Add click handler
-			mergeButton.addEventListener("click", async () => {
-				const diskBuffer = await this.document.diskBuffer();
-				const stale = await this.document.checkStale();
-				if (!stale) {
-					this.clearMergeButton();
-					return;
-				}
-				this._parent.openDiffView({
-					file1: this.document,
-					file2: diskBuffer,
-					showMergeOption: true,
-					onResolve: async () => {
-						this.document.clearDiskBuffer();
-						this.clearMergeButton();
-						// Force view to sync to CRDT state after differ resolution
-						if (
-							this._plugin &&
-							typeof this._plugin.syncViewToCRDT === "function"
-						) {
-							await this._plugin.syncViewToCRDT();
-						}
-					},
-				});
-			});
-			
-			// Insert after view-header-left
-			viewHeaderLeftElement.insertAdjacentElement("afterend", mergeButton);
-		}
-	}
-
-	clearMergeButton() {
-		const existingButton = this.view.containerEl.querySelector(".system3-merge-button");
-		if (existingButton) {
-			existingButton.remove();
-		}
-	}
-
 	mergeBanner(): () => void {
-		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
-		if (Platform.isMobile && requireApiVersion("1.11.0")) {
-			this.setMergeButton();
-		} else {
-			this._banner = new Banner(
-				this.view,
-				"Merge conflict -- click to resolve",
-				async () => {
-					const diskBuffer = await this.document.diskBuffer();
-					const stale = await this.document.checkStale();
-					if (!stale) {
-						return true;
+		this._banner = new Banner(
+			this.view,
+			{
+				short: "Conflicts detected",
+				long: "Resolve conflicts inline using the buttons, or click here for diff view",
+			},
+			async () => {
+				// HSM-aware conflict resolution path
+				const hsm = this.document.hsm;
+				if (hsm) {
+					const conflictData = hsm.getConflictData();
+					const localDoc = hsm.getLocalDoc();
+					if (
+						conflictData &&
+						localDoc &&
+						hsm.state.statePath.includes("conflict")
+					) {
+						this.log("[mergeBanner] Opening diff view for conflict resolution");
+
+						// Check if there are inline conflict regions (new flow)
+						const hasInlineConflicts =
+							conflictData.conflictRegions &&
+							conflictData.conflictRegions.length > 0;
+
+						if (hasInlineConflicts) {
+							// With inline conflicts, clicking banner opens diff view as alternative
+							this.log(
+								"[mergeBanner] Inline conflicts present, opening diff view as alternative",
+							);
+						}
+
+						// Get CURRENT localDoc content (not stale conflictData.local)
+						const currentLocalContent = localDoc.getText("contents").toString();
+						const diskContent = conflictData.remote;
+
+						this.log(
+							`[mergeBanner] localDoc: ${currentLocalContent.length} chars, disk: ${diskContent.length} chars`,
+						);
+
+						// Create DiskBuffer wrappers (differ expects TFile-like objects)
+						// Use DiskBuffer for BOTH sides to ensure we show correct content
+						const localFile = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Local)",
+							currentLocalContent,
+						);
+						const diskFile = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Disk)",
+							diskContent,
+						);
+
+						// Transition HSM to resolving state
+						hsm.send({ type: "OPEN_DIFF_VIEW" });
+
+						// Open diff view: localDoc (left) vs disk (right)
+						this._parent.openDiffView({
+							file1: localFile, // Current localDoc content
+							file2: diskFile, // Disk content
+							showMergeOption: true,
+							onResolve: async () => {
+								this.log("[mergeBanner] HSM conflict resolved via diff view");
+
+								// The differ modifies file1 (localFile) in-place via its contents.
+								// Get the resolved content and apply it to HSM's localDoc.
+								const resolvedContent = localFile.contents;
+
+								if (resolvedContent === currentLocalContent) {
+									// User kept local - just update LCA
+									hsm.send({ type: "RESOLVE_ACCEPT_LOCAL" });
+								} else if (resolvedContent === diskContent) {
+									// User chose disk
+									hsm.send({ type: "RESOLVE_ACCEPT_DISK" });
+								} else {
+									// User merged - send merged content
+									hsm.send({
+										type: "RESOLVE_ACCEPT_MERGED",
+										contents: resolvedContent,
+									});
+								}
+
+								this._banner?.destroy();
+								this._banner = undefined;
+							},
+						});
+						return false; // Don't destroy banner yet - wait for resolution
 					}
-					this._parent.openDiffView({
-						file1: this.document,
-						file2: diskBuffer,
-						showMergeOption: true,
-						onResolve: async () => {
-							this.document.clearDiskBuffer();
-							// Force view to sync to CRDT state after differ resolution
-							if (
-								this._plugin &&
-								typeof this._plugin.syncViewToCRDT === "function"
-							) {
-								await this._plugin.syncViewToCRDT();
-							}
-						},
-					});
-					return true;
-				},
-			);
-		}
+				}
+				return false;
+			},
+		);
 		return () => {};
 	}
 
@@ -569,7 +543,7 @@ export class LiveView<ViewType extends TextFileView>
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
-				"You're offline -- click to reconnect",
+				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
@@ -641,21 +615,66 @@ export class LiveView<ViewType extends TextFileView>
 			this.view instanceof MarkdownView &&
 			this.view.getMode() === "preview"
 		) {
+			this.log("[LiveView.checkStale] skipping - preview mode");
 			return false;
 		}
-		const stale = await this.document.checkStale();
-		if (stale && this.document._diskBuffer?.contents) {
+
+		// Use HSM conflict detection
+		const hsmConflict = this.document.hasHSMConflict();
+		this.log(`[LiveView.checkStale] HSM conflict detection: ${hsmConflict}`);
+		if (hsmConflict === true) {
+			this.log(
+				"[LiveView.checkStale] HSM reports conflict, showing merge banner",
+			);
 			this.mergeBanner();
+			return true;
 		} else {
 			this._banner?.destroy();
 			this._banner = undefined;
+			return false;
 		}
-		return stale;
 	}
 
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
-		this.document.userLock = true;
+		// Use HSM acquireLock if available, otherwise falls back to userLock internally
+		this.document
+			.acquireLock()
+			.then((hsm) => {
+				// Subscribe to HSM state changes for automatic conflict banner handling
+				// Must happen AFTER acquireLock completes so hsm is available
+				if (hsm && !this._hsmStateUnsubscribe) {
+					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+						const isConflict = state.statePath.includes("conflict");
+						this.log(
+							`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
+						);
+
+						// Update ViewActions to reflect tracking state change
+						this._viewActions?.$set({
+							view: this,
+							state: this.document.state,
+							remote: this.document.sharedFolder.remote,
+						});
+
+						if (isConflict && !this._banner) {
+							this.log(
+								"[LiveView.attach] HSM entered conflict state, showing merge banner",
+							);
+							this.mergeBanner();
+						} else if (!isConflict && this._banner) {
+							this.log(
+								"[LiveView.attach] HSM exited conflict state, hiding merge banner",
+							);
+							this._banner.destroy();
+							this._banner = undefined;
+						}
+					});
+				}
+			})
+			.catch((e) => {
+				this.warn("[LiveView.attach] acquireLock failed:", e);
+			});
 
 		// Add CSS class to indicate this view should have live editing
 		if (this.view instanceof MarkdownView) {
@@ -725,23 +744,26 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
-		this.clearMergeButton();
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
+		}
+		// Clean up HSM state subscription
+		if (this._hsmStateUnsubscribe) {
+			this._hsmStateUnsubscribe();
+			this._hsmStateUnsubscribe = undefined;
 		}
 		this._awarenessPlugin?.destroy();
 		this._awarenessPlugin = undefined;
 		this._plugin?.destroy();
 		this._plugin = undefined;
 		this.document.disconnect();
-		this.document.userLock = false;
+		this.document.releaseLock();
 	}
 
 	destroy() {
 		this.release();
 		this.clearViewActions();
-		this.clearMergeButton();
 		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
@@ -1232,6 +1254,8 @@ export class LiveViewManager {
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
 				InvalidLinkPlugin,
+				conflictDecorationPlugin,
+				conflictDecorationTheme,
 			]);
 			this.workspace.updateOptions();
 		}

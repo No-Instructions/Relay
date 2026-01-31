@@ -16,6 +16,8 @@ export interface FeatureFlags {
 	enablePreviewViewHooks: boolean;
 	enableMetadataViewHooks: boolean;
 	enableKanbanView: boolean;
+	enableDeviceManagement: boolean;
+	enableMergeHSMRecording: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -36,6 +38,8 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enablePreviewViewHooks: true,
 	enableMetadataViewHooks: true,
 	enableKanbanView: true,
+	enableDeviceManagement: false,
+	enableMergeHSMRecording: true,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

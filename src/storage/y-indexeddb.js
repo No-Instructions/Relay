@@ -3,6 +3,7 @@ import * as idb from 'lib0/indexeddb'
 import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
 import { metrics } from '../debug'
+import { CompactionManager } from '../workers/CompactionManager'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
@@ -25,6 +26,52 @@ const uint8ArrayEquals = (a, b) => {
 // After sync, use the lower threshold to keep the database lean
 export const STARTUP_TRIM_SIZE = 500
 export const RUNTIME_TRIM_SIZE = 50
+
+/**
+ * Check if a database needs compaction and compact it in a worker if so.
+ * This should be called BEFORE creating an IndexeddbPersistence instance.
+ * @param {string} name - The database name
+ * @returns {Promise<void>}
+ */
+export const maybeCompactDatabase = async (name) => {
+  if (!CompactionManager.instance.available) {
+    return
+  }
+
+  // Open a temporary connection just to check the count
+  const tempDb = await idb.openDB(name, db =>
+    idb.createStores(db, [
+      ['updates', { autoIncrement: true }],
+      ['custom']
+    ])
+  )
+
+  try {
+    const [checkStore] = idb.transact(tempDb, [updatesStoreName], 'readonly')
+    const count = await idb.count(checkStore)
+
+    if (count >= STARTUP_TRIM_SIZE) {
+      // Close our temp connection before worker compacts
+      tempDb.close()
+
+      try {
+        const result = await CompactionManager.instance.compact(name)
+        metrics.recordCompaction(name, 0)
+        console.log(`[y-indexeddb] Compacted ${name}: ${result.countBefore} -> ${result.countAfter}`)
+      } catch (err) {
+        console.warn(`[y-indexeddb] Background compaction failed for ${name}:`, err)
+      }
+      return
+    }
+  } finally {
+    // Close temp connection if still open
+    try {
+      tempDb.close()
+    } catch (e) {
+      // Already closed
+    }
+  }
+}
 
 /**
  * @param {IndexeddbPersistence} idbPersistence
@@ -64,7 +111,8 @@ export const storeState = (idbPersistence, forceStore = true) =>
       if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
         const compactedState = Y.encodeStateAsUpdate(idbPersistence.doc)
         const startTime = performance.now()
-        idb.addAutoKey(updatesStore, compactedState)
+        // Return the promise chain so callers can await the writes
+        return idb.addAutoKey(updatesStore, compactedState)
           .then(() => idb.del(updatesStore, idb.createIDBKeyRangeUpperBound(idbPersistence._dbref, true)))
           .then(() => idb.count(updatesStore).then(cnt => {
             idbPersistence._dbsize = cnt
@@ -104,11 +152,14 @@ export class IndexeddbPersistence extends Observable {
     this.synced = false
     this._serverSynced = undefined
     this._origin = undefined
-    this._db = idb.openDB(name, db =>
-      idb.createStores(db, [
-        ['updates', { autoIncrement: true }],
-        ['custom']
-      ])
+    // First check if compaction is needed, then open the DB
+    this._db = maybeCompactDatabase(name).then(() =>
+      idb.openDB(name, db =>
+        idb.createStores(db, [
+          ['updates', { autoIncrement: true }],
+          ['custom']
+        ])
+      )
     )
     /**
      * @type {Promise<IndexeddbPersistence>}
@@ -154,6 +205,16 @@ export class IndexeddbPersistence extends Observable {
      */
     this._storeTimeoutId = null
     /**
+     * Track pending write operations for proper teardown.
+     * @type {Set<Promise<any>>}
+     */
+    this._pendingWrites = new Set()
+    /**
+     * Track pending compaction operation for proper teardown.
+     * @type {Promise<void>|null}
+     */
+    this._pendingCompaction = null
+    /**
      * @param {Uint8Array} update
      * @param {any} origin
      */
@@ -165,7 +226,11 @@ export class IndexeddbPersistence extends Observable {
           return
         }
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
-        idb.addAutoKey(updatesStore, update)
+        const writePromise = idb.addAutoKey(updatesStore, update)
+        this._pendingWrites.add(writePromise)
+        writePromise.finally(() => {
+          this._pendingWrites.delete(writePromise)
+        })
         ++this._dbsize
         metrics.setDbSize(this.name, this._dbsize)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
@@ -175,7 +240,10 @@ export class IndexeddbPersistence extends Observable {
             clearTimeout(this._storeTimeoutId)
           }
           this._storeTimeoutId = setTimeout(() => {
-            storeState(this, false)
+            // Track the compaction promise so destroy() can await it
+            this._pendingCompaction = storeState(this, false).finally(() => {
+              this._pendingCompaction = null
+            })
             this._storeTimeoutId = null
           }, this._storeTimeout)
         }
@@ -200,16 +268,23 @@ export class IndexeddbPersistence extends Observable {
     return super.once(name, f)
   }
 
-  destroy () {
+  async destroy () {
     if (this._storeTimeoutId) {
       clearTimeout(this._storeTimeoutId)
     }
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)
     this._destroyed = true
-    return this._db.then(db => {
-      db.close()
-    })
+    // Wait for all pending writes to complete before closing
+    if (this._pendingWrites.size > 0) {
+      await Promise.all(this._pendingWrites)
+    }
+    // Wait for any pending compaction to complete before closing
+    if (this._pendingCompaction) {
+      await this._pendingCompaction
+    }
+    const db = await this._db
+    db.close()
   }
 
   /**
@@ -348,4 +423,103 @@ export class IndexeddbPersistence extends Observable {
     const origin = await this.getOrigin()
     return !serverSynced && origin !== "local" && !this.hasUserData()
   }
+}
+
+// =============================================================================
+// Doc-less Operations (for MergeHSM idle mode)
+// =============================================================================
+//
+// These operations allow working with Yjs updates without loading a full YDoc
+// into memory. Used by MergeHSM for lightweight idle mode.
+
+/**
+ * Load raw updates from IndexedDB without creating a YDoc.
+ * For lightweight idle mode operations.
+ * @param {string} name - Database name (e.g., `${appId}-relay-doc-${guid}`)
+ * @returns {Promise<Uint8Array[]>}
+ */
+export const loadUpdatesRaw = async (name) => {
+  const db = await idb.openDB(name, db =>
+    idb.createStores(db, [
+      ['updates', { autoIncrement: true }],
+      ['custom']
+    ])
+  )
+  try {
+    const [store] = idb.transact(db, [updatesStoreName], 'readonly')
+    const updates = await idb.getAll(store)
+    return updates
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Append a Yjs update to IndexedDB without loading a YDoc.
+ * For receiving remote updates in idle mode.
+ * @param {string} name - Database name
+ * @param {Uint8Array} update - Yjs update to store
+ * @returns {Promise<void>}
+ */
+export const appendUpdateRaw = async (name, update) => {
+  // Skip updates with empty state vectors (no actual content)
+  const stateVector = Y.encodeStateVectorFromUpdate(update)
+  if (stateVector.length === 0) {
+    return
+  }
+
+  const db = await idb.openDB(name, db =>
+    idb.createStores(db, [
+      ['updates', { autoIncrement: true }],
+      ['custom']
+    ])
+  )
+  try {
+    const [store] = idb.transact(db, [updatesStoreName], 'readwrite')
+    await idb.addAutoKey(store, update)
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * Get merged update and state vector without loading a YDoc.
+ * Useful for computing state in idle mode.
+ * @param {string} name - Database name
+ * @returns {Promise<{update: Uint8Array, stateVector: Uint8Array}>}
+ */
+export const getMergedStateWithoutDoc = async (name) => {
+  const updates = await loadUpdatesRaw(name)
+  if (updates.length === 0) {
+    return { update: new Uint8Array(), stateVector: new Uint8Array() }
+  }
+  const merged = Y.mergeUpdates(updates)
+  const stateVector = Y.encodeStateVectorFromUpdate(merged)
+  return { update: merged, stateVector }
+}
+
+/**
+ * Get the state vector from stored updates without loading a YDoc.
+ * @param {string} name - Database name
+ * @returns {Promise<Uint8Array>}
+ */
+export const getStateVectorWithoutDoc = async (name) => {
+  const { stateVector } = await getMergedStateWithoutDoc(name)
+  return stateVector
+}
+
+/**
+ * Compute the diff between stored updates and a remote state vector.
+ * Returns the updates needed to bring remote up to date with local.
+ * Does not load a YDoc.
+ * @param {string} name - Database name
+ * @param {Uint8Array} remoteStateVector - Remote state vector to diff against
+ * @returns {Promise<Uint8Array>} - Update containing changes remote doesn't have
+ */
+export const diffUpdatesWithoutDoc = async (name, remoteStateVector) => {
+  const { update } = await getMergedStateWithoutDoc(name)
+  if (update.length === 0) {
+    return new Uint8Array()
+  }
+  return Y.diffUpdate(update, remoteStateVector)
 }

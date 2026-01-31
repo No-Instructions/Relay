@@ -15,11 +15,15 @@ import * as awarenessProtocol from "y-protocols/awareness";
 import { Observable } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
+import { decode as decodeCBOR } from "cbor-x";
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
 export const messageAwareness = 1;
 export const messageAuth = 2;
+export const messageEvent = 4;
+export const messageEventSubscribe = 5;
+export const messageEventUnsubscribe = 6;
 
 export type HandlerFunction = (
 	encoder: encoding.Encoder,
@@ -95,6 +99,28 @@ messageHandlers[messageAuth] = (
 	authProtocol.readAuthMessage(decoder, provider.doc, (_ydoc, reason) =>
 		permissionDeniedHandler(provider, reason),
 	);
+};
+
+messageHandlers[messageEvent] = (
+	_encoder,
+	decoder,
+	provider,
+	_emitSynced,
+	_messageType,
+) => {
+	const cborLength = decoding.readVarUint(decoder);
+	const cborData = decoding.readUint8Array(decoder, cborLength);
+
+	try {
+		const eventMessage = decodeCBOR(cborData);
+
+		// Only process if we're subscribed to this event type
+		if (provider.eventSubscriptions.has(eventMessage.event_type)) {
+			provider.processEvent(eventMessage);
+		}
+	} catch (error) {
+		console.error('Failed to decode event message:', error);
+	}
 };
 
 // @todo - this should depend on awareness.outdatedTime
@@ -192,6 +218,11 @@ const setupWS = (provider: YSweetProvider) => {
 			encoding.writeVarUint(encoder, messageSync);
 			syncProtocol.writeSyncStep1(encoder, provider.doc);
 			websocket.send(encoding.toUint8Array(encoder));
+			// Re-subscribe to events after reconnection
+			if (provider.eventSubscriptions.size > 0) {
+				const eventTypes = Array.from(provider.eventSubscriptions);
+				provider.sendEventSubscribe(eventTypes);
+			}
 			// broadcast local awareness state
 			if (provider.awareness.getLocalState() !== null) {
 				const encoderAwarenessState = encoding.createEncoder();
@@ -258,6 +289,18 @@ export interface ConnectionState {
 	intent: ConnectionIntent;
 }
 
+export interface EventMessage {
+	event_id: string;
+	event_type: string;
+	doc_id: string;
+	timestamp: number;
+	user?: string;
+	metadata?: Record<string, any>;
+	update?: Uint8Array;
+}
+
+export type EventCallback = (event: EventMessage) => void;
+
 /**
  * Websocket Provider for Yjs. Creates a websocket connection to sync the shared document.
  * The document name is attached to the provided url. I.e. the following example
@@ -300,6 +343,8 @@ export class YSweetProvider extends Observable<string> {
 	_unloadHandler: Function;
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	maxConnectionErrors: number;
+	eventSubscriptions: Set<string>;
+	eventCallbacks: Map<string, EventCallback[]>;
 
 	/**
 	 * @param serverUrl - server url
@@ -357,6 +402,8 @@ export class YSweetProvider extends Observable<string> {
 		this.wsLastMessageReceived = 0;
 		this.shouldConnect = connect;
 		this.maxConnectionErrors = maxConnectionErrors;
+		this.eventSubscriptions = new Set();
+		this.eventCallbacks = new Map();
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -660,6 +707,85 @@ export class YSweetProvider extends Observable<string> {
 
 	hasUrl(expectedUrl: string): boolean {
 		return this.url === expectedUrl;
+	}
+
+	subscribeToEvents(eventTypes: string[], callback: EventCallback) {
+		eventTypes.forEach(type => {
+			this.eventSubscriptions.add(type);
+
+			if (!this.eventCallbacks.has(type)) {
+				this.eventCallbacks.set(type, []);
+			}
+			this.eventCallbacks.get(type)!.push(callback);
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.sendEventSubscribe(eventTypes);
+		}
+	}
+
+	unsubscribeFromEvents(eventTypes: string[], callback?: EventCallback) {
+		eventTypes.forEach(type => {
+			if (callback && this.eventCallbacks.has(type)) {
+				const callbacks = this.eventCallbacks.get(type)!;
+				const index = callbacks.indexOf(callback);
+				if (index > -1) {
+					callbacks.splice(index, 1);
+				}
+				if (callbacks.length === 0) {
+					this.eventSubscriptions.delete(type);
+					this.eventCallbacks.delete(type);
+				}
+			} else {
+				this.eventSubscriptions.delete(type);
+				this.eventCallbacks.delete(type);
+			}
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.sendEventUnsubscribe(eventTypes);
+		}
+	}
+
+	sendEventSubscribe(eventTypes: string[]) {
+		const encoder = encoding.createEncoder();
+		encoding.writeVarUint(encoder, messageEventSubscribe);
+		encoding.writeVarUint(encoder, eventTypes.length);
+
+		eventTypes.forEach(type => {
+			encoding.writeVarString(encoder, type);
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.ws.send(encoding.toUint8Array(encoder));
+		}
+	}
+
+	sendEventUnsubscribe(eventTypes: string[]) {
+		const encoder = encoding.createEncoder();
+		encoding.writeVarUint(encoder, messageEventUnsubscribe);
+		encoding.writeVarUint(encoder, eventTypes.length);
+
+		eventTypes.forEach(type => {
+			encoding.writeVarString(encoder, type);
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.ws.send(encoding.toUint8Array(encoder));
+		}
+	}
+
+	processEvent(eventMessage: EventMessage) {
+		this.emit('event', [eventMessage]);
+
+		const callbacks = this.eventCallbacks.get(eventMessage.event_type) || [];
+		callbacks.forEach(callback => {
+			try {
+				callback(eventMessage);
+			} catch (error) {
+				console.error('Event callback error:', error);
+			}
+		});
 	}
 
 }

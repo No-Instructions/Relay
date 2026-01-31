@@ -22,6 +22,7 @@ import { MarkdownView, editorInfoField } from "obsidian";
 import { Document } from "src/Document";
 import { EmbedBanner } from "src/ui/EmbedBanner";
 import { ViewHookPlugin } from "src/plugins/ViewHookPlugin";
+import { CM6Integration } from "src/merge-hsm/integration/CM6Integration";
 
 const TWEENS = 25;
 
@@ -54,6 +55,7 @@ export class LiveCMPluginValue implements PluginValue {
 	document?: Document;
 	embed = false;
 	viewHookPlugin?: ViewHookPlugin;
+	private cm6Integration?: CM6Integration;
 
 	getDocument(): Document | undefined {
 		const fileInfo = this.editor.state.field(editorInfoField);
@@ -83,30 +85,23 @@ export class LiveCMPluginValue implements PluginValue {
 		if (this.destroyed || !this.editor) {
 			return () => {};
 		}
-		
+
 		this.banner = new EmbedBanner(
 			this.sourceView,
 			this.editor.dom,
-			"Merge conflict -- click to resolve",
+			"Conflicts detected - resolve inline using the buttons above each conflict",
 			async () => {
 				if (!this.document) return true;
-				const diskBuffer = await this.document.diskBuffer();
-				const stale = await this.document.checkStale();
-				if (!stale) {
-					return true;
+
+				// Use HSM conflict detection
+				const hsmConflict = this.document.hasHSMConflict();
+				this.log(`[mergeBanner] HSM conflict detection: ${hsmConflict}`);
+				if (hsmConflict !== true) {
+					return true; // No conflict, dismiss banner
 				}
-				this.connectionManager?.openDiffView({
-					file1: this.document,
-					file2: diskBuffer,
-					showMergeOption: true,
-					onResolve: async () => {
-						if (this.destroyed || !this.editor || !this.document) {
-							return;
-						}
-						this.document.clearDiskBuffer();
-						this.resync();
-					},
-				});
+
+				// HSM handles conflict resolution - conflicts are shown inline
+				// Banner click dismisses (user can resolve via inline buttons)
 				return true;
 			},
 		);
@@ -229,6 +224,12 @@ export class LiveCMPluginValue implements PluginValue {
 			});
 		}
 
+		// Initialize CM6Integration for HSM Active Mode
+		if (this.document?.hsm) {
+			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor);
+			this.log("[LiveEditPlugin] CM6Integration initialized for HSM Active Mode");
+		}
+
 		this._observer = async (event, tr) => {
 			this.document = this.getDocument();
 
@@ -243,6 +244,15 @@ export class LiveCMPluginValue implements PluginValue {
 
 			// Called when a yjs event is received. Results in updates to codemirror.
 			if (tr.origin !== this) {
+				// When HSM active mode is enabled, let HSM control dispatching.
+				// The HSM will emit DISPATCH_CM6 effects which CM6Integration handles.
+				if (this.cm6Integration && this.document?.hsm) {
+					this.debug("Yjs event received, forwarding to HSM via REMOTE_DOC_UPDATED");
+					this.document.hsm.send({ type: 'REMOTE_DOC_UPDATED' });
+					return;
+				}
+
+				// Legacy path: direct dispatch to editor
 				const delta = event.delta;
 				let changes: ChangeSpec[] = [];
 				let pos = 0;
@@ -378,8 +388,15 @@ export class LiveCMPluginValue implements PluginValue {
 			return [];
 		}
 
-		if (this.document?.text === this.editor.state.doc.toString()) {
+		const crdtText = this.document?.text;
+		const editorText = this.editor.state.doc.toString();
+		this.log(
+			`[getKeyFrame] CRDT: ${crdtText?.length ?? 0} chars, editor: ${editorText.length} chars`,
+		);
+
+		if (crdtText === editorText) {
 			// disk and ytext were already the same.
+			this.log("[getKeyFrame] CRDT === editor, setting tracking=true");
 			if (isLiveMd(this.view)) {
 				this.view.tracking = true;
 			}
@@ -396,6 +413,12 @@ export class LiveCMPluginValue implements PluginValue {
 		}
 
 		this.warn(`ytext and editor buffer need syncing`);
+		this.log(
+			`[getKeyFrame] CRDT preview: "${crdtText?.slice(0, 50).replace(/\n/g, "\\n")}..."`,
+		);
+		this.log(
+			`[getKeyFrame] editor preview: "${editorText.slice(0, 50).replace(/\n/g, "\\n")}..."`,
+		);
 		if (!this.document.hasLocalDB() && this.document.text === "") {
 			this.warn("local db missing, not setting buffer");
 			return [];
@@ -403,12 +426,17 @@ export class LiveCMPluginValue implements PluginValue {
 
 		// disk and ytext differ
 		if (isLiveMd(this.view) && !this.view.tracking) {
+			this.log("[getKeyFrame] calling view.checkStale() (LiveMd path)");
 			this.view.checkStale();
 		} else if (this.document) {
-			const stale = await this.document.checkStale();
-			if (stale && !this.destroyed && this.editor) {
+			// Use HSM conflict detection
+			const hsmConflict = this.document.hasHSMConflict();
+			this.log(`[getKeyFrame] HSM conflict detection: ${hsmConflict}`);
+			if (hsmConflict === true && !this.destroyed && this.editor) {
+				this.log("[getKeyFrame] HSM reports conflict, showing merge banner");
 				this.mergeBanner();
 			}
+			// HSM always available - no legacy fallback needed
 		}
 
 		if (this.active(this.view) && !this.destroyed) {
@@ -427,6 +455,24 @@ export class LiveCMPluginValue implements PluginValue {
 		) {
 			return;
 		}
+
+		// Lazy initialization of CM6Integration: HSM might not have been available
+		// during constructor if acquireLock() hadn't completed yet
+		if (!this.cm6Integration && this.document?.hsm) {
+			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor);
+			this.log("[LiveEditPlugin] CM6Integration initialized lazily for HSM Active Mode");
+		}
+
+		// If CM6Integration is available (HSM Active Mode), forward to it
+		if (this.cm6Integration) {
+			this.cm6Integration.onEditorUpdate(update);
+			if (this.embed && this.document) {
+				this.document.requestSave();
+			}
+			return;
+		}
+
+		// Legacy path: directly apply changes to Yjs
 		this.document = this.getDocument();
 		const ytext = this.document?.ytext;
 		if (!ytext) {
@@ -464,6 +510,9 @@ export class LiveCMPluginValue implements PluginValue {
 		});
 		this.unsubscribes.length = 0;
 		this.viewHookPlugin?.destroy();
+		// Clean up CM6Integration
+		this.cm6Integration?.destroy();
+		this.cm6Integration = undefined;
 		this.connectionManager = null as any;
 		this.view = undefined;
 		this._ytext = undefined;
