@@ -7,7 +7,6 @@ export interface FeatureFlags {
 	enableNetworkLogging: boolean;
 	enableCanvasSync: boolean;
 	enableVerifyUploads: boolean;
-	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
@@ -29,7 +28,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNetworkLogging: false,
 	enableCanvasSync: false,
 	enableVerifyUploads: false,
-	enableAutomaticDiffResolution: true,
 	enableDiscordLogin: false,
 	enableSelfManageHosts: true,
 	enableToasts: true,
