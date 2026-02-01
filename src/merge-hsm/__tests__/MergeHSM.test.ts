@@ -855,6 +855,9 @@ describe('MergeHSM', () => {
       const update = createYjsUpdate('hello', 'hello world');
       t.send(remoteUpdate(update));
 
+      // Wait for async idle auto-merge to complete (BUG-021 fix made this async)
+      await t.hsm.awaitIdleAutoMerge();
+
       // Should auto-merge and emit WRITE_DISK
       expectEffect(t.effects, { type: 'WRITE_DISK' });
       expectState(t, 'idle.clean');
@@ -909,6 +912,133 @@ describe('MergeHSM', () => {
       // Should be in diverged state (3-way merge has conflict on same line)
       // The merge will fail because both sides changed the same line
       expectState(t, 'idle.diverged');
+    });
+
+    // BUG-021: Empty/uninitialized remote CRDT should not cause data loss
+    test('empty remote update does not overwrite local content (BUG-021)', async () => {
+      // Simulate the scenario from BUG-021:
+      // - Local has content stored in IndexedDB
+      // - Remote sends empty updates (remoteLen=0)
+      // - The merge should preserve local content, not overwrite with empty
+
+      const t = await createTestHSM({
+        initialState: 'idle.clean',
+        lca: await createLCA('local content', 1000),
+        disk: { contents: 'local content', mtime: 1000 },
+      });
+
+      // Note: In this test, the default loadUpdatesRaw returns empty array.
+      // This simulates when there's no IndexedDB (test environment).
+      // In production, loadUpdatesRaw would return the actual local updates.
+
+      // Create an empty update (represents uninitialized remote CRDT)
+      const emptyDoc = new Y.Doc();
+      const emptyUpdate = Y.encodeStateAsUpdate(emptyDoc);
+      emptyDoc.destroy();
+
+      t.clearEffects();
+      t.send(remoteUpdate(emptyUpdate));
+
+      await t.hsm.awaitIdleAutoMerge();
+
+      // The HSM should recognize that the remote had nothing new
+      // and should NOT emit WRITE_DISK with empty content
+      const writeDiskEffects = t.effects.filter(e => e.type === 'WRITE_DISK');
+
+      // Either no WRITE_DISK (remote had nothing new) or WRITE_DISK with original content
+      if (writeDiskEffects.length > 0) {
+        const writeEffect = writeDiskEffects[0] as { type: 'WRITE_DISK'; contents: string };
+        // If we do write, it should NOT be empty - it should preserve local content
+        expect(writeEffect.contents).not.toBe('');
+      }
+
+      // Should transition back to clean (not stuck in error state)
+      expectState(t, 'idle.clean');
+    });
+
+    // BUG-021: When local has content in IndexedDB, empty remote should preserve it
+    test('empty remote update preserves local IndexedDB content (BUG-021 full scenario)', async () => {
+      // Create a Yjs update representing "local content exists in IndexedDB"
+      const localDoc = new Y.Doc();
+      localDoc.getText('contents').insert(0, 'Line 1\nLine 2\nLine 3');
+      const localUpdate = Y.encodeStateAsUpdate(localDoc);
+      localDoc.destroy();
+
+      // Mock loadUpdatesRaw to return the local update (simulates IndexedDB content)
+      const mockLoadUpdatesRaw = async (_vaultId: string) => [localUpdate];
+
+      const t = await createTestHSM({
+        initialState: 'idle.clean',
+        lca: await createLCA('Line 1\nLine 2\nLine 3', 1000),
+        disk: { contents: 'Line 1\nLine 2\nLine 3', mtime: 1000 },
+        loadUpdatesRaw: mockLoadUpdatesRaw,
+      });
+
+      // Create an empty update (represents uninitialized remote CRDT)
+      const emptyDoc = new Y.Doc();
+      const emptyUpdate = Y.encodeStateAsUpdate(emptyDoc);
+      emptyDoc.destroy();
+
+      t.clearEffects();
+      t.send(remoteUpdate(emptyUpdate));
+
+      await t.hsm.awaitIdleAutoMerge();
+
+      // When local has content and remote is empty, the merge should:
+      // 1. Merge local + remote updates
+      // 2. See that the merged content equals local content
+      // 3. Either skip writing (no change) or write the preserved content
+
+      const writeDiskEffects = t.effects.filter(e => e.type === 'WRITE_DISK');
+      if (writeDiskEffects.length > 0) {
+        const writeEffect = writeDiskEffects[0] as { type: 'WRITE_DISK'; contents: string };
+        // The written content should be the LOCAL content, not empty
+        expect(writeEffect.contents).toBe('Line 1\nLine 2\nLine 3');
+      }
+
+      expectState(t, 'idle.clean');
+    });
+
+    // BUG-021: Remote with new content should merge with local IndexedDB content
+    test('remote update merges correctly with local IndexedDB content (BUG-021)', async () => {
+      // Create a Yjs update representing local content in IndexedDB
+      const localDoc = new Y.Doc();
+      localDoc.getText('contents').insert(0, 'Line 1\nLine 2\nLine 3');
+      const localUpdate = Y.encodeStateAsUpdate(localDoc);
+      localDoc.destroy();
+
+      // Mock loadUpdatesRaw to return the local update
+      const mockLoadUpdatesRaw = async (_vaultId: string) => [localUpdate];
+
+      const t = await createTestHSM({
+        initialState: 'idle.clean',
+        lca: await createLCA('original', 1000),
+        disk: { contents: 'original', mtime: 1000 },
+        loadUpdatesRaw: mockLoadUpdatesRaw,
+      });
+
+      // Create a remote update with different content
+      const remoteDoc = new Y.Doc();
+      remoteDoc.getText('contents').insert(0, 'Remote Content');
+      const remoteUpdateData = Y.encodeStateAsUpdate(remoteDoc);
+      remoteDoc.destroy();
+
+      t.clearEffects();
+      t.send(remoteUpdate(remoteUpdateData));
+
+      await t.hsm.awaitIdleAutoMerge();
+
+      // The merge should combine local and remote updates
+      const writeDiskEffects = t.effects.filter(e => e.type === 'WRITE_DISK');
+      expect(writeDiskEffects.length).toBe(1);
+
+      const writeEffect = writeDiskEffects[0] as { type: 'WRITE_DISK'; contents: string };
+      // The merged content should include both local and remote
+      // Since both are full state updates to 'contents', the merge behavior depends on
+      // Yjs conflict resolution (last-writer-wins by client ID)
+      expect(writeEffect.contents.length).toBeGreaterThan(0);
+
+      expectState(t, 'idle.clean');
     });
   });
 

@@ -57,6 +57,12 @@ export interface TestHSMOptions {
 
   /** Log state transitions for debugging */
   logTransitions?: boolean;
+
+  /**
+   * Mock function to load updates from IndexedDB (for BUG-021 testing).
+   * Default: returns empty array.
+   */
+  loadUpdatesRaw?: (vaultId: string) => Promise<Uint8Array[]>;
 }
 
 export interface TestHSM {
@@ -115,6 +121,8 @@ export interface TestableHSM {
   checkAndCorrectDrift(): boolean;
   subscribe(listener: (effect: MergeEffect) => void): () => void;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
+  awaitCleanup(): Promise<void>;
+  awaitIdleAutoMerge(): Promise<void>;
 }
 
 // =============================================================================
@@ -153,6 +161,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     lca: options.lca,
     disk: diskMeta,
     diskContents: options.disk?.contents,
+    loadUpdatesRaw: options.loadUpdatesRaw,
   });
 
   // Capture effects

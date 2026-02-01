@@ -39,6 +39,7 @@ import type {
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import type { TestableHSM } from './testing/createTestHSM';
+import type { LoadUpdatesRaw } from './types';
 
 // =============================================================================
 // Simple Observable for HSM
@@ -473,6 +474,7 @@ export class MergeHSM implements TestableHSM {
   private hashFn: (contents: string) => Promise<string>;
   private vaultId: string;
   private _createPersistence: CreatePersistence;
+  private _loadUpdatesRaw: LoadUpdatesRaw;
   private _persistenceMetadata?: PersistenceMetadata;
 
   // Remote doc is passed in and managed externally
@@ -488,6 +490,9 @@ export class MergeHSM implements TestableHSM {
   private _cleanupPromise: Promise<void> | null = null;
   private _cleanupResolve: (() => void) | null = null;
 
+  // Promise that resolves when idle auto-merge completes (BUG-021)
+  private _pendingIdleAutoMerge: Promise<void> | null = null;
+
   // Network connectivity status (does not block state transitions)
   private _isOnline: boolean = false;
 
@@ -499,6 +504,7 @@ export class MergeHSM implements TestableHSM {
     this.vaultId = config.vaultId;
     this.externalRemoteDoc = config.remoteDoc;
     this._createPersistence = config.createPersistence ?? defaultCreatePersistence;
+    this._loadUpdatesRaw = config.loadUpdatesRaw ?? defaultLoadUpdatesRaw;
     this._persistenceMetadata = config.persistenceMetadata;
 
     // Create and start the XState actor
@@ -537,6 +543,7 @@ export class MergeHSM implements TestableHSM {
       remoteDoc,
       timeProvider: config.timeProvider,
       hashFn: config.hashFn,
+      loadUpdatesRaw: config.loadUpdatesRaw,
     });
 
     // Stop the default actor and set up test state
@@ -690,6 +697,17 @@ export class MergeHSM implements TestableHSM {
   async awaitCleanup(): Promise<void> {
     if (this._cleanupPromise) {
       await this._cleanupPromise;
+    }
+  }
+
+  /**
+   * Wait for any pending idle auto-merge operation to complete.
+   * Returns immediately if no auto-merge is in progress.
+   * Used by tests to wait for async idle mode operations (BUG-021).
+   */
+  async awaitIdleAutoMerge(): Promise<void> {
+    if (this._pendingIdleAutoMerge) {
+      await this._pendingIdleAutoMerge;
     }
   }
 
@@ -1056,39 +1074,73 @@ export class MergeHSM implements TestableHSM {
   private performIdleRemoteAutoMerge(handleError: (err: unknown) => void): void {
     if (!this.pendingIdleUpdates || !this._lca) return;
 
-    const tempDoc = new Y.Doc();
-    try {
-      Y.applyUpdate(tempDoc, this.pendingIdleUpdates);
+    // BUG-021 FIX: Load local updates from IndexedDB and merge with remote.
+    // Previously, we applied pendingIdleUpdates to an empty Y.Doc which caused
+    // data loss when the remote CRDT was empty/uninitialized.
+    this._pendingIdleAutoMerge = this._loadUpdatesRaw(this.vaultId).then((localUpdates) => {
+      if (!this.pendingIdleUpdates) return; // Guard against race
 
-      const mergedContent = tempDoc.getText('contents').toString();
-      const stateVector = Y.encodeStateVector(tempDoc);
+      // Step 1: Merge local updates into a single update (no Y.Doc needed)
+      const localMerged = localUpdates.length > 0
+        ? Y.mergeUpdates(localUpdates)
+        : new Uint8Array();
 
-      // Emit effect synchronously
-      this.emitEffect({
-        type: 'WRITE_DISK',
-        path: this._path,
-        contents: mergedContent,
-      });
+      // Step 2: Get local state vector before merge (no Y.Doc needed)
+      const localStateVector = localMerged.length > 0
+        ? Y.encodeStateVectorFromUpdate(localMerged)
+        : new Uint8Array([0]);
 
-      // Clear pending and transition synchronously
-      this.pendingIdleUpdates = null;
-      this.transitionTo('idle.clean');
+      // Step 3: Merge local + remote updates (no Y.Doc needed)
+      const updatesToMerge = localMerged.length > 0
+        ? [localMerged, this.pendingIdleUpdates!]
+        : [this.pendingIdleUpdates!];
+      const merged = Y.mergeUpdates(updatesToMerge);
 
-      // Update LCA asynchronously (fire-and-forget)
-      this.hashFn(mergedContent).then((hash) => {
-        this._lca = {
+      // Step 4: Check if merge actually added anything (no Y.Doc needed)
+      const mergedStateVector = Y.encodeStateVectorFromUpdate(merged);
+      if (stateVectorsEqual(localStateVector, mergedStateVector)) {
+        // Remote had nothing new - skip hydration and disk write
+        this.pendingIdleUpdates = null;
+        this.transitionTo('idle.clean');
+        return;
+      }
+
+      // Step 5: NOW hydrate to extract text content (Y.Doc needed only here)
+      const tempDoc = new Y.Doc();
+      try {
+        Y.applyUpdate(tempDoc, merged);
+        const mergedContent = tempDoc.getText('contents').toString();
+        const stateVector = Y.encodeStateVector(tempDoc);
+
+        // Emit effect to write merged content to disk
+        this.emitEffect({
+          type: 'WRITE_DISK',
+          path: this._path,
           contents: mergedContent,
-          meta: {
-            hash,
-            mtime: this.timeProvider.now(),
-          },
-          stateVector,
-        };
-        this.emitPersistState();
-      }).catch(handleError);
-    } finally {
-      tempDoc.destroy();
-    }
+        });
+
+        // Clear pending and transition
+        this.pendingIdleUpdates = null;
+        this.transitionTo('idle.clean');
+
+        // Update LCA asynchronously
+        this.hashFn(mergedContent).then((hash) => {
+          this._lca = {
+            contents: mergedContent,
+            meta: {
+              hash,
+              mtime: this.timeProvider.now(),
+            },
+            stateVector,
+          };
+          this.emitPersistState();
+        }).catch(handleError);
+      } finally {
+        tempDoc.destroy();
+      }
+    }).catch(handleError).finally(() => {
+      this._pendingIdleAutoMerge = null;
+    });
   }
 
   private performIdleDiskAutoMerge(handleError: (err: unknown) => void): void {
@@ -1138,12 +1190,32 @@ export class MergeHSM implements TestableHSM {
 
     const lcaContent = this._lca.contents;
 
-    let remoteContent = lcaContent;
+    // BUG-021 FIX: Load local updates from IndexedDB and merge with remote.
+    // Previously, we applied pendingIdleUpdates to an empty Y.Doc which caused
+    // data loss when the remote CRDT was empty/uninitialized.
+    const localUpdates = await this._loadUpdatesRaw(this.vaultId);
+
+    // Compute the merged CRDT content (local + remote updates)
+    let crdtContent = lcaContent;
+    const updatesToMerge: Uint8Array[] = [];
+
+    // Include local updates from IndexedDB
+    if (localUpdates.length > 0) {
+      updatesToMerge.push(Y.mergeUpdates(localUpdates));
+    }
+
+    // Include pending remote updates
     if (this.pendingIdleUpdates) {
+      updatesToMerge.push(this.pendingIdleUpdates);
+    }
+
+    // Extract content from merged CRDT updates
+    if (updatesToMerge.length > 0) {
+      const merged = Y.mergeUpdates(updatesToMerge);
       const tempDoc = new Y.Doc();
       try {
-        Y.applyUpdate(tempDoc, this.pendingIdleUpdates);
-        remoteContent = tempDoc.getText('contents').toString();
+        Y.applyUpdate(tempDoc, merged);
+        crdtContent = tempDoc.getText('contents').toString();
       } finally {
         tempDoc.destroy();
       }
@@ -1151,7 +1223,8 @@ export class MergeHSM implements TestableHSM {
 
     const diskContent = this.pendingDiskContents ?? lcaContent;
 
-    const mergeResult = performThreeWayMerge(lcaContent, diskContent, remoteContent);
+    // 3-way merge: lca (base), disk (local changes), crdt (remote changes)
+    const mergeResult = performThreeWayMerge(lcaContent, diskContent, crdtContent);
 
     if (mergeResult.success) {
       this.emitEffect({
@@ -2225,6 +2298,17 @@ const defaultCreatePersistence: CreatePersistence = (_vaultId: string, _doc: Y.D
     },
     whenSynced: Promise.resolve(),
   };
+};
+
+/**
+ * Default loadUpdatesRaw: returns empty array (no IndexedDB).
+ * Production code should pass the real loadUpdatesRaw from y-indexeddb.
+ * Used for idle mode auto-merge (BUG-021 fix).
+ */
+const defaultLoadUpdatesRaw: LoadUpdatesRaw = async (_vaultId: string): Promise<Uint8Array[]> => {
+  // Return empty array for test environments where no IndexedDB exists.
+  // Real implementation should use loadUpdatesRaw from y-indexeddb.
+  return [];
 };
 
 async function defaultHashFn(contents: string): Promise<string> {

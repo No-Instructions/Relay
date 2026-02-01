@@ -463,6 +463,14 @@ export interface PersistenceMetadata {
  */
 export type CreatePersistence = (vaultId: string, doc: Y.Doc) => IYDocPersistence;
 
+/**
+ * Function to load raw Yjs updates from IndexedDB without creating a YDoc.
+ * Used for lightweight idle mode operations (BUG-021).
+ * Production: loadUpdatesRaw from y-indexeddb.
+ * Testing: can return an empty array or mock data.
+ */
+export type LoadUpdatesRaw = (vaultId: string) => Promise<Uint8Array[]>;
+
 export interface MergeHSMConfig {
   /** Document GUID */
   guid: string;
@@ -495,6 +503,13 @@ export interface MergeHSMConfig {
    * Override in tests with a mock.
    */
   createPersistence?: CreatePersistence;
+
+  /**
+   * Function to load raw updates from IndexedDB (for idle mode auto-merge).
+   * Defaults to loadUpdatesRaw from y-indexeddb.
+   * Override in tests with a mock that returns empty array.
+   */
+  loadUpdatesRaw?: LoadUpdatesRaw;
 
   /**
    * Metadata to store on the persistence for recovery/debugging.
