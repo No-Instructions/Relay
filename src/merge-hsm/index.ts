@@ -60,6 +60,7 @@ export type {
   // Other types
   PositionedChange,
   MergeHSMConfig,
+  LoadUpdatesRaw,
   MergeResult,
   MergeSuccess,
   MergeFailure,
