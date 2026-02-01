@@ -166,10 +166,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.updateStats();
 	}
 
-	async process(fn: (data: string) => string) {
-		if (this.tfile && flags().enableAutomaticDiffResolution) {
-			this.pendingOps.push(fn);
-		}
+	async process(_fn: (data: string) => string) {
+		// Automatic diff resolution removed due to data loss issues (BUG-020)
+		// This method is intentionally a no-op
 	}
 
 	public get parent(): TFolder | null {
