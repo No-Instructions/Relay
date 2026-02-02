@@ -6,6 +6,7 @@
  * recording/replay support straightforward.
  */
 
+import * as Y from 'yjs';
 import type {
   LoadEvent,
   UnloadEvent,
@@ -34,6 +35,7 @@ import type {
   ErrorEvent,
   PositionedChange,
   LCAState,
+  MergeEvent,
 } from '../types';
 
 // =============================================================================
@@ -182,8 +184,8 @@ export function yDocsReady(): YDocsReadyEvent {
  * Create an INITIALIZE_WITH_CONTENT event.
  * Used when there's no LCA to initialize a document with content.
  */
-export function initializeWithContent(content: string): InitializeWithContentEvent {
-  return { type: 'INITIALIZE_WITH_CONTENT', content };
+export function initializeWithContent(content: string, hash: string, mtime: number): InitializeWithContentEvent {
+  return { type: 'INITIALIZE_WITH_CONTENT', content, hash, mtime };
 }
 
 /**
@@ -256,4 +258,194 @@ export async function createLCA(
     },
     stateVector: stateVector ?? new Uint8Array([0]),
   };
+}
+
+/**
+ * Create a Yjs update representing content.
+ * Returns an update that can be applied to any Y.Doc to get the content.
+ */
+export function createYjsUpdate(content: string): Uint8Array {
+  const doc = new Y.Doc();
+  doc.getText('contents').insert(0, content);
+  const update = Y.encodeStateAsUpdate(doc);
+  doc.destroy();
+  return update;
+}
+
+// =============================================================================
+// State Transition Helpers
+// =============================================================================
+//
+// These helpers drive the HSM through real state transitions instead of
+// bypassing the state machine. Use these instead of forTesting() to ensure
+// tests validate actual transition paths.
+//
+// Minimal interface for HSM test handles (avoids circular imports)
+// =============================================================================
+
+/**
+ * Minimal interface for driving state transitions.
+ * Both TestHSM and MergeHSM satisfy this interface.
+ */
+export interface HSMHandle {
+  send(event: MergeEvent): void;
+  matches(path: string): boolean;
+  readonly statePath?: string;
+}
+
+export interface LoadAndActivateOptions {
+  /** Document GUID (default: 'test-guid') */
+  guid?: string;
+  /** Document path (default: 'test.md') */
+  path?: string;
+  /** LCA mtime (default: Date.now()) */
+  mtime?: number;
+}
+
+/**
+ * Drive HSM from unloaded to active.tracking with the given content.
+ *
+ * Sends events: LOAD → PERSISTENCE_LOADED → ACQUIRE_LOCK → INITIALIZE_WITH_CONTENT
+ * The INITIALIZE_WITH_CONTENT event creates YDocs, inserts content, and since
+ * a lock was requested, transitions to active.entering then active.tracking.
+ *
+ * @example
+ * ```ts
+ * const t = await createTestHSM();
+ * await loadAndActivate(t, 'hello world');
+ * // t is now in active.tracking with localDoc containing 'hello world'
+ * ```
+ */
+export async function loadAndActivate(
+  hsm: HSMHandle,
+  content: string,
+  opts?: LoadAndActivateOptions
+): Promise<void> {
+  const guid = opts?.guid ?? 'test-guid';
+  const path = opts?.path ?? 'test.md';
+  const mtime = opts?.mtime ?? Date.now();
+  const hash = await sha256(content);
+
+  // Drive through transitions:
+  // 1. LOAD → loading.loadingPersistence
+  hsm.send(load(guid, path));
+
+  // 2. PERSISTENCE_LOADED (no LCA) → loading.awaitingLCA
+  hsm.send(persistenceLoaded(new Uint8Array(), null));
+
+  // 3. ACQUIRE_LOCK → sets pendingLockAcquisition flag, stays in awaitingLCA
+  hsm.send(acquireLock(content));
+
+  // 4. INITIALIZE_WITH_CONTENT → creates YDocs, inserts content, sets LCA,
+  //    then since lock was pending, transitions to active.entering.
+  //    YDOCS_READY is sent via Promise microtask when persistence syncs.
+  hsm.send(initializeWithContent(content, hash, mtime));
+
+  // Wait for YDOCS_READY to fire (via microtask from whenSynced Promise)
+  await Promise.resolve();
+
+  // Verify we reached the expected state
+  if (!hsm.matches('active.tracking')) {
+    const state = hsm.statePath ?? 'unknown';
+    throw new Error(
+      `loadAndActivate: expected active.tracking but got ${state}. ` +
+      `This may indicate a bug in the state machine or test setup.`
+    );
+  }
+}
+
+export interface LoadToIdleOptions {
+  /** Document GUID (default: 'test-guid') */
+  guid?: string;
+  /** Document path (default: 'test.md') */
+  path?: string;
+  /** LCA content (default: '') */
+  content?: string;
+  /** LCA mtime (default: Date.now()) */
+  mtime?: number;
+}
+
+/**
+ * Drive HSM from unloaded to idle.clean.
+ *
+ * Sends events: LOAD → PERSISTENCE_LOADED (with LCA)
+ * Ends in idle.clean (or idle.diskAhead if disk differs from LCA).
+ *
+ * @example
+ * ```ts
+ * const t = await createTestHSM();
+ * await loadToIdle(t, { content: 'hello' });
+ * // t is now in idle.clean
+ * ```
+ */
+export async function loadToIdle(
+  hsm: HSMHandle,
+  opts?: LoadToIdleOptions
+): Promise<void> {
+  const guid = opts?.guid ?? 'test-guid';
+  const path = opts?.path ?? 'test.md';
+  const content = opts?.content ?? '';
+  const mtime = opts?.mtime ?? Date.now();
+
+  // Create LCA
+  const updates = content ? createYjsUpdate(content) : new Uint8Array();
+  const stateVector = content ? Y.encodeStateVectorFromUpdate(updates) : new Uint8Array([0]);
+  const lca = await createLCA(content, mtime, stateVector);
+
+  // Drive through transitions
+  hsm.send(load(guid, path));
+  hsm.send(persistenceLoaded(updates, lca));
+
+  // Verify we reached an idle state
+  if (!hsm.matches('idle')) {
+    const state = hsm.statePath ?? 'unknown';
+    throw new Error(
+      `loadToIdle: expected idle.* but got ${state}. ` +
+      `This may indicate a bug in the state machine or test setup.`
+    );
+  }
+}
+
+export interface LoadToAwaitingLCAOptions {
+  /** Document GUID (default: 'test-guid') */
+  guid?: string;
+  /** Document path (default: 'test.md') */
+  path?: string;
+  /** Pre-existing IndexedDB updates (default: none) */
+  updates?: Uint8Array;
+}
+
+/**
+ * Drive HSM from unloaded to loading.awaitingLCA.
+ *
+ * Sends events: LOAD → PERSISTENCE_LOADED (without LCA)
+ * Useful for testing initialization flows.
+ *
+ * @example
+ * ```ts
+ * const t = await createTestHSM();
+ * await loadToAwaitingLCA(t);
+ * // t is now in loading.awaitingLCA, waiting for INITIALIZE_WITH_CONTENT
+ * ```
+ */
+export async function loadToAwaitingLCA(
+  hsm: HSMHandle,
+  opts?: LoadToAwaitingLCAOptions
+): Promise<void> {
+  const guid = opts?.guid ?? 'test-guid';
+  const path = opts?.path ?? 'test.md';
+  const updates = opts?.updates ?? new Uint8Array();
+
+  // Drive through transitions (no LCA → stays in awaitingLCA)
+  hsm.send(load(guid, path));
+  hsm.send(persistenceLoaded(updates, null));
+
+  // Verify we reached the expected state
+  if (!hsm.matches('loading.awaitingLCA')) {
+    const state = hsm.statePath ?? 'unknown';
+    throw new Error(
+      `loadToAwaitingLCA: expected loading.awaitingLCA but got ${state}. ` +
+      `This may indicate a bug in the state machine or test setup.`
+    );
+  }
 }

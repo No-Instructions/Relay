@@ -54,6 +54,17 @@ export {
   // Helpers
   createLCA,
   sha256,
+  createYjsUpdate,
+  // State transition helpers (drive through real transitions)
+  loadAndActivate,
+  loadToIdle,
+  loadToAwaitingLCA,
+} from './events';
+export type {
+  HSMHandle,
+  LoadAndActivateOptions,
+  LoadToIdleOptions,
+  LoadToAwaitingLCAOptions,
 } from './events';
 
 // Assertions
