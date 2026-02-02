@@ -38,6 +38,9 @@ import {
   error,
   createLCA,
   sha256,
+  // State transition helpers
+  loadAndActivate,
+  loadToIdle,
   // Assertions
   expectEffect,
   expectNoEffect,
@@ -115,12 +118,9 @@ describe('MergeHSM', () => {
     test('persisted content is loaded by IndexeddbPersistence (integration)', async () => {
       // With the new architecture, persisted updates are loaded by
       // IndexeddbPersistence attached to localDoc in createYDocs().
-      // In unit tests (no IndexedDB), localDoc starts empty.
-      // Use forTesting() with localDocContent for pre-populated localDoc.
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello world',
-      });
+      // Use loadAndActivate() to drive through real transitions with content.
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello world');
 
       expectLocalDocText(t, 'hello world');
     });
@@ -239,7 +239,8 @@ describe('MergeHSM', () => {
     });
 
     test('isAwaitingLCA returns false when not in awaitingLCA state', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       expect(t.hsm.isAwaitingLCA()).toBe(false);
     });
@@ -320,10 +321,8 @@ describe('MergeHSM', () => {
 
   describe('active.tracking', () => {
     test('user edit updates localDoc', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       t.send(cm6Insert(5, ' world', 'hello world'));
 
@@ -332,10 +331,8 @@ describe('MergeHSM', () => {
     });
 
     test('user edit emits SYNC_TO_REMOTE effect', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       t.send(cm6Insert(5, ' world', 'hello world'));
 
@@ -343,10 +340,9 @@ describe('MergeHSM', () => {
     });
 
     test('user edit with isFromYjs=true does not emit SYNC_TO_REMOTE', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
+      t.clearEffects();
 
       t.send(cm6Change(
         [{ from: 5, to: 5, insert: ' world' }],
@@ -358,10 +354,9 @@ describe('MergeHSM', () => {
     });
 
     test('multiple edits each emit SYNC_TO_REMOTE', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: '',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, '');
+      t.clearEffects();
 
       t.send(cm6Insert(0, 'a', 'a'));
       t.send(cm6Insert(1, 'b', 'ab'));
@@ -372,10 +367,8 @@ describe('MergeHSM', () => {
     });
 
     test('remote update dispatches to editor', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       // Simulate a remote change by directly modifying remoteDoc
       // (this is what would happen when WebSocket receives an update)
@@ -390,10 +383,8 @@ describe('MergeHSM', () => {
     });
 
     test('remote update DISPATCH_CM6 contains correctly positioned insert changes', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       // Simulate a remote insert at position 5
       const remoteDoc = t.hsm.getRemoteDoc()!;
@@ -410,10 +401,8 @@ describe('MergeHSM', () => {
     });
 
     test('remote update DISPATCH_CM6 contains correctly positioned delete changes', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello world',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello world');
 
       // Simulate a remote delete of ' world' (positions 5-11)
       const remoteDoc = t.hsm.getRemoteDoc()!;
@@ -431,10 +420,8 @@ describe('MergeHSM', () => {
     });
 
     test('CM6_CHANGE updates lastKnownEditorText in tracking state', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       // Send CM6_CHANGE to update lastKnownEditorText
       t.send(cm6Insert(5, ' world', 'hello world'));
@@ -909,10 +896,8 @@ describe('MergeHSM', () => {
 
   describe('network events', () => {
     test('CONNECTED event is handled in active.tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       t.send(connected());
 
@@ -921,10 +906,8 @@ describe('MergeHSM', () => {
     });
 
     test('DISCONNECTED event is handled in active.tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       t.send(disconnected());
 
@@ -933,10 +916,8 @@ describe('MergeHSM', () => {
     });
 
     test('PROVIDER_SYNCED event is handled in active.tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       t.send(providerSynced());
 
@@ -945,9 +926,8 @@ describe('MergeHSM', () => {
     });
 
     test('network events work in idle mode too', async () => {
-      const t = await createTestHSM({
-        initialState: 'idle.clean',
-      });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       t.send(connected());
       expectState(t, 'idle.clean');
@@ -963,10 +943,8 @@ describe('MergeHSM', () => {
 
   describe('drift detection', () => {
     test('checkAndCorrectDrift returns false when no drift', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       // Simulate an editor change that matches localDoc
       t.send(cm6Insert(5, ' world', 'hello world'));
@@ -980,10 +958,8 @@ describe('MergeHSM', () => {
     });
 
     test('checkAndCorrectDrift detects and corrects drift', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       // Simulate editor reporting one thing
       t.send(cm6Insert(5, ' world', 'hello world'));
@@ -1003,9 +979,8 @@ describe('MergeHSM', () => {
     });
 
     test('checkAndCorrectDrift only works in active.tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'idle.clean',
-      });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       const driftDetected = t.hsm.checkAndCorrectDrift();
 
@@ -1020,7 +995,8 @@ describe('MergeHSM', () => {
   describe('idle mode', () => {
     test('REMOTE_UPDATE in idle transitions to idle.remoteAhead', async () => {
       // Create a test starting in idle.clean
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       const update = createYjsUpdate('', 'hello');
       t.send(remoteUpdate(update));
@@ -1029,6 +1005,8 @@ describe('MergeHSM', () => {
     });
 
     test('DISK_CHANGED in idle transitions to idle.diskAhead', async () => {
+      // Note: This test uses forTesting to skip auto-merge behavior.
+      // With real transitions, disk changes auto-merge when remote==LCA.
       const t = await createTestHSM({ initialState: 'idle.clean' });
 
       t.send(await diskChanged('modified content', Date.now()));
@@ -1037,7 +1015,8 @@ describe('MergeHSM', () => {
     });
 
     test('idle mode does not create YDocs (lightweight)', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       // Verify no YDocs exist in idle mode
       expect(t.getLocalDocText()).toBeNull();
@@ -1052,7 +1031,8 @@ describe('MergeHSM', () => {
     });
 
     test('ACQUIRE_LOCK creates YDocs for active mode', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       // No YDocs before
       expect(t.getLocalDocText()).toBeNull();
@@ -1272,7 +1252,8 @@ describe('MergeHSM', () => {
 
   describe('getSyncStatus', () => {
     test('returns synced status in idle.clean', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean', guid: 'doc-123', path: 'test.md' });
+      const t = await createTestHSM();
+      await loadToIdle(t, { guid: 'doc-123', path: 'test.md' });
 
       const status = t.hsm.getSyncStatus();
 
@@ -1282,7 +1263,8 @@ describe('MergeHSM', () => {
     });
 
     test('returns synced status in active.tracking', async () => {
-      const t = await createTestHSM({ initialState: 'active.tracking', localDoc: 'hello' });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const status = t.hsm.getSyncStatus();
 
@@ -1391,10 +1373,8 @@ describe('MergeHSM', () => {
     });
 
     test('snapshot is JSON serializable', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'test content',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'test content');
 
       const snapshot = t.snapshot();
       const json = JSON.stringify(snapshot);
