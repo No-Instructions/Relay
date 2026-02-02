@@ -168,7 +168,8 @@ describe('MergeHSM', () => {
       t.send(persistenceLoaded(new Uint8Array(), null));
       expectState(t, 'loading.awaitingLCA');
 
-      t.send(initializeWithContent('hello world'));
+      const hash = await sha256('hello world');
+      t.send(initializeWithContent('hello world', hash, 1000));
 
       expectState(t, 'idle.clean');
       expect(t.state.lca).not.toBeNull();
@@ -205,7 +206,8 @@ describe('MergeHSM', () => {
       expectState(t, 'loading.awaitingLCA');
 
       // Now initialize
-      t.send(initializeWithContent('hello'));
+      const hash = await sha256('hello');
+      t.send(initializeWithContent('hello', hash, 1000));
 
       // Wait for persistence.whenSynced promise to resolve
       await Promise.resolve();
@@ -221,7 +223,8 @@ describe('MergeHSM', () => {
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.clearEffects();
 
-      t.send(initializeWithContent('hello world'));
+      const hash = await sha256('hello world');
+      t.send(initializeWithContent('hello world', hash, 1000));
 
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
@@ -239,6 +242,75 @@ describe('MergeHSM', () => {
       const t = await createTestHSM({ initialState: 'idle.clean' });
 
       expect(t.hsm.isAwaitingLCA()).toBe(false);
+    });
+
+    // Recovery path tests: ACQUIRE_LOCK when no LCA but local CRDT content exists
+    describe('recovery path', () => {
+      test('ACQUIRE_LOCK with matching content derives LCA and proceeds to tracking', async () => {
+        const content = 'existing content';
+        const updates = createYjsUpdate('', content);
+
+        // Mock IndexedDB with the updates
+        const t = await createTestHSM({ indexedDBUpdates: updates });
+
+        t.send(load('doc-123', 'notes/test.md'));
+        t.send(persistenceLoaded(updates, null));
+        expectState(t, 'loading.awaitingLCA');
+
+        // ACQUIRE_LOCK with matching editorContent triggers recovery
+        t.send(acquireLock(content));
+
+        // Wait for YDOCS_READY and async LCA creation
+        await Promise.resolve();
+        await Promise.resolve();
+
+        // Content matches - should derive LCA and proceed to tracking
+        expectState(t, 'active.tracking');
+
+        // LCA should be established
+        expect(t.state.lca).not.toBeNull();
+        expect(t.state.lca?.contents).toBe(content);
+      });
+
+      test('ACQUIRE_LOCK with differing content enters conflict.blocked', async () => {
+        const localContent = 'local CRDT content';
+        const diskContent = 'different disk content';
+        const updates = createYjsUpdate('', localContent);
+
+        const t = await createTestHSM({ indexedDBUpdates: updates });
+
+        t.send(load('doc-123', 'notes/test.md'));
+        t.send(persistenceLoaded(updates, null));
+        expectState(t, 'loading.awaitingLCA');
+
+        // ACQUIRE_LOCK with different editorContent
+        t.send(acquireLock(diskContent));
+
+        // Wait for YDOCS_READY
+        await Promise.resolve();
+
+        // Content differs with no baseline - should enter conflict
+        expectState(t, 'active.conflict.bannerShown');
+
+        // conflictData should have empty base (no LCA for recovery)
+        expect(t.hsm.getConflictData()?.base).toBe('');
+        expect(t.hsm.getConflictData()?.local).toBe(localContent);
+        expect(t.hsm.getConflictData()?.remote).toBe(diskContent);
+      });
+
+      test('ACQUIRE_LOCK without local CRDT content stays in awaitingLCA', async () => {
+        const t = await createTestHSM();
+
+        t.send(load('doc-123', 'notes/test.md'));
+        t.send(persistenceLoaded(new Uint8Array(), null));
+        expectState(t, 'loading.awaitingLCA');
+
+        // ACQUIRE_LOCK without local CRDT content - cannot recover
+        t.send(acquireLock('some editor content'));
+
+        // Should stay in awaitingLCA - waiting for INITIALIZE_*
+        expectState(t, 'loading.awaitingLCA');
+      });
     });
   });
 
@@ -315,6 +387,60 @@ describe('MergeHSM', () => {
 
       expectEffect(t.effects, { type: 'DISPATCH_CM6' });
       expectLocalDocText(t, 'hello world');
+    });
+
+    test('remote update DISPATCH_CM6 contains correctly positioned insert changes', async () => {
+      const t = await createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello',
+      });
+
+      // Simulate a remote insert at position 5
+      const remoteDoc = t.hsm.getRemoteDoc()!;
+      remoteDoc.getText('contents').insert(5, ' world');
+
+      t.send(remoteDocUpdated());
+
+      // The delta-based observer should produce an insert at position 5
+      const dispatchEffect = t.effects.find(e => e.type === 'DISPATCH_CM6');
+      expect(dispatchEffect).toBeDefined();
+      expect((dispatchEffect as { type: 'DISPATCH_CM6'; changes: Array<{ from: number; to: number; insert: string }> }).changes).toEqual([
+        { from: 5, to: 5, insert: ' world' },
+      ]);
+    });
+
+    test('remote update DISPATCH_CM6 contains correctly positioned delete changes', async () => {
+      const t = await createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello world',
+      });
+
+      // Simulate a remote delete of ' world' (positions 5-11)
+      const remoteDoc = t.hsm.getRemoteDoc()!;
+      remoteDoc.getText('contents').delete(5, 6);
+
+      t.send(remoteDocUpdated());
+
+      // The delta-based observer should produce a delete from 5 to 11
+      const dispatchEffect = t.effects.find(e => e.type === 'DISPATCH_CM6');
+      expect(dispatchEffect).toBeDefined();
+      expect((dispatchEffect as { type: 'DISPATCH_CM6'; changes: Array<{ from: number; to: number; insert: string }> }).changes).toEqual([
+        { from: 5, to: 11, insert: '' },
+      ]);
+      expectLocalDocText(t, 'hello');
+    });
+
+    test('CM6_CHANGE updates lastKnownEditorText in tracking state', async () => {
+      const t = await createTestHSM({
+        initialState: 'active.tracking',
+        localDoc: 'hello',
+      });
+
+      // Send CM6_CHANGE to update lastKnownEditorText
+      t.send(cm6Insert(5, ' world', 'hello world'));
+
+      // Drift detection should find no drift since editor matches localDoc
+      expect(t.hsm.checkAndCorrectDrift()).toBe(false);
     });
 
     test('SAVE_COMPLETE updates LCA mtime', async () => {
