@@ -41,6 +41,8 @@ import {
   // State transition helpers
   loadAndActivate,
   loadToIdle,
+  loadToConflict,
+  loadToResolving,
   // Assertions
   expectEffect,
   expectNoEffect,
@@ -686,21 +688,23 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('conflict resolution', () => {
-    test('MERGE_CONFLICT transitions to active.conflict.bannerShown', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.merging',
-        localDoc: 'hello local',
+    test('real conflict reached through diverged idle state', async () => {
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello remote',
       });
-
-      t.send(mergeConflict('hello', 'hello local', 'hello remote'));
 
       expectState(t, 'active.conflict.bannerShown');
     });
 
     test('OPEN_DIFF_VIEW transitions to active.conflict.resolving', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.conflict.bannerShown',
-        localDoc: 'hello local',
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
 
       t.send(openDiffView());
@@ -709,9 +713,11 @@ describe('MergeHSM', () => {
     });
 
     test('RESOLVE_ACCEPT_DISK returns to tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.conflict.resolving',
-        localDoc: 'hello local',
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
 
       t.send(resolveAcceptDisk());
@@ -720,9 +726,11 @@ describe('MergeHSM', () => {
     });
 
     test('RESOLVE_ACCEPT_LOCAL returns to tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.conflict.resolving',
-        localDoc: 'hello local',
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
 
       t.send(resolveAcceptLocal());
@@ -731,10 +739,11 @@ describe('MergeHSM', () => {
     });
 
     test('DISMISS_CONFLICT defers and returns to tracking', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.conflict.bannerShown',
-        localDoc: 'hello local',
-        disk: { contents: 'hello disk', mtime: 1000 },
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
 
       t.send(dismissConflict());
@@ -744,17 +753,12 @@ describe('MergeHSM', () => {
     });
 
     test('RESOLVE_ACCEPT_DISK applies disk content to localDoc', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.merging',
-        localDoc: 'hello local',
-        lca: await createLCA('hello', Date.now() - 1000),
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
-
-      // First trigger a conflict
-      t.send(mergeConflict('hello', 'hello local', 'hello disk'));
-      expectState(t, 'active.conflict.bannerShown');
-
-      t.send(openDiffView());
       t.clearEffects();
 
       t.send(resolveAcceptDisk());
@@ -765,15 +769,12 @@ describe('MergeHSM', () => {
     });
 
     test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.merging',
-        localDoc: 'hello local',
-        lca: await createLCA('hello', Date.now() - 1000),
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
-
-      // First trigger a conflict
-      t.send(mergeConflict('hello', 'hello local', 'hello disk'));
-      t.send(openDiffView());
       t.clearEffects();
 
       t.send(resolveAcceptLocal());
@@ -785,15 +786,12 @@ describe('MergeHSM', () => {
     });
 
     test('RESOLVE_ACCEPT_MERGED applies merged content', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.merging',
-        localDoc: 'hello local',
-        lca: await createLCA('hello', Date.now() - 1000),
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
-
-      // First trigger a conflict
-      t.send(mergeConflict('hello', 'hello local', 'hello disk'));
-      t.send(openDiffView());
       t.clearEffects();
 
       t.send(resolveAcceptMerged('hello merged'));
@@ -804,9 +802,11 @@ describe('MergeHSM', () => {
     });
 
     test('CANCEL from resolving returns to bannerShown', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.conflict.resolving',
-        localDoc: 'hello local',
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello local',
+        disk: 'hello disk',
       });
 
       t.send(cancel());
@@ -815,21 +815,17 @@ describe('MergeHSM', () => {
     });
 
     test('ACQUIRE_LOCK from idle.diverged goes to conflict.bannerShown', async () => {
-      const t = await createTestHSM({
-        initialState: 'idle.diverged',
-        lca: await createLCA('original', 1000),
-        disk: { contents: 'disk changed', mtime: 2000 },
+      // This is what loadToConflict does internally - test the scenario directly
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'original',
+        remote: 'remote changed',
+        disk: 'disk changed',
       });
 
-      // v6: Pass editorContent (disk content) with ACQUIRE_LOCK to fix BUG-022
-      t.send(acquireLock('disk changed'));
-
-      // Should go through blocked and immediately to bannerShown
       expectState(t, 'active.conflict.bannerShown');
-      // YDocs should be created
       expect(t.hsm.getLocalDoc()).not.toBeNull();
 
-      // v6: Verify conflictData.remote is populated (fixes BUG-022)
       const conflictData = t.hsm.getConflictData();
       expect(conflictData).not.toBeNull();
       expect(conflictData!.remote).toBe('disk changed');
@@ -1266,7 +1262,12 @@ describe('MergeHSM', () => {
     });
 
     test('returns conflict status in active.conflict.bannerShown', async () => {
-      const t = await createTestHSM({ initialState: 'active.conflict.bannerShown', localDoc: 'hello' });
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'original',
+        remote: 'hello',
+        disk: 'disk change',
+      });
 
       const status = t.hsm.getSyncStatus();
 
@@ -1290,10 +1291,11 @@ describe('MergeHSM', () => {
     });
 
     test('DISMISS_CONFLICT emits PERSIST_STATE', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.conflict.bannerShown',
-        localDoc: 'hello',
-        disk: { contents: 'hello disk', mtime: 1000 },
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'original',
+        remote: 'hello',
+        disk: 'hello disk',
       });
       t.clearEffects();
 

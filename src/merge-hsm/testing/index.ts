@@ -59,12 +59,15 @@ export {
   loadAndActivate,
   loadToIdle,
   loadToAwaitingLCA,
+  loadToConflict,
+  loadToResolving,
 } from './events';
 export type {
   HSMHandle,
   LoadAndActivateOptions,
   LoadToIdleOptions,
   LoadToAwaitingLCAOptions,
+  LoadToConflictOptions,
 } from './events';
 
 // Assertions
