@@ -273,8 +273,7 @@
 {:else if !Platform.isMobile}
 	<Announcement {plugin} />
 {/if}
-<!-- E2E: data-page for test selectors. Update if routing changes. -->
-<div class="vertical-tab-content" data-page={remoteFolder ? 'folder-detail' : sharedFolder ? 'shared-folder-orphan' : currentRelay ? 'relay-detail' : 'relay-home'}>
+<div class="vertical-tab-content">
 	{#if remoteFolder}
 		<ManageRemoteFolder
 			{plugin}
