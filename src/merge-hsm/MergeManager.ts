@@ -285,8 +285,10 @@ export class MergeManager {
    * @param guid - Document GUID
    * @param path - Virtual path within shared folder
    * @param remoteDoc - Remote YDoc, managed externally with provider attached
+   * @param editorContent - The current editor/disk content. Required in v6 to fix BUG-022.
+   *   If not provided, defaults to empty string.
    */
-  async getHSM(guid: string, path: string, remoteDoc: Y.Doc): Promise<MergeHSM> {
+  async getHSM(guid: string, path: string, remoteDoc: Y.Doc, editorContent: string = ''): Promise<MergeHSM> {
     // Ensure HSM exists (register if needed)
     if (!this.hsms.has(guid)) {
       await this.register(guid, path, remoteDoc);
@@ -294,9 +296,9 @@ export class MergeManager {
 
     const hsm = this.hsms.get(guid)!;
 
-    // If not already active, acquire lock
+    // If not already active, acquire lock with editorContent
     if (!this.activeDocs.has(guid)) {
-      hsm.send({ type: 'ACQUIRE_LOCK' });
+      hsm.send({ type: 'ACQUIRE_LOCK', editorContent });
       this.activeDocs.add(guid);
     }
 

@@ -432,8 +432,11 @@ export class MergeHSM implements TestableHSM {
   private localDoc: Y.Doc | null = null;
   private remoteDoc: Y.Doc | null = null;
 
-  // Pending disk contents for merge
+  // Pending disk contents for merge (legacy, used for idle mode)
   private pendingDiskContents: string | null = null;
+
+  // v6: Editor content from ACQUIRE_LOCK event, used for merge on YDOCS_READY
+  private pendingEditorContent: string | null = null;
 
   // Conflict data (enhanced for inline resolution)
   private conflictData: {
@@ -863,7 +866,7 @@ export class MergeHSM implements TestableHSM {
         break;
 
       case 'ACQUIRE_LOCK':
-        this.handleAcquireLock();
+        this.handleAcquireLock(event);
         break;
 
       case 'RELEASE_LOCK':
@@ -1290,14 +1293,25 @@ export class MergeHSM implements TestableHSM {
   // Lock Management (Idle ↔ Active)
   // ===========================================================================
 
-  private handleAcquireLock(): void {
+  private handleAcquireLock(event?: { editorContent: string }): void {
     // If in loading state, defer lock acquisition until PERSISTENCE_LOADED
     if (this._statePath.startsWith('loading.')) {
       this.pendingLockAcquisition = true;
+      // Store editorContent for when we resume lock acquisition
+      if (event?.editorContent !== undefined) {
+        this.pendingEditorContent = event.editorContent;
+      }
       return;
     }
 
     if (this._statePath.startsWith('idle.')) {
+      // v6: Store editorContent from ACQUIRE_LOCK payload
+      // This contains the current editor/disk content at the moment of opening.
+      // Used in handleYDocsReady to compare against localDoc (fixes BUG-022).
+      if (event?.editorContent !== undefined) {
+        this.pendingEditorContent = event.editorContent;
+      }
+
       // Remember if we came from diverged for conflict handling in handleYDocsReady
       this._enteringFromDiverged = this._statePath === 'idle.diverged';
 
@@ -1311,28 +1325,61 @@ export class MergeHSM implements TestableHSM {
 
   private handleYDocsReady(): void {
     if (this._statePath === 'active.entering') {
-      if (this._enteringFromDiverged) {
-        this._enteringFromDiverged = false;
-        // Populate conflictData so the banner click can open the diff view.
-        // At this point localDoc has CRDT content (local+remote updates applied)
-        // and pendingDiskContents has what's on disk.
-        const localText = this.localDoc?.getText('contents').toString() ?? '';
-        const diskText = this.pendingDiskContents ?? '';
-        const baseText = this._lca?.contents ?? '';
+      // v6: Always compare localDoc vs pendingEditorContent (from ACQUIRE_LOCK).
+      // This fixes BUG-022 where pendingDiskContents could be null when entering
+      // from idle.diverged, causing data loss on conflict resolution.
+      const localText = this.localDoc?.getText('contents').toString() ?? '';
+      const diskText = this.pendingEditorContent ?? '';
+      const baseText = this._lca?.contents ?? '';
 
-        // No conflict regions in this case - it's a diverged state from idle
-        // The user can use the diff view or dismiss
-        this.conflictData = {
-          base: baseText,
-          local: localText,
-          remote: diskText,
-          conflictRegions: [],
-          resolvedIndices: new Set(),
-          positionedConflicts: [],
-        };
-        this.transitionTo('active.conflict.blocked');
-        this.transitionTo('active.conflict.bannerShown');
+      // Clear the flag (no longer primary check, but keep for logging/debugging)
+      this._enteringFromDiverged = false;
+
+      if (localText !== diskText) {
+        // Content differs - run 3-way merge or show conflict
+        const mergeResult = performThreeWayMerge(baseText, localText, diskText);
+
+        if (mergeResult.success) {
+          // Merge succeeded - apply to localDoc and dispatch to editor
+          this.applyContentToLocalDoc(mergeResult.merged);
+
+          if (mergeResult.patches.length > 0) {
+            this.emitEffect({ type: 'DISPATCH_CM6', changes: mergeResult.patches });
+          }
+
+          // Update LCA asynchronously
+          this.createLCAFromCurrent(mergeResult.merged).then((newLCA) => {
+            this._lca = newLCA;
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+
+          // Clear pending editor content and transition to tracking
+          this.pendingEditorContent = null;
+          this.transitionTo('active.tracking');
+        } else {
+          // Merge has conflicts - populate conflictData for banner/diff view
+          // Note: conflictData.remote = diskText (the disk/editor content)
+          this.conflictData = {
+            base: baseText,
+            local: localText,
+            remote: diskText,  // v6: Use pendingEditorContent, never empty string
+            conflictRegions: mergeResult.conflictRegions ?? [],
+            resolvedIndices: new Set(),
+            positionedConflicts: this.calculateConflictPositions(
+              mergeResult.conflictRegions ?? [],
+              localText
+            ),
+          };
+
+          // Don't clear pendingEditorContent yet - needed for conflict resolution
+          this.transitionTo('active.conflict.blocked');
+          this.transitionTo('active.conflict.bannerShown');
+        }
       } else {
+        // Content matches - no merge needed
+        this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
       }
     }
@@ -1996,6 +2043,7 @@ export class MergeHSM implements TestableHSM {
 
     this.conflictData = null;
     this.pendingDiskContents = null;
+    this.pendingEditorContent = null;  // v6: Clear after conflict resolution
 
     // Transition synchronously
     this.transitionTo('active.tracking');

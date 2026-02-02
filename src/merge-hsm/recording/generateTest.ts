@@ -227,7 +227,7 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
       return `unload()`;
 
     case 'ACQUIRE_LOCK':
-      return `acquireLock()`;
+      return `acquireLock(${JSON.stringify(event.editorContent)})`;
 
     case 'RELEASE_LOCK':
       return `releaseLock()`;

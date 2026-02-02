@@ -119,7 +119,7 @@ export interface RecordingMetadata {
 export type SerializableEvent =
   | { type: 'LOAD'; guid: string; path: string }
   | { type: 'UNLOAD' }
-  | { type: 'ACQUIRE_LOCK' }
+  | { type: 'ACQUIRE_LOCK'; editorContent: string }
   | { type: 'RELEASE_LOCK' }
   | { type: 'DISK_CHANGED'; contents: string; mtime: number; hash: string }
   | { type: 'REMOTE_UPDATE'; update: string } // base64

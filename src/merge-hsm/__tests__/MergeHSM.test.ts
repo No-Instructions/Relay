@@ -622,12 +622,18 @@ describe('MergeHSM', () => {
         disk: { contents: 'disk changed', mtime: 2000 },
       });
 
-      t.send(acquireLock());
+      // v6: Pass editorContent (disk content) with ACQUIRE_LOCK to fix BUG-022
+      t.send(acquireLock('disk changed'));
 
       // Should go through blocked and immediately to bannerShown
       expectState(t, 'active.conflict.bannerShown');
       // YDocs should be created
       expect(t.hsm.getLocalDoc()).not.toBeNull();
+
+      // v6: Verify conflictData.remote is populated (fixes BUG-022)
+      const conflictData = t.hsm.getConflictData();
+      expect(conflictData).not.toBeNull();
+      expect(conflictData!.remote).toBe('disk changed');
     });
   });
 
