@@ -1379,6 +1379,15 @@ export class MergeHSM implements TestableHSM {
         }
       } else {
         // Content matches - no merge needed
+        // If no LCA exists, create one now (safety net for edge cases)
+        if (!this._lca && diskText) {
+          this.createLCAFromCurrent(diskText).then((newLCA) => {
+            this._lca = newLCA;
+            this.emitPersistState();
+          }).catch((err) => {
+            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+          });
+        }
         this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
       }

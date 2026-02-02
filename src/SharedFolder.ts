@@ -1402,7 +1402,17 @@ export class SharedFolder extends HasProvider {
 		const doc = this.getOrCreateDoc(guid, vpath);
 		doc.markOrigin("remote");
 
-		this.backgroundSync.enqueueDownload(doc);
+		await this.backgroundSync.enqueueDownload(doc);
+
+		// Establish initial LCA after download completes
+		// At this point disk, local CRDT, and remote CRDT are all in agreement
+		const content = doc.text;
+		const tfile = doc.tfile;
+		if (tfile) {
+			const encoder = new TextEncoder();
+			const hash = await generateHash(encoder.encode(content).buffer);
+			doc.hsm.initializeLCA(content, hash, tfile.stat.mtime);
+		}
 
 		this.files.set(guid, doc);
 		this.fset.add(doc, update);
