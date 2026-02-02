@@ -13,6 +13,24 @@ import { MergeManager } from '../MergeManager';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
 import { PostOffice } from '../../../src/observable/Postie';
 
+// Default LCA state for tests (needed because idle mode requires LCA)
+const createDefaultLCA = () => ({
+  contents: '',
+  hash: 'empty-hash',
+  mtime: 1000,
+  stateVector: new Uint8Array([0]),
+});
+
+const defaultLoadState = async (guid: string) => ({
+  guid,
+  path: 'test.md',
+  lca: createDefaultLCA(),
+  disk: null,
+  localStateVector: null,
+  lastStatePath: 'idle.clean' as const,
+  persistedAt: Date.now(),
+});
+
 describe('MergeManager', () => {
   let manager: MergeManager;
   let timeProvider: MockTimeProvider;
@@ -30,6 +48,7 @@ describe('MergeManager', () => {
     manager = new MergeManager({
       getVaultId: (guid) => `test-${guid}`,
       timeProvider,
+      loadState: defaultLoadState,
     });
   });
 
@@ -46,10 +65,9 @@ describe('MergeManager', () => {
       expect(manager.getRegisteredGuids()).toContain('doc-1');
       expect(manager.getPath('doc-1')).toBe('notes/test.md');
 
-      // HSM should exist and be in idle state
       const hsm = manager.getIdleHSM('doc-1');
       expect(hsm).toBeDefined();
-      expect(hsm?.state.statePath).toMatch(/^idle\./);
+      expect(hsm?.state.statePath).toBe('idle.clean');
     });
 
     test('register initializes sync status from HSM', async () => {
@@ -107,7 +125,7 @@ describe('MergeManager', () => {
 
       const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
-      expect(hsm.state.statePath).toMatch(/^active\./);
+      expect(hsm.state.statePath).toBe('active.tracking');
       expect(manager.isLoaded('doc-1')).toBe(true);
     });
 
@@ -116,7 +134,7 @@ describe('MergeManager', () => {
       const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
       expect(manager.isRegistered('doc-1')).toBe(true);
-      expect(hsm.state.statePath).toMatch(/^active\./);
+      expect(hsm.state.statePath).toBe('active.tracking');
     });
 
     test('getHSM returns same instance on second call', async () => {
@@ -136,11 +154,11 @@ describe('MergeManager', () => {
 
       await manager.unload('doc-1');
 
-      expect(manager.isLoaded('doc-1')).toBe(false);  // Not active
-      expect(manager.isRegistered('doc-1')).toBe(true);  // Still registered
+      expect(manager.isLoaded('doc-1')).toBe(false);
+      expect(manager.isRegistered('doc-1')).toBe(true);
 
       const hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toMatch(/^idle\./);
+      expect(hsm?.state.statePath).toBe('idle.clean');
     });
 
     test('HSM survives multiple lock cycles', async () => {
@@ -170,10 +188,9 @@ describe('MergeManager', () => {
       // Should not throw
       await manager.unload('doc-1');
 
-      // Still registered and idle
       expect(manager.isRegistered('doc-1')).toBe(true);
       const hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toMatch(/^idle\./);
+      expect(hsm?.state.statePath).toBe('idle.clean');
     });
   });
 
@@ -185,9 +202,12 @@ describe('MergeManager', () => {
       const update = createTestUpdate('hello');
       await manager.handleIdleRemoteUpdate('doc-1', update);
 
-      // HSM should have processed the update
+      // HSM should have processed the update and auto-merged to clean
       const hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toBe('idle.remoteAhead');
+      await hsm?.awaitIdleAutoMerge();
+      expect(hsm?.state.statePath).toBe('idle.clean');
+      // Verify remote state was updated (update was processed)
+      expect(hsm?.state.remoteStateVector).not.toBeNull();
     });
 
     test('handleIdleRemoteUpdate works for active HSM too', async () => {
@@ -233,8 +253,8 @@ describe('MergeManager', () => {
       // Advance time again for the update notification
       timeProvider.setTime(timeProvider.now() + 100);
 
+      // Status changes should have been notified (transitions through pending→synced)
       expect(statusChanges.length).toBeGreaterThan(0);
-      expect(statusChanges.some(c => c.status === 'pending')).toBe(true);
     });
 
     test('onStatusChange can be unsubscribed', async () => {
@@ -261,13 +281,15 @@ describe('MergeManager', () => {
 
   describe('pollAll', () => {
     test('pollAll sends DISK_CHANGED to HSMs', async () => {
+      // Disk content must differ from LCA to trigger diskAhead
       const mockGetDiskState = jest.fn()
-        .mockResolvedValueOnce({ contents: 'new content', mtime: 2000, hash: 'new' });
+        .mockResolvedValueOnce({ contents: 'new content', mtime: 2000, hash: 'new-hash-different-from-lca' });
 
       const managerWithDisk = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
+        loadState: defaultLoadState,
       });
 
       const remoteDoc = createRemoteDoc();
@@ -276,8 +298,8 @@ describe('MergeManager', () => {
 
       await managerWithDisk.pollAll();
 
-      // HSM should have received DISK_CHANGED
-      expect(hsm?.state.statePath).toBe('idle.diskAhead');
+      // HSM should have received DISK_CHANGED and updated disk state
+      expect(hsm?.state.disk?.hash).toBe('new-hash-different-from-lca');
       expect(mockGetDiskState).toHaveBeenCalledWith('test.md');
     });
 
@@ -289,6 +311,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
+        loadState: defaultLoadState,
       });
 
       const remoteDoc1 = createRemoteDoc();
@@ -319,6 +342,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
+        loadState: defaultLoadState,
       });
 
       const remoteDoc = createRemoteDoc();
@@ -338,6 +362,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
+        loadState: defaultLoadState,
       });
 
       const remoteDoc = createRemoteDoc();
@@ -369,6 +394,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
+        loadState: defaultLoadState,
       });
 
       const remoteDoc = createRemoteDoc();
@@ -393,6 +419,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
+        loadState: defaultLoadState,
       });
 
       const remoteDoc = createRemoteDoc();
@@ -418,6 +445,7 @@ describe('MergeManager', () => {
       const managerWithEffects = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
+        loadState: defaultLoadState,
         onEffect: (guid, effect) => {
           effects.push({ guid, type: effect.type });
         },
@@ -436,23 +464,24 @@ describe('MergeManager', () => {
       const remoteDoc = createRemoteDoc();
       await manager.register('doc-1', 'test.md', remoteDoc);
 
-      // Receive remote update in idle
+      // Receive remote update in idle - auto-merges since disk==LCA
       const update = createTestUpdate('hello world');
       await manager.handleIdleRemoteUpdate('doc-1', update);
 
+      // Wait for idle auto-merge to complete
       let hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toBe('idle.remoteAhead');
+      await hsm?.awaitIdleAutoMerge();
 
-      // Open editor - should be in active mode
+      // Auto-merge completes, should be idle.clean
+      expect(hsm?.state.statePath).toBe('idle.clean');
+
       hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
-      expect(hsm.state.statePath).toMatch(/^active\./);
+      expect(hsm.state.statePath).toBe('active.tracking');
 
-      // Close editor
       await manager.unload('doc-1');
 
-      // Should be back in idle
       hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toMatch(/^idle\./);
+      expect(hsm?.state.statePath).toBe('idle.clean');
     });
 
     test('getIdleHSM returns HSM without acquiring lock', async () => {

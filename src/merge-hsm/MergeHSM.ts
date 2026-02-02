@@ -35,6 +35,8 @@ import type {
   ConflictRegion,
   PositionedConflict,
   ResolveHunkEvent,
+  InitializeWithContentEvent,
+  InitializeLCAEvent,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -225,13 +227,16 @@ const mergeMachine = setup({
         loadingPersistence: {
           on: {
             PERSISTENCE_LOADED: {
-              target: 'loadingLCA',
+              target: 'awaitingLCA',
               actions: ['setLCA', 'setLocalStateVector'],
             },
           },
         },
-        loadingLCA: {
-          // This is a transient state - wrapper handles auto-transition
+        awaitingLCA: {
+          // Blocks until INITIALIZE_WITH_CONTENT or INITIALIZE_LCA is sent
+        },
+        ready: {
+          // Transient state before idle/active
         },
       },
       on: {
@@ -666,6 +671,14 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
+   * Check if the HSM is awaiting LCA initialization.
+   * When true, the HSM is blocked waiting for INITIALIZE_WITH_CONTENT or INITIALIZE_LCA.
+   */
+  isAwaitingLCA(): boolean {
+    return this._statePath === 'loading.awaitingLCA';
+  }
+
+  /**
    * Check if the network is currently connected.
    * Does not affect state transitions; local edits always work offline.
    */
@@ -718,9 +731,11 @@ export class MergeHSM implements TestableHSM {
    * Wait for the HSM to reach an idle state.
    * Returns immediately if already in idle state.
    * Used to ensure HSM is ready before acquiring lock.
+   *
+   * Note: If called while in awaitingLCA state, this will block indefinitely
+   * until INITIALIZE_WITH_CONTENT or INITIALIZE_LCA is sent.
    */
   async awaitIdle(): Promise<void> {
-    // Already in idle state
     if (this._statePath.startsWith('idle.')) {
       return;
     }
@@ -933,6 +948,14 @@ export class MergeHSM implements TestableHSM {
         this.handleYDocsReady();
         break;
 
+      case 'INITIALIZE_WITH_CONTENT':
+        this.handleInitializeWithContent(event);
+        break;
+
+      case 'INITIALIZE_LCA':
+        this.handleInitializeLCA(event);
+        break;
+
       case 'MERGE_SUCCESS':
         this.handleMergeSuccess(event);
         break;
@@ -972,19 +995,156 @@ export class MergeHSM implements TestableHSM {
       this._localStateVector = Y.encodeStateVectorFromUpdate(event.updates);
     }
 
-    // Transition through loadingLCA briefly
-    this.transitionTo('loading.loadingLCA');
+    this.transitionTo('loading.awaitingLCA');
 
-    // Check if lock was requested during loading (per spec: loadingLCA checks for lock)
+    // Check if lock was requested during loading
     if (this.pendingLockAcquisition) {
-      this.pendingLockAcquisition = false;
-      // Transition first, then create YDocs (persistence 'synced' fires YDOCS_READY)
-      this.transitionTo('active.entering');
-      this.createYDocs();
+      // If we have an LCA, proceed to active mode; otherwise defer until initialized
+      if (event.lca) {
+        this.pendingLockAcquisition = false;
+        this.transitionTo('loading.ready');
+        this.handleLoadingReady();
+      }
+      // If no LCA, stay in awaitingLCA - lock will be acquired after INITIALIZE_*
       return;
     }
 
-    // Auto-transition to appropriate idle state based on current knowledge
+    // If LCA exists, transition to idle; otherwise stay in awaitingLCA
+    if (event.lca) {
+      this.transitionTo('loading.ready');
+      this.handleLoadingReady();
+    }
+    // else: stay in loading.awaitingLCA - waiting for INITIALIZE_WITH_CONTENT or INITIALIZE_LCA
+  }
+
+  /**
+   * Handle INITIALIZE_WITH_CONTENT event.
+   * Creates localDoc, inserts content, sets LCA, syncs to remote, transitions to ready.
+   * Used for newly created documents or first-time downloads.
+   */
+  private handleInitializeWithContent(event: InitializeWithContentEvent): void {
+    if (this._statePath !== 'loading.awaitingLCA') {
+      return; // Only valid in awaitingLCA state
+    }
+
+    // Create YDocs if not already created
+    if (!this.localDoc) {
+      this.createYDocs();
+    }
+
+    // Insert content into localDoc
+    if (this.localDoc) {
+      const ytext = this.localDoc.getText('contents');
+      if (ytext.length > 0) {
+        ytext.delete(0, ytext.length);
+      }
+      ytext.insert(0, event.content);
+
+      // Update local state vector
+      this._localStateVector = Y.encodeStateVector(this.localDoc);
+    }
+
+    // Set LCA synchronously with placeholder hash, then update async
+    // This ensures LCA is set before determineAndTransitionToIdleState runs
+    const stateVector = this.localDoc
+      ? Y.encodeStateVector(this.localDoc)
+      : new Uint8Array([0]);
+
+    this._lca = {
+      contents: event.content,
+      meta: {
+        hash: '', // Placeholder, will be updated
+        mtime: this.timeProvider.now(),
+      },
+      stateVector,
+    };
+
+    // Update hash asynchronously
+    this.hashFn(event.content).then((hash) => {
+      if (this._lca && this._lca.contents === event.content) {
+        this._lca = {
+          ...this._lca,
+          meta: { ...this._lca.meta, hash },
+        };
+        this.emitPersistState();
+      }
+    }).catch((err) => {
+      this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+    });
+
+    // Sync to remote
+    if (this.localDoc && this.remoteDoc) {
+      const update = Y.encodeStateAsUpdate(this.localDoc);
+      Y.applyUpdate(this.remoteDoc, update, 'local');
+      this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
+    }
+
+    // Transition to ready, then handle lock or idle transition
+    this.transitionTo('loading.ready');
+    this.handleLoadingReady();
+  }
+
+  /**
+   * Handle INITIALIZE_LCA event.
+   * Sets the LCA (content already in CRDT), transitions to ready.
+   * Used when downloading a document that already exists in the remote CRDT.
+   */
+  private handleInitializeLCA(event: InitializeLCAEvent): void {
+    if (this._statePath !== 'loading.awaitingLCA') {
+      return; // Only valid in awaitingLCA state
+    }
+
+    // Set LCA directly (content already in CRDT)
+    this._lca = {
+      contents: event.content,
+      meta: {
+        hash: event.hash,
+        mtime: event.mtime,
+      },
+      stateVector: this.localDoc
+        ? Y.encodeStateVector(this.localDoc)
+        : this._localStateVector ?? new Uint8Array([0]),
+    };
+
+    // Persist the new LCA
+    this.emitPersistState();
+
+    // Transition to ready, then handle lock or idle transition
+    this.transitionTo('loading.ready');
+    this.handleLoadingReady();
+  }
+
+  /**
+   * Handle transition from loading.ready to idle or active.
+   */
+  private handleLoadingReady(): void {
+    // Check if lock was requested during loading
+    if (this.pendingLockAcquisition) {
+      this.pendingLockAcquisition = false;
+      // Transition to active.entering and create YDocs
+      this.transitionTo('active.entering');
+      if (!this.localDoc) {
+        this.createYDocs();  // Will send YDOCS_READY when synced
+      } else if (this.localPersistence) {
+        // YDocs already created (by INITIALIZE_WITH_CONTENT)
+        // Wait for persistence to sync before signaling ready
+        this.localPersistence.whenSynced.then(() => {
+          this.send({ type: 'YDOCS_READY' });
+        });
+      }
+      return;
+    }
+
+    // Clean up YDocs if they were created during initialization
+    // (they'll be recreated when lock is acquired)
+    // Fire-and-forget - don't block idle transition
+    if (this.localDoc) {
+      this.cleanupYDocs().catch((err) => {
+        console.error('[MergeHSM] Error cleaning up YDocs:', err);
+      });
+    }
+
+    // Transition to appropriate idle state
     this.determineAndTransitionToIdleState();
   }
 
@@ -1070,7 +1230,9 @@ export class MergeHSM implements TestableHSM {
         this.performIdleDiskAutoMerge(handleError);
       }
     } else if (state === 'idle.diverged') {
-      this.performIdleThreeWayMerge().catch(handleError);
+      this._pendingIdleAutoMerge = this.performIdleThreeWayMerge().catch(handleError).finally(() => {
+        this._pendingIdleAutoMerge = null;
+      });
     }
   }
 
@@ -1122,11 +1284,14 @@ export class MergeHSM implements TestableHSM {
           contents: mergedContent,
         });
 
-        // Clear pending and transition
-        this.pendingIdleUpdates = null;
+        // Store merged update for when we enter active mode
+        // (IndexedDB doesn't have this content yet)
+        this.pendingIdleUpdates = Y.encodeStateAsUpdate(tempDoc);
+
         this.transitionTo('idle.clean');
 
-        // Update LCA asynchronously
+        // Update LCA and local state vector (they're now in sync)
+        this._localStateVector = stateVector;
         this.hashFn(mergedContent).then((hash) => {
           this._lca = {
             contents: mergedContent,
@@ -1165,6 +1330,9 @@ export class MergeHSM implements TestableHSM {
       // Clear pending and transition synchronously
       this.pendingDiskContents = null;
       this.transitionTo('idle.clean');
+
+      // Update local state vector (now in sync with disk)
+      this._localStateVector = stateVector;
 
       // Update LCA asynchronously (fire-and-forget)
       // Use disk hash if available, otherwise compute
@@ -1239,6 +1407,10 @@ export class MergeHSM implements TestableHSM {
       const tempDoc = new Y.Doc();
       try {
         tempDoc.getText('contents').insert(0, mergeResult.merged);
+        const stateVector = Y.encodeStateVector(tempDoc);
+
+        // Update local state vector (now in sync after merge)
+        this._localStateVector = stateVector;
 
         this._lca = {
           contents: mergeResult.merged,
@@ -1247,7 +1419,7 @@ export class MergeHSM implements TestableHSM {
             hash: await this.hashFn(mergeResult.merged),
             mtime: this.timeProvider.now(),
           },
-          stateVector: Y.encodeStateVector(tempDoc),
+          stateVector,
         };
       } finally {
         tempDoc.destroy();
@@ -1379,15 +1551,6 @@ export class MergeHSM implements TestableHSM {
         }
       } else {
         // Content matches - no merge needed
-        // If no LCA exists, create one now (safety net for edge cases)
-        if (!this._lca && diskText) {
-          this.createLCAFromCurrent(diskText).then((newLCA) => {
-            this._lca = newLCA;
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          });
-        }
         this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
       }
@@ -1444,6 +1607,7 @@ export class MergeHSM implements TestableHSM {
     // asynchronously and fires 'synced' when done.
     this.localPersistence = this._createPersistence(this.vaultId, this.localDoc);
     this.localPersistence.once('synced', () => {
+
       // Set persistence metadata for recovery/debugging
       if (this._persistenceMetadata && this.localPersistence?.set) {
         this.localPersistence.set('path', this._persistenceMetadata.path);
@@ -1469,6 +1633,11 @@ export class MergeHSM implements TestableHSM {
   }
 
   private async cleanupYDocs(): Promise<void> {
+    // Capture final state vector before cleanup for idle state determination
+    if (this.localDoc) {
+      this._localStateVector = Y.encodeStateVector(this.localDoc);
+    }
+
     if (this.localPersistence) {
       // Await destroy to ensure pending IndexedDB writes complete
       await this.localPersistence.destroy();

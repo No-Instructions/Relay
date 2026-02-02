@@ -91,7 +91,8 @@ export interface MergeState {
 export type StatePath =
   | 'unloaded'
   | 'loading.loadingPersistence'
-  | 'loading.loadingLCA'
+  | 'loading.awaitingLCA'
+  | 'loading.ready'
   | 'idle.clean'
   | 'idle.localAhead'
   | 'idle.remoteAhead'
@@ -216,6 +217,28 @@ export interface YDocsReadyEvent {
   type: 'YDOCS_READY';
 }
 
+/**
+ * Initialize a document with content when no LCA exists.
+ * Creates localDoc, inserts content, sets LCA, syncs to remote, transitions to ready.
+ * Used for newly created documents or first-time downloads.
+ */
+export interface InitializeWithContentEvent {
+  type: 'INITIALIZE_WITH_CONTENT';
+  content: string;
+}
+
+/**
+ * Initialize LCA for a document that already has content in the CRDT.
+ * Sets the LCA, transitions to ready.
+ * Used when downloading a document that already exists in the remote CRDT.
+ */
+export interface InitializeLCAEvent {
+  type: 'INITIALIZE_LCA';
+  content: string;
+  hash: string;
+  mtime: number;
+}
+
 export interface MergeSuccessEvent {
   type: 'MERGE_SUCCESS';
   newLCA: LCAState;
@@ -269,6 +292,8 @@ export type MergeEvent =
   // Internal
   | PersistenceLoadedEvent
   | YDocsReadyEvent
+  | InitializeWithContentEvent
+  | InitializeLCAEvent
   | MergeSuccessEvent
   | MergeConflictEvent
   | RemoteDocUpdatedEvent

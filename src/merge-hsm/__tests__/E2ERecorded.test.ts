@@ -15,6 +15,8 @@ import {
   cm6Insert,
   diskChanged,
   persistenceLoaded,
+  initializeWithContent,
+  createLCA,
   expectState,
 } from '../testing';
 
@@ -31,39 +33,37 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     expectState(t, 'loading.loadingPersistence');
   });
 
-  test('should transition through loading to idle.empty when no prior state', async () => {
+  test('should block in awaitingLCA when no prior state', async () => {
     const t = await createTestHSM();
 
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
 
-    // With no LCA and no updates, should be in idle.clean
-    expectState(t, 'idle.clean');
+    expectState(t, 'loading.awaitingLCA');
   });
 
-  test('should transition to idle.synced when disk provides content', async () => {
+  test('should transition to idle after initializing with content', async () => {
     const t = await createTestHSM();
 
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    expectState(t, 'idle.clean');
+    expectState(t, 'loading.awaitingLCA');
 
-    // Disk change provides initial content - establishes LCA
-    t.send(await diskChanged(initialContent, Date.now()));
-    expectState(t, 'idle.diskAhead');
+    t.send(initializeWithContent(initialContent));
+    expectState(t, 'idle.clean');
   });
 
   test('should enter active mode and reach active.tracking', async () => {
     const t = await createTestHSM();
 
-    // Setup: load and reach idle.synced
+    // Setup: load and initialize with content
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    t.send(await diskChanged(initialContent, Date.now()));
-    expectState(t, 'idle.diskAhead');
+    t.send(initializeWithContent(initialContent));
+    expectState(t, 'idle.clean');
 
     // Acquire lock to enter active mode
-    t.send(acquireLock());
+    t.send(acquireLock(initialContent));
 
     // From E2E recording: initial state was active.tracking
     expectState(t, 'active.tracking');
@@ -75,8 +75,8 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     // Setup to active.tracking
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    t.send(await diskChanged(initialContent, Date.now()));
-    t.send(acquireLock());
+    t.send(initializeWithContent(initialContent));
+    t.send(acquireLock(initialContent));
     expectState(t, 'active.tracking');
 
     // Clear effects from setup
@@ -101,8 +101,8 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     // Setup to active.tracking
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    t.send(await diskChanged(initialContent, Date.now()));
-    t.send(acquireLock());
+    t.send(initializeWithContent(initialContent));
+    t.send(acquireLock(initialContent));
     expectState(t, 'active.tracking');
 
     // Disk change should trigger merge

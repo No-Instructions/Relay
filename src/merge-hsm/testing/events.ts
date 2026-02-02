@@ -26,6 +26,8 @@ import type {
   CancelEvent,
   PersistenceLoadedEvent,
   YDocsReadyEvent,
+  InitializeWithContentEvent,
+  InitializeLCAEvent,
   MergeSuccessEvent,
   MergeConflictEvent,
   RemoteDocUpdatedEvent,
@@ -176,6 +178,22 @@ export function yDocsReady(): YDocsReadyEvent {
   return { type: 'YDOCS_READY' };
 }
 
+/**
+ * Create an INITIALIZE_WITH_CONTENT event.
+ * Used when there's no LCA to initialize a document with content.
+ */
+export function initializeWithContent(content: string): InitializeWithContentEvent {
+  return { type: 'INITIALIZE_WITH_CONTENT', content };
+}
+
+/**
+ * Create an INITIALIZE_LCA event.
+ * Used when the content is already in the CRDT and we just need to set the LCA.
+ */
+export function initializeLCA(content: string, hash: string, mtime: number): InitializeLCAEvent {
+  return { type: 'INITIALIZE_LCA', content, hash, mtime };
+}
+
 export function mergeSuccess(newLCA: LCAState): MergeSuccessEvent {
   return { type: 'MERGE_SUCCESS', newLCA };
 }
@@ -223,7 +241,7 @@ export async function sha256(contents: string): Promise<string> {
 }
 
 /**
- * Create an LCAState for testing
+ * Create an LCAState for testing.
  */
 export async function createLCA(
   contents: string,
