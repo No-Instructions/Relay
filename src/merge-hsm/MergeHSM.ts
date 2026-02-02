@@ -468,6 +468,9 @@ export class MergeHSM implements TestableHSM {
   // Last known editor text (for drift detection)
   private lastKnownEditorText: string | null = null;
 
+  // Y.Text observer for converting remote deltas to positioned changes
+  private localTextObserver: ((event: Y.YTextEvent, tr: Y.Transaction) => void) | null = null;
+
   // Observables (per spec)
   private readonly _effects = new SimpleObservable<MergeEffect>();
   private readonly _stateChanges = new SimpleObservable<MergeState>();
@@ -552,6 +555,7 @@ export class MergeHSM implements TestableHSM {
       timeProvider: config.timeProvider,
       hashFn: config.hashFn,
       loadUpdatesRaw: config.loadUpdatesRaw,
+      createPersistence: config.createPersistence,
     });
 
     // Stop the default actor and set up test state
@@ -999,13 +1003,29 @@ export class MergeHSM implements TestableHSM {
 
     // Check if lock was requested during loading
     if (this.pendingLockAcquisition) {
-      // If we have an LCA, proceed to active mode; otherwise defer until initialized
+      // If we have an LCA, proceed to active mode
       if (event.lca) {
         this.pendingLockAcquisition = false;
         this.transitionTo('loading.ready');
         this.handleLoadingReady();
+        return;
       }
-      // If no LCA, stay in awaitingLCA - lock will be acquired after INITIALIZE_*
+
+      // Recovery path: If no LCA but local CRDT content exists, we can attempt
+      // recovery. The user opened the file, so we have editorContent to compare.
+      // handleYDocsReady detects recovery by checking _lca === null.
+      if (event.updates.length > 0 && this.pendingEditorContent !== undefined) {
+        // Has local CRDT content - proceed to active.entering for recovery.
+        // handleYDocsReady will compare localDoc vs pendingEditorContent:
+        // - If they match: derive LCA from content, proceed to tracking
+        // - If they differ: enter conflict.blocked (user must resolve)
+        this.pendingLockAcquisition = false;
+        this.transitionTo('active.entering');
+        this.createYDocs();
+        return;
+      }
+
+      // No local CRDT content - stay in awaitingLCA, wait for INITIALIZE_*
       return;
     }
 
@@ -1020,7 +1040,7 @@ export class MergeHSM implements TestableHSM {
   /**
    * Handle INITIALIZE_WITH_CONTENT event.
    * Creates localDoc, inserts content, sets LCA, syncs to remote, transitions to ready.
-   * Used for newly created documents or first-time downloads.
+   * Used for newly created documents.
    */
   private handleInitializeWithContent(event: InitializeWithContentEvent): void {
     if (this._statePath !== 'loading.awaitingLCA') {
@@ -1044,8 +1064,7 @@ export class MergeHSM implements TestableHSM {
       this._localStateVector = Y.encodeStateVector(this.localDoc);
     }
 
-    // Set LCA synchronously with placeholder hash, then update async
-    // This ensures LCA is set before determineAndTransitionToIdleState runs
+    // Set LCA with provided hash and mtime
     const stateVector = this.localDoc
       ? Y.encodeStateVector(this.localDoc)
       : new Uint8Array([0]);
@@ -1053,24 +1072,13 @@ export class MergeHSM implements TestableHSM {
     this._lca = {
       contents: event.content,
       meta: {
-        hash: '', // Placeholder, will be updated
-        mtime: this.timeProvider.now(),
+        hash: event.hash,
+        mtime: event.mtime,
       },
       stateVector,
     };
 
-    // Update hash asynchronously
-    this.hashFn(event.content).then((hash) => {
-      if (this._lca && this._lca.contents === event.content) {
-        this._lca = {
-          ...this._lca,
-          meta: { ...this._lca.meta, hash },
-        };
-        this.emitPersistState();
-      }
-    }).catch((err) => {
-      this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-    });
+    this.emitPersistState();
 
     // Sync to remote
     if (this.localDoc && this.remoteDoc) {
@@ -1466,13 +1474,36 @@ export class MergeHSM implements TestableHSM {
   // ===========================================================================
 
   private handleAcquireLock(event?: { editorContent: string }): void {
-    // If in loading state, defer lock acquisition until PERSISTENCE_LOADED
-    if (this._statePath.startsWith('loading.')) {
+    // Handle loading states
+    if (this._statePath === 'loading.loadingPersistence') {
+      // Still loading - defer until PERSISTENCE_LOADED
       this.pendingLockAcquisition = true;
-      // Store editorContent for when we resume lock acquisition
       if (event?.editorContent !== undefined) {
         this.pendingEditorContent = event.editorContent;
+        this.lastKnownEditorText = event.editorContent;
       }
+      return;
+    }
+
+    if (this._statePath === 'loading.awaitingLCA') {
+      // Store editorContent for recovery/initialization
+      if (event?.editorContent !== undefined) {
+        this.pendingEditorContent = event.editorContent;
+        this.lastKnownEditorText = event.editorContent;
+      }
+
+      // Recovery path: if local CRDT content exists, we can proceed to active mode.
+      // handleYDocsReady will compare localDoc vs pendingEditorContent and either
+      // derive LCA (if matching) or enter conflict (if differing).
+      const hasLocalContent = this._localStateVector && this._localStateVector.length > 1;
+      if (hasLocalContent && this.pendingEditorContent !== undefined) {
+        this.transitionTo('active.entering');
+        this.createYDocs();
+        return;
+      }
+
+      // No local CRDT content - defer until INITIALIZE_*
+      this.pendingLockAcquisition = true;
       return;
     }
 
@@ -1482,6 +1513,9 @@ export class MergeHSM implements TestableHSM {
       // Used in handleYDocsReady to compare against localDoc (fixes BUG-022).
       if (event?.editorContent !== undefined) {
         this.pendingEditorContent = event.editorContent;
+        // Initialize lastKnownEditorText so we have a baseline even if no
+        // CM6_CHANGE events arrive during active.entering
+        this.lastKnownEditorText = event.editorContent;
       }
 
       // Remember if we came from diverged for conflict handling in handleYDocsReady
@@ -1497,62 +1531,90 @@ export class MergeHSM implements TestableHSM {
 
   private handleYDocsReady(): void {
     if (this._statePath === 'active.entering') {
-      // v6: Always compare localDoc vs pendingEditorContent (from ACQUIRE_LOCK).
-      // This fixes BUG-022 where pendingDiskContents could be null when entering
-      // from idle.diverged, causing data loss on conflict resolution.
+      // Use current editor state if available, fall back to pendingEditorContent.
+      // lastKnownEditorText tracks CM6_CHANGE events during active.entering,
+      // so it reflects what the user has typed while persistence was loading.
+      // This prevents data loss when user types during the entering phase.
       const localText = this.localDoc?.getText('contents').toString() ?? '';
-      const diskText = this.pendingEditorContent ?? '';
+      const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? '';
       const baseText = this._lca?.contents ?? '';
+      const isRecoveryMode = this._lca === null;
 
       // Clear the flag (no longer primary check, but keep for logging/debugging)
       this._enteringFromDiverged = false;
 
-      if (localText !== diskText) {
-        // Content differs - run 3-way merge or show conflict
-        const mergeResult = performThreeWayMerge(baseText, localText, diskText);
-
-        if (mergeResult.success) {
-          // Merge succeeded - apply to localDoc and dispatch to editor
-          this.applyContentToLocalDoc(mergeResult.merged);
-
-          if (mergeResult.patches.length > 0) {
-            this.emitEffect({ type: 'DISPATCH_CM6', changes: mergeResult.patches });
-          }
-
-          // Update LCA asynchronously
-          this.createLCAFromCurrent(mergeResult.merged).then((newLCA) => {
+      if (localText === diskText) {
+        // Content matches - derive LCA (recovery) or just proceed (normal)
+        if (isRecoveryMode) {
+          // Recovery: derive LCA from matching content
+          this.createLCAFromCurrent(localText).then((newLCA) => {
             this._lca = newLCA;
             this.emitPersistState();
           }).catch((err) => {
             this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
           });
-
-          // Clear pending editor content and transition to tracking
-          this.pendingEditorContent = null;
-          this.transitionTo('active.tracking');
-        } else {
-          // Merge has conflicts - populate conflictData for banner/diff view
-          // Note: conflictData.remote = diskText (the disk/editor content)
-          this.conflictData = {
-            base: baseText,
-            local: localText,
-            remote: diskText,  // v6: Use pendingEditorContent, never empty string
-            conflictRegions: mergeResult.conflictRegions ?? [],
-            resolvedIndices: new Set(),
-            positionedConflicts: this.calculateConflictPositions(
-              mergeResult.conflictRegions ?? [],
-              localText
-            ),
-          };
-
-          // Don't clear pendingEditorContent yet - needed for conflict resolution
-          this.transitionTo('active.conflict.blocked');
-          this.transitionTo('active.conflict.bannerShown');
         }
-      } else {
-        // Content matches - no merge needed
         this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
+        return;
+      }
+
+      // Content differs
+      if (isRecoveryMode) {
+        // Recovery mode with differing content: cannot merge (no baseline).
+        // Go straight to conflict - user must choose.
+        this.conflictData = {
+          base: '', // No baseline available
+          local: localText,
+          remote: diskText,
+          conflictRegions: [], // No regions - entire content is in conflict
+          resolvedIndices: new Set(),
+          positionedConflicts: [],
+        };
+        this.transitionTo('active.conflict.blocked');
+        this.transitionTo('active.conflict.bannerShown');
+        return;
+      }
+
+      // Normal mode: run 3-way merge
+      const mergeResult = performThreeWayMerge(baseText, localText, diskText);
+
+      if (mergeResult.success) {
+        // Merge succeeded - apply to localDoc and dispatch to editor
+        this.applyContentToLocalDoc(mergeResult.merged);
+
+        if (mergeResult.patches.length > 0) {
+          this.emitEffect({ type: 'DISPATCH_CM6', changes: mergeResult.patches });
+        }
+
+        // Update LCA asynchronously
+        this.createLCAFromCurrent(mergeResult.merged).then((newLCA) => {
+          this._lca = newLCA;
+          this.emitPersistState();
+        }).catch((err) => {
+          this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
+        });
+
+        // Clear pending editor content and transition to tracking
+        this.pendingEditorContent = null;
+        this.transitionTo('active.tracking');
+      } else {
+        // Merge has conflicts - populate conflictData for banner/diff view
+        this.conflictData = {
+          base: baseText,
+          local: localText,
+          remote: diskText,
+          conflictRegions: mergeResult.conflictRegions ?? [],
+          resolvedIndices: new Set(),
+          positionedConflicts: this.calculateConflictPositions(
+            mergeResult.conflictRegions ?? [],
+            localText
+          ),
+        };
+
+        // Don't clear pendingEditorContent yet - needed for conflict resolution
+        this.transitionTo('active.conflict.blocked');
+        this.transitionTo('active.conflict.bannerShown');
       }
     }
   }
@@ -1627,15 +1689,75 @@ export class MergeHSM implements TestableHSM {
         this._localStateVector = Y.encodeStateVector(this.localDoc);
       }
 
+      // Set up observer for remote updates (converts deltas to positioned changes)
+      this.setupLocalDocObserver();
+
       // Signal that YDocs are ready
       this.send({ type: 'YDOCS_READY' });
     });
+  }
+
+  /**
+   * Set up Y.Text observer on localDoc to convert Yjs deltas to PositionedChange[].
+   * When updates are applied with origin='remote', the observer fires with event.delta
+   * which we convert directly to positioned changes for CM6.
+   */
+  private setupLocalDocObserver(): void {
+    if (!this.localDoc) return;
+
+    const ytext = this.localDoc.getText('contents');
+    this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
+      // Only process remote-originated changes
+      if (tr.origin !== 'remote') return;
+
+      // Only dispatch in tracking state
+      if (this._statePath !== 'active.tracking') return;
+
+      // Convert delta to positioned changes
+      const changes = this.deltaToPositionedChanges(event.delta);
+      if (changes.length > 0) {
+        this.emitEffect({ type: 'DISPATCH_CM6', changes });
+      }
+    };
+    ytext.observe(this.localTextObserver);
+  }
+
+  /**
+   * Convert a Yjs delta to PositionedChange[].
+   * Same logic as the legacy path in LiveEditPlugin.
+   */
+  private deltaToPositionedChanges(delta: Array<{ insert?: string | object; delete?: number; retain?: number }>): PositionedChange[] {
+    const changes: PositionedChange[] = [];
+    let pos = 0;
+
+    for (const d of delta) {
+      if (d.insert != null) {
+        // Insert is string content (we ignore embedded objects)
+        const insertText = typeof d.insert === 'string' ? d.insert : '';
+        if (insertText) {
+          changes.push({ from: pos, to: pos, insert: insertText });
+        }
+      } else if (d.delete != null) {
+        changes.push({ from: pos, to: pos + d.delete, insert: '' });
+        pos += d.delete;
+      } else if (d.retain != null) {
+        pos += d.retain;
+      }
+    }
+    return changes;
   }
 
   private async cleanupYDocs(): Promise<void> {
     // Capture final state vector before cleanup for idle state determination
     if (this.localDoc) {
       this._localStateVector = Y.encodeStateVector(this.localDoc);
+    }
+
+    // Clean up Y.Text observer before destroying doc
+    if (this.localDoc && this.localTextObserver) {
+      const ytext = this.localDoc.getText('contents');
+      ytext.unobserve(this.localTextObserver);
+      this.localTextObserver = null;
     }
 
     if (this.localPersistence) {
@@ -1677,9 +1799,13 @@ export class MergeHSM implements TestableHSM {
     docText: string;
     isFromYjs: boolean;
   }): void {
-    if (this._statePath !== 'active.tracking') return;
-
+    // Always track editor state, even during active.entering.
+    // This ensures we have the most up-to-date editor content for
+    // merge decisions in handleYDocsReady.
     this.lastKnownEditorText = event.docText;
+
+    // Only apply to localDoc in tracking state
+    if (this._statePath !== 'active.tracking') return;
 
     if (event.isFromYjs) return;
 
@@ -1756,24 +1882,21 @@ export class MergeHSM implements TestableHSM {
     }
   }
 
+  /**
+   * Merge remote changes to local doc.
+   * The Y.Text observer (setupLocalDocObserver) handles emitting DISPATCH_CM6
+   * with correctly positioned changes derived from Yjs deltas.
+   */
   private mergeRemoteToLocal(): void {
     if (!this.localDoc || !this.remoteDoc) return;
-
-    const beforeText = this.localDoc.getText('contents').toString();
 
     const update = Y.encodeStateAsUpdate(
       this.remoteDoc,
       Y.encodeStateVector(this.localDoc)
     );
 
+    // Observer will fire and emit DISPATCH_CM6 with delta-based changes
     Y.applyUpdate(this.localDoc, update, 'remote');
-
-    const afterText = this.localDoc.getText('contents').toString();
-
-    if (beforeText !== afterText) {
-      const changes = computePositionedChanges(beforeText, afterText);
-      this.emitEffect({ type: 'DISPATCH_CM6', changes });
-    }
   }
 
   // ===========================================================================
