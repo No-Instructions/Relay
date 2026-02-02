@@ -732,6 +732,27 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
+   * Wait for the HSM to reach a state matching the given predicate.
+   * Returns immediately if already in a matching state.
+   *
+   * @param predicate - Function that returns true when the desired state is reached
+   */
+  async awaitState(predicate: (statePath: string) => boolean): Promise<void> {
+    if (predicate(this._statePath)) {
+      return;
+    }
+
+    return new Promise<void>((resolve) => {
+      const unsubscribe = this.stateChanges.subscribe((state) => {
+        if (predicate(state.statePath)) {
+          unsubscribe();
+          resolve();
+        }
+      });
+    });
+  }
+
+  /**
    * Wait for the HSM to reach an idle state.
    * Returns immediately if already in idle state.
    * Used to ensure HSM is ready before acquiring lock.
@@ -740,19 +761,17 @@ export class MergeHSM implements TestableHSM {
    * until INITIALIZE_WITH_CONTENT or INITIALIZE_LCA is sent.
    */
   async awaitIdle(): Promise<void> {
-    if (this._statePath.startsWith('idle.')) {
-      return;
-    }
+    return this.awaitState((s) => s.startsWith('idle.'));
+  }
 
-    // Wait for state change to idle
-    return new Promise<void>((resolve) => {
-      const unsubscribe = this.stateChanges.subscribe((state) => {
-        if (state.statePath.startsWith('idle.')) {
-          unsubscribe();
-          resolve();
-        }
-      });
-    });
+  /**
+   * Wait for the HSM to reach active.tracking state.
+   * Returns immediately if already in active.tracking.
+   * Used after sending ACQUIRE_LOCK to wait for lock acquisition to complete.
+   * Safe to call from loading.awaitingLCA (BUG-032).
+   */
+  async awaitActive(): Promise<void> {
+    return this.awaitState((s) => s === 'active.tracking');
   }
 
   /**

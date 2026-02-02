@@ -206,9 +206,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 
 		try {
-			// Wait for HSM to finish loading before acquiring lock
-			await this._hsm.awaitIdle();
-
 			// v6: If editorContent not provided, read from disk (fallback for backward compatibility)
 			let content = editorContent;
 			if (content === undefined) {
@@ -222,11 +219,17 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 			// Send ACQUIRE_LOCK with editorContent to transition from idle to active
 			// v6: editorContent is required to fix BUG-022 (data loss on RESOLVE_ACCEPT_DISK)
+			// BUG-032 fix: Send ACQUIRE_LOCK first, then wait. The HSM queues the event
+			// if in loading.awaitingLCA (sets pendingLockAcquisition = true), which is
+			// processed when uploadDoc calls initializeWithContent() later.
 			if (!mergeManager.isLoaded(this.guid)) {
 				this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content });
 				// Mark as active in MergeManager
 				mergeManager.markActive(this.guid);
 			}
+
+			// Wait for active.tracking state (not idle - that would deadlock in awaitingLCA)
+			await this._hsm.awaitActive();
 
 			this.userLock = true; // Keep for compatibility
 
