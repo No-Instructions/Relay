@@ -15,11 +15,11 @@ The new helpers (`loadAndActivate`, `loadToIdle`, etc.) drive through real event
 
 | Helper | Target State | Status |
 |--------|--------------|--------|
-| `loadAndActivate(hsm, content)` | `active.tracking` | ✅ Ready |
+| `loadAndActivate(hsm, content, opts?)` | `active.tracking` | ✅ Ready |
 | `loadToIdle(hsm, opts?)` | `idle.clean` | ✅ Ready |
 | `loadToAwaitingLCA(hsm, opts?)` | `loading.awaitingLCA` | ✅ Ready |
-| `loadToMerging(hsm, ...)` | `active.merging` | ❌ Needed |
-| `loadToConflict(hsm, ...)` | `active.conflict.*` | ❌ Needed |
+| `loadToConflict(hsm, opts)` | `active.conflict.bannerShown` | ✅ Ready |
+| `loadToResolving(hsm, opts)` | `active.conflict.resolving` | ✅ Ready |
 
 ## Migration Tasks
 
@@ -36,24 +36,30 @@ The new helpers (`loadAndActivate`, `loadToIdle`, etc.) drive through real event
 - [x] **recording.test.ts `active.tracking` + `idle.clean`** (23 migrated) ✅ DONE
   - Remaining 3 are HSMRecording object literals (test fixtures), not createTestHSM calls
 
-### Phase 2: Helpers with lca/disk Support
+### Phase 2: Conflict State Helpers ✅ DONE
 
-Most remaining MergeHSM.test.ts tests (32 usages) need `lca` and/or `disk` parameters.
+- [x] **Added `loadToConflict` helper** - drives to `active.conflict.bannerShown` through real transitions
+- [x] **Added `loadToResolving` helper** - drives to `active.conflict.resolving`
+- [x] **Migrated all conflict resolution tests** (12 tests migrated)
 
-Options:
-1. **Extend `loadAndActivate`/`loadToIdle`** to accept `lca` and `disk` options
-2. **Add `loadToMerging` helper** for `active.merging` tests (4 usages)
-   - Drive to tracking, then trigger merge via REMOTE_UPDATE or DISK_CHANGED
-3. **Add `loadToConflict` helper** for conflict state tests (7 usages)
-   - `active.conflict.bannerShown` (4 usages)
-   - `active.conflict.resolving` (3 usages)
+### Phase 3: Remaining Tests (11 usages)
 
-### Phase 3: Edge Cases
+Tests still using forTesting fall into these categories:
 
-- [ ] **Migrate remaining idle states** (3 usages)
-  - `idle.diverged` (1)
-  - `idle.diskAhead` (1)
-  - `idle.remoteAhead` (1)
+1. **Tests needing `disk` state in idle** (5 tests) - for auto-merge behavior testing
+   - Could extend `loadToIdle` to accept disk metadata through `PERSISTENCE_LOADED`
+
+2. **Tests needing `disk` state in active** (3 tests) - BUG-006/007 disk state tests
+   - These test SAVE_COMPLETE updating disk state
+
+3. **Transient state tests** (1 test) - `idle.diskAhead`
+   - Real transitions auto-merge immediately, can't pause in transient state
+
+4. **Lock cycle test** (1 test) - state vector mismatch
+   - May indicate a real bug in how state vectors are managed
+
+5. **Diverged active state** (1 test) - localDoc differs from LCA
+   - Could migrate by making edits after `loadAndActivate`
 
 ### Phase 4: Cleanup
 
@@ -80,21 +86,25 @@ await loadAndActivate(t, 'hello world');
 ## Progress
 
 - Total usages at start: **94**
-- **Migrated: 48**
-  - MergeHSM.test.ts: 14 (simple cases + tests using lca mtime option)
+- **Migrated: 60**
+  - MergeHSM.test.ts: 26 (simple cases, mtime option, and conflict states)
   - invariants.test.ts: 11 (all done)
   - recording.test.ts: 23 (all createTestHSM calls done; 3 remaining are HSMRecording fixtures)
-- **Remaining: 23** (MergeHSM.test.ts)
-  - With `disk` parameter: ~10 (need disk state setup)
-  - `active.merging` state: 4 (need loadToMerging helper)
-  - `active.conflict.*` states: 5 (need loadToConflict helper)
-  - `idle.diverged/diskAhead`: 2 (edge cases, may stay with forTesting)
-  - Lock cycle tests: 2 (internal state vector mismatch, keep with forTesting)
+- **Remaining: 11** (MergeHSM.test.ts)
+  - With `disk` parameter + `active.tracking`: 3 (need disk in active mode)
+  - With `disk` parameter + `idle.clean`: 5 (need disk in idle mode for auto-merge tests)
+  - `idle.diskAhead`: 1 (transient state, may stay with forTesting)
+  - Lock cycle test: 1 (internal state vector mismatch)
+  - Diverged local/LCA in active: 1 (needs local edit after activation)
 
 ### Key Learnings
 
 1. Add `t.clearEffects()` after `loadAndActivate`/`loadToIdle` when tests count specific effects
-2. Some tests for transient states (like `idle.diskAhead`) can't be migrated because real transitions auto-merge - keep those with forTesting
-3. Tests with `lca` or `disk` parameters need extended helpers or stay with old pattern for now
-4. Lock cycle tests (`acquireLock/releaseLock` sequences) have state vector mismatches when using real transitions vs forTesting - these need to stay with forTesting
+2. **Conflicts can be driven through real transitions!** Use `loadToConflict` which:
+   - Loads to idle with base content
+   - Receives remote update with different content
+   - Receives disk change with yet another content
+   - Acquires lock from diverged state → triggers real conflict
+3. Some tests for transient states (like `idle.diskAhead`) can't be migrated because real transitions auto-merge - keep those with forTesting
+4. Lock cycle tests (`acquireLock/releaseLock` sequences) have state vector mismatches - investigating if this is a bug
 5. The `mtime` option in `loadAndActivate`/`loadToIdle` allows migrating tests that only need custom LCA timestamp

@@ -449,3 +449,99 @@ export async function loadToAwaitingLCA(
     );
   }
 }
+
+export interface LoadToConflictOptions {
+  /** Base content (LCA) */
+  base: string;
+  /** Remote/CRDT content (different from base) */
+  remote: string;
+  /** Disk content (different from both base and remote) */
+  disk: string;
+  /** Document GUID (default: 'test-guid') */
+  guid?: string;
+  /** Document path (default: 'test.md') */
+  path?: string;
+}
+
+/**
+ * Drive HSM from unloaded to active.conflict.bannerShown through real transitions.
+ *
+ * Creates a real 3-way conflict by:
+ * 1. Loading to idle with base content
+ * 2. Receiving remote update with different content
+ * 3. Receiving disk change with yet another content
+ * 4. Acquiring lock from diverged state → triggers conflict
+ *
+ * @example
+ * ```ts
+ * const t = await createTestHSM();
+ * await loadToConflict(t, {
+ *   base: 'original',
+ *   remote: 'remote changed this',
+ *   disk: 'disk changed this',
+ * });
+ * // t is now in active.conflict.bannerShown with real conflict data
+ * ```
+ */
+export async function loadToConflict(
+  hsm: HSMHandle,
+  opts: LoadToConflictOptions
+): Promise<void> {
+  const guid = opts.guid ?? 'test-guid';
+  const path = opts.path ?? 'test.md';
+
+  // 1. Load to idle with base content
+  await loadToIdle(hsm, { guid, path, content: opts.base, mtime: 1000 });
+
+  // 2. Receive remote update with different content
+  const remoteDoc = new Y.Doc();
+  remoteDoc.getText('contents').insert(0, opts.remote);
+  const update = Y.encodeStateAsUpdate(remoteDoc);
+  remoteDoc.destroy();
+  hsm.send(remoteUpdate(update));
+
+  // 3. Disk changes to yet another content
+  hsm.send(await diskChanged(opts.disk, 2000));
+
+  // 4. Wait for idle auto-merge attempt (which will fail to auto-merge)
+  // The HSM should be in idle.diverged now
+  if (!hsm.matches('idle.diverged')) {
+    const state = hsm.statePath ?? 'unknown';
+    throw new Error(
+      `loadToConflict: expected idle.diverged after disk change but got ${state}. ` +
+      `The base/remote/disk content may not create a real conflict.`
+    );
+  }
+
+  // 5. Acquire lock - this triggers conflict detection from diverged state
+  hsm.send(acquireLock(opts.disk));
+
+  // Verify we reached conflict state
+  if (!hsm.matches('active.conflict.bannerShown')) {
+    const state = hsm.statePath ?? 'unknown';
+    throw new Error(
+      `loadToConflict: expected active.conflict.bannerShown but got ${state}. ` +
+      `This may indicate a bug in the state machine.`
+    );
+  }
+}
+
+/**
+ * Drive HSM to active.conflict.resolving (diff view open).
+ *
+ * Same as loadToConflict but also opens the diff view.
+ */
+export async function loadToResolving(
+  hsm: HSMHandle,
+  opts: LoadToConflictOptions
+): Promise<void> {
+  await loadToConflict(hsm, opts);
+  hsm.send(openDiffView());
+
+  if (!hsm.matches('active.conflict.resolving')) {
+    const state = hsm.statePath ?? 'unknown';
+    throw new Error(
+      `loadToResolving: expected active.conflict.resolving but got ${state}.`
+    );
+  }
+}
