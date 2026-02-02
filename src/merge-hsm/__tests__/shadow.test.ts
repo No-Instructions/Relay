@@ -127,7 +127,7 @@ describe('Shadow Mode', () => {
       const shadow = new ShadowMergeHSM(createConfig(), {}, timeProvider);
 
       shadow.send({ type: 'LOAD', guid: 'test-guid', path: 'test.md' });
-      shadow.send({ type: 'ACQUIRE_LOCK' });
+      shadow.send({ type: 'ACQUIRE_LOCK', editorContent: '' });
 
       const stats = shadow.getStats();
       expect(stats.eventsProcessed).toBe(2);
@@ -298,7 +298,7 @@ describe('Shadow Mode', () => {
 
       // Send events without causing divergence
       manager.send('guid-1', { type: 'LOAD', guid: 'guid-1', path: 'doc1.md' });
-      manager.send('guid-1', { type: 'ACQUIRE_LOCK' });
+      manager.send('guid-1', { type: 'ACQUIRE_LOCK', editorContent: '' });
 
       const stats = manager.getSessionStats();
       expect(stats.eventsProcessed).toBe(2);

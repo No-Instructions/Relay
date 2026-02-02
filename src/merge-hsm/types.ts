@@ -129,6 +129,13 @@ export interface UnloadEvent {
 
 export interface AcquireLockEvent {
   type: 'ACQUIRE_LOCK';
+  /**
+   * The current editor/disk content at the moment of opening.
+   * Since the editor content equals the disk content when a file is first opened
+   * (before CRDT loads), this provides accurate disk content for merge operations.
+   * v6: Required parameter to fix BUG-022 (data loss on RESOLVE_ACCEPT_DISK).
+   */
+  editorContent: string;
 }
 
 export interface ReleaseLockEvent {

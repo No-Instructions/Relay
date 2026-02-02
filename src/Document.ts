@@ -192,9 +192,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Transitions HSM from idle to active mode.
 	 * Call this when editor opens (replaces userLock = true).
 	 *
+	 * @param editorContent - The current editor/disk content (required in v6).
+	 *   Since the editor content equals the disk content when a file is first
+	 *   opened (before CRDT loads), this provides accurate disk content for
+	 *   merge operations. Pass the content from the editor or read from disk.
 	 * @returns The MergeHSM instance, or null if HSM is not enabled
 	 */
-	async acquireLock(): Promise<MergeHSM | null> {
+	async acquireLock(editorContent?: string): Promise<MergeHSM | null> {
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (!mergeManager || !this._hsm) {
 			this.userLock = true; // Fallback if MergeManager/HSM not available
@@ -205,9 +209,21 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			// Wait for HSM to finish loading before acquiring lock
 			await this._hsm.awaitIdle();
 
-			// Send ACQUIRE_LOCK to transition from idle to active
+			// v6: If editorContent not provided, read from disk (fallback for backward compatibility)
+			let content = editorContent;
+			if (content === undefined) {
+				const tfile = this.tfile;
+				if (tfile) {
+					content = await this.vault.read(tfile);
+				} else {
+					content = "";  // New file, no content yet
+				}
+			}
+
+			// Send ACQUIRE_LOCK with editorContent to transition from idle to active
+			// v6: editorContent is required to fix BUG-022 (data loss on RESOLVE_ACCEPT_DISK)
 			if (!mergeManager.isLoaded(this.guid)) {
-				this._hsm.send({ type: "ACQUIRE_LOCK" });
+				this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content });
 				// Mark as active in MergeManager
 				mergeManager.markActive(this.guid);
 			}

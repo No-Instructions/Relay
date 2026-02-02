@@ -98,7 +98,7 @@ describe('HSM Recording', () => {
 
     it('passes through simple events unchanged', () => {
       const events: MergeEvent[] = [
-        { type: 'ACQUIRE_LOCK' },
+        { type: 'ACQUIRE_LOCK', editorContent: 'test content' },
         { type: 'RELEASE_LOCK' },
         { type: 'UNLOAD' },
         { type: 'PROVIDER_SYNCED' },
@@ -365,7 +365,7 @@ describe('HSM Recording', () => {
           {
             seq: 0,
             timestamp: Date.now(),
-            event: { type: 'ACQUIRE_LOCK' },
+            event: { type: 'ACQUIRE_LOCK', editorContent: '' },
             statePathBefore: 'active.tracking',
             statePathAfter: 'idle.clean', // This is wrong - ACQUIRE_LOCK shouldn't cause this
             effects: [],
@@ -414,7 +414,7 @@ describe('HSM Recording', () => {
           {
             seq: 0,
             timestamp: Date.now(),
-            event: { type: 'ACQUIRE_LOCK' },
+            event: { type: 'ACQUIRE_LOCK', editorContent: '' },
             statePathBefore: 'active.tracking',
             statePathAfter: 'wrong-state' as any,
             effects: [],
@@ -517,7 +517,7 @@ describe('HSM Recording', () => {
           {
             seq: 0,
             timestamp: Date.now(),
-            event: { type: 'ACQUIRE_LOCK' },
+            event: { type: 'ACQUIRE_LOCK', editorContent: '' },
             statePathBefore: 'active.tracking',
             statePathAfter: 'wrong' as any,
             effects: [],
