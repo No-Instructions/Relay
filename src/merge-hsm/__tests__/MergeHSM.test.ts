@@ -263,9 +263,8 @@ describe('MergeHSM', () => {
         // ACQUIRE_LOCK with matching editorContent triggers recovery
         t.send(acquireLock(content));
 
-        // Wait for YDOCS_READY and async LCA creation
-        await Promise.resolve();
-        await Promise.resolve();
+        // Wait for YDOCS_READY and async LCA creation (hashFn is async)
+        await new Promise(resolve => setTimeout(resolve, 0));
 
         // Content matches - should derive LCA and proceed to tracking
         expectState(t, 'active.tracking');

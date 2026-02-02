@@ -449,6 +449,9 @@ export class MergeHSM implements TestableHSM {
   // Pending updates for idle mode auto-merge (received via REMOTE_UPDATE)
   private pendingIdleUpdates: Uint8Array | null = null;
 
+  // Initial updates from PERSISTENCE_LOADED (applied when YDocs are created)
+  private initialPersistenceUpdates: Uint8Array | null = null;
+
   // Persistence for localDoc (only in active mode)
   private localPersistence: IYDocPersistence | null = null;
 
@@ -572,7 +575,12 @@ export class MergeHSM implements TestableHSM {
       hsm.createYDocs();
 
       if (config.localDocContent !== undefined) {
-        hsm.initializeLocalDoc(config.localDocContent);
+        // Directly insert content for testing (bypasses event flow)
+        hsm.localDoc?.getText('contents').insert(0, config.localDocContent);
+        // Sync to remoteDoc so tests can modify it
+        if (hsm.localDoc && hsm.remoteDoc) {
+          Y.applyUpdate(hsm.remoteDoc, Y.encodeStateAsUpdate(hsm.localDoc));
+        }
       }
     }
 
@@ -995,6 +1003,8 @@ export class MergeHSM implements TestableHSM {
     // Compute state vector for idle mode comparisons
     if (event.updates.length > 0) {
       this._localStateVector = Y.encodeStateVectorFromUpdate(event.updates);
+      // Store updates for when YDocs are created (fixes state vector mismatch on lock cycles)
+      this.initialPersistenceUpdates = event.updates;
     }
 
     this.transitionTo('loading.awaitingLCA');
@@ -1298,7 +1308,8 @@ export class MergeHSM implements TestableHSM {
 
         // Update LCA and local state vector (they're now in sync)
         this._localStateVector = stateVector;
-        this.hashFn(mergedContent).then((hash) => {
+        // Return the promise so awaitIdleAutoMerge() waits for LCA update
+        return this.hashFn(mergedContent).then((hash) => {
           this._lca = {
             contents: mergedContent,
             meta: {
@@ -1308,7 +1319,7 @@ export class MergeHSM implements TestableHSM {
             stateVector,
           };
           this.emitPersistState();
-        }).catch(handleError);
+        });
       } finally {
         tempDoc.destroy();
       }
@@ -1554,6 +1565,8 @@ export class MergeHSM implements TestableHSM {
         }
         this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
+        // Merge any remote content that accumulated during active.entering
+        this.mergeRemoteToLocal();
         return;
       }
 
@@ -1593,6 +1606,8 @@ export class MergeHSM implements TestableHSM {
         // Clear pending editor content and transition to tracking
         this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
+        // Merge any remote content that accumulated during active.entering
+        this.mergeRemoteToLocal();
       } else {
         // Merge has conflicts - populate conflictData for banner/diff view
         this.conflictData = {
@@ -1667,10 +1682,18 @@ export class MergeHSM implements TestableHSM {
         this.localPersistence.set('s3rn', this._persistenceMetadata.s3rn);
       }
 
-      // Apply any updates received during idle mode (not yet in IndexedDB)
+      // Apply updates to populate localDoc with the correct content.
+      // Priority: pendingIdleUpdates (has remote changes) > initialPersistenceUpdates (base state)
       if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
+        // Remote updates received while in idle - apply these (they supersede initial state)
         Y.applyUpdate(this.localDoc!, this.pendingIdleUpdates);
         this.pendingIdleUpdates = null;
+        this.initialPersistenceUpdates = null; // Clear since we have newer state
+      } else if (this.initialPersistenceUpdates && this.initialPersistenceUpdates.length > 0) {
+        // No remote updates - apply initial persistence state (from PERSISTENCE_LOADED)
+        // This ensures YDocs have the same content as the stored state vector
+        Y.applyUpdate(this.localDoc!, this.initialPersistenceUpdates);
+        this.initialPersistenceUpdates = null;
       }
 
       // Update state vector to reflect what's in localDoc
@@ -1764,19 +1787,21 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
-   * Initialize localDoc with content for a new file.
-   * Waits for persistence to sync before inserting to ensure content is persisted.
+   * Initialize a new file with content and LCA.
+   * Sends INITIALIZE_WITH_CONTENT event which creates YDocs, inserts content,
+   * sets LCA, and transitions to ready state.
+   *
+   * @param content - The file content to initialize with
+   * @param hash - Hash of the content
+   * @param mtime - Modification time from disk
    */
-  async initializeLocalDoc(content: string): Promise<void> {
-    if (!this.localDoc || !this.remoteDoc) return;
-
-    // Wait for persistence to be ready so _storeUpdate can persist the content
-    if (this.localPersistence) {
-      await this.localPersistence.whenSynced;
-    }
-
-    this.localDoc.getText('contents').insert(0, content);
-    Y.applyUpdate(this.remoteDoc, Y.encodeStateAsUpdate(this.localDoc));
+  initializeLocalDoc(content: string, hash: string, mtime: number): void {
+    this.send({
+      type: 'INITIALIZE_WITH_CONTENT',
+      content,
+      hash,
+      mtime,
+    });
   }
 
   // ===========================================================================
