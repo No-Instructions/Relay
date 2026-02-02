@@ -207,6 +207,8 @@ function getEventFactory(eventType: string): string | null {
     'CANCEL': 'cancel',
     'PERSISTENCE_LOADED': 'persistenceLoaded',
     'YDOCS_READY': 'yDocsReady',
+    'INITIALIZE_WITH_CONTENT': 'initializeWithContent',
+    'INITIALIZE_LCA': 'initializeLCA',
     'MERGE_SUCCESS': 'mergeSuccess',
     'MERGE_CONFLICT': 'mergeConflict',
     'REMOTE_DOC_UPDATED': 'remoteDocUpdated',
@@ -258,6 +260,12 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
 
     case 'YDOCS_READY':
       return `yDocsReady()`;
+
+    case 'INITIALIZE_WITH_CONTENT':
+      return `initializeWithContent(${JSON.stringify(event.content)})`;
+
+    case 'INITIALIZE_LCA':
+      return `initializeLCA(${JSON.stringify(event.content)}, ${JSON.stringify(event.hash)}, ${event.mtime})`;
 
     case 'REMOTE_DOC_UPDATED':
       return `remoteDocUpdated()`;

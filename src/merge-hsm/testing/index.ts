@@ -45,6 +45,8 @@ export {
   // Internal events
   persistenceLoaded,
   yDocsReady,
+  initializeWithContent,
+  initializeLCA,
   mergeSuccess,
   mergeConflict,
   remoteDocUpdated,

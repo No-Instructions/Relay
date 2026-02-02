@@ -53,7 +53,11 @@ import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import { installE2ERecordingBridge } from "./merge-hsm/recording";
 import { generateHash } from "./hashing";
-import { loadState as loadMergeState, saveState as saveMergeState, openDatabase as openMergeHSMDatabase } from "./merge-hsm/persistence";
+import {
+	loadState as loadMergeState,
+	saveState as saveMergeState,
+	openDatabase as openMergeHSMDatabase,
+} from "./merge-hsm/persistence";
 import * as Y from "yjs";
 
 export interface SharedFolderSettings {
@@ -162,7 +166,7 @@ export class SharedFolder extends HasProvider {
 	proxy: SharedFolder;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
-	mergeManager?: MergeManager;
+	mergeManager: MergeManager;
 
 	constructor(
 		public appId: string,
@@ -285,56 +289,57 @@ export class SharedFolder extends HasProvider {
 		// Create MergeManager for this SharedFolder (per-folder instance)
 		const folderPath = this.path; // Capture for closure
 		this.mergeManager = new MergeManager({
-				getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
-				timeProvider: undefined, // Use default
-				createPersistence: (vaultId, doc) => new IndexeddbPersistence(vaultId, doc),
-				getDiskState: async (docPath: string) => {
-					// docPath is already vault-relative (e.g., "blog/note.md")
-					const tfile = this.vault.getAbstractFileByPath(docPath);
-					if (!(tfile instanceof TFile)) return null;
-					const contents = await this.vault.read(tfile);
-					const encoder = new TextEncoder();
-					const hash = await generateHash(encoder.encode(contents).buffer);
-					return { contents, mtime: tfile.stat.mtime, hash };
-				},
-				loadState: async (guid: string) => {
+			getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
+			timeProvider: undefined, // Use default
+			createPersistence: (vaultId, doc) =>
+				new IndexeddbPersistence(vaultId, doc),
+			getDiskState: async (docPath: string) => {
+				// docPath is already vault-relative (e.g., "blog/note.md")
+				const tfile = this.vault.getAbstractFileByPath(docPath);
+				if (!(tfile instanceof TFile)) return null;
+				const contents = await this.vault.read(tfile);
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				return { contents, mtime: tfile.stat.mtime, hash };
+			},
+			loadState: async (guid: string) => {
+				try {
+					const db = await openMergeHSMDatabase();
+					try {
+						return await loadMergeState(db, guid);
+					} finally {
+						db.close();
+					}
+				} catch {
+					return null;
+				}
+			},
+			onEffect: async (guid, effect) => {
+				this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
+				if (effect.type === "PERSIST_STATE") {
 					try {
 						const db = await openMergeHSMDatabase();
 						try {
-							return await loadMergeState(db, guid);
+							await saveMergeState(db, effect.state);
 						} finally {
 							db.close();
 						}
-					} catch {
-						return null;
+					} catch (e) {
+						this.warn(`[MergeManager] Failed to persist state for ${guid}:`, e);
 					}
-				},
-				onEffect: async (guid, effect) => {
-					this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
-					if (effect.type === 'PERSIST_STATE') {
-						try {
-							const db = await openMergeHSMDatabase();
-							try {
-								await saveMergeState(db, effect.state);
-							} finally {
-								db.close();
-							}
-						} catch (e) {
-							this.warn(`[MergeManager] Failed to persist state for ${guid}:`, e);
-						}
-					}
-				},
-				getPersistenceMetadata: (guid: string, path: string) => {
-					const s3rn = this.relayId
-						? new S3RemoteDocument(this.relayId, this.guid, guid)
-						: null;
-					return {
-						path,
-						relay: this.relayId || '',
-						appId: this.appId,
-						s3rn: s3rn ? S3RN.encode(s3rn) : '',
-					};
-				},
+				}
+			},
+			getPersistenceMetadata: (guid: string, path: string) => {
+				const s3rn = this.relayId
+					? new S3RemoteDocument(this.relayId, this.guid, guid)
+					: null;
+				return {
+					path,
+					relay: this.relayId || "",
+					appId: this.appId,
+					s3rn: s3rn ? S3RN.encode(s3rn) : "",
+				};
+			},
 		});
 
 		// Install E2E recording bridge if enabled
@@ -379,7 +384,7 @@ export class SharedFolder extends HasProvider {
 		if (!this._provider || !this.mergeManager) return;
 
 		this._provider.subscribeToEvents(
-			['document.updated'],
+			["document.updated"],
 			(event: EventMessage) => {
 				this.handleDocumentUpdateEvent(event);
 			},
@@ -1411,7 +1416,7 @@ export class SharedFolder extends HasProvider {
 		if (tfile) {
 			const encoder = new TextEncoder();
 			const hash = await generateHash(encoder.encode(content).buffer);
-			doc.hsm.initializeLCA(content, hash, tfile.stat.mtime);
+			doc.hsm?.initializeLCA(content, hash, tfile.stat.mtime);
 		}
 
 		this.files.set(guid, doc);
@@ -1447,25 +1452,15 @@ export class SharedFolder extends HasProvider {
 				awaitingUpdatesPromise,
 			]);
 			if (!awaitingUpdates && origin === undefined) {
-				if (this.mergeManager) {
-					// HSM mode: insert into localDoc via MergeHSM
-					const hsm = await this.mergeManager.getHSM(guid, this.getPath(vpath), doc.ydoc);
-					// initializeLocalDoc waits for persistence to sync before inserting
-					await hsm.initializeLocalDoc(contents);
+				// HSM mode: insert into localDoc via MergeHSM
+				await this.mergeManager.register(guid, this.getPath(vpath), doc.ydoc);
+				await doc.hsm?.initializeLocalDoc(contents);
 
-					// Initialize LCA to establish the baseline sync point
-					const encoder = new TextEncoder();
-					const hash = await generateHash(encoder.encode(contents).buffer);
-					const mtime = doc.tfile?.stat.mtime ?? Date.now();
-					hsm.initializeLCA(contents, hash, mtime);
-				} else {
-					// Fallback: Insert into Document.ydoc directly
-					const text = doc.ydoc.getText("contents");
-					this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
-					this.ydoc.transact(() => {
-						text.insert(0, contents);
-					}, this._persistence);
-				}
+				// Initialize LCA to establish the baseline sync point
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				const mtime = doc.tfile?.stat.mtime ?? Date.now();
+				doc.hsm?.initializeLCA(contents, hash, mtime);
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(doc);
@@ -1917,7 +1912,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				return;
 			}
 			if (!folder.guid || !S3RN.validateUUID(folder.guid)) {
-				this.warn(`Invalid settings: folder "${folder.path}" has invalid guid "${folder.guid}", skipping`);
+				this.warn(
+					`Invalid settings: folder "${folder.path}" has invalid guid "${folder.guid}", skipping`,
+				);
 				return;
 			}
 			const tFolder = this.vault.getFolderByPath(folder.path);
@@ -1929,7 +1926,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				this._new(folder.path, folder.guid, folder?.relay);
 				updated = true;
 			} catch (e) {
-				this.warn(`Failed to load folder "${folder.path}": ${e instanceof Error ? e.message : String(e)}`);
+				this.warn(
+					`Failed to load folder "${folder.path}": ${e instanceof Error ? e.message : String(e)}`,
+				);
 			}
 		});
 
@@ -1952,7 +1951,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			throw new Error(`Cannot create shared folder: invalid guid "${guid}"`);
 		}
 		if (relayId && !S3RN.validateUUID(relayId)) {
-			throw new Error(`Cannot create shared folder: invalid relayId "${relayId}"`);
+			throw new Error(
+				`Cannot create shared folder: invalid relayId "${relayId}"`,
+			);
 		}
 
 		const existing = this.find(

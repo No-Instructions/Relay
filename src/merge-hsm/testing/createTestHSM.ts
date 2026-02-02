@@ -101,6 +101,9 @@ export interface TestHSM {
 
   /** State transition history */
   readonly stateHistory: Array<{ from: StatePath; to: StatePath; event: MergeEvent['type'] }>;
+
+  /** Wait for any pending idle auto-merge to complete */
+  awaitIdleAutoMerge(): Promise<void>;
 }
 
 /**
@@ -194,6 +197,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     getRemoteDocText: () => hsm.getRemoteDoc()?.getText('contents').toString() ?? null,
     snapshot: () => createSnapshot(hsm, effects, time),
     stateHistory,
+    awaitIdleAutoMerge: () => hsm.awaitIdleAutoMerge(),
   };
 }
 

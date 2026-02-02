@@ -153,7 +153,8 @@ export class IndexeddbPersistence extends Observable {
     this._serverSynced = undefined
     this._origin = undefined
     // First check if compaction is needed, then open the DB
-    this._db = maybeCompactDatabase(name).then(() =>
+    // this._db = maybeCompactDatabase(name).then(() =>
+    this._db = Promise.resolve().then(() =>
       idb.openDB(name, db =>
         idb.createStores(db, [
           ['updates', { autoIncrement: true }],
