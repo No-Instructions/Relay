@@ -103,6 +103,9 @@ export class MergeManager {
   // GUIDs with editor open (lock acquired)
   private activeDocs: Set<string> = new Set();
 
+  // Pending registration promises (for awaiting all registrations)
+  private pendingRegistrations: Map<string, Promise<void>> = new Map();
+
   // Configuration
   private getVaultId: (guid: string) => string;
   private timeProvider: TimeProvider;
@@ -149,12 +152,30 @@ export class MergeManager {
    * @param path - Virtual path within shared folder
    * @param remoteDoc - Remote YDoc, managed externally with provider attached
    */
-  async register(guid: string, path: string, remoteDoc: Y.Doc): Promise<void> {
+  register(guid: string, path: string, remoteDoc: Y.Doc): Promise<void> {
     // Skip if already registered
     if (this.hsms.has(guid)) {
-      return;
+      return Promise.resolve();
     }
 
+    // Skip if registration already in progress
+    if (this.pendingRegistrations.has(guid)) {
+      return this.pendingRegistrations.get(guid)!;
+    }
+
+    // Create and track the registration promise
+    const registrationPromise = this.doRegister(guid, path, remoteDoc);
+    this.pendingRegistrations.set(guid, registrationPromise);
+
+    // Clean up when done
+    registrationPromise.finally(() => {
+      this.pendingRegistrations.delete(guid);
+    });
+
+    return registrationPromise;
+  }
+
+  private async doRegister(guid: string, path: string, remoteDoc: Y.Doc): Promise<void> {
     // Create HSM in idle mode
     const hsm = new MergeHSM({
       guid,
@@ -203,6 +224,17 @@ export class MergeManager {
 
     // HSM is now in idle.* state - update sync status
     this.updateSyncStatus(guid, hsm.getSyncStatus());
+  }
+
+  /**
+   * Wait for all pending registrations to complete.
+   * Use this after calling register() without await to ensure HSMs are ready.
+   */
+  async whenRegistered(): Promise<void> {
+    if (this.pendingRegistrations.size === 0) {
+      return;
+    }
+    await Promise.all(this.pendingRegistrations.values());
   }
 
   /**
