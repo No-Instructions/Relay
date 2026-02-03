@@ -1,110 +1,75 @@
-# forTesting Migration Plan
+# forTesting Migration - COMPLETED
 
-Migrate tests from `forTesting()` pattern to state transition helpers that drive real HSM transitions.
+All tests have been migrated from `forTesting()` pattern to use real state transition helpers.
 
-## Why Migrate?
+## Summary
 
-The `forTesting()` factory bypasses the state machine by directly mutating internal state (`_statePath`, `_lca`, `_disk`). This:
-- Creates objects in potentially invalid states
-- Couples tests to implementation details
-- Doesn't validate transition paths work correctly
-
-The new helpers (`loadAndActivate`, `loadToIdle`, etc.) drive through real events, ensuring tests validate actual behavior.
+The `forTesting()` factory has been **removed** from MergeHSM. All tests now use:
+- State transition helpers (`loadAndActivate`, `loadToIdle`, `loadToConflict`, etc.)
+- Event factories (`DISK_CHANGED`, `cm6Insert`, etc.) to set up test state
+- The normal MergeHSM constructor
 
 ## Available Helpers
 
-| Helper | Target State | Status |
-|--------|--------------|--------|
-| `loadAndActivate(hsm, content, opts?)` | `active.tracking` | ✅ Ready |
-| `loadToIdle(hsm, opts?)` | `idle.clean` | ✅ Ready |
-| `loadToAwaitingLCA(hsm, opts?)` | `loading.awaitingLCA` | ✅ Ready |
-| `loadToConflict(hsm, opts)` | `active.conflict.bannerShown` | ✅ Ready |
-| `loadToResolving(hsm, opts)` | `active.conflict.resolving` | ✅ Ready |
+| Helper | Target State |
+|--------|--------------|
+| `loadAndActivate(hsm, content, opts?)` | `active.tracking` |
+| `loadToIdle(hsm, opts?)` | `idle.clean` |
+| `loadToAwaitingLCA(hsm, opts?)` | `loading.awaitingLCA` |
+| `loadToConflict(hsm, opts)` | `active.conflict.bannerShown` |
+| `loadToResolving(hsm, opts)` | `active.conflict.resolving` |
 
-## Migration Tasks
+## Migration Patterns
 
-### Phase 1: Easy Migrations (existing helpers)
-
-- [x] **MergeHSM.test.ts simple cases** (14 migrated) ✅ DONE
-  - Migrated tests without `lca`/`disk` params
-  - Also migrated tests using `lca` with custom mtime (via `{ mtime }` option)
-  - Remaining 23 usages need `disk`, `active.merging`, or `active.conflict.*` states
-
-- [x] **invariants.test.ts `active.tracking`** (11 usages) ✅ DONE
-  - All migrated to `loadAndActivate(t, 'hello')`
-
-- [x] **recording.test.ts `active.tracking` + `idle.clean`** (23 migrated) ✅ DONE
-  - Remaining 3 are HSMRecording object literals (test fixtures), not createTestHSM calls
-
-### Phase 2: Conflict State Helpers ✅ DONE
-
-- [x] **Added `loadToConflict` helper** - drives to `active.conflict.bannerShown` through real transitions
-- [x] **Added `loadToResolving` helper** - drives to `active.conflict.resolving`
-- [x] **Migrated all conflict resolution tests** (12 tests migrated)
-
-### Phase 3: Remaining Tests (11 usages)
-
-Tests still using forTesting fall into these categories:
-
-1. **Tests needing `disk` state in idle** (5 tests) - for auto-merge behavior testing
-   - Could extend `loadToIdle` to accept disk metadata through `PERSISTENCE_LOADED`
-
-2. **Tests needing `disk` state in active** (3 tests) - BUG-006/007 disk state tests
-   - These test SAVE_COMPLETE updating disk state
-
-3. **Transient state tests** (1 test) - `idle.diskAhead`
-   - Real transitions auto-merge immediately, can't pause in transient state
-
-4. **Lock cycle test** (1 test) - state vector mismatch
-   - May indicate a real bug in how state vectors are managed
-
-5. **Diverged active state** (1 test) - localDoc differs from LCA
-   - Could migrate by making edits after `loadAndActivate`
-
-### Phase 4: Cleanup
-
-- [ ] **Remove `forTesting()` method** from MergeHSM.ts
-- [ ] **Remove `TestMergeHSMConfig`** type export from index.ts
-- [ ] **Update `createTestHSM`** to not use forTesting internally
-
-## Migration Pattern
-
-### Before (forTesting pattern)
-```typescript
-const t = await createTestHSM({
-  initialState: 'active.tracking',
-  localDoc: 'hello world',
-});
-```
-
-### After (real transitions)
+### Setting up active mode with content
 ```typescript
 const t = await createTestHSM();
 await loadAndActivate(t, 'hello world');
 ```
 
-## Progress
+### Setting up idle mode with content
+```typescript
+const t = await createTestHSM();
+await loadToIdle(t, { content: 'hello', mtime: 1000 });
+```
 
-- Total usages at start: **94**
-- **Migrated: 60**
-  - MergeHSM.test.ts: 26 (simple cases, mtime option, and conflict states)
-  - invariants.test.ts: 11 (all done)
-  - recording.test.ts: 23 (all createTestHSM calls done; 3 remaining are HSMRecording fixtures)
-- **Remaining: 11** (MergeHSM.test.ts)
-  - With `disk` parameter + `active.tracking`: 3 (need disk in active mode)
-  - With `disk` parameter + `idle.clean`: 5 (need disk in idle mode for auto-merge tests)
-  - `idle.diskAhead`: 1 (transient state, may stay with forTesting)
-  - Lock cycle test: 1 (internal state vector mismatch)
-  - Diverged local/LCA in active: 1 (needs local edit after activation)
+### Setting up disk state
+```typescript
+const t = await createTestHSM();
+await loadToIdle(t, { content: 'hello', mtime: 1000 });
+t.send(await diskChanged('hello', 1000)); // disk matches LCA
+```
 
-### Key Learnings
+### Setting up diverged local state
+```typescript
+const t = await createTestHSM();
+await loadAndActivate(t, 'hello', { mtime: 1000 });
+t.send(cm6Insert(5, ' world', 'hello world')); // local diverges from LCA
+```
 
-1. Add `t.clearEffects()` after `loadAndActivate`/`loadToIdle` when tests count specific effects
-2. **Conflicts can be driven through real transitions!** Use `loadToConflict` which:
-   - Loads to idle with base content
-   - Receives remote update with different content
-   - Receives disk change with yet another content
-   - Acquires lock from diverged state → triggers real conflict
-3. Some tests for transient states (like `idle.diskAhead`) can't be migrated because real transitions auto-merge - keep those with forTesting
-4. Lock cycle tests (`acquireLock/releaseLock` sequences) have state vector mismatches - investigating if this is a bug
-5. The `mtime` option in `loadAndActivate`/`loadToIdle` allows migrating tests that only need custom LCA timestamp
+### Setting up conflict state
+```typescript
+const t = await createTestHSM();
+await loadToConflict(t, {
+  base: 'original',
+  remote: 'remote changed',
+  disk: 'disk changed',
+});
+```
+
+## Key Learnings
+
+1. **Real transitions are better** - Tests now validate actual behavior, not bypass it
+2. **DISK_CHANGED can be sent during loading** - Added handler to loading state for this
+3. **Use state history for transient states** - Check `t.stateHistory` to verify transitions
+4. **Accept idle sub-state variations** - After release, may be in any idle sub-state
+5. **cm6Insert/cm6Change set up local edits** - Create diverged state for testing
+6. **awaitIdleAutoMerge() for async operations** - Wait for idle mode auto-merge to complete
+
+## Changes Made
+
+1. **Removed `forTesting()` method** from MergeHSM.ts
+2. **Removed `TestMergeHSMConfig`** interface and export
+3. **Updated `createTestHSM()`** to use normal MergeHSM constructor
+4. **Added DISK_CHANGED handling to loading state** - Allows disk metadata during loading
+5. **Migrated all 94 tests** to use real transitions

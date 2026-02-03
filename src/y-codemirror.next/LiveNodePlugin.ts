@@ -2,7 +2,7 @@
 // License
 // [The MIT License](./LICENSE) © Kevin Jahns
 
-import { Facet, Annotation } from "@codemirror/state";
+import { Facet } from "@codemirror/state";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
@@ -22,7 +22,8 @@ export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 		},
 	});
 
-export const ySyncAnnotation = Annotation.define();
+// Import from shared location
+import { ySyncAnnotation } from "../merge-hsm/integration/annotations";
 
 export class LiveNodePluginValue implements PluginValue {
 	editor: EditorView;

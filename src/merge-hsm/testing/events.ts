@@ -493,18 +493,34 @@ export async function loadToConflict(
   // 1. Load to idle with base content
   await loadToIdle(hsm, { guid, path, content: opts.base, mtime: 1000 });
 
-  // 2. Receive remote update with different content
+  // 2. Prepare both events BEFORE sending any (to avoid async race conditions)
   const remoteDoc = new Y.Doc();
   remoteDoc.getText('contents').insert(0, opts.remote);
   const update = Y.encodeStateAsUpdate(remoteDoc);
   remoteDoc.destroy();
+  // Pre-compute hash to avoid any awaits between sends
+  const diskHash = await sha256(opts.disk);
+  const diskEvent: DiskChangedEvent = {
+    type: 'DISK_CHANGED',
+    contents: opts.disk,
+    mtime: 2000,
+    hash: diskHash,
+  };
+
+  // 3. Send remote update first (transitions to idle.remoteAhead)
+  // This starts performIdleRemoteAutoMerge as a microtask
   hsm.send(remoteUpdate(update));
 
-  // 3. Disk changes to yet another content
-  hsm.send(await diskChanged(opts.disk, 2000));
+  // 4. IMMEDIATELY send disk change in the same synchronous execution
+  // This transitions to idle.diverged and starts performIdleThreeWayMerge
+  // The key is that no awaits happen between steps 3 and 4, so the microtasks
+  // from step 3 haven't run yet.
+  hsm.send(diskEvent);
 
-  // 4. Wait for idle auto-merge attempt (which will fail to auto-merge)
-  // The HSM should be in idle.diverged now
+  // 5. Wait for the 3-way merge to complete
+  // The 3-way merge should fail (conflict) because base/remote/disk all differ
+  await hsm.awaitIdleAutoMerge();
+
   if (!hsm.matches('idle.diverged')) {
     const state = hsm.statePath ?? 'unknown';
     throw new Error(

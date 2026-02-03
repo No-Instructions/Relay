@@ -19,7 +19,7 @@ import {
   E2ERecordingBridge,
 } from '../recording';
 import type { HSMRecording, ReplayResult } from '../recording';
-import { createTestHSM, cm6Insert, diskChanged, acquireLock } from '../testing';
+import { createTestHSM, cm6Insert, diskChanged, acquireLock, loadAndActivate, loadToIdle } from '../testing';
 import type { MergeEvent, MergeEffect, RemoteUpdateEvent } from '../types';
 
 describe('HSM Recording', () => {
@@ -142,10 +142,8 @@ describe('HSM Recording', () => {
 
   describe('RecordingMergeHSM', () => {
     it('records events and effects', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const recorder = new RecordingMergeHSM(t.hsm, {
         metadata: { source: 'unit-test', testName: 'basic recording' },
@@ -169,10 +167,8 @@ describe('HSM Recording', () => {
     });
 
     it('captures initial state', async () => {
-      const t = await createTestHSM({
-        initialState: 'idle.clean',
-        localDoc: 'initial content',
-      });
+      const t = await createTestHSM();
+      await loadToIdle(t);
 
       const recorder = new RecordingMergeHSM(t.hsm);
       recorder.startRecording();
@@ -184,10 +180,8 @@ describe('HSM Recording', () => {
     });
 
     it('captures effects emitted during events', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const recorder = new RecordingMergeHSM(t.hsm);
       recorder.startRecording();
@@ -202,10 +196,8 @@ describe('HSM Recording', () => {
     });
 
     it('respects maxEntries limit', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const recorder = new RecordingMergeHSM(t.hsm, { maxEntries: 3 });
       recorder.startRecording();
@@ -223,10 +215,8 @@ describe('HSM Recording', () => {
     });
 
     it('respects eventFilter', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const recorder = new RecordingMergeHSM(t.hsm, {
         eventFilter: (event) => event.type !== 'CM6_CHANGE',
@@ -241,7 +231,8 @@ describe('HSM Recording', () => {
     });
 
     it('throws if already recording', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
       const recorder = new RecordingMergeHSM(t.hsm);
 
       recorder.startRecording();
@@ -250,14 +241,16 @@ describe('HSM Recording', () => {
     });
 
     it('throws if not recording when stopping', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
       const recorder = new RecordingMergeHSM(t.hsm);
 
       expect(() => recorder.stopRecording()).toThrow('No recording in progress');
     });
 
     it('tracks recording state', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
       const recorder = new RecordingMergeHSM(t.hsm);
 
       expect(recorder.isRecording()).toBe(false);
@@ -277,10 +270,8 @@ describe('HSM Recording', () => {
 
   describe('Recording Serialization', () => {
     it('serializes and deserializes a complete recording', async () => {
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const recorder = new RecordingMergeHSM(t.hsm);
       recorder.startRecording('serialization-test');
@@ -311,10 +302,8 @@ describe('HSM Recording', () => {
   describe('Replay', () => {
     it('replays a recording successfully', async () => {
       // Create a recording
-      const t1 = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t1 = await createTestHSM();
+      await loadAndActivate(t1, 'hello');
 
       const recorder = new RecordingMergeHSM(t1.hsm);
       recorder.startRecording();
@@ -322,10 +311,8 @@ describe('HSM Recording', () => {
       const recording = recorder.stopRecording();
 
       // Replay on a fresh HSM
-      const t2 = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t2 = await createTestHSM();
+      await loadAndActivate(t2, 'hello');
 
       const result = replayRecording(t2.hsm, recording);
 
@@ -374,10 +361,8 @@ describe('HSM Recording', () => {
         metadata: { source: 'unit-test' },
       };
 
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const result = replayRecording(t.hsm, recording);
 
@@ -431,10 +416,8 @@ describe('HSM Recording', () => {
         metadata: { source: 'unit-test' },
       };
 
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       const result = replayRecording(t.hsm, recording, { stopOnDivergence: true });
 
@@ -442,20 +425,16 @@ describe('HSM Recording', () => {
     });
 
     it('calls onEventReplayed callback', async () => {
-      const t1 = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t1 = await createTestHSM();
+      await loadAndActivate(t1, 'hello');
 
       const recorder = new RecordingMergeHSM(t1.hsm);
       recorder.startRecording();
       recorder.send(cm6Insert(5, ' world', 'hello world'));
       const recording = recorder.stopRecording();
 
-      const t2 = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t2 = await createTestHSM();
+      await loadAndActivate(t2, 'hello');
 
       const replayedEvents: string[] = [];
       replayRecording(t2.hsm, recording, {
@@ -470,20 +449,16 @@ describe('HSM Recording', () => {
 
   describe('assertReplaySucceeds', () => {
     it('does not throw on successful replay', async () => {
-      const t1 = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t1 = await createTestHSM();
+      await loadAndActivate(t1, 'hello');
 
       const recorder = new RecordingMergeHSM(t1.hsm);
       recorder.startRecording();
       recorder.send(cm6Insert(5, ' world', 'hello world'));
       const recording = recorder.stopRecording();
 
-      const t2 = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t2 = await createTestHSM();
+      await loadAndActivate(t2, 'hello');
 
       expect(() => assertReplaySucceeds(t2.hsm, recording)).not.toThrow();
     });
@@ -526,10 +501,8 @@ describe('HSM Recording', () => {
         metadata: { source: 'unit-test' },
       };
 
-      const t = await createTestHSM({
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello');
 
       expect(() => assertReplaySucceeds(t.hsm, recording)).toThrow(/divergence/);
     });
@@ -537,7 +510,8 @@ describe('HSM Recording', () => {
 
   describe('Factory Functions', () => {
     it('createE2ERecorder sets correct metadata', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
       const recorder = createE2ERecorder(t.hsm, 'my-test', '/path/to/test.ts');
 
       recorder.startRecording();
@@ -549,7 +523,8 @@ describe('HSM Recording', () => {
     });
 
     it('createIntegrationRecorder sets correct metadata', async () => {
-      const t = await createTestHSM({ initialState: 'idle.clean' });
+      const t = await createTestHSM();
+      await loadToIdle(t);
       const recorder = createIntegrationRecorder(t.hsm, 'integration-test-name');
 
       recorder.startRecording();
@@ -659,12 +634,8 @@ describe('HSM Recording', () => {
       const bridge = new E2ERecordingBridge(mockManager);
 
       // Create a test HSM and add it to the manager
-      const t = await createTestHSM({
-        guid: 'test-doc',
-        path: 'test-doc.md',
-        initialState: 'active.tracking',
-        localDoc: 'hello',
-      });
+      const t = await createTestHSM({ guid: 'test-doc', path: 'test-doc.md' });
+      await loadAndActivate(t, 'hello', { guid: 'test-doc', path: 'test-doc.md' });
       mockManager._addHSM('test-doc', t.hsm);
 
       bridge.startRecording('event-capture-test');
@@ -701,8 +672,10 @@ describe('HSM Recording', () => {
       const bridge = new E2ERecordingBridge(mockManager);
 
       // Add some HSMs
-      const t1 = await createTestHSM({ guid: 'doc1', initialState: 'idle.clean' });
-      const t2 = await createTestHSM({ guid: 'doc2', initialState: 'idle.clean' });
+      const t1 = await createTestHSM({ guid: 'doc1' });
+      await loadToIdle(t1, { guid: 'doc1' });
+      const t2 = await createTestHSM({ guid: 'doc2' });
+      await loadToIdle(t2, { guid: 'doc2' });
       mockManager._addHSM('doc1', t1.hsm);
       mockManager._addHSM('doc2', t2.hsm);
 

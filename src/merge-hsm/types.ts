@@ -218,13 +218,15 @@ export interface YDocsReadyEvent {
 }
 
 /**
- * Initialize a document with content when no LCA exists.
+ * Initialize a document with content and LCA.
  * Creates localDoc, inserts content, sets LCA, syncs to remote, transitions to ready.
- * Used for newly created documents or first-time downloads.
+ * Used for newly created documents.
  */
 export interface InitializeWithContentEvent {
   type: 'INITIALIZE_WITH_CONTENT';
   content: string;
+  hash: string;
+  mtime: number;
 }
 
 /**

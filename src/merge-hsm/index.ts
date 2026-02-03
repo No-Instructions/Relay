@@ -6,7 +6,7 @@
 
 // Main HSM class
 export { MergeHSM } from './MergeHSM';
-export type { TestMergeHSMConfig, IObservable } from './MergeHSM';
+export type { IObservable } from './MergeHSM';
 
 // Manager for multiple HSMs
 export { MergeManager } from './MergeManager';

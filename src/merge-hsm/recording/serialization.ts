@@ -99,7 +99,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
 
     // Initialization events pass through (no binary data)
     case 'INITIALIZE_WITH_CONTENT':
-      return { type: event.type, content: event.content };
+      return { type: event.type, content: event.content, hash: event.hash, mtime: event.mtime };
 
     case 'INITIALIZE_LCA':
       return { type: event.type, content: event.content, hash: event.hash, mtime: event.mtime };

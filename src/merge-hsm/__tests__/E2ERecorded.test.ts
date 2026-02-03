@@ -18,6 +18,7 @@ import {
   initializeWithContent,
   createLCA,
   expectState,
+  sha256,
 } from '../testing';
 
 describe('E2E Recorded: clean-disk-file-test', () => {
@@ -49,7 +50,8 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     t.send(persistenceLoaded(new Uint8Array(), null));
     expectState(t, 'loading.awaitingLCA');
 
-    t.send(initializeWithContent(initialContent));
+    const hash = await sha256(initialContent);
+    t.send(initializeWithContent(initialContent, hash, Date.now()));
     expectState(t, 'idle.clean');
   });
 
@@ -59,7 +61,8 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     // Setup: load and initialize with content
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    t.send(initializeWithContent(initialContent));
+    const hash = await sha256(initialContent);
+    t.send(initializeWithContent(initialContent, hash, Date.now()));
     expectState(t, 'idle.clean');
 
     // Acquire lock to enter active mode
@@ -75,7 +78,8 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     // Setup to active.tracking
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    t.send(initializeWithContent(initialContent));
+    const hash = await sha256(initialContent);
+    t.send(initializeWithContent(initialContent, hash, Date.now()));
     t.send(acquireLock(initialContent));
     expectState(t, 'active.tracking');
 
@@ -101,7 +105,8 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     // Setup to active.tracking
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    t.send(initializeWithContent(initialContent));
+    const hash = await sha256(initialContent);
+    t.send(initializeWithContent(initialContent, hash, Date.now()));
     t.send(acquireLock(initialContent));
     expectState(t, 'active.tracking');
 

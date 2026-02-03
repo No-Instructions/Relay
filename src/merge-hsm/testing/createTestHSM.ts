@@ -14,10 +14,9 @@ import type {
   MergeEvent,
   MergeEffect,
   StatePath,
-  LCAState,
-  MergeMetadata,
   SerializableSnapshot,
   SyncStatus,
+  IYDocPersistence,
 } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
@@ -37,18 +36,6 @@ export interface TestHSMOptions {
   /** Vault ID (default: 'test-${guid}') */
   vaultId?: string;
 
-  /** Initial state path to bootstrap to */
-  initialState?: StatePath;
-
-  /** Initial content for localDoc */
-  localDoc?: string;
-
-  /** Initial disk state */
-  disk?: { contents: string; mtime: number };
-
-  /** Initial LCA state */
-  lca?: LCAState;
-
   /** Custom time provider (default: MockTimeProvider) */
   timeProvider?: TimeProvider;
 
@@ -61,8 +48,15 @@ export interface TestHSMOptions {
   /**
    * Mock function to load updates from IndexedDB (for BUG-021 testing).
    * Default: returns empty array.
+   * Prefer using `indexedDBUpdates` instead for simpler setup.
    */
   loadUpdatesRaw?: (vaultId: string) => Promise<Uint8Array[]>;
+
+  /**
+   * Mock IndexedDB content. When set, both loadUpdatesRaw and the mock
+   * persistence will use these updates, simulating IndexedDB state.
+   */
+  indexedDBUpdates?: Uint8Array;
 }
 
 export interface TestHSM {
@@ -143,28 +137,35 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   const effects: MergeEffect[] = [];
   const stateHistory: Array<{ from: StatePath; to: StatePath; event: MergeEvent['type'] }> = [];
 
-  // Build disk metadata if provided
-  let diskMeta: MergeMetadata | undefined;
-  if (options.disk) {
-    diskMeta = {
-      hash: await sha256(options.disk.contents),
-      mtime: options.disk.mtime,
-    };
+  // Build mock IndexedDB functions if indexedDBUpdates is provided
+  let loadUpdatesRaw = options.loadUpdatesRaw;
+  let createPersistence: ((vaultId: string, doc: Y.Doc) => IYDocPersistence) | undefined;
+
+  if (options.indexedDBUpdates) {
+    const updates = options.indexedDBUpdates;
+    // Both paths read from the same "IndexedDB"
+    loadUpdatesRaw = async () => [updates];
+    createPersistence = (_vaultId: string, doc: Y.Doc) => ({
+      once(_event: 'synced', cb: () => void) {
+        Y.applyUpdate(doc, updates);
+        cb();
+      },
+      destroy() {},
+      whenSynced: Promise.resolve(),
+    });
   }
 
-  // Use the real MergeHSM with test configuration
+  // Create the HSM using the normal constructor (no forTesting bypass)
   const guid = options.guid ?? 'test-guid';
-  const hsm = MergeHSM.forTesting({
+  const remoteDoc = new Y.Doc();
+  const hsm = new MergeHSM({
     guid,
     path: options.path ?? 'test.md',
     vaultId: options.vaultId ?? `test-${guid}`,
+    remoteDoc,
     timeProvider: time,
-    initialState: options.initialState,
-    localDocContent: options.localDoc,
-    lca: options.lca,
-    disk: diskMeta,
-    diskContents: options.disk?.contents,
-    loadUpdatesRaw: options.loadUpdatesRaw,
+    loadUpdatesRaw,
+    createPersistence,
   });
 
   // Capture effects

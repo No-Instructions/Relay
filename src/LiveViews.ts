@@ -22,6 +22,7 @@ import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances } from "./debug";
 import { Banner } from "./ui/Banner";
 import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
+import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
@@ -1230,7 +1231,9 @@ export class LiveViewManager {
 						return this;
 					}),
 				),
-				LiveEdit,
+				// HSMEditorPlugin: Captures editor changes and forwards to HSM for CRDT sync.
+				// Replaces legacy LiveEdit plugin's editor→CRDT functionality.
+				HSMEditorPlugin,
 				LiveNode,
 				yRemoteSelectionsTheme,
 				yRemoteSelections,
