@@ -291,6 +291,8 @@ export interface HSMHandle {
   send(event: MergeEvent): void;
   matches(path: string): boolean;
   readonly statePath?: string;
+  /** Wait for pending idle auto-merge to complete (optional, used by loadToConflict) */
+  awaitIdleAutoMerge?(): Promise<void>;
 }
 
 export interface LoadAndActivateOptions {
@@ -519,7 +521,7 @@ export async function loadToConflict(
 
   // 5. Wait for the 3-way merge to complete
   // The 3-way merge should fail (conflict) because base/remote/disk all differ
-  await hsm.awaitIdleAutoMerge();
+  await hsm.awaitIdleAutoMerge?.();
 
   if (!hsm.matches('idle.diverged')) {
     const state = hsm.statePath ?? 'unknown';
