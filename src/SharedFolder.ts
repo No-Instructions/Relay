@@ -327,6 +327,16 @@ export class SharedFolder extends HasProvider {
 					} catch (e) {
 						this.warn(`[MergeManager] Failed to persist state for ${guid}:`, e);
 					}
+				} else if (effect.type === "SYNC_TO_REMOTE") {
+					// BUG-033 fix: Handle SYNC_TO_REMOTE in idle mode
+					// When a file is closed, ProviderIntegration is destroyed so no one
+					// listens for these effects. Handle them at the SharedFolder level.
+					await this.handleIdleSyncToRemote(guid, effect.update);
+				} else if (effect.type === "WRITE_DISK") {
+					// BUG-033 fix: Handle WRITE_DISK in idle mode
+					// This is emitted when remote changes need to be written to disk
+					// without an editor open.
+					await this.handleIdleWriteDisk(effect.path, effect.contents);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -397,9 +407,12 @@ export class SharedFolder extends HasProvider {
 		const docId = event.doc_id;
 		if (!docId) return;
 
-		// Look up the guid from the doc_id
-		// The doc_id from the server corresponds to the document's guid
-		const guid = docId;
+		// Extract the guid from the doc_id
+		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
+		const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+		const match = docId.match(new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"));
+		if (!match) return;
+		const guid = match[1];
 
 		if (!this.files.has(guid)) return;
 
@@ -409,6 +422,72 @@ export class SharedFolder extends HasProvider {
 		// Forward the update to MergeManager for idle mode handling
 		if (event.update) {
 			this.mergeManager.handleIdleRemoteUpdate(guid, event.update);
+		}
+	}
+
+	/**
+	 * Handle SYNC_TO_REMOTE effect in idle mode (BUG-033 fix).
+	 *
+	 * When a document is in idle mode (file closed), the HSM may still need
+	 * to sync local disk changes to the remote server. This happens when:
+	 * 1. External process modifies the file on disk
+	 * 2. HSM detects the change via polling
+	 * 3. HSM performs idle auto-merge (disk → local CRDT)
+	 * 4. HSM emits SYNC_TO_REMOTE effect
+	 *
+	 * Without this handler, the effect is dropped because ProviderIntegration
+	 * is destroyed when the file is closed.
+	 */
+	private async handleIdleSyncToRemote(guid: string, update: Uint8Array): Promise<void> {
+		const file = this.files.get(guid);
+		if (!file || !isDocument(file)) {
+			this.warn(`[handleIdleSyncToRemote] Document not found for guid: ${guid}`);
+			return;
+		}
+
+		// Check if this document has an active ProviderIntegration
+		// (meaning it's in active mode and the integration will handle it)
+		if (file.userLock) {
+			this.debug?.(`[handleIdleSyncToRemote] Document ${guid} is in active mode, skipping`);
+			return;
+		}
+
+		try {
+			// Apply update to the document's remoteDoc (which is file.ydoc)
+			// The origin 'local' indicates this came from local changes
+			Y.applyUpdate(file.ydoc, update, 'local');
+
+			// The provider (if connected) will automatically sync to server
+			// If not connected, updates will be queued and synced when reconnected
+			this.log(`[handleIdleSyncToRemote] Applied idle mode update for ${guid}`);
+		} catch (e) {
+			this.warn(`[handleIdleSyncToRemote] Failed to apply update for ${guid}:`, e);
+		}
+	}
+
+	/**
+	 * Handle WRITE_DISK effect in idle mode (BUG-033 fix).
+	 *
+	 * When a document is in idle mode and receives remote updates, the HSM
+	 * may need to write merged content to disk. This happens when:
+	 * 1. Remote update arrives (from server)
+	 * 2. HSM performs idle auto-merge (remote → local CRDT)
+	 * 3. HSM emits WRITE_DISK effect to update the file on disk
+	 *
+	 * Without this handler, the effect is dropped.
+	 */
+	private async handleIdleWriteDisk(vaultPath: string, contents: string): Promise<void> {
+		try {
+			const tfile = this.vault.getAbstractFileByPath(vaultPath);
+			if (!(tfile instanceof TFile)) {
+				this.warn(`[handleIdleWriteDisk] File not found at path: ${vaultPath}`);
+				return;
+			}
+
+			await this.vault.modify(tfile, contents);
+			this.log(`[handleIdleWriteDisk] Wrote merged content to ${vaultPath}`);
+		} catch (e) {
+			this.warn(`[handleIdleWriteDisk] Failed to write to ${vaultPath}:`, e);
 		}
 	}
 
@@ -1454,13 +1533,13 @@ export class SharedFolder extends HasProvider {
 			if (!awaitingUpdates && origin === undefined) {
 				// HSM mode: insert into localDoc via MergeHSM
 				await this.mergeManager.register(guid, this.getPath(vpath), doc.ydoc);
-				await doc.hsm?.initializeLocalDoc(contents);
 
-				// Initialize LCA to establish the baseline sync point
+				// Initialize with content and LCA in one step
 				const encoder = new TextEncoder();
 				const hash = await generateHash(encoder.encode(contents).buffer);
 				const mtime = doc.tfile?.stat.mtime ?? Date.now();
-				doc.hsm?.initializeLCA(contents, hash, mtime);
+				doc.hsm?.initializeLocalDoc(contents, hash, mtime);
+
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(doc);

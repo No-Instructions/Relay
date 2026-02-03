@@ -12,7 +12,7 @@ import type { EditorView, ViewUpdate } from '@codemirror/view';
 import type { MergeHSM } from '../MergeHSM';
 import type { PositionedChange } from '../types';
 // Import the shared annotation to prevent feedback loops
-import { ySyncAnnotation } from '../../y-codemirror.next/LiveEditPlugin';
+import { ySyncAnnotation } from './annotations';
 // Import conflict decoration plugin accessor
 import { getConflictDecorationPlugin } from '../../y-codemirror.next/ConflictDecorationPlugin';
 

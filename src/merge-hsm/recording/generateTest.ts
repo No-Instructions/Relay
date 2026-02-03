@@ -262,7 +262,7 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
       return `yDocsReady()`;
 
     case 'INITIALIZE_WITH_CONTENT':
-      return `initializeWithContent(${JSON.stringify(event.content)})`;
+      return `initializeWithContent(${JSON.stringify(event.content)}, ${JSON.stringify(event.hash)}, ${event.mtime})`;
 
     case 'INITIALIZE_LCA':
       return `initializeLCA(${JSON.stringify(event.content)}, ${JSON.stringify(event.hash)}, ${event.mtime})`;

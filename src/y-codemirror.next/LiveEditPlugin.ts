@@ -2,7 +2,7 @@
 // License
 // [The MIT License](./LICENSE) © Kevin Jahns
 
-import { Facet, Annotation } from "@codemirror/state";
+import { Facet } from "@codemirror/state";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
@@ -33,7 +33,9 @@ export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
 		},
 	});
 
-export const ySyncAnnotation = Annotation.define();
+// Import and re-export from shared location for backward compatibility
+import { ySyncAnnotation } from "../merge-hsm/integration/annotations";
+export { ySyncAnnotation };
 
 export class LiveCMPluginValue implements PluginValue {
 	editor: EditorView;
@@ -309,8 +311,10 @@ export class LiveCMPluginValue implements PluginValue {
 				}
 			}
 		};
-		this._ytext = this.document.ytext;
-		this._ytext.observe(this.observer);
+		// DISABLED: Old Y.Text observer conflicts with new HSM system.
+		// The HSM's localTextObserver handles remote updates via DISPATCH_CM6 effects.
+		// this._ytext = this.document.ytext;
+		// this._ytext.observe(this.observer);
 	}
 
 	public incrementalBufferChange(newBuffer: string): ChangeSpec[] {

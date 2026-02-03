@@ -22,6 +22,7 @@ import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances } from "./debug";
 import { Banner } from "./ui/Banner";
 import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
+import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
@@ -447,10 +448,7 @@ export class LiveView<ViewType extends TextFileView>
 	mergeBanner(): () => void {
 		this._banner = new Banner(
 			this.view,
-			{
-				short: "Conflicts detected",
-				long: "Resolve conflicts inline using the buttons, or click here for diff view",
-			},
+			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
 			async () => {
 				// HSM-aware conflict resolution path
 				const hsm = this.document.hsm;
@@ -1249,7 +1247,9 @@ export class LiveViewManager {
 						return this;
 					}),
 				),
-				LiveEdit,
+				// HSMEditorPlugin: Captures editor changes and forwards to HSM for CRDT sync.
+				// Replaces legacy LiveEdit plugin's editor→CRDT functionality.
+				HSMEditorPlugin,
 				LiveNode,
 				yRemoteSelectionsTheme,
 				yRemoteSelections,

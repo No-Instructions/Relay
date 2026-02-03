@@ -243,6 +243,10 @@ const mergeMachine = setup({
         ACQUIRE_LOCK: {
           target: 'active.entering',
         },
+        // DISK_CHANGED can arrive during loading (Obsidian polls disk)
+        DISK_CHANGED: {
+          actions: ['setDiskMeta'],
+        },
       },
     },
     idle: {
@@ -389,30 +393,6 @@ const mergeMachine = setup({
 });
 
 // =============================================================================
-// Extended Config for Testing
-// =============================================================================
-
-export interface TestMergeHSMConfig extends Omit<MergeHSMConfig, 'remoteDoc'> {
-  /** Remote YDoc (optional for testing - will be created if not provided) */
-  remoteDoc?: Y.Doc;
-
-  /** Initial state path to bootstrap to */
-  initialState?: StatePath;
-
-  /** Initial content for localDoc (requires active state) */
-  localDocContent?: string;
-
-  /** Initial LCA state */
-  lca?: LCAState;
-
-  /** Initial disk metadata */
-  disk?: MergeMetadata;
-
-  /** Initial disk contents (for idle mode testing) */
-  diskContents?: string;
-}
-
-// =============================================================================
 // MergeHSM Class (Wrapper around XState Actor)
 // =============================================================================
 
@@ -540,61 +520,6 @@ export class MergeHSM implements TestableHSM {
     });
 
     this.actor.start();
-  }
-
-  /**
-   * Create a MergeHSM instance for testing with optional initial state.
-   * This bypasses normal state transitions for test setup.
-   */
-  static forTesting(config: TestMergeHSMConfig): MergeHSM {
-    // Create remoteDoc if not provided (for testing convenience)
-    const remoteDoc = config.remoteDoc ?? new Y.Doc();
-
-    const hsm = new MergeHSM({
-      guid: config.guid,
-      path: config.path,
-      vaultId: config.vaultId,
-      remoteDoc,
-      timeProvider: config.timeProvider,
-      hashFn: config.hashFn,
-      loadUpdatesRaw: config.loadUpdatesRaw,
-      createPersistence: config.createPersistence,
-    });
-
-    // Stop the default actor and set up test state
-    hsm.actor.stop();
-
-    // Set initial state and data
-    if (config.initialState) {
-      hsm._statePath = config.initialState;
-    }
-    if (config.lca) {
-      hsm._lca = config.lca;
-    }
-    if (config.disk) {
-      hsm._disk = config.disk;
-    }
-
-    // Set disk contents for idle mode testing
-    if (config.diskContents !== undefined) {
-      hsm.pendingDiskContents = config.diskContents;
-    }
-
-    // If starting in active state, create YDocs
-    if (config.initialState?.startsWith('active.')) {
-      hsm.createYDocs();
-
-      if (config.localDocContent !== undefined) {
-        // Directly insert content for testing (bypasses event flow)
-        hsm.localDoc?.getText('contents').insert(0, config.localDocContent);
-        // Sync to remoteDoc so tests can modify it
-        if (hsm.localDoc && hsm.remoteDoc) {
-          Y.applyUpdate(hsm.remoteDoc, Y.encodeStateAsUpdate(hsm.localDoc));
-        }
-      }
-    }
-
-    return hsm;
   }
 
   // ===========================================================================
@@ -1280,6 +1205,10 @@ export class MergeHSM implements TestableHSM {
     // Previously, we applied pendingIdleUpdates to an empty Y.Doc which caused
     // data loss when the remote CRDT was empty/uninitialized.
     this._pendingIdleAutoMerge = this._loadUpdatesRaw(this.vaultId).then((localUpdates) => {
+      // Guard against race: check state is still idle.remoteAhead
+      // If disk changed while we were loading, we're now in idle.diverged
+      // and should let performIdleThreeWayMerge handle it instead.
+      if (this._statePath !== 'idle.remoteAhead') return;
       if (!this.pendingIdleUpdates) return; // Guard against race
 
       // Step 1: Merge local updates into a single update (no Y.Doc needed)
@@ -1352,46 +1281,80 @@ export class MergeHSM implements TestableHSM {
   private performIdleDiskAutoMerge(handleError: (err: unknown) => void): void {
     if (!this.pendingDiskContents || !this._lca) return;
 
-    const tempDoc = new Y.Doc();
-    try {
-      tempDoc.getText('contents').insert(0, this.pendingDiskContents);
+    // BUG-034 FIX: Load local updates from IndexedDB and compute diff update.
+    // Previously, we created a fresh Y.Doc, inserted disk content, and sent the
+    // full state as an update. When applied to remoteDoc (which already has content),
+    // Yjs merges both documents causing content duplication.
+    //
+    // The fix: Load existing local state, then compute only the diff update needed
+    // to transition from the current state to the disk content.
+    this._pendingIdleAutoMerge = this._loadUpdatesRaw(this.vaultId).then(async (localUpdates) => {
+      // Guard against race: check state is still idle.diskAhead
+      // If remote changed while we were loading, we're now in idle.diverged
+      // and should let performIdleThreeWayMerge handle it instead.
+      if (this._statePath !== 'idle.diskAhead') return;
+      if (!this.pendingDiskContents) return; // Guard against race
 
-      const update = Y.encodeStateAsUpdate(tempDoc);
-      const stateVector = Y.encodeStateVector(tempDoc);
       const diskContent = this.pendingDiskContents;
       const diskHash = this._disk?.hash;
       const diskMtime = this._disk?.mtime ?? this.timeProvider.now();
 
-      // Emit effect synchronously
-      this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
+      const tempDoc = new Y.Doc();
+      try {
+        // Step 1: Apply existing local updates to get the current CRDT state
+        if (localUpdates.length > 0) {
+          const localMerged = Y.mergeUpdates(localUpdates);
+          Y.applyUpdate(tempDoc, localMerged);
+        }
 
-      // Clear pending and transition synchronously
-      this.pendingDiskContents = null;
-      this.transitionTo('idle.clean');
+        // Step 2: Capture state vector BEFORE modifying (for diff encoding)
+        const previousStateVector = Y.encodeStateVector(tempDoc);
 
-      // Update local state vector (now in sync with disk)
-      this._localStateVector = stateVector;
+        // Step 3: Replace content with disk content
+        const ytext = tempDoc.getText('contents');
+        const currentContent = ytext.toString();
+        if (currentContent !== diskContent) {
+          // Delete existing content and insert new
+          if (currentContent.length > 0) {
+            ytext.delete(0, currentContent.length);
+          }
+          if (diskContent.length > 0) {
+            ytext.insert(0, diskContent);
+          }
+        }
 
-      // Update LCA asynchronously (fire-and-forget)
-      // Use disk hash if available, otherwise compute
-      const hashPromise = diskHash
-        ? Promise.resolve(diskHash)
-        : this.hashFn(diskContent);
+        // Step 4: Encode only the DIFF (changes from previous state to new state)
+        // This is the key fix - we send only what changed, not the full state
+        const diffUpdate = Y.encodeStateAsUpdate(tempDoc, previousStateVector);
+        const newStateVector = Y.encodeStateVector(tempDoc);
 
-      hashPromise.then((hash) => {
+        // Emit effect to sync the diff to remote
+        this.emitEffect({ type: 'SYNC_TO_REMOTE', update: diffUpdate });
+
+        // Clear pending and transition
+        this.pendingDiskContents = null;
+        this.transitionTo('idle.clean');
+
+        // Update local state vector
+        this._localStateVector = newStateVector;
+
+        // Update LCA
+        const hash = diskHash ?? await this.hashFn(diskContent);
         this._lca = {
           contents: diskContent,
           meta: {
             hash,
             mtime: diskMtime,
           },
-          stateVector,
+          stateVector: newStateVector,
         };
         this.emitPersistState();
-      }).catch(handleError);
-    } finally {
-      tempDoc.destroy();
-    }
+      } finally {
+        tempDoc.destroy();
+      }
+    }).catch(handleError).finally(() => {
+      this._pendingIdleAutoMerge = null;
+    });
   }
 
   private async performIdleThreeWayMerge(): Promise<void> {
