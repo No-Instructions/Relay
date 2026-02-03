@@ -711,31 +711,20 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
-   * Initialize the LCA for a newly uploaded document.
-   * Call this after inserting initial content into localDoc to establish
-   * the baseline sync point. No-op if LCA already exists.
+   * Initialize the LCA for a downloaded document.
+   * Sends INITIALIZE_LCA event to transition out of awaitingLCA state.
+   * No-op if LCA already exists.
    *
-   * @param contents - The content that was inserted
+   * @param content - The content from disk
    * @param hash - Hash of the content
    * @param mtime - Modification time from disk
    */
-  initializeLCA(contents: string, hash: string, mtime: number): void {
+  initializeLCA(content: string, hash: string, mtime: number): void {
     if (this._lca) {
       return; // Already have an LCA, don't overwrite
     }
 
-    this._lca = {
-      contents,
-      meta: { hash, mtime },
-      stateVector: this.localDoc
-        ? Y.encodeStateVector(this.localDoc)
-        : new Uint8Array([0]),
-    };
-
-    // Also set disk state to match, since we just read from disk
-    this._disk = { hash, mtime };
-
-    this.emitPersistState();
+    this.send({ type: 'INITIALIZE_LCA', content, hash, mtime });
   }
 
   /**
