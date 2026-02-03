@@ -779,7 +779,6 @@ export class LiveViewManager {
 	private loginManager: LoginManager;
 	private offListeners: (() => void)[] = [];
 	private folderListeners: Map<SharedFolder, () => void> = new Map();
-	private pendingFolderReady: Set<SharedFolder> = new Set();
 	private metadataListeners: Map<
 		TFile,
 		(data: string, cache: CachedMetadata) => void
@@ -946,6 +945,37 @@ export class LiveViewManager {
 		return [...folders];
 	}
 
+	private async foldersReady(): Promise<SharedFolder[]> {
+		const folders: Set<SharedFolder> = new Set<SharedFolder>();
+		iterateTextFileViews(this.workspace, (textFileViews) => {
+			// Check if the view is displaying a file
+			const viewFilePath = textFileViews.file?.path;
+			if (!viewFilePath) {
+				return;
+			}
+			const folder = this.sharedFolders.lookup(viewFilePath);
+			if (folder) {
+				folders.add(folder);
+			}
+		});
+		iterateCanvasViews(this.workspace, (canvasView) => {
+			// Check if the view is displaying a file
+			const viewFilePath = canvasView.file?.path;
+			if (!viewFilePath) {
+				return;
+			}
+			const folder = this.sharedFolders.lookup(viewFilePath);
+			if (folder) {
+				folders.add(folder);
+			}
+		});
+		if (folders.size === 0) {
+			return [];
+		}
+		const readyFolders = [...folders].map((folder) => folder.whenReady());
+		return Promise.all(readyFolders);
+	}
+
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
 		iterateTextFileViews(this.workspace, async (textFileView) => {
@@ -969,19 +999,6 @@ export class LiveViewManager {
 					);
 					views.push(view);
 				} else {
-					// Set up a one-time handler to refresh when folder becomes ready
-					if (!this.pendingFolderReady.has(folder)) {
-						this.pendingFolderReady.add(folder);
-						folder
-							.whenReady()
-							.then(() => {
-								this.pendingFolderReady.delete(folder);
-								this.refresh("[Folder Ready]");
-							})
-							.catch(() => {
-								this.pendingFolderReady.delete(folder);
-							});
-					}
 					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
 			}
@@ -1008,19 +1025,6 @@ export class LiveViewManager {
 						this.log(`Skipping canvas view connection for ${viewFilePath}`);
 					}
 				} else {
-					// Set up a one-time handler to refresh when folder becomes ready
-					if (!this.pendingFolderReady.has(folder)) {
-						this.pendingFolderReady.add(folder);
-						folder
-							.whenReady()
-							.then(() => {
-								this.pendingFolderReady.delete(folder);
-								this.refresh("[Folder Ready]");
-							})
-							.catch(() => {
-								this.pendingFolderReady.delete(folder);
-							});
-					}
 					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
 			}
@@ -1149,6 +1153,8 @@ export class LiveViewManager {
 
 		if (this.destroyed) return false;
 
+		await this.foldersReady();
+
 		let views: S3View[] = [];
 		try {
 			views = await this.getViews();
@@ -1265,8 +1271,6 @@ export class LiveViewManager {
 		this.folderListeners.forEach((off) => off());
 		this.folderListeners.clear();
 		this.folderListeners = null as any;
-		this.pendingFolderReady.clear();
-		this.pendingFolderReady = null as any;
 		this.views.forEach((view) => view.destroy());
 		this.views = [];
 		this.wipe();
