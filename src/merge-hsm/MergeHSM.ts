@@ -704,7 +704,10 @@ export class MergeHSM implements TestableHSM {
    * Safe to call from loading.awaitingLCA (BUG-032).
    */
   async awaitActive(): Promise<void> {
-    return this.awaitState((s) => s === 'active.tracking');
+    // Resolve for any active.* state, not just active.tracking.
+    // If HSM enters active.conflict.* (e.g., from idle.diverged), acquireLock()
+    // must still complete so LiveView can set up HSM state subscription for banner.
+    return this.awaitState((s) => s.startsWith('active.'));
   }
 
   /**
@@ -2313,6 +2316,17 @@ export class MergeHSM implements TestableHSM {
       case 'RESOLVE_ACCEPT_LOCAL':
         if (this.localDoc) {
           const localText = this.localDoc.getText('contents').toString();
+
+          // The editor was showing conflictData.remote (disk content).
+          // We need to dispatch changes to update the editor to show localText (CRDT content).
+          if (this.conflictData) {
+            const editorText = this.conflictData.remote;
+            const localChanges = computePositionedChanges(editorText, localText);
+            if (localChanges.length > 0) {
+              this.emitEffect({ type: 'DISPATCH_CM6', changes: localChanges });
+            }
+          }
+
           // Track LCA creation so RELEASE_LOCK can await it
           this._pendingLCAPromise = this.createLCAFromCurrent(localText).then((lca) => {
             this._lca = lca;
