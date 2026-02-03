@@ -217,14 +217,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				}
 			}
 
-			// Send ACQUIRE_LOCK with editorContent to transition from idle to active
-			// v6: editorContent is required to fix BUG-022 (data loss on RESOLVE_ACCEPT_DISK)
-			// BUG-032 fix: Send ACQUIRE_LOCK first, then wait. The HSM queues the event
-			// if in loading.awaitingLCA (sets pendingLockAcquisition = true), which is
-			// processed when uploadDoc calls initializeWithContent() later.
-			// BUG-035 fix: Always send ACQUIRE_LOCK, don't guard with isLoaded().
-			// There's a race condition: releaseLock() doesn't await unload(), so
-			// activeDocs.delete() may not have completed when file is quickly reopened.
+			// Send ACQUIRE_LOCK with editorContent to transition from idle to active.
+			// Always send (don't guard with isLoaded) because releaseLock() doesn't await
+			// unload(), so activeDocs may not be cleared when file is quickly reopened.
 			// The HSM handles duplicate ACQUIRE_LOCK gracefully (no-op if already active).
 			this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content });
 			mergeManager.markActive(this.guid);
@@ -361,8 +356,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	async awaitingUpdates(): Promise<boolean> {
 		await this.whenSynced();
 		await this.getServerSynced();
-		if (!this._awaitingUpdates) {
-			return false;
+		if (this._awaitingUpdates !== undefined) {
+			return this._awaitingUpdates;
 		}
 		this._awaitingUpdates = !this.hasLocalDB();
 		return this._awaitingUpdates;

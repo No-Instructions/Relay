@@ -182,8 +182,8 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	async awaitingUpdates(): Promise<boolean> {
 		await this.whenSynced();
 		await this.getServerSynced();
-		if (!this._awaitingUpdates) {
-			return false;
+		if (this._awaitingUpdates !== undefined) {
+			return this._awaitingUpdates;
 		}
 		this._awaitingUpdates = !this.hasLocalDB();
 		return this._awaitingUpdates;
