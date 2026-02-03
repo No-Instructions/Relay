@@ -106,6 +106,9 @@ export class MergeManager {
   // Pending registration promises (for awaiting all registrations)
   private pendingRegistrations: Map<string, Promise<void>> = new Map();
 
+  // Track destroyed state to prevent operations after cleanup
+  private destroyed = false;
+
   // Configuration
   private getVaultId: (guid: string) => string;
   private timeProvider: TimeProvider;
@@ -153,6 +156,8 @@ export class MergeManager {
    * @param remoteDoc - Remote YDoc, managed externally with provider attached
    */
   register(guid: string, path: string, remoteDoc: Y.Doc): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+
     // Skip if already registered
     if (this.hsms.has(guid)) {
       return Promise.resolve();
@@ -248,9 +253,11 @@ export class MergeManager {
    * @param guid - Document GUID
    * @param path - Virtual path within shared folder
    * @param remoteDoc - Remote YDoc, managed externally with provider attached
-   * @returns The HSM instance (may still be loading)
+   * @returns The HSM instance (may still be loading), or null if destroyed
    */
-  getOrRegisterHSM(guid: string, path: string, remoteDoc: Y.Doc): MergeHSM {
+  getOrRegisterHSM(guid: string, path: string, remoteDoc: Y.Doc): MergeHSM | null {
+    if (this.destroyed) return null;
+
     // Return existing HSM if already registered
     if (this.hsms.has(guid)) {
       return this.hsms.get(guid)!;
@@ -321,6 +328,10 @@ export class MergeManager {
    *   If not provided, defaults to empty string.
    */
   async getHSM(guid: string, path: string, remoteDoc: Y.Doc, editorContent: string = ''): Promise<MergeHSM> {
+    if (this.destroyed) {
+      throw new Error('MergeManager has been destroyed');
+    }
+
     // Ensure HSM exists (register if needed)
     if (!this.hsms.has(guid)) {
       await this.register(guid, path, remoteDoc);
@@ -526,6 +537,23 @@ export class MergeManager {
    */
   getIdleHSM(guid: string): MergeHSM | undefined {
     return this.hsms.get(guid);
+  }
+
+  /**
+   * Destroy all HSMs and clean up resources.
+   */
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+
+    for (const hsm of this.hsms.values()) {
+      hsm.send({ type: 'UNLOAD' });
+    }
+
+    this.hsms.clear();
+    this.activeDocs.clear();
+    this.pendingRegistrations.clear();
+    this._syncStatus.clear();
   }
 
   // ===========================================================================
