@@ -1873,6 +1873,7 @@ export class SharedFolder extends HasProvider {
 		});
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
+		this.mergeManager?.destroy();
 		super.destroy();
 		this.ydoc.destroy();
 		this.fset.clear();
@@ -1886,6 +1887,7 @@ export class SharedFolder extends HasProvider {
 		this.fileManager = null as any;
 		this.syncStore = null as any;
 		this.syncSettingsManager = null as any;
+		this.mergeManager = null as any;
 		this.whenSyncedPromise?.destroy();
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();
@@ -1971,9 +1973,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		if (this._offRemoteUpdates) {
 			this._offRemoteUpdates();
 		}
-		this.unsubscribes.forEach((unsub) => {
-			unsub();
-		});
+		super.destroy();
 		this.relayManager = null as any;
 		this.folderBuilder = null as any;
 	}
