@@ -770,7 +770,7 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'DISPATCH_CM6' });
     });
 
-    test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged', async () => {
+    test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged but updates editor', async () => {
       const t = await createTestHSM();
       await loadToResolving(t, {
         base: 'hello',
@@ -783,8 +783,9 @@ describe('MergeHSM', () => {
 
       expectState(t, 'active.tracking');
       expectLocalDocText(t, 'hello local');
-      // No DISPATCH_CM6 because content didn't change
-      expectNoEffect(t.effects, 'DISPATCH_CM6');
+      // DISPATCH_CM6 is needed because the editor was showing disk content
+      // and needs to be updated to show the local (CRDT) content
+      expectEffect(t.effects, { type: 'DISPATCH_CM6' });
     });
 
     test('RESOLVE_ACCEPT_MERGED applies merged content', async () => {
@@ -831,6 +832,27 @@ describe('MergeHSM', () => {
       const conflictData = t.hsm.getConflictData();
       expect(conflictData).not.toBeNull();
       expect(conflictData!.remote).toBe('disk changed');
+    });
+
+    test('awaitActive() resolves for conflict state, not just tracking', async () => {
+      // Regression test: awaitActive() must resolve for any active.* state.
+      // If it only resolves for active.tracking, acquireLock() hangs when
+      // HSM enters active.conflict.*, preventing banner subscription setup.
+      const t = await createTestHSM();
+      await loadToConflict(t, {
+        base: 'original',
+        remote: 'remote changed',
+        disk: 'disk changed',
+      });
+
+      expectState(t, 'active.conflict.bannerShown');
+
+      // awaitActive() should resolve immediately since we're already in active.*
+      const resolved = await Promise.race([
+        t.hsm.awaitActive().then(() => true),
+        new Promise(resolve => setTimeout(() => resolve(false), 100)),
+      ]);
+      expect(resolved).toBe(true);
     });
   });
 
