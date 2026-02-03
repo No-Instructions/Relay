@@ -264,7 +264,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this._providerIntegration = null;
 		}
 
-		const mergeManager = this.sharedFolder.mergeManager;
+		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
+		const mergeManager = this.sharedFolder?.mergeManager;
 		if (mergeManager) {
 			// MergeManager.unload() sends RELEASE_LOCK
 			mergeManager.unload(this.guid);
@@ -277,7 +278,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * This can be used instead of checkStale() when HSM is enabled.
 	 */
 	getHSMSyncStatus(): import("./merge-hsm/types").SyncStatus | null {
-		const mergeManager = this.sharedFolder.mergeManager;
+		const mergeManager = this.sharedFolder?.mergeManager;
 		if (!mergeManager) {
 			return null;
 		}
