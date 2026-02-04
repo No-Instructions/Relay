@@ -34,7 +34,7 @@ describe('Invariant Checking', () => {
 
     it('filters invariants by state', () => {
       const activeInvariants = getInvariantsForState('active.tracking');
-      const idleInvariants = getInvariantsForState('idle.clean');
+      const idleInvariants = getInvariantsForState('idle.synced');
 
       // Some invariants should be specific to active mode
       expect(activeInvariants.some((inv) => inv.id === 'editor-matches-local-doc')).toBe(true);
@@ -110,7 +110,7 @@ describe('Invariant Checking', () => {
     describe('SYNCED_MEANS_DISK_MATCHES_LCA', () => {
       it('passes when synced and hashes match', () => {
         const context: InvariantCheckContext = {
-          statePath: 'idle.clean',
+          statePath: 'idle.synced',
           localDocText: null,
           remoteDocText: null,
           editorText: null,
@@ -126,7 +126,7 @@ describe('Invariant Checking', () => {
 
       it('fails when synced but hashes differ', () => {
         const context: InvariantCheckContext = {
-          statePath: 'idle.clean',
+          statePath: 'idle.synced',
           localDocText: null,
           remoteDocText: null,
           editorText: null,
@@ -144,7 +144,7 @@ describe('Invariant Checking', () => {
 
       it('skips when not synced', () => {
         const context: InvariantCheckContext = {
-          statePath: 'idle.clean',
+          statePath: 'idle.synced',
           localDocText: null,
           remoteDocText: null,
           editorText: null,

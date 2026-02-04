@@ -52,7 +52,7 @@ describe('E2E Recorded: clean-disk-file-test', () => {
 
     const hash = await sha256(initialContent);
     t.send(initializeWithContent(initialContent, hash, Date.now()));
-    expectState(t, 'idle.clean');
+    expectState(t, 'idle.synced');
   });
 
   test('should enter active mode and reach active.tracking', async () => {
@@ -63,7 +63,7 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     t.send(persistenceLoaded(new Uint8Array(), null));
     const hash = await sha256(initialContent);
     t.send(initializeWithContent(initialContent, hash, Date.now()));
-    expectState(t, 'idle.clean');
+    expectState(t, 'idle.synced');
 
     // Acquire lock to enter active mode
     t.send(acquireLock(initialContent));

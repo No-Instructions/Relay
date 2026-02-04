@@ -14,7 +14,7 @@ The `forTesting()` factory has been **removed** from MergeHSM. All tests now use
 | Helper | Target State |
 |--------|--------------|
 | `loadAndActivate(hsm, content, opts?)` | `active.tracking` |
-| `loadToIdle(hsm, opts?)` | `idle.clean` |
+| `loadToIdle(hsm, opts?)` | `idle.synced` |
 | `loadToAwaitingLCA(hsm, opts?)` | `loading.awaitingLCA` |
 | `loadToConflict(hsm, opts)` | `active.conflict.bannerShown` |
 | `loadToResolving(hsm, opts)` | `active.conflict.resolving` |

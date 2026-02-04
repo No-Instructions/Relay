@@ -27,7 +27,7 @@ const defaultLoadState = async (guid: string) => ({
   lca: createDefaultLCA(),
   disk: null,
   localStateVector: null,
-  lastStatePath: 'idle.clean' as const,
+  lastStatePath: 'idle.synced' as const,
   persistedAt: Date.now(),
 });
 
@@ -67,7 +67,7 @@ describe('MergeManager', () => {
 
       const hsm = manager.getIdleHSM('doc-1');
       expect(hsm).toBeDefined();
-      expect(hsm?.state.statePath).toBe('idle.clean');
+      expect(hsm?.state.statePath).toBe('idle.synced');
     });
 
     test('register initializes sync status from HSM', async () => {
@@ -158,7 +158,7 @@ describe('MergeManager', () => {
       expect(manager.isRegistered('doc-1')).toBe(true);
 
       const hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toBe('idle.clean');
+      expect(hsm?.state.statePath).toBe('idle.synced');
     });
 
     test('HSM survives multiple lock cycles', async () => {
@@ -190,7 +190,7 @@ describe('MergeManager', () => {
 
       expect(manager.isRegistered('doc-1')).toBe(true);
       const hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toBe('idle.clean');
+      expect(hsm?.state.statePath).toBe('idle.synced');
     });
   });
 
@@ -205,7 +205,7 @@ describe('MergeManager', () => {
       // HSM should have processed the update and auto-merged to clean
       const hsm = manager.getIdleHSM('doc-1');
       await hsm?.awaitIdleAutoMerge();
-      expect(hsm?.state.statePath).toBe('idle.clean');
+      expect(hsm?.state.statePath).toBe('idle.synced');
       // Verify remote state was updated (update was processed)
       expect(hsm?.state.remoteStateVector).not.toBeNull();
     });
@@ -472,8 +472,8 @@ describe('MergeManager', () => {
       let hsm = manager.getIdleHSM('doc-1');
       await hsm?.awaitIdleAutoMerge();
 
-      // Auto-merge completes, should be idle.clean
-      expect(hsm?.state.statePath).toBe('idle.clean');
+      // Auto-merge completes, should be idle.synced
+      expect(hsm?.state.statePath).toBe('idle.synced');
 
       hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
       expect(hsm.state.statePath).toBe('active.tracking');
@@ -481,7 +481,7 @@ describe('MergeManager', () => {
       await manager.unload('doc-1');
 
       hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toBe('idle.clean');
+      expect(hsm?.state.statePath).toBe('idle.synced');
     });
 
     test('getIdleHSM returns HSM without acquiring lock', async () => {
@@ -509,7 +509,7 @@ describe('MergeManager', () => {
         },
         disk: null,
         localStateVector: null,
-        lastStatePath: 'idle.clean',
+        lastStatePath: 'idle.synced',
         persistedAt: Date.now(),
       });
 

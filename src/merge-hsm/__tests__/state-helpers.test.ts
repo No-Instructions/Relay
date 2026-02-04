@@ -69,12 +69,12 @@ describe('State Transition Helpers', () => {
       expect(t.state.lca?.contents).toBe('test content');
     });
 
-    test('goes to idle.clean when disk matches LCA', async () => {
+    test('goes to idle.synced when disk matches LCA', async () => {
       const t = await createTestHSM();
 
       await loadToIdle(t, { content: '' });
 
-      expect(t.matches('idle.clean')).toBe(true);
+      expect(t.matches('idle.synced')).toBe(true);
     });
   });
 

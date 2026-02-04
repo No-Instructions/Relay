@@ -79,7 +79,7 @@ export const SYNCED_MEANS_DISK_MATCHES_LCA: InvariantDefinition = {
   description: 'When status is synced, disk hash should equal LCA hash',
   severity: 'error',
   trigger: 'on-state',
-  applicableStates: ['idle.clean'],
+  applicableStates: ['idle.synced'],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
     if (ctx.syncStatus !== 'synced') {
       return null; // Only applies when synced
@@ -186,7 +186,7 @@ export const IDLE_NO_LOCAL_DOC: InvariantDefinition = {
   severity: 'warning',
   trigger: 'on-state',
   applicableStates: [
-    'idle.clean',
+    'idle.synced',
     'idle.localAhead',
     'idle.remoteAhead',
     'idle.diskAhead',

@@ -247,9 +247,9 @@ const mergeMachine = setup({
       },
     },
     idle: {
-      initial: 'clean',
+      initial: 'synced',
       states: {
-        clean: {},
+        synced: {},
         localAhead: {},
         remoteAhead: {},
         diskAhead: {},
@@ -383,7 +383,7 @@ const mergeMachine = setup({
     },
     unloading: {
       always: {
-        target: 'idle.clean',
+        target: 'idle.synced',
       },
     },
   },
@@ -1103,7 +1103,7 @@ export class MergeHSM implements TestableHSM {
         this.transitionTo('idle.localAhead');
         return;
       }
-      this.transitionTo('idle.clean');
+      this.transitionTo('idle.synced');
       return;
     }
 
@@ -1125,7 +1125,7 @@ export class MergeHSM implements TestableHSM {
     } else if (remoteChanged) {
       this.transitionTo('idle.remoteAhead');
     } else {
-      this.transitionTo('idle.clean');
+      this.transitionTo('idle.synced');
     }
   }
 
@@ -1219,7 +1219,7 @@ export class MergeHSM implements TestableHSM {
       if (stateVectorsEqual(localStateVector, mergedStateVector)) {
         // Remote had nothing new - skip hydration and disk write
         this.pendingIdleUpdates = null;
-        this.transitionTo('idle.clean');
+        this.transitionTo('idle.synced');
         return;
       }
 
@@ -1241,7 +1241,7 @@ export class MergeHSM implements TestableHSM {
         // (IndexedDB doesn't have this content yet)
         this.pendingIdleUpdates = Y.encodeStateAsUpdate(tempDoc);
 
-        this.transitionTo('idle.clean');
+        this.transitionTo('idle.synced');
 
         // Update LCA and local state vector (they're now in sync)
         this._localStateVector = stateVector;
@@ -1322,7 +1322,7 @@ export class MergeHSM implements TestableHSM {
 
         // Clear pending and transition
         this.pendingDiskContents = null;
-        this.transitionTo('idle.clean');
+        this.transitionTo('idle.synced');
 
         // Update local state vector
         this._localStateVector = newStateVector;
@@ -1429,7 +1429,7 @@ export class MergeHSM implements TestableHSM {
       this.pendingIdleUpdates = null;
       this.pendingDiskContents = null;
 
-      this.transitionTo('idle.clean');
+      this.transitionTo('idle.synced');
       this.emitPersistState();
     }
   }
@@ -2356,7 +2356,7 @@ export class MergeHSM implements TestableHSM {
       return 'pending';
     }
 
-    if (statePath === 'idle.clean' || statePath === 'active.tracking') {
+    if (statePath === 'idle.synced' || statePath === 'active.tracking') {
       return 'synced';
     }
 
