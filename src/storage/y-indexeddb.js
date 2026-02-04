@@ -334,12 +334,12 @@ export class IndexeddbPersistence extends Observable {
   }
 
   /**
-   * Check if this database contains meaningful user data
-   * (more than just initial metadata)
+   * Check if this database contains meaningful user data.
+   * Returns true if there are any stored updates in IndexedDB.
    * @return {boolean}
    */
   hasUserData () {
-    return this._dbsize > 3
+    return this._dbsize > 0
   }
 
   /**
