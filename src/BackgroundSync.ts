@@ -16,6 +16,7 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
+import { appendUpdateRaw } from "./storage/y-indexeddb";
 
 export interface QueueItem {
 	guid: string;
@@ -887,6 +888,13 @@ export class BackgroundSync extends HasLogging {
 
 			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
+
+			// Persist to localDoc's IndexedDB for HSM idle mode.
+			// The HSM uses a two-ydoc architecture where localDoc is persisted
+			// and remoteDoc (doc.ydoc) is ephemeral. Without this, the IndexedDB
+			// backing localDoc would be empty after download.
+			const vaultId = `${doc.sharedFolder.appId}-relay-doc-${doc.guid}`;
+			await appendUpdateRaw(vaultId, updateBytes);
 
 			if (hasContents && !contentsMatch) {
 				this.log("Skipping flush - file requires merge conflict resolution.");
