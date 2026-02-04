@@ -83,6 +83,12 @@ export interface MergeManagerConfig {
    * Metadata is set on the IndexedDB persistence for recovery/debugging.
    */
   getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
+
+  /**
+   * User ID for PermanentUserData tracking.
+   * If provided, each HSM will set up user mapping on localDoc.
+   */
+  userId?: string;
 }
 
 export interface PollOptions {
@@ -131,6 +137,7 @@ export class MergeManager {
   private loadUpdatesRaw?: LoadUpdatesRaw;
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
+  private userId?: string;
 
   constructor(config: MergeManagerConfig) {
     this.getVaultId = config.getVaultId;
@@ -143,6 +150,7 @@ export class MergeManager {
     this.loadUpdatesRaw = config.loadUpdatesRaw;
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
+    this.userId = config.userId;
   }
 
   // ===========================================================================
@@ -200,6 +208,7 @@ export class MergeManager {
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
       persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
+      userId: this.userId,
     });
 
     // Subscribe to effects
@@ -285,6 +294,7 @@ export class MergeManager {
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
       persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
+      userId: this.userId,
     });
 
     // Subscribe to effects

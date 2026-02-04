@@ -480,6 +480,9 @@ export class MergeHSM implements TestableHSM {
   // Network connectivity status (does not block state transitions)
   private _isOnline: boolean = false;
 
+  // User ID for PermanentUserData tracking
+  private _userId?: string;
+
   constructor(config: MergeHSMConfig) {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn ?? defaultHashFn;
@@ -490,6 +493,7 @@ export class MergeHSM implements TestableHSM {
     this._createPersistence = config.createPersistence ?? defaultCreatePersistence;
     this._loadUpdatesRaw = config.loadUpdatesRaw ?? defaultLoadUpdatesRaw;
     this._persistenceMetadata = config.persistenceMetadata;
+    this._userId = config.userId;
 
     // Create and start the XState actor
     this.actor = createActor(mergeMachine, {
@@ -997,6 +1001,12 @@ export class MergeHSM implements TestableHSM {
       }
       ytext.insert(0, event.content);
 
+      // Store creation timestamp in metadata.
+      // Also ensures IndexedDB has an entry even for empty content
+      // (empty insert is a no-op that doesn't generate a Yjs update).
+      const meta = this.localDoc.getMap('meta');
+      meta.set('ctime', Date.now());
+
       // Update local state vector
       this._localStateVector = Y.encodeStateVector(this.localDoc);
     }
@@ -1161,6 +1171,9 @@ export class MergeHSM implements TestableHSM {
   // ===========================================================================
 
   private attemptIdleAutoMerge(): void {
+    // Guard: don't start a new merge if one is already in progress
+    if (this._pendingIdleAutoMerge) return;
+
     const state = this._statePath;
     const handleError = (err: unknown) => {
       this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
@@ -1178,6 +1191,8 @@ export class MergeHSM implements TestableHSM {
       if (!this._lca) return;
       this._pendingIdleAutoMerge = this.performIdleThreeWayMerge().catch(handleError).finally(() => {
         this._pendingIdleAutoMerge = null;
+        // Re-check for updates that arrived during the merge
+        this.attemptIdleAutoMerge();
       });
     }
   }
@@ -1259,6 +1274,8 @@ export class MergeHSM implements TestableHSM {
       }
     }).catch(handleError).finally(() => {
       this._pendingIdleAutoMerge = null;
+      // Re-check for updates that arrived during the merge
+      this.attemptIdleAutoMerge();
     });
   }
 
@@ -1338,6 +1355,8 @@ export class MergeHSM implements TestableHSM {
       }
     }).catch(handleError).finally(() => {
       this._pendingIdleAutoMerge = null;
+      // Re-check for updates that arrived during the merge
+      this.attemptIdleAutoMerge();
     });
   }
 
@@ -1636,6 +1655,14 @@ export class MergeHSM implements TestableHSM {
     this.localDoc = new Y.Doc();
     // remoteDoc is passed in externally, just reference it in active mode
     this.remoteDoc = this.externalRemoteDoc;
+
+    // Set up PermanentUserData on localDoc to track which user made changes.
+    // This is done on localDoc (not remoteDoc) to avoid crashes from malformed
+    // 'users' map entries that may arrive from the network.
+    if (this._userId) {
+      const permanentUserData = new Y.PermanentUserData(this.localDoc);
+      permanentUserData.setUserMapping(this.localDoc, this.localDoc.clientID, this._userId);
+    }
 
     // Attach persistence to localDoc — it loads stored updates
     // asynchronously and fires 'synced' when done.
