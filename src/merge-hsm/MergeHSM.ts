@@ -616,6 +616,18 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
+   * Transition directly to idle.diverged state.
+   * Used for LCA recovery when CRDT content differs from disk.
+   * The divergence will be resolved when user opens the file.
+   */
+  transitionToIdleDiverged(): void {
+    if (this._statePath !== 'loading.awaitingLCA') {
+      return; // Only valid from awaitingLCA
+    }
+    this.transitionTo('idle.diverged');
+  }
+
+  /**
    * Check if the network is currently connected.
    * Does not affect state transitions; local edits always work offline.
    */
@@ -1184,6 +1196,7 @@ export class MergeHSM implements TestableHSM {
         this.performIdleDiskAutoMerge(handleError);
       }
     } else if (state === 'idle.diverged') {
+      if (!this._lca) return;
       this._pendingIdleAutoMerge = this.performIdleThreeWayMerge().catch(handleError).finally(() => {
         this._pendingIdleAutoMerge = null;
       });

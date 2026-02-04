@@ -21,6 +21,7 @@ import type {
   PersistedMergeState,
   CreatePersistence,
   PersistenceMetadata,
+  LoadUpdatesRaw,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -63,6 +64,12 @@ export interface MergeManagerConfig {
    * Callback to persist the sync status index.
    */
   persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
+
+  /**
+   * Callback to load raw Yjs updates from IndexedDB (for LCA recovery).
+   * Used when a document has CRDT updates but no persisted LCA.
+   */
+  loadUpdatesRaw?: LoadUpdatesRaw;
 
   /**
    * Factory to create persistence for localDoc.
@@ -121,6 +128,7 @@ export class MergeManager {
     hash: string;
   } | null>;
   private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
+  private loadUpdatesRaw?: LoadUpdatesRaw;
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
 
@@ -132,6 +140,7 @@ export class MergeManager {
     this.onEffect = config.onEffect;
     this.getDiskState = config.getDiskState;
     this._persistIndex = config.persistIndex;
+    this.loadUpdatesRaw = config.loadUpdatesRaw;
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
   }
@@ -227,6 +236,9 @@ export class MergeManager {
         : null,
     });
 
+    // Attempt LCA recovery if stuck in awaitingLCA with persisted CRDT updates
+    await this.attemptLCARecovery(hsm, guid, path);
+
     // HSM is now in idle.* state - update sync status
     this.updateSyncStatus(guid, hsm.getSyncStatus());
   }
@@ -309,6 +321,9 @@ export class MergeManager {
             }
           : null,
       });
+
+      // Attempt LCA recovery if stuck in awaitingLCA with persisted CRDT updates
+      await this.attemptLCARecovery(hsm, guid, path);
 
       // HSM is now in idle.* state - update sync status
       this.updateSyncStatus(guid, hsm.getSyncStatus());
@@ -591,5 +606,67 @@ export class MergeManager {
    */
   private updateSyncStatus(guid: string, status: SyncStatus): void {
     this._syncStatus.set(guid, status);
+  }
+
+  /**
+   * Attempt LCA recovery for an HSM stuck in loading.awaitingLCA.
+   *
+   * When an HSM has persisted CRDT updates but no LCA, this method:
+   * 1. Loads updates from IndexedDB
+   * 2. Compares CRDT content to disk content
+   * 3. If match: creates LCA and transitions to idle.clean
+   * 4. If differ: transitions to idle.diverged (user resolves on file open)
+   */
+  private async attemptLCARecovery(hsm: MergeHSM, guid: string, path: string): Promise<void> {
+    // Need both callbacks to attempt recovery
+    if (!this.loadUpdatesRaw || !this.getDiskState) {
+      return;
+    }
+
+    // Check if HSM is actually stuck in awaitingLCA
+    if (!hsm.isAwaitingLCA()) {
+      return;
+    }
+
+    try {
+      const vaultId = this.getVaultId(guid);
+      const updates = await this.loadUpdatesRaw(vaultId);
+
+      // No persisted updates - nothing to recover from
+      if (!updates || updates.length === 0) {
+        return;
+      }
+
+      // Merge updates and extract text content
+      const mergedUpdate = updates.length === 1 ? updates[0] : Y.mergeUpdates(updates);
+      const tempDoc = new Y.Doc();
+      Y.applyUpdate(tempDoc, mergedUpdate);
+      const crdtText = tempDoc.getText('contents').toString();
+      tempDoc.destroy();
+
+      // Get disk content
+      const diskState = await this.getDiskState(path);
+      if (!diskState) {
+        // No disk file - can't recover, stay in awaitingLCA
+        return;
+      }
+
+      if (crdtText === diskState.contents) {
+        // Content matches - create LCA and transition to idle
+        hsm.initializeLCA(diskState.contents, diskState.hash, diskState.mtime);
+      } else {
+        // Content differs - mark as diverged, user will resolve on file open
+        // Send INITIALIZE_LCA with disk content but mark that we need resolution
+        // Actually, we can just send a DISK_CHANGED first to set disk state,
+        // then use initializeLCA - the HSM will detect divergence on ACQUIRE_LOCK
+        //
+        // Simpler: just transition directly to idle.diverged
+        // The handleYDocsReady recovery logic will handle it when user opens file
+        hsm.transitionToIdleDiverged();
+      }
+    } catch (e) {
+      // Recovery failed - leave in awaitingLCA, will retry on file open
+      console.warn(`[MergeManager] LCA recovery failed for ${path}:`, e);
+    }
   }
 }
