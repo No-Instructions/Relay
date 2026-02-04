@@ -535,3 +535,59 @@ async function rotateHSMLogIfNeeded(): Promise<void> {
 export function isHSMRecordingActive(): boolean {
 	return hsmRecordingFile !== null;
 }
+
+/**
+ * Get the current HSM recording boot ID.
+ */
+export function getHSMBootId(): string | null {
+	return hsmBootId;
+}
+
+/**
+ * Get HSM recording entries from the current boot.
+ * Reads the disk file (including rotated backups) and filters by current boot ID.
+ */
+export async function getHSMBootEntries(): Promise<object[]> {
+	if (!hsmFileAdapter || !hsmRecordingFile || !hsmBootId) {
+		return [];
+	}
+
+	// Flush any buffered entries first
+	await flushHSMRecording();
+
+	const entries: object[] = [];
+
+	// Helper to parse entries from a file
+	const parseEntriesFromFile = async (filePath: string): Promise<void> => {
+		try {
+			if (!await hsmFileAdapter!.exists(filePath)) {
+				return;
+			}
+			const content = await hsmFileAdapter!.read(filePath);
+			const lines = content.split('\n').filter(line => line.trim());
+
+			for (const line of lines) {
+				try {
+					const entry = JSON.parse(line);
+					if (entry.boot === hsmBootId) {
+						entries.push(entry);
+					}
+				} catch {
+					// Skip malformed lines
+				}
+			}
+		} catch {
+			// File doesn't exist or can't be read
+		}
+	};
+
+	// Read rotated files first (oldest to newest: .3, .2, .1)
+	for (let i = hsmRecordingConfig.maxBackups; i >= 1; i--) {
+		await parseEntriesFromFile(`${hsmRecordingFile}.${i}`);
+	}
+
+	// Read main file last (newest entries)
+	await parseEntriesFromFile(hsmRecordingFile);
+
+	return entries;
+}
