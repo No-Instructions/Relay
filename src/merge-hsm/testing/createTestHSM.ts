@@ -146,6 +146,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     // Both paths read from the same "IndexedDB"
     loadUpdatesRaw = async () => [updates];
     createPersistence = (_vaultId: string, doc: Y.Doc) => ({
+      synced: false,
       once(_event: 'synced', cb: () => void) {
         Y.applyUpdate(doc, updates);
         cb();
