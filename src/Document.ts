@@ -360,6 +360,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (this._awaitingUpdates !== undefined) {
 			return this._awaitingUpdates;
 		}
+		// If folder has synced with server (or is authoritative, which sets serverSynced), we don't need to wait
+		const folderServerSynced = await this.sharedFolder.getServerSynced();
+		if (folderServerSynced) {
+			this._awaitingUpdates = false;
+			return false;
+		}
 		this._awaitingUpdates = !this.hasLocalDB();
 		return this._awaitingUpdates;
 	}

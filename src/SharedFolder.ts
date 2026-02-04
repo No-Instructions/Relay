@@ -8,7 +8,7 @@ import {
 	debounce,
 	normalizePath,
 } from "obsidian";
-import { IndexeddbPersistence } from "./storage/y-indexeddb";
+import { IndexeddbPersistence, loadUpdatesRaw } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
@@ -294,8 +294,9 @@ export class SharedFolder extends HasProvider {
 			createPersistence: (vaultId, doc) =>
 				new IndexeddbPersistence(vaultId, doc),
 			getDiskState: async (docPath: string) => {
-				// docPath is already vault-relative (e.g., "blog/note.md")
-				const tfile = this.vault.getAbstractFileByPath(docPath);
+				// docPath is SharedFolder-relative (e.g., "/note.md")
+				const vaultPath = this.getPath(docPath);
+				const tfile = this.vault.getAbstractFileByPath(vaultPath);
 				if (!(tfile instanceof TFile)) return null;
 				const contents = await this.vault.read(tfile);
 				const encoder = new TextEncoder();
@@ -350,6 +351,9 @@ export class SharedFolder extends HasProvider {
 					s3rn: s3rn ? S3RN.encode(s3rn) : "",
 				};
 			},
+			loadUpdatesRaw: async (vaultId: string) => {
+				return loadUpdatesRaw(vaultId);
+			},
 		});
 
 		// Install E2E recording bridge if enabled
@@ -379,11 +383,16 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 
+		const authoritative = this.authoritative;
 		(async () => {
 			const serverSynced = await this.getServerSynced();
 			if (!serverSynced) {
-				await this.onceProviderSynced();
-				await this.markSynced();
+				if (authoritative) {
+					await this.markSynced();
+				} else {
+					await this.onceProviderSynced();
+					await this.markSynced();
+				}
 			}
 		})();
 
@@ -418,6 +427,12 @@ export class SharedFolder extends HasProvider {
 
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) return;
+
+		// Skip active documents - ProviderIntegration handles them via remoteDoc observer
+		const hsm = this.mergeManager.getIdleHSM(guid);
+		if (hsm?.isActive()) {
+			return;
+		}
 
 		// Forward the update to MergeManager for idle mode handling
 		if (event.update) {
