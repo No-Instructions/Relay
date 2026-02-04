@@ -8,7 +8,7 @@ import {
 	debounce,
 	normalizePath,
 } from "obsidian";
-import { IndexeddbPersistence } from "./storage/y-indexeddb";
+import { IndexeddbPersistence, loadUpdatesRaw } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
@@ -353,6 +353,7 @@ export class SharedFolder extends HasProvider {
 				};
 			},
 			userId: loginManager?.user?.id,
+			loadUpdatesRaw,
 		});
 
 		// Install E2E recording bridge if enabled (for in-memory or disk recording)

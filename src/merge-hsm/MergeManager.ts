@@ -21,6 +21,7 @@ import type {
   PersistedMergeState,
   CreatePersistence,
   PersistenceMetadata,
+  LoadUpdatesRaw,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -82,6 +83,14 @@ export interface MergeManagerConfig {
    * If provided, each HSM will set up user mapping on localDoc.
    */
   userId?: string;
+
+  /**
+   * Callback to load raw Yjs updates from IndexedDB.
+   * Used to load local CRDT state for PERSISTENCE_LOADED event.
+   * Production: pass loadUpdatesRaw from src/storage/y-indexeddb.js
+   * Tests: omit for default empty array.
+   */
+  loadUpdatesRaw?: LoadUpdatesRaw;
 }
 
 export interface PollOptions {
@@ -130,6 +139,7 @@ export class MergeManager {
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
+  private loadUpdatesRaw?: LoadUpdatesRaw;
 
   constructor(config: MergeManagerConfig) {
     this.getVaultId = config.getVaultId;
@@ -142,6 +152,7 @@ export class MergeManager {
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
     this.userId = config.userId;
+    this.loadUpdatesRaw = config.loadUpdatesRaw;
   }
 
   // ===========================================================================
@@ -218,12 +229,20 @@ export class MergeManager {
     // Initialize HSM through loading → idle
     hsm.send({ type: 'LOAD', guid, path });
 
-    // Load persisted state (LCA). Updates are loaded by IndexeddbPersistence internally.
-    const persistedState = this.loadState ? await this.loadState(guid) : null;
+    // Load persisted state (LCA) and raw CRDT updates from IndexedDB
+    const [persistedState, localUpdates] = await Promise.all([
+      this.loadState ? this.loadState(guid) : Promise.resolve(null),
+      this.loadUpdatesRaw ? this.loadUpdatesRaw(this.getVaultId(guid)) : Promise.resolve([]),
+    ]);
+
+    // Merge updates if we have any (for computing localStateVector)
+    const mergedUpdates = localUpdates.length > 0
+      ? Y.mergeUpdates(localUpdates)
+      : new Uint8Array();
 
     hsm.send({
       type: 'PERSISTENCE_LOADED',
-      updates: new Uint8Array(),
+      updates: mergedUpdates,
       lca: persistedState?.lca
         ? {
             contents: persistedState.lca.contents,
@@ -303,11 +322,20 @@ export class MergeManager {
 
     // Fire-and-forget async persistence loading
     (async () => {
-      const persistedState = this.loadState ? await this.loadState(guid) : null;
+      // Load persisted state (LCA) and raw CRDT updates from IndexedDB
+      const [persistedState, localUpdates] = await Promise.all([
+        this.loadState ? this.loadState(guid) : Promise.resolve(null),
+        this.loadUpdatesRaw ? this.loadUpdatesRaw(this.getVaultId(guid)) : Promise.resolve([]),
+      ]);
+
+      // Merge updates if we have any (for computing localStateVector)
+      const mergedUpdates = localUpdates.length > 0
+        ? Y.mergeUpdates(localUpdates)
+        : new Uint8Array();
 
       hsm.send({
         type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
+        updates: mergedUpdates,
         lca: persistedState?.lca
           ? {
               contents: persistedState.lca.contents,
