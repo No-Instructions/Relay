@@ -247,11 +247,24 @@ const mergeMachine = setup({
         DISK_CHANGED: {
           actions: ['setDiskMeta'],
         },
+        // Mode determination events from MergeManager
+        // SET_MODE_ACTIVE transitions to active.loading to wait for ACQUIRE_LOCK
+        // SET_MODE_IDLE handled by wrapper to transition to idle.*
+        SET_MODE_ACTIVE: {
+          target: 'active.loading',
+        },
+        SET_MODE_IDLE: {
+          target: 'idle.loading',
+        },
       },
     },
     idle: {
-      initial: 'synced',
+      initial: 'loading',
       states: {
+        loading: {
+          // Reading LCA from MergeManager cache before determining idle substate
+          // Wrapper handles transition to appropriate substate via handleIdleLoading()
+        },
         synced: {},
         localAhead: {},
         remoteAhead: {},
@@ -294,8 +307,16 @@ const mergeMachine = setup({
       },
     },
     active: {
-      initial: 'entering',
+      initial: 'loading',
       states: {
+        loading: {
+          // Mode is active, waiting for ACQUIRE_LOCK with editor content
+          on: {
+            ACQUIRE_LOCK: {
+              target: 'entering',
+            },
+          },
+        },
         entering: {
           on: {
             YDOCS_READY: {
@@ -323,13 +344,31 @@ const mergeMachine = setup({
           },
         },
         merging: {
-          on: {
-            MERGE_SUCCESS: {
-              target: 'tracking',
-              actions: ['updateLCAFromMerge'],
+          initial: 'threeWay',
+          states: {
+            twoWay: {
+              // No LCA available - always shows diff UI for user resolution
+              on: {
+                MERGE_SUCCESS: {
+                  target: '#mergeHSM.active.tracking',
+                  actions: ['updateLCAFromMerge'],
+                },
+                MERGE_CONFLICT: {
+                  target: '#mergeHSM.active.conflict.bannerShown',
+                },
+              },
             },
-            MERGE_CONFLICT: {
-              target: 'conflict.bannerShown',
+            threeWay: {
+              // Has LCA - attempts automatic resolution using diff3
+              on: {
+                MERGE_SUCCESS: {
+                  target: '#mergeHSM.active.tracking',
+                  actions: ['updateLCAFromMerge'],
+                },
+                MERGE_CONFLICT: {
+                  target: '#mergeHSM.active.conflict.bannerShown',
+                },
+              },
             },
           },
         },
@@ -477,6 +516,10 @@ export class MergeHSM implements TestableHSM {
   // Lock requested during loading (deferred until PERSISTENCE_LOADED)
   private pendingLockAcquisition = false;
 
+  // Mode decision from MergeManager (SET_MODE_ACTIVE / SET_MODE_IDLE)
+  // null = no decision yet, 'active' = SET_MODE_ACTIVE received, 'idle' = SET_MODE_IDLE received
+  private _modeDecision: 'active' | 'idle' | null = null;
+
   // Whether we entered active mode from idle.diverged (for conflict handling)
   private _enteringFromDiverged = false;
 
@@ -492,6 +535,11 @@ export class MergeHSM implements TestableHSM {
 
   // User ID for PermanentUserData tracking
   private _userId?: string;
+
+  // Event accumulation queue for loading state (Gap 11)
+  // Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
+  // and replayed after mode transition (to idle.* or active.*)
+  private _accumulatedEvents: Array<{ type: 'REMOTE_UPDATE'; update: Uint8Array } | { type: 'DISK_CHANGED'; contents: string; mtime: number; hash: string }> = [];
 
   constructor(config: MergeHSMConfig) {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
@@ -575,6 +623,8 @@ export class MergeHSM implements TestableHSM {
       error: this._error,
       deferredConflict: this._deferredConflict,
       isOnline: this._isOnline,
+      pendingEditorContent: this.pendingEditorContent ?? undefined,
+      lastKnownEditorText: this.lastKnownEditorText ?? undefined,
     };
   }
 
@@ -923,7 +973,85 @@ export class MergeHSM implements TestableHSM {
       case 'ERROR':
         this.handleError(event);
         break;
+
+      // Mode Determination Events (from MergeManager)
+      case 'SET_MODE_ACTIVE':
+        this.handleSetModeActive();
+        break;
+
+      case 'SET_MODE_IDLE':
+        this.handleSetModeIdle();
+        break;
     }
+  }
+
+  // ===========================================================================
+  // Mode Determination (from MergeManager)
+  // ===========================================================================
+
+  /**
+   * Handle SET_MODE_ACTIVE event from MergeManager.
+   * Signals that this HSM should be in active mode (editor is open).
+   * Transitions to active.loading to wait for ACQUIRE_LOCK with editor content.
+   */
+  private handleSetModeActive(): void {
+    // Only valid in loading states
+    if (!this._statePath.startsWith('loading.')) {
+      return;
+    }
+
+    // XState machine handles the transition to active.loading
+    // (via SET_MODE_ACTIVE event handler in loading state)
+    this.transitionTo('active.loading');
+  }
+
+  /**
+   * Handle SET_MODE_IDLE event from MergeManager.
+   * Signals that this HSM should be in idle mode (no editor open).
+   * Transitions to idle.loading, then determines appropriate idle substate.
+   */
+  private handleSetModeIdle(): void {
+    // Only valid in loading states
+    if (!this._statePath.startsWith('loading.')) {
+      return;
+    }
+    this._modeDecision = 'idle';
+
+    // XState machine handles the transition to idle.loading
+    // (via SET_MODE_IDLE event handler in loading state)
+    this.transitionTo('idle.loading');
+
+    // Now determine the appropriate idle substate
+    this.handleIdleLoading();
+  }
+
+  /**
+   * Handle transition from idle.loading to appropriate idle substate.
+   * Reads LCA (from persistence/cache) and determines sync state.
+   *
+   * Spec flow: loading → SET_MODE_IDLE → idle.loading → idle.synced/diverged/etc.
+   */
+  private handleIdleLoading(): void {
+    // Only valid in idle.loading state
+    if (this._statePath !== 'idle.loading') {
+      return;
+    }
+
+    // Clean up YDocs if they were created during initialization
+    // (they'll be recreated when lock is acquired)
+    // Fire-and-forget - don't block idle transition
+    if (this.localDoc) {
+      this.cleanupYDocs().catch((err) => {
+        console.error('[MergeHSM] Error cleaning up YDocs:', err);
+      });
+    }
+
+    // LCA is already loaded from persistence (during PERSISTENCE_LOADED)
+    // In the future (Gap 7), this will read from MergeManager's LCA cache instead
+    // For now, we use the already-loaded _lca value
+
+    // Determine and transition to the appropriate idle substate
+    this.determineAndTransitionToIdleState();
   }
 
   // ===========================================================================
@@ -933,6 +1061,10 @@ export class MergeHSM implements TestableHSM {
   private handleLoad(event: { guid: string; path: string }): void {
     this._guid = event.guid;
     this._path = event.path;
+    this._modeDecision = null; // Reset mode decision for fresh load
+    this._accumulatedEvents = []; // Clear accumulated events for fresh load
+    this._disk = null; // Clear disk state for fresh load
+    this._remoteStateVector = null; // Clear remote state for fresh load
     this.transitionTo('loading.loadingPersistence');
   }
 
@@ -1080,9 +1212,16 @@ export class MergeHSM implements TestableHSM {
 
   /**
    * Handle transition from loading.ready to idle or active.
+   * Note: SET_MODE_ACTIVE now transitions directly to active.loading via XState,
+   * so this method handles pendingLockAcquisition (backward compat) and idle transitions.
    */
   private handleLoadingReady(): void {
-    // Check if lock was requested during loading
+    // Mode determination:
+    // - SET_MODE_ACTIVE: handled by XState, transitions to active.loading directly
+    // - pendingLockAcquisition: backward compatibility with ACQUIRE_LOCK during loading
+    // - Default/SET_MODE_IDLE: transition to idle via idle.loading
+
+    // If lock was requested during loading (backward compatibility)
     if (this.pendingLockAcquisition) {
       this.pendingLockAcquisition = false;
       // Transition to active.entering and create YDocs
@@ -1099,17 +1238,12 @@ export class MergeHSM implements TestableHSM {
       return;
     }
 
-    // Clean up YDocs if they were created during initialization
-    // (they'll be recreated when lock is acquired)
-    // Fire-and-forget - don't block idle transition
-    if (this.localDoc) {
-      this.cleanupYDocs().catch((err) => {
-        console.error('[MergeHSM] Error cleaning up YDocs:', err);
-      });
-    }
+    // Go to idle mode (default or SET_MODE_IDLE)
+    this._modeDecision = null; // Reset mode decision
 
-    // Transition to appropriate idle state
-    this.determineAndTransitionToIdleState();
+    // Transition through idle.loading then to appropriate idle substate
+    this.transitionTo('idle.loading');
+    this.handleIdleLoading();
   }
 
   private determineAndTransitionToIdleState(): void {
@@ -1147,6 +1281,31 @@ export class MergeHSM implements TestableHSM {
       this.transitionTo('idle.remoteAhead');
     } else {
       this.transitionTo('idle.synced');
+    }
+
+    // Replay accumulated events after transition to idle state
+    this.replayAccumulatedEvents();
+  }
+
+  /**
+   * Replay events accumulated during loading state.
+   * Called after mode transition to process REMOTE_UPDATE and DISK_CHANGED events.
+   *
+   * Gap 11: Events are accumulated during loading states and replayed after
+   * the HSM transitions to idle.* or active.* mode.
+   */
+  private replayAccumulatedEvents(): void {
+    if (this._accumulatedEvents.length === 0) {
+      return;
+    }
+
+    // Take a copy and clear before processing (avoid re-entrancy issues)
+    const events = [...this._accumulatedEvents];
+    this._accumulatedEvents = [];
+
+    for (const event of events) {
+      // Re-send the event - since we're now in idle/active mode, it will be processed normally
+      this.send(event as MergeEvent);
     }
   }
 
@@ -1200,8 +1359,11 @@ export class MergeHSM implements TestableHSM {
       if (!this._lca) return;
       this._pendingIdleAutoMerge = this.performIdleThreeWayMerge().catch(handleError).finally(() => {
         this._pendingIdleAutoMerge = null;
-        // Re-check for updates that arrived during the merge
-        this.attemptIdleAutoMerge();
+        // Only re-check for updates if the merge succeeded (transitioned out of diverged).
+        // If still in diverged, the merge failed with conflicts - don't retry infinitely.
+        if (this._statePath !== 'idle.diverged') {
+          this.attemptIdleAutoMerge();
+        }
       });
     }
   }
@@ -1453,6 +1615,9 @@ export class MergeHSM implements TestableHSM {
       this.transitionTo('idle.synced');
       this.emitPersistState();
     }
+    // Note: If merge fails (conflict), we stay in idle.diverged.
+    // The finally block in attemptIdleAutoMerge checks state and
+    // only retries if we transitioned out of diverged (i.e., merge succeeded).
   }
 
   private handleUnload(): void {
@@ -1512,6 +1677,20 @@ export class MergeHSM implements TestableHSM {
       return;
     }
 
+    // Handle active.loading state (v9: mode is active, waiting for ACQUIRE_LOCK)
+    if (this._statePath === 'active.loading') {
+      // Store editorContent for merge on YDOCS_READY
+      if (event?.editorContent !== undefined) {
+        this.pendingEditorContent = event.editorContent;
+        this.lastKnownEditorText = event.editorContent;
+      }
+
+      // Transition to active.entering and create YDocs
+      this.transitionTo('active.entering');
+      this.createYDocs();
+      return;
+    }
+
     if (this._statePath.startsWith('idle.')) {
       // v6: Store editorContent from ACQUIRE_LOCK payload
       // This contains the current editor/disk content at the moment of opening.
@@ -1563,6 +1742,8 @@ export class MergeHSM implements TestableHSM {
         this.transitionTo('active.tracking');
         // Merge any remote content that accumulated during active.entering
         this.mergeRemoteToLocal();
+        // Replay any events accumulated during loading states
+        this.replayAccumulatedEvents();
         return;
       }
 
@@ -1580,6 +1761,8 @@ export class MergeHSM implements TestableHSM {
         };
         this.transitionTo('active.conflict.blocked');
         this.transitionTo('active.conflict.bannerShown');
+        // Replay any events accumulated during loading states
+        this.replayAccumulatedEvents();
         return;
       }
 
@@ -1607,6 +1790,8 @@ export class MergeHSM implements TestableHSM {
         this.transitionTo('active.tracking');
         // Merge any remote content that accumulated during active.entering
         this.mergeRemoteToLocal();
+        // Replay any events accumulated during loading states
+        this.replayAccumulatedEvents();
       } else {
         // Merge has conflicts - populate conflictData for banner/diff view
         this.conflictData = {
@@ -1624,6 +1809,8 @@ export class MergeHSM implements TestableHSM {
         // Don't clear pendingEditorContent yet - needed for conflict resolution
         this.transitionTo('active.conflict.blocked');
         this.transitionTo('active.conflict.bannerShown');
+        // Replay any events accumulated during loading states
+        this.replayAccumulatedEvents();
       }
     }
   }
@@ -1894,6 +2081,25 @@ export class MergeHSM implements TestableHSM {
 
     this._remoteStateVector = Y.encodeStateVectorFromUpdate(event.update);
 
+    // Accumulate event during loading states for replay after mode transition
+    if (this._statePath.startsWith('loading.')) {
+      // Merge with existing accumulated REMOTE_UPDATE if any
+      const existingRemoteIdx = this._accumulatedEvents.findIndex(e => e.type === 'REMOTE_UPDATE');
+      if (existingRemoteIdx >= 0) {
+        const existing = this._accumulatedEvents[existingRemoteIdx] as { type: 'REMOTE_UPDATE'; update: Uint8Array };
+        this._accumulatedEvents[existingRemoteIdx] = {
+          type: 'REMOTE_UPDATE',
+          update: Y.mergeUpdates([existing.update, event.update]),
+        };
+      } else {
+        this._accumulatedEvents.push({
+          type: 'REMOTE_UPDATE',
+          update: event.update,
+        });
+      }
+      return;
+    }
+
     if (this._statePath === 'active.tracking') {
       this.mergeRemoteToLocal();
     } else if (this._statePath.startsWith('idle.')) {
@@ -1996,6 +2202,19 @@ export class MergeHSM implements TestableHSM {
 
     this.pendingDiskContents = event.contents;
 
+    // Accumulate event during loading states for replay after mode transition
+    if (this._statePath.startsWith('loading.')) {
+      // Replace any existing DISK_CHANGED event (only keep latest)
+      this._accumulatedEvents = this._accumulatedEvents.filter(e => e.type !== 'DISK_CHANGED');
+      this._accumulatedEvents.push({
+        type: 'DISK_CHANGED',
+        contents: event.contents,
+        mtime: event.mtime,
+        hash: event.hash,
+      });
+      return;
+    }
+
     if (this._statePath === 'active.tracking') {
       // In active.tracking, Obsidian handles editor<->disk sync via diff-match-patch.
       // We just opportunistically update LCA if disk matches editor content.
@@ -2028,6 +2247,24 @@ export class MergeHSM implements TestableHSM {
       // Otherwise ignore - Obsidian handles disk->editor sync
       return;
     } else if (this._statePath.startsWith('idle.')) {
+      const diskChanged = this.hasDiskChangedSinceLCA();
+
+      // If disk matches LCA, no state change needed
+      if (!diskChanged) {
+        // Just update mtime in LCA if hashes match
+        if (this._lca && this._lca.meta.hash === event.hash) {
+          this._lca = {
+            ...this._lca,
+            meta: {
+              ...this._lca.meta,
+              mtime: event.mtime,
+            },
+          };
+          this.emitPersistState();
+        }
+        return;
+      }
+
       const remoteChanged = this.hasRemoteChangedSinceLCA();
 
       if (remoteChanged) {
@@ -2155,7 +2392,7 @@ export class MergeHSM implements TestableHSM {
   // ===========================================================================
 
   private handleMergeSuccess(event: { newLCA: LCAState }): void {
-    if (this._statePath === 'active.merging') {
+    if (this._statePath.startsWith('active.merging')) {
       this._lca = event.newLCA;
       this.transitionTo('active.tracking');
       this.emitPersistState();
@@ -2168,7 +2405,7 @@ export class MergeHSM implements TestableHSM {
     remote: string;
     conflictRegions?: ConflictRegion[];
   }): void {
-    if (this._statePath === 'active.merging') {
+    if (this._statePath.startsWith('active.merging')) {
       const conflictRegions = event.conflictRegions ?? [];
       const positionedConflicts = this.calculateConflictPositions(
         conflictRegions,
@@ -2545,7 +2782,7 @@ export class MergeHSM implements TestableHSM {
       statePath === 'idle.localAhead' ||
       statePath === 'idle.remoteAhead' ||
       statePath === 'idle.diskAhead' ||
-      statePath === 'active.merging'
+      statePath.startsWith('active.merging')
     ) {
       return 'pending';
     }
