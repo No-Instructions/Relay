@@ -550,6 +550,12 @@ export interface MergeHSMConfig {
    * Set after persistence syncs.
    */
   persistenceMetadata?: PersistenceMetadata;
+
+  /**
+   * User ID for PermanentUserData tracking.
+   * If provided, sets up user mapping on localDoc to track which user made changes.
+   */
+  userId?: string;
 }
 
 // =============================================================================

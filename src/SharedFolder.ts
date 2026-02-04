@@ -354,6 +354,7 @@ export class SharedFolder extends HasProvider {
 			loadUpdatesRaw: async (vaultId: string) => {
 				return loadUpdatesRaw(vaultId);
 			},
+			userId: loginManager?.user?.id,
 		});
 
 		// Install E2E recording bridge if enabled

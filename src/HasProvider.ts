@@ -81,10 +81,8 @@ export class HasProvider extends HasLogging {
 			this.ydoc.gc = false;
 		}
 
-		if (user) {
-			const permanentUserData = new Y.PermanentUserData(this.ydoc);
-			permanentUserData.setUserMapping(this.ydoc, this.ydoc.clientID, user.id);
-		}
+		// PermanentUserData is now set up in MergeHSM.createYDocs() on localDoc
+		// to avoid crashes from malformed 'users' map entries arriving from the network.
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
