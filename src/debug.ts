@@ -98,15 +98,40 @@ async function rotateLogIfNeeded(): Promise<void> {
 			const newFile = `${currentLogFile}.${i + 1}`;
 			if (await fileAdapter.exists(oldFile)) {
 				if (i === logConfig.maxBackups) {
-					await fileAdapter.remove(oldFile);
+					// Remove oldest backup - ignore if already deleted (race condition)
+					try {
+						await fileAdapter.remove(oldFile);
+					} catch {
+						// File may have been deleted by concurrent rotation
+					}
 				} else {
-					await fileAdapter.rename(oldFile, newFile);
+					// Remove destination first if it exists (Obsidian rename doesn't overwrite)
+					try {
+						await fileAdapter.remove(newFile);
+					} catch {
+						// Destination didn't exist, which is fine
+					}
+					try {
+						await fileAdapter.rename(oldFile, newFile);
+					} catch {
+						// Source may have been moved by concurrent rotation
+					}
 				}
 			}
 		}
 
 		if (await fileAdapter.exists(currentLogFile)) {
-			await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
+			// Remove destination first if it exists
+			try {
+				await fileAdapter.remove(`${currentLogFile}.1`);
+			} catch {
+				// Destination didn't exist, which is fine
+			}
+			try {
+				await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
+			} catch {
+				// Source may have been moved by concurrent rotation
+			}
 		}
 
 		await fileAdapter.write(currentLogFile, "");
@@ -464,15 +489,40 @@ async function rotateHSMLogIfNeeded(): Promise<void> {
 			const newFile = `${hsmRecordingFile}.${i + 1}`;
 			if (await hsmFileAdapter.exists(oldFile)) {
 				if (i === hsmRecordingConfig.maxBackups) {
-					await hsmFileAdapter.remove(oldFile);
+					// Remove oldest backup - ignore if already deleted (race condition)
+					try {
+						await hsmFileAdapter.remove(oldFile);
+					} catch {
+						// File may have been deleted by concurrent rotation
+					}
 				} else {
-					await hsmFileAdapter.rename(oldFile, newFile);
+					// Remove destination first if it exists (Obsidian rename doesn't overwrite)
+					try {
+						await hsmFileAdapter.remove(newFile);
+					} catch {
+						// Destination didn't exist, which is fine
+					}
+					try {
+						await hsmFileAdapter.rename(oldFile, newFile);
+					} catch {
+						// Source may have been moved by concurrent rotation
+					}
 				}
 			}
 		}
 
 		if (await hsmFileAdapter.exists(hsmRecordingFile)) {
-			await hsmFileAdapter.rename(hsmRecordingFile, `${hsmRecordingFile}.1`);
+			// Remove destination first if it exists
+			try {
+				await hsmFileAdapter.remove(`${hsmRecordingFile}.1`);
+			} catch {
+				// Destination didn't exist, which is fine
+			}
+			try {
+				await hsmFileAdapter.rename(hsmRecordingFile, `${hsmRecordingFile}.1`);
+			} catch {
+				// Source may have been moved by concurrent rotation
+			}
 		}
 
 		await hsmFileAdapter.write(hsmRecordingFile, "");
