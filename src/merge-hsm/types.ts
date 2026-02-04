@@ -62,7 +62,7 @@ export interface MergeState {
   /** Current remote CRDT state vector */
   remoteStateVector: Uint8Array | null;
 
-  /** Current HSM state path (e.g., "idle.clean", "active.tracking") */
+  /** Current HSM state path (e.g., "idle.synced", "active.tracking") */
   statePath: StatePath;
 
   /** Error information if in error state */
@@ -93,7 +93,7 @@ export type StatePath =
   | 'loading.loadingPersistence'
   | 'loading.awaitingLCA'
   | 'loading.ready'
-  | 'idle.clean'
+  | 'idle.synced'
   | 'idle.localAhead'
   | 'idle.remoteAhead'
   | 'idle.diskAhead'

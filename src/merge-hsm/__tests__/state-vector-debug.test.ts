@@ -35,7 +35,7 @@ describe('state vector debug', () => {
         lca: createDefaultLCA(),
         disk: null,
         localStateVector: null,
-        lastStatePath: 'idle.clean' as const,
+        lastStatePath: 'idle.synced' as const,
         persistedAt: Date.now(),
       }),
     });

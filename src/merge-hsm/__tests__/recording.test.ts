@@ -175,7 +175,7 @@ describe('HSM Recording', () => {
 
       const recording = recorder.stopRecording();
 
-      expect(recording.initialState.statePath).toBe('idle.clean');
+      expect(recording.initialState.statePath).toBe('idle.synced');
       expect(recording.initialState.snapshot).toBeDefined();
     });
 
@@ -354,7 +354,7 @@ describe('HSM Recording', () => {
             timestamp: Date.now(),
             event: { type: 'ACQUIRE_LOCK', editorContent: '' },
             statePathBefore: 'active.tracking',
-            statePathAfter: 'idle.clean', // This is wrong - ACQUIRE_LOCK shouldn't cause this
+            statePathAfter: 'idle.synced', // This is wrong - ACQUIRE_LOCK shouldn't cause this
             effects: [],
           },
         ],
@@ -409,7 +409,7 @@ describe('HSM Recording', () => {
             timestamp: Date.now(),
             event: { type: 'RELEASE_LOCK' },
             statePathBefore: 'wrong-state' as any,
-            statePathAfter: 'idle.clean',
+            statePathAfter: 'idle.synced',
             effects: [],
           },
         ],

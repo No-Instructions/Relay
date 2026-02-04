@@ -368,16 +368,16 @@ export interface LoadToIdleOptions {
 }
 
 /**
- * Drive HSM from unloaded to idle.clean.
+ * Drive HSM from unloaded to idle.synced.
  *
  * Sends events: LOAD → PERSISTENCE_LOADED (with LCA)
- * Ends in idle.clean (or idle.diskAhead if disk differs from LCA).
+ * Ends in idle.synced (or idle.diskAhead if disk differs from LCA).
  *
  * @example
  * ```ts
  * const t = await createTestHSM();
  * await loadToIdle(t, { content: 'hello' });
- * // t is now in idle.clean
+ * // t is now in idle.synced
  * ```
  */
 export async function loadToIdle(
