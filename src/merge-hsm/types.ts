@@ -472,6 +472,8 @@ import type * as Y from 'yjs';
  * Allows injection for testing (mock) vs production (IndexeddbPersistence).
  */
 export interface IYDocPersistence {
+  /** Whether persistence has finished loading stored updates */
+  synced: boolean;
   once(event: 'synced', cb: () => void): void;
   destroy(): void | Promise<void>;
   /** Promise that resolves when persistence is synced */

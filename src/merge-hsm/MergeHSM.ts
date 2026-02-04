@@ -1685,41 +1685,57 @@ export class MergeHSM implements TestableHSM {
     // Attach persistence to localDoc — it loads stored updates
     // asynchronously and fires 'synced' when done.
     this.localPersistence = this._createPersistence(this.vaultId, this.localDoc);
-    this.localPersistence.once('synced', () => {
 
-      // Set persistence metadata for recovery/debugging
-      if (this._persistenceMetadata && this.localPersistence?.set) {
-        this.localPersistence.set('path', this._persistenceMetadata.path);
-        this.localPersistence.set('relay', this._persistenceMetadata.relay);
-        this.localPersistence.set('appId', this._persistenceMetadata.appId);
-        this.localPersistence.set('s3rn', this._persistenceMetadata.s3rn);
-      }
+    // Check if persistence already synced (race condition fix).
+    // If synced is already true, the 'synced' event won't fire again,
+    // so we must call the handler immediately.
+    if (this.localPersistence.synced) {
+      this.handleLocalPersistenceSynced();
+    } else {
+      this.localPersistence.once('synced', () => {
+        this.handleLocalPersistenceSynced();
+      });
+    }
+  }
 
-      // Apply updates to populate localDoc with the correct content.
-      // Priority: pendingIdleUpdates (has remote changes) > initialPersistenceUpdates (base state)
-      if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
-        // Remote updates received while in idle - apply these (they supersede initial state)
-        Y.applyUpdate(this.localDoc!, this.pendingIdleUpdates);
-        this.pendingIdleUpdates = null;
-        this.initialPersistenceUpdates = null; // Clear since we have newer state
-      } else if (this.initialPersistenceUpdates && this.initialPersistenceUpdates.length > 0) {
-        // No remote updates - apply initial persistence state (from PERSISTENCE_LOADED)
-        // This ensures YDocs have the same content as the stored state vector
-        Y.applyUpdate(this.localDoc!, this.initialPersistenceUpdates);
-        this.initialPersistenceUpdates = null;
-      }
+  /**
+   * Handle local persistence synced event.
+   * Called either immediately if persistence was already synced,
+   * or via the 'synced' event callback.
+   */
+  private handleLocalPersistenceSynced(): void {
+    // Set persistence metadata for recovery/debugging
+    if (this._persistenceMetadata && this.localPersistence?.set) {
+      this.localPersistence.set('path', this._persistenceMetadata.path);
+      this.localPersistence.set('relay', this._persistenceMetadata.relay);
+      this.localPersistence.set('appId', this._persistenceMetadata.appId);
+      this.localPersistence.set('s3rn', this._persistenceMetadata.s3rn);
+    }
 
-      // Update state vector to reflect what's in localDoc
-      if (this.localDoc) {
-        this._localStateVector = Y.encodeStateVector(this.localDoc);
-      }
+    // Apply updates to populate localDoc with the correct content.
+    // Priority: pendingIdleUpdates (has remote changes) > initialPersistenceUpdates (base state)
+    if (this.pendingIdleUpdates && this.pendingIdleUpdates.length > 0) {
+      // Remote updates received while in idle - apply these (they supersede initial state)
+      Y.applyUpdate(this.localDoc!, this.pendingIdleUpdates);
+      this.pendingIdleUpdates = null;
+      this.initialPersistenceUpdates = null; // Clear since we have newer state
+    } else if (this.initialPersistenceUpdates && this.initialPersistenceUpdates.length > 0) {
+      // No remote updates - apply initial persistence state (from PERSISTENCE_LOADED)
+      // This ensures YDocs have the same content as the stored state vector
+      Y.applyUpdate(this.localDoc!, this.initialPersistenceUpdates);
+      this.initialPersistenceUpdates = null;
+    }
 
-      // Set up observer for remote updates (converts deltas to positioned changes)
-      this.setupLocalDocObserver();
+    // Update state vector to reflect what's in localDoc
+    if (this.localDoc) {
+      this._localStateVector = Y.encodeStateVector(this.localDoc);
+    }
 
-      // Signal that YDocs are ready
-      this.send({ type: 'YDOCS_READY' });
-    });
+    // Set up observer for remote updates (converts deltas to positioned changes)
+    this.setupLocalDocObserver();
+
+    // Signal that YDocs are ready
+    this.send({ type: 'YDOCS_READY' });
   }
 
   /**
@@ -2669,12 +2685,9 @@ function simpleHash(contents: string): string {
  * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
  * Production code should pass a real factory that creates IndexeddbPersistence.
  */
-/**
- * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
- * Production code should pass a real factory that creates IndexeddbPersistence.
- */
 const defaultCreatePersistence: CreatePersistence = (_vaultId: string, _doc: Y.Doc): IYDocPersistence => {
   return {
+    synced: false,
     once(_event: 'synced', cb: () => void) {
       // Fire synchronously — for test environments where no IndexedDB exists.
       // Real IndexeddbPersistence fires asynchronously after loading from IDB.
