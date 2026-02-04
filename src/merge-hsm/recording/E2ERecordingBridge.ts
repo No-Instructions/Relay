@@ -34,6 +34,17 @@ import {
 // Types
 // =============================================================================
 
+/** Entry passed to onEntry streaming callback */
+export interface StreamingEntry {
+  ns: 'mergeHSM';
+  ts: string;
+  guid: string;
+  path: string;
+  event: string;
+  from: string;
+  to: string;
+}
+
 export interface E2ERecordingBridgeConfig {
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;
@@ -46,6 +57,9 @@ export interface E2ERecordingBridgeConfig {
 
   /** Output directory for recordings (if using file saving) */
   outputDir?: string;
+
+  /** Streaming callback - called for each entry as it's recorded */
+  onEntry?: (entry: StreamingEntry) => void;
 }
 
 export interface ActiveDocRecording {
@@ -110,6 +124,7 @@ export class E2ERecordingBridge {
   private readonly maxEntriesPerDoc: number;
   private readonly captureSnapshots: boolean;
   private readonly outputDir: string;
+  private readonly onEntry?: (entry: StreamingEntry) => void;
 
   // Recording state
   private recording: boolean = false;
@@ -129,6 +144,7 @@ export class E2ERecordingBridge {
     this.maxEntriesPerDoc = config.maxEntriesPerDoc ?? 5000;
     this.captureSnapshots = config.captureSnapshots ?? false;
     this.outputDir = config.outputDir ?? '/tmp/hsm-recordings';
+    this.onEntry = config.onEntry;
   }
 
   // ===========================================================================
@@ -468,6 +484,19 @@ export class E2ERecordingBridge {
           statePathAfter: hsm.state.statePath,
           effects: pendingEvent.effects.map(serializeEffect),
         };
+
+        // Stream entry if callback provided
+        if (this.onEntry) {
+          this.onEntry({
+            ns: 'mergeHSM',
+            ts: new Date(pendingEvent.timestamp).toISOString(),
+            guid: docRecording.guid,
+            path: docRecording.path,
+            event: entry.event.type,
+            from: entry.statePathBefore,
+            to: entry.statePathAfter,
+          });
+        }
 
         // Add to timeline (with limit)
         docRecording.timeline.push(entry);

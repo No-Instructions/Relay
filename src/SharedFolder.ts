@@ -51,7 +51,8 @@ import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
-import { installE2ERecordingBridge } from "./merge-hsm/recording";
+import { installE2ERecordingBridge, type StreamingEntry } from "./merge-hsm/recording";
+import { recordHSMEntry } from "./debug";
 import { generateHash } from "./hashing";
 import {
 	loadState as loadMergeState,
@@ -357,9 +358,13 @@ export class SharedFolder extends HasProvider {
 			userId: loginManager?.user?.id,
 		});
 
-		// Install E2E recording bridge if enabled
-		if (flags().enableMergeHSMRecording) {
-			installE2ERecordingBridge(this.mergeManager);
+		// Install E2E recording bridge if enabled (for in-memory or disk recording)
+		if (flags().enableMergeHSMRecording || flags().enableHSMRecording) {
+			installE2ERecordingBridge(this.mergeManager, {
+				onEntry: flags().enableHSMRecording
+					? (entry: StreamingEntry) => recordHSMEntry(entry)
+					: undefined,
+			});
 		}
 
 		// Wire folder-level event subscriptions for idle mode remote updates

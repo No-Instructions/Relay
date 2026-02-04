@@ -93,4 +93,5 @@ export type {
   E2ERecordingBridgeConfig,
   E2ERecordingState,
   HSMRecordingGlobal,
+  StreamingEntry,
 } from './E2ERecordingBridge';

@@ -356,3 +356,132 @@ export function initializeMetrics(app: any, registerEvent: (eventRef: any) => vo
 
 /** Singleton metrics instance */
 export const metrics = new RelayMetrics();
+
+// ============================================================================
+// HSM Recording (JSONL streaming to disk)
+// ============================================================================
+
+interface HSMRecordingConfig {
+	maxFileSize: number;
+	maxBackups: number;
+	batchInterval: number;
+}
+
+const hsmRecordingConfig: HSMRecordingConfig = {
+	maxFileSize: 5 * 1024 * 1024, // 5MB
+	maxBackups: 3,
+	batchInterval: 500, // 500ms - faster than relay.log for debugging
+};
+
+let hsmRecordingFile: string | null = null;
+let hsmFileAdapter: IFileAdapter | null = null;
+let hsmTimeProvider: TimeProvider | null = null;
+let hsmFlushIntervalId: number | null = null;
+let hsmBootId: string | null = null;
+const hsmBuffer: string[] = [];
+
+function generateBootId(): string {
+	const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+	let id = '';
+	for (let i = 0; i < 8; i++) {
+		id += chars[Math.floor(Math.random() * chars.length)];
+	}
+	return id;
+}
+
+/**
+ * Initialize HSM recording to disk.
+ * Call this during plugin initialization if enableHSMRecording flag is set.
+ */
+export function initializeHSMRecording(
+	adapter: IFileAdapter,
+	timeProvider: TimeProvider,
+	logFilePath: string,
+	config?: Partial<HSMRecordingConfig>,
+): void {
+	hsmFileAdapter = adapter;
+	hsmRecordingFile = logFilePath;
+	hsmTimeProvider = timeProvider;
+	hsmBootId = generateBootId();
+	if (config) {
+		Object.assign(hsmRecordingConfig, config);
+	}
+	hsmFlushIntervalId = timeProvider.setInterval(flushHSMRecording, hsmRecordingConfig.batchInterval);
+}
+
+/**
+ * Stop HSM recording and flush remaining entries.
+ */
+export async function stopHSMRecording(): Promise<void> {
+	if (hsmFlushIntervalId !== null && hsmTimeProvider) {
+		hsmTimeProvider.clearInterval(hsmFlushIntervalId);
+		hsmFlushIntervalId = null;
+	}
+	await flushHSMRecording();
+	hsmRecordingFile = null;
+	hsmFileAdapter = null;
+	hsmTimeProvider = null;
+	hsmBootId = null;
+}
+
+/**
+ * Record an HSM entry. Called by the E2ERecordingBridge onEntry callback.
+ * Adds boot ID to each entry for session grouping.
+ */
+export function recordHSMEntry(entry: object): void {
+	if (!hsmRecordingFile || !hsmBootId) return;
+	const entryWithBoot = { ...entry, boot: hsmBootId };
+	hsmBuffer.push(JSON.stringify(entryWithBoot));
+}
+
+/**
+ * Flush buffered HSM entries to disk.
+ */
+export async function flushHSMRecording(): Promise<void> {
+	if (hsmBuffer.length === 0 || !hsmFileAdapter || !hsmRecordingFile) return;
+
+	const entries = [...hsmBuffer];
+	hsmBuffer.length = 0;
+
+	try {
+		await rotateHSMLogIfNeeded();
+		const content = entries.join("\n") + "\n";
+		await hsmFileAdapter.append(hsmRecordingFile, content);
+	} catch (error) {
+		console.error("[HSMRecording] Failed to write:", error);
+		// Re-add entries to buffer on failure
+		hsmBuffer.unshift(...entries);
+	}
+}
+
+async function rotateHSMLogIfNeeded(): Promise<void> {
+	if (!hsmFileAdapter || !hsmRecordingFile) return;
+
+	const stat = await hsmFileAdapter.stat(hsmRecordingFile);
+	if (stat && stat.size > hsmRecordingConfig.maxFileSize) {
+		for (let i = hsmRecordingConfig.maxBackups; i > 0; i--) {
+			const oldFile = `${hsmRecordingFile}.${i}`;
+			const newFile = `${hsmRecordingFile}.${i + 1}`;
+			if (await hsmFileAdapter.exists(oldFile)) {
+				if (i === hsmRecordingConfig.maxBackups) {
+					await hsmFileAdapter.remove(oldFile);
+				} else {
+					await hsmFileAdapter.rename(oldFile, newFile);
+				}
+			}
+		}
+
+		if (await hsmFileAdapter.exists(hsmRecordingFile)) {
+			await hsmFileAdapter.rename(hsmRecordingFile, `${hsmRecordingFile}.1`);
+		}
+
+		await hsmFileAdapter.write(hsmRecordingFile, "");
+	}
+}
+
+/**
+ * Check if HSM recording is active.
+ */
+export function isHSMRecordingActive(): boolean {
+	return hsmRecordingFile !== null;
+}

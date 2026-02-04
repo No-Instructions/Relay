@@ -32,6 +32,8 @@ import {
 	initializeLogger,
 	flushLogs,
 	initializeMetrics,
+	initializeHSMRecording,
+	stopHSMRecording,
 } from "./debug";
 import { getPatcher, Patcher } from "./Patcher";
 import { LiveTokenStore } from "./LiveTokenStore";
@@ -361,6 +363,20 @@ export default class Live extends Plugin {
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
+
+		// Initialize HSM disk recording if enabled
+		if (flags().enableHSMRecording) {
+			const hsmRecordingPath = normalizePath(
+				`${this.app.vault.configDir}/plugins/${this.manifest.id}/hsm-recording.jsonl`,
+			);
+			initializeHSMRecording(
+				new ObsidianFileAdapter(this.app.vault),
+				this.timeProvider,
+				hsmRecordingPath,
+			);
+			this.register(() => stopHSMRecording());
+			this.log("HSM recording enabled", { path: hsmRecordingPath });
+		}
 
 		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addRibbonIcon("satellite", "Relay", () => {
