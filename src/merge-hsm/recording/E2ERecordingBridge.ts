@@ -29,6 +29,7 @@ import {
   generateRecordingId,
   serializeRecording,
 } from './serialization';
+import { getHSMBootId, getHSMBootEntries } from '../../debug';
 
 // =============================================================================
 // Types
@@ -112,6 +113,12 @@ export interface HSMRecordingGlobal {
 
   /** Clear all saved recordings */
   clearRecordings: () => Promise<void>;
+
+  /** Get the current boot ID (for disk recording) */
+  getBootId: () => string | null;
+
+  /** Get entries from current boot (reads disk file, filters by boot ID) */
+  getBootEntries: () => Promise<object[]>;
 }
 
 // =============================================================================
@@ -145,6 +152,34 @@ export class E2ERecordingBridge {
     this.captureSnapshots = config.captureSnapshots ?? false;
     this.outputDir = config.outputDir ?? '/tmp/hsm-recordings';
     this.onEntry = config.onEntry;
+
+    // If onEntry is provided, automatically stream all HSM events to disk
+    // (independent of in-memory recording via startRecording())
+    if (this.onEntry) {
+      this.startStreaming();
+    }
+  }
+
+  /**
+   * Start streaming HSM events via onEntry callback.
+   * Called automatically when onEntry is provided in config.
+   */
+  private startStreaming(): void {
+    // Wrap existing loaded HSMs
+    for (const guid of this.manager.getRegisteredGuids()) {
+      if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+        this.startRecordingDocument(guid);
+      }
+    }
+
+    // Subscribe to new HSMs being loaded
+    this.managerUnsubscribe = this.manager.syncStatus.subscribe(() => {
+      for (const guid of this.manager.getRegisteredGuids()) {
+        if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+          this.startRecordingDocument(guid);
+        }
+      }
+    });
   }
 
   // ===========================================================================
@@ -168,6 +203,8 @@ export class E2ERecordingBridge {
       loadRecording: (key) => this.loadRecording(key),
       listRecordings: () => this.listRecordings(),
       clearRecordings: () => this.clearRecordings(),
+      getBootId: () => getHSMBootId(),
+      getBootEntries: () => getHSMBootEntries(),
     };
 
     (global as any).__hsmRecording = api;
@@ -193,25 +230,39 @@ export class E2ERecordingBridge {
     this.recordingId = generateRecordingId();
     this.recordingName = name ?? `E2E Recording ${this.recordingId}`;
     this.startedAt = new Date().toISOString();
-    this.docRecordings.clear();
 
-    // Subscribe to existing loaded HSMs
-    for (const guid of this.manager.getRegisteredGuids()) {
-      if (this.manager.isLoaded(guid)) {
-        this.startRecordingDocument(guid);
+    // If streaming is active (onEntry provided), HSMs are already wrapped.
+    // Just clear timelines for fresh recording without unwrapping.
+    if (this.onEntry) {
+      for (const docRec of this.docRecordings.values()) {
+        docRec.timeline = [];
+        docRec.seqCounter = 0;
+        docRec.startedAt = this.startedAt;
       }
-    }
+    } else {
+      // No streaming - set up fresh
+      this.docRecordings.clear();
 
-    // Subscribe to new HSMs being loaded
-    this.managerUnsubscribe = this.manager.syncStatus.subscribe(() => {
-      if (!this.recording) return;
-
+      // Subscribe to existing loaded HSMs
       for (const guid of this.manager.getRegisteredGuids()) {
-        if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+        if (this.manager.isLoaded(guid)) {
           this.startRecordingDocument(guid);
         }
       }
-    });
+    }
+
+    // Subscribe to new HSMs being loaded (only if not already subscribed via streaming)
+    if (!this.managerUnsubscribe) {
+      this.managerUnsubscribe = this.manager.syncStatus.subscribe(() => {
+        if (!this.recording) return;
+
+        for (const guid of this.manager.getRegisteredGuids()) {
+          if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+            this.startRecordingDocument(guid);
+          }
+        }
+      });
+    }
 
     return this.getState();
   }
@@ -228,11 +279,7 @@ export class E2ERecordingBridge {
     const recordings: HSMRecording[] = [];
 
     for (const [guid, docRec] of this.docRecordings.entries()) {
-      // Clean up subscriptions
-      docRec.unsubscribeEffect();
-      docRec.unsubscribeStateChange();
-
-      // Build recording
+      // Build recording from timeline
       const recording: HSMRecording = {
         version: 1,
         id: `${this.recordingId}-${guid}`,
@@ -271,16 +318,29 @@ export class E2ERecordingBridge {
       recordings.push(recording);
     }
 
-    // Clean up manager subscription
-    this.managerUnsubscribe?.();
-    this.managerUnsubscribe = null;
+    // If streaming is active (onEntry provided), keep HSMs wrapped for continued streaming.
+    // Only clean up fully when not streaming.
+    if (this.onEntry) {
+      // Clear timelines but keep HSM wrappers and subscriptions
+      for (const docRec of this.docRecordings.values()) {
+        docRec.timeline = [];
+      }
+    } else {
+      // Full cleanup - unwrap HSMs and clear everything
+      for (const docRec of this.docRecordings.values()) {
+        docRec.unsubscribeEffect();
+        docRec.unsubscribeStateChange();
+      }
+      this.managerUnsubscribe?.();
+      this.managerUnsubscribe = null;
+      this.docRecordings.clear();
+    }
 
-    // Reset state
+    // Reset recording state
     this.recording = false;
     this.recordingId = null;
     this.recordingName = null;
     this.startedAt = null;
-    this.docRecordings.clear();
 
     // Return serialized recordings
     return JSON.stringify(recordings.map((r) => JSON.parse(serializeRecording(r))));
@@ -463,7 +523,12 @@ export class E2ERecordingBridge {
     // Intercept events by wrapping the send method
     const originalSend = hsm.send.bind(hsm);
     (hsm as any).send = (event: MergeEvent) => {
-      if (this.recording) {
+      // Always capture event data for streaming (onEntry callback)
+      // Only add to in-memory timeline if this.recording is true
+      const shouldStream = !!this.onEntry;
+      const shouldRecord = this.recording;
+
+      if (shouldStream || shouldRecord) {
         pendingEvent = {
           event,
           statePathBefore: hsm.state.statePath,
@@ -474,7 +539,7 @@ export class E2ERecordingBridge {
 
       originalSend(event);
 
-      if (this.recording && pendingEvent) {
+      if (pendingEvent) {
         // Finalize timeline entry
         const entry: HSMTimelineEntry = {
           seq: docRecording.seqCounter++,
@@ -485,7 +550,7 @@ export class E2ERecordingBridge {
           effects: pendingEvent.effects.map(serializeEffect),
         };
 
-        // Stream entry if callback provided
+        // Stream entry if callback provided (always, regardless of recording state)
         if (this.onEntry) {
           this.onEntry({
             ns: 'mergeHSM',
@@ -498,10 +563,12 @@ export class E2ERecordingBridge {
           });
         }
 
-        // Add to timeline (with limit)
-        docRecording.timeline.push(entry);
-        if (docRecording.timeline.length > this.maxEntriesPerDoc) {
-          docRecording.timeline.shift();
+        // Add to in-memory timeline only if recording is active
+        if (shouldRecord) {
+          docRecording.timeline.push(entry);
+          if (docRecording.timeline.length > this.maxEntriesPerDoc) {
+            docRecording.timeline.shift();
+          }
         }
 
         pendingEvent = null;
@@ -541,6 +608,15 @@ export class E2ERecordingBridge {
         // Ignore errors during cleanup
       }
     }
+
+    // Clean up streaming (unwrap all HSMs)
+    for (const docRec of this.docRecordings.values()) {
+      docRec.unsubscribeEffect();
+      docRec.unsubscribeStateChange();
+    }
+    this.managerUnsubscribe?.();
+    this.managerUnsubscribe = null;
+    this.docRecordings.clear();
 
     this.uninstall();
   }
@@ -688,6 +764,8 @@ function installAggregateBridgeAPI(): void {
       const firstBridge = bridgeRegistry.values().next().value;
       await firstBridge?.clearRecordings();
     },
+    getBootId: () => getHSMBootId(),
+    getBootEntries: () => getHSMBootEntries(),
   };
 
   (global as any).__hsmRecording = api;
