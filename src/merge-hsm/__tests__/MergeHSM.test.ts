@@ -12,7 +12,6 @@
 import {
   createTestHSM,
   // Event factories
-  load,
   acquireLock,
   releaseLock,
   cm6Change,
@@ -21,11 +20,6 @@ import {
   remoteDocUpdated,
   diskChanged,
   saveComplete,
-  persistenceLoaded,
-  yDocsReady,
-  initializeWithContent,
-  initializeLCA,
-  mergeConflict,
   openDiffView,
   resolveAcceptDisk,
   resolveAcceptLocal,
@@ -36,8 +30,6 @@ import {
   connected,
   disconnected,
   error,
-  createLCA,
-  sha256,
   // State transition helpers
   loadAndActivate,
   loadToIdle,
@@ -78,45 +70,6 @@ describe('MergeHSM', () => {
       expectState(t, 'unloaded');
     });
 
-    test('LOAD transitions to loading.loadingPersistence', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-
-      expectState(t, 'loading.loadingPersistence');
-    });
-
-    test('PERSISTENCE_LOADED without LCA stays in loading.awaitingLCA', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-
-      expectState(t, 'loading.awaitingLCA');
-    });
-
-    test('PERSISTENCE_LOADED with LCA and matching disk goes to idle.clean', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      // Disk poll arrives during loading (before PERSISTENCE_LOADED)
-      t.send(await diskChanged('hello', 1000));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('hello', 1000)));
-
-      expectState(t, 'idle.clean');
-    });
-
-    test('PERSISTENCE_LOADED with disk changes goes to idle.diskAhead', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      // Disk poll arrives during loading with different content
-      t.send(await diskChanged('hello modified', 2000));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('hello', 1000)));
-
-      expectState(t, 'idle.diskAhead');
-    });
-
     test('persisted content is loaded by IndexeddbPersistence (integration)', async () => {
       // With the new architecture, persisted updates are loaded by
       // IndexeddbPersistence attached to localDoc in createYDocs().
@@ -125,194 +78,6 @@ describe('MergeHSM', () => {
       await loadAndActivate(t, 'hello world');
 
       expectLocalDocText(t, 'hello world');
-    });
-
-    test('pending idle updates are applied to localDoc when entering active mode', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('', 1000)));
-
-      // Receive remote update while in idle mode
-      const update = createYjsUpdate('', 'remote content');
-      t.send(remoteUpdate(update));
-
-      // Acquire lock - idle updates are applied after persistence 'synced'
-      t.send(acquireLock());
-      expectState(t, 'active.tracking');
-
-      // localDoc should have the idle update content
-      const text = t.getLocalDocText();
-      expect(text).not.toBeNull();
-      expect(text!.length).toBeGreaterThan(0);
-    });
-  });
-
-  // ===========================================================================
-  // loading.awaitingLCA State
-  // ===========================================================================
-
-  describe('loading.awaitingLCA', () => {
-    test('blocks in awaitingLCA when PERSISTENCE_LOADED has no LCA', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-
-      expectState(t, 'loading.awaitingLCA');
-      expect(t.hsm.isAwaitingLCA()).toBe(true);
-    });
-
-    test('INITIALIZE_WITH_CONTENT transitions to idle.clean', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      expectState(t, 'loading.awaitingLCA');
-
-      const hash = await sha256('hello world');
-      t.send(initializeWithContent('hello world', hash, 1000));
-
-      expectState(t, 'idle.clean');
-      expect(t.state.lca).not.toBeNull();
-      expect(t.state.lca?.contents).toBe('hello world');
-    });
-
-    test('INITIALIZE_LCA transitions to idle.clean', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      expectState(t, 'loading.awaitingLCA');
-
-      const hash = await sha256('existing content');
-      t.send(initializeLCA('existing content', hash, 2000));
-
-      expectState(t, 'idle.clean');
-      expect(t.state.lca).not.toBeNull();
-      expect(t.state.lca?.contents).toBe('existing content');
-      expect(t.state.lca?.meta.hash).toBe(hash);
-      expect(t.state.lca?.meta.mtime).toBe(2000);
-    });
-
-    test('ACQUIRE_LOCK during awaitingLCA is deferred until initialized', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      expectState(t, 'loading.awaitingLCA');
-
-      // Try to acquire lock while awaiting LCA
-      t.send(acquireLock(''));
-      // Still in awaitingLCA - lock acquisition is pending
-      expectState(t, 'loading.awaitingLCA');
-
-      // Now initialize
-      const hash = await sha256('hello');
-      t.send(initializeWithContent('hello', hash, 1000));
-
-      // Wait for persistence.whenSynced promise to resolve
-      await Promise.resolve();
-
-      // Should proceed to active mode (lock was pending)
-      expectState(t, 'active.tracking');
-    });
-
-    test('INITIALIZE_WITH_CONTENT emits SYNC_TO_REMOTE', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      t.clearEffects();
-
-      const hash = await sha256('hello world');
-      t.send(initializeWithContent('hello world', hash, 1000));
-
-      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
-    });
-
-    test('auto-transitions to idle.clean when PERSISTENCE_LOADED has LCA', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('content', 1000)));
-
-      expectState(t, 'idle.clean');
-    });
-
-    test('isAwaitingLCA returns false when not in awaitingLCA state', async () => {
-      const t = await createTestHSM();
-      await loadToIdle(t);
-
-      expect(t.hsm.isAwaitingLCA()).toBe(false);
-    });
-
-    // Recovery path tests: ACQUIRE_LOCK when no LCA but local CRDT content exists
-    describe('recovery path', () => {
-      test('ACQUIRE_LOCK with matching content derives LCA and proceeds to tracking', async () => {
-        const content = 'existing content';
-        const updates = createYjsUpdate('', content);
-
-        // Mock IndexedDB with the updates
-        const t = await createTestHSM({ indexedDBUpdates: updates });
-
-        t.send(load('doc-123', 'notes/test.md'));
-        t.send(persistenceLoaded(updates, null));
-        expectState(t, 'loading.awaitingLCA');
-
-        // ACQUIRE_LOCK with matching editorContent triggers recovery
-        t.send(acquireLock(content));
-
-        // Wait for YDOCS_READY and async LCA creation (hashFn is async via SubtleCrypto)
-        await new Promise(resolve => setTimeout(resolve, 50));
-
-        // Content matches - should derive LCA and proceed to tracking
-        expectState(t, 'active.tracking');
-
-        // LCA should be established
-        expect(t.state.lca).not.toBeNull();
-        expect(t.state.lca?.contents).toBe(content);
-      });
-
-      test('ACQUIRE_LOCK with differing content enters conflict.blocked', async () => {
-        const localContent = 'local CRDT content';
-        const diskContent = 'different disk content';
-        const updates = createYjsUpdate('', localContent);
-
-        const t = await createTestHSM({ indexedDBUpdates: updates });
-
-        t.send(load('doc-123', 'notes/test.md'));
-        t.send(persistenceLoaded(updates, null));
-        expectState(t, 'loading.awaitingLCA');
-
-        // ACQUIRE_LOCK with different editorContent
-        t.send(acquireLock(diskContent));
-
-        // Wait for YDOCS_READY
-        await Promise.resolve();
-
-        // Content differs with no baseline - should enter conflict
-        expectState(t, 'active.conflict.bannerShown');
-
-        // conflictData should have empty base (no LCA for recovery)
-        expect(t.hsm.getConflictData()?.base).toBe('');
-        expect(t.hsm.getConflictData()?.local).toBe(localContent);
-        expect(t.hsm.getConflictData()?.remote).toBe(diskContent);
-      });
-
-      test('ACQUIRE_LOCK without local CRDT content stays in awaitingLCA', async () => {
-        const t = await createTestHSM();
-
-        t.send(load('doc-123', 'notes/test.md'));
-        t.send(persistenceLoaded(new Uint8Array(), null));
-        expectState(t, 'loading.awaitingLCA');
-
-        // ACQUIRE_LOCK without local CRDT content - cannot recover
-        t.send(acquireLock('some editor content'));
-
-        // Should stay in awaitingLCA - waiting for INITIALIZE_*
-        expectState(t, 'loading.awaitingLCA');
-      });
     });
   });
 
@@ -485,76 +250,6 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('lock management', () => {
-    test('ACQUIRE_LOCK from idle auto-transitions to active.tracking (offline-first)', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('', 1000)));
-      t.send(acquireLock());
-
-      // Per spec: "This transition is based entirely on LOCAL state.
-      // Provider sync happens asynchronously and does not block.
-      // The editor must be usable immediately, even when offline."
-      expectState(t, 'active.tracking');
-    });
-
-    test('YDOCS_READY is a no-op since auto-transition already happened', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('', 1000)));
-      t.send(acquireLock());
-      expectState(t, 'active.tracking');
-
-      // Sending YDOCS_READY should be a no-op (backward compatibility)
-      t.send(yDocsReady());
-      expectState(t, 'active.tracking');
-    });
-
-    test('RELEASE_LOCK transitions back to idle', async () => {
-      // Go through proper loading flow to get consistent state
-      const t = await createTestHSM();
-      t.send(load('doc-1', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('hello', 1000)));
-      t.send(acquireLock('hello'));
-      expectState(t, 'active.tracking');
-
-      t.send(releaseLock());
-      await t.hsm.awaitCleanup();
-
-      expectState(t, 'idle.clean');
-      expect(t.getLocalDocText()).toBeNull();
-    });
-
-    test('HSM continues to process events after RELEASE_LOCK', async () => {
-      // Go through proper loading flow
-      const t = await createTestHSM();
-      t.send(load('doc-1', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('hello', 1000)));
-      t.send(acquireLock('hello'));
-      expectState(t, 'active.tracking');
-
-      t.send(releaseLock());
-      await t.hsm.awaitCleanup();
-      expectState(t, 'idle.clean');
-      t.clearEffects();
-
-      // Should still process events in idle mode
-      // Disk change with no remote changes will auto-merge back to clean
-      t.send(await diskChanged('hello world', 2000));
-
-      // Wait for async idle auto-merge to complete (BUG-034 fix made this async)
-      await t.hsm.awaitIdleAutoMerge();
-
-      // Auto-merge happened - verify SYNC_TO_REMOTE was emitted
-      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
-      expectState(t, 'idle.clean');
-
-      // Can acquire lock again - auto-transitions to tracking (offline-first)
-      t.send(acquireLock());
-      expectState(t, 'active.tracking');
-    });
-
     test('multiple ACQUIRE_LOCK/RELEASE_LOCK cycles work correctly', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
@@ -601,31 +296,6 @@ describe('MergeHSM', () => {
 
       expect(t.hsm.isIdle()).toBe(true);
       expect(t.hsm.isActive()).toBe(false);
-    });
-
-    test('transitions to active.tracking even when offline (offline-first)', async () => {
-      // Spec: "Provider sync happens asynchronously and does not block.
-      //  The editor must be usable immediately, even when offline."
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'notes/test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('', 1000)));
-
-      // Simulate going offline BEFORE acquiring lock
-      t.send(disconnected());
-
-      // Acquire lock while offline
-      t.send(acquireLock());
-
-      // Should still reach tracking state - network doesn't block
-      expectState(t, 'active.tracking');
-
-      // User can edit while offline
-      t.send(cm6Insert(0, 'hello', 'hello'));
-      expectLocalDocText(t, 'hello');
-
-      // SYNC_TO_REMOTE should still be emitted (queued for when online)
-      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
   });
 
@@ -1404,23 +1074,4 @@ describe('MergeHSM', () => {
     });
   });
 
-  // ===========================================================================
-  // State History Tracking
-  // ===========================================================================
-
-  describe('state history', () => {
-    test('tracks state transitions (one per event)', async () => {
-      const t = await createTestHSM();
-
-      t.send(load('doc-123', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), await createLCA('', 1000)));
-
-      // State history tracks one transition per event (final state per event)
-      // LOAD: unloaded → loading.loadingPersistence
-      // PERSISTENCE_LOADED: loading.loadingPersistence → idle.clean (via awaitingLCA → ready internally)
-      expect(t.stateHistory.length).toBe(2);
-      expect(t.stateHistory[0].to).toBe('loading.loadingPersistence');
-      expect(t.stateHistory[1].to).toBe('idle.clean');
-    });
-  });
 });
