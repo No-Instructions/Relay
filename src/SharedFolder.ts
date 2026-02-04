@@ -8,7 +8,7 @@ import {
 	debounce,
 	normalizePath,
 } from "obsidian";
-import { IndexeddbPersistence, loadUpdatesRaw } from "./storage/y-indexeddb";
+import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
@@ -351,9 +351,6 @@ export class SharedFolder extends HasProvider {
 					appId: this.appId,
 					s3rn: s3rn ? S3RN.encode(s3rn) : "",
 				};
-			},
-			loadUpdatesRaw: async (vaultId: string) => {
-				return loadUpdatesRaw(vaultId);
 			},
 			userId: loginManager?.user?.id,
 		});
