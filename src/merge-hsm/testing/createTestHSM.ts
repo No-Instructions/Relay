@@ -9,6 +9,7 @@
  */
 
 import * as Y from 'yjs';
+import { diff_match_patch } from 'diff-match-patch';
 import type {
   MergeState,
   MergeEvent,
@@ -98,6 +99,47 @@ export interface TestHSM {
 
   /** Wait for any pending idle auto-merge to complete */
   awaitIdleAutoMerge(): Promise<void>;
+
+  /**
+   * Seed the mock IndexedDB with updates.
+   * Call this before ACQUIRE_LOCK to simulate content that was persisted
+   * in a previous session. This simulates real y-indexeddb behavior where
+   * content is loaded from IndexedDB on file open.
+   */
+  seedIndexedDB(updates: Uint8Array): void;
+
+  /**
+   * Apply a remote change using diff-match-patch and send the REMOTE_UPDATE event.
+   *
+   * This is the proper way to simulate remote changes:
+   * 1. Applies the change to remoteDoc using diffMatchPatch (no delete-all/insert-all)
+   * 2. Captures the delta update relative to the previous state
+   * 3. Sends the REMOTE_UPDATE event to the HSM
+   *
+   * INVARIANT: Uses diff-based updates to preserve CRDT history.
+   */
+  applyRemoteChange(newContent: string): void;
+
+  /**
+   * Get a delta update from remoteDoc that can be sent as REMOTE_UPDATE.
+   * Captures changes since the last call to getRemoteUpdate() or initialization.
+   *
+   * Use this when you need fine-grained control over when updates are sent.
+   */
+  getRemoteUpdate(): Uint8Array;
+
+  /**
+   * Sync remoteDoc to match the given content using diffMatchPatch.
+   * Does NOT send REMOTE_UPDATE - use getRemoteUpdate() after this if needed.
+   */
+  setRemoteContent(content: string): void;
+
+  /**
+   * Sync remoteDoc with the given Yjs update (shares CRDT history).
+   * Use this to make remoteDoc a "fork" of localDoc by applying the same updates.
+   * This ensures subsequent changes can be properly merged.
+   */
+  syncRemoteWithUpdate(update: Uint8Array): void;
 }
 
 /**
@@ -137,24 +179,51 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   const effects: MergeEffect[] = [];
   const stateHistory: Array<{ from: StatePath; to: StatePath; event: MergeEvent['type'] }> = [];
 
-  // Build mock IndexedDB functions if indexedDBUpdates is provided
-  let loadUpdatesRaw = options.loadUpdatesRaw;
-  let createPersistence: ((vaultId: string, doc: Y.Doc) => IYDocPersistence) | undefined;
+  // Stateful mock IndexedDB - persists across lock cycles within the same test.
+  // This simulates the real y-indexeddb behavior where:
+  // 1. On destroy(), the current doc state is persisted
+  // 2. On next createPersistence(), that state is loaded into the new doc
+  //
+  // IMPORTANT: Per docs/how-we-bootstrap-collaboration.md, disk content should only
+  // be inserted into the CRDT exactly ONCE during initial enrollment. This stateful
+  // mock ensures that reopening a file loads persisted content rather than relying
+  // on any LCA fallback mechanisms.
+  let storedUpdates: Uint8Array | null = options.indexedDBUpdates ?? null;
 
-  if (options.indexedDBUpdates) {
-    const updates = options.indexedDBUpdates;
-    // Both paths read from the same "IndexedDB"
-    loadUpdatesRaw = async () => [updates];
-    createPersistence = (_vaultId: string, doc: Y.Doc) => ({
+  const loadUpdatesRaw = options.loadUpdatesRaw ?? (async () => storedUpdates ? [storedUpdates] : []);
+
+  const createPersistence = (_vaultId: string, doc: Y.Doc): IYDocPersistence => {
+    // Subscribe to doc updates to track changes
+    const updateHandler = (update: Uint8Array) => {
+      // Merge with stored updates (like y-indexeddb does)
+      if (storedUpdates) {
+        storedUpdates = Y.mergeUpdates([storedUpdates, update]);
+      } else {
+        storedUpdates = update;
+      }
+    };
+    doc.on('update', updateHandler);
+
+    return {
       synced: false,
       once(_event: 'synced', cb: () => void) {
-        Y.applyUpdate(doc, updates);
+        // Load stored content into doc (simulates IndexedDB load)
+        if (storedUpdates) {
+          Y.applyUpdate(doc, storedUpdates);
+        }
         cb();
       },
-      destroy() {},
+      destroy() {
+        // Capture final state before cleanup (simulates y-indexeddb persist)
+        const finalUpdate = Y.encodeStateAsUpdate(doc);
+        if (finalUpdate.length > 1) {
+          storedUpdates = finalUpdate;
+        }
+        doc.off('update', updateHandler);
+      },
       whenSynced: Promise.resolve(),
-    });
-  }
+    };
+  };
 
   // Create the HSM using the normal constructor (no forTesting bypass)
   const guid = options.guid ?? 'test-guid';
@@ -169,7 +238,10 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     createPersistence,
   });
 
-  // Capture effects
+  // Capture effects (PERSIST_UPDATES is informational - don't update storedUpdates
+  // synchronously because in real system persistence is async. The auto-merge
+  // logic in performIdleRemoteAutoMerge expects loadUpdatesRaw to return the
+  // "old" local state, not the just-received remote updates.)
   hsm.subscribe(effect => {
     effects.push(effect);
   });
@@ -186,6 +258,72 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     hsm.send(event);
   };
 
+  // Function to seed mock IndexedDB - exposed via TestHSM interface
+  const seedIndexedDB = (updates: Uint8Array) => {
+    if (storedUpdates) {
+      storedUpdates = Y.mergeUpdates([storedUpdates, updates]);
+    } else {
+      storedUpdates = updates;
+    }
+  };
+
+  // Track remoteDoc state vector for delta encoding
+  let lastRemoteStateVector = Y.encodeStateVector(remoteDoc);
+
+  /**
+   * Apply diff-based changes to remoteDoc using diff-match-patch.
+   * INVARIANT: Never uses delete-all/insert-all pattern.
+   */
+  const setRemoteContent = (newContent: string): void => {
+    const ytext = remoteDoc.getText('contents');
+    const currentContent = ytext.toString();
+
+    if (currentContent === newContent) return;
+
+    const dmp = new diff_match_patch();
+    const diffs = dmp.diff_main(currentContent, newContent);
+    dmp.diff_cleanupSemantic(diffs);
+
+    remoteDoc.transact(() => {
+      let cursor = 0;
+      for (const [operation, text] of diffs) {
+        switch (operation) {
+          case 1: ytext.insert(cursor, text); cursor += text.length; break;
+          case 0: cursor += text.length; break;
+          case -1: ytext.delete(cursor, text.length); break;
+        }
+      }
+    }, 'test-remote');
+  };
+
+  /**
+   * Get delta update from remoteDoc since last call.
+   */
+  const getRemoteUpdate = (): Uint8Array => {
+    const update = Y.encodeStateAsUpdate(remoteDoc, lastRemoteStateVector);
+    lastRemoteStateVector = Y.encodeStateVector(remoteDoc);
+    return update;
+  };
+
+  /**
+   * Apply remote change and send REMOTE_UPDATE event.
+   */
+  const applyRemoteChange = (newContent: string): void => {
+    setRemoteContent(newContent);
+    const update = getRemoteUpdate();
+    hsm.send({ type: 'REMOTE_UPDATE', update });
+  };
+
+  /**
+   * Sync remoteDoc by applying the given Yjs update.
+   * This makes remoteDoc share CRDT history with the source of the update.
+   */
+  const syncRemoteWithUpdate = (update: Uint8Array): void => {
+    Y.applyUpdate(remoteDoc, update, 'sync');
+    // Update tracker to reflect the new state
+    lastRemoteStateVector = Y.encodeStateVector(remoteDoc);
+  };
+
   return {
     hsm,
     send: wrappedSend,
@@ -200,6 +338,11 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     snapshot: () => createSnapshot(hsm, effects, time),
     stateHistory,
     awaitIdleAutoMerge: () => hsm.awaitIdleAutoMerge(),
+    seedIndexedDB,
+    applyRemoteChange,
+    getRemoteUpdate,
+    setRemoteContent,
+    syncRemoteWithUpdate,
   };
 }
 

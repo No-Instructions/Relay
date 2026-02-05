@@ -1068,6 +1068,60 @@ export default class Live extends Plugin {
 			},
 		});
 
+		// Patch loadFileInternal on TextFileView prototype (parent of MarkdownView)
+		// to send diagnostic events to MergeHSM for debugging visibility
+		const TextFileViewPrototype = Object.getPrototypeOf(MarkdownView.prototype);
+		getPatcher().patch(TextFileViewPrototype, {
+			loadFileInternal(old: any) {
+				return async function (this: any, file: TFile, isInitialLoad: boolean) {
+					// Capture state before calling original
+					const dirty = this.dirty;
+					const lastSavedData = this.lastSavedData;
+					const isPlaintext = this.isPlaintext;
+
+					// Call original (may trigger three-way merge internally)
+					const result = await old.call(this, file, isInitialLoad);
+
+					// After original completes, send diagnostic event if this is a Relay file
+					try {
+						const folder = plugin.sharedFolders.lookup(file.path);
+						if (folder) {
+							const doc = folder.proxy.getFile(file);
+							if (doc && isDocument(doc) && doc.hsm) {
+								// Read disk content to check if it changed
+								const diskContent = await plugin.app.vault.read(file);
+								const contentChanged = lastSavedData !== diskContent;
+								const willMerge = dirty && contentChanged && isPlaintext;
+
+								doc.hsm.send({
+									type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
+									isInitialLoad,
+									dirty,
+									contentChanged,
+									willMerge,
+								});
+
+								// If merge was triggered, send the merge event too
+								if (willMerge) {
+									doc.hsm.send({
+										type: 'OBSIDIAN_THREE_WAY_MERGE',
+										lcaLength: lastSavedData?.length ?? 0,
+										editorLength: this.getViewData?.()?.length ?? 0,
+										diskLength: diskContent.length,
+									});
+								}
+							}
+						}
+					} catch (e) {
+						// Don't let diagnostic failures break normal operation
+						plugin.debug('Error sending diagnostic event:', e);
+					}
+
+					return result;
+				};
+			},
+		});
+
 		getPatcher().patch(this.app.vault, {
 			process(old: any) {
 				return function (

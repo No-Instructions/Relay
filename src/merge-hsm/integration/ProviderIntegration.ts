@@ -74,8 +74,19 @@ export class ProviderIntegration {
     // Subscribe to HSM effects for SYNC_TO_REMOTE
     this.unsubscribeHSM = hsm.effects.subscribe((effect) => {
       if (effect.type === 'SYNC_TO_REMOTE') {
-        // Apply update to remoteDoc - provider will sync automatically
-        Y.applyUpdate(this.remoteDoc, effect.update, 'local');
+        // BUG-050 FIX: In active mode, the HSM already applied the update to
+        // remoteDoc in syncLocalToRemote(). We must NOT apply again here -
+        // Yjs operations have unique (clientID, clock) identifiers, but if
+        // the provider's server echoes back with a different encoding, we
+        // could end up with duplicate content in remoteDoc.
+        //
+        // Only apply in idle mode, where the HSM doesn't have access to
+        // remoteDoc directly (this.localDoc is null).
+        if (!this.hsm.getLocalDoc()) {
+          Y.applyUpdate(this.remoteDoc, effect.update, 'local');
+        }
+        // In both modes, the provider will sync automatically because it
+        // observes remoteDoc for changes.
       }
     });
 

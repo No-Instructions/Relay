@@ -108,9 +108,30 @@ class HSMEditorPluginValue implements PluginValue {
     const hsm = this.document.hsm;
     if (!hsm) return false;
 
+    // BUG-055/BUG-056 FIX: Verify the HSM's Document matches the editor's file.
+    // When multiple SharedFolders have files with the same relative path
+    // (e.g., multiple e2e-fixture-* folders each with /test-1.md),
+    // we must ensure we're connecting to the correct HSM.
+    const fileInfo = this.editor.state.field(editorInfoField, false);
+    const editorFilePath = fileInfo?.file?.path;
+
+    // Get the Document's vault-relative path via its TFile
+    const documentTFile = this.document.tfile;
+    const documentVaultRelativePath = documentTFile?.path;
+
+    // Verify the Document we got is actually for the file shown in this editor
+    if (editorFilePath && documentVaultRelativePath && documentVaultRelativePath !== editorFilePath) {
+      this.log(
+        `Path mismatch: Document path "${documentVaultRelativePath}" != editor file "${editorFilePath}". ` +
+        `Skipping CM6Integration to prevent cross-folder contamination.`
+      );
+      return false;
+    }
+
     // Create CM6Integration to handle bidirectional sync
-    this.cm6Integration = new CM6Integration(hsm, this.editor);
-    this.debug(`Initialized for ${this.document.path}`);
+    // Pass the vault-relative path so CM6Integration can verify the editor doesn't switch files
+    this.cm6Integration = new CM6Integration(hsm, this.editor, editorFilePath || '');
+    this.debug(`Initialized for ${this.document.path} (vault: ${editorFilePath})`);
     return true;
   }
 
@@ -130,6 +151,34 @@ class HSMEditorPluginValue implements PluginValue {
       update.transactions.some((tr) => tr.annotation(ySyncAnnotation))
     ) {
       return;
+    }
+
+    // BUG-056 FIX: Detect when the editor is now showing a different file.
+    // When Obsidian reuses an editor view for a new file, the old CM6Integration
+    // still holds a reference to the old HSM. We must detect this and reset.
+    const fileInfo = this.editor.state.field(editorInfoField, false);
+    const currentFilePath = fileInfo?.file?.path;
+    if (this.document && currentFilePath) {
+      // Compare current editor file with our stored document's vault path
+      const documentVaultPath = this.document.path;
+      // Note: document.path is virtual path within SharedFolder, not vault-relative.
+      // We need to check via the tfile which has the vault-relative path.
+      const documentTFile = this.document.tfile;
+      const documentVaultRelativePath = documentTFile?.path;
+
+      if (documentVaultRelativePath && documentVaultRelativePath !== currentFilePath) {
+        // File changed! Destroy old integration and reset.
+        this.log(
+          `File changed from "${documentVaultRelativePath}" to "${currentFilePath}". ` +
+          `Resetting CM6Integration to prevent cross-file contamination.`
+        );
+        if (this.cm6Integration) {
+          this.cm6Integration.destroy();
+          this.cm6Integration = null;
+        }
+        this.document = null;
+        // Fall through to re-initialize
+      }
     }
 
     // Lazy initialization: HSM might not be available during constructor

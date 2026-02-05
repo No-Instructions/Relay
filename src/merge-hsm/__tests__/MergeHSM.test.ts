@@ -45,19 +45,20 @@ import {
 import * as Y from 'yjs';
 
 // =============================================================================
-// Helper to create Yjs updates for testing
+// Remote Update Testing
 // =============================================================================
-
-function createYjsUpdate(_fromText: string, toText: string): Uint8Array {
-  // Create a doc with the target content and return full state.
-  // This simulates receiving a state update from the server.
-  // In real usage, server sends updates that can be applied to any doc.
-  const doc = new Y.Doc();
-  doc.getText('contents').insert(0, toText);
-  const update = Y.encodeStateAsUpdate(doc);
-  doc.destroy();
-  return update;
-}
+//
+// To simulate remote updates, use the TestHSM methods:
+// - t.setRemoteContent(content) - sync remoteDoc to content using diffMatchPatch
+// - t.getRemoteUpdate() - get delta update since last call
+// - t.applyRemoteChange(content) - set content and send REMOTE_UPDATE event
+//
+// INVARIANT: These methods use diff-match-patch to apply changes without
+// delete-all/insert-all patterns that would violate CRDT history preservation.
+//
+// DO NOT create Yjs updates from fresh Y.Doc instances - this creates
+// independent CRDT histories that cause content duplication when merged.
+// =============================================================================
 
 // =============================================================================
 // Loading and State Transitions
@@ -253,6 +254,247 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('lock management', () => {
+    // BUG-047: Edit/save/close cycle should update LCA so reopen doesn't duplicate content
+    test('edit then DISK_CHANGED then RELEASE_LOCK should transition to idle.synced', async () => {
+      const t = await createTestHSM();
+      const originalContent = '# Test file\n\nContent for test-1.md.';
+      const editedContent = '# Test file\n\n<!-- marker -->Content for test-1.md.';
+
+      // Start with content in idle.synced
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      expectState(t, 'idle.synced');
+
+      // Open file (ACQUIRE_LOCK)
+      t.send(acquireLock(originalContent));
+      expectState(t, 'active.tracking');
+
+      // User types (CM6_CHANGE)
+      t.send(cm6Insert(13, '<!-- marker -->', editedContent));
+      expectState(t, 'active.tracking');
+      expectLocalDocText(t, editedContent);
+
+      // Obsidian's native save triggers DISK_CHANGED (no SAVE_COMPLETE)
+      t.send(await diskChanged(editedContent, 2000));
+      expectState(t, 'active.tracking');
+
+      // User closes tab (RELEASE_LOCK)
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+
+      // BUG-047: HSM should be in idle.synced, not idle.diverged
+      // because cleanupYDocs should update LCA when disk matches localDoc
+      expectState(t, 'idle.synced');
+
+      // Verify LCA was updated to edited content
+      expect(t.state.lca?.contents).toBe(editedContent);
+    });
+
+    // BUG-049: Test the SAVE_COMPLETE scenario (e2e uses this, not DISK_CHANGED)
+    test('edit then SAVE_COMPLETE then RELEASE_LOCK should transition to idle.synced', async () => {
+      const t = await createTestHSM();
+      const originalContent = '# Test file\n\nContent for test-1.md.';
+      const editedContent = '# Test file\n\n<!-- e2e-tp002 marker -->Content for test-1.md.';
+
+      // Start with content in idle.synced
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      expectState(t, 'idle.synced');
+
+      // Open file (ACQUIRE_LOCK)
+      t.send(acquireLock(originalContent));
+      expectState(t, 'active.tracking');
+
+      // User types (CM6_CHANGE)
+      t.send(cm6Insert(13, '<!-- e2e-tp002 marker -->', editedContent));
+      expectState(t, 'active.tracking');
+      expectLocalDocText(t, editedContent);
+
+      // Obsidian's Ctrl+S triggers SAVE_COMPLETE (not DISK_CHANGED)
+      // Note: SAVE_COMPLETE only updates disk hash/mtime, NOT pendingDiskContents
+      // In real Obsidian, this hash comes from Obsidian's save operation
+      // It may differ from our internal hashFn, which is why we test lastKnownEditorText fallback
+      t.send(saveComplete(2000, 'obsidian-hash-different-from-internal'));
+      expectState(t, 'active.tracking');
+
+      // User closes tab (RELEASE_LOCK)
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+
+      // BUG-049: HSM should be in idle.synced, not idle.diverged
+      // cleanupYDocs should update LCA using lastKnownEditorText === finalContent
+      expectState(t, 'idle.synced');
+
+      // Verify LCA was updated to edited content
+      expect(t.state.lca?.contents).toBe(editedContent);
+    });
+
+    // BUG-049: Test reopen from idle.diverged doesn't duplicate content
+    // This test simulates the exact e2e scenario:
+    // 1. File opens from idle.synced
+    // 2. User types (CM6_CHANGE updates localDoc and lastKnownEditorText)
+    // 3. User saves (SAVE_COMPLETE - NOT DISK_CHANGED)
+    // 4. User closes (RELEASE_LOCK)
+    // 5. File should go to idle.synced, but if hash mismatch causes idle.diverged...
+    // 6. User reopens
+    // 7. Content should NOT be duplicated
+    test('reopen from idle.diverged should not duplicate content', async () => {
+      const t = await createTestHSM();
+      const originalContent = '# Test file\n\nContent for test-1.md.';
+      const editedContent = '# Test file\n\n<!-- e2e-tp002 marker -->Content for test-1.md.';
+
+      // Start with original content in idle.synced
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      expectState(t, 'idle.synced');
+
+      // Verify initial LCA
+      expect(t.state.lca?.contents).toBe(originalContent);
+      const originalLcaHash = t.state.lca?.meta.hash;
+
+      // Open file
+      t.send(acquireLock(originalContent));
+      expectState(t, 'active.tracking');
+
+      // User types (CM6_CHANGE updates localDoc and lastKnownEditorText)
+      t.send(cm6Insert(13, '<!-- e2e-tp002 marker -->', editedContent));
+      expectLocalDocText(t, editedContent);
+
+      // User saves with Ctrl+S - ONLY SAVE_COMPLETE, NO DISK_CHANGED
+      // Use a hash that DIFFERS from what hashFn would compute
+      // This simulates Obsidian using a different hash algorithm
+      t.send(saveComplete(2000, 'obsidian-hash-differs-from-internal'));
+
+      // User closes tab
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+
+      // KEY: With only SAVE_COMPLETE (no DISK_CHANGED), cleanupYDocs should still
+      // update LCA using lastKnownEditorText === finalContent fallback
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(editedContent);
+
+      // ===== PHASE 2: Reopen =====
+      // Now reopen the file
+      t.send(acquireLock(editedContent));
+      expectState(t, 'active.tracking');
+
+      // Content should NOT be duplicated
+      const localDocContent = t.hsm.localDoc?.getText('contents').toString();
+      expect(localDocContent).toBe(editedContent);
+      expect(localDocContent?.length).toBe(editedContent.length); // 65 chars, not 130
+    });
+
+    // BUG-049 variant: What if we manually force idle.diverged and then reopen?
+    test('forced idle.diverged reopen should not duplicate content', async () => {
+      const t = await createTestHSM();
+      const originalContent = '# Test file\n\nContent for test-1.md.';
+      const editedContent = '# Test file\n\n<!-- e2e-tp002 marker -->Content for test-1.md.';
+
+      // Start with original content in idle.synced
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      expectState(t, 'idle.synced');
+
+      // Open, edit, and close with DISK_CHANGED (so LCA gets updated)
+      t.send(acquireLock(originalContent));
+      t.send(cm6Insert(13, '<!-- e2e-tp002 marker -->', editedContent));
+      t.send(await diskChanged(editedContent, 2000));
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(editedContent);
+
+      // Now force idle.diverged by sending a DISK_CHANGED with different content
+      // This simulates external disk modification
+      const divergedDiskContent = editedContent + '\nExtra line from external edit';
+      t.send(await diskChanged(divergedDiskContent, 3000));
+      expectState(t, 'idle.diskAhead'); // or idle.diverged if remote also changed
+
+      // Reopen with the diverged disk content
+      t.send(acquireLock(divergedDiskContent));
+
+      // Should go to tracking or merging, but NOT have doubled content
+      expect(t.hsm.isActive()).toBe(true);
+      const localDocContent = t.hsm.localDoc?.getText('contents').toString();
+      // Content should be reasonable - either the diverged content or a merge result
+      // But definitely NOT doubled
+      expect(localDocContent!.length).toBeLessThan(divergedDiskContent.length * 2);
+    });
+
+    // BUG-051: Test server echo scenario - the exact e2e failure case
+    // When a file is edited, saved, closed, and the server echoes the update,
+    // reopening should NOT duplicate content even though remoteDoc received the echo.
+    test('server echo during idle should not duplicate content on reopen', async () => {
+      const t = await createTestHSM();
+      const originalContent = '# Test file\n\nContent for test-1.md.';
+      const editedContent = '# Test file\n\n<!-- e2e-tp002 marker -->Content for test-1.md.';
+
+      // Start with original content in idle.synced
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      expectState(t, 'idle.synced');
+
+      // Open file
+      t.send(acquireLock(originalContent));
+      expectState(t, 'active.tracking');
+
+      // Capture remoteDoc state before edits
+      const remoteDocBefore = t.hsm.getRemoteDoc().getText('contents').toString();
+      expect(remoteDocBefore).toBe(originalContent);
+
+      // User types
+      t.send(cm6Insert(13, '<!-- e2e-tp002 marker -->', editedContent));
+      expectLocalDocText(t, editedContent);
+
+      // Verify remoteDoc was synced (syncLocalToRemote is called on CM6_CHANGE)
+      const remoteDocAfterEdit = t.hsm.getRemoteDoc().getText('contents').toString();
+      expect(remoteDocAfterEdit).toBe(editedContent);
+
+      // Save
+      t.send(saveComplete(2000, 'test-hash'));
+
+      // Close
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+      expectState(t, 'idle.synced');
+
+      // KEY SCENARIO: Server echo arrives while in idle
+      // This is a delta update containing just the new ops (the marker insertion)
+      // In real system, this comes from the server echoing our update
+      // We simulate by encoding the delta between original and edited state
+      const deltaDoc = new Y.Doc();
+      deltaDoc.getText('contents').insert(0, editedContent);
+      // The "server echo" would only contain the NEW operations
+      // Since we can't easily extract just the delta, we'll send the full state
+      // which exercises the same code path (merging with existing content)
+      const serverEcho = Y.encodeStateAsUpdate(deltaDoc);
+      deltaDoc.destroy();
+
+      // Send the "server echo" as REMOTE_UPDATE
+      t.send(remoteUpdate(serverEcho));
+
+      // HSM should transition to idle.remoteAhead and auto-merge
+      await t.hsm.awaitIdleAutoMerge();
+
+      // Should be back in idle.synced (no conflicts)
+      expectState(t, 'idle.synced');
+
+      // ===== PHASE 2: Reopen =====
+      // Now reopen the file
+      t.send(acquireLock(editedContent));
+      expectState(t, 'active.tracking');
+
+      // Content should NOT be duplicated
+      const localDocContent = t.hsm.localDoc?.getText('contents').toString();
+      expect(localDocContent).toBe(editedContent);
+      expect(localDocContent?.length).toBe(editedContent.length); // 65 chars, not 130
+
+      // RemoteDoc should also have correct content
+      const remoteDocContent = t.hsm.getRemoteDoc().getText('contents').toString();
+      expect(remoteDocContent).toBe(editedContent);
+    });
+
     test('multiple ACQUIRE_LOCK/RELEASE_LOCK cycles work correctly', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
@@ -440,7 +682,10 @@ describe('MergeHSM', () => {
 
       expectState(t, 'active.tracking');
       expectLocalDocText(t, 'hello disk');
-      expectEffect(t.effects, { type: 'DISPATCH_CM6' });
+      // BUG-044 fix: NO DISPATCH_CM6 for RESOLVE_ACCEPT_DISK.
+      // The editor already shows disk content (Obsidian loaded it from disk).
+      // Dispatching would cause duplication.
+      expect(t.effects.filter(e => e.type === 'DISPATCH_CM6')).toHaveLength(0);
     });
 
     test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged but updates editor', async () => {
@@ -676,8 +921,8 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t);
 
-      const update = createYjsUpdate('', 'hello');
-      t.send(remoteUpdate(update));
+      // Apply remote change using proper diff-based update
+      t.applyRemoteChange('hello');
 
       expectState(t, 'idle.remoteAhead');
     });
@@ -711,8 +956,7 @@ describe('MergeHSM', () => {
       expect(t.getLocalDocText()).toBeNull();
 
       // Receive remote update - should still not create localDoc
-      const update = createYjsUpdate('', 'hello');
-      t.send(remoteUpdate(update));
+      t.applyRemoteChange('hello');
 
       expect(t.getLocalDocText()).toBeNull();
     });
@@ -733,15 +977,16 @@ describe('MergeHSM', () => {
 
     test('idle.remoteAhead auto-merges when disk==lca', async () => {
       const t = await createTestHSM();
+      // loadToIdle automatically syncs remoteDoc with the same CRDT history
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
 
       // Set up disk state matching LCA
       t.send(await diskChanged('hello', 1000));
       t.clearEffects();
 
-      // Remote update arrives
-      const update = createYjsUpdate('hello', 'hello world');
-      t.send(remoteUpdate(update));
+      // Remote update arrives - applyRemoteChange creates proper delta update
+      // because remoteDoc shares CRDT history with local
+      t.applyRemoteChange('hello world');
 
       // Wait for async idle auto-merge to complete (BUG-021 fix made this async)
       await t.hsm.awaitIdleAutoMerge();
@@ -771,12 +1016,14 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'line1\nline2\nline3', mtime: 1000 });
 
-      // First, remote update changes line1
-      const update = createYjsUpdate('line1\nline2\nline3', 'REMOTE\nline2\nline3');
-      t.send(remoteUpdate(update));
+      // Pre-compute disk event before sending remote update to avoid timing issues
+      const diskEvent = await diskChanged('line1\nline2\nDISK', 2000);
+
+      // Remote update changes line1 - proper delta because remoteDoc shares CRDT history
+      t.applyRemoteChange('REMOTE\nline2\nline3');
 
       // Then disk changes line3 - diverged but mergeable
-      t.send(await diskChanged('line1\nline2\nDISK', 2000));
+      t.send(diskEvent);
 
       // Wait for async 3-way merge to complete
       await t.awaitIdleAutoMerge();
@@ -790,14 +1037,11 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original line', mtime: 1000 });
 
-      // Create remote update that changes the same line
-      const update = createYjsUpdate('original line', 'remote changed this');
-
       // Pre-compute disk event to avoid async between sends
       const diskEvent = await diskChanged('disk changed this', 2000);
 
       // Send remote first (→ idle.remoteAhead), then disk immediately (→ idle.diverged)
-      t.send(remoteUpdate(update));
+      t.applyRemoteChange('remote changed this');
       t.send(diskEvent);
 
       // Wait for 3-way merge to attempt
@@ -962,9 +1206,8 @@ describe('MergeHSM', () => {
     test('returns pending status in idle.remoteAhead', async () => {
       const t = await createTestHSM();
       await loadToIdle(t);
-      // Send a remote update to transition to idle.remoteAhead
-      const update = createYjsUpdate('', 'remote content');
-      t.send(remoteUpdate(update));
+      // Apply remote change using proper diff-based update
+      t.applyRemoteChange('remote content');
       expectState(t, 'idle.remoteAhead');
 
       const status = t.hsm.getSyncStatus();
@@ -1041,8 +1284,7 @@ describe('MergeHSM', () => {
       t.clearEffects();
 
       // Receiving remote update changes status from synced to pending
-      const update = createYjsUpdate('', 'hello world');
-      t.send(remoteUpdate(update));
+      t.applyRemoteChange('hello world');
 
       expectEffect(t.effects, { type: 'STATUS_CHANGED' });
     });

@@ -8,6 +8,7 @@
  */
 
 import type { EditorView, ViewUpdate } from '@codemirror/view';
+import { editorInfoField } from 'obsidian';
 import type { MergeHSM } from '../MergeHSM';
 import type { PositionedChange } from '../types';
 // Import the shared annotation to prevent feedback loops
@@ -23,9 +24,11 @@ export class CM6Integration {
   private unsubscribe: (() => void) | null = null;
   private suppressNextChange = false;
 
-  constructor(hsm: MergeHSM, view: EditorView) {
+  constructor(hsm: MergeHSM, view: EditorView, vaultRelativePath: string) {
     this.hsm = hsm;
     this.view = view;
+    this.expectedVaultPath = vaultRelativePath;
+    this.log = curryLog('[CM6Integration]', 'log');
 
     // Subscribe to HSM effects
     this.unsubscribe = hsm.effects.subscribe((effect) => {
@@ -41,6 +44,17 @@ export class CM6Integration {
    */
   private dispatchToEditor(changes: PositionedChange[]): void {
     if (changes.length === 0) return;
+    if (this.destroyed) return;
+
+    // BUG-056 FIX: Verify the editor is still showing our file.
+    // If the editor has switched to a different file, dispatching would
+    // corrupt the wrong document.
+    if (!this.isEditorShowingExpectedFile()) {
+      this.log(
+        `Skipping dispatch: editor is no longer showing expected file "${this.expectedVaultPath}"`
+      );
+      return;
+    }
 
     // Convert PositionedChange[] to CodeMirror ChangeSpec[]
     const cmChanges = changes.map((change) => ({
@@ -76,6 +90,17 @@ export class CM6Integration {
       return;
     }
 
+    // BUG-057 FIX: Verify the editor is still showing our file.
+    // When editor views are reused, an old CM6Integration might receive
+    // updates for a different file. Sending these to the wrong HSM causes
+    // content corruption.
+    if (!this.isEditorShowingExpectedFile()) {
+      this.log(
+        `Skipping editor update: editor is no longer showing expected file "${this.expectedVaultPath}"`
+      );
+      return;
+    }
+
     // Convert CodeMirror changes to PositionedChange[]
     const changes: PositionedChange[] = [];
     update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
@@ -101,6 +126,7 @@ export class CM6Integration {
    * Destroy the integration and unsubscribe from HSM.
    */
   destroy(): void {
+    this.destroyed = true;
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;
