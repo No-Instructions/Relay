@@ -228,7 +228,10 @@ export class LiveCMPluginValue implements PluginValue {
 
 		// Initialize CM6Integration for HSM Active Mode
 		if (this.document?.hsm) {
-			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor);
+			// Get vault-relative path for the CM6Integration
+			const fileInfo = this.editor.state.field(editorInfoField, false);
+			const vaultRelativePath = fileInfo?.file?.path || '';
+			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor, vaultRelativePath);
 			this.log("[LiveEditPlugin] CM6Integration initialized for HSM Active Mode");
 		}
 
@@ -365,6 +368,32 @@ export class LiveCMPluginValue implements PluginValue {
 	}
 
 	async resync() {
+		// BUG-058 FIX: Verify the editor is still showing the expected file before resyncing.
+		// When editor views are reused for different files, the old LiveEditPlugin may still
+		// receive resync() calls (via setViewData patch) with a stale this.document reference.
+		// Without this check, we would push the old document's CRDT content to the new file's
+		// editor, causing content duplication.
+		const fileInfo = this.editor.state.field(editorInfoField, false);
+		const currentFilePath = fileInfo?.file?.path;
+		if (this.document && currentFilePath) {
+			const documentTFile = this.document.tfile;
+			const documentVaultRelativePath = documentTFile?.path;
+			if (documentVaultRelativePath && documentVaultRelativePath !== currentFilePath) {
+				// File changed - reset document reference and skip resync.
+				// The new file will get its own LiveEditPlugin instance.
+				this.log(
+					`[resync] File changed from "${documentVaultRelativePath}" to "${currentFilePath}". ` +
+					`Skipping resync to prevent cross-file contamination.`
+				);
+				if (this.cm6Integration) {
+					this.cm6Integration.destroy();
+					this.cm6Integration = undefined;
+				}
+				this.document = undefined;
+				return;
+			}
+		}
+
 		if (isLiveMd(this.view) && !this.view.tracking && !this.destroyed) {
 			await this.view.document.whenSynced();
 			const keyFrame = await this.getKeyFrame();
@@ -390,6 +419,22 @@ export class LiveCMPluginValue implements PluginValue {
 		// goal: sync editor state to ytext state so we can accept delta edits.
 		if (!this.active(this.view) || this.destroyed) {
 			return [];
+		}
+
+		// BUG-058 FIX: Verify document matches current editor file before using CRDT content.
+		// This is a secondary guard in case resync() check was bypassed.
+		const fileInfo = this.editor.state.field(editorInfoField, false);
+		const currentFilePath = fileInfo?.file?.path;
+		if (this.document && currentFilePath) {
+			const documentTFile = this.document.tfile;
+			const documentVaultRelativePath = documentTFile?.path;
+			if (documentVaultRelativePath && documentVaultRelativePath !== currentFilePath) {
+				this.warn(
+					`[getKeyFrame] Document path mismatch: "${documentVaultRelativePath}" != "${currentFilePath}". ` +
+					`Returning empty to prevent cross-file contamination.`
+				);
+				return [];
+			}
 		}
 
 		const crdtText = this.document?.text;
@@ -460,10 +505,36 @@ export class LiveCMPluginValue implements PluginValue {
 			return;
 		}
 
+		// BUG-057 FIX: Detect when the editor is showing a different file.
+		// When Obsidian reuses an editor view for a new file, the old CM6Integration
+		// still holds a reference to the old HSM. We must detect this and reset.
+		const fileInfo = this.editor.state.field(editorInfoField, false);
+		const currentFilePath = fileInfo?.file?.path;
+		if (this.document && currentFilePath) {
+			const documentTFile = this.document.tfile;
+			const documentVaultRelativePath = documentTFile?.path;
+
+			if (documentVaultRelativePath && documentVaultRelativePath !== currentFilePath) {
+				// File changed! Destroy old integration and reset.
+				this.log(
+					`[LiveEditPlugin] File changed from "${documentVaultRelativePath}" to "${currentFilePath}". ` +
+					`Resetting CM6Integration to prevent cross-file contamination.`
+				);
+				if (this.cm6Integration) {
+					this.cm6Integration.destroy();
+					this.cm6Integration = undefined;
+				}
+				this.document = undefined;
+				// Fall through to re-initialize
+			}
+		}
+
 		// Lazy initialization of CM6Integration: HSM might not have been available
 		// during constructor if acquireLock() hadn't completed yet
 		if (!this.cm6Integration && this.document?.hsm) {
-			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor);
+			// Get vault-relative path for the CM6Integration
+			const vaultRelativePath = fileInfo?.file?.path || '';
+			this.cm6Integration = new CM6Integration(this.document.hsm, this.editor, vaultRelativePath);
 			this.log("[LiveEditPlugin] CM6Integration initialized lazily for HSM Active Mode");
 		}
 

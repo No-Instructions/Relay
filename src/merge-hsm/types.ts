@@ -301,6 +301,41 @@ export interface ErrorEvent {
   error: Error;
 }
 
+// Diagnostic Events (from Obsidian monkeypatches)
+// These events are informational only - they don't trigger state transitions.
+// They provide visibility into Obsidian's internal file handling for debugging.
+
+/**
+ * Fired when Obsidian's loadFileInternal is called.
+ * This is the entry point for Obsidian's disk change handling.
+ */
+export interface ObsidianLoadFileInternalEvent {
+  type: 'OBSIDIAN_LOAD_FILE_INTERNAL';
+  /** True if this is the initial file load (not a reload) */
+  isInitialLoad: boolean;
+  /** True if the editor has unsaved changes */
+  dirty: boolean;
+  /** True if disk content differs from lastSavedData */
+  contentChanged: boolean;
+  /** True if three-way merge will be triggered (dirty && contentChanged && isPlaintext) */
+  willMerge: boolean;
+}
+
+/**
+ * Fired when Obsidian's three-way merge is triggered.
+ * This happens when: dirty && contentChanged && isPlaintext.
+ * The merge rebases editor changes onto the new disk content.
+ */
+export interface ObsidianThreeWayMergeEvent {
+  type: 'OBSIDIAN_THREE_WAY_MERGE';
+  /** Length of the LCA (lastSavedData) */
+  lcaLength: number;
+  /** Length of the current editor content */
+  editorLength: number;
+  /** Length of the new disk content */
+  diskLength: number;
+}
+
 export type MergeEvent =
   // External
   | LoadEvent
@@ -333,7 +368,10 @@ export type MergeEvent =
   | MergeSuccessEvent
   | MergeConflictEvent
   | RemoteDocUpdatedEvent
-  | ErrorEvent;
+  | ErrorEvent
+  // Diagnostic (from Obsidian monkeypatches)
+  | ObsidianLoadFileInternalEvent
+  | ObsidianThreeWayMergeEvent;
 
 // =============================================================================
 // Effect Types

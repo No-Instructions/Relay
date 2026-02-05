@@ -297,6 +297,10 @@ export interface HSMHandle {
   hsm?: {
     getRemoteDoc(): Y.Doc | null;
   };
+  /** Seed mock IndexedDB with updates (optional, used by loadAndActivate for proper persistence simulation) */
+  seedIndexedDB?(updates: Uint8Array): void;
+  /** Sync remoteDoc with updates to share CRDT history (optional, used by loadToIdle) */
+  syncRemoteWithUpdate?(update: Uint8Array): void;
 }
 
 export interface LoadAndActivateOptions {
@@ -333,12 +337,19 @@ export async function loadAndActivate(
   const guid = opts?.guid ?? 'test-guid';
   const path = opts?.path ?? 'test.md';
   const mtime = opts?.mtime ?? Date.now();
-  const hash = await sha256(content);
 
   // Create LCA and updates for the content
   const updates = content ? createYjsUpdate(content) : new Uint8Array();
   const stateVector = content ? Y.encodeStateVectorFromUpdate(updates) : new Uint8Array([0]);
   const lca = await createLCA(content, mtime, stateVector);
+
+  // Seed the mock IndexedDB with the content BEFORE any transitions.
+  // This simulates content that was persisted in a previous session.
+  // Per docs/how-we-bootstrap-collaboration.md, content should only be inserted
+  // into the CRDT once during enrollment, and loaded from persistence thereafter.
+  if (content && hsm.seedIndexedDB) {
+    hsm.seedIndexedDB(updates);
+  }
 
   // Drive through transitions:
   // 1. LOAD → loading (flat state)
@@ -415,6 +426,18 @@ export async function loadToIdle(
   const updates = content ? createYjsUpdate(content) : new Uint8Array();
   const stateVector = content ? Y.encodeStateVectorFromUpdate(updates) : new Uint8Array([0]);
   const lca = await createLCA(content, mtime, stateVector);
+
+  // Seed the mock IndexedDB with the content BEFORE any transitions.
+  // This simulates content that was persisted in a previous session.
+  if (content && hsm.seedIndexedDB) {
+    hsm.seedIndexedDB(updates);
+  }
+
+  // Sync remoteDoc with the same updates so it shares CRDT history with local.
+  // This ensures subsequent applyRemoteChange() calls create proper delta updates.
+  if (content && hsm.syncRemoteWithUpdate) {
+    hsm.syncRemoteWithUpdate(updates);
+  }
 
   // Drive through transitions:
   // 1. LOAD → loading
@@ -523,37 +546,60 @@ export async function loadToConflict(
   const guid = opts.guid ?? 'test-guid';
   const path = opts.path ?? 'test.md';
 
-  // 1. Load to idle with base content
-  await loadToIdle(hsm, { guid, path, content: opts.base, mtime: 1000 });
+  // INVARIANT: Per docs/how-we-bootstrap-collaboration.md, content is inserted
+  // into the CRDT exactly ONCE during initial enrollment. We NEVER do:
+  //   - delete(0, length) + insert(0, newContent) — destroys CRDT history
+  //   - Create fresh Y.Doc and merge with existing — creates parallel histories
+  //
+  // For conflict testing, we simulate a scenario where:
+  // - IndexedDB/CRDT has the "remote" content (what was synced from server)
+  // - LCA has the "base" content (last common ancestor from before remote edits)
+  // - Disk has the "disk" content (external edit while offline)
+  // - This creates a real 3-way conflict
+  //
+  // The key insight: LCA represents the point where local and remote diverged.
+  // When remote edits happened, CRDT got remote content but LCA stayed at base.
+  // Then disk was edited externally, creating a 3-way divergence.
 
-  // 2. Prepare both events BEFORE sending any (to avoid async race conditions)
-  const remoteDoc = new Y.Doc();
-  remoteDoc.getText('contents').insert(0, opts.remote);
-  const update = Y.encodeStateAsUpdate(remoteDoc);
-  remoteDoc.destroy();
-  // Pre-compute hash to avoid any awaits between sends
+  // Step 1: Seed IndexedDB with REMOTE content (this is what CRDT will have)
+  const remoteUpdates = createYjsUpdate(opts.remote);
+  if (hsm.seedIndexedDB) {
+    hsm.seedIndexedDB(remoteUpdates);
+  }
+
+  // Step 2: Create LCA with BASE content (the last common ancestor)
+  // Note: LCA state vector should reflect the base content, not remote
+  const baseUpdates = opts.base ? createYjsUpdate(opts.base) : new Uint8Array();
+  const baseStateVector = opts.base ? Y.encodeStateVectorFromUpdate(baseUpdates) : new Uint8Array([0]);
+  const baseLca = await createLCA(opts.base, 500, baseStateVector);
+
+  // Step 3: Load through state machine
+  // - LOAD starts loading
+  // - PERSISTENCE_LOADED sets LCA to base (with base state vector)
+  // - REMOTE_UPDATE sets _remoteStateVector (to remote state vector, different from LCA)
+  // - SET_MODE_IDLE transitions to idle
+  hsm.send(load(guid, path));
+  // Pass base updates for local state vector to match LCA
+  hsm.send(persistenceLoaded(baseUpdates, baseLca));
+  // Send REMOTE_UPDATE to set _remoteStateVector (different from LCA)
+  // This simulates remote edits that happened while we were offline
+  hsm.send({ type: 'REMOTE_UPDATE', update: remoteUpdates });
+  hsm.send({ type: 'SET_MODE_IDLE' });
+
+  // Step 4: Send DISK_CHANGED with different content
+  // This triggers diverged state (disk differs from both LCA and CRDT)
   const diskHash = await sha256(opts.disk);
-  const diskEvent: DiskChangedEvent = {
+  hsm.send({
     type: 'DISK_CHANGED',
     contents: opts.disk,
     mtime: 2000,
     hash: diskHash,
-  };
+  });
 
-  // 3. Send remote update first (transitions to idle.remoteAhead)
-  // This starts performIdleRemoteAutoMerge as a microtask
-  hsm.send(remoteUpdate(update));
-
-  // 4. IMMEDIATELY send disk change in the same synchronous execution
-  // This transitions to idle.diverged and starts performIdleThreeWayMerge
-  // The key is that no awaits happen between steps 3 and 4, so the microtasks
-  // from step 3 haven't run yet.
-  hsm.send(diskEvent);
-
-  // 5. Wait for the 3-way merge to complete
-  // The 3-way merge should fail (conflict) because base/remote/disk all differ
+  // Wait for any auto-merge attempts to complete
   await hsm.awaitIdleAutoMerge?.();
 
+  // Should be in idle.diverged now (3-way conflict detected)
   if (!hsm.matches('idle.diverged')) {
     const state = hsm.statePath ?? 'unknown';
     throw new Error(
@@ -562,7 +608,7 @@ export async function loadToConflict(
     );
   }
 
-  // 5. Acquire lock - this triggers conflict detection from diverged state
+  // Step 4: Acquire lock - this triggers conflict detection
   hsm.send(acquireLock(opts.disk));
 
   // Verify we reached conflict state

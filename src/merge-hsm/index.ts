@@ -47,6 +47,9 @@ export type {
   MergeConflictEvent,
   RemoteDocUpdatedEvent,
   ErrorEvent,
+  // Diagnostic events (from Obsidian monkeypatches)
+  ObsidianLoadFileInternalEvent,
+  ObsidianThreeWayMergeEvent,
 
   // Effect types
   MergeEffect,
