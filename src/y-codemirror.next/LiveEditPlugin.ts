@@ -83,7 +83,7 @@ export class LiveCMPluginValue implements PluginValue {
 		if (this.destroyed || !this.editor) {
 			return () => {};
 		}
-		
+
 		this.banner = new EmbedBanner(
 			this.sourceView,
 			this.editor.dom,
@@ -211,7 +211,10 @@ export class LiveCMPluginValue implements PluginValue {
 				}),
 			);
 		} else {
-			this.document.connect();
+			// Respect user's explicit disconnect intent
+			if (!this.document.userDisconnectedIntent) {
+				this.document.connect();
+			}
 		}
 
 		if (this.document.connected) {
