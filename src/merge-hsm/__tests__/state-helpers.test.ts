@@ -7,7 +7,7 @@ import {
   createTestHSM,
   loadAndActivate,
   loadToIdle,
-  loadToAwaitingLCA,
+  loadToLoading,
   createYjsUpdate,
 } from '../testing';
 
@@ -78,19 +78,19 @@ describe('State Transition Helpers', () => {
     });
   });
 
-  describe('loadToAwaitingLCA', () => {
-    test('drives HSM to loading.awaitingLCA', async () => {
+  describe('loadToLoading', () => {
+    test('drives HSM to loading state', async () => {
       const t = await createTestHSM();
 
-      await loadToAwaitingLCA(t);
+      await loadToLoading(t);
 
-      expect(t.matches('loading.awaitingLCA')).toBe(true);
+      expect(t.matches('loading')).toBe(true);
     });
 
-    test('has no LCA set', async () => {
+    test('has no LCA by default', async () => {
       const t = await createTestHSM();
 
-      await loadToAwaitingLCA(t);
+      await loadToLoading(t);
 
       expect(t.state.lca).toBeNull();
     });

@@ -104,6 +104,16 @@ export async function getAllStateGuids(db: IDBDatabase): Promise<string[]> {
   return keys as string[];
 }
 
+/**
+ * Load all HSM states from the database.
+ * Used by MergeManager.initialize() for bulk LCA cache loading.
+ */
+export async function getAllStates(db: IDBDatabase): Promise<PersistedMergeState[]> {
+  const [store] = idb.transact(db, [STORES.states], 'readonly');
+  const states = await idb.getAll(store);
+  return (states as unknown as PersistedMergeState[]) ?? [];
+}
+
 // =============================================================================
 // Yjs Updates Storage (via y-indexeddb)
 // =============================================================================

@@ -31,25 +31,30 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     expectState(t, 'unloaded');
 
     t.send(load(guid, path));
-    expectState(t, 'loading.loadingPersistence');
+    expectState(t, 'loading');
   });
 
-  test('should block in awaitingLCA when no prior state', async () => {
+  test('should stay in loading after persistence loaded (flat state)', async () => {
     const t = await createTestHSM();
 
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
 
-    expectState(t, 'loading.awaitingLCA');
+    // Loading is flat - waits for mode determination
+    expectState(t, 'loading');
   });
 
-  test('should transition to idle after initializing with content', async () => {
+  test('should transition to idle after mode determination and initialization', async () => {
     const t = await createTestHSM();
 
     t.send(load(guid, path));
     t.send(persistenceLoaded(new Uint8Array(), null));
-    expectState(t, 'loading.awaitingLCA');
+    expectState(t, 'loading');
 
+    // Mode determination required before transitioning out of loading
+    t.send({ type: 'SET_MODE_IDLE' });
+
+    // Now in idle.loading, can initialize with content
     const hash = await sha256(initialContent);
     t.send(initializeWithContent(initialContent, hash, Date.now()));
     expectState(t, 'idle.synced');
@@ -58,15 +63,9 @@ describe('E2E Recorded: clean-disk-file-test', () => {
   test('should enter active mode and reach active.tracking', async () => {
     const t = await createTestHSM();
 
-    // Setup: load and initialize with content
-    t.send(load(guid, path));
-    t.send(persistenceLoaded(new Uint8Array(), null));
-    const hash = await sha256(initialContent);
-    t.send(initializeWithContent(initialContent, hash, Date.now()));
-    expectState(t, 'idle.synced');
-
-    // Acquire lock to enter active mode
-    t.send(acquireLock(initialContent));
+    // Use loadAndActivate helper which properly sets up LCA
+    const { loadAndActivate } = await import('../testing');
+    await loadAndActivate(t, initialContent, { guid, path });
 
     // From E2E recording: initial state was active.tracking
     expectState(t, 'active.tracking');
@@ -75,12 +74,9 @@ describe('E2E Recorded: clean-disk-file-test', () => {
   test('should handle CM6_CHANGE and emit SYNC_TO_REMOTE effect', async () => {
     const t = await createTestHSM();
 
-    // Setup to active.tracking
-    t.send(load(guid, path));
-    t.send(persistenceLoaded(new Uint8Array(), null));
-    const hash = await sha256(initialContent);
-    t.send(initializeWithContent(initialContent, hash, Date.now()));
-    t.send(acquireLock(initialContent));
+    // Setup to active.tracking using loadAndActivate helper
+    const { loadAndActivate } = await import('../testing');
+    await loadAndActivate(t, initialContent, { guid, path });
     expectState(t, 'active.tracking');
 
     // Clear effects from setup
@@ -102,20 +98,17 @@ describe('E2E Recorded: clean-disk-file-test', () => {
   test('should handle disk changes in active mode via merge cycle', async () => {
     const t = await createTestHSM();
 
-    // Setup to active.tracking
-    t.send(load(guid, path));
-    t.send(persistenceLoaded(new Uint8Array(), null));
-    const hash = await sha256(initialContent);
-    t.send(initializeWithContent(initialContent, hash, Date.now()));
-    t.send(acquireLock(initialContent));
+    // Setup to active.tracking using loadAndActivate helper
+    const { loadAndActivate } = await import('../testing');
+    await loadAndActivate(t, initialContent, { guid, path });
     expectState(t, 'active.tracking');
 
     // Disk change should trigger merge
     const newDiskContent = initialContent + '\n- NewItem (from disk)';
     t.send(await diskChanged(newDiskContent, Date.now()));
 
-    // From recording: transitions were active.merging -> active.tracking
-    // The HSM auto-merges and returns to tracking
+    // From recording: transitions were active.merging.threeWay -> active.tracking
+    // The HSM auto-merges (via 3-way merge with LCA) and returns to tracking
     expectState(t, 'active.tracking');
   });
 
@@ -136,13 +129,15 @@ describe('E2E Recorded: clean-disk-file-test', () => {
 
   test('documents recorded state transitions', () => {
     // The E2E recording captured these unique transitions:
+    // Note: With v9, active.merging is split into active.merging.twoWay and active.merging.threeWay
+    // Since LCA exists in this test, the merge uses threeWay
     const recordedTransitions = [
-      'active.merging -> active.tracking',  // After successful merge
+      'active.merging.threeWay -> active.tracking',  // After successful 3-way merge
       'active.tracking -> active.tracking'  // CM6_CHANGE in tracking state
     ];
 
     expect(recordedTransitions).toHaveLength(2);
-    expect(recordedTransitions).toContain('active.merging -> active.tracking');
+    expect(recordedTransitions).toContain('active.merging.threeWay -> active.tracking');
     expect(recordedTransitions).toContain('active.tracking -> active.tracking');
   });
 });

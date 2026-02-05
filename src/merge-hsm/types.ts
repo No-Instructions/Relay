@@ -82,6 +82,20 @@ export interface MergeState {
    * Does not block state transitions; affects sync behavior only.
    */
   isOnline: boolean;
+
+  /**
+   * Editor content received from ACQUIRE_LOCK.
+   * Available during active.entering while YDocs are loading.
+   * Cleared after successful entry to active.tracking.
+   */
+  pendingEditorContent?: string;
+
+  /**
+   * Last known editor text from CM6_CHANGE events.
+   * Updated whenever the editor content changes.
+   * Used for drift detection and merge operations.
+   */
+  lastKnownEditorText?: string;
 }
 
 // =============================================================================
@@ -90,19 +104,19 @@ export interface MergeState {
 
 export type StatePath =
   | 'unloaded'
-  | 'loading.loadingPersistence'
-  | 'loading.awaitingLCA'
-  | 'loading.ready'
+  | 'loading'
+  | 'idle.loading'
   | 'idle.synced'
   | 'idle.localAhead'
   | 'idle.remoteAhead'
   | 'idle.diskAhead'
   | 'idle.diverged'
   | 'idle.error'
+  | 'active.loading'
   | 'active.entering'
   | 'active.tracking'
-  | 'active.merging'
-  | 'active.conflict.blocked'
+  | 'active.merging.twoWay'
+  | 'active.merging.threeWay'
   | 'active.conflict.bannerShown'
   | 'active.conflict.resolving'
   | 'unloading';
@@ -178,6 +192,23 @@ export interface ConnectedEvent {
 
 export interface DisconnectedEvent {
   type: 'DISCONNECTED';
+}
+
+// Mode Determination Events (sent by MergeManager)
+/**
+ * MergeManager signals this HSM should be in active mode.
+ * Transitions from `loading` → `active.loading`.
+ */
+export interface SetModeActiveEvent {
+  type: 'SET_MODE_ACTIVE';
+}
+
+/**
+ * MergeManager signals this HSM should be in idle mode.
+ * Transitions from `loading` → `idle.loading`.
+ */
+export interface SetModeIdleEvent {
+  type: 'SET_MODE_IDLE';
 }
 
 // User Events
@@ -283,6 +314,9 @@ export type MergeEvent =
   | ProviderSyncedEvent
   | ConnectedEvent
   | DisconnectedEvent
+  // Mode Determination (from MergeManager)
+  | SetModeActiveEvent
+  | SetModeIdleEvent
   // User
   | ResolveAcceptDiskEvent
   | ResolveAcceptLocalEvent

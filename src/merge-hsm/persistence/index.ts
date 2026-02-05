@@ -20,6 +20,7 @@ export {
   loadState,
   deleteState,
   getAllStateGuids,
+  getAllStates,
 
   // NOTE: Updates are stored in y-indexeddb, not here.
   // Use the doc-less operations from y-indexeddb:

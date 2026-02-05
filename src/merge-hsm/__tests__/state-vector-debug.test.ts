@@ -48,7 +48,7 @@ describe('state vector debug', () => {
 
     // Send remote update
     const update = createTestUpdate('hello world');
-    await manager.handleIdleRemoteUpdate('doc-1', update);
+    await manager.handleRemoteUpdate('doc-1', update);
     await hsm?.awaitIdleAutoMerge();
 
     console.log('After remote update + auto-merge:', hsm?.state.statePath);

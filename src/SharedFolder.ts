@@ -368,10 +368,19 @@ export class SharedFolder extends HasProvider {
 		// Wire folder-level event subscriptions for idle mode remote updates
 		this.setupEventSubscriptions();
 
-		this.whenReady().then(() => {
+		this.whenReady().then(async () => {
 			if (!this.destroyed) {
 				this.addLocalDocs();
 				this.syncFileTree(this.syncStore);
+
+				// Wait for all HSM registrations to complete, then transition them to idle mode.
+				// This ensures HSMs don't stay stuck in 'loading' state when no editor is open.
+				// Per spec: HSMs start in 'loading', then receive SET_MODE_IDLE from MergeManager.
+				if (this.mergeManager) {
+					await this.mergeManager.whenRegistered();
+					// All newly registered HSMs should go idle (no editor open yet)
+					this.mergeManager.setActiveDocuments(new Set());
+				}
 			}
 		});
 
@@ -440,7 +449,7 @@ export class SharedFolder extends HasProvider {
 
 		// Forward the update to MergeManager for idle mode handling
 		if (event.update) {
-			this.mergeManager.handleIdleRemoteUpdate(guid, event.update);
+			this.mergeManager.handleRemoteUpdate(guid, event.update);
 		}
 	}
 

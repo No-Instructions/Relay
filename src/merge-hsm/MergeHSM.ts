@@ -216,30 +216,19 @@ const mergeMachine = setup({
     unloaded: {
       on: {
         LOAD: {
-          target: 'loading.loadingPersistence',
+          target: 'loading',
           actions: ['setGuidAndPath'],
         },
       },
     },
     loading: {
-      initial: 'loadingPersistence',
-      states: {
-        loadingPersistence: {
-          on: {
-            PERSISTENCE_LOADED: {
-              target: 'awaitingLCA',
-              actions: ['setLCA', 'setLocalStateVector'],
-            },
-          },
-        },
-        awaitingLCA: {
-          // Blocks until INITIALIZE_WITH_CONTENT or INITIALIZE_LCA is sent
-        },
-        ready: {
-          // Transient state before idle/active
-        },
-      },
+      // Flat state - no sub-states per spec
+      // Handles PERSISTENCE_LOADED internally, waits for mode determination
       on: {
+        PERSISTENCE_LOADED: {
+          // Stay in loading, just update context
+          actions: ['setLCA', 'setLocalStateVector'],
+        },
         ACQUIRE_LOCK: {
           target: 'active.entering',
         },
@@ -248,8 +237,6 @@ const mergeMachine = setup({
           actions: ['setDiskMeta'],
         },
         // Mode determination events from MergeManager
-        // SET_MODE_ACTIVE transitions to active.loading to wait for ACQUIRE_LOCK
-        // SET_MODE_IDLE handled by wrapper to transition to idle.*
         SET_MODE_ACTIVE: {
           target: 'active.loading',
         },
@@ -274,7 +261,7 @@ const mergeMachine = setup({
       },
       on: {
         LOAD: {
-          target: 'loading.loadingPersistence',
+          target: 'loading',
           actions: ['setGuidAndPath'],
         },
         UNLOAD: {
@@ -282,9 +269,9 @@ const mergeMachine = setup({
         },
         ACQUIRE_LOCK: [
           {
-            target: 'active.conflict.blocked',
+            target: 'active.conflict.bannerShown',
             guard: ({ context }) => {
-              // Going to conflict.blocked if coming from diverged
+              // Going to conflict.bannerShown if coming from diverged
               return false; // Wrapper handles this logic
             },
           },
@@ -339,7 +326,8 @@ const mergeMachine = setup({
               // Wrapper handles merge
             },
             SAVE_COMPLETE: {
-              actions: ['updateLCAMtime'],
+              // Per spec: LCA is never touched during active.* states
+              // Disk metadata is updated by the wrapper
             },
           },
         },
@@ -373,11 +361,8 @@ const mergeMachine = setup({
           },
         },
         conflict: {
-          initial: 'blocked',
+          initial: 'bannerShown',
           states: {
-            blocked: {
-              // Transient - immediately goes to bannerShown
-            },
             bannerShown: {
               on: {
                 OPEN_DIFF_VIEW: {
@@ -483,9 +468,6 @@ export class MergeHSM implements TestableHSM {
 
   // Persistence for localDoc (only in active mode)
   private localPersistence: IYDocPersistence | null = null;
-
-  // Track pending LCA creation to ensure it completes before releasing lock
-  private _pendingLCAPromise: Promise<void> | null = null;
 
   // Last known editor text (for drift detection)
   private lastKnownEditorText: string | null = null;
@@ -662,11 +644,12 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
-   * Check if the HSM is awaiting LCA initialization.
-   * When true, the HSM is blocked waiting for INITIALIZE_WITH_CONTENT or INITIALIZE_LCA.
+   * Check if the HSM is in loading state without an LCA.
+   * When true, INITIALIZE_WITH_CONTENT or INITIALIZE_LCA can be called to establish LCA.
+   * Note: LCA is progressive enhancement; documents work without it.
    */
   isAwaitingLCA(): boolean {
-    return this._statePath === 'loading.awaitingLCA';
+    return this._statePath === 'loading' && this._lca === null;
   }
 
   /**
@@ -692,8 +675,18 @@ export class MergeHSM implements TestableHSM {
     return this.conflictData;
   }
 
-  getRemoteDoc(): Y.Doc | null {
-    return this.remoteDoc;
+  getRemoteDoc(): Y.Doc {
+    // Per spec: "Access remoteDoc (always available - managed externally)"
+    // externalRemoteDoc is passed in via config and always available
+    return this.externalRemoteDoc;
+  }
+
+  /**
+   * Check if HSM has an LCA established.
+   * Returns true if LCA exists and can be used for 3-way merge.
+   */
+  hasLCA(): boolean {
+    return this._lca !== null;
   }
 
   /**
@@ -755,7 +748,7 @@ export class MergeHSM implements TestableHSM {
    * Wait for the HSM to reach active.tracking state.
    * Returns immediately if already in active.tracking.
    * Used after sending ACQUIRE_LOCK to wait for lock acquisition to complete.
-   * Safe to call from loading.awaitingLCA (BUG-032).
+   * Safe to call from loading state (BUG-032).
    */
   async awaitActive(): Promise<void> {
     // Resolve for any active.* state, not just active.tracking.
@@ -995,8 +988,8 @@ export class MergeHSM implements TestableHSM {
    * Transitions to active.loading to wait for ACQUIRE_LOCK with editor content.
    */
   private handleSetModeActive(): void {
-    // Only valid in loading states
-    if (!this._statePath.startsWith('loading.')) {
+    // Only valid in loading state
+    if (this._statePath !== 'loading') {
       return;
     }
 
@@ -1011,8 +1004,8 @@ export class MergeHSM implements TestableHSM {
    * Transitions to idle.loading, then determines appropriate idle substate.
    */
   private handleSetModeIdle(): void {
-    // Only valid in loading states
-    if (!this._statePath.startsWith('loading.')) {
+    // Only valid in loading state
+    if (this._statePath !== 'loading') {
       return;
     }
     this._modeDecision = 'idle';
@@ -1065,13 +1058,14 @@ export class MergeHSM implements TestableHSM {
     this._accumulatedEvents = []; // Clear accumulated events for fresh load
     this._disk = null; // Clear disk state for fresh load
     this._remoteStateVector = null; // Clear remote state for fresh load
-    this.transitionTo('loading.loadingPersistence');
+    this.transitionTo('loading');
   }
 
   private handlePersistenceLoaded(event: {
     updates: Uint8Array;
     lca: LCAState | null;
   }): void {
+    // Store LCA (may be null - that's fine, LCA is progressive enhancement)
     this._lca = event.lca;
 
     // Compute state vector for idle mode comparisons
@@ -1081,81 +1075,39 @@ export class MergeHSM implements TestableHSM {
       this.initialPersistenceUpdates = event.updates;
     }
 
-    this.transitionTo('loading.awaitingLCA');
-
-    // Check if lock was requested during loading
-    if (this.pendingLockAcquisition) {
-      // If we have an LCA, proceed to active mode
-      if (event.lca) {
-        this.pendingLockAcquisition = false;
-        this.transitionTo('loading.ready');
-        this.handleLoadingReady();
-        return;
-      }
-
-      // Recovery path: If no LCA but local CRDT content exists, we can attempt
-      // recovery. The user opened the file, so we have editorContent to compare.
-      // handleYDocsReady detects recovery by checking _lca === null.
-      if (event.updates.length > 0 && this.pendingEditorContent !== undefined) {
-        // Has local CRDT content - proceed to active.entering for recovery.
-        // handleYDocsReady will compare localDoc vs pendingEditorContent:
-        // - If they match: derive LCA from content, proceed to tracking
-        // - If they differ: enter conflict.blocked (user must resolve)
-        this.pendingLockAcquisition = false;
-        this.transitionTo('active.entering');
-        this.createYDocs();
-        return;
-      }
-
-      // No local CRDT content - stay in awaitingLCA, wait for INITIALIZE_*
-      return;
-    }
-
-    // If LCA exists, transition to idle; otherwise stay in awaitingLCA
-    if (event.lca) {
-      this.transitionTo('loading.ready');
-      this.handleLoadingReady();
-    }
-    // else: stay in loading.awaitingLCA - waiting for INITIALIZE_WITH_CONTENT or INITIALIZE_LCA
+    // Stay in loading - wait for mode determination via SET_MODE_ACTIVE/IDLE
+    // Documents without LCA proceed normally; they'll use 2-way merge or idle.diverged
   }
 
   /**
    * Handle INITIALIZE_WITH_CONTENT event.
-   * Creates localDoc, inserts content, sets LCA, syncs to remote, transitions to ready.
+   * Creates localDoc, inserts content, sets LCA, syncs to remote.
    * Used for newly created documents.
+   * Can be called in loading, idle, or active states.
    */
   private handleInitializeWithContent(event: InitializeWithContentEvent): void {
-    if (this._statePath !== 'loading.awaitingLCA') {
-      return; // Only valid in awaitingLCA state
+    // Skip if already have LCA (don't overwrite)
+    if (this._lca) {
+      return;
     }
 
-    // Create YDocs if not already created
-    if (!this.localDoc) {
-      this.createYDocs();
-    }
+    // In active mode, use localDoc; in loading/idle, create temporarily if needed
+    const needsTempDoc = !this.localDoc && this._statePath !== 'loading';
 
-    // Insert content into localDoc
-    if (this.localDoc) {
+    if (this._statePath.startsWith('active.') && this.localDoc) {
+      // Active mode: update existing localDoc
       const ytext = this.localDoc.getText('contents');
       if (ytext.length > 0) {
         ytext.delete(0, ytext.length);
       }
       ytext.insert(0, event.content);
-
-      // Store creation timestamp in metadata.
-      // Also ensures IndexedDB has an entry even for empty content
-      // (empty insert is a no-op that doesn't generate a Yjs update).
-      const meta = this.localDoc.getMap('meta');
-      meta.set('ctime', Date.now());
-
-      // Update local state vector
       this._localStateVector = Y.encodeStateVector(this.localDoc);
     }
 
     // Set LCA with provided hash and mtime
     const stateVector = this.localDoc
       ? Y.encodeStateVector(this.localDoc)
-      : new Uint8Array([0]);
+      : this._localStateVector ?? new Uint8Array([0]);
 
     this._lca = {
       contents: event.content,
@@ -1168,26 +1120,24 @@ export class MergeHSM implements TestableHSM {
 
     this.emitPersistState();
 
-    // Sync to remote
+    // Sync to remote if in active mode
     if (this.localDoc && this.remoteDoc) {
       const update = Y.encodeStateAsUpdate(this.localDoc);
       Y.applyUpdate(this.remoteDoc, update, 'local');
       this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
     }
-
-    // Transition to ready, then handle lock or idle transition
-    this.transitionTo('loading.ready');
-    this.handleLoadingReady();
   }
 
   /**
    * Handle INITIALIZE_LCA event.
-   * Sets the LCA (content already in CRDT), transitions to ready.
+   * Sets the LCA (content already in CRDT).
    * Used when downloading a document that already exists in the remote CRDT.
+   * Can be called in loading, idle, or active states.
    */
   private handleInitializeLCA(event: InitializeLCAEvent): void {
-    if (this._statePath !== 'loading.awaitingLCA') {
-      return; // Only valid in awaitingLCA state
+    // Skip if already have LCA (don't overwrite)
+    if (this._lca) {
+      return;
     }
 
     // Set LCA directly (content already in CRDT)
@@ -1204,46 +1154,6 @@ export class MergeHSM implements TestableHSM {
 
     // Persist the new LCA
     this.emitPersistState();
-
-    // Transition to ready, then handle lock or idle transition
-    this.transitionTo('loading.ready');
-    this.handleLoadingReady();
-  }
-
-  /**
-   * Handle transition from loading.ready to idle or active.
-   * Note: SET_MODE_ACTIVE now transitions directly to active.loading via XState,
-   * so this method handles pendingLockAcquisition (backward compat) and idle transitions.
-   */
-  private handleLoadingReady(): void {
-    // Mode determination:
-    // - SET_MODE_ACTIVE: handled by XState, transitions to active.loading directly
-    // - pendingLockAcquisition: backward compatibility with ACQUIRE_LOCK during loading
-    // - Default/SET_MODE_IDLE: transition to idle via idle.loading
-
-    // If lock was requested during loading (backward compatibility)
-    if (this.pendingLockAcquisition) {
-      this.pendingLockAcquisition = false;
-      // Transition to active.entering and create YDocs
-      this.transitionTo('active.entering');
-      if (!this.localDoc) {
-        this.createYDocs();  // Will send YDOCS_READY when synced
-      } else if (this.localPersistence) {
-        // YDocs already created (by INITIALIZE_WITH_CONTENT)
-        // Wait for persistence to sync before signaling ready
-        this.localPersistence.whenSynced.then(() => {
-          this.send({ type: 'YDOCS_READY' });
-        });
-      }
-      return;
-    }
-
-    // Go to idle mode (default or SET_MODE_IDLE)
-    this._modeDecision = null; // Reset mode decision
-
-    // Transition through idle.loading then to appropriate idle substate
-    this.transitionTo('idle.loading');
-    this.handleIdleLoading();
   }
 
   private determineAndTransitionToIdleState(): void {
@@ -1644,36 +1554,16 @@ export class MergeHSM implements TestableHSM {
   // ===========================================================================
 
   private handleAcquireLock(event?: { editorContent: string }): void {
-    // Handle loading states
-    if (this._statePath === 'loading.loadingPersistence') {
-      // Still loading - defer until PERSISTENCE_LOADED
-      this.pendingLockAcquisition = true;
+    // Handle loading state - XState will transition to active.entering
+    if (this._statePath === 'loading') {
+      // Store editorContent for merge on YDOCS_READY
       if (event?.editorContent !== undefined) {
         this.pendingEditorContent = event.editorContent;
         this.lastKnownEditorText = event.editorContent;
       }
-      return;
-    }
-
-    if (this._statePath === 'loading.awaitingLCA') {
-      // Store editorContent for recovery/initialization
-      if (event?.editorContent !== undefined) {
-        this.pendingEditorContent = event.editorContent;
-        this.lastKnownEditorText = event.editorContent;
-      }
-
-      // Recovery path: if local CRDT content exists, we can proceed to active mode.
-      // handleYDocsReady will compare localDoc vs pendingEditorContent and either
-      // derive LCA (if matching) or enter conflict (if differing).
-      const hasLocalContent = this._localStateVector && this._localStateVector.length > 1;
-      if (hasLocalContent && this.pendingEditorContent !== undefined) {
-        this.transitionTo('active.entering');
-        this.createYDocs();
-        return;
-      }
-
-      // No local CRDT content - defer until INITIALIZE_*
-      this.pendingLockAcquisition = true;
+      // XState handles transition to active.entering
+      this.transitionTo('active.entering');
+      this.createYDocs();
       return;
     }
 
@@ -1721,23 +1611,15 @@ export class MergeHSM implements TestableHSM {
       // This prevents data loss when user types during the entering phase.
       const localText = this.localDoc?.getText('contents').toString() ?? '';
       const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? '';
-      const baseText = this._lca?.contents ?? '';
       const isRecoveryMode = this._lca === null;
 
       // Clear the flag (no longer primary check, but keep for logging/debugging)
       this._enteringFromDiverged = false;
 
       if (localText === diskText) {
-        // Content matches - derive LCA (recovery) or just proceed (normal)
-        if (isRecoveryMode) {
-          // Recovery: derive LCA from matching content
-          this.createLCAFromCurrent(localText).then((newLCA) => {
-            this._lca = newLCA;
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          });
-        }
+        // Content matches - proceed to tracking.
+        // Per spec: LCA is never touched during active.* states.
+        // LCA will be established when file transitions to idle mode.
         this.pendingEditorContent = null;
         this.transitionTo('active.tracking');
         // Merge any remote content that accumulated during active.entering
@@ -1747,71 +1629,109 @@ export class MergeHSM implements TestableHSM {
         return;
       }
 
-      // Content differs
+      // Content differs - transition to appropriate merging state per spec
       if (isRecoveryMode) {
-        // Recovery mode with differing content: cannot merge (no baseline).
-        // Go straight to conflict - user must choose.
-        this.conflictData = {
-          base: '', // No baseline available
-          local: localText,
-          remote: diskText,
-          conflictRegions: [], // No regions - entire content is in conflict
-          resolvedIndices: new Set(),
-          positionedConflicts: [],
-        };
-        this.transitionTo('active.conflict.blocked');
-        this.transitionTo('active.conflict.bannerShown');
+        // No LCA available - always shows diff UI for user resolution
+        this.transitionTo('active.merging.twoWay');
         // Replay any events accumulated during loading states
         this.replayAccumulatedEvents();
-        return;
-      }
-
-      // Normal mode: run 3-way merge
-      const mergeResult = performThreeWayMerge(baseText, localText, diskText);
-
-      if (mergeResult.success) {
-        // Merge succeeded - apply to localDoc and dispatch to editor
-        this.applyContentToLocalDoc(mergeResult.merged);
-
-        if (mergeResult.patches.length > 0) {
-          this.emitEffect({ type: 'DISPATCH_CM6', changes: mergeResult.patches });
-        }
-
-        // Update LCA asynchronously
-        this.createLCAFromCurrent(mergeResult.merged).then((newLCA) => {
-          this._lca = newLCA;
-          this.emitPersistState();
-        }).catch((err) => {
-          this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-        });
-
-        // Clear pending editor content and transition to tracking
-        this.pendingEditorContent = null;
-        this.transitionTo('active.tracking');
-        // Merge any remote content that accumulated during active.entering
-        this.mergeRemoteToLocal();
-        // Replay any events accumulated during loading states
-        this.replayAccumulatedEvents();
+        // Perform two-way merge (shows diff UI)
+        this.performTwoWayMerge(localText, diskText);
       } else {
-        // Merge has conflicts - populate conflictData for banner/diff view
-        this.conflictData = {
-          base: baseText,
-          local: localText,
-          remote: diskText,
-          conflictRegions: mergeResult.conflictRegions ?? [],
-          resolvedIndices: new Set(),
-          positionedConflicts: this.calculateConflictPositions(
-            mergeResult.conflictRegions ?? [],
-            localText
-          ),
-        };
-
-        // Don't clear pendingEditorContent yet - needed for conflict resolution
-        this.transitionTo('active.conflict.blocked');
-        this.transitionTo('active.conflict.bannerShown');
+        // Has LCA - attempts automatic resolution using diff3
+        this.transitionTo('active.merging.threeWay');
         // Replay any events accumulated during loading states
         this.replayAccumulatedEvents();
+        // Perform three-way merge (may auto-resolve or show conflict)
+        this.performThreeWayMergeFromState();
       }
+    }
+  }
+
+  /**
+   * Perform two-way merge when no LCA is available.
+   * Per spec: always shows diff UI for user resolution.
+   * Edits in differ write immediately to CRDT/disk.
+   */
+  private performTwoWayMerge(localText: string, diskText: string): void {
+    // Populate conflictData for the diff UI
+    this.conflictData = {
+      base: '', // No baseline available
+      local: localText,
+      remote: diskText,
+      conflictRegions: [], // No regions - entire content is in conflict
+      resolvedIndices: new Set(),
+      positionedConflicts: [],
+    };
+
+    // Two-way merge always shows diff UI - send MERGE_CONFLICT to transition
+    this.send({
+      type: 'MERGE_CONFLICT',
+      base: '',
+      local: localText,
+      remote: diskText,
+      conflictRegions: [],
+    });
+  }
+
+  /**
+   * Perform three-way merge when LCA is available.
+   * Per spec: attempts auto-resolve, shows conflict UI only if truly unresolvable.
+   */
+  private performThreeWayMergeFromState(): void {
+    const localText = this.localDoc?.getText('contents').toString() ?? '';
+    const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? '';
+    const baseText = this._lca?.contents ?? '';
+
+    const mergeResult = performThreeWayMerge(baseText, localText, diskText);
+
+    if (mergeResult.success) {
+      // Merge succeeded - apply to localDoc and dispatch to editor
+      this.applyContentToLocalDoc(mergeResult.merged);
+
+      if (mergeResult.patches.length > 0) {
+        this.emitEffect({ type: 'DISPATCH_CM6', changes: mergeResult.patches });
+      }
+
+      // Per spec: LCA is never touched during active.* states.
+      // Send MERGE_SUCCESS to transition to tracking. LCA will be
+      // established when file transitions to idle mode.
+      // Note: newLCA is required by the event type but ignored by handler.
+      this.send({
+        type: 'MERGE_SUCCESS',
+        newLCA: this._lca ?? {
+          contents: '',
+          meta: { hash: '', mtime: 0 },
+          stateVector: new Uint8Array([0]),
+        },
+      });
+
+      // Clear pending editor content
+      this.pendingEditorContent = null;
+      // Merge any remote content that accumulated during active.entering
+      this.mergeRemoteToLocal();
+    } else {
+      // Merge has conflicts - populate conflictData for banner/diff view
+      this.conflictData = {
+        base: baseText,
+        local: localText,
+        remote: diskText,
+        conflictRegions: mergeResult.conflictRegions ?? [],
+        resolvedIndices: new Set(),
+        positionedConflicts: this.calculateConflictPositions(
+          mergeResult.conflictRegions ?? [],
+          localText
+        ),
+      };
+
+      // Send MERGE_CONFLICT to transition to conflict state
+      this.send({
+        type: 'MERGE_CONFLICT',
+        base: baseText,
+        local: localText,
+        remote: diskText,
+        conflictRegions: mergeResult.conflictRegions,
+      });
     }
   }
 
@@ -1827,15 +1747,8 @@ export class MergeHSM implements TestableHSM {
 
       this.transitionTo('unloading');
 
-      // Wait for any pending LCA creation to complete before cleanup
-      // This prevents race conditions where RELEASE_LOCK happens before
-      // LCA from RESOLVE_ACCEPT_* is persisted
-      const pendingLCA = this._pendingLCAPromise ?? Promise.resolve();
-
-      pendingLCA.then(() => {
-        // Cleanup YDocs asynchronously, awaiting IndexedDB writes to complete
-        return this.cleanupYDocs();
-      }).then(() => {
+      // Cleanup YDocs asynchronously, awaiting IndexedDB writes to complete
+      this.cleanupYDocs().then(() => {
         // Transition to appropriate idle state after cleanup completes
         if (wasInConflict) {
           this.transitionTo('idle.diverged');
@@ -2081,8 +1994,8 @@ export class MergeHSM implements TestableHSM {
 
     this._remoteStateVector = Y.encodeStateVectorFromUpdate(event.update);
 
-    // Accumulate event during loading states for replay after mode transition
-    if (this._statePath.startsWith('loading.')) {
+    // Accumulate event during loading state for replay after mode transition
+    if (this._statePath === 'loading') {
       // Merge with existing accumulated REMOTE_UPDATE if any
       const existingRemoteIdx = this._accumulatedEvents.findIndex(e => e.type === 'REMOTE_UPDATE');
       if (existingRemoteIdx >= 0) {
@@ -2202,8 +2115,8 @@ export class MergeHSM implements TestableHSM {
 
     this.pendingDiskContents = event.contents;
 
-    // Accumulate event during loading states for replay after mode transition
-    if (this._statePath.startsWith('loading.')) {
+    // Accumulate event during loading state for replay after mode transition
+    if (this._statePath === 'loading') {
       // Replace any existing DISK_CHANGED event (only keep latest)
       this._accumulatedEvents = this._accumulatedEvents.filter(e => e.type !== 'DISK_CHANGED');
       this._accumulatedEvents.push({
@@ -2217,34 +2130,8 @@ export class MergeHSM implements TestableHSM {
 
     if (this._statePath === 'active.tracking') {
       // In active.tracking, Obsidian handles editor<->disk sync via diff-match-patch.
-      // We just opportunistically update LCA if disk matches editor content.
-
-      // If disk hash matches LCA hash, just update mtime
-      if (this._lca && this._lca.meta.hash === event.hash) {
-        this._lca = {
-          ...this._lca,
-          meta: {
-            ...this._lca.meta,
-            mtime: event.mtime,
-          },
-        };
-        this.emitPersistState();
-        return;
-      }
-
-      // If disk content matches editor, update LCA to new baseline
-      if (this.localDoc) {
-        const localText = this.localDoc.getText('contents').toString();
-        if (event.contents === localText) {
-          this.createLCAFromCurrent(event.contents, event.hash).then((newLCA) => {
-            this._lca = newLCA;
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          });
-        }
-      }
-      // Otherwise ignore - Obsidian handles disk->editor sync
+      // Per spec: LCA is never touched during active.* states.
+      // Disk metadata is already updated at the start of this function.
       return;
     } else if (this._statePath.startsWith('idle.')) {
       const diskChanged = this.hasDiskChangedSinceLCA();
@@ -2365,26 +2252,13 @@ export class MergeHSM implements TestableHSM {
   }
 
   private handleSaveComplete(event: { mtime: number; hash: string }): void {
-    // Update LCA with new mtime and hash
-    if (this._lca) {
-      this._lca = {
-        ...this._lca,
-        meta: {
-          ...this._lca.meta,
-          mtime: event.mtime,
-          hash: event.hash,
-        },
-      };
-    }
-
-    // Update disk state to match what we just saved
-    // This prevents the next poll from seeing a "change" that is actually our own save
+    // Per spec: LCA is never touched during active.* states.
+    // Only update disk state to match what we just saved.
+    // This prevents the next poll from seeing a "change" that is actually our own save.
     this._disk = {
       mtime: event.mtime,
       hash: event.hash,
     };
-
-    this.emitPersistState();
   }
 
   // ===========================================================================
@@ -2393,9 +2267,9 @@ export class MergeHSM implements TestableHSM {
 
   private handleMergeSuccess(event: { newLCA: LCAState }): void {
     if (this._statePath.startsWith('active.merging')) {
-      this._lca = event.newLCA;
+      // Per spec: LCA is never touched during active.* states.
+      // LCA will be established when file transitions to idle mode.
       this.transitionTo('active.tracking');
-      this.emitPersistState();
     }
   }
 
@@ -2560,17 +2434,11 @@ export class MergeHSM implements TestableHSM {
 
   /**
    * Finalize conflict resolution when all hunks are resolved.
+   * Per spec: LCA is never touched during active.* states.
+   * LCA will be updated when transitioning back to idle mode.
    */
   private finalizeConflictResolution(): void {
     if (!this.localDoc) return;
-
-    const content = this.localDoc.getText('contents').toString();
-    this.createLCAFromCurrent(content).then((lca) => {
-      this._lca = lca;
-      this.emitPersistState();
-    }).catch((err) => {
-      this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-    });
 
     this.conflictData = null;
     this.pendingDiskContents = null;
@@ -2592,7 +2460,7 @@ export class MergeHSM implements TestableHSM {
   private handleResolve(event: MergeEvent): void {
     if (this._statePath !== 'active.conflict.resolving') return;
 
-    // Perform synchronous resolution work first
+    // Perform resolution work
     switch (event.type) {
       case 'RESOLVE_ACCEPT_DISK':
         if (this.conflictData) {
@@ -2606,44 +2474,24 @@ export class MergeHSM implements TestableHSM {
           if (diskChanges.length > 0) {
             this.emitEffect({ type: 'DISPATCH_CM6', changes: diskChanges });
           }
-
-          // Track LCA creation so RELEASE_LOCK can await it
-          const diskContent = this.conflictData.remote;
-          const diskHash = this._disk?.hash;
-          this._pendingLCAPromise = this.createLCAFromCurrent(diskContent, diskHash).then((lca) => {
-            this._lca = lca;
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          }).finally(() => {
-            this._pendingLCAPromise = null;
-          });
+          // Per spec: LCA is never touched during active.* states.
+          // LCA will be established when file transitions to idle mode.
         }
         break;
 
       case 'RESOLVE_ACCEPT_LOCAL':
-        if (this.localDoc) {
+        if (this.localDoc && this.conflictData) {
           const localText = this.localDoc.getText('contents').toString();
 
           // The editor was showing conflictData.remote (disk content).
           // We need to dispatch changes to update the editor to show localText (CRDT content).
-          if (this.conflictData) {
-            const editorText = this.conflictData.remote;
-            const localChanges = computePositionedChanges(editorText, localText);
-            if (localChanges.length > 0) {
-              this.emitEffect({ type: 'DISPATCH_CM6', changes: localChanges });
-            }
+          const editorText = this.conflictData.remote;
+          const localChanges = computePositionedChanges(editorText, localText);
+          if (localChanges.length > 0) {
+            this.emitEffect({ type: 'DISPATCH_CM6', changes: localChanges });
           }
-
-          // Track LCA creation so RELEASE_LOCK can await it
-          this._pendingLCAPromise = this.createLCAFromCurrent(localText).then((lca) => {
-            this._lca = lca;
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          }).finally(() => {
-            this._pendingLCAPromise = null;
-          });
+          // Per spec: LCA is never touched during active.* states.
+          // LCA will be established when file transitions to idle mode.
         }
         break;
 
@@ -2656,26 +2504,17 @@ export class MergeHSM implements TestableHSM {
           if (mergedChanges.length > 0) {
             this.emitEffect({ type: 'DISPATCH_CM6', changes: mergedChanges });
           }
-
-          // Track LCA creation so RELEASE_LOCK can await it
-          const mergedContent = event.contents;
-          this._pendingLCAPromise = this.createLCAFromCurrent(mergedContent).then((lca) => {
-            this._lca = lca;
-            this.emitPersistState();
-          }).catch((err) => {
-            this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-          }).finally(() => {
-            this._pendingLCAPromise = null;
-          });
+          // Per spec: LCA is never touched during active.* states.
+          // LCA will be established when file transitions to idle mode.
         }
         break;
     }
 
     this.conflictData = null;
     this.pendingDiskContents = null;
-    this.pendingEditorContent = null;  // v6: Clear after conflict resolution
+    this.pendingEditorContent = null;
 
-    // Transition synchronously
+    // Transition to tracking
     this.transitionTo('active.tracking');
   }
 

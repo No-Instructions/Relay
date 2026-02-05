@@ -22,6 +22,7 @@ import type {
   CreatePersistence,
   PersistenceMetadata,
   LoadUpdatesRaw,
+  LCAState,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -46,6 +47,14 @@ export interface MergeManagerConfig {
 
   /** Callback to load persisted state for a document */
   loadState?: (guid: string) => Promise<PersistedMergeState | null>;
+
+  /**
+   * Callback to load all persisted states for bulk LCA cache initialization.
+   * Called during initialize() to bulk-load all LCA states into cache.
+   * Production: pass a function that uses getAllStates from MergeHSMDatabase.
+   * Tests: can omit for default empty array.
+   */
+  loadAllStates?: () => Promise<PersistedMergeState[]>;
 
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void;
@@ -124,11 +133,18 @@ export class MergeManager {
   // Track destroyed state to prevent operations after cleanup
   private destroyed = false;
 
+  // Track initialized state - initialize() must be called before registering HSMs
+  private _initialized = false;
+
+  // LCA cache - bulk-loaded during initialize(), owned by MergeManager
+  private _lcaCache = new Map<string, LCAState | null>();
+
   // Configuration
   private getVaultId: (guid: string) => string;
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
+  private loadAllStates?: () => Promise<PersistedMergeState[]>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
   private getDiskState?: (path: string) => Promise<{
     contents: string;
@@ -146,6 +162,7 @@ export class MergeManager {
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn;
     this.loadState = config.loadState;
+    this.loadAllStates = config.loadAllStates;
     this.onEffect = config.onEffect;
     this.getDiskState = config.getDiskState;
     this._persistIndex = config.persistIndex;
@@ -164,6 +181,111 @@ export class MergeManager {
    */
   get syncStatus(): ObservableMap<string, SyncStatus> {
     return this._syncStatus;
+  }
+
+  /**
+   * Check if initialize() has been called.
+   */
+  get initialized(): boolean {
+    return this._initialized;
+  }
+
+  // ===========================================================================
+  // LCA Cache (Gap 7: MergeManager owns reads AND writes)
+  // ===========================================================================
+
+  /**
+   * Get LCA from cache (synchronous).
+   * Returns the cached LCA state, or null if not found or not in cache.
+   *
+   * HSMs should call this instead of receiving LCA via PERSISTENCE_LOADED event.
+   * The cache is populated during initialize() via bulk load.
+   */
+  getLCA(guid: string): LCAState | null {
+    return this._lcaCache.get(guid) ?? null;
+  }
+
+  /**
+   * Update LCA in cache and persist to storage.
+   * HSMs should call this instead of emitting PERSIST_STATE effect.
+   *
+   * @param guid - Document GUID
+   * @param lca - New LCA state, or null to clear
+   */
+  async setLCA(guid: string, lca: LCAState | null): Promise<void> {
+    // Update cache immediately (synchronous)
+    this._lcaCache.set(guid, lca);
+
+    // Persist to storage via the onEffect callback
+    // The integration layer handles actual IndexedDB writes
+    const hsm = this.hsms.get(guid);
+    if (hsm && this.onEffect) {
+      const persistedState: PersistedMergeState = {
+        guid,
+        path: hsm.state.path,
+        lca: lca
+          ? {
+              contents: lca.contents,
+              hash: lca.meta.hash,
+              mtime: lca.meta.mtime,
+              stateVector: lca.stateVector,
+            }
+          : null,
+        disk: hsm.state.disk,
+        localStateVector: hsm.state.localStateVector,
+        lastStatePath: hsm.state.statePath,
+        deferredConflict: hsm.state.deferredConflict,
+        persistedAt: this.timeProvider.now(),
+      };
+
+      this.onEffect(guid, {
+        type: 'PERSIST_STATE',
+        guid,
+        state: persistedState,
+      });
+    }
+  }
+
+  // ===========================================================================
+  // Initialization
+  // ===========================================================================
+
+  /**
+   * Initialize MergeManager - MUST be called before registering HSMs.
+   * Performs bulk read of all LCA states from IndexedDB into cache.
+   *
+   * This enables synchronous LCA lookups during HSM operations and avoids
+   * per-document IndexedDB reads during registration.
+   */
+  async initialize(): Promise<void> {
+    if (this._initialized) {
+      return; // Already initialized
+    }
+
+    if (this.destroyed) {
+      return; // Don't initialize if destroyed
+    }
+
+    // Bulk-load all persisted states into LCA cache
+    if (this.loadAllStates) {
+      const allStates = await this.loadAllStates();
+      for (const state of allStates) {
+        if (state.lca) {
+          this._lcaCache.set(state.guid, {
+            contents: state.lca.contents,
+            meta: {
+              hash: state.lca.hash,
+              mtime: state.lca.mtime,
+            },
+            stateVector: state.lca.stateVector,
+          });
+        } else {
+          this._lcaCache.set(state.guid, null);
+        }
+      }
+    }
+
+    this._initialized = true;
   }
 
   /**
@@ -254,6 +376,9 @@ export class MergeManager {
           }
         : null,
     });
+
+    // Send mode determination to transition out of loading (flat state per v9 spec)
+    hsm.send({ type: 'SET_MODE_IDLE' });
 
     // HSM is now in idle.* state - update sync status
     this.updateSyncStatus(guid, hsm.getSyncStatus());
@@ -389,8 +514,15 @@ export class MergeManager {
   /**
    * Check if an HSM is currently in active mode (lock acquired).
    */
-  isLoaded(guid: string): boolean {
+  isActive(guid: string): boolean {
     return this.activeDocs.has(guid);
+  }
+
+  /**
+   * @deprecated Use isActive() instead. Renamed for spec consistency.
+   */
+  isLoaded(guid: string): boolean {
+    return this.isActive(guid);
   }
 
   /**
@@ -406,6 +538,34 @@ export class MergeManager {
    */
   isRegistered(guid: string): boolean {
     return this.hsms.has(guid);
+  }
+
+  /**
+   * Set which documents have open editors.
+   * Called by LiveViews after scanning the workspace.
+   *
+   * - Documents in activeGuids: HSM receives SET_MODE_ACTIVE
+   * - Documents NOT in activeGuids: HSM receives SET_MODE_IDLE
+   *
+   * This method only affects HSMs currently in `loading` state.
+   * HSMs already in `idle.*` or `active.*` states ignore these events.
+   */
+  setActiveDocuments(activeGuids: Set<string>): void {
+    if (this.destroyed) return;
+
+    for (const [guid, hsm] of this.hsms) {
+      // Only send mode events to HSMs in loading state (flat state per v9 spec)
+      const statePath = hsm.state.statePath;
+      if (statePath !== 'loading') {
+        continue;
+      }
+
+      if (activeGuids.has(guid)) {
+        hsm.send({ type: 'SET_MODE_ACTIVE' });
+      } else {
+        hsm.send({ type: 'SET_MODE_IDLE' });
+      }
+    }
   }
 
   /**
@@ -460,7 +620,7 @@ export class MergeManager {
    * Handle a remote update for a document.
    * Forwards to the HSM which handles it appropriately in either idle or active mode.
    */
-  async handleIdleRemoteUpdate(guid: string, update: Uint8Array): Promise<void> {
+  handleRemoteUpdate(guid: string, update: Uint8Array): void {
     const hsm = this.hsms.get(guid);
     if (hsm) {
       // Forward to HSM - it handles idle vs active mode internally

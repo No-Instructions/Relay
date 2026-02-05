@@ -909,6 +909,55 @@ export class LiveViewManager {
 		return this.views.some((view) => view.document === doc);
 	}
 
+	/**
+	 * Notify MergeManagers which documents have open editors.
+	 * Groups views by their shared folder and calls setActiveDocuments() on each.
+	 * This transitions HSMs from 'loading' to the appropriate mode (idle or active).
+	 *
+	 * Per spec (Gap 8): LiveViews sends bulk update to MergeManager indicating which
+	 * documents have open editors. MergeManager fans out SET_MODE_ACTIVE to those HSMs,
+	 * and SET_MODE_IDLE to all others.
+	 */
+	private async updateMergeManagerActiveDocuments(views: S3View[]): Promise<void> {
+		// Group document GUIDs by their shared folder
+		const folderToGuids = new Map<SharedFolder, Set<string>>();
+
+		for (const view of views) {
+			const doc = view.document;
+			if (!doc) continue;
+
+			const folder = doc.sharedFolder;
+			if (!folder?.mergeManager) continue;
+
+			if (!folderToGuids.has(folder)) {
+				folderToGuids.set(folder, new Set());
+			}
+			folderToGuids.get(folder)!.add(doc.guid);
+		}
+
+		// Wait for all folders to complete their pending registrations
+		// This ensures HSMs are registered before we set their mode
+		const waitPromises: Promise<void>[] = [];
+		for (const folder of this.sharedFolders.items()) {
+			if (folder.mergeManager) {
+				waitPromises.push(folder.mergeManager.whenRegistered());
+			}
+		}
+		await Promise.all(waitPromises);
+
+		// Call setActiveDocuments on each folder's MergeManager
+		for (const [folder, guids] of folderToGuids) {
+			folder.mergeManager.setActiveDocuments(guids);
+		}
+
+		// Also notify folders with no active views (all HSMs should be idle)
+		for (const folder of this.sharedFolders.items()) {
+			if (!folderToGuids.has(folder) && folder.mergeManager) {
+				folder.mergeManager.setActiveDocuments(new Set());
+			}
+		}
+	}
+
 	private releaseViews(views: S3View[]) {
 		views.forEach((view) => {
 			view.release();
@@ -1163,6 +1212,11 @@ export class LiveViewManager {
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();
+
+		// Notify MergeManagers which documents have open editors (Gap 8: mode determination)
+		// This transitions HSMs from 'loading' to the appropriate mode before attach() calls acquireLock()
+		await this.updateMergeManagerActiveDocuments(views);
+
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			if (this.extensions.length !== 0) {
 				log("Unexpected plugins loaded.");

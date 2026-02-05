@@ -293,6 +293,10 @@ export interface HSMHandle {
   readonly statePath?: string;
   /** Wait for pending idle auto-merge to complete (optional, used by loadToConflict) */
   awaitIdleAutoMerge?(): Promise<void>;
+  /** Access to underlying HSM for getting remoteDoc (optional, used by loadAndActivate) */
+  hsm?: {
+    getRemoteDoc(): Y.Doc | null;
+  };
 }
 
 export interface LoadAndActivateOptions {
@@ -307,15 +311,18 @@ export interface LoadAndActivateOptions {
 /**
  * Drive HSM from unloaded to active.tracking with the given content.
  *
- * Sends events: LOAD → PERSISTENCE_LOADED → ACQUIRE_LOCK → INITIALIZE_WITH_CONTENT
- * The INITIALIZE_WITH_CONTENT event creates YDocs, inserts content, and since
- * a lock was requested, transitions to active.entering then active.tracking.
+ * Sends events: LOAD → PERSISTENCE_LOADED → SET_MODE_ACTIVE → ACQUIRE_LOCK
+ * With mock persistence that syncs immediately, transitions through
+ * active.loading → active.entering → active.tracking.
+ *
+ * Also populates the external remoteDoc with the same content (simulating
+ * initial provider sync in production).
  *
  * @example
  * ```ts
  * const t = await createTestHSM();
  * await loadAndActivate(t, 'hello world');
- * // t is now in active.tracking with localDoc containing 'hello world'
+ * // t is now in active.tracking with localDoc and remoteDoc containing 'hello world'
  * ```
  */
 export async function loadAndActivate(
@@ -328,23 +335,38 @@ export async function loadAndActivate(
   const mtime = opts?.mtime ?? Date.now();
   const hash = await sha256(content);
 
+  // Create LCA and updates for the content
+  const updates = content ? createYjsUpdate(content) : new Uint8Array();
+  const stateVector = content ? Y.encodeStateVectorFromUpdate(updates) : new Uint8Array([0]);
+  const lca = await createLCA(content, mtime, stateVector);
+
   // Drive through transitions:
-  // 1. LOAD → loading.loadingPersistence
+  // 1. LOAD → loading (flat state)
   hsm.send(load(guid, path));
 
-  // 2. PERSISTENCE_LOADED (no LCA) → loading.awaitingLCA
-  hsm.send(persistenceLoaded(new Uint8Array(), null));
+  // 2. PERSISTENCE_LOADED → stays in loading, stores LCA and updates
+  hsm.send(persistenceLoaded(updates, lca));
 
-  // 3. ACQUIRE_LOCK → sets pendingLockAcquisition flag, stays in awaitingLCA
+  // 3. SET_MODE_ACTIVE → active.loading (mode determination)
+  hsm.send({ type: 'SET_MODE_ACTIVE' });
+
+  // 4. ACQUIRE_LOCK → active.entering (creates YDocs, waits for sync)
+  //    Mock persistence syncs immediately, fires YDOCS_READY via microtask
   hsm.send(acquireLock(content));
-
-  // 4. INITIALIZE_WITH_CONTENT → creates YDocs, inserts content, sets LCA,
-  //    then since lock was pending, transitions to active.entering.
-  //    YDOCS_READY is sent via Promise microtask when persistence syncs.
-  hsm.send(initializeWithContent(content, hash, mtime));
 
   // Wait for YDOCS_READY to fire (via microtask from whenSynced Promise)
   await Promise.resolve();
+
+  // Sync localDoc content to remoteDoc (simulating initial provider sync)
+  // In production, remoteDoc would be synced via WebSocket/WebRTC provider.
+  // We use applyUpdate to avoid triggering the observer twice.
+  if (hsm.hsm && content) {
+    const remoteDoc = hsm.hsm.getRemoteDoc();
+    if (remoteDoc && remoteDoc.getText('contents').toString() === '') {
+      // Apply the same updates to remoteDoc to sync them without creating new changes
+      Y.applyUpdate(remoteDoc, updates);
+    }
+  }
 
   // Verify we reached the expected state
   if (!hsm.matches('active.tracking')) {
@@ -370,7 +392,7 @@ export interface LoadToIdleOptions {
 /**
  * Drive HSM from unloaded to idle.synced.
  *
- * Sends events: LOAD → PERSISTENCE_LOADED (with LCA)
+ * Sends events: LOAD → PERSISTENCE_LOADED (with LCA) → SET_MODE_IDLE
  * Ends in idle.synced (or idle.diskAhead if disk differs from LCA).
  *
  * @example
@@ -394,9 +416,13 @@ export async function loadToIdle(
   const stateVector = content ? Y.encodeStateVectorFromUpdate(updates) : new Uint8Array([0]);
   const lca = await createLCA(content, mtime, stateVector);
 
-  // Drive through transitions
+  // Drive through transitions:
+  // 1. LOAD → loading
   hsm.send(load(guid, path));
+  // 2. PERSISTENCE_LOADED → stays in loading, stores LCA
   hsm.send(persistenceLoaded(updates, lca));
+  // 3. SET_MODE_IDLE → idle.loading → idle.synced (or other idle substate)
+  hsm.send({ type: 'SET_MODE_IDLE' });
 
   // Verify we reached an idle state
   if (!hsm.matches('idle')) {
@@ -408,45 +434,50 @@ export async function loadToIdle(
   }
 }
 
-export interface LoadToAwaitingLCAOptions {
+export interface LoadToLoadingOptions {
   /** Document GUID (default: 'test-guid') */
   guid?: string;
   /** Document path (default: 'test.md') */
   path?: string;
   /** Pre-existing IndexedDB updates (default: none) */
   updates?: Uint8Array;
+  /** LCA state (default: null - no LCA) */
+  lca?: LCAState | null;
 }
 
 /**
- * Drive HSM from unloaded to loading.awaitingLCA.
+ * Drive HSM from unloaded to loading state.
  *
- * Sends events: LOAD → PERSISTENCE_LOADED (without LCA)
+ * Sends events: LOAD → PERSISTENCE_LOADED
+ * The HSM stays in loading until mode determination (SET_MODE_ACTIVE/IDLE).
  * Useful for testing initialization flows.
  *
  * @example
  * ```ts
  * const t = await createTestHSM();
- * await loadToAwaitingLCA(t);
- * // t is now in loading.awaitingLCA, waiting for INITIALIZE_WITH_CONTENT
+ * await loadToLoading(t);
+ * // t is now in loading, waiting for SET_MODE_ACTIVE or SET_MODE_IDLE
  * ```
  */
-export async function loadToAwaitingLCA(
+export async function loadToLoading(
   hsm: HSMHandle,
-  opts?: LoadToAwaitingLCAOptions
+  opts?: LoadToLoadingOptions
 ): Promise<void> {
   const guid = opts?.guid ?? 'test-guid';
   const path = opts?.path ?? 'test.md';
   const updates = opts?.updates ?? new Uint8Array();
+  const lca = opts?.lca ?? null;
 
-  // Drive through transitions (no LCA → stays in awaitingLCA)
+  // Drive through transitions
+  // LOAD → loading, PERSISTENCE_LOADED → stays in loading
   hsm.send(load(guid, path));
-  hsm.send(persistenceLoaded(updates, null));
+  hsm.send(persistenceLoaded(updates, lca));
 
   // Verify we reached the expected state
-  if (!hsm.matches('loading.awaitingLCA')) {
+  if (!hsm.matches('loading')) {
     const state = hsm.statePath ?? 'unknown';
     throw new Error(
-      `loadToAwaitingLCA: expected loading.awaitingLCA but got ${state}. ` +
+      `loadToLoading: expected loading but got ${state}. ` +
       `This may indicate a bug in the state machine or test setup.`
     );
   }
