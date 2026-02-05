@@ -468,7 +468,10 @@ export default class Live extends Plugin {
 
 		const code = `async function() {
 			const app = window.app;
+			app._reloadAwait = [];
 			await app.plugins.disablePlugin("system3-relay");
+			await Promise.all(app._reloadAwait || []);
+			app._reloadAwait = null;
 			await app.plugins.enablePlugin("system3-relay");
 		}`;
 		(this.app as any).reloadRelay = new Function("return " + code);
