@@ -1623,15 +1623,22 @@ export class MergeHSM implements TestableHSM {
 
     this.transitionTo('unloading');
     // Await IndexedDB writes before completing unload
-    this.cleanupYDocs().then(() => {
-      this.transitionTo('unloaded');
-      // Resolve cleanup promise
-      if (this._cleanupResolve) {
-        this._cleanupResolve();
-        this._cleanupResolve = null;
-        this._cleanupPromise = null;
-      }
-    });
+    this.cleanupYDocs()
+      .then(() => {
+        this.transitionTo('unloaded');
+      })
+      .catch((err) => {
+        console.error('[MergeHSM] Error during unload cleanup:', err);
+        this.transitionTo('unloaded');
+      })
+      .finally(() => {
+        // Always resolve cleanup promise
+        if (this._cleanupResolve) {
+          this._cleanupResolve();
+          this._cleanupResolve = null;
+          this._cleanupPromise = null;
+        }
+      });
   }
 
   // ===========================================================================
@@ -1878,20 +1885,28 @@ export class MergeHSM implements TestableHSM {
       this.transitionTo('unloading');
 
       // Cleanup YDocs asynchronously, awaiting IndexedDB writes to complete
-      this.cleanupYDocs().then(() => {
-        // Transition to appropriate idle state after cleanup completes
-        if (wasInConflict) {
-          this.transitionTo('idle.diverged');
-        } else {
+      this.cleanupYDocs()
+        .then(() => {
+          // Transition to appropriate idle state after cleanup completes
+          if (wasInConflict) {
+            this.transitionTo('idle.diverged');
+          } else {
+            this.determineAndTransitionToIdleState();
+          }
+        })
+        .catch((err) => {
+          console.error('[MergeHSM] Error during release lock cleanup:', err);
+          // Still transition to idle on error
           this.determineAndTransitionToIdleState();
-        }
-        // Resolve cleanup promise
-        if (this._cleanupResolve) {
-          this._cleanupResolve();
-          this._cleanupResolve = null;
-          this._cleanupPromise = null;
-        }
-      });
+        })
+        .finally(() => {
+          // Always resolve cleanup promise
+          if (this._cleanupResolve) {
+            this._cleanupResolve();
+            this._cleanupResolve = null;
+            this._cleanupPromise = null;
+          }
+        });
     }
   }
 

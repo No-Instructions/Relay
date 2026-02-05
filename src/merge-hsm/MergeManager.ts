@@ -27,6 +27,7 @@ import type {
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
+import { awaitOnReload } from '../reloadUtils';
 
 // =============================================================================
 // Types
@@ -746,6 +747,7 @@ export class MergeManager {
 
     for (const hsm of this.hsms.values()) {
       hsm.send({ type: 'UNLOAD' });
+      awaitOnReload(hsm.awaitCleanup());
     }
 
     this.hsms.clear();
@@ -762,6 +764,9 @@ export class MergeManager {
    * Handle an effect emitted by an HSM.
    */
   private handleHSMEffect(guid: string, effect: MergeEffect): void {
+    // Skip effects during/after destruction to avoid PostOffice teardown errors
+    if (this.destroyed) return;
+
     // Forward to external handler
     if (this.onEffect) {
       this.onEffect(guid, effect);
@@ -788,6 +793,8 @@ export class MergeManager {
    * ObservableMap automatically notifies subscribers when set() is called.
    */
   private updateSyncStatus(guid: string, status: SyncStatus): void {
+    // Skip updates during/after destruction to avoid PostOffice teardown errors
+    if (this.destroyed) return;
     this._syncStatus.set(guid, status);
   }
 }
