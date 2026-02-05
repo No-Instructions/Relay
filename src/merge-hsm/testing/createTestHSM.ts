@@ -87,7 +87,7 @@ export interface TestHSM {
   /** Get localDoc text content (null if not in active mode) */
   getLocalDocText(): string | null;
 
-  /** Get remoteDoc text content (null if not in active mode) */
+  /** Get remoteDoc text content (always available - managed externally per spec) */
   getRemoteDocText(): string | null;
 
   /** Create a serializable snapshot (for future recording) */

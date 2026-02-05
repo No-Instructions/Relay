@@ -58,7 +58,7 @@ export {
   // State transition helpers (drive through real transitions)
   loadAndActivate,
   loadToIdle,
-  loadToAwaitingLCA,
+  loadToLoading,
   loadToConflict,
   loadToResolving,
 } from './events';
@@ -66,7 +66,7 @@ export type {
   HSMHandle,
   LoadAndActivateOptions,
   LoadToIdleOptions,
-  LoadToAwaitingLCAOptions,
+  LoadToLoadingOptions,
   LoadToConflictOptions,
 } from './events';
 

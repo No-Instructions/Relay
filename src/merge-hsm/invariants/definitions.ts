@@ -155,8 +155,8 @@ export const ACTIVE_HAS_LOCAL_DOC: InvariantDefinition = {
   applicableStates: [
     'active.entering',
     'active.tracking',
-    'active.merging',
-    'active.conflict.blocked',
+    'active.merging.twoWay',
+    'active.merging.threeWay',
     'active.conflict.bannerShown',
     'active.conflict.resolving',
   ],
@@ -186,6 +186,7 @@ export const IDLE_NO_LOCAL_DOC: InvariantDefinition = {
   severity: 'warning',
   trigger: 'on-state',
   applicableStates: [
+    'idle.loading',
     'idle.synced',
     'idle.localAhead',
     'idle.remoteAhead',
@@ -221,7 +222,6 @@ export const CONFLICT_HAS_DIVERGENCE: InvariantDefinition = {
   severity: 'warning',
   trigger: 'on-state',
   applicableStates: [
-    'active.conflict.blocked',
     'active.conflict.bannerShown',
     'active.conflict.resolving',
   ],

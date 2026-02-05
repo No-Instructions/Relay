@@ -196,16 +196,19 @@ describe('MergeHSM', () => {
       expect(t.hsm.checkAndCorrectDrift()).toBe(false);
     });
 
-    test('SAVE_COMPLETE updates LCA mtime', async () => {
+    test('SAVE_COMPLETE updates disk state but not LCA (per spec)', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', { mtime: 1000 });
 
       t.send(saveComplete(2000));
 
-      expect(t.state.lca?.meta.mtime).toBe(2000);
+      // Per spec: LCA is never touched during active.* states
+      expect(t.state.lca?.meta.mtime).toBe(1000);
+      // Disk state IS updated
+      expect(t.state.disk?.mtime).toBe(2000);
     });
 
-    test('SAVE_COMPLETE updates LCA hash and disk state (BUG-006)', async () => {
+    test('SAVE_COMPLETE updates disk state (LCA frozen per spec)', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', { mtime: 1000 });
 
@@ -215,16 +218,15 @@ describe('MergeHSM', () => {
       // Send SAVE_COMPLETE with new mtime and hash
       t.send(saveComplete(2000, 'new-hash-after-save'));
 
-      // LCA should have updated mtime and hash
-      expect(t.state.lca?.meta.mtime).toBe(2000);
-      expect(t.state.lca?.meta.hash).toBe('new-hash-after-save');
+      // Per spec: LCA is never touched during active.* states
+      expect(t.state.lca?.meta.mtime).toBe(1000);
 
-      // Disk state should also be updated to match
+      // Disk state IS updated
       expect(t.state.disk?.mtime).toBe(2000);
       expect(t.state.disk?.hash).toBe('new-hash-after-save');
     });
 
-    test('SAVE_COMPLETE prevents subsequent pollAll from triggering merge (BUG-006 + BUG-007)', async () => {
+    test('SAVE_COMPLETE keeps tracking state stable', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello world', { mtime: 1000 });
 
@@ -234,13 +236,14 @@ describe('MergeHSM', () => {
       // Simulate save completing with new mtime/hash
       t.send(saveComplete(2000, 'saved-content-hash'));
 
-      // Both LCA and disk should now have the same mtime/hash
-      expect(t.state.lca?.meta.mtime).toBe(2000);
-      expect(t.state.lca?.meta.hash).toBe('saved-content-hash');
+      // Per spec: LCA is never touched during active.* states
+      expect(t.state.lca?.meta.mtime).toBe(1000);
+
+      // Disk state IS updated
       expect(t.state.disk?.mtime).toBe(2000);
       expect(t.state.disk?.hash).toBe('saved-content-hash');
 
-      // Should still be in tracking state (no unnecessary merge triggered)
+      // Should still be in tracking state
       expect(t.state.statePath).toBe('active.tracking');
     });
   });
@@ -699,20 +702,19 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
     });
 
-    test('idle mode does not create YDocs (lightweight)', async () => {
+    test('idle mode does not create localDoc (lightweight)', async () => {
       const t = await createTestHSM();
       await loadToIdle(t);
 
-      // Verify no YDocs exist in idle mode
+      // Verify localDoc does not exist in idle mode
+      // (remoteDoc is always available - managed externally per spec)
       expect(t.getLocalDocText()).toBeNull();
-      expect(t.getRemoteDocText()).toBeNull();
 
-      // Receive remote update - should still not create YDocs
+      // Receive remote update - should still not create localDoc
       const update = createYjsUpdate('', 'hello');
       t.send(remoteUpdate(update));
 
       expect(t.getLocalDocText()).toBeNull();
-      expect(t.getRemoteDocText()).toBeNull();
     });
 
     test('ACQUIRE_LOCK creates YDocs for active mode', async () => {
@@ -989,14 +991,17 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('persistence effects', () => {
-    test('SAVE_COMPLETE emits PERSIST_STATE', async () => {
+    test('SAVE_COMPLETE in active mode does not emit PERSIST_STATE (LCA frozen)', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', { mtime: 1000 });
       t.clearEffects();
 
       t.send(saveComplete(2000));
 
-      expectEffect(t.effects, { type: 'PERSIST_STATE' });
+      // Per spec: LCA is never touched during active.* states
+      // So no PERSIST_STATE for LCA updates in active mode
+      const persistEffects = t.effects.filter(e => e.type === 'PERSIST_STATE');
+      expect(persistEffects).toHaveLength(0);
     });
 
     test('DISMISS_CONFLICT emits PERSIST_STATE', async () => {
@@ -1013,7 +1018,7 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('DISK_CHANGED matching editor emits PERSIST_STATE (LCA update)', async () => {
+    test('DISK_CHANGED in active mode does not update LCA (per spec)', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', { mtime: 1000 });
 
@@ -1021,13 +1026,13 @@ describe('MergeHSM', () => {
       t.send(cm6Insert(5, ' world', 'hello world'));
       t.clearEffects();
 
-      // Disk now matches editor content - opportunistic LCA update
+      // Disk change in active.tracking mode
       t.send(await diskChanged('hello world', Date.now()));
 
-      // Wait for async LCA creation
-      await new Promise(resolve => setTimeout(resolve, 10));
-
-      expectEffect(t.effects, { type: 'PERSIST_STATE' });
+      // Per spec: LCA is never touched during active.* states
+      // No PERSIST_STATE should be emitted for LCA updates
+      const persistEffects = t.effects.filter(e => e.type === 'PERSIST_STATE');
+      expect(persistEffects).toHaveLength(0);
     });
 
     test('STATUS_CHANGED emitted on state transition that changes sync status', async () => {
