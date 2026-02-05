@@ -591,3 +591,82 @@ export async function getHSMBootEntries(): Promise<object[]> {
 
 	return entries;
 }
+
+/**
+ * Get the most recent HSM recording entries for a specific document.
+ * Reads files in reverse order (newest first) and stops once limit is reached.
+ * Much more efficient than getBootEntries() when you only need a few entries.
+ */
+export async function getRecentEntries(guid: string, limit: number = 10): Promise<object[]> {
+	if (!hsmBootId) {
+		return [];
+	}
+
+	const results: object[] = [];
+
+	// Scan the in-memory buffer first (newest, not yet flushed to disk).
+	// Walk backwards for most-recent-first collection.
+	for (let i = hsmBuffer.length - 1; i >= 0; i--) {
+		try {
+			const entry = JSON.parse(hsmBuffer[i]) as Record<string, unknown>;
+			if (entry.boot === hsmBootId && entry.guid === guid) {
+				results.push(entry);
+				if (results.length >= limit) {
+					results.reverse();
+					return results;
+				}
+			}
+		} catch {
+			// Skip malformed lines
+		}
+	}
+
+	if (!hsmFileAdapter || !hsmRecordingFile) {
+		results.reverse();
+		return results;
+	}
+
+	// Parse a file's lines in reverse, collecting matches until we hit the limit.
+	// Returns true if we've collected enough.
+	const collectFromFile = async (filePath: string): Promise<boolean> => {
+		try {
+			if (!await hsmFileAdapter!.exists(filePath)) {
+				return false;
+			}
+			const content = await hsmFileAdapter!.read(filePath);
+			const lines = content.split('\n').filter(line => line.trim());
+
+			// Walk backwards so we get the most recent entries first
+			for (let i = lines.length - 1; i >= 0; i--) {
+				try {
+					const entry = JSON.parse(lines[i]) as Record<string, unknown>;
+					if (entry.boot === hsmBootId && entry.guid === guid) {
+						results.push(entry);
+						if (results.length >= limit) return true;
+					}
+				} catch {
+					// Skip malformed lines
+				}
+			}
+		} catch {
+			// File doesn't exist or can't be read
+		}
+		return false;
+	};
+
+	// Read newest file first (main), then rotated files in order (.1, .2, .3)
+	if (await collectFromFile(hsmRecordingFile)) {
+		results.reverse();
+		return results;
+	}
+
+	for (let i = 1; i <= hsmRecordingConfig.maxBackups; i++) {
+		if (await collectFromFile(`${hsmRecordingFile}.${i}`)) {
+			break;
+		}
+	}
+
+	// We collected in reverse order, flip to chronological
+	results.reverse();
+	return results;
+}
