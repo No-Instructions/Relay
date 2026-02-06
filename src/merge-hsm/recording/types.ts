@@ -135,7 +135,7 @@ export type SerializableEvent =
   | { type: 'OPEN_DIFF_VIEW' }
   | { type: 'CANCEL' }
   | { type: 'PERSISTENCE_LOADED'; updates: string; lca: SerializableLCA | null } // updates is base64
-  | { type: 'YDOCS_READY' }
+  | { type: 'PERSISTENCE_SYNCED'; hasContent: boolean }
   | { type: 'INITIALIZE_WITH_CONTENT'; content: string; hash: string; mtime: number }
   | { type: 'INITIALIZE_LCA'; content: string; hash: string; mtime: number }
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }

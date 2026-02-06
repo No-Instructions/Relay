@@ -154,6 +154,9 @@ export const ACTIVE_HAS_LOCAL_DOC: InvariantDefinition = {
   trigger: 'on-state',
   applicableStates: [
     'active.entering',
+    'active.entering.awaitingPersistence',
+    'active.entering.awaitingRemote',
+    'active.entering.reconciling',
     'active.tracking',
     'active.merging.twoWay',
     'active.merging.threeWay',

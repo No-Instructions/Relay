@@ -206,7 +206,7 @@ function getEventFactory(eventType: string): string | null {
     'OPEN_DIFF_VIEW': 'openDiffView',
     'CANCEL': 'cancel',
     'PERSISTENCE_LOADED': 'persistenceLoaded',
-    'YDOCS_READY': 'yDocsReady',
+    'PERSISTENCE_SYNCED': 'persistenceSynced',
     'INITIALIZE_WITH_CONTENT': 'initializeWithContent',
     'INITIALIZE_LCA': 'initializeLCA',
     'MERGE_SUCCESS': 'mergeSuccess',
@@ -258,8 +258,6 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
     case 'CANCEL':
       return `cancel()`;
 
-    case 'YDOCS_READY':
-      return `yDocsReady()`;
 
     case 'INITIALIZE_WITH_CONTENT':
       return `initializeWithContent(${JSON.stringify(event.content)}, ${JSON.stringify(event.hash)}, ${event.mtime})`;
@@ -293,6 +291,9 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
 
     case 'MERGE_CONFLICT':
       return `mergeConflict(\n${indent}  ${JSON.stringify(event.base)},\n${indent}  ${JSON.stringify(event.local)},\n${indent}  ${JSON.stringify(event.remote)}\n${indent})`;
+
+    case 'PERSISTENCE_SYNCED':
+      return `persistenceSynced(${JSON.stringify((event as any).hasContent)})`;
 
     case 'ERROR':
       return `error(new Error(${JSON.stringify(event.error)}))`;

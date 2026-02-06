@@ -114,6 +114,9 @@ export type StatePath =
   | 'idle.error'
   | 'active.loading'
   | 'active.entering'
+  | 'active.entering.awaitingPersistence'
+  | 'active.entering.awaitingRemote'
+  | 'active.entering.reconciling'
   | 'active.tracking'
   | 'active.merging.twoWay'
   | 'active.merging.threeWay'
@@ -244,8 +247,9 @@ export interface PersistenceLoadedEvent {
   lca: LCAState | null;
 }
 
-export interface YDocsReadyEvent {
-  type: 'YDOCS_READY';
+export interface PersistenceSyncedEvent {
+  type: 'PERSISTENCE_SYNCED';
+  hasContent: boolean;
 }
 
 /**
@@ -388,7 +392,7 @@ export type MergeEvent =
   | ResolveHunkEvent
   // Internal
   | PersistenceLoadedEvent
-  | YDocsReadyEvent
+  | PersistenceSyncedEvent
   | InitializeWithContentEvent
   | InitializeLCAEvent
   | MergeSuccessEvent

@@ -255,23 +255,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content });
 			mergeManager.markActive(this.guid);
 
-			// Wait for active.tracking state (not idle - that would deadlock in awaitingLCA)
-			await this._hsm.awaitActive();
-
-			// Guard against race: releaseLock() may have been called while we
-			// were awaiting. If so, the HSM has already transitioned back to idle
-			// and we must not create a ProviderIntegration (it would leak).
-			if (!this.userLock && !mergeManager.isActive(this.guid)) {
-				return null;
-			}
-
-			this.userLock = true; // Keep for compatibility
-
-			// Create ProviderIntegration to bridge HSM with provider.
-			// This handles:
-			// - SYNC_TO_REMOTE effect → applies updates to remoteDoc (this.ydoc)
-			// - remoteDoc.on('update') → sends REMOTE_DOC_UPDATED to HSM
-			// - Provider events (sync, disconnect) → forwards to HSM
+			// Create ProviderIntegration BEFORE awaiting so it can deliver
+			// PROVIDER_SYNCED during the entering phase (needed for empty-IDB flow).
 			if (!this._providerIntegration) {
 				this._providerIntegration = new ProviderIntegration(
 					this._hsm,
@@ -279,6 +264,20 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					this._provider as YjsProvider
 				);
 			}
+
+			// Wait for HSM to reach a post-entering active state
+			await this._hsm.awaitActive();
+
+			// Guard against race: releaseLock() may have been called while we
+			// were awaiting. If so, the HSM has already transitioned back to idle
+			// and we must not keep a ProviderIntegration (it would leak).
+			if (!this.userLock && !mergeManager.isActive(this.guid)) {
+				this._providerIntegration.destroy();
+				this._providerIntegration = null;
+				return null;
+			}
+
+			this.userLock = true; // Keep for compatibility
 
 			return this._hsm;
 		} catch (e) {

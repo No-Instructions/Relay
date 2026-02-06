@@ -121,7 +121,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'DISMISS_CONFLICT':
     case 'OPEN_DIFF_VIEW':
     case 'CANCEL':
-    case 'YDOCS_READY':
+    case 'PERSISTENCE_SYNCED':
     case 'MERGE_CONFLICT':
     case 'REMOTE_DOC_UPDATED':
       return event as unknown as SerializableEvent;

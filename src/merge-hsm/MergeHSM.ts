@@ -199,6 +199,12 @@ const mergeMachine = setup({
     }),
   },
   guards: {
+    persistenceHasContent: ({ event }): boolean => {
+      if (event.type === 'PERSISTENCE_SYNCED') {
+        return event.hasContent === true;
+      }
+      return false;
+    },
     isDiverged: ({ context }): boolean => {
       // Check if we have divergence from LCA
       if (!context.lca) return false;
@@ -318,10 +324,22 @@ const mergeMachine = setup({
           },
         },
         entering: {
-          on: {
-            YDOCS_READY: {
-              target: 'tracking',
+          initial: 'awaitingPersistence',
+          states: {
+            awaitingPersistence: {
+              on: {
+                PERSISTENCE_SYNCED: [
+                  { target: 'reconciling', guard: 'persistenceHasContent' },
+                  { target: 'awaitingRemote' },
+                ],
+              },
             },
+            awaitingRemote: {
+              on: {
+                PROVIDER_SYNCED: { target: 'reconciling' },
+              },
+            },
+            reconciling: {},
           },
         },
         tracking: {
@@ -457,7 +475,7 @@ export class MergeHSM implements TestableHSM {
   // Pending disk contents for merge (legacy, used for idle mode)
   private pendingDiskContents: string | null = null;
 
-  // v6: Editor content from ACQUIRE_LOCK event, used for merge on YDOCS_READY
+  // Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
   private pendingEditorContent: string | null = null;
 
   // Conflict data (enhanced for inline resolution)
@@ -517,6 +535,9 @@ export class MergeHSM implements TestableHSM {
 
   // Whether we entered active mode from idle.diverged (for conflict handling)
   private _enteringFromDiverged = false;
+
+  // Whether PROVIDER_SYNCED has been received during the current lock cycle
+  private _providerSynced = false;
 
   // Promise that resolves when cleanup completes (for awaiting unload/release)
   private _cleanupPromise: Promise<void> | null = null;
@@ -766,10 +787,16 @@ export class MergeHSM implements TestableHSM {
    * Safe to call from loading state (BUG-032).
    */
   async awaitActive(): Promise<void> {
-    // Resolve for any active.* state, not just active.tracking.
-    // If HSM enters active.conflict.* (e.g., from idle.diverged), acquireLock()
-    // must still complete so LiveView can set up HSM state subscription for banner.
-    return this.awaitState((s) => s.startsWith('active.'));
+    // Resolve for post-entering active states only. The entering substates
+    // (awaitingPersistence, awaitingRemote, reconciling) must complete before
+    // acquireLock() returns, so that ProviderIntegration and other setup can
+    // safely use localDoc.
+    return this.awaitState((s) =>
+      s.startsWith('active.') &&
+      !s.startsWith('active.entering.') &&
+      s !== 'active.entering' &&
+      s !== 'active.loading'
+    );
   }
 
   /**
@@ -954,8 +981,8 @@ export class MergeHSM implements TestableHSM {
         this.handlePersistenceLoaded(event);
         break;
 
-      case 'YDOCS_READY':
-        this.handleYDocsReady();
+      case 'PERSISTENCE_SYNCED':
+        this.handlePersistenceSynced(event);
         break;
 
       case 'INITIALIZE_WITH_CONTENT':
@@ -1663,95 +1690,40 @@ export class MergeHSM implements TestableHSM {
   private handleAcquireLock(event?: { editorContent: string }): void {
     // Handle loading state - XState will transition to active.entering
     if (this._statePath === 'loading') {
-      // Store editorContent for merge on YDOCS_READY
       if (event?.editorContent !== undefined) {
         this.pendingEditorContent = event.editorContent;
         this.lastKnownEditorText = event.editorContent;
       }
-      // XState handles transition to active.entering
-      this.transitionTo('active.entering');
+      this._providerSynced = false;
+      this.transitionTo('active.entering.awaitingPersistence');
       this.createYDocs();
       return;
     }
 
     // Handle active.loading state (v9: mode is active, waiting for ACQUIRE_LOCK)
     if (this._statePath === 'active.loading') {
-      // Store editorContent for merge on YDOCS_READY
       if (event?.editorContent !== undefined) {
         this.pendingEditorContent = event.editorContent;
         this.lastKnownEditorText = event.editorContent;
       }
-
-      // Transition to active.entering and create YDocs
-      this.transitionTo('active.entering');
+      this._providerSynced = false;
+      this.transitionTo('active.entering.awaitingPersistence');
       this.createYDocs();
       return;
     }
 
     if (this._statePath.startsWith('idle.')) {
-      // v6: Store editorContent from ACQUIRE_LOCK payload
-      // This contains the current editor/disk content at the moment of opening.
-      // Used in handleYDocsReady to compare against localDoc (fixes BUG-022).
       if (event?.editorContent !== undefined) {
         this.pendingEditorContent = event.editorContent;
-        // Initialize lastKnownEditorText so we have a baseline even if no
-        // CM6_CHANGE events arrive during active.entering
         this.lastKnownEditorText = event.editorContent;
       }
 
-      // Remember if we came from diverged for conflict handling in handleYDocsReady
+      // Remember if we came from diverged for conflict handling
       this._enteringFromDiverged = this._statePath === 'idle.diverged';
 
-      // Transition to active.entering first — editor loads from disk and is usable
-      // immediately. Then create YDocs which attach persistence. When persistence
-      // reports 'synced', YDOCS_READY fires and transitions to active.tracking.
-      this.transitionTo('active.entering');
+      this._providerSynced = false;
+      this.transitionTo('active.entering.awaitingPersistence');
       this.createYDocs();
-    }
-  }
-
-  private handleYDocsReady(): void {
-    if (this._statePath === 'active.entering') {
-      // Use current editor state if available, fall back to pendingEditorContent.
-      // lastKnownEditorText tracks CM6_CHANGE events during active.entering,
-      // so it reflects what the user has typed while persistence was loading.
-      // This prevents data loss when user types during the entering phase.
-      const localText = this.localDoc?.getText('contents').toString() ?? '';
-      const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? '';
-      const isRecoveryMode = this._lca === null;
-
-      // Clear the flag (no longer primary check, but keep for logging/debugging)
-      this._enteringFromDiverged = false;
-
-      if (localText === diskText) {
-        // Content matches - proceed to tracking.
-        // Per spec: LCA is never touched during active.* states.
-        // LCA will be established when file transitions to idle mode.
-        this.pendingEditorContent = null;
-        this.transitionTo('active.tracking');
-        // Merge any remote content that accumulated during active.entering
-        this.mergeRemoteToLocal();
-        // Replay any events accumulated during loading states
-        this.replayAccumulatedEvents();
-        return;
-      }
-
-      // Content differs - transition to appropriate merging state per spec
-      if (isRecoveryMode) {
-        // No LCA available - always shows diff UI for user resolution
-        this.transitionTo('active.merging.twoWay');
-        // Replay any events accumulated during loading states
-        this.replayAccumulatedEvents();
-        // Perform two-way merge (shows diff UI)
-        this.performTwoWayMerge(localText, diskText);
-      } else {
-        // Has LCA - attempts automatic resolution using diff3
-        this.transitionTo('active.merging.threeWay');
-        // Replay any events accumulated during loading states
-        this.replayAccumulatedEvents();
-        // Perform three-way merge (may auto-resolve or show conflict)
-        this.performThreeWayMergeFromState();
-      }
     }
   }
 
@@ -1991,6 +1963,17 @@ export class MergeHSM implements TestableHSM {
     // Instead, let the merge flow (handleYDocsReady) detect the difference and use proper
     // merge logic (twoWay/threeWay) to resolve it.
     //
+    // Determine if IDB had stored CRDT state. We check two signals:
+    // 1. State vector > 1 byte: means Yjs operations exist in the database
+    // 2. LCA exists: means the file was previously enrolled (covers empty files
+    //    that were enrolled but have no Yjs operations)
+    // This is checked BEFORE applying pendingIdleUpdates so it reflects
+    // only what the persistence database loaded.
+    const dbHasOps = this.localDoc
+      ? Y.encodeStateVector(this.localDoc).length > 1
+      : false;
+    const hasContent = dbHasOps || this._lca !== null;
+
     // BUG-048 fix: Only apply pendingIdleUpdates when localDoc is empty.
     // If localDoc has content from IndexedDB, we must NOT blindly apply pendingIdleUpdates
     // even if the content matches - the CRDT histories may differ (same text inserted by
@@ -2008,22 +1991,9 @@ export class MergeHSM implements TestableHSM {
       // If localDoc has content, DO NOT apply - let mergeRemoteToLocal() handle it
       this.pendingIdleUpdates = null;
     }
+
     // Clear initialPersistenceUpdates - no longer needed (state vector already computed)
     this.initialPersistenceUpdates = null;
-
-    // INVARIANT VIOLATION - DO NOT DO THIS:
-    // Per docs/how-we-bootstrap-collaboration.md, disk content must only be inserted
-    // into the CRDT exactly ONCE during initial enrollment. Inserting LCA content here
-    // on reopen would violate this invariant and cause content duplication if the CRDT
-    // already has content from a different client/history.
-    //
-    // If localDoc is empty after persistence sync, it means:
-    // 1. This is the first time opening this file (IDB is empty) - the merge flow will
-    //    handle comparing against disk content
-    // 2. IDB was cleared/corrupted - should show conflict, not silently insert LCA
-    //
-    // The correct solution is to let handleYDocsReady detect the content mismatch
-    // and use the normal merge flow (twoWay/threeWay) to resolve it.
 
     // Update state vector to reflect what's in localDoc
     if (this.localDoc) {
@@ -2033,8 +2003,90 @@ export class MergeHSM implements TestableHSM {
     // Set up observer for remote updates (converts deltas to positioned changes)
     this.setupLocalDocObserver();
 
-    // Signal that YDocs are ready
-    this.send({ type: 'YDOCS_READY' });
+    // Signal persistence sync complete with IDB content status
+    this.send({ type: 'PERSISTENCE_SYNCED', hasContent });
+  }
+
+  /**
+   * Handle PERSISTENCE_SYNCED event.
+   * Drives the entering substate machine based on whether IDB had content.
+   */
+  private handlePersistenceSynced(event: { hasContent: boolean }): void {
+    if (!this.matches('active.entering')) return;
+
+    if (event.hasContent) {
+      // IDB had content → go straight to reconciliation
+      this.transitionTo('active.entering.reconciling');
+      this.performReconciliation();
+    } else {
+      // IDB was empty → check if provider already synced
+      if (this._providerSynced) {
+        // Provider already synced (before or during persistence load)
+        this.applyRemoteToLocalIfNeeded();
+        this.transitionTo('active.entering.reconciling');
+        this.performReconciliation();
+      } else {
+        // Wait for PROVIDER_SYNCED
+        this.transitionTo('active.entering.awaitingRemote');
+      }
+    }
+  }
+
+  /**
+   * When IDB was empty and the server has content, apply server CRDT to localDoc.
+   * This ensures localDoc has the latest remote state before reconciliation.
+   */
+  private applyRemoteToLocalIfNeeded(): void {
+    if (!this.localDoc || !this.remoteDoc) return;
+
+    const localText = this.localDoc.getText('contents').toString();
+    const remoteText = this.remoteDoc.getText('contents').toString();
+
+    // Only apply if localDoc is empty and remoteDoc has content
+    if (localText === '' && remoteText !== '') {
+      const update = Y.encodeStateAsUpdate(
+        this.remoteDoc,
+        Y.encodeStateVector(this.localDoc)
+      );
+      Y.applyUpdate(this.localDoc, update, 'remote');
+    }
+  }
+
+  /**
+   * Perform reconciliation: compare localDoc vs disk content and decide
+   * tracking/twoWay/threeWay. Called when all data sources have been consulted.
+   */
+  private performReconciliation(): void {
+    if (!this.matches('active.entering.reconciling')) return;
+
+    const localText = this.localDoc?.getText('contents').toString() ?? '';
+    const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? '';
+    const isRecoveryMode = this._lca === null;
+
+    // Clear the flag
+    this._enteringFromDiverged = false;
+
+    if (localText === diskText) {
+      // Content matches — proceed to tracking.
+      this.pendingEditorContent = null;
+      this.transitionTo('active.tracking');
+      // Merge any remote content that accumulated during active.entering
+      this.mergeRemoteToLocal();
+      // Replay any events accumulated during loading states
+      this.replayAccumulatedEvents();
+      return;
+    }
+
+    // Content differs — transition to appropriate merging state per spec
+    if (isRecoveryMode) {
+      this.transitionTo('active.merging.twoWay');
+      this.replayAccumulatedEvents();
+      this.performTwoWayMerge(localText, diskText);
+    } else {
+      this.transitionTo('active.merging.threeWay');
+      this.replayAccumulatedEvents();
+      this.performThreeWayMergeFromState();
+    }
   }
 
   /**
@@ -2294,6 +2346,28 @@ export class MergeHSM implements TestableHSM {
 
     // Apply update to remoteDoc if available (only in active mode)
     if (this.remoteDoc) {
+      // BUG-067 FIX: Before applying in active mode, check if the incoming update
+      // contains the same content as remoteDoc but from a different client (independent
+      // enrollment). Applying such an update would cause Yjs to preserve both clients'
+      // insert operations, doubling the content.
+      const currentContent = this.remoteDoc.getText('contents').toString();
+      if (currentContent !== '') {
+        const tempDoc = new Y.Doc();
+        let shouldSkip = false;
+        try {
+          Y.applyUpdate(tempDoc, event.update);
+          const updateContent = tempDoc.getText('contents').toString();
+          if (updateContent !== '' && currentContent === updateContent) {
+            shouldSkip = true;
+          }
+        } finally {
+          tempDoc.destroy();
+        }
+        if (shouldSkip) {
+          this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+          return;
+        }
+      }
       Y.applyUpdate(this.remoteDoc, event.update, 'remote');
       // Get state vector from the doc AFTER applying update, not from the update itself.
       // Delta updates have minimal state vectors that don't reflect the full doc state.
@@ -2340,10 +2414,10 @@ export class MergeHSM implements TestableHSM {
       return;
     }
 
-    if (this._statePath === 'loading' || this._statePath === 'active.loading' || this._statePath === 'active.entering') {
-      // Accumulate for replay after mode transition / YDOCS_READY.
+    if (this._statePath === 'loading' || this._statePath === 'active.loading' || this.matches('active.entering')) {
+      // Accumulate for replay after mode transition / reconciliation.
       // active.entering: YDocs are being created; mergeRemoteToLocal() will run
-      // after YDOCS_READY fires in handleYDocsReady().
+      // after reconciliation completes in performReconciliation().
       const existingRemoteIdx = this._accumulatedEvents.findIndex(e => e.type === 'REMOTE_UPDATE');
       if (existingRemoteIdx >= 0) {
         const existing = this._accumulatedEvents[existingRemoteIdx] as { type: 'REMOTE_UPDATE'; update: Uint8Array };
@@ -2449,13 +2523,11 @@ export class MergeHSM implements TestableHSM {
       return;
     }
 
-    // Content differs - apply remote changes normally
+    // Content differs - apply delta from remoteDoc to localDoc.
     const update = Y.encodeStateAsUpdate(
       this.remoteDoc,
       Y.encodeStateVector(this.localDoc)
     );
-
-    // Observer will fire and emit DISPATCH_CM6 with delta-based changes
     Y.applyUpdate(this.localDoc, update, 'remote');
   }
 
@@ -2942,7 +3014,15 @@ export class MergeHSM implements TestableHSM {
   // ===========================================================================
 
   private handleProviderSynced(): void {
-    // Provider sync complete - may trigger state updates
+    this._providerSynced = true;
+
+    if (this._statePath === 'active.entering.awaitingRemote') {
+      // Server CRDT now available in remoteDoc — apply to localDoc if needed
+      this.applyRemoteToLocalIfNeeded();
+      this.transitionTo('active.entering.reconciling');
+      this.performReconciliation();
+    }
+    // In all other states: no-op (just record the flag)
   }
 
   private handleConnected(): void {
