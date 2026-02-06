@@ -40,6 +40,7 @@ import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
+import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
 
 const BACKGROUND_CONNECTIONS = 3;
@@ -372,6 +373,7 @@ export class LiveView<ViewType extends TextFileView>
 	shouldConnect: boolean;
 	canConnect: boolean;
 	private _plugin?: TextFileViewPlugin;
+	private _viewHookPlugin?: ViewHookPlugin;
 
 	private _viewActions?: ViewActions;
 	private offConnectionStatusSubscription?: () => void;
@@ -677,6 +679,15 @@ export class LiveView<ViewType extends TextFileView>
 		// Add CSS class to indicate this view should have live editing
 		if (this.view instanceof MarkdownView) {
 			this.view.containerEl.addClass("relay-live-editor");
+
+			// Initialize ViewHookPlugin to capture non-CM6 edit paths
+			// (preview mode checkbox toggles, frontmatter saves via Properties panel)
+			if (!this._viewHookPlugin) {
+				this._viewHookPlugin = new ViewHookPlugin(this.view, this.document);
+				this._viewHookPlugin.initialize().catch((error) => {
+					this.error("Error initializing ViewHookPlugin:", error);
+				});
+			}
 		}
 
 		if (!(this.view instanceof MarkdownView)) {
@@ -753,6 +764,8 @@ export class LiveView<ViewType extends TextFileView>
 		}
 		this._awarenessPlugin?.destroy();
 		this._awarenessPlugin = undefined;
+		this._viewHookPlugin?.destroy();
+		this._viewHookPlugin = undefined;
 		this._plugin?.destroy();
 		this._plugin = undefined;
 		this.document.disconnect();
@@ -933,6 +946,34 @@ export class LiveViewManager {
 				folderToGuids.set(folder, new Set());
 			}
 			folderToGuids.get(folder)!.add(doc.guid);
+		}
+
+		// Also discover embedded markdown files inside canvas views.
+		// Canvas nodes with type='file' have a child TextFileView whose file
+		// may belong to a shared folder. Their HSMs need active mode too.
+		for (const view of views) {
+			if (!(view instanceof RelayCanvasView)) continue;
+			const canvas = view.view.canvas;
+			if (!canvas?.nodes) continue;
+
+			for (const [, node] of canvas.nodes) {
+				const nodeData = node.getData?.();
+				// @ts-ignore — child is not typed on CanvasNode, only on CanvasNodeData
+				const child = (node as any).child ?? nodeData?.child;
+				if (!child?.file) continue;
+
+				const filePath = child.file.path;
+				const folder = this.sharedFolders.lookup(filePath);
+				if (!folder?.mergeManager || !folder.ready) continue;
+
+				const embeddedDoc = folder.proxy.getDoc(filePath);
+				if (!embeddedDoc) continue;
+
+				if (!folderToGuids.has(folder)) {
+					folderToGuids.set(folder, new Set());
+				}
+				folderToGuids.get(folder)!.add(embeddedDoc.guid);
+			}
 		}
 
 		// Wait for all folders to complete their pending registrations

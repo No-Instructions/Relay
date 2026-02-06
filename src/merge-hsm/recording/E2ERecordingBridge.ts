@@ -29,7 +29,7 @@ import {
   generateRecordingId,
   serializeRecording,
 } from './serialization';
-import { getHSMBootId, getHSMBootEntries } from '../../debug';
+import { getHSMBootId, getHSMBootEntries, getRecentEntries } from '../../debug';
 
 // =============================================================================
 // Types
@@ -119,6 +119,9 @@ export interface HSMRecordingGlobal {
 
   /** Get entries from current boot (reads disk file, filters by boot ID) */
   getBootEntries: () => Promise<object[]>;
+
+  /** Get last N entries for a specific document (buffer + disk, newest files first) */
+  getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
 }
 
 // =============================================================================
@@ -205,6 +208,7 @@ export class E2ERecordingBridge {
       clearRecordings: () => this.clearRecordings(),
       getBootId: () => getHSMBootId(),
       getBootEntries: () => getHSMBootEntries(),
+      getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
     };
 
     (global as any).__hsmRecording = api;
@@ -766,6 +770,7 @@ function installAggregateBridgeAPI(): void {
     },
     getBootId: () => getHSMBootId(),
     getBootEntries: () => getHSMBootEntries(),
+    getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
   };
 
   (global as any).__hsmRecording = api;

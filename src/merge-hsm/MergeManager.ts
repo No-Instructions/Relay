@@ -548,23 +548,28 @@ export class MergeManager {
    * - Documents in activeGuids: HSM receives SET_MODE_ACTIVE
    * - Documents NOT in activeGuids: HSM receives SET_MODE_IDLE
    *
-   * This method only affects HSMs currently in `loading` state.
-   * HSMs already in `idle.*` or `active.*` states ignore these events.
+   * For HSMs in `loading` state, sends mode determination events.
+   * Also detects HSMs stuck in `active.*` mode without a corresponding
+   * open editor and sends RELEASE_LOCK to recover them to idle.
    */
   setActiveDocuments(activeGuids: Set<string>): void {
     if (this.destroyed) return;
 
     for (const [guid, hsm] of this.hsms) {
-      // Only send mode events to HSMs in loading state (flat state per v9 spec)
       const statePath = hsm.state.statePath;
-      if (statePath !== 'loading') {
-        continue;
-      }
 
-      if (activeGuids.has(guid)) {
-        hsm.send({ type: 'SET_MODE_ACTIVE' });
-      } else {
-        hsm.send({ type: 'SET_MODE_IDLE' });
+      if (statePath === 'loading') {
+        if (activeGuids.has(guid)) {
+          hsm.send({ type: 'SET_MODE_ACTIVE' });
+        } else {
+          hsm.send({ type: 'SET_MODE_IDLE' });
+        }
+      } else if (statePath.startsWith('active.') && !activeGuids.has(guid) && !this.activeDocs.has(guid)) {
+        // HSM is in active mode but no editor is open and MergeManager doesn't
+        // consider it active. This can happen when a stale ACQUIRE_LOCK arrives
+        // (e.g., from a race between async acquireLock and sync releaseLock).
+        // Send RELEASE_LOCK to recover the HSM to idle mode.
+        hsm.send({ type: 'RELEASE_LOCK' });
       }
     }
   }

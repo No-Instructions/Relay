@@ -995,6 +995,9 @@ export class MergeHSM implements TestableHSM {
       // These are informational only - no state change, just logged/recorded for debugging
       case 'OBSIDIAN_LOAD_FILE_INTERNAL':
       case 'OBSIDIAN_THREE_WAY_MERGE':
+      case 'OBSIDIAN_FILE_OPENED':
+      case 'OBSIDIAN_FILE_UNLOADED':
+      case 'OBSIDIAN_VIEW_REUSED':
         // No-op: these events are captured by the recording/debugger infrastructure
         // but don't trigger any state transitions or actions
         break;
@@ -1297,6 +1300,18 @@ export class MergeHSM implements TestableHSM {
 
     if (state === 'idle.remoteAhead') {
       if (!this.hasDiskChangedSinceLCA()) {
+        if (!this.pendingIdleUpdates) {
+          // Remote state vector advanced but no actual updates to merge
+          // (server echoes were skipped by the content-match check in handleRemoteUpdate).
+          // Disk already has correct content — update LCA state vector and sync.
+          if (this._lca && this._remoteStateVector) {
+            this._lca.stateVector = this._remoteStateVector;
+            this._localStateVector = this._remoteStateVector;
+            this.emitPersistState();
+          }
+          this.transitionTo('idle.synced');
+          return;
+        }
         this.performIdleRemoteAutoMerge(handleError);
       }
     } else if (state === 'idle.diskAhead') {
@@ -2325,8 +2340,10 @@ export class MergeHSM implements TestableHSM {
       return;
     }
 
-    if (this._statePath === 'loading') {
-      // Merge with existing accumulated REMOTE_UPDATE if any
+    if (this._statePath === 'loading' || this._statePath === 'active.loading' || this._statePath === 'active.entering') {
+      // Accumulate for replay after mode transition / YDOCS_READY.
+      // active.entering: YDocs are being created; mergeRemoteToLocal() will run
+      // after YDOCS_READY fires in handleYDocsReady().
       const existingRemoteIdx = this._accumulatedEvents.findIndex(e => e.type === 'REMOTE_UPDATE');
       if (existingRemoteIdx >= 0) {
         const existing = this._accumulatedEvents[existingRemoteIdx] as { type: 'REMOTE_UPDATE'; update: Uint8Array };

@@ -30,6 +30,7 @@ class HSMEditorPluginValue implements PluginValue {
   private document: Document | null = null;
   private cm6Integration: CM6Integration | null = null;
   private destroyed = false;
+  private embed = false;
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
 
@@ -128,10 +129,14 @@ class HSMEditorPluginValue implements PluginValue {
       return false;
     }
 
+    // Detect embedded canvas editors (no MarkdownView wrapper, no auto-save)
+    const sourceView = this.editor.dom.closest(".markdown-source-view");
+    this.embed = !!sourceView?.classList.contains("mod-inside-iframe");
+
     // Create CM6Integration to handle bidirectional sync
     // Pass the vault-relative path so CM6Integration can verify the editor doesn't switch files
     this.cm6Integration = new CM6Integration(hsm, this.editor, editorFilePath || '');
-    this.debug(`Initialized for ${this.document.path} (vault: ${editorFilePath})`);
+    this.debug(`Initialized for ${this.document.path} (vault: ${editorFilePath}, embed: ${this.embed})`);
     return true;
   }
 
@@ -167,6 +172,17 @@ class HSMEditorPluginValue implements PluginValue {
       const documentVaultRelativePath = documentTFile?.path;
 
       if (documentVaultRelativePath && documentVaultRelativePath !== currentFilePath) {
+        // Send diagnostic event to OLD HSM before teardown
+        const oldHsm = this.document?.hsm;
+        if (oldHsm) {
+          try {
+            oldHsm.send({
+              type: 'OBSIDIAN_VIEW_REUSED',
+              oldPath: documentVaultRelativePath,
+              newPath: currentFilePath,
+            });
+          } catch { /* diagnostic must never break */ }
+        }
         // File changed! Destroy old integration and reset.
         this.log(
           `File changed from "${documentVaultRelativePath}" to "${currentFilePath}". ` +
@@ -190,6 +206,11 @@ class HSMEditorPluginValue implements PluginValue {
 
     // Forward to CM6Integration which sends to HSM
     this.cm6Integration!.onEditorUpdate(update);
+
+    // Embedded canvas editors don't auto-save — trigger explicit save
+    if (this.embed && this.document) {
+      this.document.requestSave();
+    }
   }
 
   /**

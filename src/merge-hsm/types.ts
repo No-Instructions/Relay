@@ -336,6 +336,32 @@ export interface ObsidianThreeWayMergeEvent {
   diskLength: number;
 }
 
+/**
+ * Fired when Obsidian's workspace 'file-open' event fires for a Relay file.
+ */
+export interface ObsidianFileOpenedEvent {
+  type: 'OBSIDIAN_FILE_OPENED';
+  path: string;
+}
+
+/**
+ * Fired when a MarkdownView unloads a Relay file (onUnloadFile monkeypatch).
+ */
+export interface ObsidianFileUnloadedEvent {
+  type: 'OBSIDIAN_FILE_UNLOADED';
+  path: string;
+}
+
+/**
+ * Fired when a CM6 ViewPlugin detects the editor switched to a different file.
+ * Sent to the OLD document's HSM before teardown.
+ */
+export interface ObsidianViewReusedEvent {
+  type: 'OBSIDIAN_VIEW_REUSED';
+  oldPath: string;
+  newPath: string;
+}
+
 export type MergeEvent =
   // External
   | LoadEvent
@@ -371,7 +397,10 @@ export type MergeEvent =
   | ErrorEvent
   // Diagnostic (from Obsidian monkeypatches)
   | ObsidianLoadFileInternalEvent
-  | ObsidianThreeWayMergeEvent;
+  | ObsidianThreeWayMergeEvent
+  | ObsidianFileOpenedEvent
+  | ObsidianFileUnloadedEvent
+  | ObsidianViewReusedEvent;
 
 // =============================================================================
 // Effect Types
