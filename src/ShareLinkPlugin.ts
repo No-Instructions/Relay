@@ -79,7 +79,7 @@ export class ShareLinkPluginValue implements PluginValue {
 		if (!this.view || !this.view.shouldConnect) {
 			return;
 		}
-		if (this.view.document.text != this.editor.state.doc.toString()) {
+		if (this.view.document.localText != this.editor.state.doc.toString()) {
 			return;
 		}
 		const text = this.editor.state.doc.toString();
@@ -87,7 +87,7 @@ export class ShareLinkPluginValue implements PluginValue {
 		const withShareLink = updateFrontMatter(text, {
 			shareLink: shareLink,
 		});
-		if (!(text || this.view.document.text)) {
+		if (!(text || this.view.document.localText)) {
 			// document is empty
 			this.editor.dispatch({
 				changes: { from: 0, insert: withShareLink },

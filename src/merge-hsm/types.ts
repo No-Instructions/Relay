@@ -585,6 +585,14 @@ export interface IYDocPersistence {
   whenSynced: Promise<unknown>;
   /** Set metadata key-value pair on the persistence store */
   set?(key: string, value: string): void;
+  /** Check if database contains meaningful user data (stored updates) */
+  hasUserData(): boolean;
+  /**
+   * Initialize persistence with text content.
+   * Used for initial document enrollment.
+   * @throws Error if database already has content
+   */
+  initializeWithContent(content: string, fieldName?: string): Promise<void>;
 }
 
 /**
@@ -599,10 +607,10 @@ export interface PersistenceMetadata {
 
 /**
  * Factory that creates a persistence instance for a YDoc.
- * Production: creates IndexeddbPersistence(vaultId, doc).
+ * Production: creates IndexeddbPersistence(vaultId, doc, userId).
  * Testing: can return a mock that fires 'synced' synchronously.
  */
-export type CreatePersistence = (vaultId: string, doc: Y.Doc) => IYDocPersistence;
+export type CreatePersistence = (vaultId: string, doc: Y.Doc, userId?: string) => IYDocPersistence;
 
 /**
  * Function to load raw Yjs updates from IndexedDB without creating a YDoc.

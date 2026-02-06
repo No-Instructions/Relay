@@ -292,8 +292,8 @@ export class SharedFolder extends HasProvider {
 		this.mergeManager = new MergeManager({
 			getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
 			timeProvider: undefined, // Use default
-			createPersistence: (vaultId, doc) =>
-				new IndexeddbPersistence(vaultId, doc),
+			createPersistence: (vaultId, doc, userId) =>
+				new IndexeddbPersistence(vaultId, doc, userId),
 			getDiskState: async (docPath: string) => {
 				// docPath is SharedFolder-relative (e.g., "/note.md")
 				const vaultPath = this.getPath(docPath);
@@ -429,6 +429,11 @@ export class SharedFolder extends HasProvider {
 		const docId = event.doc_id;
 		if (!docId) return;
 
+		// Skip events from our own user (server echo of our own updates)
+		if (event.user && event.user === this.loginManager?.user?.id) {
+			return;
+		}
+
 		// Extract the guid from the doc_id
 		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
 		const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
@@ -441,12 +446,14 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) return;
 
-		// Always forward remote updates to MergeManager regardless of HSM mode.
-		// In active mode with ProviderIntegration, the update is already applied
-		// to remoteDoc by the provider — the HSM handles deduplication safely
-		// (Yjs ignores already-applied updates). This ensures updates are never
-		// lost when the HSM is in active mode without a ProviderIntegration
-		// (e.g., stale ACQUIRE_LOCK caused spurious idle→active transition).
+		// Skip if document is active - ProviderIntegration handles updates
+		// through the y-protocols sync channel with proper origin filtering
+		if (this.mergeManager.isActive(guid)) {
+			return;
+		}
+
+		// Forward remote updates to MergeManager for idle mode documents.
+		// This ensures updates are received even when the file is closed.
 		if (event.update) {
 			this.mergeManager.handleRemoteUpdate(guid, event.update);
 		}
@@ -472,9 +479,11 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
-		// Check if this document has an active ProviderIntegration
-		// (meaning it's in active mode and the integration will handle it)
-		if (file.userLock) {
+		// Check if this document is in active mode. userLock is set after
+		// acquireLock() completes, but the HSM may already be active (and
+		// emitting SYNC_TO_REMOTE) during the await in acquireLock().
+		// Check both userLock and MergeManager.isActive() to cover the window.
+		if (file.userLock || this.mergeManager?.isActive(guid)) {
 			this.debug?.(`[handleIdleSyncToRemote] Document ${guid} is in active mode, skipping`);
 			return;
 		}
@@ -1567,7 +1576,7 @@ export class SharedFolder extends HasProvider {
 				const encoder = new TextEncoder();
 				const hash = await generateHash(encoder.encode(contents).buffer);
 				const mtime = doc.tfile?.stat.mtime ?? Date.now();
-				doc.hsm?.initializeLocalDoc(contents, hash, mtime);
+				await doc.hsm?.initializeLocalDoc(contents, hash, mtime);
 
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);

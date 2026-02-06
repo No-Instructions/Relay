@@ -893,8 +893,17 @@ export class BackgroundSync extends HasLogging {
 			// The HSM uses a two-ydoc architecture where localDoc is persisted
 			// and remoteDoc (doc.ydoc) is ephemeral. Without this, the IndexedDB
 			// backing localDoc would be empty after download.
-			const vaultId = `${doc.sharedFolder.appId}-relay-doc-${doc.guid}`;
-			await appendUpdateRaw(vaultId, updateBytes);
+			//
+			// Skip when HSM is in active mode: the HSM's localDoc has its own
+			// IndexeddbPersistence writing to the same IDB database. Writing here
+			// too creates a second set of operations from a different clientID,
+			// causing content duplication on the next load.
+			const mergeManager = doc.sharedFolder.mergeManager;
+			const isActive = mergeManager?.isActive(doc.guid);
+			if (!isActive) {
+				const vaultId = `${doc.sharedFolder.appId}-relay-doc-${doc.guid}`;
+				await appendUpdateRaw(vaultId, updateBytes);
+			}
 
 			if (hasContents && !contentsMatch) {
 				this.log("Skipping flush - file requires merge conflict resolution.");

@@ -105,7 +105,8 @@ export class TextFileViewPlugin extends HasLogging {
 			}
 
 			await this.doc.whenSynced();
-			if (this.doc.text === this.view.view.getViewData()) {
+			const docText = this.doc.localText;
+			if (docText === this.view.view.getViewData()) {
 				// Document and view content already match - set tracking immediately
 				this.view.tracking = true;
 				this.warn("resync() - content matches, setting tracking=true");
@@ -115,15 +116,15 @@ export class TextFileViewPlugin extends HasLogging {
 					documentPath: this.doc.path,
 					documentTFilePath: this.doc._tfile?.path,
 					viewFilePath: this.view.view.file?.path,
-					documentText: this.doc.text,
+					documentText: docText,
 					viewData: this.view.view.getViewData(),
 					documentGuid: this.doc.guid,
 					tFilesMatching: this.doc._tfile === this.view.view.file,
-					documentTextLength: this.doc.text?.length || 0,
+					documentTextLength: docText?.length || 0,
 					viewDataLength: this.view.view.getViewData()?.length || 0,
 				});
 			}
-			if (!this.doc.hasLocalDB() && this.doc.text === "") {
+			if (!this.doc.hasLocalDB() && docText === "") {
 				this.warn("local db missing, not setting buffer");
 				return;
 			}
@@ -150,7 +151,7 @@ export class TextFileViewPlugin extends HasLogging {
 		) {
 			this.warn("Syncing view to CRDT - setViewData");
 			this.saving = true;
-			this.view.view.setViewData(this.doc.text, false);
+			this.view.view.setViewData(this.doc.localText, false);
 			this.doc.save();
 			this.saving = false;
 			this.view.tracking = true;
@@ -201,7 +202,7 @@ export class TextFileViewPlugin extends HasLogging {
 								that.doc &&
 								that.view.view.file === that.doc.tfile
 							) {
-								if (that.view.document.text === data) {
+								if (that.doc.localText === data) {
 									that.view.tracking = true;
 								}
 							}
@@ -224,7 +225,7 @@ export class TextFileViewPlugin extends HasLogging {
 							if (that.view.tracking && !that.saving) {
 								that.warn("tracking - applying diff");
 								diffMatchPatch(
-									that.doc.ydoc,
+									that.doc.getWritableDoc(),
 									that.view.view.getViewData(),
 									that.doc,
 								);
@@ -266,7 +267,7 @@ export class TextFileViewPlugin extends HasLogging {
 				}
 				this.warn("setting view data");
 				this.saving = true;
-				this.view.view.setViewData(this.doc.text, false);
+				this.view.view.setViewData(this.doc.localText, false);
 				this.view.view.requestSave();
 				this.saving = false;
 				this.view.tracking = true;

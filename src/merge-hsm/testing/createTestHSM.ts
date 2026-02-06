@@ -88,6 +88,9 @@ export interface TestHSM {
   /** Get localDoc text content (null if not in active mode) */
   getLocalDocText(): string | null;
 
+  /** Get localDoc text length (loads from IDB if in idle mode) */
+  getLocalDocLength(): Promise<number>;
+
   /** Get remoteDoc text content (always available - managed externally per spec) */
   getRemoteDocText(): string | null;
 
@@ -155,6 +158,7 @@ export interface TestableHSM {
   isActive(): boolean;
   isIdle(): boolean;
   getLocalDoc(): Y.Doc | null;
+  getLocalDocLength(): Promise<number>;
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
   checkAndCorrectDrift(): boolean;
@@ -192,7 +196,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
 
   const loadUpdatesRaw = options.loadUpdatesRaw ?? (async () => storedUpdates ? [storedUpdates] : []);
 
-  const createPersistence = (_vaultId: string, doc: Y.Doc): IYDocPersistence => {
+  const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string): IYDocPersistence => {
     // Subscribe to doc updates to track changes
     const updateHandler = (update: Uint8Array) => {
       // Merge with stored updates (like y-indexeddb does)
@@ -203,6 +207,9 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
       }
     };
     doc.on('update', updateHandler);
+
+    // Track if IDB had content at sync time (before any new updates)
+    const hadContentAtSync = storedUpdates !== null;
 
     return {
       synced: false,
@@ -222,6 +229,21 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
         doc.off('update', updateHandler);
       },
       whenSynced: Promise.resolve(),
+      hasUserData() {
+        // Return whether IDB had content when persistence synced
+        return hadContentAtSync;
+      },
+      async initializeWithContent(content: string, fieldName = 'contents') {
+        // Check if already has content
+        if (storedUpdates !== null) {
+          throw new Error(`[mock-persistence] Cannot initialize: database already has content`);
+        }
+        // Insert content into doc
+        doc.transact(() => {
+          const ytext = doc.getText(fieldName);
+          ytext.insert(0, content);
+        });
+      },
     };
   };
 
@@ -334,6 +356,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     clearEffects: () => { effects.length = 0; },
     time,
     getLocalDocText: () => hsm.getLocalDoc()?.getText('contents').toString() ?? null,
+    getLocalDocLength: () => hsm.getLocalDocLength(),
     getRemoteDocText: () => hsm.getRemoteDoc()?.getText('contents').toString() ?? null,
     snapshot: () => createSnapshot(hsm, effects, time),
     stateHistory,

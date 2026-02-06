@@ -134,6 +134,10 @@ export class ShadowMergeHSM implements RecordableHSM {
     return this.hsm.getLocalDoc();
   }
 
+  getLocalDocLength(): Promise<number> {
+    return this.hsm.getLocalDocLength();
+  }
+
   getRemoteDoc(): Y.Doc | null {
     return this.hsm.getRemoteDoc();
   }

@@ -41,8 +41,8 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 				return;
 			}
 
-			// Parse frontmatter from document text
-			const fmi = getFrontMatterInfo(document.text);
+			// Parse frontmatter from localDoc content
+			const fmi = getFrontMatterInfo(document.localText);
 			const fm = fmi.frontmatter;
 			
 			if (fm) {

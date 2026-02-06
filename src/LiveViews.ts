@@ -645,6 +645,9 @@ export class LiveView<ViewType extends TextFileView>
 				// Must happen AFTER acquireLock completes so hsm is available
 				if (hsm && !this._hsmStateUnsubscribe) {
 					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+						// Guard against destroy-time state changes
+						if (!this.document?.sharedFolder?.remote) return;
+
 						const isConflict = state.statePath.includes("conflict");
 						this.log(
 							`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,

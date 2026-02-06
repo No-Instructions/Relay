@@ -37,14 +37,17 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 
 		try {
 			this.debug("Rendering preview from document");
-			
+
+			// Use localText to get editor state from localDoc
+			const text = document.localText;
+
 			// Update the view's internal text state
 			// @ts-ignore - accessing internal Obsidian API
-			this.view.text = document.text;
-			
+			this.view.text = text;
+
 			// Update the preview renderer
 			// @ts-ignore - accessing internal Obsidian API
-			this.view.previewMode.renderer.set(document.text);
+			this.view.previewMode.renderer.set(text);
 
 			// Trigger internal data change handler if available
 			// @ts-ignore - accessing internal Obsidian API

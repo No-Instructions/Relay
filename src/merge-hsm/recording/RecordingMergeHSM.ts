@@ -53,6 +53,7 @@ export interface RecordableHSM {
   send(event: MergeEvent): void;
   matches(statePath: string): boolean;
   getLocalDoc(): Y.Doc | null;
+  getLocalDocLength(): Promise<number>;
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
   checkAndCorrectDrift(): boolean;
@@ -238,6 +239,10 @@ export class RecordingMergeHSM implements RecordableHSM {
 
   getLocalDoc(): Y.Doc | null {
     return this.hsm.getLocalDoc();
+  }
+
+  getLocalDocLength(): Promise<number> {
+    return this.hsm.getLocalDocLength();
   }
 
   getRemoteDoc(): Y.Doc | null {

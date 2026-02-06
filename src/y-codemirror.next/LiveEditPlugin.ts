@@ -166,7 +166,7 @@ export class LiveCMPluginValue implements PluginValue {
 						return function (data: string, clear: boolean) {
 							if (clear) {
 								if (isLiveMd(liveEditPlugin.view)) {
-									if (liveEditPlugin.view.document.text === data) {
+									if (liveEditPlugin.view.document.localText === data) {
 										liveEditPlugin.view.tracking = true;
 									}
 								}
@@ -468,11 +468,6 @@ export class LiveCMPluginValue implements PluginValue {
 		this.log(
 			`[getKeyFrame] editor preview: "${editorText.slice(0, 50).replace(/\n/g, "\\n")}..."`,
 		);
-		if (!this.document.hasLocalDB() && this.document.text === "") {
-			this.warn("local db missing, not setting buffer");
-			return [];
-		}
-
 		// disk and ytext differ
 		if (isLiveMd(this.view) && !this.view.tracking) {
 			this.log("[getKeyFrame] calling view.checkStale() (LiveMd path)");
@@ -485,11 +480,10 @@ export class LiveCMPluginValue implements PluginValue {
 				this.log("[getKeyFrame] HSM reports conflict, showing merge banner");
 				this.mergeBanner();
 			}
-			// HSM always available - no legacy fallback needed
 		}
 
 		if (this.active(this.view) && !this.destroyed) {
-			return [this.getBufferChange(this.document.text, incremental)];
+			return [this.getBufferChange(this.document.localText, incremental)];
 		}
 		return [];
 	}

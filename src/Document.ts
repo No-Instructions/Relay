@@ -357,6 +357,70 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return this.ytext.toString();
 	}
 
+	// ===========================================================================
+	// HSM-aware accessors (localDoc only - no fallback to remoteDoc)
+	// ===========================================================================
+
+	/**
+	 * Get the HSM's localDoc when available (active mode only).
+	 * Returns null when HSM is not in active mode or not available.
+	 *
+	 * IMPORTANT: All editor operations should use localDoc, not ydoc (remoteDoc).
+	 * Writing to ydoc directly causes corruption.
+	 */
+	public get localDoc(): Y.Doc | null {
+		return this._hsm?.getLocalDoc() ?? null;
+	}
+
+	/**
+	 * Get the Y.Text from HSM's localDoc.
+	 * @throws Error if HSM is not in active mode (no localDoc available)
+	 */
+	public get localYText(): Y.Text {
+		const doc = this.localDoc;
+		if (!doc) {
+			throw new Error(
+				`Document ${this.path}: Cannot access localYText - HSM not in active mode.`
+			);
+		}
+		return doc.getText("contents");
+	}
+
+	/**
+	 * Get text content from HSM's localDoc.
+	 * @throws Error if HSM is not in active mode (no localDoc available)
+	 */
+	public get localText(): string {
+		return this.localYText.toString();
+	}
+
+	/**
+	 * Get the YDoc that should be used for write operations.
+	 * Returns localDoc when in active mode, throws when HSM not in active mode.
+	 *
+	 * IMPORTANT: Writing to ydoc (remoteDoc) directly causes corruption.
+	 * All write operations must go through this method or the HSM.
+	 *
+	 * @throws Error if HSM is not in active mode (no localDoc available)
+	 */
+	public getWritableDoc(): Y.Doc {
+		const localDoc = this.localDoc;
+		if (!localDoc) {
+			throw new Error(
+				`Document ${this.path}: Cannot write - HSM not in active mode. ` +
+				`Writing to ydoc (remoteDoc) directly causes corruption.`
+			);
+		}
+		return localDoc;
+	}
+
+	/**
+	 * Check if the document is in a writable state (HSM active mode).
+	 */
+	public get isWritable(): boolean {
+		return this.localDoc !== null;
+	}
+
 	async connect(): Promise<boolean> {
 		if (this.sharedFolder.s3rn instanceof S3Folder) {
 			// Local only

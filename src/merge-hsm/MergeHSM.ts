@@ -54,6 +54,7 @@ import type {
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
+import { curryLog } from '../debug';
 import type { TestableHSM } from './testing/createTestHSM';
 
 // =============================================================================
@@ -440,9 +441,9 @@ const mergeMachine = setup({
       },
     },
     unloading: {
-      always: {
-        target: 'idle.synced',
-      },
+      // No automatic transition - handlers (handleUnload, handleReleaseLock)
+      // do async cleanup and explicitly transition when complete.
+      // An 'always' here would race with async cleanup.
     },
   },
 });
@@ -468,9 +469,14 @@ export class MergeHSM implements TestableHSM {
   private _error: Error | undefined;
   private _deferredConflict: { diskHash: string; localHash: string } | undefined;
 
-  // YDocs (only populated in active mode)
-  private localDoc: Y.Doc | null = null;
-  private remoteDoc: Y.Doc | null = null;
+  // YDocs
+  private localDoc: Y.Doc | null = null;  // Only populated in active mode
+  private remoteDoc: Y.Doc;  // Always available, passed in via config, managed externally
+
+  // Persisted client ID for localDoc across lock cycles.
+  // Reusing the same client ID prevents content duplication when IDB is empty
+  // (the same content enrolled with different client IDs appears as duplicates).
+  private _localDocClientID: number | null = null;
 
   // Pending disk contents for merge (legacy, used for idle mode)
   private pendingDiskContents: string | null = null;
@@ -523,8 +529,6 @@ export class MergeHSM implements TestableHSM {
   private _loadUpdatesRaw: LoadUpdatesRaw;
   private _persistenceMetadata?: PersistenceMetadata;
 
-  // Remote doc is passed in and managed externally
-  private externalRemoteDoc: Y.Doc;
 
   // Lock requested during loading (deferred until PERSISTENCE_LOADED)
   private pendingLockAcquisition = false;
@@ -546,11 +550,18 @@ export class MergeHSM implements TestableHSM {
   // Promise that resolves when idle auto-merge completes (BUG-021)
   private _pendingIdleAutoMerge: Promise<void> | null = null;
 
+  // Promise that resolves when initialization completes
+  private _pendingInitialization: Promise<void> | null = null;
+
   // Network connectivity status (does not block state transitions)
   private _isOnline: boolean = false;
 
   // User ID for PermanentUserData tracking
   private _userId?: string;
+
+  // CRDT operation logging
+  private crdtLog = curryLog('[MergeHSM:CRDT]', 'debug');
+  private _remoteDocLogHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
 
   // Event accumulation queue for loading state (Gap 11)
   // Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
@@ -563,7 +574,7 @@ export class MergeHSM implements TestableHSM {
     this._guid = config.guid;
     this._path = config.path;
     this.vaultId = config.vaultId;
-    this.externalRemoteDoc = config.remoteDoc;
+    this.remoteDoc = config.remoteDoc;
     this._createPersistence = config.createPersistence ?? defaultCreatePersistence;
     this._loadUpdatesRaw = config.loadUpdatesRaw ?? defaultLoadUpdatesRaw;
     this._persistenceMetadata = config.persistenceMetadata;
@@ -698,6 +709,33 @@ export class MergeHSM implements TestableHSM {
     return this.localDoc;
   }
 
+  /**
+   * Get the length of the local document content.
+   * If localDoc is loaded in memory, returns immediately.
+   * If in idle mode (localDoc unloaded), loads from IndexedDB.
+   */
+  async getLocalDocLength(): Promise<number> {
+    // Fast path: localDoc is in memory
+    if (this.localDoc) {
+      return this.localDoc.getText('contents').toString().length;
+    }
+
+    // Slow path: load from IndexedDB
+    const updates = await this._loadUpdatesRaw(this.vaultId);
+    if (updates.length === 0) {
+      return 0;
+    }
+
+    const merged = Y.mergeUpdates(updates);
+    const tempDoc = new Y.Doc();
+    try {
+      Y.applyUpdate(tempDoc, merged, this);
+      return tempDoc.getText('contents').toString().length;
+    } finally {
+      tempDoc.destroy();
+    }
+  }
+
   getConflictData(): {
     base: string;
     local: string;
@@ -711,8 +749,7 @@ export class MergeHSM implements TestableHSM {
 
   getRemoteDoc(): Y.Doc {
     // Per spec: "Access remoteDoc (always available - managed externally)"
-    // externalRemoteDoc is passed in via config and always available
-    return this.externalRemoteDoc;
+    return this.remoteDoc;
   }
 
   /**
@@ -986,7 +1023,14 @@ export class MergeHSM implements TestableHSM {
         break;
 
       case 'INITIALIZE_WITH_CONTENT':
-        this.handleInitializeWithContent(event);
+        // Track the pending initialization so callers can await it
+        this._pendingInitialization = this.handleInitializeWithContent(event)
+          .catch((err) => {
+            console.error('[MergeHSM] Error in handleInitializeWithContent:', err);
+          })
+          .finally(() => {
+            this._pendingInitialization = null;
+          });
         break;
 
       case 'INITIALIZE_LCA':
@@ -1111,6 +1155,11 @@ export class MergeHSM implements TestableHSM {
     this._accumulatedEvents = []; // Clear accumulated events for fresh load
     this._disk = null; // Clear disk state for fresh load
     this._remoteStateVector = null; // Clear remote state for fresh load
+
+    // Register CRDT update observer on remoteDoc (lives from LOAD to UNLOAD)
+    this._remoteDocLogHandler = this.makeCRDTUpdateLogger('remoteDoc', this.remoteDoc);
+    this.remoteDoc.on('update', this._remoteDocLogHandler);
+
     this.transitionTo('loading');
   }
 
@@ -1118,8 +1167,11 @@ export class MergeHSM implements TestableHSM {
     updates: Uint8Array;
     lca: LCAState | null;
   }): void {
-    // Store LCA (may be null - that's fine, LCA is progressive enhancement)
-    this._lca = event.lca;
+    // Only set LCA from persistence if we don't already have one.
+    // INITIALIZE_WITH_CONTENT may have set the LCA before this event arrives.
+    if (!this._lca && event.lca) {
+      this._lca = event.lca;
+    }
 
     // Compute state vector for idle mode comparisons
     if (event.updates.length > 0) {
@@ -1134,64 +1186,57 @@ export class MergeHSM implements TestableHSM {
 
   /**
    * Handle INITIALIZE_WITH_CONTENT event.
-   * Creates localDoc, inserts content, sets LCA, syncs to remote.
-   * Used for newly created documents.
-   * Can be called in loading, idle, or active states.
+   * Creates localDoc, inserts content, attaches persistence, sets LCA, syncs to remote.
+   * Used for initial document enrollment - the first insert into IndexedDB.
+   * Works in any state - this is an API call that must always succeed.
    */
-  private handleInitializeWithContent(event: InitializeWithContentEvent): void {
-    // Skip if already have LCA (don't overwrite)
-    if (this._lca) {
+  private async handleInitializeWithContent(event: InitializeWithContentEvent): Promise<void> {
+    // Create localDoc if it doesn't exist
+    if (!this.localDoc) {
+      this.localDoc = new Y.Doc();
+
+      // Reuse the client ID from a previous session if available.
+      if (this._localDocClientID !== null) {
+        this.localDoc.clientID = this._localDocClientID;
+      }
+    }
+
+    // Attach persistence if not already attached (creates/opens IndexedDB)
+    if (!this.localPersistence) {
+      this.localPersistence = this._createPersistence(this.vaultId, this.localDoc, this._userId);
+    }
+
+    // Initialize with content - handles sync, enrollment check, PUD, and content insertion
+    try {
+      await this.localPersistence.initializeWithContent(event.content);
+    } catch (err) {
+      // Already enrolled - log and return
+      console.error(
+        `[MergeHSM] INITIALIZE_WITH_CONTENT called on already-enrolled file! ` +
+        `guid=${this._guid}, path=${this._path}, error=${err}`
+      );
       return;
     }
 
-    // In active mode, use localDoc; in loading/idle, create temporarily if needed
-    const needsTempDoc = !this.localDoc && this._statePath !== 'loading';
+    // Update state vector
+    this._localStateVector = Y.encodeStateVector(this.localDoc);
 
-    if (this._statePath.startsWith('active.') && this.localDoc) {
-      // Active mode: update existing localDoc using diff-based updates
-      // INVARIANT: Never use delete-all/insert-all pattern
-      const ytext = this.localDoc.getText('contents');
-      const currentText = ytext.toString();
-      if (currentText !== event.content) {
-        const dmp = new diff_match_patch();
-        const diffs = dmp.diff_main(currentText, event.content);
-        dmp.diff_cleanupSemantic(diffs);
-        this.localDoc.transact(() => {
-          let cursor = 0;
-          for (const [operation, text] of diffs) {
-            switch (operation) {
-              case 1: ytext.insert(cursor, text); cursor += text.length; break;
-              case 0: cursor += text.length; break;
-              case -1: ytext.delete(cursor, text.length); break;
-            }
-          }
-        }, this);
-      }
-      this._localStateVector = Y.encodeStateVector(this.localDoc);
-    }
-
-    // Set LCA with provided hash and mtime
-    const stateVector = this.localDoc
-      ? Y.encodeStateVector(this.localDoc)
-      : this._localStateVector ?? new Uint8Array([0]);
-
+    // Set LCA
     this._lca = {
       contents: event.content,
       meta: {
         hash: event.hash,
         mtime: event.mtime,
       },
-      stateVector,
+      stateVector: this._localStateVector,
     };
 
     this.emitPersistState();
 
-    // Sync to remote if in active mode
-    if (this.localDoc && this.remoteDoc) {
-      const update = Y.encodeStateAsUpdate(this.localDoc);
-      Y.applyUpdate(this.remoteDoc, update, this);
-      this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
-    }
+    // Sync localDoc to remoteDoc (so doc.text has content)
+    const update = Y.encodeStateAsUpdate(this.localDoc);
+    Y.applyUpdate(this.remoteDoc, update, this);
+    this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
   }
 
   /**
@@ -1658,6 +1703,12 @@ export class MergeHSM implements TestableHSM {
   }
 
   private handleUnload(): void {
+    // Remove remoteDoc CRDT logging observer
+    if (this._remoteDocLogHandler) {
+      this.remoteDoc.off('update', this._remoteDocLogHandler);
+      this._remoteDocLogHandler = null;
+    }
+
     // Set up cleanup promise for callers to await
     this._cleanupPromise = new Promise<void>((resolve) => {
       this._cleanupResolve = resolve;
@@ -1901,22 +1952,67 @@ export class MergeHSM implements TestableHSM {
   // YDoc Management
   // ===========================================================================
 
-  private createYDocs(): void {
-    this.localDoc = new Y.Doc();
-    // remoteDoc is passed in externally, just reference it in active mode
-    this.remoteDoc = this.externalRemoteDoc;
+  private describeOrigin(origin: unknown): string {
+    if (origin === this) return 'HSM';
+    if (origin === this.remoteDoc) return 'remoteDoc';
+    if (origin === this.localPersistence) return 'persistence';
+    if (origin === null || origin === undefined) return 'null';
+    if (typeof origin === 'string') return `"${origin}"`;
+    return (origin as { constructor?: { name?: string } })?.constructor?.name ?? typeof origin;
+  }
 
-    // Set up PermanentUserData on localDoc to track which user made changes.
-    // This is done on localDoc (not remoteDoc) to avoid crashes from malformed
-    // 'users' map entries that may arrive from the network.
-    if (this._userId) {
-      const permanentUserData = new Y.PermanentUserData(this.localDoc);
-      permanentUserData.setUserMapping(this.localDoc, this.localDoc.clientID, this._userId);
+  private makeCRDTUpdateLogger(docName: string, doc: Y.Doc) {
+    return (update: Uint8Array, origin: unknown) => {
+      const sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+      const clientEntries = [...sv.entries()].map(([id, clock]) => `${id}:${clock}`);
+      const text = doc.getText('contents').toString();
+      this.crdtLog(
+        `${docName} update | origin=${this.describeOrigin(origin)} | clients=[${clientEntries.join(',')}] | len=${text.length} | bytes=${update.length} | state=${this._statePath}`
+      );
+    };
+  }
+
+  private setupCRDTLogging(): void {
+    this.localDoc!.on('update', this.makeCRDTUpdateLogger('localDoc', this.localDoc!));
+    this.remoteDoc!.on('update', this.makeCRDTUpdateLogger('remoteDoc', this.remoteDoc!));
+  }
+
+  private createYDocs(): void {
+    // Reuse localDoc if it already exists (e.g., from INITIALIZE_WITH_CONTENT enrollment)
+    if (!this.localDoc) {
+      this.localDoc = new Y.Doc();
+
+      // Reuse the client ID from a previous session if available.
+      // This prevents content duplication when IDB is empty on reopen:
+      // without this fix, a new client ID would be used to insert the same
+      // content, causing duplication when merged with remoteDoc's history.
+      if (this._localDocClientID !== null) {
+        const freshClientID = this.localDoc.clientID;
+        this.localDoc.clientID = this._localDocClientID;
+        this.crdtLog(
+          `createYDocs | reusing clientID=${this._localDocClientID} (fresh would have been ${freshClientID})`
+        );
+      } else {
+        this.crdtLog(`createYDocs | new clientID=${this.localDoc.clientID}`);
+      }
     }
+
+    // Register CRDT update observers for debugging
+    this.setupCRDTLogging();
 
     // Attach persistence to localDoc — it loads stored updates
     // asynchronously and fires 'synced' when done.
-    this.localPersistence = this._createPersistence(this.vaultId, this.localDoc);
+    // Reuse persistence if it already exists (e.g., from INITIALIZE_WITH_CONTENT enrollment)
+    // PermanentUserData is set up later in handleLocalPersistenceSynced()
+    // AFTER the DB is open and IDB is loaded. This is critical because PUD
+    // advances the client's Yjs clock. If PUD runs before IDB is loaded,
+    // subsequent content operations reference post-PUD clock positions.
+    // The _storeUpdate handler can't capture PUD operations (DB not open
+    // yet), and on reload the content operations become orphaned — they
+    // reference clock positions that don't exist, causing silent data loss.
+    if (!this.localPersistence) {
+      this.localPersistence = this._createPersistence(this.vaultId, this.localDoc, this._userId);
+    }
 
     // Check if persistence already synced (race condition fix).
     // If synced is already true, the 'synced' event won't fire again,
@@ -1944,35 +2040,31 @@ export class MergeHSM implements TestableHSM {
       this.localPersistence.set('s3rn', this._persistenceMetadata.s3rn);
     }
 
-    // Apply updates to populate localDoc with the correct content.
-    // Note: IndexedDB persistence has already loaded stored updates into localDoc.
-    // We only need to handle two cases:
-    // 1. pendingIdleUpdates: Remote updates received while in idle mode
-    // 2. LCA fallback: If localDoc is empty but we have LCA content (BUG-040 fix)
-    //
-    // BUG-043 fix: Do NOT apply initialPersistenceUpdates here - they were already
-    // loaded by IndexedDB persistence. Applying them again causes content duplication.
-    //
-    // BUG-048 fix: Check if pendingIdleUpdates content matches localDoc before applying.
-    // If content is identical but CRDT histories differ (same text inserted by different
-    // clients), applying would duplicate content.
-    //
-    // INVARIANT: Per docs/how-we-bootstrap-collaboration.md, we can only insert content
-    // into the CRDT exactly ONCE. If localDoc already has content from IndexedDB and
-    // pendingIdleUpdates has DIFFERENT content from remote, we MUST NOT blindly apply it.
-    // Instead, let the merge flow (handleYDocsReady) detect the difference and use proper
-    // merge logic (twoWay/threeWay) to resolve it.
-    //
-    // Determine if IDB had stored CRDT state. We check two signals:
-    // 1. State vector > 1 byte: means Yjs operations exist in the database
-    // 2. LCA exists: means the file was previously enrolled (covers empty files
-    //    that were enrolled but have no Yjs operations)
+    // Determine if IDB had stored CRDT state by checking database size directly.
     // This is checked BEFORE applying pendingIdleUpdates so it reflects
     // only what the persistence database loaded.
-    const dbHasOps = this.localDoc
-      ? Y.encodeStateVector(this.localDoc).length > 1
-      : false;
-    const hasContent = dbHasOps || this._lca !== null;
+    //
+    // NOTE: We intentionally do NOT check for LCA existence here.
+    // Per System Invariant #3: "When IDB is empty (no persisted CRDT), the HSM
+    // must consult the server before making a merge decision."
+    // Even if LCA exists (from a previous session), if IDB is empty we must
+    // wait for PROVIDER_SYNCED to get the server's CRDT state before proceeding.
+    // Otherwise we'd go straight to reconciling with empty localDoc, trigger
+    // a merge that re-inserts disk content with a new client ID, and cause
+    // content duplication when synced with remoteDoc's existing history.
+    if (!this.localPersistence) {
+      throw new Error('[MergeHSM] localPersistence is null in handleLocalPersistenceSynced');
+    }
+    // Check if IDB has stored content. PermanentUserData setup is handled
+    // automatically by persistence when it syncs (if userId was provided).
+    const hasContent = this.localPersistence.hasUserData();
+    const localText = this.localDoc?.getText('contents').toString() ?? '';
+
+    this.crdtLog(
+      `persistence synced | hasContent=${hasContent} | ` +
+      `localDocLen=${localText.length} | clientID=${this.localDoc?.clientID} | ` +
+      `savedClientID=${this._localDocClientID}`
+    );
 
     // BUG-048 fix: Only apply pendingIdleUpdates when localDoc is empty.
     // If localDoc has content from IndexedDB, we must NOT blindly apply pendingIdleUpdates
@@ -1986,7 +2078,7 @@ export class MergeHSM implements TestableHSM {
 
       // Only apply if localDoc is empty - safe to apply remote content
       if (localText === '') {
-        Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.externalRemoteDoc);
+        Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
       }
       // If localDoc has content, DO NOT apply - let mergeRemoteToLocal() handle it
       this.pendingIdleUpdates = null;
@@ -1998,6 +2090,12 @@ export class MergeHSM implements TestableHSM {
     // Update state vector to reflect what's in localDoc
     if (this.localDoc) {
       this._localStateVector = Y.encodeStateVector(this.localDoc);
+
+      // Record the client ID for reuse across lock cycles.
+      // This prevents content duplication when IDB comes back empty on reopen.
+      if (this._localDocClientID === null) {
+        this._localDocClientID = this.localDoc.clientID;
+      }
     }
 
     // Set up observer for remote updates (converts deltas to positioned changes)
@@ -2037,7 +2135,7 @@ export class MergeHSM implements TestableHSM {
    * This ensures localDoc has the latest remote state before reconciliation.
    */
   private applyRemoteToLocalIfNeeded(): void {
-    if (!this.localDoc || !this.remoteDoc) return;
+    if (!this.localDoc) return;
 
     const localText = this.localDoc.getText('contents').toString();
     const remoteText = this.remoteDoc.getText('contents').toString();
@@ -2048,7 +2146,7 @@ export class MergeHSM implements TestableHSM {
         this.remoteDoc,
         Y.encodeStateVector(this.localDoc)
       );
-      Y.applyUpdate(this.localDoc, update, this.externalRemoteDoc);
+      Y.applyUpdate(this.localDoc, update, this.remoteDoc);
     }
   }
 
@@ -2100,7 +2198,7 @@ export class MergeHSM implements TestableHSM {
     const ytext = this.localDoc.getText('contents');
     this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
       // Skip changes originated by this HSM (CM6 edits, conflict resolution, etc.).
-      // Remote-originated changes use externalRemoteDoc as origin, so they pass through.
+      // Remote-originated changes use remoteDoc as origin, so they pass through.
       if (tr.origin === this) return;
 
       // Only dispatch in tracking state
@@ -2204,8 +2302,6 @@ export class MergeHSM implements TestableHSM {
       this.localDoc = null;
     }
     // Do NOT destroy remoteDoc - it's managed externally
-    // Just clear our reference to it
-    this.remoteDoc = null;
   }
 
   /**
@@ -2216,14 +2312,17 @@ export class MergeHSM implements TestableHSM {
    * @param content - The file content to initialize with
    * @param hash - Hash of the content
    * @param mtime - Modification time from disk
+   * @returns Promise that resolves when initialization completes
    */
-  initializeLocalDoc(content: string, hash: string, mtime: number): void {
+  initializeLocalDoc(content: string, hash: string, mtime: number): Promise<void> {
     this.send({
       type: 'INITIALIZE_WITH_CONTENT',
       content,
       hash,
       mtime,
     });
+    // Return the pending initialization promise (set by handleEvent)
+    return this._pendingInitialization ?? Promise.resolve();
   }
 
   // ===========================================================================
@@ -2265,7 +2364,7 @@ export class MergeHSM implements TestableHSM {
   // While you may be tempted to try to filter outbound sync based on
   // heuristics, that is always the wrong approach. The error is in the sender.
   private syncLocalToRemote(): void {
-    if (!this.localDoc || !this.remoteDoc) return;
+    if (!this.localDoc) return;
 
     const update = Y.encodeStateAsUpdate(
       this.localDoc,
@@ -2286,18 +2385,11 @@ export class MergeHSM implements TestableHSM {
     // While you may be tempted to try to filter inbound messages based on
     // heuristics, that is always the wrong approach. The error is in the sender.
     //
-    // Apply update to the appropriate YDoc.
+    // Apply update to remoteDoc (always available, managed externally).
     // Yjs apply is idempotent for same-client operations, so re-applying
     // an update the provider already applied is safe (no-op).
-    if (this.remoteDoc) {
-      Y.applyUpdate(this.remoteDoc, event.update, this.externalRemoteDoc);
-      this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
-    } else {
-      // In idle/loading mode, remoteDoc may not be available.
-      // Use externalRemoteDoc (always available) to track state.
-      Y.applyUpdate(this.externalRemoteDoc, event.update, this.externalRemoteDoc);
-      this._remoteStateVector = Y.encodeStateVector(this.externalRemoteDoc);
-    }
+    Y.applyUpdate(this.remoteDoc, event.update, this.remoteDoc);
+    this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
 
     if (this._statePath === 'loading' || this._statePath === 'active.loading' || this.matches('active.entering')) {
       // Accumulate for replay after mode transition / reconciliation.
@@ -2359,7 +2451,7 @@ export class MergeHSM implements TestableHSM {
    * heuristics, that is always the wrong approach. The error is in the sender.
    */
   private mergeRemoteToLocal(): void {
-    if (!this.localDoc || !this.remoteDoc) return;
+    if (!this.localDoc) return;
 
     const localText = this.localDoc.getText('contents').toString();
     const remoteText = this.remoteDoc.getText('contents').toString();
@@ -2374,7 +2466,7 @@ export class MergeHSM implements TestableHSM {
       this.remoteDoc,
       Y.encodeStateVector(this.localDoc)
     );
-    Y.applyUpdate(this.localDoc, update, this.externalRemoteDoc);
+    Y.applyUpdate(this.localDoc, update, this.remoteDoc);
   }
 
   // ===========================================================================
@@ -3144,7 +3236,8 @@ function simpleHash(contents: string): string {
  * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
  * Production code should pass a real factory that creates IndexeddbPersistence.
  */
-const defaultCreatePersistence: CreatePersistence = (_vaultId: string, _doc: Y.Doc): IYDocPersistence => {
+const defaultCreatePersistence: CreatePersistence = (_vaultId: string, doc: Y.Doc, _userId?: string): IYDocPersistence => {
+  let hasContent = false;
   return {
     synced: false,
     once(_event: 'synced', cb: () => void) {
@@ -3156,6 +3249,19 @@ const defaultCreatePersistence: CreatePersistence = (_vaultId: string, _doc: Y.D
       // No-op
     },
     whenSynced: Promise.resolve(),
+    hasUserData() {
+      return hasContent;
+    },
+    async initializeWithContent(content: string, fieldName = 'contents') {
+      if (hasContent) {
+        throw new Error('[default-persistence] Cannot initialize: already has content');
+      }
+      doc.transact(() => {
+        const ytext = doc.getText(fieldName);
+        ytext.insert(0, content);
+      });
+      hasContent = true;
+    },
   };
 };
 

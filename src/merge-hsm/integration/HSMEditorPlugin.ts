@@ -103,6 +103,25 @@ class HSMEditorPluginValue implements PluginValue {
     if (this.cm6Integration) return true;
     if (this.destroyed) return false;
 
+    const connectionManager = this.editor.state.field(
+      ConnectionManagerStateField,
+      false
+    );
+    if (!connectionManager) return false;
+
+    // Detect embedded canvas editors (no MarkdownView wrapper, no auto-save)
+    const sourceView = this.editor.dom.closest(".markdown-source-view");
+    this.embed = !!sourceView?.classList.contains("mod-inside-iframe");
+
+    // In Live Preview mode, Obsidian creates two CodeMirror instances:
+    // 1. The source editor (where user types) - findView() matches this
+    // 2. The reading/preview editor - findView() returns undefined
+    // Only create CM6Integration for the main source editor (or embeds).
+    const view = connectionManager.findView(this.editor);
+    if (!isLiveMd(view) && !this.embed) {
+      return false;
+    }
+
     this.document = this.getDocument();
     if (!this.document) return false;
 
@@ -128,10 +147,6 @@ class HSMEditorPluginValue implements PluginValue {
       );
       return false;
     }
-
-    // Detect embedded canvas editors (no MarkdownView wrapper, no auto-save)
-    const sourceView = this.editor.dom.closest(".markdown-source-view");
-    this.embed = !!sourceView?.classList.contains("mod-inside-iframe");
 
     // Create CM6Integration to handle bidirectional sync
     // Pass the vault-relative path so CM6Integration can verify the editor doesn't switch files

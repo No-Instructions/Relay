@@ -137,14 +137,16 @@ export class IndexeddbPersistence extends Observable {
   /**
    * @param {string} name
    * @param {Y.Doc} doc
+   * @param {string|null} [userId] - User ID for PermanentUserData tracking
    */
-  constructor (name, doc) {
+  constructor (name, doc, userId = null) {
     super()
     this.doc = doc
     this.name = name
     this._dbref = 0
     this._dbsize = 0
     this._destroyed = false
+    this._userId = userId
     /**
      * @type {IDBDatabase|null}
      */
@@ -191,6 +193,15 @@ export class IndexeddbPersistence extends Observable {
           if (changed) {
             idb.addAutoKey(updatesStore, pendingState)
           }
+        }
+        // Set up PermanentUserData if userId provided and DB has content.
+        // This MUST happen AFTER IDB is loaded because PUD advances the client's
+        // Yjs clock. If done before IDB loads, subsequent content operations
+        // reference post-PUD clock positions that don't exist in IDB.
+        // Only set up PUD if file is already enrolled (hasUserData), otherwise
+        // we'd write PUD ops before enrollment.
+        if (this._userId && this.hasUserData()) {
+          this._setupPermanentUserData()
         }
         this.synced = true
         this.emit('synced', [this])
@@ -340,6 +351,45 @@ export class IndexeddbPersistence extends Observable {
    */
   hasUserData () {
     return this._dbsize > 0
+  }
+
+  /**
+   * Initialize persistence with text content.
+   * Used for initial document enrollment - the first insert into IndexedDB.
+   * @param {string} content - Text content to insert
+   * @param {string} [fieldName='contents'] - Y.Text field name
+   * @throws {Error} if database already has content (already enrolled)
+   * @return {Promise<void>}
+   */
+  async initializeWithContent (content, fieldName = 'contents') {
+    await this.whenSynced
+    if (this.hasUserData()) {
+      throw new Error(
+        `[y-indexeddb] Cannot initialize: database "${this.name}" already has ${this._dbsize} updates`
+      )
+    }
+
+    // Set up PermanentUserData BEFORE content insertion.
+    // This ensures user mapping is active when operations are written.
+    if (this._userId) {
+      this._setupPermanentUserData()
+    }
+
+    // Insert content into the doc's Text type
+    this.doc.transact(() => {
+      const ytext = this.doc.getText(fieldName)
+      ytext.insert(0, content)
+    })
+  }
+
+  /**
+   * Set up PermanentUserData for user tracking.
+   * @private
+   */
+  _setupPermanentUserData () {
+    if (!this._userId) return
+    const permanentUserData = new Y.PermanentUserData(this.doc)
+    permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
   }
 
   /**
