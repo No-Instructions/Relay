@@ -26,7 +26,7 @@ import type {
   OpenDiffViewEvent,
   CancelEvent,
   PersistenceLoadedEvent,
-  YDocsReadyEvent,
+  PersistenceSyncedEvent,
   InitializeWithContentEvent,
   InitializeLCAEvent,
   MergeSuccessEvent,
@@ -176,8 +176,8 @@ export function persistenceLoaded(
   return { type: 'PERSISTENCE_LOADED', updates, lca };
 }
 
-export function yDocsReady(): YDocsReadyEvent {
-  return { type: 'YDOCS_READY' };
+export function persistenceSynced(hasContent: boolean): PersistenceSyncedEvent {
+  return { type: 'PERSISTENCE_SYNCED', hasContent };
 }
 
 /**
@@ -361,11 +361,19 @@ export async function loadAndActivate(
   // 3. SET_MODE_ACTIVE → active.loading (mode determination)
   hsm.send({ type: 'SET_MODE_ACTIVE' });
 
-  // 4. ACQUIRE_LOCK → active.entering (creates YDocs, waits for sync)
-  //    Mock persistence syncs immediately, fires YDOCS_READY via microtask
+  // 4. ACQUIRE_LOCK → active.entering.awaitingPersistence (creates YDocs)
+  //    Mock persistence syncs immediately, fires PERSISTENCE_SYNCED synchronously.
+  //    If IDB had content (hasContent=true) → reconciling → tracking.
+  //    If IDB was empty (hasContent=false) → awaitingRemote (needs PROVIDER_SYNCED).
   hsm.send(acquireLock(content));
 
-  // Wait for YDOCS_READY to fire (via microtask from whenSynced Promise)
+  // When IDB was empty, HSM waits in awaitingRemote for server state.
+  // Send PROVIDER_SYNCED to unblock it.
+  if (hsm.matches('active.entering')) {
+    hsm.send(providerSynced());
+  }
+
+  // Wait for any async microtasks to settle
   await Promise.resolve();
 
   // Sync localDoc content to remoteDoc (simulating initial provider sync)

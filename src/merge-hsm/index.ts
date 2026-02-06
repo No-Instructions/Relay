@@ -42,7 +42,7 @@ export type {
   OpenDiffViewEvent,
   CancelEvent,
   PersistenceLoadedEvent,
-  YDocsReadyEvent,
+  PersistenceSyncedEvent,
   MergeSuccessEvent,
   MergeConflictEvent,
   RemoteDocUpdatedEvent,

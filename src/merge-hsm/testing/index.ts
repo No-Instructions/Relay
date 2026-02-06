@@ -44,7 +44,7 @@ export {
   cancel,
   // Internal events
   persistenceLoaded,
-  yDocsReady,
+  persistenceSynced,
   initializeWithContent,
   initializeLCA,
   mergeSuccess,

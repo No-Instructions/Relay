@@ -507,6 +507,14 @@ export class MergeManager {
     if (!this.activeDocs.has(guid)) {
       hsm.send({ type: 'ACQUIRE_LOCK', editorContent });
       this.activeDocs.add(guid);
+
+      // If HSM is waiting for provider sync (empty IDB), send PROVIDER_SYNCED
+      // to unblock. In production, ProviderIntegration (created by Document.acquireLock)
+      // delivers this event. MergeManager.getHSM() is a simpler API that handles
+      // the common case of an already-synced provider.
+      if (hsm.matches('active.entering')) {
+        hsm.send({ type: 'PROVIDER_SYNCED' });
+      }
     }
 
     return hsm;
@@ -517,13 +525,6 @@ export class MergeManager {
    */
   isActive(guid: string): boolean {
     return this.activeDocs.has(guid);
-  }
-
-  /**
-   * @deprecated Use isActive() instead. Renamed for spec consistency.
-   */
-  isLoaded(guid: string): boolean {
-    return this.isActive(guid);
   }
 
   /**
@@ -702,23 +703,6 @@ export class MergeManager {
     }
 
     await this._persistIndex(statusMap);
-  }
-
-  /**
-   * Subscribe to sync status changes.
-   * @deprecated Use syncStatus.subscribe() directly for ObservableMap subscription.
-   */
-  onStatusChange(
-    listener: (guid: string, status: SyncStatus) => void
-  ): () => void {
-    // Wrap the listener to work with ObservableMap subscription
-    const observableListener = () => {
-      // This gets called when any status changes - caller can check what changed
-      for (const [guid, status] of this._syncStatus.entries()) {
-        listener(guid, status);
-      }
-    };
-    return this._syncStatus.subscribe(observableListener);
   }
 
   /**

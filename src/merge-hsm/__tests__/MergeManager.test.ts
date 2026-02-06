@@ -430,12 +430,12 @@ describe('MergeManager', () => {
       await manager.register('doc-1', 'notes/test.md', remoteDoc);
       await manager.getHSM('doc-1', 'notes/test.md', remoteDoc);
 
-      expect(manager.isLoaded('doc-1')).toBe(true);
+      expect(manager.isActive('doc-1')).toBe(true);
 
       await manager.unregister('doc-1');
 
       expect(manager.isRegistered('doc-1')).toBe(false);
-      expect(manager.isLoaded('doc-1')).toBe(false);
+      expect(manager.isActive('doc-1')).toBe(false);
     });
   });
 
@@ -447,7 +447,7 @@ describe('MergeManager', () => {
       const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
       expect(hsm.state.statePath).toBe('active.tracking');
-      expect(manager.isLoaded('doc-1')).toBe(true);
+      expect(manager.isActive('doc-1')).toBe(true);
     });
 
     test('getHSM registers if not already registered', async () => {
@@ -471,11 +471,11 @@ describe('MergeManager', () => {
       await manager.register('doc-1', 'test.md', remoteDoc);
       await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
-      expect(manager.isLoaded('doc-1')).toBe(true);
+      expect(manager.isActive('doc-1')).toBe(true);
 
       await manager.unload('doc-1');
 
-      expect(manager.isLoaded('doc-1')).toBe(false);
+      expect(manager.isActive('doc-1')).toBe(false);
       expect(manager.isRegistered('doc-1')).toBe(true);
 
       const hsm = manager.getIdleHSM('doc-1');
@@ -504,7 +504,7 @@ describe('MergeManager', () => {
       await manager.register('doc-1', 'test.md', remoteDoc);
 
       // Never called getHSM, so not active
-      expect(manager.isLoaded('doc-1')).toBe(false);
+      expect(manager.isActive('doc-1')).toBe(false);
 
       // Should not throw
       await manager.unload('doc-1');
@@ -535,8 +535,6 @@ describe('MergeManager', () => {
       const remoteDoc = createRemoteDoc();
       const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
-      // Send YDOCS_READY to get to tracking state
-      hsm.send({ type: 'YDOCS_READY' });
       expect(hsm.state.statePath).toBe('active.tracking');
 
       const update = createTestUpdate('hello');
@@ -557,11 +555,11 @@ describe('MergeManager', () => {
   });
 
   describe('status change notifications', () => {
-    test('onStatusChange notifies on status update', async () => {
-      const statusChanges: Array<{ guid: string; status: string }> = [];
+    test('syncStatus.subscribe notifies on status update', async () => {
+      let notified = false;
 
-      manager.onStatusChange((guid, status) => {
-        statusChanges.push({ guid, status: status.status });
+      manager.syncStatus.subscribe(() => {
+        notified = true;
       });
 
       const remoteDoc = createRemoteDoc();
@@ -574,14 +572,14 @@ describe('MergeManager', () => {
       // Advance time again for the update notification
       timeProvider.setTime(timeProvider.now() + 100);
 
-      // Status changes should have been notified (transitions through pending→synced)
-      expect(statusChanges.length).toBeGreaterThan(0);
+      // Status changes should have been notified
+      expect(notified).toBe(true);
     });
 
-    test('onStatusChange can be unsubscribed', async () => {
+    test('syncStatus.subscribe can be unsubscribed', async () => {
       let callCount = 0;
 
-      const unsubscribe = manager.onStatusChange(() => {
+      const unsubscribe = manager.syncStatus.subscribe(() => {
         callCount++;
       });
 
@@ -824,7 +822,7 @@ describe('MergeManager', () => {
 
       expect(hsm).toBeDefined();
       expect(hsm?.isIdle()).toBe(true);
-      expect(manager.isLoaded('doc-1')).toBe(false);  // No lock acquired
+      expect(manager.isActive('doc-1')).toBe(false);  // No lock acquired
     });
   });
 
@@ -890,15 +888,15 @@ describe('MergeManager', () => {
       expect(manager.isActive('doc-1')).toBe(true);
     });
 
-    test('isLoaded is deprecated alias for isActive', async () => {
+    test('isActive reflects lock state through lifecycle', async () => {
       const remoteDoc = createRemoteDoc();
       await manager.register('doc-1', 'test.md', remoteDoc);
 
-      expect(manager.isLoaded('doc-1')).toBe(manager.isActive('doc-1'));
+      expect(manager.isActive('doc-1')).toBe(false);
 
       await manager.getHSM('doc-1', 'test.md', remoteDoc);
 
-      expect(manager.isLoaded('doc-1')).toBe(manager.isActive('doc-1'));
+      expect(manager.isActive('doc-1')).toBe(true);
     });
   });
 
