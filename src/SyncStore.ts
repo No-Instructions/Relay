@@ -252,10 +252,10 @@ export class SyncStore extends Observable<SyncStore> {
 			this.legacyIds.observe(logObserver);
 			this.meta.observe(logObserver);
 			this.unsubscribes.push(() => {
-				this.legacyIds.unobserve(logObserver);
+				this.legacyIds?.unobserve(logObserver);
 			});
 			this.unsubscribes.push(() => {
-				this.meta.unobserve(logObserver);
+				this.meta?.unobserve(logObserver);
 			});
 		});
 
@@ -278,10 +278,10 @@ export class SyncStore extends Observable<SyncStore> {
 		this.legacyIds.observe(legacyListener);
 		this.meta.observe(syncFileObserver);
 		this.unsubscribes.push(() => {
-			this.legacyIds.unobserve(legacyListener);
+			this.legacyIds?.unobserve(legacyListener);
 		});
 		this.unsubscribes.push(() => {
-			this.meta.unobserve(syncFileObserver);
+			this.meta?.unobserve(syncFileObserver);
 		});
 		this.unsubscribes.push(
 			this.typeRegistry.subscribe(() => {

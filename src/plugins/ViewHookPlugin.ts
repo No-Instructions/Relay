@@ -82,7 +82,7 @@ export class ViewHookPlugin extends HasLogging {
 							if (that.view.getMode?.() === "preview" && that.saving) {
 								that.debug("Syncing metadata changes to CRDT during save");
 								diffMatchPatch(
-									that.document.ydoc,
+									that.document.getWritableDoc(),
 									// @ts-ignore
 									that.view.text,
 									that.document,
@@ -117,7 +117,7 @@ export class ViewHookPlugin extends HasLogging {
 									that.debug("Dispatched preview edit to CodeMirror");
 								} else {
 									// Otherwise sync directly to CRDT
-									diffMatchPatch(that.document.ydoc, data, that.document);
+									diffMatchPatch(that.document.getWritableDoc(), data, that.document);
 									that.debug("Synced preview edit directly to CRDT");
 								}
 								return;
@@ -220,9 +220,9 @@ export class ViewHookPlugin extends HasLogging {
 	async initialize(): Promise<void> {
 		await this.document.whenReady();
 
-		// Perform initial render
+		// Perform initial render using localDoc content
 		// @ts-ignore
-		this.view.previewMode.renderer.set(this.document.text);
+		this.view.previewMode.renderer.set(this.document.localText);
 		this.renderAll();
 
 		this.document.connect();

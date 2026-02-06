@@ -168,17 +168,18 @@ export class E2ERecordingBridge {
    * Called automatically when onEntry is provided in config.
    */
   private startStreaming(): void {
-    // Wrap existing loaded HSMs
+    // Wrap all registered HSMs (not just active ones — idle HSMs also
+    // receive events that trigger state transitions we want to capture).
     for (const guid of this.manager.getRegisteredGuids()) {
-      if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+      if (!this.docRecordings.has(guid)) {
         this.startRecordingDocument(guid);
       }
     }
 
-    // Subscribe to new HSMs being loaded
+    // Subscribe to new HSMs being registered
     this.managerUnsubscribe = this.manager.syncStatus.subscribe(() => {
       for (const guid of this.manager.getRegisteredGuids()) {
-        if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+        if (!this.docRecordings.has(guid)) {
           this.startRecordingDocument(guid);
         }
       }
@@ -249,7 +250,7 @@ export class E2ERecordingBridge {
 
       // Subscribe to existing loaded HSMs
       for (const guid of this.manager.getRegisteredGuids()) {
-        if (this.manager.isLoaded(guid)) {
+        if (this.manager.isActive(guid)) {
           this.startRecordingDocument(guid);
         }
       }
@@ -261,7 +262,7 @@ export class E2ERecordingBridge {
         if (!this.recording) return;
 
         for (const guid of this.manager.getRegisteredGuids()) {
-          if (this.manager.isLoaded(guid) && !this.docRecordings.has(guid)) {
+          if (this.manager.isActive(guid) && !this.docRecordings.has(guid)) {
             this.startRecordingDocument(guid);
           }
         }
