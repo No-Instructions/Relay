@@ -258,6 +258,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			// Wait for active.tracking state (not idle - that would deadlock in awaitingLCA)
 			await this._hsm.awaitActive();
 
+			// Guard against race: releaseLock() may have been called while we
+			// were awaiting. If so, the HSM has already transitioned back to idle
+			// and we must not create a ProviderIntegration (it would leak).
+			if (!this.userLock && !mergeManager.isActive(this.guid)) {
+				return null;
+			}
+
 			this.userLock = true; // Keep for compatibility
 
 			// Create ProviderIntegration to bridge HSM with provider.

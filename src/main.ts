@@ -919,6 +919,9 @@ export default class Live extends Plugin {
 			this.app.workspace.on("file-open", (file) => {
 				workspaceLog("file-open");
 				plugin._liveViews.refresh("file-open");
+				if (file instanceof TFile) {
+					sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_OPENED', path: file.path });
+				}
 			}),
 		);
 
@@ -1060,10 +1063,28 @@ export default class Live extends Plugin {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
+		/** Route a diagnostic event to the HSM for the given file (if it's a Relay document). */
+		const sendDiagnosticToHSM = (file: TFile, event: any) => {
+			try {
+				const folder = plugin.sharedFolders.lookup(file.path);
+				if (folder) {
+					const doc = folder.proxy.getFile(file);
+					if (doc && isDocument(doc) && doc.hsm) {
+						doc.hsm.send(event);
+					}
+				}
+			} catch (e) {
+				plugin.debug('Error sending diagnostic event:', e);
+			}
+		};
+
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old: any) {
 				return function (file: any) {
+					if (file instanceof TFile) {
+						sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_UNLOADED', path: file.path });
+					}
 					plugin._liveViews.wipe();
 					// @ts-ignore
 					return old.call(this, file);

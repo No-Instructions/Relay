@@ -441,13 +441,12 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) return;
 
-		// Skip active documents - ProviderIntegration handles them via remoteDoc observer
-		const hsm = this.mergeManager.getIdleHSM(guid);
-		if (hsm?.isActive()) {
-			return;
-		}
-
-		// Forward the update to MergeManager for idle mode handling
+		// Always forward remote updates to MergeManager regardless of HSM mode.
+		// In active mode with ProviderIntegration, the update is already applied
+		// to remoteDoc by the provider — the HSM handles deduplication safely
+		// (Yjs ignores already-applied updates). This ensures updates are never
+		// lost when the HSM is in active mode without a ProviderIntegration
+		// (e.g., stale ACQUIRE_LOCK caused spurious idle→active transition).
 		if (event.update) {
 			this.mergeManager.handleRemoteUpdate(guid, event.update);
 		}
@@ -504,8 +503,10 @@ export class SharedFolder extends HasProvider {
 	 *
 	 * Without this handler, the effect is dropped.
 	 */
-	private async handleIdleWriteDisk(vaultPath: string, contents: string): Promise<void> {
+	private async handleIdleWriteDisk(docPath: string, contents: string): Promise<void> {
 		try {
+			// docPath is SharedFolder-relative (e.g., "/note.md"), convert to vault path
+			const vaultPath = this.getPath(docPath);
 			const tfile = this.vault.getAbstractFileByPath(vaultPath);
 			if (!(tfile instanceof TFile)) {
 				this.warn(`[handleIdleWriteDisk] File not found at path: ${vaultPath}`);
@@ -515,7 +516,7 @@ export class SharedFolder extends HasProvider {
 			await this.vault.modify(tfile, contents);
 			this.log(`[handleIdleWriteDisk] Wrote merged content to ${vaultPath}`);
 		} catch (e) {
-			this.warn(`[handleIdleWriteDisk] Failed to write to ${vaultPath}:`, e);
+			this.warn(`[handleIdleWriteDisk] Failed to write to ${docPath}:`, e);
 		}
 	}
 
