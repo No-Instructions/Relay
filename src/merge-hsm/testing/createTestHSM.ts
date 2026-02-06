@@ -293,7 +293,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
           case -1: ytext.delete(cursor, text.length); break;
         }
       }
-    }, 'test-remote');
+    }, remoteDoc);
   };
 
   /**
@@ -319,7 +319,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
    * This makes remoteDoc share CRDT history with the source of the update.
    */
   const syncRemoteWithUpdate = (update: Uint8Array): void => {
-    Y.applyUpdate(remoteDoc, update, 'sync');
+    Y.applyUpdate(remoteDoc, update, remoteDoc);
     // Update tracker to reflect the new state
     lastRemoteStateVector = Y.encodeStateVector(remoteDoc);
   };

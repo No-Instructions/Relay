@@ -465,17 +465,11 @@ describe('MergeHSM', () => {
       await t.hsm.awaitCleanup();
       expectState(t, 'idle.synced');
 
-      // KEY SCENARIO: Server echo arrives while in idle
-      // This is a delta update containing just the new ops (the marker insertion)
-      // In real system, this comes from the server echoing our update
-      // We simulate by encoding the delta between original and edited state
-      const deltaDoc = new Y.Doc();
-      deltaDoc.getText('contents').insert(0, editedContent);
-      // The "server echo" would only contain the NEW operations
-      // Since we can't easily extract just the delta, we'll send the full state
-      // which exercises the same code path (merging with existing content)
-      const serverEcho = Y.encodeStateAsUpdate(deltaDoc);
-      deltaDoc.destroy();
+      // KEY SCENARIO: Server echo arrives while in idle.
+      // A real server echo contains the same operations we already sent,
+      // echoed back. It shares CRDT history with our remoteDoc (same client IDs).
+      // Simulate by re-encoding remoteDoc's state as the echo update.
+      const serverEcho = Y.encodeStateAsUpdate(t.hsm.getRemoteDoc());
 
       // Send the "server echo" as REMOTE_UPDATE
       t.send(remoteUpdate(serverEcho));
@@ -965,6 +959,125 @@ describe('MergeHSM', () => {
       t.applyRemoteChange('hello');
 
       expect(t.getLocalDocText()).toBeNull();
+    });
+
+    // =================================================================
+    // Anti-heuristic tests
+    //
+    // These tests ensure that remote updates are NEVER filtered based
+    // on content heuristics. Legitimate documents can contain repeated
+    // text, and remote updates that happen to match local content must
+    // still be processed. The error is always in the sender, never in
+    // the receiver.
+    // =================================================================
+
+    const POEM = [
+      'Do not go gentle into that good night,',
+      'Old age should burn and rave at close of day;',
+      'Rage, rage against the dying of the light.',
+      '',
+      'Though wise men at their end know dark is right,',
+      'Because their words had forked no lightning they',
+      'Do not go gentle into that good night.',
+      '',
+      'Rage, rage against the dying of the light.',
+    ].join('\n');
+
+    test('remote update with repeated content (refrain) transitions to idle.remoteAhead', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t);
+
+      // The poem has two identical lines ("Rage, rage..." and "Do not go...").
+      // A content-matching heuristic might see repeated text and wrongly
+      // conclude this is a duplication artifact.
+      t.applyRemoteChange(POEM);
+
+      expectState(t, 'idle.remoteAhead');
+    });
+
+    test('remote update arriving twice is idempotent, not blocked', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+      t.send(await diskChanged('hello', 1000));
+
+      // First remote update
+      t.applyRemoteChange('hello world');
+      await t.hsm.awaitIdleAutoMerge();
+      expectState(t, 'idle.synced');
+
+      // Send the exact same content again (e.g. server re-delivery).
+      // A heuristic that compares content strings would skip this.
+      // But Yjs handles idempotency correctly — same ops from the same
+      // client are a no-op, and the state machine must still process the event.
+      t.applyRemoteChange('hello world');
+      // Should process without error and remain synced (content didn't change)
+      await t.hsm.awaitIdleAutoMerge();
+      expect(t.matches('idle')).toBe(true);
+    });
+
+    test('document whose content is naturally doubled survives remote sync', async () => {
+      // Content where the second half equals the first half — like a
+      // call-and-response or a copy/paste that the user actually intended.
+      const doubled = 'chorus line\nchorus line\n';
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: doubled, mtime: 1000 });
+      t.send(await diskChanged(doubled, 1000));
+
+      // Remote peer adds a verse before the doubled chorus
+      const withVerse = 'new verse\n' + doubled;
+      t.applyRemoteChange(withVerse);
+      await t.hsm.awaitIdleAutoMerge();
+
+      expectState(t, 'idle.synced');
+    });
+
+    test('active mode: remote update matching editor content still merges', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'draft', mtime: 1000 });
+      t.send(await diskChanged('draft', 1000));
+
+      // Open editor
+      t.send(acquireLock('draft'));
+      expectState(t, 'active.tracking');
+
+      // User types "draft v2"
+      t.send(cm6Insert(5, ' v2', 'draft v2'));
+      expectLocalDocText(t, 'draft v2');
+
+      // Remote peer independently made the same edit.
+      // The remote update contains the same resulting text.
+      // A heuristic would see "content matches" and skip — but this is
+      // a legitimate convergent edit that must be processed.
+      t.applyRemoteChange('draft v2');
+
+      // Should still be tracking, content intact (not doubled)
+      expectState(t, 'active.tracking');
+      expectLocalDocText(t, 'draft v2');
+    });
+
+    test('poem with refrain survives full edit/save/close/reopen cycle', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: POEM, mtime: 1000 });
+      t.send(await diskChanged(POEM, 1000));
+
+      // Open, edit (add a stanza that repeats the refrain again), save, close
+      t.send(acquireLock(POEM));
+      expectState(t, 'active.tracking');
+
+      const extraRefrain = POEM + '\n\nRage, rage against the dying of the light.';
+      t.send(cm6Insert(POEM.length, '\n\nRage, rage against the dying of the light.', extraRefrain));
+      expectLocalDocText(t, extraRefrain);
+
+      t.send(saveComplete(2000, 'poem-hash'));
+      t.send(await diskChanged(extraRefrain, 2000));
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+      expectState(t, 'idle.synced');
+
+      // Reopen — content must not be deduplicated or corrupted
+      t.send(acquireLock(extraRefrain));
+      expectState(t, 'active.tracking');
+      expectLocalDocText(t, extraRefrain);
     });
 
     test('ACQUIRE_LOCK creates YDocs for active mode', async () => {
