@@ -50,11 +50,11 @@ import type {
   ResolveHunkEvent,
   InitializeWithContentEvent,
   InitializeLCAEvent,
+  LoadUpdatesRaw,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import type { TestableHSM } from './testing/createTestHSM';
-import type { LoadUpdatesRaw } from './types';
 
 // =============================================================================
 // Simple Observable for HSM
@@ -1189,7 +1189,7 @@ export class MergeHSM implements TestableHSM {
     // Sync to remote if in active mode
     if (this.localDoc && this.remoteDoc) {
       const update = Y.encodeStateAsUpdate(this.localDoc);
-      Y.applyUpdate(this.remoteDoc, update, 'local');
+      Y.applyUpdate(this.remoteDoc, update, this);
       this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
     }
   }
@@ -1410,7 +1410,7 @@ export class MergeHSM implements TestableHSM {
       if (localMerged.length > 0) {
         const localDoc = new Y.Doc();
         try {
-          Y.applyUpdate(localDoc, localMerged);
+          Y.applyUpdate(localDoc, localMerged, this);
           localContent = localDoc.getText('contents').toString();
         } finally {
           localDoc.destroy();
@@ -1418,7 +1418,7 @@ export class MergeHSM implements TestableHSM {
       }
       const remoteDoc = new Y.Doc();
       try {
-        Y.applyUpdate(remoteDoc, this.pendingIdleUpdates!);
+        Y.applyUpdate(remoteDoc, this.pendingIdleUpdates!, this);
         remoteContent = remoteDoc.getText('contents').toString();
       } finally {
         remoteDoc.destroy();
@@ -1435,7 +1435,7 @@ export class MergeHSM implements TestableHSM {
       // Step 5: NOW hydrate to extract text content (Y.Doc needed only here)
       const tempDoc = new Y.Doc();
       try {
-        Y.applyUpdate(tempDoc, merged);
+        Y.applyUpdate(tempDoc, merged, this);
         const mergedContent = tempDoc.getText('contents').toString();
         const stateVector = Y.encodeStateVector(tempDoc);
 
@@ -1503,7 +1503,7 @@ export class MergeHSM implements TestableHSM {
         // Step 1: Apply existing local updates to get the current CRDT state
         if (localUpdates.length > 0) {
           const localMerged = Y.mergeUpdates(localUpdates);
-          Y.applyUpdate(tempDoc, localMerged);
+          Y.applyUpdate(tempDoc, localMerged, this);
         }
 
         // Step 2: Capture state vector BEFORE modifying (for diff encoding)
@@ -1527,7 +1527,7 @@ export class MergeHSM implements TestableHSM {
                 case -1: ytext.delete(cursor, text.length); break;
               }
             }
-          });
+          }, this);
         }
 
         // Step 4: Encode only the DIFF (changes from previous state to new state)
@@ -1596,7 +1596,7 @@ export class MergeHSM implements TestableHSM {
       const merged = Y.mergeUpdates(updatesToMerge);
       const tempDoc = new Y.Doc();
       try {
-        Y.applyUpdate(tempDoc, merged);
+        Y.applyUpdate(tempDoc, merged, this);
         crdtContent = tempDoc.getText('contents').toString();
       } finally {
         tempDoc.destroy();
@@ -1986,7 +1986,7 @@ export class MergeHSM implements TestableHSM {
 
       // Only apply if localDoc is empty - safe to apply remote content
       if (localText === '') {
-        Y.applyUpdate(this.localDoc, this.pendingIdleUpdates);
+        Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.externalRemoteDoc);
       }
       // If localDoc has content, DO NOT apply - let mergeRemoteToLocal() handle it
       this.pendingIdleUpdates = null;
@@ -2048,7 +2048,7 @@ export class MergeHSM implements TestableHSM {
         this.remoteDoc,
         Y.encodeStateVector(this.localDoc)
       );
-      Y.applyUpdate(this.localDoc, update, 'remote');
+      Y.applyUpdate(this.localDoc, update, this.externalRemoteDoc);
     }
   }
 
@@ -2099,8 +2099,9 @@ export class MergeHSM implements TestableHSM {
 
     const ytext = this.localDoc.getText('contents');
     this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
-      // Only process remote-originated changes
-      if (tr.origin !== 'remote') return;
+      // Skip changes originated by this HSM (CM6 edits, conflict resolution, etc.).
+      // Remote-originated changes use externalRemoteDoc as origin, so they pass through.
+      if (tr.origin === this) return;
 
       // Only dispatch in tracking state
       if (this._statePath !== 'active.tracking') return;
@@ -2261,77 +2262,18 @@ export class MergeHSM implements TestableHSM {
     this.syncLocalToRemote();
   }
 
+  // While you may be tempted to try to filter outbound sync based on
+  // heuristics, that is always the wrong approach. The error is in the sender.
   private syncLocalToRemote(): void {
     if (!this.localDoc || !this.remoteDoc) return;
 
-    // BUG-053 FIX: Before syncing, check if content is identical.
-    // If localDoc and remoteDoc have the same content but different CRDT histories
-    // (different clientIDs), delta encoding would send ALL of localDoc's operations
-    // to remoteDoc, causing content duplication. Instead:
-    // 1. If content matches, check if remoteDoc needs our content at all
-    // 2. If remoteDoc already has the content, skip sync entirely
-    // 3. Only sync when there's actual NEW content (beyond matching base content)
-    const localText = this.localDoc.getText('contents').toString();
-    const remoteText = this.remoteDoc.getText('contents').toString();
-
-    if (localText === remoteText) {
-      // Content is identical - no need to sync anything.
-      // State vectors may differ but that's OK - remoteDoc already has the content.
-      return;
-    }
-
-    // BUG-053 FIX: Check for partial match scenario where remoteDoc has older content
-    // that's a prefix of localDoc's content. In this case, we only need to sync the
-    // new part, but we need to be careful about CRDT history.
-    //
-    // If the matching prefix was created by different clients (different CRDT ops),
-    // we can't just sync the suffix - we'd still duplicate the prefix.
-    //
-    // Detection: If remoteDoc content is a prefix of localDoc content, check if
-    // this is a "same content, different history" situation by comparing what
-    // the delta update would actually contain.
     const update = Y.encodeStateAsUpdate(
       this.localDoc,
       Y.encodeStateVector(this.remoteDoc)
     );
 
     if (update.length > 0) {
-      // Before applying, verify the update won't cause duplication.
-      // Create a temp doc to test what applying the update would produce.
-      const tempDoc = new Y.Doc();
-      try {
-        Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(this.remoteDoc));
-        Y.applyUpdate(tempDoc, update, 'local');
-        const resultText = tempDoc.getText('contents').toString();
-
-        // If applying the update results in duplicated content, skip the sync.
-        // Duplication pattern: result is exactly 2x local length with repeated content.
-        if (resultText.length === localText.length * 2 &&
-            resultText.slice(0, localText.length) === localText &&
-            resultText.slice(localText.length) === localText) {
-          // Sync would cause duplication - skip it.
-          // This happens when localDoc and remoteDoc have the same base content
-          // but with different CRDT histories (different clientIDs).
-          return;
-        }
-
-        // Also check if result is too long (partial duplication)
-        if (resultText.length > localText.length) {
-          // Result is longer than expected - might be partial duplication.
-          // Check if localText is contained multiple times.
-          const firstIndex = resultText.indexOf(localText);
-          const secondIndex = resultText.indexOf(localText, firstIndex + 1);
-          if (firstIndex >= 0 && secondIndex >= 0) {
-            // localText appears multiple times - skip to prevent duplication
-            return;
-          }
-        }
-      } finally {
-        tempDoc.destroy();
-      }
-
-      // Safe to apply
-      Y.applyUpdate(this.remoteDoc, update, 'local');
+      Y.applyUpdate(this.remoteDoc, update, this);
       this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
     }
   }
@@ -2341,77 +2283,20 @@ export class MergeHSM implements TestableHSM {
   // ===========================================================================
 
   private handleRemoteUpdate(event: { update: Uint8Array }): void {
-    // Track whether we should skip accumulation (BUG-054 fix)
-    let skipAccumulation = false;
-
-    // Apply update to remoteDoc if available (only in active mode)
+    // While you may be tempted to try to filter inbound messages based on
+    // heuristics, that is always the wrong approach. The error is in the sender.
+    //
+    // Apply update to the appropriate YDoc.
+    // Yjs apply is idempotent for same-client operations, so re-applying
+    // an update the provider already applied is safe (no-op).
     if (this.remoteDoc) {
-      // BUG-067 FIX: Before applying in active mode, check if the incoming update
-      // contains the same content as remoteDoc but from a different client (independent
-      // enrollment). Applying such an update would cause Yjs to preserve both clients'
-      // insert operations, doubling the content.
-      const currentContent = this.remoteDoc.getText('contents').toString();
-      if (currentContent !== '') {
-        const tempDoc = new Y.Doc();
-        let shouldSkip = false;
-        try {
-          Y.applyUpdate(tempDoc, event.update);
-          const updateContent = tempDoc.getText('contents').toString();
-          if (updateContent !== '' && currentContent === updateContent) {
-            shouldSkip = true;
-          }
-        } finally {
-          tempDoc.destroy();
-        }
-        if (shouldSkip) {
-          this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
-          return;
-        }
-      }
-      Y.applyUpdate(this.remoteDoc, event.update, 'remote');
-      // Get state vector from the doc AFTER applying update, not from the update itself.
-      // Delta updates have minimal state vectors that don't reflect the full doc state.
+      Y.applyUpdate(this.remoteDoc, event.update, this.externalRemoteDoc);
       this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
     } else {
       // In idle/loading mode, remoteDoc may not be available.
       // Use externalRemoteDoc (always available) to track state.
-      //
-      // BUG-051 FIX: Before applying the update, check if it would cause content
-      // duplication. This can happen when a server echo arrives with the same
-      // content but different CRDT history (different clientID). Applying such
-      // an update would preserve both sets of operations, doubling the content.
-      //
-      // Solution: Compare the content of the incoming update with what's already
-      // in externalRemoteDoc. If they match, skip the apply to prevent duplication.
-      const currentContent = this.externalRemoteDoc.getText('contents').toString();
-      const tempDoc = new Y.Doc();
-      try {
-        Y.applyUpdate(tempDoc, event.update);
-        const updateContent = tempDoc.getText('contents').toString();
-
-        if (currentContent !== '' && updateContent !== '' && currentContent === updateContent) {
-          // Content already matches - skip apply to prevent duplication from
-          // different CRDT histories containing the same text.
-          // Just update the state vector (using the doc's current state).
-          this._remoteStateVector = Y.encodeStateVector(this.externalRemoteDoc);
-          // BUG-054 FIX: Also skip accumulation in pendingIdleUpdates and PERSIST_UPDATES.
-          // Without this, the echo gets persisted to IDB, and on reopen both the original
-          // content (from IDB) and the echo get loaded into localDoc, causing duplication.
-          skipAccumulation = true;
-        } else {
-          // Content differs or one is empty - safe to apply
-          Y.applyUpdate(this.externalRemoteDoc, event.update, 'remote');
-          this._remoteStateVector = Y.encodeStateVector(this.externalRemoteDoc);
-        }
-      } finally {
-        tempDoc.destroy();
-      }
-    }
-
-    // Accumulate event during loading state for replay after mode transition
-    // BUG-054: Skip accumulation if content matched (prevents duplication on reopen)
-    if (skipAccumulation) {
-      return;
+      Y.applyUpdate(this.externalRemoteDoc, event.update, this.externalRemoteDoc);
+      this._remoteStateVector = Y.encodeStateVector(this.externalRemoteDoc);
     }
 
     if (this._statePath === 'loading' || this._statePath === 'active.loading' || this.matches('active.entering')) {
@@ -2470,13 +2355,8 @@ export class MergeHSM implements TestableHSM {
    * The Y.Text observer (setupLocalDocObserver) handles emitting DISPATCH_CM6
    * with correctly positioned changes derived from Yjs deltas.
    *
-   * BUG-035 FIX: Check if content is already identical before merging.
-   * If localDoc and remoteDoc have the same text content but different CRDT
-   * histories (e.g., same content inserted by different clients), blindly
-   * applying the remote update would duplicate the content. Instead, we:
-   * 1. Check if the text content is already identical
-   * 2. If identical, sync state vectors without applying content changes
-   * 3. If different, apply the remote update normally
+   * While you may be tempted to try to filter inbound messages based on
+   * heuristics, that is always the wrong approach. The error is in the sender.
    */
   private mergeRemoteToLocal(): void {
     if (!this.localDoc || !this.remoteDoc) return;
@@ -2484,42 +2364,8 @@ export class MergeHSM implements TestableHSM {
     const localText = this.localDoc.getText('contents').toString();
     const remoteText = this.remoteDoc.getText('contents').toString();
 
-    // BUG-053 FIX: Detect and fix content duplication in remoteDoc.
-    // This can happen when the server echoes back operations with different CRDT
-    // history (e.g., different clientID), causing Yjs to preserve both sets of
-    // operations and doubling the content. The provider applies these echoes
-    // directly to remoteDoc before we can intercept them.
-    //
-    // Detection: remoteText is exactly 2x localText length, and remoteText is
-    // localText repeated twice (first half === second half === localText).
-    if (localText.length > 0 &&
-        remoteText.length === localText.length * 2 &&
-        remoteText.slice(0, localText.length) === localText &&
-        remoteText.slice(localText.length) === localText) {
-      // remoteDoc has duplicated content - fix it by clearing and reinserting
-      // from localDoc's content. This is safe because localText is the correct
-      // content (matches disk and IDB).
-      const remoteYtext = this.remoteDoc.getText('contents');
-      this.remoteDoc.transact(() => {
-        remoteYtext.delete(0, remoteYtext.length);
-        remoteYtext.insert(0, localText);
-      }, this);
-      // After fixing remoteDoc, content now matches - nothing more to do for localDoc
-      return;
-    }
-
-    // If content is already identical, we need to reconcile state vectors
-    // without duplicating content
+    // Content already matches - no merge needed
     if (localText === remoteText) {
-      // Content matches - no changes needed.
-      // State vector differences are acceptable and will naturally converge
-      // through future edits. We do NOT reconcile state vectors here because:
-      // 1. The BUG-052 "fix" (delete + reapply) creates new CRDT operations
-      //    that get persisted to IDB, causing cumulative growth
-      // 2. Simply returning here is safe - syncLocalToRemote uses delta encoding
-      //    which only transfers operations remoteDoc doesn't have
-      // 3. If remoteDoc has duplicate ops (same content, different history),
-      //    that's a server/provider issue handled by BUG-053 fix above
       return;
     }
 
@@ -2528,7 +2374,7 @@ export class MergeHSM implements TestableHSM {
       this.remoteDoc,
       Y.encodeStateVector(this.localDoc)
     );
-    Y.applyUpdate(this.localDoc, update, 'remote');
+    Y.applyUpdate(this.localDoc, update, this.externalRemoteDoc);
   }
 
   // ===========================================================================

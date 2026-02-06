@@ -5,5 +5,7 @@
  * No-op during normal Obsidian unload (app._reloadAwait will be undefined).
  */
 export function awaitOnReload(p: Promise<void>): void {
-	(window as any).app?._reloadAwait?.push(p);
+	if (typeof window !== 'undefined') {
+		(window as any).app?._reloadAwait?.push(p);
+	}
 }

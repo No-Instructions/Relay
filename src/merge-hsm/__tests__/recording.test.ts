@@ -545,6 +545,7 @@ describe('HSM Recording', () => {
       return {
         getRegisteredGuids: () => registeredGuids,
         isLoaded: (guid: string) => hsms.has(guid),
+        isActive: (guid: string) => hsms.has(guid),
         getPath: (guid: string) => `${guid}.md`,
         hsms, // Exposed as 'hsms' for E2ERecordingBridge.getHSMForGuid
         syncStatus: {
