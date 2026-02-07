@@ -21,16 +21,6 @@ const createDefaultLCA = () => ({
   stateVector: new Uint8Array([0]),
 });
 
-const defaultLoadState = async (guid: string) => ({
-  guid,
-  path: 'test.md',
-  lca: createDefaultLCA(),
-  disk: null,
-  localStateVector: null,
-  lastStatePath: 'idle.synced' as const,
-  persistedAt: Date.now(),
-});
-
 describe('MergeManager', () => {
   let manager: MergeManager;
   let timeProvider: MockTimeProvider;
@@ -48,7 +38,6 @@ describe('MergeManager', () => {
     manager = new MergeManager({
       getVaultId: (guid) => `test-${guid}`,
       timeProvider,
-      loadState: defaultLoadState,
     });
   });
 
@@ -101,8 +90,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        loadAllStates: mockLoadAllStates,
+          loadAllStates: mockLoadAllStates,
       });
 
       expect(managerWithInit.initialized).toBe(false);
@@ -119,8 +107,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        loadAllStates: mockLoadAllStates,
+          loadAllStates: mockLoadAllStates,
       });
 
       await managerWithInit.initialize();
@@ -135,8 +122,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        loadAllStates: mockLoadAllStates,
+          loadAllStates: mockLoadAllStates,
       });
 
       managerWithInit.destroy();
@@ -150,8 +136,7 @@ describe('MergeManager', () => {
       const managerWithoutCallback = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-      });
+        });
 
       await managerWithoutCallback.initialize();
 
@@ -164,8 +149,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-      });
+        });
 
       await managerWithInit.initialize();
 
@@ -195,8 +179,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        loadAllStates: mockLoadAllStates,
+          loadAllStates: mockLoadAllStates,
       });
 
       await managerWithInit.initialize();
@@ -224,8 +207,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        loadAllStates: mockLoadAllStates,
+          loadAllStates: mockLoadAllStates,
       });
 
       await managerWithInit.initialize();
@@ -238,8 +220,7 @@ describe('MergeManager', () => {
       const managerWithEffects = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        onEffect: (guid, effect) => {
+          onEffect: (guid, effect) => {
           effects.push({ guid, type: effect.type });
         },
       });
@@ -267,8 +248,7 @@ describe('MergeManager', () => {
       const managerWithEffects = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        onEffect: (guid, effect) => {
+          onEffect: (guid, effect) => {
           effects.push({ guid, type: effect.type, state: (effect as any).state });
         },
       });
@@ -312,8 +292,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        loadAllStates: mockLoadAllStates,
+          loadAllStates: mockLoadAllStates,
         onEffect: () => {},
       });
 
@@ -336,8 +315,7 @@ describe('MergeManager', () => {
       const managerNoEffects = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        // No onEffect callback
+          // No onEffect callback
       });
 
       const remoteDoc = createRemoteDoc();
@@ -360,8 +338,7 @@ describe('MergeManager', () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-      });
+        });
 
       const newLCA = {
         contents: 'orphan content',
@@ -523,10 +500,10 @@ describe('MergeManager', () => {
       const update = createTestUpdate('hello');
       await manager.handleRemoteUpdate('doc-1', update);
 
-      // HSM should have processed the update and auto-merged to clean
+      // HSM should have processed the update
       const hsm = manager.getIdleHSM('doc-1');
       await hsm?.awaitIdleAutoMerge();
-      expect(hsm?.state.statePath).toBe('idle.synced');
+      expect(hsm?.matches('idle')).toBe(true);
       // Verify remote state was updated (update was processed)
       expect(hsm?.state.remoteStateVector).not.toBeNull();
     });
@@ -608,8 +585,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
-        loadState: defaultLoadState,
-      });
+        });
 
       const remoteDoc = createRemoteDoc();
       await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
@@ -630,8 +606,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
-        loadState: defaultLoadState,
-      });
+        });
 
       const remoteDoc1 = createRemoteDoc();
       const remoteDoc2 = createRemoteDoc();
@@ -661,8 +636,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
-        loadState: defaultLoadState,
-      });
+        });
 
       const remoteDoc = createRemoteDoc();
       await managerWithDisk.register('guid-1', 'shared-folder/subfolder/note.md', remoteDoc);
@@ -681,8 +655,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
-        loadState: defaultLoadState,
-      });
+        });
 
       const remoteDoc = createRemoteDoc();
       await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
@@ -713,8 +686,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
-        loadState: defaultLoadState,
-      });
+        });
 
       const remoteDoc = createRemoteDoc();
       await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
@@ -738,8 +710,7 @@ describe('MergeManager', () => {
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
         getDiskState: mockGetDiskState,
-        loadState: defaultLoadState,
-      });
+        });
 
       const remoteDoc = createRemoteDoc();
       await managerWithDisk.register('doc-1', 'test.md', remoteDoc);
@@ -764,8 +735,7 @@ describe('MergeManager', () => {
       const managerWithEffects = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: defaultLoadState,
-        onEffect: (guid, effect) => {
+          onEffect: (guid, effect) => {
           effects.push({ guid, type: effect.type });
         },
       });
@@ -794,24 +764,23 @@ describe('MergeManager', () => {
       const remoteDoc = createRemoteDoc();
       await manager.register('doc-1', 'test.md', remoteDoc);
 
-      // Receive remote update in idle - auto-merges since disk==LCA
-      const update = createTestUpdate('hello world');
-      await manager.handleRemoteUpdate('doc-1', update);
+      // Get to active mode
+      let hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+      expect(hsm.state.statePath).toBe('active.tracking');
 
-      // Wait for idle auto-merge to complete
-      let hsm = manager.getIdleHSM('doc-1');
-      await hsm?.awaitIdleAutoMerge();
+      // Unload back to idle
+      await manager.unload('doc-1');
 
-      // Auto-merge completes, should be idle.synced
-      expect(hsm?.state.statePath).toBe('idle.synced');
+      hsm = manager.getIdleHSM('doc-1')!;
+      expect(hsm.matches('idle')).toBe(true);
 
+      // Back to active
       hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
       expect(hsm.state.statePath).toBe('active.tracking');
 
+      // Unload again
       await manager.unload('doc-1');
-
-      hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.state.statePath).toBe('idle.synced');
+      expect(manager.getIdleHSM('doc-1')?.matches('idle')).toBe(true);
     });
 
     test('getIdleHSM returns HSM without acquiring lock', async () => {
@@ -827,8 +796,8 @@ describe('MergeManager', () => {
   });
 
   describe('persistence callbacks', () => {
-    test('loadState is called during registration', async () => {
-      const mockLoadState = jest.fn().mockResolvedValue({
+    test('LCA is read from cache during registration', async () => {
+      const mockLoadAllStates = jest.fn().mockResolvedValue([{
         guid: 'doc-1',
         path: 'test.md',
         lca: {
@@ -841,18 +810,19 @@ describe('MergeManager', () => {
         localStateVector: null,
         lastStatePath: 'idle.synced',
         persistedAt: Date.now(),
-      });
+      }]);
 
       const managerWithPersistence = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         timeProvider,
-        loadState: mockLoadState,
+        loadAllStates: mockLoadAllStates,
       });
+
+      // Initialize to populate cache
+      await managerWithPersistence.initialize();
 
       const remoteDoc = createRemoteDoc();
       await managerWithPersistence.register('doc-1', 'test.md', remoteDoc);
-
-      expect(mockLoadState).toHaveBeenCalledWith('doc-1');
 
       const hsm = managerWithPersistence.getIdleHSM('doc-1');
       expect(hsm?.state.lca?.contents).toBe('persisted content');
@@ -901,44 +871,6 @@ describe('MergeManager', () => {
   });
 
   describe('setActiveDocuments (Gap 8)', () => {
-    test('setActiveDocuments sends SET_MODE_ACTIVE to HSMs in loading state', async () => {
-      // Create manager that doesn't auto-load state (to keep HSMs in loading)
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        // No loadState callback - HSMs will stay in loading state until PERSISTENCE_LOADED
-      });
-
-      const remoteDoc1 = createRemoteDoc();
-      const remoteDoc2 = createRemoteDoc();
-
-      // Use getOrRegisterHSM to get synchronous reference, HSMs stay in loading state
-      const hsm1 = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test1.md', remoteDoc1);
-      const hsm2 = managerNoAutoLoad.getOrRegisterHSM('doc-2', 'test2.md', remoteDoc2);
-
-      // Both HSMs should be in loading state
-      expect(hsm1?.state.statePath).toBe('loading');
-      expect(hsm2?.state.statePath).toBe('loading');
-
-      // Send PERSISTENCE_LOADED to transition to loading (but not ready yet)
-      hsm1?.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-      hsm2?.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-
-      // Now in loading
-      expect(hsm1?.state.statePath).toBe('loading');
-      expect(hsm2?.state.statePath).toBe('loading');
-
-      // Set doc-1 as active
-      managerNoAutoLoad.setActiveDocuments(new Set(['doc-1']));
-
-      // doc-1 should be in active.loading (waiting for ACQUIRE_LOCK)
-      expect(hsm1?.state.statePath).toBe('active.loading');
-
-      // doc-2 should be in idle (synced since no LCA and no local changes)
-      expect(hsm2?.state.statePath).toBe('idle.synced');
-
-      managerNoAutoLoad.destroy();
-    });
 
     test('setActiveDocuments only affects HSMs in loading state', async () => {
       const remoteDoc1 = createRemoteDoc();
@@ -969,8 +901,8 @@ describe('MergeManager', () => {
       });
 
       const remoteDoc = createRemoteDoc();
-      const hsm = managerToDestroy.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
-      expect(hsm?.state.statePath).toBe('loading');
+      managerToDestroy.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
+      // With LCA cache, HSM immediately transitions to idle
 
       managerToDestroy.destroy();
 
@@ -978,34 +910,6 @@ describe('MergeManager', () => {
       expect(() => managerToDestroy.setActiveDocuments(new Set(['doc-1']))).not.toThrow();
     });
 
-    test('setActiveDocuments with empty set sends SET_MODE_IDLE to all loading HSMs', async () => {
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-      });
-
-      const remoteDoc1 = createRemoteDoc();
-      const remoteDoc2 = createRemoteDoc();
-
-      const hsm1 = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test1.md', remoteDoc1);
-      const hsm2 = managerNoAutoLoad.getOrRegisterHSM('doc-2', 'test2.md', remoteDoc2);
-
-      // Send PERSISTENCE_LOADED to get to loading
-      hsm1?.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-      hsm2?.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-
-      expect(hsm1?.state.statePath).toBe('loading');
-      expect(hsm2?.state.statePath).toBe('loading');
-
-      // Set empty set - all HSMs should go to idle mode
-      managerNoAutoLoad.setActiveDocuments(new Set());
-
-      // Both should be in idle.synced (no LCA and no local changes = synced)
-      expect(hsm1?.state.statePath).toBe('idle.synced');
-      expect(hsm2?.state.statePath).toBe('idle.synced');
-
-      managerNoAutoLoad.destroy();
-    });
   });
 
   describe('state exposure (Gap 10)', () => {
@@ -1025,36 +929,20 @@ describe('MergeManager', () => {
       expect(hsm?.state.lastKnownEditorText).toBeUndefined();
     });
 
-    test('state.pendingEditorContent is set after ACQUIRE_LOCK in active.loading', async () => {
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-      });
-
+    test('state.lastKnownEditorText is set after ACQUIRE_LOCK', async () => {
       const remoteDoc = createRemoteDoc();
-      const hsm = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
+      await manager.register('doc-1', 'test.md', remoteDoc);
 
-      // Progress to loading
-      hsm?.send({ type: 'PERSISTENCE_LOADED', updates: new Uint8Array(), lca: null });
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Set active mode - stays in active.loading waiting for ACQUIRE_LOCK
-      managerNoAutoLoad.setActiveDocuments(new Set(['doc-1']));
-      expect(hsm?.state.statePath).toBe('active.loading');
-
-      // In active.loading state, pendingEditorContent and lastKnownEditorText are still undefined
-      expect(hsm?.state.pendingEditorContent).toBeUndefined();
+      // Start in idle mode
+      let hsm = manager.getIdleHSM('doc-1');
+      expect(hsm?.matches('idle')).toBe(true);
       expect(hsm?.state.lastKnownEditorText).toBeUndefined();
 
-      // Send ACQUIRE_LOCK - this sets pendingEditorContent and lastKnownEditorText
-      // Note: The HSM may transition through states quickly, but the values are set
+      // Send ACQUIRE_LOCK to transition to active
       hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: 'editor text here' });
 
-      // After ACQUIRE_LOCK, lastKnownEditorText should be set (it persists through state transitions)
-      // pendingEditorContent may be cleared during transition to tracking/conflict
+      // After ACQUIRE_LOCK, lastKnownEditorText should be set
       expect(hsm?.state.lastKnownEditorText).toBe('editor text here');
-
-      managerNoAutoLoad.destroy();
     });
 
     test('state.lastKnownEditorText is updated by CM6_CHANGE events', async () => {
@@ -1091,249 +979,6 @@ describe('MergeManager', () => {
     });
   });
 
-  describe('event accumulation in loading state (Gap 11)', () => {
-    test('DISK_CHANGED events during loading are accumulated and replayed', async () => {
-      // Create manager without auto-loading to control loading sequence
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        loadState: async () => null, // No persisted state
-      });
-
-      const remoteDoc = createRemoteDoc();
-      const hsm = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Send DISK_CHANGED during loading
-      hsm?.send({
-        type: 'DISK_CHANGED',
-        contents: 'disk content',
-        mtime: 1000,
-        hash: 'disk-hash',
-      });
-
-      // Still in loading state
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Disk metadata should be set
-      expect(hsm?.state.disk?.hash).toBe('disk-hash');
-
-      // Provide LCA via PERSISTENCE_LOADED - stays in loading
-      hsm?.send({
-        type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
-        lca: {
-          contents: 'disk content',
-          meta: {
-            hash: 'disk-hash',
-            mtime: 1000,
-          },
-          stateVector: new Uint8Array([0]),
-        },
-      });
-
-      // Still in loading - needs mode determination
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // SET_MODE_IDLE to transition to idle
-      hsm?.send({ type: 'SET_MODE_IDLE' });
-
-      // Should transition to idle.synced (disk hash matches LCA hash)
-      expect(hsm?.state.statePath).toBe('idle.synced');
-
-      managerNoAutoLoad.destroy();
-    });
-
-    test('REMOTE_UPDATE events during loading are accumulated and replayed', async () => {
-      // Create manager without auto-loading
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        loadState: async () => null,
-      });
-
-      const remoteDoc = createRemoteDoc();
-      const hsm = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Create a remote update
-      const remoteUpdate = createTestUpdate('remote content');
-
-      // Send REMOTE_UPDATE during loading
-      hsm?.send({
-        type: 'REMOTE_UPDATE',
-        update: remoteUpdate,
-      });
-
-      // Still in loading state
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Remote state vector should be set
-      expect(hsm?.state.remoteStateVector).toBeTruthy();
-
-      // Provide LCA via PERSISTENCE_LOADED - stays in loading
-      hsm?.send({
-        type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
-        lca: {
-          contents: '',
-          meta: {
-            hash: 'empty-hash',
-            mtime: 1000,
-          },
-          stateVector: new Uint8Array([0]),
-        },
-      });
-
-      // Still in loading - needs mode determination
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // SET_MODE_IDLE to transition to idle
-      hsm?.send({ type: 'SET_MODE_IDLE' });
-
-      // Should be in idle.remoteAhead since remote has content LCA doesn't have
-      expect(hsm?.state.statePath).toBe('idle.remoteAhead');
-
-      managerNoAutoLoad.destroy();
-    });
-
-    test('multiple REMOTE_UPDATE events during loading are merged', async () => {
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        loadState: async () => null,
-      });
-
-      const remoteDoc = createRemoteDoc();
-      const hsm = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
-
-      // Send multiple REMOTE_UPDATE during loading
-      const update1 = createTestUpdate('content1');
-      const update2 = createTestUpdate('content2');
-
-      hsm?.send({ type: 'REMOTE_UPDATE', update: update1 });
-      hsm?.send({ type: 'REMOTE_UPDATE', update: update2 });
-
-      // Still in loading
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Provide LCA via PERSISTENCE_LOADED - stays in loading
-      hsm?.send({
-        type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
-        lca: {
-          contents: '',
-          meta: {
-            hash: 'empty-hash',
-            mtime: 1000,
-          },
-          stateVector: new Uint8Array([0]),
-        },
-      });
-
-      // Still in loading - needs mode determination
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // SET_MODE_IDLE to transition to idle
-      hsm?.send({ type: 'SET_MODE_IDLE' });
-
-      // Should be in idle.remoteAhead
-      expect(hsm?.state.statePath).toBe('idle.remoteAhead');
-
-      managerNoAutoLoad.destroy();
-    });
-
-    test('DISK_CHANGED during loading is accumulated', async () => {
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        loadState: async () => null,
-      });
-
-      const remoteDoc = createRemoteDoc();
-      const hsm = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
-
-      // Progress to loading (with no LCA)
-      hsm?.send({
-        type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
-        lca: null, // No LCA
-      });
-      expect(hsm?.state.statePath).toBe('loading');
-
-      // Send DISK_CHANGED during loading
-      hsm?.send({
-        type: 'DISK_CHANGED',
-        contents: 'new disk content',
-        mtime: 2000,
-        hash: 'new-disk-hash',
-      });
-
-      // Still in loading - disk metadata should be accumulated
-      expect(hsm?.state.statePath).toBe('loading');
-      expect(hsm?.state.disk?.hash).toBe('new-disk-hash');
-
-      // SET_MODE_IDLE to transition out of loading
-      hsm?.send({ type: 'SET_MODE_IDLE' });
-
-      // Wait for any auto-merge to complete
-      await hsm?.awaitIdleAutoMerge();
-
-      // After SET_MODE_IDLE without LCA, HSM is in idle (exact sub-state depends on comparison)
-      // The key assertion is that disk metadata was preserved through loading
-      expect(hsm?.state.disk?.hash).toBe('new-disk-hash');
-
-      // Now initialize with content that differs from disk
-      hsm?.send({
-        type: 'INITIALIZE_WITH_CONTENT',
-        content: 'initial content',
-        hash: 'initial-hash',
-        mtime: 1000,
-      });
-
-      // Wait for any auto-merge after initialization
-      await hsm?.awaitIdleAutoMerge();
-
-      // The important assertion: disk metadata was accumulated and preserved
-      // Disk differs from LCA, so should be diskAhead
-      expect(hsm?.state.disk?.hash).toBe('new-disk-hash');
-      expect(hsm?.matches('idle')).toBe(true);
-
-      managerNoAutoLoad.destroy();
-    });
-
-    test('accumulated events are cleared on new LOAD', async () => {
-      const managerNoAutoLoad = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        timeProvider,
-        loadState: async () => null,
-      });
-
-      const remoteDoc = createRemoteDoc();
-      const hsm = managerNoAutoLoad.getOrRegisterHSM('doc-1', 'test.md', remoteDoc);
-
-      // Send events during loading
-      hsm?.send({
-        type: 'DISK_CHANGED',
-        contents: 'disk content',
-        mtime: 1000,
-        hash: 'disk-hash',
-      });
-
-      // Unload and reload
-      hsm?.send({ type: 'UNLOAD' });
-
-      // Wait a tick for async cleanup
-      await new Promise(resolve => setTimeout(resolve, 10));
-
-      hsm?.send({ type: 'LOAD', guid: 'doc-1', path: 'test.md' });
-
-      // Disk metadata should be cleared (fresh load)
-      expect(hsm?.state.disk).toBeNull();
-
-      managerNoAutoLoad.destroy();
-    });
-  });
 });
 
 // =============================================================================

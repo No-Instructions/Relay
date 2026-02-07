@@ -55,9 +55,9 @@ import { installE2ERecordingBridge, type StreamingEntry } from "./merge-hsm/reco
 import { recordHSMEntry } from "./debug";
 import { generateHash } from "./hashing";
 import {
-	loadState as loadMergeState,
 	saveState as saveMergeState,
 	openDatabase as openMergeHSMDatabase,
+	getAllStates,
 } from "./merge-hsm/persistence";
 import * as Y from "yjs";
 
@@ -304,16 +304,16 @@ export class SharedFolder extends HasProvider {
 				const hash = await generateHash(encoder.encode(contents).buffer);
 				return { contents, mtime: tfile.stat.mtime, hash };
 			},
-			loadState: async (guid: string) => {
+			loadAllStates: async () => {
 				try {
 					const db = await openMergeHSMDatabase();
 					try {
-						return await loadMergeState(db, guid);
+						return await getAllStates(db);
 					} finally {
 						db.close();
 					}
 				} catch {
-					return null;
+					return [];
 				}
 			},
 			onEffect: async (guid, effect) => {
@@ -376,6 +376,9 @@ export class SharedFolder extends HasProvider {
 
 		this.whenReady().then(async () => {
 			if (!this.destroyed) {
+				// Bulk-load LCA cache before registering HSMs
+				await this.mergeManager.initialize();
+
 				this.addLocalDocs();
 				this.syncFileTree(this.syncStore);
 
@@ -496,14 +499,15 @@ export class SharedFolder extends HasProvider {
 
 		try {
 			// Apply update to the document's remoteDoc (which is file.ydoc)
-			// The origin 'local' indicates this came from local changes
 			Y.applyUpdate(file.ydoc, update, 'local');
 
-			// The provider (if connected) will automatically sync to server
-			// If not connected, updates will be queued and synced when reconnected
-			this.log(`[handleIdleSyncToRemote] Applied idle mode update for ${guid}`);
+			// The per-document provider is not connected in idle mode, so we
+			// must explicitly sync via backgroundSync to push the update to
+			// the server.
+			await this.backgroundSync.enqueueSync(file);
+			this.log(`[handleIdleSyncToRemote] Synced idle mode update for ${guid}`);
 		} catch (e) {
-			this.warn(`[handleIdleSyncToRemote] Failed to apply update for ${guid}:`, e);
+			this.warn(`[handleIdleSyncToRemote] Failed to sync update for ${guid}:`, e);
 		}
 	}
 
