@@ -300,14 +300,15 @@ export class MergeManager {
   register(guid: string, path: string, remoteDoc: Y.Doc): Promise<void> {
     if (this.destroyed) return Promise.resolve();
 
-    // Skip if already registered
-    if (this.hsms.has(guid)) {
-      return Promise.resolve();
-    }
-
-    // Skip if registration already in progress
+    // If registration/loading is still in progress, return that promise.
+    // This covers both doRegister() and getOrRegisterHSM() async loading.
     if (this.pendingRegistrations.has(guid)) {
       return this.pendingRegistrations.get(guid)!;
+    }
+
+    // Skip if already registered and fully loaded
+    if (this.hsms.has(guid)) {
+      return Promise.resolve();
     }
 
     // Create and track the registration promise
@@ -332,6 +333,7 @@ export class MergeManager {
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
+      loadUpdatesRaw: this.loadUpdatesRaw,
       persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
       userId: this.userId,
     });
@@ -426,6 +428,7 @@ export class MergeManager {
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
+      loadUpdatesRaw: this.loadUpdatesRaw,
       persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
       userId: this.userId,
     });
@@ -446,8 +449,11 @@ export class MergeManager {
     // Initialize HSM through loading → idle
     hsm.send({ type: 'LOAD', guid, path });
 
-    // Fire-and-forget async persistence loading
-    (async () => {
+    // Track async persistence loading so whenRegistered() waits for it.
+    // Without this, setActiveDocuments() can send SET_MODE_IDLE before
+    // PERSISTENCE_LOADED arrives, causing HSMs to transition to idle
+    // with empty state (no LCA, no local state vector).
+    const loadingPromise = (async () => {
       // Load persisted state (LCA) and raw CRDT updates from IndexedDB
       const [persistedState, localUpdates] = await Promise.all([
         this.loadState ? this.loadState(guid) : Promise.resolve(null),
@@ -474,9 +480,21 @@ export class MergeManager {
           : null,
       });
 
-      // HSM is now in idle.* state - update sync status
+      // If the HSM is still in loading state (no mode decision from
+      // setActiveDocuments yet), default to idle mode. This handles
+      // HSMs created after setActiveDocuments already ran (e.g., from
+      // downloadDoc in syncFileTree which isn't awaited).
+      if (hsm.state.statePath === 'loading') {
+        hsm.send({ type: 'SET_MODE_IDLE' });
+      }
+
       this.updateSyncStatus(guid, hsm.getSyncStatus());
     })();
+
+    this.pendingRegistrations.set(guid, loadingPromise);
+    loadingPromise.finally(() => {
+      this.pendingRegistrations.delete(guid);
+    });
 
     return hsm;
   }

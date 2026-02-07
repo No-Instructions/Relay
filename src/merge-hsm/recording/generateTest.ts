@@ -209,6 +209,7 @@ function getEventFactory(eventType: string): string | null {
     'PERSISTENCE_SYNCED': 'persistenceSynced',
     'INITIALIZE_WITH_CONTENT': 'initializeWithContent',
     'INITIALIZE_LCA': 'initializeLCA',
+    'INITIALIZE_FROM_REMOTE': 'initializeFromRemote',
     'MERGE_SUCCESS': 'mergeSuccess',
     'MERGE_CONFLICT': 'mergeConflict',
     'REMOTE_DOC_UPDATED': 'remoteDocUpdated',
@@ -264,6 +265,9 @@ function generateEventCode(event: SerializableEvent, indent: string): string {
 
     case 'INITIALIZE_LCA':
       return `initializeLCA(${JSON.stringify(event.content)}, ${JSON.stringify(event.hash)}, ${event.mtime})`;
+
+    case 'INITIALIZE_FROM_REMOTE':
+      return `initializeFromRemote(${JSON.stringify(event.content)}, ${JSON.stringify(event.hash)}, ${event.mtime})`;
 
     case 'REMOTE_DOC_UPDATED':
       return `remoteDocUpdated()`;
