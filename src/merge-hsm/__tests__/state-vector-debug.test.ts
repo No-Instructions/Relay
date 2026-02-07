@@ -29,17 +29,18 @@ describe('state vector debug', () => {
     const manager = new MergeManager({
       getVaultId: (guid) => `test-${guid}`,
       timeProvider,
-      loadState: async (guid) => ({
-        guid,
+      loadAllStates: async () => [{
+        guid: 'doc-1',
         path: 'test.md',
         lca: createDefaultLCA(),
         disk: null,
         localStateVector: null,
         lastStatePath: 'idle.synced' as const,
         persistedAt: Date.now(),
-      }),
+      }],
     });
 
+    await manager.initialize();
     const remoteDoc = createRemoteDoc();
     await manager.register('doc-1', 'test.md', remoteDoc);
 

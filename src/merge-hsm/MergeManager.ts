@@ -46,9 +46,6 @@ export interface MergeManagerConfig {
   /** Hash function */
   hashFn?: (contents: string) => Promise<string>;
 
-  /** Callback to load persisted state for a document */
-  loadState?: (guid: string) => Promise<PersistedMergeState | null>;
-
   /**
    * Callback to load all persisted states for bulk LCA cache initialization.
    * Called during initialize() to bulk-load all LCA states into cache.
@@ -144,7 +141,6 @@ export class MergeManager {
   private getVaultId: (guid: string) => string;
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
-  private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
   private loadAllStates?: () => Promise<PersistedMergeState[]>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
   private getDiskState?: (path: string) => Promise<{
@@ -162,7 +158,6 @@ export class MergeManager {
     this.getVaultId = config.getVaultId;
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn;
-    this.loadState = config.loadState;
     this.loadAllStates = config.loadAllStates;
     this.onEffect = config.onEffect;
     this.getDiskState = config.getDiskState;
@@ -354,11 +349,11 @@ export class MergeManager {
     // Initialize HSM through loading → idle
     hsm.send({ type: 'LOAD', guid, path });
 
-    // Load persisted state (LCA) and raw CRDT updates from IndexedDB
-    const [persistedState, localUpdates] = await Promise.all([
-      this.loadState ? this.loadState(guid) : Promise.resolve(null),
-      this.loadUpdatesRaw ? this.loadUpdatesRaw(this.getVaultId(guid)) : Promise.resolve([]),
-    ]);
+    // Get LCA from cache (bulk-loaded during initialize()) and load CRDT updates
+    const lca = this.getLCA(guid);
+    const localUpdates = this.loadUpdatesRaw
+      ? await this.loadUpdatesRaw(this.getVaultId(guid))
+      : [];
 
     // Merge updates if we have any (for computing localStateVector)
     const mergedUpdates = localUpdates.length > 0
@@ -368,16 +363,7 @@ export class MergeManager {
     hsm.send({
       type: 'PERSISTENCE_LOADED',
       updates: mergedUpdates,
-      lca: persistedState?.lca
-        ? {
-            contents: persistedState.lca.contents,
-            meta: {
-              hash: persistedState.lca.hash,
-              mtime: persistedState.lca.mtime,
-            },
-            stateVector: persistedState.lca.stateVector,
-          }
-        : null,
+      lca,
     });
 
     // Send mode determination to transition out of loading (flat state per v9 spec)
@@ -454,11 +440,11 @@ export class MergeManager {
     // PERSISTENCE_LOADED arrives, causing HSMs to transition to idle
     // with empty state (no LCA, no local state vector).
     const loadingPromise = (async () => {
-      // Load persisted state (LCA) and raw CRDT updates from IndexedDB
-      const [persistedState, localUpdates] = await Promise.all([
-        this.loadState ? this.loadState(guid) : Promise.resolve(null),
-        this.loadUpdatesRaw ? this.loadUpdatesRaw(this.getVaultId(guid)) : Promise.resolve([]),
-      ]);
+      // Get LCA from cache (bulk-loaded during initialize()) and load CRDT updates
+      const lca = this.getLCA(guid);
+      const localUpdates = this.loadUpdatesRaw
+        ? await this.loadUpdatesRaw(this.getVaultId(guid))
+        : [];
 
       // Merge updates if we have any (for computing localStateVector)
       const mergedUpdates = localUpdates.length > 0
@@ -468,16 +454,7 @@ export class MergeManager {
       hsm.send({
         type: 'PERSISTENCE_LOADED',
         updates: mergedUpdates,
-        lca: persistedState?.lca
-          ? {
-              contents: persistedState.lca.contents,
-              meta: {
-                hash: persistedState.lca.hash,
-                mtime: persistedState.lca.mtime,
-              },
-              stateVector: persistedState.lca.stateVector,
-            }
-          : null,
+        lca,
       });
 
       // If the HSM is still in loading state (no mode decision from
@@ -786,7 +763,20 @@ export class MergeManager {
         break;
 
       case 'PERSIST_STATE':
-        // Integration layer handles actual persistence
+        // Update LCA cache from HSM's persisted state
+        if (effect.state.lca) {
+          this._lcaCache.set(guid, {
+            contents: effect.state.lca.contents,
+            meta: {
+              hash: effect.state.lca.hash,
+              mtime: effect.state.lca.mtime,
+            },
+            stateVector: effect.state.lca.stateVector,
+          });
+        } else {
+          this._lcaCache.set(guid, null);
+        }
+        // Integration layer handles actual IDB persistence via onEffect above
         break;
 
       case 'PERSIST_UPDATES':
