@@ -29,6 +29,7 @@ import type {
   PersistenceSyncedEvent,
   InitializeWithContentEvent,
   InitializeLCAEvent,
+  InitializeFromRemoteEvent,
   MergeSuccessEvent,
   MergeConflictEvent,
   RemoteDocUpdatedEvent,
@@ -194,6 +195,10 @@ export function initializeWithContent(content: string, hash: string, mtime: numb
  */
 export function initializeLCA(content: string, hash: string, mtime: number): InitializeLCAEvent {
   return { type: 'INITIALIZE_LCA', content, hash, mtime };
+}
+
+export function initializeFromRemote(content: string, hash: string, mtime: number): InitializeFromRemoteEvent {
+  return { type: 'INITIALIZE_FROM_REMOTE', content, hash, mtime };
 }
 
 export function mergeSuccess(newLCA: LCAState): MergeSuccessEvent {

@@ -8,7 +8,7 @@ import {
 	debounce,
 	normalizePath,
 } from "obsidian";
-import { IndexeddbPersistence, loadUpdatesRaw } from "./storage/y-indexeddb";
+import { IndexeddbPersistence, loadUpdatesRaw, appendUpdateRaw } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
@@ -334,6 +334,12 @@ export class SharedFolder extends HasProvider {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
 					await this.handleIdleSyncToRemote(guid, effect.update);
+				} else if (effect.type === "PERSIST_UPDATES") {
+					try {
+						await appendUpdateRaw(effect.dbName, effect.update);
+					} catch (e) {
+						this.warn(`[MergeManager] Failed to persist updates for ${guid}:`, e);
+					}
 				} else if (effect.type === "WRITE_DISK") {
 					// BUG-033 fix: Handle WRITE_DISK in idle mode
 					// This is emitted when remote changes need to be written to disk
@@ -1526,14 +1532,15 @@ export class SharedFolder extends HasProvider {
 
 		await this.backgroundSync.enqueueDownload(doc);
 
-		// Establish initial LCA after download completes
-		// At this point disk, local CRDT, and remote CRDT are all in agreement
+		// Initialize localDoc from remoteDoc's CRDT state and set LCA.
+		// remoteDoc has the server's content; we replicate its CRDT state into
+		// localDoc (shared history) rather than inserting from text independently.
 		const content = doc.text;
 		const tfile = doc.tfile;
 		if (tfile) {
 			const encoder = new TextEncoder();
 			const hash = await generateHash(encoder.encode(content).buffer);
-			doc.hsm?.initializeLCA(content, hash, tfile.stat.mtime);
+			await doc.hsm?.initializeFromRemote(content, hash, tfile.stat.mtime);
 		}
 
 		this.files.set(guid, doc);

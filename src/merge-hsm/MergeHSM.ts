@@ -50,6 +50,7 @@ import type {
   ResolveHunkEvent,
   InitializeWithContentEvent,
   InitializeLCAEvent,
+  InitializeFromRemoteEvent,
   LoadUpdatesRaw,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
@@ -854,6 +855,25 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
+   * Initialize localDoc from remoteDoc's CRDT state for downloaded documents.
+   * Creates localDoc with shared CRDT history (no independent operations),
+   * attaches IDB persistence, and sets LCA.
+   *
+   * @param content - Text content for LCA
+   * @param hash - Hash of the content
+   * @param mtime - Modification time from disk
+   * @returns Promise that resolves when initialization completes
+   */
+  initializeFromRemote(content: string, hash: string, mtime: number): Promise<void> {
+    if (this._lca) {
+      return Promise.resolve(); // Already initialized
+    }
+
+    this.send({ type: 'INITIALIZE_FROM_REMOTE', content, hash, mtime });
+    return this._pendingInitialization ?? Promise.resolve();
+  }
+
+  /**
    * Get the current sync status for this document.
    */
   getSyncStatus(): SyncStatus {
@@ -1035,6 +1055,16 @@ export class MergeHSM implements TestableHSM {
 
       case 'INITIALIZE_LCA':
         this.handleInitializeLCA(event);
+        break;
+
+      case 'INITIALIZE_FROM_REMOTE':
+        this._pendingInitialization = this.handleInitializeFromRemote(event)
+          .catch((err) => {
+            console.error('[MergeHSM] Error in handleInitializeFromRemote:', err);
+          })
+          .finally(() => {
+            this._pendingInitialization = null;
+          });
         break;
 
       case 'MERGE_SUCCESS':
@@ -1267,6 +1297,57 @@ export class MergeHSM implements TestableHSM {
     this.emitPersistState();
   }
 
+  /**
+   * Handle INITIALIZE_FROM_REMOTE event.
+   * Creates localDoc from remoteDoc's CRDT state (shared history), attaches IDB persistence, sets LCA.
+   * Used for downloaded documents where remoteDoc already has server content.
+   */
+  private async handleInitializeFromRemote(event: InitializeFromRemoteEvent): Promise<void> {
+    // Skip if already have LCA (already initialized)
+    if (this._lca) {
+      return;
+    }
+
+    // Create localDoc if it doesn't exist
+    if (!this.localDoc) {
+      this.localDoc = new Y.Doc();
+
+      if (this._localDocClientID !== null) {
+        this.localDoc.clientID = this._localDocClientID;
+      }
+    }
+
+    // Attach persistence BEFORE applying updates so the _storeUpdate listener
+    // can write to IDB. The listener checks `this.db` which is set after the
+    // DB opens, so we must also wait for whenSynced before applying.
+    if (!this.localPersistence) {
+      this.localPersistence = this._createPersistence(this.vaultId, this.localDoc, this._userId);
+    }
+
+    // Wait for persistence DB to be open (so _storeUpdate can write)
+    await this.localPersistence.whenSynced;
+
+    // Apply remoteDoc's state to localDoc (shared CRDT history, no independent operations).
+    // With persistence attached and DB open, _storeUpdate will persist this to IDB.
+    const remoteState = Y.encodeStateAsUpdate(this.remoteDoc);
+    Y.applyUpdate(this.localDoc, remoteState, this);
+
+    // Update state vector
+    this._localStateVector = Y.encodeStateVector(this.localDoc);
+
+    // Set LCA
+    this._lca = {
+      contents: event.content,
+      meta: {
+        hash: event.hash,
+        mtime: event.mtime,
+      },
+      stateVector: this._localStateVector,
+    };
+
+    this.emitPersistState();
+  }
+
   private determineAndTransitionToIdleState(): void {
     const lca = this._lca;
     const disk = this._disk;
@@ -1491,9 +1572,16 @@ export class MergeHSM implements TestableHSM {
           contents: mergedContent,
         });
 
+        // Persist merged state to IndexedDB so it survives reload
+        const fullState = Y.encodeStateAsUpdate(tempDoc);
+        this.emitEffect({
+          type: 'PERSIST_UPDATES',
+          dbName: this.vaultId,
+          update: fullState,
+        });
+
         // Store merged update for when we enter active mode
-        // (IndexedDB doesn't have this content yet)
-        this.pendingIdleUpdates = Y.encodeStateAsUpdate(tempDoc);
+        this.pendingIdleUpdates = fullState;
 
         this.transitionTo('idle.synced');
 
@@ -1582,6 +1670,13 @@ export class MergeHSM implements TestableHSM {
 
         // Emit effect to sync the diff to remote
         this.emitEffect({ type: 'SYNC_TO_REMOTE', update: diffUpdate });
+
+        // Persist the diff to IndexedDB so local state survives reload
+        this.emitEffect({
+          type: 'PERSIST_UPDATES',
+          dbName: this.vaultId,
+          update: diffUpdate,
+        });
 
         // Clear pending and transition
         this.pendingDiskContents = null;
@@ -1687,6 +1782,11 @@ export class MergeHSM implements TestableHSM {
         syncDoc.getText('contents').insert(0, mergeResult.merged);
         const update = Y.encodeStateAsUpdate(syncDoc);
         this.emitEffect({ type: 'SYNC_TO_REMOTE', update });
+        this.emitEffect({
+          type: 'PERSIST_UPDATES',
+          dbName: this.vaultId,
+          update,
+        });
       } finally {
         syncDoc.destroy();
       }

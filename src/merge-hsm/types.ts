@@ -276,6 +276,19 @@ export interface InitializeLCAEvent {
   mtime: number;
 }
 
+/**
+ * Initialize localDoc from remoteDoc's CRDT state.
+ * Creates localDoc, applies remoteDoc's state (shared history), attaches IDB persistence, sets LCA.
+ * Used when downloading a document — remoteDoc already has server content,
+ * and we need to replicate it into localDoc without creating independent CRDT operations.
+ */
+export interface InitializeFromRemoteEvent {
+  type: 'INITIALIZE_FROM_REMOTE';
+  content: string;
+  hash: string;
+  mtime: number;
+}
+
 export interface MergeSuccessEvent {
   type: 'MERGE_SUCCESS';
   newLCA: LCAState;
@@ -395,6 +408,7 @@ export type MergeEvent =
   | PersistenceSyncedEvent
   | InitializeWithContentEvent
   | InitializeLCAEvent
+  | InitializeFromRemoteEvent
   | MergeSuccessEvent
   | MergeConflictEvent
   | RemoteDocUpdatedEvent

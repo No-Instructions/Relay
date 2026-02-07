@@ -47,6 +47,7 @@ export {
   persistenceSynced,
   initializeWithContent,
   initializeLCA,
+  initializeFromRemote,
   mergeSuccess,
   mergeConflict,
   remoteDocUpdated,
