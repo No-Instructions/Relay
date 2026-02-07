@@ -573,13 +573,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	requestSave = debounce(this.save, 2000);
 
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
-		if (!this._persistence) return;
-		await this._persistence.setOrigin(origin);
+		if (!this._hsm) return;
+		await this._hsm.markOrigin(origin);
 	}
 
 	async getOrigin(): Promise<"local" | "remote" | undefined> {
-		if (!this._persistence) return undefined;
-		return this._persistence.getOrigin();
+		if (!this._hsm) return undefined;
+		return this._hsm.getOrigin();
 	}
 
 	async markSynced(): Promise<void> {
