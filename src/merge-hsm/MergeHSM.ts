@@ -888,6 +888,38 @@ export class MergeHSM implements TestableHSM {
   }
 
   /**
+   * Ensure localDoc and localPersistence exist, awaiting persistence sync.
+   */
+  private async ensurePersistence(): Promise<void> {
+    if (!this.localDoc) {
+      this.localDoc = new Y.Doc();
+      if (this._localDocClientID !== null) {
+        this.localDoc.clientID = this._localDocClientID;
+      }
+    }
+    if (!this.localPersistence) {
+      this.localPersistence = this._createPersistence(this.vaultId, this.localDoc, this._userId);
+    }
+    await this.localPersistence.whenSynced;
+  }
+
+  /**
+   * Get the origin of this document (local = created here, remote = downloaded).
+   */
+  async getOrigin(): Promise<'local' | 'remote' | undefined> {
+    await this.ensurePersistence();
+    return this.localPersistence!.getOrigin!();
+  }
+
+  /**
+   * Mark the origin of this document.
+   */
+  async markOrigin(origin: 'local' | 'remote'): Promise<void> {
+    await this.ensurePersistence();
+    await this.localPersistence!.markOrigin!(origin);
+  }
+
+  /**
    * Check for drift between editor and localDoc, correcting if needed.
    * Returns true if drift was detected and corrected.
    */

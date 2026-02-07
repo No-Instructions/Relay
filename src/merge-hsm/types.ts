@@ -607,6 +607,15 @@ export interface IYDocPersistence {
    * @throws Error if database already has content
    */
   initializeWithContent(content: string, fieldName?: string): Promise<void>;
+  /**
+   * Get the origin of this document (local = created here, remote = downloaded).
+   * Used to determine if a document needs initial upload vs is already enrolled.
+   */
+  getOrigin?(): Promise<'local' | 'remote' | undefined>;
+  /**
+   * Mark the origin of this document.
+   */
+  markOrigin?(origin: 'local' | 'remote'): Promise<void>;
 }
 
 /**
