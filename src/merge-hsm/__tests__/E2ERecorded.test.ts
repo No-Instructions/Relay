@@ -15,7 +15,6 @@ import {
   cm6Insert,
   diskChanged,
   persistenceLoaded,
-  initializeWithContent,
   createLCA,
   expectState,
   sha256,
@@ -42,22 +41,6 @@ describe('E2E Recorded: clean-disk-file-test', () => {
 
     // Loading is flat - waits for mode determination
     expectState(t, 'loading');
-  });
-
-  test('should transition to idle after mode determination and initialization', async () => {
-    const t = await createTestHSM();
-
-    t.send(load(guid, path));
-    t.send(persistenceLoaded(new Uint8Array(), null));
-    expectState(t, 'loading');
-
-    // Mode determination required before transitioning out of loading
-    t.send({ type: 'SET_MODE_IDLE' });
-
-    // Now in idle.loading, can initialize with content
-    const hash = await sha256(initialContent);
-    t.send(initializeWithContent(initialContent, hash, Date.now()));
-    expectState(t, 'idle.synced');
   });
 
   test('should enter active mode and reach active.tracking', async () => {

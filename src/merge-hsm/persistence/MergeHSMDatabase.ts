@@ -125,7 +125,6 @@ export async function getAllStates(db: IDBDatabase): Promise<PersistedMergeState
 // To work with Yjs updates in idle mode (without loading a YDoc), use:
 //   - loadUpdatesRaw(dbName)         - load raw updates
 //   - appendUpdateRaw(dbName, update) - append an update
-//   - getMergedStateWithoutDoc(dbName) - get merged update + state vector
 //
 // These functions are exported from src/storage/y-indexeddb.js
 //

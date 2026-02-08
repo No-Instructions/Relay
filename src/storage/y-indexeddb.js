@@ -3,7 +3,6 @@ import * as idb from 'lib0/indexeddb'
 import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
 import { metrics } from '../debug'
-import { CompactionManager } from '../workers/CompactionManager'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
@@ -26,52 +25,6 @@ const uint8ArrayEquals = (a, b) => {
 // After sync, use the lower threshold to keep the database lean
 export const STARTUP_TRIM_SIZE = 500
 export const RUNTIME_TRIM_SIZE = 50
-
-/**
- * Check if a database needs compaction and compact it in a worker if so.
- * This should be called BEFORE creating an IndexeddbPersistence instance.
- * @param {string} name - The database name
- * @returns {Promise<void>}
- */
-export const maybeCompactDatabase = async (name) => {
-  if (!CompactionManager.instance.available) {
-    return
-  }
-
-  // Open a temporary connection just to check the count
-  const tempDb = await idb.openDB(name, db =>
-    idb.createStores(db, [
-      ['updates', { autoIncrement: true }],
-      ['custom']
-    ])
-  )
-
-  try {
-    const [checkStore] = idb.transact(tempDb, [updatesStoreName], 'readonly')
-    const count = await idb.count(checkStore)
-
-    if (count >= STARTUP_TRIM_SIZE) {
-      // Close our temp connection before worker compacts
-      tempDb.close()
-
-      try {
-        const result = await CompactionManager.instance.compact(name)
-        metrics.recordCompaction(name, 0)
-        console.log(`[y-indexeddb] Compacted ${name}: ${result.countBefore} -> ${result.countAfter}`)
-      } catch (err) {
-        console.warn(`[y-indexeddb] Background compaction failed for ${name}:`, err)
-      }
-      return
-    }
-  } finally {
-    // Close temp connection if still open
-    try {
-      tempDb.close()
-    } catch (e) {
-      // Already closed
-    }
-  }
-}
 
 /**
  * @param {IndexeddbPersistence} idbPersistence
@@ -354,35 +307,6 @@ export class IndexeddbPersistence extends Observable {
   }
 
   /**
-   * Initialize persistence with text content.
-   * Used for initial document enrollment - the first insert into IndexedDB.
-   * @param {string} content - Text content to insert
-   * @param {string} [fieldName='contents'] - Y.Text field name
-   * @throws {Error} if database already has content (already enrolled)
-   * @return {Promise<void>}
-   */
-  async initializeWithContent (content, fieldName = 'contents') {
-    await this.whenSynced
-    if (this.hasUserData()) {
-      throw new Error(
-        `[y-indexeddb] Cannot initialize: database "${this.name}" already has ${this._dbsize} updates`
-      )
-    }
-
-    // Set up PermanentUserData BEFORE content insertion.
-    // This ensures user mapping is active when operations are written.
-    if (this._userId) {
-      this._setupPermanentUserData()
-    }
-
-    // Insert content into the doc's Text type
-    this.doc.transact(() => {
-      const ytext = this.doc.getText(fieldName)
-      ytext.insert(0, content)
-    })
-  }
-
-  /**
    * Set up PermanentUserData for user tracking.
    * @private
    */
@@ -453,6 +377,81 @@ export class IndexeddbPersistence extends Observable {
   }
 
   /**
+   * Initialize document with content if not already initialized.
+   * Checks origin in one IDB session, calls contentLoader only if needed.
+   * @param {() => Promise<{content: string, hash: string, mtime: number}>} contentLoader
+   * @param {string} [fieldName='contents'] - Y.Text field name
+   * @return {Promise<boolean>} true if initialization happened, false if already initialized
+   */
+  async initializeWithContent (contentLoader, fieldName = 'contents') {
+    await this.whenSynced
+
+    // Check if already enrolled (origin set = previously initialized)
+    const existingOrigin = await this.getOrigin()
+    if (existingOrigin !== undefined) {
+      return false
+    }
+
+    // Also check for user data (belt and suspenders)
+    if (this.hasUserData()) {
+      return false
+    }
+
+    // Not initialized - load content lazily
+    const { content } = await contentLoader()
+
+    // Set up PermanentUserData BEFORE content insertion
+    if (this._userId) {
+      this._setupPermanentUserData()
+    }
+
+    // Insert content
+    this.doc.transact(() => {
+      const ytext = this.doc.getText(fieldName)
+      ytext.insert(0, content)
+    })
+
+    // Mark origin
+    await this.setOrigin('local')
+
+    return true
+  }
+
+  /**
+   * Initialize document from remote CRDT state if not already initialized.
+   * Used for downloaded documents where remoteDoc already has server content.
+   * @param {Uint8Array} update - CRDT update from remoteDoc
+   * @return {Promise<boolean>} true if initialization happened, false if already initialized
+   */
+  async initializeFromRemote (update) {
+    await this.whenSynced
+
+    // Check if already initialized (origin set = previously initialized)
+    const existingOrigin = await this.getOrigin()
+    if (existingOrigin !== undefined) {
+      return false
+    }
+
+    // Also check for user data (belt and suspenders)
+    if (this.hasUserData()) {
+      return false
+    }
+
+    // Set up PermanentUserData BEFORE applying update
+    if (this._userId) {
+      this._setupPermanentUserData()
+    }
+
+    // Apply remote CRDT state (preserves history, no new operations created)
+    Y.applyUpdate(this.doc, update, this)
+
+    // Mark origin
+    await this.setOrigin('remote')
+
+    return true
+  }
+
+  /**
    * Enhanced readiness detection
    */
 
@@ -505,6 +504,7 @@ export const loadUpdatesRaw = async (name) => {
   }
 }
 
+
 /**
  * Append a Yjs update to IndexedDB without loading a YDoc.
  * For receiving remote updates in idle mode.
@@ -533,44 +533,3 @@ export const appendUpdateRaw = async (name, update) => {
   }
 }
 
-/**
- * Get merged update and state vector without loading a YDoc.
- * Useful for computing state in idle mode.
- * @param {string} name - Database name
- * @returns {Promise<{update: Uint8Array, stateVector: Uint8Array}>}
- */
-export const getMergedStateWithoutDoc = async (name) => {
-  const updates = await loadUpdatesRaw(name)
-  if (updates.length === 0) {
-    return { update: new Uint8Array(), stateVector: new Uint8Array() }
-  }
-  const merged = Y.mergeUpdates(updates)
-  const stateVector = Y.encodeStateVectorFromUpdate(merged)
-  return { update: merged, stateVector }
-}
-
-/**
- * Get the state vector from stored updates without loading a YDoc.
- * @param {string} name - Database name
- * @returns {Promise<Uint8Array>}
- */
-export const getStateVectorWithoutDoc = async (name) => {
-  const { stateVector } = await getMergedStateWithoutDoc(name)
-  return stateVector
-}
-
-/**
- * Compute the diff between stored updates and a remote state vector.
- * Returns the updates needed to bring remote up to date with local.
- * Does not load a YDoc.
- * @param {string} name - Database name
- * @param {Uint8Array} remoteStateVector - Remote state vector to diff against
- * @returns {Promise<Uint8Array>} - Update containing changes remote doesn't have
- */
-export const diffUpdatesWithoutDoc = async (name, remoteStateVector) => {
-  const { update } = await getMergedStateWithoutDoc(name)
-  if (update.length === 0) {
-    return new Uint8Array()
-  }
-  return Y.diffUpdate(update, remoteStateVector)
-}

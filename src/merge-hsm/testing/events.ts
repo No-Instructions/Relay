@@ -27,9 +27,6 @@ import type {
   CancelEvent,
   PersistenceLoadedEvent,
   PersistenceSyncedEvent,
-  InitializeWithContentEvent,
-  InitializeLCAEvent,
-  InitializeFromRemoteEvent,
   MergeSuccessEvent,
   MergeConflictEvent,
   RemoteDocUpdatedEvent,
@@ -179,26 +176,6 @@ export function persistenceLoaded(
 
 export function persistenceSynced(hasContent: boolean): PersistenceSyncedEvent {
   return { type: 'PERSISTENCE_SYNCED', hasContent };
-}
-
-/**
- * Create an INITIALIZE_WITH_CONTENT event.
- * Used when there's no LCA to initialize a document with content.
- */
-export function initializeWithContent(content: string, hash: string, mtime: number): InitializeWithContentEvent {
-  return { type: 'INITIALIZE_WITH_CONTENT', content, hash, mtime };
-}
-
-/**
- * Create an INITIALIZE_LCA event.
- * Used when the content is already in the CRDT and we just need to set the LCA.
- */
-export function initializeLCA(content: string, hash: string, mtime: number): InitializeLCAEvent {
-  return { type: 'INITIALIZE_LCA', content, hash, mtime };
-}
-
-export function initializeFromRemote(content: string, hash: string, mtime: number): InitializeFromRemoteEvent {
-  return { type: 'INITIALIZE_FROM_REMOTE', content, hash, mtime };
 }
 
 export function mergeSuccess(newLCA: LCAState): MergeSuccessEvent {

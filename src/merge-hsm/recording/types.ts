@@ -136,9 +136,6 @@ export type SerializableEvent =
   | { type: 'CANCEL' }
   | { type: 'PERSISTENCE_LOADED'; updates: string; lca: SerializableLCA | null } // updates is base64
   | { type: 'PERSISTENCE_SYNCED'; hasContent: boolean }
-  | { type: 'INITIALIZE_WITH_CONTENT'; content: string; hash: string; mtime: number }
-  | { type: 'INITIALIZE_LCA'; content: string; hash: string; mtime: number }
-  | { type: 'INITIALIZE_FROM_REMOTE'; content: string; hash: string; mtime: number }
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }
   | { type: 'MERGE_CONFLICT'; base: string; local: string; remote: string }
   | { type: 'REMOTE_DOC_UPDATED' }
