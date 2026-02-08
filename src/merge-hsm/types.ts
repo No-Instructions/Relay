@@ -252,43 +252,6 @@ export interface PersistenceSyncedEvent {
   hasContent: boolean;
 }
 
-/**
- * Initialize a document with content and LCA.
- * Creates localDoc, inserts content, sets LCA, syncs to remote, transitions to ready.
- * Used for newly created documents.
- */
-export interface InitializeWithContentEvent {
-  type: 'INITIALIZE_WITH_CONTENT';
-  content: string;
-  hash: string;
-  mtime: number;
-}
-
-/**
- * Initialize LCA for a document that already has content in the CRDT.
- * Sets the LCA, transitions to ready.
- * Used when downloading a document that already exists in the remote CRDT.
- */
-export interface InitializeLCAEvent {
-  type: 'INITIALIZE_LCA';
-  content: string;
-  hash: string;
-  mtime: number;
-}
-
-/**
- * Initialize localDoc from remoteDoc's CRDT state.
- * Creates localDoc, applies remoteDoc's state (shared history), attaches IDB persistence, sets LCA.
- * Used when downloading a document — remoteDoc already has server content,
- * and we need to replicate it into localDoc without creating independent CRDT operations.
- */
-export interface InitializeFromRemoteEvent {
-  type: 'INITIALIZE_FROM_REMOTE';
-  content: string;
-  hash: string;
-  mtime: number;
-}
-
 export interface MergeSuccessEvent {
   type: 'MERGE_SUCCESS';
   newLCA: LCAState;
@@ -406,9 +369,6 @@ export type MergeEvent =
   // Internal
   | PersistenceLoadedEvent
   | PersistenceSyncedEvent
-  | InitializeWithContentEvent
-  | InitializeLCAEvent
-  | InitializeFromRemoteEvent
   | MergeSuccessEvent
   | MergeConflictEvent
   | RemoteDocUpdatedEvent
@@ -538,7 +498,6 @@ export interface PersistedMergeState {
 // operations from y-indexeddb:
 //   - loadUpdatesRaw(dbName)
 //   - appendUpdateRaw(dbName, update)
-//   - getMergedStateWithoutDoc(dbName)
 
 /**
  * Folder-level sync status index.
@@ -555,9 +514,7 @@ export interface MergeIndex {
  * No YDocs in memory, just state vectors and updates.
  *
  * NOTE: Yjs updates (localUpdates) are stored in y-indexeddb per-document
- * databases, NOT in MergeHSMDatabase. Access via:
- *   - loadUpdatesRaw(dbName) - load raw updates
- *   - getMergedStateWithoutDoc(dbName) - get merged update + state vector
+ * databases, NOT in MergeHSMDatabase. Access via loadUpdatesRaw(dbName).
  */
 export interface IdleModeState {
   guid: string;
@@ -567,7 +524,7 @@ export interface IdleModeState {
    * Convention: `${appId}-relay-doc-${guid}`
    */
   yIndexedDbName: string;
-  /** Computed from updates without loading doc (via getMergedStateWithoutDoc) */
+  /** Computed from updates via Y.mergeUpdates + Y.encodeStateVectorFromUpdate */
   localStateVector: Uint8Array;
   /** LCA for comparison */
   lca: LCAState;
@@ -602,20 +559,29 @@ export interface IYDocPersistence {
   /** Check if database contains meaningful user data (stored updates) */
   hasUserData(): boolean;
   /**
-   * Initialize persistence with text content.
-   * Used for initial document enrollment.
-   * @throws Error if database already has content
-   */
-  initializeWithContent(content: string, fieldName?: string): Promise<void>;
-  /**
    * Get the origin of this document (local = created here, remote = downloaded).
    * Used to determine if a document needs initial upload vs is already enrolled.
    */
   getOrigin?(): Promise<'local' | 'remote' | undefined>;
   /**
-   * Mark the origin of this document.
+   * Set the origin of this document.
    */
-  markOrigin?(origin: 'local' | 'remote'): Promise<void>;
+  setOrigin?(origin: 'local' | 'remote'): Promise<void>;
+  /**
+   * Initialize document with content if not already initialized.
+   * Checks origin in one IDB session, calls contentLoader only if needed.
+   * @returns true if initialization happened, false if already initialized
+   */
+  initializeWithContent?(
+    contentLoader: () => Promise<{ content: string; hash: string; mtime: number }>,
+    fieldName?: string
+  ): Promise<boolean>;
+  /**
+   * Initialize document from remote CRDT state if not already initialized.
+   * Used for downloaded documents where remoteDoc already has server content.
+   * @returns true if initialization happened, false if already initialized
+   */
+  initializeFromRemote?(update: Uint8Array): Promise<boolean>;
 }
 
 /**
@@ -642,6 +608,25 @@ export type CreatePersistence = (vaultId: string, doc: Y.Doc, userId?: string) =
  * Testing: can return an empty array or mock data.
  */
 export type LoadUpdatesRaw = (vaultId: string) => Promise<Uint8Array[]>;
+
+/**
+ * Content loaded from disk for lazy enrollment.
+ * Returned by diskLoader when HSM needs to initialize a document.
+ */
+export interface DiskContent {
+  /** File text contents */
+  content: string;
+  /** Content hash (SHA-256) */
+  hash: string;
+  /** Modification time (ms since epoch) */
+  mtime: number;
+}
+
+/**
+ * Function to lazily load disk content for enrollment.
+ * Called only when HSM determines initialization is needed (not already enrolled).
+ */
+export type DiskLoader = () => Promise<DiskContent>;
 
 export interface MergeHSMConfig {
   /** Document GUID */
@@ -694,6 +679,13 @@ export interface MergeHSMConfig {
    * If provided, sets up user mapping on localDoc to track which user made changes.
    */
   userId?: string;
+
+  /**
+   * Function to lazily load disk content for local enrollment.
+   * Called by initializeWithContent() only when the document isn't already enrolled.
+   * This avoids disk reads when re-opening already-enrolled files.
+   */
+  diskLoader: DiskLoader;
 }
 
 // =============================================================================

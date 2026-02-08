@@ -1532,7 +1532,6 @@ export class SharedFolder extends HasProvider {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
-		doc.markOrigin("remote");
 
 		await this.backgroundSync.enqueueDownload(doc);
 
@@ -1566,33 +1565,24 @@ export class SharedFolder extends HasProvider {
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
 
-		const originPromise = doc.getOrigin();
-		const awaitingUpdatesPromise = this.awaitingUpdates();
-
 		(async () => {
-			const exists = await this.exists(doc);
+			const [exists, awaitingUpdates] = await Promise.all([
+				this.exists(doc),
+				this.awaitingUpdates(),
+			]);
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
-			const [contents, origin, awaitingUpdates] = await Promise.all([
-				this.read(doc),
-				originPromise,
-				awaitingUpdatesPromise,
-			]);
-			if (!awaitingUpdates && origin === undefined) {
-				// HSM mode: insert into localDoc via MergeHSM
-				await this.mergeManager.register(guid, this.getPath(vpath), doc.ydoc);
-
-				// Initialize with content and LCA in one step
-				const encoder = new TextEncoder();
-				const hash = await generateHash(encoder.encode(contents).buffer);
-				const mtime = doc.tfile?.stat.mtime ?? Date.now();
-				await doc.hsm?.initializeLocalDoc(contents, hash, mtime);
-
-				doc.markOrigin("local");
-				this.log(`[${doc.path}] Uploading file`);
-				await this.backgroundSync.enqueueSync(doc);
-				this.markUploaded(doc);
+			if (!awaitingUpdates) {
+				// HSM handles enrollment check and lazy disk loading internally.
+				// initializeWithContent() checks origin in one IDB session, only reads
+				// disk if not already enrolled, and sets origin atomically.
+				const enrolled = await doc.hsm?.initializeWithContent();
+				if (enrolled) {
+					this.log(`[${doc.path}] Uploading file`);
+					await this.backgroundSync.enqueueSync(doc);
+					this.markUploaded(doc);
+				}
 			}
 		})();
 

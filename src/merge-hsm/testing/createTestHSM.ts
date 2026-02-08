@@ -18,6 +18,7 @@ import type {
   SerializableSnapshot,
   SyncStatus,
   IYDocPersistence,
+  DiskLoader,
 } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
@@ -58,6 +59,12 @@ export interface TestHSMOptions {
    * persistence will use these updates, simulating IndexedDB state.
    */
   indexedDBUpdates?: Uint8Array;
+
+  /**
+   * Custom disk loader for testing enrollment.
+   * Default: returns empty content.
+   */
+  diskLoader?: DiskLoader;
 }
 
 export interface TestHSM {
@@ -233,23 +240,20 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
         // Return whether IDB had content when persistence synced
         return hadContentAtSync;
       },
-      async initializeWithContent(content: string, fieldName = 'contents') {
-        // Check if already has content
-        if (storedUpdates !== null) {
-          throw new Error(`[mock-persistence] Cannot initialize: database already has content`);
-        }
-        // Insert content into doc
-        doc.transact(() => {
-          const ytext = doc.getText(fieldName);
-          ytext.insert(0, content);
-        });
-      },
     };
   };
 
   // Create the HSM using the normal constructor (no forTesting bypass)
   const guid = options.guid ?? 'test-guid';
   const remoteDoc = new Y.Doc();
+
+  // Default diskLoader for tests - returns empty content
+  const diskLoader = options.diskLoader ?? (async () => ({
+    content: '',
+    hash: 'empty-hash',
+    mtime: Date.now(),
+  }));
+
   const hsm = new MergeHSM({
     guid,
     path: options.path ?? 'test.md',
@@ -258,6 +262,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     timeProvider: time,
     loadUpdatesRaw,
     createPersistence,
+    diskLoader,
   });
 
   // Capture effects (PERSIST_UPDATES is informational - don't update storedUpdates

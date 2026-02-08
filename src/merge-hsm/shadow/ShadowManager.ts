@@ -115,12 +115,21 @@ export class ShadowManager {
     }
 
     const getVaultId = this.config.getVaultId ?? ((g: string) => `shadow-${g}`);
+
+    // Shadow HSMs don't enroll - they replay events. Provide a no-op diskLoader.
+    const noOpDiskLoader = async () => ({
+      content: '',
+      hash: 'shadow-no-op',
+      mtime: 0,
+    });
+
     const hsmConfig: MergeHSMConfig = {
       guid,
       path,
       vaultId: getVaultId(guid),
       remoteDoc,
       timeProvider: this.timeProvider,
+      diskLoader: noOpDiskLoader,
     };
 
     const shadow = new ShadowMergeHSM(

@@ -45,9 +45,6 @@ export {
   // Internal events
   persistenceLoaded,
   persistenceSynced,
-  initializeWithContent,
-  initializeLCA,
-  initializeFromRemote,
   mergeSuccess,
   mergeConflict,
   remoteDocUpdated,

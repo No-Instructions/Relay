@@ -26,7 +26,6 @@ export {
   // Use the doc-less operations from y-indexeddb:
   //   - loadUpdatesRaw(dbName)
   //   - appendUpdateRaw(dbName, update)
-  //   - getMergedStateWithoutDoc(dbName)
 
   // Index store
   saveIndex,

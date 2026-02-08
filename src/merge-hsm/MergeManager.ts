@@ -319,6 +319,22 @@ export class MergeManager {
   }
 
   private async doRegister(guid: string, path: string, remoteDoc: Y.Doc): Promise<void> {
+    // Create diskLoader that wraps getDiskState for lazy content loading
+    const diskLoader = async () => {
+      if (!this.getDiskState) {
+        throw new Error(`[MergeManager] getDiskState not configured, cannot enroll ${path}`);
+      }
+      const state = await this.getDiskState(path);
+      if (!state) {
+        throw new Error(`[MergeManager] File not found at ${path}, cannot enroll`);
+      }
+      return {
+        content: state.contents,
+        hash: state.hash,
+        mtime: state.mtime,
+      };
+    };
+
     // Create HSM in idle mode
     const hsm = new MergeHSM({
       guid,
@@ -331,6 +347,7 @@ export class MergeManager {
       loadUpdatesRaw: this.loadUpdatesRaw,
       persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
       userId: this.userId,
+      diskLoader,
     });
 
     // Subscribe to effects
@@ -405,6 +422,22 @@ export class MergeManager {
       return this.hsms.get(guid)!;
     }
 
+    // Create diskLoader that wraps getDiskState for lazy content loading
+    const diskLoader = async () => {
+      if (!this.getDiskState) {
+        throw new Error(`[MergeManager] getDiskState not configured, cannot enroll ${path}`);
+      }
+      const state = await this.getDiskState(path);
+      if (!state) {
+        throw new Error(`[MergeManager] File not found at ${path}, cannot enroll`);
+      }
+      return {
+        content: state.contents,
+        hash: state.hash,
+        mtime: state.mtime,
+      };
+    };
+
     // Create HSM in idle mode
     const hsm = new MergeHSM({
       guid,
@@ -417,6 +450,7 @@ export class MergeManager {
       loadUpdatesRaw: this.loadUpdatesRaw,
       persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
       userId: this.userId,
+      diskLoader,
     });
 
     // Subscribe to effects
