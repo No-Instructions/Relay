@@ -28,6 +28,7 @@ import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
 import { awaitOnReload } from '../reloadUtils';
+import { validateUpdate } from '../storage/yjs-validation';
 
 // =============================================================================
 // Types
@@ -39,6 +40,13 @@ export interface MergeManagerConfig {
    * Convention: `${appId}-relay-doc-${guid}`
    */
   getVaultId: (guid: string) => string;
+
+  /**
+   * Callback to get a Document by GUID.
+   * Required - Document owns HSM, MergeManager accesses via this callback.
+   * Return undefined if document not found.
+   */
+  getDocument: (guid: string) => { hsm: import('./MergeHSM').MergeHSM | null } | undefined;
 
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;
@@ -155,14 +163,8 @@ export class MergeManager {
   // Sync status for ALL registered documents - Observable per spec
   private readonly _syncStatus = new ObservableMap<string, SyncStatus>('MergeManager.syncStatus');
 
-  // All HSM instances (both idle and active)
-  private hsms: Map<string, MergeHSM> = new Map();
-
   // GUIDs with editor open (lock acquired)
   private activeDocs: Set<string> = new Set();
-
-  // Pending registration promises (for awaiting all registrations)
-  private pendingRegistrations: Map<string, Promise<void>> = new Map();
 
   // Track destroyed state to prevent operations after cleanup
   private destroyed = false;
@@ -204,7 +206,8 @@ export class MergeManager {
   private _maxConcurrentWarm: number;
 
   // Configuration
-  private getVaultId: (guid: string) => string;
+  private _getVaultId: (guid: string) => string;
+  private _getDocument: (guid: string) => { hsm: MergeHSM | null } | undefined;
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
   private loadAllStates?: () => Promise<PersistedMergeState[]>;
@@ -221,7 +224,8 @@ export class MergeManager {
   private loadUpdatesRaw?: LoadUpdatesRaw;
 
   constructor(config: MergeManagerConfig) {
-    this.getVaultId = config.getVaultId;
+    this._getVaultId = config.getVaultId;
+    this._getDocument = config.getDocument;
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.hashFn = config.hashFn;
     this.loadAllStates = config.loadAllStates;
@@ -254,6 +258,90 @@ export class MergeManager {
    */
   get initialized(): boolean {
     return this._initialized;
+  }
+
+  /**
+   * Get vault ID for a document.
+   * Exposed for Document to use when creating HSM.
+   */
+  getVaultId(guid: string): string {
+    return this._getVaultId(guid);
+  }
+
+  // ===========================================================================
+  // HSM Factory API
+  // ===========================================================================
+
+  /**
+   * Create a new HSM instance with shared configuration.
+   * Document owns the HSM - this is just a factory that provides shared config.
+   *
+   * @param config HSM configuration
+   * @returns The newly created MergeHSM
+   */
+  createHSM(config: {
+    guid: string;
+    path: string;
+    remoteDoc: Y.Doc | null;
+    getDiskContent: () => Promise<{ content: string; hash: string; mtime: number }>;
+    getPersistenceMetadata?: () => PersistenceMetadata;
+  }): MergeHSM {
+    const { guid, path, remoteDoc, getDiskContent, getPersistenceMetadata } = config;
+
+    // Get LCA and localStateVector from cache (bulk-loaded during initialize())
+    const lca = this.getLCA(guid);
+    const localStateVector = this.getLocalStateVector(guid);
+
+    const hsm = new MergeHSM({
+      guid,
+      path,
+      vaultId: this._getVaultId(guid),
+      remoteDoc,
+      timeProvider: this.timeProvider,
+      hashFn: this.hashFn,
+      createPersistence: this.createPersistence,
+      loadUpdatesRaw: this.loadUpdatesRaw,
+      persistenceMetadata: getPersistenceMetadata?.(),
+      userId: this.userId,
+      diskLoader: getDiskContent,
+    });
+
+    // Send LOAD and PERSISTENCE_LOADED to initialize the HSM
+    hsm.send({ type: 'LOAD', guid, path });
+    hsm.send({
+      type: 'PERSISTENCE_LOADED',
+      updates: new Uint8Array(), // No updates needed - we pass state vector directly
+      lca,
+      localStateVector,
+    });
+
+    // Start in idle mode by default (caller can send SET_MODE_ACTIVE if needed)
+    hsm.send({ type: 'SET_MODE_IDLE' });
+
+    return hsm;
+  }
+
+  /**
+   * Notify MergeManager that an HSM was created for a document.
+   * Updates hibernation tracking.
+   */
+  notifyHSMCreated(guid: string): void {
+    if (this.destroyed) return;
+    this._hibernationState.set(guid, 'warm');
+    this.resetHibernateTimer(guid);
+  }
+
+  /**
+   * Notify MergeManager that an HSM was destroyed for a document.
+   * Cleans up hibernation tracking.
+   */
+  notifyHSMDestroyed(guid: string): void {
+    if (this.destroyed) return;
+    this._hibernationState.delete(guid);
+    this._hibernationBuffer.delete(guid);
+    this.clearHibernateTimer(guid);
+    this._syncStatus.delete(guid);
+    this.activeDocs.delete(guid);
   }
 
   // ===========================================================================
@@ -330,7 +418,8 @@ export class MergeManager {
   wake(guid: string, remoteDoc: Y.Doc): void {
     if (this.destroyed) return;
 
-    const hsm = this.hsms.get(guid);
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
     if (!hsm) return;
 
     // Attach remoteDoc to HSM
@@ -361,7 +450,8 @@ export class MergeManager {
     if (currentState === 'hibernated') return;
     if (currentState === 'active') return; // Never hibernate active docs
 
-    const hsm = this.hsms.get(guid);
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
     if (hsm) {
       hsm.setRemoteDoc(null);
     }
@@ -409,7 +499,8 @@ export class MergeManager {
 
     // Persist to storage via the onEffect callback
     // The integration layer handles actual IndexedDB writes
-    const hsm = this.hsms.get(guid);
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
     if (hsm && this.onEffect) {
       const persistedState: PersistedMergeState = {
         guid,
@@ -486,266 +577,6 @@ export class MergeManager {
   }
 
   /**
-   * Register a document and create its HSM in idle mode.
-   * The HSM will persist across lock cycles until unregister() is called.
-   *
-   * @param guid - Document GUID
-   * @param path - Virtual path within shared folder
-   * @param remoteDoc - Remote YDoc, managed externally with provider attached
-   */
-  register(guid: string, path: string, remoteDoc: Y.Doc | null = null): Promise<void> {
-    if (this.destroyed) return Promise.resolve();
-
-    // If registration/loading is still in progress, return that promise.
-    // This covers both doRegister() and getOrRegisterHSM() async loading.
-    if (this.pendingRegistrations.has(guid)) {
-      return this.pendingRegistrations.get(guid)!;
-    }
-
-    // Skip if already registered and fully loaded
-    if (this.hsms.has(guid)) {
-      return Promise.resolve();
-    }
-
-    // Create and track the registration promise
-    const registrationPromise = this.doRegister(guid, path, remoteDoc);
-    this.pendingRegistrations.set(guid, registrationPromise);
-
-    // Clean up when done
-    registrationPromise.finally(() => {
-      this.pendingRegistrations.delete(guid);
-    });
-
-    return registrationPromise;
-  }
-
-  private async doRegister(guid: string, path: string, remoteDoc: Y.Doc | null): Promise<void> {
-    // Create diskLoader that wraps getDiskState for lazy content loading
-    const diskLoader = async () => {
-      if (!this.getDiskState) {
-        throw new Error(`[MergeManager] getDiskState not configured, cannot enroll ${path}`);
-      }
-      const state = await this.getDiskState(path);
-      if (!state) {
-        throw new Error(`[MergeManager] File not found at ${path}, cannot enroll`);
-      }
-      return {
-        content: state.contents,
-        hash: state.hash,
-        mtime: state.mtime,
-      };
-    };
-
-    // Create HSM in idle mode
-    const hsm = new MergeHSM({
-      guid,
-      path,
-      vaultId: this.getVaultId(guid),
-      remoteDoc,
-      timeProvider: this.timeProvider,
-      hashFn: this.hashFn,
-      createPersistence: this.createPersistence,
-      loadUpdatesRaw: this.loadUpdatesRaw,
-      persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
-      userId: this.userId,
-      diskLoader,
-    });
-
-    // Subscribe to effects
-    hsm.subscribe((effect) => {
-      this.handleHSMEffect(guid, effect);
-    });
-
-    // Subscribe to state changes to update sync status
-    hsm.onStateChange(() => {
-      this.updateSyncStatus(guid, hsm.getSyncStatus());
-    });
-
-    // Store HSM
-    this.hsms.set(guid, hsm);
-
-    // Initialize HSM through loading → idle
-    hsm.send({ type: 'LOAD', guid, path });
-
-    // Get LCA and localStateVector from cache (bulk-loaded during initialize())
-    // This avoids opening per-document IDBs at registration time
-    const lca = this.getLCA(guid);
-    const cachedStateVector = this.getLocalStateVector(guid);
-
-    hsm.send({
-      type: 'PERSISTENCE_LOADED',
-      updates: new Uint8Array(),  // No updates needed - we pass state vector directly
-      lca,
-      localStateVector: cachedStateVector,
-    });
-
-    // Send mode determination to transition out of loading (flat state per v9 spec)
-    hsm.send({ type: 'SET_MODE_IDLE' });
-
-    // HSM is now in idle.* state - update sync status
-    this.updateSyncStatus(guid, hsm.getSyncStatus());
-
-    // Start hibernated (no remoteDoc in memory)
-    this._hibernationState.set(guid, 'hibernated');
-  }
-
-  /**
-   * Wait for all pending registrations to complete.
-   * Use this after calling register() without await to ensure HSMs are ready.
-   */
-  async whenRegistered(): Promise<void> {
-    if (this.pendingRegistrations.size === 0) {
-      return;
-    }
-    await Promise.all(this.pendingRegistrations.values());
-  }
-
-  /**
-   * Get or create HSM for a document (synchronous).
-   * Creates the HSM in loading state and kicks off async persistence loading.
-   * Does NOT acquire lock - the HSM stays in idle mode after loading completes.
-   *
-   * Use this when you need the HSM reference immediately (e.g., in constructors).
-   * The HSM will be in loading state until persistence loads, then idle.
-   *
-   * @param guid - Document GUID
-   * @param path - Virtual path within shared folder
-   * @param remoteDoc - Remote YDoc, managed externally with provider attached
-   * @returns The HSM instance (may still be loading), or null if destroyed
-   */
-  getOrRegisterHSM(guid: string, path: string, remoteDoc: Y.Doc | null = null): MergeHSM | null {
-    if (this.destroyed) return null;
-
-    // Return existing HSM if already registered
-    if (this.hsms.has(guid)) {
-      return this.hsms.get(guid)!;
-    }
-
-    // Create diskLoader that wraps getDiskState for lazy content loading
-    const diskLoader = async () => {
-      if (!this.getDiskState) {
-        throw new Error(`[MergeManager] getDiskState not configured, cannot enroll ${path}`);
-      }
-      const state = await this.getDiskState(path);
-      if (!state) {
-        throw new Error(`[MergeManager] File not found at ${path}, cannot enroll`);
-      }
-      return {
-        content: state.contents,
-        hash: state.hash,
-        mtime: state.mtime,
-      };
-    };
-
-    // Create HSM in idle mode
-    const hsm = new MergeHSM({
-      guid,
-      path,
-      vaultId: this.getVaultId(guid),
-      remoteDoc,
-      timeProvider: this.timeProvider,
-      hashFn: this.hashFn,
-      createPersistence: this.createPersistence,
-      loadUpdatesRaw: this.loadUpdatesRaw,
-      persistenceMetadata: this.getPersistenceMetadata?.(guid, path),
-      userId: this.userId,
-      diskLoader,
-    });
-
-    // Subscribe to effects
-    hsm.subscribe((effect) => {
-      this.handleHSMEffect(guid, effect);
-    });
-
-    // Subscribe to state changes to update sync status
-    hsm.onStateChange(() => {
-      this.updateSyncStatus(guid, hsm.getSyncStatus());
-    });
-
-    // Store HSM
-    this.hsms.set(guid, hsm);
-
-    // Initialize HSM through loading → idle
-    hsm.send({ type: 'LOAD', guid, path });
-
-    // Get LCA and localStateVector from cache synchronously (bulk-loaded during initialize())
-    // This avoids opening per-document IDBs at registration time, preventing deadlocks
-    // when files are created via app.vault.create()
-    const lca = this.getLCA(guid);
-    const cachedStateVector = this.getLocalStateVector(guid);
-
-    hsm.send({
-      type: 'PERSISTENCE_LOADED',
-      updates: new Uint8Array(),  // No updates needed - we pass state vector directly
-      lca,
-      localStateVector: cachedStateVector,
-    });
-
-    // If the HSM is still in loading state (no mode decision from
-    // setActiveDocuments yet), default to idle mode. This handles
-    // HSMs created after setActiveDocuments already ran (e.g., from
-    // downloadDoc in syncFileTree which isn't awaited).
-    if (hsm.state.statePath === 'loading') {
-      hsm.send({ type: 'SET_MODE_IDLE' });
-    }
-
-    this.updateSyncStatus(guid, hsm.getSyncStatus());
-
-    // Start hibernated (no remoteDoc in memory)
-    this._hibernationState.set(guid, 'hibernated');
-
-    // No async loading needed - cache lookup is synchronous.
-    // Still track as "pending" briefly so callers can await if needed.
-    const loadingPromise = Promise.resolve();
-
-    this.pendingRegistrations.set(guid, loadingPromise);
-    loadingPromise.finally(() => {
-      this.pendingRegistrations.delete(guid);
-    });
-
-    return hsm;
-  }
-
-  /**
-   * Get HSM for a document, acquiring lock to transition to active mode.
-   * If not already registered, registers the document first.
-   *
-   * @param guid - Document GUID
-   * @param path - Virtual path within shared folder
-   * @param remoteDoc - Remote YDoc, managed externally with provider attached
-   * @param editorContent - The current editor/disk content. Required in v6 to fix BUG-022.
-   *   If not provided, defaults to empty string.
-   */
-  async getHSM(guid: string, path: string, remoteDoc: Y.Doc | null, editorContent: string = ''): Promise<MergeHSM> {
-    if (this.destroyed) {
-      throw new Error('MergeManager has been destroyed');
-    }
-
-    // Ensure HSM exists (register if needed)
-    if (!this.hsms.has(guid)) {
-      await this.register(guid, path, remoteDoc);
-    }
-
-    const hsm = this.hsms.get(guid)!;
-
-    // If not already active, acquire lock with editorContent
-    if (!this.activeDocs.has(guid)) {
-      hsm.send({ type: 'ACQUIRE_LOCK', editorContent });
-      this.markActive(guid);
-
-      // If HSM is waiting for provider sync (empty IDB), send PROVIDER_SYNCED
-      // to unblock. In production, ProviderIntegration (created by Document.acquireLock)
-      // delivers this event. MergeManager.getHSM() is a simpler API that handles
-      // the common case of an already-synced provider.
-      if (hsm.matches('active.entering')) {
-        hsm.send({ type: 'PROVIDER_SYNCED' });
-      }
-    }
-
-    return hsm;
-  }
-
-  /**
    * Check if an HSM is currently in active mode (lock acquired).
    */
   isActive(guid: string): boolean {
@@ -764,9 +595,11 @@ export class MergeManager {
 
   /**
    * Check if a document is registered (HSM exists).
+   * Uses getDocument callback - Document owns HSM.
    */
   isRegistered(guid: string): boolean {
-    return this.hsms.has(guid);
+    const doc = this._getDocument(guid);
+    return doc?.hsm != null;
   }
 
   /**
@@ -779,11 +612,18 @@ export class MergeManager {
    * For HSMs in `loading` state, sends mode determination events.
    * Also detects HSMs stuck in `active.*` mode without a corresponding
    * open editor and sends RELEASE_LOCK to recover them to idle.
+   *
+   * @param activeGuids - GUIDs of documents with open editors
+   * @param allGuids - All document GUIDs to iterate (required since Document owns HSM)
    */
-  setActiveDocuments(activeGuids: Set<string>): void {
+  setActiveDocuments(activeGuids: Set<string>, allGuids: string[]): void {
     if (this.destroyed) return;
 
-    for (const [guid, hsm] of this.hsms) {
+    for (const guid of allGuids) {
+      const doc = this._getDocument(guid);
+      const hsm = doc?.hsm;
+      if (!hsm) continue;
+
       const statePath = hsm.state.statePath;
 
       if (statePath === 'loading') {
@@ -808,7 +648,8 @@ export class MergeManager {
    * Waits for IndexedDB writes to complete before returning.
    */
   async unload(guid: string): Promise<void> {
-    const hsm = this.hsms.get(guid);
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
     if (!hsm) return;
 
     // Only send RELEASE_LOCK if currently active
@@ -827,43 +668,20 @@ export class MergeManager {
   }
 
   /**
-   * Fully unregister a document, destroying its HSM.
-   * Use this when removing a document from sync.
-   * Waits for IndexedDB writes to complete before returning.
-   */
-  async unregister(guid: string): Promise<void> {
-    const hsm = this.hsms.get(guid);
-    if (!hsm) return;
-
-    // Ensure released from active mode first
-    if (this.activeDocs.has(guid)) {
-      hsm.send({ type: 'RELEASE_LOCK' });
-      this.activeDocs.delete(guid);
-      // Wait for cleanup to complete (IndexedDB writes)
-      await hsm.awaitCleanup();
-    }
-
-    // Now fully unload
-    hsm.send({ type: 'UNLOAD' });
-    // Wait for unload cleanup to complete
-    await hsm.awaitCleanup();
-
-    // Cleanup
-    this.hsms.delete(guid);
-    this._syncStatus.delete(guid);
-    this._hibernationState.delete(guid);
-    this._hibernationBuffer.delete(guid);
-    this.clearHibernateTimer(guid);
-  }
-
-  /**
    * Handle a remote update for a document.
    * If hibernated, buffers the update and enqueues a P3 wake.
    * If warm/active, forwards directly to the HSM.
    */
   handleRemoteUpdate(guid: string, update: Uint8Array): void {
-    const hsm = this.hsms.get(guid);
-    if (!hsm) return; // Document isn't registered - ignore
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
+    if (!hsm) return; // Document not found or no HSM - ignore
+
+    const updateError = validateUpdate(update);
+    if (updateError) {
+      console.error(`[MergeManager] Dropping invalid remote update for ${guid} (${update.byteLength} bytes):`, updateError);
+      return;
+    }
 
     const state = this.getHibernationState(guid);
 
@@ -883,40 +701,6 @@ export class MergeManager {
     // Reset hibernate timer if warm
     if (state === 'warm') {
       this.resetHibernateTimer(guid);
-    }
-  }
-
-  /**
-   * Poll for disk changes on registered documents.
-   * Only sends DISK_CHANGED if the disk state actually differs from HSM's knowledge.
-   * Works for all documents regardless of hibernation state — DISK_CHANGED is
-   * metadata-only and the HSM handles it without needing a remoteDoc.
-   */
-  async pollAll(options?: PollOptions): Promise<void> {
-    if (!this.getDiskState) {
-      return; // No disk state provider configured
-    }
-
-    const guids = options?.guids ?? Array.from(this.hsms.keys());
-
-    for (const guid of guids) {
-      const hsm = this.hsms.get(guid);
-      if (!hsm) continue;
-
-      const path = hsm.state.path;
-      const diskState = await this.getDiskState(path);
-      if (diskState) {
-        // BUG-007 fix: Only send DISK_CHANGED if something actually changed
-        const currentDisk = hsm.state.disk;
-        if (this.shouldSendDiskChanged(currentDisk, diskState)) {
-          hsm.send({
-            type: 'DISK_CHANGED',
-            contents: diskState.contents,
-            mtime: diskState.mtime,
-            hash: diskState.hash,
-          });
-        }
-      }
     }
   }
 
@@ -958,29 +742,18 @@ export class MergeManager {
   }
 
   /**
-   * Get all registered document GUIDs.
-   */
-  getRegisteredGuids(): string[] {
-    return Array.from(this.hsms.keys());
-  }
-
-  /**
-   * Get the path for a registered document.
-   */
-  getPath(guid: string): string | undefined {
-    return this.hsms.get(guid)?.state.path;
-  }
-
-  /**
    * Get HSM without acquiring lock (for inspection/testing).
    * Returns undefined if document is not registered.
    */
   getIdleHSM(guid: string): MergeHSM | undefined {
-    return this.hsms.get(guid);
+    const doc = this._getDocument(guid);
+    return doc?.hsm ?? undefined;
   }
 
   /**
-   * Destroy all HSMs and clean up resources.
+   * Destroy MergeManager and clean up resources.
+   * Note: Document owns HSMs, so they are not destroyed here.
+   * Document.destroy() handles HSM cleanup.
    */
   destroy(): void {
     if (this.destroyed) return;
@@ -991,14 +764,7 @@ export class MergeManager {
       this.clearHibernateTimer(guid);
     }
 
-    for (const hsm of this.hsms.values()) {
-      hsm.send({ type: 'UNLOAD' });
-      awaitOnReload(hsm.awaitCleanup());
-    }
-
-    this.hsms.clear();
     this.activeDocs.clear();
-    this.pendingRegistrations.clear();
     this._syncStatus.clear();
     this._hibernationState.clear();
     this._hibernationBuffer.clear();
@@ -1084,8 +850,8 @@ export class MergeManager {
         // Skip if already warm/active
         if (currentState !== 'hibernated') continue;
 
-        // Skip if HSM doesn't exist
-        const hsm = this.hsms.get(request.guid);
+        const doc = this._getDocument(request.guid);
+        const hsm = doc?.hsm;
         if (!hsm) continue;
 
         this._wakingDocs.add(request.guid);
@@ -1159,8 +925,9 @@ export class MergeManager {
   /**
    * Update sync status.
    * ObservableMap automatically notifies subscribers when set() is called.
+   * Public so Document can update sync status when its HSM state changes.
    */
-  private updateSyncStatus(guid: string, status: SyncStatus): void {
+  updateSyncStatus(guid: string, status: SyncStatus): void {
     // Skip updates during/after destruction to avoid PostOffice teardown errors
     if (this.destroyed) return;
     this._syncStatus.set(guid, status);
