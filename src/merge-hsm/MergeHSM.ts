@@ -468,34 +468,25 @@ export class MergeHSM implements TestableHSM {
 	}
 
 	/**
-	 * Initialize localDoc from remoteDoc's CRDT state for downloaded documents.
-	 * Creates localDoc with shared CRDT history (no independent operations),
-	 * attaches IDB persistence, and sets LCA.
+	 * Initialize localDoc from downloaded CRDT bytes.
+	 * Applies bytes to localDoc via persistence, then derives LCA from localDoc.
+	 * No remoteDoc dependency — bytes flow directly from the download.
 	 *
-	 * @param content - Text content for LCA
-	 * @param hash - Hash of the content
+	 * @param updateBytes - Raw CRDT update bytes from the server
 	 * @param mtime - Modification time from disk
 	 * @returns true if initialization happened, false if already initialized
 	 */
 	async initializeFromRemote(
-		content: string,
-		hash: string,
+		updateBytes: Uint8Array,
 		mtime: number,
 	): Promise<boolean> {
 		await this.ensurePersistence();
 
-		if (!this.remoteDoc) {
-			throw new Error("[MergeHSM] initializeFromRemote requires remoteDoc to be loaded");
-		}
-
-		// Get remote CRDT state to apply
-		const remoteState = Y.encodeStateAsUpdate(this.remoteDoc);
-
-		// Use persistence's initializeFromRemote which checks origin in same IDB session
-		const didInitialize = await this.localPersistence!.initializeFromRemote!(remoteState);
+		const didInitialize = await this.localPersistence!.initializeFromRemote!(updateBytes);
 
 		if (didInitialize) {
-			// Initialization happened - set LCA to match content
+			const content = this.localDoc!.getText("contents").toString();
+			const hash = await this.hashFn(content);
 			const stateVector = Y.encodeStateVector(this.localDoc!);
 			this._lca = {
 				contents: content,

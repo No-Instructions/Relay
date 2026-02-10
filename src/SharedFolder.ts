@@ -1602,17 +1602,18 @@ export class SharedFolder extends HasProvider {
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
 
-		await this.backgroundSync.enqueueDownload(doc);
+		// Download via queue — returns raw CRDT bytes applied to remoteDoc
+		const updateBytes = await this.backgroundSync.enqueueDownload(doc);
 
-		// Initialize localDoc from remoteDoc's CRDT state and set LCA.
-		// remoteDoc has the server's content; we replicate its CRDT state into
-		// localDoc (shared history) rather than inserting from text independently.
-		const content = doc.text;
-		const tfile = doc.tfile;
-		if (tfile) {
-			const encoder = new TextEncoder();
-			const hash = await generateHash(encoder.encode(content).buffer);
-			await doc.hsm?.initializeFromRemote(content, hash, tfile.stat.mtime);
+		if (updateBytes) {
+			// Flush remoteDoc content to disk
+			if (this.syncStore.has(doc.path)) {
+				await this.flush(doc, doc.text);
+			}
+
+			// Initialize localDoc from downloaded bytes, set LCA with actual disk mtime
+			const mtime = doc.tfile?.stat.mtime ?? Date.now();
+			await doc.hsm?.initializeFromRemote(updateBytes, mtime);
 		}
 
 		this.files.set(guid, doc);
