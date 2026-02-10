@@ -647,8 +647,11 @@ export interface MergeHSMConfig {
    * Remote YDoc - passed in, managed externally.
    * Provider is attached by integration layer.
    * HSM observes for remote updates.
+   * Can be null for hibernated documents (no YDoc in memory).
+   * When null, idle mode operations use doc-less Yjs APIs.
+   * Must be provided (via setRemoteDoc) before entering active mode.
    */
-  remoteDoc: Y.Doc;
+  remoteDoc: Y.Doc | null;
 
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;

@@ -145,7 +145,7 @@ export class MergeHSM implements TestableHSM {
 
 	// YDocs
 	private localDoc: Y.Doc | null = null; // Only populated in active mode
-	private remoteDoc: Y.Doc; // Always available, passed in via config, managed externally
+	private remoteDoc: Y.Doc | null; // Lazily provided, managed externally. Null when hibernated.
 
 	// Persisted client ID for localDoc across lock cycles.
 	// Reusing the same client ID prevents content duplication when IDB is empty
@@ -365,9 +365,31 @@ export class MergeHSM implements TestableHSM {
 		return this.conflictData;
 	}
 
-	getRemoteDoc(): Y.Doc {
-		// Per spec: "Access remoteDoc (always available - managed externally)"
+	getRemoteDoc(): Y.Doc | null {
 		return this.remoteDoc;
+	}
+
+	/**
+	 * Set or replace the remote YDoc. Used by MergeManager to provide
+	 * a remoteDoc when waking from hibernation.
+	 */
+	setRemoteDoc(doc: Y.Doc | null): void {
+		// Unregister old CRDT log observer if present
+		if (this._remoteDocLogHandler && this.remoteDoc) {
+			this.remoteDoc.off("update", this._remoteDocLogHandler);
+			this._remoteDocLogHandler = null;
+		}
+
+		this.remoteDoc = doc;
+
+		// Re-register CRDT log observer on new doc if loaded
+		if (this.remoteDoc && this._statePath !== "unloaded") {
+			this._remoteDocLogHandler = this.makeCRDTUpdateLogger(
+				"remoteDoc",
+				this.remoteDoc,
+			);
+			this.remoteDoc.on("update", this._remoteDocLogHandler);
+		}
 	}
 
 	/**
@@ -453,6 +475,10 @@ export class MergeHSM implements TestableHSM {
 		mtime: number,
 	): Promise<boolean> {
 		await this.ensurePersistence();
+
+		if (!this.remoteDoc) {
+			throw new Error("[MergeHSM] initializeFromRemote requires remoteDoc to be loaded");
+		}
 
 		// Get remote CRDT state to apply
 		const remoteState = Y.encodeStateAsUpdate(this.remoteDoc);
@@ -821,11 +847,13 @@ export class MergeHSM implements TestableHSM {
 		this._remoteStateVector = null; // Clear remote state for fresh load
 
 		// Register CRDT update observer on remoteDoc (lives from LOAD to UNLOAD)
-		this._remoteDocLogHandler = this.makeCRDTUpdateLogger(
-			"remoteDoc",
-			this.remoteDoc,
-		);
-		this.remoteDoc.on("update", this._remoteDocLogHandler);
+		if (this.remoteDoc) {
+			this._remoteDocLogHandler = this.makeCRDTUpdateLogger(
+				"remoteDoc",
+				this.remoteDoc,
+			);
+			this.remoteDoc.on("update", this._remoteDocLogHandler);
+		}
 
 		this.transitionTo("loading");
 	}
@@ -1296,7 +1324,7 @@ export class MergeHSM implements TestableHSM {
 
 	private handleUnload(): void {
 		// Remove remoteDoc CRDT logging observer
-		if (this._remoteDocLogHandler) {
+		if (this._remoteDocLogHandler && this.remoteDoc) {
 			this.remoteDoc.off("update", this._remoteDocLogHandler);
 			this._remoteDocLogHandler = null;
 		}
@@ -1503,7 +1531,7 @@ export class MergeHSM implements TestableHSM {
 
 	private describeOrigin(origin: unknown): string {
 		if (origin === this) return "HSM";
-		if (origin === this.remoteDoc) return "remoteDoc";
+		if (this.remoteDoc && origin === this.remoteDoc) return "remoteDoc";
 		if (origin === this.localPersistence) return "persistence";
 		if (origin === null || origin === undefined) return "null";
 		if (typeof origin === "string") return `"${origin}"`;
@@ -1531,10 +1559,12 @@ export class MergeHSM implements TestableHSM {
 			"update",
 			this.makeCRDTUpdateLogger("localDoc", this.localDoc!),
 		);
-		this.remoteDoc!.on(
-			"update",
-			this.makeCRDTUpdateLogger("remoteDoc", this.remoteDoc!),
-		);
+		if (this.remoteDoc) {
+			this.remoteDoc.on(
+				"update",
+				this.makeCRDTUpdateLogger("remoteDoc", this.remoteDoc),
+			);
+		}
 	}
 
 	private createYDocs(): void {
@@ -1705,7 +1735,7 @@ export class MergeHSM implements TestableHSM {
 	 * This ensures localDoc has the latest remote state before reconciliation.
 	 */
 	private applyRemoteToLocalIfNeeded(): void {
-		if (!this.localDoc) return;
+		if (!this.localDoc || !this.remoteDoc) return;
 
 		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
@@ -1924,7 +1954,7 @@ export class MergeHSM implements TestableHSM {
 	// While you may be tempted to try to filter outbound sync based on
 	// heuristics, that is always the wrong approach. The error is in the sender.
 	private syncLocalToRemote(): void {
-		if (!this.localDoc) return;
+		if (!this.localDoc || !this.remoteDoc) return;
 
 		const update = Y.encodeStateAsUpdate(
 			this.localDoc,
@@ -1945,11 +1975,15 @@ export class MergeHSM implements TestableHSM {
 		// While you may be tempted to try to filter inbound messages based on
 		// heuristics, that is always the wrong approach. The error is in the sender.
 		//
-		// Apply update to remoteDoc (always available, managed externally).
-		// Yjs apply is idempotent for same-client operations, so re-applying
-		// an update the provider already applied is safe (no-op).
-		Y.applyUpdate(this.remoteDoc, event.update, this.remoteDoc);
-		this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+		// Apply update to remoteDoc if loaded. When hibernated (remoteDoc is null),
+		// the update is handled doc-less via pendingIdleUpdates / accumulated events.
+		if (this.remoteDoc) {
+			Y.applyUpdate(this.remoteDoc, event.update, this.remoteDoc);
+			this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+		} else {
+			// Doc-less: update remoteStateVector from raw bytes
+			this._remoteStateVector = Y.encodeStateVectorFromUpdate(event.update);
+		}
 
 		if (
 			this._statePath === "loading" ||
@@ -2023,7 +2057,7 @@ export class MergeHSM implements TestableHSM {
 	 * heuristics, that is always the wrong approach. The error is in the sender.
 	 */
 	private mergeRemoteToLocal(): void {
-		if (!this.localDoc) return;
+		if (!this.localDoc || !this.remoteDoc) return;
 
 		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
