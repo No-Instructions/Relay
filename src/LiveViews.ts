@@ -979,25 +979,17 @@ export class LiveViewManager {
 			}
 		}
 
-		// Wait for all folders to complete their pending registrations
-		// This ensures HSMs are registered before we set their mode
-		const waitPromises: Promise<void>[] = [];
-		for (const folder of this.sharedFolders.items()) {
-			if (folder.mergeManager) {
-				waitPromises.push(folder.mergeManager.whenRegistered());
-			}
-		}
-		await Promise.all(waitPromises);
-
 		// Call setActiveDocuments on each folder's MergeManager
 		for (const [folder, guids] of folderToGuids) {
-			folder.mergeManager.setActiveDocuments(guids);
+			const allGuids = Array.from(folder.files.keys());
+			folder.mergeManager.setActiveDocuments(guids, allGuids);
 		}
 
 		// Also notify folders with no active views (all HSMs should be idle)
 		for (const folder of this.sharedFolders.items()) {
 			if (!folderToGuids.has(folder) && folder.mergeManager) {
-				folder.mergeManager.setActiveDocuments(new Set());
+				const allGuids = Array.from(folder.files.keys());
+				folder.mergeManager.setActiveDocuments(new Set(), allGuids);
 			}
 		}
 	}

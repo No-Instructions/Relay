@@ -536,18 +536,16 @@ describe('HSM Recording', () => {
   });
 
   describe('E2ERecordingBridge', () => {
+    // Document registry for testing (simulates SharedFolder.files)
+    const documents = new Map<string, { hsm: any; path: string }>();
+
     // Mock MergeManager for testing
     function createMockManager() {
-      const registeredGuids: string[] = [];
-      const hsms = new Map(); // Named 'hsms' to match real MergeManager
       const syncStatusSubscribers: (() => void)[] = [];
 
       return {
-        getRegisteredGuids: () => registeredGuids,
-        isLoaded: (guid: string) => hsms.has(guid),
-        isActive: (guid: string) => hsms.has(guid),
-        getPath: (guid: string) => `${guid}.md`,
-        hsms, // Exposed as 'hsms' for E2ERecordingBridge.getHSMForGuid
+        isLoaded: (guid: string) => documents.has(guid),
+        isActive: (guid: string) => documents.has(guid),
         syncStatus: {
           subscribe: (fn: () => void) => {
             syncStatusSubscribers.push(fn);
@@ -559,16 +557,27 @@ describe('HSM Recording', () => {
         },
         // Helper to add a loaded HSM for testing
         _addHSM: (guid: string, hsm: any) => {
-          registeredGuids.push(guid);
-          hsms.set(guid, hsm);
+          documents.set(guid, { hsm, path: `${guid}.md` });
           syncStatusSubscribers.forEach(fn => fn());
         },
       };
     }
 
+    // Default config for E2ERecordingBridge
+    function createBridgeConfig() {
+      return {
+        getDocument: (guid: string) => documents.get(guid),
+        getAllGuids: () => Array.from(documents.keys()),
+      };
+    }
+
+    beforeEach(() => {
+      documents.clear();
+    });
+
     it('installs and uninstalls global API', () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       expect((globalThis as any).__hsmRecording).toBeUndefined();
 
@@ -584,7 +593,7 @@ describe('HSM Recording', () => {
 
     it('tracks recording state', () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       expect(bridge.isRecording()).toBe(false);
       expect(bridge.getState().recording).toBe(false);
@@ -603,7 +612,7 @@ describe('HSM Recording', () => {
 
     it('throws when starting while already recording', () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       bridge.startRecording();
 
@@ -614,14 +623,14 @@ describe('HSM Recording', () => {
 
     it('throws when stopping without recording', () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       expect(() => bridge.stopRecording()).toThrow('No recording in progress');
     });
 
     it('returns valid JSON when stopping', () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       bridge.startRecording('json-test');
       const json = bridge.stopRecording();
@@ -632,7 +641,7 @@ describe('HSM Recording', () => {
 
     it('records HSM events when loaded', async () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       // Create a test HSM and add it to the manager
       const t = await createTestHSM({ guid: 'test-doc', path: 'test-doc.md' });
@@ -655,7 +664,7 @@ describe('HSM Recording', () => {
 
     it('cleans up properly on dispose', () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       bridge.install();
       bridge.startRecording();
@@ -670,7 +679,7 @@ describe('HSM Recording', () => {
 
     it('getActiveDocuments returns loaded document GUIDs', async () => {
       const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager);
+      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
 
       // Add some HSMs
       const t1 = await createTestHSM({ guid: 'doc1' });
