@@ -16,7 +16,6 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
-import { appendUpdateRaw } from "./storage/y-indexeddb";
 
 export interface QueueItem {
 	guid: string;
@@ -79,7 +78,7 @@ export class BackgroundSync extends HasLogging {
 	private downloadCompletionCallbacks = new Map<
 		string,
 		{
-			resolve: () => void;
+			resolve: (result?: Uint8Array) => void;
 			reject: (error: Error) => void;
 		}
 	>();
@@ -346,12 +345,12 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				downloadPromise
-					.then(() => {
+					.then((result) => {
 						item.status = "completed";
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
-							callback.resolve();
+							callback.resolve(result as Uint8Array | undefined);
 							this.downloadCompletionCallbacks.delete(item.guid);
 						}
 
@@ -498,7 +497,7 @@ export class BackgroundSync extends HasLogging {
 	 * @param item The document to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueDownload(item: SyncFile | Document | Canvas): Promise<void> {
+	enqueueDownload(item: SyncFile | Document | Canvas): Promise<Uint8Array | undefined> {
 		// Skip if already in progress
 		if (this.inProgressDownloads.has(item.guid)) {
 			this.debug(
@@ -509,13 +508,13 @@ export class BackgroundSync extends HasLogging {
 			const existingCallback = this.downloadCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
 				this.processDownloadQueue();
-				return new Promise<void>((resolve, reject) => {
+				return new Promise<Uint8Array | undefined>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
 				});
 			}
 			this.processDownloadQueue();
-			return Promise.resolve();
+			return Promise.resolve(undefined);
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -553,7 +552,7 @@ export class BackgroundSync extends HasLogging {
 		this.inProgressDownloads.add(item.guid);
 
 		// Create a promise that will resolve when the download completes
-		const downloadPromise = new Promise<void>((resolve, reject) => {
+		const downloadPromise = new Promise<Uint8Array | undefined>((resolve, reject) => {
 			this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
 		});
 
@@ -793,7 +792,7 @@ export class BackgroundSync extends HasLogging {
 	 * @param canvas The canvas to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueCanvasDownload(canvas: Canvas): Promise<void> {
+	enqueueCanvasDownload(canvas: Canvas): Promise<Uint8Array | undefined> {
 		return this.enqueueDownload(canvas);
 	}
 
@@ -836,26 +835,13 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
-	private async getDocument(doc: Document, retry = 3, wait = 3000) {
+	private async getDocument(doc: Document, retry = 3, wait = 3000): Promise<Uint8Array | undefined> {
 		try {
-			// Get the current contents before applying the update
-			const currentText = doc.text;
-			let currentFileContents = "";
-			try {
-				currentFileContents = await doc.sharedFolder.read(doc);
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = currentText === currentFileContents;
-			const hasContents = currentFileContents !== "";
-
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
-			// Check for newly created documents without content, and reject them
+			// Validate: reject uninitialized documents
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
 			const users = newDoc.getMap("users");
@@ -863,7 +849,6 @@ export class BackgroundSync extends HasLogging {
 
 			if (contents === "") {
 				if (users.size === 0) {
-					// Hack for better compat with < 0.4.2.
 					this.log(
 						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
 						users.size,
@@ -875,44 +860,20 @@ export class BackgroundSync extends HasLogging {
 							this.getDocument(doc, retry - 1, wait * 2);
 						}, wait);
 					}
-					return;
+					return undefined;
 				}
 				if (doc.text) {
 					this.log(
 						"[getDocument] local crdt has contents, but remote is empty",
 					);
 					this.enqueueSync(doc);
-					return;
+					return undefined;
 				}
 			}
 
 			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
-
-			// Persist to localDoc's IndexedDB for HSM idle mode.
-			// The HSM uses a two-ydoc architecture where localDoc is persisted
-			// and remoteDoc (doc.ydoc) is ephemeral. Without this, the IndexedDB
-			// backing localDoc would be empty after download.
-			//
-			// Skip when HSM is in active mode: the HSM's localDoc has its own
-			// IndexeddbPersistence writing to the same IDB database. Writing here
-			// too creates a second set of operations from a different clientID,
-			// causing content duplication on the next load.
-			const mergeManager = doc.sharedFolder.mergeManager;
-			const isActive = mergeManager?.isActive(doc.guid);
-			if (!isActive) {
-				const vaultId = `${doc.sharedFolder.appId}-relay-doc-${doc.guid}`;
-				await appendUpdateRaw(vaultId, updateBytes);
-			}
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (doc.sharedFolder.syncStore.has(doc.path)) {
-				doc.sharedFolder.flush(doc, doc.text);
-				this.log("[getDocument] flushed");
-			}
+			return updateBytes;
 		} catch (e) {
 			this.error(e);
 			throw e;

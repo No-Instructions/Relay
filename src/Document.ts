@@ -246,37 +246,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 
 		try {
-			// BUG-055/BUG-056 FIX: Verify the HSM's path matches this document's vault-relative path.
-			// This guards against a misconfigured HSM receiving events for the wrong file.
-			// Note: HSM.path is the virtual path (e.g., "test-1.md"), same as Document.path.
-			// For vault-relative comparison, we use this.tfile.path.
-			const hsmPath = this._hsm.path;
-			const expectedVirtualPath = this.path;
-			const tfile = this.tfile;
-			const vaultRelativePath = tfile?.path;
-			const expectedVaultPath = this.sharedFolder.getPath(this.path);
-
-			// Verify HSM virtual path matches Document virtual path
-			if (hsmPath !== expectedVirtualPath) {
-				this.warn(
-					`[acquireLock] Virtual path mismatch: HSM path "${hsmPath}" != expected "${expectedVirtualPath}". ` +
-					`This could indicate duplicate HSMs for files with the same relative path across SharedFolders.`
-				);
-				// Don't proceed - this would send ACQUIRE_LOCK to the wrong HSM
-				this.userLock = true;
-				return null;
-			}
-
-			// Also verify the TFile path matches the expected vault-relative path
-			if (vaultRelativePath && vaultRelativePath !== expectedVaultPath) {
-				this.warn(
-					`[acquireLock] Vault path mismatch: TFile path "${vaultRelativePath}" != expected "${expectedVaultPath}". ` +
-					`This could indicate the Document is associated with the wrong file.`
-				);
-				this.userLock = true;
-				return null;
-			}
-
 			// v6: If editorContent not provided, read from disk (fallback for backward compatibility)
 			let content = editorContent;
 			if (content === undefined) {
