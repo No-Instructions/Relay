@@ -18,4 +18,31 @@ data.json
 
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
+
+# igit
+.igit
+.igitignore
+
+# developer harness
+CLAUDE.md
+agent-creds.toml
+debug-tools/
+.claude/
+docs/
+tickets/
+specs/
+test-plans/
+test-results/
+prompts/
+
+# E2E tests
 vaults/
+obsidian-versions/
+playwright/test-output/
+playwright/test-results/
+playwright/artifacts/
+playwright/archive/
+playwright/allure-results/
+playwright/allure-report/
+playwright/.memory/
+playwright/capture-results/
