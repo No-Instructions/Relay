@@ -23,7 +23,6 @@ import { S3Folder, S3RN, S3RemoteFolder, S3RemoteDocument } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import { DiskBufferStore } from "./DiskBuffer";
 import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances } from "./debug";
@@ -163,7 +162,6 @@ export class SharedFolder extends HasProvider {
 	private pendingDeletes: Set<string> = new Set();
 
 	private _persistence: IndexeddbPersistence;
-	diskBufferStore: DiskBufferStore;
 	proxy: SharedFolder;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
@@ -210,7 +208,6 @@ export class SharedFolder extends HasProvider {
 		});
 		this.relayManager = relayManager;
 		this.relayId = relayId;
-		this.diskBufferStore = new DiskBufferStore();
 		this._shouldConnect = this.settings.connect ?? true;
 
 		this.authoritative = !awaitingUpdates;
@@ -227,7 +224,7 @@ export class SharedFolder extends HasProvider {
 			this.syncSettingsManager,
 		);
 		this.syncStore.on(async () => {
-			await this.syncFileTree(this.syncStore);
+			await this.syncFileTree();
 		});
 
 		this.unsubscribes.push(
@@ -291,6 +288,11 @@ export class SharedFolder extends HasProvider {
 		const folderPath = this.path; // Capture for closure
 		this.mergeManager = new MergeManager({
 			getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
+			getDocument: (guid: string) => {
+				const file = this.files.get(guid);
+				if (!file || !isDocument(file)) return undefined;
+				return file;
+			},
 			timeProvider: undefined, // Use default
 			createPersistence: (vaultId, doc, userId) =>
 				new IndexeddbPersistence(vaultId, doc, userId),
@@ -368,6 +370,12 @@ export class SharedFolder extends HasProvider {
 				onEntry: flags().enableHSMRecording
 					? (entry: StreamingEntry) => recordHSMEntry(entry)
 					: undefined,
+				getDocument: (guid: string) => {
+					const file = this.files.get(guid);
+					if (!file || !isDocument(file)) return undefined;
+					return { hsm: file.hsm, path: file.path };
+				},
+				getAllGuids: () => Array.from(this.files.keys()),
 			});
 		}
 
@@ -380,15 +388,13 @@ export class SharedFolder extends HasProvider {
 				await this.mergeManager.initialize();
 
 				this.addLocalDocs();
-				this.syncFileTree(this.syncStore);
+				this.syncFileTree();
 
-				// Wait for all HSM registrations to complete, then transition them to idle mode.
-				// This ensures HSMs don't stay stuck in 'loading' state when no editor is open.
-				// Per spec: HSMs start in 'loading', then receive SET_MODE_IDLE from MergeManager.
+				// Transition all HSMs to idle mode since no editor is open yet.
+				// HSMs start in 'loading', then receive SET_MODE_IDLE from MergeManager.
 				if (this.mergeManager) {
-					await this.mergeManager.whenRegistered();
-					// All newly registered HSMs should go idle (no editor open yet)
-					this.mergeManager.setActiveDocuments(new Set());
+					const allGuids = Array.from(this.files.keys());
+					this.mergeManager.setActiveDocuments(new Set(), allGuids);
 				}
 			}
 		});
@@ -546,6 +552,62 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/**
+	 * Poll for disk changes on all documents in this SharedFolder.
+	 * Only sends DISK_CHANGED if the disk state actually differs from HSM's knowledge.
+	 * Works for all documents regardless of hibernation state.
+	 *
+	 * @param guids - Optional set of GUIDs to poll. If not provided, polls all documents.
+	 */
+	async pollDiskState(guids?: string[]): Promise<void> {
+		const targetGuids = guids ?? Array.from(this.files.keys());
+
+		for (const guid of targetGuids) {
+			const file = this.files.get(guid);
+			if (!file || !isDocument(file)) continue;
+
+			const hsm = file.hsm;
+			if (!hsm) continue;
+
+			try {
+				const diskState = await file.readDiskContent();
+				const currentDisk = hsm.state.disk;
+
+				if (this.shouldSendDiskChanged(currentDisk, diskState)) {
+					hsm.send({
+						type: "DISK_CHANGED",
+						contents: diskState.content,
+						mtime: diskState.mtime,
+						hash: diskState.hash,
+					});
+				}
+			} catch (e) {
+				// File might have been deleted - ignore
+				this.debug?.(`[pollDiskState] Failed to read disk state for ${guid}:`, e);
+			}
+		}
+	}
+
+	/**
+	 * Determine if DISK_CHANGED event should be sent based on current vs new disk state.
+	 * Returns true if disk state has changed, false if unchanged.
+	 */
+	private shouldSendDiskChanged(
+		currentDisk: { hash: string; mtime: number } | null,
+		newDiskState: { mtime: number; hash: string }
+	): boolean {
+		// No current disk state - always send
+		if (!currentDisk) return true;
+
+		// Compare mtime first (fast check)
+		if (currentDisk.mtime !== newDiskState.mtime) return true;
+
+		// Compare hash as fallback (handles clock skew edge cases)
+		if (currentDisk.hash !== newDiskState.hash) return true;
+
+		return false;
+	}
+
 	private addLocalDocs = () => {
 		const syncTFiles = this.getSyncFiles();
 		const files: IFile[] = [];
@@ -652,7 +714,7 @@ export class SharedFolder extends HasProvider {
 	async netSync() {
 		await this.whenReady();
 		this.addLocalDocs();
-		await this.syncFileTree(this.syncStore);
+		await this.syncFileTree();
 		this.backgroundSync.enqueueSharedFolderSync(this);
 	}
 
@@ -661,7 +723,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	async sync() {
-		await this.syncFileTree(this.syncStore);
+		await this.syncFileTree();
 	}
 
 	async connect(): Promise<boolean> {
@@ -1050,7 +1112,7 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
-	syncFileTree(syncStore: SyncStore): Promise<void> {
+	syncFileTree(): Promise<void> {
 		// If a sync is already running, mark that we want another sync after
 		if (this.syncFileTreePromise) {
 			this.syncRequestedDuringSync = true;
@@ -1058,7 +1120,7 @@ export class SharedFolder extends HasProvider {
 			promise.then(() => {
 				if (this.syncRequestedDuringSync) {
 					this.syncRequestedDuringSync = false;
-					return this.syncFileTree(syncStore);
+					return this.syncFileTree();
 				}
 			});
 			return promise;
@@ -1072,12 +1134,12 @@ export class SharedFolder extends HasProvider {
 				this.ydoc.transact(async () => {
 					// Sync folder operations first because renames/moves also affect files
 					this.syncStore.migrateUp();
-					this.syncByType(syncStore, diffLog, ops, [SyncType.Folder]);
+					this.syncByType(this.syncStore, diffLog, ops, [SyncType.Folder]);
 				}, this);
 				await Promise.all(ops.map((op) => op.promise));
 				this.ydoc.transact(async () => {
 					this.syncByType(
-						syncStore,
+						this.syncStore,
 						diffLog,
 						ops,
 						this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
@@ -1520,10 +1582,9 @@ export class SharedFolder extends HasProvider {
 		}
 		doc.move(vpath, this);
 
-		// Register with MergeManager for idle mode tracking
-		// Use vault-relative path (e.g., "blog/note.md") not SharedFolder-relative (e.g., "/note.md")
-		// Pass null for remoteDoc — it will be lazily created when needed (hibernation).
-		this.mergeManager?.register(guid, this.getPath(vpath), null);
+		// Document creates its own HSM via ensureHSM() - no need to register separately.
+		// Just ensure the HSM exists after the move.
+		doc.ensureHSM();
 
 		return doc;
 	}
@@ -1815,8 +1876,8 @@ export class SharedFolder extends HasProvider {
 	deleteFile(vpath: string) {
 		const guid = this.syncStore?.get(vpath);
 		if (guid) {
-			// Unregister from MergeManager
-			this.mergeManager?.unregister(guid);
+			// Notify MergeManager that HSM is being destroyed
+			this.mergeManager?.notifyHSMDestroyed(guid);
 
 			this.ydoc.transact(() => {
 				this.syncStore.delete(vpath);
@@ -1861,6 +1922,7 @@ export class SharedFolder extends HasProvider {
 			const file = this.files.get(guid);
 			if (!newVPath) {
 				// moving out of shared folder.. destroy the live doc.
+				this.mergeManager?.notifyHSMDestroyed(guid);
 				this.ydoc.transact(() => {
 					this.syncStore.delete(oldVPath);
 				}, this);
@@ -1926,7 +1988,6 @@ export class SharedFolder extends HasProvider {
 		this.fset.clear();
 		this._settings.destroy();
 		this._settings = null as any;
-		this.diskBufferStore = null as any;
 		this.relayManager = null as any;
 		this.backgroundSync = null as any;
 		this.loginManager = null as any;

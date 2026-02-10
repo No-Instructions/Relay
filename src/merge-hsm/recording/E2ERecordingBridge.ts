@@ -61,6 +61,12 @@ export interface E2ERecordingBridgeConfig {
 
   /** Streaming callback - called for each entry as it's recorded */
   onEntry?: (entry: StreamingEntry) => void;
+
+  /** Callback to get a Document (and its HSM) by guid */
+  getDocument: (guid: string) => { hsm: MergeHSM | null; path: string } | undefined;
+
+  /** Callback to get all document guids */
+  getAllGuids: () => string[];
 }
 
 export interface ActiveDocRecording {
@@ -135,6 +141,8 @@ export class E2ERecordingBridge {
   private readonly captureSnapshots: boolean;
   private readonly outputDir: string;
   private readonly onEntry?: (entry: StreamingEntry) => void;
+  private readonly _getDocument: (guid: string) => { hsm: MergeHSM | null; path: string } | undefined;
+  private readonly _getAllGuids: () => string[];
 
   // Recording state
   private recording: boolean = false;
@@ -148,13 +156,15 @@ export class E2ERecordingBridge {
   // HSM subscription cleanup
   private managerUnsubscribe: (() => void) | null = null;
 
-  constructor(manager: MergeManager, config: E2ERecordingBridgeConfig = {}) {
+  constructor(manager: MergeManager, config: E2ERecordingBridgeConfig) {
     this.manager = manager;
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
     this.maxEntriesPerDoc = config.maxEntriesPerDoc ?? 5000;
     this.captureSnapshots = config.captureSnapshots ?? false;
     this.outputDir = config.outputDir ?? '/tmp/hsm-recordings';
     this.onEntry = config.onEntry;
+    this._getDocument = config.getDocument;
+    this._getAllGuids = config.getAllGuids;
 
     // If onEntry is provided, automatically stream all HSM events to disk
     // (independent of in-memory recording via startRecording())
@@ -170,15 +180,15 @@ export class E2ERecordingBridge {
   private startStreaming(): void {
     // Wrap all registered HSMs (not just active ones — idle HSMs also
     // receive events that trigger state transitions we want to capture).
-    for (const guid of this.manager.getRegisteredGuids()) {
+    for (const guid of this._getAllGuids()) {
       if (!this.docRecordings.has(guid)) {
         this.startRecordingDocument(guid);
       }
     }
 
-    // Subscribe to new HSMs being registered
+    // Subscribe to new HSMs being loaded
     this.managerUnsubscribe = this.manager.syncStatus.subscribe(() => {
-      for (const guid of this.manager.getRegisteredGuids()) {
+      for (const guid of this._getAllGuids()) {
         if (!this.docRecordings.has(guid)) {
           this.startRecordingDocument(guid);
         }
@@ -249,7 +259,7 @@ export class E2ERecordingBridge {
       this.docRecordings.clear();
 
       // Subscribe to existing loaded HSMs
-      for (const guid of this.manager.getRegisteredGuids()) {
+      for (const guid of this._getAllGuids()) {
         if (this.manager.isActive(guid)) {
           this.startRecordingDocument(guid);
         }
@@ -261,7 +271,7 @@ export class E2ERecordingBridge {
       this.managerUnsubscribe = this.manager.syncStatus.subscribe(() => {
         if (!this.recording) return;
 
-        for (const guid of this.manager.getRegisteredGuids()) {
+        for (const guid of this._getAllGuids()) {
           if (this.manager.isActive(guid) && !this.docRecordings.has(guid)) {
             this.startRecordingDocument(guid);
           }
@@ -493,11 +503,10 @@ export class E2ERecordingBridge {
    * Start recording a specific document's HSM.
    */
   private startRecordingDocument(guid: string): void {
-    // Access the HSM via the manager (this is internal, we'll need a way to get it)
-    const hsm = this.getHSMForGuid(guid);
-    if (!hsm) return;
+    const doc = this._getDocument(guid);
+    if (!doc?.hsm) return;
 
-    const path = this.manager.getPath(guid) ?? guid;
+    const { hsm, path } = doc;
 
     const docRecording: ActiveDocRecording = {
       guid,
@@ -591,17 +600,6 @@ export class E2ERecordingBridge {
   }
 
   /**
-   * Get HSM for a GUID.
-   * Note: MergeManager doesn't expose loaded HSMs directly, so we need
-   * to work around this. In real integration, we'd add a method to MergeManager.
-   */
-  private getHSMForGuid(guid: string): MergeHSM | null {
-    // Access internal hsms map (for prototype - in real code, add public accessor)
-    const hsms = (this.manager as any).hsms as Map<string, MergeHSM>;
-    return hsms?.get(guid) ?? null;
-  }
-
-  /**
    * Clean up resources.
    */
   dispose(): void {
@@ -646,7 +644,7 @@ let activeRecordingName: string | null = null;
  */
 export function installE2ERecordingBridge(
   manager: MergeManager,
-  config?: E2ERecordingBridgeConfig
+  config: E2ERecordingBridgeConfig
 ): E2ERecordingBridge {
   const bridge = new E2ERecordingBridge(manager, config);
 

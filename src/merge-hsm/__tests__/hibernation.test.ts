@@ -12,11 +12,17 @@
 
 import * as Y from 'yjs';
 import { MergeManager, WakePriority, type HibernationState } from '../MergeManager';
+import { MergeHSM } from '../MergeHSM';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
 import { PostOffice } from '../../../src/observable/Postie';
 
-function createRemoteDoc(): Y.Doc {
-  return new Y.Doc();
+// Simulates a Document that owns an HSM
+interface MockDocument {
+  guid: string;
+  path: string;
+  hsm: MergeHSM | null;
+  remoteDoc: Y.Doc | null;
+  localDoc: Y.Doc;
 }
 
 function createUpdate(content: string): Uint8Array {
@@ -30,9 +36,44 @@ function createUpdate(content: string): Uint8Array {
 describe('Hibernation Lifecycle', () => {
   let manager: MergeManager;
   let timeProvider: MockTimeProvider;
+  let documents: Map<string, MockDocument>;
+
+  // Helper to create a mock document and its HSM
+  function createMockDocument(
+    guid: string,
+    path: string,
+    mgr: MergeManager = manager,
+    remoteDoc: Y.Doc | null = null
+  ): MockDocument {
+    const localDoc = new Y.Doc();
+    const doc: MockDocument = {
+      guid,
+      path,
+      hsm: null,
+      remoteDoc,
+      localDoc,
+    };
+
+    // Create HSM via manager factory
+    doc.hsm = mgr.createHSM({
+      guid,
+      path,
+      remoteDoc,
+      getDiskContent: async () => ({ content: '', hash: 'empty', mtime: Date.now() }),
+    });
+
+    // Register document in our map (simulating SharedFolder.files)
+    documents.set(guid, doc);
+
+    // Notify manager that HSM was created
+    mgr.notifyHSMCreated(guid);
+
+    return doc;
+  }
 
   beforeEach(() => {
     timeProvider = new MockTimeProvider();
+    documents = new Map();
 
     PostOffice.destroy();
     // @ts-ignore
@@ -42,6 +83,7 @@ describe('Hibernation Lifecycle', () => {
 
     manager = new MergeManager({
       getVaultId: (guid) => `test-${guid}`,
+      getDocument: (guid) => documents.get(guid),
       timeProvider,
       hibernation: {
         hibernateTimeoutMs: 60_000,
@@ -52,17 +94,21 @@ describe('Hibernation Lifecycle', () => {
 
   afterEach(() => {
     manager.destroy();
+    // Clean up documents
+    for (const doc of documents.values()) {
+      if (doc.hsm && typeof doc.hsm.destroy === 'function') {
+        doc.hsm.destroy();
+      }
+      doc.localDoc.destroy();
+      doc.remoteDoc?.destroy();
+    }
+    documents.clear();
     PostOffice.destroy();
   });
 
   describe('initial state', () => {
-    test('registered documents start hibernated', async () => {
-      await manager.register('doc-1', 'test.md', null);
-      expect(manager.getHibernationState('doc-1')).toBe('hibernated');
-    });
-
-    test('getOrRegisterHSM documents start hibernated', () => {
-      manager.getOrRegisterHSM('doc-1', 'test.md', null);
+    test('registered documents start hibernated', () => {
+      createMockDocument('doc-1', 'test.md');
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
     });
 
@@ -72,17 +118,18 @@ describe('Hibernation Lifecycle', () => {
   });
 
   describe('update buffering', () => {
-    test('remote updates buffer then drain via wake queue', async () => {
+    test('remote updates buffer then drain via wake queue', () => {
       // Use concurrency 0 to prevent auto-draining
       const strictManager = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
         timeProvider,
         hibernation: {
           hibernateTimeoutMs: 60_000,
           maxConcurrentWarm: 0,
         },
       });
-      await strictManager.register('doc-1', 'test.md', null);
+      createMockDocument('doc-1', 'test.md', strictManager);
 
       const update = createUpdate('hello');
       strictManager.handleRemoteUpdate('doc-1', update);
@@ -94,17 +141,18 @@ describe('Hibernation Lifecycle', () => {
       strictManager.destroy();
     });
 
-    test('multiple updates are compacted via mergeUpdates', async () => {
+    test('multiple updates are compacted via mergeUpdates', () => {
       // Use concurrency 0 to prevent auto-draining
       const strictManager = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
         timeProvider,
         hibernation: {
           hibernateTimeoutMs: 60_000,
           maxConcurrentWarm: 0,
         },
       });
-      await strictManager.register('doc-1', 'test.md', null);
+      createMockDocument('doc-1', 'test.md', strictManager);
 
       const update1 = createUpdate('hello');
       const update2 = createUpdate('world');
@@ -127,86 +175,91 @@ describe('Hibernation Lifecycle', () => {
   });
 
   describe('wake()', () => {
-    test('wake transitions from hibernated to warm', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('wake transitions from hibernated to warm', () => {
+      createMockDocument('doc-1', 'test.md');
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
 
       expect(manager.getHibernationState('doc-1')).toBe('warm');
+      remoteDoc.destroy();
     });
 
-    test('wake drains buffered updates into HSM', async () => {
+    test('wake drains buffered updates into HSM', () => {
       // Use concurrency 0 to keep buffer intact until explicit wake()
       const strictManager = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
         timeProvider,
         hibernation: {
           hibernateTimeoutMs: 60_000,
           maxConcurrentWarm: 0,
         },
       });
-      await strictManager.register('doc-1', 'test.md', null);
+      createMockDocument('doc-1', 'test.md', strictManager);
 
       const update = createUpdate('hello');
       strictManager.handleRemoteUpdate('doc-1', update);
       expect(strictManager.getHibernationBuffer('doc-1')).not.toBeNull();
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       strictManager.wake('doc-1', remoteDoc);
 
       // Buffer should be drained
       expect(strictManager.getHibernationBuffer('doc-1')).toBeNull();
 
       strictManager.destroy();
+      remoteDoc.destroy();
     });
 
-    test('wake sets remoteDoc on HSM', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('wake sets remoteDoc on HSM', () => {
+      const doc = createMockDocument('doc-1', 'test.md');
 
-      const hsm = manager.getIdleHSM('doc-1');
-      expect(hsm?.getRemoteDoc()).toBeNull();
+      expect(doc.hsm?.getRemoteDoc()).toBeNull();
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
 
-      expect(hsm?.getRemoteDoc()).toBe(remoteDoc);
+      expect(doc.hsm?.getRemoteDoc()).toBe(remoteDoc);
+      remoteDoc.destroy();
     });
   });
 
   describe('hibernate()', () => {
-    test('hibernate transitions from warm to hibernated', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('hibernate transitions from warm to hibernated', () => {
+      createMockDocument('doc-1', 'test.md');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
       expect(manager.getHibernationState('doc-1')).toBe('warm');
 
       manager.hibernate('doc-1');
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
+      remoteDoc.destroy();
     });
 
-    test('hibernate detaches remoteDoc from HSM', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('hibernate detaches remoteDoc from HSM', () => {
+      const doc = createMockDocument('doc-1', 'test.md');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
-      expect(manager.getIdleHSM('doc-1')?.getRemoteDoc()).toBe(remoteDoc);
+      expect(doc.hsm?.getRemoteDoc()).toBe(remoteDoc);
 
       manager.hibernate('doc-1');
-      expect(manager.getIdleHSM('doc-1')?.getRemoteDoc()).toBeNull();
+      expect(doc.hsm?.getRemoteDoc()).toBeNull();
+      remoteDoc.destroy();
     });
 
-    test('hibernate is no-op for already hibernated', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('hibernate is no-op for already hibernated', () => {
+      createMockDocument('doc-1', 'test.md');
       manager.hibernate('doc-1');
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
     });
 
-    test('hibernate is no-op for active documents', async () => {
-      const remoteDoc = createRemoteDoc();
-      await manager.register('doc-1', 'test.md', remoteDoc);
+    test('hibernate is no-op for active documents', () => {
+      const remoteDoc = new Y.Doc();
+      const doc = createMockDocument('doc-1', 'test.md', manager, remoteDoc);
 
       manager.wake('doc-1', remoteDoc);
       manager.markActive('doc-1');
@@ -214,26 +267,28 @@ describe('Hibernation Lifecycle', () => {
 
       manager.hibernate('doc-1');
       expect(manager.getHibernationState('doc-1')).toBe('active');
+      remoteDoc.destroy();
     });
   });
 
   describe('hibernate timer', () => {
-    test('warm documents re-hibernate after timeout', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('warm documents re-hibernate after timeout', () => {
+      createMockDocument('doc-1', 'test.md');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
       expect(manager.getHibernationState('doc-1')).toBe('warm');
 
       // Advance time past the hibernate timeout
       timeProvider.setTime(timeProvider.now() + 61_000);
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
+      remoteDoc.destroy();
     });
 
-    test('activity resets the hibernate timer', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('activity resets the hibernate timer', () => {
+      createMockDocument('doc-1', 'test.md');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
 
       // Advance 30 seconds
@@ -251,14 +306,15 @@ describe('Hibernation Lifecycle', () => {
       // Advance past 60s since last activity
       timeProvider.setTime(timeProvider.now() + 20_000);
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
+      remoteDoc.destroy();
     });
   });
 
   describe('active mode', () => {
-    test('markActive transitions to active and clears timer', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('markActive transitions to active and clears timer', () => {
+      createMockDocument('doc-1', 'test.md');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
       manager.markActive('doc-1');
 
@@ -267,12 +323,15 @@ describe('Hibernation Lifecycle', () => {
       // Timer should be cleared - advancing time should NOT hibernate
       timeProvider.setTime(timeProvider.now() + 120_000);
       expect(manager.getHibernationState('doc-1')).toBe('active');
+      remoteDoc.destroy();
     });
 
     test('unload transitions from active to warm with timer', async () => {
-      const remoteDoc = createRemoteDoc();
-      const hsm = await manager.getHSM('doc-1', 'test.md', remoteDoc);
+      const remoteDoc = new Y.Doc();
+      const doc = createMockDocument('doc-1', 'test.md', manager, remoteDoc);
 
+      doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: '' });
+      manager.markActive('doc-1'); // Document.acquireLock() calls this after ACQUIRE_LOCK
       expect(manager.getHibernationState('doc-1')).toBe('active');
 
       await manager.unload('doc-1');
@@ -281,12 +340,13 @@ describe('Hibernation Lifecycle', () => {
       // Should eventually hibernate
       timeProvider.setTime(timeProvider.now() + 61_000);
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
+      remoteDoc.destroy();
     });
   });
 
   describe('wake queue', () => {
-    test('enqueueWake processes hibernated documents', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('enqueueWake processes hibernated documents', () => {
+      createMockDocument('doc-1', 'test.md');
 
       manager.enqueueWake({
         guid: 'doc-1',
@@ -297,10 +357,10 @@ describe('Hibernation Lifecycle', () => {
       expect(manager.getHibernationState('doc-1')).toBe('warm');
     });
 
-    test('enqueueWake respects bounded concurrency', async () => {
+    test('enqueueWake respects bounded concurrency', () => {
       // Register 5 documents
       for (let i = 1; i <= 5; i++) {
-        await manager.register(`doc-${i}`, `test-${i}.md`, null);
+        createMockDocument(`doc-${i}`, `test-${i}.md`);
       }
 
       // Enqueue all at same priority
@@ -321,10 +381,11 @@ describe('Hibernation Lifecycle', () => {
       expect(warmCount).toBeLessThanOrEqual(3);
     });
 
-    test('enqueueWake prioritizes higher priority requests', async () => {
+    test('enqueueWake prioritizes higher priority requests', () => {
       // Manager with concurrency 1 to test ordering
       const strictManager = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
         timeProvider,
         hibernation: {
           hibernateTimeoutMs: 60_000,
@@ -332,8 +393,8 @@ describe('Hibernation Lifecycle', () => {
         },
       });
 
-      await strictManager.register('low', 'low.md', null);
-      await strictManager.register('high', 'high.md', null);
+      createMockDocument('low', 'low.md', strictManager);
+      createMockDocument('high', 'high.md', strictManager);
 
       // Enqueue low priority first, then high
       strictManager.enqueueWake({
@@ -357,8 +418,8 @@ describe('Hibernation Lifecycle', () => {
       strictManager.destroy();
     });
 
-    test('enqueueWake buffers updates', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('enqueueWake buffers updates', () => {
+      createMockDocument('doc-1', 'test.md');
 
       const update = createUpdate('buffered');
       manager.enqueueWake({
@@ -371,10 +432,10 @@ describe('Hibernation Lifecycle', () => {
       expect(manager.getHibernationBuffer('doc-1')).toBeNull();
     });
 
-    test('enqueueWake is no-op for warm documents', async () => {
-      await manager.register('doc-1', 'test.md', null);
+    test('enqueueWake is no-op for warm documents', () => {
+      createMockDocument('doc-1', 'test.md');
 
-      const remoteDoc = createRemoteDoc();
+      const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
 
       manager.enqueueWake({
@@ -384,12 +445,14 @@ describe('Hibernation Lifecycle', () => {
 
       // Still warm, timer just reset
       expect(manager.getHibernationState('doc-1')).toBe('warm');
+      remoteDoc.destroy();
     });
 
-    test('enqueueWake upgrades priority for queued requests', async () => {
+    test('enqueueWake upgrades priority for queued requests', () => {
       // Manager with concurrency 0 (nothing processes) to test queue ordering
       const strictManager = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
         timeProvider,
         hibernation: {
           hibernateTimeoutMs: 60_000,
@@ -397,7 +460,7 @@ describe('Hibernation Lifecycle', () => {
         },
       });
 
-      await strictManager.register('doc-1', 'test.md', null);
+      createMockDocument('doc-1', 'test.md', strictManager);
 
       strictManager.enqueueWake({
         guid: 'doc-1',
@@ -418,23 +481,26 @@ describe('Hibernation Lifecycle', () => {
   });
 
   describe('cleanup', () => {
-    test('unregister cleans up hibernation state', async () => {
+    test('notifyHSMDestroyed cleans up hibernation state', () => {
       // Use concurrency 0 to prevent auto-draining
       const strictManager = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
         timeProvider,
         hibernation: {
           hibernateTimeoutMs: 60_000,
           maxConcurrentWarm: 0,
         },
       });
-      await strictManager.register('doc-1', 'test.md', null);
+      const doc = createMockDocument('doc-1', 'test.md', strictManager);
 
       const update = createUpdate('buffered');
       strictManager.handleRemoteUpdate('doc-1', update);
       expect(strictManager.getHibernationBuffer('doc-1')).not.toBeNull();
 
-      await strictManager.unregister('doc-1');
+      doc.hsm?.destroy();
+      strictManager.notifyHSMDestroyed('doc-1');
+      documents.delete('doc-1');
 
       expect(strictManager.getHibernationState('doc-1')).toBe('hibernated'); // default
       expect(strictManager.getHibernationBuffer('doc-1')).toBeNull();
@@ -442,11 +508,11 @@ describe('Hibernation Lifecycle', () => {
       strictManager.destroy();
     });
 
-    test('destroy cleans up all hibernation resources', async () => {
-      await manager.register('doc-1', 'test.md', null);
-      await manager.register('doc-2', 'test2.md', null);
+    test('destroy cleans up all hibernation resources', () => {
+      createMockDocument('doc-1', 'test.md');
+      createMockDocument('doc-2', 'test2.md');
 
-      manager.wake('doc-1', createRemoteDoc());
+      manager.wake('doc-1', new Y.Doc());
       manager.handleRemoteUpdate('doc-2', createUpdate('hello'));
 
       manager.destroy();
