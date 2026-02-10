@@ -245,6 +245,8 @@ export interface PersistenceLoadedEvent {
   type: 'PERSISTENCE_LOADED';
   updates: Uint8Array;
   lca: LCAState | null;
+  /** Pre-computed state vector from cache (avoids per-document IDB opens) */
+  localStateVector?: Uint8Array | null;
 }
 
 export interface PersistenceSyncedEvent {

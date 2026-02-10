@@ -833,6 +833,7 @@ export class MergeHSM implements TestableHSM {
 	private handlePersistenceLoaded(event: {
 		updates: Uint8Array;
 		lca: LCAState | null;
+		localStateVector?: Uint8Array | null;
 	}): void {
 		// Only set LCA from persistence if we don't already have one.
 		// initializeFromRemote() may have set the LCA before this event arrives.
@@ -840,8 +841,12 @@ export class MergeHSM implements TestableHSM {
 			this._lca = event.lca;
 		}
 
-		// Compute state vector for idle mode comparisons
-		if (event.updates.length > 0) {
+		// Use pre-computed state vector if provided (from MergeManager cache)
+		// This avoids opening per-document IDBs at registration time
+		if (event.localStateVector) {
+			this._localStateVector = event.localStateVector;
+		} else if (event.updates.length > 0) {
+			// Fallback: compute from updates (for backward compatibility)
 			this._localStateVector = Y.encodeStateVectorFromUpdate(event.updates);
 			// Store updates for when YDocs are created (fixes state vector mismatch on lock cycles)
 			this.initialPersistenceUpdates = event.updates;
