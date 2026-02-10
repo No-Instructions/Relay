@@ -498,8 +498,15 @@ export class SharedFolder extends HasProvider {
 		}
 
 		try {
-			// Apply update to the document's remoteDoc (which is file.ydoc)
-			Y.applyUpdate(file.ydoc, update, 'local');
+			// Apply update to the document's remoteDoc (which is file.ydoc).
+			// This intentionally triggers lazy creation (wake from hibernation).
+			const remoteDoc = file.ensureRemoteDoc();
+			Y.applyUpdate(remoteDoc, update, 'local');
+
+			// Also update the HSM's remoteDoc reference so it stays in sync
+			if (file.hsm) {
+				file.hsm.setRemoteDoc(remoteDoc);
+			}
 
 			// The per-document provider is not connected in idle mode, so we
 			// must explicitly sync via backgroundSync to push the update to
@@ -1515,7 +1522,8 @@ export class SharedFolder extends HasProvider {
 
 		// Register with MergeManager for idle mode tracking
 		// Use vault-relative path (e.g., "blog/note.md") not SharedFolder-relative (e.g., "/note.md")
-		this.mergeManager?.register(guid, this.getPath(vpath), doc.ydoc);
+		// Pass null for remoteDoc — it will be lazily created when needed (hibernation).
+		this.mergeManager?.register(guid, this.getPath(vpath), null);
 
 		return doc;
 	}

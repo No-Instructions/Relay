@@ -93,9 +93,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 		// Initialize HSM immediately so it's always available for filtering disk changes.
 		// The HSM starts in loading state and transitions to idle once persistence loads.
+		// Pass null for remoteDoc — it will be lazily created when needed (hibernation).
 		const mergeManager = parent.mergeManager;
 		if (mergeManager) {
-			this._hsm = mergeManager.getOrRegisterHSM(guid, path, this.ydoc);
+			this._hsm = mergeManager.getOrRegisterHSM(guid, path, null);
 		}
 
 		this.unsubscribes.push(
@@ -140,6 +141,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// });
 
 		withFlag(flag.enableDeltaLogging, () => {
+			// Only attach observer when remoteDoc is loaded (avoid triggering lazy creation)
+			if (!this.isRemoteDocLoaded) return;
 			const logObserver = (event: Y.YTextEvent) => {
 				let log = "";
 				log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
@@ -248,6 +251,11 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				}
 			}
 
+			// Ensure remoteDoc and provider exist before entering active mode.
+			// This wakes the document from hibernation if needed.
+			const remoteDoc = this.ensureRemoteDoc();
+			this._hsm.setRemoteDoc(remoteDoc);
+
 			// Send ACQUIRE_LOCK with editorContent to transition from idle to active.
 			// Always send (don't guard with isLoaded) because releaseLock() doesn't await
 			// unload(), so activeDocs may not be cleared when file is quickly reopened.
@@ -260,8 +268,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			if (!this._providerIntegration) {
 				this._providerIntegration = new ProviderIntegration(
 					this._hsm,
-					this.ydoc, // remoteDoc is the same as Document.ydoc
-					this._provider as YjsProvider
+					remoteDoc,
+					this._provider! as YjsProvider
 				);
 			}
 
@@ -597,7 +605,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 
 		super.destroy();
-		this.ydoc.destroy();
+		// Note: super.destroy() calls destroyRemoteDoc() which handles ydoc cleanup.
+		// Do NOT call this.ydoc.destroy() here — it would trigger lazy creation.
 		if (this._diskBuffer) {
 			this._diskBuffer.contents = "";
 			this._diskBuffer = undefined;
@@ -621,7 +630,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	// Helper method to update file stats
 	private updateStats(): void {
 		this.stat.mtime = Date.now();
-		this.stat.size = this.text.length;
+		// Only access text if remoteDoc is loaded (avoid triggering lazy creation)
+		if (this.isRemoteDocLoaded) {
+			this.stat.size = this.text.length;
+		}
 	}
 
 	// Additional methods that might be useful
