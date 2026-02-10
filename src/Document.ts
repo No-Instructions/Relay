@@ -8,7 +8,6 @@ import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce } from "obsidian";
-import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
 import { flags, withFlag } from "./flagManager";
@@ -43,8 +42,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		mtime: number;
 		size: number;
 	};
-	_diskBuffer?: DiskBuffer;
-	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
 	pendingOps: ((data: string) => string)[] = [];
 
@@ -89,15 +86,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			mtime: Date.now(),
 			size: 0,
 		};
-		this._diskBufferStore = this.sharedFolder.diskBufferStore;
-
 		// Initialize HSM immediately so it's always available for filtering disk changes.
 		// The HSM starts in loading state and transitions to idle once persistence loads.
-		// Pass null for remoteDoc — it will be lazily created when needed (hibernation).
-		const mergeManager = parent.mergeManager;
-		if (mergeManager) {
-			this._hsm = mergeManager.getOrRegisterHSM(guid, path, null);
-		}
+		// Document owns the HSM - use ensureHSM() which uses MergeManager as a factory.
+		this.ensureHSM();
 
 		this.unsubscribes.push(
 			this._parent.subscribe(this.path, (state) => {
@@ -187,6 +179,51 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Returns null if HSM active mode is not enabled or lock not acquired.
 	 */
 	public get hsm(): MergeHSM | null {
+		return this._hsm;
+	}
+
+	/**
+	 * Ensure an HSM exists for this document, creating one if needed.
+	 * Document owns the HSM - MergeManager is just a factory.
+	 * @returns The MergeHSM instance, or null if MergeManager not available
+	 */
+	ensureHSM(): MergeHSM | null {
+		if (this._hsm) {
+			return this._hsm;
+		}
+
+		const mergeManager = this.sharedFolder?.mergeManager;
+		if (!mergeManager) {
+			return null;
+		}
+
+		// Create HSM using factory
+		this._hsm = mergeManager.createHSM({
+			guid: this.guid,
+			path: this.path,
+			remoteDoc: this.isRemoteDocLoaded ? this.ydoc : null,
+			getDiskContent: () => this.readDiskContent(),
+			getPersistenceMetadata: () => ({
+				path: this.path,
+				relay: this.sharedFolder.relayId || "",
+				appId: this.sharedFolder.appId,
+				s3rn: this.s3rn ? S3RN.encode(this.s3rn) : "",
+			}),
+		});
+
+		// Subscribe to effects
+		this._hsm.subscribe((effect) => {
+			this.handleEffect(effect);
+		});
+
+		// Subscribe to state changes for sync status updates
+		this._hsm.onStateChange(() => {
+			mergeManager.updateSyncStatus(this.guid, this._hsm!.getSyncStatus());
+		});
+
+		// Notify MergeManager for hibernation tracking
+		mergeManager.notifyHSMCreated(this.guid);
+
 		return this._hsm;
 	}
 
@@ -607,11 +644,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		super.destroy();
 		// Note: super.destroy() calls destroyRemoteDoc() which handles ydoc cleanup.
 		// Do NOT call this.ydoc.destroy() here — it would trigger lazy creation.
-		if (this._diskBuffer) {
-			this._diskBuffer.contents = "";
-			this._diskBuffer = undefined;
-		}
-		this._diskBufferStore = null as any;
 		this.whenSyncedPromise?.destroy();
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();
@@ -624,7 +656,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public async cleanup(): Promise<void> {
-		this._diskBufferStore?.removeDiskBuffer(this.guid);
+		// No-op: disk buffer persistence removed
 	}
 
 	// Helper method to update file stats
@@ -646,5 +678,110 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	public async append(content: string): Promise<void> {
 		this.ytext.insert(this.ytext.length, content);
 		this.updateStats();
+	}
+
+	// ===========================================================================
+	// HSM Effect Handling
+	// ===========================================================================
+
+	/**
+	 * Read current disk content for the HSM.
+	 * Used as diskLoader callback when creating HSM.
+	 */
+	async readDiskContent(): Promise<{ content: string; hash: string; mtime: number }> {
+		const tfile = this.tfile;
+		if (!tfile) {
+			throw new Error(`[Document] Cannot read disk content for ${this.path}: TFile not found`);
+		}
+		const content = await this.vault.read(tfile);
+		const encoder = new TextEncoder();
+		const hash = await generateHash(encoder.encode(content).buffer);
+		return { content, hash, mtime: tfile.stat.mtime };
+	}
+
+	/**
+	 * Handle effects emitted by the HSM.
+	 * Called by HSM subscriber in ensureHSM().
+	 */
+	async handleEffect(effect: import("./merge-hsm/types").MergeEffect): Promise<void> {
+		switch (effect.type) {
+			case "WRITE_DISK":
+				await this.handleWriteDisk(effect.contents);
+				break;
+			case "PERSIST_STATE":
+				await this.handlePersistState(effect.state);
+				break;
+			case "SYNC_TO_REMOTE":
+				await this.handleSyncToRemote(effect.update);
+				break;
+			case "PERSIST_UPDATES":
+				await this.handlePersistUpdates(effect.dbName, effect.update);
+				break;
+			// Other effects (DISPATCH_CM6, STATUS_CHANGED, etc.) are handled elsewhere
+		}
+	}
+
+	private async handleWriteDisk(contents: string): Promise<void> {
+		const tfile = this.tfile;
+		if (!tfile) {
+			this.warn("[handleEffect:WRITE_DISK] TFile not found, cannot write");
+			return;
+		}
+		if (this.sharedFolder.isPendingDelete(this.path)) {
+			this.warn("[handleEffect:WRITE_DISK] Skipping write for pending delete", this.path);
+			return;
+		}
+
+		this._isSaving = true;
+		try {
+			await this.vault.modify(tfile, contents);
+			this.debug?.("[handleEffect:WRITE_DISK] Wrote to disk", this.path);
+
+			// Notify HSM of save completion with new mtime and hash
+			if (this._hsm) {
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				this._hsm.send({ type: "SAVE_COMPLETE", mtime: tfile.stat.mtime, hash });
+			}
+		} finally {
+			this._isSaving = false;
+		}
+	}
+
+	private async handlePersistState(state: import("./merge-hsm/types").PersistedMergeState): Promise<void> {
+		const mergeManager = this.sharedFolder?.mergeManager;
+		if (!mergeManager) return;
+
+		// Update LCA cache in MergeManager
+		if (state.lca) {
+			mergeManager.setLCA(this.guid, {
+				contents: state.lca.contents,
+				meta: { hash: state.lca.hash, mtime: state.lca.mtime },
+				stateVector: state.lca.stateVector,
+			});
+		} else {
+			mergeManager.setLCA(this.guid, null);
+		}
+	}
+
+	private async handleSyncToRemote(update: Uint8Array): Promise<void> {
+		// Skip if document is in active mode - ProviderIntegration handles it
+		if (this.userLock || this.sharedFolder?.mergeManager?.isActive(this.guid)) {
+			return;
+		}
+
+		// Apply update to remoteDoc (intentionally triggers lazy creation / wake from hibernation)
+		const remoteDoc = this.ensureRemoteDoc();
+		Y.applyUpdate(remoteDoc, update, "idle-sync");
+	}
+
+	private async handlePersistUpdates(dbName: string, update: Uint8Array): Promise<void> {
+		// Import dynamically to avoid circular dependency
+		const { appendUpdateRaw } = await import("./storage/y-indexeddb");
+		try {
+			await appendUpdateRaw(dbName, update);
+		} catch (e) {
+			this.warn("[handleEffect:PERSIST_UPDATES] Failed to persist updates:", e);
+		}
 	}
 }

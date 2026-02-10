@@ -33,16 +33,7 @@
 	};
 
 	const handleLayersClick = async () => {
-		const diskBuffer = await view.document.diskBuffer();
-		view.connectionManager.openDiffView({
-			file1: view.document,
-			file2: diskBuffer,
-			showMergeOption: true,
-			onResolve: async () => {
-				view.document.clearDiskBuffer();
-				await view.syncViewToCRDT();
-			},
-		});
+		// Disk buffer feature removed - this button is now a no-op
 	};
 
 	const handleLayersKeyPress = (event: KeyboardEvent) => {

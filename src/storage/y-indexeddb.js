@@ -21,6 +21,24 @@ const uint8ArrayEquals = (a, b) => {
   return true
 }
 
+/**
+ * Validate a Yjs update by applying it to a throwaway doc.
+ * Returns null if valid, or the Error if invalid.
+ * @param {Uint8Array} update
+ * @returns {Error|null}
+ */
+const validateUpdate = (update) => {
+  const doc = new Y.Doc()
+  try {
+    Y.applyUpdate(doc, update)
+    return null
+  } catch (e) {
+    return e instanceof Error ? e : new Error(String(e))
+  } finally {
+    doc.destroy()
+  }
+}
+
 // Use a higher threshold on startup to avoid slow initial compaction
 // After sync, use the lower threshold to keep the database lean
 export const STARTUP_TRIM_SIZE = 500
@@ -36,8 +54,21 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
   return idb.getAll(updatesStore, idb.createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then(updates => {
     if (!idbPersistence._destroyed) {
       beforeApplyUpdatesCallback(updatesStore)
+      // Validate each update on a throwaway doc BEFORE applying to the real doc.
+      // A corrupted update can partially integrate items (advancing the client clock)
+      // before throwing. If we catch after the fact, the doc has phantom clock entries
+      // that make future remote diffs compute as empty — causing silent data divergence.
+      const validUpdates = updates.filter(val => {
+        const err = validateUpdate(val)
+        if (!err) return true
+        console.error(`[y-indexeddb] Filtering out corrupted update from IDB for ${idbPersistence.name} (${val.byteLength} bytes):`, err)
+        return false
+      })
+      if (validUpdates.length < updates.length) {
+        console.error(`[y-indexeddb] Filtered ${updates.length - validUpdates.length}/${updates.length} corrupted updates from IDB for ${idbPersistence.name}`)
+      }
       Y.transact(idbPersistence.doc, () => {
-        updates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
+        validUpdates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
       }, idbPersistence, false)
     }
   })
@@ -185,9 +216,9 @@ export class IndexeddbPersistence extends Observable {
      */
     this._storeUpdate = (update, origin) => {
       if (this.db && origin !== this) {
-        // Skip updates with empty state vectors (no actual content)
-        const stateVector = Y.encodeStateVectorFromUpdate(update)
-        if (stateVector.length === 0) {
+        const storeErr = validateUpdate(update)
+        if (storeErr) {
+          console.error(`[y-indexeddb] Dropping invalid update for ${this.name} (${update.byteLength} bytes, not persisted):`, storeErr)
           return
         }
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
@@ -513,9 +544,9 @@ export const loadUpdatesRaw = async (name) => {
  * @returns {Promise<void>}
  */
 export const appendUpdateRaw = async (name, update) => {
-  // Skip updates with empty state vectors (no actual content)
-  const stateVector = Y.encodeStateVectorFromUpdate(update)
-  if (stateVector.length === 0) {
+  const appendErr = validateUpdate(update)
+  if (appendErr) {
+    console.error(`[y-indexeddb] Dropping invalid update for ${name} (${update.byteLength} bytes, not persisted):`, appendErr)
     return
   }
 

@@ -261,6 +261,14 @@ export class MergeHSM implements TestableHSM {
 		return this._path;
 	}
 
+	/**
+	 * Update the path when a file is renamed.
+	 * Called by MergeManager when SharedFolder notifies of a rename.
+	 */
+	updatePath(newPath: string): void {
+		this._path = newPath;
+	}
+
 	get guid(): string {
 		return this._guid;
 	}
@@ -1323,6 +1331,11 @@ export class MergeHSM implements TestableHSM {
 	}
 
 	private handleUnload(): void {
+		// Already unloading or unloaded - nothing to do
+		if (this._statePath === 'unloading' || this._statePath === 'unloaded') {
+			return;
+		}
+
 		// Remove remoteDoc CRDT logging observer
 		if (this._remoteDocLogHandler && this.remoteDoc) {
 			this.remoteDoc.off("update", this._remoteDocLogHandler);
@@ -1334,10 +1347,15 @@ export class MergeHSM implements TestableHSM {
 		this.spawnAsync('cleanup', async () => {
 			try {
 				await this.cleanupYDocs();
-				this.transitionTo("unloaded");
+				// Only transition if still in unloading (could have been re-registered)
+				if (this._statePath === 'unloading') {
+					this.transitionTo("unloaded");
+				}
 			} catch (err) {
 				console.error("[MergeHSM] Error during unload cleanup:", err);
-				this.transitionTo("unloaded");
+				if (this._statePath === 'unloading') {
+					this.transitionTo("unloaded");
+				}
 			}
 		});
 	}
@@ -1626,6 +1644,12 @@ export class MergeHSM implements TestableHSM {
 	 * or via the 'synced' event callback.
 	 */
 	private handleLocalPersistenceSynced(): void {
+		// Guard: If we're no longer in awaitingPersistence (e.g., lock was released
+		// or unload happened during async persistence load), ignore this callback.
+		if (!this.matches("active.entering.awaitingPersistence")) {
+			return;
+		}
+
 		// Set persistence metadata for recovery/debugging
 		if (this._persistenceMetadata && this.localPersistence?.set) {
 			this.localPersistence.set("path", this._persistenceMetadata.path);
@@ -1982,7 +2006,12 @@ export class MergeHSM implements TestableHSM {
 			this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
 		} else {
 			// Doc-less: update remoteStateVector from raw bytes
-			this._remoteStateVector = Y.encodeStateVectorFromUpdate(event.update);
+			try {
+				this._remoteStateVector = Y.encodeStateVectorFromUpdate(event.update);
+			} catch (e) {
+				console.error(`[MergeHSM] Dropping unparseable remote update for ${this._guid} (${event.update.byteLength} bytes):`, e);
+				return;
+			}
 		}
 
 		if (
