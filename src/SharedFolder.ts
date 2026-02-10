@@ -8,7 +8,11 @@ import {
 	debounce,
 	normalizePath,
 } from "obsidian";
-import { IndexeddbPersistence, loadUpdatesRaw, appendUpdateRaw } from "./storage/y-indexeddb";
+import {
+	IndexeddbPersistence,
+	loadUpdatesRaw,
+	appendUpdateRaw,
+} from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
@@ -50,7 +54,10 @@ import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
-import { installE2ERecordingBridge, type StreamingEntry } from "./merge-hsm/recording";
+import {
+	installE2ERecordingBridge,
+	type StreamingEntry,
+} from "./merge-hsm/recording";
 import { recordHSMEntry } from "./debug";
 import { generateHash } from "./hashing";
 import {
@@ -340,7 +347,10 @@ export class SharedFolder extends HasProvider {
 					try {
 						await appendUpdateRaw(effect.dbName, effect.update);
 					} catch (e) {
-						this.warn(`[MergeManager] Failed to persist updates for ${guid}:`, e);
+						this.warn(
+							`[MergeManager] Failed to persist updates for ${guid}:`,
+							e,
+						);
 					}
 				} else if (effect.type === "WRITE_DISK") {
 					// BUG-033 fix: Handle WRITE_DISK in idle mode
@@ -451,8 +461,11 @@ export class SharedFolder extends HasProvider {
 
 		// Extract the guid from the doc_id
 		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
-		const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-		const match = docId.match(new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"));
+		const uuidPattern =
+			"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+		const match = docId.match(
+			new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"),
+		);
 		if (!match) return;
 		const guid = match[1];
 
@@ -469,8 +482,13 @@ export class SharedFolder extends HasProvider {
 
 		// Forward remote updates to MergeManager for idle mode documents.
 		// This ensures updates are received even when the file is closed.
+		// CBOR decoding may return Buffer or plain object — ensure Uint8Array.
 		if (event.update) {
-			this.mergeManager.handleRemoteUpdate(guid, event.update);
+			const update =
+				event.update instanceof Uint8Array
+					? event.update
+					: new Uint8Array(event.update);
+			this.mergeManager.handleRemoteUpdate(guid, update);
 		}
 	}
 
@@ -487,10 +505,15 @@ export class SharedFolder extends HasProvider {
 	 * Without this handler, the effect is dropped because ProviderIntegration
 	 * is destroyed when the file is closed.
 	 */
-	private async handleIdleSyncToRemote(guid: string, update: Uint8Array): Promise<void> {
+	private async handleIdleSyncToRemote(
+		guid: string,
+		update: Uint8Array,
+	): Promise<void> {
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) {
-			this.warn(`[handleIdleSyncToRemote] Document not found for guid: ${guid}`);
+			this.warn(
+				`[handleIdleSyncToRemote] Document not found for guid: ${guid}`,
+			);
 			return;
 		}
 
@@ -499,7 +522,9 @@ export class SharedFolder extends HasProvider {
 		// emitting SYNC_TO_REMOTE) during the await in acquireLock().
 		// Check both userLock and MergeManager.isActive() to cover the window.
 		if (file.userLock || this.mergeManager?.isActive(guid)) {
-			this.debug?.(`[handleIdleSyncToRemote] Document ${guid} is in active mode, skipping`);
+			this.debug?.(
+				`[handleIdleSyncToRemote] Document ${guid} is in active mode, skipping`,
+			);
 			return;
 		}
 
@@ -507,7 +532,7 @@ export class SharedFolder extends HasProvider {
 			// Apply update to the document's remoteDoc (which is file.ydoc).
 			// This intentionally triggers lazy creation (wake from hibernation).
 			const remoteDoc = file.ensureRemoteDoc();
-			Y.applyUpdate(remoteDoc, update, 'local');
+			Y.applyUpdate(remoteDoc, update, "local");
 
 			// Also update the HSM's remoteDoc reference so it stays in sync
 			if (file.hsm) {
@@ -520,7 +545,10 @@ export class SharedFolder extends HasProvider {
 			await this.backgroundSync.enqueueSync(file);
 			this.log(`[handleIdleSyncToRemote] Synced idle mode update for ${guid}`);
 		} catch (e) {
-			this.warn(`[handleIdleSyncToRemote] Failed to sync update for ${guid}:`, e);
+			this.warn(
+				`[handleIdleSyncToRemote] Failed to sync update for ${guid}:`,
+				e,
+			);
 		}
 	}
 
@@ -535,7 +563,10 @@ export class SharedFolder extends HasProvider {
 	 *
 	 * Without this handler, the effect is dropped.
 	 */
-	private async handleIdleWriteDisk(docPath: string, contents: string): Promise<void> {
+	private async handleIdleWriteDisk(
+		docPath: string,
+		contents: string,
+	): Promise<void> {
 		try {
 			// docPath is SharedFolder-relative (e.g., "/note.md"), convert to vault path
 			const vaultPath = this.getPath(docPath);
@@ -583,7 +614,10 @@ export class SharedFolder extends HasProvider {
 				}
 			} catch (e) {
 				// File might have been deleted - ignore
-				this.debug?.(`[pollDiskState] Failed to read disk state for ${guid}:`, e);
+				this.debug?.(
+					`[pollDiskState] Failed to read disk state for ${guid}:`,
+					e,
+				);
 			}
 		}
 	}
@@ -594,7 +628,7 @@ export class SharedFolder extends HasProvider {
 	 */
 	private shouldSendDiskChanged(
 		currentDisk: { hash: string; mtime: number } | null,
-		newDiskState: { mtime: number; hash: string }
+		newDiskState: { mtime: number; hash: string },
 	): boolean {
 		// No current disk state - always send
 		if (!currentDisk) return true;
@@ -1877,9 +1911,6 @@ export class SharedFolder extends HasProvider {
 	deleteFile(vpath: string) {
 		const guid = this.syncStore?.get(vpath);
 		if (guid) {
-			// Notify MergeManager that HSM is being destroyed
-			this.mergeManager?.notifyHSMDestroyed(guid);
-
 			this.ydoc.transact(() => {
 				this.syncStore.delete(vpath);
 				const doc = this.files.get(guid);
@@ -1889,6 +1920,14 @@ export class SharedFolder extends HasProvider {
 				}
 				this.files.delete(guid);
 			}, this);
+		} else {
+			const doc = this.files.get(vpath);
+			if (doc) {
+				const guid = doc.guid;
+				doc.cleanup();
+				this.fset.delete(doc);
+				this.files.delete(guid);
+			}
 		}
 	}
 
@@ -1923,7 +1962,6 @@ export class SharedFolder extends HasProvider {
 			const file = this.files.get(guid);
 			if (!newVPath) {
 				// moving out of shared folder.. destroy the live doc.
-				this.mergeManager?.notifyHSMDestroyed(guid);
 				this.ydoc.transact(() => {
 					this.syncStore.delete(oldVPath);
 				}, this);
