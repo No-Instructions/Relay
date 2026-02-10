@@ -36,7 +36,6 @@ export type SyncStatusType = 'synced' | 'pending' | 'conflict' | 'error';
 
 export interface SyncStatus {
   guid: string;
-  path: string;
   status: SyncStatusType;
   diskMtime: number;
   localStateVector: Uint8Array;

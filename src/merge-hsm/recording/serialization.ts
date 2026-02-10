@@ -334,7 +334,6 @@ export function deserializePersistedState(state: SerializablePersistedState): Pe
 export function serializeSyncStatus(status: SyncStatus): SerializableSyncStatus {
   return {
     guid: status.guid,
-    path: status.path,
     status: status.status,
     diskMtime: status.diskMtime,
     localStateVector: uint8ArrayToBase64(status.localStateVector),
@@ -348,7 +347,6 @@ export function serializeSyncStatus(status: SyncStatus): SerializableSyncStatus 
 export function deserializeSyncStatus(status: SerializableSyncStatus): SyncStatus {
   return {
     guid: status.guid,
-    path: status.path,
     status: status.status,
     diskMtime: status.diskMtime,
     localStateVector: base64ToUint8Array(status.localStateVector),
