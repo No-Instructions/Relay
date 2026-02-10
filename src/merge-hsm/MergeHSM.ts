@@ -515,7 +515,6 @@ export class MergeHSM implements TestableHSM {
 	getSyncStatus(): SyncStatus {
 		return {
 			guid: this._guid,
-			path: this._path,
 			status: this.computeSyncStatusType(),
 			diskMtime: this._disk?.mtime ?? 0,
 			localStateVector: this._localStateVector ?? new Uint8Array([0]),
@@ -1138,7 +1137,7 @@ export class MergeHSM implements TestableHSM {
 	}
 
 	private performIdleDiskAutoMerge(): void {
-		if (!this.pendingDiskContents || !this._lca) return;
+		if (this.pendingDiskContents == null || !this._lca) return;
 
 		this.spawnAsync('idle-merge', async (signal) => {
 			const localUpdates = await this._loadUpdatesRaw(this.vaultId);
@@ -1146,7 +1145,7 @@ export class MergeHSM implements TestableHSM {
 			// Guard against race or cancellation
 			if (signal.aborted) return;
 			if (this._statePath !== "idle.diskAhead") return;
-			if (!this.pendingDiskContents) return;
+			if (this.pendingDiskContents == null) return;
 
 			const diskContent = this.pendingDiskContents;
 			const diskHash = this._disk?.hash;

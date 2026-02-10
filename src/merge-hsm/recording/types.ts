@@ -181,7 +181,6 @@ export interface SerializablePersistedState {
  */
 export interface SerializableSyncStatus {
   guid: string;
-  path: string;
   status: 'synced' | 'pending' | 'conflict' | 'error';
   diskMtime: number;
   localStateVector: string; // base64

@@ -1309,7 +1309,6 @@ describe('MergeHSM', () => {
       const status = t.hsm.getSyncStatus();
 
       expect(status.guid).toBe('doc-123');
-      expect(status.path).toBe('test.md');
       expect(status.status).toBe('synced');
     });
 
