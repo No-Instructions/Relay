@@ -137,6 +137,10 @@ export class MergeManager {
   // LCA cache - bulk-loaded during initialize(), owned by MergeManager
   private _lcaCache = new Map<string, LCAState | null>();
 
+  // Local state vector cache - bulk-loaded during initialize()
+  // Used for idle mode sync status display without opening per-document IDBs
+  private _localStateVectorCache = new Map<string, Uint8Array | null>();
+
   // Configuration
   private getVaultId: (guid: string) => string;
   private timeProvider: TimeProvider;
@@ -199,6 +203,17 @@ export class MergeManager {
    */
   getLCA(guid: string): LCAState | null {
     return this._lcaCache.get(guid) ?? null;
+  }
+
+  /**
+   * Get localStateVector from cache (synchronous).
+   * Returns the cached state vector, or null if not found or not in cache.
+   *
+   * Used during HSM registration to avoid opening per-document IDBs.
+   * The cache is populated during initialize() via bulk load.
+   */
+  getLocalStateVector(guid: string): Uint8Array | null {
+    return this._localStateVectorCache.get(guid) ?? null;
   }
 
   /**
@@ -278,6 +293,12 @@ export class MergeManager {
         } else {
           this._lcaCache.set(state.guid, null);
         }
+
+        // Also cache localStateVector for idle mode sync status
+        this._localStateVectorCache.set(
+          state.guid,
+          state.localStateVector ?? null
+        );
       }
     }
 
@@ -366,21 +387,16 @@ export class MergeManager {
     // Initialize HSM through loading → idle
     hsm.send({ type: 'LOAD', guid, path });
 
-    // Get LCA from cache (bulk-loaded during initialize()) and load CRDT updates
+    // Get LCA and localStateVector from cache (bulk-loaded during initialize())
+    // This avoids opening per-document IDBs at registration time
     const lca = this.getLCA(guid);
-    const localUpdates = this.loadUpdatesRaw
-      ? await this.loadUpdatesRaw(this.getVaultId(guid))
-      : [];
-
-    // Merge updates if we have any (for computing localStateVector)
-    const mergedUpdates = localUpdates.length > 0
-      ? Y.mergeUpdates(localUpdates)
-      : new Uint8Array();
+    const cachedStateVector = this.getLocalStateVector(guid);
 
     hsm.send({
       type: 'PERSISTENCE_LOADED',
-      updates: mergedUpdates,
+      updates: new Uint8Array(),  // No updates needed - we pass state vector directly
       lca,
+      localStateVector: cachedStateVector,
     });
 
     // Send mode determination to transition out of loading (flat state per v9 spec)
@@ -469,38 +485,32 @@ export class MergeManager {
     // Initialize HSM through loading → idle
     hsm.send({ type: 'LOAD', guid, path });
 
-    // Track async persistence loading so whenRegistered() waits for it.
-    // Without this, setActiveDocuments() can send SET_MODE_IDLE before
-    // PERSISTENCE_LOADED arrives, causing HSMs to transition to idle
-    // with empty state (no LCA, no local state vector).
-    const loadingPromise = (async () => {
-      // Get LCA from cache (bulk-loaded during initialize()) and load CRDT updates
-      const lca = this.getLCA(guid);
-      const localUpdates = this.loadUpdatesRaw
-        ? await this.loadUpdatesRaw(this.getVaultId(guid))
-        : [];
+    // Get LCA and localStateVector from cache synchronously (bulk-loaded during initialize())
+    // This avoids opening per-document IDBs at registration time, preventing deadlocks
+    // when files are created via app.vault.create()
+    const lca = this.getLCA(guid);
+    const cachedStateVector = this.getLocalStateVector(guid);
 
-      // Merge updates if we have any (for computing localStateVector)
-      const mergedUpdates = localUpdates.length > 0
-        ? Y.mergeUpdates(localUpdates)
-        : new Uint8Array();
+    hsm.send({
+      type: 'PERSISTENCE_LOADED',
+      updates: new Uint8Array(),  // No updates needed - we pass state vector directly
+      lca,
+      localStateVector: cachedStateVector,
+    });
 
-      hsm.send({
-        type: 'PERSISTENCE_LOADED',
-        updates: mergedUpdates,
-        lca,
-      });
+    // If the HSM is still in loading state (no mode decision from
+    // setActiveDocuments yet), default to idle mode. This handles
+    // HSMs created after setActiveDocuments already ran (e.g., from
+    // downloadDoc in syncFileTree which isn't awaited).
+    if (hsm.state.statePath === 'loading') {
+      hsm.send({ type: 'SET_MODE_IDLE' });
+    }
 
-      // If the HSM is still in loading state (no mode decision from
-      // setActiveDocuments yet), default to idle mode. This handles
-      // HSMs created after setActiveDocuments already ran (e.g., from
-      // downloadDoc in syncFileTree which isn't awaited).
-      if (hsm.state.statePath === 'loading') {
-        hsm.send({ type: 'SET_MODE_IDLE' });
-      }
+    this.updateSyncStatus(guid, hsm.getSyncStatus());
 
-      this.updateSyncStatus(guid, hsm.getSyncStatus());
-    })();
+    // No async loading needed - cache lookup is synchronous.
+    // Still track as "pending" briefly so callers can await if needed.
+    const loadingPromise = Promise.resolve();
 
     this.pendingRegistrations.set(guid, loadingPromise);
     loadingPromise.finally(() => {
@@ -810,6 +820,10 @@ export class MergeManager {
         } else {
           this._lcaCache.set(guid, null);
         }
+
+        // Update localStateVector cache
+        this._localStateVectorCache.set(guid, effect.state.localStateVector ?? null);
+
         // Integration layer handles actual IDB persistence via onEffect above
         break;
 
