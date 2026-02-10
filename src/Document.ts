@@ -625,7 +625,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public async cleanup(): Promise<void> {
-		// No-op: disk buffer persistence removed
+		this.sharedFolder?.mergeManager?.notifyHSMDestroyed(this.guid);
 	}
 
 	// Helper method to update file stats
