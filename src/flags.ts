@@ -18,6 +18,7 @@ export interface FeatureFlags {
 	enableDeviceManagement: boolean;
 	enableMergeHSMRecording: boolean;
 	enableHSMRecording: boolean;
+	enableDirectRemoteUpdates: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -40,6 +41,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDeviceManagement: false,
 	enableMergeHSMRecording: true,
 	enableHSMRecording: false,
+	enableDirectRemoteUpdates: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

@@ -484,11 +484,22 @@ export class SharedFolder extends HasProvider {
 		// This ensures updates are received even when the file is closed.
 		// CBOR decoding may return Buffer or plain object — ensure Uint8Array.
 		if (event.update) {
-			const update =
-				event.update instanceof Uint8Array
-					? event.update
-					: new Uint8Array(event.update);
-			this.mergeManager.handleRemoteUpdate(guid, update);
+			if (flags().enableDirectRemoteUpdates) {
+				// Direct update application (can cause PermanentUserData issues)
+				const update =
+					event.update instanceof Uint8Array
+						? event.update
+						: new Uint8Array(event.update);
+				this.mergeManager.handleRemoteUpdate(guid, update);
+			} else {
+				// Safer path: enqueue for background sync polling
+				// Then forward the downloaded bytes to HSM for merge + disk write
+				this.backgroundSync.enqueueDownload(file).then((updateBytes) => {
+					if (updateBytes) {
+						this.mergeManager.handleRemoteUpdate(guid, updateBytes);
+					}
+				});
+			}
 		}
 	}
 
