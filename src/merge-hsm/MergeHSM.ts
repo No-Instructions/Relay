@@ -1857,9 +1857,13 @@ export class MergeHSM implements TestableHSM {
 					},
 					stateVector: this._localStateVector ?? new Uint8Array([0]),
 				};
-				// Persist the updated LCA
-				this.emitPersistState();
 			}
+		}
+
+		// Always persist state on cleanup to cache the latest localStateVector.
+		// This ensures idle mode sync status is accurate after reopening.
+		if (finalContent !== null) {
+			this.emitPersistState();
 		}
 
 		// Clean up Y.Text observer before destroying doc
