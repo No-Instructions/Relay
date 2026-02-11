@@ -139,28 +139,6 @@ export type {
   HSMRecordingGlobal,
 } from './recording';
 
-// Shadow mode infrastructure
-export {
-  ShadowMergeHSM,
-  ShadowManager,
-  createLoggingShadow,
-  createCallbackShadow,
-  createLoggingShadowManager,
-} from './shadow';
-export type {
-  OldSystemAction,
-  ShadowDivergence,
-  ShadowModeConfig,
-  ShadowDocumentState,
-  ShadowSessionStats,
-  ShadowManagerConfig,
-  ShadowReport,
-  DocumentShadowSummary,
-  DivergenceType,
-  DivergenceSeverity,
-  ComparisonResult,
-} from './shadow';
-
 // Invariant checking
 export {
   InvariantChecker,
