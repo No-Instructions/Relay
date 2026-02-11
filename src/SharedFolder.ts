@@ -10,8 +10,6 @@ import {
 } from "obsidian";
 import {
 	IndexeddbPersistence,
-	loadUpdatesRaw,
-	appendUpdateRaw,
 } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
@@ -343,15 +341,6 @@ export class SharedFolder extends HasProvider {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
 					await this.handleIdleSyncToRemote(guid, effect.update);
-				} else if (effect.type === "PERSIST_UPDATES") {
-					try {
-						await appendUpdateRaw(effect.dbName, effect.update);
-					} catch (e) {
-						this.warn(
-							`[MergeManager] Failed to persist updates for ${guid}:`,
-							e,
-						);
-					}
 				} else if (effect.type === "WRITE_DISK") {
 					// BUG-033 fix: Handle WRITE_DISK in idle mode
 					// This is emitted when remote changes need to be written to disk
@@ -371,7 +360,6 @@ export class SharedFolder extends HasProvider {
 				};
 			},
 			userId: loginManager?.user?.id,
-			loadUpdatesRaw,
 		});
 
 		// Install E2E recording bridge if enabled (for in-memory or disk recording)
@@ -431,6 +419,12 @@ export class SharedFolder extends HasProvider {
 					await this.onceProviderSynced();
 					await this.markSynced();
 				}
+			} else if (!authoritative) {
+				// Even when IDB already has serverSync, we still need the
+				// provider to sync so _providerSynced is set. Without this,
+				// the folder's `synced` getter stays false and downstream
+				// flows (syncFileTree downloads) can fail.
+				await this.onceProviderSynced();
 			}
 		})();
 
@@ -1651,14 +1645,12 @@ export class SharedFolder extends HasProvider {
 		const updateBytes = await this.backgroundSync.enqueueDownload(doc);
 
 		if (updateBytes) {
+			await doc.hsm?.initializeFromRemote(updateBytes, Date.now());
+
 			// Flush remoteDoc content to disk
 			if (this.syncStore.has(doc.path)) {
 				await this.flush(doc, doc.text);
 			}
-
-			// Initialize localDoc from downloaded bytes, set LCA with actual disk mtime
-			const mtime = doc.tfile?.stat.mtime ?? Date.now();
-			await doc.hsm?.initializeFromRemote(updateBytes, mtime);
 		}
 
 		this.files.set(guid, doc);

@@ -228,6 +228,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
+	 * Create the remote YDoc, populating it from localDoc if available.
+	 * This ensures the remoteDoc has content for provider sync even when
+	 * content was enrolled into localDoc (e.g., via initializeWithContent).
+	 */
+	ensureRemoteDoc(): Y.Doc {
+		const isNew = !this.isRemoteDocLoaded;
+		const doc = super.ensureRemoteDoc();
+		if (isNew && this._hsm) {
+			const localDoc = this._hsm.getLocalDoc();
+			if (localDoc) {
+				const update = Y.encodeStateAsUpdate(localDoc);
+				Y.applyUpdate(doc, update);
+			}
+		}
+		return doc;
+	}
+
+	/**
 	 * Acquire lock on this document for active editing.
 	 * Transitions HSM from idle to active mode.
 	 * Call this when editor opens (replaces userLock = true).
@@ -683,9 +701,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			case "SYNC_TO_REMOTE":
 				await this.handleSyncToRemote(effect.update);
 				break;
-			case "PERSIST_UPDATES":
-				await this.handlePersistUpdates(effect.dbName, effect.update);
-				break;
 			// Other effects (DISPATCH_CM6, STATUS_CHANGED, etc.) are handled elsewhere
 		}
 	}
@@ -744,13 +759,4 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		Y.applyUpdate(remoteDoc, update, "idle-sync");
 	}
 
-	private async handlePersistUpdates(dbName: string, update: Uint8Array): Promise<void> {
-		// Import dynamically to avoid circular dependency
-		const { appendUpdateRaw } = await import("./storage/y-indexeddb");
-		try {
-			await appendUpdateRaw(dbName, update);
-		} catch (e) {
-			this.warn("[handleEffect:PERSIST_UPDATES] Failed to persist updates:", e);
-		}
-	}
 }

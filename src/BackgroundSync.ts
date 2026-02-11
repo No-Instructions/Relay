@@ -497,7 +497,9 @@ export class BackgroundSync extends HasLogging {
 	 * @param item The document to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueDownload(item: SyncFile | Document | Canvas): Promise<Uint8Array | undefined> {
+	enqueueDownload(
+		item: SyncFile | Document | Canvas,
+	): Promise<Uint8Array | undefined> {
 		// Skip if already in progress
 		if (this.inProgressDownloads.has(item.guid)) {
 			this.debug(
@@ -552,9 +554,11 @@ export class BackgroundSync extends HasLogging {
 		this.inProgressDownloads.add(item.guid);
 
 		// Create a promise that will resolve when the download completes
-		const downloadPromise = new Promise<Uint8Array | undefined>((resolve, reject) => {
-			this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
-		});
+		const downloadPromise = new Promise<Uint8Array | undefined>(
+			(resolve, reject) => {
+				this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
+			},
+		);
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
@@ -733,45 +737,31 @@ export class BackgroundSync extends HasLogging {
 
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
 		// if the local file is synced, then we do the two step process
-		// check if file is tracking
-		let currentFileContents = "";
-
-		// Handle different document types
-		let currentTextStr = "";
-		let currentCanvasData: CanvasData | null = null;
-
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
-			currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
-			currentTextStr = JSON.stringify(currentCanvasData);
-		} else if (isDocument(doc)) {
-			currentTextStr = doc.text;
-		}
-		try {
-			currentFileContents = await doc.sharedFolder.read(doc);
-		} catch (e) {
-			// File does not exist
-		}
+			const currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
+			try {
+				const currentFileContents = await doc.sharedFolder.read(doc);
 
-		// Only proceed with update if file matches current ydoc state
-		let contentsMatch = false;
-		if (isCanvas(doc) && currentCanvasData) {
-			// For canvas, use deep object comparison instead of string equality
-			const currentFileJson = currentFileContents
-				? JSON.parse(currentFileContents)
-				: { nodes: [], edges: [] };
-			contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
-		} else {
-			contentsMatch = currentTextStr === currentFileContents;
+				// Only proceed with update if file matches current ydoc state
+				let contentsMatch = false;
+				if (isCanvas(doc) && currentCanvasData) {
+					// For canvas, use deep object comparison instead of string equality
+					const currentFileJson = currentFileContents
+						? JSON.parse(currentFileContents)
+						: { nodes: [], edges: [] };
+					contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
+					if (!contentsMatch && currentFileContents) {
+						this.log(
+							"file is not tracking local disk. resolve merge conflicts before syncing.",
+						);
+						return false;
+					}
+				}
+			} catch (e) {
+				// File does not exist
+			}
 		}
-
-		if (!contentsMatch && currentFileContents) {
-			this.log(
-				"file is not tracking local disk. resolve merge conflicts before syncing.",
-			);
-			return false;
-		}
-
 		const promise = doc.onceProviderSynced();
 		const intent = doc.intent;
 		doc.connect();
@@ -835,7 +825,11 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
-	private async getDocument(doc: Document, retry = 3, wait = 3000): Promise<Uint8Array | undefined> {
+	private async getDocument(
+		doc: Document,
+		retry = 3,
+		wait = 3000,
+	): Promise<Uint8Array | undefined> {
 		try {
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
