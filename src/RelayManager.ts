@@ -2041,7 +2041,7 @@ export class RelayManager extends HasLogging {
 		} else {
 			this.warn("No role found to leave relay");
 		}
-		this.store?.cascade("relay", relay.id);
+		this.store?.cascade("relays", relay.id);
 	}
 
 	async kick(relay_role: RelayRole) {
