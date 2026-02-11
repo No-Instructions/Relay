@@ -21,7 +21,6 @@ import type {
   PersistedMergeState,
   CreatePersistence,
   PersistenceMetadata,
-  LoadUpdatesRaw,
   LCAState,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
@@ -98,14 +97,6 @@ export interface MergeManagerConfig {
    * If provided, each HSM will set up user mapping on localDoc.
    */
   userId?: string;
-
-  /**
-   * Callback to load raw Yjs updates from IndexedDB.
-   * Used to load local CRDT state for PERSISTENCE_LOADED event.
-   * Production: pass loadUpdatesRaw from src/storage/y-indexeddb.js
-   * Tests: omit for default empty array.
-   */
-  loadUpdatesRaw?: LoadUpdatesRaw;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
@@ -221,7 +212,6 @@ export class MergeManager {
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
-  private loadUpdatesRaw?: LoadUpdatesRaw;
 
   constructor(config: MergeManagerConfig) {
     this._getVaultId = config.getVaultId;
@@ -235,7 +225,6 @@ export class MergeManager {
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
     this.userId = config.userId;
-    this.loadUpdatesRaw = config.loadUpdatesRaw;
 
     // Hibernation defaults
     this._hibernateTimeoutMs = config.hibernation?.hibernateTimeoutMs ?? 60_000;
@@ -300,7 +289,6 @@ export class MergeManager {
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
-      loadUpdatesRaw: this.loadUpdatesRaw,
       persistenceMetadata: getPersistenceMetadata?.(),
       userId: this.userId,
       diskLoader: getDiskContent,
@@ -916,9 +904,6 @@ export class MergeManager {
         // Integration layer handles actual IDB persistence via onEffect above
         break;
 
-      case 'PERSIST_UPDATES':
-        // HSM handles internally now - no need to store in idleUpdates
-        break;
     }
   }
 

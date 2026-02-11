@@ -170,13 +170,6 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
  */
 export function serializeEffect(effect: MergeEffect): SerializableEffect {
   switch (effect.type) {
-    case 'PERSIST_UPDATES':
-      return {
-        type: 'PERSIST_UPDATES',
-        dbName: effect.dbName,
-        update: uint8ArrayToBase64(effect.update),
-      };
-
     case 'SYNC_TO_REMOTE':
       return {
         type: 'SYNC_TO_REMOTE',
@@ -212,13 +205,6 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
  */
 export function deserializeEffect(effect: SerializableEffect): MergeEffect {
   switch (effect.type) {
-    case 'PERSIST_UPDATES':
-      return {
-        type: 'PERSIST_UPDATES',
-        dbName: effect.dbName,
-        update: base64ToUint8Array(effect.update),
-      };
-
     case 'SYNC_TO_REMOTE':
       return {
         type: 'SYNC_TO_REMOTE',

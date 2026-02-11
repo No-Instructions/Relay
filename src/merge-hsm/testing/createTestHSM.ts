@@ -48,15 +48,8 @@ export interface TestHSMOptions {
   logTransitions?: boolean;
 
   /**
-   * Mock function to load updates from IndexedDB (for BUG-021 testing).
-   * Default: returns empty array.
-   * Prefer using `indexedDBUpdates` instead for simpler setup.
-   */
-  loadUpdatesRaw?: (vaultId: string) => Promise<Uint8Array[]>;
-
-  /**
-   * Mock IndexedDB content. When set, both loadUpdatesRaw and the mock
-   * persistence will use these updates, simulating IndexedDB state.
+   * Mock IndexedDB content. When set, the mock persistence will use these
+   * updates, simulating IndexedDB state.
    */
   indexedDBUpdates?: Uint8Array;
 
@@ -201,8 +194,6 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   // on any LCA fallback mechanisms.
   let storedUpdates: Uint8Array | null = options.indexedDBUpdates ?? null;
 
-  const loadUpdatesRaw = options.loadUpdatesRaw ?? (async () => storedUpdates ? [storedUpdates] : []);
-
   const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string): IYDocPersistence => {
     // Subscribe to doc updates to track changes
     const updateHandler = (update: Uint8Array) => {
@@ -260,15 +251,11 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     vaultId: options.vaultId ?? `test-${guid}`,
     remoteDoc,
     timeProvider: time,
-    loadUpdatesRaw,
     createPersistence,
     diskLoader,
   });
 
-  // Capture effects (PERSIST_UPDATES is informational - don't update storedUpdates
-  // synchronously because in real system persistence is async. The auto-merge
-  // logic in performIdleRemoteAutoMerge expects loadUpdatesRaw to return the
-  // "old" local state, not the just-received remote updates.)
+  // Capture effects for test assertions
   hsm.subscribe(effect => {
     effects.push(effect);
   });

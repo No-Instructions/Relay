@@ -248,7 +248,7 @@ function compareEffects(
  * Default effect comparator.
  * Compares effects by type and essential properties.
  *
- * Note: For effects with Yjs updates (SYNC_TO_REMOTE, PERSIST_UPDATES),
+ * Note: For effects with Yjs updates (SYNC_TO_REMOTE),
  * we only compare by type since the binary content is non-deterministic.
  */
 function defaultEffectComparator(
@@ -261,7 +261,7 @@ function defaultEffectComparator(
 
   // For effects with Yjs updates, only compare type
   // The binary content is non-deterministic across different YDoc instances
-  if (expected.type === 'SYNC_TO_REMOTE' || expected.type === 'PERSIST_UPDATES') {
+  if (expected.type === 'SYNC_TO_REMOTE') {
     return true; // Type match is sufficient
   }
 

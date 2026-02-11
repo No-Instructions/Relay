@@ -311,10 +311,15 @@ export class IndexeddbPersistence extends Observable {
    * @return {Promise<String | number | ArrayBuffer | Date>}
    */
   set (key, value) {
-    return this._db.then(db => {
+    const writePromise = this._db.then(db => {
       const [custom] = idb.transact(db, [customStoreName])
       return idb.put(custom, value, key)
     })
+    this._pendingWrites.add(writePromise)
+    writePromise.finally(() => {
+      this._pendingWrites.delete(writePromise)
+    })
+    return writePromise
   }
 
   /**
@@ -452,9 +457,10 @@ export class IndexeddbPersistence extends Observable {
    * Initialize document from remote CRDT state if not already initialized.
    * Used for downloaded documents where remoteDoc already has server content.
    * @param {Uint8Array} update - CRDT update from remoteDoc
+   * @param {any} origin - Origin to use for Y.applyUpdate (must differ from `this` so _storeUpdate persists to IDB)
    * @return {Promise<boolean>} true if initialization happened, false if already initialized
    */
-  async initializeFromRemote (update) {
+  async initializeFromRemote (update, origin) {
     await this.whenSynced
 
     // Check if already initialized (origin set = previously initialized)
@@ -473,8 +479,8 @@ export class IndexeddbPersistence extends Observable {
       this._setupPermanentUserData()
     }
 
-    // Apply remote CRDT state (preserves history, no new operations created)
-    Y.applyUpdate(this.doc, update, this)
+    // Apply remote CRDT state — origin must differ from `this` so _storeUpdate persists to IDB
+    Y.applyUpdate(this.doc, update, origin)
 
     // Mark origin
     await this.setOrigin('remote')
@@ -506,61 +512,4 @@ export class IndexeddbPersistence extends Observable {
   }
 }
 
-// =============================================================================
-// Doc-less Operations (for MergeHSM idle mode)
-// =============================================================================
-//
-// These operations allow working with Yjs updates without loading a full YDoc
-// into memory. Used by MergeHSM for lightweight idle mode.
-
-/**
- * Load raw updates from IndexedDB without creating a YDoc.
- * For lightweight idle mode operations.
- * @param {string} name - Database name (e.g., `${appId}-relay-doc-${guid}`)
- * @returns {Promise<Uint8Array[]>}
- */
-export const loadUpdatesRaw = async (name) => {
-  const db = await idb.openDB(name, db =>
-    idb.createStores(db, [
-      ['updates', { autoIncrement: true }],
-      ['custom']
-    ])
-  )
-  try {
-    const [store] = idb.transact(db, [updatesStoreName], 'readonly')
-    const updates = await idb.getAll(store)
-    return updates
-  } finally {
-    db.close()
-  }
-}
-
-
-/**
- * Append a Yjs update to IndexedDB without loading a YDoc.
- * For receiving remote updates in idle mode.
- * @param {string} name - Database name
- * @param {Uint8Array} update - Yjs update to store
- * @returns {Promise<void>}
- */
-export const appendUpdateRaw = async (name, update) => {
-  const appendErr = validateUpdate(update)
-  if (appendErr) {
-    console.error(`[y-indexeddb] Dropping invalid update for ${name} (${update.byteLength} bytes, not persisted):`, appendErr)
-    return
-  }
-
-  const db = await idb.openDB(name, db =>
-    idb.createStores(db, [
-      ['updates', { autoIncrement: true }],
-      ['custom']
-    ])
-  )
-  try {
-    const [store] = idb.transact(db, [updatesStoreName], 'readwrite')
-    await idb.addAutoKey(store, update)
-  } finally {
-    db.close()
-  }
-}
 

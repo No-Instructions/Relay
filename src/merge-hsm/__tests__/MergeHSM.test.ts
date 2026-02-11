@@ -411,11 +411,12 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
       expect(t.state.lca?.contents).toBe(editedContent);
 
-      // Now force idle.diverged by sending a DISK_CHANGED with different content
-      // This simulates external disk modification
+      // Now send DISK_CHANGED with different content (external disk modification).
+      // With localDoc alive, disk auto-merge completes synchronously.
       const divergedDiskContent = editedContent + '\nExtra line from external edit';
       t.send(await diskChanged(divergedDiskContent, 3000));
-      expectState(t, 'idle.diskAhead'); // or idle.diverged if remote also changed
+      await t.hsm.awaitIdleAutoMerge();
+      expectState(t, 'idle.synced');
 
       // Reopen with the diverged disk content
       t.send(acquireLock(divergedDiskContent));
@@ -916,49 +917,52 @@ describe('MergeHSM', () => {
   // ===========================================================================
 
   describe('idle mode', () => {
-    test('REMOTE_UPDATE in idle transitions to idle.remoteAhead', async () => {
+    test('REMOTE_UPDATE in idle auto-merges and writes to disk', async () => {
       // Create a test starting in idle.synced
       const t = await createTestHSM();
       await loadToIdle(t);
+      t.clearEffects();
 
-      // Apply remote change using proper diff-based update
+      // Apply remote change using proper diff-based update.
+      // With localDoc alive, the auto-merge completes synchronously:
+      // idle.synced → idle.remoteAhead → idle.synced (within handleEvent)
       t.applyRemoteChange('hello');
+      await t.hsm.awaitIdleAutoMerge();
 
-      expectState(t, 'idle.remoteAhead');
+      expectState(t, 'idle.synced');
+      expectEffect(t.effects, { type: 'WRITE_DISK' });
+      expect(t.getLocalDocText()).toBe('hello');
     });
 
-    test('DISK_CHANGED in idle transitions through idle.diskAhead', async () => {
+    test('DISK_CHANGED in idle triggers auto-merge and returns to synced', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original', mtime: 1000 });
 
+      t.clearEffects();
       t.send(await diskChanged('modified content', Date.now()));
 
-      // With real transitions, disk changes trigger auto-merge when remote==LCA.
-      // The transition goes through idle.diskAhead before resolving.
+      // With localDoc alive, auto-merge completes synchronously within send().
+      // The intermediate idle.diskAhead state is transient.
       await t.hsm.awaitIdleAutoMerge();
-
-      // Verify we transitioned through diskAhead (check state history)
-      const passedThroughDiskAhead = t.stateHistory.some(
-        h => h.to === 'idle.diskAhead'
-      );
-      expect(passedThroughDiskAhead).toBe(true);
 
       // End state should be clean after auto-merge
       expectState(t, 'idle.synced');
+
+      // Verify SYNC_TO_REMOTE was emitted (disk changes propagated to remote)
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
-    test('idle mode does not create localDoc (lightweight)', async () => {
+    test('idle mode keeps localDoc alive for auto-merge', async () => {
       const t = await createTestHSM();
       await loadToIdle(t);
 
-      // Verify localDoc does not exist in idle mode
-      // (remoteDoc is always available - managed externally per spec)
-      expect(t.getLocalDocText()).toBeNull();
+      // localDoc stays alive in idle mode for efficient auto-merge
+      expect(t.getLocalDocText()).not.toBeNull();
 
-      // Receive remote update - should still not create localDoc
+      // Receive remote update - localDoc is updated directly
       t.applyRemoteChange('hello');
 
-      expect(t.getLocalDocText()).toBeNull();
+      expect(t.getLocalDocText()).toBe('hello');
     });
 
     // =================================================================
@@ -983,7 +987,7 @@ describe('MergeHSM', () => {
       'Rage, rage against the dying of the light.',
     ].join('\n');
 
-    test('remote update with repeated content (refrain) transitions to idle.remoteAhead', async () => {
+    test('remote update with repeated content (refrain) auto-merges correctly', async () => {
       const t = await createTestHSM();
       await loadToIdle(t);
 
@@ -991,8 +995,12 @@ describe('MergeHSM', () => {
       // A content-matching heuristic might see repeated text and wrongly
       // conclude this is a duplication artifact.
       t.applyRemoteChange(POEM);
+      await t.hsm.awaitIdleAutoMerge();
 
-      expectState(t, 'idle.remoteAhead');
+      // Auto-merge completes synchronously with localDoc alive.
+      // Content must not be deduplicated or corrupted.
+      expectState(t, 'idle.synced');
+      expect(t.getLocalDocText()).toBe(POEM);
     });
 
     test('remote update arriving twice is idempotent, not blocked', async () => {
@@ -1080,18 +1088,19 @@ describe('MergeHSM', () => {
       expectLocalDocText(t, extraRefrain);
     });
 
-    test('ACQUIRE_LOCK creates YDocs for active mode', async () => {
+    test('ACQUIRE_LOCK transitions to active with localDoc', async () => {
       const t = await createTestHSM();
       await loadToIdle(t);
 
-      // No YDocs before
-      expect(t.getLocalDocText()).toBeNull();
+      // localDoc already alive in idle mode
+      expect(t.hsm.getLocalDoc()).not.toBeNull();
 
       t.send(acquireLock());
 
-      // YDocs created after ACQUIRE_LOCK
+      // Still alive in active mode
       expect(t.hsm.getLocalDoc()).not.toBeNull();
       expect(t.hsm.getRemoteDoc()).not.toBeNull();
+      expect(t.hsm.isActive()).toBe(true);
     });
 
     test('idle.remoteAhead auto-merges when disk==lca', async () => {
@@ -1184,9 +1193,7 @@ describe('MergeHSM', () => {
       // Set up disk state matching LCA
       t.send(await diskChanged('local content', 1000));
 
-      // Note: In this test, the default loadUpdatesRaw returns empty array.
-      // This simulates when there's no IndexedDB (test environment).
-      // In production, loadUpdatesRaw would return the actual local updates.
+      // localDoc is alive in idle mode with content from persistence.
 
       // Create an empty update (represents uninitialized remote CRDT)
       const emptyDoc = new Y.Doc();
@@ -1221,10 +1228,8 @@ describe('MergeHSM', () => {
       const localUpdate = Y.encodeStateAsUpdate(localDoc);
       localDoc.destroy();
 
-      // Mock loadUpdatesRaw to return the local update (simulates IndexedDB content)
-      const mockLoadUpdatesRaw = async (_vaultId: string) => [localUpdate];
-
-      const t = await createTestHSM({ loadUpdatesRaw: mockLoadUpdatesRaw });
+      // Seed mock IndexedDB with the local update (localDoc stays alive in idle)
+      const t = await createTestHSM({ indexedDBUpdates: localUpdate });
       await loadToIdle(t, { content: 'Line 1\nLine 2\nLine 3', mtime: 1000 });
 
       // Set up disk state matching LCA
@@ -1263,10 +1268,8 @@ describe('MergeHSM', () => {
       const localUpdate = Y.encodeStateAsUpdate(localDoc);
       localDoc.destroy();
 
-      // Mock loadUpdatesRaw to return the local update
-      const mockLoadUpdatesRaw = async (_vaultId: string) => [localUpdate];
-
-      const t = await createTestHSM({ loadUpdatesRaw: mockLoadUpdatesRaw });
+      // Seed mock IndexedDB with the local update (localDoc stays alive in idle)
+      const t = await createTestHSM({ indexedDBUpdates: localUpdate });
       await loadToIdle(t, { content: 'original', mtime: 1000 });
 
       // Set up disk state matching LCA
@@ -1322,9 +1325,14 @@ describe('MergeHSM', () => {
     });
 
     test('returns pending status in idle.remoteAhead', async () => {
+      // Load without LCA so auto-merge can't complete and state stays remoteAhead
       const t = await createTestHSM();
-      await loadToIdle(t);
-      // Apply remote change using proper diff-based update
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      expectState(t, 'idle.synced');
+
+      // Apply remote change - without LCA, auto-merge can't proceed
       t.applyRemoteChange('remote content');
       expectState(t, 'idle.remoteAhead');
 

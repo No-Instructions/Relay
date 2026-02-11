@@ -22,6 +22,16 @@ interface MockDocument {
   remoteDoc: Y.Doc;
 }
 
+/** Create a valid Yjs state vector from content text. */
+function stateVectorFor(content: string, clientID: number = 1): Uint8Array {
+  const doc = new Y.Doc();
+  doc.clientID = clientID;
+  doc.getText('contents').insert(0, content);
+  const sv = Y.encodeStateVector(doc);
+  doc.destroy();
+  return sv;
+}
+
 describe('MergeManager', () => {
   let manager: MergeManager;
   let timeProvider: MockTimeProvider;
@@ -94,7 +104,7 @@ describe('MergeManager', () => {
             contents: 'content 1',
             hash: 'hash1',
             mtime: 1000,
-            stateVector: new Uint8Array([1]),
+            stateVector: stateVectorFor('content 1'),
           },
           disk: null,
           localStateVector: null,
@@ -108,7 +118,7 @@ describe('MergeManager', () => {
             contents: 'content 2',
             hash: 'hash2',
             mtime: 2000,
-            stateVector: new Uint8Array([2]),
+            stateVector: stateVectorFor('content 2'),
           },
           disk: null,
           localStateVector: null,
@@ -330,7 +340,7 @@ describe('MergeManager', () => {
             contents: 'existing content',
             hash: 'existing-hash',
             mtime: 1000,
-            stateVector: new Uint8Array([1]),
+            stateVector: stateVectorFor('existing content'),
           },
           disk: null,
           localStateVector: null,
@@ -665,7 +675,7 @@ describe('MergeManager', () => {
           contents: 'persisted content',
           hash: 'hash123',
           mtime: 1000,
-          stateVector: new Uint8Array([0]),
+          stateVector: stateVectorFor('persisted content'),
         },
         disk: null,
         localStateVector: null,

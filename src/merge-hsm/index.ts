@@ -56,14 +56,12 @@ export type {
   DispatchCM6Effect,
   WriteDiskEffect,
   PersistStateEffect,
-  PersistUpdatesEffect,
   SyncToRemoteEffect,
   StatusChangedEffect,
 
   // Other types
   PositionedChange,
   MergeHSMConfig,
-  LoadUpdatesRaw,
   MergeResult,
   MergeSuccess,
   MergeFailure,
@@ -80,7 +78,7 @@ export type {
 
 // Persistence (IndexedDB)
 // NOTE: Yjs updates are stored in y-indexeddb, not here.
-// Use loadUpdatesRaw/appendUpdateRaw from src/storage/y-indexeddb.js
+// Persistence writes to IDB automatically via localDoc's _storeUpdate handler.
 export {
   openDatabase,
   closeDatabase,

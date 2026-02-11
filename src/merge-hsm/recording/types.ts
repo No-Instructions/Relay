@@ -148,7 +148,6 @@ export type SerializableEffect =
   | { type: 'DISPATCH_CM6'; changes: Array<{ from: number; to: number; insert: string }> }
   | { type: 'WRITE_DISK'; path: string; contents: string }
   | { type: 'PERSIST_STATE'; guid: string; state: SerializablePersistedState }
-  | { type: 'PERSIST_UPDATES'; dbName: string; update: string } // base64
   | { type: 'SYNC_TO_REMOTE'; update: string } // base64
   | { type: 'STATUS_CHANGED'; guid: string; status: SerializableSyncStatus };
 

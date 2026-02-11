@@ -362,7 +362,6 @@ export class ShadowMergeHSM implements RecordableHSM {
       SYNC_TO_REMOTE: ['SYNC_TO_REMOTE'],
       STATUS_CHANGED: [], // No direct mapping
       PERSIST_STATE: [], // No direct mapping
-      PERSIST_UPDATES: [], // No direct mapping
     };
 
     const expectedActionTypes = mapping[effect.type] ?? [];

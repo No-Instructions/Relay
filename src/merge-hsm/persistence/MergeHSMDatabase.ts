@@ -7,8 +7,8 @@
  *   - index: Folder-level sync status (MergeIndex)
  *
  * NOTE: Yjs updates are stored in y-indexeddb (per-document databases),
- * NOT in this database. This ensures compatibility with existing documents.
- * Use loadUpdatesRaw/appendUpdateRaw from y-indexeddb for update storage.
+ * NOT in this database. Persistence writes to IDB automatically
+ * via the _storeUpdate handler on localDoc.
  */
 
 import * as idb from 'lib0/indexeddb';
@@ -119,16 +119,8 @@ export async function getAllStates(db: IDBDatabase): Promise<PersistedMergeState
 // =============================================================================
 //
 // IMPORTANT: Yjs updates are NOT stored in this database.
-// They are stored in y-indexeddb per-document databases for compatibility
-// with existing documents.
-//
-// To work with Yjs updates in idle mode (without loading a YDoc), use:
-//   - loadUpdatesRaw(dbName)         - load raw updates
-//   - appendUpdateRaw(dbName, update) - append an update
-//
-// These functions are exported from src/storage/y-indexeddb.js
-//
-// The database name convention is: `${appId}-relay-doc-${guid}`
+// They are stored in y-indexeddb per-document databases.
+// Persistence writes to IDB automatically via the _storeUpdate handler on localDoc.
 
 // =============================================================================
 // Index Store Operations
