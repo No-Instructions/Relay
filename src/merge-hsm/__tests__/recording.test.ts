@@ -566,7 +566,8 @@ describe('HSM Recording', () => {
     // Default config for E2ERecordingBridge
     function createBridgeConfig() {
       return {
-        getDocument: (guid: string) => documents.get(guid),
+        getHSM: (guid: string) => documents.get(guid)?.hsm,
+        getFullPath: (guid: string) => documents.get(guid)?.path,
         getAllGuids: () => Array.from(documents.keys()),
       };
     }
