@@ -1,5 +1,5 @@
 # vscode
-.vscode 
+.vscode
 
 # Intellij
 *.iml
@@ -27,13 +27,20 @@ data.json
 CLAUDE.md
 agent-creds.toml
 debug-tools/
+.githooks/
+.memory/
 .claude/
 docs/
+infra/
+scripts/
 tickets/
 specs/
+unit/
+templates/
 test-plans/
 test-results/
 prompts/
+vision/
 
 # relay-harness overlay content (managed via igit, not relay-plugin git)
 .githooks/
@@ -50,11 +57,4 @@ start-test.sh
 # E2E runtime artifacts
 vaults/
 obsidian-versions/
-playwright/test-output/
-playwright/test-results/
-playwright/artifacts/
-playwright/archive/
-playwright/allure-results/
-playwright/allure-report/
-playwright/.memory/
-playwright/capture-results/
+playwright/
