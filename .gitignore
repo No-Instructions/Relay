@@ -35,7 +35,19 @@ test-plans/
 test-results/
 prompts/
 
-# E2E tests
+# relay-harness overlay content (managed via igit, not relay-plugin git)
+.githooks/
+.memory/
+infra/
+playwright/
+scripts/
+templates/
+unit/
+vision/
+.nvmrc
+start-test.sh
+
+# E2E runtime artifacts
 vaults/
 obsidian-versions/
 playwright/test-output/
