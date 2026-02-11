@@ -25,6 +25,7 @@ data.json
 
 # developer harness
 CLAUDE.md
+AGENTS.md
 agent-creds.toml
 debug-tools/
 .githooks/
