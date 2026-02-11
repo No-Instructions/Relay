@@ -1,5 +1,5 @@
 # vscode
-.vscode 
+.vscode
 
 # Intellij
 *.iml
@@ -29,20 +29,18 @@ agent-creds.toml
 debug-tools/
 .claude/
 docs/
+infra/
+scripts/
 tickets/
 specs/
+unit/
+templates/
 test-plans/
 test-results/
 prompts/
+vision/
 
 # E2E tests
 vaults/
 obsidian-versions/
-playwright/test-output/
-playwright/test-results/
-playwright/artifacts/
-playwright/archive/
-playwright/allure-results/
-playwright/allure-report/
-playwright/.memory/
-playwright/capture-results/
+playwright/
