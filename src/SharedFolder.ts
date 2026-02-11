@@ -345,7 +345,7 @@ export class SharedFolder extends HasProvider {
 					// BUG-033 fix: Handle WRITE_DISK in idle mode
 					// This is emitted when remote changes need to be written to disk
 					// without an editor open.
-					await this.handleIdleWriteDisk(effect.path, effect.contents);
+					await this.handleIdleWriteDisk(effect.guid, effect.contents);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -569,12 +569,18 @@ export class SharedFolder extends HasProvider {
 	 * Without this handler, the effect is dropped.
 	 */
 	private async handleIdleWriteDisk(
-		docPath: string,
+		guid: string,
 		contents: string,
 	): Promise<void> {
 		try {
-			// docPath is SharedFolder-relative (e.g., "/note.md"), convert to vault path
-			const vaultPath = this.getPath(docPath);
+			// Look up document by guid to get current path (handles renames)
+			const file = this.files.get(guid);
+			if (!file || !isDocument(file)) {
+				this.warn(`[handleIdleWriteDisk] Document not found for guid: ${guid}`);
+				return;
+			}
+
+			const vaultPath = this.getPath(file.path);
 			const tfile = this.vault.getAbstractFileByPath(vaultPath);
 			if (!(tfile instanceof TFile)) {
 				this.warn(`[handleIdleWriteDisk] File not found at path: ${vaultPath}`);
@@ -584,7 +590,7 @@ export class SharedFolder extends HasProvider {
 			await this.vault.modify(tfile, contents);
 			this.log(`[handleIdleWriteDisk] Wrote merged content to ${vaultPath}`);
 		} catch (e) {
-			this.warn(`[handleIdleWriteDisk] Failed to write to ${docPath}:`, e);
+			this.warn(`[handleIdleWriteDisk] Failed to write for guid ${guid}:`, e);
 		}
 	}
 

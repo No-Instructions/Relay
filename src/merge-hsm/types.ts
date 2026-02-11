@@ -392,7 +392,7 @@ export interface DispatchCM6Effect {
 
 export interface WriteDiskEffect {
 	type: "WRITE_DISK";
-	path: string;
+	guid: string;
 	contents: string;
 }
 
