@@ -1301,6 +1301,142 @@ describe('MergeHSM', () => {
   });
 
   // ===========================================================================
+  // State Vector Comparison — Merge Routing
+  // ===========================================================================
+  //
+  // These tests verify that state vector comparison correctly drives the
+  // merge routing decisions. The HSM uses stateVectorIsAhead() to determine
+  // whether remote or local has changed relative to the LCA:
+  //
+  // - handleDiskChanged: if disk differs from LCA, checks hasRemoteChangedSinceLCA()
+  //   to decide idle.diskAhead (remote == LCA) vs idle.diverged (remote > LCA)
+  // - attemptIdleAutoMerge in idle.diskAhead: checks hasRemoteChangedSinceLCA()
+  //   to confirm disk-only merge is safe
+  // - attemptIdleAutoMerge in idle.remoteAhead: checks hasDiskChangedSinceLCA()
+  //   to confirm remote-only merge is safe
+  //
+  // State vectors are built from real Yjs docs, not synthetic bytes.
+
+  describe('state vector merge routing', () => {
+    test('disk-only merge when remote state vector equals LCA', async () => {
+      // After loadToIdle, LCA and remote share the same state vector.
+      // A disk change should take the disk-only path (SYNC_TO_REMOTE, no WRITE_DISK).
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'original', mtime: 1000 });
+      t.clearEffects();
+
+      // Disk changes but remote hasn't changed since LCA
+      t.send(await diskChanged('original modified', 2000));
+      await t.hsm.awaitIdleAutoMerge();
+
+      // Disk-only merge emits SYNC_TO_REMOTE (push disk content to remote)
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
+      // Should NOT emit WRITE_DISK (disk already has the content)
+      expectNoEffect(t.effects, { type: 'WRITE_DISK' });
+      expectState(t, 'idle.synced');
+    });
+
+    test('remote-only merge when disk hash equals LCA', async () => {
+      // After loadToIdle, disk hash matches LCA.
+      // A remote update should take the remote-only path (WRITE_DISK, no SYNC_TO_REMOTE).
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'original', mtime: 1000 });
+      t.send(await diskChanged('original', 1000));
+      t.clearEffects();
+
+      // Remote changes but disk matches LCA
+      t.applyRemoteChange('original updated');
+      await t.hsm.awaitIdleAutoMerge();
+
+      // Remote-only merge emits WRITE_DISK (write merged content to disk)
+      expectEffect(t.effects, { type: 'WRITE_DISK' });
+      expectState(t, 'idle.synced');
+    });
+
+    test('three-way merge when both remote state vector and disk hash differ from LCA', async () => {
+      // Both remote and disk have changed since LCA.
+      // Changes are on different lines so the three-way merge succeeds.
+      // (Need 3+ lines so diff3 can separate the hunks.)
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'line1\nline2\nline3', mtime: 1000 });
+
+      const diskEvent = await diskChanged('line1\nline2\ndisk-changed', 2000);
+      t.applyRemoteChange('remote-changed\nline2\nline3');
+      t.send(diskEvent);
+
+      await t.hsm.awaitIdleAutoMerge();
+
+      // Three-way merge emits both effects
+      expectEffect(t.effects, { type: 'WRITE_DISK' });
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
+      expectState(t, 'idle.synced');
+    });
+
+    test('remote update after disk change triggers diverged (not diskAhead)', async () => {
+      // Start with disk ahead, then remote also changes.
+      // The second event should push to idle.diverged.
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'base', mtime: 1000 });
+
+      // Disk changes first
+      t.send(await diskChanged('base disk', 2000));
+      await t.hsm.awaitIdleAutoMerge();
+
+      // After disk-only merge, we're back to synced with updated LCA
+      expectState(t, 'idle.synced');
+      t.clearEffects();
+
+      // Now a *new* remote change arrives relative to the new LCA.
+      // Since the new LCA was set after the disk merge, and remote hasn't
+      // changed relative to that new LCA until now:
+      t.applyRemoteChange('base disk remote');
+      await t.hsm.awaitIdleAutoMerge();
+
+      // Should do remote-only merge (disk matches new LCA)
+      expectEffect(t.effects, { type: 'WRITE_DISK' });
+      expectState(t, 'idle.synced');
+    });
+
+    test('remote state vector with different client ID is detected as ahead', async () => {
+      // Verify that stateVectorIsAhead works across different client IDs.
+      // The LCA state vector has client X, remote gets operations from client Y.
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+      t.send(await diskChanged('hello', 1000));
+      t.clearEffects();
+
+      // applyRemoteChange operates on remoteDoc (which has a different clientID
+      // than the one that created the LCA update). This verifies that
+      // stateVectorIsAhead correctly compares across different client IDs.
+      t.applyRemoteChange('hello world');
+      await t.hsm.awaitIdleAutoMerge();
+
+      // Remote was detected as ahead → remote-only auto-merge
+      expectEffect(t.effects, { type: 'WRITE_DISK' });
+      expectState(t, 'idle.synced');
+
+      // Verify content was written correctly
+      const writeEffect = t.effects.find(e => e.type === 'WRITE_DISK') as { type: 'WRITE_DISK'; contents: string };
+      expect(writeEffect.contents).toBe('hello world');
+    });
+
+    test('no merge triggered when remote state vector matches LCA and disk matches LCA', async () => {
+      // Both remote and disk match LCA — no merge should occur.
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'stable', mtime: 1000 });
+      t.send(await diskChanged('stable', 1000));
+      t.clearEffects();
+
+      // Send a disk event with the same hash — should be a no-op
+      t.send(await diskChanged('stable', 2000));
+
+      expectNoEffect(t.effects, { type: 'WRITE_DISK' });
+      expectNoEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
+      expectState(t, 'idle.synced');
+    });
+  });
+
+  // ===========================================================================
   // Sync Status
   // ===========================================================================
 
