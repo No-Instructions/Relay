@@ -27,6 +27,8 @@ data.json
 CLAUDE.md
 agent-creds.toml
 debug-tools/
+.githooks/
+.memory/
 .claude/
 docs/
 infra/
