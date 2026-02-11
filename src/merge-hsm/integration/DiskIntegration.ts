@@ -51,26 +51,28 @@ export type HashFn = (contents: string) => Promise<string>;
 export class DiskIntegration {
   private hsm: MergeHSM;
   private vault: Vault;
-  private path: string;
   private hashFn: HashFn;
   private unsubscribeHSM: (() => void) | null = null;
   private unsubscribeVault: (() => void) | null = null;
   private lastKnownMtime: number = 0;
 
+  /** Get current path from HSM (handles renames) */
+  private get path(): string {
+    return this.hsm.path;
+  }
+
   constructor(
     hsm: MergeHSM,
     vault: Vault,
-    path: string,
     hashFn: HashFn
   ) {
     this.hsm = hsm;
     this.vault = vault;
-    this.path = path;
     this.hashFn = hashFn;
 
-    // Subscribe to HSM effects for WRITE_DISK
+    // Subscribe to HSM effects for WRITE_DISK (filter by guid for rename safety)
     this.unsubscribeHSM = hsm.effects.subscribe(async (effect) => {
-      if (effect.type === 'WRITE_DISK' && effect.path === this.path) {
+      if (effect.type === 'WRITE_DISK' && effect.guid === hsm.guid) {
         await this.writeToDisk(effect.contents);
       }
     });

@@ -1068,7 +1068,7 @@ export class MergeHSM implements TestableHSM {
 
 			this.emitEffect({
 				type: "WRITE_DISK",
-				path: this._path,
+				guid: this._guid,
 				contents: mergedContent,
 			});
 
@@ -1195,7 +1195,7 @@ export class MergeHSM implements TestableHSM {
 		if (mergeResult.success) {
 			this.emitEffect({
 				type: "WRITE_DISK",
-				path: this._path,
+				guid: this._guid,
 				contents: mergeResult.merged,
 			});
 

@@ -382,9 +382,9 @@ export interface DispatchCM6Effect {
 }
 
 export interface WriteDiskEffect {
-  type: 'WRITE_DISK';
-  path: string;
-  contents: string;
+	type: "WRITE_DISK";
+	guid: string;
+	contents: string;
 }
 
 export interface PersistStateEffect {
