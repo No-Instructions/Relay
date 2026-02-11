@@ -1,3 +1,6 @@
+# Track only shared session notes under .memory
+.memory/
+
 # vscode
 .vscode
 
@@ -27,6 +30,7 @@ data.json
 CLAUDE.md
 agent-creds.toml
 debug-tools/
+.githooks/
 .claude/
 docs/
 infra/
