@@ -14,7 +14,6 @@ import {
   setIcon,
 } from 'obsidian';
 import type { MergeState, MergeEvent, MergeEffect, StatePath } from '../types';
-import type { ShadowDivergence } from '../shadow';
 import type { InvariantViolation } from '../invariants';
 import { curryLog } from '../../debug';
 
@@ -45,9 +44,6 @@ interface DebuggerData {
     effect: MergeEffect;
   }>;
 
-  /** Recent divergences (shadow mode) */
-  recentDivergences: ShadowDivergence[];
-
   /** Recent invariant violations */
   recentViolations: InvariantViolation[];
 
@@ -77,11 +73,6 @@ interface DebuggerCallbacks {
     callback: (guid: string, effect: MergeEffect) => void
   ) => () => void;
 
-  /** Subscribe to divergences */
-  onDivergence: (
-    callback: (divergence: ShadowDivergence) => void
-  ) => () => void;
-
   /** Subscribe to violations */
   onViolation: (
     callback: (violation: InvariantViolation) => void
@@ -98,7 +89,6 @@ export class HSMDebuggerView extends ItemView {
     currentState: null,
     recentEvents: [],
     recentEffects: [],
-    recentDivergences: [],
     recentViolations: [],
     availableDocuments: [],
   };
@@ -109,7 +99,6 @@ export class HSMDebuggerView extends ItemView {
 
   private readonly maxEvents = 50;
   private readonly maxEffects = 50;
-  private readonly maxDivergences = 20;
   private readonly maxViolations = 20;
 
   constructor(leaf: WorkspaceLeaf) {
@@ -202,19 +191,6 @@ export class HSMDebuggerView extends ItemView {
       })
     );
 
-    // Divergences
-    this.unsubscribes.push(
-      this.callbacks.onDivergence((divergence) => {
-        if (divergence.document.guid === this.data.selectedGuid) {
-          this.data.recentDivergences.unshift(divergence);
-          if (this.data.recentDivergences.length > this.maxDivergences) {
-            this.data.recentDivergences.pop();
-          }
-          this.render();
-        }
-      })
-    );
-
     // Violations
     this.unsubscribes.push(
       this.callbacks.onViolation((violation) => {
@@ -242,7 +218,6 @@ export class HSMDebuggerView extends ItemView {
     this.data.currentState = this.callbacks?.getState(guid) ?? null;
     this.data.recentEvents = [];
     this.data.recentEffects = [];
-    this.data.recentDivergences = [];
     this.render();
   }
 
@@ -264,7 +239,7 @@ export class HSMDebuggerView extends ItemView {
       // State info
       this.renderStateInfo(container);
 
-      // Tabs for events/effects/divergences
+      // Tabs for events/effects/violations
       this.renderTabs(container);
     } else {
       container.createEl('p', {
@@ -365,10 +340,6 @@ export class HSMDebuggerView extends ItemView {
       text: `Effects (${this.data.recentEffects.length})`,
       cls: 'hsm-tab-btn',
     });
-    const divergenceTab = tabBar.createEl('button', {
-      text: `Divergences (${this.data.recentDivergences.length})`,
-      cls: 'hsm-tab-btn',
-    });
     const violationTab = tabBar.createEl('button', {
       text: `Violations (${this.data.recentViolations.length})`,
       cls: 'hsm-tab-btn',
@@ -391,7 +362,6 @@ export class HSMDebuggerView extends ItemView {
 
     eventTab.addEventListener('click', () => setActiveTab(eventTab, this.renderEventList()));
     effectTab.addEventListener('click', () => setActiveTab(effectTab, this.renderEffectList()));
-    divergenceTab.addEventListener('click', () => setActiveTab(divergenceTab, this.renderDivergenceList()));
     violationTab.addEventListener('click', () => setActiveTab(violationTab, this.renderViolationList()));
   }
 
@@ -441,30 +411,6 @@ export class HSMDebuggerView extends ItemView {
       item.createEl('span', {
         text: new Date(entry.timestamp).toLocaleTimeString(),
         cls: 'hsm-effect-time',
-      });
-    }
-
-    return list;
-  }
-
-  private renderDivergenceList(): Element {
-    const list = document.createElement('div');
-    list.addClass('hsm-debugger-list');
-
-    if (this.data.recentDivergences.length === 0) {
-      list.createEl('p', { text: 'No divergences detected', cls: 'hsm-list-empty' });
-      return list;
-    }
-
-    for (const div of this.data.recentDivergences) {
-      const item = list.createEl('div', { cls: `hsm-list-item hsm-divergence-${div.severity}` });
-      item.createEl('span', {
-        text: `[${div.severity.toUpperCase()}] ${div.type}`,
-        cls: 'hsm-divergence-type',
-      });
-      item.createEl('span', {
-        text: div.message,
-        cls: 'hsm-divergence-message',
       });
     }
 
