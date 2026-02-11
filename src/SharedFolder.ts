@@ -1926,18 +1926,21 @@ export class SharedFolder extends HasProvider {
 				this.syncStore.delete(vpath);
 				const doc = this.files.get(guid);
 				if (doc) {
-					doc.cleanup();
 					this.fset.delete(doc);
+					this.files.delete(guid);
+					doc.cleanup();
+					doc.destroy();
 				}
-				this.files.delete(guid);
 			}, this);
 		} else {
-			const doc = this.files.get(vpath);
+			// syncStore entry already gone (remote delete) - find by path
+			const doc = this.fset.find((f) => f.path === vpath);
 			if (doc) {
-				const guid = doc.guid;
-				doc.cleanup();
+				const docGuid = doc.guid;
 				this.fset.delete(doc);
-				this.files.delete(guid);
+				this.files.delete(docGuid);
+				doc.cleanup();
+				doc.destroy();
 			}
 		}
 	}
