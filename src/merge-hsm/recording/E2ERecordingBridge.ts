@@ -62,8 +62,11 @@ export interface E2ERecordingBridgeConfig {
   /** Streaming callback - called for each entry as it's recorded */
   onEntry?: (entry: StreamingEntry) => void;
 
-  /** Callback to get a Document (and its HSM) by guid */
-  getDocument: (guid: string) => { hsm: MergeHSM | null; path: string } | undefined;
+  /** Callback to get an HSM by guid */
+  getHSM: (guid: string) => MergeHSM | null | undefined;
+
+  /** Callback to get full vault path for a guid (for recording/logging) */
+  getFullPath: (guid: string) => string | undefined;
 
   /** Callback to get all document guids */
   getAllGuids: () => string[];
@@ -141,7 +144,8 @@ export class E2ERecordingBridge {
   private readonly captureSnapshots: boolean;
   private readonly outputDir: string;
   private readonly onEntry?: (entry: StreamingEntry) => void;
-  private readonly _getDocument: (guid: string) => { hsm: MergeHSM | null; path: string } | undefined;
+  private readonly _getHSM: (guid: string) => MergeHSM | null | undefined;
+  private readonly _getFullPath: (guid: string) => string | undefined;
   private readonly _getAllGuids: () => string[];
 
   // Recording state
@@ -163,7 +167,8 @@ export class E2ERecordingBridge {
     this.captureSnapshots = config.captureSnapshots ?? false;
     this.outputDir = config.outputDir ?? '/tmp/hsm-recordings';
     this.onEntry = config.onEntry;
-    this._getDocument = config.getDocument;
+    this._getHSM = config.getHSM;
+    this._getFullPath = config.getFullPath;
     this._getAllGuids = config.getAllGuids;
 
     // If onEntry is provided, automatically stream all HSM events to disk
@@ -503,14 +508,12 @@ export class E2ERecordingBridge {
    * Start recording a specific document's HSM.
    */
   private startRecordingDocument(guid: string): void {
-    const doc = this._getDocument(guid);
-    if (!doc?.hsm) return;
-
-    const { hsm, path } = doc;
+    const hsm = this._getHSM(guid);
+    if (!hsm) return;
 
     const docRecording: ActiveDocRecording = {
       guid,
-      path,
+      path: this._getFullPath(guid) ?? hsm.path,
       startedAt: new Date().toISOString(),
       initialStatePath: hsm.state.statePath,
       timeline: [],
@@ -570,7 +573,7 @@ export class E2ERecordingBridge {
             ns: 'mergeHSM',
             ts: new Date(pendingEvent.timestamp).toISOString(),
             guid: docRecording.guid,
-            path: docRecording.path,
+            path: this._getFullPath(docRecording.guid) ?? hsm.path,
             event: entry.event.type,
             from: entry.statePathBefore,
             to: entry.statePathAfter,

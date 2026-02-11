@@ -368,10 +368,15 @@ export class SharedFolder extends HasProvider {
 				onEntry: flags().enableHSMRecording
 					? (entry: StreamingEntry) => recordHSMEntry(entry)
 					: undefined,
-				getDocument: (guid: string) => {
+				getHSM: (guid: string) => {
 					const file = this.files.get(guid);
 					if (!file || !isDocument(file)) return undefined;
-					return { hsm: file.hsm, path: file.path };
+					return file.hsm;
+				},
+				getFullPath: (guid: string) => {
+					const file = this.files.get(guid);
+					if (!file || !isDocument(file)) return undefined;
+					return join(this.path, file.path);
 				},
 				getAllGuids: () => Array.from(this.files.keys()),
 			});
