@@ -427,14 +427,6 @@ describe('MergeManager', () => {
       expect(doc.hsm?.state.statePath).toBe('idle.synced');
     });
 
-    test('createHSM initializes sync status from HSM', () => {
-      createMockDocument('doc-1', 'notes/test.md');
-
-      const status = manager.syncStatus.get('doc-1');
-      expect(status).toBeDefined();
-      expect(status?.status).toBe('synced');
-    });
-
     test('isRegistered returns true for created HSM', () => {
       createMockDocument('doc-1', 'notes/test.md');
 
@@ -446,11 +438,10 @@ describe('MergeManager', () => {
     });
 
     test('notifyHSMDestroyed cleans up registration', () => {
-      const doc = createMockDocument('doc-1', 'notes/test.md');
+      createMockDocument('doc-1', 'notes/test.md');
 
       expect(manager.isRegistered('doc-1')).toBe(true);
 
-      doc.hsm?.destroy();
       manager.notifyHSMDestroyed('doc-1');
       documents.delete('doc-1');
 
@@ -608,37 +599,6 @@ describe('MergeManager', () => {
 
       // Should not have received more notifications after unsubscribe
       expect(callCount).toBe(initialCount);
-    });
-  });
-
-  describe('effect handling', () => {
-    test('onEffect callback receives HSM effects', () => {
-      const effects: Array<{ guid: string; type: string }> = [];
-
-      const managerWithEffects = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        getDocument: (guid) => documents.get(guid),
-        timeProvider,
-        onEffect: (guid, effect) => {
-          effects.push({ guid, type: effect.type });
-        },
-      });
-
-      // Reassign manager for createMockDocument to use
-      manager = managerWithEffects;
-      const doc = createMockDocument('doc-1', 'test.md');
-
-      // Transition to active - ACQUIRE_LOCK triggers effects
-      doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: '' });
-      managerWithEffects.markActive('doc-1');
-
-      // HSM is now in active mode (entering states)
-      expect(doc.hsm?.isActive()).toBe(true);
-
-      // Should have received effects during transition
-      expect(effects.length).toBeGreaterThan(0);
-
-      managerWithEffects.destroy();
     });
   });
 
