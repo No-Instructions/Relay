@@ -97,6 +97,22 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
         error: event.error.message,
       };
 
+    case 'IDLE_MERGE_COMPLETE':
+      if (event.success) {
+        return {
+          type: 'IDLE_MERGE_COMPLETE' as const,
+          success: true as const,
+          source: event.source,
+          newLCA: serializeLCA(event.newLCA),
+        };
+      }
+      return {
+        type: 'IDLE_MERGE_COMPLETE' as const,
+        success: false as const,
+        source: event.source,
+        ...(event.error ? { error: event.error.message } : {}),
+      };
+
     // Events without binary data pass through
     case 'LOAD':
     case 'UNLOAD':
@@ -154,6 +170,22 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
         type: 'ERROR',
         error: new Error(event.error),
       };
+
+    case 'IDLE_MERGE_COMPLETE':
+      if (event.success) {
+        return {
+          type: 'IDLE_MERGE_COMPLETE',
+          success: true,
+          source: event.source,
+          newLCA: deserializeLCA(event.newLCA),
+        } as MergeEvent;
+      }
+      return {
+        type: 'IDLE_MERGE_COMPLETE',
+        success: false,
+        source: event.source,
+        ...(event.error ? { error: new Error(event.error) } : {}),
+      } as MergeEvent;
 
     // Events without binary data pass through
     default:

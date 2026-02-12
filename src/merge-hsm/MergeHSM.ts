@@ -46,6 +46,7 @@ import type {
 	PositionedConflict,
 	ResolveHunkEvent,
 	DiskLoader,
+	IdleMergeCompleteEvent,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -767,6 +768,10 @@ export class MergeHSM implements TestableHSM {
 				this.handleRemoteDocUpdated();
 				break;
 
+			case "IDLE_MERGE_COMPLETE":
+				this.handleIdleMergeComplete(event);
+				break;
+
 			case "ERROR":
 				this.handleError(event);
 				break;
@@ -1071,10 +1076,7 @@ export class MergeHSM implements TestableHSM {
 		} else if (state === "idle.diverged") {
 			if (!this._lca) return;
 			this.spawnAsync('idle-merge', async (signal) => {
-				await this.performIdleThreeWayMerge();
-				if (!signal.aborted && this._statePath !== "idle.diverged") {
-					this.attemptIdleAutoMerge();
-				}
+				await this.performIdleThreeWayMerge(signal);
 			});
 		}
 	}
@@ -1122,32 +1124,25 @@ export class MergeHSM implements TestableHSM {
 				return;
 			}
 
+			this.pendingIdleUpdates = null;
+
+			// Compute hash before emitting effects so that everything after
+			// the await is synchronous — no window for interleaving events.
+			const hash = await this.hashFn(mergedContent);
+			if (signal.aborted) return;
+
 			this.emitEffect({
 				type: "WRITE_DISK",
 				guid: this._guid,
 				contents: mergedContent,
 			});
 
-			this.pendingIdleUpdates = null;
-			this.transitionTo("idle.synced");
-
-			this._localStateVector = stateVector;
-			this._remoteStateVector = stateVector;
-
-			const hash = await this.hashFn(mergedContent);
-			if (!signal.aborted) {
-				this._lca = {
-					contents: mergedContent,
-					meta: { hash, mtime: this.timeProvider.now() },
-					stateVector,
-				};
-				this.emitPersistState();
-			}
-
-			// Re-check for updates that arrived during the merge
-			if (!signal.aborted) {
-				this.attemptIdleAutoMerge();
-			}
+			this.send({
+				type: "IDLE_MERGE_COMPLETE",
+				success: true,
+				newLCA: { contents: mergedContent, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
+				source: "remote",
+			});
 		});
 	}
 
@@ -1202,32 +1197,25 @@ export class MergeHSM implements TestableHSM {
 			);
 			const newStateVector = Y.encodeStateVector(this.localDoc);
 
+			this.pendingDiskContents = null;
+
+			// Compute hash before emitting effects so that everything after
+			// the await is synchronous — no window for interleaving events.
+			const hash = diskHash ?? (await this.hashFn(diskContent));
+			if (signal.aborted) return;
+
 			this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
 
-			this.pendingDiskContents = null;
-			this.transitionTo("idle.synced");
-
-			this._localStateVector = newStateVector;
-			this._remoteStateVector = newStateVector;
-
-			const hash = diskHash ?? (await this.hashFn(diskContent));
-			if (!signal.aborted) {
-				this._lca = {
-					contents: diskContent,
-					meta: { hash, mtime: diskMtime },
-					stateVector: newStateVector,
-				};
-				this.emitPersistState();
-			}
-
-			// Re-check for updates that arrived during the merge
-			if (!signal.aborted) {
-				this.attemptIdleAutoMerge();
-			}
+			this.send({
+				type: "IDLE_MERGE_COMPLETE",
+				success: true,
+				newLCA: { contents: diskContent, meta: { hash, mtime: diskMtime }, stateVector: newStateVector },
+				source: "disk",
+			});
 		});
 	}
 
-	private async performIdleThreeWayMerge(): Promise<void> {
+	private async performIdleThreeWayMerge(signal: AbortSignal): Promise<void> {
 		if (!this._lca || !this.localDoc) return;
 
 		const lcaContent = this._lca.contents;
@@ -1249,12 +1237,6 @@ export class MergeHSM implements TestableHSM {
 		);
 
 		if (mergeResult.success) {
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: mergeResult.merged,
-			});
-
 			// Apply merged result to localDoc using diff-based updates
 			this.applyContentToLocalDoc(mergeResult.merged);
 
@@ -1262,26 +1244,28 @@ export class MergeHSM implements TestableHSM {
 
 			// Encode diff for remote sync
 			const update = Y.encodeStateAsUpdate(this.localDoc);
-			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
-
-			// Update local and remote state vectors (now in sync after merge)
-			this._localStateVector = stateVector;
-			this._remoteStateVector = stateVector;
-
-			this._lca = {
-				contents: mergeResult.merged,
-				meta: {
-					hash: await this.hashFn(mergeResult.merged),
-					mtime: this.timeProvider.now(),
-				},
-				stateVector,
-			};
 
 			this.pendingIdleUpdates = null;
 			this.pendingDiskContents = null;
 
-			this.transitionTo("idle.synced");
-			this.emitPersistState();
+			// Compute hash before emitting effects so that everything after
+			// the await is synchronous — no window for interleaving events.
+			const hash = await this.hashFn(mergeResult.merged);
+			if (signal.aborted) return;
+
+			this.emitEffect({
+				type: "WRITE_DISK",
+				guid: this._guid,
+				contents: mergeResult.merged,
+			});
+			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+
+			this.send({
+				type: "IDLE_MERGE_COMPLETE",
+				success: true,
+				newLCA: { contents: mergeResult.merged, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
+				source: "threeWay",
+			});
 		}
 		// Note: If merge fails (conflict), we stay in idle.diverged.
 	}
@@ -2104,13 +2088,33 @@ export class MergeHSM implements TestableHSM {
 			}
 
 			const remoteChanged = this.hasRemoteChangedSinceLCA();
+			const localAhead = this._statePath === "idle.localAhead";
 
-			if (remoteChanged) {
-				this.transitionTo("idle.diverged");
-			} else {
-				this.transitionTo("idle.diskAhead");
-			}
+			// Determine target state based on what has changed
+			// - idle.localAhead + disk changed → idle.diverged (both local and disk differ from LCA)
+			// - idle.synced + remote changed + disk changed → idle.diverged
+			// - idle.synced + disk changed only → idle.diskAhead
+			const targetState = (remoteChanged || localAhead) ? "idle.diverged" : "idle.diskAhead";
+			this.transitionTo(targetState);
 			this.attemptIdleAutoMerge();
+		}
+	}
+
+	private handleIdleMergeComplete(event: IdleMergeCompleteEvent): void {
+		// Only process if still in an idle merge state
+		const validStates: StatePath[] = ["idle.remoteAhead", "idle.diskAhead", "idle.diverged"];
+		if (!validStates.includes(this._statePath)) return;
+
+		if (event.success) {
+			this._lca = event.newLCA;
+			this._localStateVector = event.newLCA.stateVector;
+			this._remoteStateVector = event.newLCA.stateVector;
+			this.emitPersistState();
+			this.transitionTo("idle.synced");
+			// Re-check for updates that arrived during the merge
+			this.attemptIdleAutoMerge();
+		} else {
+			this.transitionTo("idle.diverged");
 		}
 	}
 

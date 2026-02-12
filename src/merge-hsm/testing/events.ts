@@ -574,11 +574,15 @@ export async function loadToConflict(
   // Send REMOTE_UPDATE to set _remoteStateVector (different from LCA)
   // This simulates remote edits that happened while we were offline
   hsm.send({ type: 'REMOTE_UPDATE', update: remoteUpdates });
+
+  // Pre-compute hash to avoid microtask boundary between SET_MODE_IDLE
+  // and DISK_CHANGED (idle merge callbacks must not run between them).
+  const diskHash = await sha256(opts.disk);
+
   hsm.send({ type: 'SET_MODE_IDLE' });
 
   // Step 4: Send DISK_CHANGED with different content
   // This triggers diverged state (disk differs from both LCA and CRDT)
-  const diskHash = await sha256(opts.disk);
   hsm.send({
     type: 'DISK_CHANGED',
     contents: opts.disk,

@@ -139,7 +139,9 @@ export type SerializableEvent =
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }
   | { type: 'MERGE_CONFLICT'; base: string; local: string; remote: string }
   | { type: 'REMOTE_DOC_UPDATED' }
-  | { type: 'ERROR'; error: string }; // error message
+  | { type: 'ERROR'; error: string } // error message
+  | { type: 'IDLE_MERGE_COMPLETE'; success: true; source: string; newLCA: SerializableLCA }
+  | { type: 'IDLE_MERGE_COMPLETE'; success: false; source: string; error?: string };
 
 /**
  * Serializable effect with all Uint8Array fields encoded as base64.

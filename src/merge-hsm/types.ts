@@ -282,6 +282,11 @@ export interface ErrorEvent {
 	error: Error;
 }
 
+/** Completion event for idle merge operations */
+export type IdleMergeCompleteEvent =
+	| { type: "IDLE_MERGE_COMPLETE"; success: true; newLCA: LCAState; source: "remote" | "disk" | "threeWay" }
+	| { type: "IDLE_MERGE_COMPLETE"; success: false; error?: Error; source: "remote" | "disk" | "threeWay" };
+
 // Diagnostic Events (from Obsidian monkeypatches)
 // These events are informational only - they don't trigger state transitions.
 // They provide visibility into Obsidian's internal file handling for debugging.
@@ -374,6 +379,7 @@ export type MergeEvent =
 	| MergeConflictEvent
 	| RemoteDocUpdatedEvent
 	| ErrorEvent
+	| IdleMergeCompleteEvent
 	// Diagnostic (from Obsidian monkeypatches)
 	| ObsidianLoadFileInternalEvent
 	| ObsidianThreeWayMergeEvent
