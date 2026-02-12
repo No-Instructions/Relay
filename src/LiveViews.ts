@@ -21,7 +21,6 @@ import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances } from "./debug";
 import { Banner } from "./ui/Banner";
-import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
 	yRemoteSelections,

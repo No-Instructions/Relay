@@ -3,7 +3,7 @@ import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { TextFileView } from "obsidian";
 import { LiveView, LiveViewManager } from "./LiveViews";
-import { connectionManagerFacet } from "./y-codemirror.next/LiveEditPlugin";
+import { connectionManagerFacet } from "./y-codemirror.next/LiveNodePlugin";
 import { hasKey, updateFrontMatter } from "./Frontmatter";
 import { diffChars } from "diff";
 
