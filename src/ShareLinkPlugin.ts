@@ -2,8 +2,7 @@ import { Annotation, ChangeSet } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { TextFileView } from "obsidian";
-import { LiveView, LiveViewManager } from "./LiveViews";
-import { connectionManagerFacet } from "./y-codemirror.next/LiveNodePlugin";
+import { LiveView, LiveViewManager, getConnectionManager } from "./LiveViews";
 import { hasKey, updateFrontMatter } from "./Frontmatter";
 import { diffChars } from "diff";
 
@@ -59,7 +58,7 @@ export class ShareLinkPluginValue implements PluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
+		this.connectionManager = getConnectionManager(this.editor)!;
 		this.view = this.connectionManager.findView(editor);
 		this.editor = editor;
 		if (this.view) {

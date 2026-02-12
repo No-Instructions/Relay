@@ -1085,7 +1085,6 @@ export default class Live extends Plugin {
 					if (file instanceof TFile) {
 						sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_UNLOADED', path: file.path });
 					}
-					plugin._liveViews.wipe();
 					// @ts-ignore
 					return old.call(this, file);
 				};

@@ -11,7 +11,7 @@ import { TextFileView } from "obsidian";
 import {
 	LiveView,
 	LiveViewManager,
-	ConnectionManagerStateField,
+	getConnectionManager,
 } from "../LiveViews";
 import { curryLog } from "src/debug";
 import type { App, CachedMetadata } from "obsidian";
@@ -53,9 +53,7 @@ export class InvalidLinkPluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.field(
-			ConnectionManagerStateField,
-		);
+		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 		this.decorations = Decoration.none;
 		this.decorationAnchors = [];
 		this.metadata = new Map();
