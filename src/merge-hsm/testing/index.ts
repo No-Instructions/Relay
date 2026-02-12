@@ -24,6 +24,8 @@ export {
   load,
   unload,
   acquireLock,
+  sendAcquireLock,
+  sendAcquireLockToTracking,
   releaseLock,
   diskChanged,
   remoteUpdate,
@@ -67,6 +69,9 @@ export type {
   LoadToLoadingOptions,
   LoadToConflictOptions,
 } from './events';
+
+// Random timing (seeded via TEST_SEED env var)
+export { nextInt, nextDelay, resetFountain } from './random';
 
 // Assertions
 export {
