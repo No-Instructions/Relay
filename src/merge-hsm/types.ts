@@ -698,6 +698,98 @@ export interface ConflictRegion {
 export type MergeResult = MergeSuccess | MergeFailure;
 
 // =============================================================================
+// Declarative State Machine Types
+// =============================================================================
+
+/** A single transition candidate: guard → actions → target */
+export type TransitionCandidate = {
+	target: StatePath;
+	/** Name in the guards table */
+	guard?: string;
+	/** Names in the actions table */
+	actions?: string[];
+	/** True = fire exit/entry on self-transition (default: false = internal) */
+	reenter?: boolean;
+};
+
+/** Event handler: simple target, single candidate, or ordered array (first passing guard wins) */
+export type EventHandler = StatePath | TransitionCandidate | TransitionCandidate[];
+
+/** Async service declaration — spawned on state entry, cancelled on state exit */
+export type InvokeDef = {
+	/** Name in the invokeSources table */
+	src: string;
+	/** Transition on successful completion */
+	onDone: EventHandler;
+	/** Transition on error (default: stay in state) */
+	onError?: EventHandler;
+};
+
+/** Eventless transition — evaluated immediately on state entry after entry actions */
+export type AlwaysCandidate = {
+	target: StatePath;
+	guard?: string;
+	actions?: string[];
+};
+
+/** A single state node in the machine definition */
+export type StateNode = {
+	/** Actions on entering this state */
+	entry?: string[];
+	/** Actions on exiting this state */
+	exit?: string[];
+	/** Event → transition mapping */
+	on?: Record<string, EventHandler>;
+	/** Async service (spawned on entry, cancelled on exit) */
+	invoke?: InvokeDef;
+	/** Eventless transitions (evaluated on entry after entry actions) */
+	always?: AlwaysCandidate[];
+};
+
+/** The complete machine definition: partial mapping from state path to state node */
+export type MachineDefinition = Partial<Record<StatePath, StateNode>>;
+
+// Forward-reference MergeHSM to avoid circular imports — the interpreter
+// receives the HSM instance opaquely and passes it to guard/action/invoke functions.
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface MachineHSM {
+	/** Current state path */
+	readonly statePath: StatePath;
+	/** Transition to a new state (updates _statePath, emits STATUS_CHANGED) */
+	setStatePath(target: StatePath): void;
+	/** Send an event to the HSM (re-enters handleEvent loop) */
+	send(event: MergeEvent): void;
+	/** Get the currently active invoke (for cancellation) */
+	getActiveInvoke(): ActiveInvoke | null;
+	/** Set the active invoke (for the interpreter to track) */
+	setActiveInvoke(invoke: ActiveInvoke | null): void;
+}
+
+/** Tracking structure for a running invoke */
+export interface ActiveInvoke {
+	id: string;
+	controller: AbortController;
+	/** Promise that resolves when the invoke completes (for awaitAsync compatibility) */
+	promise?: Promise<void>;
+}
+
+/** Guard function: returns true if the transition should proceed */
+export type GuardFn = (hsm: MachineHSM, event: MergeEvent) => boolean;
+
+/** Action function: performs a side effect on the HSM */
+export type ActionFn = (hsm: MachineHSM, event: MergeEvent) => void;
+
+/** Invoke source function: async work spawned on state entry */
+export type InvokeSourceFn = (hsm: MachineHSM, signal: AbortSignal) => Promise<unknown>;
+
+/** Configuration for the interpreter — lookup tables for named references */
+export interface InterpreterConfig {
+	guards: Record<string, GuardFn>;
+	actions: Record<string, ActionFn>;
+	invokeSources: Record<string, InvokeSourceFn>;
+}
+
+// =============================================================================
 // Serialization Helpers (for future recording support)
 // =============================================================================
 
