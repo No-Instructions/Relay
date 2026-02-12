@@ -13,6 +13,8 @@ import {
   createTestHSM,
   // Event factories
   acquireLock,
+  sendAcquireLock,
+  sendAcquireLockToTracking,
   releaseLock,
   cm6Change,
   cm6Insert,
@@ -272,7 +274,7 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
 
       // Open file (ACQUIRE_LOCK)
-      t.send(acquireLock(originalContent));
+      await sendAcquireLockToTracking(t, originalContent);
       expectState(t, 'active.tracking');
 
       // User types (CM6_CHANGE)
@@ -308,7 +310,7 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
 
       // Open file (ACQUIRE_LOCK)
-      t.send(acquireLock(originalContent));
+      await sendAcquireLockToTracking(t, originalContent);
       expectState(t, 'active.tracking');
 
       // User types (CM6_CHANGE)
@@ -359,7 +361,7 @@ describe('MergeHSM', () => {
       const originalLcaHash = t.state.lca?.meta.hash;
 
       // Open file
-      t.send(acquireLock(originalContent));
+      await sendAcquireLockToTracking(t, originalContent);
       expectState(t, 'active.tracking');
 
       // User types (CM6_CHANGE updates localDoc and lastKnownEditorText)
@@ -382,7 +384,7 @@ describe('MergeHSM', () => {
 
       // ===== PHASE 2: Reopen =====
       // Now reopen the file
-      t.send(acquireLock(editedContent));
+      await sendAcquireLockToTracking(t, editedContent);
       expectState(t, 'active.tracking');
 
       // Content should NOT be duplicated
@@ -403,7 +405,7 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
 
       // Open, edit, and close with DISK_CHANGED (so LCA gets updated)
-      t.send(acquireLock(originalContent));
+      await sendAcquireLockToTracking(t, originalContent);
       t.send(cm6Insert(13, '<!-- e2e-tp002 marker -->', editedContent));
       t.send(await diskChanged(editedContent, 2000));
       t.send(releaseLock());
@@ -419,7 +421,7 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
 
       // Reopen with the diverged disk content
-      t.send(acquireLock(divergedDiskContent));
+      await sendAcquireLockToTracking(t, divergedDiskContent);
 
       // Should go to tracking or merging, but NOT have doubled content
       expect(t.hsm.isActive()).toBe(true);
@@ -443,7 +445,7 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
 
       // Open file
-      t.send(acquireLock(originalContent));
+      await sendAcquireLockToTracking(t, originalContent);
       expectState(t, 'active.tracking');
 
       // Capture remoteDoc state before edits
@@ -483,7 +485,7 @@ describe('MergeHSM', () => {
 
       // ===== PHASE 2: Reopen =====
       // Now reopen the file
-      t.send(acquireLock(editedContent));
+      await sendAcquireLockToTracking(t, editedContent);
       expectState(t, 'active.tracking');
 
       // Content should NOT be duplicated
@@ -504,7 +506,7 @@ describe('MergeHSM', () => {
       t.send(await diskChanged('hello', 1000));
 
       // First cycle - auto-transitions to tracking (offline-first)
-      t.send(acquireLock('hello'));
+      await sendAcquireLockToTracking(t, 'hello');
       expectState(t, 'active.tracking');
       t.send(releaseLock());
       await t.hsm.awaitCleanup();
@@ -513,7 +515,7 @@ describe('MergeHSM', () => {
       expect(t.matches('idle')).toBe(true);
 
       // Second cycle
-      t.send(acquireLock('hello'));
+      await sendAcquireLockToTracking(t, 'hello');
       expectState(t, 'active.tracking');
       t.send(releaseLock());
       await t.hsm.awaitCleanup();
@@ -521,7 +523,7 @@ describe('MergeHSM', () => {
       expect(t.matches('idle')).toBe(true);
 
       // Third cycle - should still work
-      t.send(acquireLock('hello'));
+      await sendAcquireLockToTracking(t, 'hello');
       expectState(t, 'active.tracking');
     });
 
@@ -532,7 +534,7 @@ describe('MergeHSM', () => {
       expect(t.hsm.isIdle()).toBe(true);
       expect(t.hsm.isActive()).toBe(false);
 
-      t.send(acquireLock());
+      await sendAcquireLockToTracking(t);
 
       expect(t.hsm.isIdle()).toBe(false);
       expect(t.hsm.isActive()).toBe(true);
@@ -1045,7 +1047,7 @@ describe('MergeHSM', () => {
       t.send(await diskChanged('draft', 1000));
 
       // Open editor
-      t.send(acquireLock('draft'));
+      await sendAcquireLockToTracking(t, 'draft');
       expectState(t, 'active.tracking');
 
       // User types "draft v2"
@@ -1069,7 +1071,7 @@ describe('MergeHSM', () => {
       t.send(await diskChanged(POEM, 1000));
 
       // Open, edit (add a stanza that repeats the refrain again), save, close
-      t.send(acquireLock(POEM));
+      await sendAcquireLockToTracking(t, POEM);
       expectState(t, 'active.tracking');
 
       const extraRefrain = POEM + '\n\nRage, rage against the dying of the light.';
@@ -1083,7 +1085,7 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
 
       // Reopen — content must not be deduplicated or corrupted
-      t.send(acquireLock(extraRefrain));
+      await sendAcquireLockToTracking(t, extraRefrain);
       expectState(t, 'active.tracking');
       expectLocalDocText(t, extraRefrain);
     });
@@ -1095,7 +1097,7 @@ describe('MergeHSM', () => {
       // localDoc already alive in idle mode
       expect(t.hsm.getLocalDoc()).not.toBeNull();
 
-      t.send(acquireLock());
+      await sendAcquireLockToTracking(t);
 
       // Still alive in active mode
       expect(t.hsm.getLocalDoc()).not.toBeNull();
@@ -1108,8 +1110,9 @@ describe('MergeHSM', () => {
       // loadToIdle automatically syncs remoteDoc with the same CRDT history
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
 
-      // Set up disk state matching LCA
+      // Set up disk state matching LCA (await in case of async work)
       t.send(await diskChanged('hello', 1000));
+      await t.awaitIdleAutoMerge();
       t.clearEffects();
 
       // Remote update arrives - applyRemoteChange creates proper delta update
@@ -1143,12 +1146,15 @@ describe('MergeHSM', () => {
     test('idle.diverged auto-merges when no conflicts', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'line1\nline2\nline3', mtime: 1000 });
+      t.clearEffects();
 
       // Pre-compute disk event before sending remote update to avoid timing issues
       const diskEvent = await diskChanged('line1\nline2\nDISK', 2000);
 
       // Remote update changes line1 - proper delta because remoteDoc shares CRDT history
       t.applyRemoteChange('REMOTE\nline2\nline3');
+      // Await potential async work from remote update before sending disk event
+      await t.awaitIdleAutoMerge();
 
       // Then disk changes line3 - diverged but mergeable
       t.send(diskEvent);
@@ -1342,6 +1348,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original', mtime: 1000 });
       t.send(await diskChanged('original', 1000));
+      await t.awaitIdleAutoMerge();
       t.clearEffects();
 
       // Remote changes but disk matches LCA
@@ -1403,6 +1410,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
       t.send(await diskChanged('hello', 1000));
+      await t.awaitIdleAutoMerge();
       t.clearEffects();
 
       // applyRemoteChange operates on remoteDoc (which has a different clientID
@@ -1604,7 +1612,7 @@ describe('MergeHSM', () => {
       t2.send(load('test-guid', 'test.md'));
       t2.send(persistenceLoaded(new Uint8Array(), null));
       t2.send({ type: 'SET_MODE_ACTIVE' });
-      t2.send(acquireLock(''));
+      await sendAcquireLock(t2, '');
 
       // IDB is empty, no LCA → hasContent=false → awaitingRemote
       expectState(t2, 'active.entering.awaitingRemote');
@@ -1625,7 +1633,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock(''));
+      await sendAcquireLock(t, '');
 
       // IDB empty, no LCA → awaitingRemote
       expectState(t, 'active.entering.awaitingRemote');
@@ -1636,7 +1644,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock(''));
+      await sendAcquireLock(t, '');
 
       expectState(t, 'active.entering.awaitingRemote');
 
@@ -1656,7 +1664,7 @@ describe('MergeHSM', () => {
       // Set remote content before ACQUIRE_LOCK (simulating already-synced provider)
       t.setRemoteContent('server content');
 
-      t.send(acquireLock(''));
+      await sendAcquireLock(t, '');
 
       expectState(t, 'active.entering.awaitingRemote');
 
@@ -1690,7 +1698,7 @@ describe('MergeHSM', () => {
       // persistence finishes loading. The flag captures it. With seeded IDB,
       // hasContent=true so it goes to reconciling regardless of the flag.
       t.seedIndexedDB(updates);
-      t.send(acquireLock(content));
+      await sendAcquireLockToTracking(t, content);
 
       // Mock persistence fires synchronously, so PERSISTENCE_SYNCED fires first.
       // With IDB content, goes straight to reconciling → tracking.
@@ -1702,7 +1710,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock(''));
+      await sendAcquireLock(t, '');
 
       expectState(t, 'active.entering.awaitingRemote');
 
@@ -1717,7 +1725,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock(''));
+      await sendAcquireLock(t, '');
 
       expectState(t, 'active.entering.awaitingRemote');
 
@@ -1739,7 +1747,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock(''));
+      await sendAcquireLock(t, '');
 
       expectState(t, 'active.entering.awaitingRemote');
 

@@ -23,6 +23,7 @@ import type {
 import type { TimeProvider } from '../../TimeProvider';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
 import { MergeHSM } from '../MergeHSM';
+import { nextDelay, delaysEnabled } from './random';
 
 // =============================================================================
 // Test HSM Interface
@@ -209,24 +210,38 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     // Track if IDB had content at sync time (before any new updates)
     const hadContentAtSync = storedUpdates !== null;
 
+    // Random delay for IndexedDB sync simulation (only when TEST_ASYNC_DELAYS=1)
+    const syncDelay = delaysEnabled() ? nextDelay(0, 10) : null;
+
+    const doSync = () => {
+      if (storedUpdates) {
+        Y.applyUpdate(doc, storedUpdates);
+      }
+    };
+
     return {
       synced: false,
       once(_event: 'synced', cb: () => void) {
-        // Load stored content into doc (simulates IndexedDB load)
-        if (storedUpdates) {
-          Y.applyUpdate(doc, storedUpdates);
+        if (syncDelay) {
+          // Async path when delays enabled
+          syncDelay.then(() => { doSync(); cb(); });
+        } else {
+          // Sync path for normal tests
+          doSync();
+          cb();
         }
-        cb();
       },
-      destroy() {
-        // Capture final state before cleanup (simulates y-indexeddb persist)
+      async destroy() {
+        if (delaysEnabled()) {
+          await nextDelay(0, 5);
+        }
         const finalUpdate = Y.encodeStateAsUpdate(doc);
         if (finalUpdate.length > 1) {
           storedUpdates = finalUpdate;
         }
         doc.off('update', updateHandler);
       },
-      whenSynced: Promise.resolve(),
+      whenSynced: syncDelay ?? Promise.resolve(),
       hasUserData() {
         // Return whether IDB had content when persistence synced
         return hadContentAtSync;
@@ -239,12 +254,19 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   const remoteDoc = new Y.Doc();
 
   // Default diskLoader for tests - returns empty content
-  const diskLoader = options.diskLoader ?? (async () => ({
+  const baseDiskLoader = options.diskLoader ?? (async () => ({
     content: '',
     hash: 'empty-hash',
     mtime: Date.now(),
   }));
 
+  // Wrap diskLoader with random delay for timing variability
+  const diskLoader: DiskLoader = async () => {
+    await nextDelay(0, 10);
+    return baseDiskLoader();
+  };
+
+  // Use production hashFn (defaultHashFn uses SubtleCrypto, already async)
   const hsm = new MergeHSM({
     guid,
     path: options.path ?? 'test.md',
