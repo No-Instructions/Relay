@@ -47,11 +47,16 @@ import type {
 	ResolveHunkEvent,
 	DiskLoader,
 	IdleMergeCompleteEvent,
+	MachineHSM,
+	ActiveInvoke,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
 import { curryLog, recordHSMEntry } from "../debug";
 import type { TestableHSM } from "./testing/createTestHSM";
+import { processEvent } from "./machine-interpreter";
+import { MACHINE, createInterpreterConfig } from "./machine-definition";
+import type { InterpreterConfig } from "./types";
 
 // =============================================================================
 // Simple Observable for HSM
@@ -93,42 +98,10 @@ class SimpleObservable<T> implements IObservable<T> {
 }
 
 // =============================================================================
-// Transition Validation Table
-// =============================================================================
-
-const TRANSITIONS: Partial<Record<StatePath, StatePath[]>> = {
-	'unloaded': ['loading'],
-	'loading': ['active.loading', 'active.entering.awaitingPersistence', 'idle.loading', 'unloading'],
-	'idle.loading': ['idle.synced', 'idle.localAhead', 'idle.remoteAhead', 'idle.diskAhead', 'idle.diverged'],
-	'idle.synced': ['idle.remoteAhead', 'idle.diskAhead', 'idle.diverged', 'idle.error',
-		'active.entering.awaitingPersistence', 'unloading', 'loading'],
-	'idle.localAhead': ['idle.synced', 'idle.diverged', 'idle.error',
-		'active.entering.awaitingPersistence', 'unloading', 'loading'],
-	'idle.remoteAhead': ['idle.synced', 'idle.remoteAhead', 'idle.diverged', 'idle.error',
-		'active.entering.awaitingPersistence', 'unloading', 'loading'],
-	'idle.diskAhead': ['idle.synced', 'idle.diskAhead', 'idle.diverged', 'idle.error',
-		'active.entering.awaitingPersistence', 'unloading', 'loading'],
-	'idle.diverged': ['idle.synced', 'idle.error',
-		'active.entering.awaitingPersistence', 'active.conflict.bannerShown', 'unloading', 'loading'],
-	'idle.error': ['idle.synced', 'active.entering.awaitingPersistence', 'unloading', 'loading'],
-	'active.loading': ['active.entering.awaitingPersistence', 'unloading'],
-	'active.entering.awaitingPersistence': ['active.entering.reconciling', 'active.entering.awaitingRemote', 'unloading'],
-	'active.entering.awaitingRemote': ['active.entering.reconciling', 'unloading'],
-	'active.entering.reconciling': ['active.tracking', 'active.merging.twoWay', 'active.merging.threeWay', 'unloading'],
-	'active.tracking': ['active.conflict.bannerShown', 'unloading'],
-	'active.merging.twoWay': ['active.tracking', 'active.conflict.bannerShown', 'unloading'],
-	'active.merging.threeWay': ['active.tracking', 'active.conflict.bannerShown', 'unloading'],
-	'active.conflict.bannerShown': ['active.conflict.resolving', 'active.tracking', 'unloading'],
-	'active.conflict.resolving': ['active.conflict.bannerShown', 'active.tracking', 'unloading'],
-	'unloading': ['idle.synced', 'idle.localAhead', 'idle.remoteAhead', 'idle.diskAhead',
-		'idle.diverged', 'idle.loading', 'unloaded'],
-};
-
-// =============================================================================
 // MergeHSM Class
 // =============================================================================
 
-export class MergeHSM implements TestableHSM {
+export class MergeHSM implements TestableHSM, MachineHSM {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
 
@@ -211,6 +184,12 @@ export class MergeHSM implements TestableHSM {
 	// Async operation tracking with cancellation support
 	private _asyncOps = new Map<string, { controller: AbortController; promise: Promise<void> }>();
 
+	// Declarative machine interpreter state
+	private _activeInvoke: ActiveInvoke | null = null;
+	private _cleanupType: 'unload' | 'release' | null = null;
+	private _cleanupWasConflict = false;
+	private _interpreterConfig: InterpreterConfig = createInterpreterConfig();
+
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
 
@@ -249,6 +228,11 @@ export class MergeHSM implements TestableHSM {
 		this._persistenceMetadata = config.persistenceMetadata;
 		this._userId = config.userId;
 		this._diskLoader = config.diskLoader;
+		this._interpreterConfig = createInterpreterConfig({
+			guards: this.buildGuards(),
+			actions: this.buildActions(),
+			invokeSources: this.buildInvokeSources(),
+		});
 	}
 
 	// ===========================================================================
@@ -674,185 +658,647 @@ export class MergeHSM implements TestableHSM {
 	}
 
 	// ===========================================================================
+	// MachineHSM Interface (for declarative interpreter)
+	// ===========================================================================
+
+	get statePath(): StatePath {
+		return this._statePath;
+	}
+
+	/**
+	 * Transition to a new state path. Called by the interpreter during
+	 * transition execution. Updates statePath and emits STATUS_CHANGED
+	 * if the sync status category changes.
+	 */
+	setStatePath(target: StatePath): void {
+		const oldStatus = this.lastSyncStatus;
+		this._statePath = target;
+
+		const newStatus = this.computeSyncStatusType();
+		if (oldStatus !== newStatus) {
+			this.lastSyncStatus = newStatus;
+			this.emitEffect({
+				type: "STATUS_CHANGED",
+				guid: this._guid,
+				status: this.getSyncStatus(),
+			});
+		}
+	}
+
+	getActiveInvoke(): ActiveInvoke | null {
+		return this._activeInvoke;
+	}
+
+	setActiveInvoke(invoke: ActiveInvoke | null): void {
+		// Sync with _asyncOps so awaitIdleAutoMerge()/awaitCleanup() continue to work
+		if (this._activeInvoke) {
+			this._asyncOps.delete(this._activeInvoke.id);
+		}
+		this._activeInvoke = invoke;
+		if (invoke && invoke.promise) {
+			const promise = invoke.promise.finally(() => {
+				// Clean up from _asyncOps when promise settles
+				const current = this._asyncOps.get(invoke.id);
+				if (current?.controller === invoke.controller) {
+					this._asyncOps.delete(invoke.id);
+				}
+			});
+			this._asyncOps.set(invoke.id, { controller: invoke.controller, promise });
+		}
+	}
+
+	// ===========================================================================
+	// Declarative Machine: Guards, Actions, Invoke Sources
+	// ===========================================================================
+
+	private buildGuards(): Record<string, GuardFn> {
+		return {
+			// Idle state determination (for always transitions in idle.loading)
+			allSyncedAtLoad: () => {
+				if (!this._lca) {
+					// No LCA: synced only if no local state
+					return !this._localStateVector || this._localStateVector.length <= 1;
+				}
+				return !this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
+			},
+			localAheadAtLoad: () => {
+				if (!this._lca) {
+					// No LCA: local ahead if we have local state
+					return !!this._localStateVector && this._localStateVector.length > 1;
+				}
+				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
+			},
+			remoteAheadAtLoad: () => {
+				if (!this._lca) return false;
+				return this.hasRemoteChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
+			},
+			diskAheadAtLoad: () => {
+				if (!this._lca) return false;
+				return this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
+			},
+
+			// DISK_CHANGED: check if disk event matches LCA (using event hash, not stored _disk)
+			diskMatchesLCA: (_hsm, event) => {
+				if (!this._lca) return false;
+				return this._lca.meta.hash === (event as any).hash;
+			},
+
+			// Idle event guards (for REMOTE_UPDATE candidates)
+			diskChangedSinceLCA: () => this.hasDiskChangedSinceLCA(),
+			remoteOrLocalAhead: () =>
+				this.hasRemoteChangedSinceLCA() || this._statePath === "idle.localAhead",
+
+			// Invoke completion guards
+			mergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
+
+			// === Cleanup guards ===
+			cleanupWasConflict: (_hsm, event) => {
+				const data = (event as any).data;
+				return data?.type === 'release' && data?.wasConflict === true;
+			},
+			cleanupWasReleaseLock: (_hsm, event) => {
+				return (event as any).data?.type === 'release';
+			},
+
+			// === Active entering/tracking guards ===
+			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
+			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
+				(event as any).hasContent !== true && !this._providerSynced,
+			contentMatchesAtReconcile: () => {
+				const localText = this.localDoc?.getText("contents").toString() ?? "";
+				const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
+				return localText === diskText;
+			},
+			isRecoveryMode: () => this._lca === null,
+			isFromYjs: (_hsm, event) => (event as any).isFromYjs === true,
+		};
+	}
+
+	private buildActions(): Record<string, ActionFn> {
+		return {
+			// === Idle loading ===
+			ensureLocalDocForIdle: () => this.ensureLocalDocForIdle(),
+
+			// === Remote/Disk data ===
+			applyRemoteToRemoteDoc: (_hsm, event) => {
+				const update = (event as any).update as Uint8Array;
+				if (this.remoteDoc) {
+					Y.applyUpdate(this.remoteDoc, update, this.remoteDoc);
+					this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+				} else {
+					try {
+						this._remoteStateVector = Y.encodeStateVectorFromUpdate(update);
+					} catch (e) {
+						console.error(`[MergeHSM] Dropping unparseable remote update for ${this._guid} (${update.byteLength} bytes):`, e);
+					}
+				}
+			},
+			storePendingRemoteUpdate: (_hsm, event) => {
+				const update = (event as any).update as Uint8Array;
+				if (this.pendingIdleUpdates) {
+					this.pendingIdleUpdates = Y.mergeUpdates([this.pendingIdleUpdates, update]);
+				} else {
+					this.pendingIdleUpdates = update;
+				}
+			},
+			storeDiskMetadata: (_hsm, event) => {
+				const e = event as any;
+				this._disk = { hash: e.hash, mtime: e.mtime };
+				this.pendingDiskContents = e.contents;
+			},
+			updateLCAMtime: (_hsm, event) => {
+				const e = event as any;
+				if (this._lca && this._lca.meta.hash === e.hash) {
+					this._lca = {
+						...this._lca,
+						meta: { ...this._lca.meta, mtime: e.mtime },
+					};
+					this.emitPersistState();
+				}
+			},
+
+			// === Idle merge completion ===
+			updateLCAFromInvokeResult: (_hsm, event) => {
+				const result = (event as any).data;
+				if (result?.newLCA) {
+					this._lca = result.newLCA;
+					this._localStateVector = result.newLCA.stateVector;
+					this._remoteStateVector = result.newLCA.stateVector;
+					this.emitPersistState();
+				}
+			},
+
+			// === ACQUIRE_LOCK from idle ===
+			storeEditorContent: (_hsm, event) => {
+				const e = event as any;
+				if (e.editorContent !== undefined) {
+					this.pendingEditorContent = e.editorContent;
+					this.lastKnownEditorText = e.editorContent;
+				}
+				if (this._statePath.startsWith("idle.")) {
+					this._enteringFromDiverged = this._statePath === "idle.diverged";
+				}
+				this._providerSynced = false;
+			},
+
+			// === Lifecycle ===
+			beginUnload: () => {
+				if (this._remoteDocLogHandler && this.remoteDoc) {
+					this.remoteDoc.off("update", this._remoteDocLogHandler);
+					this._remoteDocLogHandler = null;
+				}
+				this._cleanupType = 'unload';
+			},
+			initializeFromLoad: (_hsm, event) => {
+				const e = event as any;
+				this._guid = e.guid;
+				this._path = e.path;
+				this._modeDecision = null;
+				this._accumulatedEvents = [];
+				this._disk = null;
+				this._remoteStateVector = null;
+				if (this.remoteDoc) {
+					this._remoteDocLogHandler = this.makeCRDTUpdateLogger("remoteDoc", this.remoteDoc);
+					this.remoteDoc.on("update", this._remoteDocLogHandler);
+				}
+			},
+			storeError: (_hsm, event) => {
+				this._error = (event as any).error;
+			},
+			storePersistenceData: (_hsm, event) => {
+				const e = event as any;
+				if (!this._lca && e.lca) {
+					this._lca = e.lca;
+				}
+				if (e.localStateVector) {
+					this._localStateVector = e.localStateVector;
+				} else if (e.updates && e.updates.length > 0) {
+					this._localStateVector = Y.encodeStateVectorFromUpdate(e.updates);
+					this.initialPersistenceUpdates = e.updates;
+				}
+			},
+			initIdleMode: () => {
+				this._modeDecision = "idle";
+			},
+			processAccumulatedForIdle: () => {
+				// Extract accumulated REMOTE_UPDATE data into pendingIdleUpdates.
+				// The update was already applied to remoteDoc during loading (by applyRemoteToRemoteDoc),
+				// but it needs to be in pendingIdleUpdates for the idle merge to use.
+				for (const event of this._accumulatedEvents) {
+					if (event.type === 'REMOTE_UPDATE') {
+						const update = (event as any).update as Uint8Array;
+						if (this.pendingIdleUpdates) {
+							this.pendingIdleUpdates = Y.mergeUpdates([this.pendingIdleUpdates, update]);
+						} else {
+							this.pendingIdleUpdates = update;
+						}
+					}
+					// DISK_CHANGED data already stored by storeDiskMetadata during loading
+				}
+				this._accumulatedEvents = [];
+			},
+
+			// === Active conflict/merging actions ===
+			trackEditorText: (_hsm, event) => {
+				const e = event as any;
+				if (e.docText !== undefined) {
+					this.lastKnownEditorText = e.docText;
+				}
+			},
+			resolveWithDisk: () => {
+				if (this.conflictData) {
+					this.applyContentToLocalDoc(this.conflictData.remote);
+				}
+				this.conflictData = null;
+				this.pendingDiskContents = null;
+				this.pendingEditorContent = null;
+			},
+			resolveWithLocal: () => {
+				if (this.localDoc && this.conflictData) {
+					const localText = this.localDoc.getText("contents").toString();
+					const editorText = this.conflictData.remote;
+					const localChanges = computePositionedChanges(editorText, localText);
+					if (localChanges.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes: localChanges });
+					}
+				}
+				this.conflictData = null;
+				this.pendingDiskContents = null;
+				this.pendingEditorContent = null;
+			},
+			resolveWithMerged: (_hsm, event) => {
+				const e = event as any;
+				if (e.contents && this.conflictData) {
+					this.applyContentToLocalDoc(e.contents);
+					const editorText = this.conflictData.remote;
+					const mergedChanges = computePositionedChanges(editorText, e.contents);
+					if (mergedChanges.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes: mergedChanges });
+					}
+				}
+				this.conflictData = null;
+				this.pendingDiskContents = null;
+				this.pendingEditorContent = null;
+			},
+			storeConflictData: (_hsm, event) => {
+				const e = event as any;
+				const conflictRegions = e.conflictRegions ?? [];
+				const positionedConflicts = this.calculateConflictPositions(
+					conflictRegions,
+					e.local,
+				);
+				this.conflictData = {
+					base: e.base,
+					local: e.local,
+					remote: e.remote,
+					conflictRegions,
+					resolvedIndices: new Set(),
+					positionedConflicts,
+				};
+				if (positionedConflicts.length > 0) {
+					this.emitEffect({
+						type: "SHOW_CONFLICT_DECORATIONS",
+						conflictRegions,
+						positions: positionedConflicts,
+					});
+				}
+			},
+			handleMergeSuccessAction: () => {
+				// No-op: per spec, LCA is never touched during active.* states.
+				// Transition to tracking is handled by the machine definition.
+			},
+			storeDeferredConflict: () => {
+				this._deferredConflict = {
+					diskHash: this._disk?.hash ?? "",
+					localHash: "",
+				};
+				this.emitPersistState();
+				// Async local hash computation (fire-and-forget)
+				this.computeLocalHash()
+					.then((localHash) => {
+						if (this._deferredConflict) {
+							this._deferredConflict.localHash = localHash;
+							this.emitPersistState();
+						}
+					})
+					.catch((err) => {
+						this.send({
+							type: "ERROR",
+							error: err instanceof Error ? err : new Error(String(err)),
+						});
+					});
+			},
+			resolveHunk: (_hsm, event) => {
+				this.handleResolveHunk(event as ResolveHunkEvent);
+			},
+			beginReleaseLock: () => {
+				this._cleanupWasConflict = this._statePath.includes("conflict");
+				this._cleanupType = 'release';
+			},
+
+			// === Active entering/tracking actions ===
+			accumulateRemoteUpdate: (_hsm, event) => {
+				const update = (event as any).update as Uint8Array;
+				const existingIdx = this._accumulatedEvents.findIndex(
+					(e) => e.type === "REMOTE_UPDATE",
+				);
+				if (existingIdx >= 0) {
+					const existing = this._accumulatedEvents[existingIdx] as {
+						type: "REMOTE_UPDATE";
+						update: Uint8Array;
+					};
+					this._accumulatedEvents[existingIdx] = {
+						type: "REMOTE_UPDATE",
+						update: Y.mergeUpdates([existing.update, update]),
+					};
+				} else {
+					this._accumulatedEvents.push({ type: "REMOTE_UPDATE", update });
+				}
+			},
+			accumulateDiskChanged: (_hsm, event) => {
+				const e = event as any;
+				this._accumulatedEvents = this._accumulatedEvents.filter(
+					(ev) => ev.type !== "DISK_CHANGED",
+				);
+				this._accumulatedEvents.push({
+					type: "DISK_CHANGED",
+					contents: e.contents,
+					mtime: e.mtime,
+					hash: e.hash,
+				});
+			},
+			createYDocs: () => this.createYDocs(),
+			applyRemoteToLocalIfNeeded: () => this.applyRemoteToLocalIfNeeded(),
+			clearEnteringState: () => {
+				this._enteringFromDiverged = false;
+				this.pendingEditorContent = null;
+			},
+			mergeRemoteToLocal: () => this.mergeRemoteToLocal(),
+			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
+			startTwoWayMerge: () => {
+				const localText = this.localDoc?.getText("contents").toString() ?? "";
+				const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
+				this.performTwoWayMerge(localText, diskText);
+			},
+			startThreeWayMerge: () => this.performThreeWayMergeFromState(),
+			applyCM6ToLocalDoc: (_hsm, event) => {
+				const e = event as any;
+				this.lastKnownEditorText = e.docText;
+				if (this.localDoc) {
+					const ytext = this.localDoc.getText("contents");
+					this.localDoc.transact(() => {
+						for (const change of e.changes) {
+							if (change.to > change.from) {
+								ytext.delete(change.from, change.to - change.from);
+							}
+							if (change.insert) {
+								ytext.insert(change.from, change.insert);
+							}
+						}
+					}, this);
+				}
+				this.syncLocalToRemote();
+			},
+			updateDiskFromSave: (_hsm, event) => {
+				const e = event as any;
+				this._disk = { mtime: e.mtime, hash: e.hash };
+			},
+			storeDiskMetadataOnly: (_hsm, event) => {
+				// In active.tracking, only update disk metadata (no state changes)
+				const e = event as any;
+				this._disk = { hash: e.hash, mtime: e.mtime };
+				this.pendingDiskContents = e.contents;
+			},
+			flushPendingToRemote: () => {
+				this._isOnline = true;
+				if (this.localDoc) {
+					this.syncLocalToRemote();
+				}
+			},
+			setOffline: () => {
+				this._isOnline = false;
+			},
+		};
+	}
+
+	private buildInvokeSources(): Record<string, InvokeSourceFn> {
+		return {
+			'idle-merge': (_hsm, signal) => {
+				// Dispatch to the right merge based on which idle state spawned the invoke.
+				// The interpreter spawns invokes on state entry, so _statePath is
+				// the state that declared the invoke.
+				switch (this._statePath) {
+					case 'idle.remoteAhead':
+						return this.invokeIdleRemoteAutoMerge(signal);
+					case 'idle.diskAhead':
+						return this.invokeIdleDiskAutoMerge(signal);
+					case 'idle.diverged':
+						return this.invokeIdleThreeWayAutoMerge(signal);
+					default:
+						return Promise.resolve({ success: false });
+				}
+			},
+			'cleanup': async (_hsm, _signal) => {
+				const cleanupType = this._cleanupType;
+				this._cleanupType = null;
+
+				if (cleanupType === 'release') {
+					const wasConflict = this._cleanupWasConflict;
+					this._cleanupWasConflict = false;
+					try {
+						await this.deactivateEditor();
+					} catch (err) {
+						console.error("[MergeHSM] Error during release lock cleanup:", err);
+					}
+					return { type: 'release', wasConflict };
+				} else {
+					try {
+						await this.destroyLocalDoc();
+					} catch (err) {
+						console.error("[MergeHSM] Error during unload cleanup:", err);
+					}
+					return { type: 'unload' };
+				}
+			},
+		};
+	}
+
+	// ===========================================================================
+	// Invoke Source Implementations (async operations)
+	// ===========================================================================
+
+	private async invokeIdleRemoteAutoMerge(signal: AbortSignal): Promise<unknown> {
+		if (!this.pendingIdleUpdates || !this._lca || !this.localDoc) {
+			return { success: false };
+		}
+
+		// Fast path: no actual updates to merge (state vectors advanced but no pending data)
+		if (!this.pendingIdleUpdates) {
+			if (this._lca && this._remoteStateVector) {
+				this._lca.stateVector = this._remoteStateVector;
+				this._localStateVector = this._remoteStateVector;
+				this.emitPersistState();
+			}
+			return { success: true, newLCA: this._lca };
+		}
+
+		const localContent = this.localDoc.getText("contents").toString();
+
+		// Check if local and remote have identical CONTENT before merging.
+		// Different state vectors with identical content means the same text was inserted
+		// by different clients. Merging would duplicate content.
+		const remoteDoc = new Y.Doc();
+		try {
+			Y.applyUpdate(remoteDoc, this.pendingIdleUpdates, this);
+			const remoteContent = remoteDoc.getText("contents").toString();
+			if (localContent === remoteContent) {
+				this.pendingIdleUpdates = null;
+				return { success: true, newLCA: this._lca };
+			}
+		} finally {
+			remoteDoc.destroy();
+		}
+
+		// Apply pending updates to the live localDoc.
+		// Persistence's _storeUpdate handler writes to IDB automatically.
+		const beforeSV = Y.encodeStateVector(this.localDoc);
+		Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
+
+		const mergedContent = this.localDoc.getText("contents").toString();
+		const stateVector = Y.encodeStateVector(this.localDoc);
+
+		// Check if merge actually added anything
+		if (stateVectorsEqual(beforeSV, stateVector)) {
+			this.pendingIdleUpdates = null;
+			return { success: true, newLCA: this._lca };
+		}
+
+		this.pendingIdleUpdates = null;
+
+		const hash = await this.hashFn(mergedContent);
+		if (signal.aborted) return { success: false };
+
+		this.emitEffect({
+			type: "WRITE_DISK",
+			guid: this._guid,
+			contents: mergedContent,
+		});
+
+		return {
+			success: true,
+			newLCA: { contents: mergedContent, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
+		};
+	}
+
+	private async invokeIdleDiskAutoMerge(signal: AbortSignal): Promise<unknown> {
+		if (this.pendingDiskContents == null || !this._lca || !this.localDoc) {
+			return { success: false };
+		}
+
+		const diskContent = this.pendingDiskContents;
+		const diskHash = this._disk?.hash;
+		const diskMtime = this._disk?.mtime ?? this.timeProvider.now();
+
+		// Capture state vector BEFORE modifying (for diff encoding)
+		const previousStateVector = Y.encodeStateVector(this.localDoc);
+
+		// Apply disk content using diff-based updates directly to the live localDoc.
+		const ytext = this.localDoc.getText("contents");
+		const currentContent = ytext.toString();
+		if (currentContent !== diskContent) {
+			const dmp = new diff_match_patch();
+			const diffs = dmp.diff_main(currentContent, diskContent);
+			dmp.diff_cleanupSemantic(diffs);
+			this.localDoc.transact(() => {
+				let cursor = 0;
+				for (const [operation, text] of diffs) {
+					switch (operation) {
+						case 1:
+							ytext.insert(cursor, text);
+							cursor += text.length;
+							break;
+						case 0:
+							cursor += text.length;
+							break;
+						case -1:
+							ytext.delete(cursor, text.length);
+							break;
+					}
+				}
+			}, this);
+		}
+
+		// Encode only the DIFF (changes from previous state to new state)
+		const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, previousStateVector);
+		const newStateVector = Y.encodeStateVector(this.localDoc);
+
+		this.pendingDiskContents = null;
+
+		const hash = diskHash ?? (await this.hashFn(diskContent));
+		if (signal.aborted) return { success: false };
+
+		this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
+
+		return {
+			success: true,
+			newLCA: { contents: diskContent, meta: { hash, mtime: diskMtime }, stateVector: newStateVector },
+		};
+	}
+
+	private async invokeIdleThreeWayAutoMerge(signal: AbortSignal): Promise<unknown> {
+		if (!this._lca || !this.localDoc) return { success: false };
+
+		const lcaContent = this._lca.contents;
+
+		// Apply pending remote updates to the live localDoc if present.
+		if (this.pendingIdleUpdates) {
+			Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
+		}
+
+		const crdtContent = this.localDoc.getText("contents").toString();
+		const diskContent = this.pendingDiskContents ?? lcaContent;
+
+		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
+		const mergeResult = performThreeWayMerge(lcaContent, diskContent, crdtContent);
+
+		if (mergeResult.success) {
+			// Apply merged result to localDoc using diff-based updates
+			this.applyContentToLocalDoc(mergeResult.merged);
+
+			const stateVector = Y.encodeStateVector(this.localDoc);
+			const update = Y.encodeStateAsUpdate(this.localDoc);
+
+			this.pendingIdleUpdates = null;
+			this.pendingDiskContents = null;
+
+			const hash = await this.hashFn(mergeResult.merged);
+			if (signal.aborted) return { success: false };
+
+			this.emitEffect({
+				type: "WRITE_DISK",
+				guid: this._guid,
+				contents: mergeResult.merged,
+			});
+			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+
+			return {
+				success: true,
+				newLCA: { contents: mergeResult.merged, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
+			};
+		}
+
+		// Merge conflict — stay in idle.diverged
+		return { success: false };
+	}
+
+	// ===========================================================================
 	// Event Handler
 	// ===========================================================================
 
 	private handleEvent(event: MergeEvent): void {
-		switch (event.type) {
-			// External Events
-			case "LOAD":
-				this.handleLoad(event);
-				break;
-
-			case "UNLOAD":
-				this.handleUnload();
-				break;
-
-			case "ACQUIRE_LOCK":
-				this.handleAcquireLock(event);
-				break;
-
-			case "RELEASE_LOCK":
-				this.handleReleaseLock();
-				break;
-
-			case "DISK_CHANGED":
-				this.handleDiskChanged(event);
-				break;
-
-			case "REMOTE_UPDATE":
-				this.handleRemoteUpdate(event);
-				break;
-
-			case "SAVE_COMPLETE":
-				this.handleSaveComplete(event);
-				break;
-
-			case "CM6_CHANGE":
-				this.handleCM6Change(event);
-				break;
-
-			case "PROVIDER_SYNCED":
-				this.handleProviderSynced();
-				break;
-
-			case "CONNECTED":
-				this.handleConnected();
-				break;
-
-			case "DISCONNECTED":
-				this.handleDisconnected();
-				break;
-
-			// User Events
-			case "RESOLVE_ACCEPT_DISK":
-			case "RESOLVE_ACCEPT_LOCAL":
-			case "RESOLVE_ACCEPT_MERGED":
-				this.handleResolve(event);
-				break;
-
-			case "DISMISS_CONFLICT":
-				this.handleDismissConflict();
-				break;
-
-			case "OPEN_DIFF_VIEW":
-				this.handleOpenDiffView();
-				break;
-
-			case "CANCEL":
-				this.handleCancel();
-				break;
-
-			case "RESOLVE_HUNK":
-				this.handleResolveHunk(event);
-				break;
-
-			// Internal Events
-			case "PERSISTENCE_LOADED":
-				this.handlePersistenceLoaded(event);
-				break;
-
-			case "PERSISTENCE_SYNCED":
-				this.handlePersistenceSynced(event);
-				break;
-
-			case "MERGE_SUCCESS":
-				this.handleMergeSuccess(event);
-				break;
-
-			case "MERGE_CONFLICT":
-				this.handleMergeConflict(event);
-				break;
-
-			case "REMOTE_DOC_UPDATED":
-				this.handleRemoteDocUpdated();
-				break;
-
-			case "IDLE_MERGE_COMPLETE":
-				this.handleIdleMergeComplete(event);
-				break;
-
-			case "ERROR":
-				this.handleError(event);
-				break;
-
-			// Mode Determination Events (from MergeManager)
-			case "SET_MODE_ACTIVE":
-				this.handleSetModeActive();
-				break;
-
-			case "SET_MODE_IDLE":
-				this.handleSetModeIdle();
-				break;
-
-			// Diagnostic events (from Obsidian monkeypatches)
-			// These are informational only - no state change, just logged/recorded for debugging
-			case "OBSIDIAN_LOAD_FILE_INTERNAL":
-			case "OBSIDIAN_THREE_WAY_MERGE":
-			case "OBSIDIAN_FILE_OPENED":
-			case "OBSIDIAN_FILE_UNLOADED":
-			case "OBSIDIAN_VIEW_REUSED":
-				// No-op: these events are captured by the recording/debugger infrastructure
-				// but don't trigger any state transitions or actions
-				break;
-		}
+		processEvent(this, event, MACHINE, this._interpreterConfig);
 	}
 
-	// ===========================================================================
-	// Mode Determination (from MergeManager)
-	// ===========================================================================
-
-	/**
-	 * Handle SET_MODE_ACTIVE event from MergeManager.
-	 * Signals that this HSM should be in active mode (editor is open).
-	 * Transitions to active.loading to wait for ACQUIRE_LOCK with editor content.
-	 */
-	private handleSetModeActive(): void {
-		// Only valid in loading state
-		if (this._statePath !== "loading") {
-			return;
-		}
-
-		this.transitionTo("active.loading");
-	}
-
-	/**
-	 * Handle SET_MODE_IDLE event from MergeManager.
-	 * Signals that this HSM should be in idle mode (no editor open).
-	 * Transitions to idle.loading, then determines appropriate idle substate.
-	 */
-	private handleSetModeIdle(): void {
-		// Only valid in loading state
-		if (this._statePath !== "loading") {
-			return;
-		}
-		this._modeDecision = "idle";
-
-		this.transitionTo("idle.loading");
-
-		// Now determine the appropriate idle substate
-		this.handleIdleLoading();
-	}
-
-	/**
-	 * Handle transition from idle.loading to appropriate idle substate.
-	 * Reads LCA (from persistence/cache) and determines sync state.
-	 *
-	 * Spec flow: loading → SET_MODE_IDLE → idle.loading → idle.synced/diverged/etc.
-	 */
-	private handleIdleLoading(): void {
-		// Only valid in idle.loading state
-		if (this._statePath !== "idle.loading") {
-			return;
-		}
-
-		// Ensure localDoc and persistence exist for idle mode.
-		// They stay alive and persistence's _storeUpdate handler writes to IDB automatically.
-		this.ensureLocalDocForIdle();
-
-		// Determine and transition to the appropriate idle substate
-		this.determineAndTransitionToIdleState();
-	}
 
 	/**
 	 * Create localDoc and localPersistence if they don't exist.
@@ -903,97 +1349,6 @@ export class MergeHSM implements TestableHSM {
 		}
 	}
 
-	// ===========================================================================
-	// Loading & Unloading
-	// ===========================================================================
-
-	private handleLoad(event: { guid: string; path: string }): void {
-		this._guid = event.guid;
-		this._path = event.path;
-		this._modeDecision = null; // Reset mode decision for fresh load
-		this._accumulatedEvents = []; // Clear accumulated events for fresh load
-		this._disk = null; // Clear disk state for fresh load
-		this._remoteStateVector = null; // Clear remote state for fresh load
-
-		// Register CRDT update observer on remoteDoc (lives from LOAD to UNLOAD)
-		if (this.remoteDoc) {
-			this._remoteDocLogHandler = this.makeCRDTUpdateLogger(
-				"remoteDoc",
-				this.remoteDoc,
-			);
-			this.remoteDoc.on("update", this._remoteDocLogHandler);
-		}
-
-		this.transitionTo("loading");
-	}
-
-	private handlePersistenceLoaded(event: {
-		updates: Uint8Array;
-		lca: LCAState | null;
-		localStateVector?: Uint8Array | null;
-	}): void {
-		// Only set LCA from persistence if we don't already have one.
-		// initializeFromRemote() may have set the LCA before this event arrives.
-		if (!this._lca && event.lca) {
-			this._lca = event.lca;
-		}
-
-		// Use pre-computed state vector if provided (from MergeManager cache)
-		// This avoids opening per-document IDBs at registration time
-		if (event.localStateVector) {
-			this._localStateVector = event.localStateVector;
-		} else if (event.updates.length > 0) {
-			// Fallback: compute from updates (for backward compatibility)
-			this._localStateVector = Y.encodeStateVectorFromUpdate(event.updates);
-			// Store updates for when YDocs are created (fixes state vector mismatch on lock cycles)
-			this.initialPersistenceUpdates = event.updates;
-		}
-
-		// Stay in loading - wait for mode determination via SET_MODE_ACTIVE/IDLE
-		// Documents without LCA proceed normally; they'll use 2-way merge or idle.diverged
-	}
-
-	private determineAndTransitionToIdleState(): void {
-		const lca = this._lca;
-		const disk = this._disk;
-		const localSV = this._localStateVector;
-		const remoteSV = this._remoteStateVector;
-
-		// No LCA means we haven't established a sync point yet
-		if (!lca) {
-			if (localSV && localSV.length > 1) {
-				this.transitionTo("idle.localAhead");
-				return;
-			}
-			this.transitionTo("idle.synced");
-			return;
-		}
-
-		// Check for divergence scenarios
-		const localChanged = this.hasLocalChangedSinceLCA();
-		const diskChanged = this.hasDiskChangedSinceLCA();
-		const remoteChanged = this.hasRemoteChangedSinceLCA();
-
-		if (localChanged && diskChanged) {
-			this.transitionTo("idle.diverged");
-		} else if (localChanged && remoteChanged) {
-			this.transitionTo("idle.diverged");
-		} else if (diskChanged && remoteChanged) {
-			this.transitionTo("idle.diverged");
-		} else if (localChanged) {
-			this.transitionTo("idle.localAhead");
-		} else if (diskChanged) {
-			this.transitionTo("idle.diskAhead");
-		} else if (remoteChanged) {
-			this.transitionTo("idle.remoteAhead");
-		} else {
-			this.transitionTo("idle.synced");
-		}
-
-		// Replay accumulated events after transition to idle state
-		this.replayAccumulatedEvents();
-	}
-
 	/**
 	 * Replay events accumulated during loading state.
 	 * Called after mode transition to process REMOTE_UPDATE and DISK_CHANGED events.
@@ -1041,288 +1396,6 @@ export class MergeHSM implements TestableHSM {
 
 		// Check if remote has operations not in LCA
 		return stateVectorIsAhead(remoteSV, lcaSV);
-	}
-
-	// ===========================================================================
-	// Idle Mode Auto-Merge
-	// ===========================================================================
-
-	private attemptIdleAutoMerge(): void {
-		// Guard: don't start a new merge if one is already in progress
-		if (this._asyncOps.has('idle-merge')) return;
-
-		const state = this._statePath;
-
-		if (state === "idle.remoteAhead") {
-			if (!this.hasDiskChangedSinceLCA()) {
-				if (!this.pendingIdleUpdates) {
-					// Remote state vector advanced but no actual updates to merge
-					// (server echoes were skipped by the content-match check in handleRemoteUpdate).
-					// Disk already has correct content — update LCA state vector and sync.
-					if (this._lca && this._remoteStateVector) {
-						this._lca.stateVector = this._remoteStateVector;
-						this._localStateVector = this._remoteStateVector;
-						this.emitPersistState();
-					}
-					this.transitionTo("idle.synced");
-					return;
-				}
-				this.performIdleRemoteAutoMerge();
-			}
-		} else if (state === "idle.diskAhead") {
-			if (!this.hasRemoteChangedSinceLCA()) {
-				this.performIdleDiskAutoMerge();
-			}
-		} else if (state === "idle.diverged") {
-			if (!this._lca) return;
-			this.spawnAsync('idle-merge', async (signal) => {
-				await this.performIdleThreeWayMerge(signal);
-			});
-		}
-	}
-
-	private performIdleRemoteAutoMerge(): void {
-		if (!this.pendingIdleUpdates || !this._lca || !this.localDoc) return;
-
-		this.spawnAsync('idle-merge', async (signal) => {
-			// Guard against race or cancellation
-			if (signal.aborted) return;
-			if (this._statePath !== "idle.remoteAhead") return;
-			if (!this.pendingIdleUpdates || !this.localDoc) return;
-
-			const localContent = this.localDoc.getText("contents").toString();
-
-			// Check if local and remote have identical CONTENT before merging.
-			// Different state vectors with identical content means the same text was inserted
-			// by different clients. Merging in this case duplicates content because Yjs
-			// preserves both sets of operations.
-			const remoteDoc = new Y.Doc();
-			try {
-				Y.applyUpdate(remoteDoc, this.pendingIdleUpdates, this);
-				const remoteContent = remoteDoc.getText("contents").toString();
-				if (localContent === remoteContent) {
-					this.pendingIdleUpdates = null;
-					this.transitionTo("idle.synced");
-					return;
-				}
-			} finally {
-				remoteDoc.destroy();
-			}
-
-			// Apply pending updates to the live localDoc.
-			// Persistence's _storeUpdate handler writes to IDB automatically.
-			const beforeSV = Y.encodeStateVector(this.localDoc);
-			Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
-
-			const mergedContent = this.localDoc.getText("contents").toString();
-			const stateVector = Y.encodeStateVector(this.localDoc);
-
-			// Check if merge actually added anything
-			if (stateVectorsEqual(beforeSV, stateVector)) {
-				this.pendingIdleUpdates = null;
-				this.transitionTo("idle.synced");
-				return;
-			}
-
-			this.pendingIdleUpdates = null;
-
-			// Compute hash before emitting effects so that everything after
-			// the await is synchronous — no window for interleaving events.
-			const hash = await this.hashFn(mergedContent);
-			if (signal.aborted) return;
-
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: mergedContent,
-			});
-
-			this.send({
-				type: "IDLE_MERGE_COMPLETE",
-				success: true,
-				newLCA: { contents: mergedContent, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
-				source: "remote",
-			});
-		});
-	}
-
-	private performIdleDiskAutoMerge(): void {
-		if (this.pendingDiskContents == null || !this._lca || !this.localDoc) return;
-
-		this.spawnAsync('idle-merge', async (signal) => {
-			// Guard against race or cancellation
-			if (signal.aborted) return;
-			if (this._statePath !== "idle.diskAhead") return;
-			if (this.pendingDiskContents == null || !this.localDoc) return;
-
-			const diskContent = this.pendingDiskContents;
-			const diskHash = this._disk?.hash;
-			const diskMtime = this._disk?.mtime ?? this.timeProvider.now();
-
-			// Capture state vector BEFORE modifying (for diff encoding)
-			const previousStateVector = Y.encodeStateVector(this.localDoc);
-
-			// Apply disk content using diff-based updates directly to the live localDoc.
-			// Persistence's _storeUpdate handler writes to IDB automatically.
-			// INVARIANT: Never use delete-all/insert-all pattern
-			const ytext = this.localDoc.getText("contents");
-			const currentContent = ytext.toString();
-			if (currentContent !== diskContent) {
-				const dmp = new diff_match_patch();
-				const diffs = dmp.diff_main(currentContent, diskContent);
-				dmp.diff_cleanupSemantic(diffs);
-				this.localDoc.transact(() => {
-					let cursor = 0;
-					for (const [operation, text] of diffs) {
-						switch (operation) {
-							case 1:
-								ytext.insert(cursor, text);
-								cursor += text.length;
-								break;
-							case 0:
-								cursor += text.length;
-								break;
-							case -1:
-								ytext.delete(cursor, text.length);
-								break;
-						}
-					}
-				}, this);
-			}
-
-			// Encode only the DIFF (changes from previous state to new state)
-			const diffUpdate = Y.encodeStateAsUpdate(
-				this.localDoc,
-				previousStateVector,
-			);
-			const newStateVector = Y.encodeStateVector(this.localDoc);
-
-			this.pendingDiskContents = null;
-
-			// Compute hash before emitting effects so that everything after
-			// the await is synchronous — no window for interleaving events.
-			const hash = diskHash ?? (await this.hashFn(diskContent));
-			if (signal.aborted) return;
-
-			this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
-
-			this.send({
-				type: "IDLE_MERGE_COMPLETE",
-				success: true,
-				newLCA: { contents: diskContent, meta: { hash, mtime: diskMtime }, stateVector: newStateVector },
-				source: "disk",
-			});
-		});
-	}
-
-	private async performIdleThreeWayMerge(signal: AbortSignal): Promise<void> {
-		if (!this._lca || !this.localDoc) return;
-
-		const lcaContent = this._lca.contents;
-
-		// Apply pending remote updates to the live localDoc if present.
-		// Persistence's _storeUpdate handler writes to IDB automatically.
-		if (this.pendingIdleUpdates) {
-			Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
-		}
-
-		const crdtContent = this.localDoc.getText("contents").toString();
-		const diskContent = this.pendingDiskContents ?? lcaContent;
-
-		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
-		const mergeResult = performThreeWayMerge(
-			lcaContent,
-			diskContent,
-			crdtContent,
-		);
-
-		if (mergeResult.success) {
-			// Apply merged result to localDoc using diff-based updates
-			this.applyContentToLocalDoc(mergeResult.merged);
-
-			const stateVector = Y.encodeStateVector(this.localDoc);
-
-			// Encode diff for remote sync
-			const update = Y.encodeStateAsUpdate(this.localDoc);
-
-			this.pendingIdleUpdates = null;
-			this.pendingDiskContents = null;
-
-			// Compute hash before emitting effects so that everything after
-			// the await is synchronous — no window for interleaving events.
-			const hash = await this.hashFn(mergeResult.merged);
-			if (signal.aborted) return;
-
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: mergeResult.merged,
-			});
-			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
-
-			this.send({
-				type: "IDLE_MERGE_COMPLETE",
-				success: true,
-				newLCA: { contents: mergeResult.merged, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
-				source: "threeWay",
-			});
-		}
-		// Note: If merge fails (conflict), we stay in idle.diverged.
-	}
-
-	private handleUnload(): void {
-		// Already unloading or unloaded - nothing to do
-		if (this._statePath === 'unloading' || this._statePath === 'unloaded') {
-			return;
-		}
-
-		// Remove remoteDoc CRDT logging observer
-		if (this._remoteDocLogHandler && this.remoteDoc) {
-			this.remoteDoc.off("update", this._remoteDocLogHandler);
-			this._remoteDocLogHandler = null;
-		}
-
-		this.transitionTo("unloading");
-
-		this.spawnAsync('cleanup', async () => {
-			try {
-				await this.destroyLocalDoc();
-				// Only transition if still in unloading (could have been re-registered)
-				if (this._statePath === 'unloading') {
-					this.transitionTo("unloaded");
-				}
-			} catch (err) {
-				console.error("[MergeHSM] Error during unload cleanup:", err);
-				if (this._statePath === 'unloading') {
-					this.transitionTo("unloaded");
-				}
-			}
-		});
-	}
-
-	// ===========================================================================
-	// Lock Management (Idle ↔ Active)
-	// ===========================================================================
-
-	private handleAcquireLock(event?: { editorContent: string }): void {
-		if (
-			this._statePath === "loading" ||
-			this._statePath === "active.loading" ||
-			this._statePath.startsWith("idle.")
-		) {
-			if (event?.editorContent !== undefined) {
-				this.pendingEditorContent = event.editorContent;
-				this.lastKnownEditorText = event.editorContent;
-			}
-
-			if (this._statePath.startsWith("idle.")) {
-				this._enteringFromDiverged = this._statePath === "idle.diverged";
-			}
-
-			this._providerSynced = false;
-			// createYDocs() is called by onEnterState()
-			this.transitionTo("active.entering.awaitingPersistence");
-		}
 	}
 
 	/**
@@ -1442,27 +1515,6 @@ export class MergeHSM implements TestableHSM {
 		}
 	}
 
-	private handleReleaseLock(): void {
-		if (this._statePath.startsWith("active.")) {
-			const wasInConflict = this._statePath.includes("conflict");
-
-			this.transitionTo("unloading");
-
-			this.spawnAsync('cleanup', async () => {
-				try {
-					await this.deactivateEditor();
-					if (wasInConflict) {
-						this.transitionTo("idle.diverged");
-					} else {
-						this.determineAndTransitionToIdleState();
-					}
-				} catch (err) {
-					console.error("[MergeHSM] Error during release lock cleanup:", err);
-					this.determineAndTransitionToIdleState();
-				}
-			});
-		}
-	}
 
 	// ===========================================================================
 	// YDoc Management
@@ -1650,30 +1702,6 @@ export class MergeHSM implements TestableHSM {
 		this.send({ type: "PERSISTENCE_SYNCED", hasContent });
 	}
 
-	/**
-	 * Handle PERSISTENCE_SYNCED event.
-	 * Drives the entering substate machine based on whether IDB had content.
-	 */
-	private handlePersistenceSynced(event: { hasContent: boolean }): void {
-		if (!this.matches("active.entering")) return;
-
-		if (event.hasContent) {
-			// IDB had content → go straight to reconciliation
-			this.transitionTo("active.entering.reconciling");
-			this.performReconciliation();
-		} else {
-			// IDB was empty → check if provider already synced
-			if (this._providerSynced) {
-				// Provider already synced (before or during persistence load)
-				this.applyRemoteToLocalIfNeeded();
-				this.transitionTo("active.entering.reconciling");
-				this.performReconciliation();
-			} else {
-				// Wait for PROVIDER_SYNCED
-				this.transitionTo("active.entering.awaitingRemote");
-			}
-		}
-	}
 
 	/**
 	 * When IDB was empty and the server has content, apply server CRDT to localDoc.
@@ -1695,43 +1723,6 @@ export class MergeHSM implements TestableHSM {
 		}
 	}
 
-	/**
-	 * Perform reconciliation: compare localDoc vs disk content and decide
-	 * tracking/twoWay/threeWay. Called when all data sources have been consulted.
-	 */
-	private performReconciliation(): void {
-		if (!this.matches("active.entering.reconciling")) return;
-
-		const localText = this.localDoc?.getText("contents").toString() ?? "";
-		const diskText =
-			this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
-		const isRecoveryMode = this._lca === null;
-
-		// Clear the flag
-		this._enteringFromDiverged = false;
-
-		if (localText === diskText) {
-			// Content matches — proceed to tracking.
-			this.pendingEditorContent = null;
-			this.transitionTo("active.tracking");
-			// Merge any remote content that accumulated during active.entering
-			this.mergeRemoteToLocal();
-			// Replay any events accumulated during loading states
-			this.replayAccumulatedEvents();
-			return;
-		}
-
-		// Content differs — transition to appropriate merging state per spec
-		if (isRecoveryMode) {
-			this.transitionTo("active.merging.twoWay");
-			this.replayAccumulatedEvents();
-			this.performTwoWayMerge(localText, diskText);
-		} else {
-			this.transitionTo("active.merging.threeWay");
-			this.replayAccumulatedEvents();
-			this.performThreeWayMergeFromState();
-		}
-	}
 
 	/**
 	 * Set up Y.Text observer on localDoc to convert Yjs deltas to PositionedChange[].
@@ -1871,41 +1862,6 @@ export class MergeHSM implements TestableHSM {
 		// Do NOT destroy remoteDoc - it's managed externally
 	}
 
-	// ===========================================================================
-	// Active Mode: Editor Integration
-	// ===========================================================================
-
-	private handleCM6Change(event: {
-		changes: PositionedChange[];
-		docText: string;
-		isFromYjs: boolean;
-	}): void {
-		// Always track editor state, even during active.entering.
-		// This ensures we have the most up-to-date editor content for
-		// merge decisions in handleYDocsReady.
-		this.lastKnownEditorText = event.docText;
-
-		// Only apply to localDoc in tracking state
-		if (this._statePath !== "active.tracking") return;
-
-		if (event.isFromYjs) return;
-
-		if (this.localDoc) {
-			const ytext = this.localDoc.getText("contents");
-			this.localDoc.transact(() => {
-				for (const change of event.changes) {
-					if (change.to > change.from) {
-						ytext.delete(change.from, change.to - change.from);
-					}
-					if (change.insert) {
-						ytext.insert(change.from, change.insert);
-					}
-				}
-			}, this);
-		}
-
-		this.syncLocalToRemote();
-	}
 
 	// While you may be tempted to try to filter outbound sync based on
 	// heuristics, that is always the wrong approach. The error is in the sender.
@@ -1920,88 +1876,6 @@ export class MergeHSM implements TestableHSM {
 		if (update.length > 0) {
 			Y.applyUpdate(this.remoteDoc, update, this);
 			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
-		}
-	}
-
-	// ===========================================================================
-	// Active Mode: Remote Updates
-	// ===========================================================================
-
-	private handleRemoteUpdate(event: { update: Uint8Array }): void {
-		// While you may be tempted to try to filter inbound messages based on
-		// heuristics, that is always the wrong approach. The error is in the sender.
-		//
-		// Apply update to remoteDoc if loaded. When hibernated (remoteDoc is null),
-		// update remoteStateVector from raw bytes for sync status tracking.
-		if (this.remoteDoc) {
-			Y.applyUpdate(this.remoteDoc, event.update, this.remoteDoc);
-			this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
-		} else {
-			// Hibernated: update remoteStateVector from raw bytes
-			try {
-				this._remoteStateVector = Y.encodeStateVectorFromUpdate(event.update);
-			} catch (e) {
-				console.error(`[MergeHSM] Dropping unparseable remote update for ${this._guid} (${event.update.byteLength} bytes):`, e);
-				return;
-			}
-		}
-
-		if (
-			this._statePath === "loading" ||
-			this._statePath === "active.loading" ||
-			this.matches("active.entering")
-		) {
-			// Accumulate for replay after mode transition / reconciliation.
-			// active.entering: YDocs are being created; mergeRemoteToLocal() will run
-			// after reconciliation completes in performReconciliation().
-			const existingRemoteIdx = this._accumulatedEvents.findIndex(
-				(e) => e.type === "REMOTE_UPDATE",
-			);
-			if (existingRemoteIdx >= 0) {
-				const existing = this._accumulatedEvents[existingRemoteIdx] as {
-					type: "REMOTE_UPDATE";
-					update: Uint8Array;
-				};
-				this._accumulatedEvents[existingRemoteIdx] = {
-					type: "REMOTE_UPDATE",
-					update: Y.mergeUpdates([existing.update, event.update]),
-				};
-			} else {
-				this._accumulatedEvents.push({
-					type: "REMOTE_UPDATE",
-					update: event.update,
-				});
-			}
-			return;
-		}
-
-		if (this._statePath === "active.tracking") {
-			this.mergeRemoteToLocal();
-		} else if (this._statePath.startsWith("idle.")) {
-			if (this.pendingIdleUpdates) {
-				this.pendingIdleUpdates = Y.mergeUpdates([
-					this.pendingIdleUpdates,
-					event.update,
-				]);
-			} else {
-				this.pendingIdleUpdates = event.update;
-			}
-
-			// Persistence's _storeUpdate handler on localDoc writes to IDB automatically
-			// when updates are applied during idle auto-merge.
-
-			if (this.hasDiskChangedSinceLCA()) {
-				this.transitionTo("idle.diverged");
-			} else {
-				this.transitionTo("idle.remoteAhead");
-			}
-			this.attemptIdleAutoMerge();
-		}
-	}
-
-	private handleRemoteDocUpdated(): void {
-		if (this._statePath === "active.tracking") {
-			this.mergeRemoteToLocal();
 		}
 	}
 
@@ -2030,150 +1904,6 @@ export class MergeHSM implements TestableHSM {
 			Y.encodeStateVector(this.localDoc),
 		);
 		Y.applyUpdate(this.localDoc, update, this.remoteDoc);
-	}
-
-	// ===========================================================================
-	// Disk Changes
-	// ===========================================================================
-
-	private handleDiskChanged(event: {
-		contents: string;
-		mtime: number;
-		hash: string;
-	}): void {
-		this._disk = {
-			hash: event.hash,
-			mtime: event.mtime,
-		};
-
-		this.pendingDiskContents = event.contents;
-
-		// Accumulate event during loading state for replay after mode transition
-		if (this._statePath === "loading") {
-			// Replace any existing DISK_CHANGED event (only keep latest)
-			this._accumulatedEvents = this._accumulatedEvents.filter(
-				(e) => e.type !== "DISK_CHANGED",
-			);
-			this._accumulatedEvents.push({
-				type: "DISK_CHANGED",
-				contents: event.contents,
-				mtime: event.mtime,
-				hash: event.hash,
-			});
-			return;
-		}
-
-		if (this._statePath === "active.tracking") {
-			// In active.tracking, Obsidian handles editor<->disk sync via diff-match-patch.
-			// Per spec: LCA is never touched during active.* states.
-			// Disk metadata is already updated at the start of this function.
-			return;
-		} else if (this._statePath.startsWith("idle.")) {
-			const diskChanged = this.hasDiskChangedSinceLCA();
-
-			// If disk matches LCA, no state change needed
-			if (!diskChanged) {
-				// Just update mtime in LCA if hashes match
-				if (this._lca && this._lca.meta.hash === event.hash) {
-					this._lca = {
-						...this._lca,
-						meta: {
-							...this._lca.meta,
-							mtime: event.mtime,
-						},
-					};
-					this.emitPersistState();
-				}
-				return;
-			}
-
-			const remoteChanged = this.hasRemoteChangedSinceLCA();
-			const localAhead = this._statePath === "idle.localAhead";
-
-			// Determine target state based on what has changed
-			// - idle.localAhead + disk changed → idle.diverged (both local and disk differ from LCA)
-			// - idle.synced + remote changed + disk changed → idle.diverged
-			// - idle.synced + disk changed only → idle.diskAhead
-			const targetState = (remoteChanged || localAhead) ? "idle.diverged" : "idle.diskAhead";
-			this.transitionTo(targetState);
-			this.attemptIdleAutoMerge();
-		}
-	}
-
-	private handleIdleMergeComplete(event: IdleMergeCompleteEvent): void {
-		// Only process if still in an idle merge state
-		const validStates: StatePath[] = ["idle.remoteAhead", "idle.diskAhead", "idle.diverged"];
-		if (!validStates.includes(this._statePath)) return;
-
-		if (event.success) {
-			this._lca = event.newLCA;
-			this._localStateVector = event.newLCA.stateVector;
-			this._remoteStateVector = event.newLCA.stateVector;
-			this.emitPersistState();
-			this.transitionTo("idle.synced");
-			// Re-check for updates that arrived during the merge
-			this.attemptIdleAutoMerge();
-		} else {
-			this.transitionTo("idle.diverged");
-		}
-	}
-
-	private async performDiskMerge(diskContents: string): Promise<void> {
-		if (!this.localDoc) return;
-
-		const localText = this.localDoc.getText("contents").toString();
-		const lcaText = this._lca?.contents ?? "";
-		// Use disk hash if available (from DISK_CHANGED event)
-		const diskHash = this._disk?.hash;
-
-		if (diskContents === localText) {
-			this.send({
-				type: "MERGE_SUCCESS",
-				newLCA: await this.createLCAFromCurrent(diskContents, diskHash),
-			});
-			return;
-		}
-
-		if (diskContents === lcaText) {
-			this.send({
-				type: "MERGE_SUCCESS",
-				newLCA: this._lca!,
-			});
-			return;
-		}
-
-		if (localText === lcaText) {
-			this.applyContentToLocalDoc(diskContents);
-			this.send({
-				type: "MERGE_SUCCESS",
-				newLCA: await this.createLCAFromCurrent(diskContents, diskHash),
-			});
-			return;
-		}
-
-		const mergeResult = performThreeWayMerge(lcaText, localText, diskContents);
-
-		if (mergeResult.success) {
-			this.applyContentToLocalDoc(mergeResult.merged);
-
-			if (mergeResult.patches.length > 0) {
-				this.emitEffect({ type: "DISPATCH_CM6", changes: mergeResult.patches });
-			}
-
-			this.send({
-				type: "MERGE_SUCCESS",
-				// Merged content is new, need to compute hash
-				newLCA: await this.createLCAFromCurrent(mergeResult.merged),
-			});
-		} else {
-			this.send({
-				type: "MERGE_CONFLICT",
-				base: mergeResult.base,
-				local: mergeResult.local,
-				remote: mergeResult.remote,
-				conflictRegions: mergeResult.conflictRegions,
-			});
-		}
 	}
 
 	/**
@@ -2231,63 +1961,6 @@ export class MergeHSM implements TestableHSM {
 				? Y.encodeStateVector(this.localDoc)
 				: new Uint8Array([0]),
 		};
-	}
-
-	private handleSaveComplete(event: { mtime: number; hash: string }): void {
-		// Per spec: LCA is never touched during active.* states.
-		// Only update disk state to match what we just saved.
-		// This prevents the next poll from seeing a "change" that is actually our own save.
-		this._disk = {
-			mtime: event.mtime,
-			hash: event.hash,
-		};
-	}
-
-	// ===========================================================================
-	// Conflict Resolution
-	// ===========================================================================
-
-	private handleMergeSuccess(event: { newLCA: LCAState }): void {
-		if (this._statePath.startsWith("active.merging")) {
-			// Per spec: LCA is never touched during active.* states.
-			// LCA will be established when file transitions to idle mode.
-			this.transitionTo("active.tracking");
-		}
-	}
-
-	private handleMergeConflict(event: {
-		base: string;
-		local: string;
-		remote: string;
-		conflictRegions?: ConflictRegion[];
-	}): void {
-		if (this._statePath.startsWith("active.merging")) {
-			const conflictRegions = event.conflictRegions ?? [];
-			const positionedConflicts = this.calculateConflictPositions(
-				conflictRegions,
-				event.local,
-			);
-
-			this.conflictData = {
-				base: event.base,
-				local: event.local,
-				remote: event.remote,
-				conflictRegions,
-				resolvedIndices: new Set(),
-				positionedConflicts,
-			};
-
-			// Emit effect to show inline decorations
-			if (positionedConflicts.length > 0) {
-				this.emitEffect({
-					type: "SHOW_CONFLICT_DECORATIONS",
-					conflictRegions,
-					positions: positionedConflicts,
-				});
-			}
-
-			this.transitionTo("active.conflict.bannerShown");
-		}
 	}
 
 	/**
@@ -2413,256 +2086,16 @@ export class MergeHSM implements TestableHSM {
 			this.conflictData.resolvedIndices.size ===
 			this.conflictData.conflictRegions.length
 		) {
-			this.finalizeConflictResolution();
+			// All hunks resolved — localDoc already has the final content.
+			// Send RESOLVE_ACCEPT_LOCAL to clear conflict state and transition to tracking.
+			this.send({ type: "RESOLVE_ACCEPT_LOCAL" });
 		}
-	}
-
-	/**
-	 * Finalize conflict resolution when all hunks are resolved.
-	 * Per spec: LCA is never touched during active.* states.
-	 * LCA will be updated when transitioning back to idle mode.
-	 */
-	private finalizeConflictResolution(): void {
-		if (!this.localDoc) return;
-
-		this.conflictData = null;
-		this.pendingDiskContents = null;
-		this.transitionTo("active.tracking");
-	}
-
-	private handleOpenDiffView(): void {
-		if (this._statePath === "active.conflict.bannerShown") {
-			this.transitionTo("active.conflict.resolving");
-		}
-	}
-
-	private handleCancel(): void {
-		if (this._statePath === "active.conflict.resolving") {
-			this.transitionTo("active.conflict.bannerShown");
-		}
-	}
-
-	private handleResolve(event: MergeEvent): void {
-		if (this._statePath !== "active.conflict.resolving") return;
-
-		// Perform resolution work
-		switch (event.type) {
-			case "RESOLVE_ACCEPT_DISK":
-				if (this.conflictData) {
-					// Apply disk content to the CRDT
-					this.applyContentToLocalDoc(this.conflictData.remote);
-
-					// BUG-044 fix: Don't dispatch CM6 changes for RESOLVE_ACCEPT_DISK.
-					// The editor is already showing disk content (Obsidian loaded it from disk
-					// when the file was opened). Dispatching changes from CRDT→disk would apply
-					// those changes on top of the existing disk content, causing duplication.
-					//
-					// Per spec: LCA is never touched during active.* states.
-					// LCA will be established when file transitions to idle mode.
-				}
-				break;
-
-			case "RESOLVE_ACCEPT_LOCAL":
-				if (this.localDoc && this.conflictData) {
-					const localText = this.localDoc.getText("contents").toString();
-
-					// The editor was showing conflictData.remote (disk content).
-					// We need to dispatch changes to update the editor to show localText (CRDT content).
-					const editorText = this.conflictData.remote;
-					const localChanges = computePositionedChanges(editorText, localText);
-					if (localChanges.length > 0) {
-						this.emitEffect({ type: "DISPATCH_CM6", changes: localChanges });
-					}
-					// Per spec: LCA is never touched during active.* states.
-					// LCA will be established when file transitions to idle mode.
-				}
-				break;
-
-			case "RESOLVE_ACCEPT_MERGED":
-				if ("contents" in event && this.conflictData) {
-					this.applyContentToLocalDoc(event.contents);
-
-					// BUG-044 fix: The editor shows disk content (conflictData.remote), not CRDT content.
-					// Compute changes from disk→merged to correctly update the editor.
-					const editorText = this.conflictData.remote;
-					const mergedChanges = computePositionedChanges(
-						editorText,
-						event.contents,
-					);
-					if (mergedChanges.length > 0) {
-						this.emitEffect({ type: "DISPATCH_CM6", changes: mergedChanges });
-					}
-					// Per spec: LCA is never touched during active.* states.
-					// LCA will be established when file transitions to idle mode.
-				}
-				break;
-		}
-
-		this.conflictData = null;
-		this.pendingDiskContents = null;
-		this.pendingEditorContent = null;
-
-		// Transition to tracking
-		this.transitionTo("active.tracking");
-	}
-
-	private handleDismissConflict(): void {
-		if (this._statePath !== "active.conflict.bannerShown") return;
-
-		// Set deferred conflict synchronously with disk hash
-		// Local hash will be computed and updated asynchronously
-		this._deferredConflict = {
-			diskHash: this._disk?.hash ?? "",
-			localHash: "", // Will be updated asynchronously
-		};
-
-		// Transition synchronously
-		this.transitionTo("active.tracking");
-
-		// Emit persist state synchronously (with partial deferred conflict)
-		this.emitPersistState();
-
-		// Async computation of local hash (fire-and-forget)
-		this.computeLocalHash()
-			.then((localHash) => {
-				if (this._deferredConflict) {
-					this._deferredConflict.localHash = localHash;
-					// Emit again with updated hash
-					this.emitPersistState();
-				}
-			})
-			.catch((err) => {
-				this.send({
-					type: "ERROR",
-					error: err instanceof Error ? err : new Error(String(err)),
-				});
-			});
 	}
 
 	private async computeLocalHash(): Promise<string> {
 		if (!this.localDoc) return "";
 		const text = this.localDoc.getText("contents").toString();
 		return this.hashFn(text);
-	}
-
-	// ===========================================================================
-	// Connection Events
-	// ===========================================================================
-
-	private handleProviderSynced(): void {
-		this._providerSynced = true;
-
-		if (this._statePath === "active.entering.awaitingRemote") {
-			// Server CRDT now available in remoteDoc — apply to localDoc if needed
-			this.applyRemoteToLocalIfNeeded();
-			this.transitionTo("active.entering.reconciling");
-			this.performReconciliation();
-		}
-		// In all other states: no-op (just record the flag)
-	}
-
-	private handleConnected(): void {
-		this._isOnline = true;
-
-		// When we reconnect, flush any pending local changes to remoteDoc.
-		// This ensures edits made while offline get synced to the server.
-		if (this.localDoc && this._statePath === "active.tracking") {
-			this.syncLocalToRemote();
-		}
-	}
-
-	private handleDisconnected(): void {
-		this._isOnline = false;
-		// Local edits continue to be applied to localDoc and persisted to IndexedDB.
-		// When connectivity returns, handleConnected() will flush pending updates.
-	}
-
-	// ===========================================================================
-	// Error Handling
-	// ===========================================================================
-
-	private handleError(event: { error: Error }): void {
-		this._error = event.error;
-		if (this._statePath.startsWith("idle.")) {
-			this.transitionTo("idle.error");
-		}
-	}
-
-	// ===========================================================================
-	// State Transition Helper
-	// ===========================================================================
-
-	private transitionTo(newState: StatePath): void {
-		if (process.env.NODE_ENV !== 'production') {
-			const allowed = TRANSITIONS[this._statePath];
-			if (allowed && !allowed.includes(newState)) {
-				console.error(
-					`[MergeHSM] Invalid transition: ${this._statePath} → ${newState}`,
-				);
-			}
-		}
-
-		const oldState = this._statePath;
-		this.onExitState(oldState, newState);
-
-		const oldStatus = this.lastSyncStatus;
-		this._statePath = newState;
-
-		this.onEnterState(newState);
-
-		const newStatus = this.computeSyncStatusType();
-		if (oldStatus !== newStatus) {
-			this.lastSyncStatus = newStatus;
-			this.emitEffect({
-				type: "STATUS_CHANGED",
-				guid: this._guid,
-				status: this.getSyncStatus(),
-			});
-		}
-	}
-
-	private onEnterState(state: StatePath): void {
-		switch (state) {
-			case 'active.entering.awaitingPersistence':
-				this.createYDocs();
-				break;
-		}
-	}
-
-	private onExitState(oldState: StatePath, _newState: StatePath): void {
-		if (oldState.startsWith('idle.') && oldState !== 'idle.loading') {
-			this.cancelAsync('idle-merge');
-		}
-	}
-
-	// ===========================================================================
-	// Async Operation Lifecycle
-	// ===========================================================================
-
-	private spawnAsync(id: string, fn: (signal: AbortSignal) => Promise<void>): void {
-		this.cancelAsync(id);
-		const controller = new AbortController();
-		const promise = fn(controller.signal)
-			.catch((err) => {
-				if (!controller.signal.aborted) {
-					this.send({ type: 'ERROR', error: err instanceof Error ? err : new Error(String(err)) });
-				}
-			})
-			.finally(() => {
-				const current = this._asyncOps.get(id);
-				if (current?.controller === controller) {
-					this._asyncOps.delete(id);
-				}
-			});
-		this._asyncOps.set(id, { controller, promise });
-	}
-
-	private cancelAsync(id: string): void {
-		const op = this._asyncOps.get(id);
-		if (op) {
-			op.controller.abort();
-			this._asyncOps.delete(id);
-		}
 	}
 
 	async awaitAsync(id: string): Promise<void> {

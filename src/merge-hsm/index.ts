@@ -104,35 +104,31 @@ export type { Vault, HashFn } from './integration/DiskIntegration';
 
 // Recording infrastructure
 export {
-  RecordingMergeHSM,
-  createE2ERecorder,
-  createIntegrationRecorder,
-  createShadowRecorder,
-  replayRecording,
-  assertReplaySucceeds,
-  assertReplayDiverges,
-  loadRecordingFixture,
-  loadRecordingFixtures,
-  serializeRecording,
-  deserializeRecording,
+  replayLogEntries,
+  filterLogEntries,
+  sliceLogEntries,
+  findLogTransition,
+  loadLogFixture,
+  loadLogFixtures,
   serializeEvent,
   deserializeEvent,
   serializeEffect,
   deserializeEffect,
-  generateTestFromRecording,
+  serializeLCA,
+  deserializeLCA,
+  generateRecordingId,
+  uint8ArrayToBase64,
+  base64ToUint8Array,
   // E2E test integration
   E2ERecordingBridge,
   installE2ERecordingBridge,
 } from './recording';
 export type {
-  HSMRecording,
-  HSMTimelineEntry,
-  RecordingOptions,
-  RecordingMetadata,
+  HSMLogEntry,
+  RecordingSummary,
   ReplayResult,
   ReplayDivergence,
-  ReplayOptions,
-  RecordableHSM,
+  LogReplayOptions,
   // E2E test integration types
   E2ERecordingBridgeConfig,
   E2ERecordingState,
@@ -164,3 +160,6 @@ export {
   HSM_DEBUGGER_VIEW_TYPE,
   openHSMDebugger,
 } from './debugger';
+
+// Machine visualization
+export { toMermaid, toDOT } from './machine-visualization';
