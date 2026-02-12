@@ -1,5 +1,4 @@
 import type { Extension } from "@codemirror/state";
-import { StateField, EditorState, Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -9,6 +8,7 @@ import {
 	TFile,
 	TextFileView,
 	Workspace,
+	editorInfoField,
 	moment,
 	type CachedMetadata,
 } from "obsidian";
@@ -37,6 +37,16 @@ import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
+
+/**
+ * Access the LiveViewManager singleton via the Obsidian plugin registry.
+ * Replaces ConnectionManagerStateField — no CM6 state field needed since
+ * the plugin is a singleton reachable from any EditorView.
+ */
+export function getConnectionManager(editor: EditorView): LiveViewManager | null {
+	const fileInfo = editor.state.field(editorInfoField, false);
+	return (fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ?? null;
+}
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -457,7 +467,19 @@ export class LiveView<ViewType extends TextFileView>
 						localDoc &&
 						hsm.state.statePath.includes("conflict")
 					) {
-						this.log("[mergeBanner] Using HSM conflict resolution path");
+						this.log("[mergeBanner] Opening diff view for conflict resolution");
+
+						// Check if there are inline conflict regions (new flow)
+						const hasInlineConflicts =
+							conflictData.conflictRegions &&
+							conflictData.conflictRegions.length > 0;
+
+						if (hasInlineConflicts) {
+							// With inline conflicts, clicking banner opens diff view as alternative
+							this.log(
+								"[mergeBanner] Inline conflicts present, opening diff view as alternative",
+							);
+						}
 
 						// Get CURRENT localDoc content (not stale conflictData.local)
 						const currentLocalContent = localDoc.getText("contents").toString();
@@ -489,7 +511,7 @@ export class LiveView<ViewType extends TextFileView>
 							file2: diskFile, // Disk content
 							showMergeOption: true,
 							onResolve: async () => {
-								this.log("[mergeBanner] HSM conflict resolved");
+								this.log("[mergeBanner] HSM conflict resolved via diff view");
 
 								// The differ modifies file1 (localFile) in-place via its contents.
 								// Get the resolved content and apply it to HSM's localDoc.
@@ -774,7 +796,6 @@ export class LiveViewManager {
 	workspace: Workspace;
 	views: S3View[];
 	private _activePromise?: Promise<boolean> | null;
-	_compartment: Compartment;
 	private loginManager: LoginManager;
 	private offListeners: (() => void)[] = [];
 	private folderListeners: Map<SharedFolder, () => void> = new Map();
@@ -803,7 +824,6 @@ export class LiveViewManager {
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
-		this._compartment = new Compartment();
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -865,16 +885,6 @@ export class LiveViewManager {
 			}),
 		);
 		RelayInstances.set(this, "LiveViewManager");
-	}
-
-	reconfigure(editorView: EditorView) {
-		editorView.dispatch({
-			effects: this._compartment.reconfigure([
-				ConnectionManagerStateField.init(() => {
-					return this;
-				}),
-			]),
-		});
 	}
 
 	onMeta(tfile: TFile, cb: (data: string, cache: CachedMetadata) => void) {
@@ -1237,10 +1247,6 @@ export class LiveViewManager {
 		await this.updateMergeManagerActiveDocuments(views);
 
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
-			if (this.extensions.length !== 0) {
-				log("Unexpected plugins loaded.");
-				this.wipe();
-			}
 			logViews("Releasing Views", this.views);
 			this.releaseViews(this.views);
 			this.views = [];
@@ -1312,24 +1318,15 @@ export class LiveViewManager {
 	}
 
 	load() {
-		this.wipe();
-		if (this.views.length > 0) {
-			this.extensions.push([
-				this._compartment.of(
-					ConnectionManagerStateField.init(() => {
-						return this;
-					}),
-				),
-				// HSMEditorPlugin: Captures editor changes and forwards to HSM for CRDT sync.
-				// Replaces legacy LiveEdit plugin's editor→CRDT functionality.
-				HSMEditorPlugin,
-				LiveNode,
-				yRemoteSelectionsTheme,
-				yRemoteSelections,
-				InvalidLinkPlugin,
-			]);
-			this.workspace.updateOptions();
-		}
+		if (this.extensions.length > 0) return; // already registered
+		this.extensions.push([
+			HSMEditorPlugin,
+			LiveNode,
+			yRemoteSelectionsTheme,
+			yRemoteSelections,
+			InvalidLinkPlugin,
+		]);
+		this.workspace.updateOptions();
 	}
 
 	public destroy() {
@@ -1355,13 +1352,3 @@ export class LiveViewManager {
 	}
 }
 
-export const ConnectionManagerStateField = StateField.define<
-	LiveViewManager | undefined
->({
-	create(state: EditorState) {
-		return undefined;
-	},
-	update(currentManager, transaction) {
-		return currentManager;
-	},
-});

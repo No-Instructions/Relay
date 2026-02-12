@@ -19,7 +19,7 @@ import type { PluginValue, DecorationSet } from "@codemirror/view";
 import {
 	LiveViewManager,
 	LiveView,
-	ConnectionManagerStateField,
+	getConnectionManager,
 } from "../LiveViews";
 
 import * as Y from "yjs";
@@ -171,9 +171,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	constructor(editor: EditorView) {
 		this.editor = editor;
 		this.decorations = RangeSet.of([]);
-		this.connectionManager = this.editor.state.field(
-			ConnectionManagerStateField,
-		);
+		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 
 		// Allowlist: Check for live editing markers (same as LiveEditPlugin)
 		const sourceView = this.editor.dom.closest(".markdown-source-view");

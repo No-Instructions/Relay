@@ -2,25 +2,17 @@
 // License
 // [The MIT License](./LICENSE) © Kevin Jahns
 
-import { Facet } from "@codemirror/state";
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import {
 	LiveViewManager,
-	ConnectionManagerStateField,
 	RelayCanvasView,
+	getConnectionManager,
 } from "../LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import type { CanvasNodeData } from "src/CanvasView";
-
-export const connectionManagerFacet: Facet<LiveViewManager, LiveViewManager> =
-	Facet.define({
-		combine(inputs) {
-			return inputs[inputs.length - 1];
-		},
-	});
 
 // Import from shared location
 import { ySyncAnnotation } from "../merge-hsm/integration/annotations";
@@ -69,9 +61,7 @@ export class LiveNodePluginValue implements PluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.field(
-			ConnectionManagerStateField,
-		);
+		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 		this.view = this.connectionManager?.findCanvas(this.editor);
 		this.node = this.getNode();
 		this._ytext = this.getYText();

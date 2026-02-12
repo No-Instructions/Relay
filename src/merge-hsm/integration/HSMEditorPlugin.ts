@@ -16,7 +16,7 @@
 import { ViewPlugin, EditorView, ViewUpdate } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
-import { ConnectionManagerStateField, isLiveMd } from "../../LiveViews";
+import { getConnectionManager } from "../../LiveViews";
 import { Document } from "../../Document";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
@@ -65,10 +65,7 @@ class HSMEditorPluginValue implements PluginValue {
    * Get the Document for this editor.
    */
   private getDocument(): Document | null {
-    const connectionManager = this.editor.state.field(
-      ConnectionManagerStateField,
-      false
-    );
+    const connectionManager = getConnectionManager(this.editor);
     if (!connectionManager) return null;
 
     const fileInfo = this.editor.state.field(editorInfoField, false);
@@ -87,12 +84,6 @@ class HSMEditorPluginValue implements PluginValue {
       }
     }
 
-    // Fallback: try to find via view
-    const view = connectionManager.findView(this.editor);
-    if (view && view.document instanceof Document) {
-      return view.document;
-    }
-
     return null;
   }
 
@@ -103,24 +94,12 @@ class HSMEditorPluginValue implements PluginValue {
     if (this.cm6Integration) return true;
     if (this.destroyed) return false;
 
-    const connectionManager = this.editor.state.field(
-      ConnectionManagerStateField,
-      false
-    );
+    const connectionManager = getConnectionManager(this.editor);
     if (!connectionManager) return false;
 
     // Detect embedded canvas editors (no MarkdownView wrapper, no auto-save)
     const sourceView = this.editor.dom.closest(".markdown-source-view");
     this.embed = !!sourceView?.classList.contains("mod-inside-iframe");
-
-    // In Live Preview mode, Obsidian creates two CodeMirror instances:
-    // 1. The source editor (where user types) - findView() matches this
-    // 2. The reading/preview editor - findView() returns undefined
-    // Only create CM6Integration for the main source editor (or embeds).
-    const view = connectionManager.findView(this.editor);
-    if (!isLiveMd(view) && !this.embed) {
-      return false;
-    }
 
     this.document = this.getDocument();
     if (!this.document) return false;
