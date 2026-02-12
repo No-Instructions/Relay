@@ -49,7 +49,7 @@ import type {
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
-import { curryLog } from "../debug";
+import { curryLog, recordHSMEntry } from "../debug";
 import type { TestableHSM } from "./testing/createTestHSM";
 
 // =============================================================================
@@ -558,24 +558,43 @@ export class MergeHSM implements TestableHSM {
 	/**
 	 * Check for drift between editor and localDoc, correcting if needed.
 	 * Returns true if drift was detected and corrected.
+	 *
+	 * When actualEditorText is provided, it is used instead of the cached
+	 * lastKnownEditorText. This is important because lastKnownEditorText
+	 * is only updated via CM6_CHANGE events — if a change bypasses that
+	 * path (e.g. Obsidian's metadata renderer calling setViewData), the
+	 * cached value will be stale.
 	 */
-	checkAndCorrectDrift(): boolean {
+	checkAndCorrectDrift(actualEditorText?: string): boolean {
 		if (this._statePath !== "active.tracking") {
 			return false;
 		}
 
-		if (!this.localDoc || this.lastKnownEditorText === null) {
+		if (!this.localDoc) {
 			return false;
 		}
 
-		const editorText = this.lastKnownEditorText;
+		const editorText = actualEditorText ?? this.lastKnownEditorText;
+		if (editorText === null) {
+			return false;
+		}
+
+		// Update cached value if caller provided actual editor text
+		if (actualEditorText !== undefined) {
+			this.lastKnownEditorText = actualEditorText;
+		}
+
 		const yjsText = this.localDoc.getText("contents").toString();
 
 		if (editorText === yjsText) {
 			return false; // No drift
 		}
 
-		// Drift detected - localDoc (Yjs) wins
+		// Drift detected — this indicates a bug in the sync pipeline.
+		// Log diagnostics so the root cause can be investigated.
+		this.logDrift(editorText, yjsText);
+
+		// localDoc (Yjs) wins — dispatch correction to the editor
 		const changes = this.computeDiffChanges(editorText, yjsText);
 
 		if (changes.length > 0) {
@@ -589,6 +608,32 @@ export class MergeHSM implements TestableHSM {
 		this.lastKnownEditorText = yjsText;
 
 		return true;
+	}
+
+	/**
+	 * Log drift diagnostic to both relay log and HSM recording.
+	 * Captures editor text, CRDT text, and the diff for debugging.
+	 */
+	private logDrift(editorText: string, yjsText: string): void {
+		const driftLog = curryLog(`[MergeHSM:DRIFT:${this._guid}]`, "warn");
+		driftLog(
+			`Editor and localDoc diverged during active.tracking. ` +
+			`Editor: ${editorText.length} chars, localDoc: ${yjsText.length} chars, ` +
+			`delta: ${editorText.length - yjsText.length} chars. ` +
+			`Correcting editor to match localDoc.`,
+		);
+
+		// Write structured diagnostic to HSM recording file
+		recordHSMEntry({
+			type: "DRIFT_DETECTED",
+			guid: this._guid,
+			timestamp: new Date().toISOString(),
+			state: this._statePath,
+			editorLength: editorText.length,
+			yjsLength: yjsText.length,
+			editorPreview: editorText.substring(0, 200),
+			yjsPreview: yjsText.substring(0, 200),
+		});
 	}
 
 	/**

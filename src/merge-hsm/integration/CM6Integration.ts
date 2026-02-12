@@ -30,17 +30,23 @@ export class CM6Integration {
   private conflictPluginConnected = false;
   private destroyed = false;
   private log: (...args: unknown[]) => void;
+  private warn: (...args: unknown[]) => void;
   /**
    * The vault-relative path that this integration was created for.
    * Used to detect when the editor view has switched to a different file.
    */
   private readonly expectedVaultPath: string;
+  private driftCheckInterval: ReturnType<typeof setInterval> | null = null;
+
+  /** How often to check for editor↔CRDT drift (ms) */
+  private static readonly DRIFT_CHECK_INTERVAL = 5000;
 
   constructor(hsm: MergeHSM, view: EditorView, vaultRelativePath: string) {
     this.hsm = hsm;
     this.view = view;
     this.expectedVaultPath = vaultRelativePath;
     this.log = curryLog('[CM6Integration]', 'log');
+    this.warn = curryLog('[CM6Integration]', 'warn');
 
     // Subscribe to HSM effects
     this.unsubscribe = hsm.effects.subscribe((effect) => {
@@ -51,6 +57,9 @@ export class CM6Integration {
 
     // Connect the conflict decoration plugin to HSM
     this.connectConflictPlugin();
+
+    // Start periodic drift detection
+    this.startDriftCheck();
   }
 
   /**
@@ -166,10 +175,36 @@ export class CM6Integration {
   }
 
   /**
+   * Start periodic drift detection between editor and CRDT.
+   * Reads the actual editor content and compares against localDoc.
+   * If drift is found, logs diagnostics and corrects (CRDT wins).
+   */
+  private startDriftCheck(): void {
+    this.driftCheckInterval = setInterval(() => {
+      if (this.destroyed) return;
+      if (!this.isEditorShowingExpectedFile()) return;
+
+      const editorText = this.view.state.doc.toString();
+      const driftDetected = this.hsm.checkAndCorrectDrift(editorText);
+
+      if (driftDetected) {
+        this.warn(
+          `Drift corrected for "${this.expectedVaultPath}". ` +
+          `This indicates a change reached the editor without going through the HSM.`,
+        );
+      }
+    }, CM6Integration.DRIFT_CHECK_INTERVAL);
+  }
+
+  /**
    * Destroy the integration and unsubscribe from HSM.
    */
   destroy(): void {
     this.destroyed = true;
+    if (this.driftCheckInterval !== null) {
+      clearInterval(this.driftCheckInterval);
+      this.driftCheckInterval = null;
+    }
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;

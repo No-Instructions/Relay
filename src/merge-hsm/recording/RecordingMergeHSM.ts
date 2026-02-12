@@ -56,7 +56,7 @@ export interface RecordableHSM {
   getLocalDocLength(): Promise<number>;
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
-  checkAndCorrectDrift(): boolean;
+  checkAndCorrectDrift(actualEditorText?: string): boolean;
   subscribe(listener: (effect: MergeEffect) => void): () => void;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
 }
@@ -253,8 +253,8 @@ export class RecordingMergeHSM implements RecordableHSM {
     return this.hsm.getSyncStatus();
   }
 
-  checkAndCorrectDrift(): boolean {
-    return this.hsm.checkAndCorrectDrift();
+  checkAndCorrectDrift(actualEditorText?: string): boolean {
+    return this.hsm.checkAndCorrectDrift(actualEditorText);
   }
 
   subscribe(listener: (effect: MergeEffect) => void): () => void {
