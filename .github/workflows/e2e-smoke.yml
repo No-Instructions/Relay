@@ -1,0 +1,245 @@
+name: E2E Smoke Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test (e.g. origin/main, origin/feature-x)'
+        required: true
+        default: 'origin/main'
+
+env:
+  VM_NAME: ${{ secrets.GCP_VM_NAME }}
+  VM_ZONE: ${{ secrets.GCP_VM_ZONE }}
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Clone relay-harness
+        run: |
+          mkdir -p ~/.ssh
+          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          cat >> ~/.ssh/config << 'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/harness-key
+            StrictHostKeyChecking accept-new
+          EOF
+
+          git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+
+      - name: Ensure VM is running
+        run: |
+          STATUS=$(gcloud compute instances describe "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "NOT_FOUND" ]; then
+            echo "VM does not exist. Creating via harness infra scripts..."
+            cd ~/relay-harness
+            GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" ./infra/gcp-linux-vm.sh create
+          elif [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
+            echo "Starting stopped VM..."
+            gcloud compute instances start "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT"
+          elif [ "$STATUS" = "RUNNING" ]; then
+            echo "VM already running"
+          else
+            echo "Unexpected VM status: $STATUS"
+            exit 1
+          fi
+
+          echo "Waiting for SSH readiness..."
+          for i in $(seq 1 60); do
+            if gcloud compute ssh "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --command="echo ready" 2>/dev/null; then
+              echo "VM is ready"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "Timed out waiting for VM SSH"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Provision VM credentials
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
+          gcloud compute scp /tmp/sa-key.json "$VM_NAME":~/ci-sa-key.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT"
+          rm -f /tmp/sa-key.json
+
+          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
+          chmod 600 /tmp/deploy-key
+          gcloud compute scp /tmp/deploy-key "$VM_NAME":~/ci-deploy-key \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT"
+          rm -f /tmp/deploy-key
+
+      - name: Run smoke tests on VM
+        run: |
+          BRANCH="${{ github.event.inputs.branch }}"
+
+          gcloud compute ssh "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --command="bash -s -- '$BRANCH'" << 'REMOTE_SCRIPT'
+          set -eo pipefail
+          BRANCH="$1"
+
+          # Activate GCP service account for gcloud/GCS uploads
+          gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
+
+          # Set up SSH for private repo access
+          mkdir -p ~/.ssh
+          cp ~/ci-deploy-key ~/.ssh/ci-deploy-key
+          chmod 600 ~/.ssh/ci-deploy-key
+          if ! grep -q 'ci-deploy-key' ~/.ssh/config 2>/dev/null; then
+            cat >> ~/.ssh/config << 'SSHCFG'
+          Host github.com
+            IdentityFile ~/.ssh/ci-deploy-key
+            StrictHostKeyChecking accept-new
+          SSHCFG
+          fi
+
+          # Clone or update relay-plugin (public)
+          if [ ! -d ~/relay-plugin ]; then
+            git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
+          fi
+          cd ~/relay-plugin && git fetch --all && git checkout "$BRANCH" 2>/dev/null || git checkout -b "$(basename "$BRANCH")" "$BRANCH"
+
+          # Clone or update relay-harness (private)
+          if [ ! -d ~/relay-harness ]; then
+            git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+          fi
+          cd ~/relay-harness && git checkout main && git pull
+
+          # Run tests using the harness test-branch.sh orchestrator
+          export RELAY_PLUGIN_DIR=~/relay-plugin
+          cd ~/relay-harness
+
+          TEST_EXIT=0
+          ./scripts/test-branch.sh "$BRANCH" --upload || TEST_EXIT=$?
+
+          # Extract results for the GitHub Actions runner
+          LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
+          if [ -n "$LATEST" ] && [ -f "$LATEST/summary.json" ]; then
+            cp "$LATEST/summary.json" ~/test-summary.json
+
+            COMMIT=$(basename "$(dirname "$LATEST")")
+            EXEC_ID=$(basename "$LATEST")
+            REPORT_URL="https://storage.googleapis.com/relay-e2e-screenshots/runs/${COMMIT}/${EXEC_ID}/index.html"
+            echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
+          else
+            echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
+            echo '{"reportUrl":"","commit":"","execId":""}' > ~/test-metadata.json
+          fi
+
+          exit $TEST_EXIT
+          REMOTE_SCRIPT
+
+      - name: Clean up VM credentials
+        if: always()
+        run: |
+          gcloud compute ssh "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key" 2>/dev/null || true
+
+      - name: Fetch results
+        if: always()
+        run: |
+          gcloud compute scp "$VM_NAME":~/test-summary.json ./summary.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+          gcloud compute scp "$VM_NAME":~/test-metadata.json ./metadata.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+
+      - name: Generate job summary
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let summary, metadata;
+            try {
+              summary = JSON.parse(fs.readFileSync('summary.json', 'utf-8'));
+            } catch {
+              core.summary.addRaw('## E2E Smoke Test Results\n\n:x: **Failed to retrieve test results from VM**\n');
+              await core.summary.write();
+              core.setFailed('No test results available');
+              return;
+            }
+            try {
+              metadata = JSON.parse(fs.readFileSync('metadata.json', 'utf-8'));
+            } catch {
+              metadata = { reportUrl: '', commit: '', execId: '' };
+            }
+
+            const s = summary.summary || {};
+            const tests = summary.tests || [];
+            const reportBase = (metadata.reportUrl || '').replace(/\/index\.html$/, '');
+
+            // Status emoji map
+            const statusEmoji = {
+              pass: ':white_check_mark:',
+              fail: ':x:',
+              expected_fail: ':warning:',
+              unexpected_pass: ':sparkles:',
+            };
+
+            // Verdict
+            const totalDur = Math.round((s.duration || 0) / 1000);
+            const verdictEmoji = (s.fail || 0) > 0 ? ':x:' : ':white_check_mark:';
+            const verdictText = (s.fail || 0) > 0 ? 'FAIL' : 'PASS';
+            const parts = [];
+            if (s.pass) parts.push(`${s.pass} pass`);
+            if (s.fail) parts.push(`${s.fail} fail`);
+            if (s.expectedFail) parts.push(`${s.expectedFail} expected-fail`);
+            if (s.unexpectedPass) parts.push(`${s.unexpectedPass} unexpected-pass`);
+
+            let md = `## E2E Smoke Test Results\n\n`;
+            md += `${verdictEmoji} **${verdictText}** | ${parts.join(', ')} | ${totalDur}s`;
+            if (metadata.reportUrl) {
+              md += ` | [Full Report](${metadata.reportUrl})`;
+            }
+            md += `\n\n`;
+
+            // Test table
+            md += `| Test | Status | Assertions | Duration |\n`;
+            md += `|------|--------|------------|----------|\n`;
+            for (const t of tests) {
+              const emoji = statusEmoji[t.status] || ':grey_question:';
+              const dur = `${(t.duration / 1000).toFixed(1)}s`;
+              const assertions = `${t.passedAssertions ?? '?'}/${t.assertions ?? '?'}`;
+              const testUrl = reportBase ? `${reportBase}/${t.dir}/index.html` : '';
+              const name = testUrl ? `[${t.name}](${testUrl})` : t.name;
+
+              let row = `| ${name} | ${emoji} ${t.status} | ${assertions} | ${dur} |`;
+              md += row + '\n';
+
+              // Add error detail for failures
+              if (t.status === 'fail' && t.firstError) {
+                const errText = t.firstError.split('\n')[0].substring(0, 120);
+                md += `| | | \`${errText}\` | |\n`;
+              }
+            }
+
+            core.summary.addRaw(md);
+            await core.summary.write();
+
+            // Set job status
+            if ((s.fail || 0) > 0) {
+              core.setFailed(`${s.fail} test(s) failed`);
+            }
