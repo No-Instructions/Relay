@@ -62,18 +62,24 @@ jobs:
             exit 1
           fi
 
-          # DIAGNOSTIC RUN — stderr visible, connect timeout, 3 attempts only
+          # Pre-generate SSH key quietly (gcloud's ssh-keygen leaks to stdout)
           ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
+          # Set connect timeout so SSH attempts fail fast instead of hanging
+          echo -e "\nHost *\n  ConnectTimeout 10" >> ~/.ssh/config
 
           echo "Waiting for SSH readiness..."
-          for i in 1 2 3; do
-            echo "--- SSH attempt $i/3 ---"
-            gcloud compute ssh "$VM_NAME" \
+          for i in $(seq 1 30); do
+            if gcloud compute ssh "$VM_NAME" --quiet \
               --zone="$VM_ZONE" --project="$GCP_PROJECT" \
               --tunnel-through-iap \
-              --ssh-flag="-o ConnectTimeout=10" \
-              --command="echo ready" && { echo "VM is ready"; break; }
-            echo "Attempt $i failed (exit $?)"
+              --command="echo ready" 2>/dev/null; then
+              echo "VM is ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Timed out waiting for VM SSH"
+              exit 1
+            fi
             sleep 5
           done
 
