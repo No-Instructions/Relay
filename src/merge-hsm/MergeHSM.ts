@@ -56,7 +56,7 @@ import { curryLog, recordHSMEntry } from "../debug";
 import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
-import type { InterpreterConfig } from "./types";
+import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 
 // =============================================================================
 // Simple Observable for HSM
@@ -608,12 +608,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			`Correcting editor to match localDoc.`,
 		);
 
-		// Write structured diagnostic to HSM recording file
+		// Write structured diagnostic to HSM recording file (standard format)
 		recordHSMEntry({
-			type: "DRIFT_DETECTED",
+			ns: "mergeHSM",
+			ts: new Date().toISOString(),
 			guid: this._guid,
-			timestamp: new Date().toISOString(),
-			state: this._statePath,
+			path: this._path,
+			event: "DRIFT_DETECTED",
+			from: this._statePath,
+			to: this._statePath,
 			editorLength: editorText.length,
 			yjsLength: yjsText.length,
 			editorPreview: editorText.substring(0, 200),
