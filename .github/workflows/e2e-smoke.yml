@@ -12,6 +12,7 @@ env:
   VM_NAME: ${{ secrets.GCP_VM_NAME }}
   VM_ZONE: ${{ secrets.GCP_VM_ZONE }}
   GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  GCP_USE_IAP: "true"
 
 jobs:
   smoke-test:
@@ -65,6 +66,7 @@ jobs:
           for i in $(seq 1 60); do
             if gcloud compute ssh "$VM_NAME" \
               --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --tunnel-through-iap \
               --command="echo ready" 2>/dev/null; then
               echo "VM is ready"
               break
@@ -80,13 +82,15 @@ jobs:
         run: |
           echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
           gcloud compute scp /tmp/sa-key.json "$VM_NAME":~/ci-sa-key.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT"
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null
           rm -f /tmp/sa-key.json
 
           echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
           gcloud compute scp /tmp/deploy-key "$VM_NAME":~/ci-deploy-key \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT"
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null
           rm -f /tmp/deploy-key
 
       - name: Run smoke tests on VM
@@ -95,7 +99,8 @@ jobs:
 
           gcloud compute ssh "$VM_NAME" \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --command="bash -s -- '$BRANCH'" << 'REMOTE_SCRIPT'
+            --tunnel-through-iap \
+            --command="bash -s -- '$BRANCH'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           BRANCH="$1"
 
@@ -155,15 +160,18 @@ jobs:
         run: |
           gcloud compute ssh "$VM_NAME" \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
             --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key" 2>/dev/null || true
 
       - name: Fetch results
         if: always()
         run: |
           gcloud compute scp "$VM_NAME":~/test-summary.json ./summary.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp "$VM_NAME":~/test-metadata.json ./metadata.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>/dev/null || true
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null || true
 
       - name: Generate job summary
         if: always()
