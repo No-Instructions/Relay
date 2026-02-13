@@ -140,6 +140,9 @@ jobs:
           fi
           cd ~/relay-harness && git checkout main && git pull
 
+          # Install playwright test dependencies
+          cd ~/relay-harness/playwright && npm install --ignore-scripts 2>/dev/null
+
           # Run tests using the harness test-branch.sh orchestrator
           export RELAY_PLUGIN_DIR=~/relay-plugin
           cd ~/relay-harness
