@@ -4,31 +4,19 @@
  * Provides infrastructure for recording and replaying MergeHSM event/effect traces.
  *
  * Usage:
- *   import {
- *     RecordingMergeHSM,
- *     replayRecording,
- *     serializeRecording,
- *   } from './recording';
+ *   import { replayLogEntries, HSMLogEntry } from './recording';
  *
- *   // Recording
- *   const recorder = new RecordingMergeHSM(hsm, { metadata: { source: 'e2e-test' } });
- *   recorder.startRecording('my-test');
- *   // ... send events ...
- *   const recording = recorder.stopRecording();
- *   fs.writeFileSync('fixture.json', serializeRecording(recording));
- *
- *   // Replay
- *   const recording = await loadRecordingFixture('fixture.json');
- *   const result = replayRecording(freshHsm, recording);
+ *   // Replay from log entries
+ *   const entries: HSMLogEntry[] = [...];
+ *   const result = replayLogEntries(freshHsm, entries);
  *   expect(result.success).toBe(true);
  */
 
 // Types
 export type {
-  HSMRecording,
-  HSMTimelineEntry,
-  RecordingOptions,
-  RecordingMetadata,
+  RecordableHSM,
+  HSMLogEntry,
+  RecordingSummary,
   SerializableEvent,
   SerializableEffect,
   SerializableLCA,
@@ -48,41 +36,19 @@ export {
   deserializeEffect,
   serializeLCA,
   deserializeLCA,
-  serializePersistedState,
-  deserializePersistedState,
-  serializeSyncStatus,
-  deserializeSyncStatus,
-  createSerializableSnapshot,
-  serializeRecording,
-  deserializeRecording,
   generateRecordingId,
 } from './serialization';
 
-// Recording
+// Replay (log-based)
 export {
-  RecordingMergeHSM,
-  createE2ERecorder,
-  createIntegrationRecorder,
-  createShadowRecorder,
-} from './RecordingMergeHSM';
-export type { RecordableHSM } from './RecordingMergeHSM';
-
-// Replay
-export {
-  replayRecording,
-  assertReplaySucceeds,
-  assertReplayDiverges,
-  loadRecordingFixture,
-  loadRecordingFixtures,
-  filterRecording,
-  sliceRecording,
-  findStateTransition,
+  replayLogEntries,
+  filterLogEntries,
+  sliceLogEntries,
+  findLogTransition,
+  loadLogFixture,
+  loadLogFixtures,
 } from './replay';
-export type { ReplayOptions } from './replay';
-
-// Test generation
-export { generateTestFromRecording } from './generateTest';
-export type { GenerateTestOptions } from './generateTest';
+export type { LogReplayOptions } from './replay';
 
 // E2E test integration
 export {
@@ -93,5 +59,4 @@ export type {
   E2ERecordingBridgeConfig,
   E2ERecordingState,
   HSMRecordingGlobal,
-  StreamingEntry,
 } from './E2ERecordingBridge';

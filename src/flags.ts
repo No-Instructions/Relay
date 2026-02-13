@@ -16,7 +16,6 @@ export interface FeatureFlags {
 	enableMetadataViewHooks: boolean;
 	enableKanbanView: boolean;
 	enableDeviceManagement: boolean;
-	enableMergeHSMRecording: boolean;
 	enableHSMRecording: boolean;
 	enableDirectRemoteUpdates: boolean;
 }
@@ -39,7 +38,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableMetadataViewHooks: true,
 	enableKanbanView: true,
 	enableDeviceManagement: false,
-	enableMergeHSMRecording: true,
 	enableHSMRecording: false,
 	enableDirectRemoteUpdates: false,
 } as const;

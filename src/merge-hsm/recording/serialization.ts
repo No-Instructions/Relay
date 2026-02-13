@@ -11,8 +11,6 @@ import type {
   LCAState,
   PersistedMergeState,
   SyncStatus,
-  SerializableSnapshot,
-  MergeState,
 } from '../types';
 import type {
   SerializableEvent,
@@ -20,7 +18,6 @@ import type {
   SerializableLCA,
   SerializablePersistedState,
   SerializableSyncStatus,
-  HSMRecording,
 } from './types';
 
 // =============================================================================
@@ -212,14 +209,14 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
       return {
         type: 'PERSIST_STATE',
         guid: effect.guid,
-        state: serializePersistedState(effect.state),
+        state: _serializePersistedState(effect.state),
       };
 
     case 'STATUS_CHANGED':
       return {
         type: 'STATUS_CHANGED',
         guid: effect.guid,
-        status: serializeSyncStatus(effect.status),
+        status: _serializeSyncStatus(effect.status),
       };
 
     // Effects without binary data pass through
@@ -247,19 +244,81 @@ export function deserializeEffect(effect: SerializableEffect): MergeEffect {
       return {
         type: 'PERSIST_STATE',
         guid: effect.guid,
-        state: deserializePersistedState(effect.state),
+        state: _deserializePersistedState(effect.state),
       };
 
     case 'STATUS_CHANGED':
       return {
         type: 'STATUS_CHANGED',
         guid: effect.guid,
-        status: deserializeSyncStatus(effect.status),
+        status: _deserializeSyncStatus(effect.status),
       };
 
     default:
       return effect as MergeEffect;
   }
+}
+
+// Internal helpers for effect serialization (not exported)
+
+function _serializePersistedState(state: PersistedMergeState): SerializablePersistedState {
+  return {
+    guid: state.guid,
+    path: state.path,
+    lca: state.lca ? {
+      contents: state.lca.contents,
+      hash: state.lca.hash,
+      mtime: state.lca.mtime,
+      stateVector: uint8ArrayToBase64(state.lca.stateVector),
+    } : null,
+    disk: state.disk,
+    localStateVector: state.localStateVector
+      ? uint8ArrayToBase64(state.localStateVector)
+      : null,
+    lastStatePath: state.lastStatePath,
+    deferredConflict: state.deferredConflict,
+    persistedAt: state.persistedAt,
+  };
+}
+
+function _deserializePersistedState(state: SerializablePersistedState): PersistedMergeState {
+  return {
+    guid: state.guid,
+    path: state.path,
+    lca: state.lca ? {
+      contents: state.lca.contents,
+      hash: state.lca.hash,
+      mtime: state.lca.mtime,
+      stateVector: base64ToUint8Array(state.lca.stateVector),
+    } : null,
+    disk: state.disk,
+    localStateVector: state.localStateVector
+      ? base64ToUint8Array(state.localStateVector)
+      : null,
+    lastStatePath: state.lastStatePath,
+    deferredConflict: state.deferredConflict,
+    persistedAt: state.persistedAt,
+  };
+}
+
+function _serializeSyncStatus(status: SyncStatus): SerializableSyncStatus {
+  return {
+    guid: status.guid,
+    status: status.status,
+    diskMtime: status.diskMtime,
+    localStateVector: uint8ArrayToBase64(status.localStateVector),
+    remoteStateVector: uint8ArrayToBase64(status.remoteStateVector),
+  };
+}
+
+function _deserializeSyncStatus(status: SerializableSyncStatus): SyncStatus {
+  return {
+    guid: status.guid,
+    status: status.status,
+    diskMtime: status.diskMtime,
+    localStateVector: base64ToUint8Array(status.localStateVector),
+    remoteStateVector: base64ToUint8Array(status.remoteStateVector),
+  };
 }
 
 // =============================================================================
@@ -290,151 +349,6 @@ export function deserializeLCA(lca: SerializableLCA): LCAState {
     },
     stateVector: base64ToUint8Array(lca.stateVector),
   };
-}
-
-// =============================================================================
-// PersistedMergeState Serialization
-// =============================================================================
-
-/**
- * Serialize a PersistedMergeState to a JSON-safe object.
- */
-export function serializePersistedState(state: PersistedMergeState): SerializablePersistedState {
-  return {
-    guid: state.guid,
-    path: state.path,
-    lca: state.lca ? {
-      contents: state.lca.contents,
-      hash: state.lca.hash,
-      mtime: state.lca.mtime,
-      stateVector: uint8ArrayToBase64(state.lca.stateVector),
-    } : null,
-    disk: state.disk,
-    localStateVector: state.localStateVector
-      ? uint8ArrayToBase64(state.localStateVector)
-      : null,
-    lastStatePath: state.lastStatePath,
-    deferredConflict: state.deferredConflict,
-    persistedAt: state.persistedAt,
-  };
-}
-
-/**
- * Deserialize a SerializablePersistedState back to PersistedMergeState.
- */
-export function deserializePersistedState(state: SerializablePersistedState): PersistedMergeState {
-  return {
-    guid: state.guid,
-    path: state.path,
-    lca: state.lca ? {
-      contents: state.lca.contents,
-      hash: state.lca.hash,
-      mtime: state.lca.mtime,
-      stateVector: base64ToUint8Array(state.lca.stateVector),
-    } : null,
-    disk: state.disk,
-    localStateVector: state.localStateVector
-      ? base64ToUint8Array(state.localStateVector)
-      : null,
-    lastStatePath: state.lastStatePath,
-    deferredConflict: state.deferredConflict,
-    persistedAt: state.persistedAt,
-  };
-}
-
-// =============================================================================
-// SyncStatus Serialization
-// =============================================================================
-
-/**
- * Serialize a SyncStatus to a JSON-safe object.
- */
-export function serializeSyncStatus(status: SyncStatus): SerializableSyncStatus {
-  return {
-    guid: status.guid,
-    status: status.status,
-    diskMtime: status.diskMtime,
-    localStateVector: uint8ArrayToBase64(status.localStateVector),
-    remoteStateVector: uint8ArrayToBase64(status.remoteStateVector),
-  };
-}
-
-/**
- * Deserialize a SerializableSyncStatus back to SyncStatus.
- */
-export function deserializeSyncStatus(status: SerializableSyncStatus): SyncStatus {
-  return {
-    guid: status.guid,
-    status: status.status,
-    diskMtime: status.diskMtime,
-    localStateVector: base64ToUint8Array(status.localStateVector),
-    remoteStateVector: base64ToUint8Array(status.remoteStateVector),
-  };
-}
-
-// =============================================================================
-// MergeState Snapshot Serialization
-// =============================================================================
-
-/**
- * Create a serializable snapshot from MergeState and doc contents.
- */
-export function createSerializableSnapshot(
-  state: MergeState,
-  timestamp: number,
-  localDocText: string | null,
-  remoteDocText: string | null
-): SerializableSnapshot {
-  return {
-    timestamp,
-    state: {
-      guid: state.guid,
-      path: state.path,
-      statePath: state.statePath,
-      lca: state.lca ? {
-        contents: state.lca.contents,
-        hash: state.lca.meta.hash,
-        mtime: state.lca.meta.mtime,
-        stateVector: uint8ArrayToBase64(state.lca.stateVector),
-      } : null,
-      disk: state.disk,
-      localStateVector: state.localStateVector
-        ? uint8ArrayToBase64(state.localStateVector)
-        : null,
-      remoteStateVector: state.remoteStateVector
-        ? uint8ArrayToBase64(state.remoteStateVector)
-        : null,
-      error: state.error?.message,
-      deferredConflict: state.deferredConflict,
-    },
-    localDocText,
-    remoteDocText,
-  };
-}
-
-// =============================================================================
-// Recording Serialization
-// =============================================================================
-
-/**
- * Serialize a recording to a JSON string.
- */
-export function serializeRecording(recording: HSMRecording): string {
-  return JSON.stringify(recording, null, 2);
-}
-
-/**
- * Deserialize a recording from a JSON string.
- */
-export function deserializeRecording(json: string): HSMRecording {
-  const parsed = JSON.parse(json);
-
-  // Validate version
-  if (parsed.version !== 1) {
-    throw new Error(`Unsupported recording version: ${parsed.version}`);
-  }
-
-  return parsed as HSMRecording;
 }
 
 /**

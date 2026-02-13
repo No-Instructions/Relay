@@ -8,14 +8,38 @@
  * - Debugging and visualization
  */
 
+import type * as Y from 'yjs';
 import type {
+  MergeState,
   MergeEvent,
   MergeEffect,
   StatePath,
+  SyncStatus,
   SerializableSnapshot,
   LCAState,
   MergeMetadata,
 } from '../types';
+
+// =============================================================================
+// HSM Interface for Replay
+// =============================================================================
+
+/**
+ * Interface for an HSM that can be used in replay.
+ * MergeHSM implements this interface.
+ */
+export interface RecordableHSM {
+  readonly state: MergeState;
+  send(event: MergeEvent): void;
+  matches(statePath: string): boolean;
+  getLocalDoc(): Y.Doc | null;
+  getLocalDocLength(): Promise<number>;
+  getRemoteDoc(): Y.Doc | null;
+  getSyncStatus(): SyncStatus;
+  checkAndCorrectDrift(actualEditorText?: string): boolean;
+  subscribe(listener: (effect: MergeEffect) => void): () => void;
+  onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
+}
 
 // =============================================================================
 // Recording Types
@@ -207,6 +231,51 @@ export interface RecordingOptions {
 
   /** Recording metadata */
   metadata?: Partial<RecordingMetadata>;
+}
+
+// =============================================================================
+// Log Entry (unified format for disk JSONL + replay)
+// =============================================================================
+
+/**
+ * A single HSM log entry — the unified format used for disk recording (JSONL)
+ * and for replay-based testing. Replaces both StreamingEntry and HSMTimelineEntry.
+ */
+export interface HSMLogEntry {
+  ns: 'mergeHSM';
+  ts: string;              // ISO timestamp
+  boot?: string;           // Boot ID (added by recordHSMEntry)
+  guid: string;
+  path: string;
+  seq: number;             // Per-document sequence number
+  event: SerializableEvent;
+  from: string;            // StatePath before
+  to: string;              // StatePath after
+  effects: SerializableEffect[];
+}
+
+// =============================================================================
+// Recording Summary (returned by stopRecording v2)
+// =============================================================================
+
+/**
+ * Lightweight summary returned by stopRecording().
+ * The full event data lives in the JSONL log; this is just stats.
+ */
+export interface RecordingSummary {
+  version: 2;
+  id: string;
+  name: string;
+  startedAt: string;
+  endedAt: string;
+  documents: Array<{
+    guid: string;
+    path: string;
+    eventCount: number;
+    eventCounts: Record<string, number>;
+    initialStatePath: string;
+    finalStatePath: string;
+  }>;
 }
 
 // =============================================================================

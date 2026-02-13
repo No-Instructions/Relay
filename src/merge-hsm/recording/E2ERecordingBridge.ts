@@ -16,35 +16,25 @@
  *   recording = await e2e.eval_js('window.__hsmRecording.stopRecording()')
  */
 
+import * as Y from 'yjs';
+import { IndexeddbPersistence } from '../../storage/y-indexeddb';
 import type { MergeManager } from '../MergeManager';
 import type { MergeHSM } from '../MergeHSM';
 import type { MergeEvent, MergeEffect, StatePath } from '../types';
 import type { TimeProvider } from '../../TimeProvider';
 import { DefaultTimeProvider } from '../../TimeProvider';
-import type { HSMRecording, HSMTimelineEntry, RecordingMetadata } from './types';
+import type { HSMLogEntry, RecordingSummary } from './types';
+import type { HSMTimelineEntry } from './types';
 import {
   serializeEvent,
   serializeEffect,
-  createSerializableSnapshot,
   generateRecordingId,
-  serializeRecording,
 } from './serialization';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries } from '../../debug';
 
 // =============================================================================
 // Types
 // =============================================================================
-
-/** Entry passed to onEntry streaming callback */
-export interface StreamingEntry {
-  ns: 'mergeHSM';
-  ts: string;
-  guid: string;
-  path: string;
-  event: string;
-  from: string;
-  to: string;
-}
 
 export interface E2ERecordingBridgeConfig {
   /** Time provider (for testing) */
@@ -60,7 +50,7 @@ export interface E2ERecordingBridgeConfig {
   outputDir?: string;
 
   /** Streaming callback - called for each entry as it's recorded */
-  onEntry?: (entry: StreamingEntry) => void;
+  onEntry?: (entry: HSMLogEntry) => void;
 
   /** Callback to get an HSM by guid */
   getHSM: (guid: string) => MergeHSM | null | undefined;
@@ -79,6 +69,9 @@ export interface ActiveDocRecording {
   initialStatePath: StatePath;
   timeline: HSMTimelineEntry[];
   seqCounter: number;
+  eventCounts: Record<string, number>;
+  eventTotal: number;
+  lastStatePath: string;
   unsubscribeEffect: () => void;
   unsubscribeStateChange: () => void;
 }
@@ -99,7 +92,7 @@ export interface HSMRecordingGlobal {
   /** Start recording all HSM activity */
   startRecording: (name?: string) => E2ERecordingState;
 
-  /** Stop recording and return serialized JSON */
+  /** Stop recording and return lightweight summary JSON */
   stopRecording: () => string;
 
   /** Get current recording state */
@@ -111,18 +104,6 @@ export interface HSMRecordingGlobal {
   /** Get list of active document GUIDs */
   getActiveDocuments: () => string[];
 
-  /** Save recording to IndexedDB (returns key) */
-  saveRecording: (recording: string) => Promise<string>;
-
-  /** Load recording from IndexedDB by key */
-  loadRecording: (key: string) => Promise<string | null>;
-
-  /** List all saved recording keys */
-  listRecordings: () => Promise<string[]>;
-
-  /** Clear all saved recordings */
-  clearRecordings: () => Promise<void>;
-
   /** Get the current boot ID (for disk recording) */
   getBootId: () => string | null;
 
@@ -131,6 +112,9 @@ export interface HSMRecordingGlobal {
 
   /** Get last N entries for a specific document (buffer + disk, newest files first) */
   getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
+
+  /** Read Y.Doc text content from IndexedDB without waking the HSM */
+  readIdbContent: (guid: string, appId: string) => Promise<{ content: string; stateVector: Uint8Array } | null>;
 }
 
 // =============================================================================
@@ -143,7 +127,7 @@ export class E2ERecordingBridge {
   private readonly maxEntriesPerDoc: number;
   private readonly captureSnapshots: boolean;
   private readonly outputDir: string;
-  private readonly onEntry?: (entry: StreamingEntry) => void;
+  private readonly onEntry?: (entry: HSMLogEntry) => void;
   private readonly _getHSM: (guid: string) => MergeHSM | null | undefined;
   private readonly _getFullPath: (guid: string) => string | undefined;
   private readonly _getAllGuids: () => string[];
@@ -218,13 +202,24 @@ export class E2ERecordingBridge {
       getState: () => this.getState(),
       isRecording: () => this.isRecording(),
       getActiveDocuments: () => this.getActiveDocuments(),
-      saveRecording: (recording) => this.saveRecording(recording),
-      loadRecording: (key) => this.loadRecording(key),
-      listRecordings: () => this.listRecordings(),
-      clearRecordings: () => this.clearRecordings(),
       getBootId: () => getHSMBootId(),
       getBootEntries: () => getHSMBootEntries(),
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
+      readIdbContent: async (guid, appId) => {
+        const dbName = `${appId}-relay-doc-${guid}`;
+        const tempDoc = new Y.Doc();
+        try {
+          const persistence = new IndexeddbPersistence(dbName, tempDoc);
+          await persistence.whenSynced;
+          const content = tempDoc.getText('contents').toString();
+          const stateVector = Y.encodeStateVector(tempDoc);
+          await persistence.destroy();
+          return { content, stateVector };
+        } catch {
+          tempDoc.destroy();
+          return null;
+        }
+      },
     };
 
     (global as any).__hsmRecording = api;
@@ -252,11 +247,13 @@ export class E2ERecordingBridge {
     this.startedAt = new Date().toISOString();
 
     // If streaming is active (onEntry provided), HSMs are already wrapped.
-    // Just clear timelines for fresh recording without unwrapping.
+    // Just clear counters for fresh recording without unwrapping.
     if (this.onEntry) {
       for (const docRec of this.docRecordings.values()) {
         docRec.timeline = [];
         docRec.seqCounter = 0;
+        docRec.eventCounts = {};
+        docRec.eventTotal = 0;
         docRec.startedAt = this.startedAt;
       }
     } else {
@@ -288,62 +285,42 @@ export class E2ERecordingBridge {
   }
 
   /**
-   * Stop recording and return serialized recordings as JSON.
-   * Returns an array of HSMRecording objects, one per document.
+   * Stop recording and return lightweight summary as JSON.
+   * Full event data lives in the JSONL log (via onEntry callback).
    */
   stopRecording(): string {
     if (!this.recording) {
       throw new Error('No recording in progress');
     }
 
-    const recordings: HSMRecording[] = [];
+    const summary: RecordingSummary = {
+      version: 2,
+      id: this.recordingId!,
+      name: this.recordingName!,
+      startedAt: this.startedAt!,
+      endedAt: new Date().toISOString(),
+      documents: [],
+    };
 
-    for (const [guid, docRec] of this.docRecordings.entries()) {
-      // Build recording from timeline
-      const recording: HSMRecording = {
-        version: 1,
-        id: `${this.recordingId}-${guid}`,
-        name: `${this.recordingName} - ${docRec.path}`,
-        startedAt: docRec.startedAt,
-        endedAt: new Date().toISOString(),
-        document: {
-          guid: docRec.guid,
-          path: docRec.path,
-        },
-        initialState: {
-          statePath: docRec.initialStatePath,
-          snapshot: {
-            timestamp: Date.parse(docRec.startedAt),
-            state: {
-              guid: docRec.guid,
-              path: docRec.path,
-              statePath: docRec.initialStatePath,
-              lca: null,
-              disk: null,
-              localStateVector: null,
-              remoteStateVector: null,
-            },
-            localDocText: null,
-            remoteDocText: null,
-          },
-        },
-        timeline: docRec.timeline,
-        metadata: {
-          source: 'e2e-test',
-          testName: this.recordingName ?? undefined,
-          sessionId: this.recordingId ?? undefined,
-        } as RecordingMetadata,
-      };
-
-      recordings.push(recording);
+    for (const docRec of this.docRecordings.values()) {
+      summary.documents.push({
+        guid: docRec.guid,
+        path: docRec.path,
+        eventCount: docRec.eventTotal,
+        eventCounts: { ...docRec.eventCounts },
+        initialStatePath: docRec.initialStatePath,
+        finalStatePath: docRec.lastStatePath,
+      });
     }
 
     // If streaming is active (onEntry provided), keep HSMs wrapped for continued streaming.
     // Only clean up fully when not streaming.
     if (this.onEntry) {
-      // Clear timelines but keep HSM wrappers and subscriptions
+      // Reset counters but keep HSM wrappers and subscriptions
       for (const docRec of this.docRecordings.values()) {
         docRec.timeline = [];
+        docRec.eventCounts = {};
+        docRec.eventTotal = 0;
       }
     } else {
       // Full cleanup - unwrap HSMs and clear everything
@@ -362,8 +339,7 @@ export class E2ERecordingBridge {
     this.recordingName = null;
     this.startedAt = null;
 
-    // Return serialized recordings
-    return JSON.stringify(recordings.map((r) => JSON.parse(serializeRecording(r))));
+    return JSON.stringify(summary, null, 2);
   }
 
   /**
@@ -372,7 +348,7 @@ export class E2ERecordingBridge {
   getState(): E2ERecordingState {
     let totalEntries = 0;
     for (const docRec of this.docRecordings.values()) {
-      totalEntries += docRec.timeline.length;
+      totalEntries += docRec.eventTotal;
     }
 
     return {
@@ -400,107 +376,6 @@ export class E2ERecordingBridge {
   }
 
   // ===========================================================================
-  // IndexedDB Storage for Recordings
-  // ===========================================================================
-
-  private getDB(): Promise<IDBDatabase> {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open('HSMRecordings', 1);
-
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        if (!db.objectStoreNames.contains('recordings')) {
-          db.createObjectStore('recordings', { keyPath: 'key' });
-        }
-      };
-    });
-  }
-
-  /**
-   * Save recording JSON to IndexedDB.
-   */
-  async saveRecording(recordingJson: string): Promise<string> {
-    const db = await this.getDB();
-    const key = `recording-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('recordings', 'readwrite');
-      const store = tx.objectStore('recordings');
-
-      const request = store.put({
-        key,
-        recording: recordingJson,
-        savedAt: new Date().toISOString(),
-      });
-
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(key);
-    });
-  }
-
-  /**
-   * Load recording JSON from IndexedDB by key.
-   */
-  async loadRecording(key: string): Promise<string | null> {
-    const db = await this.getDB();
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('recordings', 'readonly');
-      const store = tx.objectStore('recordings');
-
-      const request = store.get(key);
-
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        if (request.result) {
-          resolve(request.result.recording);
-        } else {
-          resolve(null);
-        }
-      };
-    });
-  }
-
-  /**
-   * List all saved recording keys.
-   */
-  async listRecordings(): Promise<string[]> {
-    const db = await this.getDB();
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('recordings', 'readonly');
-      const store = tx.objectStore('recordings');
-
-      const request = store.getAllKeys();
-
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => {
-        resolve(request.result as string[]);
-      };
-    });
-  }
-
-  /**
-   * Clear all saved recordings.
-   */
-  async clearRecordings(): Promise<void> {
-    const db = await this.getDB();
-
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction('recordings', 'readwrite');
-      const store = tx.objectStore('recordings');
-
-      const request = store.clear();
-
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve();
-    });
-  }
-
-  // ===========================================================================
   // Private Methods
   // ===========================================================================
 
@@ -518,6 +393,9 @@ export class E2ERecordingBridge {
       initialStatePath: hsm.state.statePath,
       timeline: [],
       seqCounter: 0,
+      eventCounts: {},
+      eventTotal: 0,
+      lastStatePath: hsm.state.statePath,
       unsubscribeEffect: () => {},
       unsubscribeStateChange: () => {},
     };
@@ -567,16 +445,24 @@ export class E2ERecordingBridge {
           effects: pendingEvent.effects.map(serializeEffect),
         };
 
-        // Stream entry if callback provided (always, regardless of recording state)
+        // Update per-doc counters
+        const eventType = entry.event.type;
+        docRecording.eventCounts[eventType] = (docRecording.eventCounts[eventType] || 0) + 1;
+        docRecording.eventTotal++;
+        docRecording.lastStatePath = entry.statePathAfter;
+
+        // Stream enriched entry if callback provided (always, regardless of recording state)
         if (this.onEntry) {
           this.onEntry({
             ns: 'mergeHSM',
             ts: new Date(pendingEvent.timestamp).toISOString(),
             guid: docRecording.guid,
             path: this._getFullPath(docRecording.guid) ?? hsm.path,
-            event: entry.event.type,
+            seq: entry.seq,
+            event: entry.event,
             from: entry.statePathBefore,
             to: entry.statePathAfter,
+            effects: entry.effects,
           });
         }
 
@@ -753,26 +639,24 @@ function installAggregateBridgeAPI(): void {
       }
       return docs;
     },
-    saveRecording: (recording) => {
-      // Save to first bridge (they all share localStorage)
-      const firstBridge = bridgeRegistry.values().next().value;
-      return firstBridge?.saveRecording(recording) ?? '';
-    },
-    loadRecording: (key) => {
-      const firstBridge = bridgeRegistry.values().next().value;
-      return firstBridge?.loadRecording(key) ?? null;
-    },
-    listRecordings: () => {
-      const firstBridge = bridgeRegistry.values().next().value;
-      return firstBridge?.listRecordings() ?? [];
-    },
-    clearRecordings: async () => {
-      const firstBridge = bridgeRegistry.values().next().value;
-      await firstBridge?.clearRecordings();
-    },
     getBootId: () => getHSMBootId(),
     getBootEntries: () => getHSMBootEntries(),
     getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
+    readIdbContent: async (guid, appId) => {
+      const dbName = `${appId}-relay-doc-${guid}`;
+      const tempDoc = new Y.Doc();
+      try {
+        const persistence = new IndexeddbPersistence(dbName, tempDoc);
+        await persistence.whenSynced;
+        const content = tempDoc.getText('contents').toString();
+        const stateVector = Y.encodeStateVector(tempDoc);
+        await persistence.destroy();
+        return { content, stateVector };
+      } catch {
+        tempDoc.destroy();
+        return null;
+      }
+    },
   };
 
   (global as any).__hsmRecording = api;
