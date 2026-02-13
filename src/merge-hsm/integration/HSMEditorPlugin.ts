@@ -21,6 +21,7 @@ import { Document } from "../../Document";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
+import type { PositionedChange } from "../types";
 
 /**
  * Plugin value class that handles the editor ↔ HSM integration.
@@ -31,6 +32,7 @@ class HSMEditorPluginValue implements PluginValue {
   private cm6Integration: CM6Integration | null = null;
   private destroyed = false;
   private embed = false;
+  private pendingEdits: Array<{ changes: PositionedChange[]; docText: string }> = [];
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
 
@@ -39,14 +41,14 @@ class HSMEditorPluginValue implements PluginValue {
     this.log = curryLog("[HSMEditorPlugin]", "log");
     this.debug = curryLog("[HSMEditorPlugin]", "debug");
 
-    // Check if this is a live editor (shared folder document)
-    if (!this.isLiveEditor()) {
-      this.destroyed = true;
-      return;
+    // Try to get the document and initialize CM6Integration.
+    // Note: We do NOT check isLiveEditor() here and set destroyed=true,
+    // because the `relay-live-editor` CSS class is added asynchronously
+    // by LiveViews after acquireLock(). If we destroy here, the plugin
+    // will never initialize when the class appears later.
+    if (this.isLiveEditor()) {
+      this.initializeIfReady();
     }
-
-    // Try to get the document and initialize CM6Integration
-    this.initializeIfReady();
   }
 
   /**
@@ -131,6 +133,22 @@ class HSMEditorPluginValue implements PluginValue {
     // Pass the vault-relative path so CM6Integration can verify the editor doesn't switch files
     this.cm6Integration = new CM6Integration(hsm, this.editor, editorFilePath || '');
     this.debug(`Initialized for ${this.document.path} (vault: ${editorFilePath}, embed: ${this.embed})`);
+
+    // Replay any edits that arrived before initialization completed.
+    // The editor may have changed while the HSM/Document weren't ready yet.
+    if (this.pendingEdits.length > 0) {
+      this.log(`Replaying ${this.pendingEdits.length} buffered edits for ${editorFilePath}`);
+      for (const edit of this.pendingEdits) {
+        hsm.send({
+          type: 'CM6_CHANGE',
+          changes: edit.changes,
+          docText: edit.docText,
+          isFromYjs: false,
+        });
+      }
+      this.pendingEdits = [];
+    }
+
     return true;
   }
 
@@ -140,6 +158,9 @@ class HSMEditorPluginValue implements PluginValue {
    */
   update(update: ViewUpdate): void {
     if (this.destroyed) return;
+
+    // Skip non-live editors entirely (no buffering needed)
+    if (!this.cm6Integration && !this.isLiveEditor()) return;
 
     // Skip if no document changes
     if (!update.docChanged) return;
@@ -194,7 +215,17 @@ class HSMEditorPluginValue implements PluginValue {
     // Lazy initialization: HSM might not be available during constructor
     // if acquireLock() hasn't completed yet
     if (!this.cm6Integration && !this.initializeIfReady()) {
-      // Still not ready - document or HSM not available
+      // Buffer the actual CM6 changes so they can be replayed once initialized
+      const changes: PositionedChange[] = [];
+      update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+        changes.push({ from: fromA, to: toA, insert: inserted.toString() });
+      });
+      if (changes.length > 0) {
+        this.pendingEdits.push({
+          changes,
+          docText: update.state.doc.toString(),
+        });
+      }
       return;
     }
 
