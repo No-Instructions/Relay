@@ -64,7 +64,7 @@ jobs:
 
           echo "Waiting for SSH readiness..."
           for i in $(seq 1 60); do
-            if gcloud compute ssh "$VM_NAME" \
+            if gcloud compute ssh "$VM_NAME" --quiet \
               --zone="$VM_ZONE" --project="$GCP_PROJECT" \
               --tunnel-through-iap \
               --command="echo ready" 2>/dev/null; then
@@ -81,14 +81,14 @@ jobs:
       - name: Provision VM credentials
         run: |
           echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
-          gcloud compute scp /tmp/sa-key.json "$VM_NAME":~/ci-sa-key.json \
+          gcloud compute scp --quiet /tmp/sa-key.json "$VM_NAME":~/ci-sa-key.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null
           rm -f /tmp/sa-key.json
 
           echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
-          gcloud compute scp /tmp/deploy-key "$VM_NAME":~/ci-deploy-key \
+          gcloud compute scp --quiet /tmp/deploy-key "$VM_NAME":~/ci-deploy-key \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null
           rm -f /tmp/deploy-key
@@ -97,7 +97,7 @@ jobs:
         run: |
           BRANCH="${{ github.event.inputs.branch }}"
 
-          gcloud compute ssh "$VM_NAME" \
+          gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
             --command="bash -s -- '$BRANCH'" 2>/dev/null << 'REMOTE_SCRIPT'
@@ -158,7 +158,7 @@ jobs:
       - name: Clean up VM credentials
         if: always()
         run: |
-          gcloud compute ssh "$VM_NAME" \
+          gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
             --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key" 2>/dev/null || true
@@ -166,10 +166,10 @@ jobs:
       - name: Fetch results
         if: always()
         run: |
-          gcloud compute scp "$VM_NAME":~/test-summary.json ./summary.json \
+          gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
-          gcloud compute scp "$VM_NAME":~/test-metadata.json ./metadata.json \
+          gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
 
