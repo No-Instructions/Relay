@@ -54,7 +54,7 @@ import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import {
 	installE2ERecordingBridge,
-	type StreamingEntry,
+	type HSMLogEntry,
 } from "./merge-hsm/recording";
 import { recordHSMEntry } from "./debug";
 import { generateHash } from "./hashing";
@@ -362,25 +362,23 @@ export class SharedFolder extends HasProvider {
 			userId: loginManager?.user?.id,
 		});
 
-		// Install E2E recording bridge if enabled (for in-memory or disk recording)
-		if (flags().enableMergeHSMRecording || flags().enableHSMRecording) {
-			installE2ERecordingBridge(this.mergeManager, {
-				onEntry: flags().enableHSMRecording
-					? (entry: StreamingEntry) => recordHSMEntry(entry)
-					: undefined,
-				getHSM: (guid: string) => {
-					const file = this.files.get(guid);
-					if (!file || !isDocument(file)) return undefined;
-					return file.hsm;
-				},
-				getFullPath: (guid: string) => {
-					const file = this.files.get(guid);
-					if (!file || !isDocument(file)) return undefined;
-					return join(this.path, file.path);
-				},
-				getAllGuids: () => Array.from(this.files.keys()),
-			});
-		}
+		// Install E2E recording bridge (always — lightweight without onEntry)
+		installE2ERecordingBridge(this.mergeManager, {
+			onEntry: flags().enableHSMRecording
+				? (entry: HSMLogEntry) => recordHSMEntry(entry)
+				: undefined,
+			getHSM: (guid: string) => {
+				const file = this.files.get(guid);
+				if (!file || !isDocument(file)) return undefined;
+				return file.hsm;
+			},
+			getFullPath: (guid: string) => {
+				const file = this.files.get(guid);
+				if (!file || !isDocument(file)) return undefined;
+				return join(this.path, file.path);
+			},
+			getAllGuids: () => Array.from(this.files.keys()),
+		});
 
 		// Wire folder-level event subscriptions for idle mode remote updates
 		this.setupEventSubscriptions();

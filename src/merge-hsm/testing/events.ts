@@ -305,6 +305,8 @@ export interface HSMHandle {
   /** Access to underlying HSM for getting remoteDoc (optional, used by loadAndActivate) */
   hsm?: {
     getRemoteDoc(): Y.Doc | null;
+    getLocalDoc?(): Y.Doc | null;
+    awaitState?(predicate: (statePath: string) => boolean): Promise<void>;
   };
   /** Seed mock IndexedDB with updates (optional, used by loadAndActivate for proper persistence simulation) */
   seedIndexedDB?(updates: Uint8Array): void;
@@ -476,7 +478,7 @@ export async function loadToIdle(
     const maxWaitMs = 100;
     const startTime = Date.now();
     while (Date.now() - startTime < maxWaitMs) {
-      const localDocText = hsm.hsm?.getLocalDoc()?.getText('contents').toString();
+      const localDocText = hsm.hsm?.getLocalDoc?.()?.getText('contents').toString();
       if (localDocText === content) break;
       await new Promise(resolve => setTimeout(resolve, 1));
     }

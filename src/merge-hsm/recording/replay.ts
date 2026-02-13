@@ -1,9 +1,8 @@
 /**
  * HSM Recording Replay Utilities
  *
- * Functions for replaying recorded HSM sessions and verifying behavior.
+ * Functions for replaying log entries against HSM instances and verifying behavior.
  * Used for:
- * - Converting integration test recordings to unit tests
  * - Regression testing
  * - Debugging
  */
@@ -14,24 +13,22 @@ import type {
   StatePath,
 } from '../types';
 import type {
-  HSMRecording,
-  HSMTimelineEntry,
+  RecordableHSM,
+  HSMLogEntry,
   ReplayResult,
   ReplayDivergence,
   SerializableEffect,
 } from './types';
 import {
   deserializeEvent,
-  deserializeEffect,
   serializeEffect,
 } from './serialization';
-import type { RecordableHSM } from './RecordingMergeHSM';
 
 // =============================================================================
-// Replay Options
+// Log-Based Replay Options
 // =============================================================================
 
-export interface ReplayOptions {
+export interface LogReplayOptions {
   /** Stop on first divergence (default: false) */
   stopOnDivergence?: boolean;
 
@@ -42,28 +39,23 @@ export interface ReplayOptions {
   effectComparator?: (expected: SerializableEffect, actual: SerializableEffect) => boolean;
 
   /** Callback for each event replayed */
-  onEventReplayed?: (entry: HSMTimelineEntry, effects: MergeEffect[]) => void;
+  onEventReplayed?: (entry: HSMLogEntry, effects: MergeEffect[]) => void;
 
   /** Callback for divergence detected */
   onDivergence?: (divergence: ReplayDivergence) => void;
 }
 
 // =============================================================================
-// Replay Function
+// Log-Based Replay
 // =============================================================================
 
 /**
- * Replay a recording against an HSM instance and check for divergences.
- *
- * The HSM should be in the same initial state as when the recording started.
- * The replay will send each recorded event and compare:
- * - State transitions
- * - Effects emitted
+ * Replay log entries against an HSM instance and check for divergences.
  */
-export function replayRecording(
+export function replayLogEntries(
   hsm: RecordableHSM,
-  recording: HSMRecording,
-  options: ReplayOptions = {}
+  entries: HSMLogEntry[],
+  options: LogReplayOptions = {}
 ): ReplayResult {
   const {
     stopOnDivergence = false,
@@ -77,29 +69,6 @@ export function replayRecording(
   const allEffects: SerializableEffect[] = [];
   let eventsReplayed = 0;
 
-  // Verify initial state matches
-  if (hsm.state.statePath !== recording.initialState.statePath) {
-    const divergence: ReplayDivergence = {
-      seq: -1,
-      type: 'state-mismatch',
-      expected: recording.initialState.statePath,
-      actual: hsm.state.statePath,
-      message: `Initial state mismatch: expected ${recording.initialState.statePath}, got ${hsm.state.statePath}`,
-    };
-    divergences.push(divergence);
-    onDivergence?.(divergence);
-
-    if (stopOnDivergence) {
-      return {
-        success: false,
-        eventsReplayed: 0,
-        divergences,
-        finalStatePath: hsm.state.statePath,
-        allEffects,
-      };
-    }
-  }
-
   // Set up effect capture
   const capturedEffects: MergeEffect[] = [];
   const unsubscribe = hsm.subscribe((effect) => {
@@ -107,30 +76,26 @@ export function replayRecording(
   });
 
   try {
-    // Replay each event
-    for (const entry of recording.timeline) {
-      capturedEffects.length = 0; // Clear captured effects
+    for (const entry of entries) {
+      capturedEffects.length = 0;
 
-      // Deserialize and send the event
       const event = deserializeEvent(entry.event);
       hsm.send(event);
       eventsReplayed++;
 
-      // Serialize captured effects for comparison
       const actualEffects = capturedEffects.map(serializeEffect);
       allEffects.push(...actualEffects);
 
-      // Callback
       onEventReplayed?.(entry, capturedEffects);
 
       // Check state transition
-      if (hsm.state.statePath !== entry.statePathAfter) {
+      if (hsm.state.statePath !== entry.to) {
         const divergence: ReplayDivergence = {
           seq: entry.seq,
           type: 'state-mismatch',
-          expected: entry.statePathAfter,
+          expected: entry.to,
           actual: hsm.state.statePath,
-          message: `State mismatch at seq ${entry.seq} (${entry.event.type}): expected ${entry.statePathAfter}, got ${hsm.state.statePath}`,
+          message: `State mismatch at seq ${entry.seq} (${entry.event.type}): expected ${entry.to}, got ${hsm.state.statePath}`,
         };
         divergences.push(divergence);
         onDivergence?.(divergence);
@@ -198,7 +163,6 @@ function compareEffects(
   const divergences: ReplayDivergence[] = [];
 
   if (strictOrder) {
-    // Compare in order
     const minLen = Math.min(expected.length, actual.length);
     for (let i = 0; i < minLen; i++) {
       if (!comparator(expected[i], actual[i])) {
@@ -212,7 +176,6 @@ function compareEffects(
       }
     }
   } else {
-    // Set comparison (order doesn't matter)
     const actualCopy = [...actual];
     for (const exp of expected) {
       const matchIndex = actualCopy.findIndex((act) => comparator(exp, act));
@@ -229,7 +192,6 @@ function compareEffects(
       }
     }
 
-    // Any remaining actual effects are unexpected
     for (const remaining of actualCopy) {
       divergences.push({
         seq,
@@ -246,10 +208,8 @@ function compareEffects(
 
 /**
  * Default effect comparator.
- * Compares effects by type and essential properties.
- *
- * Note: For effects with Yjs updates (SYNC_TO_REMOTE),
- * we only compare by type since the binary content is non-deterministic.
+ * For effects with Yjs updates (SYNC_TO_REMOTE), only compare by type
+ * since the binary content is non-deterministic.
  */
 function defaultEffectComparator(
   expected: SerializableEffect,
@@ -259,15 +219,11 @@ function defaultEffectComparator(
     return false;
   }
 
-  // For effects with Yjs updates, only compare type
-  // The binary content is non-deterministic across different YDoc instances
   if (expected.type === 'SYNC_TO_REMOTE') {
-    return true; // Type match is sufficient
+    return true;
   }
 
-  // For DISPATCH_CM6, compare the changes structure
   if (expected.type === 'DISPATCH_CM6' && actual.type === 'DISPATCH_CM6') {
-    // Changes should match in position and content
     if (expected.changes.length !== actual.changes.length) {
       return false;
     }
@@ -281,142 +237,89 @@ function defaultEffectComparator(
     return true;
   }
 
-  // Deep comparison with JSON stringify for other effects
   return JSON.stringify(expected) === JSON.stringify(actual);
 }
 
 // =============================================================================
-// Assertion Helpers for Tests
+// Log Entry Filtering/Transformation
 // =============================================================================
 
 /**
- * Assert that replay succeeds with no divergences.
- * Throws an error with details if divergences are found.
+ * Filter log entries to only include certain event types.
  */
-export function assertReplaySucceeds(
-  hsm: RecordableHSM,
-  recording: HSMRecording,
-  options?: ReplayOptions
-): void {
-  const result = replayRecording(hsm, recording, options);
-
-  if (!result.success) {
-    const messages = result.divergences.map((d) => d.message).join('\n  - ');
-    throw new Error(
-      `Replay failed with ${result.divergences.length} divergence(s):\n  - ${messages}`
-    );
-  }
-}
-
-/**
- * Assert that replay produces specific divergences.
- * Useful for testing that the HSM behavior has changed intentionally.
- */
-export function assertReplayDiverges(
-  hsm: RecordableHSM,
-  recording: HSMRecording,
-  expectedDivergenceCount: number,
-  options?: ReplayOptions
-): ReplayResult {
-  const result = replayRecording(hsm, recording, options);
-
-  if (result.divergences.length !== expectedDivergenceCount) {
-    throw new Error(
-      `Expected ${expectedDivergenceCount} divergence(s), got ${result.divergences.length}`
-    );
-  }
-
-  return result;
-}
-
-// =============================================================================
-// Recording Fixture Loader
-// =============================================================================
-
-/**
- * Load a recording from a JSON file (for use in tests).
- * Works in both Node.js (via fs) and browser (via fetch) environments.
- */
-export async function loadRecordingFixture(path: string): Promise<HSMRecording> {
-  if (typeof require !== 'undefined') {
-    // Node.js environment
-    const fs = await import('fs');
-    const json = fs.readFileSync(path, 'utf-8');
-    return JSON.parse(json) as HSMRecording;
-  } else {
-    // Browser environment
-    const response = await fetch(path);
-    return response.json() as Promise<HSMRecording>;
-  }
-}
-
-/**
- * Load all recordings from a directory.
- */
-export async function loadRecordingFixtures(
-  dirPath: string
-): Promise<HSMRecording[]> {
-  if (typeof require !== 'undefined') {
-    // Node.js environment
-    const fs = await import('fs');
-    const path = await import('path');
-    const files = fs.readdirSync(dirPath).filter((f) => f.endsWith('.json'));
-    return Promise.all(
-      files.map((f) => loadRecordingFixture(path.join(dirPath, f)))
-    );
-  } else {
-    throw new Error('loadRecordingFixtures is only available in Node.js');
-  }
-}
-
-// =============================================================================
-// Recording Filtering/Transformation
-// =============================================================================
-
-/**
- * Filter a recording to only include certain event types.
- */
-export function filterRecording(
-  recording: HSMRecording,
+export function filterLogEntries(
+  entries: HSMLogEntry[],
   eventTypes: MergeEvent['type'][]
-): HSMRecording {
+): HSMLogEntry[] {
   const typeSet = new Set(eventTypes);
-  return {
-    ...recording,
-    timeline: recording.timeline.filter((entry) =>
-      typeSet.has(entry.event.type as MergeEvent['type'])
-    ),
-  };
+  return entries.filter((entry) =>
+    typeSet.has(entry.event.type as MergeEvent['type'])
+  );
 }
 
 /**
- * Slice a recording to a specific sequence range.
+ * Slice log entries to a specific sequence range.
  */
-export function sliceRecording(
-  recording: HSMRecording,
-  startSeq: number,
-  endSeq?: number
-): HSMRecording {
-  const end = endSeq ?? recording.timeline.length;
-  return {
-    ...recording,
-    timeline: recording.timeline.filter(
-      (entry) => entry.seq >= startSeq && entry.seq < end
-    ),
-  };
+export function sliceLogEntries(
+  entries: HSMLogEntry[],
+  start: number,
+  end?: number
+): HSMLogEntry[] {
+  const endSeq = end ?? entries.length;
+  return entries.filter(
+    (entry) => entry.seq >= start && entry.seq < endSeq
+  );
 }
 
 /**
- * Find the sequence number where a specific state was reached.
+ * Find the sequence number where a specific state was reached in log entries.
  */
-export function findStateTransition(
-  recording: HSMRecording,
+export function findLogTransition(
+  entries: HSMLogEntry[],
   targetState: StatePath
 ): number | null {
-  for (const entry of recording.timeline) {
-    if (entry.statePathAfter === targetState) {
+  for (const entry of entries) {
+    if (entry.to === targetState) {
       return entry.seq;
     }
   }
   return null;
+}
+
+// =============================================================================
+// Log Fixture Loader
+// =============================================================================
+
+/**
+ * Load log entries from a JSONL file (one JSON per line).
+ */
+export async function loadLogFixture(path: string): Promise<HSMLogEntry[]> {
+  if (typeof require !== 'undefined') {
+    const fs = await import('fs');
+    const content = fs.readFileSync(path, 'utf-8');
+    return content
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as HSMLogEntry);
+  } else {
+    throw new Error('loadLogFixture is only available in Node.js');
+  }
+}
+
+/**
+ * Load all log fixtures from a directory (all .jsonl files).
+ */
+export async function loadLogFixtures(
+  dirPath: string
+): Promise<HSMLogEntry[][]> {
+  if (typeof require !== 'undefined') {
+    const fs = await import('fs');
+    const pathModule = await import('path');
+    const files = fs.readdirSync(dirPath).filter((f) => f.endsWith('.jsonl'));
+    return Promise.all(
+      files.map((f) => loadLogFixture(pathModule.join(dirPath, f)))
+    );
+  } else {
+    throw new Error('loadLogFixtures is only available in Node.js');
+  }
 }
