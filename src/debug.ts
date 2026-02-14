@@ -188,7 +188,7 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 		if (debugging) {
 			const timestamp = new Date().toISOString();
 			const stack = new Error().stack;
-			const callerInfo = stack ? stack.split("\n")[2].trim() : "";
+			const callerInfo = stack?.split("\n")[2]?.trim() ?? "";
 			const serializedArgs = args.map(serializeArg).join(" ");
 
 			const logEntry: LogEntry = {
