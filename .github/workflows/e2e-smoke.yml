@@ -109,6 +109,15 @@ jobs:
           set -eo pipefail
           BRANCH="$1"
 
+          # Start virtual display for headless Obsidian
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          XVFB_PID=$!
+          sleep 1
+
+          # Clean stale test reports from previous runs
+          rm -rf /tmp/test-reports
+
           # Activate GCP service account for gcloud/GCS uploads
           gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
 
@@ -136,6 +145,9 @@ jobs:
           fi
           cd ~/relay-harness && git checkout main && git pull
 
+          # Install playwright test dependencies
+          cd ~/relay-harness/playwright && npm install --ignore-scripts 2>/dev/null
+
           # Run tests using the harness test-branch.sh orchestrator
           export RELAY_PLUGIN_DIR=~/relay-plugin
           cd ~/relay-harness
@@ -156,6 +168,9 @@ jobs:
             echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
             echo '{"reportUrl":"","commit":"","execId":""}' > ~/test-metadata.json
           fi
+
+          # Clean up virtual display
+          kill $XVFB_PID 2>/dev/null || true
 
           exit $TEST_EXIT
           REMOTE_SCRIPT
@@ -253,6 +268,8 @@ jobs:
             await core.summary.write();
 
             // Set job status
-            if ((s.fail || 0) > 0) {
+            if ((s.total || 0) === 0 || summary.state === 'error') {
+              core.setFailed('No tests were executed');
+            } else if ((s.fail || 0) > 0) {
               core.setFailed(`${s.fail} test(s) failed`);
             }
