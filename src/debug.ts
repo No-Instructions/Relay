@@ -277,3 +277,82 @@ const debug = BUILD_TYPE === "debug";
 export function createToast(notifier: INotifier) {
 	return createToastFunction(notifier, debug);
 }
+
+// ============================================================================
+// Metrics Integration (for obsidian-metrics plugin)
+// ============================================================================
+
+import type {
+	IObsidianMetricsAPI,
+	MetricInstance,
+	ObsidianMetricsPlugin,
+} from "./types/obsidian-metrics";
+
+/**
+ * Metrics for Relay - uses obsidian-metrics plugin if available, no-ops otherwise.
+ *
+ * Uses event-based initialization to handle plugin load order. The obsidian-metrics
+ * plugin emits 'obsidian-metrics:ready' when loaded, and metric creation is idempotent.
+ */
+class RelayMetrics {
+	private dbSize: MetricInstance | null = null;
+	private compactions: MetricInstance | null = null;
+	private compactionDuration: MetricInstance | null = null;
+
+	/**
+	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
+	 * Safe to call multiple times - metric creation is idempotent.
+	 */
+	initializeFromAPI(api: IObsidianMetricsAPI): void {
+		this.dbSize = api.createGauge({
+			name: "relay_db_size",
+			help: "Number of updates stored in IndexedDB per document",
+			labelNames: ["document"],
+		});
+		this.compactions = api.createCounter({
+			name: "relay_compactions_total",
+			help: "Total compaction operations",
+			labelNames: ["document"],
+		});
+		this.compactionDuration = api.createHistogram({
+			name: "relay_compaction_duration_seconds",
+			help: "Compaction duration in seconds",
+			labelNames: ["document"],
+			buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+		});
+	}
+
+	setDbSize(document: string, count: number): void {
+		this.dbSize?.labels({ document }).set(count);
+	}
+
+	recordCompaction(document: string, durationSeconds: number): void {
+		this.compactions?.labels({ document }).inc();
+		this.compactionDuration?.labels({ document }).observe(durationSeconds);
+	}
+}
+
+/**
+ * Initialize metrics integration with Obsidian app.
+ * Sets up event listener for obsidian-metrics:ready and checks if already available.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function initializeMetrics(app: any, registerEvent: (eventRef: any) => void): void {
+	// Listen for metrics API becoming available (or re-initializing after reload)
+	registerEvent(
+		app.workspace.on("obsidian-metrics:ready", (api: IObsidianMetricsAPI) => {
+			metrics.initializeFromAPI(api);
+		})
+	);
+
+	// Also try to get it immediately in case metrics plugin loaded first
+	const metricsPlugin = app.plugins?.plugins?.["obsidian-metrics"] as
+		| ObsidianMetricsPlugin
+		| undefined;
+	if (metricsPlugin?.api) {
+		metrics.initializeFromAPI(metricsPlugin.api);
+	}
+}
+
+/** Singleton metrics instance */
+export const metrics = new RelayMetrics();
