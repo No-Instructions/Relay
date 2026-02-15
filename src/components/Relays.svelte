@@ -192,6 +192,8 @@
 	}
 </script>
 
+<!-- E2E: data-view for test selectors -->
+<div data-view="relays">
 <SettingItemHeading name="Join a Relay Server"></SettingItemHeading>
 <SettingGroup>
 	<SettingItem
@@ -346,6 +348,8 @@
 		{/each}
 	</SettingGroup>
 {/if}
+
+</div>
 
 <style>
 	span.faint {
