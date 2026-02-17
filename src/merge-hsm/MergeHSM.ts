@@ -1165,6 +1165,83 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this._fork = null;
 				this.emitPersistState();
 			},
+			reconcileForkInActive: () => {
+				// Reconcile fork when PROVIDER_SYNCED arrives in active mode
+				if (!this._fork || !this.localDoc || !this.remoteDoc) {
+					return;
+				}
+
+				const fork = this._fork;
+				const localContent = this.localDoc.getText("contents").toString();
+
+				// Check if remote has changed since fork
+				const remoteChanged = this._remoteStateVector
+					? stateVectorIsAhead(this._remoteStateVector, fork.remoteStateVector)
+					: false;
+
+				if (!remoteChanged) {
+					// Remote unchanged — disk edit is safe, sync outbound
+					const stateVector = Y.encodeStateVector(this.localDoc);
+					const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
+					if (diffUpdate.length > 0) {
+						Y.applyUpdate(this.remoteDoc, diffUpdate, this);
+						this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
+					}
+
+					// Clear fork and update LCA
+					this._fork = null;
+					this._lca = {
+						contents: localContent,
+						meta: { hash: "", mtime: this.timeProvider.now() },
+						stateVector,
+					};
+					this._localStateVector = stateVector;
+					this._remoteStateVector = stateVector;
+					this._syncGate.pendingInbound = 0;
+					this._syncGate.pendingOutbound = 0;
+					this.emitPersistState();
+					return;
+				}
+
+				// Remote changed — need three-way merge
+				const remoteContent = this.remoteDoc.getText("contents").toString();
+				const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
+
+				if (mergeResult.success) {
+					// Apply merged result to localDoc
+					const beforeMerge = localContent;
+					this.applyContentToLocalDoc(mergeResult.merged);
+
+					// Dispatch granular changes to editor if content changed
+					if (mergeResult.merged !== beforeMerge) {
+						const changes = this.computeDiffChanges(beforeMerge, mergeResult.merged);
+						if (changes.length > 0) {
+							this.emitEffect({ type: "DISPATCH_CM6", changes });
+						}
+					}
+
+					// Clear fork and update LCA
+					const stateVector = Y.encodeStateVector(this.localDoc);
+					this._fork = null;
+					this._lca = {
+						contents: mergeResult.merged,
+						meta: { hash: "", mtime: this.timeProvider.now() },
+						stateVector,
+					};
+					this._localStateVector = stateVector;
+					this._remoteStateVector = stateVector;
+					this._syncGate.pendingInbound = 0;
+					this._syncGate.pendingOutbound = 0;
+					this.emitPersistState();
+
+					// Sync merged result to remote
+					const update = Y.encodeStateAsUpdate(this.localDoc);
+					if (update.length > 0) {
+						this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+					}
+				}
+				// If merge fails, fork stays — user continues editing, we retry later
+			},
 		};
 	}
 

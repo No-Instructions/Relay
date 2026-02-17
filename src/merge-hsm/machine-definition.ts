@@ -313,6 +313,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
 			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote'] },
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'reconcileForkInActive'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.tracking', actions: ['storeError'] },
