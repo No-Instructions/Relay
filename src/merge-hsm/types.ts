@@ -29,6 +29,39 @@ export interface LCAState {
 }
 
 // =============================================================================
+// Fork and SyncGate Types
+// =============================================================================
+
+/**
+ * Snapshot of localDoc state taken before a disk edit is ingested in idle mode.
+ * Enables three-way reconciliation when the provider reconnects and syncs.
+ */
+export interface Fork {
+	/** localDoc content before changes were ingested */
+	base: string;
+	/** Y.js state vector of localDoc at fork point */
+	localStateVector: Uint8Array;
+	/** Y.js state vector of remoteDoc at fork point */
+	remoteStateVector: Uint8Array;
+	/** What created this fork */
+	origin: string;
+	/** When the fork was created (ms since epoch) */
+	created: number;
+}
+
+/**
+ * Controls whether CRDT ops flow between localDoc and remoteDoc.
+ * Gates on: provider connection status, fork existence, and user local-only preference.
+ */
+export interface SyncGate {
+	providerConnected: boolean;
+	providerSynced: boolean;
+	localOnly: boolean;
+	pendingInbound: number;
+	pendingOutbound: number;
+}
+
+// =============================================================================
 // State Types
 // =============================================================================
 
@@ -75,6 +108,12 @@ export interface MergeState {
 		diskHash: string;
 		localHash: string;
 	};
+
+	/**
+	 * Fork state for idle mode reconciliation.
+	 * Present when a disk edit was ingested and awaits provider sync for reconciliation.
+	 */
+	fork?: Fork | null;
 
 	/**
 	 * Network connectivity status.
@@ -481,6 +520,7 @@ export interface PersistedMergeState {
 		diskHash: string;
 		localHash: string;
 	};
+	fork?: Fork | null;
 	persistedAt: number;
 }
 

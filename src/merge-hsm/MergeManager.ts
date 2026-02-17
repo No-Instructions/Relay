@@ -137,6 +137,8 @@ export interface WakeRequest {
   priority: WakePriority;
   /** Raw update bytes to buffer (for P3 wake from remote update) */
   update?: Uint8Array;
+  /** Signal that the document should connect its provider after waking (for fork reconciliation) */
+  connect?: boolean;
 }
 
 export interface HibernationConfig {

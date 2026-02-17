@@ -102,10 +102,19 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.localAhead': {
+		invoke: {
+			src: 'fork-reconcile',
+			onDone: [
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
+				{ target: 'idle.diverged', actions: ['clearForkKeepDiverged'] },
+			],
+			onError: { target: 'idle.diverged', actions: ['clearForkKeepDiverged'] },
+		},
 		on: {
+			PROVIDER_SYNCED: { target: 'idle.localAhead', actions: ['markProviderSynced'], reenter: true },
 			REMOTE_UPDATE: [
 				{ target: 'idle.diverged', guard: 'diskChangedSinceLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
-				{ target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.localAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],
 			DISK_CHANGED: [
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
@@ -142,6 +151,7 @@ export const MACHINE: MachineDefinition = {
 			src: 'idle-merge',
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
 				{ target: 'idle.diverged' },
 			],
 			onError: { target: 'idle.diverged' },
