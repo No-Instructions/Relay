@@ -1331,6 +1331,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this.pendingDiskContents = null;
 		this.emitPersistState();
 
+		// Request provider sync for fork reconciliation
+		this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
+
 		// Return forked: true to signal the machine to transition to idle.localAhead
 		return { success: false, forked: true };
 	}
