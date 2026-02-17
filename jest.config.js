@@ -10,6 +10,8 @@ module.exports = {
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
 		"^src/(.*)$": "<rootDir>/src/$1",
+		"^node-diff3$": "<rootDir>/__mocks__/node-diff3.js",
+		".*/storage/y-indexeddb": "<rootDir>/__mocks__/y-indexeddb.js",
 	},
 	testPathIgnorePatterns: ["/__tests__/mocks/"],
     globals: {

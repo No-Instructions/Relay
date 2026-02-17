@@ -191,6 +191,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _createPersistence: CreatePersistence;
 	private _persistenceMetadata?: PersistenceMetadata;
 	private _diskLoader: DiskLoader;
+	private _isProviderSynced: () => boolean;
 
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
@@ -254,6 +255,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this._persistenceMetadata = config.persistenceMetadata;
 		this._userId = config.userId;
 		this._diskLoader = config.diskLoader;
+		this._isProviderSynced = config.isProviderSynced ?? (() => this._syncGate.providerSynced);
 		this._interpreterConfig = createInterpreterConfig({
 			guards: this.buildGuards(),
 			actions: this.buildActions(),
@@ -789,6 +791,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			// Invoke completion guards
 			mergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
 			forkWasCreated: (_hsm, event) => (event as any).data?.forked === true,
+			awaitingProvider: (_hsm, event) => (event as any).data?.awaitingProvider === true,
+
+			// Fork guard: stay in localAhead when remote updates arrive during fork reconciliation
+			hasFork: () => this._fork !== null,
 
 			// === Cleanup guards ===
 			cleanupWasConflict: (_hsm, event) => {
@@ -1479,10 +1485,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return { success: true, newLCA: this._lca };
 		}
 
-		if (!this._syncGate.providerSynced) {
-			// Provider not synced yet — return failure.
+		if (!this._isProviderSynced()) {
+			// Provider not synced yet — stay in idle.localAhead and wait.
 			// PROVIDER_SYNCED will reenter idle.localAhead, restarting this invoke.
-			return { success: false };
+			return { success: false, awaitingProvider: true };
 		}
 
 		if (!this.localDoc) {

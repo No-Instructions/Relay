@@ -262,18 +262,21 @@ describe('SyncGate', () => {
     const t = await createTestHSM();
     await loadToIdle(t, { content: 'original line', mtime: 1000 });
 
-    // Create conflicting changes
-    t.applyRemoteChange('remote changed this');
-    await t.awaitIdleAutoMerge();
+    // Disk edit creates fork FIRST
+    t.send(await diskChanged('disk changed this', 2000));
+    await t.hsm.awaitIdleAutoMerge();
 
+    // Now in idle.localAhead waiting for provider sync
+    // Remote change arrives AFTER fork was created (creates conflict)
+    t.applyRemoteChange('remote changed this');
+
+    // Provider syncs - fork reconciliation will run diff3 and find conflict
     t.send(connected());
     t.send(providerSynced());
-    t.send(await diskChanged('disk changed this', 2000));
-
-    await t.hsm.awaitIdleAutoMerge();
     await t.hsm.awaitForkReconcile();
 
     // Fork should be cleared (null) even though conflict occurred
+    // (clearForkKeepDiverged clears fork and transitions to idle.diverged)
     expect(t.state.fork).toBeNull();
   });
 });

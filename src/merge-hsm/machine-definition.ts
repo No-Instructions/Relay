@@ -106,6 +106,7 @@ export const MACHINE: MachineDefinition = {
 			src: 'fork-reconcile',
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
+				{ target: 'idle.localAhead', guard: 'awaitingProvider' },
 				{ target: 'idle.diverged', actions: ['clearForkKeepDiverged'] },
 			],
 			onError: { target: 'idle.diverged', actions: ['clearForkKeepDiverged'] },
@@ -113,6 +114,8 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			PROVIDER_SYNCED: { target: 'idle.localAhead', actions: ['markProviderSynced'], reenter: true },
 			REMOTE_UPDATE: [
+				// If fork exists, stay in localAhead and accumulate - fork-reconcile will handle it
+				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.diverged', guard: 'diskChangedSinceLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.localAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],
