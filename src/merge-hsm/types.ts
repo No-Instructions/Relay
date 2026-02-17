@@ -491,6 +491,15 @@ export interface HideConflictDecorationEffect {
 	index: number;
 }
 
+/**
+ * Request provider sync for fork reconciliation.
+ * Emitted when a fork is created and needs remote state to reconcile.
+ */
+export interface RequestProviderSyncEffect {
+	type: "REQUEST_PROVIDER_SYNC";
+	guid: string;
+}
+
 export type MergeEffect =
 	| DispatchCM6Effect
 	| WriteDiskEffect
@@ -498,7 +507,8 @@ export type MergeEffect =
 	| SyncToRemoteEffect
 	| StatusChangedEffect
 	| ShowConflictDecorationsEffect
-	| HideConflictDecorationEffect;
+	| HideConflictDecorationEffect
+	| RequestProviderSyncEffect;
 
 // =============================================================================
 // Persistence Types

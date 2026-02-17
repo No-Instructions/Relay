@@ -346,6 +346,9 @@ export class SharedFolder extends HasProvider {
 					// This is emitted when remote changes need to be written to disk
 					// without an editor open.
 					await this.handleIdleWriteDisk(effect.guid, effect.contents);
+				} else if (effect.type === "REQUEST_PROVIDER_SYNC") {
+					// Fork reconciliation: download remote state and signal provider synced
+					await this.handleRequestProviderSync(effect.guid);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -594,6 +597,54 @@ export class SharedFolder extends HasProvider {
 			this.log(`[handleIdleWriteDisk] Wrote merged content to ${vaultPath}`);
 		} catch (e) {
 			this.warn(`[handleIdleWriteDisk] Failed to write for guid ${guid}:`, e);
+		}
+	}
+
+	/**
+	 * Handle REQUEST_PROVIDER_SYNC effect for fork reconciliation.
+	 *
+	 * When a fork is created (disk edit in idle mode), the HSM needs remote
+	 * state to reconcile. This handler:
+	 * 1. Downloads latest state from server via backgroundSync
+	 * 2. Applies updates to remoteDoc
+	 * 3. Sends CONNECTED + PROVIDER_SYNCED to HSM
+	 * 4. HSM then runs fork reconciliation
+	 */
+	private async handleRequestProviderSync(guid: string): Promise<void> {
+		const file = this.files.get(guid);
+		if (!file || !isDocument(file)) {
+			this.warn(`[handleRequestProviderSync] Document not found for guid: ${guid}`);
+			return;
+		}
+
+		// Skip if document is in active mode - ProviderIntegration handles it
+		if (file.userLock || this.mergeManager?.isActive(guid)) {
+			this.debug?.(`[handleRequestProviderSync] Document ${guid} is in active mode, skipping`);
+			return;
+		}
+
+		try {
+			// Download latest state from server
+			const updateBytes = await this.backgroundSync.enqueueDownload(file);
+
+			// Apply to remoteDoc
+			const remoteDoc = file.ensureRemoteDoc();
+			if (updateBytes) {
+				Y.applyUpdate(remoteDoc, updateBytes, "server");
+			}
+
+			// Update HSM's remoteDoc reference
+			if (file.hsm) {
+				file.hsm.setRemoteDoc(remoteDoc);
+
+				// Signal provider is connected and synced
+				file.hsm.send({ type: "CONNECTED" });
+				file.hsm.send({ type: "PROVIDER_SYNCED" });
+			}
+
+			this.log(`[handleRequestProviderSync] Synced provider for ${guid}`);
+		} catch (e) {
+			this.warn(`[handleRequestProviderSync] Failed for guid ${guid}:`, e);
 		}
 	}
 
