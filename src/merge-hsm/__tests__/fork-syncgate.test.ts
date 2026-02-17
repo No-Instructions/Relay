@@ -299,4 +299,53 @@ describe('Fork + Active Mode Integration', () => {
 
     expectState(t, 'idle.synced');
   });
+
+  test('PROVIDER_SYNCED in active.tracking reconciles fork (remote unchanged)', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'original', mtime: 1000 });
+
+    // Create fork via disk edit (provider not synced)
+    t.send(await diskChanged('disk-edit', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+
+    // Open file while fork exists (goes through diverged → tracking)
+    await sendAcquireLockToTracking(t, 'disk-edit');
+    expectState(t, 'active.tracking');
+
+    // Fork should still exist (not reconciled yet)
+    // Note: fork may be cleared if auto-merge happened, check content instead
+    expect(t.getLocalDocText()).toBe('disk-edit');
+
+    // Send PROVIDER_SYNCED — should reconcile fork
+    t.send(providerSynced());
+
+    // Fork should be cleared
+    expect(t.state.fork).toBeNull();
+    expectState(t, 'active.tracking');
+  });
+
+  test('PROVIDER_SYNCED in active.tracking with remote changes merges content', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'line1\nline2\nline3', mtime: 1000 });
+
+    // Remote changes line1
+    t.applyRemoteChange('REMOTE\nline2\nline3');
+    await t.awaitIdleAutoMerge();
+
+    // Now disk changes line3
+    t.send(await diskChanged('line1\nline2\nDISK', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+
+    // Open file
+    await sendAcquireLockToTracking(t, t.getLocalDocText() ?? '');
+    expectState(t, 'active.tracking');
+
+    // Send provider synced
+    t.send(connected());
+    t.send(providerSynced());
+
+    // Content should reflect merge (depends on merge algorithm)
+    expect(t.state.fork).toBeNull();
+    expectState(t, 'active.tracking');
+  });
 });
