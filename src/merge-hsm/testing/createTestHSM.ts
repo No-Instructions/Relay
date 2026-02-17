@@ -167,6 +167,7 @@ export interface TestableHSM {
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
   awaitCleanup(): Promise<void>;
   awaitIdleAutoMerge(): Promise<void>;
+  awaitForkReconcile(): Promise<void>;
 }
 
 // =============================================================================

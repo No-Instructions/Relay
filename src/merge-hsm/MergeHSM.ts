@@ -49,6 +49,8 @@ import type {
 	IdleMergeCompleteEvent,
 	MachineHSM,
 	ActiveInvoke,
+	Fork,
+	SyncGate,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -115,6 +117,18 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _deferredConflict:
 		| { diskHash: string; localHash: string }
 		| undefined;
+
+	// Fork: snapshot of localDoc state before disk edit ingestion (idle mode)
+	private _fork: Fork | null = null;
+
+	// SyncGate: controls CRDT op flow between localDoc and remoteDoc
+	private _syncGate: SyncGate = {
+		providerConnected: false,
+		providerSynced: false,
+		localOnly: false,
+		pendingInbound: 0,
+		pendingOutbound: 0,
+	};
 
 	// YDocs
 	private localDoc: Y.Doc | null = null; // Alive in idle + active mode; null when unloaded/hibernated
@@ -193,6 +207,18 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
 
+	/** Whether sync operations can proceed (provider connected+synced and no fork) */
+	private get canSync(): boolean {
+		return this._syncGate.providerConnected
+			&& this._syncGate.providerSynced
+			&& this._fork === null;
+	}
+
+	/** Whether sync is actively flowing (canSync and not in local-only mode) */
+	private get isSyncing(): boolean {
+		return this.canSync && !this._syncGate.localOnly;
+	}
+
 	// User ID for PermanentUserData tracking
 	private _userId?: string;
 
@@ -266,6 +292,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			statePath: this._statePath,
 			error: this._error,
 			deferredConflict: this._deferredConflict,
+			fork: this._fork,
 			isOnline: this._isOnline,
 			pendingEditorContent: this.pendingEditorContent ?? undefined,
 			lastKnownEditorText: this.lastKnownEditorText ?? undefined,
@@ -381,6 +408,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 */
 	async awaitIdleAutoMerge(): Promise<void> {
 		await this.awaitAsync('idle-merge');
+	}
+
+	/**
+	 * Wait for any pending fork reconciliation to complete.
+	 * Returns immediately if no fork-reconcile is in progress.
+	 */
+	async awaitForkReconcile(): Promise<void> {
+		await this.awaitAsync('fork-reconcile');
 	}
 
 	/**
@@ -753,6 +788,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 			// Invoke completion guards
 			mergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
+			forkWasCreated: (_hsm, event) => (event as any).data?.forked === true,
 
 			// === Cleanup guards ===
 			cleanupWasConflict: (_hsm, event) => {
@@ -842,6 +878,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._enteringFromDiverged = this._statePath === "idle.diverged";
 				}
 				this._providerSynced = false;
+				this._syncGate.providerSynced = false;
 			},
 
 			// === Lifecycle ===
@@ -878,6 +915,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				} else if (e.updates && e.updates.length > 0) {
 					this._localStateVector = Y.encodeStateVectorFromUpdate(e.updates);
 					this.initialPersistenceUpdates = e.updates;
+				}
+				// Restore fork from persisted state
+				if (e.fork !== undefined) {
+					this._fork = e.fork ?? null;
 				}
 			},
 			initIdleMode: () => {
@@ -1074,12 +1115,44 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			},
 			flushPendingToRemote: () => {
 				this._isOnline = true;
+				this._syncGate.providerConnected = true;
 				if (this.localDoc) {
 					this.syncLocalToRemote();
 				}
 			},
 			setOffline: () => {
 				this._isOnline = false;
+				this._syncGate.providerConnected = false;
+				this._syncGate.providerSynced = false;
+			},
+			markProviderSynced: () => {
+				this._syncGate.providerSynced = true;
+			},
+			clearForkAndUpdateLCA: (_hsm, event) => {
+				this._fork = null;
+				const result = (event as any).data;
+				if (result?.newLCA) {
+					this._lca = result.newLCA;
+					this._localStateVector = result.newLCA.stateVector;
+					this._remoteStateVector = result.newLCA.stateVector;
+				}
+				// Flush pending inbound: apply accumulated remote updates
+				if (this._syncGate.pendingInbound > 0 && this.localDoc && this.remoteDoc) {
+					const update = Y.encodeStateAsUpdate(
+						this.remoteDoc,
+						Y.encodeStateVector(this.localDoc),
+					);
+					if (update.length > 0) {
+						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+					}
+				}
+				this._syncGate.pendingInbound = 0;
+				this._syncGate.pendingOutbound = 0;
+				this.emitPersistState();
+			},
+			clearForkKeepDiverged: () => {
+				this._fork = null;
+				this.emitPersistState();
 			},
 		};
 	}
@@ -1100,6 +1173,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					default:
 						return Promise.resolve({ success: false });
 				}
+			},
+			'fork-reconcile': (_hsm, signal) => {
+				return this.invokeForkReconcile(signal);
 			},
 			'cleanup': async (_hsm, _signal) => {
 				const cleanupType = this._cleanupType;
@@ -1199,8 +1275,17 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		const diskContent = this.pendingDiskContents;
-		const diskHash = this._disk?.hash;
-		const diskMtime = this._disk?.mtime ?? this.timeProvider.now();
+
+		// Snapshot fork BEFORE ingesting disk edit.
+		// The fork captures localDoc's state so that when the provider reconnects
+		// and syncs, we can perform three-way reconciliation (fork.base vs localDoc vs remoteDoc).
+		const fork: Fork = {
+			base: this.localDoc.getText("contents").toString(),
+			localStateVector: Y.encodeStateVector(this.localDoc),
+			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+			origin: 'disk-edit',
+			created: this.timeProvider.now(),
+		};
 
 		// Capture state vector BEFORE modifying (for diff encoding)
 		const previousStateVector = Y.encodeStateVector(this.localDoc);
@@ -1231,21 +1316,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			}, this);
 		}
 
-		// Encode only the DIFF (changes from previous state to new state)
-		const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, previousStateVector);
-		const newStateVector = Y.encodeStateVector(this.localDoc);
-
+		this._fork = fork;
 		this.pendingDiskContents = null;
+		this.emitPersistState();
 
-		const hash = diskHash ?? (await this.hashFn(diskContent));
-		if (signal.aborted) return { success: false };
-
-		this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
-
-		return {
-			success: true,
-			newLCA: { contents: diskContent, meta: { hash, mtime: diskMtime }, stateVector: newStateVector },
-		};
+		// Return forked: true to signal the machine to transition to idle.localAhead
+		return { success: false, forked: true };
 	}
 
 	private async invokeIdleThreeWayAutoMerge(signal: AbortSignal): Promise<unknown> {
@@ -1291,6 +1367,117 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		// Merge conflict — stay in idle.diverged
+		return { success: false };
+	}
+
+	/**
+	 * Fork reconciliation: three-way merge using fork.base as the common ancestor.
+	 *
+	 * Called when entering idle.localAhead after a fork was created.
+	 * If provider is not synced, returns immediately with failure so the invoke
+	 * completes; PROVIDER_SYNCED reenters idle.localAhead which restarts the invoke.
+	 *
+	 * When provider is synced:
+	 * 1. Get remoteDoc content (represents what server has)
+	 * 2. If remote unchanged since fork: disk edit is safe, update LCA
+	 * 3. If remote changed: diff3(localDoc, fork.base, remoteDoc)
+	 */
+	private async invokeForkReconcile(signal: AbortSignal): Promise<unknown> {
+		if (!this._fork) {
+			// No fork — nothing to reconcile
+			return { success: true, newLCA: this._lca };
+		}
+
+		if (!this._syncGate.providerSynced) {
+			// Provider not synced yet — return failure.
+			// PROVIDER_SYNCED will reenter idle.localAhead, restarting this invoke.
+			return { success: false };
+		}
+
+		if (!this.localDoc) {
+			return { success: false };
+		}
+
+		const fork = this._fork;
+		const localContent = this.localDoc.getText("contents").toString();
+
+		// Check if remote has changed since fork
+		const remoteChanged = this._remoteStateVector
+			? stateVectorIsAhead(this._remoteStateVector, fork.remoteStateVector)
+			: false;
+
+		if (!remoteChanged) {
+			// Remote unchanged since fork — disk edit is safe.
+			// Sync localDoc (which has disk edit) to remote.
+			const stateVector = Y.encodeStateVector(this.localDoc);
+			const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
+			this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
+
+			const hash = await this.hashFn(localContent);
+			if (signal.aborted) return { success: false };
+
+			// Write disk to ensure it matches localDoc
+			this.emitEffect({
+				type: "WRITE_DISK",
+				guid: this._guid,
+				contents: localContent,
+			});
+
+			return {
+				success: true,
+				newLCA: {
+					contents: localContent,
+					meta: { hash, mtime: this.timeProvider.now() },
+					stateVector,
+				},
+			};
+		}
+
+		// Remote changed — need three-way merge using fork.base as ancestor.
+		// Get remote content (from remoteDoc if available, otherwise from pending updates).
+		let remoteContent: string;
+		if (this.remoteDoc) {
+			// Apply any pending updates to get latest remote state
+			if (this.pendingIdleUpdates) {
+				Y.applyUpdate(this.remoteDoc, this.pendingIdleUpdates, this.remoteDoc);
+				this.pendingIdleUpdates = null;
+			}
+			remoteContent = this.remoteDoc.getText("contents").toString();
+		} else {
+			// No remoteDoc available — can't reconcile
+			return { success: false };
+		}
+
+		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
+
+		if (mergeResult.success) {
+			// Apply merged result to localDoc
+			this.applyContentToLocalDoc(mergeResult.merged);
+
+			const stateVector = Y.encodeStateVector(this.localDoc);
+			const update = Y.encodeStateAsUpdate(this.localDoc);
+
+			const hash = await this.hashFn(mergeResult.merged);
+			if (signal.aborted) return { success: false };
+
+			this.emitEffect({
+				type: "WRITE_DISK",
+				guid: this._guid,
+				contents: mergeResult.merged,
+			});
+			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+
+			return {
+				success: true,
+				newLCA: {
+					contents: mergeResult.merged,
+					meta: { hash, mtime: this.timeProvider.now() },
+					stateVector,
+				},
+			};
+		}
+
+		// Merge conflict — can't auto-resolve
 		return { success: false };
 	}
 
@@ -1893,6 +2080,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private mergeRemoteToLocal(): void {
 		if (!this.localDoc || !this.remoteDoc) return;
 
+		// Don't merge remote→local while a fork is unreconciled
+		if (this._fork !== null) {
+			this._syncGate.pendingInbound++;
+			return;
+		}
+
 		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
 
@@ -2216,6 +2409,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			localStateVector: this._localStateVector,
 			lastStatePath: this._statePath,
 			deferredConflict: this._deferredConflict,
+			fork: this._fork,
 			persistedAt: this.timeProvider.now(),
 		};
 
