@@ -404,6 +404,10 @@ describe('MergeHSM', () => {
       t.send(await diskChanged(originalContent, 1000));
       expectState(t, 'idle.synced');
 
+      // Mark provider as synced so fork reconciliation can complete
+      t.send(connected());
+      t.send(providerSynced());
+
       // Open, edit, and close with DISK_CHANGED (so LCA gets updated)
       await sendAcquireLockToTracking(t, originalContent);
       t.send(cm6Insert(13, '<!-- e2e-tp002 marker -->', editedContent));
@@ -414,10 +418,11 @@ describe('MergeHSM', () => {
       expect(t.state.lca?.contents).toBe(editedContent);
 
       // Now send DISK_CHANGED with different content (external disk modification).
-      // With localDoc alive, disk auto-merge completes synchronously.
+      // With localDoc alive and provider synced, fork reconciliation completes.
       const divergedDiskContent = editedContent + '\nExtra line from external edit';
       t.send(await diskChanged(divergedDiskContent, 3000));
       await t.hsm.awaitIdleAutoMerge();
+      await t.hsm.awaitForkReconcile();
       expectState(t, 'idle.synced');
 
       // Reopen with the diverged disk content
@@ -940,12 +945,16 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original', mtime: 1000 });
 
+      // Mark provider as synced so fork reconciliation can complete
+      t.send(connected());
+      t.send(providerSynced());
       t.clearEffects();
+
       t.send(await diskChanged('modified content', Date.now()));
 
-      // With localDoc alive, auto-merge completes synchronously within send().
-      // The intermediate idle.diskAhead state is transient.
+      // Disk edit creates fork, fork reconciliation runs immediately (provider synced)
       await t.hsm.awaitIdleAutoMerge();
+      await t.hsm.awaitForkReconcile();
 
       // End state should be clean after auto-merge
       expectState(t, 'idle.synced');
@@ -1130,13 +1139,18 @@ describe('MergeHSM', () => {
     test('idle.diskAhead auto-merges when remote==lca', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
+
+      // Mark provider as synced so fork reconciliation can complete
+      t.send(connected());
+      t.send(providerSynced());
       t.clearEffects();
 
       // Disk changes externally
       t.send(await diskChanged('hello world', 2000));
 
-      // Wait for async idle auto-merge to complete (BUG-034 fix made this async)
+      // Wait for fork creation and reconciliation
       await t.hsm.awaitIdleAutoMerge();
+      await t.hsm.awaitForkReconcile();
 
       // Should auto-merge and emit SYNC_TO_REMOTE
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
@@ -1146,6 +1160,10 @@ describe('MergeHSM', () => {
     test('idle.diverged auto-merges when no conflicts', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'line1\nline2\nline3', mtime: 1000 });
+
+      // Mark provider as synced so fork reconciliation can complete
+      t.send(connected());
+      t.send(providerSynced());
       t.clearEffects();
 
       // Pre-compute disk event before sending remote update to avoid timing issues
@@ -1159,8 +1177,9 @@ describe('MergeHSM', () => {
       // Then disk changes line3 - diverged but mergeable
       t.send(diskEvent);
 
-      // Wait for async 3-way merge to complete
-      await t.awaitIdleAutoMerge();
+      // Wait for fork reconciliation (3-way merge)
+      await t.hsm.awaitIdleAutoMerge();
+      await t.hsm.awaitForkReconcile();
 
       // 3-way merge should succeed - back to clean
       expectState(t, 'idle.synced');
@@ -1326,16 +1345,21 @@ describe('MergeHSM', () => {
   describe('state vector merge routing', () => {
     test('disk-only merge when remote state vector equals LCA', async () => {
       // After loadToIdle, LCA and remote share the same state vector.
-      // A disk change should take the disk-only path (SYNC_TO_REMOTE, no WRITE_DISK).
+      // A disk change creates a fork, fork reconciliation syncs to remote.
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original', mtime: 1000 });
+
+      // Mark provider as synced so fork reconciliation can complete
+      t.send(connected());
+      t.send(providerSynced());
       t.clearEffects();
 
       // Disk changes but remote hasn't changed since LCA
       t.send(await diskChanged('original modified', 2000));
       await t.hsm.awaitIdleAutoMerge();
+      await t.hsm.awaitForkReconcile();
 
-      // Disk-only merge emits SYNC_TO_REMOTE (push disk content to remote)
+      // Fork reconciliation emits SYNC_TO_REMOTE (push disk content to remote)
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
       // Should NOT emit WRITE_DISK (disk already has the content)
       expectNoEffect(t.effects, { type: 'WRITE_DISK' });
@@ -1385,11 +1409,16 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'base', mtime: 1000 });
 
+      // Mark provider as synced so fork reconciliation can complete
+      t.send(connected());
+      t.send(providerSynced());
+
       // Disk changes first
       t.send(await diskChanged('base disk', 2000));
       await t.hsm.awaitIdleAutoMerge();
+      await t.hsm.awaitForkReconcile();
 
-      // After disk-only merge, we're back to synced with updated LCA
+      // After fork reconciliation, we're back to synced with updated LCA
       expectState(t, 'idle.synced');
       t.clearEffects();
 

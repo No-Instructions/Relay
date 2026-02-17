@@ -267,6 +267,10 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     return baseDiskLoader();
   };
 
+  // Track provider state for isProviderSynced callback
+  // This simulates querying provider.synced directly
+  const providerState = { connected: false, synced: false };
+
   // Use production hashFn (defaultHashFn uses SubtleCrypto, already async)
   const hsm = new MergeHSM({
     guid,
@@ -276,6 +280,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     timeProvider: time,
     createPersistence,
     diskLoader,
+    isProviderSynced: () => providerState.synced,
   });
 
   // Capture effects for test assertions
@@ -292,6 +297,15 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   });
 
   const wrappedSend = (event: MergeEvent) => {
+    // Track provider state to simulate querying provider.synced
+    if (event.type === 'CONNECTED') {
+      providerState.connected = true;
+    } else if (event.type === 'DISCONNECTED') {
+      providerState.connected = false;
+      providerState.synced = false;  // Provider clears synced on disconnect
+    } else if (event.type === 'PROVIDER_SYNCED') {
+      providerState.synced = true;
+    }
     hsm.send(event);
   };
 

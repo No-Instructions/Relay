@@ -718,6 +718,13 @@ export interface MergeHSMConfig {
 	 * This avoids disk reads when re-opening already-enrolled files.
 	 */
 	diskLoader: DiskLoader;
+
+	/**
+	 * Query whether the provider is connected and synced.
+	 * Used by fork-reconcile to determine if it can proceed with reconciliation.
+	 * If not provided, defaults to checking internal _syncGate state.
+	 */
+	isProviderSynced?: () => boolean;
 }
 
 // =============================================================================
