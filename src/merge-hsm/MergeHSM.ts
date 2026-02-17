@@ -1146,6 +1146,17 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
 					}
 				}
+				// Flush pending outbound: sync accumulated local changes to remote
+				if (this._syncGate.pendingOutbound > 0 && this.localDoc && this.remoteDoc) {
+					const update = Y.encodeStateAsUpdate(
+						this.localDoc,
+						Y.encodeStateVector(this.remoteDoc),
+					);
+					if (update.length > 0) {
+						Y.applyUpdate(this.remoteDoc, update, this);
+						this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+					}
+				}
 				this._syncGate.pendingInbound = 0;
 				this._syncGate.pendingOutbound = 0;
 				this.emitPersistState();
@@ -2057,6 +2068,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// heuristics, that is always the wrong approach. The error is in the sender.
 	private syncLocalToRemote(): void {
 		if (!this.localDoc || !this.remoteDoc) return;
+
+		// Don't sync local→remote while a fork is unreconciled
+		if (this._fork !== null) {
+			this._syncGate.pendingOutbound++;
+			return;
+		}
 
 		const update = Y.encodeStateAsUpdate(
 			this.localDoc,
