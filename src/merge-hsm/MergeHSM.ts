@@ -1186,6 +1186,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this._fork = null;
 				this.emitPersistState();
 			},
+			ingestDiskToLocalDoc: () => {
+				if (this.pendingDiskContents !== null) {
+					this.applyContentToLocalDoc(this.pendingDiskContents);
+				}
+			},
 			reconcileForkInActive: () => {
 				// Reconcile fork when PROVIDER_SYNCED arrives in active mode
 				if (!this._fork || !this.localDoc || !this.remoteDoc) {
