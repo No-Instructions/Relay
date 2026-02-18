@@ -73,6 +73,15 @@ export class DiskIntegration {
     // Subscribe to HSM effects for WRITE_DISK (filter by guid for rename safety)
     this.unsubscribeHSM = hsm.effects.subscribe(async (effect) => {
       if (effect.type === 'WRITE_DISK' && effect.guid === hsm.guid) {
+        // Fail-closed interlock: never write to disk when Obsidian has the file open
+        if (hsm.isObsidianFileOpen) {
+          console.error(
+            '[DiskIntegration] FATAL: WRITE_DISK blocked - Obsidian has file open:',
+            hsm.path,
+            'state:', hsm.statePath
+          );
+          return;
+        }
         await this.writeToDisk(effect.contents);
       }
     });

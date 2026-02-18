@@ -130,6 +130,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		pendingOutbound: 0,
 	};
 
+	// Obsidian file lifecycle tracking (from workspace events)
+	private _obsidianFileOpen: boolean = false;
+
 	// YDocs
 	private localDoc: Y.Doc | null = null; // Alive in idle + active mode; null when unloaded/hibernated
 	private remoteDoc: Y.Doc | null; // Lazily provided, managed externally. Null when hibernated.
@@ -340,6 +343,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 */
 	get isOnline(): boolean {
 		return this._isOnline;
+	}
+
+	/**
+	 * Check if Obsidian has the file open (based on workspace events).
+	 * Used as a fail-closed interlock for disk writes.
+	 */
+	get isObsidianFileOpen(): boolean {
+		return this._obsidianFileOpen;
 	}
 
 	getLocalDoc(): Y.Doc | null {
@@ -1248,6 +1259,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				}
 				// If merge fails, fork stays — user continues editing, we retry later
 			},
+
+			// === Obsidian file lifecycle tracking ===
+			setObsidianFileOpen: () => {
+				this._obsidianFileOpen = true;
+			},
+			setObsidianFileClosed: () => {
+				this._obsidianFileOpen = false;
+			},
 		};
 	}
 
@@ -1583,6 +1602,16 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// ===========================================================================
 
 	private handleEvent(event: MergeEvent): void {
+		// Handle Obsidian file lifecycle events (diagnostic, all states)
+		if (event.type === 'OBSIDIAN_FILE_OPENED') {
+			this._obsidianFileOpen = true;
+			return; // Diagnostic only, no state transition
+		}
+		if (event.type === 'OBSIDIAN_FILE_UNLOADED') {
+			this._obsidianFileOpen = false;
+			return; // Diagnostic only, no state transition
+		}
+
 		processEvent(this, event, MACHINE, this._interpreterConfig);
 	}
 
