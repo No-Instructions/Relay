@@ -1591,7 +1591,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * Create localDoc and localPersistence if they don't exist.
 	 * Used when entering idle mode to keep docs alive for auto-merge.
 	 */
-	private ensureLocalDocForIdle(): void {
+	ensureLocalDocForIdle(): void {
 		if (!this.localDoc) {
 			this.localDoc = new Y.Doc();
 			if (this._localDocClientID !== null) {
@@ -2125,28 +2125,41 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	}
 
 	/**
-	 * Full teardown (unload, hibernation).
-	 * Destroys localPersistence (awaits pending writes) and localDoc.
-	 * Caller handles remoteDoc destruction.
+	 * Destroy localDoc and persistence (for unload and hibernation).
+	 *
+	 * Nulls out references synchronously so callers see localDoc === null
+	 * immediately, then awaits pending IndexedDB writes on the captured
+	 * references. This prevents races where wake() recreates localDoc
+	 * while the async cleanup is still running.
+	 *
+	 * Caller handles remoteDoc separately.
 	 */
-	private async destroyLocalDoc(): Promise<void> {
-		// Clean up Y.Text observer if still attached
-		if (this.localDoc && this.localTextObserver) {
-			const ytext = this.localDoc.getText("contents");
-			ytext.unobserve(this.localTextObserver);
-			this.localTextObserver = null;
+	async destroyLocalDoc(): Promise<void> {
+		// Capture current references before nulling — async cleanup
+		// operates on these, not on this.localDoc / this.localPersistence
+		// which may be replaced by ensureLocalDocForIdle() during the await.
+		const doc = this.localDoc;
+		const persistence = this.localPersistence;
+		const observer = this.localTextObserver;
+
+		// Null out immediately (synchronous) so the HSM is in a clean
+		// state for any subsequent ensureLocalDocForIdle() call.
+		this.localDoc = null;
+		this.localPersistence = null;
+		this.localTextObserver = null;
+
+		// Clean up captured references
+		if (doc && observer) {
+			const ytext = doc.getText("contents");
+			ytext.unobserve(observer);
 		}
 
-		if (this.localPersistence) {
-			// Await destroy to ensure pending IndexedDB writes complete
-			await this.localPersistence.destroy();
-			this.localPersistence = null;
+		if (persistence) {
+			await persistence.destroy();
 		}
-		if (this.localDoc) {
-			this.localDoc.destroy();
-			this.localDoc = null;
+		if (doc) {
+			doc.destroy();
 		}
-		// Do NOT destroy remoteDoc - it's managed externally
 	}
 
 

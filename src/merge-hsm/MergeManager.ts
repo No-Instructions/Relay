@@ -412,6 +412,9 @@ export class MergeManager {
     const hsm = doc?.hsm;
     if (!hsm) return;
 
+    // Recreate localDoc destroyed during hibernation
+    hsm.ensureLocalDocForIdle();
+
     // Attach remoteDoc to HSM
     hsm.setRemoteDoc(remoteDoc);
 
@@ -444,6 +447,10 @@ export class MergeManager {
     const hsm = doc?.hsm;
     if (hsm) {
       hsm.setRemoteDoc(null);
+      // destroyLocalDoc() nulls out references synchronously, then does
+      // async IDB cleanup on the captured refs. Fire-and-forget is safe
+      // because wake → ensureLocalDocForIdle() creates fresh instances.
+      hsm.destroyLocalDoc();
     }
 
     this.clearHibernateTimer(guid);
@@ -846,8 +853,10 @@ export class MergeManager {
 
         this._wakingDocs.add(request.guid);
 
+        // Recreate localDoc destroyed during hibernation
+        hsm.ensureLocalDocForIdle();
+
         // Background wake: drain buffer and mark warm.
-        // The HSM processes updates doc-less (via pendingIdleUpdates).
         const buffered = this._hibernationBuffer.get(request.guid);
         if (buffered) {
           hsm.send({ type: 'REMOTE_UPDATE', update: buffered });
