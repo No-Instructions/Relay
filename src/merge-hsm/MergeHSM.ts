@@ -1055,6 +1055,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			beginReleaseLock: () => {
 				this._cleanupWasConflict = this._statePath.includes("conflict");
 				this._cleanupType = 'release';
+				this._syncGate.providerSynced = false;
+				if (this._fork) {
+					this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
+				}
 			},
 
 			// === Active entering/tracking actions ===
@@ -1217,6 +1221,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._syncGate.pendingInbound = 0;
 					this._syncGate.pendingOutbound = 0;
 					this.emitPersistState();
+					this.patchLCAHash(localContent, stateVector);
 					return;
 				}
 
@@ -1250,6 +1255,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._syncGate.pendingInbound = 0;
 					this._syncGate.pendingOutbound = 0;
 					this.emitPersistState();
+					this.patchLCAHash(mergeResult.merged, stateVector);
 
 					// Sync merged result to remote
 					const update = Y.encodeStateAsUpdate(this.localDoc);
@@ -1430,6 +1436,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		this._fork = fork;
+		this._syncGate.providerSynced = false;
 		this.pendingDiskContents = null;
 		this.emitPersistState();
 
@@ -1490,17 +1497,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * Fork reconciliation: three-way merge using fork.base as the common ancestor.
 	 *
 	 * Called when entering idle.localAhead after a fork was created.
-	 * If provider is not synced, returns immediately with failure so the invoke
-	 * completes; PROVIDER_SYNCED reenters idle.localAhead which restarts the invoke.
+	 * If provider is not synced, returns immediately with awaitingProvider so the
+	 * invoke completes; PROVIDER_SYNCED reenters idle.localAhead which restarts it.
 	 *
-	 * When provider is synced:
-	 * 1. Get remoteDoc content (represents what server has)
-	 * 2. If remote unchanged since fork: disk edit is safe, update LCA
-	 * 3. If remote changed: diff3(localDoc, fork.base, remoteDoc)
+	 * When provider is synced, runs diff3(localDoc, fork.base, remoteDoc):
+	 * - Success: write disk, sync to remote, clear fork, update LCA → idle.synced
+	 * - Conflict: → idle.diverged
 	 */
 	private async invokeForkReconcile(signal: AbortSignal): Promise<unknown> {
 		if (!this._fork) {
-			// No fork — nothing to reconcile
 			return { success: true, newLCA: this._lca };
 		}
 
@@ -1510,64 +1515,23 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return { success: false, awaitingProvider: true };
 		}
 
-		if (!this.localDoc) {
+		if (!this.localDoc || !this.remoteDoc) {
 			return { success: false };
 		}
 
 		const fork = this._fork;
 		const localContent = this.localDoc.getText("contents").toString();
 
-		// Check if remote has changed since fork
-		const remoteChanged = this._remoteStateVector
-			? stateVectorIsAhead(this._remoteStateVector, fork.remoteStateVector)
-			: false;
-
-		if (!remoteChanged) {
-			// Remote unchanged since fork — disk edit is safe.
-			// Sync localDoc (which has disk edit) to remote.
-			const stateVector = Y.encodeStateVector(this.localDoc);
-			const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
-			this.emitEffect({ type: "SYNC_TO_REMOTE", update: diffUpdate });
-
-			const hash = await this.hashFn(localContent);
-			if (signal.aborted) return { success: false };
-
-			// Write disk to ensure it matches localDoc
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: localContent,
-			});
-
-			return {
-				success: true,
-				newLCA: {
-					contents: localContent,
-					meta: { hash, mtime: this.timeProvider.now() },
-					stateVector,
-				},
-			};
+		// Apply any pending remote updates before reading remoteDoc content
+		if (this.pendingIdleUpdates) {
+			Y.applyUpdate(this.remoteDoc, this.pendingIdleUpdates, this.remoteDoc);
+			this.pendingIdleUpdates = null;
 		}
-
-		// Remote changed — need three-way merge using fork.base as ancestor.
-		// Get remote content (from remoteDoc if available, otherwise from pending updates).
-		let remoteContent: string;
-		if (this.remoteDoc) {
-			// Apply any pending updates to get latest remote state
-			if (this.pendingIdleUpdates) {
-				Y.applyUpdate(this.remoteDoc, this.pendingIdleUpdates, this.remoteDoc);
-				this.pendingIdleUpdates = null;
-			}
-			remoteContent = this.remoteDoc.getText("contents").toString();
-		} else {
-			// No remoteDoc available — can't reconcile
-			return { success: false };
-		}
+		const remoteContent = this.remoteDoc.getText("contents").toString();
 
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
-			// Apply merged result to localDoc
 			this.applyContentToLocalDoc(mergeResult.merged);
 
 			const stateVector = Y.encodeStateVector(this.localDoc);
@@ -2095,6 +2059,27 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			}
 		}
 		return changes;
+	}
+
+	/**
+	 * Asynchronously compute the hash for a just-established LCA and patch it in.
+	 * Called after reconcileForkInActive sets an LCA with an empty hash placeholder.
+	 * Checks that the LCA state vector still matches before patching, so stale
+	 * results from superseded reconciliations are safely ignored.
+	 */
+	private patchLCAHash(content: string, stateVector: Uint8Array): void {
+		this.hashFn(content).then((hash) => {
+			if (
+				this._lca &&
+				this._lca.meta.hash === "" &&
+				stateVectorsEqual(this._lca.stateVector, stateVector)
+			) {
+				this._lca = { ...this._lca, meta: { ...this._lca.meta, hash } };
+				this.emitPersistState();
+			}
+		}).catch(() => {
+			// Hash failure is non-fatal; deactivateEditor will compute a correct LCA on close.
+		});
 	}
 
 	/**
