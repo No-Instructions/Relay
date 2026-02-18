@@ -474,9 +474,11 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) return;
 
-		// Skip if document is active - ProviderIntegration handles updates
-		// through the y-protocols sync channel with proper origin filtering
-		if (this.mergeManager.isActive(guid)) {
+		// Skip direct update injection when active — ProviderIntegration handles
+		// it through the y-protocols sync channel with proper origin filtering.
+		// The enqueueDownload path is safe in all cases (fetches server state),
+		// so only skip when direct injection is enabled.
+		if (this.mergeManager.isActive(guid) && flags().enableDirectRemoteUpdates) {
 			return;
 		}
 
