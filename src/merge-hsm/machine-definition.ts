@@ -121,7 +121,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			DISK_CHANGED: [
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
-				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
