@@ -1986,6 +1986,7 @@ export class SharedFolder extends HasProvider {
 					doc.destroy();
 				}
 			}, this);
+			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
 		} else {
 			// syncStore entry already gone (remote delete) - find by path
 			const doc = this.fset.find((f) => f.path === vpath);
@@ -1995,6 +1996,7 @@ export class SharedFolder extends HasProvider {
 				this.files.delete(docGuid);
 				doc.cleanup();
 				doc.destroy();
+				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${docGuid}`);
 			}
 		}
 	}
@@ -2083,10 +2085,12 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
+
 		this.files.forEach((doc: IFile) => {
 			doc.destroy();
 			this.files.delete(doc.guid);
 		});
+
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
@@ -2109,6 +2113,7 @@ export class SharedFolder extends HasProvider {
 		this.readyPromise = null as any;
 		this.syncFileTreePromise?.destroy();
 		this.syncFileTreePromise = null as any;
+
 	}
 }
 
@@ -2155,11 +2160,23 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	}
 
 	public delete(item: SharedFolder): boolean {
+		// Collect IDB database names before destroy nulls references
+		const dbNames: string[] = [];
+		if (item) {
+			item.files.forEach((doc: IFile) => {
+				dbNames.push(`${item.appId}-relay-doc-${doc.guid}`);
+			});
+			dbNames.push(item.guid);
+		}
 		item?.destroy();
 		const deleted = super.delete(item);
 		this.settings.update((current) => {
 			return current.filter((settings) => settings.guid !== item.guid);
 		});
+		// Delete IDB databases after in-memory objects are destroyed
+		for (const name of dbNames) {
+			indexedDB.deleteDatabase(name);
+		}
 		return deleted;
 	}
 
