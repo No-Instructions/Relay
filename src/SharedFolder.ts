@@ -299,8 +299,8 @@ export class SharedFolder extends HasProvider {
 				return file;
 			},
 			timeProvider: undefined, // Use default
-			createPersistence: (vaultId, doc, userId) =>
-				new IndexeddbPersistence(vaultId, doc, userId),
+			createPersistence: (vaultId, doc, userId, captureOpts) =>
+				new IndexeddbPersistence(vaultId, doc, userId, captureOpts),
 			getDiskState: async (docPath: string) => {
 				// docPath is SharedFolder-relative (e.g., "/note.md")
 				const vaultPath = this.getPath(docPath);

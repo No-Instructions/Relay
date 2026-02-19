@@ -51,6 +51,7 @@ import type {
 	ActiveInvoke,
 	Fork,
 	SyncGate,
+	CaptureOpts,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -59,6 +60,7 @@ import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
+import { DISK_ORIGIN, OpCapture, CapturedOp } from "./undo";
 
 // =============================================================================
 // Simple Observable for HSM
@@ -120,6 +122,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	// Fork: snapshot of localDoc state before disk edit ingestion (idle mode)
 	private _fork: Fork | null = null;
+
+	// "After" snapshot of each disk ingestion within the current fork.
+	// Each ingestDisk call pushes one entry, giving 1:1 correspondence
+	// with CapturedOp entries from OpCapture. Cleared when the fork is cleared.
+	private _ingestionTexts: string[] = [];
 
 	// SyncGate: controls CRDT op flow between localDoc and remoteDoc
 	private _syncGate: SyncGate = {
@@ -195,6 +202,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _persistenceMetadata?: PersistenceMetadata;
 	private _diskLoader: DiskLoader;
 	private _isProviderSynced: () => boolean;
+	private _captureOpts: CaptureOpts | null;
 
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
@@ -221,6 +229,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	/** Whether sync is actively flowing (canSync and not in local-only mode) */
 	private get isSyncing(): boolean {
 		return this.canSync && !this._syncGate.localOnly;
+	}
+
+	private getOpCapture(): OpCapture | null {
+		return this.localPersistence?.opCapture ?? null;
 	}
 
 	// User ID for PermanentUserData tracking
@@ -259,6 +271,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this._userId = config.userId;
 		this._diskLoader = config.diskLoader;
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._syncGate.providerSynced);
+		this._captureOpts = {
+			scope: "contents",
+			trackedOrigins: new Set([DISK_ORIGIN]),
+			captureTimeout: 0,
+		};
 		this._interpreterConfig = createInterpreterConfig({
 			guards: this.buildGuards(),
 			actions: this.buildActions(),
@@ -542,6 +559,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.vaultId,
 				this.localDoc,
 				this._userId,
+				this._captureOpts,
 			);
 		}
 		await this.localPersistence.whenSynced;
@@ -1151,6 +1169,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			},
 			clearForkAndUpdateLCA: (_hsm, event) => {
 				this._fork = null;
+				this._ingestionTexts = [];
 				const result = (event as any).data;
 				if (result?.newLCA) {
 					this._lca = result.newLCA;
@@ -1184,11 +1203,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			},
 			clearForkKeepDiverged: () => {
 				this._fork = null;
+				this._ingestionTexts = [];
 				this.emitPersistState();
 			},
 			ingestDiskToLocalDoc: () => {
 				if (this.pendingDiskContents !== null) {
-					this.applyContentToLocalDoc(this.pendingDiskContents);
+					this.applyContentToLocalDoc(this.pendingDiskContents, DISK_ORIGIN);
+					this._ingestionTexts.push(this.pendingDiskContents);
 				}
 			},
 			reconcileForkInActive: () => {
@@ -1206,7 +1227,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					: false;
 
 				if (!remoteChanged) {
-					// Remote unchanged — disk edit is safe, sync outbound
+					// Remote unchanged — disk edit is confirmed safe, drop captured ops
+					const opCapture = this.getOpCapture();
+					if (opCapture && fork.captureMark != null) {
+						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
+						opCapture.drop(diskOps);
+					}
+
 					const stateVector = Y.encodeStateVector(this.localDoc);
 					const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
 					if (diffUpdate.length > 0) {
@@ -1216,6 +1243,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 					// Clear fork and update LCA
 					this._fork = null;
+					this._ingestionTexts = [];
 					this._lca = {
 						contents: localContent,
 						meta: { hash: "", mtime: this.timeProvider.now() },
@@ -1235,6 +1263,25 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 				if (mergeResult.success) {
+					// Reverse redundant / drop unique disk ops before applying merged result
+					const opCapture = this.getOpCapture();
+					if (opCapture && fork.captureMark != null) {
+						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
+						const redundant: CapturedOp[] = [];
+						const unique: CapturedOp[] = [];
+						diskOps.forEach((op, i) => {
+							const beforeText = i === 0 ? fork.base : this._ingestionTexts[i - 1];
+							const afterText = this._ingestionTexts[i];
+							if (afterText != null && isRedundantWithRemote(beforeText, afterText, remoteContent)) {
+								redundant.push(op);
+							} else {
+								unique.push(op);
+							}
+						});
+						opCapture.reverse(redundant);
+						opCapture.drop(unique);
+					}
+
 					// Apply merged result to localDoc
 					const beforeMerge = localContent;
 					this.applyContentToLocalDoc(mergeResult.merged);
@@ -1250,6 +1297,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					// Clear fork and update LCA
 					const stateVector = Y.encodeStateVector(this.localDoc);
 					this._fork = null;
+					this._ingestionTexts = [];
 					this._lca = {
 						contents: mergeResult.merged,
 						meta: { hash: "", mtime: this.timeProvider.now() },
@@ -1283,7 +1331,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	private buildInvokeSources(): Record<string, InvokeSourceFn> {
 		return {
-			'idle-merge': (_hsm, signal) => {
+			'idle-merge': async (_hsm, signal) => {
+				// Entry action ensureLocalDocForIdle creates localDoc +
+				// persistence. Await persistence sync before merging
+				// (e.g. after waking from hibernation).
+				if (this.localPersistence && !this.localPersistence.synced) {
+					await this.localPersistence.whenSynced;
+					if (signal.aborted) return { success: false };
+				}
+
 				// Dispatch to the right merge based on which idle state spawned the invoke.
 				// The interpreter spawns invokes on state entry, so _statePath is
 				// the state that declared the invoke.
@@ -1298,7 +1354,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						return Promise.resolve({ success: false });
 				}
 			},
-			'fork-reconcile': (_hsm, signal) => {
+			'fork-reconcile': async (_hsm, signal) => {
+				if (this.localPersistence && !this.localPersistence.synced) {
+					await this.localPersistence.whenSynced;
+					if (signal.aborted) return { success: false };
+				}
 				return this.invokeForkReconcile(signal);
 			},
 			'cleanup': async (_hsm, _signal) => {
@@ -1409,6 +1469,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
 			origin: 'disk-edit',
 			created: this.timeProvider.now(),
+			captureMark: this.getOpCapture()?.mark() ?? 0,
 		};
 
 		// Capture state vector BEFORE modifying (for diff encoding)
@@ -1437,10 +1498,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 							break;
 					}
 				}
-			}, this);
+			}, DISK_ORIGIN);
 		}
 
 		this._fork = fork;
+		this._ingestionTexts.push(diskContent);
 		this._syncGate.providerSynced = false;
 		this.pendingDiskContents = null;
 		this.emitPersistState();
@@ -1537,6 +1599,26 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
+			// Reverse redundant / drop unique disk ops before applying merged result
+			const opCapture = this.getOpCapture();
+			if (opCapture && fork.captureMark != null) {
+				const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
+				const redundant: CapturedOp[] = [];
+				const unique: CapturedOp[] = [];
+				diskOps.forEach((op, i) => {
+					const beforeText = i === 0 ? fork.base : this._ingestionTexts[i - 1];
+					const afterText = this._ingestionTexts[i];
+					if (afterText != null && isRedundantWithRemote(beforeText, afterText, remoteContent)) {
+						redundant.push(op);
+					} else {
+						unique.push(op);
+					}
+				});
+				opCapture.reverse(redundant);
+				opCapture.drop(unique);
+			}
+			this._ingestionTexts = [];
+
 			this.applyContentToLocalDoc(mergeResult.merged);
 
 			const stateVector = Y.encodeStateVector(this.localDoc);
@@ -1602,6 +1684,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.vaultId,
 				this.localDoc,
 				this._userId,
+				this._captureOpts,
 			);
 
 			// Do NOT apply initialPersistenceUpdates here. The persistence
@@ -1881,6 +1964,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.vaultId,
 				this.localDoc,
 				this._userId,
+				this._captureOpts,
 			);
 		}
 
@@ -2242,8 +2326,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 *
 	 * INVARIANT: Never uses delete-all/insert-all pattern. Uses diff-match-patch
 	 * to compute minimal edits that preserve CRDT operational history.
+	 *
+	 * @param origin - Transaction origin. Pass DISK_ORIGIN for disk ingestion
+	 *   so OpCapture can track these operations. Defaults to `this`.
 	 */
-	private applyContentToLocalDoc(newContent: string): void {
+	private applyContentToLocalDoc(newContent: string, origin?: any): void {
 		if (!this.localDoc) return;
 
 		const ytext = this.localDoc.getText("contents");
@@ -2273,7 +2360,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						break;
 				}
 			}
-		}, this);
+		}, origin ?? this);
 
 		this.syncLocalToRemote();
 	}
@@ -2672,6 +2759,7 @@ const defaultCreatePersistence: CreatePersistence = (
 	_vaultId: string,
 	doc: Y.Doc,
 	_userId?: string,
+	_captureOpts?: CaptureOpts | null,
 ): IYDocPersistence => {
 	let hasContent = false;
 	return {
@@ -2703,6 +2791,34 @@ async function defaultHashFn(contents: string): Promise<string> {
 }
 
 // =============================================================================
+// OpCapture: Redundancy Detection
+// =============================================================================
+
+/**
+ * Returns true if all text changes the disk op made (beforeText → afterText)
+ * are already present in remoteText. Uses newline-as-explicit-token comparison
+ * (same tokenization as diff3) so adjacent-line changes are checked independently.
+ */
+function isRedundantWithRemote(
+	beforeText: string,
+	afterText: string,
+	remoteText: string,
+): boolean {
+	const tok = (s: string) => s.split(/(\n)/);
+	const beforeTok = tok(beforeText);
+	const afterTok = tok(afterText);
+	const remoteTok = tok(remoteText);
+	const maxLen = Math.max(beforeTok.length, afterTok.length);
+	for (let i = 0; i < maxLen; i++) {
+		const b = beforeTok[i] ?? "";
+		const a = afterTok[i] ?? "";
+		const r = remoteTok[i] ?? "";
+		if (a !== b && a !== r) return false;
+	}
+	return true;
+}
+
+// =============================================================================
 // 3-Way Merge Implementation
 // =============================================================================
 
@@ -2711,11 +2827,12 @@ function performThreeWayMerge(
 	local: string,
 	remote: string,
 ): MergeResult {
-	const lcaLines = lca.split("\n");
-	const localLines = local.split("\n");
-	const remoteLines = remote.split("\n");
+	const tok = (s: string) => s.split(/(\n)/);
+	const lcaTokens = tok(lca);
+	const localTokens = tok(local);
+	const remoteTokens = tok(remote);
 
-	const result = diff3Merge(localLines, lcaLines, remoteLines);
+	const result = diff3Merge(localTokens, lcaTokens, remoteTokens);
 
 	const hasConflict = result.some(
 		(region: {
@@ -2734,13 +2851,13 @@ function performThreeWayMerge(
 		};
 	}
 
-	const mergedLines: string[] = [];
+	const mergedTokens: string[] = [];
 	for (const region of result) {
 		if ("ok" in region && region.ok) {
-			mergedLines.push(...region.ok);
+			mergedTokens.push(...region.ok);
 		}
 	}
-	const merged = mergedLines.join("\n");
+	const merged = mergedTokens.join("");
 
 	const patches = computeDiffMatchPatchChanges(local, merged);
 
@@ -2773,14 +2890,14 @@ function extractConflictRegions(
 	let lineOffset = 0;
 	for (const region of result) {
 		if ("conflict" in region && region.conflict) {
-			const { a: localLines, o: baseLines, b: remoteLines } = region.conflict;
+			const { a: localTokens, o: baseTokens, b: remoteTokens } = region.conflict;
 			regions.push({
 				baseStart: lineOffset,
-				baseEnd: lineOffset + (baseLines?.length ?? 0),
-				localContent: localLines?.join("\n") ?? "",
-				remoteContent: remoteLines?.join("\n") ?? "",
+				baseEnd: lineOffset + (baseTokens?.length ?? 0),
+				localContent: localTokens?.join("") ?? "",
+				remoteContent: remoteTokens?.join("") ?? "",
 			});
-			lineOffset += baseLines?.length ?? 0;
+			lineOffset += baseTokens?.length ?? 0;
 		} else if ("ok" in region && region.ok) {
 			lineOffset += region.ok.length;
 		}
