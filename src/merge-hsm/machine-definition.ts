@@ -102,6 +102,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.localAhead': {
+		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'fork-reconcile',
 			onDone: [
@@ -131,6 +132,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.remoteAhead': {
+		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
@@ -150,6 +152,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.diskAhead': {
+		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
@@ -170,6 +173,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.diverged': {
+		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'idle-merge',
 			onDone: [

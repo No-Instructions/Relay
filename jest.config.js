@@ -10,11 +10,14 @@ module.exports = {
 	moduleNameMapper: {
 		"^(\\.{1,2}/.*)\\.js$": "$1",
 		"^src/(.*)$": "<rootDir>/src/$1",
+		"^yjs$": "<rootDir>/node_modules/yjs/src/index.js",
+		"^yjs/dist/src/internals$": "<rootDir>/node_modules/yjs/src/internals.js",
 	},
 	testPathIgnorePatterns: ["/__tests__/mocks/"],
     globals: {
         "BUILD_TYPE": "production",
     },
+	transformIgnorePatterns: ["/node_modules/(?!(yjs|lib0)/)"],
 	transform: {
 		"\\.ts$": [
 			"ts-jest",
@@ -27,6 +30,13 @@ module.exports = {
 			},
 		],
 		"src/.+\\.js$": [
+			"ts-jest",
+			{
+				isolatedModules: true,
+				useESM: true,
+			},
+		],
+		"node_modules/(yjs|lib0)/.+\\.js$": [
 			"ts-jest",
 			{
 				isolatedModules: true,

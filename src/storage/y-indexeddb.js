@@ -3,9 +3,12 @@ import * as idb from 'lib0/indexeddb'
 import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
 import { metrics } from '../debug'
+import { OpCapture } from '../merge-hsm/undo'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
+const historyStoreName = 'history'
+const DB_VERSION = 2
 
 /**
  * Compare two Uint8Arrays for equality
@@ -122,8 +125,9 @@ export class IndexeddbPersistence extends Observable {
    * @param {string} name
    * @param {Y.Doc} doc
    * @param {string|null} [userId] - User ID for PermanentUserData tracking
+   * @param {{ scope: string, trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture)
    */
-  constructor (name, doc, userId = null) {
+  constructor (name, doc, userId = null, captureOpts = null) {
     super()
     this.doc = doc
     this.name = name
@@ -131,6 +135,7 @@ export class IndexeddbPersistence extends Observable {
     this._dbsize = 0
     this._destroyed = false
     this._userId = userId
+    this._captureOpts = captureOpts
     /**
      * @type {IDBDatabase|null}
      */
@@ -138,16 +143,31 @@ export class IndexeddbPersistence extends Observable {
     this.synced = false
     this._serverSynced = undefined
     this._origin = undefined
-    // First check if compaction is needed, then open the DB
-    // this._db = maybeCompactDatabase(name).then(() =>
-    this._db = Promise.resolve().then(() =>
-      idb.openDB(name, db =>
-        idb.createStores(db, [
-          ['updates', { autoIncrement: true }],
-          ['custom']
-        ])
-      )
-    )
+    /**
+     * OpCapture instance managed by this persistence.
+     * Created during the sync lifecycle if captureOpts is provided.
+     * @type {OpCapture|null}
+     */
+    this.opCapture = null
+    // Open IDB with explicit version to support schema migrations.
+    // The 'history' store holds serialized OpCapture entries.
+    this._db = new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, DB_VERSION)
+      request.onupgradeneeded = (event) => {
+        const db = /** @type {IDBDatabase} */ (event.target.result)
+        if (!db.objectStoreNames.contains(updatesStoreName)) {
+          db.createObjectStore(updatesStoreName, { autoIncrement: true })
+        }
+        if (!db.objectStoreNames.contains(customStoreName)) {
+          db.createObjectStore(customStoreName)
+        }
+        if (!db.objectStoreNames.contains(historyStoreName)) {
+          db.createObjectStore(historyStoreName, { autoIncrement: true })
+        }
+      }
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve(request.result)
+    })
     /**
      * @type {Promise<IndexeddbPersistence>}
      */
@@ -187,10 +207,20 @@ export class IndexeddbPersistence extends Observable {
         if (this._userId && this.hasUserData()) {
           this._setupPermanentUserData()
         }
-        this.synced = true
-        this.emit('synced', [this])
+        // 'synced' is emitted after capture init (see below)
       }
       fetchUpdates(this, beforeApplyUpdatesCallback, afterApplyUpdatesCallback)
+        .then(() => {
+          if (this._captureOpts && !this._destroyed) {
+            return this._initCapture()
+          }
+        })
+        .then(() => {
+          if (!this._destroyed) {
+            this.synced = true
+            this.emit('synced', [this])
+          }
+        })
     })
     /**
      * Timeout in ms untill data is merged and persisted in idb.
@@ -264,6 +294,78 @@ export class IndexeddbPersistence extends Observable {
     return super.once(name, f)
   }
 
+  /**
+   * Load capture entries from the history object store.
+   * @return {Promise<Array<{k: number, v: any}>>}
+   * @private
+   */
+  async _loadCaptureEntries () {
+    const db = await this._db
+    const [store] = idb.transact(db, [historyStoreName], 'readonly')
+    return idb.getAllKeysValues(store)
+  }
+
+  /**
+   * Initialize OpCapture from IDB and wire storage hooks.
+   * Called from the constructor's sync chain, AFTER fetchUpdates (so items
+   * exist for keepItem restoration) and BEFORE 'synced' fires.
+   * @return {Promise<void>}
+   * @private
+   */
+  async _initCapture () {
+    const saved = await this._loadCaptureEntries()
+    const scope = this.doc.getText(this._captureOpts.scope)
+
+    if (saved.length > 0) {
+      this.opCapture = OpCapture.restore(
+        this.doc, scope, { entries: [] }, this._captureOpts, saved
+      )
+    } else {
+      this.opCapture = new OpCapture(scope, this._captureOpts)
+    }
+
+    // Wire internal persistence hooks
+    this.opCapture._storage = {
+      append: (serialized) => {
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return idb.addAutoKey(store, serialized)
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      },
+      update: (key, serialized) => {
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return idb.put(store, serialized, key)
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      },
+      remove: (keys) => {
+        if (keys.length === 0) return Promise.resolve()
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return Promise.all(keys.map(k => idb.del(store, k)))
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      },
+      clear: () => {
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return idb.rtop(store.clear())
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      }
+    }
+  }
+
   async destroy () {
     if (this._storeTimeoutId) {
       clearTimeout(this._storeTimeoutId)
@@ -271,6 +373,11 @@ export class IndexeddbPersistence extends Observable {
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)
     this._destroyed = true
+    // Destroy OpCapture (releases keepItem holds, no persistence needed)
+    if (this.opCapture) {
+      this.opCapture.destroy()
+      this.opCapture = null
+    }
     // Wait for all pending writes to complete before closing
     if (this._pendingWrites.size > 0) {
       await Promise.all(this._pendingWrites)

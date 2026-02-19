@@ -19,7 +19,9 @@ import type {
   SyncStatus,
   IYDocPersistence,
   DiskLoader,
+  CaptureOpts,
 } from '../types';
+import { OpCapture } from '../undo';
 import type { TimeProvider } from '../../TimeProvider';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
 import { MergeHSM } from '../MergeHSM';
@@ -196,7 +198,11 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   // on any LCA fallback mechanisms.
   let storedUpdates: Uint8Array | null = options.indexedDBUpdates ?? null;
 
-  const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string): IYDocPersistence => {
+  // Shared capture state — persists across lock cycles like real IDB
+  let captureEntries = new Map<number, any>();
+  let captureKeyCounter = 0;
+
+  const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string, captureOpts?: CaptureOpts | null): IYDocPersistence => {
     // Subscribe to doc updates to track changes
     const updateHandler = (update: Uint8Array) => {
       // Merge with stored updates (like y-indexeddb does)
@@ -214,27 +220,63 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     // Random delay for IndexedDB sync simulation (only when TEST_ASYNC_DELAYS=1)
     const syncDelay = delaysEnabled() ? nextDelay(0, 10) : null;
 
+    const initCapture = () => {
+      if (!captureOpts) return;
+      const scope = doc.getText(captureOpts.scope);
+      const saved = [...captureEntries.entries()].map(([k, v]) => ({ k, v }));
+
+      if (saved.length > 0) {
+        persistence.opCapture = OpCapture.restore(doc, scope, { entries: [] }, captureOpts, saved);
+      } else {
+        persistence.opCapture = new OpCapture(scope, captureOpts);
+      }
+
+      persistence.opCapture._storage = {
+        append: async (s: any) => {
+          const k = ++captureKeyCounter;
+          captureEntries.set(k, s);
+          return k;
+        },
+        update: async (k: number, s: any) => {
+          captureEntries.set(k, s);
+        },
+        remove: async (keys: number[]) => {
+          keys.forEach(k => captureEntries.delete(k));
+        },
+        clear: async () => {
+          captureEntries.clear();
+        },
+      };
+    };
+
     const doSync = () => {
       if (storedUpdates) {
         Y.applyUpdate(doc, storedUpdates);
       }
+      initCapture();
     };
 
-    return {
+    const persistence: IYDocPersistence = {
       synced: false,
       once(_event: 'synced', cb: () => void) {
         if (syncDelay) {
           // Async path when delays enabled
-          syncDelay.then(() => { doSync(); cb(); });
+          syncDelay.then(() => { doSync(); persistence.synced = true; cb(); });
         } else {
           // Sync path for normal tests
           doSync();
+          persistence.synced = true;
           cb();
         }
       },
       async destroy() {
         if (delaysEnabled()) {
           await nextDelay(0, 5);
+        }
+        // Destroy OpCapture before closing (mirrors real y-indexeddb)
+        if (persistence.opCapture) {
+          persistence.opCapture.destroy();
+          persistence.opCapture = null;
         }
         const finalUpdate = Y.encodeStateAsUpdate(doc);
         if (finalUpdate.length > 1) {
@@ -247,7 +289,10 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
         // Return whether IDB had content when persistence synced
         return hadContentAtSync;
       },
+      opCapture: null as OpCapture | null,
     };
+
+    return persistence;
   };
 
   // Create the HSM using the normal constructor (no forTesting bypass)

@@ -47,6 +47,8 @@ export interface Fork {
 	origin: string;
 	/** When the fork was created (ms since epoch) */
 	created: number;
+	/** OpCapture position at fork creation — boundary for sinceByOrigin() */
+	captureMark: number;
 }
 
 /**
@@ -578,6 +580,7 @@ export type { TimeProvider };
 
 // Import Y.Doc type for remoteDoc
 import type * as Y from "yjs";
+import type { OpCapture } from "./undo";
 
 /**
  * Minimal interface for IndexedDB-backed YDoc persistence.
@@ -622,6 +625,12 @@ export interface IYDocPersistence {
 	 * @returns true if initialization happened, false if already initialized
 	 */
 	initializeFromRemote?(update: Uint8Array, origin?: unknown): Promise<boolean>;
+	/**
+	 * OpCapture instance managed by this persistence layer.
+	 * Initialized during the persistence sync lifecycle when captureOpts
+	 * is passed to the constructor.
+	 */
+	opCapture?: OpCapture | null;
 }
 
 /**
@@ -635,14 +644,26 @@ export interface PersistenceMetadata {
 }
 
 /**
+ * OpCapture configuration passed to persistence constructor.
+ * When provided, persistence initializes OpCapture during its sync
+ * lifecycle (after fetchUpdates, before 'synced' fires).
+ */
+export interface CaptureOpts {
+	scope: string;
+	trackedOrigins: Set<any>;
+	captureTimeout?: number;
+}
+
+/**
  * Factory that creates a persistence instance for a YDoc.
- * Production: creates IndexeddbPersistence(vaultId, doc, userId).
+ * Production: creates IndexeddbPersistence(vaultId, doc, userId, captureOpts).
  * Testing: can return a mock that fires 'synced' synchronously.
  */
 export type CreatePersistence = (
 	vaultId: string,
 	doc: Y.Doc,
 	userId?: string,
+	captureOpts?: CaptureOpts | null,
 ) => IYDocPersistence;
 
 /**
