@@ -279,6 +279,34 @@ describe('SyncGate', () => {
     // (clearForkKeepDiverged clears fork and transitions to idle.diverged)
     expect(t.state.fork).toBeNull();
   });
+
+  test('fork conflict does not corrupt content via raw CRDT merge', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'original line', mtime: 1000 });
+
+    // Disk edit creates fork
+    t.send(await diskChanged('disk changed this', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+    expectState(t, 'idle.localAhead');
+
+    // Remote change on same content (creates conflict)
+    t.applyRemoteChange('remote changed this');
+
+    // Provider syncs → fork reconciliation → diff3 conflict → idle.diverged
+    t.send(connected());
+    t.send(providerSynced());
+    await t.hsm.awaitForkReconcile();
+
+    // idle.diverged runs idle-merge invoke — must NOT apply raw CRDT merge
+    await t.hsm.awaitIdleAutoMerge();
+
+    // Must stay in idle.diverged (not idle.synced with corrupted content)
+    expectState(t, 'idle.diverged');
+
+    // localDoc must have the disk-ingested content only — no interleaving
+    // with remote content from a raw Y.applyUpdate
+    expectLocalDocText(t, 'disk changed this');
+  });
 });
 
 describe('Fork + Active Mode Integration', () => {
@@ -350,5 +378,39 @@ describe('Fork + Active Mode Integration', () => {
     // Content should reflect merge (depends on merge algorithm)
     expect(t.state.fork).toBeNull();
     expectState(t, 'active.tracking');
+  });
+
+  test('PROVIDER_SYNCED in active.tracking surfaces conflict banner when fork conflicts with remote', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'original line', mtime: 1000 });
+
+    // Disk edit creates fork (provider not yet synced)
+    t.send(await diskChanged('disk changed this', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+    expectState(t, 'idle.localAhead');
+
+    // Open the file before PROVIDER_SYNCED — fork carries into active mode
+    await sendAcquireLockToTracking(t, 'disk changed this');
+    expectState(t, 'active.tracking');
+
+    // Fork still exists (reconcile hasn't run yet)
+    expect(t.state.fork).not.toBeNull();
+
+    // Remote makes a conflicting change to the same line
+    t.applyRemoteChange('remote changed this');
+
+    // PROVIDER_SYNCED fires — reconcileForkInActive runs diff3 → conflict
+    t.send(providerSynced());
+
+    // Fork should be cleared and conflict banner shown
+    expect(t.state.fork).toBeNull();
+    expectState(t, 'active.conflict.bannerShown');
+
+    // conflictData should capture the three sides correctly
+    const cd = t.hsm.getConflictData();
+    expect(cd).toBeDefined();
+    expect(cd?.base).toBe('original line');
+    expect(cd?.local).toBe('disk changed this');
+    expect(cd?.remote).toBe('remote changed this');
   });
 });

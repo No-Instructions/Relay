@@ -58,6 +58,10 @@ export class ViewHookPlugin extends HasLogging {
 					saveFrontmatter(old: any) {
 						return function (data: any) {
 							that.debug("saveFrontmatter hook triggered");
+							that.document.hsm?.send({
+								type: 'OBSIDIAN_SAVE_FRONTMATTER',
+								path: that.document.path,
+							});
 							that.saving = true;
 							// @ts-ignore
 							const result = old.call(this, data);
@@ -79,8 +83,14 @@ export class ViewHookPlugin extends HasLogging {
 						const result = old.call(this, data);
 						try {
 							// @ts-ignore
-							if (that.view.getMode?.() === "preview" && that.saving) {
+							const viewMode = that.view.getMode?.() ?? "unknown";
+							if (viewMode === "preview" && that.saving) {
 								that.debug("Syncing metadata changes to CRDT during save");
+								that.document.hsm?.send({
+									type: 'OBSIDIAN_METADATA_SYNC',
+									path: that.document.path,
+									mode: viewMode,
+								});
 								diffMatchPatch(
 									that.document.getWritableDoc(),
 									// @ts-ignore

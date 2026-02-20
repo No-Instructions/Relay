@@ -321,6 +321,7 @@ export const MACHINE: MachineDefinition = {
 			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote'] },
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
 			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'reconcileForkInActive'] },
+			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.tracking', actions: ['storeError'] },

@@ -389,6 +389,26 @@ export interface ObsidianViewReusedEvent {
 	newPath: string;
 }
 
+/**
+ * Fired when Obsidian's saveFrontmatter hook triggers on a Relay file.
+ * The metadata editor writes frontmatter into the CM6 buffer outside
+ * the normal CM6_CHANGE path, which can cause editor↔localDoc drift.
+ */
+export interface ObsidianSaveFrontmatterEvent {
+	type: "OBSIDIAN_SAVE_FRONTMATTER";
+	path: string;
+}
+
+/**
+ * Fired when the ViewHookPlugin save hook syncs metadata changes to the CRDT
+ * via diffMatchPatch (preview mode only).
+ */
+export interface ObsidianMetadataSyncEvent {
+	type: "OBSIDIAN_METADATA_SYNC";
+	path: string;
+	mode: string;
+}
+
 export type MergeEvent =
 	// External
 	| LoadEvent
@@ -426,7 +446,9 @@ export type MergeEvent =
 	| ObsidianThreeWayMergeEvent
 	| ObsidianFileOpenedEvent
 	| ObsidianFileUnloadedEvent
-	| ObsidianViewReusedEvent;
+	| ObsidianViewReusedEvent
+	| ObsidianSaveFrontmatterEvent
+	| ObsidianMetadataSyncEvent;
 
 // =============================================================================
 // Effect Types
