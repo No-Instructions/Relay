@@ -16,6 +16,7 @@ import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import type { EditorViewRef } from "./merge-hsm/types";
 import { ProviderIntegration, type YjsProvider } from "./merge-hsm/integration/ProviderIntegration";
 import { generateHash } from "./hashing";
 
@@ -256,7 +257,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 *   merge operations. Pass the content from the editor or read from disk.
 	 * @returns The MergeHSM instance, or null if HSM is not enabled
 	 */
-	async acquireLock(editorContent?: string): Promise<MergeHSM | null> {
+	async acquireLock(editorContent?: string, editorViewRef?: EditorViewRef): Promise<MergeHSM | null> {
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (!mergeManager || !this._hsm) {
 			this.userLock = true; // Fallback if MergeManager/HSM not available
@@ -284,7 +285,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			// Always send (don't guard with isLoaded) because releaseLock() doesn't await
 			// unload(), so activeDocs may not be cleared when file is quickly reopened.
 			// The HSM handles duplicate ACQUIRE_LOCK gracefully (no-op if already active).
-			this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content });
+			this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content, editorViewRef });
 			mergeManager.markActive(this.guid);
 
 			// Create ProviderIntegration BEFORE awaiting so it can deliver

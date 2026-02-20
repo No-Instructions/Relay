@@ -6,6 +6,19 @@
  */
 
 // =============================================================================
+// View Reference Types
+// =============================================================================
+
+/**
+ * Narrow interface for reading the editor view's dirty flag.
+ * Used to determine if Obsidian's auto-save has flushed (dirty === false),
+ * enabling safe LCA advancement during active.tracking.
+ */
+export interface EditorViewRef {
+	readonly dirty: boolean;
+}
+
+// =============================================================================
 // Metadata Types
 // =============================================================================
 
@@ -190,9 +203,14 @@ export interface AcquireLockEvent {
 	 * The current editor/disk content at the moment of opening.
 	 * Since the editor content equals the disk content when a file is first opened
 	 * (before CRDT loads), this provides accurate disk content for merge operations.
-	 * v6: Required parameter to fix BUG-022 (data loss on RESOLVE_ACCEPT_DISK).
 	 */
 	editorContent: string;
+	/**
+	 * Live reference to the editor view's dirty flag.
+	 * When present, enables LCA advancement during active.tracking
+	 * when DISK_CHANGED fires and dirty === false (auto-save has flushed).
+	 */
+	editorViewRef?: EditorViewRef;
 }
 
 export interface ReleaseLockEvent {

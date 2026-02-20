@@ -52,6 +52,7 @@ import type {
 	Fork,
 	SyncGate,
 	CaptureOpts,
+	EditorViewRef,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -136,6 +137,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		pendingInbound: 0,
 		pendingOutbound: 0,
 	};
+
+	// Live reference to the editor view for reading the dirty flag
+	private _editorViewRef: EditorViewRef | null = null;
 
 	// Obsidian file lifecycle tracking (from workspace events)
 	private _obsidianFileOpen: boolean = false;
@@ -902,6 +906,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this.pendingEditorContent = e.editorContent;
 					this.lastKnownEditorText = e.editorContent;
 				}
+				this._editorViewRef = e.editorViewRef ?? null;
 				if (this._statePath.startsWith("idle.")) {
 					this._enteringFromDiverged = this._statePath === "idle.diverged";
 				}
@@ -1063,6 +1068,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.handleResolveHunk(event as ResolveHunkEvent);
 			},
 			beginReleaseLock: () => {
+				this._editorViewRef = null;
 				this._cleanupWasConflict = this._statePath.includes("conflict");
 				this._cleanupType = 'release';
 				this._syncGate.providerSynced = false;
@@ -1143,6 +1149,18 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const e = event as any;
 				this._disk = { hash: e.hash, mtime: e.mtime };
 				this.pendingDiskContents = e.contents;
+
+				// Advance LCA when Obsidian's auto-save has flushed (dirty === false).
+				// At this point disk and localDoc agree — a safe LCA snapshot.
+				if (this._editorViewRef && !this._editorViewRef.dirty && this.localDoc) {
+					const stateVector = Y.encodeStateVector(this.localDoc);
+					this._lca = {
+						contents: e.contents,
+						meta: { hash: e.hash, mtime: e.mtime },
+						stateVector,
+					};
+					this.emitPersistState();
+				}
 			},
 			flushPendingToRemote: () => {
 				this._isOnline = true;

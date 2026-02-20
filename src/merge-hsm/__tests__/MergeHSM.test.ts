@@ -606,6 +606,55 @@ describe('MergeHSM', () => {
       // HSM does NOT trigger conflict - stays in tracking.
       expectState(t, 'active.tracking');
     });
+
+    test('DISK_CHANGED advances LCA when editorViewRef.dirty is false', async () => {
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello', {
+        mtime: Date.now() - 1000,
+        editorViewRef: { dirty: false },
+      });
+
+      const oldLca = t.state.lca;
+
+      const newMtime = Date.now();
+      t.send(await diskChanged('hello updated', newMtime));
+
+      expectState(t, 'active.tracking');
+      const newLca = t.state.lca;
+      expect(newLca).not.toBeNull();
+      expect(newLca!.contents).toBe('hello updated');
+      expect(newLca!.meta.mtime).toBe(newMtime);
+      expect(newLca).not.toEqual(oldLca);
+    });
+
+    test('DISK_CHANGED does NOT advance LCA when editorViewRef.dirty is true', async () => {
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello', {
+        mtime: Date.now() - 1000,
+        editorViewRef: { dirty: true },
+      });
+
+      const oldLca = t.state.lca;
+
+      t.send(await diskChanged('hello updated', Date.now()));
+
+      expectState(t, 'active.tracking');
+      const newLca = t.state.lca;
+      expect(newLca!.contents).toBe(oldLca!.contents);
+    });
+
+    test('DISK_CHANGED does NOT advance LCA when no editorViewRef', async () => {
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello', { mtime: Date.now() - 1000 });
+
+      const oldLca = t.state.lca;
+
+      t.send(await diskChanged('hello updated', Date.now()));
+
+      expectState(t, 'active.tracking');
+      const newLca = t.state.lca;
+      expect(newLca!.contents).toBe(oldLca!.contents);
+    });
   });
 
   // ===========================================================================
