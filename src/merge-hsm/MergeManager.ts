@@ -272,12 +272,12 @@ export class MergeManager {
    */
   createHSM(config: {
     guid: string;
-    path: string;
+    getPath: () => string;
     remoteDoc: Y.Doc | null;
     getDiskContent: () => Promise<{ content: string; hash: string; mtime: number }>;
     getPersistenceMetadata?: () => PersistenceMetadata;
   }): MergeHSM {
-    const { guid, path, remoteDoc, getDiskContent, getPersistenceMetadata } = config;
+    const { guid, getPath, remoteDoc, getDiskContent, getPersistenceMetadata } = config;
 
     // Get LCA and localStateVector from cache (bulk-loaded during initialize())
     const lca = this.getLCA(guid);
@@ -285,7 +285,7 @@ export class MergeManager {
 
     const hsm = new MergeHSM({
       guid,
-      path,
+      getPath,
       vaultId: this._getVaultId(guid),
       remoteDoc,
       timeProvider: this.timeProvider,
@@ -297,7 +297,7 @@ export class MergeManager {
     });
 
     // Send LOAD and PERSISTENCE_LOADED to initialize the HSM
-    hsm.send({ type: 'LOAD', guid, path });
+    hsm.send({ type: 'LOAD', guid });
     hsm.send({
       type: 'PERSISTENCE_LOADED',
       updates: new Uint8Array(), // No updates needed - we pass state vector directly
@@ -307,6 +307,17 @@ export class MergeManager {
 
     // Start in idle mode by default (caller can send SET_MODE_ACTIVE if needed)
     hsm.send({ type: 'SET_MODE_IDLE' });
+
+    // Forward REQUEST_PROVIDER_SYNC to the external handler (SharedFolder).
+    // WRITE_DISK, PERSIST_STATE, and SYNC_TO_REMOTE are handled by Document.handleEffect
+    // and must not be forwarded here to avoid duplicate disk writes or uploads.
+    if (this.onEffect) {
+      hsm.subscribe((effect) => {
+        if (effect.type === 'REQUEST_PROVIDER_SYNC') {
+          this.onEffect!(guid, effect);
+        }
+      });
+    }
 
     return hsm;
   }

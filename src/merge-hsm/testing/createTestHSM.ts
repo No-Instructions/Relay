@@ -319,7 +319,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   // Use production hashFn (defaultHashFn uses SubtleCrypto, already async)
   const hsm = new MergeHSM({
     guid,
-    path: options.path ?? 'test.md',
+    getPath: () => options.path ?? 'test.md',
     vaultId: options.vaultId ?? `test-${guid}`,
     remoteDoc,
     timeProvider: time,

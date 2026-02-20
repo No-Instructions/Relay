@@ -178,7 +178,6 @@ export interface PositionedChange {
 export interface LoadEvent {
 	type: "LOAD";
 	guid: string;
-	path: string;
 }
 
 export interface UnloadEvent {
@@ -711,8 +710,8 @@ export interface MergeHSMConfig {
 	/** Document GUID */
 	guid: string;
 
-	/** Virtual path */
-	path: string;
+	/** Callback to look up the current path by guid. */
+	getPath: () => string;
 
 	/**
 	 * Vault ID for y-indexeddb persistence.

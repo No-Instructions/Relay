@@ -110,7 +110,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _statePath: StatePath = "unloaded";
 
 	private _guid: string;
-	private _path: string;
+	private _getPath: () => string;
 	private _lca: LCAState | null = null;
 	private _disk: MergeMetadata | null = null;
 	private _localStateVector: Uint8Array | null = null;
@@ -262,7 +262,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
 		this.hashFn = config.hashFn ?? defaultHashFn;
 		this._guid = config.guid;
-		this._path = config.path;
+		this._getPath = config.getPath;
 		this.vaultId = config.vaultId;
 		this.remoteDoc = config.remoteDoc;
 		this._createPersistence =
@@ -288,15 +288,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// ===========================================================================
 
 	get path(): string {
-		return this._path;
-	}
-
-	/**
-	 * Update the path when a file is renamed.
-	 * Called by MergeManager when SharedFolder notifies of a rename.
-	 */
-	updatePath(newPath: string): void {
-		this._path = newPath;
+		return this._getPath();
 	}
 
 	get guid(): string {
@@ -306,7 +298,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	get state(): MergeState {
 		return {
 			guid: this._guid,
-			path: this._path,
+			path: this.path,
 			lca: this._lca,
 			disk: this._disk,
 			localStateVector: this._localStateVector,
@@ -679,7 +671,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			ns: "mergeHSM",
 			ts: new Date().toISOString(),
 			guid: this._guid,
-			path: this._path,
+			path: this.path,
 			event: "DRIFT_DETECTED",
 			from: this._statePath,
 			to: this._statePath,
@@ -927,7 +919,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			initializeFromLoad: (_hsm, event) => {
 				const e = event as any;
 				this._guid = e.guid;
-				this._path = e.path;
 				this._modeDecision = null;
 				this._accumulatedEvents = [];
 				this._disk = null;
@@ -2660,7 +2651,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private emitPersistState(): void {
 		const persistedState: PersistedMergeState = {
 			guid: this._guid,
-			path: this._path,
+			path: this.path,
 			lca: this._lca
 				? {
 						contents: this._lca.contents,

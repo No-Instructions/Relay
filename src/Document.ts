@@ -200,7 +200,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// Create HSM using factory
 		this._hsm = mergeManager.createHSM({
 			guid: this.guid,
-			path: this.path,
+			getPath: () => this.path,
 			remoteDoc: this.isRemoteDocLoaded ? this.ydoc : null,
 			getDiskContent: () => this.readDiskContent(),
 			getPersistenceMetadata: () => ({
