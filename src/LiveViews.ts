@@ -267,6 +267,7 @@ export class RelayCanvasView implements S3View {
 						view: this,
 						state: this.canvas.state,
 						remote: this.canvas.sharedFolder.remote,
+						tracking: this.tracking,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -276,6 +277,7 @@ export class RelayCanvasView implements S3View {
 							view: this,
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
+							tracking: this.tracking,
 						});
 					},
 				);
@@ -284,6 +286,7 @@ export class RelayCanvasView implements S3View {
 				view: this,
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
+				tracking: this.tracking,
 			});
 		}
 	}
@@ -584,6 +587,7 @@ export class LiveView<ViewType extends TextFileView>
 						view: this,
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
+						tracking: this.tracking,
 					},
 				});
 				this.offConnectionStatusSubscription = this.document.subscribe(
@@ -593,6 +597,7 @@ export class LiveView<ViewType extends TextFileView>
 							view: this,
 							state: state,
 							remote: this.document.sharedFolder.remote,
+							tracking: this.tracking,
 						});
 					},
 				);
@@ -601,6 +606,7 @@ export class LiveView<ViewType extends TextFileView>
 				view: this,
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
+				tracking: this.tracking,
 			});
 		}
 	}
@@ -667,6 +673,7 @@ export class LiveView<ViewType extends TextFileView>
 							view: this,
 							state: this.document.state,
 							remote: this.document.sharedFolder.remote,
+							tracking: this.tracking,
 						});
 
 						if (isConflict && !this._banner) {
