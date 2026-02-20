@@ -29,14 +29,14 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     const t = await createTestHSM();
     expectState(t, 'unloaded');
 
-    t.send(load(guid, path));
+    t.send(load(guid));
     expectState(t, 'loading');
   });
 
   test('should stay in loading after persistence loaded (flat state)', async () => {
     const t = await createTestHSM();
 
-    t.send(load(guid, path));
+    t.send(load(guid));
     t.send(persistenceLoaded(new Uint8Array(), null));
 
     // Loading is flat - waits for mode determination

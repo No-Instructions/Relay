@@ -38,12 +38,11 @@ describe('State Transition Helpers', () => {
       expect(t.state.lca?.contents).toBe('hello');
     });
 
-    test('accepts custom guid and path', async () => {
-      const t = await createTestHSM();
+    test('accepts custom guid', async () => {
+      const t = await createTestHSM({ path: 'custom/path.md' });
 
       await loadAndActivate(t, 'content', {
         guid: 'custom-guid',
-        path: 'custom/path.md',
       });
 
       expect(t.hsm.guid).toBe('custom-guid');

@@ -57,7 +57,7 @@ describe('Hibernation Lifecycle', () => {
     // Create HSM via manager factory
     doc.hsm = mgr.createHSM({
       guid,
-      path,
+      getPath: () => path,
       remoteDoc,
       getDiskContent: async () => ({ content: '', hash: 'empty', mtime: Date.now() }),
     });

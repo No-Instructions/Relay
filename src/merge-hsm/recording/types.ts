@@ -141,7 +141,7 @@ export interface RecordingMetadata {
  * Extends the basic SerializableEvent from types.ts with full typing.
  */
 export type SerializableEvent =
-  | { type: 'LOAD'; guid: string; path: string }
+  | { type: 'LOAD'; guid: string }
   | { type: 'UNLOAD' }
   | { type: 'ACQUIRE_LOCK'; editorContent: string }
   | { type: 'RELEASE_LOCK' }

@@ -40,8 +40,8 @@ import type {
 // External Events
 // =============================================================================
 
-export function load(guid: string, path: string): LoadEvent {
-  return { type: 'LOAD', guid, path };
+export function load(guid: string): LoadEvent {
+  return { type: 'LOAD', guid };
 }
 
 export function unload(): UnloadEvent {
@@ -364,7 +364,7 @@ export async function loadAndActivate(
 
   // Drive through transitions:
   // 1. LOAD → loading (flat state)
-  hsm.send(load(guid, path));
+  hsm.send(load(guid));
 
   // 2. PERSISTENCE_LOADED → stays in loading, stores LCA and updates
   hsm.send(persistenceLoaded(updates, lca));
@@ -466,7 +466,7 @@ export async function loadToIdle(
 
   // Drive through transitions:
   // 1. LOAD → loading
-  hsm.send(load(guid, path));
+  hsm.send(load(guid));
   // 2. PERSISTENCE_LOADED → stays in loading, stores LCA
   hsm.send(persistenceLoaded(updates, lca));
   // 3. SET_MODE_IDLE → idle.loading → idle.synced (or other idle substate)
@@ -533,7 +533,7 @@ export async function loadToLoading(
 
   // Drive through transitions
   // LOAD → loading, PERSISTENCE_LOADED → stays in loading
-  hsm.send(load(guid, path));
+  hsm.send(load(guid));
   hsm.send(persistenceLoaded(updates, lca));
 
   // Verify we reached the expected state
@@ -618,7 +618,7 @@ export async function loadToConflict(
   // - PERSISTENCE_LOADED sets LCA to base (with base state vector)
   // - REMOTE_UPDATE sets _remoteStateVector (to remote state vector, different from LCA)
   // - SET_MODE_IDLE transitions to idle
-  hsm.send(load(guid, path));
+  hsm.send(load(guid));
   // Pass base updates for local state vector to match LCA
   hsm.send(persistenceLoaded(baseUpdates, baseLca));
   // Send REMOTE_UPDATE to set _remoteStateVector (different from LCA)

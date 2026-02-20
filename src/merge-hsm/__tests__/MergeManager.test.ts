@@ -50,7 +50,7 @@ describe('MergeManager', () => {
     // Create HSM via manager factory
     doc.hsm = manager.createHSM({
       guid,
-      path,
+      getPath: () => path,
       remoteDoc,
       getDiskContent: async () => ({ content: '', hash: 'empty', mtime: Date.now() }),
     });
