@@ -830,6 +830,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
 				(event as any).hasContent !== true && !this._providerSynced,
+			hasPreexistingConflict: () => this.conflictData !== null,
 			contentMatchesAtReconcile: () => {
 				const localText = this.localDoc?.getText("contents").toString() ?? "";
 				const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
@@ -1416,7 +1417,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// ===========================================================================
 
 	private async invokeIdleRemoteAutoMerge(signal: AbortSignal): Promise<unknown> {
-		if (!this.pendingIdleUpdates || !this._lca || !this.localDoc) {
+		if (!this.pendingIdleUpdates || !this.localDoc) {
+			return { success: false };
+		}
+
+		// Block automatic writes when there is no LCA, UNLESS there is no file on
+		// disk. No LCA + no disk file = initial sync from a remote peer (safe to
+		// write). No LCA + disk file exists = up-migration where we must not
+		// silently overwrite what the user has on disk.
+		if (!this._lca && this._disk !== null) {
 			return { success: false };
 		}
 
@@ -1674,7 +1683,22 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			};
 		}
 
-		// Merge conflict — can't auto-resolve
+		// Merge conflict — can't auto-resolve.
+		// Populate conflictData so the diff UI is available when the user opens
+		// the file from idle.diverged. Without this, CRDT merge during provider
+		// sync would make localDoc and disk identical, causing the active.entering
+		// reconciliation to skip conflict detection (localText === diskText).
+		this.conflictData = {
+			base: fork.base,
+			local: localContent,
+			remote: remoteContent,
+			conflictRegions: mergeResult.conflictRegions ?? [],
+			resolvedIndices: new Set(),
+			positionedConflicts: this.calculateConflictPositions(
+				mergeResult.conflictRegions ?? [],
+				localContent,
+			),
+		};
 		return { success: false };
 	}
 

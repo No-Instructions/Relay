@@ -301,6 +301,7 @@ export const MACHINE: MachineDefinition = {
 
 	'active.entering.reconciling': {
 		always: [
+			{ target: 'active.conflict.bannerShown', guard: 'hasPreexistingConflict', actions: ['clearEnteringState'] },
 			{ target: 'active.tracking', guard: 'contentMatchesAtReconcile', actions: ['clearEnteringState'] },
 			{ target: 'active.merging.twoWay', guard: 'isRecoveryMode', actions: ['clearEnteringState'] },
 			{ target: 'active.merging.threeWay', actions: ['clearEnteringState'] },
