@@ -15,6 +15,7 @@ import {
 import ViewActions from "src/components/ViewActions.svelte";
 import * as Y from "yjs";
 import { Document } from "./Document";
+import type { EditorViewRef } from "./merge-hsm/types";
 import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
@@ -647,8 +648,10 @@ export class LiveView<ViewType extends TextFileView>
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
 		// Use HSM acquireLock if available, otherwise falls back to userLock internally
+		// Pass view as EditorViewRef so HSM can read the live dirty flag
+		const viewRef: EditorViewRef = this.view as unknown as EditorViewRef;
 		this.document
-			.acquireLock()
+			.acquireLock(undefined, viewRef)
 			.then((hsm) => {
 				// Subscribe to HSM state changes for automatic conflict banner handling
 				// Must happen AFTER acquireLock completes so hsm is available

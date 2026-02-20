@@ -34,6 +34,7 @@ import type {
   PositionedChange,
   LCAState,
   MergeEvent,
+  EditorViewRef,
 } from '../types';
 
 // =============================================================================
@@ -52,8 +53,8 @@ export function unload(): UnloadEvent {
  * Create an ACQUIRE_LOCK event.
  * @param editorContent - The current editor/disk content. Required in v6 to fix BUG-022.
  */
-export function acquireLock(editorContent: string = ''): AcquireLockEvent {
-  return { type: 'ACQUIRE_LOCK', editorContent };
+export function acquireLock(editorContent: string = '', editorViewRef?: EditorViewRef): AcquireLockEvent {
+  return { type: 'ACQUIRE_LOCK', editorContent, editorViewRef };
 }
 
 /**
@@ -321,6 +322,8 @@ export interface LoadAndActivateOptions {
   path?: string;
   /** LCA mtime (default: Date.now()) */
   mtime?: number;
+  /** Editor view ref for LCA advancement during active.tracking */
+  editorViewRef?: EditorViewRef;
 }
 
 /**
@@ -376,7 +379,7 @@ export async function loadAndActivate(
   //    Persistence syncs asynchronously (may have random delay in tests).
   //    If IDB had content (hasContent=true) → reconciling → tracking.
   //    If IDB was empty (hasContent=false) → awaitingRemote (needs PROVIDER_SYNCED).
-  hsm.send(acquireLock(content));
+  hsm.send(acquireLock(content, opts?.editorViewRef));
 
   // Wait for persistence to sync and state to settle
   await hsm.hsm?.awaitState?.((s) =>
