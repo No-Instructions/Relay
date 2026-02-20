@@ -287,13 +287,20 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 					!Y.compareRelativePositions(currentAnchor, anchor) ||
 					!Y.compareRelativePositions(currentHead, head)
 				) {
-					awareness.setLocalStateField("cursor", {
-						anchor,
-						head,
+					// Defer awareness update to avoid re-entrant EditorView.update calls.
+					// awareness.setLocalStateField emits synchronously, and listeners
+					// may dispatch to the editor which is not allowed during update().
+					queueMicrotask(() => {
+						awareness.setLocalStateField("cursor", {
+							anchor,
+							head,
+						});
 					});
 				}
 			} else if (localAwarenessState.cursor != null && hasFocus) {
-				awareness.setLocalStateField("cursor", null);
+				queueMicrotask(() => {
+					awareness.setLocalStateField("cursor", null);
+				});
 			}
 		}
 

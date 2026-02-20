@@ -770,7 +770,8 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		// promise can take some time
-		if (intent === "disconnected" && !doc.userLock) {
+		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
+		if (intent === "disconnected" && !isActive) {
 			doc.disconnect();
 			doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
 		}
