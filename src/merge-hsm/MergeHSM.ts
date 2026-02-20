@@ -1170,6 +1170,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			clearForkAndUpdateLCA: (_hsm, event) => {
 				this._fork = null;
 				this._ingestionTexts = [];
+				this.pendingIdleUpdates = null;
 				const result = (event as any).data;
 				if (result?.newLCA) {
 					this._lca = result.newLCA;
@@ -1202,8 +1203,19 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.emitPersistState();
 			},
 			clearForkKeepDiverged: () => {
+				// Restore pendingDiskContents from localDoc (which has the disk-ingested
+				// content). Without this, invokeIdleThreeWayAutoMerge falls back to LCA
+				// for the disk side and sees no disk changes, causing it to auto-accept
+				// and escape to idle.synced instead of staying diverged.
+				this.pendingDiskContents = this.localDoc?.getText("contents").toString() ?? null;
 				this._fork = null;
 				this._ingestionTexts = [];
+				// Clear pending remote updates — fork reconciliation already
+				// evaluated them via diff3 and found a conflict. Without this,
+				// idle.diverged's idle-merge invoke runs invokeIdleRemoteAutoMerge
+				// with the same updates, applying a raw CRDT merge that
+				// interleaves conflicting edits instead of surfacing a conflict.
+				this.pendingIdleUpdates = null;
 				this.emitPersistState();
 			},
 			ingestDiskToLocalDoc: () => {
@@ -1315,8 +1327,30 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					if (update.length > 0) {
 						this.emitEffect({ type: "SYNC_TO_REMOTE", update });
 					}
+				} else {
+					// Conflict detected — clear fork tracking and surface it to the user.
+					// pendingInbound/Outbound are reset because the fork gate is lifting;
+					// conflict resolution will re-sync both sides via resolveWith* actions.
+					this._fork = null;
+					this._ingestionTexts = [];
+					this._syncGate.pendingInbound = 0;
+					this._syncGate.pendingOutbound = 0;
+
+					// Drop captured disk ops — conflict resolution supersedes them.
+					const opCapture = this.getOpCapture();
+					if (opCapture && fork.captureMark != null) {
+						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
+						opCapture.drop(diskOps);
+					}
+
+					this.send({
+						type: "MERGE_CONFLICT",
+						base: fork.base,
+						local: localContent,
+						remote: remoteContent,
+						conflictRegions: mergeResult.conflictRegions,
+					});
 				}
-				// If merge fails, fork stays — user continues editing, we retry later
 			},
 
 			// === Obsidian file lifecycle tracking ===
@@ -1519,12 +1553,17 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 		const lcaContent = this._lca.contents;
 
-		// Apply pending remote updates to the live localDoc if present.
-		if (this.pendingIdleUpdates) {
-			Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
-		}
+		// Read the remote content from remoteDoc. Applying pendingIdleUpdates
+		// to localDoc via raw Y.applyUpdate causes CRDT-level interleaving that
+		// corrupts text when there's a true conflict (e.g. post-fork diverge).
+		// remoteDoc already has all remote updates applied (applyRemoteToRemoteDoc
+		// runs before storePendingRemoteUpdate), so reading its text gives the
+		// correct remote content without the corruption path.
+		// If remoteDoc isn't available yet (e.g. waking from hibernation), bail
+		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
+		if (!this.remoteDoc) return { success: false };
+		const crdtContent = this.remoteDoc.getText("contents").toString();
 
-		const crdtContent = this.localDoc.getText("contents").toString();
 		const diskContent = this.pendingDiskContents ?? lcaContent;
 
 		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
@@ -1660,6 +1699,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 		if (event.type === 'OBSIDIAN_FILE_UNLOADED') {
 			this._obsidianFileOpen = false;
+			return; // Diagnostic only, no state transition
+		}
+		if (event.type === 'OBSIDIAN_SAVE_FRONTMATTER' || event.type === 'OBSIDIAN_METADATA_SYNC') {
 			return; // Diagnostic only, no state transition
 		}
 
