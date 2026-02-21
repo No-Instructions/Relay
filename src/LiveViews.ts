@@ -662,11 +662,15 @@ export class LiveView<ViewType extends TextFileView>
 				// Subscribe to HSM state changes for automatic conflict banner handling
 				// Must happen AFTER acquireLock completes so hsm is available
 				if (hsm && !this._hsmStateUnsubscribe) {
+					let lastStatePath: string | null = null;
 					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
 						const isConflict = state.statePath.includes("conflict");
-						this.log(
-							`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
-						);
+						if (state.statePath !== lastStatePath) {
+							this.log(
+								`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
+							);
+							lastStatePath = state.statePath;
+						}
 
 						// Update ViewActions to reflect tracking state change
 						this._viewActions?.$set({

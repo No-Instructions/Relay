@@ -156,7 +156,6 @@ export class ViewHookPlugin extends HasLogging {
 				return;
 			}
 
-			this.debug("Document changed, updating all renderers");
 			this.renderAll();
 		};
 
@@ -177,8 +176,6 @@ export class ViewHookPlugin extends HasLogging {
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
-		this.debug(`Rendering all components for mode: ${viewMode}`);
-
 		this.renderers.forEach((renderer) => {
 			try {
 				renderer.render(this.document, viewMode);

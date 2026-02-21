@@ -31,7 +31,6 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 		}
 
 		if (viewMode !== "preview") {
-			this.debug("Skipping render - not in preview mode");
 			return;
 		}
 
