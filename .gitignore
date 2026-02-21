@@ -24,6 +24,7 @@ data.json
 .igitignore
 
 # developer harness
+.mcp.json
 AGENTS.md
 CLAUDE.md
 AGENTS.md
