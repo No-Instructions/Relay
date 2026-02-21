@@ -110,10 +110,15 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
         ...(event.error ? { error: event.error.message } : {}),
       };
 
+    case 'ACQUIRE_LOCK':
+      return {
+        type: 'ACQUIRE_LOCK',
+        editorContent: event.editorContent,
+      } as unknown as SerializableEvent;
+
     // Events without binary data pass through
     case 'LOAD':
     case 'UNLOAD':
-    case 'ACQUIRE_LOCK':
     case 'RELEASE_LOCK':
     case 'DISK_CHANGED':
     case 'SAVE_COMPLETE':

@@ -598,6 +598,24 @@ export class LiveView<ViewType extends TextFileView>
 					},
 				);
 			}
+			// Subscribe to HSM state changes to update tracking icon and conflict banner
+			const hsm = this.document.hsm;
+			if (hsm && !this._hsmStateUnsubscribe) {
+				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+					this._viewActions?.$set({
+						tracking: state.statePath === "active.tracking",
+					});
+					const isConflict = state.statePath.includes("conflict");
+					if (isConflict && !this._banner) {
+						this.log("[LiveView] HSM entered conflict state, showing merge banner");
+						this.mergeBanner();
+					} else if (!isConflict && this._banner) {
+						this.log("[LiveView] HSM exited conflict state, hiding merge banner");
+						this._banner.destroy();
+						this._banner = undefined;
+					}
+				});
+			}
 			this._viewActions.$set({
 				view: this,
 				state: this.document.state,
@@ -654,42 +672,10 @@ export class LiveView<ViewType extends TextFileView>
 		const viewRef: EditorViewRef = this.view as unknown as EditorViewRef;
 		this.document
 			.acquireLock(undefined, viewRef)
-			.then((hsm) => {
-				// Subscribe to HSM state changes for automatic conflict banner handling
-				// Must happen AFTER acquireLock completes so hsm is available
-				if (hsm && !this._hsmStateUnsubscribe) {
-					let lastStatePath: string | null = null;
-					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
-						const isConflict = state.statePath.includes("conflict");
-						if (state.statePath !== lastStatePath) {
-							this.log(
-								`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
-							);
-							lastStatePath = state.statePath;
-						}
-
-						// Update ViewActions to reflect tracking state change
-						this._viewActions?.$set({
-							view: this,
-							state: this.document.state,
-							remote: this.document.sharedFolder.remote,
-							tracking: this.tracking,
-						});
-
-						if (isConflict && !this._banner) {
-							this.log(
-								"[LiveView.attach] HSM entered conflict state, showing merge banner",
-							);
-							this.mergeBanner();
-						} else if (!isConflict && this._banner) {
-							this.log(
-								"[LiveView.attach] HSM exited conflict state, hiding merge banner",
-							);
-							this._banner.destroy();
-							this._banner = undefined;
-						}
-					});
-				}
+			.then(() => {
+				// Refresh ViewActions after lock acquired — HSM may have
+				// reached active.tracking during the async acquireLock.
+				this.setConnectionDot();
 			})
 			.catch((e) => {
 				this.warn("[LiveView.attach] acquireLock failed:", e);
