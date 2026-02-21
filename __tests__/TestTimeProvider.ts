@@ -14,11 +14,11 @@ describe("MockTimeProvider debounce", () => {
 		expect(mockFn).not.toHaveBeenCalled();
 
 		// Advance time by 500ms
-		mockTime.setTime(mockTime.getTime() + 500);
+		mockTime.setTime(mockTime.now() + 500);
 		expect(mockFn).not.toHaveBeenCalled();
 
 		// Advance time to just after the delay
-		mockTime.setTime(mockTime.getTime() + 501);
+		mockTime.setTime(mockTime.now() + 501);
 		expect(mockFn).toHaveBeenCalledTimes(1);
 	});
 
@@ -31,15 +31,15 @@ describe("MockTimeProvider debounce", () => {
 		debouncedFn();
 
 		// Advance 300ms and call again
-		mockTime.setTime(mockTime.getTime() + 300);
+		mockTime.setTime(mockTime.now() + 300);
 		debouncedFn();
 
 		// Advance another 300ms and call again
-		mockTime.setTime(mockTime.getTime() + 300);
+		mockTime.setTime(mockTime.now() + 300);
 		debouncedFn();
 
 		// Advance time to trigger the last debounced call
-		mockTime.setTime(mockTime.getTime() + 1000);
+		mockTime.setTime(mockTime.now() + 1000);
 
 		expect(mockFn).toHaveBeenCalledTimes(1);
 	});
@@ -53,7 +53,7 @@ describe("MockTimeProvider debounce", () => {
 		debouncedFn("test", 123);
 
 		// Advance time past delay
-		mockTime.setTime(mockTime.getTime() + 1001);
+		mockTime.setTime(mockTime.now() + 1001);
 
 		// Check if function was called with correct arguments
 		expect(mockFn).toHaveBeenCalledWith("test", 123);
@@ -68,17 +68,17 @@ describe("MockTimeProvider debounce", () => {
 		debouncedFn();
 
 		// Advance time almost to delay
-		mockTime.setTime(mockTime.getTime() + 900);
+		mockTime.setTime(mockTime.now() + 900);
 
 		// Second call - should reset timer
 		debouncedFn();
 
 		// Advance time past first delay but not second
-		mockTime.setTime(mockTime.getTime() + 200);
+		mockTime.setTime(mockTime.now() + 200);
 		expect(mockFn).not.toHaveBeenCalled();
 
 		// Advance time past second delay
-		mockTime.setTime(mockTime.getTime() + 801);
+		mockTime.setTime(mockTime.now() + 801);
 		expect(mockFn).toHaveBeenCalledTimes(1);
 	});
 
@@ -90,11 +90,11 @@ describe("MockTimeProvider debounce", () => {
 		debouncedFn();
 
 		// Advance time by 400ms
-		mockTime.setTime(mockTime.getTime() + 400);
+		mockTime.setTime(mockTime.now() + 400);
 		expect(mockFn).not.toHaveBeenCalled();
 
 		// Advance time past default delay
-		mockTime.setTime(mockTime.getTime() + 101);
+		mockTime.setTime(mockTime.now() + 101);
 		expect(mockFn).toHaveBeenCalledTimes(1);
 	});
 });

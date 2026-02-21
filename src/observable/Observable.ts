@@ -73,12 +73,14 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 
 	off(listener: () => void): void {
 		this._listeners.delete(listener);
+		PostOffice.getInstance().cancel(listener);
 	}
 
 	unsubscribe(run: Subscriber<T>): void {
 		if (this._listeners) {
 			this._listeners.delete(run);
 		}
+		PostOffice.getInstance().cancel(run);
 	}
 
 	destroy() {

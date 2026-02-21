@@ -52,6 +52,14 @@ export class PostOffice {
 		}
 	}
 
+	/**
+	 * Cancel any pending deliveries for a recipient.
+	 * Call this when unsubscribing to prevent stale notifications.
+	 */
+	cancel(recipient: (value: any) => void): void {
+		this.mailboxes.delete(recipient);
+	}
+
 	send<T>(
 		sender: T & IObservable<T>,
 		recipient: (value: T) => void,

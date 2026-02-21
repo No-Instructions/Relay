@@ -12,7 +12,7 @@ class TestTimeProvider implements TimeProvider {
 	private pendingCallbacks: Array<{ id: number; callback: () => void }> = [];
 	private nextId = 1;
 
-	getTime(): number {
+	now(): number {
 		return Date.now();
 	}
 

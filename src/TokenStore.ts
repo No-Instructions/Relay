@@ -3,6 +3,7 @@
 import { decodeJwt } from "jose";
 import type { TimeProvider } from "./TimeProvider";
 import { RelayInstances } from "./debug";
+import { awaitOnReload } from "./reloadUtils";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
@@ -238,12 +239,12 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	isTokenValid(token: TokenInfo<TokenType>): boolean {
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		return currentTime < token.expiryTime;
 	}
 
 	shouldRefresh(token: TokenInfo<TokenType>): boolean {
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		return currentTime + this.expiryMargin > token.expiryTime;
 	}
 
@@ -313,7 +314,7 @@ export class TokenStore<TokenType extends HasToken> {
 
 	_reportWithFilter(filter: (documentId: string) => boolean) {
 		const reportLines: string[] = [];
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		const tokens = Array.from(this.tokenMap.entries()).sort((a, b) => {
 			return a[1].expiryTime - b[1].expiryTime;
 		});
@@ -393,6 +394,11 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	destroy() {
+		// Track active token refresh promises before clearing
+		if (this._activePromises.size > 0) {
+			awaitOnReload(Promise.all(this._activePromises.values()).then(() => {}));
+		}
+
 		this.clear();
 		this.timeProvider.destroy();
 		this.timeProvider = null as any;

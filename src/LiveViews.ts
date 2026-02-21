@@ -1,5 +1,4 @@
 import type { Extension } from "@codemirror/state";
-import { StateField, EditorState, Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -9,23 +8,29 @@ import {
 	TFile,
 	TextFileView,
 	Workspace,
+	editorInfoField,
 	moment,
 	type CachedMetadata,
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
 import * as Y from "yjs";
 import { Document } from "./Document";
+import type { EditorViewRef } from "./merge-hsm/types";
 import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances } from "./debug";
 import { Banner } from "./ui/Banner";
-import { LiveEdit } from "./y-codemirror.next/LiveEditPlugin";
+import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
 } from "./y-codemirror.next/RemoteSelections";
+import {
+	conflictDecorationPlugin,
+	conflictDecorationTheme,
+} from "./y-codemirror.next/ConflictDecorationPlugin";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 import type { CanvasView } from "./CanvasView";
@@ -35,6 +40,18 @@ import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
 import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
+import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
+import { DiskBuffer } from "./DiskBuffer";
+
+/**
+ * Access the LiveViewManager singleton via the Obsidian plugin registry.
+ * Replaces ConnectionManagerStateField — no CM6 state field needed since
+ * the plugin is a singleton reachable from any EditorView.
+ */
+export function getConnectionManager(editor: EditorView): LiveViewManager | null {
+	const fileInfo = editor.state.field(editorInfoField, false);
+	return (fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ?? null;
+}
 
 const BACKGROUND_CONNECTIONS = 3;
 
@@ -124,65 +141,24 @@ export class LoggedOutView implements S3View {
 		this.login = login;
 	}
 
-	setLoginIcon(): void {
-		const viewHeaderElement =
-			this.view.containerEl.querySelector(".view-header");
-		const viewHeaderLeftElement = 
-			this.view.containerEl.querySelector(".view-header-left");
-		
-		if (viewHeaderElement && viewHeaderLeftElement) {
-			this.clearLoginButton();
-			
-			// Create login button element
-			const loginButton = document.createElement("button");
-			loginButton.className = "view-header-left system3-login-button";
-			loginButton.textContent = "Login to enable Live edits";
-			loginButton.setAttribute("aria-label", "Login to enable Live edits");
-			loginButton.setAttribute("tabindex", "0");
-			
-			// Add click handler
-			loginButton.addEventListener("click", async () => {
-				await this.login();
-			});
-			
-			// Insert after view-header-left
-			viewHeaderLeftElement.insertAdjacentElement("afterend", loginButton);
-		}
-	}
-
-	clearLoginButton() {
-		const existingButton = this.view.containerEl.querySelector(".system3-login-button");
-		if (existingButton) {
-			existingButton.remove();
-		}
-	}
-
 	attach(): Promise<S3View> {
-		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
-		if (Platform.isMobile && requireApiVersion("1.11.0")) {
-			this.setLoginIcon();
-		} else {
-			this.banner = new Banner(
-				this.view,
-				"Login to enable Live edits",
-				async () => {
-					return await this.login();
-				},
-			);
-		}
+		this.banner = new Banner(
+			this.view,
+			{ short: "Login to Relay", long: "Login to enable Live edits" },
+			async () => {
+				return await this.login();
+			},
+		);
 		return Promise.resolve(this);
 	}
 
 	release() {
 		this.banner?.destroy();
-		this.clearLoginButton();
 	}
 
 	destroy() {
-		this.release();
 		this.banner?.destroy();
 		this.banner = undefined;
-		this.clearLoginButton();
 		this.view = null as any;
 	}
 }
@@ -260,7 +236,7 @@ export class RelayCanvasView implements S3View {
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
-				"You're offline -- click to reconnect",
+				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
@@ -291,6 +267,7 @@ export class RelayCanvasView implements S3View {
 						view: this,
 						state: this.canvas.state,
 						remote: this.canvas.sharedFolder.remote,
+						tracking: this.tracking,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -300,6 +277,7 @@ export class RelayCanvasView implements S3View {
 							view: this,
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
+							tracking: this.tracking,
 						});
 					},
 				);
@@ -308,6 +286,7 @@ export class RelayCanvasView implements S3View {
 				view: this,
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
+				tracking: this.tracking,
 			});
 		}
 	}
@@ -383,7 +362,7 @@ export class RelayCanvasView implements S3View {
 			this.offConnectionStatusSubscription = undefined;
 		}
 		this.canvas.disconnect();
-		this.canvas.userLock = false;
+		this.canvas.releaseLock();
 	}
 
 	destroy() {
@@ -407,6 +386,7 @@ export class LiveView<ViewType extends TextFileView>
 	shouldConnect: boolean;
 	canConnect: boolean;
 	private _plugin?: TextFileViewPlugin;
+	private _viewHookPlugin?: ViewHookPlugin;
 
 	private _viewActions?: ViewActions;
 	private offConnectionStatusSubscription?: () => void;
@@ -414,6 +394,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _banner?: Banner;
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
+	private _hsmStateUnsubscribe?: () => void;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -450,13 +431,17 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	public get tracking() {
+		if (this.document?.hsm) {
+			return this.document.hsm.state.statePath === "active.tracking";
+		}
 		return this._tracking;
 	}
 
 	public set tracking(value: boolean) {
 		const old = this._tracking;
 		this._tracking = value;
-		if (this._tracking !== old) {
+		// Only call attach for non-HSM mode (fallback for views without HSM)
+		if (this._tracking !== old && !this.document?.hsm) {
 			this.attach();
 		}
 	}
@@ -475,93 +460,95 @@ export class LiveView<ViewType extends TextFileView>
 		}
 	}
 
-	setMergeButton(): void {
-		const viewHeaderElement =
-			this.view.containerEl.querySelector(".view-header");
-		const viewHeaderLeftElement = 
-			this.view.containerEl.querySelector(".view-header-left");
-		
-		if (viewHeaderElement && viewHeaderLeftElement) {
-			this.clearMergeButton();
-			
-			// Create merge button element
-			const mergeButton = document.createElement("button");
-			mergeButton.className = "view-header-left system3-merge-button";
-			mergeButton.textContent = "Merge conflict";
-			mergeButton.setAttribute("aria-label", "Merge conflict -- click to resolve");
-			mergeButton.setAttribute("tabindex", "0");
-			
-			// Add click handler
-			mergeButton.addEventListener("click", async () => {
-				const diskBuffer = await this.document.diskBuffer();
-				const stale = await this.document.checkStale();
-				if (!stale) {
-					this.clearMergeButton();
-					return;
-				}
-				this._parent.openDiffView({
-					file1: this.document,
-					file2: diskBuffer,
-					showMergeOption: true,
-					onResolve: async () => {
-						this.document.clearDiskBuffer();
-						this.clearMergeButton();
-						// Force view to sync to CRDT state after differ resolution
-						if (
-							this._plugin &&
-							typeof this._plugin.syncViewToCRDT === "function"
-						) {
-							await this._plugin.syncViewToCRDT();
-						}
-					},
-				});
-			});
-			
-			// Insert after view-header-left
-			viewHeaderLeftElement.insertAdjacentElement("afterend", mergeButton);
-		}
-	}
-
-	clearMergeButton() {
-		const existingButton = this.view.containerEl.querySelector(".system3-merge-button");
-		if (existingButton) {
-			existingButton.remove();
-		}
-	}
-
 	mergeBanner(): () => void {
-		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
-		if (Platform.isMobile && requireApiVersion("1.11.0")) {
-			this.setMergeButton();
-		} else {
-			this._banner = new Banner(
-				this.view,
-				"Merge conflict -- click to resolve",
-				async () => {
-					const diskBuffer = await this.document.diskBuffer();
-					const stale = await this.document.checkStale();
-					if (!stale) {
-						return true;
+		this._banner = new Banner(
+			this.view,
+			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
+			async () => {
+				// HSM-aware conflict resolution path
+				const hsm = this.document.hsm;
+				if (hsm) {
+					const conflictData = hsm.getConflictData();
+					const localDoc = hsm.getLocalDoc();
+					if (
+						conflictData &&
+						localDoc &&
+						hsm.state.statePath.includes("conflict")
+					) {
+						this.log("[mergeBanner] Opening diff view for conflict resolution");
+
+						// Check if there are inline conflict regions (new flow)
+						const hasInlineConflicts =
+							conflictData.conflictRegions &&
+							conflictData.conflictRegions.length > 0;
+
+						if (hasInlineConflicts) {
+							// With inline conflicts, clicking banner opens diff view as alternative
+							this.log(
+								"[mergeBanner] Inline conflicts present, opening diff view as alternative",
+							);
+						}
+
+						// Get CURRENT localDoc content (not stale conflictData.local)
+						const currentLocalContent = localDoc.getText("contents").toString();
+						const diskContent = conflictData.remote;
+
+						this.log(
+							`[mergeBanner] localDoc: ${currentLocalContent.length} chars, disk: ${diskContent.length} chars`,
+						);
+
+						// Create DiskBuffer wrappers (differ expects TFile-like objects)
+						// Use DiskBuffer for BOTH sides to ensure we show correct content
+						const localFile = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Local)",
+							currentLocalContent,
+						);
+						const diskFile = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Disk)",
+							diskContent,
+						);
+
+						// Transition HSM to resolving state
+						hsm.send({ type: "OPEN_DIFF_VIEW" });
+
+						// Open diff view: localDoc (left) vs disk (right)
+						this._parent.openDiffView({
+							file1: localFile, // Current localDoc content
+							file2: diskFile, // Disk content
+							showMergeOption: true,
+							onResolve: async () => {
+								this.log("[mergeBanner] HSM conflict resolved via diff view");
+
+								// The differ modifies file1 (localFile) in-place via its contents.
+								// Get the resolved content and apply it to HSM's localDoc.
+								const resolvedContent = localFile.contents;
+
+								if (resolvedContent === currentLocalContent) {
+									// User kept local - just update LCA
+									hsm.send({ type: "RESOLVE_ACCEPT_LOCAL" });
+								} else if (resolvedContent === diskContent) {
+									// User chose disk
+									hsm.send({ type: "RESOLVE_ACCEPT_DISK" });
+								} else {
+									// User merged - send merged content
+									hsm.send({
+										type: "RESOLVE_ACCEPT_MERGED",
+										contents: resolvedContent,
+									});
+								}
+
+								this._banner?.destroy();
+								this._banner = undefined;
+							},
+						});
+						return false; // Don't destroy banner yet - wait for resolution
 					}
-					this._parent.openDiffView({
-						file1: this.document,
-						file2: diskBuffer,
-						showMergeOption: true,
-						onResolve: async () => {
-							this.document.clearDiskBuffer();
-							// Force view to sync to CRDT state after differ resolution
-							if (
-								this._plugin &&
-								typeof this._plugin.syncViewToCRDT === "function"
-							) {
-								await this._plugin.syncViewToCRDT();
-							}
-						},
-					});
-					return true;
-				},
-			);
-		}
+				}
+				return false;
+			},
+		);
 		return () => {};
 	}
 
@@ -569,7 +556,7 @@ export class LiveView<ViewType extends TextFileView>
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
-				"You're offline -- click to reconnect",
+				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
@@ -600,6 +587,7 @@ export class LiveView<ViewType extends TextFileView>
 						view: this,
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
+						tracking: this.tracking,
 					},
 				});
 				this.offConnectionStatusSubscription = this.document.subscribe(
@@ -609,6 +597,7 @@ export class LiveView<ViewType extends TextFileView>
 							view: this,
 							state: state,
 							remote: this.document.sharedFolder.remote,
+							tracking: this.tracking,
 						});
 					},
 				);
@@ -617,6 +606,7 @@ export class LiveView<ViewType extends TextFileView>
 				view: this,
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
+				tracking: this.tracking,
 			});
 		}
 	}
@@ -641,25 +631,86 @@ export class LiveView<ViewType extends TextFileView>
 			this.view instanceof MarkdownView &&
 			this.view.getMode() === "preview"
 		) {
+			this.log("[LiveView.checkStale] skipping - preview mode");
 			return false;
 		}
-		const stale = await this.document.checkStale();
-		if (stale && this.document._diskBuffer?.contents) {
+
+		// Use HSM conflict detection
+		const hsmConflict = this.document.hasHSMConflict();
+		this.log(`[LiveView.checkStale] HSM conflict detection: ${hsmConflict}`);
+		if (hsmConflict === true) {
+			this.log(
+				"[LiveView.checkStale] HSM reports conflict, showing merge banner",
+			);
 			this.mergeBanner();
+			return true;
 		} else {
 			this._banner?.destroy();
 			this._banner = undefined;
+			return false;
 		}
-		return stale;
 	}
 
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
-		this.document.userLock = true;
+		// Use HSM acquireLock if available, otherwise falls back to userLock internally
+		// Pass view as EditorViewRef so HSM can read the live dirty flag
+		const viewRef: EditorViewRef = this.view as unknown as EditorViewRef;
+		this.document
+			.acquireLock(undefined, viewRef)
+			.then((hsm) => {
+				// Subscribe to HSM state changes for automatic conflict banner handling
+				// Must happen AFTER acquireLock completes so hsm is available
+				if (hsm && !this._hsmStateUnsubscribe) {
+					let lastStatePath: string | null = null;
+					this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+						const isConflict = state.statePath.includes("conflict");
+						if (state.statePath !== lastStatePath) {
+							this.log(
+								`[LiveView.attach] HSM state changed: ${state.statePath}, isConflict: ${isConflict}`,
+							);
+							lastStatePath = state.statePath;
+						}
+
+						// Update ViewActions to reflect tracking state change
+						this._viewActions?.$set({
+							view: this,
+							state: this.document.state,
+							remote: this.document.sharedFolder.remote,
+							tracking: this.tracking,
+						});
+
+						if (isConflict && !this._banner) {
+							this.log(
+								"[LiveView.attach] HSM entered conflict state, showing merge banner",
+							);
+							this.mergeBanner();
+						} else if (!isConflict && this._banner) {
+							this.log(
+								"[LiveView.attach] HSM exited conflict state, hiding merge banner",
+							);
+							this._banner.destroy();
+							this._banner = undefined;
+						}
+					});
+				}
+			})
+			.catch((e) => {
+				this.warn("[LiveView.attach] acquireLock failed:", e);
+			});
 
 		// Add CSS class to indicate this view should have live editing
 		if (this.view instanceof MarkdownView) {
 			this.view.containerEl.addClass("relay-live-editor");
+
+			// Initialize ViewHookPlugin to capture non-CM6 edit paths
+			// (preview mode checkbox toggles, frontmatter saves via Properties panel)
+			if (!this._viewHookPlugin) {
+				this._viewHookPlugin = new ViewHookPlugin(this.view, this.document);
+				this._viewHookPlugin.initialize().catch((error) => {
+					this.error("Error initializing ViewHookPlugin:", error);
+				});
+			}
 		}
 
 		if (!(this.view instanceof MarkdownView)) {
@@ -725,23 +776,28 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
-		this.clearMergeButton();
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
 		}
+		// Clean up HSM state subscription
+		if (this._hsmStateUnsubscribe) {
+			this._hsmStateUnsubscribe();
+			this._hsmStateUnsubscribe = undefined;
+		}
 		this._awarenessPlugin?.destroy();
 		this._awarenessPlugin = undefined;
+		this._viewHookPlugin?.destroy();
+		this._viewHookPlugin = undefined;
 		this._plugin?.destroy();
 		this._plugin = undefined;
 		this.document.disconnect();
-		this.document.userLock = false;
+		this.document.releaseLock();
 	}
 
 	destroy() {
 		this.release();
 		this.clearViewActions();
-		this.clearMergeButton();
 		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
@@ -755,7 +811,6 @@ export class LiveViewManager {
 	workspace: Workspace;
 	views: S3View[];
 	private _activePromise?: Promise<boolean> | null;
-	_compartment: Compartment;
 	private loginManager: LoginManager;
 	private offListeners: (() => void)[] = [];
 	private folderListeners: Map<SharedFolder, () => void> = new Map();
@@ -784,7 +839,6 @@ export class LiveViewManager {
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
-		this._compartment = new Compartment();
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -848,16 +902,6 @@ export class LiveViewManager {
 		RelayInstances.set(this, "LiveViewManager");
 	}
 
-	reconfigure(editorView: EditorView) {
-		editorView.dispatch({
-			effects: this._compartment.reconfigure([
-				ConnectionManagerStateField.init(() => {
-					return this;
-				}),
-			]),
-		});
-	}
-
 	onMeta(tfile: TFile, cb: (data: string, cache: CachedMetadata) => void) {
 		this.metadataListeners.set(tfile, cb);
 	}
@@ -887,6 +931,75 @@ export class LiveViewManager {
 
 	docIsOpen(doc: Document): boolean {
 		return this.views.some((view) => view.document === doc);
+	}
+
+	/**
+	 * Notify MergeManagers which documents have open editors.
+	 * Groups views by their shared folder and calls setActiveDocuments() on each.
+	 * This transitions HSMs from 'loading' to the appropriate mode (idle or active).
+	 *
+	 * Per spec (Gap 8): LiveViews sends bulk update to MergeManager indicating which
+	 * documents have open editors. MergeManager fans out SET_MODE_ACTIVE to those HSMs,
+	 * and SET_MODE_IDLE to all others.
+	 */
+	private async updateMergeManagerActiveDocuments(views: S3View[]): Promise<void> {
+		// Group document GUIDs by their shared folder
+		const folderToGuids = new Map<SharedFolder, Set<string>>();
+
+		for (const view of views) {
+			const doc = view.document;
+			if (!doc) continue;
+
+			const folder = doc.sharedFolder;
+			if (!folder?.mergeManager) continue;
+
+			if (!folderToGuids.has(folder)) {
+				folderToGuids.set(folder, new Set());
+			}
+			folderToGuids.get(folder)!.add(doc.guid);
+		}
+
+		// Also discover embedded markdown files inside canvas views.
+		// Canvas nodes with type='file' have a child TextFileView whose file
+		// may belong to a shared folder. Their HSMs need active mode too.
+		for (const view of views) {
+			if (!(view instanceof RelayCanvasView)) continue;
+			const canvas = view.view.canvas;
+			if (!canvas?.nodes) continue;
+
+			for (const [, node] of canvas.nodes) {
+				const nodeData = node.getData?.();
+				// @ts-ignore — child is not typed on CanvasNode, only on CanvasNodeData
+				const child = (node as any).child ?? nodeData?.child;
+				if (!child?.file) continue;
+
+				const filePath = child.file.path;
+				const folder = this.sharedFolders.lookup(filePath);
+				if (!folder?.mergeManager || !folder.ready) continue;
+
+				const embeddedDoc = folder.proxy.getDoc(filePath);
+				if (!embeddedDoc) continue;
+
+				if (!folderToGuids.has(folder)) {
+					folderToGuids.set(folder, new Set());
+				}
+				folderToGuids.get(folder)!.add(embeddedDoc.guid);
+			}
+		}
+
+		// Call setActiveDocuments on each folder's MergeManager
+		for (const [folder, guids] of folderToGuids) {
+			const allGuids = Array.from(folder.files.keys());
+			folder.mergeManager.setActiveDocuments(guids, allGuids);
+		}
+
+		// Also notify folders with no active views (all HSMs should be idle)
+		for (const folder of this.sharedFolders.items()) {
+			if (!folderToGuids.has(folder) && folder.mergeManager) {
+				const allGuids = Array.from(folder.files.keys());
+				folder.mergeManager.setActiveDocuments(new Set(), allGuids);
+			}
+		}
 	}
 
 	private releaseViews(views: S3View[]) {
@@ -991,21 +1104,21 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder && canvasView.file) {
-				const canvas = folder.getFile(canvasView.file);
-				if (isCanvas(canvas)) {
-					if (!this.loginManager.loggedIn) {
-						const view = new LoggedOutView(this, canvasView, () => {
-							return this.loginManager.openLoginPage();
-						});
-						views.push(view);
-					} else if (folder.ready) {
+				if (!this.loginManager.loggedIn) {
+					const view = new LoggedOutView(this, canvasView, () => {
+						return this.loginManager.openLoginPage();
+					});
+					views.push(view);
+				} else if (folder.ready) {
+					const canvas = folder.getFile(canvasView.file);
+					if (isCanvas(canvas)) {
 						const view = new RelayCanvasView(this, canvasView, canvas);
 						views.push(view);
 					} else {
-						this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+						this.log(`Skipping canvas view connection for ${viewFilePath}`);
 					}
 				} else {
-					this.log(`Skipping canvas view connection for ${viewFilePath}`);
+					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
 			}
 		});
@@ -1143,11 +1256,12 @@ export class LiveViewManager {
 			return false;
 		}
 		const activeDocumentFolders = this.findFolders();
+
+		// Notify MergeManagers which documents have open editors (Gap 8: mode determination)
+		// This transitions HSMs from 'loading' to the appropriate mode before attach() calls acquireLock()
+		await this.updateMergeManagerActiveDocuments(views);
+
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
-			if (this.extensions.length !== 0) {
-				log("Unexpected plugins loaded.");
-				this.wipe();
-			}
 			logViews("Releasing Views", this.views);
 			this.releaseViews(this.views);
 			this.views = [];
@@ -1219,22 +1333,17 @@ export class LiveViewManager {
 	}
 
 	load() {
-		this.wipe();
-		if (this.views.length > 0) {
-			this.extensions.push([
-				this._compartment.of(
-					ConnectionManagerStateField.init(() => {
-						return this;
-					}),
-				),
-				LiveEdit,
-				LiveNode,
-				yRemoteSelectionsTheme,
-				yRemoteSelections,
-				InvalidLinkPlugin,
-			]);
-			this.workspace.updateOptions();
-		}
+		if (this.extensions.length > 0) return; // already registered
+		this.extensions.push([
+			HSMEditorPlugin,
+			LiveNode,
+			yRemoteSelectionsTheme,
+			yRemoteSelections,
+			InvalidLinkPlugin,
+			conflictDecorationPlugin,
+			conflictDecorationTheme,
+		]);
+		this.workspace.updateOptions();
 	}
 
 	public destroy() {
@@ -1260,13 +1369,3 @@ export class LiveViewManager {
 	}
 }
 
-export const ConnectionManagerStateField = StateField.define<
-	LiveViewManager | undefined
->({
-	create(state: EditorState) {
-		return undefined;
-	},
-	update(currentManager, transaction) {
-		return currentManager;
-	},
-});

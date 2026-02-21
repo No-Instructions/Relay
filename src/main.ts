@@ -17,6 +17,7 @@ import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
+import { S3RN } from "./S3RN";
 import { LiveViewManager } from "./LiveViews";
 
 import { SharedFolders } from "./SharedFolder";
@@ -30,6 +31,9 @@ import {
 	RelayInstances,
 	initializeLogger,
 	flushLogs,
+	initializeMetrics,
+	initializeHSMRecording,
+	stopHSMRecording,
 } from "./debug";
 import { getPatcher, Patcher } from "./Patcher";
 import { LiveTokenStore } from "./LiveTokenStore";
@@ -57,12 +61,17 @@ import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
+import { CompactionManager } from "./workers/CompactionManager";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { generateHash } from "./hashing";
 import { SelfHostModal } from "./ui/SelfHostModal";
+import { DeviceManager } from "./DeviceManager";
+import { setDeviceManagementConfig } from "./customFetch";
+import { RelayDebugAPI } from "./RelayDebugAPI";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -109,6 +118,8 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	relayManager!: RelayManager;
+	deviceManager!: DeviceManager;
+	private relayDebugAPI!: RelayDebugAPI;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -329,6 +340,7 @@ export default class Live extends Plugin {
 				disableConsole: false, // Disable console logging
 			},
 		);
+		initializeMetrics(this.app, (ref) => this.registerEvent(ref));
 		this.notifier = new ObsidianNotifier();
 
 		this.debug = curryLog("[System 3][Relay]", "debug");
@@ -353,6 +365,20 @@ export default class Live extends Plugin {
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
+
+		// Initialize HSM disk recording if enabled
+		if (flags().enableHSMRecording) {
+			const hsmRecordingPath = normalizePath(
+				`${this.app.vault.configDir}/plugins/${this.manifest.id}/hsm-recording.jsonl`,
+			);
+			initializeHSMRecording(
+				new ObsidianFileAdapter(this.app.vault),
+				this.timeProvider,
+				hsmRecordingPath,
+			);
+			this.register(() => stopHSMRecording());
+			this.log("HSM recording enabled", { path: hsmRecordingPath });
+		}
 
 		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addRibbonIcon("satellite", "Relay", () => {
@@ -444,7 +470,10 @@ export default class Live extends Plugin {
 
 		const code = `async function() {
 			const app = window.app;
+			app._reloadAwait = [];
 			await app.plugins.disablePlugin("system3-relay");
+			await Promise.all(app._reloadAwait || []);
+			app._reloadAwait = null;
 			await app.plugins.enablePlugin("system3-relay");
 		}`;
 		(this.app as any).reloadRelay = new Function("return " + code);
@@ -529,6 +558,16 @@ export default class Live extends Plugin {
 			endpointManager,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
+		this.relayDebugAPI = new RelayDebugAPI();
+		this.deviceManager = new DeviceManager(
+			this.appId,
+			this.vault.getName(),
+			this.loginManager,
+		);
+		setDeviceManagementConfig({
+			vaultId: this.appId,
+			deviceId: this.deviceManager.getDeviceId(),
+		});
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this.vault,
@@ -549,6 +588,7 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.timeProvider,
 			this.sharedFolders,
+			3, // concurrency
 		);
 
 		if (!this.loginManager.setup()) {
@@ -722,6 +762,14 @@ export default class Live extends Plugin {
 		relayId?: string,
 		awaitingUpdates?: boolean,
 	): SharedFolder {
+		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
+		if (!guid || !S3RN.validateUUID(guid)) {
+			throw new Error(`Cannot create shared folder: invalid guid "${guid}"`);
+		}
+		if (relayId && !S3RN.validateUUID(relayId)) {
+			throw new Error(`Cannot create shared folder: invalid relayId "${relayId}"`);
+		}
+
 		// Initialize settings with pattern matching syntax
 		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
 			this.settings,
@@ -771,6 +819,9 @@ export default class Live extends Plugin {
 		this.sharedFolders.load();
 		this.relayManager?.login();
 		this._liveViews.refresh("login");
+		withFlag(flag.enableDeviceManagement, () => {
+			this.deviceManager.register();
+		});
 	}
 
 	async openSettings(path: string = "/") {
@@ -871,6 +922,9 @@ export default class Live extends Plugin {
 			this.app.workspace.on("file-open", (file) => {
 				workspaceLog("file-open");
 				plugin._liveViews.refresh("file-open");
+				if (file instanceof TFile) {
+					sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_OPENED', path: file.path });
+				}
 			}),
 		);
 
@@ -968,7 +1022,7 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("modify", (tfile) => {
+			this.app.vault.on("modify", async (tfile) => {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					vaultLog("Modify", tfile.path);
@@ -976,6 +1030,31 @@ export default class Live extends Plugin {
 					if (file && isSyncFile(file)) {
 						file.sync();
 					}
+
+					// Send DISK_CHANGED to HSM for documents with active lock
+					// (but not when we're the ones doing the save)
+					if (
+						file &&
+						isDocument(file) &&
+						file.hsm &&
+						!file.isSaving &&
+						tfile instanceof TFile
+					) {
+						try {
+							const contents = await this.app.vault.read(tfile);
+							const encoder = new TextEncoder();
+							const hash = await generateHash(encoder.encode(contents).buffer);
+							file.hsm.send({
+								type: 'DISK_CHANGED',
+								contents,
+								mtime: tfile.stat.mtime,
+								hash,
+							});
+						} catch (e) {
+							vaultLog("Failed to send DISK_CHANGED to HSM", e);
+						}
+					}
+
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
 						this.app.metadataCache.trigger("resolve", file);
@@ -987,13 +1066,84 @@ export default class Live extends Plugin {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
+		/** Route a diagnostic event to the HSM for the given file (if it's a Relay document). */
+		const sendDiagnosticToHSM = (file: TFile, event: any) => {
+			try {
+				const folder = plugin.sharedFolders.lookup(file.path);
+				if (folder) {
+					const doc = folder.proxy.getFile(file);
+					if (doc && isDocument(doc) && doc.hsm) {
+						doc.hsm.send(event);
+					}
+				}
+			} catch (e) {
+				plugin.debug('Error sending diagnostic event:', e);
+			}
+		};
+
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old: any) {
 				return function (file: any) {
-					plugin._liveViews.wipe();
+					if (file instanceof TFile) {
+						sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_UNLOADED', path: file.path });
+					}
 					// @ts-ignore
 					return old.call(this, file);
+				};
+			},
+		});
+
+		// Patch loadFileInternal on TextFileView prototype (parent of MarkdownView)
+		// to send diagnostic events to MergeHSM for debugging visibility
+		const TextFileViewPrototype = Object.getPrototypeOf(MarkdownView.prototype);
+		getPatcher().patch(TextFileViewPrototype, {
+			loadFileInternal(old: any) {
+				return async function (this: any, file: TFile, isInitialLoad: boolean) {
+					// Capture state before calling original
+					const dirty = this.dirty;
+					const lastSavedData = this.lastSavedData;
+					const isPlaintext = this.isPlaintext;
+
+					// Call original (may trigger three-way merge internally)
+					const result = await old.call(this, file, isInitialLoad);
+
+					// After original completes, send diagnostic event if this is a Relay file
+					try {
+						const folder = plugin.sharedFolders.lookup(file.path);
+						if (folder) {
+							const doc = folder.proxy.getFile(file);
+							if (doc && isDocument(doc) && doc.hsm) {
+								// Read disk content to check if it changed
+								const diskContent = await plugin.app.vault.read(file);
+								const contentChanged = lastSavedData !== diskContent;
+								const willMerge = dirty && contentChanged && isPlaintext;
+
+								doc.hsm.send({
+									type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
+									isInitialLoad,
+									dirty,
+									contentChanged,
+									willMerge,
+								});
+
+								// If merge was triggered, send the merge event too
+								if (willMerge) {
+									doc.hsm.send({
+										type: 'OBSIDIAN_THREE_WAY_MERGE',
+										lcaLength: lastSavedData?.length ?? 0,
+										editorLength: this.getViewData?.()?.length ?? 0,
+										diskLength: diskContent.length,
+									});
+								}
+							}
+						}
+					} catch (e) {
+						// Don't let diagnostic failures break normal operation
+						plugin.debug('Error sending diagnostic event:', e);
+					}
+
+					return result;
 				};
 			},
 		});
@@ -1146,8 +1296,15 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
+		// Clean up debug API globals
+		this.relayDebugAPI?.destroy();
+		this.relayDebugAPI = null as any;
+
 		// Cleanup all monkeypatches and destroy the singleton
 		Patcher.destroy();
+
+		// Terminate the compaction worker
+		CompactionManager.destroy();
 
 		this.timeProvider?.destroy();
 
@@ -1166,6 +1323,9 @@ export default class Live extends Plugin {
 
 		this.relayManager?.destroy();
 		this.relayManager = null as any;
+
+		this.deviceManager?.destroy();
+		this.deviceManager = null as any;
 
 		this.tokenStore?.stop();
 		this.tokenStore?.clearState();

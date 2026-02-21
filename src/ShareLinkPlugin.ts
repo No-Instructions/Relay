@@ -2,8 +2,7 @@ import { Annotation, ChangeSet } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { TextFileView } from "obsidian";
-import { LiveView, LiveViewManager } from "./LiveViews";
-import { connectionManagerFacet } from "./y-codemirror.next/LiveEditPlugin";
+import { LiveView, LiveViewManager, getConnectionManager } from "./LiveViews";
 import { hasKey, updateFrontMatter } from "./Frontmatter";
 import { diffChars } from "diff";
 
@@ -59,7 +58,7 @@ export class ShareLinkPluginValue implements PluginValue {
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = this.editor.state.facet(connectionManagerFacet);
+		this.connectionManager = getConnectionManager(this.editor)!;
 		this.view = this.connectionManager.findView(editor);
 		this.editor = editor;
 		if (this.view) {
@@ -79,7 +78,7 @@ export class ShareLinkPluginValue implements PluginValue {
 		if (!this.view || !this.view.shouldConnect) {
 			return;
 		}
-		if (this.view.document.text != this.editor.state.doc.toString()) {
+		if (this.view.document.localText != this.editor.state.doc.toString()) {
 			return;
 		}
 		const text = this.editor.state.doc.toString();
@@ -87,7 +86,7 @@ export class ShareLinkPluginValue implements PluginValue {
 		const withShareLink = updateFrontMatter(text, {
 			shareLink: shareLink,
 		});
-		if (!(text || this.view.document.text)) {
+		if (!(text || this.view.document.localText)) {
 			// document is empty
 			this.editor.dispatch({
 				changes: { from: 0, insert: withShareLink },

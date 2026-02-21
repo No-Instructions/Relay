@@ -98,15 +98,40 @@ async function rotateLogIfNeeded(): Promise<void> {
 			const newFile = `${currentLogFile}.${i + 1}`;
 			if (await fileAdapter.exists(oldFile)) {
 				if (i === logConfig.maxBackups) {
-					await fileAdapter.remove(oldFile);
+					// Remove oldest backup - ignore if already deleted (race condition)
+					try {
+						await fileAdapter.remove(oldFile);
+					} catch {
+						// File may have been deleted by concurrent rotation
+					}
 				} else {
-					await fileAdapter.rename(oldFile, newFile);
+					// Remove destination first if it exists (Obsidian rename doesn't overwrite)
+					try {
+						await fileAdapter.remove(newFile);
+					} catch {
+						// Destination didn't exist, which is fine
+					}
+					try {
+						await fileAdapter.rename(oldFile, newFile);
+					} catch {
+						// Source may have been moved by concurrent rotation
+					}
 				}
 			}
 		}
 
 		if (await fileAdapter.exists(currentLogFile)) {
-			await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
+			// Remove destination first if it exists
+			try {
+				await fileAdapter.remove(`${currentLogFile}.1`);
+			} catch {
+				// Destination didn't exist, which is fine
+			}
+			try {
+				await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
+			} catch {
+				// Source may have been moved by concurrent rotation
+			}
 		}
 
 		await fileAdapter.write(currentLogFile, "");
@@ -188,7 +213,7 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 		if (debugging) {
 			const timestamp = new Date().toISOString();
 			const stack = new Error().stack;
-			const callerInfo = stack ? stack.split("\n")[2].trim() : "";
+			const callerInfo = stack?.split("\n")[2]?.trim() ?? "";
 			const serializedArgs = args.map(serializeArg).join(" ");
 
 			const logEntry: LogEntry = {
@@ -276,4 +301,372 @@ export class HasLogging {
 const debug = BUILD_TYPE === "debug";
 export function createToast(notifier: INotifier) {
 	return createToastFunction(notifier, debug);
+}
+
+// ============================================================================
+// Metrics Integration (for obsidian-metrics plugin)
+// ============================================================================
+
+import type {
+	IObsidianMetricsAPI,
+	MetricInstance,
+	ObsidianMetricsPlugin,
+} from "./types/obsidian-metrics";
+
+/**
+ * Metrics for Relay - uses obsidian-metrics plugin if available, no-ops otherwise.
+ *
+ * Uses event-based initialization to handle plugin load order. The obsidian-metrics
+ * plugin emits 'obsidian-metrics:ready' when loaded, and metric creation is idempotent.
+ */
+class RelayMetrics {
+	private dbSize: MetricInstance | null = null;
+	private compactions: MetricInstance | null = null;
+	private compactionDuration: MetricInstance | null = null;
+
+	/**
+	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
+	 * Safe to call multiple times - metric creation is idempotent.
+	 */
+	initializeFromAPI(api: IObsidianMetricsAPI): void {
+		this.dbSize = api.createGauge({
+			name: "relay_db_size",
+			help: "Number of updates stored in IndexedDB per document",
+			labelNames: ["document"],
+		});
+		this.compactions = api.createCounter({
+			name: "relay_compactions_total",
+			help: "Total compaction operations",
+			labelNames: ["document"],
+		});
+		this.compactionDuration = api.createHistogram({
+			name: "relay_compaction_duration_seconds",
+			help: "Compaction duration in seconds",
+			labelNames: ["document"],
+			buckets: [0.01, 0.05, 0.1, 0.5, 1, 2, 5, 10],
+		});
+	}
+
+	setDbSize(document: string, count: number): void {
+		this.dbSize?.labels({ document }).set(count);
+	}
+
+	recordCompaction(document: string, durationSeconds: number): void {
+		this.compactions?.labels({ document }).inc();
+		this.compactionDuration?.labels({ document }).observe(durationSeconds);
+	}
+}
+
+/**
+ * Initialize metrics integration with Obsidian app.
+ * Sets up event listener for obsidian-metrics:ready and checks if already available.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function initializeMetrics(app: any, registerEvent: (eventRef: any) => void): void {
+	// Listen for metrics API becoming available (or re-initializing after reload)
+	registerEvent(
+		app.workspace.on("obsidian-metrics:ready", (api: IObsidianMetricsAPI) => {
+			metrics.initializeFromAPI(api);
+		})
+	);
+
+	// Also try to get it immediately in case metrics plugin loaded first
+	const metricsPlugin = app.plugins?.plugins?.["obsidian-metrics"] as
+		| ObsidianMetricsPlugin
+		| undefined;
+	if (metricsPlugin?.api) {
+		metrics.initializeFromAPI(metricsPlugin.api);
+	}
+}
+
+/** Singleton metrics instance */
+export const metrics = new RelayMetrics();
+
+// ============================================================================
+// HSM Recording (JSONL streaming to disk)
+// ============================================================================
+
+interface HSMRecordingConfig {
+	maxFileSize: number;
+	maxBackups: number;
+	batchInterval: number;
+}
+
+const hsmRecordingConfig: HSMRecordingConfig = {
+	maxFileSize: 5 * 1024 * 1024, // 5MB
+	maxBackups: 3,
+	batchInterval: 500, // 500ms - faster than relay.log for debugging
+};
+
+let hsmRecordingFile: string | null = null;
+let hsmFileAdapter: IFileAdapter | null = null;
+let hsmTimeProvider: TimeProvider | null = null;
+let hsmFlushIntervalId: number | null = null;
+let hsmBootId: string | null = null;
+const hsmBuffer: string[] = [];
+
+function generateBootId(): string {
+	const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+	let id = '';
+	for (let i = 0; i < 8; i++) {
+		id += chars[Math.floor(Math.random() * chars.length)];
+	}
+	return id;
+}
+
+/**
+ * Initialize HSM recording to disk.
+ * Call this during plugin initialization if enableHSMRecording flag is set.
+ */
+export function initializeHSMRecording(
+	adapter: IFileAdapter,
+	timeProvider: TimeProvider,
+	logFilePath: string,
+	config?: Partial<HSMRecordingConfig>,
+): void {
+	hsmFileAdapter = adapter;
+	hsmRecordingFile = logFilePath;
+	hsmTimeProvider = timeProvider;
+	hsmBootId = generateBootId();
+	if (config) {
+		Object.assign(hsmRecordingConfig, config);
+	}
+	hsmFlushIntervalId = timeProvider.setInterval(flushHSMRecording, hsmRecordingConfig.batchInterval);
+}
+
+/**
+ * Stop HSM recording and flush remaining entries.
+ */
+export async function stopHSMRecording(): Promise<void> {
+	if (hsmFlushIntervalId !== null && hsmTimeProvider) {
+		hsmTimeProvider.clearInterval(hsmFlushIntervalId);
+		hsmFlushIntervalId = null;
+	}
+	await flushHSMRecording();
+	hsmRecordingFile = null;
+	hsmFileAdapter = null;
+	hsmTimeProvider = null;
+	hsmBootId = null;
+}
+
+/**
+ * Record an HSM entry. Called by the E2ERecordingBridge onEntry callback.
+ * Adds boot ID to each entry for session grouping.
+ */
+export function recordHSMEntry(entry: object): void {
+	if (!hsmRecordingFile || !hsmBootId) return;
+	const entryWithBoot = { ...entry, boot: hsmBootId };
+	hsmBuffer.push(JSON.stringify(entryWithBoot));
+}
+
+/**
+ * Flush buffered HSM entries to disk.
+ */
+export async function flushHSMRecording(): Promise<void> {
+	if (hsmBuffer.length === 0 || !hsmFileAdapter || !hsmRecordingFile) return;
+
+	const entries = [...hsmBuffer];
+	hsmBuffer.length = 0;
+
+	try {
+		await rotateHSMLogIfNeeded();
+		const content = entries.join("\n") + "\n";
+		await hsmFileAdapter.append(hsmRecordingFile, content);
+	} catch (error) {
+		console.error("[HSMRecording] Failed to write:", error);
+		// Re-add entries to buffer on failure
+		hsmBuffer.unshift(...entries);
+	}
+}
+
+async function rotateHSMLogIfNeeded(): Promise<void> {
+	if (!hsmFileAdapter || !hsmRecordingFile) return;
+
+	const stat = await hsmFileAdapter.stat(hsmRecordingFile);
+	if (stat && stat.size > hsmRecordingConfig.maxFileSize) {
+		for (let i = hsmRecordingConfig.maxBackups; i > 0; i--) {
+			const oldFile = `${hsmRecordingFile}.${i}`;
+			const newFile = `${hsmRecordingFile}.${i + 1}`;
+			if (await hsmFileAdapter.exists(oldFile)) {
+				if (i === hsmRecordingConfig.maxBackups) {
+					// Remove oldest backup - ignore if already deleted (race condition)
+					try {
+						await hsmFileAdapter.remove(oldFile);
+					} catch {
+						// File may have been deleted by concurrent rotation
+					}
+				} else {
+					// Remove destination first if it exists (Obsidian rename doesn't overwrite)
+					try {
+						await hsmFileAdapter.remove(newFile);
+					} catch {
+						// Destination didn't exist, which is fine
+					}
+					try {
+						await hsmFileAdapter.rename(oldFile, newFile);
+					} catch {
+						// Source may have been moved by concurrent rotation
+					}
+				}
+			}
+		}
+
+		if (await hsmFileAdapter.exists(hsmRecordingFile)) {
+			// Remove destination first if it exists
+			try {
+				await hsmFileAdapter.remove(`${hsmRecordingFile}.1`);
+			} catch {
+				// Destination didn't exist, which is fine
+			}
+			try {
+				await hsmFileAdapter.rename(hsmRecordingFile, `${hsmRecordingFile}.1`);
+			} catch {
+				// Source may have been moved by concurrent rotation
+			}
+		}
+
+		await hsmFileAdapter.write(hsmRecordingFile, "");
+	}
+}
+
+/**
+ * Check if HSM recording is active.
+ */
+export function isHSMRecordingActive(): boolean {
+	return hsmRecordingFile !== null;
+}
+
+/**
+ * Get the current HSM recording boot ID.
+ */
+export function getHSMBootId(): string | null {
+	return hsmBootId;
+}
+
+/**
+ * Get HSM recording entries from the current boot.
+ * Reads the disk file (including rotated backups) and filters by current boot ID.
+ */
+export async function getHSMBootEntries(): Promise<object[]> {
+	if (!hsmFileAdapter || !hsmRecordingFile || !hsmBootId) {
+		return [];
+	}
+
+	// Flush any buffered entries first
+	await flushHSMRecording();
+
+	const entries: object[] = [];
+
+	// Helper to parse entries from a file
+	const parseEntriesFromFile = async (filePath: string): Promise<void> => {
+		try {
+			if (!await hsmFileAdapter!.exists(filePath)) {
+				return;
+			}
+			const content = await hsmFileAdapter!.read(filePath);
+			const lines = content.split('\n').filter(line => line.trim());
+
+			for (const line of lines) {
+				try {
+					const entry = JSON.parse(line);
+					if (entry.boot === hsmBootId) {
+						entries.push(entry);
+					}
+				} catch {
+					// Skip malformed lines
+				}
+			}
+		} catch {
+			// File doesn't exist or can't be read
+		}
+	};
+
+	// Read rotated files first (oldest to newest: .3, .2, .1)
+	for (let i = hsmRecordingConfig.maxBackups; i >= 1; i--) {
+		await parseEntriesFromFile(`${hsmRecordingFile}.${i}`);
+	}
+
+	// Read main file last (newest entries)
+	await parseEntriesFromFile(hsmRecordingFile);
+
+	return entries;
+}
+
+/**
+ * Get the most recent HSM recording entries for a specific document.
+ * Reads files in reverse order (newest first) and stops once limit is reached.
+ * Much more efficient than getBootEntries() when you only need a few entries.
+ */
+export async function getRecentEntries(guid: string, limit: number = 10): Promise<object[]> {
+	if (!hsmBootId) {
+		return [];
+	}
+
+	const results: object[] = [];
+
+	// Scan the in-memory buffer first (newest, not yet flushed to disk).
+	// Walk backwards for most-recent-first collection.
+	for (let i = hsmBuffer.length - 1; i >= 0; i--) {
+		try {
+			const entry = JSON.parse(hsmBuffer[i]) as Record<string, unknown>;
+			if (entry.boot === hsmBootId && entry.guid === guid) {
+				results.push(entry);
+				if (results.length >= limit) {
+					results.reverse();
+					return results;
+				}
+			}
+		} catch {
+			// Skip malformed lines
+		}
+	}
+
+	if (!hsmFileAdapter || !hsmRecordingFile) {
+		results.reverse();
+		return results;
+	}
+
+	// Parse a file's lines in reverse, collecting matches until we hit the limit.
+	// Returns true if we've collected enough.
+	const collectFromFile = async (filePath: string): Promise<boolean> => {
+		try {
+			if (!await hsmFileAdapter!.exists(filePath)) {
+				return false;
+			}
+			const content = await hsmFileAdapter!.read(filePath);
+			const lines = content.split('\n').filter(line => line.trim());
+
+			// Walk backwards so we get the most recent entries first
+			for (let i = lines.length - 1; i >= 0; i--) {
+				try {
+					const entry = JSON.parse(lines[i]) as Record<string, unknown>;
+					if (entry.boot === hsmBootId && entry.guid === guid) {
+						results.push(entry);
+						if (results.length >= limit) return true;
+					}
+				} catch {
+					// Skip malformed lines
+				}
+			}
+		} catch {
+			// File doesn't exist or can't be read
+		}
+		return false;
+	};
+
+	// Read newest file first (main), then rotated files in order (.1, .2, .3)
+	if (await collectFromFile(hsmRecordingFile)) {
+		results.reverse();
+		return results;
+	}
+
+	for (let i = 1; i <= hsmRecordingConfig.maxBackups; i++) {
+		if (await collectFromFile(`${hsmRecordingFile}.${i}`)) {
+			break;
+		}
+	}
+
+	// We collected in reverse order, flip to chronological
+	results.reverse();
+	return results;
 }

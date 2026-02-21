@@ -8,7 +8,7 @@ export class DefaultTimeProvider implements TimeProvider {
 		this.intervals = [];
 	}
 
-	getTime(): number {
+	now(): number {
 		return Date.now();
 	}
 
@@ -63,7 +63,7 @@ export class DefaultTimeProvider implements TimeProvider {
 }
 
 export interface TimeProvider {
-	getTime: () => number;
+	now: () => number;
 	setInterval: (callback: () => void, ms: number) => number;
 	clearInterval: (timerId: number) => void;
 	setTimeout: (callback: () => void, ms: number) => number;

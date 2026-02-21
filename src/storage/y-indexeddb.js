@@ -2,9 +2,45 @@ import * as Y from 'yjs'
 import * as idb from 'lib0/indexeddb'
 import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
+import { metrics } from '../debug'
+import { OpCapture } from '../merge-hsm/undo'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
+const historyStoreName = 'history'
+const DB_VERSION = 2
+
+/**
+ * Compare two Uint8Arrays for equality
+ * @param {Uint8Array} a
+ * @param {Uint8Array} b
+ * @returns {boolean}
+ */
+const uint8ArrayEquals = (a, b) => {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
+/**
+ * Validate a Yjs update by applying it to a throwaway doc.
+ * Returns null if valid, or the Error if invalid.
+ * @param {Uint8Array} update
+ * @returns {Error|null}
+ */
+const validateUpdate = (update) => {
+  const doc = new Y.Doc()
+  try {
+    Y.applyUpdate(doc, update)
+    return null
+  } catch (e) {
+    return e instanceof Error ? e : new Error(String(e))
+  } finally {
+    doc.destroy()
+  }
+}
 
 // Use a higher threshold on startup to avoid slow initial compaction
 // After sync, use the lower threshold to keep the database lean
@@ -21,13 +57,29 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
   return idb.getAll(updatesStore, idb.createIDBKeyRangeLowerBound(idbPersistence._dbref, false)).then(updates => {
     if (!idbPersistence._destroyed) {
       beforeApplyUpdatesCallback(updatesStore)
+      // Validate each update on a throwaway doc BEFORE applying to the real doc.
+      // A corrupted update can partially integrate items (advancing the client clock)
+      // before throwing. If we catch after the fact, the doc has phantom clock entries
+      // that make future remote diffs compute as empty — causing silent data divergence.
+      const validUpdates = updates.filter(val => {
+        const err = validateUpdate(val)
+        if (!err) return true
+        console.error(`[y-indexeddb] Filtering out corrupted update from IDB for ${idbPersistence.name} (${val.byteLength} bytes):`, err)
+        return false
+      })
+      if (validUpdates.length < updates.length) {
+        console.error(`[y-indexeddb] Filtered ${updates.length - validUpdates.length}/${updates.length} corrupted updates from IDB for ${idbPersistence.name}`)
+      }
       Y.transact(idbPersistence.doc, () => {
-        updates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
+        validUpdates.forEach(val => Y.applyUpdate(idbPersistence.doc, val))
       }, idbPersistence, false)
     }
   })
     .then(() => idb.getLastKey(updatesStore).then(lastKey => { idbPersistence._dbref = lastKey + 1 }))
-    .then(() => idb.count(updatesStore).then(cnt => { idbPersistence._dbsize = cnt }))
+    .then(() => idb.count(updatesStore).then(cnt => {
+      idbPersistence._dbsize = cnt
+      metrics.setDbSize(idbPersistence.name, cnt)
+    }))
     .then(() => {
       if (!idbPersistence._destroyed) {
         afterApplyUpdatesCallback(updatesStore)
@@ -44,9 +96,19 @@ export const storeState = (idbPersistence, forceStore = true) =>
   fetchUpdates(idbPersistence)
     .then(updatesStore => {
       if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
-        idb.addAutoKey(updatesStore, Y.encodeStateAsUpdate(idbPersistence.doc))
+        const compactedState = Y.encodeStateAsUpdate(idbPersistence.doc)
+        const startTime = performance.now()
+        // Return the promise chain so callers can await the writes
+        return idb.addAutoKey(updatesStore, compactedState)
           .then(() => idb.del(updatesStore, idb.createIDBKeyRangeUpperBound(idbPersistence._dbref, true)))
-          .then(() => idb.count(updatesStore).then(cnt => { idbPersistence._dbsize = cnt }))
+          .then(() => idb.count(updatesStore).then(cnt => {
+            idbPersistence._dbsize = cnt
+            metrics.setDbSize(idbPersistence.name, cnt)
+          }))
+          .then(() => {
+            const durationSeconds = (performance.now() - startTime) / 1000
+            metrics.recordCompaction(idbPersistence.name, durationSeconds)
+          })
       }
     })
 
@@ -62,14 +124,18 @@ export class IndexeddbPersistence extends Observable {
   /**
    * @param {string} name
    * @param {Y.Doc} doc
+   * @param {string|null} [userId] - User ID for PermanentUserData tracking
+   * @param {{ scope: string, trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture)
    */
-  constructor (name, doc) {
+  constructor (name, doc, userId = null, captureOpts = null) {
     super()
     this.doc = doc
     this.name = name
     this._dbref = 0
     this._dbsize = 0
     this._destroyed = false
+    this._userId = userId
+    this._captureOpts = captureOpts
     /**
      * @type {IDBDatabase|null}
      */
@@ -77,12 +143,31 @@ export class IndexeddbPersistence extends Observable {
     this.synced = false
     this._serverSynced = undefined
     this._origin = undefined
-    this._db = idb.openDB(name, db =>
-      idb.createStores(db, [
-        ['updates', { autoIncrement: true }],
-        ['custom']
-      ])
-    )
+    /**
+     * OpCapture instance managed by this persistence.
+     * Created during the sync lifecycle if captureOpts is provided.
+     * @type {OpCapture|null}
+     */
+    this.opCapture = null
+    // Open IDB with explicit version to support schema migrations.
+    // The 'history' store holds serialized OpCapture entries.
+    this._db = new Promise((resolve, reject) => {
+      const request = indexedDB.open(name, DB_VERSION)
+      request.onupgradeneeded = (event) => {
+        const db = /** @type {IDBDatabase} */ (event.target.result)
+        if (!db.objectStoreNames.contains(updatesStoreName)) {
+          db.createObjectStore(updatesStoreName, { autoIncrement: true })
+        }
+        if (!db.objectStoreNames.contains(customStoreName)) {
+          db.createObjectStore(customStoreName)
+        }
+        if (!db.objectStoreNames.contains(historyStoreName)) {
+          db.createObjectStore(historyStoreName, { autoIncrement: true })
+        }
+      }
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve(request.result)
+    })
     /**
      * @type {Promise<IndexeddbPersistence>}
      */
@@ -90,16 +175,52 @@ export class IndexeddbPersistence extends Observable {
 
     this._db.then(db => {
       this.db = db
+      // Capture pending state before loading from IDB
+      /** @type {Uint8Array|null} */
+      let pendingState = null
       /**
        * @param {IDBObjectStore} updatesStore
        */
-      const beforeApplyUpdatesCallback = (updatesStore) => idb.addAutoKey(updatesStore, Y.encodeStateAsUpdate(doc))
-      const afterApplyUpdatesCallback = () => {
+      const beforeApplyUpdatesCallback = (updatesStore) => {
+        // Capture any in-memory state before loading from IDB
+        pendingState = Y.encodeStateAsUpdate(doc)
+      }
+      const afterApplyUpdatesCallback = (updatesStore) => {
         if (this._destroyed) return this
-        this.synced = true
-        this.emit('synced', [this])
+        // After loading from IDB, check if pending state had anything new
+        if (pendingState && pendingState.length > 2) {
+          const vectorBeforePending = Y.encodeStateVector(doc)
+          Y.applyUpdate(doc, pendingState, this)
+          const vectorAfterPending = Y.encodeStateVector(doc)
+          const changed = !uint8ArrayEquals(vectorBeforePending, vectorAfterPending)
+          // Only write if applying pending state actually changed something
+          if (changed) {
+            idb.addAutoKey(updatesStore, pendingState)
+          }
+        }
+        // Set up PermanentUserData if userId provided and DB has content.
+        // This MUST happen AFTER IDB is loaded because PUD advances the client's
+        // Yjs clock. If done before IDB loads, subsequent content operations
+        // reference post-PUD clock positions that don't exist in IDB.
+        // Only set up PUD if file is already enrolled (hasUserData), otherwise
+        // we'd write PUD ops before enrollment.
+        if (this._userId && this.hasUserData()) {
+          this._setupPermanentUserData()
+        }
+        // 'synced' is emitted after capture init (see below)
       }
       fetchUpdates(this, beforeApplyUpdatesCallback, afterApplyUpdatesCallback)
+        .then(() => {
+          if (this._captureOpts && !this._destroyed) {
+            return this._initCapture()
+          }
+        })
+        .then(() => {
+          if (!this._destroyed) {
+            this.synced = true
+            this.emit('synced', [this])
+          }
+        })
     })
     /**
      * Timeout in ms untill data is merged and persisted in idb.
@@ -110,21 +231,45 @@ export class IndexeddbPersistence extends Observable {
      */
     this._storeTimeoutId = null
     /**
+     * Track pending write operations for proper teardown.
+     * @type {Set<Promise<any>>}
+     */
+    this._pendingWrites = new Set()
+    /**
+     * Track pending compaction operation for proper teardown.
+     * @type {Promise<void>|null}
+     */
+    this._pendingCompaction = null
+    /**
      * @param {Uint8Array} update
      * @param {any} origin
      */
     this._storeUpdate = (update, origin) => {
       if (this.db && origin !== this) {
+        const storeErr = validateUpdate(update)
+        if (storeErr) {
+          console.error(`[y-indexeddb] Dropping invalid update for ${this.name} (${update.byteLength} bytes, not persisted):`, storeErr)
+          return
+        }
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
-        idb.addAutoKey(updatesStore, update)
+        const writePromise = idb.addAutoKey(updatesStore, update)
+        this._pendingWrites.add(writePromise)
+        writePromise.finally(() => {
+          this._pendingWrites.delete(writePromise)
+        })
+        ++this._dbsize
+        metrics.setDbSize(this.name, this._dbsize)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
-        if (++this._dbsize >= trimSize) {
+        if (this._dbsize >= trimSize) {
           // debounce store call
           if (this._storeTimeoutId !== null) {
             clearTimeout(this._storeTimeoutId)
           }
           this._storeTimeoutId = setTimeout(() => {
-            storeState(this, false)
+            // Track the compaction promise so destroy() can await it
+            this._pendingCompaction = storeState(this, false).finally(() => {
+              this._pendingCompaction = null
+            })
             this._storeTimeoutId = null
           }, this._storeTimeout)
         }
@@ -149,16 +294,100 @@ export class IndexeddbPersistence extends Observable {
     return super.once(name, f)
   }
 
-  destroy () {
+  /**
+   * Load capture entries from the history object store.
+   * @return {Promise<Array<{k: number, v: any}>>}
+   * @private
+   */
+  async _loadCaptureEntries () {
+    const db = await this._db
+    const [store] = idb.transact(db, [historyStoreName], 'readonly')
+    return idb.getAllKeysValues(store)
+  }
+
+  /**
+   * Initialize OpCapture from IDB and wire storage hooks.
+   * Called from the constructor's sync chain, AFTER fetchUpdates (so items
+   * exist for keepItem restoration) and BEFORE 'synced' fires.
+   * @return {Promise<void>}
+   * @private
+   */
+  async _initCapture () {
+    const saved = await this._loadCaptureEntries()
+    const scope = this.doc.getText(this._captureOpts.scope)
+
+    if (saved.length > 0) {
+      this.opCapture = OpCapture.restore(
+        this.doc, scope, { entries: [] }, this._captureOpts, saved
+      )
+    } else {
+      this.opCapture = new OpCapture(scope, this._captureOpts)
+    }
+
+    // Wire internal persistence hooks
+    this.opCapture._storage = {
+      append: (serialized) => {
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return idb.addAutoKey(store, serialized)
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      },
+      update: (key, serialized) => {
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return idb.put(store, serialized, key)
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      },
+      remove: (keys) => {
+        if (keys.length === 0) return Promise.resolve()
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return Promise.all(keys.map(k => idb.del(store, k)))
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      },
+      clear: () => {
+        const p = this._db.then(db => {
+          const [store] = idb.transact(db, [historyStoreName])
+          return idb.rtop(store.clear())
+        })
+        this._pendingWrites.add(p)
+        p.finally(() => this._pendingWrites.delete(p))
+        return p
+      }
+    }
+  }
+
+  async destroy () {
     if (this._storeTimeoutId) {
       clearTimeout(this._storeTimeoutId)
     }
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)
     this._destroyed = true
-    return this._db.then(db => {
-      db.close()
-    })
+    // Destroy OpCapture (releases keepItem holds, no persistence needed)
+    if (this.opCapture) {
+      this.opCapture.destroy()
+      this.opCapture = null
+    }
+    // Wait for all pending writes to complete before closing
+    if (this._pendingWrites.size > 0) {
+      await Promise.all(this._pendingWrites)
+    }
+    // Wait for any pending compaction to complete before closing
+    if (this._pendingCompaction) {
+      await this._pendingCompaction
+    }
+    const db = await this._db
+    db.close()
   }
 
   /**
@@ -189,10 +418,15 @@ export class IndexeddbPersistence extends Observable {
    * @return {Promise<String | number | ArrayBuffer | Date>}
    */
   set (key, value) {
-    return this._db.then(db => {
+    const writePromise = this._db.then(db => {
       const [custom] = idb.transact(db, [customStoreName])
       return idb.put(custom, value, key)
     })
+    this._pendingWrites.add(writePromise)
+    writePromise.finally(() => {
+      this._pendingWrites.delete(writePromise)
+    })
+    return writePromise
   }
 
   /**
@@ -207,12 +441,22 @@ export class IndexeddbPersistence extends Observable {
   }
 
   /**
-   * Check if this database contains meaningful user data
-   * (more than just initial metadata)
+   * Check if this database contains meaningful user data.
+   * Returns true if there are any stored updates in IndexedDB.
    * @return {boolean}
    */
   hasUserData () {
-    return this._dbsize > 3
+    return this._dbsize > 0
+  }
+
+  /**
+   * Set up PermanentUserData for user tracking.
+   * @private
+   */
+  _setupPermanentUserData () {
+    if (!this._userId) return
+    const permanentUserData = new Y.PermanentUserData(this.doc)
+    permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
   }
 
   /**
@@ -276,6 +520,82 @@ export class IndexeddbPersistence extends Observable {
   }
 
   /**
+   * Initialize document with content if not already initialized.
+   * Checks origin in one IDB session, calls contentLoader only if needed.
+   * @param {() => Promise<{content: string, hash: string, mtime: number}>} contentLoader
+   * @param {string} [fieldName='contents'] - Y.Text field name
+   * @return {Promise<boolean>} true if initialization happened, false if already initialized
+   */
+  async initializeWithContent (contentLoader, fieldName = 'contents') {
+    await this.whenSynced
+
+    // Check if already enrolled (origin set = previously initialized)
+    const existingOrigin = await this.getOrigin()
+    if (existingOrigin !== undefined) {
+      return false
+    }
+
+    // Also check for user data (belt and suspenders)
+    if (this.hasUserData()) {
+      return false
+    }
+
+    // Not initialized - load content lazily
+    const { content } = await contentLoader()
+
+    // Set up PermanentUserData BEFORE content insertion
+    if (this._userId) {
+      this._setupPermanentUserData()
+    }
+
+    // Insert content
+    this.doc.transact(() => {
+      const ytext = this.doc.getText(fieldName)
+      ytext.insert(0, content)
+    })
+
+    // Mark origin
+    await this.setOrigin('local')
+
+    return true
+  }
+
+  /**
+   * Initialize document from remote CRDT state if not already initialized.
+   * Used for downloaded documents where remoteDoc already has server content.
+   * @param {Uint8Array} update - CRDT update from remoteDoc
+   * @param {any} origin - Origin to use for Y.applyUpdate (must differ from `this` so _storeUpdate persists to IDB)
+   * @return {Promise<boolean>} true if initialization happened, false if already initialized
+   */
+  async initializeFromRemote (update, origin) {
+    await this.whenSynced
+
+    // Check if already initialized (origin set = previously initialized)
+    const existingOrigin = await this.getOrigin()
+    if (existingOrigin !== undefined) {
+      return false
+    }
+
+    // Also check for user data (belt and suspenders)
+    if (this.hasUserData()) {
+      return false
+    }
+
+    // Set up PermanentUserData BEFORE applying update
+    if (this._userId) {
+      this._setupPermanentUserData()
+    }
+
+    // Apply remote CRDT state — origin must differ from `this` so _storeUpdate persists to IDB
+    Y.applyUpdate(this.doc, update, origin)
+
+    // Mark origin
+    await this.setOrigin('remote')
+
+    return true
+  }
+
+  /**
    * Enhanced readiness detection
    */
 
@@ -298,3 +618,5 @@ export class IndexeddbPersistence extends Observable {
     return !serverSynced && origin !== "local" && !this.hasUserData()
   }
 }
+
+

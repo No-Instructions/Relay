@@ -13,13 +13,11 @@ export class MockTimeProvider implements TimeProvider {
 		this.currentTime = Date.now();
 	}
 
-	getTime(): number {
+	now(): number {
 		return this.currentTime;
 	}
 
 	setTime(newTime: number): void {
-		const diff = (newTime - this.currentTime) / 1000;
-		console.log(`setting time to ${newTime} (+${diff}s)`);
 		this.currentTime = newTime;
 		this.checkTimers();
 	}
@@ -97,10 +95,8 @@ export class MockTimeProvider implements TimeProvider {
 	}
 
 	private checkTimers(): void {
-		console.log(this.timers);
 		this.timers.forEach((timer) => {
 			if (this.currentTime >= timer.triggerTime) {
-				console.log("timer triggered");
 				timer.callback();
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any
 				const id = <any>timer.id;

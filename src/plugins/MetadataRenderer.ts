@@ -26,12 +26,10 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		}
 
 		if (!flags().enableMetadataViewHooks) {
-			this.debug("Metadata view hooks disabled via flags");
 			return;
 		}
 
 		try {
-			this.debug("Rendering metadata from document");
 			
 			// @ts-ignore - accessing internal Obsidian API
 			const metadataEditor = this.view.metadataEditor;
@@ -41,8 +39,8 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 				return;
 			}
 
-			// Parse frontmatter from document text
-			const fmi = getFrontMatterInfo(document.text);
+			// Parse frontmatter from localDoc content
+			const fmi = getFrontMatterInfo(document.localText);
 			const fm = fmi.frontmatter;
 			
 			if (fm) {
@@ -51,8 +49,6 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 				for (const prop of metadataEditor.rendered) {
 					prop.renderProperty(prop.entry, true); // true = force
 				}
-			} else {
-				this.debug("No frontmatter found in document");
 			}
 		} catch (error) {
 			this.error("Error rendering metadata:", error);

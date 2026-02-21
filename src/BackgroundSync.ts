@@ -78,7 +78,7 @@ export class BackgroundSync extends HasLogging {
 	private downloadCompletionCallbacks = new Map<
 		string,
 		{
-			resolve: () => void;
+			resolve: (result?: Uint8Array) => void;
 			reject: (error: Error) => void;
 		}
 	>();
@@ -100,6 +100,13 @@ export class BackgroundSync extends HasLogging {
 			this.processSyncQueue();
 			this.processDownloadQueue();
 		}, 1000);
+
+		// Add polling timer for disk changes (poll all folders)
+		this.timeProvider.setInterval(() => {
+			this.sharedFolders.forEach((folder) => {
+				folder.pollDiskState();
+			});
+		}, 5000); // Poll every 5 seconds
 	}
 
 	/**
@@ -338,12 +345,12 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				downloadPromise
-					.then(() => {
+					.then((result) => {
 						item.status = "completed";
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
-							callback.resolve();
+							callback.resolve(result as Uint8Array | undefined);
 							this.downloadCompletionCallbacks.delete(item.guid);
 						}
 
@@ -490,7 +497,9 @@ export class BackgroundSync extends HasLogging {
 	 * @param item The document to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueDownload(item: SyncFile | Document | Canvas): Promise<void> {
+	enqueueDownload(
+		item: SyncFile | Document | Canvas,
+	): Promise<Uint8Array | undefined> {
 		// Skip if already in progress
 		if (this.inProgressDownloads.has(item.guid)) {
 			this.debug(
@@ -501,13 +510,13 @@ export class BackgroundSync extends HasLogging {
 			const existingCallback = this.downloadCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
 				this.processDownloadQueue();
-				return new Promise<void>((resolve, reject) => {
+				return new Promise<Uint8Array | undefined>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
 				});
 			}
 			this.processDownloadQueue();
-			return Promise.resolve();
+			return Promise.resolve(undefined);
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -545,9 +554,11 @@ export class BackgroundSync extends HasLogging {
 		this.inProgressDownloads.add(item.guid);
 
 		// Create a promise that will resolve when the download completes
-		const downloadPromise = new Promise<void>((resolve, reject) => {
-			this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
-		});
+		const downloadPromise = new Promise<Uint8Array | undefined>(
+			(resolve, reject) => {
+				this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
+			},
+		);
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
@@ -726,45 +737,31 @@ export class BackgroundSync extends HasLogging {
 
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
 		// if the local file is synced, then we do the two step process
-		// check if file is tracking
-		let currentFileContents = "";
-
-		// Handle different document types
-		let currentTextStr = "";
-		let currentCanvasData: CanvasData | null = null;
-
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
-			currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
-			currentTextStr = JSON.stringify(currentCanvasData);
-		} else if (isDocument(doc)) {
-			currentTextStr = doc.text;
-		}
-		try {
-			currentFileContents = await doc.sharedFolder.read(doc);
-		} catch (e) {
-			// File does not exist
-		}
+			const currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
+			try {
+				const currentFileContents = await doc.sharedFolder.read(doc);
 
-		// Only proceed with update if file matches current ydoc state
-		let contentsMatch = false;
-		if (isCanvas(doc) && currentCanvasData) {
-			// For canvas, use deep object comparison instead of string equality
-			const currentFileJson = currentFileContents
-				? JSON.parse(currentFileContents)
-				: { nodes: [], edges: [] };
-			contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
-		} else {
-			contentsMatch = currentTextStr === currentFileContents;
+				// Only proceed with update if file matches current ydoc state
+				let contentsMatch = false;
+				if (isCanvas(doc) && currentCanvasData) {
+					// For canvas, use deep object comparison instead of string equality
+					const currentFileJson = currentFileContents
+						? JSON.parse(currentFileContents)
+						: { nodes: [], edges: [] };
+					contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
+					if (!contentsMatch && currentFileContents) {
+						this.log(
+							"file is not tracking local disk. resolve merge conflicts before syncing.",
+						);
+						return false;
+					}
+				}
+			} catch (e) {
+				// File does not exist
+			}
 		}
-
-		if (!contentsMatch && currentFileContents) {
-			this.log(
-				"file is not tracking local disk. resolve merge conflicts before syncing.",
-			);
-			return false;
-		}
-
 		const promise = doc.onceProviderSynced();
 		const intent = doc.intent;
 		doc.connect();
@@ -773,7 +770,8 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		// promise can take some time
-		if (intent === "disconnected" && !doc.userLock) {
+		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
+		if (intent === "disconnected" && !isActive) {
 			doc.disconnect();
 			doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
 		}
@@ -785,7 +783,7 @@ export class BackgroundSync extends HasLogging {
 	 * @param canvas The canvas to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueCanvasDownload(canvas: Canvas): Promise<void> {
+	enqueueCanvasDownload(canvas: Canvas): Promise<Uint8Array | undefined> {
 		return this.enqueueDownload(canvas);
 	}
 
@@ -828,26 +826,17 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
-	private async getDocument(doc: Document, retry = 3, wait = 3000) {
+	private async getDocument(
+		doc: Document,
+		retry = 3,
+		wait = 3000,
+	): Promise<Uint8Array | undefined> {
 		try {
-			// Get the current contents before applying the update
-			const currentText = doc.text;
-			let currentFileContents = "";
-			try {
-				currentFileContents = await doc.sharedFolder.read(doc);
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = currentText === currentFileContents;
-			const hasContents = currentFileContents !== "";
-
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
-			// Check for newly created documents without content, and reject them
+			// Validate: reject uninitialized documents
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
 			const users = newDoc.getMap("users");
@@ -855,7 +844,6 @@ export class BackgroundSync extends HasLogging {
 
 			if (contents === "") {
 				if (users.size === 0) {
-					// Hack for better compat with < 0.4.2.
 					this.log(
 						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
 						users.size,
@@ -867,28 +855,20 @@ export class BackgroundSync extends HasLogging {
 							this.getDocument(doc, retry - 1, wait * 2);
 						}, wait);
 					}
-					return;
+					return undefined;
 				}
 				if (doc.text) {
 					this.log(
 						"[getDocument] local crdt has contents, but remote is empty",
 					);
 					this.enqueueSync(doc);
-					return;
+					return undefined;
 				}
 			}
 
 			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (doc.sharedFolder.syncStore.has(doc.path)) {
-				doc.sharedFolder.flush(doc, doc.text);
-				this.log("[getDocument] flushed");
-			}
+			return updateBytes;
 		} catch (e) {
 			this.error(e);
 			throw e;

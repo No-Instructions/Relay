@@ -8,6 +8,7 @@
 	export let view: LiveView;
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
+	export let tracking: boolean = false;
 	export let isLoggedOut: boolean = false;
 	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
 
@@ -33,16 +34,7 @@
 	};
 
 	const handleLayersClick = async () => {
-		const diskBuffer = await view.document.diskBuffer();
-		view.connectionManager.openDiffView({
-			file1: view.document,
-			file2: diskBuffer,
-			showMergeOption: true,
-			onResolve: async () => {
-				view.document.clearDiskBuffer();
-				await view.syncViewToCRDT();
-			},
-		});
+		// Disk buffer feature removed - this button is now a no-op
 	};
 
 	const handleLayersKeyPress = (event: KeyboardEvent) => {
@@ -64,10 +56,10 @@
 	</button>
 {:else if remote}
 	<button
-		class="clickable-icon view-action system3-view-action {view.tracking
+		class="clickable-icon view-action system3-view-action {tracking
 			? 'notebook-synced'
 			: 'notebook'}"
-		aria-label={view.tracking
+		aria-label={tracking
 			? "Tracking changes: local file and update log are in sync"
 			: "Not tracking changes: local file and update log are not in sync -- click to check"}
 		tabindex="0"
@@ -88,10 +80,10 @@
 	</button>
 {:else}
 	<button
-		class="clickable-icon view-action system3-view-action {view.tracking
+		class="clickable-icon view-action system3-view-action {tracking
 			? 'notebook-synced'
 			: 'notebook'}"
-		aria-label={view.tracking
+		aria-label={tracking
 			? "Tracking changes: local file and update log are in sync"
 			: "Not tracking changes: local file and update log are not in sync -- click to check"}
 		tabindex="0"

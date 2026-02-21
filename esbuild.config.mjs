@@ -3,6 +3,7 @@ import process from "process";
 import esbuildSvelte from "esbuild-svelte";
 import sveltePreprocess from "svelte-preprocess";
 import builtins from "builtin-modules";
+import inlineWorkerPlugin from "esbuild-plugin-inline-worker";
 import { execSync } from "child_process";
 import chokidar from "chokidar";
 import path from "path";
@@ -14,9 +15,14 @@ if you want to view the source, please visit the github repository of this plugi
 */
 `;
 
-const gitTag = execSync("git describe --tags --always", {
-	encoding: "utf8",
-}).trim();
+const getGitTag = () => {
+	try {
+		return execSync("git describe --tags --always", { encoding: "utf8" }).trim();
+	} catch (e) {
+		return "dev";
+	}
+};
+const gitTag = getGitTag();
 
 const develop = process.argv[2] === "develop";
 const staging = process.argv[2] === "staging";
@@ -35,7 +41,15 @@ const NotifyPlugin = {
 	name: "on-end",
 	setup(build) {
 		build.onEnd((result) => {
-			if (result.errors.length > 0) execSync(`notify-send "Build Failed"`);
+			if (result.errors.length > 0) {
+				execSync(`notify-send "Build Failed"`);
+			} else if (watch) {
+				const tag = getGitTag();
+				const outfile = build.initialOptions.outfile;
+				const content = fs.readFileSync(outfile, "utf8");
+				fs.writeFileSync(outfile, content.replace(/__GIT_TAG__/g, tag));
+				console.log(`GIT_TAG: ${tag}`);
+			}
 		});
 	},
 };
@@ -80,6 +94,7 @@ const context = await esbuild.context({
 			compilerOptions: { css: true },
 			preprocess: sveltePreprocess(),
 		}),
+		inlineWorkerPlugin(),
 		YjsInternalsPlugin,
 		NotifyPlugin,
 	],
@@ -89,7 +104,7 @@ const context = await esbuild.context({
 	sourcemap: debug ? "inline" : false,
 	define: {
 		BUILD_TYPE: debug ? '"debug"' : '"prod"',
-		GIT_TAG: `"${gitTag}"`,
+		GIT_TAG: watch ? '"__GIT_TAG__"' : `"${gitTag}"`,
 		HEALTH_URL: `"${healthUrl}"`,
 		API_URL: `"${apiUrl}"`,
 		AUTH_URL: `"${authUrl}"`,
@@ -110,7 +125,7 @@ const copyFile = (src, dest) => {
 const watchAndMove = (fnames, mapping) => {
 	// only usable on top level directory
 	const watcher = chokidar.watch(fnames, {
-		ignored: /(^|[\/\\])\../, // ignore dotfiles
+		ignored: /(^|[\/\\])\./, // ignore dotfiles
 		persistent: true,
 	});
 

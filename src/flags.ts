@@ -7,7 +7,6 @@ export interface FeatureFlags {
 	enableNetworkLogging: boolean;
 	enableCanvasSync: boolean;
 	enableVerifyUploads: boolean;
-	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
@@ -16,6 +15,9 @@ export interface FeatureFlags {
 	enablePreviewViewHooks: boolean;
 	enableMetadataViewHooks: boolean;
 	enableKanbanView: boolean;
+	enableDeviceManagement: boolean;
+	enableHSMRecording: boolean;
+	enableDirectRemoteUpdates: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -27,7 +29,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNetworkLogging: false,
 	enableCanvasSync: false,
 	enableVerifyUploads: false,
-	enableAutomaticDiffResolution: true,
 	enableDiscordLogin: false,
 	enableSelfManageHosts: true,
 	enableToasts: true,
@@ -36,6 +37,9 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enablePreviewViewHooks: true,
 	enableMetadataViewHooks: true,
 	enableKanbanView: true,
+	enableDeviceManagement: false,
+	enableHSMRecording: false,
+	enableDirectRemoteUpdates: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
