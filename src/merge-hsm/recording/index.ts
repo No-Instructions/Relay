@@ -53,10 +53,8 @@ export type { LogReplayOptions } from './replay';
 // E2E test integration
 export {
   E2ERecordingBridge,
-  installE2ERecordingBridge,
 } from './E2ERecordingBridge';
 export type {
   E2ERecordingBridgeConfig,
   E2ERecordingState,
-  HSMRecordingGlobal,
 } from './E2ERecordingBridge';

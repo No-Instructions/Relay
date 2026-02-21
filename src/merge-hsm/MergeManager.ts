@@ -100,6 +100,9 @@ export interface MergeManagerConfig {
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
+
+  /** Push-based transition callback for recording bridge */
+  onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
 }
 
 export interface PollOptions {
@@ -214,6 +217,7 @@ export class MergeManager {
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
+  private _onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
 
   constructor(config: MergeManagerConfig) {
     this._getVaultId = config.getVaultId;
@@ -227,6 +231,7 @@ export class MergeManager {
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
     this.userId = config.userId;
+    this._onTransition = config.onTransition;
 
     // Hibernation defaults
     this._hibernateTimeoutMs = config.hibernation?.hibernateTimeoutMs ?? 60_000;
@@ -257,6 +262,14 @@ export class MergeManager {
    */
   getVaultId(guid: string): string {
     return this._getVaultId(guid);
+  }
+
+  /**
+   * Set the push-based transition callback (used by recording bridge).
+   * Applies to HSMs created after this call.
+   */
+  setOnTransition(cb: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void): void {
+    this._onTransition = cb;
   }
 
   // ===========================================================================
@@ -295,6 +308,14 @@ export class MergeManager {
       userId: this.userId,
       diskLoader: getDiskContent,
     });
+
+    // Wire push-based transition callback for recording
+    if (this._onTransition) {
+      const onTransition = this._onTransition;
+      hsm.setOnTransition((info) => {
+        onTransition(guid, getPath(), info);
+      });
+    }
 
     // Send LOAD and PERSISTENCE_LOADED to initialize the HSM
     hsm.send({ type: 'LOAD', guid });

@@ -193,6 +193,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private readonly _effects = new SimpleObservable<MergeEffect>();
 	private readonly _stateChanges = new SimpleObservable<MergeState>();
 
+	// Push-based transition callback for recording bridge
+	private _onTransition?: (info: { from: StatePath; to: StatePath; event: MergeEvent; effects: MergeEffect[] }) => void;
+	private _pendingEffects: MergeEffect[] | null = null;
+
 	// Legacy listeners (for backward compatibility with test harness)
 	private stateChangeListeners: Array<
 		(from: StatePath, to: StatePath, event: MergeEvent) => void
@@ -319,13 +323,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	send(event: MergeEvent): void {
 		const fromState = this._statePath;
+		if (this._onTransition) this._pendingEffects = [];
 		this.handleEvent(event);
 		const toState = this._statePath;
-
-		// Always notify state change, even if state path unchanged.
-		// This ensures subscribers (like MergeManager.syncStatus) are updated
-		// when properties like diskMtime change without a state transition.
-		// Subscribers should be idempotent.
+		if (this._onTransition && this._pendingEffects) {
+			this._onTransition({ from: fromState, to: toState, event, effects: this._pendingEffects });
+			this._pendingEffects = null;
+		}
+		// Always notify even if statePath unchanged — subscribers rely on
+		// property changes (e.g. diskMtime) that can occur without transitions.
 		this.notifyStateChange(fromState, toState, event);
 	}
 
@@ -2687,7 +2693,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// ===========================================================================
 
 	private emitEffect(effect: MergeEffect): void {
+		this._pendingEffects?.push(effect);
 		this._effects.emit(effect);
+	}
+
+	setOnTransition(cb: ((info: { from: StatePath; to: StatePath; event: MergeEvent; effects: MergeEffect[] }) => void) | null): void {
+		this._onTransition = cb ?? undefined;
 	}
 
 	private emitPersistState(): void {

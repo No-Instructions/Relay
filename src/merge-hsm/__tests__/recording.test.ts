@@ -335,63 +335,15 @@ describe('HSM Recording', () => {
   });
 
   describe('E2ERecordingBridge', () => {
-    // Document registry for testing (simulates SharedFolder.files)
-    const documents = new Map<string, { hsm: any; path: string }>();
-
-    // Mock MergeManager for testing
-    function createMockManager() {
-      const syncStatusSubscribers: (() => void)[] = [];
-
+    function createBridgeConfig(overrides?: Partial<import('../recording').E2ERecordingBridgeConfig>) {
       return {
-        isLoaded: (guid: string) => documents.has(guid),
-        isActive: (guid: string) => documents.has(guid),
-        syncStatus: {
-          subscribe: (fn: () => void) => {
-            syncStatusSubscribers.push(fn);
-            return () => {
-              const idx = syncStatusSubscribers.indexOf(fn);
-              if (idx >= 0) syncStatusSubscribers.splice(idx, 1);
-            };
-          },
-        },
-        _addHSM: (guid: string, hsm: any) => {
-          documents.set(guid, { hsm, path: `${guid}.md` });
-          syncStatusSubscribers.forEach(fn => fn());
-        },
+        getFullPath: (guid: string) => `${guid}.md`,
+        ...overrides,
       };
     }
-
-    function createBridgeConfig() {
-      return {
-        getHSM: (guid: string) => documents.get(guid)?.hsm,
-        getFullPath: (guid: string) => documents.get(guid)?.path,
-        getAllGuids: () => Array.from(documents.keys()),
-      };
-    }
-
-    beforeEach(() => {
-      documents.clear();
-    });
-
-    it('installs and uninstalls global API', () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
-
-      expect((globalThis as any).__hsmRecording).toBeUndefined();
-
-      bridge.install();
-      expect((globalThis as any).__hsmRecording).toBeDefined();
-      expect(typeof (globalThis as any).__hsmRecording.startRecording).toBe('function');
-      expect(typeof (globalThis as any).__hsmRecording.stopRecording).toBe('function');
-      expect(typeof (globalThis as any).__hsmRecording.getState).toBe('function');
-
-      bridge.uninstall();
-      expect((globalThis as any).__hsmRecording).toBeUndefined();
-    });
 
     it('tracks recording state', () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
+      const bridge = new E2ERecordingBridge(createBridgeConfig());
 
       expect(bridge.isRecording()).toBe(false);
       expect(bridge.getState().recording).toBe(false);
@@ -409,8 +361,7 @@ describe('HSM Recording', () => {
     });
 
     it('throws when starting while already recording', () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
+      const bridge = new E2ERecordingBridge(createBridgeConfig());
 
       bridge.startRecording();
 
@@ -420,15 +371,13 @@ describe('HSM Recording', () => {
     });
 
     it('throws when stopping without recording', () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
+      const bridge = new E2ERecordingBridge(createBridgeConfig());
 
       expect(() => bridge.stopRecording()).toThrow('No recording in progress');
     });
 
     it('returns v2 summary JSON when stopping', () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
+      const bridge = new E2ERecordingBridge(createBridgeConfig());
 
       bridge.startRecording('json-test');
       const json = bridge.stopRecording();
@@ -442,15 +391,17 @@ describe('HSM Recording', () => {
 
     it('streams enriched HSMLogEntry via onEntry callback', async () => {
       const collected: HSMLogEntry[] = [];
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, {
-        ...createBridgeConfig(),
+      const bridge = new E2ERecordingBridge(createBridgeConfig({
         onEntry: (entry) => collected.push(entry),
-      });
+      }));
 
       const t = await createTestHSM({ guid: 'test-doc', path: 'test-doc.md' });
       await loadAndActivate(t, 'hello', { guid: 'test-doc', path: 'test-doc.md' });
-      mockManager._addHSM('test-doc', t.hsm);
+
+      // Wire onTransition callback (as MergeManager would)
+      t.hsm.setOnTransition((info) => {
+        bridge.recordTransition('test-doc', 'test-doc.md', info);
+      });
 
       t.send(cm6Insert(5, ' world', 'hello world'));
 
@@ -465,10 +416,8 @@ describe('HSM Recording', () => {
     });
 
     it('cleans up properly on dispose', () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
+      const bridge = new E2ERecordingBridge(createBridgeConfig());
 
-      bridge.install();
       bridge.startRecording();
 
       expect(bridge.isRecording()).toBe(true);
@@ -476,27 +425,18 @@ describe('HSM Recording', () => {
       bridge.dispose();
 
       expect(bridge.isRecording()).toBe(false);
-      expect((globalThis as any).__hsmRecording).toBeUndefined();
     });
 
-    it('getActiveDocuments returns loaded document GUIDs', async () => {
-      const mockManager = createMockManager() as any;
-      const bridge = new E2ERecordingBridge(mockManager, createBridgeConfig());
+    it('getActiveDocuments returns GUIDs that have received transitions', async () => {
+      const bridge = new E2ERecordingBridge(createBridgeConfig());
 
-      const t1 = await createTestHSM({ guid: 'doc1' });
-      await loadToIdle(t1, { guid: 'doc1' });
-      const t2 = await createTestHSM({ guid: 'doc2' });
-      await loadToIdle(t2, { guid: 'doc2' });
-      mockManager._addHSM('doc1', t1.hsm);
-      mockManager._addHSM('doc2', t2.hsm);
-
-      bridge.startRecording();
+      // Push transitions directly (as MergeManager would)
+      bridge.recordTransition('doc1', 'doc1.md', { from: 'idle', to: 'idle.synced', event: { type: 'SET_MODE_IDLE' } as any, effects: [] });
+      bridge.recordTransition('doc2', 'doc2.md', { from: 'idle', to: 'idle.synced', event: { type: 'SET_MODE_IDLE' } as any, effects: [] });
 
       const docs = bridge.getActiveDocuments();
       expect(docs).toContain('doc1');
       expect(docs).toContain('doc2');
-
-      bridge.stopRecording();
     });
   });
 });

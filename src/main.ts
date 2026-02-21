@@ -71,6 +71,7 @@ import { generateHash } from "./hashing";
 import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
 import { setDeviceManagementConfig } from "./customFetch";
+import { RelayDebugAPI } from "./RelayDebugAPI";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -118,6 +119,7 @@ export default class Live extends Plugin {
 	folderNavDecorations!: FolderNavigationDecorations;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
+	private relayDebugAPI!: RelayDebugAPI;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -556,6 +558,7 @@ export default class Live extends Plugin {
 			endpointManager,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
+		this.relayDebugAPI = new RelayDebugAPI();
 		this.deviceManager = new DeviceManager(
 			this.appId,
 			this.vault.getName(),
@@ -1293,6 +1296,10 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
+		// Clean up debug API globals
+		this.relayDebugAPI?.destroy();
+		this.relayDebugAPI = null as any;
+
 		// Cleanup all monkeypatches and destroy the singleton
 		Patcher.destroy();
 

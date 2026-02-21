@@ -121,7 +121,6 @@ export {
   base64ToUint8Array,
   // E2E test integration
   E2ERecordingBridge,
-  installE2ERecordingBridge,
 } from './recording';
 export type {
   HSMLogEntry,
@@ -132,7 +131,6 @@ export type {
   // E2E test integration types
   E2ERecordingBridgeConfig,
   E2ERecordingState,
-  HSMRecordingGlobal,
 } from './recording';
 
 // Invariant checking
