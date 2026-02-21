@@ -1158,7 +1158,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 				// Advance LCA when Obsidian's auto-save has flushed (dirty === false).
 				// At this point disk and localDoc agree — a safe LCA snapshot.
-				if (this._editorViewRef && !this._editorViewRef.dirty && this.localDoc) {
+				const dirty = this._editorViewRef?.dirty;
+				if (this._editorViewRef && !dirty && this.localDoc) {
 					const stateVector = Y.encodeStateVector(this.localDoc);
 					this._lca = {
 						contents: e.contents,
@@ -1166,6 +1167,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						stateVector,
 					};
 					this.emitPersistState();
+					this.crdtLog(`LCA advanced (dirty=false, len=${e.contents.length})`);
+				} else {
+					this.crdtLog(`LCA skipped (dirty=${dirty}, hasViewRef=${!!this._editorViewRef}, hasLocalDoc=${!!this.localDoc})`);
 				}
 			},
 			flushPendingToRemote: () => {
