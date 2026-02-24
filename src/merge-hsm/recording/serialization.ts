@@ -126,9 +126,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'PROVIDER_SYNCED':
     case 'CONNECTED':
     case 'DISCONNECTED':
-    case 'RESOLVE_ACCEPT_DISK':
-    case 'RESOLVE_ACCEPT_LOCAL':
-    case 'RESOLVE_ACCEPT_MERGED':
+    case 'RESOLVE':
     case 'DISMISS_CONFLICT':
     case 'OPEN_DIFF_VIEW':
     case 'CANCEL':

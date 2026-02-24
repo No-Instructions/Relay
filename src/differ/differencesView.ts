@@ -49,6 +49,8 @@ export interface ViewState {
 	file1: TFile;
 	file2: TFile;
 	showMergeOption: boolean;
+	oursLabel?: string;
+	theirsLabel?: string;
 	onResolve?: () => Promise<void>;
 	originalLeaf?: WorkspaceLeaf;
 	[key: string]: unknown;
@@ -239,9 +241,12 @@ export class DifferencesView extends ItemView {
 			cls: "flex flex-row gap-1 py-0-5",
 		});
 
+		const oursLabel = this.state?.oursLabel ?? "Editor";
+		const theirsLabel = this.state?.theirsLabel ?? "Disk";
+
 		// Left file (top)
 		new ActionLineButton({
-			text: `Keep Editor Contents`,
+			text: `Keep ${oursLabel} Contents`,
 			onClick: async (e) => {
 				e.preventDefault();
 				await this.acceptAllFromLeft();
@@ -252,7 +257,7 @@ export class DifferencesView extends ItemView {
 
 		// Right file (bottom)
 		new ActionLineButton({
-			text: `Accept All from Local Disk`,
+			text: `Accept All from ${theirsLabel}`,
 			onClick: async (e) => {
 				e.preventDefault();
 				await this.acceptAllFromRight();
@@ -332,6 +337,8 @@ export class DifferencesView extends ItemView {
 				file2: this.state.file2,
 				file1Content: this.file1Content || "",
 				file2Content: this.file2Content || "",
+				oursLabel: this.state.oursLabel,
+				theirsLabel: this.state.theirsLabel,
 				triggerRebuild: async (): Promise<void> => {
 					await this.updateState();
 					this.update();

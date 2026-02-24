@@ -152,16 +152,14 @@ export type SerializableEvent =
   | { type: 'PROVIDER_SYNCED' }
   | { type: 'CONNECTED' }
   | { type: 'DISCONNECTED' }
-  | { type: 'RESOLVE_ACCEPT_DISK' }
-  | { type: 'RESOLVE_ACCEPT_LOCAL' }
-  | { type: 'RESOLVE_ACCEPT_MERGED'; contents: string }
+  | { type: 'RESOLVE'; contents: string }
   | { type: 'DISMISS_CONFLICT' }
   | { type: 'OPEN_DIFF_VIEW' }
   | { type: 'CANCEL' }
   | { type: 'PERSISTENCE_LOADED'; updates: string; lca: SerializableLCA | null } // updates is base64
   | { type: 'PERSISTENCE_SYNCED'; hasContent: boolean }
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }
-  | { type: 'MERGE_CONFLICT'; base: string; local: string; remote: string }
+  | { type: 'MERGE_CONFLICT'; base: string; ours: string; theirs: string }
   | { type: 'REMOTE_DOC_UPDATED' }
   | { type: 'ERROR'; error: string } // error message
   | { type: 'IDLE_MERGE_COMPLETE'; success: true; source: string; newLCA: SerializableLCA }

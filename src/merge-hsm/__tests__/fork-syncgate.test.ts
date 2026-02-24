@@ -275,9 +275,9 @@ describe('SyncGate', () => {
     t.send(providerSynced());
     await t.hsm.awaitForkReconcile();
 
-    // Fork should be cleared (null) even though conflict occurred
-    // (clearForkKeepDiverged clears fork and transitions to idle.diverged)
-    expect(t.state.fork).toBeNull();
+    // Fork is preserved so the sync gate stays active and OpCapture
+    // data is available for conflict resolution.
+    expect(t.state.fork).not.toBeNull();
   });
 
   test('fork conflict does not corrupt content via raw CRDT merge', async () => {
@@ -410,7 +410,7 @@ describe('Fork + Active Mode Integration', () => {
     const cd = t.hsm.getConflictData();
     expect(cd).toBeDefined();
     expect(cd?.base).toBe('original line');
-    expect(cd?.local).toBe('disk changed this');
-    expect(cd?.remote).toBe('remote changed this');
+    expect(cd?.ours).toBe('disk changed this');
+    expect(cd?.theirs).toBe('remote changed this');
   });
 });

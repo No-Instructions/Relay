@@ -207,9 +207,7 @@ export const MACHINE: MachineDefinition = {
 	'active.merging.twoWay': {
 		entry: ['replayAccumulatedEvents', 'startTwoWayMerge'],
 		on: {
-			RESOLVE_ACCEPT_DISK: { target: 'active.tracking', actions: ['resolveWithDisk'] },
-			RESOLVE_ACCEPT_LOCAL: { target: 'active.tracking', actions: ['resolveWithLocal'] },
-			RESOLVE_ACCEPT_MERGED: { target: 'active.tracking', actions: ['resolveWithMerged'] },
+			RESOLVE: { target: 'active.tracking', actions: ['resolveConflict'] },
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			CM6_CHANGE: { target: 'active.merging.twoWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.twoWay', actions: ['applyRemoteToRemoteDoc'] },
@@ -235,7 +233,8 @@ export const MACHINE: MachineDefinition = {
 			OPEN_DIFF_VIEW: 'active.conflict.resolving',
 			DISMISS_CONFLICT: { target: 'active.tracking', actions: ['storeDeferredConflict'] },
 			CM6_CHANGE: { target: 'active.conflict.bannerShown', actions: ['trackEditorText'] },
-			REMOTE_UPDATE: { target: 'active.conflict.bannerShown', actions: ['applyRemoteToRemoteDoc'] },
+			REMOTE_UPDATE: { target: 'active.conflict.bannerShown', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			DISK_CHANGED: { target: 'active.conflict.bannerShown', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RESOLVE_HUNK: { target: 'active.conflict.bannerShown', actions: ['resolveHunk'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
@@ -244,12 +243,12 @@ export const MACHINE: MachineDefinition = {
 
 	'active.conflict.resolving': {
 		on: {
-			RESOLVE_ACCEPT_DISK: { target: 'active.tracking', actions: ['resolveWithDisk'] },
-			RESOLVE_ACCEPT_LOCAL: { target: 'active.tracking', actions: ['resolveWithLocal'] },
-			RESOLVE_ACCEPT_MERGED: { target: 'active.tracking', actions: ['resolveWithMerged'] },
+			RESOLVE: { target: 'active.tracking', actions: ['resolveConflict'] },
 			RESOLVE_HUNK: { target: 'active.conflict.resolving', actions: ['resolveHunk'] },
 			CANCEL: 'active.conflict.bannerShown',
 			CM6_CHANGE: { target: 'active.conflict.resolving', actions: ['trackEditorText'] },
+			REMOTE_UPDATE: { target: 'active.conflict.resolving', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			DISK_CHANGED: { target: 'active.conflict.resolving', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},

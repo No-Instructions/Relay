@@ -19,9 +19,7 @@ import type {
   ProviderSyncedEvent,
   ConnectedEvent,
   DisconnectedEvent,
-  ResolveAcceptDiskEvent,
-  ResolveAcceptLocalEvent,
-  ResolveAcceptMergedEvent,
+  ResolveEvent,
   DismissConflictEvent,
   OpenDiffViewEvent,
   CancelEvent,
@@ -167,16 +165,8 @@ export function disconnected(): DisconnectedEvent {
 // User Events
 // =============================================================================
 
-export function resolveAcceptDisk(): ResolveAcceptDiskEvent {
-  return { type: 'RESOLVE_ACCEPT_DISK' };
-}
-
-export function resolveAcceptLocal(): ResolveAcceptLocalEvent {
-  return { type: 'RESOLVE_ACCEPT_LOCAL' };
-}
-
-export function resolveAcceptMerged(contents: string): ResolveAcceptMergedEvent {
-  return { type: 'RESOLVE_ACCEPT_MERGED', contents };
+export function resolve(contents: string): ResolveEvent {
+  return { type: 'RESOLVE', contents };
 }
 
 export function dismissConflict(): DismissConflictEvent {
@@ -212,10 +202,10 @@ export function mergeSuccess(newLCA: LCAState): MergeSuccessEvent {
 
 export function mergeConflict(
   base: string,
-  local: string,
-  remote: string
+  ours: string,
+  theirs: string
 ): MergeConflictEvent {
-  return { type: 'MERGE_CONFLICT', base, local, remote };
+  return { type: 'MERGE_CONFLICT', base, ours, theirs };
 }
 
 export function remoteDocUpdated(): RemoteDocUpdatedEvent {

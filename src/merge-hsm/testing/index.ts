@@ -38,9 +38,7 @@ export {
   connected,
   disconnected,
   // User events
-  resolveAcceptDisk,
-  resolveAcceptLocal,
-  resolveAcceptMerged,
+  resolve,
   dismissConflict,
   openDiffView,
   cancel,

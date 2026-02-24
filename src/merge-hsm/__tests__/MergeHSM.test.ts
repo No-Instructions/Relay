@@ -23,9 +23,7 @@ import {
   diskChanged,
   saveComplete,
   openDiffView,
-  resolveAcceptDisk,
-  resolveAcceptLocal,
-  resolveAcceptMerged,
+  resolve,
   dismissConflict,
   cancel,
   providerSynced,
@@ -686,7 +684,7 @@ describe('MergeHSM', () => {
       expectState(t, 'active.conflict.resolving');
     });
 
-    test('RESOLVE_ACCEPT_DISK returns to tracking', async () => {
+    test('RESOLVE with disk content returns to tracking', async () => {
       const t = await createTestHSM();
       await loadToResolving(t, {
         base: 'hello',
@@ -694,12 +692,12 @@ describe('MergeHSM', () => {
         disk: 'hello disk',
       });
 
-      t.send(resolveAcceptDisk());
+      t.send(resolve('hello disk'));
 
       expectState(t, 'active.tracking');
     });
 
-    test('RESOLVE_ACCEPT_LOCAL returns to tracking', async () => {
+    test('RESOLVE with local content returns to tracking', async () => {
       const t = await createTestHSM();
       await loadToResolving(t, {
         base: 'hello',
@@ -707,7 +705,7 @@ describe('MergeHSM', () => {
         disk: 'hello disk',
       });
 
-      t.send(resolveAcceptLocal());
+      t.send(resolve('hello local'));
 
       expectState(t, 'active.tracking');
     });
@@ -726,7 +724,7 @@ describe('MergeHSM', () => {
       expect(t.state.deferredConflict).toBeDefined();
     });
 
-    test('RESOLVE_ACCEPT_DISK applies disk content to localDoc', async () => {
+    test('RESOLVE applies content to localDoc and dispatches to editor', async () => {
       const t = await createTestHSM();
       await loadToResolving(t, {
         base: 'hello',
@@ -735,17 +733,16 @@ describe('MergeHSM', () => {
       });
       t.clearEffects();
 
-      t.send(resolveAcceptDisk());
+      t.send(resolve('hello disk'));
 
       expectState(t, 'active.tracking');
       expectLocalDocText(t, 'hello disk');
-      // BUG-044 fix: NO DISPATCH_CM6 for RESOLVE_ACCEPT_DISK.
-      // The editor already shows disk content (Obsidian loaded it from disk).
-      // Dispatching would cause duplication.
-      expect(t.effects.filter(e => e.type === 'DISPATCH_CM6')).toHaveLength(0);
+      // RESOLVE always applies content to localDoc and dispatches CM6
+      // to sync the editor with the resolved content
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
-    test('RESOLVE_ACCEPT_LOCAL keeps localDoc unchanged but updates editor', async () => {
+    test('RESOLVE with merged content applies merged content', async () => {
       const t = await createTestHSM();
       await loadToResolving(t, {
         base: 'hello',
@@ -754,29 +751,12 @@ describe('MergeHSM', () => {
       });
       t.clearEffects();
 
-      t.send(resolveAcceptLocal());
-
-      expectState(t, 'active.tracking');
-      expectLocalDocText(t, 'hello local');
-      // DISPATCH_CM6 is needed because the editor was showing disk content
-      // and needs to be updated to show the local (CRDT) content
-      expectEffect(t.effects, { type: 'DISPATCH_CM6' });
-    });
-
-    test('RESOLVE_ACCEPT_MERGED applies merged content', async () => {
-      const t = await createTestHSM();
-      await loadToResolving(t, {
-        base: 'hello',
-        remote: 'hello local',
-        disk: 'hello disk',
-      });
-      t.clearEffects();
-
-      t.send(resolveAcceptMerged('hello merged'));
+      t.send(resolve('hello merged'));
 
       expectState(t, 'active.tracking');
       expectLocalDocText(t, 'hello merged');
-      expectEffect(t.effects, { type: 'DISPATCH_CM6' });
+      // No DISPATCH_CM6 — y-codemirror binding propagates CRDT changes to editor
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
     test('CANCEL from resolving returns to bannerShown', async () => {
@@ -806,7 +786,7 @@ describe('MergeHSM', () => {
 
       const conflictData = t.hsm.getConflictData();
       expect(conflictData).not.toBeNull();
-      expect(conflictData!.remote).toBe('disk changed');
+      expect(conflictData!.theirs).toBe('disk changed');
     });
 
     test('awaitActive() resolves for conflict state, not just tracking', async () => {

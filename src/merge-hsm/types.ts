@@ -272,16 +272,8 @@ export interface SetModeIdleEvent {
 }
 
 // User Events
-export interface ResolveAcceptDiskEvent {
-	type: "RESOLVE_ACCEPT_DISK";
-}
-
-export interface ResolveAcceptLocalEvent {
-	type: "RESOLVE_ACCEPT_LOCAL";
-}
-
-export interface ResolveAcceptMergedEvent {
-	type: "RESOLVE_ACCEPT_MERGED";
+export interface ResolveEvent {
+	type: "RESOLVE";
 	contents: string;
 }
 
@@ -319,8 +311,8 @@ export interface MergeSuccessEvent {
 export interface MergeConflictEvent {
 	type: "MERGE_CONFLICT";
 	base: string;
-	local: string;
-	remote: string;
+	ours: string;
+	theirs: string;
 	conflictRegions?: ConflictRegion[];
 }
 
@@ -443,9 +435,7 @@ export type MergeEvent =
 	| SetModeActiveEvent
 	| SetModeIdleEvent
 	// User
-	| ResolveAcceptDiskEvent
-	| ResolveAcceptLocalEvent
-	| ResolveAcceptMergedEvent
+	| ResolveEvent
 	| DismissConflictEvent
 	| OpenDiffViewEvent
 	| CancelEvent
@@ -509,10 +499,10 @@ export interface PositionedConflict {
 	localStart: number;
 	/** Character position where conflict ends in editor */
 	localEnd: number;
-	/** Content from local version */
-	localContent: string;
-	/** Content from remote/disk version */
-	remoteContent: string;
+	/** Content from ours (editor/CRDT) version */
+	oursContent: string;
+	/** Content from theirs (disk/remote) version */
+	theirsContent: string;
 }
 
 /**
@@ -800,16 +790,16 @@ export interface MergeSuccess {
 export interface MergeFailure {
 	success: false;
 	base: string;
-	local: string;
-	remote: string;
+	ours: string;
+	theirs: string;
 	conflictRegions: ConflictRegion[];
 }
 
 export interface ConflictRegion {
 	baseStart: number;
 	baseEnd: number;
-	localContent: string;
-	remoteContent: string;
+	oursContent: string;
+	theirsContent: string;
 }
 
 export type MergeResult = MergeSuccess | MergeFailure;

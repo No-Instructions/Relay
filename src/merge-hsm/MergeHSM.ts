@@ -128,7 +128,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Each ingestDisk call pushes one entry, giving 1:1 correspondence
 	// with CapturedOp entries from OpCapture. Cleared when the fork is cleared.
 	private _ingestionTexts: string[] = [];
-
 	// SyncGate: controls CRDT op flow between localDoc and remoteDoc
 	private _syncGate: SyncGate = {
 		providerConnected: false,
@@ -162,8 +161,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Conflict data (enhanced for inline resolution)
 	private conflictData: {
 		base: string;
-		local: string;
-		remote: string;
+		ours: string;
+		theirs: string;
+		oursLabel: string;
+		theirsLabel: string;
 		conflictRegions: ConflictRegion[];
 		resolvedIndices: Set<number>;
 		positionedConflicts: PositionedConflict[];
@@ -389,8 +390,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	getConflictData(): {
 		base: string;
-		local: string;
-		remote: string;
+		ours: string;
+		theirs: string;
+		oursLabel: string;
+		theirsLabel: string;
 		conflictRegions?: ConflictRegion[];
 		resolvedIndices?: Set<number>;
 		positionedConflicts?: PositionedConflict[];
@@ -987,37 +990,49 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this.lastKnownEditorText = e.docText;
 				}
 			},
-			resolveWithDisk: () => {
-				if (this.conflictData) {
-					this.applyContentToLocalDoc(this.conflictData.remote);
+			resolveConflict: (_hsm, event) => {
+				const contents = (event as any).contents as string;
+
+				if (!this.localDoc || !this.remoteDoc) {
+					this.conflictData = null;
+					return;
 				}
-				this.conflictData = null;
-				this.pendingDiskContents = null;
-				this.pendingEditorContent = null;
-			},
-			resolveWithLocal: () => {
-				if (this.localDoc && this.conflictData) {
-					const localText = this.localDoc.getText("contents").toString();
-					const editorText = this.conflictData.remote;
-					const localChanges = computePositionedChanges(editorText, localText);
-					if (localChanges.length > 0) {
-						this.emitEffect({ type: "DISPATCH_CM6", changes: localChanges });
-					}
+
+				// Step 1: Reverse disk ops from OpCapture to undo the disk edit
+				// from localDoc's CRDT history. This restores localDoc to its
+				// pre-fork state so the CRDT merge in step 2 won't interleave.
+				const opCapture = this.getOpCapture();
+				if (opCapture && this._fork?.captureMark != null) {
+					const diskOps = opCapture.sinceByOrigin(this._fork.captureMark, DISK_ORIGIN);
+					opCapture.reverse(diskOps);
 				}
-				this.conflictData = null;
-				this.pendingDiskContents = null;
-				this.pendingEditorContent = null;
-			},
-			resolveWithMerged: (_hsm, event) => {
-				const e = event as any;
-				if (e.contents && this.conflictData) {
-					this.applyContentToLocalDoc(e.contents);
-					const editorText = this.conflictData.remote;
-					const mergedChanges = computePositionedChanges(editorText, e.contents);
-					if (mergedChanges.length > 0) {
-						this.emitEffect({ type: "DISPATCH_CM6", changes: mergedChanges });
-					}
+
+				// Step 2: Merge remote CRDT into local so histories converge.
+				const remoteUpdate = Y.encodeStateAsUpdate(
+					this.remoteDoc,
+					Y.encodeStateVector(this.localDoc),
+				);
+				Y.applyUpdate(this.localDoc, remoteUpdate, this.remoteDoc);
+
+				// Step 3: DMP the resolved text onto localDoc. After the CRDT
+				// merge the text may not match what the user chose (e.g. they
+				// accepted ours, or merged individual hunks). DMP fixes it up.
+				this.applyContentToLocalDoc(contents);
+
+				// Step 4: Sync localDoc → remoteDoc and server. Histories are
+				// now converged so the update is clean.
+				const outUpdate = Y.encodeStateAsUpdate(
+					this.localDoc,
+					Y.encodeStateVector(this.remoteDoc),
+				);
+				if (outUpdate.length > 0) {
+					Y.applyUpdate(this.remoteDoc, outUpdate, this.localDoc);
 				}
+				this.emitEffect({ type: 'SYNC_TO_REMOTE', update: Y.encodeStateAsUpdate(this.localDoc) });
+
+				// Clear fork and conflict state
+				this._fork = null;
+				this._ingestionTexts = [];
 				this.conflictData = null;
 				this.pendingDiskContents = null;
 				this.pendingEditorContent = null;
@@ -1027,12 +1042,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const conflictRegions = e.conflictRegions ?? [];
 				const positionedConflicts = this.calculateConflictPositions(
 					conflictRegions,
-					e.local,
+					e.ours,
 				);
 				this.conflictData = {
 					base: e.base,
-					local: e.local,
-					remote: e.remote,
+					ours: e.ours,
+					theirs: e.theirs,
+					oursLabel: e.oursLabel ?? "Editor",
+					theirsLabel: e.theirsLabel ?? "Disk",
 					conflictRegions,
 					resolvedIndices: new Set(),
 					positionedConflicts,
@@ -1228,8 +1245,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				// for the disk side and sees no disk changes, causing it to auto-accept
 				// and escape to idle.synced instead of staying diverged.
 				this.pendingDiskContents = this.localDoc?.getText("contents").toString() ?? null;
-				this._fork = null;
-				this._ingestionTexts = [];
+				// Keep the fork alive — it gates syncLocalToRemote and holds the
+				// captureMark needed to reverse disk ops during conflict resolution.
 				// Clear pending remote updates — fork reconciliation already
 				// evaluated them via diff3 and found a conflict. Without this,
 				// idle.diverged's idle-merge invoke runs invokeIdleRemoteAutoMerge
@@ -1366,8 +1383,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this.send({
 						type: "MERGE_CONFLICT",
 						base: fork.base,
-						local: localContent,
-						remote: remoteContent,
+						ours: localContent,
+						theirs: remoteContent,
 						conflictRegions: mergeResult.conflictRegions,
 					});
 				}
@@ -1577,6 +1594,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	}
 
 	private async invokeIdleThreeWayAutoMerge(signal: AbortSignal): Promise<unknown> {
+		// If fork-reconcile already detected a conflict, don't re-attempt the
+		// merge — the conflict data is authoritative and must be surfaced to
+		// the user when they open the file.
+		if (this.conflictData) return { success: false };
 		if (!this._lca || !this.localDoc) return { success: false };
 
 		const lcaContent = this._lca.contents;
@@ -1718,8 +1739,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// reconciliation to skip conflict detection (localText === diskText).
 		this.conflictData = {
 			base: fork.base,
-			local: localContent,
-			remote: remoteContent,
+			ours: localContent,
+			theirs: remoteContent,
+			oursLabel: "Local",
+			theirsLabel: "Remote",
 			conflictRegions: mergeResult.conflictRegions ?? [],
 			resolvedIndices: new Set(),
 			positionedConflicts: this.calculateConflictPositions(
@@ -1860,8 +1883,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// Populate conflictData for the diff UI
 		this.conflictData = {
 			base: "", // No baseline available
-			local: localText,
-			remote: diskText,
+			ours: localText,
+			theirs: diskText,
+			oursLabel: "Editor",
+			theirsLabel: "Disk",
 			conflictRegions: [], // No regions - entire content is in conflict
 			resolvedIndices: new Set(),
 			positionedConflicts: [],
@@ -1871,8 +1896,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this.send({
 			type: "MERGE_CONFLICT",
 			base: "",
-			local: localText,
-			remote: diskText,
+			ours: localText,
+			theirs: diskText,
 			conflictRegions: [],
 		});
 	}
@@ -1947,8 +1972,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			// Merge has conflicts - populate conflictData for banner/diff view
 			this.conflictData = {
 				base: baseText,
-				local: localText,
-				remote: diskText,
+				ours: localText,
+				theirs: diskText,
+				oursLabel: "Editor",
+				theirsLabel: "Disk",
 				conflictRegions: mergeResult.conflictRegions ?? [],
 				resolvedIndices: new Set(),
 				positionedConflicts: this.calculateConflictPositions(
@@ -1961,8 +1988,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			this.send({
 				type: "MERGE_CONFLICT",
 				base: baseText,
-				local: localText,
-				remote: diskText,
+				ours: localText,
+				theirs: diskText,
 				conflictRegions: mergeResult.conflictRegions,
 			});
 		}
@@ -2485,8 +2512,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			index,
 			localStart: lineStarts[region.baseStart] ?? 0,
 			localEnd: lineStarts[region.baseEnd] ?? localContent.length,
-			localContent: region.localContent,
-			remoteContent: region.remoteContent,
+			oursContent: region.oursContent,
+			theirsContent: region.theirsContent,
 		}));
 	}
 
@@ -2505,7 +2532,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// For unresolved regions, we need to find them in the new content
 		// This is a simplified approach - in practice we'd need more sophisticated tracking
 		// For now, we'll re-emit with adjusted positions
-		this.conflictData.local = currentContent;
+		this.conflictData.ours = currentContent;
 	}
 
 	/**
@@ -2530,13 +2557,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		let newContent: string;
 		switch (resolution) {
 			case "local":
-				newContent = region.localContent;
+				newContent = region.oursContent;
 				break;
 			case "remote":
-				newContent = region.remoteContent;
+				newContent = region.theirsContent;
 				break;
 			case "both":
-				newContent = region.localContent + "\n" + region.remoteContent;
+				newContent = region.oursContent + "\n" + region.theirsContent;
 				break;
 		}
 
@@ -2576,7 +2603,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		// Update stored local content
-		this.conflictData.local = afterText;
+		this.conflictData.ours = afterText;
 
 		// Recalculate positions for remaining conflicts (they shift!)
 		this.recalculateConflictPositions();
@@ -2590,8 +2617,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			this.conflictData.conflictRegions.length
 		) {
 			// All hunks resolved — localDoc already has the final content.
-			// Send RESOLVE_ACCEPT_LOCAL to clear conflict state and transition to tracking.
-			this.send({ type: "RESOLVE_ACCEPT_LOCAL" });
+			const finalContent = this.localDoc.getText("contents").toString();
+			this.send({ type: "RESOLVE", contents: finalContent });
 		}
 	}
 
@@ -2935,8 +2962,8 @@ function performThreeWayMerge(
 		return {
 			success: false,
 			base: lca,
-			local,
-			remote,
+			ours: local,
+			theirs: remote,
 			conflictRegions: extractConflictRegions(result, lca),
 		};
 	}
@@ -2967,14 +2994,14 @@ function extractConflictRegions(
 ): Array<{
 	baseStart: number;
 	baseEnd: number;
-	localContent: string;
-	remoteContent: string;
+	oursContent: string;
+	theirsContent: string;
 }> {
 	const regions: Array<{
 		baseStart: number;
 		baseEnd: number;
-		localContent: string;
-		remoteContent: string;
+		oursContent: string;
+		theirsContent: string;
 	}> = [];
 
 	let lineOffset = 0;
@@ -2984,8 +3011,8 @@ function extractConflictRegions(
 			regions.push({
 				baseStart: lineOffset,
 				baseEnd: lineOffset + (baseTokens?.length ?? 0),
-				localContent: localTokens?.join("") ?? "",
-				remoteContent: remoteTokens?.join("") ?? "",
+				oursContent: localTokens?.join("") ?? "",
+				theirsContent: remoteTokens?.join("") ?? "",
 			});
 			lineOffset += baseTokens?.length ?? 0;
 		} else if ("ok" in region && region.ok) {

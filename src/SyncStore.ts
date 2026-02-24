@@ -1,6 +1,6 @@
 "use strict";
 import * as Y from "yjs";
-import { sep, dirname } from "path-browserify";
+import { sep, dirname, join } from "path-browserify";
 import { v4 as uuidv4 } from "uuid";
 import { Observable } from "./observable/Observable";
 import { withFlag } from "./flagManager";
@@ -445,7 +445,7 @@ export class SyncStore extends Observable<SyncStore> {
 			if (oldPath === oldFolder) return;
 
 			const relativePath = oldPath.slice(oldFolder.length);
-			const newPath = newFolder + relativePath;
+			const newPath = join(newFolder, relativePath);
 
 			// Delete old path
 			this.move(oldPath, newPath);

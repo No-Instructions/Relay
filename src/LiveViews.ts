@@ -485,9 +485,9 @@ export class LiveView<ViewType extends TextFileView>
 							);
 						}
 
-						// Get CURRENT localDoc content (not stale conflictData.local)
+						// Get CURRENT localDoc content (not stale conflictData.ours)
 						const currentLocalContent = localDoc.getText("contents").toString();
-						const diskContent = conflictData.remote;
+						const diskContent = conflictData.theirs;
 
 						this.log(
 							`[mergeBanner] localDoc: ${currentLocalContent.length} chars, disk: ${diskContent.length} chars`,
@@ -495,14 +495,16 @@ export class LiveView<ViewType extends TextFileView>
 
 						// Create DiskBuffer wrappers (differ expects TFile-like objects)
 						// Use DiskBuffer for BOTH sides to ensure we show correct content
+						const oursLabel = conflictData.oursLabel ?? "Editor";
+						const theirsLabel = conflictData.theirsLabel ?? "Disk";
 						const localFile = new DiskBuffer(
 							this._parent.app.vault,
-							this.document.path + " (Local)",
+							this.document.path + ` (${oursLabel})`,
 							currentLocalContent,
 						);
 						const diskFile = new DiskBuffer(
 							this._parent.app.vault,
-							this.document.path + " (Disk)",
+							this.document.path + ` (${theirsLabel})`,
 							diskContent,
 						);
 
@@ -511,9 +513,11 @@ export class LiveView<ViewType extends TextFileView>
 
 						// Open diff view: localDoc (left) vs disk (right)
 						this._parent.openDiffView({
-							file1: localFile, // Current localDoc content
-							file2: diskFile, // Disk content
+							file1: localFile,
+							file2: diskFile,
 							showMergeOption: true,
+							oursLabel,
+							theirsLabel,
 							onResolve: async () => {
 								this.log("[mergeBanner] HSM conflict resolved via diff view");
 
@@ -521,19 +525,7 @@ export class LiveView<ViewType extends TextFileView>
 								// Get the resolved content and apply it to HSM's localDoc.
 								const resolvedContent = localFile.contents;
 
-								if (resolvedContent === currentLocalContent) {
-									// User kept local - just update LCA
-									hsm.send({ type: "RESOLVE_ACCEPT_LOCAL" });
-								} else if (resolvedContent === diskContent) {
-									// User chose disk
-									hsm.send({ type: "RESOLVE_ACCEPT_DISK" });
-								} else {
-									// User merged - send merged content
-									hsm.send({
-										type: "RESOLVE_ACCEPT_MERGED",
-										contents: resolvedContent,
-									});
-								}
+								hsm.send({ type: "RESOLVE", contents: resolvedContent });
 
 								this._banner?.destroy();
 								this._banner = undefined;

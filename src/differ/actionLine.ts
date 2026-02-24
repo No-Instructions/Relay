@@ -43,6 +43,8 @@ export class ActionLine {
 			file2: TFile;
 			file1Content: string;
 			file2Content: string;
+			oursLabel?: string;
+			theirsLabel?: string;
 			triggerRebuild: VoidCallback;
 		},
 	) {
@@ -51,6 +53,8 @@ export class ActionLine {
 		this.file2 = args.file2;
 		this.file1Content = args.file1Content;
 		this.file2Content = args.file2Content;
+		this.oursLabel = args.oursLabel ?? "Editor";
+		this.theirsLabel = args.theirsLabel ?? "Disk";
 		this.triggerRebuild = args.triggerRebuild;
 	}
 
@@ -63,6 +67,10 @@ export class ActionLine {
 	private file1Content: string;
 
 	private file2Content: string;
+
+	private oursLabel: string;
+
+	private theirsLabel: string;
 
 	private triggerRebuild: VoidCallback;
 
@@ -87,12 +95,12 @@ export class ActionLine {
 
 		if (hasPlusLines && hasMinusLines) {
 			new ActionLineButton({
-				text: "Accept Top (Editor)",
+				text: `Accept Top (${this.oursLabel})`,
 				onClick: (e) => this.acceptTopClick(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
 			new ActionLineButton({
-				text: "Accept Bottom (Local Disk)",
+				text: `Accept Bottom (${this.theirsLabel})`,
 				onClick: (e) => this.acceptBottomClick(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
@@ -107,22 +115,22 @@ export class ActionLine {
 			}).build(actionLine);
 		} else if (hasMinusLines) {
 			new ActionLineButton({
-				text: `Keep in Editor`,
+				text: `Keep in ${this.oursLabel}`,
 				onClick: (e) => this.insertFile1Difference(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
 			new ActionLineButton({
-				text: "Discard in Editor",
+				text: `Discard in ${this.oursLabel}`,
 				onClick: (e) => this.discardFile1Difference(e, this.difference),
 			}).build(actionLine);
 		} else if (hasPlusLines) {
 			new ActionLineButton({
-				text: `Accept from Local Disk`,
+				text: `Accept from ${this.theirsLabel}`,
 				onClick: (e) => this.insertFile2Difference(e, this.difference),
 			}).build(actionLine);
 			ActionLineDivider.build(actionLine);
 			new ActionLineButton({
-				text: "Discard on Disk",
+				text: `Discard on ${this.theirsLabel}`,
 				onClick: (e) => this.discardFile2Difference(e, this.difference),
 			}).build(actionLine);
 		}
