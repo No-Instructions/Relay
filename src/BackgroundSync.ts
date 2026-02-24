@@ -104,7 +104,7 @@ export class BackgroundSync extends HasLogging {
 		// Add polling timer for disk changes (poll all folders)
 		this.timeProvider.setInterval(() => {
 			this.sharedFolders.forEach((folder) => {
-				folder.pollDiskState();
+				folder.poll();
 			});
 		}, 5000); // Poll every 5 seconds
 	}

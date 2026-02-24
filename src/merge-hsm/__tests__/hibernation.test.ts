@@ -23,6 +23,9 @@ interface MockDocument {
   hsm: MergeHSM | null;
   remoteDoc: Y.Doc | null;
   localDoc: Y.Doc;
+  connectForForkReconcile(): Promise<void>;
+  destroyIdleProviderIntegration(): void;
+  hasProviderIntegration(): boolean;
 }
 
 function createUpdate(content: string): Uint8Array {
@@ -52,6 +55,9 @@ describe('Hibernation Lifecycle', () => {
       hsm: null,
       remoteDoc,
       localDoc,
+      connectForForkReconcile: async () => {},
+      destroyIdleProviderIntegration: () => {},
+      hasProviderIntegration: () => false,
     };
 
     // Create HSM via manager factory

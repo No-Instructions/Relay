@@ -347,9 +347,6 @@ export class SharedFolder extends HasProvider {
 					// This is emitted when remote changes need to be written to disk
 					// without an editor open.
 					await this.handleIdleWriteDisk(effect.guid, effect.contents);
-				} else if (effect.type === "REQUEST_PROVIDER_SYNC") {
-					// Fork reconciliation: download remote state and signal provider synced
-					await this.handleRequestProviderSync(effect.guid);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -533,13 +530,10 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
-		// Check if this document is in active mode. userLock is set after
-		// acquireLock() completes, but the HSM may already be active (and
-		// emitting SYNC_TO_REMOTE) during the await in acquireLock().
-		// Check both userLock and MergeManager.isActive() to cover the window.
-		if (file.userLock || this.mergeManager?.isActive(guid)) {
+		// Skip if a live provider handles sync (active mode or fork-reconcile).
+		if (file.userLock || this.mergeManager?.isActive(guid) || file.hasProviderIntegration()) {
 			this.debug?.(
-				`[handleIdleSyncToRemote] Document ${guid} is in active mode, skipping`,
+				`[handleIdleSyncToRemote] Document ${guid} has live provider, skipping`,
 			);
 			return;
 		}
@@ -615,44 +609,6 @@ export class SharedFolder extends HasProvider {
 	 * 3. Sends CONNECTED + PROVIDER_SYNCED to HSM
 	 * 4. HSM then runs fork reconciliation
 	 */
-	private async handleRequestProviderSync(guid: string): Promise<void> {
-		const file = this.files.get(guid);
-		if (!file || !isDocument(file)) {
-			this.warn(`[handleRequestProviderSync] Document not found for guid: ${guid}`);
-			return;
-		}
-
-		// Skip if document is in active mode - ProviderIntegration handles it
-		if (file.userLock || this.mergeManager?.isActive(guid)) {
-			this.debug?.(`[handleRequestProviderSync] Document ${guid} is in active mode, skipping`);
-			return;
-		}
-
-		try {
-			// Download latest state from server
-			const updateBytes = await this.backgroundSync.enqueueDownload(file);
-
-			// Apply to remoteDoc
-			const remoteDoc = file.ensureRemoteDoc();
-			if (updateBytes) {
-				Y.applyUpdate(remoteDoc, updateBytes, "server");
-			}
-
-			// Update HSM's remoteDoc reference
-			if (file.hsm) {
-				file.hsm.setRemoteDoc(remoteDoc);
-
-				// Signal provider is connected and synced
-				file.hsm.send({ type: "CONNECTED" });
-				file.hsm.send({ type: "PROVIDER_SYNCED" });
-			}
-
-			this.log(`[handleRequestProviderSync] Synced provider for ${guid}`);
-		} catch (e) {
-			this.warn(`[handleRequestProviderSync] Failed for guid ${guid}:`, e);
-		}
-	}
-
 	/**
 	 * Poll for disk changes on all documents in this SharedFolder.
 	 * Only sends DISK_CHANGED if the disk state actually differs from HSM's knowledge.
@@ -660,7 +616,7 @@ export class SharedFolder extends HasProvider {
 	 *
 	 * @param guids - Optional set of GUIDs to poll. If not provided, polls all documents.
 	 */
-	async pollDiskState(guids?: string[]): Promise<void> {
+	async poll(guids?: string[]): Promise<void> {
 		const targetGuids = guids ?? Array.from(this.files.keys());
 
 		for (const guid of targetGuids) {
@@ -670,6 +626,7 @@ export class SharedFolder extends HasProvider {
 			const hsm = file.hsm;
 			if (!hsm) continue;
 
+			// Check disk state
 			try {
 				const diskState = await file.readDiskContent();
 				const currentDisk = hsm.state.disk;
@@ -685,9 +642,21 @@ export class SharedFolder extends HasProvider {
 			} catch (e) {
 				// File might have been deleted - ignore
 				this.debug?.(
-					`[pollDiskState] Failed to read disk state for ${guid}:`,
+					`[poll] Failed to read disk state for ${guid}:`,
 					e,
 				);
+			}
+
+			// Connect forked documents awaiting provider sync
+			if (
+				hsm.state.fork !== null
+				&& hsm.matches("idle.localAhead")
+				&& !file.hasProviderIntegration()
+				&& this.shouldConnect
+			) {
+				file.connectForForkReconcile().catch((e) => {
+					this.debug?.(`[poll] Failed to connect for fork reconcile ${guid}:`, e);
+				});
 			}
 		}
 	}

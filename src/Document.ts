@@ -237,8 +237,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const isNew = !this.isRemoteDocLoaded;
 		const doc = super.ensureRemoteDoc();
 		if (isNew && this._hsm) {
+			// Seed remoteDoc from localDoc so the provider can sync local
+			// state to the server. Skip when a fork exists — the fork gates
+			// local→remote sync because the two sides are intentionally
+			// diverged until conflict resolution completes.
 			const localDoc = this._hsm.getLocalDoc();
-			if (localDoc) {
+			if (localDoc && !this._hsm.hasFork()) {
 				const update = Y.encodeStateAsUpdate(localDoc);
 				Y.applyUpdate(doc, update);
 			}
@@ -737,9 +741,74 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
+	/**
+	 * Connect the provider for idle-mode fork reconciliation.
+	 * Creates a temporary ProviderIntegration so the HSM receives
+	 * CONNECTED/PROVIDER_SYNCED events and SYNC_TO_REMOTE effects
+	 * flow through the live WebSocket.
+	 *
+	 * Cleanup: call destroyIdleProviderIntegration() or releaseLock()
+	 * when the provider is no longer needed (e.g. on hibernate).
+	 */
+	async connectForForkReconcile(): Promise<void> {
+		if (!this._hsm) return;
+		if (this._providerIntegration) return; // Already bridged
+
+		// Destroy the existing remoteDoc so we get a fresh one populated
+		// purely from the server. The old remoteDoc may contain local edits
+		// from the active session (via syncLocalToRemote), which would
+		// prevent fork-reconcile from detecting true divergence.
+		this.destroyRemoteDoc();
+
+		const remoteDoc = this.ensureRemoteDoc();
+		this._hsm.setRemoteDoc(remoteDoc);
+
+		await this.connect();
+
+		if (this._provider && this._hsm) {
+			this._providerIntegration = new ProviderIntegration(
+				this._hsm,
+				remoteDoc,
+				this._provider as YjsProvider,
+			);
+
+			// Tear down when transitioning to another idle state (fork resolved
+			// or diverged). Don't tear down when transitioning to active —
+			// acquireLock adopts the existing provider and ProviderIntegration.
+			const unsub = this._hsm.onStateChange(() => {
+				if (!this._hsm?.matches("idle.localAhead")) {
+					unsub();
+					if (!this._hsm?.isActive()) {
+						this.destroyIdleProviderIntegration();
+					}
+				}
+			});
+		}
+	}
+
+	/**
+	 * Tear down idle-mode provider integration (created by connectForForkReconcile).
+	 * Called during hibernation to clean up the WebSocket connection.
+	 */
+	destroyIdleProviderIntegration(): void {
+		if (this._providerIntegration && !this.userLock) {
+			this._providerIntegration.destroy();
+			this._providerIntegration = null;
+			this.disconnect();
+		}
+	}
+
+	/**
+	 * Whether this document has an active provider integration
+	 * (either from acquireLock or connectForForkReconcile).
+	 */
+	hasProviderIntegration(): boolean {
+		return this._providerIntegration !== null;
+	}
+
 	private async handleSyncToRemote(update: Uint8Array): Promise<void> {
-		// Skip if document is in active mode - ProviderIntegration handles it
-		if (this.userLock || this.sharedFolder?.mergeManager?.isActive(this.guid)) {
+		// Skip if ProviderIntegration handles it (active mode or fork-reconcile)
+		if (this.userLock || this._providerIntegration || this.sharedFolder?.mergeManager?.isActive(this.guid)) {
 			return;
 		}
 

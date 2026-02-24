@@ -74,10 +74,10 @@ export class ProviderIntegration {
     // Subscribe to HSM effects for SYNC_TO_REMOTE
     this.unsubscribeHSM = hsm.effects.subscribe((effect) => {
       if (effect.type === 'SYNC_TO_REMOTE') {
-        // In active mode, the HSM already applied the update to remoteDoc
-        // in syncLocalToRemote(). Only apply in idle mode, where the HSM
-        // doesn't have direct access to remoteDoc.
-        if (!this.hsm.getLocalDoc()) {
+        // In active mode, syncLocalToRemote() already applied the update
+        // to remoteDoc. In idle mode (fork-reconcile), the HSM emits the
+        // effect expecting us to apply it.
+        if (!this.hsm.isActive()) {
           Y.applyUpdate(this.remoteDoc, effect.update, this);
         }
       }

@@ -350,6 +350,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		return this._statePath.startsWith("active.");
 	}
 
+	hasFork(): boolean {
+		return this._fork !== null;
+	}
+
 	/**
 	 * Check if the HSM is in idle mode (no editor, lightweight state).
 	 */
@@ -1270,10 +1274,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const fork = this._fork;
 				const localContent = this.localDoc.getText("contents").toString();
 
-				// Check if remote has changed since fork
-				const remoteChanged = this._remoteStateVector
-					? stateVectorIsAhead(this._remoteStateVector, fork.remoteStateVector)
-					: false;
+				// Check if remote has changed since fork using remoteDoc's actual
+				// state vector (not the cached _remoteStateVector, which may be
+				// stale if updates arrived via provider sync rather than REMOTE_UPDATE).
+				const remoteChanged = stateVectorIsAhead(
+					Y.encodeStateVector(this.remoteDoc),
+					fork.remoteStateVector,
+				);
 
 				if (!remoteChanged) {
 					// Remote unchanged — disk edit is confirmed safe, drop captured ops
@@ -1713,8 +1720,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			const update = Y.encodeStateAsUpdate(this.localDoc);
 
 			const hash = await this.hashFn(mergeResult.merged);
-			if (signal.aborted) return { success: false };
-
+			if (signal.aborted) {
+				return { success: false };
+			}
 			this.emitEffect({
 				type: "WRITE_DISK",
 				guid: this._guid,

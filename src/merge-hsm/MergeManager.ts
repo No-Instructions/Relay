@@ -33,6 +33,21 @@ import { validateUpdate } from '../storage/yjs-validation';
 // Types
 // =============================================================================
 
+/**
+ * Interface for documents managed by MergeManager.
+ * Implemented by Document — MergeManager uses this to avoid
+ * depending on the full Document class.
+ */
+export interface MergeManagerDocument {
+  hsm: import('./MergeHSM').MergeHSM | null;
+  /** Connect the WebSocket provider for idle-mode fork reconciliation. */
+  connectForForkReconcile(): Promise<void>;
+  /** Tear down the idle-mode provider integration (on hibernate). */
+  destroyIdleProviderIntegration(): void;
+  /** Whether a ProviderIntegration is currently active. */
+  hasProviderIntegration(): boolean;
+}
+
 export interface MergeManagerConfig {
   /**
    * Function to generate vault ID for a document.
@@ -45,7 +60,7 @@ export interface MergeManagerConfig {
    * Required - Document owns HSM, MergeManager accesses via this callback.
    * Return undefined if document not found.
    */
-  getDocument: (guid: string) => { hsm: import('./MergeHSM').MergeHSM | null } | undefined;
+  getDocument: (guid: string) => MergeManagerDocument | undefined;
 
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;
@@ -203,7 +218,7 @@ export class MergeManager {
 
   // Configuration
   private _getVaultId: (guid: string) => string;
-  private _getDocument: (guid: string) => { hsm: MergeHSM | null } | undefined;
+  private _getDocument: (guid: string) => MergeManagerDocument | undefined;
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
   private loadAllStates?: () => Promise<PersistedMergeState[]>;
@@ -329,16 +344,18 @@ export class MergeManager {
     // Start in idle mode by default (caller can send SET_MODE_ACTIVE if needed)
     hsm.send({ type: 'SET_MODE_IDLE' });
 
-    // Forward REQUEST_PROVIDER_SYNC to the external handler (SharedFolder).
-    // WRITE_DISK, PERSIST_STATE, and SYNC_TO_REMOTE are handled by Document.handleEffect
-    // and must not be forwarded here to avoid duplicate disk writes or uploads.
-    if (this.onEffect) {
-      hsm.subscribe((effect) => {
-        if (effect.type === 'REQUEST_PROVIDER_SYNC') {
-          this.onEffect!(guid, effect);
+    // Handle REQUEST_PROVIDER_SYNC by connecting the document's provider.
+    // This creates a live WebSocket so fork-reconcile can sync with the server.
+    hsm.subscribe((effect) => {
+      if (effect.type === 'REQUEST_PROVIDER_SYNC') {
+        const doc = this._getDocument(guid);
+        if (doc && !doc.hasProviderIntegration()) {
+          doc.connectForForkReconcile().catch(() => {
+            // Connection failure — fork-reconcile will time out or retry
+          });
         }
-      });
-    }
+      }
+    });
 
     return hsm;
   }
@@ -476,6 +493,10 @@ export class MergeManager {
     if (currentState === 'active') return; // Never hibernate active docs
 
     const doc = this._getDocument(guid);
+
+    // Tear down any idle-mode provider integration before destroying docs
+    doc?.destroyIdleProviderIntegration();
+
     const hsm = doc?.hsm;
     if (hsm) {
       hsm.setRemoteDoc(null);
@@ -898,6 +919,11 @@ export class MergeManager {
         this._hibernationState.set(request.guid, 'warm');
         this.resetHibernateTimer(request.guid);
         this._wakingDocs.delete(request.guid);
+
+        // Connect provider if requested (for fork reconciliation)
+        if (request.connect) {
+          doc.connectForForkReconcile?.().catch(() => {});
+        }
       }
     } finally {
       this._isProcessingWakeQueue = false;
