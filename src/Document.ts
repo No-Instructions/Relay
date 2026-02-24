@@ -656,18 +656,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
-	// Additional methods that might be useful
-	public async write(content: string): Promise<void> {
-		this.ytext.delete(0, this.ytext.length);
-		this.ytext.insert(0, content);
-		this.updateStats();
-	}
-
-	public async append(content: string): Promise<void> {
-		this.ytext.insert(this.ytext.length, content);
-		this.updateStats();
-	}
-
 	// ===========================================================================
 	// HSM Effect Handling
 	// ===========================================================================
