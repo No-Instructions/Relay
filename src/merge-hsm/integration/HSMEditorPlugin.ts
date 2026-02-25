@@ -64,29 +64,21 @@ class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
-   * Get the Document for this editor.
+   * Resolve the Document for the file currently shown in this editor.
+   * Returns null if the file isn't in a shared folder.
    */
-  private getDocument(): Document | null {
+  private resolveCurrentDocument(): Document | null {
     const connectionManager = getConnectionManager(this.editor);
     if (!connectionManager) return null;
 
     const fileInfo = this.editor.state.field(editorInfoField, false);
     const file = fileInfo?.file;
+    if (!file) return null;
 
-    if (file) {
-      // Check if we already have the right document
-      if (this.document && (this.document as any)._tfile === file) {
-        return this.document;
-      }
+    const folder = connectionManager.sharedFolders.lookup(file.path);
+    if (!folder) return null;
 
-      // Look up the shared folder and get the document
-      const folder = connectionManager.sharedFolders.lookup(file.path);
-      if (folder) {
-        return folder.proxy.getDoc(file.path) as Document;
-      }
-    }
-
-    return null;
+    return folder.proxy.getDoc(file.path) as Document;
   }
 
   /**
@@ -103,46 +95,49 @@ class HSMEditorPluginValue implements PluginValue {
     const sourceView = this.editor.dom.closest(".markdown-source-view");
     this.embed = !!sourceView?.classList.contains("mod-inside-iframe");
 
-    this.document = this.getDocument();
+    this.document = this.resolveCurrentDocument();
     if (!this.document) return false;
 
     const hsm = this.document.hsm;
     if (!hsm) return false;
 
-    // BUG-055/BUG-056 FIX: Verify the HSM's Document matches the editor's file.
+    // Verify the HSM's Document matches the editor's file.
     // When multiple SharedFolders have files with the same relative path
     // (e.g., multiple e2e-fixture-* folders each with /test-1.md),
     // we must ensure we're connecting to the correct HSM.
     const fileInfo = this.editor.state.field(editorInfoField, false);
-    const editorFilePath = fileInfo?.file?.path;
+    const editorFile = fileInfo?.file;
 
-    // Get the Document's vault-relative path via its TFile
+    // Verify the Document's TFile matches the editor's TFile
     const documentTFile = this.document.tfile;
-    const documentVaultRelativePath = documentTFile?.path;
-
-    // Verify the Document we got is actually for the file shown in this editor
-    if (editorFilePath && documentVaultRelativePath && documentVaultRelativePath !== editorFilePath) {
+    if (editorFile && documentTFile && documentTFile !== editorFile) {
       this.log(
-        `Path mismatch: Document path "${documentVaultRelativePath}" != editor file "${editorFilePath}". ` +
+        `TFile mismatch: Document tfile != editor file. ` +
         `Skipping CM6Integration to prevent cross-folder contamination.`
       );
       return false;
     }
 
-    // Don't create CM6Integration until we know the editor's file path.
-    // Without it, isEditorShowingExpectedFile() would always fail and
-    // silently drop all dispatches to the editor.
-    if (!editorFilePath) return false;
+    // Don't create CM6Integration until we can identify the editor's file.
+    if (!editorFile) return false;
 
-    // Create CM6Integration to handle bidirectional sync
-    // Pass the vault-relative path so CM6Integration can verify the editor doesn't switch files
-    this.cm6Integration = new CM6Integration(hsm, this.editor, editorFilePath);
-    this.debug(`Initialized for ${this.document.path} (vault: ${editorFilePath}, embed: ${this.embed})`);
+    // Capture the document GUID for the validity check closure.
+    // This is stable across renames — unlike paths.
+    const expectedGuid = this.document.guid;
+
+    // Create CM6Integration with a validity check that uses GUID identity.
+    // The check resolves the editor's current document and compares GUIDs,
+    // so it survives file renames and detects view reuse.
+    this.cm6Integration = new CM6Integration(hsm, this.editor, () => {
+      const currentDoc = this.resolveCurrentDocument();
+      return currentDoc !== null && currentDoc.guid === expectedGuid;
+    });
+    this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
     // Replay any edits that arrived before initialization completed.
     // The editor may have changed while the HSM/Document weren't ready yet.
     if (this.pendingEdits.length > 0) {
-      this.log(`Replaying ${this.pendingEdits.length} buffered edits for ${editorFilePath}`);
+      this.log(`Replaying ${this.pendingEdits.length} buffered edits for ${expectedGuid}`);
       for (const edit of this.pendingEdits) {
         hsm.send({
           type: 'CM6_CHANGE',
@@ -165,9 +160,9 @@ class HSMEditorPluginValue implements PluginValue {
     if (this.destroyed) return;
 
     // Skip non-live editors entirely (no buffering needed).
-    // Check getDocument() too — the file may be in a shared folder before
-    // the relay-live-editor CSS class is added by acquireLock().
-    if (!this.cm6Integration && !this.isLiveEditor() && !this.getDocument()) return;
+    // Check resolveCurrentDocument() too — the file may be in a shared folder
+    // before the relay-live-editor CSS class is added by acquireLock().
+    if (!this.cm6Integration && !this.isLiveEditor() && !this.resolveCurrentDocument()) return;
 
     // Skip if no document changes
     if (!update.docChanged) return;
@@ -180,35 +175,27 @@ class HSMEditorPluginValue implements PluginValue {
       return;
     }
 
-    // BUG-056 FIX: Detect when the editor is now showing a different file.
-    // When Obsidian reuses an editor view for a new file, the old CM6Integration
-    // still holds a reference to the old HSM. We must detect this and reset.
-    const fileInfo = this.editor.state.field(editorInfoField, false);
-    const currentFilePath = fileInfo?.file?.path;
-    if (this.document && currentFilePath) {
-      // Compare current editor file with our stored document's vault path
-      const documentVaultPath = this.document.path;
-      // Note: document.path is virtual path within SharedFolder, not vault-relative.
-      // We need to check via the tfile which has the vault-relative path.
-      const documentTFile = this.document.tfile;
-      const documentVaultRelativePath = documentTFile?.path;
-
-      if (documentVaultRelativePath && documentVaultRelativePath !== currentFilePath) {
+    // Detect when the editor is now showing a different document.
+    // This happens when Obsidian reuses an editor view for a new file,
+    // or after a file rename where the Document object changes.
+    if (this.document) {
+      const currentDoc = this.resolveCurrentDocument();
+      if (currentDoc && currentDoc.guid !== this.document.guid) {
         // Send diagnostic event to OLD HSM before teardown
         const oldHsm = this.document?.hsm;
         if (oldHsm) {
           try {
             oldHsm.send({
               type: 'OBSIDIAN_VIEW_REUSED',
-              oldPath: documentVaultRelativePath,
-              newPath: currentFilePath,
+              oldPath: this.document.path,
+              newPath: currentDoc.path,
             });
           } catch { /* diagnostic must never break */ }
         }
-        // File changed! Destroy old integration and reset.
+        // Document changed! Destroy old integration and reset.
         this.log(
-          `File changed from "${documentVaultRelativePath}" to "${currentFilePath}". ` +
-          `Resetting CM6Integration to prevent cross-file contamination.`
+          `Document changed: ${this.document.guid} → ${currentDoc.guid}. ` +
+          `Resetting CM6Integration.`
         );
         if (this.cm6Integration) {
           this.cm6Integration.destroy();
