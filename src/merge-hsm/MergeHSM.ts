@@ -259,6 +259,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _accumulatedEvents: Array<
 		| { type: "REMOTE_UPDATE"; update: Uint8Array }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
+		| { type: "CM6_CHANGE"; changes: any[]; docText: string; isFromYjs: boolean }
 	> = [];
 
 	// Mode decision during loading state (null = not decided, 'idle' or 'active')
@@ -1123,6 +1124,18 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._accumulatedEvents.push({ type: "REMOTE_UPDATE", update });
 				}
 			},
+			accumulateCM6Change: (_hsm, event) => {
+				const e = event as any;
+				if (e.docText !== undefined) {
+					this.lastKnownEditorText = e.docText;
+				}
+				this._accumulatedEvents.push({
+					type: "CM6_CHANGE",
+					changes: e.changes,
+					docText: e.docText,
+					isFromYjs: false,
+				});
+			},
 			accumulateDiskChanged: (_hsm, event) => {
 				const e = event as any;
 				this._accumulatedEvents = this._accumulatedEvents.filter(
@@ -1188,9 +1201,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						stateVector,
 					};
 					this.emitPersistState();
-					this.crdtLog(`LCA advanced (dirty=false, len=${e.contents.length})`);
-				} else {
-					this.crdtLog(`LCA skipped (dirty=${dirty}, hasViewRef=${!!this._editorViewRef}, hasLocalDoc=${!!this.localDoc})`);
 				}
 			},
 			flushPendingToRemote: () => {

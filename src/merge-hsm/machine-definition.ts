@@ -47,6 +47,7 @@ export const MACHINE: MachineDefinition = {
 			PERSISTENCE_LOADED: { target: 'loading', actions: ['storePersistenceData'] },
 			SET_MODE_ACTIVE: 'active.loading',
 			SET_MODE_IDLE: { target: 'idle.loading', actions: ['initIdleMode'] },
+			CM6_CHANGE: { target: 'loading', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
@@ -94,6 +95,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
+			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -124,6 +126,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
+			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -144,6 +147,7 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
+			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -165,6 +169,7 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
+			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -185,6 +190,7 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'], reenter: true },
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
+			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -194,6 +200,7 @@ export const MACHINE: MachineDefinition = {
 
 	'idle.error': {
 		on: {
+			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -261,6 +268,7 @@ export const MACHINE: MachineDefinition = {
 	'active.loading': {
 		on: {
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
+			CM6_CHANGE: { target: 'active.loading', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'active.loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -277,7 +285,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'active.entering.awaitingRemote', guard: 'persistenceEmptyAndProviderNotSynced' },
 				{ target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
 			],
-			CM6_CHANGE: { target: 'active.entering.awaitingPersistence', actions: ['trackEditorText'] },
+			CM6_CHANGE: { target: 'active.entering.awaitingPersistence', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'active.entering.awaitingPersistence', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.entering.awaitingPersistence', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -289,7 +297,7 @@ export const MACHINE: MachineDefinition = {
 	'active.entering.awaitingRemote': {
 		on: {
 			PROVIDER_SYNCED: { target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
-			CM6_CHANGE: { target: 'active.entering.awaitingRemote', actions: ['trackEditorText'] },
+			CM6_CHANGE: { target: 'active.entering.awaitingRemote', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'active.entering.awaitingRemote', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			CONNECTED: 'active.entering.awaitingRemote',
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -308,7 +316,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.tracking': {
-		entry: ['mergeRemoteToLocal', 'replayAccumulatedEvents'],
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal'],
 		on: {
 			CM6_CHANGE: [
 				{ target: 'active.tracking', guard: 'isFromYjs' },

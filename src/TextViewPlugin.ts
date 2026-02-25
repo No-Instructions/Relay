@@ -104,7 +104,12 @@ export class TextFileViewPlugin extends HasLogging {
 				return;
 			}
 
-			await this.doc.whenSynced();
+			const hsm = this.doc.hsm;
+			if (hsm?.awaitState) {
+				await hsm.awaitState((s) => s.startsWith("active."));
+			} else {
+				return;
+			}
 			const docText = this.doc.localText;
 			if (docText === this.view.view.getViewData()) {
 				// Document and view content already match - set tracking immediately
@@ -279,8 +284,11 @@ export class TextFileViewPlugin extends HasLogging {
 		// Use the dynamically retrieved document for ytext
 		this.doc = this.getDocument();
 		if (this.doc) {
-			this._ytext = this.doc.localYText;
-			this._ytext.observe(this.observer);
+			const localDoc = this.doc.localDoc;
+			if (localDoc) {
+				this._ytext = localDoc.getText("contents");
+				this._ytext.observe(this.observer);
+			}
 		}
 
 		// Initialize ViewHookPlugin after sync state is established

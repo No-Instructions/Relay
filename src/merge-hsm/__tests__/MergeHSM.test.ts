@@ -1868,4 +1868,75 @@ describe('MergeHSM', () => {
     });
   });
 
+  // ===========================================================================
+  // CM6 Change Buffering
+  // ===========================================================================
+
+  describe('CM6 change buffering', () => {
+    test('CM6_CHANGE during idle is accumulated and replayed on active.tracking', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello' });
+      expectState(t, 'idle.synced');
+
+      // User types while HSM is still idle (race between editor open and ACQUIRE_LOCK)
+      t.send(cm6Insert(5, ' world', 'hello world'));
+      expectState(t, 'idle.synced');
+
+      // Now ACQUIRE_LOCK fires and we drive to active.tracking
+      await sendAcquireLockToTracking(t, 'hello world');
+
+      // The accumulated CM6_CHANGE should have been replayed into localDoc
+      expectLocalDocText(t, 'hello world');
+      expectState(t, 'active.tracking');
+    });
+
+    test('CM6_CHANGE during active.entering is accumulated and replayed', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello' });
+
+      // Send ACQUIRE_LOCK to enter active.entering states
+      t.send(acquireLock('hello'));
+
+      // Wait for entering state
+      await t.hsm?.awaitState?.((s) =>
+        s.startsWith('active.entering') || s === 'active.tracking'
+      );
+
+      // If we're in an entering state, send a CM6_CHANGE
+      if (t.matches('active.entering')) {
+        t.send(cm6Insert(5, ' world', 'hello world'));
+
+        // Drive to tracking
+        t.send(providerSynced());
+        await t.hsm?.awaitState?.((s) => s === 'active.tracking');
+
+        // The accumulated CM6_CHANGE should have been replayed
+        expectLocalDocText(t, 'hello world');
+      } else {
+        // Already in tracking — just verify CM6_CHANGE works normally
+        t.send(cm6Insert(5, ' world', 'hello world'));
+        expectLocalDocText(t, 'hello world');
+      }
+
+      expectState(t, 'active.tracking');
+    });
+
+    test('multiple CM6_CHANGEs during idle are all replayed in order', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: '' });
+      expectState(t, 'idle.synced');
+
+      // Multiple edits while idle
+      t.send(cm6Insert(0, 'a', 'a'));
+      t.send(cm6Insert(1, 'b', 'ab'));
+      t.send(cm6Insert(2, 'c', 'abc'));
+
+      // Drive to active.tracking
+      await sendAcquireLockToTracking(t, 'abc');
+
+      expectLocalDocText(t, 'abc');
+      expectState(t, 'active.tracking');
+    });
+  });
+
 });

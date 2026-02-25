@@ -654,9 +654,7 @@ export class SharedFolder extends HasProvider {
 				&& !file.hasProviderIntegration()
 				&& this.shouldConnect
 			) {
-				file.connectForForkReconcile().catch((e) => {
-					this.debug?.(`[poll] Failed to connect for fork reconcile ${guid}:`, e);
-				});
+				file.connectForForkReconcile().catch(() => {});
 			}
 		}
 	}

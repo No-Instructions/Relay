@@ -21,7 +21,7 @@ export class ViewHookPlugin extends HasLogging {
 	private renderers: ViewRenderer[];
 	private unsubscribes: Array<() => void> = [];
 	private observer?: (event: YTextEvent, tr: Transaction) => void;
-	private _ytext: YText;
+	private _ytext: YText | null = null;
 	private destroyed = false;
 	private saving = false;
 
@@ -37,10 +37,35 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.push(new PreviewRenderer(view));
 		this.renderers.push(new MetadataRenderer(view));
 
-		this._ytext = this.document.localYText;
 		this.installMarkdownHooks(this.view);
+	}
+
+	/**
+	 * Attach the document observer once localDoc is available.
+	 * Waits for the HSM to enter active mode if needed.
+	 */
+	async initialize(): Promise<void> {
+		// Wait for localDoc to become available (HSM entering active mode)
+		let localDoc = this.document.localDoc;
+		if (!localDoc) {
+			const hsm = this.document.hsm;
+			if (hsm?.awaitState) {
+				await hsm.awaitState((s) => s.startsWith("active."));
+			}
+			localDoc = this.document.localDoc;
+		}
+		if (this.destroyed || !localDoc) return;
+
+		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
+
+		// Perform initial render using localDoc content
+		// @ts-ignore
+		this.view.previewMode.renderer.set(this.document.localText);
 		this.renderAll();
+
+		this.document.connect();
+		this.debug("initialized");
 	}
 
 	/**
@@ -146,6 +171,8 @@ export class ViewHookPlugin extends HasLogging {
 	 * Setup document observer to trigger UI updates
 	 */
 	private setupDocumentObserver(): void {
+		if (!this._ytext) return;
+
 		this.observer = async (event: YTextEvent, tr: Transaction) => {
 			if (!this.active()) {
 				this.debug("Received yjs event against a non-active view");
@@ -220,20 +247,6 @@ export class ViewHookPlugin extends HasLogging {
 			}
 		}
 		return changes;
-	}
-	/**
-	 * Initialize the plugin after document is ready
-	 */
-	async initialize(): Promise<void> {
-		await this.document.whenReady();
-
-		// Perform initial render using localDoc content
-		// @ts-ignore
-		this.view.previewMode.renderer.set(this.document.localText);
-		this.renderAll();
-
-		this.document.connect();
-		this.debug("ViewHookPlugin initialized");
 	}
 
 	/**

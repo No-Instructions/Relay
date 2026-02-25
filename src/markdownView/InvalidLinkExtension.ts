@@ -58,6 +58,7 @@ export class InvalidLinkPluginValue {
 		this.decorationAnchors = [];
 		this.metadata = new Map();
 		this.cb = (data: string, cache: CachedMetadata) => {
+			if (!this.editor) return;
 			this.updateFromMetadata(cache);
 			this.editor.dispatch({
 				effects: metadataChangeEffect.of(null),
@@ -85,9 +86,11 @@ export class InvalidLinkPluginValue {
 		this.log("created");
 
 		if (this.view.document) {
-			this.view.document.whenSynced().then(() => {
+			const hsm = this.view.document.hsm;
+			if (!hsm?.awaitState) return;
+			hsm.awaitState((s) => s.startsWith("active.")).then(() => {
 				const tfile = this.view?.document?.getTFile();
-				if (this.connectionManager && this.app && tfile) {
+				if (this.connectionManager && this.app && this.editor && tfile) {
 					this.connectionManager.onMeta(tfile, this.cb);
 					const fileCache = this.app.metadataCache.getFileCache(tfile);
 					if (fileCache) {

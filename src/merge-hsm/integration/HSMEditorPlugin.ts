@@ -129,9 +129,14 @@ class HSMEditorPluginValue implements PluginValue {
       return false;
     }
 
+    // Don't create CM6Integration until we know the editor's file path.
+    // Without it, isEditorShowingExpectedFile() would always fail and
+    // silently drop all dispatches to the editor.
+    if (!editorFilePath) return false;
+
     // Create CM6Integration to handle bidirectional sync
     // Pass the vault-relative path so CM6Integration can verify the editor doesn't switch files
-    this.cm6Integration = new CM6Integration(hsm, this.editor, editorFilePath || '');
+    this.cm6Integration = new CM6Integration(hsm, this.editor, editorFilePath);
     this.debug(`Initialized for ${this.document.path} (vault: ${editorFilePath}, embed: ${this.embed})`);
 
     // Replay any edits that arrived before initialization completed.
@@ -159,8 +164,10 @@ class HSMEditorPluginValue implements PluginValue {
   update(update: ViewUpdate): void {
     if (this.destroyed) return;
 
-    // Skip non-live editors entirely (no buffering needed)
-    if (!this.cm6Integration && !this.isLiveEditor()) return;
+    // Skip non-live editors entirely (no buffering needed).
+    // Check getDocument() too — the file may be in a shared folder before
+    // the relay-live-editor CSS class is added by acquireLock().
+    if (!this.cm6Integration && !this.isLiveEditor() && !this.getDocument()) return;
 
     // Skip if no document changes
     if (!update.docChanged) return;
@@ -247,6 +254,7 @@ class HSMEditorPluginValue implements PluginValue {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
     }
+    this.pendingEdits = [];
     this.document = null;
   }
 }

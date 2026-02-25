@@ -62,7 +62,9 @@ export class ShareLinkPluginValue implements PluginValue {
 		this.view = this.connectionManager.findView(editor);
 		this.editor = editor;
 		if (this.view) {
-			this.view.document?.whenSynced().then(async () => {
+			const hsm = this.view.document?.hsm;
+			if (!hsm?.awaitState) return;
+			hsm.awaitState((s) => s.startsWith("active.")).then(async () => {
 				const hasKnownPeers = await this.view?.document?.hasKnownPeers();
 				if (this.view?.document?.text || !hasKnownPeers) {
 					this.updateFrontMatter();
