@@ -249,9 +249,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	// CRDT operation logging
 	private crdtLog = curryLog("[MergeHSM:CRDT]", "debug");
-	private _remoteDocLogHandler:
-		| ((update: Uint8Array, origin: unknown) => void)
-		| null = null;
 
 	// Event accumulation queue for loading state (Gap 11)
 	// Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
@@ -415,22 +412,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * a remoteDoc when waking from hibernation.
 	 */
 	setRemoteDoc(doc: Y.Doc | null): void {
-		// Unregister old CRDT log observer if present
-		if (this._remoteDocLogHandler && this.remoteDoc) {
-			this.remoteDoc.off("update", this._remoteDocLogHandler);
-			this._remoteDocLogHandler = null;
-		}
-
 		this.remoteDoc = doc;
-
-		// Re-register CRDT log observer on new doc if loaded
-		if (this.remoteDoc && this._statePath !== "unloaded") {
-			this._remoteDocLogHandler = this.makeCRDTUpdateLogger(
-				"remoteDoc",
-				this.remoteDoc,
-			);
-			this.remoteDoc.on("update", this._remoteDocLogHandler);
-		}
 	}
 
 	/**
@@ -930,10 +912,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 			// === Lifecycle ===
 			beginUnload: () => {
-				if (this._remoteDocLogHandler && this.remoteDoc) {
-					this.remoteDoc.off("update", this._remoteDocLogHandler);
-					this._remoteDocLogHandler = null;
-				}
 				this._cleanupType = 'unload';
 			},
 			initializeFromLoad: (_hsm, event) => {
@@ -943,10 +921,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this._accumulatedEvents = [];
 				this._disk = null;
 				this._remoteStateVector = null;
-				if (this.remoteDoc) {
-					this._remoteDocLogHandler = this.makeCRDTUpdateLogger("remoteDoc", this.remoteDoc);
-					this.remoteDoc.on("update", this._remoteDocLogHandler);
-				}
 			},
 			storeError: (_hsm, event) => {
 				this._error = (event as any).error;
@@ -2018,44 +1992,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// YDoc Management
 	// ===========================================================================
 
-	private describeOrigin(origin: unknown): string {
-		if (origin === this) return "HSM";
-		if (this.remoteDoc && origin === this.remoteDoc) return "remoteDoc";
-		if (origin === this.localPersistence) return "persistence";
-		if (origin === null || origin === undefined) return "null";
-		if (typeof origin === "string") return `"${origin}"`;
-		return (
-			(origin as { constructor?: { name?: string } })?.constructor?.name ??
-			typeof origin
-		);
-	}
-
-	private makeCRDTUpdateLogger(docName: string, doc: Y.Doc) {
-		return (update: Uint8Array, origin: unknown) => {
-			const sv = Y.decodeStateVector(Y.encodeStateVector(doc));
-			const clientEntries = [...sv.entries()].map(
-				([id, clock]) => `${id}:${clock}`,
-			);
-			const text = doc.getText("contents").toString();
-			this.crdtLog(
-				`${docName} update | origin=${this.describeOrigin(origin)} | clients=[${clientEntries.join(",")}] | len=${text.length} | bytes=${update.length} | state=${this._statePath}`,
-			);
-		};
-	}
-
-	private setupCRDTLogging(): void {
-		this.localDoc!.on(
-			"update",
-			this.makeCRDTUpdateLogger("localDoc", this.localDoc!),
-		);
-		if (this.remoteDoc) {
-			this.remoteDoc.on(
-				"update",
-				this.makeCRDTUpdateLogger("remoteDoc", this.remoteDoc),
-			);
-		}
-	}
-
 	private createYDocs(): void {
 		// Reuse localDoc if it already exists (e.g., from initializeFromRemote() enrollment)
 		if (!this.localDoc) {
@@ -2075,9 +2011,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.crdtLog(`createYDocs | new clientID=${this.localDoc.clientID}`);
 			}
 		}
-
-		// Register CRDT update observers for debugging
-		this.setupCRDTLogging();
 
 		// Attach persistence to localDoc — it loads stored updates
 		// asynchronously and fires 'synced' when done.
