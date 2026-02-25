@@ -76,7 +76,7 @@ export class ActionLine {
 
 	async modify(file: TFile, newContent: string): Promise<void> {
 		if (file instanceof Document) {
-			diffMatchPatch(file.ydoc, newContent, file);
+			diffMatchPatch(file.getWritableDoc(), newContent, file);
 			return;
 		} else if (file instanceof DiskBuffer) {
 			file.contents = newContent;

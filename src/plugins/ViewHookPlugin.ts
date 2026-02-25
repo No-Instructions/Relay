@@ -37,7 +37,7 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.push(new PreviewRenderer(view));
 		this.renderers.push(new MetadataRenderer(view));
 
-		this._ytext = this.document.ytext;
+		this._ytext = this.document.localYText;
 		this.installMarkdownHooks(this.view);
 		this.setupDocumentObserver();
 		this.renderAll();

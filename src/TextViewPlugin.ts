@@ -279,7 +279,7 @@ export class TextFileViewPlugin extends HasLogging {
 		// Use the dynamically retrieved document for ytext
 		this.doc = this.getDocument();
 		if (this.doc) {
-			this._ytext = this.doc.ytext;
+			this._ytext = this.doc.localYText;
 			this._ytext.observe(this.observer);
 		}
 

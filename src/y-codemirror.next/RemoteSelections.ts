@@ -244,8 +244,15 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		}
 		const editor: EditorView = update.view;
 		this.document = this.getDocument();
-		const ytext = this.document?.ytext;
+		const ytext = this.document?.localDoc?.getText("contents") ?? this.document?.ytext;
 		if (!(this.document && ytext && ytext.doc)) {
+			return;
+		}
+		// Disable cursors when the fork gate is blocking local↔remote traffic.
+		// Positions created from localDoc won't resolve correctly on remote peers
+		// when the docs have diverged.
+		if (this.document.hsm?.hasFork()) {
+			this.decorations = Decoration.none;
 			return;
 		}
 		const provider = this.document._provider;
