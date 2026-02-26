@@ -586,14 +586,23 @@ export class SharedFolder extends HasProvider {
 			}
 
 			const vaultPath = this.getPath(file.path);
-			const tfile = this.vault.getAbstractFileByPath(vaultPath);
-			if (!(tfile instanceof TFile)) {
-				this.warn(`[handleIdleWriteDisk] File not found at path: ${vaultPath}`);
-				return;
+			let tfile = this.vault.getAbstractFileByPath(vaultPath);
+
+			if (tfile instanceof TFile) {
+				await this.vault.modify(tfile, contents);
+			} else {
+				// File doesn't exist on disk yet (new remote file) — create it
+				const normalized = normalizePath(vaultPath);
+				// Ensure parent folders exist
+				const parentPath = normalized.substring(0, normalized.lastIndexOf("/"));
+				if (parentPath && !this.vault.getAbstractFileByPath(parentPath)) {
+					await this.vault.createFolder(parentPath);
+				}
+				tfile = await this.vault.create(normalized, contents);
 			}
 
-			await this.vault.modify(tfile, contents);
 			this.log(`[handleIdleWriteDisk] Wrote merged content to ${vaultPath}`);
+
 		} catch (e) {
 			this.warn(`[handleIdleWriteDisk] Failed to write for guid ${guid}:`, e);
 		}
