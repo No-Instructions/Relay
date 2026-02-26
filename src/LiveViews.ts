@@ -530,6 +530,10 @@ export class LiveView<ViewType extends TextFileView>
 								this._banner?.destroy();
 								this._banner = undefined;
 							},
+							onCancel: () => {
+								this.log("[mergeBanner] Diff view closed without resolving");
+								hsm.send({ type: "CANCEL" });
+							},
 						});
 						return false; // Don't destroy banner yet - wait for resolution
 					}

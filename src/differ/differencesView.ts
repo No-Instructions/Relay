@@ -52,6 +52,7 @@ export interface ViewState {
 	oursLabel?: string;
 	theirsLabel?: string;
 	onResolve?: () => Promise<void>;
+	onCancel?: () => void;
 	originalLeaf?: WorkspaceLeaf;
 	[key: string]: unknown;
 }
@@ -85,6 +86,7 @@ export class DifferencesView extends ItemView {
 	private fileDifferences?: FileDifferences;
 	private file1Lines: string[] = [];
 	private file2Lines: string[] = [];
+	private resolved = false;
 	protected log;
 
 	constructor(leaf: WorkspaceLeaf) {
@@ -127,7 +129,9 @@ export class DifferencesView extends ItemView {
 	}
 
 	async onunload(): Promise<void> {
-		this.state?.onResolve?.();
+		if (!this.resolved) {
+			this.state?.onCancel?.();
+		}
 	}
 
 	private closeAndReturnToOriginal(): void {
@@ -204,6 +208,8 @@ export class DifferencesView extends ItemView {
 				}
 				await this.modify(this.state.file2, this.file1Content || "");
 			}
+			this.resolved = true;
+			await this.state.onResolve?.();
 			this.closeAndReturnToOriginal();
 		}
 	}
@@ -279,6 +285,7 @@ export class DifferencesView extends ItemView {
 	private async acceptAllFromLeft(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
 		await this.modify(this.state.file2, this.file1Content || "");
+		this.resolved = true;
 		await this.state.onResolve?.();
 		this.closeAndReturnToOriginal();
 	}
@@ -286,6 +293,7 @@ export class DifferencesView extends ItemView {
 	private async acceptAllFromRight(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
 		await this.modify(this.state.file1, this.file2Content || "");
+		this.resolved = true;
 		await this.state.onResolve?.();
 		this.closeAndReturnToOriginal();
 	}
