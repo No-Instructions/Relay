@@ -891,6 +891,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._lca = result.newLCA;
 					this._localStateVector = result.newLCA.stateVector;
 					this._remoteStateVector = result.newLCA.stateVector;
+					// The idle-merge emits WRITE_DISK, so disk now matches LCA
+					if (result.newLCA.meta) {
+						this._disk = { hash: result.newLCA.meta.hash, mtime: result.newLCA.meta.mtime };
+					}
 					this.emitPersistState();
 				}
 			},
