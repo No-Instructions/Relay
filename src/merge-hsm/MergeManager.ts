@@ -212,6 +212,9 @@ export class MergeManager {
   /** Whether the wake queue processor is currently running. */
   private _isProcessingWakeQueue = false;
 
+  /** Tracked remote state vector per document (clientId → clock). Used for gap detection. */
+  private _trackedRemoteSV = new Map<string, Map<number, number>>();
+
   // Hibernation configuration
   private _hibernateTimeoutMs: number;
   private _maxConcurrentWarm: number;
@@ -378,6 +381,7 @@ export class MergeManager {
     if (this.destroyed) return;
     this._hibernationState.delete(guid);
     this._hibernationBuffer.delete(guid);
+    this._trackedRemoteSV.delete(guid);
     this.clearHibernateTimer(guid);
     this._syncStatus.delete(guid);
     this.activeDocs.delete(guid);
@@ -754,6 +758,91 @@ export class MergeManager {
     }
   }
 
+  // ===========================================================================
+  // Gap Detection API (remote update optimization)
+  // ===========================================================================
+
+  /**
+   * Check if an incremental remote update can be applied directly (without HTTP fallback).
+   * Returns true if we have a tracked SV for this document and the update's ops
+   * aren't stale (no client clock regression).
+   *
+   * Returns false (triggering HTTP fallback) when:
+   * - No tracked SV exists (first event after connect or reconnect)
+   * - The update bytes can't be parsed
+   * - Any client in the update's SV has a clock behind our tracked clock
+   */
+  canApplyDirectly(guid: string, update: Uint8Array): boolean {
+    const tracked = this._trackedRemoteSV.get(guid);
+    if (!tracked) return false;
+
+    try {
+      const updateSVBytes = Y.encodeStateVectorFromUpdate(update);
+      const updateSV = Y.decodeStateVector(updateSVBytes);
+
+      // Check for stale/reordered events: if any client in the update has a
+      // clock behind our tracked clock, something was missed.
+      for (const [clientId, clock] of updateSV) {
+        const trackedClock = tracked.get(clientId);
+        if (trackedClock !== undefined && clock < trackedClock) {
+          return false;
+        }
+      }
+
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * After successfully applying an incremental update, merge its per-client clocks
+   * into the tracked SV (taking the max for each client).
+   */
+  advanceTrackedRemoteSV(guid: string, update: Uint8Array): void {
+    let tracked = this._trackedRemoteSV.get(guid);
+    if (!tracked) {
+      tracked = new Map();
+      this._trackedRemoteSV.set(guid, tracked);
+    }
+
+    try {
+      const updateSVBytes = Y.encodeStateVectorFromUpdate(update);
+      const updateSV = Y.decodeStateVector(updateSVBytes);
+
+      for (const [clientId, clock] of updateSV) {
+        const existing = tracked.get(clientId) ?? 0;
+        tracked.set(clientId, Math.max(existing, clock));
+      }
+    } catch {
+      // Parse failure — leave tracked SV unchanged
+    }
+  }
+
+  /**
+   * After an HTTP full-sync, replace the tracked SV for this document.
+   * The full-state update represents complete server state, so we replace
+   * rather than merge.
+   */
+  seedTrackedRemoteSV(guid: string, update: Uint8Array): void {
+    try {
+      const svBytes = Y.encodeStateVectorFromUpdate(update);
+      const sv = Y.decodeStateVector(svBytes);
+      this._trackedRemoteSV.set(guid, sv);
+    } catch {
+      // Parse failure — remove tracking so next event falls back to HTTP
+      this._trackedRemoteSV.delete(guid);
+    }
+  }
+
+  /**
+   * Clear all tracked remote SVs. Called on WebSocket reconnect so the first
+   * event on the new connection triggers an HTTP full-sync to establish a baseline.
+   */
+  clearTrackedRemoteSVs(): void {
+    this._trackedRemoteSV.clear();
+  }
+
   /**
    * Determine if DISK_CHANGED event should be sent based on current vs new disk state.
    * Returns true if disk state has changed, false if unchanged.
@@ -818,6 +907,7 @@ export class MergeManager {
     this._syncStatus.clear();
     this._hibernationState.clear();
     this._hibernationBuffer.clear();
+    this._trackedRemoteSV.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
   }
