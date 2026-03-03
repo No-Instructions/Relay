@@ -814,6 +814,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			forkWasCreated: (_hsm, event) => (event as any).data?.forked === true,
 			awaitingProvider: (_hsm, event) => (event as any).data?.awaitingProvider === true,
 
+			// Loop-back guards: merge succeeded but new data arrived during the await
+			mergeSucceededAndRemotePending: (_hsm, event) =>
+				(event as any).data?.success === true && this.pendingIdleUpdates !== null,
+			mergeSucceededButMorePending: (_hsm, event) =>
+				(event as any).data?.success === true
+				&& (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null),
+			hasPendingIdleWork: () =>
+				this.pendingIdleUpdates !== null || this.pendingDiskContents !== null,
+
 			// Fork guard: stay in localAhead when remote updates arrive during fork reconciliation
 			hasFork: () => this._fork !== null,
 
@@ -885,6 +894,36 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			},
 
 			// === Idle merge completion ===
+			applyIdleMergeResult: (_hsm, event) => {
+				const result = (event as any).data;
+				if (!result?.success || result.noop) return;
+
+				if (result.updates && this.localDoc) {
+					// Remote-ahead: apply CRDT updates to real localDoc
+					Y.applyUpdate(this.localDoc, result.updates, this.remoteDoc);
+				} else if (result.mergedContent !== undefined && this.localDoc) {
+					// Three-way: apply merged content via diff
+					this.applyContentToLocalDoc(result.mergedContent);
+				}
+
+				// Fill in stateVector from real localDoc after applying updates.
+				// NOTE: This mutates event.data in-place. updateLCAFromInvokeResult
+				// (which runs next in the same action list) reads the filled-in value.
+				if (result.newLCA && result.newLCA.stateVector === null && this.localDoc) {
+					result.newLCA.stateVector = Y.encodeStateVector(this.localDoc);
+				}
+
+				// Write merged content to disk
+				if (result.mergedContent !== undefined) {
+					this.emitEffect({ type: "WRITE_DISK", guid: this._guid, contents: result.mergedContent });
+				}
+
+				// Sync to remote (three-way merge)
+				if (result.needsSync && this.localDoc) {
+					const update = Y.encodeStateAsUpdate(this.localDoc);
+					this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+				}
+			},
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = (event as any).data;
 				if (result?.newLCA) {
@@ -1469,62 +1508,53 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return { success: false };
 		}
 
-		// Fast path: no actual updates to merge (state vectors advanced but no pending data)
-		if (!this.pendingIdleUpdates) {
-			if (this._lca && this._remoteStateVector) {
-				this._lca.stateVector = this._remoteStateVector;
-				this._localStateVector = this._remoteStateVector;
-				this.emitPersistState();
-			}
-			return { success: true, newLCA: this._lca };
-		}
+		// Snapshot and clear — new REMOTE_UPDATEs accumulate into fresh buffer
+		const updates = this.pendingIdleUpdates;
+		this.pendingIdleUpdates = null;
 
 		const localContent = this.localDoc.getText("contents").toString();
 
 		// Check if local and remote have identical CONTENT before merging.
 		// Different state vectors with identical content means the same text was inserted
 		// by different clients. Merging would duplicate content.
-		const remoteDoc = new Y.Doc();
+		const checkDoc = new Y.Doc();
 		try {
-			Y.applyUpdate(remoteDoc, this.pendingIdleUpdates, this);
-			const remoteContent = remoteDoc.getText("contents").toString();
-			if (localContent === remoteContent) {
-				this.pendingIdleUpdates = null;
-				return { success: true, newLCA: this._lca };
+			Y.applyUpdate(checkDoc, updates, this);
+			if (localContent === checkDoc.getText("contents").toString()) {
+				return { success: true, newLCA: this._lca, noop: true };
 			}
 		} finally {
-			remoteDoc.destroy();
+			checkDoc.destroy();
 		}
 
-		// Apply pending updates to the live localDoc.
-		// Persistence's _storeUpdate handler writes to IDB automatically.
-		const beforeSV = Y.encodeStateVector(this.localDoc);
-		Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
+		// Compute merge on a temp doc (clone localDoc state + apply updates).
+		// localDoc is NOT mutated — the onDone action applies the result.
+		const tempDoc = new Y.Doc();
+		try {
+			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(this.localDoc), this);
+			const beforeSV = Y.encodeStateVector(tempDoc);
+			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
+			const afterSV = Y.encodeStateVector(tempDoc);
 
-		const mergedContent = this.localDoc.getText("contents").toString();
-		const stateVector = Y.encodeStateVector(this.localDoc);
+			// Check if merge actually added anything
+			if (stateVectorsEqual(beforeSV, afterSV)) {
+				return { success: true, newLCA: this._lca, noop: true };
+			}
 
-		// Check if merge actually added anything
-		if (stateVectorsEqual(beforeSV, stateVector)) {
-			this.pendingIdleUpdates = null;
-			return { success: true, newLCA: this._lca };
+			const mergedContent = tempDoc.getText("contents").toString();
+			const hash = await this.hashFn(mergedContent);
+			if (signal.aborted) return { success: false };
+
+			// stateVector: null — filled in from real localDoc after applying updates
+			return {
+				success: true,
+				mergedContent,
+				updates,
+				newLCA: { contents: mergedContent, meta: { hash, mtime: this.timeProvider.now() }, stateVector: null },
+			};
+		} finally {
+			tempDoc.destroy();
 		}
-
-		this.pendingIdleUpdates = null;
-
-		const hash = await this.hashFn(mergedContent);
-		if (signal.aborted) return { success: false };
-
-		this.emitEffect({
-			type: "WRITE_DISK",
-			guid: this._guid,
-			contents: mergedContent,
-		});
-
-		return {
-			success: true,
-			newLCA: { contents: mergedContent, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
-		};
 	}
 
 	private async invokeIdleDiskAutoMerge(signal: AbortSignal): Promise<unknown> {
@@ -1610,37 +1640,26 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 		const diskContent = this.pendingDiskContents ?? lcaContent;
 
+		// Snapshot and clear — new events accumulate fresh during await
+		this.pendingIdleUpdates = null;
+		this.pendingDiskContents = null;
+
 		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
 		const mergeResult = performThreeWayMerge(lcaContent, diskContent, crdtContent);
 
-		if (mergeResult.success) {
-			// Apply merged result to localDoc using diff-based updates
-			this.applyContentToLocalDoc(mergeResult.merged);
+		if (!mergeResult.success) return { success: false };
 
-			const stateVector = Y.encodeStateVector(this.localDoc);
-			const update = Y.encodeStateAsUpdate(this.localDoc);
+		const hash = await this.hashFn(mergeResult.merged);
+		if (signal.aborted) return { success: false };
 
-			this.pendingIdleUpdates = null;
-			this.pendingDiskContents = null;
-
-			const hash = await this.hashFn(mergeResult.merged);
-			if (signal.aborted) return { success: false };
-
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: mergeResult.merged,
-			});
-			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
-
-			return {
-				success: true,
-				newLCA: { contents: mergeResult.merged, meta: { hash, mtime: this.timeProvider.now() }, stateVector },
-			};
-		}
-
-		// Merge conflict — stay in idle.diverged
-		return { success: false };
+		// localDoc mutations deferred to onDone action (applyIdleMergeResult).
+		// stateVector is null here — filled in after applying to real localDoc.
+		return {
+			success: true,
+			mergedContent: mergeResult.merged,
+			needsSync: true,
+			newLCA: { contents: mergeResult.merged, meta: { hash, mtime: this.timeProvider.now() }, stateVector: null },
+		};
 	}
 
 	/**

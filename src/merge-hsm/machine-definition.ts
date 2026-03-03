@@ -139,14 +139,15 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
-				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				{ target: 'idle.remoteAhead', guard: 'mergeSucceededAndRemotePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'], reenter: true },
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
 				{ target: 'idle.diverged' },
 			],
 			onError: { target: 'idle.diverged' },
 		},
 		on: {
 			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
-			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
+			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
@@ -182,14 +183,16 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
-				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'], reenter: true },
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
+				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', reenter: true },
 				{ target: 'idle.diverged' }, // 3-way conflict — stay diverged
 			],
 			onError: { target: 'idle.diverged' },
 		},
 		on: {
-			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'], reenter: true },
-			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
+			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
