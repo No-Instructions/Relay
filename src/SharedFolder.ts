@@ -474,34 +474,31 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) return;
 
-		// Skip direct update injection when active — ProviderIntegration handles
-		// it through the y-protocols sync channel with proper origin filtering.
-		// The enqueueDownload path is safe in all cases (fetches server state),
-		// so only skip when direct injection is enabled.
-		if (this.mergeManager.isActive(guid) && flags().enableDirectRemoteUpdates) {
+		// Active documents: ProviderIntegration handles sync via y-protocols
+		if (this.mergeManager.isActive(guid)) {
 			return;
 		}
 
-		// Forward remote updates to MergeManager for idle mode documents.
-		// This ensures updates are received even when the file is closed.
-		// CBOR decoding may return Buffer or plain object — ensure Uint8Array.
-		if (event.update) {
-			if (flags().enableDirectRemoteUpdates) {
-				// Direct update application (can cause PermanentUserData issues)
-				const update =
-					event.update instanceof Uint8Array
-						? event.update
-						: new Uint8Array(event.update);
-				this.mergeManager.handleRemoteUpdate(guid, update);
-			} else {
-				// Safer path: enqueue for background sync polling
-				// Then forward the downloaded bytes to HSM for merge + disk write
-				this.backgroundSync.enqueueDownload(file).then((updateBytes) => {
-					if (updateBytes) {
-						this.mergeManager.handleRemoteUpdate(guid, updateBytes);
-					}
-				});
-			}
+		if (!event.update) return;
+
+		// Normalize update bytes (CBOR decoding may return Buffer or plain object)
+		const update =
+			event.update instanceof Uint8Array
+				? event.update
+				: new Uint8Array(event.update);
+
+		// Gap detection: apply incremental bytes directly when we have a
+		// contiguous tracked SV, otherwise fall back to HTTP full-sync.
+		if (this.mergeManager.canApplyDirectly(guid, update)) {
+			this.mergeManager.handleRemoteUpdate(guid, update);
+			this.mergeManager.advanceTrackedRemoteSV(guid, update);
+		} else {
+			this.backgroundSync.enqueueDownload(file).then((updateBytes) => {
+				if (updateBytes) {
+					this.mergeManager.handleRemoteUpdate(guid, updateBytes);
+					this.mergeManager.seedTrackedRemoteSV(guid, updateBytes);
+				}
+			});
 		}
 	}
 
@@ -811,6 +808,9 @@ export class SharedFolder extends HasProvider {
 			if (this.connected || this.shouldConnect) {
 				const result = await super.connect();
 				if (result && this.mergeManager) {
+					// Clear tracked SVs so the first event on this connection
+					// triggers an HTTP full-sync to establish a baseline.
+					this.mergeManager.clearTrackedRemoteSVs();
 					this.setupEventSubscriptions();
 				}
 				return result;

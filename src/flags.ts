@@ -17,7 +17,6 @@ export interface FeatureFlags {
 	enableKanbanView: boolean;
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
-	enableDirectRemoteUpdates: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -39,7 +38,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableKanbanView: true,
 	enableDeviceManagement: false,
 	enableHSMRecording: false,
-	enableDirectRemoteUpdates: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
