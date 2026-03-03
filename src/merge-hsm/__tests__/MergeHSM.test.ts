@@ -999,10 +999,34 @@ describe('MergeHSM', () => {
       // localDoc stays alive in idle mode for efficient auto-merge
       expect(t.getLocalDocText()).not.toBeNull();
 
-      // Receive remote update - localDoc is updated directly
+      // Receive remote update - merge applies after invoke completes
       t.applyRemoteChange('hello');
+      await t.awaitIdleAutoMerge();
 
       expect(t.getLocalDocText()).toBe('hello');
+    });
+
+    test('REMOTE_UPDATE during in-flight idle merge does not corrupt localDoc', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, 'base');
+
+      // First remote update: triggers idle.remoteAhead invoke
+      t.applyRemoteChange('base hello');
+
+      // Second remote update arrives while first merge is in flight.
+      // Without the temp-doc fix, this could corrupt localDoc by
+      // re-entering the invoke after partial localDoc mutation.
+      t.applyRemoteChange('base hello world');
+
+      await t.awaitIdleAutoMerge();
+
+      // localDoc should have the final merged content
+      expect(t.getLocalDocText()).toBe('base hello world');
+
+      // Verify disk write was emitted with correct content
+      const lastDiskWrite = [...t.effects].reverse().find(e => e.type === 'WRITE_DISK');
+      expect(lastDiskWrite).toBeDefined();
+      expect((lastDiskWrite as any).contents).toBe('base hello world');
     });
 
     // =================================================================
