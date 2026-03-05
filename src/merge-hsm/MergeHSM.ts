@@ -1714,6 +1714,16 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			}
 			this._ingestionTexts = [];
 
+			// Merge remote CRDT state into localDoc so that shared edits
+			// use the same item IDs as the remote. Without this step,
+			// applyContentToLocalDoc would generate independent insert
+			// ops that duplicate text already present in the remote CRDT.
+			const remoteUpdate = Y.encodeStateAsUpdate(
+				this.remoteDoc,
+				Y.encodeStateVector(this.localDoc),
+			);
+			Y.applyUpdate(this.localDoc, remoteUpdate, this.remoteDoc);
+
 			this.applyContentToLocalDoc(mergeResult.merged);
 
 			const stateVector = Y.encodeStateVector(this.localDoc);
