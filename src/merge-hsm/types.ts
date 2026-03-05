@@ -470,6 +470,7 @@ export interface WriteDiskEffect {
 	type: "WRITE_DISK";
 	guid: string;
 	contents: string;
+	mtime?: number;
 }
 
 export interface PersistStateEffect {

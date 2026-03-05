@@ -10,7 +10,8 @@
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
-import { getHSMBootId, getHSMBootEntries, getRecentEntries } from './debug';
+import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
+import type { SessionLogOptions } from './debug';
 
 // =============================================================================
 // Global interface exposed via CDP
@@ -35,6 +36,8 @@ export interface RelayDebugGlobal {
   getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
   /** Read Y.Doc text content from IndexedDB without waking the HSM */
   readIdbContent: (guid: string, appId: string) => Promise<{ content: string; stateVector: Uint8Array } | null>;
+  /** Get plugin log entries from the current session, with optional level/pattern filtering */
+  getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
 }
 
 // =============================================================================
@@ -151,6 +154,7 @@ export class RelayDebugAPI {
       getBootEntries: () => getHSMBootEntries(),
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
       readIdbContent: readIdbContent,
+      getSessionLogs: (options) => getSessionLogs(options),
     };
 
     (g as any).__relayDebug = api;
