@@ -60,6 +60,9 @@ export class CapturedOp {
 	/** Resolves to IDB key once the append write completes. */
 	_pendingKey: Promise<number> | null = null;
 
+	/** True once the ops in this entry have been synced to remote. */
+	_synced: boolean = false;
+
 	constructor(
 		deletions: DeleteSet,
 		insertions: DeleteSet,
@@ -412,6 +415,158 @@ export class OpCapture {
 		const pendingKeysToAwait: Promise<number>[] = [];
 		for (let i = this.entries.length - 1; i >= 0; i--) {
 			if (toReverse.has(this.entries[i])) {
+				const entry = this.entries[i];
+				if (entry._storeKey !== null) {
+					keysToRemove.push(entry._storeKey);
+				} else if (entry._pendingKey) {
+					pendingKeysToAwait.push(entry._pendingKey);
+				}
+				this.entries.splice(i, 1);
+			}
+		}
+
+		if (this._storage) {
+			if (keysToRemove.length > 0) {
+				this._storage.remove(keysToRemove);
+			}
+			if (pendingKeysToAwait.length > 0) {
+				Promise.all(pendingKeysToAwait).then((keys) => {
+					if (this._storage) {
+						this._storage.remove(keys);
+					}
+				});
+			}
+		}
+	}
+
+	/**
+	 * Mark all current entries as synced to remote.
+	 *
+	 * Call this after ops have been sent to a peer (e.g., syncLocalToRemote).
+	 * Entries marked as synced cannot be cancel()'d — only reverse()'d.
+	 */
+	notifySynced(): void {
+		for (const entry of this.entries) {
+			entry._synced = true;
+		}
+	}
+
+	/**
+	 * Cancel entries: truly undo the CRDT ops so the document state is as
+	 * if they never happened. Inserted items are deleted; deleted items are
+	 * un-tombstoned by flipping the internal `deleted` flag directly.
+	 *
+	 * Unlike `reverse()` (which uses `redoItem` to create NEW items for
+	 * un-deletions), cancel produces no new items. This means a subsequent
+	 * remote update that performs the same edits applies cleanly with no
+	 * duplication — the ops truly cancel out.
+	 *
+	 * Throws if any entry has been synced to remote (use reverse() instead).
+	 */
+	cancel(entries: CapturedOp[]): void {
+		if (entries.length === 0) return;
+
+		for (const entry of entries) {
+			if (entry._synced) {
+				throw new Error(
+					"OpCapture.cancel(): cannot cancel ops that have been synced to remote. " +
+					"Use reverse() for synced ops.",
+				);
+			}
+		}
+
+		const toCancel = new Set(entries);
+
+		this._suppressCapture = true;
+		try {
+			transact(
+				this.doc,
+				(transaction: Transaction) => {
+					const store = this.doc.store;
+
+					for (let idx = entries.length - 1; idx >= 0; idx--) {
+						const entry = entries[idx];
+						const itemsToDelete: Item[] = [];
+
+						// Insertions → items to delete
+						iterateDeletedStructs(
+							transaction,
+							entry.insertions,
+							(struct: Item | GC) => {
+								if (struct instanceof Item) {
+									if (struct.redone !== null) {
+										let { item, diff } = followRedone(store, struct.id);
+										if (diff > 0) {
+											item = getItemCleanStart(
+												transaction,
+												createID(item.id.client, item.id.clock + diff),
+											);
+										}
+										struct = item;
+									}
+									if (
+										!struct.deleted &&
+										this.scope.some((type) =>
+											isParentOf(type, struct as Item),
+										)
+									) {
+										itemsToDelete.push(struct);
+									}
+								}
+							},
+						);
+
+						// Deletions → un-tombstone by flipping the deleted flag
+						// directly. No redoItem, no new items created.
+						iterateDeletedStructs(
+							transaction,
+							entry.deletions,
+							(struct: Item | GC) => {
+								if (
+									struct instanceof Item &&
+									struct.deleted &&
+									this.scope.some((type) => isParentOf(type, struct)) &&
+									!isDeleted(entry.insertions, struct.id)
+								) {
+									struct.deleted = false;
+									const parent = struct.parent as AbstractType<any>;
+									if (parent._length != null) {
+										parent._length += struct.length;
+									}
+								}
+							},
+						);
+
+						for (let i = itemsToDelete.length - 1; i >= 0; i--) {
+							const item = itemsToDelete[i];
+							if (this.deleteFilter(item)) {
+								item.delete(transaction);
+							}
+						}
+
+						releaseEntry(transaction, this.scope, entry);
+					}
+
+					// Clear search markers on changed types
+					transaction.changed.forEach(
+						(subProps: Set<string | null>, type: AbstractType<any>) => {
+							if (subProps.has(null) && (type as any)._searchMarker) {
+								(type as any)._searchMarker.length = 0;
+							}
+						},
+					);
+				},
+				this,
+			);
+		} finally {
+			this._suppressCapture = false;
+		}
+
+		// Remove cancelled entries from the log and collect store keys
+		const keysToRemove: number[] = [];
+		const pendingKeysToAwait: Promise<number>[] = [];
+		for (let i = this.entries.length - 1; i >= 0; i--) {
+			if (toCancel.has(this.entries[i])) {
 				const entry = this.entries[i];
 				if (entry._storeKey !== null) {
 					keysToRemove.push(entry._storeKey);
