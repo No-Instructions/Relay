@@ -1615,7 +1615,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// If fork-reconcile already detected a conflict, don't re-attempt the
 		// merge — the conflict data is authoritative and must be surfaced to
 		// the user when they open the file.
-		if (this.conflictData) return { success: false };
+		if (this.conflictData) {
+			this.pendingDiskContents = null;
+			this.pendingIdleUpdates = null;
+			return { success: false };
+		}
 		if (!this._lca || !this.localDoc) return { success: false };
 
 		const lcaContent = this._lca.contents;
