@@ -61,7 +61,7 @@ import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
-import { DISK_ORIGIN, OpCapture, CapturedOp } from "./undo";
+import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture, CapturedOp } from "./undo";
 import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 
 // =============================================================================
@@ -267,6 +267,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Track if entering active mode from diverged state for conflict handling
 	private _enteringFromDiverged: boolean = false;
 
+	// Machine edit rewind: pending vault.process() edits awaiting remote match
+	private _pendingMachineEdits: Array<{
+		fn: (data: string) => string;
+		expectedText: string;
+		captureMark: number;
+		registeredAt: number;
+	}> = [];
+	private _suppressLocalObserver = false;
+
 	constructor(config: MergeHSMConfig) {
 		this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
 		this.hashFn = config.hashFn ?? defaultHashFn;
@@ -282,7 +291,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._syncGate.providerSynced);
 		this._captureOpts = {
 			scope: "contents",
-			trackedOrigins: new Set([DISK_ORIGIN]),
+			trackedOrigins: new Set([DISK_ORIGIN, MACHINE_EDIT_ORIGIN]),
 			captureTimeout: 0,
 		};
 		this._interpreterConfig = createInterpreterConfig({
@@ -440,6 +449,48 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 */
 	async awaitForkReconcile(): Promise<void> {
 		await this.awaitAsync('fork-reconcile');
+	}
+
+	/**
+	 * Register a machine edit (vault.process) for deferred sync with rewind.
+	 *
+	 * Pre-computes the expected result text and bookmarks OpCapture so that
+	 * when matching remote ops arrive, the local ops can be reversed
+	 * (rewound) instead of producing duplicates.
+	 *
+	 * @param fn - The text transform function from vault.process()
+	 */
+	registerMachineEdit(fn: (data: string) => string): void {
+		if (this._statePath !== "active.tracking" || !this.localDoc) return;
+
+		const ytext = this.localDoc.getText("contents");
+		const currentText = ytext.toString();
+
+		let expectedText: string;
+		try {
+			expectedText = fn(currentText);
+		} catch {
+			return;
+		}
+
+		// fn is a no-op for this file — skip registration
+		if (expectedText === currentText) return;
+
+		const opCapture = this.getOpCapture();
+		const captureMark = opCapture?.mark() ?? 0;
+
+		this._pendingMachineEdits.push({
+			fn,
+			expectedText,
+			captureMark,
+			registeredAt: this.timeProvider.now(),
+		});
+
+		// Schedule expiry check at TTL + 100ms
+		const MACHINE_EDIT_TTL = 5000;
+		this.timeProvider.setTimeout(() => {
+			this.expireMachineEdits();
+		}, MACHINE_EDIT_TTL + 100);
 	}
 
 	/**
@@ -1186,6 +1237,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const e = event as any;
 				this.lastKnownEditorText = e.docText;
 				if (this.localDoc) {
+					// Check if this CM6 change matches a pending machine edit
+					const machineEditIdx = this._pendingMachineEdits.findIndex(
+						(me) => me.expectedText === e.docText,
+					);
+					const origin = machineEditIdx >= 0 ? MACHINE_EDIT_ORIGIN : this;
+
 					const ytext = this.localDoc.getText("contents");
 					this.localDoc.transact(() => {
 						for (const change of e.changes) {
@@ -1196,9 +1253,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 								ytext.insert(change.from, change.insert);
 							}
 						}
-					}, this);
+					}, origin);
+
+					// Machine edits defer sync — they wait for remote match or TTL expiry
+					if (machineEditIdx < 0) {
+						this.syncLocalToRemote();
+					}
+				} else {
+					this.syncLocalToRemote();
 				}
-				this.syncLocalToRemote();
 			},
 			updateDiskFromSave: (_hsm, event) => {
 				const e = event as any;
@@ -2196,6 +2259,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 		const ytext = this.localDoc.getText("contents");
 		this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
+			// Skip when suppressed (during machine edit rewind)
+			if (this._suppressLocalObserver) return;
+
 			// Skip changes originated by this HSM (CM6 edits, conflict resolution, etc.).
 			// Remote-originated changes use remoteDoc as origin, so they pass through.
 			if (tr.origin === this) return;
@@ -2270,6 +2336,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * removes Y.Text observer. localDoc, localPersistence, and remoteDoc stay alive.
 	 */
 	private async deactivateEditor(): Promise<void> {
+		// Flush any pending machine edits — drop tracking and sync deferred ops
+		this.flushPendingMachineEdits();
+
 		// Capture final state for idle state determination and LCA update
 		let finalContent: string | null = null;
 		if (this.localDoc) {
@@ -2378,6 +2447,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		if (update.length > 0) {
 			Y.applyUpdate(this.remoteDoc, update, this);
 			this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+			this.getOpCapture()?.notifySynced();
 		}
 	}
 
@@ -2398,8 +2468,64 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return;
 		}
 
-		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
+
+		// Check for machine edit match — if the remote already has this
+		// transform applied, rewind our local ops and apply remote instead
+		const match = this.matchMachineEdit(remoteText);
+		if (match) {
+			const opCapture = this.getOpCapture();
+			if (opCapture) {
+				const machineOps = opCapture.sinceByOrigin(
+					match.captureMark,
+					MACHINE_EDIT_ORIGIN,
+				);
+				if (machineOps.length > 0) {
+					const beforeText = this.localDoc.getText("contents").toString();
+
+					// Suppress observer during rewind to avoid spurious DISPATCH_CM6
+					this._suppressLocalObserver = true;
+					try {
+						// Cancel our machine edit ops: truly undo the CRDT ops
+						// so the document state is as if they never happened.
+						// Safe because we deferred sync — no peer has seen these ops.
+						opCapture.cancel(machineOps);
+
+						// Apply remote CRDT update — fills in the same edits cleanly
+						const update = Y.encodeStateAsUpdate(
+							this.remoteDoc,
+							Y.encodeStateVector(this.localDoc),
+						);
+						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+					} finally {
+						this._suppressLocalObserver = false;
+					}
+
+					// Compute net diff and dispatch to editor (usually empty)
+					const afterText = this.localDoc.getText("contents").toString();
+					if (beforeText !== afterText) {
+						const changes = this.computeDiffChanges(beforeText, afterText);
+						if (changes.length > 0) {
+							this.emitEffect({ type: "DISPATCH_CM6", changes });
+						}
+					}
+
+					// Remove the matched registration
+					const idx = this._pendingMachineEdits.indexOf(match);
+					if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
+
+					// Sync to propagate the clean state
+					this.syncLocalToRemote();
+					return;
+				}
+			}
+
+			// OpCapture unavailable or no ops captured — remove registration anyway
+			const idx = this._pendingMachineEdits.indexOf(match);
+			if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
+		}
+
+		const localText = this.localDoc.getText("contents").toString();
 
 		// Content already matches - no merge needed
 		if (localText === remoteText) {
@@ -2646,6 +2772,79 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		return "synced";
+	}
+
+	// ===========================================================================
+	// Machine Edit Rewind
+	// ===========================================================================
+
+	private static readonly MACHINE_EDIT_TTL = 5000;
+
+	/**
+	 * Find a pending machine edit whose fn is already satisfied by remoteText.
+	 * fn(remoteText) === remoteText means the remote already has this transform.
+	 */
+	private matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
+		const now = this.timeProvider.now();
+		for (const entry of this._pendingMachineEdits) {
+			if (now - entry.registeredAt > MergeHSM.MACHINE_EDIT_TTL) continue;
+			try {
+				if (entry.fn(remoteText) === remoteText) {
+					return entry;
+				}
+			} catch {
+				// fn threw — skip this entry
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Expire machine edits older than TTL.
+	 * Drops OpCapture tracking and syncs deferred ops.
+	 */
+	private expireMachineEdits(): void {
+		const now = this.timeProvider.now();
+		let anyExpired = false;
+		const opCapture = this.getOpCapture();
+
+		for (let i = this._pendingMachineEdits.length - 1; i >= 0; i--) {
+			const entry = this._pendingMachineEdits[i];
+			if (now - entry.registeredAt > MergeHSM.MACHINE_EDIT_TTL) {
+				if (opCapture) {
+					const ops = opCapture.sinceByOrigin(entry.captureMark, MACHINE_EDIT_ORIGIN);
+					if (ops.length > 0) {
+						opCapture.drop(ops);
+					}
+				}
+				this._pendingMachineEdits.splice(i, 1);
+				anyExpired = true;
+			}
+		}
+
+		if (anyExpired) {
+			this.syncLocalToRemote();
+		}
+	}
+
+	/**
+	 * Flush all pending machine edits immediately (e.g., on editor close).
+	 * Drops OpCapture tracking and syncs deferred ops.
+	 */
+	private flushPendingMachineEdits(): void {
+		if (this._pendingMachineEdits.length === 0) return;
+
+		const opCapture = this.getOpCapture();
+		for (const entry of this._pendingMachineEdits) {
+			if (opCapture) {
+				const ops = opCapture.sinceByOrigin(entry.captureMark, MACHINE_EDIT_ORIGIN);
+				if (ops.length > 0) {
+					opCapture.drop(ops);
+				}
+			}
+		}
+		this._pendingMachineEdits.length = 0;
+		this.syncLocalToRemote();
 	}
 
 	// ===========================================================================
