@@ -9,6 +9,9 @@
 /** Origin used when ingesting disk edits into localDoc. */
 export const DISK_ORIGIN = Symbol.for("relay:disk");
 
+/** Origin used when applying machine edits (vault.process) to localDoc. */
+export const MACHINE_EDIT_ORIGIN = Symbol.for("relay:machine-edit");
+
 /**
  * Serialize a transaction origin for IndexedDB storage.
  * Returns the global symbol key (via Symbol.keyFor) for registered symbols,
