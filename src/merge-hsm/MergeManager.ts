@@ -28,6 +28,7 @@ import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
 import { awaitOnReload } from '../reloadUtils';
 import { validateUpdate } from '../storage/yjs-validation';
+import { classifyUpdate as classifyUpdateSV } from './state-vectors';
 
 // =============================================================================
 // Types
@@ -772,28 +773,20 @@ export class MergeManager {
    * - The update bytes can't be parsed
    * - Any client in the update's SV has a clock behind our tracked clock
    */
-  canApplyDirectly(guid: string, update: Uint8Array): boolean {
-    const tracked = this._trackedRemoteSV.get(guid);
-    if (!tracked) return false;
-
+  /**
+   * Classify an incremental remote update relative to the tracked SV.
+   * - 'apply': contiguous, safe to deliver and advance SV
+   * - 'stale': all ops already covered by tracked SV, safe to drop
+   * - 'gap': no tracked SV exists, need a keyframe first
+   */
+  classifyUpdate(guid: string, update: Uint8Array): 'apply' | 'stale' | 'gap' {
     try {
-      const updateSVBytes = Y.encodeStateVectorFromUpdate(update);
-      const updateSV = Y.decodeStateVector(updateSVBytes);
-
-      // Check for stale/reordered events: if any client in the update has a
-      // clock behind our tracked clock, something was missed.
-      for (const [clientId, clock] of updateSV) {
-        const trackedClock = tracked.get(clientId);
-        if (trackedClock !== undefined && clock < trackedClock) {
-          return false;
-        }
-      }
-
-      return true;
+      return classifyUpdateSV(update, this._trackedRemoteSV.get(guid));
     } catch {
-      return false;
+      return 'gap';
     }
   }
+
 
   /**
    * After successfully applying an incremental update, merge its per-client clocks

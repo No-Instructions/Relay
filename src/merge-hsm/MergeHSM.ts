@@ -62,6 +62,7 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, OpCapture, CapturedOp } from "./undo";
+import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 
 // =============================================================================
 // Simple Observable for HSM
@@ -249,6 +250,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	// CRDT operation logging
 	private crdtLog = curryLog("[MergeHSM:CRDT]", "debug");
+	private idleMergeLog = curryLog("[MergeHSM:IdleMerge]", "log");
 
 	// Event accumulation queue for loading state (Gap 11)
 	// Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
@@ -896,6 +898,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			// === Idle merge completion ===
 			applyIdleMergeResult: (_hsm, event) => {
 				const result = (event as any).data;
+				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates}`);
 				if (!result?.success || result.noop) return;
 
 				if (result.updates && this.localDoc) {
@@ -915,7 +918,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 				// Write merged content to disk
 				if (result.mergedContent !== undefined) {
-					this.emitEffect({ type: "WRITE_DISK", guid: this._guid, contents: result.mergedContent });
+					this.emitEffect({ type: "WRITE_DISK", guid: this._guid, contents: result.mergedContent, mtime: result.newLCA?.meta?.mtime });
 				}
 
 				// Sync to remote (three-way merge)
@@ -1497,6 +1500,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	private async invokeIdleRemoteAutoMerge(signal: AbortSignal): Promise<unknown> {
 		if (!this.pendingIdleUpdates || !this.localDoc) {
+			this.idleMergeLog(`[idle-merge-debug] ${this._guid} early-exit: pendingIdleUpdates=${!!this.pendingIdleUpdates} localDoc=${!!this.localDoc}`);
 			return { success: false };
 		}
 
@@ -1505,6 +1509,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// write). No LCA + disk file exists = up-migration where we must not
 		// silently overwrite what the user has on disk.
 		if (!this._lca && this._disk !== null) {
+			this.idleMergeLog(`[idle-merge-debug] ${this._guid} blocked: no LCA but disk exists`);
 			return { success: false };
 		}
 
@@ -1512,20 +1517,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		const updates = this.pendingIdleUpdates;
 		this.pendingIdleUpdates = null;
 
-		const localContent = this.localDoc.getText("contents").toString();
-
-		// Check if local and remote have identical CONTENT before merging.
-		// Different state vectors with identical content means the same text was inserted
-		// by different clients. Merging would duplicate content.
-		const checkDoc = new Y.Doc();
-		try {
-			Y.applyUpdate(checkDoc, updates, this);
-			if (localContent === checkDoc.getText("contents").toString()) {
-				return { success: true, newLCA: this._lca, noop: true };
-			}
-		} finally {
-			checkDoc.destroy();
-		}
+		this.idleMergeLog(`[idle-merge-debug] ${this._guid} updatesLen=${updates.byteLength}`);
 
 		// Compute merge on a temp doc (clone localDoc state + apply updates).
 		// localDoc is NOT mutated — the onDone action applies the result.
@@ -1536,12 +1528,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
 			const afterSV = Y.encodeStateVector(tempDoc);
 
-			// Check if merge actually added anything
+			// If the update didn't advance the state vector, it's a noop
 			if (stateVectorsEqual(beforeSV, afterSV)) {
 				return { success: true, newLCA: this._lca, noop: true };
 			}
 
 			const mergedContent = tempDoc.getText("contents").toString();
+			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContent=${JSON.stringify(mergedContent.substring(0, 80))}`);
 			const hash = await this.hashFn(mergedContent);
 			if (signal.aborted) return { success: false };
 
@@ -2761,42 +2754,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
  * Uses proper CRDT semantics: decodes the state vectors and compares
  * client clocks, rather than byte-by-byte comparison.
  */
-function stateVectorsEqual(sv1: Uint8Array, sv2: Uint8Array): boolean {
-	const decoded1 = Y.decodeStateVector(sv1);
-	const decoded2 = Y.decodeStateVector(sv2);
-
-	// Check all clients in sv1 exist in sv2 with same clock
-	for (const [clientId, clock] of decoded1) {
-		if (decoded2.get(clientId) !== clock) return false;
-	}
-
-	// Check all clients in sv2 exist in sv1 (already checked clock above if they do)
-	for (const [clientId] of decoded2) {
-		if (!decoded1.has(clientId)) return false;
-	}
-
-	return true;
-}
-
-/**
- * Check if `ahead` state vector contains operations not present in `behind`.
- * Returns true if any client in `ahead` has a higher clock than in `behind`.
- *
- * This is the proper CRDT way to check "has remote changed since LCA" -
- * we're asking if remote's state vector contains any operations that
- * weren't in the LCA's state vector.
- */
-function stateVectorIsAhead(ahead: Uint8Array, behind: Uint8Array): boolean {
-	const aheadDecoded = Y.decodeStateVector(ahead);
-	const behindDecoded = Y.decodeStateVector(behind);
-
-	for (const [clientId, clock] of aheadDecoded) {
-		const behindClock = behindDecoded.get(clientId) ?? 0;
-		if (clock > behindClock) return true;
-	}
-
-	return false;
-}
 
 function computePositionedChanges(
 	before: string,

@@ -276,6 +276,88 @@ export async function getAllLogs(): Promise<string> {
 	return logs.reverse().join("\n");
 }
 
+const BOOT_MARKER = "Plugin started";
+
+/**
+ * Parse raw log text into structured entries.
+ * Each entry is two lines: `[timestamp] [LEVEL] message` followed by `    at callerInfo`.
+ */
+function parseLogEntries(text: string): LogEntry[] {
+	const entries: LogEntry[] = [];
+	const lines = text.split('\n');
+	for (let i = 0; i < lines.length; i++) {
+		const match = lines[i].match(/^\[([^\]]+)\] \[([A-Z]+)\] (.*)$/);
+		if (match) {
+			const callerLine = (i + 1 < lines.length && lines[i + 1].startsWith('    at '))
+				? lines[i + 1].slice(7) // strip "    at "
+				: '';
+			entries.push({
+				timestamp: match[1],
+				level: match[2].toLowerCase() as LogLevel,
+				message: match[3],
+				callerInfo: callerLine,
+			});
+			if (callerLine) i++; // skip the caller line
+		}
+	}
+	return entries;
+}
+
+export interface SessionLogOptions {
+	level?: LogLevel | LogLevel[];
+	pattern?: string;
+}
+
+/**
+ * Get log entries from the current session (since last "Plugin started").
+ * Reads disk files and appends the in-memory buffer (unflushed entries),
+ * then finds the boot boundary and applies optional filters.
+ */
+export async function getSessionLogs(options?: SessionLogOptions): Promise<LogEntry[]> {
+	if (!fileAdapter || !currentLogFile) return [];
+
+	// Read all files oldest-first (reversed backups, then main)
+	const chunks: string[] = [];
+	for (let i = logConfig.maxBackups; i >= 1; i--) {
+		const backupFile = `${currentLogFile}.${i}`;
+		try {
+			if (await fileAdapter.exists(backupFile)) {
+				chunks.push(await fileAdapter.read(backupFile));
+			}
+		} catch { /* skip unreadable */ }
+	}
+	try {
+		if (await fileAdapter.exists(currentLogFile)) {
+			chunks.push(await fileAdapter.read(currentLogFile));
+		}
+	} catch { /* skip unreadable */ }
+
+	// Disk entries + unflushed in-memory entries
+	const allEntries = parseLogEntries(chunks.join('\n')).concat(logBuffer);
+
+	// Find the last boot marker — everything from there is the current session
+	let bootIndex = 0;
+	for (let i = allEntries.length - 1; i >= 0; i--) {
+		if (allEntries[i].message.includes(BOOT_MARKER)) {
+			bootIndex = i;
+			break;
+		}
+	}
+
+	let entries = allEntries.slice(bootIndex);
+
+	if (options?.level) {
+		const levels = Array.isArray(options.level) ? options.level : [options.level];
+		entries = entries.filter(e => levels.includes(e.level));
+	}
+	if (options?.pattern) {
+		const re = new RegExp(options.pattern, 'i');
+		entries = entries.filter(e => re.test(e.message) || re.test(e.callerInfo));
+	}
+
+	return entries;
+}
+
 export class HasLogging {
 	protected debug;
 	protected log;

@@ -146,7 +146,10 @@ export const MACHINE: MachineDefinition = {
 			onError: { target: 'idle.diverged' },
 		},
 		on: {
-			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			DISK_CHANGED: [
+				{ target: 'idle.remoteAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			],
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },

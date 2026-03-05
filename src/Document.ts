@@ -686,7 +686,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	async handleEffect(effect: import("./merge-hsm/types").MergeEffect): Promise<void> {
 		switch (effect.type) {
 			case "WRITE_DISK":
-				await this.handleWriteDisk(effect.contents);
+				await this.handleWriteDisk(effect.contents, effect.mtime);
 				break;
 			case "PERSIST_STATE":
 				await this.handlePersistState(effect.state);
@@ -698,7 +698,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
-	private async handleWriteDisk(contents: string): Promise<void> {
+	private async handleWriteDisk(contents: string, mtime?: number): Promise<void> {
 		const tfile = this.tfile;
 		if (!tfile) {
 			this.warn("[handleEffect:WRITE_DISK] TFile not found, cannot write");
@@ -711,7 +711,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 		this._isSaving = true;
 		try {
-			await this.vault.modify(tfile, contents);
+			const options = mtime !== undefined ? { mtime } : undefined;
+			await this.vault.modify(tfile, contents, options);
 			this.debug?.("[handleEffect:WRITE_DISK] Wrote to disk", this.path);
 
 			// Notify HSM of save completion with new mtime and hash

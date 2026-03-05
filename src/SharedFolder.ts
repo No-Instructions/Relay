@@ -172,6 +172,7 @@ export class SharedFolder extends HasProvider {
 	syncSettingsManager: SyncSettingsManager;
 	mergeManager: MergeManager;
 	private recordingBridge: E2ERecordingBridge;
+	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
 
 	constructor(
 		public appId: string,
@@ -487,19 +488,57 @@ export class SharedFolder extends HasProvider {
 				? event.update
 				: new Uint8Array(event.update);
 
-		// Gap detection: apply incremental bytes directly when we have a
-		// contiguous tracked SV, otherwise fall back to HTTP full-sync.
-		if (this.mergeManager.canApplyDirectly(guid, update)) {
-			this.mergeManager.handleRemoteUpdate(guid, update);
-			this.mergeManager.advanceTrackedRemoteSV(guid, update);
-		} else {
-			this.backgroundSync.enqueueDownload(file).then((updateBytes) => {
-				if (updateBytes) {
-					this.mergeManager.handleRemoteUpdate(guid, updateBytes);
-					this.mergeManager.seedTrackedRemoteSV(guid, updateBytes);
-				}
-			});
+		// If a keyframe fetch is in progress, buffer the update
+		const buf = this._pendingKeyframeUpdates.get(guid);
+		if (buf) {
+			buf.push(update);
+			return;
 		}
+
+		const classification = this.mergeManager.classifyUpdate(guid, update);
+		switch (classification) {
+			case 'apply':
+				this.mergeManager.handleRemoteUpdate(guid, update);
+				this.mergeManager.advanceTrackedRemoteSV(guid, update);
+				break;
+			case 'stale':
+				break; // already covered by tracked SV
+			case 'gap':
+				this._fetchKeyframeAndDeliver(file, guid, [update]);
+				break;
+		}
+	}
+
+	/**
+	 * Fetch an HTTP keyframe, then deliver it and the buffered updates.
+	 */
+	private _fetchKeyframeAndDeliver(
+		file: Document,
+		guid: string,
+		pending: Uint8Array[],
+	): void {
+		this._pendingKeyframeUpdates.set(guid, pending);
+		this.backgroundSync.enqueueDownload(file).then((keyframe) => {
+			const buf = this._pendingKeyframeUpdates.get(guid);
+			this._pendingKeyframeUpdates.delete(guid);
+			if (!buf || buf.length === 0) return;
+
+			if (keyframe) {
+				this.mergeManager.handleRemoteUpdate(guid, keyframe);
+				this.mergeManager.seedTrackedRemoteSV(guid, keyframe);
+			}
+
+			for (const u of buf) {
+				const c = this.mergeManager.classifyUpdate(guid, u);
+				if (c === 'apply') {
+					this.mergeManager.handleRemoteUpdate(guid, u);
+					this.mergeManager.advanceTrackedRemoteSV(guid, u);
+				}
+				// 'stale' → drop (subsumed by keyframe)
+				// 'gap' shouldn't happen after a keyframe, but if it does
+				// the update is dropped — the keyframe is the best we have
+			}
+		});
 	}
 
 	/**
