@@ -139,13 +139,14 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
-				{ target: 'idle.remoteAhead', guard: 'mergeSucceededAndRemotePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'], reenter: true },
+				{ target: 'idle.remoteAhead', guard: 'mergeSucceededAndRemotePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
 				{ target: 'idle.diverged' },
 			],
 			onError: { target: 'idle.diverged' },
 		},
 		on: {
+			IDLE_RETRY: { target: 'idle.remoteAhead', reenter: true },
 			DISK_CHANGED: [
 				{ target: 'idle.remoteAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
@@ -186,14 +187,15 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
-				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'], reenter: true },
+				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
-				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', reenter: true },
+				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
 				{ target: 'idle.diverged' }, // 3-way conflict — stay diverged
 			],
 			onError: { target: 'idle.diverged' },
 		},
 		on: {
+			IDLE_RETRY: { target: 'idle.diverged', reenter: true },
 			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },

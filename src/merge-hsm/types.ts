@@ -448,6 +448,7 @@ export type MergeEvent =
 	| RemoteDocUpdatedEvent
 	| ErrorEvent
 	| IdleMergeCompleteEvent
+	| { type: 'IDLE_RETRY' }
 	// Diagnostic (from Obsidian monkeypatches)
 	| ObsidianLoadFileInternalEvent
 	| ObsidianThreeWayMergeEvent
