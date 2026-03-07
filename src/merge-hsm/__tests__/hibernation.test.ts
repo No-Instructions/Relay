@@ -300,7 +300,7 @@ describe('Hibernation Lifecycle', () => {
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
     });
 
-    test('activity resets the hibernate timer', () => {
+    test('activity resets the hibernate timer', async () => {
       createMockDocument('doc-1', 'test.md');
       expect(manager.getHibernationState('doc-1')).toBe('warm');
 
@@ -308,15 +308,20 @@ describe('Hibernation Lifecycle', () => {
       timeProvider.setTime(timeProvider.now() + 30_000);
       expect(manager.getHibernationState('doc-1')).toBe('warm');
 
-      // Send a remote update (resets timer)
+      // Send a remote update (resets timer and starts idle-merge invoke)
       const update = createUpdate('activity');
       manager.handleRemoteUpdate('doc-1', update);
 
-      // Advance another 45 seconds (75s total, but only 45s since last activity)
+      // Wait for idle-merge invoke to finish so hibernate won't defer
+      const hsm = documents.get('doc-1')!.hsm!;
+      await hsm.awaitAsync('idle-merge');
+
+      // Timer was reset at T=30_000, fires at T=90_000.
+      // 45s later → T=75_000, before the reset timer fires
       timeProvider.setTime(timeProvider.now() + 45_000);
       expect(manager.getHibernationState('doc-1')).toBe('warm');
 
-      // Advance past 60s since last activity
+      // 20s more → T=95_000, past the 60s window since activity
       timeProvider.setTime(timeProvider.now() + 20_000);
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
     });
