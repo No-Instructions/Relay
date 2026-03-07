@@ -584,7 +584,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// Mark that we're saving to distinguish from external modifications
 		this._isSaving = true;
 		try {
-			const contents = this.text;
+			// Use localDoc content when in HSM active mode; ydoc (remoteDoc) is stale there.
+			const contents = this.localDoc ? this.localText : this.text;
 			await this.vault.modify(this.tfile, contents);
 			this.warn("file saved", this.path);
 
