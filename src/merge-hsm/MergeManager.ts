@@ -504,6 +504,12 @@ export class MergeManager {
 
     const hsm = doc?.hsm;
     if (hsm) {
+      // If an async invoke (idle-merge, fork-reconcile) is running, defer
+      // hibernation so the work can finish rather than aborting mid-merge.
+      if (hsm.getActiveInvoke()) {
+        this.resetHibernateTimer(guid);
+        return;
+      }
       hsm.setRemoteDoc(null);
       // destroyLocalDoc() nulls out references synchronously, then does
       // async IDB cleanup on the captured refs. Fire-and-forget is safe
