@@ -284,6 +284,21 @@ export class MergeManager {
   }
 
   /**
+   * Set local-only mode on multiple HSMs.
+   * When enabled, ops accumulate instead of syncing between localDoc and remoteDoc.
+   * When disabled, accumulated ops are flushed.
+   */
+  setLocalOnly(guids: string[], localOnly: boolean): void {
+    for (const guid of guids) {
+      const doc = this._getDocument(guid);
+      const hsm = doc?.hsm;
+      if (hsm) {
+        hsm.setLocalOnly(localOnly);
+      }
+    }
+  }
+
+  /**
    * Set the push-based transition callback (used by recording bridge).
    * Applies to HSMs created after this call.
    */

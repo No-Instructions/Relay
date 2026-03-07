@@ -378,6 +378,56 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		return this._isOnline;
 	}
 
+	/** Whether sync between localDoc and remoteDoc is paused. */
+	get isLocalOnly(): boolean {
+		return this._syncGate.localOnly;
+	}
+
+	/** Number of local edits accumulated while the sync gate is closed. */
+	get pendingOutbound(): number {
+		return this._syncGate.pendingOutbound;
+	}
+
+	/** Number of remote edits accumulated while the sync gate is closed. */
+	get pendingInbound(): number {
+		return this._syncGate.pendingInbound;
+	}
+
+	/**
+	 * Toggle local-only mode. When enabled, ops accumulate in pending counters
+	 * instead of flowing between localDoc and remoteDoc. When disabled, pending
+	 * ops are flushed immediately (unless a fork is active).
+	 */
+	setLocalOnly(value: boolean): void {
+		if (this._syncGate.localOnly === value) return;
+		this._syncGate.localOnly = value;
+
+		// Flush pending ops when turning off (fork takes precedence)
+		if (!value && this._fork === null && this.localDoc && this.remoteDoc) {
+			if (this._syncGate.pendingInbound > 0) {
+				const update = Y.encodeStateAsUpdate(
+					this.remoteDoc,
+					Y.encodeStateVector(this.localDoc),
+				);
+				if (update.length > 0) {
+					Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+				}
+			}
+			if (this._syncGate.pendingOutbound > 0) {
+				const update = Y.encodeStateAsUpdate(
+					this.localDoc,
+					Y.encodeStateVector(this.remoteDoc),
+				);
+				if (update.length > 0) {
+					Y.applyUpdate(this.remoteDoc, update, this);
+					this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+				}
+			}
+			this._syncGate.pendingInbound = 0;
+			this._syncGate.pendingOutbound = 0;
+		}
+	}
+
 	/**
 	 * Check if Obsidian has the file open (based on workspace events).
 	 * Used as a fail-closed interlock for disk writes.
@@ -2446,6 +2496,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return;
 		}
 
+		if (this._syncGate.localOnly) {
+			this._syncGate.pendingOutbound++;
+			this._stateChanges.emit(this.state);
+			return;
+		}
+
 		const update = Y.encodeStateAsUpdate(
 			this.localDoc,
 			Y.encodeStateVector(this.remoteDoc),
@@ -2472,6 +2528,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// Don't merge remote→local while a fork is unreconciled
 		if (this._fork !== null) {
 			this._syncGate.pendingInbound++;
+			return;
+		}
+
+		if (this._syncGate.localOnly) {
+			this._syncGate.pendingInbound++;
+			this._stateChanges.emit(this.state);
 			return;
 		}
 

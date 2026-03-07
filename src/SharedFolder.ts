@@ -70,6 +70,7 @@ export interface SharedFolderSettings {
 	path: string;
 	relay?: string;
 	connect?: boolean;
+	localOnly?: boolean;
 	sync?: SyncFlags;
 }
 
@@ -149,6 +150,7 @@ export class SharedFolder extends HasProvider {
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
 	_shouldConnect: boolean;
+	private _localOnly: boolean;
 	destroyed: boolean = false;
 	public vault: Vault;
 	syncStore: SyncStore;
@@ -216,6 +218,7 @@ export class SharedFolder extends HasProvider {
 		this.relayManager = relayManager;
 		this.relayId = relayId;
 		this._shouldConnect = this.settings.connect ?? true;
+		this._localOnly = this.settings.localOnly ?? false;
 
 		this.authoritative = !awaitingUpdates;
 
@@ -825,6 +828,21 @@ export class SharedFolder extends HasProvider {
 			connect,
 		}));
 		this._shouldConnect = connect;
+	}
+
+	public get localOnly(): boolean {
+		return this._localOnly;
+	}
+
+	public set localOnly(value: boolean) {
+		if (this._localOnly === value) return;
+		this._localOnly = value;
+		this._settings.update((current) => ({
+			...current,
+			localOnly: value,
+		}));
+		const guids = Array.from(this.files.keys());
+		this.mergeManager?.setLocalOnly(guids, value);
 	}
 
 	async netSync() {
@@ -1704,6 +1722,10 @@ export class SharedFolder extends HasProvider {
 		// Document creates its own HSM via ensureHSM() - no need to register separately.
 		// Just ensure the HSM exists after the move.
 		doc.ensureHSM();
+
+		if (this._localOnly && doc.hsm) {
+			doc.hsm.setLocalOnly(true);
+		}
 
 		return doc;
 	}
