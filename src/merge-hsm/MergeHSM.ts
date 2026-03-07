@@ -978,6 +978,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this.emitEffect({ type: "SYNC_TO_REMOTE", update });
 				}
 			},
+			scheduleIdleRetry: () => {
+				setTimeout(() => {
+					if (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null) {
+						this.send({ type: 'IDLE_RETRY' });
+					}
+				}, 0);
+			},
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = (event as any).data;
 				if (result?.newLCA) {
