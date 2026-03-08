@@ -430,6 +430,18 @@ export class LiveView<ViewType extends TextFileView>
 		}
 	}
 
+	toggleLocalOnly() {
+		const hsm = this.document.hsm;
+		if (hsm) {
+			const wasLocalOnly = hsm.isLocalOnly;
+			hsm.setLocalOnly(!wasLocalOnly);
+			if (wasLocalOnly && !this.document.connected) {
+				this.document.connect();
+			}
+			this.attach();
+		}
+	}
+
 	public get tracking() {
 		if (this.document?.hsm) {
 			return this.document.hsm.state.statePath === "active.tracking";
@@ -585,6 +597,10 @@ export class LiveView<ViewType extends TextFileView>
 						remote: this.document.sharedFolder.remote,
 						tracking: this.tracking,
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
+						enableDraftMode: flags().enableDraftMode,
+						folderConnected: this.document.sharedFolder.connected,
+						pendingOutbound: this.document.hsm!.pendingOutbound,
+						pendingInbound: this.document.hsm!.pendingInbound,
 					},
 				});
 				this.offConnectionStatusSubscription = this.document.subscribe(
@@ -596,6 +612,10 @@ export class LiveView<ViewType extends TextFileView>
 							remote: this.document.sharedFolder.remote,
 							tracking: this.tracking,
 							localOnly: this.document.hsm?.isLocalOnly ?? false,
+							enableDraftMode: flags().enableDraftMode,
+							folderConnected: this.document.sharedFolder.connected,
+							pendingOutbound: this.document.hsm!.pendingOutbound,
+							pendingInbound: this.document.hsm!.pendingInbound,
 						});
 					},
 				);
@@ -607,6 +627,10 @@ export class LiveView<ViewType extends TextFileView>
 					this._viewActions?.$set({
 						tracking: state.statePath === "active.tracking",
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
+						enableDraftMode: flags().enableDraftMode,
+						folderConnected: this.document.sharedFolder.connected,
+						pendingOutbound: this.document.hsm!.pendingOutbound,
+						pendingInbound: this.document.hsm!.pendingInbound,
 					});
 					const isConflict = state.statePath.includes("conflict");
 					if (isConflict && !this._banner) {
@@ -625,6 +649,10 @@ export class LiveView<ViewType extends TextFileView>
 				remote: this.document.sharedFolder.remote,
 				tracking: this.tracking,
 				localOnly: this.document.hsm?.isLocalOnly ?? false,
+				enableDraftMode: flags().enableDraftMode,
+				folderConnected: this.document.sharedFolder.connected,
+				pendingOutbound: this.document.hsm!.pendingOutbound,
+				pendingInbound: this.document.hsm!.pendingInbound,
 			});
 		}
 	}
