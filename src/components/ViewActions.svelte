@@ -9,15 +9,19 @@
 	export let state: ConnectionState;
 	export let remote: RemoteSharedFolder;
 	export let tracking: boolean = false;
+	export let localOnly: boolean = false;
 	export let isLoggedOut: boolean = false;
 	export let onLogin: (() => Promise<boolean>) | undefined = undefined;
 
-	const ariaLabels: Record<ConnectionStatus, string> = {
-		connected: "connected: click to go offline",
-		connecting: "connecting...",
-		disconnected: "disconnected: click to go online",
-		unknown: "unknown status",
-	};
+	$: opsFlowing = state.status === "connected" && !localOnly;
+	$: satelliteClass = opsFlowing
+		? "system3-connected"
+		: localOnly ? "system3-paused" : `system3-${state.status}`;
+	$: satelliteLabel = opsFlowing
+		? `${remote?.relay?.name || "Relay"} (connected)`
+		: localOnly
+			? `${remote?.relay?.name || "Relay"} (paused)`
+			: `${remote?.relay?.name || "Relay"} (${state.status})`;
 
 	const handleClick = () => {
 		if (isLoggedOut && onLogin) {
@@ -70,8 +74,8 @@
 		<Layers class="svg-icon inline-icon" />
 	</button>
 	<button
-		class="system3-{state.status} clickable-icon view-action system3-view-action"
-		aria-label={`${remote.relay.name} (${state.status})`}
+		class="{satelliteClass} clickable-icon view-action system3-view-action"
+		aria-label={satelliteLabel}
 		tabindex="0"
 		on:click={handleClick}
 		on:keypress={handleKeyPress}
@@ -107,6 +111,9 @@
 		color: var(--color-accent);
 	}
 	button.system3-disconnected {
+		color: var(--color-base-40);
+	}
+	button.system3-paused {
 		color: var(--color-base-40);
 	}
 </style>
