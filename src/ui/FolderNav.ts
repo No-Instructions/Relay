@@ -177,6 +177,7 @@ class PillDecoration {
 				status: this.sharedFolder.state.status,
 				relayId: this.sharedFolder.relayId,
 				remote: this.sharedFolder.remote,
+				localOnly: this.sharedFolder.localOnly,
 				progress: 0,
 				syncStatus: "pending",
 			},
@@ -189,6 +190,8 @@ class PillDecoration {
 					status: state.status,
 					relayId: this.sharedFolder.relayId,
 					remote: this.sharedFolder.remote,
+					localOnly: this.sharedFolder.localOnly,
+					enableDraftMode: flags().enableDraftMode,
 				});
 			}),
 		);

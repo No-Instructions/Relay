@@ -584,6 +584,7 @@ export class LiveView<ViewType extends TextFileView>
 						state: this.document.state,
 						remote: this.document.sharedFolder.remote,
 						tracking: this.tracking,
+						localOnly: this.document.hsm?.isLocalOnly ?? false,
 					},
 				});
 				this.offConnectionStatusSubscription = this.document.subscribe(
@@ -594,6 +595,7 @@ export class LiveView<ViewType extends TextFileView>
 							state: state,
 							remote: this.document.sharedFolder.remote,
 							tracking: this.tracking,
+							localOnly: this.document.hsm?.isLocalOnly ?? false,
 						});
 					},
 				);
@@ -604,6 +606,7 @@ export class LiveView<ViewType extends TextFileView>
 				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
 					this._viewActions?.$set({
 						tracking: state.statePath === "active.tracking",
+						localOnly: this.document.hsm?.isLocalOnly ?? false,
 					});
 					const isConflict = state.statePath.includes("conflict");
 					if (isConflict && !this._banner) {
@@ -621,6 +624,7 @@ export class LiveView<ViewType extends TextFileView>
 				state: this.document.state,
 				remote: this.document.sharedFolder.remote,
 				tracking: this.tracking,
+				localOnly: this.document.hsm?.isLocalOnly ?? false,
 			});
 		}
 	}
