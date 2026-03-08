@@ -7,6 +7,7 @@
 	export let remote: RemoteSharedFolder | undefined;
 	export let progress = 0;
 	export let localOnly: boolean = false;
+	export let enableDraftMode: boolean = false;
 	export let syncStatus: "pending" | "running" | "completed" | "failed" =
 		"pending";
 
@@ -14,8 +15,9 @@
 	$: showProgress =
 		(syncStatus !== "completed" || progress < 100) && progress > 0;
 
-	$: satelliteClass = localOnly ? "system3-paused" : `system3-${status}`;
-	$: satelliteLabel = localOnly
+	$: effectiveLocalOnly = enableDraftMode && localOnly;
+	$: satelliteClass = effectiveLocalOnly ? "system3-paused" : `system3-${status}`;
+	$: satelliteLabel = effectiveLocalOnly
 		? `${remote?.relay.name || "Relay Server"} (paused)`
 		: `${remote?.relay.name || "Relay Server"} (${status})`;
 </script>
