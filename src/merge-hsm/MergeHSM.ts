@@ -1309,26 +1309,54 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					const machineEditIdx = this._pendingMachineEdits.findIndex(
 						(me) => me.expectedText === e.docText,
 					);
-					const origin = machineEditIdx >= 0 ? MACHINE_EDIT_ORIGIN : this;
 
-					// Tag for the outbound queue listener so it can defer machine edits
-					this._currentMachineEditMark = machineEditIdx >= 0
-						? this._pendingMachineEdits[machineEditIdx].captureMark
-						: null;
+					if (machineEditIdx >= 0) {
+						// Machine edit: apply via a temp proxy Y.Doc so the
+						// items get the proxy's clientID, not localDoc's. This
+						// decouples user edits from machine edits at the state
+						// vector level — non-adjacent user edits flow to
+						// remoteDoc immediately even while the machine edit
+						// is deferred.
+						this._currentMachineEditMark =
+							this._pendingMachineEdits[machineEditIdx].captureMark;
 
-					const ytext = this.localDoc.getText("contents");
-					this.localDoc.transact(() => {
-						for (const change of e.changes) {
-							if (change.to > change.from) {
-								ytext.delete(change.from, change.to - change.from);
+						const proxyDoc = new Y.Doc();
+						Y.applyUpdate(proxyDoc, Y.encodeStateAsUpdate(this.localDoc));
+
+						const proxyText = proxyDoc.getText("contents");
+						proxyDoc.transact(() => {
+							for (const change of e.changes) {
+								if (change.to > change.from) {
+									proxyText.delete(change.from, change.to - change.from);
+								}
+								if (change.insert) {
+									proxyText.insert(change.from, change.insert);
+								}
 							}
-							if (change.insert) {
-								ytext.insert(change.from, change.insert);
-							}
-						}
-					}, origin);
+						});
 
-					this._currentMachineEditMark = null;
+						const diff = Y.encodeStateAsUpdate(
+							proxyDoc,
+							Y.encodeStateVector(this.localDoc),
+						);
+						Y.applyUpdate(this.localDoc, diff, MACHINE_EDIT_ORIGIN);
+						proxyDoc.destroy();
+
+						this._currentMachineEditMark = null;
+					} else {
+						// Normal user edit: apply directly to localDoc
+						const ytext = this.localDoc.getText("contents");
+						this.localDoc.transact(() => {
+							for (const change of e.changes) {
+								if (change.to > change.from) {
+									ytext.delete(change.from, change.to - change.from);
+								}
+								if (change.insert) {
+									ytext.insert(change.from, change.insert);
+								}
+							}
+						}, this);
+					}
 				}
 
 				// Always flush — the queue handles filtering

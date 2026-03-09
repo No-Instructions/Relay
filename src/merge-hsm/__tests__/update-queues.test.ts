@@ -126,14 +126,15 @@ describe("outbound queue", () => {
 		expectRemoteDocText(t, "Hello [[B]] world");
 	});
 
-	it("machine edit + user edit: user edit synced, machine edit deferred", async () => {
+	it("machine edit + user edit: user edit flows to remoteDoc, machine edit deferred", async () => {
 		const t = await setupActive("Hello [[B]] world");
 		const fn = (text: string) => text.replace("[[B]]", "[[C]]");
 
 		// Register machine edit
 		t.hsm.registerMachineEdit(fn);
 
-		// Machine edit arrives via CM6
+		// Machine edit arrives via CM6 — applied via proxy doc so the items
+		// use the proxy's clientID, not localDoc's
 		const machineChanges = computeCM6Changes(
 			"Hello [[B]] world",
 			"Hello [[C]] world",
@@ -146,19 +147,13 @@ describe("outbound queue", () => {
 		// User types at the end (docText doesn't match any pending expectedText)
 		t.send(cm6Insert(17, "!", "Hello [[C]] world!"));
 
-		// User edit SYNC_TO_REMOTE is emitted (the update is sent to remoteDoc)
+		// User edit SYNC_TO_REMOTE is emitted
 		expectEffect(t.effects, { type: "SYNC_TO_REMOTE" });
 
-		// The user edit's Y.js update references items created by the machine
-		// edit (adjacent content). Y.js buffers these as pending in remoteDoc
-		// until the machine edit items arrive. This is the known limitation
-		// for adjacent edits — they resolve when the machine edit completes.
-		// Edits at non-adjacent positions would apply immediately.
-		const remoteText = t.getRemoteDocText();
-		// Machine edit is still deferred — remoteDoc may or may not show the
-		// user edit depending on Y.js item adjacency. The key invariant is
-		// that the machine edit's [[C]] is NOT in remoteDoc yet.
-		expect(remoteText).not.toContain("[[C]]");
+		// With the proxy approach, user edits use localDoc's clientID (decoupled
+		// from the proxy's). The user edit update applies cleanly to remoteDoc.
+		// Machine edit [[C]] is still deferred — only [[B]] is in remoteDoc.
+		expectRemoteDocText(t, "Hello [[B]] world!");
 	});
 
 	it("machine edit match: deferred entries discarded, clean sync", async () => {
@@ -198,27 +193,21 @@ describe("outbound queue", () => {
 		t.send(cm6Change(machineChanges, "Hello [[C]] world"));
 		expectNoEffect(t.effects, "SYNC_TO_REMOTE");
 
-		// User types at the end
+		// User types at the end — with the proxy approach this flows to
+		// remoteDoc immediately (decoupled state vectors)
 		t.send(cm6Insert(17, "!", "Hello [[C]] world!"));
 
 		t.clearEffects();
 
-		// Remote applies the same machine-edit transform
-		t.applyRemoteChange("Hello [[C]] world");
+		// Remote applies the same rename function. Since the user edit already
+		// flowed to remoteDoc, remoteDoc has "Hello [[B]] world!". The remote
+		// peer's rename turns that into "Hello [[C]] world!" (preserving "!").
+		t.applyRemoteChange("Hello [[C]] world!");
 
-		// Cancel succeeds — machine edit ops were never marked synced
-		// localDoc has both the canonical machine edit (from remote) and user edit
+		// Cancel succeeds — machine edit ops were never marked synced.
+		// localDoc has the canonical machine edit (from remote) + user edit.
 		expectLocalDocText(t, "Hello [[C]] world!");
-
-		// remoteDoc has the canonical machine edit from remote.
-		// The user edit ("!") was sent earlier but references machine edit items
-		// that didn't exist in remoteDoc at the time — Y.js stores these as
-		// pending. After the remote match resolves the machine edit, the pending
-		// user edit items resolve too.
-		const remoteText = t.getRemoteDocText();
-		expect(remoteText).toContain("[[C]]");
-		// The "!" may or may not be visible depending on Y.js pending resolution
-		// timing, but the content will converge once all updates are exchanged.
+		expectRemoteDocText(t, "Hello [[C]] world!");
 	});
 
 	it("machine edit expiry releases deferred entries", async () => {
@@ -308,9 +297,11 @@ describe("outbound queue", () => {
 		// User edit — syncs but notifySynced should be skipped (deferred entries exist)
 		t.send(cm6Insert(17, "!", "Hello [[C]] world!"));
 
-		// Verify cancel still works on machine edit ops (they weren't marked synced)
+		// Verify cancel still works on machine edit ops (they weren't marked synced).
+		// Remote applies rename to current remoteDoc content (which includes
+		// the user edit "!" thanks to proxy decoupling).
 		t.clearEffects();
-		t.applyRemoteChange("Hello [[C]] world");
+		t.applyRemoteChange("Hello [[C]] world!");
 
 		// Should not throw — ops are still cancellable
 		expectLocalDocText(t, "Hello [[C]] world!");
