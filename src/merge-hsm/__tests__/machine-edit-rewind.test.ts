@@ -349,8 +349,9 @@ describe("machine edit rewind - HSM integration", () => {
 		// After rewind, no duplication
 		expectLocalDocText(t, "Hello [[C]] world");
 
-		// SYNC_TO_REMOTE emitted after rewind flush
-		expectEffect(t.effects, { type: "SYNC_TO_REMOTE" });
+		// Deferred outbound entries discarded — localDoc and remoteDoc
+		// already agree after cancel + apply remote, so no SYNC_TO_REMOTE.
+		expectNoEffect(t.effects, "SYNC_TO_REMOTE");
 	});
 
 	it("syncs ops on TTL expiry (originator vault)", async () => {
