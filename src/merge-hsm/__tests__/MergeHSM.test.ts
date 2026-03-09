@@ -755,7 +755,7 @@ describe('MergeHSM', () => {
 
       expectState(t, 'active.tracking');
       expectLocalDocText(t, 'hello merged');
-      // No DISPATCH_CM6 — y-codemirror binding propagates CRDT changes to editor
+      expectEffect(t.effects, { type: 'DISPATCH_CM6' });
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
@@ -1018,6 +1018,12 @@ describe('MergeHSM', () => {
       // re-entering the invoke after partial localDoc mutation.
       t.applyRemoteChange('base hello world');
 
+      // First invoke completes → scheduleIdleRetry queues IDLE_RETRY via
+      // setTimeout. Await the first invoke, flush the timer to let IDLE_RETRY
+      // fire (which re-enters idle.remoteAhead and starts a second invoke),
+      // then await the second invoke.
+      await t.awaitIdleAutoMerge();
+      await new Promise(r => setTimeout(r, 0));
       await t.awaitIdleAutoMerge();
 
       // localDoc should have the final merged content
