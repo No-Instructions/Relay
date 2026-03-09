@@ -397,6 +397,47 @@ describe('Hibernation Lifecycle', () => {
       expect(warmCount).toBeLessThanOrEqual(3);
     });
 
+    test('hibernate drains wake queue when slot frees', () => {
+      // Concurrency 1: only one warm doc at a time
+      const strictManager = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
+        timeProvider,
+        hibernation: {
+          hibernateTimeoutMs: 60_000,
+          maxConcurrentWarm: 1,
+        },
+      });
+
+      createMockDocument('occupant', 'occupant.md', strictManager);
+      createMockDocument('waiter', 'waiter.md', strictManager);
+
+      // Hibernate both
+      strictManager.hibernate('occupant');
+      strictManager.hibernate('waiter');
+
+      // Wake occupant — fills the single slot
+      strictManager.enqueueWake({
+        guid: 'occupant',
+        priority: WakePriority.REMOTE_UPDATE,
+      });
+      expect(strictManager.getHibernationState('occupant')).toBe('warm');
+
+      // Enqueue waiter — blocked by concurrency limit
+      strictManager.enqueueWake({
+        guid: 'waiter',
+        priority: WakePriority.REMOTE_UPDATE,
+      });
+      expect(strictManager.getHibernationState('waiter')).toBe('hibernated');
+
+      // Hibernate occupant — frees the slot, should drain waiter from queue
+      strictManager.hibernate('occupant');
+      expect(strictManager.getHibernationState('occupant')).toBe('hibernated');
+      expect(strictManager.getHibernationState('waiter')).toBe('warm');
+
+      strictManager.destroy();
+    });
+
     test('enqueueWake prioritizes higher priority requests', () => {
       // Manager with concurrency 1 to test ordering
       const strictManager = new MergeManager({

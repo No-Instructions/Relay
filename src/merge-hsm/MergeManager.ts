@@ -534,6 +534,7 @@ export class MergeManager {
 
     this.clearHibernateTimer(guid);
     this._hibernationState.set(guid, 'hibernated');
+    this.processWakeQueue();
   }
 
   // ===========================================================================
