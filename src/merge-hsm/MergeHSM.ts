@@ -1152,7 +1152,19 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				// accepted ours, or merged individual hunks). DMP fixes it up.
 				this.applyContentToLocalDoc(contents);
 
-				// Step 4: Sync localDoc → remoteDoc and server. Histories are
+				// Step 4: Dispatch resolved content to CM6. The localDoc
+				// observer skips origin=this, so we emit explicitly.
+				if (this.lastKnownEditorText == null) {
+					throw new Error("resolveConflict: lastKnownEditorText is null — editor should always be active during conflict resolution");
+				}
+				if (contents !== this.lastKnownEditorText) {
+					const changes = this.computeDiffChanges(this.lastKnownEditorText, contents);
+					if (changes.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes });
+					}
+				}
+
+				// Step 5: Sync localDoc → remoteDoc and server. Histories are
 				// now converged so the update is clean.
 				const outUpdate = Y.encodeStateAsUpdate(
 					this.localDoc,
