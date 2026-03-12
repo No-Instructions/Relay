@@ -124,15 +124,13 @@ export class ProviderIntegration {
       return;
     }
 
-    // Forward to HSM as REMOTE_UPDATE or REMOTE_DOC_UPDATED
-    // For active mode, use REMOTE_DOC_UPDATED (doc already has the update)
-    // For idle mode, use REMOTE_UPDATE with the update bytes
-    const localDoc = this.hsm.getLocalDoc();
-    if (localDoc) {
-      // Active mode - doc is already updated, tell HSM to merge
+    // Forward to HSM as REMOTE_UPDATE or REMOTE_DOC_UPDATED.
+    // Active mode: doc is already updated in remoteDoc — tell HSM to merge into editor.
+    // Idle mode: send the update bytes regardless of whether localDoc is loaded,
+    // so that idle states (e.g. idle.synced) can transition and write disk.
+    if (this.hsm.isActive()) {
       this.hsm.send({ type: 'REMOTE_DOC_UPDATED' });
     } else {
-      // Idle mode - send the update bytes for lightweight handling
       this.hsm.send({ type: 'REMOTE_UPDATE', update });
     }
   }
