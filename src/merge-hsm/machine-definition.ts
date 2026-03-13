@@ -208,6 +208,8 @@ export const MACHINE: MachineDefinition = {
 
 	'idle.error': {
 		on: {
+			REMOTE_UPDATE: { target: 'idle.error', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			DISK_CHANGED: { target: 'idle.error', actions: ['storeDiskMetadata'] },
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
