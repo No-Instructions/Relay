@@ -2060,7 +2060,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				},
 			});
 
-			// Clear pending editor content
+			// Clear pending editor content.
+			// Note: inbound remote content accumulated during entering is flushed
+			// by the mergeRemoteToLocal entry action on active.tracking.
 			this.pendingEditorContent = null;
 		} else {
 			// Merge has conflicts - populate conflictData for banner/diff view
@@ -2533,6 +2535,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 *
 	 * Falls back to a full state diff when the listener isn't installed yet
 	 * (loading/idle phases).
+	 *
+	 * Does NOT assert state-vector convergence — callers that need a
+	 * bidirectional sync with convergence verification should use flush().
+	 * One-directional callers (applyCM6ToLocalDoc, flushPendingToRemote,
+	 * conflict resolution) intentionally skip the assertion because the
+	 * inbound direction may not have been drained yet.
 	 */
 	private flushOutbound(): void {
 		if (!this.localDoc || !this.remoteDoc) return;
@@ -2578,11 +2586,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				// Queue was empty and nothing deferred: check for a state diff
 				// that predates handler installation (e.g. IDB content loaded before
 				// the queue listener was attached).
-				const catchUp = Y.encodeStateAsUpdate(
-					this.localDoc,
-					Y.encodeStateVector(this.remoteDoc),
-				);
-				if (catchUp.length > 0) {
+				const localText = this.localDoc.getText("contents").toString();
+				const remoteText = this.remoteDoc!.getText("contents").toString();
+				if (localText !== remoteText) {
+					const catchUp = Y.encodeStateAsUpdate(
+						this.localDoc,
+						Y.encodeStateVector(this.remoteDoc),
+					);
 					this.syncToRemote(catchUp);
 					this.getOpCapture()?.notifySynced();
 				}

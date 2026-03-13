@@ -1139,6 +1139,9 @@ export class SharedFolder extends HasProvider {
 					this.files.delete(localGuid);
 					this.files.set(guid, localFile);
 					localFile.guid = guid;
+					// Clear stale syncStore entries that still reference the old GUID
+					// so subsequent lookups return the canonical remote GUID.
+					this.syncStore.pendingUpload.delete(path);
 					this.log(
 						`Remapped Document ${path} from local GUID ${localGuid} to remote GUID ${guid}`,
 					);
