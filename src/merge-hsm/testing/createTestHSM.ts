@@ -447,24 +447,6 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
 // Helpers
 // =============================================================================
 
-// Get crypto.subtle - works in both browser and Node.js
-const getCryptoSubtle = (): SubtleCrypto => {
-  if (globalThis.crypto?.subtle) {
-    return globalThis.crypto.subtle;
-  }
-  // Node.js fallback
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-  return require('crypto').webcrypto.subtle;
-};
-
-async function sha256(contents: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(contents);
-  const hashBuffer = await getCryptoSubtle().digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
 function uint8ArrayToBase64(arr: Uint8Array): string {
   // Simple base64 encoding for Node.js/browser compatibility
   if (typeof Buffer !== 'undefined') {
