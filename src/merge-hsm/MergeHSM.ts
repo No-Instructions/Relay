@@ -1130,13 +1130,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					return;
 				}
 
-				// Step 1: Reverse disk ops from OpCapture to undo the disk edit
-				// from localDoc's CRDT history. This restores localDoc to its
-				// pre-fork state so the CRDT merge in step 2 won't interleave.
+				// Step 1: Cancel disk ops from OpCapture to erase the disk edit
+				// from localDoc's CRDT history. Safe because the fork gates
+				// outbound sync — no peer has seen these ops.
 				const opCapture = this.getOpCapture();
 				if (opCapture && this._fork?.captureMark != null) {
 					const diskOps = opCapture.sinceByOrigin(this._fork.captureMark, DISK_ORIGIN);
-					opCapture.reverse(diskOps);
+					opCapture.cancel(diskOps);
 				}
 
 				// Step 2: Merge remote CRDT into local so histories converge.
@@ -1497,23 +1497,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 				if (mergeResult.success) {
-					// Reverse redundant / drop unique disk ops before applying merged result
+					// Cancel all disk ops — fork gates outbound sync so no peer
+					// has seen them. The merged result will be applied fresh via DMP.
 					const opCapture = this.getOpCapture();
 					if (opCapture && fork.captureMark != null) {
 						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
-						const redundant: CapturedOp[] = [];
-						const unique: CapturedOp[] = [];
-						diskOps.forEach((op, i) => {
-							const beforeText = i === 0 ? fork.base : this._ingestionTexts[i - 1];
-							const afterText = this._ingestionTexts[i];
-							if (afterText != null && isRedundantWithRemote(beforeText, afterText, remoteContent)) {
-								redundant.push(op);
-							} else {
-								unique.push(op);
-							}
-						});
-						opCapture.reverse(redundant);
-						opCapture.drop(unique);
+						opCapture.cancel(diskOps);
 					}
 
 					// Apply merged result to localDoc
@@ -1846,23 +1835,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
-			// Reverse redundant / drop unique disk ops before applying merged result
+			// Cancel all disk ops — fork gates outbound sync so no peer
+			// has seen them. The merged result will be applied fresh via DMP.
 			const opCapture = this.getOpCapture();
 			if (opCapture && fork.captureMark != null) {
 				const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
-				const redundant: CapturedOp[] = [];
-				const unique: CapturedOp[] = [];
-				diskOps.forEach((op, i) => {
-					const beforeText = i === 0 ? fork.base : this._ingestionTexts[i - 1];
-					const afterText = this._ingestionTexts[i];
-					if (afterText != null && isRedundantWithRemote(beforeText, afterText, remoteContent)) {
-						redundant.push(op);
-					} else {
-						unique.push(op);
-					}
-				});
-				opCapture.reverse(redundant);
-				opCapture.drop(unique);
+				opCapture.cancel(diskOps);
 			}
 			this._ingestionTexts = [];
 
