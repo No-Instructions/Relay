@@ -1629,6 +1629,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// silently overwrite what the user has on disk.
 		if (!this._lca && this._disk !== null) {
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} blocked: no LCA but disk exists`);
+			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
 
@@ -1713,7 +1714,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
-		if (!this._lca || !this.localDoc) return { success: false };
+		if (!this._lca || !this.localDoc) {
+			this.pendingDiskContents = null;
+			this.pendingIdleUpdates = null;
+			return { success: false };
+		}
 
 		const lcaContent = this._lca.contents;
 
@@ -1725,7 +1730,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// correct remote content without the corruption path.
 		// If remoteDoc isn't available yet (e.g. waking from hibernation), bail
 		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
-		if (!this.remoteDoc) return { success: false };
+		if (!this.remoteDoc) {
+			this.pendingDiskContents = null;
+			this.pendingIdleUpdates = null;
+			return { success: false };
+		}
 		const crdtContent = this.remoteDoc.getText("contents").toString();
 
 		const diskContent = this.pendingDiskContents ?? lcaContent;
