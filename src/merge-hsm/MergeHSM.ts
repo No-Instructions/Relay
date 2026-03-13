@@ -1880,7 +1880,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			this._obsidianFileOpen = false;
 			return; // Diagnostic only, no state transition
 		}
-		if (event.type === 'OBSIDIAN_SAVE_FRONTMATTER' || event.type === 'OBSIDIAN_METADATA_SYNC') {
+		if (event.type === 'OBSIDIAN_SAVE_FRONTMATTER'
+			|| event.type === 'OBSIDIAN_METADATA_SYNC'
+			|| event.type === 'OBSIDIAN_VIEW_REUSED'
+			|| event.type === 'OBSIDIAN_THREE_WAY_MERGE'
+			|| event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL') {
 			return; // Diagnostic only, no state transition
 		}
 
