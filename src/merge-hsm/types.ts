@@ -69,7 +69,6 @@ export interface Fork {
  * Gates on: provider connection status, fork existence, and user local-only preference.
  */
 export interface SyncGate {
-	providerConnected: boolean;
 	providerSynced: boolean;
 	localOnly: boolean;
 	pendingInbound: number;
