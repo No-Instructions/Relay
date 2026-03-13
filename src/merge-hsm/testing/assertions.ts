@@ -5,7 +5,7 @@
  * These work with Jest's expect API.
  */
 
-import type { MergeEffect, StatePath, PositionedChange } from '../types';
+import type { MergeEffect, StatePath } from '../types';
 import type { TestHSM } from './createTestHSM';
 
 // =============================================================================
@@ -76,17 +76,6 @@ export function getEffects<T extends MergeEffect['type']>(
   return effects.filter(e => e.type === type) as Extract<MergeEffect, { type: T }>[];
 }
 
-/**
- * Get the last effect of a specific type.
- */
-export function getLastEffect<T extends MergeEffect['type']>(
-  effects: MergeEffect[],
-  type: T
-): Extract<MergeEffect, { type: T }> | undefined {
-  const matching = getEffects(effects, type);
-  return matching[matching.length - 1];
-}
-
 // =============================================================================
 // State Assertions
 // =============================================================================
@@ -99,51 +88,6 @@ export function expectState(hsm: TestHSM, statePath: StatePath): void {
     throw new Error(
       `Expected state "${statePath}", but got "${hsm.statePath}"`
     );
-  }
-}
-
-/**
- * Assert that the HSM is NOT in a specific state.
- */
-export function expectNotState(hsm: TestHSM, statePath: StatePath): void {
-  if (hsm.matches(statePath)) {
-    throw new Error(
-      `Expected NOT to be in state "${statePath}", but was`
-    );
-  }
-}
-
-/**
- * Assert that the HSM transitioned through specific states.
- */
-export function expectStateHistory(
-  hsm: TestHSM,
-  expectedTransitions: Array<{ from?: StatePath; to: StatePath }>
-): void {
-  const history = hsm.stateHistory;
-
-  if (history.length < expectedTransitions.length) {
-    throw new Error(
-      `Expected at least ${expectedTransitions.length} transitions, but got ${history.length}:\n` +
-      JSON.stringify(history, null, 2)
-    );
-  }
-
-  for (let i = 0; i < expectedTransitions.length; i++) {
-    const expected = expectedTransitions[i];
-    const actual = history[i];
-
-    if (expected.from !== undefined && actual.from !== expected.from) {
-      throw new Error(
-        `Transition ${i}: expected from="${expected.from}", got from="${actual.from}"`
-      );
-    }
-
-    if (actual.to !== expected.to) {
-      throw new Error(
-        `Transition ${i}: expected to="${expected.to}", got to="${actual.to}"`
-      );
-    }
   }
 }
 
@@ -185,38 +129,6 @@ export function expectRemoteDocText(hsm: TestHSM, expected: string): void {
   if (actual !== expected) {
     throw new Error(
       `Expected remoteDoc text:\n"${expected}"\n\nGot:\n"${actual}"`
-    );
-  }
-}
-
-// =============================================================================
-// Change Assertions
-// =============================================================================
-
-/**
- * Assert that a DISPATCH_CM6 effect contains specific changes.
- */
-export function expectDispatchChanges(
-  effects: MergeEffect[],
-  expectedChanges: PositionedChange[]
-): void {
-  const dispatchEffects = getEffects(effects, 'DISPATCH_CM6');
-
-  if (dispatchEffects.length === 0) {
-    throw new Error(
-      `Expected DISPATCH_CM6 effect with changes, but no DISPATCH_CM6 effects found`
-    );
-  }
-
-  // Check if any dispatch effect contains the expected changes
-  const hasMatch = dispatchEffects.some(effect =>
-    changesMatch(effect.changes, expectedChanges)
-  );
-
-  if (!hasMatch) {
-    throw new Error(
-      `Expected DISPATCH_CM6 with changes:\n${JSON.stringify(expectedChanges, null, 2)}\n\n` +
-      `Got:\n${JSON.stringify(dispatchEffects.map(e => e.changes), null, 2)}`
     );
   }
 }
@@ -265,18 +177,6 @@ function arraysMatch(a: unknown[], b: unknown[]): boolean {
     }
     return item === b[i];
   });
-}
-
-function changesMatch(actual: PositionedChange[], expected: PositionedChange[]): boolean {
-  if (actual.length !== expected.length) return false;
-
-  return expected.every(exp =>
-    actual.some(act =>
-      act.from === exp.from &&
-      act.to === exp.to &&
-      act.insert === exp.insert
-    )
-  );
 }
 
 function uint8ArrayEquals(a: Uint8Array, b: Uint8Array): boolean {
