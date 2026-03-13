@@ -46,7 +46,6 @@ import type {
 	PositionedConflict,
 	ResolveHunkEvent,
 	DiskLoader,
-	IdleMergeCompleteEvent,
 	MachineHSM,
 	ActiveInvoke,
 	Fork,
