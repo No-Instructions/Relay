@@ -276,6 +276,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	}> = [];
 	private _suppressLocalObserver = false;
 	private _flushingInbound = false;
+	private _resolvingConflict = false;
 
 	// Outbound update queue (local → remote)
 	private _outboundQueue: Array<{
@@ -1150,7 +1151,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				// Step 3: DMP the resolved text onto localDoc. After the CRDT
 				// merge the text may not match what the user chose (e.g. they
 				// accepted ours, or merged individual hunks). DMP fixes it up.
-				this.applyContentToLocalDoc(contents);
+				//
+				// Suppress the safety net: steps 1-2 modified localDoc without
+				// syncing to remoteDoc — step 5 does the explicit sync.
+				this._resolvingConflict = true;
+				try {
+					this.applyContentToLocalDoc(contents);
+				} finally {
+					this._resolvingConflict = false;
+				}
 
 				// Step 4: Dispatch resolved content to CM6. The localDoc
 				// observer skips origin=this, so we emit explicitly.
@@ -2704,6 +2713,18 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					const idx = this._pendingMachineEdits.indexOf(match);
 					if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
 
+					// Sync cancel-op metadata to remoteDoc. The cancel created
+					// new SV entries on localDoc that have no text effect (they
+					// undo the deferred machine-edit ops). Without this sync,
+					// the SVs stay diverged until the next flushOutbound call.
+					const svSync = Y.encodeStateAsUpdate(
+						this.localDoc,
+						Y.encodeStateVector(this.remoteDoc),
+					);
+					if (svSync.length > 0) {
+						Y.applyUpdate(this.remoteDoc, svSync, this);
+					}
+
 					// Flush remaining user edits to remote
 					this.flushOutbound();
 					return;
@@ -2764,6 +2785,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// machine-edit-match path — that path manages sync explicitly.
 		if (this._flushingInbound) return;
 
+		// Fork gates outbound sync — SV divergence is expected while it exists.
+		if (this._fork !== null) return;
+
+		// resolveConflict modifies localDoc in multiple steps (cancel, remote
+		// merge, DMP) before explicitly syncing to remoteDoc at the end.
+		if (this._resolvingConflict) return;
+
 		const localSV = Y.encodeStateVector(this.localDoc);
 		const remoteSV = Y.encodeStateVector(this.remoteDoc);
 		if (stateVectorsEqual(localSV, remoteSV)) return;
@@ -2771,13 +2799,17 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
 
-		console.error(
+		const msg =
 			`[MergeHSM] BUG: state vector divergence after queue flush ` +
 			`(guid=${this._guid}, path=${this._path}, ` +
 			`localSVLen=${localSV.length}, remoteSVLen=${remoteSV.length}, ` +
 			`localTextLen=${localText.length}, remoteTextLen=${remoteText.length}, ` +
-			`textMatch=${localText === remoteText})`,
-		);
+			`textMatch=${localText === remoteText})`;
+
+		console.error(msg);
+		if (process.env.NODE_ENV === 'test') {
+			throw new Error(msg);
+		}
 
 		// Bidirectional sync: apply each direction's missing ops
 		const outbound = Y.encodeStateAsUpdate(this.localDoc, remoteSV);
