@@ -164,20 +164,12 @@ class HSMEditorPluginValue implements PluginValue {
     // before the relay-live-editor CSS class is added by acquireLock().
     if (!this.cm6Integration && !this.isLiveEditor() && !this.resolveCurrentDocument()) return;
 
-    // Skip if no document changes
-    if (!update.docChanged) return;
-
-    // Skip if this change came from Yjs/HSM sync (prevent feedback loop)
-    if (
-      update.transactions.length > 0 &&
-      update.transactions.some((tr) => tr.annotation(ySyncAnnotation))
-    ) {
-      return;
-    }
-
     // Detect when the editor is now showing a different document.
     // This happens when Obsidian reuses an editor view for a new file,
-    // or after a file rename where the Document object changes.
+    // after a file rename where the Document object changes, or after a
+    // GUID remap during shared folder reconciliation. Checked before the
+    // docChanged guard so that GUID remaps (which are remote-only and
+    // produce no editor transaction) still trigger re-initialization.
     if (this.document) {
       const currentDoc = this.resolveCurrentDocument();
       if (currentDoc && currentDoc.guid !== this.document.guid) {
@@ -202,8 +194,22 @@ class HSMEditorPluginValue implements PluginValue {
           this.cm6Integration = null;
         }
         this.document = null;
-        // Fall through to re-initialize
+        // Immediately re-initialize with the new document so the
+        // editor-CRDT bridge is not lost. This is essential for GUID
+        // remaps where no user edit (docChanged) will follow.
+        this.initializeIfReady();
       }
+    }
+
+    // Skip if no document changes
+    if (!update.docChanged) return;
+
+    // Skip if this change came from Yjs/HSM sync (prevent feedback loop)
+    if (
+      update.transactions.length > 0 &&
+      update.transactions.some((tr) => tr.annotation(ySyncAnnotation))
+    ) {
+      return;
     }
 
     // Lazy initialization: HSM might not be available during constructor

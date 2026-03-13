@@ -259,8 +259,8 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'active.conflict.bannerShown', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.conflict.bannerShown', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RESOLVE_HUNK: { target: 'active.conflict.bannerShown', actions: ['resolveHunk'] },
-			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
 		},
 	},
 
@@ -272,8 +272,8 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'active.conflict.resolving', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.conflict.resolving', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.conflict.resolving', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
-			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
 		},
 	},
 
