@@ -130,6 +130,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _ingestionTexts: string[] = [];
 	// SyncGate: controls CRDT op flow between localDoc and remoteDoc
 	private _syncGate: SyncGate = {
+		providerConnected: false,
 		providerSynced: false,
 		localOnly: false,
 		pendingInbound: 0,
@@ -227,6 +228,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
 
+	/** Whether sync operations can proceed (provider connected+synced and no fork) */
+	private get canSync(): boolean {
+		return this._syncGate.providerConnected
+			&& this._syncGate.providerSynced
+			&& this._fork === null;
+	}
+
 	private getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
 	}
@@ -259,10 +267,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		captureMark: number;
 		registeredAt: number;
 	}> = [];
-	// Texts of machine edits consumed by an incoming remote CRDT before the
-	// corresponding CM6 transaction fired. Any delayed CM6 event matching one
-	// of these texts must be skipped — the CRDT content is already correct.
-	private _consumedMachineEditTexts: Set<string> = new Set();
 	private _suppressLocalObserver = false;
 
 	// Outbound update queue (local → remote)
@@ -405,7 +409,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 		// Flush pending ops when turning off (fork takes precedence)
 		if (!value && this._fork === null && this.localDoc && this.remoteDoc) {
-			this.flush();
+			if (this._syncGate.pendingInbound > 0) {
+				this.flushInbound();
+			}
+			if (this._syncGate.pendingOutbound > 0) {
+				this.flushOutbound();
+			}
 			this._syncGate.pendingInbound = 0;
 			this._syncGate.pendingOutbound = 0;
 		}
@@ -944,7 +953,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			// === Remote/Disk data ===
 			applyRemoteToRemoteDoc: (_hsm, event) => {
 				const update = (event as any).update as Uint8Array;
-				if (!update || update.byteLength === 0) return;
 				if (this.remoteDoc) {
 					Y.applyUpdate(this.remoteDoc, update, this.remoteDoc);
 					this._remoteStateVector = Y.encodeStateVector(this.remoteDoc);
@@ -1285,12 +1293,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						(me) => me.expectedText === e.docText,
 					);
 
-					if (this._consumedMachineEditTexts.has(e.docText)) {
-						// Remote CRDT arrived and updated localDoc before this
-						// CM6 transaction fired. The CRDT content is already
-						// correct — skip the CRDT op to avoid duplication.
-						this._consumedMachineEditTexts.delete(e.docText);
-					} else if (machineEditIdx >= 0) {
+					if (machineEditIdx >= 0) {
 						// Machine edit: apply via a temp proxy Y.Doc so the
 						// items get the proxy's clientID, not localDoc's. This
 						// decouples user edits from machine edits at the state
@@ -1367,12 +1370,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			},
 			flushPendingToRemote: () => {
 				this._isOnline = true;
+				this._syncGate.providerConnected = true;
 				if (this.localDoc) {
 					this.flushOutbound();
 				}
 			},
 			setOffline: () => {
 				this._isOnline = false;
+				this._syncGate.providerConnected = false;
 				this._syncGate.providerSynced = false;
 			},
 			markProviderSynced: () => {
@@ -1389,7 +1394,12 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._remoteStateVector = result.newLCA.stateVector;
 				}
 				// Flush pending inbound/outbound through the queue drain path
-				this.flush();
+				if (this._syncGate.pendingInbound > 0) {
+					this.flushInbound();
+				}
+				if (this._syncGate.pendingOutbound > 0) {
+					this.flushOutbound();
+				}
 				this._syncGate.pendingInbound = 0;
 				this._syncGate.pendingOutbound = 0;
 				this.emitPersistState();
@@ -2062,6 +2072,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 			// Clear pending editor content
 			this.pendingEditorContent = null;
+			// Merge any remote content that accumulated during active.entering
+			this.flushInbound();
 		} else {
 			// Merge has conflicts - populate conflictData for banner/diff view
 			this.conflictData = {
@@ -2513,17 +2525,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	}
 
 	/**
-	 * Drain both inbound and outbound queues, then assert convergence.
-	 * Callers that need bidirectional sync should use this instead of
-	 * calling flushInbound + flushOutbound separately.
-	 */
-	private flush(): void {
-		this.flushInbound();
-		this.flushOutbound();
-		this.assertStateVectorConvergence();
-	}
-
-	/**
 	 * Flush outbound queue: send buffered local updates to remoteDoc.
 	 *
 	 * When the update listener is active, partitions the queue: entries tagged
@@ -2574,19 +2575,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				if (toDefer.length === 0) {
 					this.getOpCapture()?.notifySynced();
 				}
-			} else if (toDefer.length === 0) {
-				// Queue was empty and nothing deferred: check for a state diff
-				// that predates handler installation (e.g. IDB content loaded before
-				// the queue listener was attached).
-				const catchUp = Y.encodeStateAsUpdate(
-					this.localDoc,
-					Y.encodeStateVector(this.remoteDoc),
-				);
-				if (catchUp.length > 0) {
-					this.syncToRemote(catchUp);
-					this.getOpCapture()?.notifySynced();
-				}
 			}
+			this.assertStateVectorConvergence();
 			return;
 		}
 
@@ -2693,51 +2683,35 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				}
 			}
 
-			// OpCapture unavailable or no ops captured yet (CM6 transaction hasn't
-			// fired). Remove the registration but record the expected text so the
-			// delayed CM6 transaction does not generate a duplicate CRDT op.
+			// OpCapture unavailable or no ops captured — remove registration anyway
 			const idx = this._pendingMachineEdits.indexOf(match);
 			if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
-			this._consumedMachineEditTexts.add(match.expectedText);
 		}
 
-		// Capture editor text before any modifications so we can compute the
-		// net diff for DISPATCH_CM6 at the end.
-		const beforeText = this.localDoc.getText("contents").toString();
-
-		// Queue path (active editing — listener installed): drain buffered updates.
-		// After draining, fall through to the full state diff — the current
-		// in-flight update arrived at remoteDoc before the queue handler ran,
-		// so it is in remoteDoc but not yet in _inboundQueue.
+		// Queue path (active editing — listener installed)
 		if (this._remoteDocUpdateHandler && this._inboundQueue.length > 0) {
-			if (beforeText === remoteText) {
+			const localText = this.localDoc.getText("contents").toString();
+			if (localText === remoteText) {
 				this._inboundQueue = [];
 				return;
 			}
 			const merged = Y.mergeUpdates(this._inboundQueue);
 			this._inboundQueue = [];
 			this.syncToLocal(merged);
-			// Fall through to full state diff to pick up any remaining gap.
+			return;
 		}
 
-		// Full state diff: apply any remoteDoc state not yet in localDoc.
+		// Fallback: full state diff (loading, idle — before listener installed)
 		const localText = this.localDoc.getText("contents").toString();
-		if (localText !== remoteText) {
-			const update = Y.encodeStateAsUpdate(
-				this.remoteDoc,
-				Y.encodeStateVector(this.localDoc),
-			);
-			this.syncToLocal(update);
+		if (localText === remoteText) {
+			return;
 		}
 
-		// Dispatch the net change to the editor view.
-		const afterText = this.localDoc.getText("contents").toString();
-		if (afterText !== beforeText) {
-			const changes = this.computeDiffChanges(beforeText, afterText);
-			if (changes.length > 0) {
-				this.emitEffect({ type: "DISPATCH_CM6", changes });
-			}
-		}
+		const update = Y.encodeStateAsUpdate(
+			this.remoteDoc,
+			Y.encodeStateVector(this.localDoc),
+		);
+		this.syncToLocal(update);
 	}
 
 	/**
@@ -3085,7 +3059,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			}
 		}
 		this._pendingMachineEdits.length = 0;
-		this._consumedMachineEditTexts.clear();
 		this.flushOutbound();
 	}
 
