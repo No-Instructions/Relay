@@ -1907,25 +1907,20 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			// CRDT histories (e.g., conflict scenarios).
 			this.initialPersistenceUpdates = null;
 
-			// Wait for persistence sync (fire-and-forget for idle mode)
-			if (!this.localPersistence.synced) {
-				this.localPersistence.once("synced", () => {
-					// Update state vector after persistence loads
-					if (this.localDoc) {
-						this._localStateVector = Y.encodeStateVector(this.localDoc);
-						if (this._localDocClientID === null) {
-							this._localDocClientID = this.localDoc.clientID;
-						}
-					}
-				});
-			} else {
-				// Already synced - update state vector now
+			// Update state vector once persistence finishes loading
+			const updateStateVector = () => {
 				if (this.localDoc) {
 					this._localStateVector = Y.encodeStateVector(this.localDoc);
 					if (this._localDocClientID === null) {
 						this._localDocClientID = this.localDoc.clientID;
 					}
 				}
+			};
+
+			if (this.localPersistence.synced) {
+				updateStateVector();
+			} else {
+				this.localPersistence.once("synced", updateStateVector);
 			}
 		}
 	}
