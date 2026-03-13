@@ -32,8 +32,6 @@ export {
   saveComplete,
   cm6Change,
   cm6Insert,
-  cm6Delete,
-  cm6Replace,
   providerSynced,
   connected,
   disconnected,
@@ -78,14 +76,9 @@ export {
   expectNoEffect,
   expectEffectCount,
   getEffects,
-  getLastEffect,
   // State assertions
   expectState,
-  expectNotState,
-  expectStateHistory,
   // Content assertions
   expectLocalDocText,
   expectRemoteDocText,
-  // Change assertions
-  expectDispatchChanges,
 } from './assertions';

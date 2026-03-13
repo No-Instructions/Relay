@@ -126,29 +126,6 @@ export function cm6Insert(
   return cm6Change([{ from, to: from, insert }], docText, false);
 }
 
-/**
- * Convenience: create a cm6Change for a simple delete
- */
-export function cm6Delete(
-  from: number,
-  to: number,
-  docText: string
-): CM6ChangeEvent {
-  return cm6Change([{ from, to, insert: '' }], docText, false);
-}
-
-/**
- * Convenience: create a cm6Change for a replacement
- */
-export function cm6Replace(
-  from: number,
-  to: number,
-  insert: string,
-  docText: string
-): CM6ChangeEvent {
-  return cm6Change([{ from, to, insert }], docText, false);
-}
-
 export function providerSynced(): ProviderSyncedEvent {
   return { type: 'PROVIDER_SYNCED' };
 }
