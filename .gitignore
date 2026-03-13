@@ -60,3 +60,5 @@ start-test.sh
 vaults/
 obsidian-versions/
 playwright/
+slots/
+.staging-only
