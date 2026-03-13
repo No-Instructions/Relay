@@ -275,6 +275,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		registeredAt: number;
 	}> = [];
 	private _suppressLocalObserver = false;
+	private _flushingInbound = false;
 
 	// Outbound update queue (local → remote)
 	private _outboundQueue: Array<{
@@ -2600,6 +2601,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this.getOpCapture()?.notifySynced();
 				}
 			}
+			this.repairStateVectorDivergence();
 			return;
 		}
 
@@ -2624,6 +2626,17 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * (merging updates) or falls back to a full state diff.
 	 */
 	private flushInbound(): void {
+		if (!this.localDoc || !this.remoteDoc) return;
+
+		this._flushingInbound = true;
+		try {
+			this.flushInboundInner();
+		} finally {
+			this._flushingInbound = false;
+		}
+	}
+
+	private flushInboundInner(): void {
 		if (!this.localDoc || !this.remoteDoc) return;
 
 		if (this._fork !== null) {
@@ -2712,6 +2725,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			const merged = Y.mergeUpdates(this._inboundQueue);
 			this._inboundQueue = [];
 			Y.applyUpdate(this.localDoc, merged, this.remoteDoc);
+			this.repairStateVectorDivergence();
 			return;
 		}
 
@@ -2726,6 +2740,56 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			Y.encodeStateVector(this.localDoc),
 		);
 		Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+	}
+
+	/**
+	 * Safety net: if localDoc and remoteDoc have divergent state vectors
+	 * with no pending machine edits to account for the difference, perform
+	 * a bidirectional full state diff to force convergence. This should
+	 * never be needed — if it fires, there is a bug that allowed ops to
+	 * enter one doc without being queued for the other.
+	 *
+	 * Called after the queue-based flush completes (not during nested
+	 * flushOutbound calls from flushInbound's machine-edit-match path).
+	 */
+	private repairStateVectorDivergence(): void {
+		if (!this.localDoc || !this.remoteDoc) return;
+
+		// Machine edits intentionally defer outbound ops — state vectors
+		// will diverge until the deferred entries are matched or expire.
+		if (this._pendingMachineEdits.length > 0) return;
+		if (this._outboundQueue.some(e => e.machineEditMark !== null)) return;
+
+		// Skip during nested flushOutbound calls from flushInbound's
+		// machine-edit-match path — that path manages sync explicitly.
+		if (this._flushingInbound) return;
+
+		const localSV = Y.encodeStateVector(this.localDoc);
+		const remoteSV = Y.encodeStateVector(this.remoteDoc);
+		if (stateVectorsEqual(localSV, remoteSV)) return;
+
+		const localText = this.localDoc.getText("contents").toString();
+		const remoteText = this.remoteDoc.getText("contents").toString();
+
+		console.error(
+			`[MergeHSM] BUG: state vector divergence after queue flush ` +
+			`(guid=${this._guid}, path=${this._path}, ` +
+			`localSVLen=${localSV.length}, remoteSVLen=${remoteSV.length}, ` +
+			`localTextLen=${localText.length}, remoteTextLen=${remoteText.length}, ` +
+			`textMatch=${localText === remoteText})`,
+		);
+
+		// Bidirectional sync: apply each direction's missing ops
+		const outbound = Y.encodeStateAsUpdate(this.localDoc, remoteSV);
+		if (outbound.length > 0) {
+			Y.applyUpdate(this.remoteDoc, outbound, this);
+			this.emitEffect({ type: "SYNC_TO_REMOTE", update: outbound });
+		}
+
+		const inbound = Y.encodeStateAsUpdate(this.remoteDoc, localSV);
+		if (inbound.length > 0) {
+			Y.applyUpdate(this.localDoc, inbound, this.remoteDoc);
+		}
 	}
 
 	/**
