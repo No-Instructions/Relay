@@ -1689,34 +1689,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			captureMark: this.getOpCapture()?.mark() ?? 0,
 		};
 
-		// Capture state vector BEFORE modifying (for diff encoding)
-		const previousStateVector = Y.encodeStateVector(this.localDoc);
-
-		// Apply disk content using diff-based updates directly to the live localDoc.
-		const ytext = this.localDoc.getText("contents");
-		const currentContent = ytext.toString();
-		if (currentContent !== diskContent) {
-			const dmp = new diff_match_patch();
-			const diffs = dmp.diff_main(currentContent, diskContent);
-			dmp.diff_cleanupSemantic(diffs);
-			this.localDoc.transact(() => {
-				let cursor = 0;
-				for (const [operation, text] of diffs) {
-					switch (operation) {
-						case 1:
-							ytext.insert(cursor, text);
-							cursor += text.length;
-							break;
-						case 0:
-							cursor += text.length;
-							break;
-						case -1:
-							ytext.delete(cursor, text.length);
-							break;
-					}
-				}
-			}, DISK_ORIGIN);
-		}
+		// Apply disk content to localDoc using diff-based updates.
+		this.applyContentToLocalDoc(diskContent, DISK_ORIGIN);
 
 		this._fork = fork;
 		this._ingestionTexts.push(diskContent);
