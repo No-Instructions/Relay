@@ -68,10 +68,8 @@ export type {
   SerializableSnapshot,
   SerializableEvent,
 
-  // Idle mode and index types
+  // Index types
   MergeIndex,
-  IdleModeState,
-  // NOTE: StoredUpdates removed - Yjs updates are stored in y-indexeddb
 } from './types';
 
 // Persistence (IndexedDB)

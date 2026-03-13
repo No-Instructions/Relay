@@ -580,26 +580,6 @@ export interface MergeIndex {
 	updatedAt: number;
 }
 
-/**
- * Lightweight idle mode state.
- * localDoc stays alive with persistence writing to IDB automatically.
- */
-export interface IdleModeState {
-	guid: string;
-	path: string;
-	/**
-	 * Database name for y-indexeddb access.
-	 * Convention: `${appId}-relay-doc-${guid}`
-	 */
-	yIndexedDbName: string;
-	/** Computed from updates via Y.mergeUpdates + Y.encodeStateVectorFromUpdate */
-	localStateVector: Uint8Array;
-	/** LCA for comparison */
-	lca: LCAState;
-	/** Sync status for UI */
-	syncStatus: "synced" | "pending" | "conflict";
-}
-
 // =============================================================================
 // Configuration Types
 // =============================================================================
