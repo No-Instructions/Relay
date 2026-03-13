@@ -153,7 +153,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// (the same content enrolled with different client IDs appears as duplicates).
 	private _localDocClientID: number | null = null;
 
-	// Pending disk contents for merge (legacy, used for idle mode)
+	// Pending disk contents for merge (used in idle mode)
 	private pendingDiskContents: string | null = null;
 
 	// Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
@@ -199,7 +199,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _onTransition?: (info: { from: StatePath; to: StatePath; event: MergeEvent; effects: MergeEffect[] }) => void;
 	private _pendingEffects: MergeEffect[] | null = null;
 
-	// Legacy listeners (for backward compatibility with test harness)
+	// Listeners for detailed transition info (used by test harness)
 	private stateChangeListeners: Array<
 		(from: StatePath, to: StatePath, event: MergeEvent) => void
 	> = [];
@@ -236,11 +236,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			&& this._fork === null;
 	}
 
-	/** Whether sync is actively flowing (canSync and not in local-only mode) */
-	private get isSyncing(): boolean {
-		return this.canSync && !this._syncGate.localOnly;
-	}
-
 	private getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
 	}
@@ -252,7 +247,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private crdtLog = curryLog("[MergeHSM:CRDT]", "debug");
 	private idleMergeLog = curryLog("[MergeHSM:IdleMerge]", "log");
 
-	// Event accumulation queue for loading state (Gap 11)
 	// Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
 	// and replayed after mode transition (to idle.* or active.*)
 	private _accumulatedEvents: Array<
@@ -576,7 +570,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * Wait for the HSM to reach active.tracking state.
 	 * Returns immediately if already in active.tracking.
 	 * Used after sending ACQUIRE_LOCK to wait for lock acquisition to complete.
-	 * Safe to call from loading state (BUG-032).
+	 * Safe to call from loading state.
 	 */
 	async awaitActive(): Promise<void> {
 		// Resolve for post-entering active states only. The entering substates
@@ -1199,10 +1193,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						positions: positionedConflicts,
 					});
 				}
-			},
-			handleMergeSuccessAction: () => {
-				// No-op: per spec, LCA is never touched during active.* states.
-				// Transition to tracking is handled by the machine definition.
 			},
 			storeDeferredConflict: () => {
 				this._deferredConflict = {
@@ -1970,7 +1960,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * Replay events accumulated during loading state.
 	 * Called after mode transition to process REMOTE_UPDATE and DISK_CHANGED events.
 	 *
-	 * Gap 11: Events are accumulated during loading states and replayed after
+	 * Events are accumulated during loading states and replayed after
 	 * the HSM transitions to idle.* or active.* mode.
 	 */
 	private replayAccumulatedEvents(): void {
@@ -2053,11 +2043,10 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
 		const baseText = this._lca?.contents ?? "";
 
-		// BUG-043 fix: If local and disk have identical content, skip merge entirely.
+		// If local and disk have identical content, skip merge entirely.
 		// This can happen when reopening from idle.diverged after an edit+save session
-		// where IDB and disk both have the updated content. In this case, no merge is
-		// needed - just transition to tracking. This prevents potential duplication
-		// from diff3 merge when both sides made identical changes relative to LCA.
+		// where IDB and disk both have the updated content. Skipping prevents
+		// duplication from diff3 merge when both sides made identical changes relative to LCA.
 		if (localText === diskText) {
 			this.pendingEditorContent = null;
 			this.send({
@@ -2079,7 +2068,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			this.applyContentToLocalDoc(mergeResult.merged);
 			this.flushOutbound();
 
-			// BUG-042 fix: Only dispatch patches to editor if editor content differs from merged result.
+			// Only dispatch patches to editor if editor content differs from merged result.
 			// The patches are computed from localText→merged, but the editor has diskText.
 			// If diskText === merged (common case when local === base), skip dispatch to avoid duplication.
 			if (mergeResult.patches.length > 0 && diskText !== mergeResult.merged) {
@@ -2241,7 +2230,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				`savedClientID=${this._localDocClientID}`,
 		);
 
-		// BUG-048 fix: Only apply pendingIdleUpdates when localDoc is empty.
+		// Only apply pendingIdleUpdates when localDoc is empty.
 		// If localDoc has content from IndexedDB, we must NOT blindly apply pendingIdleUpdates
 		// even if the content matches - the CRDT histories may differ (same text inserted by
 		// different clients), and applying would duplicate content.
@@ -2369,7 +2358,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	/**
 	 * Convert a Yjs delta to PositionedChange[].
-	 * Same logic as the legacy path in LiveEditPlugin.
+	 * Converts Yjs delta format to CM6-compatible positioned changes.
 	 */
 	private deltaToPositionedChanges(
 		delta: Array<{
@@ -2844,22 +2833,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}, origin ?? this);
 	}
 
-	private async createLCAFromCurrent(
-		contents: string,
-		hash?: string,
-	): Promise<LCAState> {
-		return {
-			contents,
-			meta: {
-				hash: hash ?? (await this.hashFn(contents)),
-				mtime: this.timeProvider.now(),
-			},
-			stateVector: this.localDoc
-				? Y.encodeStateVector(this.localDoc)
-				: new Uint8Array([0]),
-		};
-	}
-
 	/**
 	 * Calculate character positions for conflict regions based on line numbers.
 	 */
@@ -3112,51 +3085,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// ===========================================================================
 
 	private computeDiffChanges(from: string, to: string): PositionedChange[] {
-		const dmp = new diff_match_patch();
-		const diffs = dmp.diff_main(from, to);
-		dmp.diff_cleanupSemantic(diffs);
-
-		const changes: PositionedChange[] = [];
-		let pos = 0;
-
-		for (const [op, text] of diffs) {
-			if (op === 0) {
-				pos += text.length;
-			} else if (op === -1) {
-				changes.push({ from: pos, to: pos + text.length, insert: "" });
-				pos += text.length;
-			} else if (op === 1) {
-				changes.push({ from: pos, to: pos, insert: text });
-			}
-		}
-
-		return this.mergeAdjacentChanges(changes);
-	}
-
-	private mergeAdjacentChanges(
-		changes: PositionedChange[],
-	): PositionedChange[] {
-		if (changes.length <= 1) return changes;
-
-		const merged: PositionedChange[] = [];
-		let current = { ...changes[0] };
-
-		for (let i = 1; i < changes.length; i++) {
-			const next = changes[i];
-			if (current.to === next.from && current.insert === "") {
-				current.to = next.to;
-				current.insert = next.insert;
-			} else if (current.from === next.from && current.to === current.from) {
-				current.to = next.to;
-				current.insert += next.insert;
-			} else {
-				merged.push(current);
-				current = { ...next };
-			}
-		}
-		merged.push(current);
-
-		return merged;
+		return computeDiffMatchPatchChanges(from, to);
 	}
 
 	// ===========================================================================
@@ -3211,7 +3140,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// Emit on Observable (per spec)
 		this._stateChanges.emit(this.state);
 
-		// Notify legacy listeners (for test harness)
+		// Notify detailed transition listeners (for test harness)
 		for (const listener of this.stateChangeListeners) {
 			listener(from, to, event);
 		}
@@ -3309,34 +3238,6 @@ async function defaultHashFn(contents: string): Promise<string> {
 		return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 	}
 	return simpleHash(contents);
-}
-
-// =============================================================================
-// OpCapture: Redundancy Detection
-// =============================================================================
-
-/**
- * Returns true if all text changes the disk op made (beforeText → afterText)
- * are already present in remoteText. Uses newline-as-explicit-token comparison
- * (same tokenization as diff3) so adjacent-line changes are checked independently.
- */
-function isRedundantWithRemote(
-	beforeText: string,
-	afterText: string,
-	remoteText: string,
-): boolean {
-	const tok = (s: string) => s.split(/(\n)/);
-	const beforeTok = tok(beforeText);
-	const afterTok = tok(afterText);
-	const remoteTok = tok(remoteText);
-	const maxLen = Math.max(beforeTok.length, afterTok.length);
-	for (let i = 0; i < maxLen; i++) {
-		const b = beforeTok[i] ?? "";
-		const a = afterTok[i] ?? "";
-		const r = remoteTok[i] ?? "";
-		if (a !== b && a !== r) return false;
-	}
-	return true;
 }
 
 // =============================================================================

@@ -342,14 +342,12 @@ export class SharedFolder extends HasProvider {
 						this.warn(`[MergeManager] Failed to persist state for ${guid}:`, e);
 					}
 				} else if (effect.type === "SYNC_TO_REMOTE") {
-					// BUG-033 fix: Handle SYNC_TO_REMOTE in idle mode
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
 					await this.handleIdleSyncToRemote(guid, effect.update);
 				} else if (effect.type === "WRITE_DISK") {
-					// BUG-033 fix: Handle WRITE_DISK in idle mode
-					// This is emitted when remote changes need to be written to disk
-					// without an editor open.
+					// Handle WRITE_DISK in idle mode: remote changes need to be
+					// written to disk without an editor open.
 					await this.handleIdleWriteDisk(effect.guid, effect.contents);
 				}
 			},
@@ -545,7 +543,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Handle SYNC_TO_REMOTE effect in idle mode (BUG-033 fix).
+	 * Handle SYNC_TO_REMOTE effect in idle mode.
 	 *
 	 * When a document is in idle mode (file closed), the HSM may still need
 	 * to sync local disk changes to the remote server. This happens when:
@@ -602,7 +600,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Handle WRITE_DISK effect in idle mode (BUG-033 fix).
+	 * Handle WRITE_DISK effect in idle mode.
 	 *
 	 * When a document is in idle mode and receives remote updates, the HSM
 	 * may need to write merged content to disk. This happens when:

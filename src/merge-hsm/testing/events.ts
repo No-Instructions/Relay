@@ -49,7 +49,7 @@ export function unload(): UnloadEvent {
 
 /**
  * Create an ACQUIRE_LOCK event.
- * @param editorContent - The current editor/disk content. Required in v6 to fix BUG-022.
+ * @param editorContent - The current editor/disk content at the moment of opening.
  */
 export function acquireLock(editorContent: string = '', editorViewRef?: EditorViewRef): AcquireLockEvent {
   return { type: 'ACQUIRE_LOCK', editorContent, editorViewRef };
