@@ -185,7 +185,7 @@ describe('Fork Model', () => {
 });
 
 describe('SyncGate', () => {
-  test('CONNECTED sets isOnline', async () => {
+  test('CONNECTED sets providerConnected in SyncGate', async () => {
     const t = await createTestHSM();
     await loadAndActivate(t, 'hello');
 
@@ -194,7 +194,7 @@ describe('SyncGate', () => {
     expect(t.state.isOnline).toBe(true);
   });
 
-  test('DISCONNECTED clears isOnline', async () => {
+  test('DISCONNECTED clears providerConnected and providerSynced', async () => {
     const t = await createTestHSM();
     await loadAndActivate(t, 'hello');
 

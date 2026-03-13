@@ -39,7 +39,6 @@ import {
 	makeFileMeta,
 	makeFolderMeta,
 	isSyncFileMeta,
-	isDocumentMeta,
 	isCanvasMeta,
 	type FileMeta,
 	type Meta,
@@ -168,7 +167,6 @@ export class SharedFolder extends HasProvider {
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	private pendingDeletes: Set<string> = new Set();
-	private _remoteRenameInProgress: boolean = false;
 
 	private _persistence: IndexeddbPersistence;
 	proxy: SharedFolder;
@@ -1007,10 +1005,6 @@ export class SharedFolder extends HasProvider {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
-	public get remoteRenameInProgress(): boolean {
-		return this._remoteRenameInProgress;
-	}
-
 	async _handleServerRename(
 		doc: IFile,
 		path: string,
@@ -1026,21 +1020,11 @@ export class SharedFolder extends HasProvider {
 				diffLog?.push(`creating directory ${dir}`);
 			}
 		}
-		this._remoteRenameInProgress = true;
-		try {
-			await this.fileManager
-				.renameFile(file, normalizePath(this.getPath(path)))
-				.then(() => {
-					doc.move(path, this);
-				});
-		} finally {
-			// Obsidian's link-repair cascade calls vault.process() on linked files
-			// asynchronously, after the rename promise resolves. Delay clearing so
-			// those callbacks still see the flag set and suppress duplicate CRDT ops.
-			setTimeout(() => {
-				this._remoteRenameInProgress = false;
-			}, 500);
-		}
+		await this.fileManager
+			.renameFile(file, normalizePath(this.getPath(path)))
+			.then(() => {
+				doc.move(path, this);
+			});
 	}
 
 	async _handleServerCreate(
@@ -1117,12 +1101,12 @@ export class SharedFolder extends HasProvider {
 			}
 
 			// Check for GUID mismatch - file exists but not mapped to remote GUID
-			if (!file) {
+			if (!file && isSyncFileMeta(meta)) {
 				const localGuid = this.syncStore.get(path);
 				const localFile = localGuid ? this.files.get(localGuid) : null;
 
-				if (localGuid && localFile && isSyncFile(localFile) && isSyncFileMeta(meta)) {
-					// SyncFile with different GUID - check if content matches
+				if (localGuid && localFile && isSyncFile(localFile)) {
+					// We have a local file with different GUID - check if content matches
 					const promise = this.remapIfHashMatches(
 						localFile,
 						localGuid,
@@ -1131,18 +1115,6 @@ export class SharedFolder extends HasProvider {
 						meta,
 					);
 					return { op: "update", path, promise };
-				}
-
-				if (localGuid && localFile && isDocument(localFile) && isDocumentMeta(meta)) {
-					// Document with different GUID - remap to remote GUID
-					// and let Yjs sync merge the content
-					this.files.delete(localGuid);
-					this.files.set(guid, localFile);
-					localFile.guid = guid;
-					this.log(
-						`Remapped Document ${path} from local GUID ${localGuid} to remote GUID ${guid}`,
-					);
-					return { op: "update", path, promise: Promise.resolve() };
 				}
 			}
 

@@ -1038,7 +1038,6 @@ export default class Live extends Plugin {
 						isDocument(file) &&
 						file.hsm &&
 						!file.isSaving &&
-						!folder.remoteRenameInProgress &&
 						tfile instanceof TFile
 					) {
 						try {
@@ -1161,12 +1160,7 @@ export default class Live extends Plugin {
 						if (folder) {
 							const file = folder.proxy.getFile(tfile);
 							if (tfile instanceof TFile && file && isDocument(file)) {
-								if (file.process(fn)) {
-									// process() returned true: suppress the disk write.
-									// The CRDT from the active vault will arrive and
-									// idle-merge will apply it to disk.
-									return;
-								}
+								file.process(fn);
 							}
 						}
 					} catch (e: any) {

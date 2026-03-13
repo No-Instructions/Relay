@@ -162,20 +162,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.updateStats();
 	}
 
-	process(fn: (data: string) => string): boolean {
+	async process(fn: (data: string) => string) {
 		if (this._hsm) {
-			if (this._hsm.isActive()) {
-				this._hsm.registerMachineEdit(fn);
-				return false;
-			}
-			// In idle mode during a remote rename, suppress the local disk write.
-			// The CRDT from the renaming vault will arrive and idle-merge will
-			// write the correct content to disk, avoiding duplicate CRDT insertions.
-			if (this._parent.remoteRenameInProgress) {
-				return true;
-			}
+			this._hsm.registerMachineEdit(fn);
 		}
-		return false;
 	}
 
 	public get parent(): TFolder | null {
