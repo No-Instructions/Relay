@@ -1535,14 +1535,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				}
 			},
 
-			// === Obsidian file lifecycle tracking ===
-			setObsidianFileOpen: () => {
-				this._obsidianFileOpen = true;
-			},
-			setObsidianFileClosed: () => {
-				this._obsidianFileOpen = false;
-			},
-
 		};
 	}
 
