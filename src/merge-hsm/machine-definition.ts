@@ -22,6 +22,21 @@ import type {
 import { normalizeToCandidates } from "./machine-interpreter";
 
 // =============================================================================
+// Shared Event Handlers
+// =============================================================================
+
+/**
+ * Events handled identically across all idle substates.
+ * Spread into each idle state's `on` map to avoid repetition.
+ */
+const IDLE_LIFECYCLE: Record<string, EventHandler> = {
+	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
+	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+	LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
+	ERROR: { target: 'idle.error', actions: ['storeError'] },
+};
+
+// =============================================================================
 // Machine Definition
 // =============================================================================
 
@@ -102,10 +117,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
-			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
-			ERROR: { target: 'idle.error', actions: ['storeError'] },
+			...IDLE_LIFECYCLE,
 		},
 	},
 
@@ -133,10 +145,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
-			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
-			ERROR: { target: 'idle.error', actions: ['storeError'] },
+			...IDLE_LIFECYCLE,
 		},
 	},
 
@@ -159,10 +168,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
-			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
-			ERROR: { target: 'idle.error', actions: ['storeError'] },
+			...IDLE_LIFECYCLE,
 		},
 	},
 
@@ -181,10 +187,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
 			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
-			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
-			ERROR: { target: 'idle.error', actions: ['storeError'] },
+			...IDLE_LIFECYCLE,
 		},
 	},
 
@@ -205,10 +208,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
-			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
-			ERROR: { target: 'idle.error', actions: ['storeError'] },
+			...IDLE_LIFECYCLE,
 		},
 	},
 
@@ -217,9 +217,9 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'idle.error', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			DISK_CHANGED: { target: 'idle.error', actions: ['storeDiskMetadata'] },
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
-			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
+			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
+			UNLOAD: IDLE_LIFECYCLE.UNLOAD,
+			LOAD: IDLE_LIFECYCLE.LOAD,
 		},
 	},
 
