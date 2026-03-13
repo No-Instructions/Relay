@@ -1469,47 +1469,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				const remoteContent = this.remoteDoc.getText("contents").toString();
 				const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
-				if (mergeResult.success) {
-					// Cancel all disk ops — fork gates outbound sync so no peer
-					// has seen them. The merged result will be applied fresh via DMP.
-					const opCapture = this.getOpCapture();
-					if (opCapture && fork.captureMark != null) {
-						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
-						opCapture.cancel(diskOps);
-					}
-
-					// Apply merged result to localDoc
-					const beforeMerge = localContent;
-					this.applyContentToLocalDoc(mergeResult.merged);
-
-					// Dispatch granular changes to editor if content changed
-					if (mergeResult.merged !== beforeMerge) {
-						const changes = this.computeDiffChanges(beforeMerge, mergeResult.merged);
-						if (changes.length > 0) {
-							this.emitEffect({ type: "DISPATCH_CM6", changes });
-						}
-					}
-
-					// Clear fork and update LCA
-					const stateVector = Y.encodeStateVector(this.localDoc);
-					this._fork = null;
-					this._ingestionTexts = [];
-					this._lca = {
-						contents: mergeResult.merged,
-						meta: { hash: "", mtime: this.timeProvider.now() },
-						stateVector,
-					};
-					this._localStateVector = stateVector;
-					this._remoteStateVector = stateVector;
-					this._syncGate.pendingInbound = 0;
-					this._syncGate.pendingOutbound = 0;
-					this.emitPersistState();
-					this.patchLCAHash(mergeResult.merged, stateVector);
-
-					// Sync merged result to remote
-					this.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
-					this._outboundQueue = [];
-				} else {
+				if (!mergeResult.success) {
 					// Conflict detected — clear fork tracking and surface it to the user.
 					// pendingInbound/Outbound are reset because the fork gate is lifting;
 					// conflict resolution will re-sync both sides via resolveWith* actions.
@@ -1532,7 +1492,49 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						theirs: remoteContent,
 						conflictRegions: mergeResult.conflictRegions,
 					});
+					return;
 				}
+
+				// Cancel all disk ops — fork gates outbound sync so no peer
+				// has seen them. The merged result will be applied fresh via DMP.
+				{
+					const opCapture = this.getOpCapture();
+					if (opCapture && fork.captureMark != null) {
+						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
+						opCapture.cancel(diskOps);
+					}
+				}
+
+				// Apply merged result to localDoc
+				this.applyContentToLocalDoc(mergeResult.merged);
+
+				// Dispatch granular changes to editor if content changed
+				if (mergeResult.merged !== localContent) {
+					const changes = this.computeDiffChanges(localContent, mergeResult.merged);
+					if (changes.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes });
+					}
+				}
+
+				// Clear fork and update LCA
+				const stateVector = Y.encodeStateVector(this.localDoc);
+				this._fork = null;
+				this._ingestionTexts = [];
+				this._lca = {
+					contents: mergeResult.merged,
+					meta: { hash: "", mtime: this.timeProvider.now() },
+					stateVector,
+				};
+				this._localStateVector = stateVector;
+				this._remoteStateVector = stateVector;
+				this._syncGate.pendingInbound = 0;
+				this._syncGate.pendingOutbound = 0;
+				this.emitPersistState();
+				this.patchLCAHash(mergeResult.merged, stateVector);
+
+				// Sync merged result to remote
+				this.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+				this._outboundQueue = [];
 			},
 
 		};
@@ -1583,14 +1585,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						console.error("[MergeHSM] Error during release lock cleanup:", err);
 					}
 					return { type: 'release', wasConflict };
-				} else {
-					try {
-						await this.destroyLocalDoc();
-					} catch (err) {
-						console.error("[MergeHSM] Error during unload cleanup:", err);
-					}
-					return { type: 'unload' };
 				}
+
+				try {
+					await this.destroyLocalDoc();
+				} catch (err) {
+					console.error("[MergeHSM] Error during unload cleanup:", err);
+				}
+				return { type: 'unload' };
 			},
 		};
 	}
