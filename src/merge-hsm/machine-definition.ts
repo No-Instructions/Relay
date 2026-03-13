@@ -234,7 +234,7 @@ export const MACHINE: MachineDefinition = {
 	'active.merging.threeWay': {
 		entry: ['replayAccumulatedEvents', 'startThreeWayMerge'],
 		on: {
-			MERGE_SUCCESS: { target: 'active.tracking', actions: ['handleMergeSuccessAction'] },
+			MERGE_SUCCESS: 'active.tracking',
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
