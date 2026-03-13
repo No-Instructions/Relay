@@ -360,14 +360,12 @@ describe('Malformed events', () => {
   });
 
   test('REMOTE_UPDATE with empty Uint8Array crashes Yjs (unguarded)', async () => {
-    // Yjs throws "Unexpected end of array" on empty updates.
-    // The HSM does not guard against this. Filed as hardening opportunity.
+    // Empty updates are silently ignored (byteLength === 0 guard).
     const t = await createTestHSM();
     await loadToIdle(t, { content: 'test', mtime: 1000 });
 
-    expect(() => {
-      t.send({ type: 'REMOTE_UPDATE', update: new Uint8Array() });
-    }).toThrow('Unexpected end of array');
+    // Should not throw — the guard skips empty updates
+    t.send({ type: 'REMOTE_UPDATE', update: new Uint8Array() });
   });
 
   test('CM6_CHANGE with empty changes array', async () => {
