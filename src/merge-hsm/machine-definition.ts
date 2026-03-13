@@ -18,7 +18,6 @@ import type {
 	ActionFn,
 	InvokeSourceFn,
 	EventHandler,
-	TransitionCandidate,
 } from "./types";
 import { normalizeToCandidates } from "./machine-interpreter";
 
