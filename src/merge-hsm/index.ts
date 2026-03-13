@@ -85,7 +85,6 @@ export {
   deleteState,
   getAllStateGuids,
   getAllStates,
-  // REMOVED: saveUpdates, loadUpdates, deleteUpdates - use y-indexeddb instead
   saveIndex,
   loadIndex,
   deleteIndex,
