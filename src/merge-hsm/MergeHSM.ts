@@ -3007,7 +3007,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return "synced";
 		}
 
-		if (statePath.startsWith("loading.") || statePath === "unloading") {
+		if (
+			statePath === "unloading" ||
+			statePath === "loading" ||
+			statePath === "unloaded" ||
+			statePath.startsWith("active.entering") ||
+			statePath === "active.loading" ||
+			statePath === "idle.loading"
+		) {
 			return "pending";
 		}
 
