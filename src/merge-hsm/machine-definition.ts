@@ -70,6 +70,13 @@ export const MACHINE: MachineDefinition = {
 
 	// =========================================================================
 	// Idle states
+	//
+	// CONNECTED and DISCONNECTED events are intentionally unhandled in idle
+	// states. The isOnline flag is only meaningful during active mode where
+	// the HSM manages a live provider connection and needs to flush/buffer
+	// updates. In idle mode, the SharedFolder's provider handles connectivity
+	// independently, and online status is re-evaluated on transition to active
+	// mode (via ACQUIRE_LOCK -> active.entering).
 	// =========================================================================
 
 	'idle.loading': {
