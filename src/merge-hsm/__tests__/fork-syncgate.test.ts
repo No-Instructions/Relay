@@ -14,15 +14,20 @@ import {
   createTestHSM,
   loadToIdle,
   loadAndActivate,
+  loadToConflict,
   diskChanged,
   sendAcquireLockToTracking,
   releaseLock,
+  resolve,
+  openDiffView,
+  cm6Insert,
   providerSynced,
   connected,
   disconnected,
   expectState,
   expectEffect,
   expectLocalDocText,
+  expectRemoteDocText,
 } from '../testing';
 
 import * as Y from 'yjs';
@@ -412,5 +417,51 @@ describe('Fork + Active Mode Integration', () => {
     expect(cd?.base).toBe('original line');
     expect(cd?.ours).toBe('disk changed this');
     expect(cd?.theirs).toBe('remote changed this');
+  });
+
+  test('bidirectional sync restored after conflict resolution', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'line1\nline2', mtime: 1000 });
+
+    // Disk edits line2 → fork created (provider not yet synced)
+    t.send(await diskChanged('line1\ndisk-edit', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+    expectState(t, 'idle.localAhead');
+
+    // Open file while fork exists
+    await sendAcquireLockToTracking(t, 'line1\ndisk-edit');
+    expectState(t, 'active.tracking');
+
+    // Remote edits line2 differently (arrives after fork was created)
+    t.applyRemoteChange('line1\nremote-edit');
+
+    // PROVIDER_SYNCED triggers fork reconciliation → diff3 conflict
+    t.send(providerSynced());
+    expectState(t, 'active.conflict.bannerShown');
+
+    // User opens diff view and resolves with the remote content
+    const resolvedContent = 'line1\nremote-edit';
+    t.send(openDiffView());
+    expectState(t, 'active.conflict.resolving');
+    t.send(resolve(resolvedContent));
+    expectState(t, 'active.tracking');
+
+    // Both docs should converge on resolved content
+    expectLocalDocText(t, resolvedContent);
+    expectRemoteDocText(t, resolvedContent);
+
+    // --- Verify outbound sync (local → remote) ---
+    t.clearEffects();
+    t.send(cm6Insert(resolvedContent.length, '\nlocal-addition', resolvedContent + '\nlocal-addition'));
+
+    expectLocalDocText(t, 'line1\nremote-edit\nlocal-addition');
+    expectRemoteDocText(t, 'line1\nremote-edit\nlocal-addition');
+
+    // --- Verify inbound sync (remote → local) ---
+    t.clearEffects();
+    t.applyRemoteChange('line1\nremote-edit\nlocal-addition\npartner-line');
+
+    expectLocalDocText(t, 'line1\nremote-edit\nlocal-addition\npartner-line');
+    expectEffect(t.effects, { type: 'DISPATCH_CM6' });
   });
 });
