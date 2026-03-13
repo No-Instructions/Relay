@@ -10,7 +10,6 @@
 
 import {
 	MACHINE,
-	createInterpreterConfig,
 	deriveTransitions,
 	validateMachine,
 } from "../machine-definition";

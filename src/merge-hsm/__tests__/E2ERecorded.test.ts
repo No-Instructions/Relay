@@ -11,13 +11,10 @@
 import {
   createTestHSM,
   load,
-  acquireLock,
   cm6Insert,
   diskChanged,
   persistenceLoaded,
-  createLCA,
   expectState,
-  sha256,
 } from '../testing';
 
 describe('E2E Recorded: clean-disk-file-test', () => {

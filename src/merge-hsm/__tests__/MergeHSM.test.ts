@@ -30,7 +30,6 @@ import {
   connected,
   disconnected,
   error,
-  persistenceSynced,
   persistenceLoaded,
   load,
   createLCA,
@@ -38,7 +37,6 @@ import {
   // State transition helpers
   loadAndActivate,
   loadToIdle,
-  loadToLoading,
   loadToConflict,
   loadToResolving,
   // Assertions

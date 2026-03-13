@@ -14,7 +14,6 @@ import {
   createTestHSM,
   loadToIdle,
   loadAndActivate,
-  loadToConflict,
   diskChanged,
   sendAcquireLockToTracking,
   releaseLock,
