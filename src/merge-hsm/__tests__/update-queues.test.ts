@@ -272,9 +272,9 @@ describe("outbound queue", () => {
 
 		// Both entries are deferred in the outbound queue
 		const hsm = t.hsm as any;
-		expect(hsm._outboundQueue.length).toBe(2);
-		expect(hsm._outboundQueue[0].machineEditMark).not.toBeNull();
-		expect(hsm._outboundQueue[1].machineEditMark).not.toBeNull();
+		expect(hsm._bridge._outboundQueue.length).toBe(2);
+		expect(hsm._bridge._outboundQueue[0].machineEditMark).not.toBeNull();
+		expect(hsm._bridge._outboundQueue[1].machineEditMark).not.toBeNull();
 
 		// remoteDoc should NOT have either machine edit
 		expectRemoteDocText(t, "Hello [[A]] and [[B]] world");
@@ -386,7 +386,7 @@ describe("gate interactions", () => {
 
 		// SYNC_TO_REMOTE should NOT be emitted (gated by fork)
 		expectNoEffect(t.effects, "SYNC_TO_REMOTE");
-		expect((t.hsm as any)._syncGate.pendingOutbound).toBeGreaterThan(0);
+		expect((t.hsm as any)._bridge._syncGate.pendingOutbound).toBeGreaterThan(0);
 
 		// Clean up
 		(t.hsm as any)._fork = null;
@@ -478,16 +478,16 @@ describe("cleanup", () => {
 
 		// Verify queue has entries before destroy
 		const hsm = t.hsm as any;
-		expect(hsm._outboundQueue.length).toBeGreaterThan(0);
+		expect(hsm._bridge._outboundQueue.length).toBeGreaterThan(0);
 
 		// Destroy
 		await hsm.destroyLocalDoc();
 
 		// Queues cleared
-		expect(hsm._outboundQueue).toEqual([]);
-		expect(hsm._inboundQueue).toEqual([]);
-		expect(hsm._localDocUpdateHandler).toBeNull();
-		expect(hsm._remoteDocUpdateHandler).toBeNull();
+		expect(hsm._bridge._outboundQueue).toEqual([]);
+		expect(hsm._bridge._inboundQueue).toEqual([]);
+		expect(hsm._bridge._localDocUpdateHandler).toBeNull();
+		expect(hsm._bridge._remoteDocUpdateHandler).toBeNull();
 	});
 
 	it("deactivateEditor clears queues and removes listeners", async () => {
@@ -502,9 +502,9 @@ describe("cleanup", () => {
 		await t.hsm.awaitCleanup();
 
 		const hsm = t.hsm as any;
-		expect(hsm._outboundQueue).toEqual([]);
-		expect(hsm._inboundQueue).toEqual([]);
-		expect(hsm._localDocUpdateHandler).toBeNull();
-		expect(hsm._remoteDocUpdateHandler).toBeNull();
+		expect(hsm._bridge._outboundQueue).toEqual([]);
+		expect(hsm._bridge._inboundQueue).toEqual([]);
+		expect(hsm._bridge._localDocUpdateHandler).toBeNull();
+		expect(hsm._bridge._remoteDocUpdateHandler).toBeNull();
 	});
 });
