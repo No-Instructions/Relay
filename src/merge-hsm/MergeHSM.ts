@@ -1776,7 +1776,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// resolution once the provider syncs with authoritative remote state.
 			if (this._lca) {
 				const fork: Fork = {
-					base: this.localDoc.getText("contents").toString(),
+					base: lcaContent,
 					localStateVector: Y.encodeStateVector(this.localDoc),
 					remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
 					origin: 'three-way-conflict',
