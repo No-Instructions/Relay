@@ -3173,6 +3173,62 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			listener(from, to, event);
 		}
 	}
+
+	/**
+	 * Reset the HSM for a GUID remap. When the server assigns a different GUID
+	 * to a file path, the local CRDT (under the old GUID) has independent
+	 * document history that cannot be merged with the server's CRDT.
+	 *
+	 * This method:
+	 * 1. Destroys the local Yjs doc and its IDB persistence (old GUID data)
+	 * 2. Clears the LCA (computed for the old GUID's document)
+	 * 3. Detaches the remote doc
+	 * 4. Resets the HSM to its initial state under the new GUID
+	 *
+	 * After calling this, the caller should re-initialize the HSM with LOAD +
+	 * PERSISTENCE_LOADED + SET_MODE_IDLE so it starts fresh. When the provider
+	 * syncs the server's CRDT, fork reconciliation compares disk content against
+	 * the server's content (two-way, since there's no shared LCA).
+	 */
+	async resetForGuidRemap(newGuid: string, newVaultId: string): Promise<void> {
+		// Destroy localDoc + IDB persistence for the old GUID
+		await this.destroyLocalDoc();
+
+		// Detach remoteDoc (it belongs to the old GUID's provider)
+		this.remoteDoc = null;
+
+		// Clear all state that was computed under the old GUID
+		this._lca = null;
+		this._disk = null;
+		this._localStateVector = null;
+		this._remoteStateVector = null;
+		this._fork = null;
+		this._ingestionTexts = [];
+		this._deferredConflict = undefined;
+		this._error = undefined;
+		this.pendingIdleUpdates = null;
+		this.pendingDiskContents = null;
+		this.pendingEditorContent = null;
+		this.initialPersistenceUpdates = null;
+		this.conflictData = null;
+		this._accumulatedEvents = [];
+		this._modeDecision = null;
+		this._providerSynced = false;
+		this._syncGate = {
+			providerSynced: false,
+			localOnly: false,
+			pendingInbound: 0,
+			pendingOutbound: 0,
+		};
+		this._localDocClientID = null;
+
+		// Update identity to the new GUID
+		this._guid = newGuid;
+		this.vaultId = newVaultId;
+
+		// Reset the state machine to unloaded so it can be re-initialized
+		this._statePath = "unloaded";
+	}
 }
 
 // =============================================================================

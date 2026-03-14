@@ -109,7 +109,78 @@ describe("GUID remap during active tracking", () => {
 });
 
 // ===========================================================================
-// 2. HSMEditorPlugin GUID-change detection (structural verification)
+// 3. HSM resetForGuidRemap — CRDT and LCA are discarded
+// ===========================================================================
+
+describe("HSM resetForGuidRemap", () => {
+	test("clears LCA, localDoc, and state after remap", async () => {
+		// Setup: idle.synced with content and an LCA
+		const t = await createTestHSM({ guid: "old-guid" });
+		await loadAndActivate(t, "hello world");
+		expectState(t, "active.tracking");
+
+		// Release lock to go idle, await cleanup
+		t.send({ type: "RELEASE_LOCK" });
+		await t.hsm.awaitCleanup();
+
+		// Reset for GUID remap
+		await t.hsm.resetForGuidRemap("new-guid", "test-new-guid");
+
+		// After reset, HSM is in unloaded state with new GUID
+		expect(t.hsm.state.statePath).toBe("unloaded");
+		expect(t.hsm.guid).toBe("new-guid");
+
+		// LCA is cleared (old GUID's LCA is meaningless)
+		expect(t.hsm.state.lca).toBeNull();
+
+		// localDoc is destroyed (nulled by resetForGuidRemap)
+		expect(t.hsm.getLocalDoc()).toBeNull();
+
+		// State vectors are cleared
+		expect(t.hsm.state.localStateVector).toBeNull();
+		expect(t.hsm.state.remoteStateVector).toBeNull();
+
+		// Re-initialize the HSM under the new GUID
+		t.send({ type: "LOAD", guid: "new-guid" });
+		t.send({
+			type: "PERSISTENCE_LOADED",
+			updates: new Uint8Array(),
+			lca: null,
+			localStateVector: null,
+		});
+		t.send({ type: "SET_MODE_IDLE" });
+
+		// HSM is back in idle with clean state
+		expect(t.statePath.startsWith("idle.")).toBe(true);
+		expect(t.hsm.state.lca).toBeNull();
+	});
+
+	test("re-initialized HSM can receive remote content and detect fork", async () => {
+		const t = await createTestHSM({ guid: "old-guid" });
+		await loadAndActivate(t, "local content");
+		t.send({ type: "RELEASE_LOCK" });
+
+		// Reset for GUID remap
+		await t.hsm.resetForGuidRemap("new-guid", "test-new-guid");
+
+		// Re-initialize
+		t.send({ type: "LOAD", guid: "new-guid" });
+		t.send({
+			type: "PERSISTENCE_LOADED",
+			updates: new Uint8Array(),
+			lca: null,
+			localStateVector: null,
+		});
+		t.send({ type: "SET_MODE_IDLE" });
+
+		// The HSM starts fresh — no old CRDT contamination
+		expect(t.hsm.guid).toBe("new-guid");
+		expect(t.hsm.state.lca).toBeNull();
+	});
+});
+
+// ===========================================================================
+// 4. HSMEditorPlugin GUID-change detection (structural verification)
 // ===========================================================================
 
 describe("HSMEditorPlugin GUID-change detection", () => {
