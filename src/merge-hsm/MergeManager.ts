@@ -47,6 +47,8 @@ export interface MergeManagerDocument {
   destroyIdleProviderIntegration(): void;
   /** Whether a ProviderIntegration is currently active. */
   hasProviderIntegration(): boolean;
+  /** Create/return the remote YDoc, seeding from localDoc if needed. */
+  ensureRemoteDoc(): import('yjs').Doc;
 }
 
 export interface MergeManagerConfig {
@@ -1015,8 +1017,13 @@ export class MergeManager {
         hsm.ensureLocalDocForIdle();
 
         // Background wake: drain buffer and mark warm.
+        // When buffered remote updates exist, attach a remoteDoc so the
+        // HSM can read remote content during three-way merge. Without this,
+        // the REMOTE_UPDATE action drops the data and conflicts show empty "theirs".
         const buffered = this._hibernationBuffer.get(request.guid);
         if (buffered) {
+          const remoteDoc = doc.ensureRemoteDoc();
+          hsm.setRemoteDoc(remoteDoc);
           hsm.send({ type: 'REMOTE_UPDATE', update: buffered });
           this._hibernationBuffer.delete(request.guid);
         }
