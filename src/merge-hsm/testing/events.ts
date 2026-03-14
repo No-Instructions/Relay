@@ -263,6 +263,10 @@ export interface HSMHandle {
   readonly statePath?: string;
   /** Wait for pending idle auto-merge to complete (optional, used by loadToConflict) */
   awaitIdleAutoMerge?(): Promise<void>;
+  /** Wait for pending fork-reconcile to complete (optional, used by loadToConflict) */
+  awaitForkReconcile?(): Promise<void>;
+  /** Get conflict data if set (optional, used by loadToConflict) */
+  getConflictData?(): { base: string; ours: string; theirs: string } | null;
   /** Access to underlying HSM for getting remoteDoc (optional, used by loadAndActivate) */
   hsm?: {
     getRemoteDoc(): Y.Doc | null;
@@ -592,13 +596,26 @@ export async function loadToConflict(
   // Wait for any auto-merge attempts to complete
   await hsm.awaitIdleAutoMerge?.();
 
-  // Should be in idle.diverged now (3-way conflict detected)
-  if (!hsm.matches('idle.diverged')) {
-    const state = hsm.statePath ?? 'unknown';
-    throw new Error(
-      `loadToConflict: expected idle.diverged after disk change but got ${state}. ` +
-      `The base/remote/disk content may not create a real conflict.`
-    );
+  // The three-way merge may create a fork (idle.localAhead) or stay in idle.diverged.
+  // If a fork was created, fork-reconcile needs PROVIDER_SYNCED to proceed.
+  if (hsm.matches('idle.localAhead')) {
+    hsm.send({ type: 'CONNECTED' } as ConnectedEvent);
+    hsm.send({ type: 'PROVIDER_SYNCED' } as ProviderSyncedEvent);
+    await hsm.awaitForkReconcile?.();
+    // Fork-reconcile may re-enter idle.diverged or set conflictData
+    await hsm.awaitIdleAutoMerge?.();
+  }
+
+  if (!hsm.matches('idle.diverged') && !hsm.matches('idle.localAhead')) {
+    // Check if conflictData was set (fork-reconcile detected conflict)
+    const cd = hsm.getConflictData?.();
+    if (!cd) {
+      const state = hsm.statePath ?? 'unknown';
+      throw new Error(
+        `loadToConflict: expected idle.diverged or idle.localAhead with conflictData but got ${state}. ` +
+        `The base/remote/disk content may not create a real conflict.`
+      );
+    }
   }
 
   // Step 4: Acquire lock - this triggers conflict detection

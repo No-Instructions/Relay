@@ -1786,9 +1786,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 				this.applyContentToLocalDoc(diskContent, DISK_ORIGIN);
 				this._fork = fork;
-				// Provider is already synced (we just read remoteDoc successfully).
-				// Don't clear providerSynced — fork-reconcile should run immediately.
-				// The fork itself gates outbound sync (SyncBridge checks hasFork()).
+				this._bridge.providerSynced = false;
+
+				// Request provider sync so connectForForkReconcile creates a
+				// ProviderIntegration and fires PROVIDER_SYNCED once the server
+				// state is loaded into a fresh remoteDoc.
+				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 
 				return { success: false, forked: true };
 			}
