@@ -564,7 +564,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 */
 	async awaitActive(): Promise<void> {
 		// Resolve for post-entering active states only. The entering substates
-		// (awaitingPersistence, awaitingRemote, reconciling) must complete before
+		// (awaitingPersistence, reconciling) must complete before
 		// acquireLock() returns, so that ProviderIntegration and other setup can
 		// safely use localDoc.
 		return this.awaitState(

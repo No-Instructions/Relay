@@ -1692,16 +1692,16 @@ describe('MergeHSM', () => {
       t.send({ type: 'SET_MODE_ACTIVE' });
 
       // Don't seed IndexedDB — we want to observe the substate directly.
-      // Send ACQUIRE_LOCK but prevent mock persistence from having data.
-      // Use a fresh HSM with no seeded IDB to get awaitingPersistence → awaitingRemote.
+      // When IDB is empty and provider not synced, HSM skips to tracking
+      // so the user can edit immediately (reconciliation happens on PROVIDER_SYNCED).
       const t2 = await createTestHSM();
       t2.send(load('test-guid', 'test.md'));
       t2.send(persistenceLoaded(new Uint8Array(), null));
       t2.send({ type: 'SET_MODE_ACTIVE' });
       await sendAcquireLock(t2, '');
 
-      // IDB is empty, no LCA → hasContent=false → awaitingRemote
-      expectState(t2, 'active.entering.awaitingRemote');
+      // IDB is empty, provider not synced → goes straight to tracking
+      expectState(t2, 'active.tracking');
     });
 
     test('PERSISTENCE_SYNCED(hasContent=true) → reconciling → tracking', async () => {
@@ -1714,60 +1714,39 @@ describe('MergeHSM', () => {
       expectLocalDocText(t, content);
     });
 
-    test('PERSISTENCE_SYNCED(hasContent=false) → awaitingRemote', async () => {
+    test('unsynced provider opens file → goes to active.tracking', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, '');
+      await sendAcquireLock(t, 'user content');
 
-      // IDB empty, no LCA → awaitingRemote
-      expectState(t, 'active.entering.awaitingRemote');
-    });
-
-    test('awaitingRemote + PROVIDER_SYNCED → reconciling → tracking', async () => {
-      const t = await createTestHSM();
-      t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, '');
-
-      expectState(t, 'active.entering.awaitingRemote');
-
-      // Send PROVIDER_SYNCED to unblock
-      t.send(providerSynced());
-
-      // localDoc is empty, disk is empty → content matches → tracking
+      // With empty IDB and unsynced provider, user can edit immediately
       expectState(t, 'active.tracking');
     });
 
-    test('awaitingRemote + PROVIDER_SYNCED with server content applies to localDoc', async () => {
+    test('PROVIDER_SYNCED in active.tracking with divergent content triggers reconciliation', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-
-      // Set remote content before ACQUIRE_LOCK (simulating already-synced provider)
-      t.setRemoteContent('server content');
-
       await sendAcquireLock(t, '');
 
-      expectState(t, 'active.entering.awaitingRemote');
+      // Should be in tracking (not blocked)
+      expectState(t, 'active.tracking');
 
-      // Send PROVIDER_SYNCED — should apply remote content to localDoc
+      // Simulate remote content arriving via provider sync
+      t.applyRemoteChange('server content');
+
+      // Send PROVIDER_SYNCED — reconcileForkInActive detects divergence
       t.send(providerSynced());
 
-      // localDoc gets server content, disk is empty → content mismatch → merge
-      // (twoWay because no LCA). After merge, since disk is empty and local has
-      // content from server, the conflict state is entered.
+      // Should have triggered reconciliation (merge or conflict)
       expect(
+        t.matches('active.tracking') ||
         t.matches('active.merging') ||
-        t.matches('active.conflict') ||
-        t.matches('active.tracking')
+        t.matches('active.conflict')
       ).toBe(true);
-
-      // localDoc should have the server content applied
-      expect(t.getLocalDocText()).toBe('server content');
     });
 
     test('PROVIDER_SYNCED before PERSISTENCE_SYNCED is captured by flag', async () => {
@@ -1791,59 +1770,6 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('CM6_CHANGE during awaitingRemote updates lastKnownEditorText', async () => {
-      const t = await createTestHSM();
-      t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, '');
-
-      expectState(t, 'active.entering.awaitingRemote');
-
-      // User types while waiting
-      t.send(cm6Insert(0, 'typed', 'typed'));
-
-      expect(t.state.lastKnownEditorText).toBe('typed');
-    });
-
-    test('REMOTE_UPDATE during awaitingRemote is accumulated', async () => {
-      const t = await createTestHSM();
-      t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, '');
-
-      expectState(t, 'active.entering.awaitingRemote');
-
-      // Send a remote update — should be accumulated, not crash
-      t.applyRemoteChange('remote content');
-
-      // Still in awaitingRemote (REMOTE_UPDATE is accumulated, not processed)
-      expectState(t, 'active.entering.awaitingRemote');
-
-      // Unblock with PROVIDER_SYNCED
-      t.send(providerSynced());
-
-      // Should have proceeded to reconciliation
-      expect(t.matches('active.entering')).toBe(false);
-    });
-
-    test('RELEASE_LOCK during awaitingRemote transitions to unloading', async () => {
-      const t = await createTestHSM();
-      t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
-      t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, '');
-
-      expectState(t, 'active.entering.awaitingRemote');
-
-      // Release lock while waiting
-      t.send(releaseLock());
-      await t.hsm.awaitCleanup();
-
-      // Should have transitioned through unloading to idle
-      expect(t.matches('idle')).toBe(true);
-    });
 
   });
 

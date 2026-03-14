@@ -298,7 +298,7 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			PERSISTENCE_SYNCED: [
 				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent' },
-				{ target: 'active.entering.awaitingRemote', guard: 'persistenceEmptyAndProviderNotSynced' },
+				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
 				{ target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
 			],
 			CM6_CHANGE: { target: 'active.entering.awaitingPersistence', actions: ['accumulateCM6Change'] },
@@ -307,18 +307,6 @@ export const MACHINE: MachineDefinition = {
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.entering.awaitingPersistence', actions: ['storeError'] },
-		},
-	},
-
-	'active.entering.awaitingRemote': {
-		on: {
-			PROVIDER_SYNCED: { target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
-			CM6_CHANGE: { target: 'active.entering.awaitingRemote', actions: ['accumulateCM6Change'] },
-			REMOTE_UPDATE: { target: 'active.entering.awaitingRemote', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
-			CONNECTED: 'active.entering.awaitingRemote',
-			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
-			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
-			ERROR: { target: 'active.entering.awaitingRemote', actions: ['storeError'] },
 		},
 	},
 

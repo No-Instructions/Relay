@@ -31,7 +31,6 @@ const ALL_STATE_PATHS: StatePath[] = [
 	"active.loading",
 	"active.entering",
 	"active.entering.awaitingPersistence",
-	"active.entering.awaitingRemote",
 	"active.entering.reconciling",
 	"active.tracking",
 	"active.merging.twoWay",
