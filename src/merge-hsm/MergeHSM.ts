@@ -227,6 +227,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
 
+	// When true, the HSM was reset due to a GUID remap and the remote CRDT
+	// is authoritative. This allows idle-merge to write remote content to
+	// disk even when no LCA exists and a file is already on disk.
+	private _guidRemapInProgress: boolean = false;
+
 	private getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
 	}
@@ -1004,6 +1009,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				// Write merged content to disk
 				if (result.mergedContent !== undefined) {
 					this.emitEffect({ type: "WRITE_DISK", guid: this._guid, contents: result.mergedContent, mtime: result.newLCA?.meta?.mtime });
+					// Clear the GUID remap flag once remote content has been
+					// successfully merged and written to disk.
+					this._guidRemapInProgress = false;
 				}
 
 				// Sync to remote (three-way merge)
@@ -1611,7 +1619,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// disk. No LCA + no disk file = initial sync from a remote peer (safe to
 		// write). No LCA + disk file exists = up-migration where we must not
 		// silently overwrite what the user has on disk.
-		if (!this._lca && this._disk !== null) {
+		// Exception: after GUID remap, the remote CRDT is authoritative and
+		// should be written to disk regardless of existing file content.
+		if (!this._lca && this._disk !== null && !this._guidRemapInProgress) {
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} blocked: no LCA but disk exists`);
 			this.pendingIdleUpdates = null;
 			return { success: false };
@@ -1699,6 +1709,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			return { success: false };
 		}
 		if (!this._lca || !this.localDoc) {
+			// After GUID remap, there is no LCA but the remote CRDT is
+			// authoritative. Delegate to remote-ahead merge which handles
+			// the remap flag and applies the remote content to disk.
+			if (this._guidRemapInProgress && this.pendingIdleUpdates && this.localDoc) {
+				this.pendingDiskContents = null;
+				return this.invokeIdleRemoteAutoMerge(signal);
+			}
 			this.pendingDiskContents = null;
 			this.pendingIdleUpdates = null;
 			return { success: false };
@@ -3248,6 +3265,11 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// Update identity to the new GUID
 		this._guid = newGuid;
 		this.vaultId = newVaultId;
+
+		// Mark that this reset is due to a GUID remap so idle-merge knows
+		// the remote CRDT is authoritative and can be written to disk even
+		// without an LCA.
+		this._guidRemapInProgress = true;
 
 		// Reset the state machine to unloaded so it can be re-initialized
 		this._statePath = "unloaded";
