@@ -45,6 +45,7 @@ unit/
 templates/
 test-plans/
 test-results/
+merge-queue/
 prompts/
 vision/
 
