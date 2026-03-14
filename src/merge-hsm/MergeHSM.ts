@@ -2885,14 +2885,37 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		if (!this.conflictData || !this.localDoc) return;
 
 		const currentContent = this.localDoc.getText("contents").toString();
-		const unresolvedRegions = this.conflictData.conflictRegions.filter(
-			(_, i) => !this.conflictData!.resolvedIndices.has(i),
-		);
-
-		// For unresolved regions, we need to find them in the new content
-		// This is a simplified approach - in practice we'd need more sophisticated tracking
-		// For now, we'll re-emit with adjusted positions
 		this.conflictData.ours = currentContent;
+
+		const positioned = this.conflictData.positionedConflicts;
+
+		// For each unresolved conflict, find its oursContent in the updated document
+		for (let i = 0; i < positioned.length; i++) {
+			if (this.conflictData.resolvedIndices.has(i)) continue;
+
+			const conflict = positioned[i];
+			const searchText = conflict.oursContent;
+
+			if (!searchText) {
+				// Empty oursContent — zero-width region; find by surrounding context
+				conflict.localStart = 0;
+				conflict.localEnd = 0;
+				continue;
+			}
+
+			const foundIndex = currentContent.indexOf(searchText, Math.max(0, conflict.localStart - 100));
+			if (foundIndex !== -1) {
+				conflict.localStart = foundIndex;
+				conflict.localEnd = foundIndex + searchText.length;
+			} else {
+				// Fallback: search from the beginning
+				const fallbackIndex = currentContent.indexOf(searchText);
+				if (fallbackIndex !== -1) {
+					conflict.localStart = fallbackIndex;
+					conflict.localEnd = fallbackIndex + searchText.length;
+				}
+			}
+		}
 	}
 
 	/**
