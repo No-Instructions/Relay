@@ -12,7 +12,7 @@ import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
-import { withAnyOf, withFlag } from "src/flagManager";
+import { flags, withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
@@ -177,6 +177,8 @@ class PillDecoration {
 				status: this.sharedFolder.state.status,
 				relayId: this.sharedFolder.relayId,
 				remote: this.sharedFolder.remote,
+				localOnly: this.sharedFolder.localOnly,
+				enableDraftMode: flags().enableDraftMode,
 				progress: 0,
 				syncStatus: "pending",
 			},
@@ -189,6 +191,8 @@ class PillDecoration {
 					status: state.status,
 					relayId: this.sharedFolder.relayId,
 					remote: this.sharedFolder.remote,
+					localOnly: this.sharedFolder.localOnly,
+					enableDraftMode: flags().enableDraftMode,
 				});
 			}),
 		);
@@ -327,11 +331,42 @@ class FilePillDecoration {
 			el.remove();
 		});
 
-		this.unsubscribes.push(
-			this.file.subscribe(() => {
-				this.setText();
-			}),
-		);
+		// Subscribe to HSM sync status for UI updates
+		// Get mergeManager from the file's sharedFolder (per-folder instance)
+		const mergeManager = this.file.sharedFolder?.mergeManager;
+		if (mergeManager) {
+			this.unsubscribes.push(
+				mergeManager.syncStatus.subscribe(() => {
+					this.setTextFromHSM();
+				})
+			);
+		} else {
+			this.unsubscribes.push(
+				this.file.subscribe(() => {
+					this.setText();
+				}),
+			);
+		}
+	}
+
+	private setTextFromHSM() {
+		const mergeManager = this.file.sharedFolder?.mergeManager;
+		const status = mergeManager?.syncStatus.get(this.file.guid);
+		if (!status || status.status === 'synced') {
+			this.pill?.$destroy();
+			this.pill = undefined;
+			return;
+		}
+		const tag = status.status; // 'pending' | 'conflict' | 'error'
+
+		if (!this.pill) {
+			this.pill = new UploadPill({
+				target: this.el,
+				props: { text: tag },
+			});
+		} else {
+			this.pill.$set({ text: tag });
+		}
 	}
 
 	setText() {

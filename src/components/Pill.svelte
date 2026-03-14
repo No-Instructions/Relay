@@ -6,12 +6,20 @@
 	export let relayId: string | undefined;
 	export let remote: RemoteSharedFolder | undefined;
 	export let progress = 0;
+	export let localOnly: boolean = false;
+	export let enableDraftMode: boolean = false;
 	export let syncStatus: "pending" | "running" | "completed" | "failed" =
 		"pending";
 
 	// Always show progress during any active state
 	$: showProgress =
 		(syncStatus !== "completed" || progress < 100) && progress > 0;
+
+	$: effectiveLocalOnly = enableDraftMode && localOnly;
+	$: satelliteClass = effectiveLocalOnly ? "system3-paused" : `system3-${status}`;
+	$: satelliteLabel = effectiveLocalOnly
+		? `${remote?.relay.name || "Relay Server"} (paused)`
+		: `${remote?.relay.name || "Relay Server"} (${status})`;
 </script>
 
 <div class="system3-folder-icons">
@@ -26,8 +34,8 @@
 			<Layers class="inline-icon" style="width: 0.8em" />
 		</span>
 		<span
-			class="satellite system3-icon system3-{status}"
-			aria-label={`${remote?.relay.name || "Relay Server"} (${status})`}
+			class="satellite system3-icon {satelliteClass}"
+			aria-label={satelliteLabel}
 		>
 			<Satellite class="inline-icon" />
 		</span>
@@ -65,6 +73,9 @@
 	}
 	span.system3-disconnected {
 		color: var(--color-base-40);
+	}
+	span.system3-paused {
+		color: var(--color-yellow);
 	}
 	span.notebook {
 		color: var(--color-accent);

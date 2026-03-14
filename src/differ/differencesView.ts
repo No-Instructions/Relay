@@ -49,7 +49,10 @@ export interface ViewState {
 	file1: TFile;
 	file2: TFile;
 	showMergeOption: boolean;
+	oursLabel?: string;
+	theirsLabel?: string;
 	onResolve?: () => Promise<void>;
+	onCancel?: () => void;
 	originalLeaf?: WorkspaceLeaf;
 	[key: string]: unknown;
 }
@@ -83,6 +86,7 @@ export class DifferencesView extends ItemView {
 	private fileDifferences?: FileDifferences;
 	private file1Lines: string[] = [];
 	private file2Lines: string[] = [];
+	private resolved = false;
 	protected log;
 
 	constructor(leaf: WorkspaceLeaf) {
@@ -125,7 +129,9 @@ export class DifferencesView extends ItemView {
 	}
 
 	async onunload(): Promise<void> {
-		this.state?.onResolve?.();
+		if (!this.resolved) {
+			this.state?.onCancel?.();
+		}
 	}
 
 	private closeAndReturnToOriginal(): void {
@@ -202,6 +208,8 @@ export class DifferencesView extends ItemView {
 				}
 				await this.modify(this.state.file2, this.file1Content || "");
 			}
+			this.resolved = true;
+			await this.state.onResolve?.();
 			this.closeAndReturnToOriginal();
 		}
 	}
@@ -239,9 +247,12 @@ export class DifferencesView extends ItemView {
 			cls: "flex flex-row gap-1 py-0-5",
 		});
 
+		const oursLabel = this.state?.oursLabel ?? "Editor";
+		const theirsLabel = this.state?.theirsLabel ?? "Disk";
+
 		// Left file (top)
 		new ActionLineButton({
-			text: `Keep Editor Contents`,
+			text: `Keep ${oursLabel} Contents`,
 			onClick: async (e) => {
 				e.preventDefault();
 				await this.acceptAllFromLeft();
@@ -252,7 +263,7 @@ export class DifferencesView extends ItemView {
 
 		// Right file (bottom)
 		new ActionLineButton({
-			text: `Accept All from Local Disk`,
+			text: `Accept All from ${theirsLabel}`,
 			onClick: async (e) => {
 				e.preventDefault();
 				await this.acceptAllFromRight();
@@ -262,7 +273,7 @@ export class DifferencesView extends ItemView {
 
 	async modify(file: TFile, newContent: string): Promise<void> {
 		if (file instanceof Document) {
-			diffMatchPatch(file.ydoc, newContent, this);
+			diffMatchPatch(file.getWritableDoc(), newContent, this);
 			return;
 		} else if (file instanceof DiskBuffer) {
 			file.contents = newContent;
@@ -274,6 +285,7 @@ export class DifferencesView extends ItemView {
 	private async acceptAllFromLeft(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
 		await this.modify(this.state.file2, this.file1Content || "");
+		this.resolved = true;
 		await this.state.onResolve?.();
 		this.closeAndReturnToOriginal();
 	}
@@ -281,6 +293,7 @@ export class DifferencesView extends ItemView {
 	private async acceptAllFromRight(): Promise<void> {
 		if (!this.state || !this.fileDifferences) return;
 		await this.modify(this.state.file1, this.file2Content || "");
+		this.resolved = true;
 		await this.state.onResolve?.();
 		this.closeAndReturnToOriginal();
 	}
@@ -332,6 +345,8 @@ export class DifferencesView extends ItemView {
 				file2: this.state.file2,
 				file1Content: this.file1Content || "",
 				file2Content: this.file2Content || "",
+				oursLabel: this.state.oursLabel,
+				theirsLabel: this.state.theirsLabel,
 				triggerRebuild: async (): Promise<void> => {
 					await this.updateState();
 					this.update();

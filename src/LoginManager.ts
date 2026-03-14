@@ -1,6 +1,6 @@
 "use strict";
 
-import { requestUrl, type RequestUrlResponsePromise } from "obsidian";
+import { apiVersion, requestUrl, type RequestUrlResponsePromise } from "obsidian";
 import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
@@ -13,7 +13,7 @@ import { Observable } from "./observable/Observable";
 
 declare const GIT_TAG: string;
 
-import { customFetch } from "./customFetch";
+import { customFetch, getDeviceManagementHeaders } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
@@ -192,6 +192,7 @@ export class LoginManager extends Observable<LoginManager> {
 			options.fetch = customFetch;
 			options.headers = Object.assign({}, options.headers, {
 				"Relay-Version": GIT_TAG,
+				"Obsidian-Version": apiVersion,
 			});
 			return { url, options };
 		};
@@ -283,6 +284,8 @@ export class LoginManager extends Observable<LoginManager> {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			"Relay-Version": GIT_TAG,
+			"Obsidian-Version": apiVersion,
+			...getDeviceManagementHeaders(),
 		};
 		return requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/relay/${relay_guid}/check-host`,
@@ -295,6 +298,8 @@ export class LoginManager extends Observable<LoginManager> {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			"Relay-Version": GIT_TAG,
+			"Obsidian-Version": apiVersion,
+			...getDeviceManagementHeaders(),
 		};
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/flags`,
@@ -315,6 +320,7 @@ export class LoginManager extends Observable<LoginManager> {
 	whoami() {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
+			...getDeviceManagementHeaders(),
 		};
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/whoami`,
@@ -351,6 +357,10 @@ export class LoginManager extends Observable<LoginManager> {
 		const result = await this.endpointManager.validateAndSetEndpoints(timeoutMs);
 		
 		if (result.success && this.endpointManager.hasValidatedEndpoints()) {
+			// Clean up old PocketBase instance before creating new one
+			this.pb.cancelAllRequests();
+			this.pb.realtime.unsubscribe();
+
 			// Recreate PocketBase instance with new auth URL
 			const pbLog = curryLog("[Pocketbase]", "debug");
 			this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
@@ -362,6 +372,7 @@ export class LoginManager extends Observable<LoginManager> {
 				options.fetch = customFetch;
 				options.headers = Object.assign({}, options.headers, {
 					"Relay-Version": GIT_TAG,
+					"Obsidian-Version": apiVersion,
 				});
 				return { url, options };
 			};
@@ -389,6 +400,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	logout() {
 		this.pb.cancelAllRequests();
+		this.pb.realtime.unsubscribe();
 		this.pb.authStore.clear();
 		this.user = undefined;
 		this.notifyListeners();
@@ -549,10 +561,18 @@ export class LoginManager extends Observable<LoginManager> {
 
 	async login(provider: string): Promise<boolean> {
 		this.beforeLogin();
-		const authData = await this.pb.collection("users").authWithOAuth2({
-			provider: provider,
-		});
-		return this.setup(authData, provider);
+		try {
+			const authData = await this.pb.collection("users").authWithOAuth2({
+				provider: provider,
+			});
+			return this.setup(authData, provider);
+		} catch (e) {
+			// Clean up realtime subscription to prevent reconnection loops
+			// authWithOAuth2 internally subscribes to @oauth2 via SSE, and if it fails,
+			// PocketBase's realtime client will keep trying to reconnect indefinitely
+			this.pb.realtime.unsubscribe();
+			throw e;
+		}
 	}
 
 	async openLoginPage() {

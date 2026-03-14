@@ -113,6 +113,7 @@
  */
 
 import { Observable, type Unsubscriber } from "./observable/Observable";
+import { PostOffice } from "./observable/Postie";
 
 export type PathSegment = string | number;
 export type Path = PathSegment[];
@@ -696,6 +697,7 @@ export class NamespacedSettings<
 		run(this.get());
 		return () => {
 			this._listeners.delete(run);
+			PostOffice.getInstance().cancel(run);
 		};
 	}
 

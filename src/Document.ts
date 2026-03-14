@@ -8,7 +8,6 @@ import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce } from "obsidian";
-import { DiskBuffer, DiskBufferStore } from "./DiskBuffer";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
 import { flags, withFlag } from "./flagManager";
@@ -16,6 +15,10 @@ import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { diffMatchPatch } from "./y-diffMatchPatch";
+import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import type { EditorViewRef } from "./merge-hsm/types";
+import { ProviderIntegration, type YjsProvider } from "./merge-hsm/integration/ProviderIntegration";
+import { generateHash } from "./hashing";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -23,7 +26,7 @@ export function isDocument(file?: IFile): file is Document {
 
 export class Document extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
-	private _persistence: IndexeddbPersistence;
+	private _persistence: IndexeddbPersistence | null = null;
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
 	_awaitingUpdates?: boolean;
@@ -40,10 +43,27 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		mtime: number;
 		size: number;
 	};
-	_diskBuffer?: DiskBuffer;
-	_diskBufferStore?: DiskBufferStore;
 	unsubscribes: Unsubscriber[] = [];
 	pendingOps: ((data: string) => string)[] = [];
+
+	/**
+	 * MergeHSM instance for this document.
+	 * Only available when HSM active mode is enabled.
+	 * Use acquireLock() to get/create the HSM.
+	 */
+	private _hsm: MergeHSM | null = null;
+
+	/**
+	 * ProviderIntegration instance for bridging HSM with the provider.
+	 * Created when lock is acquired, destroyed when released.
+	 */
+	private _providerIntegration: ProviderIntegration | null = null;
+
+	/**
+	 * Flag to track when we're in the middle of our own save operation.
+	 * Used to distinguish our writes from external modifications.
+	 */
+	private _isSaving: boolean = false;
 
 	constructor(
 		path: string,
@@ -67,7 +87,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			mtime: Date.now(),
 			size: 0,
 		};
-		this._diskBufferStore = this.sharedFolder.diskBufferStore;
+		// Initialize HSM immediately so it's always available for filtering disk changes.
+		// The HSM starts in loading state and transitions to idle once persistence loads.
+		// Document owns the HSM - use ensureHSM() which uses MergeManager as a factory.
+		this.ensureHSM();
 
 		this.unsubscribes.push(
 			this._parent.subscribe(this.path, (state) => {
@@ -78,46 +101,41 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		);
 
 		this.setLoggers(`[SharedDoc](${this.path})`);
-		try {
-			const key = `${this.sharedFolder.appId}-relay-doc-${this.guid}`;
-			this._persistence = new IndexeddbPersistence(key, this.ydoc);
-		} catch (e) {
-			this.warn("Unable to open persistence.", this.guid);
-			console.error(e);
-			throw e;
-		}
 
-		this.whenSynced().then(() => {
-			const statsObserver = (event: Y.YTextEvent) => {
-				const origin = event.transaction.origin;
-				if (event.changes.keys.size === 0) return;
-				if (origin == this) return;
-				this.updateStats();
-			};
-			this.ytext.observe(statsObserver);
-			this.unsubscribes.push(() => {
-				this.ytext?.unobserve(statsObserver);
-			});
-			this.updateStats();
-			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.sharedFolder.relayId || "");
-				this._persistence.set("appId", this.sharedFolder.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			} catch (e) {
-				// pass
-			}
+		// need to port this to the HSM
+		// this.whenSynced().then(() => {
+		// 	const statsObserver = (event: Y.YTextEvent) => {
+		// 		const origin = event.transaction.origin;
+		// 		if (event.changes.keys.size === 0) return;
+		// 		if (origin == this) return;
+		// 		this.updateStats();
+		// 	};
+		// 	this.ytext.observe(statsObserver);
+		// 	this.unsubscribes.push(() => {
+		// 		this.ytext?.unobserve(statsObserver);
+		// 	});
+		// 	this.updateStats();
+		// 	try {
+		// 		this._persistence!.set("path", this.path);
+		// 		this._persistence!.set("relay", this.sharedFolder.relayId || "");
+		// 		this._persistence!.set("appId", this.sharedFolder.appId);
+		// 		this._persistence!.set("s3rn", S3RN.encode(this.s3rn));
+		// 	} catch (e) {
+		// 		// pass
+		// 	}
 
-			(async () => {
-				const serverSynced = await this.getServerSynced();
-				if (!serverSynced) {
-					await this.onceProviderSynced();
-					await this.markSynced();
-				}
-			})();
-		});
+		// 	(async () => {
+		// 		const serverSynced = await this.getServerSynced();
+		// 		if (!serverSynced) {
+		// 			await this.onceProviderSynced();
+		// 			await this.markSynced();
+		// 		}
+		// 	})();
+		// });
 
 		withFlag(flag.enableDeltaLogging, () => {
+			// Only attach observer when remoteDoc is loaded (avoid triggering lazy creation)
+			if (!this.isRemoteDocLoaded) return;
 			const logObserver = (event: Y.YTextEvent) => {
 				let log = "";
 				log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
@@ -144,10 +162,20 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.updateStats();
 	}
 
-	async process(fn: (data: string) => string) {
-		if (this.tfile && flags().enableAutomaticDiffResolution) {
-			this.pendingOps.push(fn);
+	process(fn: (data: string) => string): boolean {
+		if (this._hsm) {
+			if (this._hsm.isActive()) {
+				this._hsm.registerMachineEdit(fn);
+				return false;
+			}
+			// In idle mode during a remote rename, suppress the local disk write.
+			// The CRDT from the renaming vault will arrive and idle-merge will
+			// write the correct content to disk, avoiding duplicate CRDT insertions.
+			if (this._parent.remoteRenameInProgress) {
+				return true;
+			}
 		}
+		return false;
 	}
 
 	public get parent(): TFolder | null {
@@ -157,6 +185,204 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	public get sharedFolder(): SharedFolder {
 		return this._parent;
 	}
+
+	/**
+	 * Get the MergeHSM instance for this document.
+	 * Returns null if HSM active mode is not enabled or lock not acquired.
+	 */
+	public get hsm(): MergeHSM | null {
+		return this._hsm;
+	}
+
+	/**
+	 * Ensure an HSM exists for this document, creating one if needed.
+	 * Document owns the HSM - MergeManager is just a factory.
+	 * @returns The MergeHSM instance, or null if MergeManager not available
+	 */
+	ensureHSM(): MergeHSM | null {
+		if (this._hsm) {
+			return this._hsm;
+		}
+
+		const mergeManager = this.sharedFolder?.mergeManager;
+		if (!mergeManager) {
+			return null;
+		}
+
+		// Create HSM using factory
+		this._hsm = mergeManager.createHSM({
+			guid: this.guid,
+			getPath: () => this.path,
+			remoteDoc: this.isRemoteDocLoaded ? this.ydoc : null,
+			getDiskContent: () => this.readDiskContent(),
+			getPersistenceMetadata: () => ({
+				path: this.path,
+				relay: this.sharedFolder.relayId || "",
+				appId: this.sharedFolder.appId,
+				s3rn: this.s3rn ? S3RN.encode(this.s3rn) : "",
+			}),
+		});
+
+		// Subscribe to effects
+		this._hsm.subscribe((effect) => {
+			this.handleEffect(effect);
+		});
+
+		// Subscribe to state changes for sync status updates
+		this._hsm.onStateChange(() => {
+			mergeManager.updateSyncStatus(this.guid, this._hsm!.getSyncStatus());
+		});
+
+		// Notify MergeManager for hibernation tracking
+		mergeManager.notifyHSMCreated(this.guid);
+
+		return this._hsm;
+	}
+
+	/**
+	 * Create the remote YDoc, populating it from localDoc if available.
+	 * This ensures the remoteDoc has content for provider sync even when
+	 * content was enrolled into localDoc (e.g., via initializeWithContent).
+	 */
+	ensureRemoteDoc(): Y.Doc {
+		const isNew = !this.isRemoteDocLoaded;
+		const doc = super.ensureRemoteDoc();
+		if (isNew && this._hsm) {
+			// Seed remoteDoc from localDoc so the provider can sync local
+			// state to the server. Skip when a fork exists — the fork gates
+			// local→remote sync because the two sides are intentionally
+			// diverged until conflict resolution completes.
+			const localDoc = this._hsm.getLocalDoc();
+			if (localDoc && !this._hsm.hasFork()) {
+				const update = Y.encodeStateAsUpdate(localDoc);
+				Y.applyUpdate(doc, update);
+			}
+		}
+		return doc;
+	}
+
+	/**
+	 * Acquire lock on this document for active editing.
+	 * Transitions HSM from idle to active mode.
+	 * Call this when editor opens (replaces userLock = true).
+	 *
+	 * @param editorContent - The current editor/disk content (required in v6).
+	 *   Since the editor content equals the disk content when a file is first
+	 *   opened (before CRDT loads), this provides accurate disk content for
+	 *   merge operations. Pass the content from the editor or read from disk.
+	 * @returns The MergeHSM instance, or null if HSM is not enabled
+	 */
+	async acquireLock(editorContent?: string, editorViewRef?: EditorViewRef): Promise<MergeHSM | null> {
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (!mergeManager || !this._hsm) {
+			this.userLock = true; // Fallback if MergeManager/HSM not available
+			return null;
+		}
+
+		try {
+			// v6: If editorContent not provided, read from disk (fallback for backward compatibility)
+			let content = editorContent;
+			if (content === undefined) {
+				const tfile = this.tfile;
+				if (tfile) {
+					content = await this.vault.read(tfile);
+				} else {
+					content = "";  // New file, no content yet
+				}
+			}
+
+			// Ensure remoteDoc and provider exist before entering active mode.
+			// This wakes the document from hibernation if needed.
+			const remoteDoc = this.ensureRemoteDoc();
+			this._hsm.setRemoteDoc(remoteDoc);
+
+			// Send ACQUIRE_LOCK with editorContent to transition from idle to active.
+			// Always send (don't guard with isLoaded) because releaseLock() doesn't await
+			// unload(), so activeDocs may not be cleared when file is quickly reopened.
+			// The HSM handles duplicate ACQUIRE_LOCK gracefully (no-op if already active).
+			this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content, editorViewRef });
+			mergeManager.markActive(this.guid);
+
+			// Create ProviderIntegration BEFORE awaiting so it can deliver
+			// PROVIDER_SYNCED during the entering phase (needed for empty-IDB flow).
+			if (!this._providerIntegration) {
+				this._providerIntegration = new ProviderIntegration(
+					this._hsm,
+					remoteDoc,
+					this._provider! as YjsProvider
+				);
+			}
+
+			// Wait for HSM to reach a post-entering active state
+			await this._hsm.awaitActive();
+
+			// Guard against race: releaseLock() may have been called while we
+			// were awaiting. If so, the HSM has already transitioned back to idle
+			// and we must not keep a ProviderIntegration (it would leak).
+			if (!this.userLock && !mergeManager.isActive(this.guid)) {
+				this._providerIntegration.destroy();
+				this._providerIntegration = null;
+				return null;
+			}
+
+			this.userLock = true; // Keep for compatibility
+
+			return this._hsm;
+		} catch (e) {
+			this.warn("[acquireLock] Failed to acquire HSM lock:", e);
+			this.userLock = true; // Fallback
+			return null;
+		}
+	}
+
+	/**
+	 * Release lock on this document.
+	 * Transitions HSM from active back to idle mode.
+	 * Call this when editor closes (replaces userLock = false).
+	 */
+	releaseLock(): void {
+		this.userLock = false; // Keep for compatibility
+
+		// Destroy ProviderIntegration (unsubscribes from events)
+		if (this._providerIntegration) {
+			this._providerIntegration.destroy();
+			this._providerIntegration = null;
+		}
+
+		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
+		const mergeManager = this.sharedFolder?.mergeManager;
+		if (mergeManager) {
+			// MergeManager.unload() sends RELEASE_LOCK
+			mergeManager.unload(this.guid);
+		}
+	}
+
+	/**
+	 * Get the HSM sync status for this document.
+	 * Returns the status if HSM is available, or null otherwise.
+	 * This can be used instead of checkStale() when HSM is enabled.
+	 */
+	getHSMSyncStatus(): import("./merge-hsm/types").SyncStatus | null {
+		const mergeManager = this.sharedFolder?.mergeManager;
+		if (!mergeManager) {
+			return null;
+		}
+		return mergeManager.syncStatus.get(this.guid) ?? null;
+	}
+
+	/**
+	 * Check if the document has a conflict according to HSM.
+	 * Returns true if HSM indicates a conflict, false if synced/pending,
+	 * or null if HSM is not available.
+	 */
+	hasHSMConflict(): boolean | null {
+		const status = this.getHSMSyncStatus();
+		if (!status) {
+			return null;
+		}
+		return status.status === "conflict";
+	}
+
 	public get tfile(): TFile | null {
 		if (!this._tfile) {
 			this._tfile = this.getTFile();
@@ -179,98 +405,68 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return this.ytext.toString();
 	}
 
-	public async diskBuffer(read = false): Promise<TFile> {
-		if (read || this._diskBuffer === undefined) {
-			let fileContents: string;
-			try {
-				const storedContents = await this._parent.diskBufferStore
-					.loadDiskBuffer(this.guid)
-					.catch((e) => {
-						return null;
-					});
-				if (storedContents !== null && storedContents !== "") {
-					fileContents = storedContents;
-				} else {
-					fileContents = await this._parent.read(this);
-				}
-				return this.setDiskBuffer(fileContents.replace(/\r\n/g, "\n"));
-			} catch (e) {
-				console.error(e);
-				throw e;
-			}
-		}
-		return this._diskBuffer;
+	// ===========================================================================
+	// HSM-aware accessors (localDoc only - no fallback to remoteDoc)
+	// ===========================================================================
+
+	/**
+	 * Get the HSM's localDoc when available (active mode only).
+	 * Returns null when HSM is not in active mode or not available.
+	 *
+	 * IMPORTANT: All editor operations should use localDoc, not ydoc (remoteDoc).
+	 * Writing to ydoc directly causes corruption.
+	 */
+	public get localDoc(): Y.Doc | null {
+		return this._hsm?.getLocalDoc() ?? null;
 	}
 
-	setDiskBuffer(contents: string): TFile {
-		if (this._diskBuffer) {
-			this._diskBuffer.contents = contents;
-		} else {
-			this._diskBuffer = new DiskBuffer(
-				this._parent.vault,
-				"local disk",
-				contents,
+	/**
+	 * Get the Y.Text from HSM's localDoc.
+	 * @throws Error if HSM is not in active mode (no localDoc available)
+	 */
+	public get localYText(): Y.Text {
+		const doc = this.localDoc;
+		if (!doc) {
+			throw new Error(
+				`Document ${this.path}: Cannot access localYText - HSM not in active mode.`
 			);
 		}
-		this._parent.diskBufferStore
-			.saveDiskBuffer(this.guid, contents)
-			.catch((e) => {});
-		return this._diskBuffer;
+		return doc.getText("contents");
 	}
 
-	async clearDiskBuffer(): Promise<void> {
-		if (this._diskBuffer) {
-			this._diskBuffer.contents = "";
-			this._diskBuffer = undefined;
-		}
-		await this._parent.diskBufferStore
-			.removeDiskBuffer(this.guid)
-			.catch((e) => {});
+	/**
+	 * Get text content from HSM's localDoc.
+	 * @throws Error if HSM is not in active mode (no localDoc available)
+	 */
+	public get localText(): string {
+		return this.localYText.toString();
 	}
 
-	public async checkStale(): Promise<boolean> {
-		await this.whenSynced();
-		const diskBuffer = await this.diskBuffer(true);
-		const contents = (diskBuffer as DiskBuffer).contents;
-		const response = await this.sharedFolder.backgroundSync.downloadItem(this);
-		const updateBytes = new Uint8Array(response.arrayBuffer);
-
-		Y.applyUpdate(this.ydoc, updateBytes);
-		const stale = this.text !== contents;
-
-		const og = this.text;
-		let text = og;
-
-		const applied: ((data: string) => string)[] = [];
-		for (const fn of this.pendingOps) {
-			text = fn(text);
-			applied.push(fn);
-
-			if (text == contents) {
-				this.clearDiskBuffer();
-				if (og == this.text) {
-					diffMatchPatch(this.ydoc, text, this);
-				} else {
-					if (flags().enableDeltaLogging) {
-						this.warn(
-							"diffMatchPatch solution is stale an cannot be applied",
-							text,
-							this.text,
-						);
-					} else {
-						this.log("diffMatchPatch solution is stale an cannot be applied");
-					}
-					return true;
-				}
-				this.pendingOps = [];
-				return true;
-			}
+	/**
+	 * Get the YDoc that should be used for write operations.
+	 * Returns localDoc when in active mode, throws when HSM not in active mode.
+	 *
+	 * IMPORTANT: Writing to ydoc (remoteDoc) directly causes corruption.
+	 * All write operations must go through this method or the HSM.
+	 *
+	 * @throws Error if HSM is not in active mode (no localDoc available)
+	 */
+	public getWritableDoc(): Y.Doc {
+		const localDoc = this.localDoc;
+		if (!localDoc) {
+			throw new Error(
+				`Document ${this.path}: Cannot write - HSM not in active mode. ` +
+				`Writing to ydoc (remoteDoc) directly causes corruption.`
+			);
 		}
-		this.pendingOps = [];
-		if (!stale) {
-			this.clearDiskBuffer();
-		}
-		return stale;
+		return localDoc;
+	}
+
+	/**
+	 * Check if the document is in a writable state (HSM active mode).
+	 */
+	public get isWritable(): boolean {
+		return this.localDoc !== null;
 	}
 
 	async connect(): Promise<boolean> {
@@ -298,17 +494,25 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public get ready(): boolean {
+		if (!this._persistence) return this.synced;
 		return this._persistence.isReady(this.synced);
 	}
 
 	hasLocalDB(): boolean {
+		if (!this._persistence) return false;
 		return this._persistence.hasServerSync || this._persistence.hasUserData();
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
 		await this.whenSynced();
 		await this.getServerSynced();
-		if (!this._awaitingUpdates) {
+		if (this._awaitingUpdates !== undefined) {
+			return this._awaitingUpdates;
+		}
+		// If folder has synced with server (or is authoritative, which sets serverSynced), we don't need to wait
+		const folderServerSynced = await this.sharedFolder.getServerSynced();
+		if (folderServerSynced) {
+			this._awaitingUpdates = false;
 			return false;
 		}
 		this._awaitingUpdates = !this.hasLocalDB();
@@ -348,6 +552,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					return;
 				}
 
+				if (!this._persistence) {
+					this.persistenceSynced = true;
+					resolve();
+					return;
+				}
+
 				this._persistence.once("synced", () => {
 					this.persistenceSynced = true;
 					resolve();
@@ -372,7 +582,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return getMimeType(this.path);
 	}
 
-	save() {
+	async save() {
 		if (!this.tfile) {
 			return;
 		}
@@ -380,25 +590,44 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this.warn("skipping save for pending delete", this.path);
 			return;
 		}
-		this.vault.modify(this.tfile, this.text);
-		this.warn("file saved", this.path);
+
+		// Mark that we're saving to distinguish from external modifications
+		this._isSaving = true;
+		try {
+			// Use localDoc content when in HSM active mode; ydoc (remoteDoc) is stale there.
+			const contents = this.localDoc ? this.localText : this.text;
+			await this.vault.modify(this.tfile, contents);
+			this.warn("file saved", this.path);
+
+			// Notify HSM of save completion with new mtime and hash
+			if (this._hsm && this.tfile) {
+				const mtime = this.tfile.stat.mtime;
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				this._hsm.send({ type: "SAVE_COMPLETE", mtime, hash });
+			}
+		} finally {
+			this._isSaving = false;
+		}
+	}
+
+	/**
+	 * Check if the document is currently being saved by us.
+	 * Used to distinguish our writes from external modifications.
+	 */
+	get isSaving(): boolean {
+		return this._isSaving;
 	}
 
 	requestSave = debounce(this.save, 2000);
 
-	async markOrigin(origin: "local" | "remote"): Promise<void> {
-		await this._persistence.setOrigin(origin);
-	}
-
-	async getOrigin(): Promise<"local" | "remote" | undefined> {
-		return this._persistence.getOrigin();
-	}
-
 	async markSynced(): Promise<void> {
+		if (!this._persistence) return;
 		await this._persistence.markServerSynced();
 	}
 
 	async getServerSynced(): Promise<boolean> {
+		if (!this._persistence) return false;
 		return this._persistence.getServerSynced();
 	}
 
@@ -410,13 +639,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
-		super.destroy();
-		this.ydoc.destroy();
-		if (this._diskBuffer) {
-			this._diskBuffer.contents = "";
-			this._diskBuffer = undefined;
+
+		// Release HSM lock if held
+		if (this._hsm) {
+			this.releaseLock();
 		}
-		this._diskBufferStore = null as any;
+
+		super.destroy();
+		// Note: super.destroy() calls destroyRemoteDoc() which handles ydoc cleanup.
+		// Do NOT call this.ydoc.destroy() here — it would trigger lazy creation.
 		this.whenSyncedPromise?.destroy();
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();
@@ -429,24 +660,245 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public async cleanup(): Promise<void> {
-		this._diskBufferStore?.removeDiskBuffer(this.guid);
+		this.sharedFolder?.mergeManager?.notifyHSMDestroyed(this.guid);
+	}
+
+	/**
+	 * Handle a GUID remap: the server uses a different GUID for this file path.
+	 * The local CRDT (under the old GUID) has independent document history that
+	 * cannot be merged with the server's CRDT, so we discard it entirely.
+	 *
+	 * After reset, the HSM is re-initialized under the new GUID with no CRDT
+	 * history and no LCA. When the provider syncs, fork reconciliation compares
+	 * disk content against the server's CRDT content (two-way merge).
+	 */
+	async handleGuidRemap(newGuid: string): Promise<void> {
+		const mergeManager = this.sharedFolder?.mergeManager;
+		const oldGuid = this.guid;
+
+		// Destroy the remote doc (it's connected to the old GUID's provider)
+		if (this.isRemoteDocLoaded) {
+			this.destroyRemoteDoc();
+		}
+
+		// Clean up MergeManager caches for the old GUID
+		if (mergeManager) {
+			mergeManager.notifyHSMDestroyed(oldGuid);
+		}
+
+		// Delete the old GUID's IndexedDB database
+		try {
+			const appId = this.sharedFolder?.appId;
+			if (appId) {
+				indexedDB.deleteDatabase(`${appId}-relay-doc-${oldGuid}`);
+			}
+		} catch {
+			// IDB cleanup is best-effort
+		}
+
+		// Update the Document's identity to the new GUID
+		this.guid = newGuid;
+
+		// Update S3RN for the new GUID
+		if (this.sharedFolder.relayId) {
+			this.s3rn = new S3RemoteDocument(
+				this.sharedFolder.relayId,
+				this.sharedFolder.guid,
+				newGuid,
+			);
+		} else {
+			this.s3rn = new S3Document(this.sharedFolder.guid, newGuid);
+		}
+
+		// Reset the HSM under the new GUID if it exists
+		if (this._hsm) {
+			const newVaultId = mergeManager
+				? mergeManager.getVaultId(newGuid)
+				: `relay-doc-${newGuid}`;
+			await this._hsm.resetForGuidRemap(newGuid, newVaultId);
+
+			// Re-initialize the HSM (mirrors ensureHSM's initialization sequence)
+			this._hsm.send({ type: 'LOAD', guid: newGuid });
+			this._hsm.send({
+				type: 'PERSISTENCE_LOADED',
+				updates: new Uint8Array(),
+				lca: null,
+				localStateVector: null,
+			});
+			this._hsm.send({ type: 'SET_MODE_IDLE' });
+
+			// Re-register with MergeManager under the new GUID
+			if (mergeManager) {
+				mergeManager.notifyHSMCreated(newGuid);
+			}
+		}
 	}
 
 	// Helper method to update file stats
 	private updateStats(): void {
 		this.stat.mtime = Date.now();
-		this.stat.size = this.text.length;
+		// Only access text if remoteDoc is loaded (avoid triggering lazy creation)
+		if (this.isRemoteDocLoaded) {
+			this.stat.size = this.text.length;
+		}
 	}
 
-	// Additional methods that might be useful
-	public async write(content: string): Promise<void> {
-		this.ytext.delete(0, this.ytext.length);
-		this.ytext.insert(0, content);
-		this.updateStats();
+	// ===========================================================================
+	// HSM Effect Handling
+	// ===========================================================================
+
+	/**
+	 * Read current disk content for the HSM.
+	 * Used as diskLoader callback when creating HSM.
+	 */
+	async readDiskContent(): Promise<{ content: string; hash: string; mtime: number }> {
+		const tfile = this.tfile;
+		if (!tfile) {
+			throw new Error(`[Document] Cannot read disk content for ${this.path}: TFile not found`);
+		}
+		const content = await this.vault.read(tfile);
+		const encoder = new TextEncoder();
+		const hash = await generateHash(encoder.encode(content).buffer);
+		return { content, hash, mtime: tfile.stat.mtime };
 	}
 
-	public async append(content: string): Promise<void> {
-		this.ytext.insert(this.ytext.length, content);
-		this.updateStats();
+	/**
+	 * Handle effects emitted by the HSM.
+	 * Called by HSM subscriber in ensureHSM().
+	 */
+	async handleEffect(effect: import("./merge-hsm/types").MergeEffect): Promise<void> {
+		switch (effect.type) {
+			case "WRITE_DISK":
+				await this.handleWriteDisk(effect.contents, effect.mtime);
+				break;
+			case "PERSIST_STATE":
+				await this.handlePersistState(effect.state);
+				break;
+			case "SYNC_TO_REMOTE":
+				await this.handleSyncToRemote(effect.update);
+				break;
+			// Other effects (DISPATCH_CM6, STATUS_CHANGED, etc.) are handled elsewhere
+		}
 	}
+
+	private async handleWriteDisk(contents: string, mtime?: number): Promise<void> {
+		const tfile = this.tfile;
+		if (!tfile) {
+			this.warn("[handleEffect:WRITE_DISK] TFile not found, cannot write");
+			return;
+		}
+		if (this.sharedFolder.isPendingDelete(this.path)) {
+			this.warn("[handleEffect:WRITE_DISK] Skipping write for pending delete", this.path);
+			return;
+		}
+
+		this._isSaving = true;
+		try {
+			const options = mtime !== undefined ? { mtime } : undefined;
+			await this.vault.modify(tfile, contents, options);
+			this.debug?.("[handleEffect:WRITE_DISK] Wrote to disk", this.path);
+
+			// Notify HSM of save completion with new mtime and hash
+			if (this._hsm) {
+				const encoder = new TextEncoder();
+				const hash = await generateHash(encoder.encode(contents).buffer);
+				this._hsm.send({ type: "SAVE_COMPLETE", mtime: tfile.stat.mtime, hash });
+			}
+		} finally {
+			this._isSaving = false;
+		}
+	}
+
+	private async handlePersistState(state: import("./merge-hsm/types").PersistedMergeState): Promise<void> {
+		const mergeManager = this.sharedFolder?.mergeManager;
+		if (!mergeManager) return;
+
+		// Update LCA cache in MergeManager
+		if (state.lca) {
+			mergeManager.setLCA(this.guid, {
+				contents: state.lca.contents,
+				meta: { hash: state.lca.hash, mtime: state.lca.mtime },
+				stateVector: state.lca.stateVector,
+			});
+		} else {
+			mergeManager.setLCA(this.guid, null);
+		}
+	}
+
+	/**
+	 * Connect the provider for idle-mode fork reconciliation.
+	 * Creates a temporary ProviderIntegration so the HSM receives
+	 * CONNECTED/PROVIDER_SYNCED events and SYNC_TO_REMOTE effects
+	 * flow through the live WebSocket.
+	 *
+	 * Cleanup: call destroyIdleProviderIntegration() or releaseLock()
+	 * when the provider is no longer needed (e.g. on hibernate).
+	 */
+	async connectForForkReconcile(): Promise<void> {
+		if (!this._hsm) return;
+		if (this._providerIntegration) return; // Already bridged
+
+		// Destroy the existing remoteDoc so we get a fresh one populated
+		// purely from the server. The old remoteDoc may contain local edits
+		// from the active session (via syncLocalToRemote), which would
+		// prevent fork-reconcile from detecting true divergence.
+		this.destroyRemoteDoc();
+
+		const remoteDoc = this.ensureRemoteDoc();
+		this._hsm.setRemoteDoc(remoteDoc);
+
+		await this.connect();
+
+		if (this._provider && this._hsm) {
+			this._providerIntegration = new ProviderIntegration(
+				this._hsm,
+				remoteDoc,
+				this._provider as YjsProvider,
+			);
+
+			// Tear down when transitioning to another idle state (fork resolved
+			// or diverged). Don't tear down when transitioning to active —
+			// acquireLock adopts the existing provider and ProviderIntegration.
+			const unsub = this._hsm.onStateChange(() => {
+				if (!this._hsm?.matches("idle.localAhead")) {
+					unsub();
+					if (!this._hsm?.isActive()) {
+						this.destroyIdleProviderIntegration();
+					}
+				}
+			});
+		}
+	}
+
+	/**
+	 * Tear down idle-mode provider integration (created by connectForForkReconcile).
+	 * Called during hibernation to clean up the WebSocket connection.
+	 */
+	destroyIdleProviderIntegration(): void {
+		if (this._providerIntegration && !this.userLock) {
+			this._providerIntegration.destroy();
+			this._providerIntegration = null;
+			this.disconnect();
+		}
+	}
+
+	/**
+	 * Whether this document has an active provider integration
+	 * (either from acquireLock or connectForForkReconcile).
+	 */
+	hasProviderIntegration(): boolean {
+		return this._providerIntegration !== null;
+	}
+
+	private async handleSyncToRemote(update: Uint8Array): Promise<void> {
+		// Skip if ProviderIntegration handles it (active mode or fork-reconcile)
+		if (this.userLock || this._providerIntegration || this.sharedFolder?.mergeManager?.isActive(this.guid)) {
+			return;
+		}
+
+		// Apply update to remoteDoc (intentionally triggers lazy creation / wake from hibernation)
+		const remoteDoc = this.ensureRemoteDoc();
+		Y.applyUpdate(remoteDoc, update, "idle-sync");
+	}
+
 }

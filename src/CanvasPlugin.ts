@@ -109,9 +109,10 @@ export class CanvasPlugin extends HasLogging {
 		this.trackedEmbedViews.add(embedView);
 		this.unsubscribes.push(
 			(() => {
+				const document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
 				const plugin = new ViewHookPlugin(
 					embedView,
-					this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path),
+					document,
 				);
 				plugin.initialize().catch((error) => {
 					this.error(
@@ -119,9 +120,23 @@ export class CanvasPlugin extends HasLogging {
 						error,
 					);
 				});
+
+				// Acquire HSM lock for the embedded document so its HSM
+				// transitions to active mode and can process CM6 events.
+				// Read editor content: the embed's CM6 editor may start empty,
+				// so use the child view's data (which holds the disk content).
+				const editorContent = embedView.data ?? "";
+				document.acquireLock(editorContent).catch((error: unknown) => {
+					this.error(
+						"Error acquiring lock for canvas embed:",
+						error,
+					);
+				});
+
 				return () => {
 					this.trackedEmbedViews.delete(embedView);
 					plugin.destroy();
+					document.releaseLock();
 				};
 			})(),
 		);
