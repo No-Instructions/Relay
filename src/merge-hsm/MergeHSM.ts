@@ -1721,6 +1721,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 		const crdtContent = this.remoteDoc.getText("contents").toString();
 
+		// When a fork is active but the provider hasn't synced yet, remoteDoc
+		// may not reflect the server's CRDT state.  Defer the merge until
+		// PROVIDER_SYNCED delivers the real remote content.
+		if (this._fork && !this._isProviderSynced()) {
+			this.pendingDiskContents = null;
+			this.pendingIdleUpdates = null;
+			return { success: false };
+		}
+
 		const diskContent = this.pendingDiskContents ?? lcaContent;
 
 		// Snapshot and clear — new events accumulate fresh during await
