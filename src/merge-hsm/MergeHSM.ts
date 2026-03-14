@@ -1739,7 +1739,27 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
 		const mergeResult = performThreeWayMerge(lcaContent, diskContent, crdtContent);
 
-		if (!mergeResult.success) return { success: false };
+		if (!mergeResult.success) {
+			// When LCA exists, create a fork so fork-reconcile can attempt
+			// resolution once the provider syncs with authoritative remote state.
+			if (this._lca) {
+				const fork: Fork = {
+					base: this.localDoc.getText("contents").toString(),
+					localStateVector: Y.encodeStateVector(this.localDoc),
+					remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+					origin: 'three-way-conflict',
+					created: this.timeProvider.now(),
+					captureMark: this.getOpCapture()?.mark() ?? 0,
+				};
+
+				this.applyContentToLocalDoc(diskContent, DISK_ORIGIN);
+				this._fork = fork;
+				this._syncGate.providerSynced = false;
+
+				return { success: false, forked: true };
+			}
+			return { success: false };
+		}
 
 		const hash = await this.hashFn(mergeResult.merged);
 		if (signal.aborted) return { success: false };

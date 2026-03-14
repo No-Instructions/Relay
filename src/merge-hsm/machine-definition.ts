@@ -199,6 +199,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
 				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
+				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
 				{ target: 'idle.diverged' }, // 3-way conflict — stay diverged
 			],
 			onError: { target: 'idle.diverged' },
