@@ -49,7 +49,6 @@ import type {
 	MachineHSM,
 	ActiveInvoke,
 	Fork,
-	SyncGate,
 	CaptureOpts,
 	EditorViewRef,
 } from "./types";
@@ -62,6 +61,8 @@ import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture, CapturedOp } from "./undo";
 import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
+import { SyncBridge } from "./SyncBridge";
+import type { SyncBridgeHost } from "./SyncBridge";
 
 // =============================================================================
 // Simple Observable for HSM
@@ -106,7 +107,7 @@ class SimpleObservable<T> implements IObservable<T> {
 // MergeHSM Class
 // =============================================================================
 
-export class MergeHSM implements TestableHSM, MachineHSM {
+export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
 
@@ -128,13 +129,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Each ingestDisk call pushes one entry, giving 1:1 correspondence
 	// with CapturedOp entries from OpCapture. Cleared when the fork is cleared.
 	private _ingestionTexts: string[] = [];
-	// SyncGate: controls CRDT op flow between localDoc and remoteDoc
-	private _syncGate: SyncGate = {
-		providerSynced: false,
-		localOnly: false,
-		pendingInbound: 0,
-		pendingOutbound: 0,
-	};
+	// Bridge: manages CRDT op flow between localDoc and remoteDoc
+	private _bridge: SyncBridge;
 
 	// Live reference to the editor view for reading the dirty flag
 	private _editorViewRef: EditorViewRef | null = null;
@@ -227,7 +223,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
 
-	private getOpCapture(): OpCapture | null {
+	getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
 	}
 
@@ -265,17 +261,6 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	private _consumedMachineEditTexts: Set<string> = new Set();
 	private _suppressLocalObserver = false;
 
-	// Outbound update queue (local → remote)
-	private _outboundQueue: Array<{
-		update: Uint8Array;
-		machineEditMark: number | null;
-	}> = [];
-	private _localDocUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
-	private _currentMachineEditMark: number | null = null;
-
-	// Inbound update queue (remote → local)
-	private _inboundQueue: Uint8Array[] = [];
-	private _remoteDocUpdateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
 
 	constructor(config: MergeHSMConfig) {
 		this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
@@ -289,7 +274,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this._persistenceMetadata = config.persistenceMetadata;
 		this._userId = config.userId;
 		this._diskLoader = config.diskLoader;
-		this._isProviderSynced = config.isProviderSynced ?? (() => this._syncGate.providerSynced);
+		this._bridge = new SyncBridge(this);
+		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
 		this._captureOpts = {
 			scope: "contents",
 			trackedOrigins: new Set([DISK_ORIGIN, MACHINE_EDIT_ORIGIN]),
@@ -381,17 +367,17 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 	/** Whether sync between localDoc and remoteDoc is paused. */
 	get isLocalOnly(): boolean {
-		return this._syncGate.localOnly;
+		return this._bridge.isLocalOnly;
 	}
 
 	/** Number of local edits accumulated while the sync gate is closed. */
 	get pendingOutbound(): number {
-		return this._syncGate.pendingOutbound;
+		return this._bridge.pendingOutbound;
 	}
 
 	/** Number of remote edits accumulated while the sync gate is closed. */
 	get pendingInbound(): number {
-		return this._syncGate.pendingInbound;
+		return this._bridge.pendingInbound;
 	}
 
 	/**
@@ -400,15 +386,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * ops are flushed immediately (unless a fork is active).
 	 */
 	setLocalOnly(value: boolean): void {
-		if (this._syncGate.localOnly === value) return;
-		this._syncGate.localOnly = value;
-
-		// Flush pending ops when turning off (fork takes precedence)
-		if (!value && this._fork === null && this.localDoc && this.remoteDoc) {
-			this.flush();
-			this._syncGate.pendingInbound = 0;
-			this._syncGate.pendingOutbound = 0;
-		}
+		this._bridge.setLocalOnly(value);
 	}
 
 	/**
@@ -457,6 +435,64 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 */
 	setRemoteDoc(doc: Y.Doc | null): void {
 		this.remoteDoc = doc;
+	}
+
+	// ===========================================================================
+	// SyncBridgeHost Implementation
+	// ===========================================================================
+
+	/** @internal Used by SyncBridge */
+	emitEffect(effect: MergeEffect): void {
+		this._pendingEffects?.push(effect);
+		this._effects.emit(effect);
+	}
+
+	/** @internal Used by SyncBridge */
+	emitStateChange(): void {
+		this._stateChanges.emit(this.state);
+	}
+
+	/** @internal Used by SyncBridge */
+	getPendingMachineEdits(): ReadonlyArray<{
+		fn: (data: string) => string;
+		expectedText: string;
+		captureMark: number;
+		registeredAt: number;
+	}> {
+		return this._pendingMachineEdits;
+	}
+
+	/** @internal Used by SyncBridge */
+	matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
+		return this._matchMachineEdit(remoteText);
+	}
+
+	/** @internal Used by SyncBridge */
+	removeMachineEdit(entry: { captureMark: number }): void {
+		const idx = this._pendingMachineEdits.findIndex(
+			e => e.captureMark === entry.captureMark,
+		);
+		if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
+	}
+
+	/** @internal Used by SyncBridge */
+	addConsumedMachineEditText(text: string): void {
+		this._consumedMachineEditTexts.add(text);
+	}
+
+	/** @internal Used by SyncBridge */
+	computeDiffChanges(from: string, to: string): PositionedChange[] {
+		return computeDiffMatchPatchChanges(from, to);
+	}
+
+	/** @internal Used by SyncBridge */
+	isSuppressLocalObserver(): boolean {
+		return this._suppressLocalObserver;
+	}
+
+	/** @internal Used by SyncBridge */
+	setSuppressLocalObserver(value: boolean): void {
+		this._suppressLocalObserver = value;
 	}
 
 	/**
@@ -988,7 +1024,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 				if (result.updates && this.localDoc) {
 					// Remote-ahead: apply CRDT updates to real localDoc
-					this.syncToLocal(result.updates);
+					this._bridge.syncToLocal(result.updates);
 				} else if (result.mergedContent !== undefined && this.localDoc) {
 					// Three-way: apply merged content via diff
 					this.applyContentToLocalDoc(result.mergedContent);
@@ -1045,7 +1081,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._enteringFromDiverged = this._statePath === "idle.diverged";
 				}
 				this._providerSynced = false;
-				this._syncGate.providerSynced = false;
+				this._bridge.providerSynced = false;
 			},
 
 			// === Lifecycle ===
@@ -1129,7 +1165,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this.remoteDoc,
 					Y.encodeStateVector(this.localDoc),
 				);
-				this.syncToLocal(remoteUpdate);
+				this._bridge.syncToLocal(remoteUpdate);
 
 				// Step 3: DMP the resolved text onto localDoc. After the CRDT
 				// merge the text may not match what the user chose (e.g. they
@@ -1150,8 +1186,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 				// Step 5: Sync localDoc → remoteDoc and server. Histories are
 				// now converged so the update is clean.
-				this.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
-				this._outboundQueue = [];
+				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+				this._bridge.clearOutboundQueue();
 
 				// Clear fork and conflict state
 				this._fork = null;
@@ -1213,7 +1249,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this._editorViewRef = null;
 				this._cleanupWasConflict = this._statePath.includes("conflict");
 				this._cleanupType = 'release';
-				this._syncGate.providerSynced = false;
+				this._bridge.providerSynced = false;
 				if (this._fork) {
 					this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 				}
@@ -1268,7 +1304,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this._enteringFromDiverged = false;
 				this.pendingEditorContent = null;
 			},
-			mergeRemoteToLocal: () => this.flushInbound(),
+			mergeRemoteToLocal: () => this._bridge.flushInbound(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			startTwoWayMerge: () => {
 				const localText = this.localDoc?.getText("contents").toString() ?? "";
@@ -1297,7 +1333,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						// vector level — non-adjacent user edits flow to
 						// remoteDoc immediately even while the machine edit
 						// is deferred.
-						this._currentMachineEditMark =
+						this._bridge.currentMachineEditMark =
 							this._pendingMachineEdits[machineEditIdx].captureMark;
 
 						const proxyDoc = new Y.Doc();
@@ -1322,7 +1358,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 						Y.applyUpdate(this.localDoc, diff, MACHINE_EDIT_ORIGIN);
 						proxyDoc.destroy();
 
-						this._currentMachineEditMark = null;
+						this._bridge.currentMachineEditMark = null;
 					} else {
 						// Normal user edit: apply directly to localDoc
 						const ytext = this.localDoc.getText("contents");
@@ -1340,7 +1376,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				}
 
 				// Always flush — the queue handles filtering
-				this.flushOutbound();
+				this._bridge.flushOutbound();
 			},
 			updateDiskFromSave: (_hsm, event) => {
 				const e = event as any;
@@ -1368,15 +1404,15 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 			flushPendingToRemote: () => {
 				this._isOnline = true;
 				if (this.localDoc) {
-					this.flushOutbound();
+					this._bridge.flushOutbound();
 				}
 			},
 			setOffline: () => {
 				this._isOnline = false;
-				this._syncGate.providerSynced = false;
+				this._bridge.providerSynced = false;
 			},
 			markProviderSynced: () => {
-				this._syncGate.providerSynced = true;
+				this._bridge.providerSynced = true;
 			},
 			clearForkAndUpdateLCA: (_hsm, event) => {
 				this._fork = null;
@@ -1389,9 +1425,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					this._remoteStateVector = result.newLCA.stateVector;
 				}
 				// Flush pending inbound/outbound through the queue drain path
-				this.flush();
-				this._syncGate.pendingInbound = 0;
-				this._syncGate.pendingOutbound = 0;
+				this._bridge.flush();
+				this._bridge.resetPendingCounters();
 				this.emitPersistState();
 			},
 			clearForkKeepDiverged: () => {
@@ -1444,9 +1479,9 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					const stateVector = Y.encodeStateVector(this.localDoc);
 					const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
 					if (diffUpdate.length > 0) {
-						this.syncToRemote(diffUpdate);
+						this._bridge.syncToRemote(diffUpdate);
 					}
-					this._outboundQueue = [];
+					this._bridge.clearOutboundQueue();
 
 					// Clear fork and update LCA
 					this._fork = null;
@@ -1458,8 +1493,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					};
 					this._localStateVector = stateVector;
 					this._remoteStateVector = stateVector;
-					this._syncGate.pendingInbound = 0;
-					this._syncGate.pendingOutbound = 0;
+					this._bridge.resetPendingCounters();
 					this.emitPersistState();
 					this.patchLCAHash(localContent, stateVector);
 					return;
@@ -1475,8 +1509,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					// conflict resolution will re-sync both sides via resolveWith* actions.
 					this._fork = null;
 					this._ingestionTexts = [];
-					this._syncGate.pendingInbound = 0;
-					this._syncGate.pendingOutbound = 0;
+					this._bridge.resetPendingCounters();
 
 					// Drop captured disk ops — conflict resolution supersedes them.
 					const opCapture = this.getOpCapture();
@@ -1527,14 +1560,13 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				};
 				this._localStateVector = stateVector;
 				this._remoteStateVector = stateVector;
-				this._syncGate.pendingInbound = 0;
-				this._syncGate.pendingOutbound = 0;
+				this._bridge.resetPendingCounters();
 				this.emitPersistState();
 				this.patchLCAHash(mergeResult.merged, stateVector);
 
 				// Sync merged result to remote
-				this.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
-				this._outboundQueue = [];
+				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+				this._bridge.clearOutboundQueue();
 			},
 
 		};
@@ -1678,7 +1710,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 
 		this._fork = fork;
 		this._ingestionTexts.push(diskContent);
-		this._syncGate.providerSynced = false;
+		this._bridge.providerSynced = false;
 		this.pendingDiskContents = null;
 		this.emitPersistState();
 
@@ -1830,7 +1862,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				this.remoteDoc,
 				Y.encodeStateVector(this.localDoc),
 			);
-			this.syncToLocal(remoteUpdate);
+			this._bridge.syncToLocal(remoteUpdate);
 
 			this.applyContentToLocalDoc(mergeResult.merged);
 
@@ -1846,7 +1878,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 				guid: this._guid,
 				contents: mergeResult.merged,
 			});
-			this.syncToRemote(update);
+			this._bridge.syncToRemote(update);
 
 			return {
 				success: true,
@@ -2051,7 +2083,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 					stateVector: new Uint8Array([0]),
 				},
 			});
-			this.flushInbound();
+			this._bridge.flushInbound();
 			return;
 		}
 
@@ -2060,7 +2092,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		if (mergeResult.success) {
 			// Merge succeeded - apply to localDoc and dispatch to editor
 			this.applyContentToLocalDoc(mergeResult.merged);
-			this.flushOutbound();
+			this._bridge.flushOutbound();
 
 			// Only dispatch patches to editor if editor content differs from merged result.
 			// The patches are computed from localText→merged, but the editor has diskText.
@@ -2317,37 +2349,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		};
 		ytext.observe(this.localTextObserver);
 
-		this.setupUpdateQueues();
-	}
-
-	/**
-	 * Install Y.Doc 'update' listeners that buffer individual transaction
-	 * updates into outbound/inbound queues. The outbound queue tags entries
-	 * with a machine-edit mark so flushOutbound() can defer them while their
-	 * registrations are pending.
-	 */
-	private setupUpdateQueues(): void {
-		if (this.localDoc && !this._localDocUpdateHandler) {
-			this._localDocUpdateHandler = (update: Uint8Array, origin: unknown) => {
-				if (origin === this.remoteDoc) return;       // inbound echo
-				if (this._suppressLocalObserver) return;     // rewind ops
-				this._outboundQueue.push({
-					update,
-					machineEditMark: origin === MACHINE_EDIT_ORIGIN
-						? this._currentMachineEditMark
-						: null,
-				});
-			};
-			this.localDoc.on('update', this._localDocUpdateHandler);
-		}
-
-		if (this.remoteDoc && !this._remoteDocUpdateHandler) {
-			this._remoteDocUpdateHandler = (update: Uint8Array, origin: unknown) => {
-				if (origin === this) return;                 // outbound echo
-				this._inboundQueue.push(update);
-			};
-			this.remoteDoc.on('update', this._remoteDocUpdateHandler);
-		}
+		this._bridge.setupUpdateQueues();
 	}
 
 	/**
@@ -2459,16 +2461,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		// Clean up update queue listeners (editor-specific)
-		if (this.localDoc && this._localDocUpdateHandler) {
-			this.localDoc.off('update', this._localDocUpdateHandler);
-			this._localDocUpdateHandler = null;
-		}
-		if (this.remoteDoc && this._remoteDocUpdateHandler) {
-			this.remoteDoc.off('update', this._remoteDocUpdateHandler);
-			this._remoteDocUpdateHandler = null;
-		}
-		this._outboundQueue = [];
-		this._inboundQueue = [];
+		this._bridge.teardownUpdateQueues();
 
 		// localDoc, localPersistence, and remoteDoc stay alive for idle mode
 	}
@@ -2490,18 +2483,14 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		const doc = this.localDoc;
 		const persistence = this.localPersistence;
 		const observer = this.localTextObserver;
-		const localUpdateHandler = this._localDocUpdateHandler;
-		const remoteUpdateHandler = this._remoteDocUpdateHandler;
+		// Capture and null handler references from the bridge
+		const { localUpdateHandler, remoteUpdateHandler } = this._bridge.detachHandlers();
 
 		// Null out immediately (synchronous) so the HSM is in a clean
 		// state for any subsequent ensureLocalDocForIdle() call.
 		this.localDoc = null;
 		this.localPersistence = null;
 		this.localTextObserver = null;
-		this._localDocUpdateHandler = null;
-		this._remoteDocUpdateHandler = null;
-		this._outboundQueue = [];
-		this._inboundQueue = [];
 
 		// Clean up captured references
 		if (doc && observer) {
@@ -2524,312 +2513,8 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	}
 
 
-	/**
-	 * Apply an outbound update (from localDoc) to remoteDoc.
-	 * This is the ONLY method that should apply local ops to remoteDoc.
-	 */
-	private syncToRemote(update: Uint8Array): void {
-		if (!this.remoteDoc) return;
-		Y.applyUpdate(this.remoteDoc, update, this);
-		this.emitEffect({ type: "SYNC_TO_REMOTE", update });
-	}
 
-	/**
-	 * Apply an inbound update (from remoteDoc) to localDoc.
-	 * This is the ONLY method that should apply remote ops to localDoc.
-	 */
-	private syncToLocal(update: Uint8Array): void {
-		if (!this.localDoc) return;
-		Y.applyUpdate(this.localDoc, update, this.remoteDoc);
-	}
 
-	/**
-	 * Drain both inbound and outbound queues, then assert convergence.
-	 * Callers that need bidirectional sync should use this instead of
-	 * calling flushInbound + flushOutbound separately.
-	 */
-	private flush(): void {
-		this.flushInbound();
-		this.flushOutbound();
-		this.assertStateVectorConvergence();
-	}
-
-	/**
-	 * Flush outbound queue: send buffered local updates to remoteDoc.
-	 *
-	 * When the update listener is active, partitions the queue: entries tagged
-	 * with a pending machine-edit mark are deferred (the remote hasn't matched
-	 * yet), everything else is merged and applied. notifySynced() is only called
-	 * when nothing is deferred — machine-edit ops must stay cancellable.
-	 *
-	 * Falls back to a full state diff when the listener isn't installed yet
-	 * (loading/idle phases).
-	 *
-	 * Does NOT assert state-vector convergence — callers that need a
-	 * bidirectional sync with convergence verification should use flush().
-	 * One-directional callers (applyCM6ToLocalDoc, flushPendingToRemote,
-	 * conflict resolution) intentionally skip the assertion because the
-	 * inbound direction may not have been drained yet.
-	 */
-	private flushOutbound(): void {
-		if (!this.localDoc || !this.remoteDoc) return;
-
-		if (this._fork !== null) {
-			this._syncGate.pendingOutbound++;
-			return;
-		}
-
-		if (this._syncGate.localOnly) {
-			this._syncGate.pendingOutbound++;
-			this._stateChanges.emit(this.state);
-			return;
-		}
-
-		// Queue path (active editing — listener installed)
-		if (this._localDocUpdateHandler) {
-			const pendingMarks = new Set(
-				this._pendingMachineEdits.map(e => e.captureMark),
-			);
-			const toSend: Uint8Array[] = [];
-			const toDefer: typeof this._outboundQueue = [];
-
-			for (const entry of this._outboundQueue) {
-				if (entry.machineEditMark !== null
-					&& pendingMarks.has(entry.machineEditMark)) {
-					toDefer.push(entry);
-				} else {
-					toSend.push(entry.update);
-				}
-			}
-			this._outboundQueue = toDefer;
-
-			if (toSend.length > 0) {
-				const merged = Y.mergeUpdates(toSend);
-				this.syncToRemote(merged);
-				// Only mark synced when nothing is deferred — machine-edit
-				// entries must stay cancellable until matched/expired.
-				if (toDefer.length === 0) {
-					this.getOpCapture()?.notifySynced();
-				}
-			} else if (toDefer.length === 0) {
-				// Queue was empty and nothing deferred: check for a state diff
-				// that predates handler installation (e.g. IDB content loaded before
-				// the queue listener was attached).
-				const localText = this.localDoc.getText("contents").toString();
-				const remoteText = this.remoteDoc!.getText("contents").toString();
-				if (localText !== remoteText) {
-					const catchUp = Y.encodeStateAsUpdate(
-						this.localDoc,
-						Y.encodeStateVector(this.remoteDoc),
-					);
-					this.syncToRemote(catchUp);
-					this.getOpCapture()?.notifySynced();
-				}
-			}
-			return;
-		}
-
-		// Fallback: full state diff (loading, idle — before listener installed)
-		const update = Y.encodeStateAsUpdate(
-			this.localDoc,
-			Y.encodeStateVector(this.remoteDoc),
-		);
-		if (update.length > 0) {
-			this.syncToRemote(update);
-			this.getOpCapture()?.notifySynced();
-		}
-	}
-
-	/**
-	 * Flush inbound queue: apply buffered remote updates to localDoc.
-	 *
-	 * Handles machine-edit matching first: if the remote already has a pending
-	 * machine edit applied, cancel our local ops, discard matched outbound
-	 * entries, and apply the remote version. Otherwise drains the inbound queue
-	 * (merging updates) or falls back to a full state diff.
-	 */
-	private flushInbound(): void {
-		if (!this.localDoc || !this.remoteDoc) return;
-
-		if (this._fork !== null) {
-			this._syncGate.pendingInbound++;
-			return;
-		}
-
-		if (this._syncGate.localOnly) {
-			this._syncGate.pendingInbound++;
-			this._stateChanges.emit(this.state);
-			return;
-		}
-
-		const remoteText = this.remoteDoc.getText("contents").toString();
-
-		// Check for machine edit match — if the remote already has this
-		// transform applied, rewind our local ops and apply remote instead
-		const match = this.matchMachineEdit(remoteText);
-		if (match) {
-			const opCapture = this.getOpCapture();
-			if (opCapture) {
-				const machineOps = opCapture.sinceByOrigin(
-					match.captureMark,
-					MACHINE_EDIT_ORIGIN,
-				);
-				if (machineOps.length > 0) {
-					const beforeText = this.localDoc.getText("contents").toString();
-
-					// Suppress observer during rewind to avoid spurious DISPATCH_CM6
-					this._suppressLocalObserver = true;
-					try {
-						// Cancel our machine edit ops: truly undo the CRDT ops
-						// so the document state is as if they never happened.
-						// Safe because we deferred sync — no peer has seen these ops.
-						opCapture.cancel(machineOps);
-
-						// Apply remote CRDT update — fills in the same edits cleanly
-						const update = Y.encodeStateAsUpdate(
-							this.remoteDoc,
-							Y.encodeStateVector(this.localDoc),
-						);
-						this.syncToLocal(update);
-					} finally {
-						this._suppressLocalObserver = false;
-					}
-
-					// Clear inbound queue — remote state fully applied
-					this._inboundQueue = [];
-
-					// Discard matched entry's deferred outbound updates
-					this._outboundQueue = this._outboundQueue.filter(
-						e => e.machineEditMark !== match.captureMark,
-					);
-
-					// Compute net diff and dispatch to editor (usually empty)
-					const afterText = this.localDoc.getText("contents").toString();
-					if (beforeText !== afterText) {
-						const changes = this.computeDiffChanges(beforeText, afterText);
-						if (changes.length > 0) {
-							this.emitEffect({ type: "DISPATCH_CM6", changes });
-						}
-					}
-
-					// Remove the matched registration
-					const idx = this._pendingMachineEdits.indexOf(match);
-					if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
-
-					// Drain remaining user edits + cancel-op metadata in
-					// one shot. Full-state diff covers both the SV entries
-					// from the cancel and any queued user edits.
-					const outbound = Y.encodeStateAsUpdate(
-						this.localDoc,
-						Y.encodeStateVector(this.remoteDoc),
-					);
-					this._outboundQueue = [];
-					if (outbound.length > 0) {
-						this.syncToRemote(outbound);
-					}
-					this.assertStateVectorConvergence();
-					return;
-				}
-			}
-
-			// OpCapture unavailable or no ops captured yet (CM6 transaction hasn't
-			// fired). Remove the registration but record the expected text so the
-			// delayed CM6 transaction does not generate a duplicate CRDT op.
-			const idx = this._pendingMachineEdits.indexOf(match);
-			if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
-			this._consumedMachineEditTexts.add(match.expectedText);
-		}
-
-		// Capture editor text before any modifications so we can compute the
-		// net diff for DISPATCH_CM6 at the end.
-		const beforeText = this.localDoc.getText("contents").toString();
-
-		// Queue path (active editing — listener installed): drain buffered updates.
-		// After draining, fall through to the full state diff — the current
-		// in-flight update arrived at remoteDoc before the queue handler ran,
-		// so it is in remoteDoc but not yet in _inboundQueue.
-		if (this._remoteDocUpdateHandler && this._inboundQueue.length > 0) {
-			if (beforeText === remoteText) {
-				this._inboundQueue = [];
-				return;
-			}
-			const merged = Y.mergeUpdates(this._inboundQueue);
-			this._inboundQueue = [];
-			this.syncToLocal(merged);
-			// Fall through to full state diff to pick up any remaining gap.
-		}
-
-		// Full state diff: apply any remoteDoc state not yet in localDoc.
-		const localText = this.localDoc.getText("contents").toString();
-		if (localText !== remoteText) {
-			const update = Y.encodeStateAsUpdate(
-				this.remoteDoc,
-				Y.encodeStateVector(this.localDoc),
-			);
-			this.syncToLocal(update);
-		}
-
-		// Dispatch the net change to the editor view.
-		const afterText = this.localDoc.getText("contents").toString();
-		if (afterText !== beforeText) {
-			const changes = this.computeDiffChanges(beforeText, afterText);
-			if (changes.length > 0) {
-				this.emitEffect({ type: "DISPATCH_CM6", changes });
-			}
-		}
-	}
-
-	/**
-	 * Safety net: if localDoc and remoteDoc have divergent state vectors
-	 * with no pending machine edits to account for the difference, perform
-	 * a bidirectional full state diff to force convergence. This should
-	 * never be needed — if it fires, there is a bug that allowed ops to
-	 * enter one doc without being queued for the other.
-	 *
-	 * Called after the queue-based flush completes (not during nested
-	 * flushOutbound calls from flushInbound's machine-edit-match path).
-	 */
-	private assertStateVectorConvergence(): void {
-		if (!this.localDoc || !this.remoteDoc) return;
-
-		// Machine edits intentionally defer outbound ops — state vectors
-		// will diverge until the deferred entries are matched or expire.
-		if (this._pendingMachineEdits.length > 0) return;
-		if (this._outboundQueue.some(e => e.machineEditMark !== null)) return;
-
-		// Fork gates outbound sync — SV divergence is expected while it exists.
-		if (this._fork !== null) return;
-
-		const localSV = Y.encodeStateVector(this.localDoc);
-		const remoteSV = Y.encodeStateVector(this.remoteDoc);
-		if (stateVectorsEqual(localSV, remoteSV)) return;
-
-		const localText = this.localDoc.getText("contents").toString();
-		const remoteText = this.remoteDoc.getText("contents").toString();
-
-		const msg =
-			`[MergeHSM] BUG: state vector divergence after queue flush ` +
-			`(guid=${this._guid}, path=${this.path}, ` +
-			`localSVLen=${localSV.length}, remoteSVLen=${remoteSV.length}, ` +
-			`localTextLen=${localText.length}, remoteTextLen=${remoteText.length}, ` +
-			`textMatch=${localText === remoteText})`;
-
-		console.error(msg);
-		if (process.env.NODE_ENV === 'test') {
-			throw new Error(msg);
-		}
-
-		// Bidirectional sync: apply each direction's missing ops
-		const outbound = Y.encodeStateAsUpdate(this.localDoc, remoteSV);
-		if (outbound.length > 0) {
-			this.syncToRemote(outbound);
-		}
-
-		const inbound = Y.encodeStateAsUpdate(this.remoteDoc, localSV);
-		if (inbound.length > 0) {
-			this.syncToLocal(inbound);
-		}
-	}
 
 	/**
 	 * Apply new content to localDoc using diff-based updates.
@@ -3012,7 +2697,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		this.recalculateConflictPositions();
 
 		// Sync to remote → collaborators see immediately
-		this.flushOutbound();
+		this._bridge.flushOutbound();
 
 		// Check if all conflicts resolved
 		if (
@@ -3087,7 +2772,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 	 * Find a pending machine edit whose fn is already satisfied by remoteText.
 	 * fn(remoteText) === remoteText means the remote already has this transform.
 	 */
-	private matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
+	private _matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
 		const now = this.timeProvider.now();
 		for (const entry of this._pendingMachineEdits) {
 			if (now - entry.registeredAt > MergeHSM.MACHINE_EDIT_TTL) continue;
@@ -3126,7 +2811,7 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 
 		if (anyExpired) {
-			this.flushOutbound();
+			this._bridge.flushOutbound();
 		}
 	}
 
@@ -3148,25 +2833,20 @@ export class MergeHSM implements TestableHSM, MachineHSM {
 		}
 		this._pendingMachineEdits.length = 0;
 		this._consumedMachineEditTexts.clear();
-		this.flushOutbound();
+		this._bridge.flushOutbound();
 	}
 
 	// ===========================================================================
 	// Diff Computation
 	// ===========================================================================
 
-	private computeDiffChanges(from: string, to: string): PositionedChange[] {
-		return computeDiffMatchPatchChanges(from, to);
-	}
+
 
 	// ===========================================================================
 	// Effect Emission
 	// ===========================================================================
 
-	private emitEffect(effect: MergeEffect): void {
-		this._pendingEffects?.push(effect);
-		this._effects.emit(effect);
-	}
+
 
 	setOnTransition(cb: ((info: { from: StatePath; to: StatePath; event: MergeEvent; effects: MergeEffect[] }) => void) | null): void {
 		this._onTransition = cb ?? undefined;
