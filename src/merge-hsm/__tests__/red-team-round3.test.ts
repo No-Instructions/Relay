@@ -224,7 +224,7 @@ describe('PersistedMergeState round-trips', () => {
       'idle.loading', 'idle.synced', 'idle.localAhead',
       'idle.remoteAhead', 'idle.diskAhead', 'idle.diverged', 'idle.error',
       'active.loading', 'active.entering', 'active.entering.awaitingPersistence',
-      'active.entering.awaitingRemote', 'active.entering.reconciling',
+      'active.entering.reconciling',
       'active.tracking', 'active.merging.twoWay', 'active.merging.threeWay',
       'active.conflict.bannerShown', 'active.conflict.resolving',
       'unloading',
@@ -520,7 +520,6 @@ describe('Lock lifecycle', () => {
     await sendAcquireLockToTracking(t, 'content');
 
     // After re-acquire, provider synced state should be fresh
-    // (awaitingRemote may need PROVIDER_SYNCED again)
     expectState(t, 'active.tracking');
   });
 

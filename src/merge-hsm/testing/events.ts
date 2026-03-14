@@ -57,8 +57,8 @@ export function acquireLock(editorContent: string = '', editorViewRef?: EditorVi
 
 /**
  * Send ACQUIRE_LOCK and wait for persistence to sync.
- * After this, state will be in active.tracking or active.entering.awaitingRemote
- * (or active.conflict.* if there's a deferred conflict).
+ * After this, state will be in active.tracking, active.entering.reconciling,
+ * or active.conflict.* if there's a deferred conflict.
  */
 export async function sendAcquireLock(hsm: HSMHandle, editorContent: string = ''): Promise<void> {
   hsm.send(acquireLock(editorContent));
@@ -68,16 +68,9 @@ export async function sendAcquireLock(hsm: HSMHandle, editorContent: string = ''
 
 /**
  * Send ACQUIRE_LOCK and wait all the way to active.tracking.
- * Sends PROVIDER_SYNCED if needed to unblock awaitingRemote.
  */
 export async function sendAcquireLockToTracking(hsm: HSMHandle, editorContent: string = ''): Promise<void> {
   hsm.send(acquireLock(editorContent));
-  // Wait for state to leave awaitingPersistence
-  await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence'));
-  // If we're in awaitingRemote, send PROVIDER_SYNCED to unblock
-  if (hsm.matches('active.entering.awaitingRemote')) {
-    hsm.send(providerSynced());
-  }
   // Wait for tracking (or conflict)
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking' || s.includes('conflict'));
 }
@@ -345,23 +338,11 @@ export async function loadAndActivate(
   // 4. ACQUIRE_LOCK → active.entering.awaitingPersistence (creates YDocs)
   //    Persistence syncs asynchronously (may have random delay in tests).
   //    If IDB had content (hasContent=true) → reconciling → tracking.
-  //    If IDB was empty (hasContent=false) → awaitingRemote (needs PROVIDER_SYNCED).
+  //    If IDB was empty (hasContent=false) and provider not synced → tracking directly.
   hsm.send(acquireLock(content, opts?.editorViewRef));
 
-  // Wait for persistence to sync and state to settle
-  await hsm.hsm?.awaitState?.((s) =>
-    s === 'active.tracking' ||
-    s === 'active.entering.awaitingRemote' ||
-    s === 'active.entering.reconciling'
-  );
-
-  // When IDB was empty, HSM waits in awaitingRemote for server state.
-  // Send PROVIDER_SYNCED to unblock it.
-  if (hsm.matches('active.entering')) {
-    hsm.send(providerSynced());
-    // Wait for transition to tracking
-    await hsm.hsm?.awaitState?.((s) => s === 'active.tracking');
-  }
+  // Wait for state to reach tracking
+  await hsm.hsm?.awaitState?.((s) => s === 'active.tracking');
 
   // Sync localDoc content to remoteDoc (simulating initial provider sync)
   // In production, remoteDoc would be synced via WebSocket/WebRTC provider.

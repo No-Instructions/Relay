@@ -155,7 +155,6 @@ export const ACTIVE_HAS_LOCAL_DOC: InvariantDefinition = {
   applicableStates: [
     'active.entering',
     'active.entering.awaitingPersistence',
-    'active.entering.awaitingRemote',
     'active.entering.reconciling',
     'active.tracking',
     'active.merging.twoWay',
