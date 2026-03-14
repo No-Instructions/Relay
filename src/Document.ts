@@ -663,6 +663,77 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.sharedFolder?.mergeManager?.notifyHSMDestroyed(this.guid);
 	}
 
+	/**
+	 * Handle a GUID remap: the server uses a different GUID for this file path.
+	 * The local CRDT (under the old GUID) has independent document history that
+	 * cannot be merged with the server's CRDT, so we discard it entirely.
+	 *
+	 * After reset, the HSM is re-initialized under the new GUID with no CRDT
+	 * history and no LCA. When the provider syncs, fork reconciliation compares
+	 * disk content against the server's CRDT content (two-way merge).
+	 */
+	async handleGuidRemap(newGuid: string): Promise<void> {
+		const mergeManager = this.sharedFolder?.mergeManager;
+		const oldGuid = this.guid;
+
+		// Destroy the remote doc (it's connected to the old GUID's provider)
+		if (this.isRemoteDocLoaded) {
+			this.destroyRemoteDoc();
+		}
+
+		// Clean up MergeManager caches for the old GUID
+		if (mergeManager) {
+			mergeManager.notifyHSMDestroyed(oldGuid);
+		}
+
+		// Delete the old GUID's IndexedDB database
+		try {
+			const appId = this.sharedFolder?.appId;
+			if (appId) {
+				indexedDB.deleteDatabase(`${appId}-relay-doc-${oldGuid}`);
+			}
+		} catch {
+			// IDB cleanup is best-effort
+		}
+
+		// Update the Document's identity to the new GUID
+		this.guid = newGuid;
+
+		// Update S3RN for the new GUID
+		if (this.sharedFolder.relayId) {
+			this.s3rn = new S3RemoteDocument(
+				this.sharedFolder.relayId,
+				this.sharedFolder.guid,
+				newGuid,
+			);
+		} else {
+			this.s3rn = new S3Document(this.sharedFolder.guid, newGuid);
+		}
+
+		// Reset the HSM under the new GUID if it exists
+		if (this._hsm) {
+			const newVaultId = mergeManager
+				? mergeManager.getVaultId(newGuid)
+				: `relay-doc-${newGuid}`;
+			await this._hsm.resetForGuidRemap(newGuid, newVaultId);
+
+			// Re-initialize the HSM (mirrors ensureHSM's initialization sequence)
+			this._hsm.send({ type: 'LOAD', guid: newGuid });
+			this._hsm.send({
+				type: 'PERSISTENCE_LOADED',
+				updates: new Uint8Array(),
+				lca: null,
+				localStateVector: null,
+			});
+			this._hsm.send({ type: 'SET_MODE_IDLE' });
+
+			// Re-register with MergeManager under the new GUID
+			if (mergeManager) {
+				mergeManager.notifyHSMCreated(newGuid);
+			}
+		}
+	}
+
 	// Helper method to update file stats
 	private updateStats(): void {
 		this.stat.mtime = Date.now();

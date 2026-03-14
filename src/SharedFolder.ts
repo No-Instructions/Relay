@@ -1134,18 +1134,20 @@ export class SharedFolder extends HasProvider {
 				}
 
 				if (localGuid && localFile && isDocument(localFile) && isDocumentMeta(meta)) {
-					// Document with different GUID - remap to remote GUID
-					// and let Yjs sync merge the content
+					// Document with different GUID — the local CRDT (under the old
+					// GUID) has independent history from the server's CRDT and cannot
+					// be merged. Discard the old CRDT/LCA entirely and adopt the
+					// server's GUID. Fork reconciliation handles content differences
+					// once the provider syncs.
 					this.files.delete(localGuid);
-					this.files.set(guid, localFile);
-					localFile.guid = guid;
-					// Clear stale syncStore entries that still reference the old GUID
-					// so subsequent lookups return the canonical remote GUID.
+					const promise = localFile.handleGuidRemap(guid).then(() => {
+						this.files.set(guid, localFile);
+					});
 					this.syncStore.pendingUpload.delete(path);
 					this.log(
 						`Remapped Document ${path} from local GUID ${localGuid} to remote GUID ${guid}`,
 					);
-					return { op: "update", path, promise: Promise.resolve() };
+					return { op: "update", path, promise };
 				}
 			}
 
