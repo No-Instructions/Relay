@@ -784,7 +784,9 @@ describe('MergeHSM', () => {
 
       const conflictData = t.hsm.getConflictData();
       expect(conflictData).not.toBeNull();
-      expect(conflictData!.theirs).toBe('disk changed');
+      // Fork-reconcile: ours=local (disk content), theirs=remote
+      expect(conflictData!.ours).toBe('disk changed');
+      expect(conflictData!.theirs).toBe('remote changed');
     });
 
     test('awaitActive() resolves for conflict state, not just tracking', async () => {
@@ -1243,7 +1245,7 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'WRITE_DISK' });
     });
 
-    test('idle.diverged stays diverged when merge has conflicts', async () => {
+    test('idle.diverged creates fork when merge has conflicts', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original line', mtime: 1000 });
 
@@ -1257,9 +1259,9 @@ describe('MergeHSM', () => {
       // Wait for 3-way merge to attempt
       await t.hsm.awaitIdleAutoMerge();
 
-      // Should be in diverged state (3-way merge has conflict on same line)
-      // The merge will fail because both sides changed the same line
-      expectState(t, 'idle.diverged');
+      // Three-way merge conflict creates a fork → idle.localAhead
+      // Fork-reconcile will run once PROVIDER_SYNCED arrives
+      expectState(t, 'idle.localAhead');
     });
 
     // BUG-021: Empty/uninitialized remote CRDT should not cause data loss
