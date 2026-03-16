@@ -26,6 +26,7 @@ interface MockDocument {
   connectForForkReconcile(): Promise<void>;
   destroyIdleProviderIntegration(): void;
   hasProviderIntegration(): boolean;
+  ensureRemoteDoc(): Y.Doc;
 }
 
 function createUpdate(content: string): Uint8Array {
@@ -58,6 +59,15 @@ describe('Hibernation Lifecycle', () => {
       connectForForkReconcile: async () => {},
       destroyIdleProviderIntegration: () => {},
       hasProviderIntegration: () => false,
+      ensureRemoteDoc: () => {
+        if (!doc.remoteDoc) {
+          doc.remoteDoc = new Y.Doc();
+          // Seed from localDoc (mirrors Document.ensureRemoteDoc behavior)
+          const update = Y.encodeStateAsUpdate(doc.localDoc);
+          Y.applyUpdate(doc.remoteDoc, update);
+        }
+        return doc.remoteDoc;
+      },
     };
 
     // Create HSM via manager factory
