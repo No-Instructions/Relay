@@ -836,7 +836,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	async connectForForkReconcile(): Promise<void> {
 		if (!this._hsm) return;
-		if (this._providerIntegration) return; // Already bridged
+
+		// If already connected (active mode), tear down the existing
+		// provider integration so we can create a fresh remoteDoc from
+		// the server. The existing remoteDoc may contain local edits
+		// that would corrupt fork-reconcile's 3-way merge.
+		if (this._providerIntegration) {
+			this._providerIntegration.destroy();
+			this._providerIntegration = null;
+		}
 
 		// Destroy the existing remoteDoc so we get a fresh one populated
 		// purely from the server. The old remoteDoc may contain local edits
