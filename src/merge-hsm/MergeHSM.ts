@@ -1786,7 +1786,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 				this.applyContentToLocalDoc(diskContent, DISK_ORIGIN);
 				this._fork = fork;
-				this._syncGate.providerSynced = false;
+				this._bridge.providerSynced = false;
 
 				return { success: false, forked: true };
 			}
@@ -2937,12 +2937,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._accumulatedEvents = [];
 		this._modeDecision = null;
 		this._providerSynced = false;
-		this._syncGate = {
-			providerSynced: false,
-			localOnly: false,
-			pendingInbound: 0,
-			pendingOutbound: 0,
-		};
+		this._bridge.providerSynced = false;
+		this._bridge.setLocalOnly(false);
+		this._bridge.resetPendingCounters();
 		this._localDocClientID = null;
 
 		// Update identity to the new GUID
