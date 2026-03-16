@@ -362,21 +362,23 @@ export class MergeManager {
       localStateVector,
     });
 
-    // Start in idle mode by default (caller can send SET_MODE_ACTIVE if needed)
-    hsm.send({ type: 'SET_MODE_IDLE' });
-
     // Handle REQUEST_PROVIDER_SYNC by connecting the document's provider.
     // This creates a live WebSocket so fork-reconcile can sync with the server.
+    // Must be wired before SET_MODE_IDLE because the idle invoke can emit
+    // REQUEST_PROVIDER_SYNC synchronously during the send() call below.
     hsm.subscribe((effect) => {
       if (effect.type === 'REQUEST_PROVIDER_SYNC') {
         const doc = this._getDocument(guid);
         if (doc && !doc.hasProviderIntegration()) {
-          doc.connectForForkReconcile().catch(() => {
-            // Connection failure — fork-reconcile will time out or retry
+          doc.connectForForkReconcile().catch((err) => {
+            console.error(`[MergeManager] connectForForkReconcile failed:`, err);
           });
         }
       }
     });
+
+    // Start in idle mode by default (caller can send SET_MODE_ACTIVE if needed)
+    hsm.send({ type: 'SET_MODE_IDLE' });
 
     return hsm;
   }
