@@ -368,11 +368,20 @@ export class MergeManager {
     // REQUEST_PROVIDER_SYNC synchronously during the send() call below.
     hsm.subscribe((effect) => {
       if (effect.type === 'REQUEST_PROVIDER_SYNC') {
-        const doc = this._getDocument(guid);
-        if (doc && !doc.hasProviderIntegration()) {
+        const connect = () => {
+          const doc = this._getDocument(guid);
+          if (!doc) return;
           doc.connectForForkReconcile().catch((err) => {
             console.error(`[MergeManager] connectForForkReconcile failed:`, err);
           });
+        };
+        // The document may not be registered in SharedFolder.files yet when
+        // this fires synchronously during createHSM. Defer to next microtask
+        // so the caller can finish registration first.
+        if (this._getDocument(guid)) {
+          connect();
+        } else {
+          Promise.resolve().then(connect);
         }
       }
     });
