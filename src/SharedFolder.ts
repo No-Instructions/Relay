@@ -168,7 +168,7 @@ export class SharedFolder extends HasProvider {
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	private pendingDeletes: Set<string> = new Set();
-	private _remoteRenameInProgress: boolean = false;
+
 
 	private _persistence: IndexeddbPersistence;
 	proxy: SharedFolder;
@@ -1007,9 +1007,7 @@ export class SharedFolder extends HasProvider {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
 
-	public get remoteRenameInProgress(): boolean {
-		return this._remoteRenameInProgress;
-	}
+
 
 	async _handleServerRename(
 		doc: IFile,
@@ -1026,21 +1024,11 @@ export class SharedFolder extends HasProvider {
 				diffLog?.push(`creating directory ${dir}`);
 			}
 		}
-		this._remoteRenameInProgress = true;
-		try {
-			await this.fileManager
-				.renameFile(file, normalizePath(this.getPath(path)))
-				.then(() => {
-					doc.move(path, this);
-				});
-		} finally {
-			// Obsidian's link-repair cascade calls vault.process() on linked files
-			// asynchronously, after the rename promise resolves. Delay clearing so
-			// those callbacks still see the flag set and suppress duplicate CRDT ops.
-			setTimeout(() => {
-				this._remoteRenameInProgress = false;
-			}, 500);
-		}
+		await this.fileManager
+			.renameFile(file, normalizePath(this.getPath(path)))
+			.then(() => {
+				doc.move(path, this);
+			});
 	}
 
 	async _handleServerCreate(
