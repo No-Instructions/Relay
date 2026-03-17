@@ -668,26 +668,6 @@ describe("SyncBridge", () => {
 			expect(localDoc.getText("contents").toString()).toBe("hello world");
 		});
 
-		test("flushInbound emits DISPATCH_CM6 for text changes", () => {
-			const { localDoc, remoteDoc } = createDocPair("hello");
-			const host = createMockHost({ localDoc, remoteDoc });
-			const bridge = new SyncBridge(host);
-
-			remoteDoc.getText("contents").insert(5, " world");
-			bridge.flushInbound();
-			expect(host.effects.some(e => e.type === "DISPATCH_CM6")).toBe(true);
-		});
-
-		test("flushInbound with matching docs emits no effects", () => {
-			const { localDoc, remoteDoc } = createDocPair("same");
-			const host = createMockHost({ localDoc, remoteDoc });
-			const bridge = new SyncBridge(host);
-			bridge.setupUpdateQueues();
-
-			bridge.flushInbound();
-			expect(host.effects.filter(e => e.type === "DISPATCH_CM6").length).toBe(0);
-		});
-
 		test("flushInbound with handler drains queue then does state diff", () => {
 			const { localDoc, remoteDoc } = createDocPair("abc");
 			const host = createMockHost({ localDoc, remoteDoc });
@@ -697,6 +677,50 @@ describe("SyncBridge", () => {
 			remoteDoc.getText("contents").insert(3, "def");
 			bridge.flushInbound();
 			expect(localDoc.getText("contents").toString()).toBe("abcdef");
+		});
+
+		test("flushInbound syncs wikilink repair to localDoc", () => {
+			const { localDoc, remoteDoc } = createDocPair("Link: [[target]]\nEnd.");
+			const host = createMockHost({ localDoc, remoteDoc });
+			const bridge = new SyncBridge(host);
+			bridge.setupUpdateQueues();
+
+			remoteDoc.getText("contents").delete(8, 6);
+			remoteDoc.getText("contents").insert(8, "renamed-target");
+
+			bridge.flushInbound();
+			expect(localDoc.getText("contents").toString()).toBe("Link: [[renamed-target]]\nEnd.");
+		});
+
+		test("flushInbound syncs even when called before queue handler", () => {
+			// Simulates ProviderIntegration observer firing before SyncBridge's
+			// queue handler — flushInbound sees empty queue but full state diff
+			// still picks up the change.
+			const { localDoc, remoteDoc } = createDocPair("Link: [[target]]\nEnd.");
+			const host = createMockHost({ localDoc, remoteDoc });
+			const bridge = new SyncBridge(host);
+
+			let flushInboundCalled = false;
+			remoteDoc.on('update', () => {
+				if (!flushInboundCalled) {
+					flushInboundCalled = true;
+					bridge.flushInbound();
+				}
+			});
+
+			bridge.setupUpdateQueues();
+
+			const vault1Doc = new Y.Doc();
+			Y.applyUpdate(vault1Doc, Y.encodeStateAsUpdate(remoteDoc));
+			vault1Doc.getText("contents").delete(8, 6);
+			vault1Doc.getText("contents").insert(8, "renamed-target");
+			const updateFromVault1 = Y.encodeStateAsUpdate(
+				vault1Doc, Y.encodeStateVector(remoteDoc)
+			);
+
+			Y.applyUpdate(remoteDoc, updateFromVault1);
+
+			expect(localDoc.getText("contents").toString()).toBe("Link: [[renamed-target]]\nEnd.");
 		});
 
 		test("flush() does both inbound and outbound", () => {

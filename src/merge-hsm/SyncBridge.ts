@@ -16,7 +16,7 @@ import * as Y from "yjs";
 import type { SyncGate, MergeEffect, PositionedChange } from "./types";
 import type { OpCapture } from "./undo";
 import { MACHINE_EDIT_ORIGIN } from "./undo";
-import { stateVectorsEqual } from "./state-vectors";
+import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 
 // =============================================================================
 // Host Interface
@@ -484,42 +484,21 @@ export class SyncBridge {
 			this.host.removeMachineEdit(match);
 		}
 
-		// Capture editor text before any modifications so we can compute the
-		// net diff for DISPATCH_CM6 at the end.
-		const beforeText = localDoc.getText("contents").toString();
-
-		// Queue path (active editing -- listener installed): drain buffered updates.
-		// After draining, fall through to the full state diff -- the current
-		// in-flight update arrived at remoteDoc before the queue handler ran,
-		// so it is in remoteDoc but not yet in _inboundQueue.
-		if (this._remoteDocUpdateHandler && this._inboundQueue.length > 0) {
-			if (beforeText === remoteText) {
-				this._inboundQueue = [];
-				return;
-			}
+		// Drain buffered inbound updates.
+		if (this._inboundQueue.length > 0) {
 			const merged = Y.mergeUpdates(this._inboundQueue);
 			this._inboundQueue = [];
 			this.syncToLocal(merged);
-			// Fall through to full state diff to pick up any remaining gap.
 		}
 
-		// Full state diff: apply any remoteDoc state not yet in localDoc.
-		const localText = localDoc.getText("contents").toString();
-		if (localText !== remoteText) {
-			const update = Y.encodeStateAsUpdate(
-				remoteDoc,
-				Y.encodeStateVector(localDoc),
-			);
-			this.syncToLocal(update);
-		}
-
-		// Dispatch the net change to the editor view.
-		const afterText = localDoc.getText("contents").toString();
-		if (afterText !== beforeText) {
-			const changes = this.host.computeDiffChanges(beforeText, afterText);
-			if (changes.length > 0) {
-				this.host.emitEffect({ type: "DISPATCH_CM6", changes });
-			}
+		// Safety net: apply any remoteDoc state not yet in localDoc.
+		// After queue drain this should be a no-op. If it isn't, an update
+		// slipped past the queue — log an error so we can track it down.
+		const svBefore = Y.encodeStateVector(localDoc);
+		const update = Y.encodeStateAsUpdate(remoteDoc, svBefore);
+		this.syncToLocal(update);
+		if (stateVectorIsAhead(Y.encodeStateVector(localDoc), svBefore)) {
+			console.error("[SyncBridge] flushInbound safety net fired — update bypassed queue");
 		}
 	}
 
