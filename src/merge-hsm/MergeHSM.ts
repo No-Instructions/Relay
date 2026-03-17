@@ -431,6 +431,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 */
 	setRemoteDoc(doc: Y.Doc | null): void {
 		this.remoteDoc = doc;
+		if (!doc) {
+			this._bridge.providerSynced = false;
+		}
 	}
 
 	// ===========================================================================
