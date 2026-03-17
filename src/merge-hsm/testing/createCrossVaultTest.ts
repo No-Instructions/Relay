@@ -11,6 +11,8 @@ import * as Y from 'yjs';
 import { createTestHSM } from './createTestHSM';
 import type { TestHSM } from './createTestHSM';
 import type { MergeEffect } from '../types';
+import { ProviderIntegration } from '../integration/ProviderIntegration';
+import { MockYjsProvider } from './MockYjsProvider';
 
 // =============================================================================
 // Types
@@ -46,6 +48,15 @@ export interface VaultHandle {
   reconnect(): void;
   /** Whether this vault is connected to the server */
   connected: boolean;
+  /** MockYjsProvider (only present when useProviderIntegration is true) */
+  provider?: MockYjsProvider;
+  /** ProviderIntegration (only present when useProviderIntegration is true) */
+  integration?: ProviderIntegration;
+}
+
+export interface CrossVaultTestOptions {
+  /** Wire up real ProviderIntegration + MockYjsProvider per vault */
+  useProviderIntegration?: boolean;
 }
 
 export interface CrossVaultTest {
@@ -63,7 +74,7 @@ export interface CrossVaultTest {
 // Factory
 // =============================================================================
 
-export async function createCrossVaultTest(): Promise<CrossVaultTest> {
+export async function createCrossVaultTest(options: CrossVaultTestOptions = {}): Promise<CrossVaultTest> {
   const server = new Y.Doc();
 
   // Both vaults share the same document GUID (same file, two vaults)
@@ -120,6 +131,9 @@ export async function createCrossVaultTest(): Promise<CrossVaultTest> {
     }
   });
 
+  // Indirection so ProviderIntegration mode can override sync behavior
+  let syncFn: () => void;
+
   function sync() {
     for (let round = 0; round < 5; round++) {
       const hadWork = pendingFromA.length > 0 || pendingFromB.length > 0 || pendingFromServer.length > 0;
@@ -151,6 +165,8 @@ export async function createCrossVaultTest(): Promise<CrossVaultTest> {
       }
     }
   }
+
+  syncFn = sync;
 
   // Track WRITE_DISK effects to update simulated disks
   hsmA.hsm.subscribe((effect: MergeEffect) => {
@@ -263,5 +279,61 @@ export async function createCrossVaultTest(): Promise<CrossVaultTest> {
   const vaultA = createVaultHandle(hsmA, diskA, remoteDocA, () => aConnected, (v) => { aConnected = v; });
   const vaultB = createVaultHandle(hsmB, diskB, remoteDocB, () => bConnected, (v) => { bConnected = v; });
 
-  return { vaultA, vaultB, server, sync, destroy() { server.destroy(); } };
+  // Wire up ProviderIntegration if requested
+  if (options.useProviderIntegration) {
+    const providerA = new MockYjsProvider(remoteDocA, server);
+    const providerB = new MockYjsProvider(remoteDocB, server);
+
+    const integrationA = new ProviderIntegration(hsmA.hsm as any, remoteDocA, providerA);
+    const integrationB = new ProviderIntegration(hsmB.hsm as any, remoteDocB, providerB);
+
+    vaultA.provider = providerA;
+    vaultA.integration = integrationA;
+    vaultB.provider = providerB;
+    vaultB.integration = integrationB;
+
+    // Override disconnect/reconnect to go through the mock provider
+    vaultA.disconnect = () => {
+      aConnected = false;
+      providerA.disconnect();
+    };
+    vaultA.reconnect = () => {
+      aConnected = true;
+      providerA.connect();
+      // Push any pending local changes to server
+      providerA.pushToServer('vaultA');
+    };
+    vaultB.disconnect = () => {
+      bConnected = false;
+      providerB.disconnect();
+    };
+    vaultB.reconnect = () => {
+      bConnected = true;
+      providerB.connect();
+      providerB.pushToServer('vaultB');
+    };
+
+    // Override syncFn to route through providers
+    syncFn = function providerSync() {
+      // First: push vault remoteDocs to server via providers
+      if (aConnected) providerA.pushToServer('vaultA');
+      if (bConnected) providerB.pushToServer('vaultB');
+
+      // Then: pull server updates into each vault's remoteDoc via provider
+      if (aConnected) {
+        const updateForA = Y.encodeStateAsUpdate(server, Y.encodeStateVector(remoteDocA));
+        if (updateForA.length > 2) {
+          providerA.receiveServerUpdate(updateForA);
+        }
+      }
+      if (bConnected) {
+        const updateForB = Y.encodeStateAsUpdate(server, Y.encodeStateVector(remoteDocB));
+        if (updateForB.length > 2) {
+          providerB.receiveServerUpdate(updateForB);
+        }
+      }
+    };
+  }
+
+  return { vaultA, vaultB, server, sync: () => syncFn(), destroy() { server.destroy(); } };
 }

@@ -1,0 +1,98 @@
+/**
+ * MockYjsProvider - Minimal mock implementing the YjsProvider interface.
+ *
+ * Simulates a Yjs WebSocket provider for unit testing ProviderIntegration.
+ * Supports connect/disconnect/destroy lifecycle and event emission.
+ */
+
+import * as Y from 'yjs';
+import type { YjsProvider } from '../integration/ProviderIntegration';
+
+type EventCallback = (...args: any[]) => void;
+
+export class MockYjsProvider implements YjsProvider {
+  synced = false;
+  connectionState: { status: string } = { status: 'disconnected' };
+
+  private listeners = new Map<string, Set<EventCallback>>();
+  private _remoteDoc: Y.Doc;
+  private _serverDoc: Y.Doc;
+  private _destroyed = false;
+
+  /**
+   * @param remoteDoc - The remoteDoc this provider is "attached" to
+   * @param serverDoc - The shared server Y.Doc to sync against
+   */
+  constructor(remoteDoc: Y.Doc, serverDoc: Y.Doc) {
+    this._remoteDoc = remoteDoc;
+    this._serverDoc = serverDoc;
+  }
+
+  on(event: string, callback: EventCallback): void {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(callback);
+  }
+
+  off(event: string, callback: EventCallback): void {
+    this.listeners.get(event)?.delete(callback);
+  }
+
+  private emit(event: string, ...args: any[]): void {
+    this.listeners.get(event)?.forEach(cb => cb(...args));
+  }
+
+  connect(): void {
+    if (this._destroyed) return;
+    this.connectionState = { status: 'connected' };
+
+    // Simulate initial sync: pull server state into remoteDoc
+    const serverUpdate = Y.encodeStateAsUpdate(
+      this._serverDoc,
+      Y.encodeStateVector(this._remoteDoc),
+    );
+    if (serverUpdate.length > 2) {
+      Y.applyUpdate(this._remoteDoc, serverUpdate, 'provider');
+    }
+
+    this.synced = true;
+    this.emit('sync');
+  }
+
+  disconnect(): void {
+    if (this._destroyed) return;
+    this.connectionState = { status: 'disconnected' };
+    this.synced = false;
+    this.emit('connection-close');
+  }
+
+  destroy(): void {
+    this._destroyed = true;
+    this.listeners.clear();
+  }
+
+  /**
+   * Simulate receiving a server update (as if server pushed data).
+   * Applies the update to remoteDoc with origin 'provider'.
+   */
+  receiveServerUpdate(update: Uint8Array): void {
+    if (this._destroyed || this.connectionState.status !== 'connected') return;
+    Y.applyUpdate(this._remoteDoc, update, 'provider');
+  }
+
+  /**
+   * Push local remoteDoc changes to the server.
+   * Call this to simulate the provider's outbound sync.
+   */
+  pushToServer(origin: string): void {
+    if (this._destroyed || this.connectionState.status !== 'connected') return;
+    const update = Y.encodeStateAsUpdate(
+      this._remoteDoc,
+      Y.encodeStateVector(this._serverDoc),
+    );
+    if (update.length > 2) {
+      Y.applyUpdate(this._serverDoc, update, origin);
+    }
+  }
+}
