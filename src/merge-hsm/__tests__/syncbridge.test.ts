@@ -62,7 +62,6 @@ function createMockHost(opts: MockHostOptions = {}): SyncBridgeHost & {
 		getPendingMachineEdits() { return host.pendingMachineEdits; },
 		matchMachineEdit(remoteText: string) { return host._matchResult; },
 		removeMachineEdit(_entry: { captureMark: number }) {},
-		addConsumedMachineEditText(text: string) { host.consumedTexts.push(text); },
 		computeDiffChanges(from: string, to: string): PositionedChange[] {
 			// Simple diff: single replacement of entire text
 			if (from === to) return [];
@@ -865,7 +864,6 @@ describe("SyncBridge", () => {
 
 			bridge.flushInbound();
 			expect(removedMark).toBe(5);
-			expect(host.consumedTexts).toContain("hello");
 		});
 
 		test("flushOutbound no-ops with null localDoc", () => {

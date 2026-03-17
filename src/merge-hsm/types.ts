@@ -237,7 +237,6 @@ export interface CM6ChangeEvent {
 	type: "CM6_CHANGE";
 	changes: PositionedChange[];
 	docText: string;
-	isFromYjs: boolean;
 }
 
 export interface ProviderSyncedEvent {

@@ -323,10 +323,7 @@ export const MACHINE: MachineDefinition = {
 	'active.tracking': {
 		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal'],
 		on: {
-			CM6_CHANGE: [
-				{ target: 'active.tracking', guard: 'isFromYjs' },
-				{ target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
-			],
+			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
 			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal'] },
 			REMOTE_UPDATE: { target: 'active.tracking', actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal'] },
 			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },

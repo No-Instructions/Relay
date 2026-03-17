@@ -143,7 +143,6 @@ class HSMEditorPluginValue implements PluginValue {
           type: 'CM6_CHANGE',
           changes: edit.changes,
           docText: edit.docText,
-          isFromYjs: false,
         });
       }
       this.pendingEdits = [];

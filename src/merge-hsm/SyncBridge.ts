@@ -55,8 +55,6 @@ export interface SyncBridgeHost {
 	} | null;
 	/** Remove a matched machine edit registration */
 	removeMachineEdit(entry: { captureMark: number }): void;
-	/** Record consumed machine edit text (for delayed CM6 deduplication) */
-	addConsumedMachineEditText(text: string): void;
 	/** Compute positioned diff changes between two strings */
 	computeDiffChanges(from: string, to: string): PositionedChange[];
 	/** GUID for logging */
@@ -482,10 +480,8 @@ export class SyncBridge {
 			}
 
 			// OpCapture unavailable or no ops captured yet (CM6 transaction hasn't
-			// fired). Remove the registration but record the expected text so the
-			// delayed CM6 transaction does not generate a duplicate CRDT op.
+			// fired). Remove the registration.
 			this.host.removeMachineEdit(match);
-			this.host.addConsumedMachineEditText(match.expectedText);
 		}
 
 		// Capture editor text before any modifications so we can compute the
