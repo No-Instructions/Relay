@@ -1038,7 +1038,6 @@ export default class Live extends Plugin {
 						isDocument(file) &&
 						file.hsm &&
 						!file.isSaving &&
-						!folder.remoteRenameInProgress &&
 						tfile instanceof TFile
 					) {
 						try {

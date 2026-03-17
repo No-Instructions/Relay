@@ -168,12 +168,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				this._hsm.registerMachineEdit(fn);
 				return false;
 			}
-			// In idle mode during a remote rename, suppress the local disk write.
-			// The CRDT from the renaming vault will arrive and idle-merge will
-			// write the correct content to disk, avoiding duplicate CRDT insertions.
-			if (this._parent.remoteRenameInProgress) {
-				return true;
-			}
+			// Idle mode: let Obsidian write to disk. The HSM will detect the
+			// disk change, create a fork, and reconcile with any remote CRDT
+			// that carries the same (or different) edit.
 		}
 		return false;
 	}
