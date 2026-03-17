@@ -16,6 +16,8 @@
 
 // Factory
 export { createTestHSM } from './createTestHSM';
+export { createCrossVaultTest } from './createCrossVaultTest';
+export type { CrossVaultTest, VaultHandle, SimulatedDisk } from './createCrossVaultTest';
 export type { TestHSM, TestHSMOptions, TestableHSM } from './createTestHSM';
 
 // Event factories

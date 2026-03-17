@@ -115,7 +115,7 @@ export function cm6Insert(
   insert: string,
   docText: string
 ): CM6ChangeEvent {
-  return cm6Change([{ from, to: from, insert }], docText, false);
+  return cm6Change([{ from, to: from, insert }], docText);
 }
 
 export function providerSynced(): ProviderSyncedEvent {
