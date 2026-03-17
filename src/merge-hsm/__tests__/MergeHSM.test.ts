@@ -421,6 +421,8 @@ describe('MergeHSM', () => {
       const divergedDiskContent = editedContent + '\nExtra line from external edit';
       t.send(await diskChanged(divergedDiskContent, 3000));
       await t.hsm.awaitIdleAutoMerge();
+      t.send(connected());
+      t.send(providerSynced());
       await t.hsm.awaitForkReconcile();
       expectState(t, 'idle.synced');
 
@@ -787,9 +789,9 @@ describe('MergeHSM', () => {
 
       const conflictData = t.hsm.getConflictData();
       expect(conflictData).not.toBeNull();
-      // Fork-reconcile: ours=local (disk content), theirs=remote
-      expect(conflictData!.ours).toBe('disk changed');
-      expect(conflictData!.theirs).toBe('remote changed');
+      // Fork-reconcile: ours=localDoc (CRDT with remote content), theirs=remoteDoc
+      expect(conflictData!.ours).toBe('remote changed');
+      expect(conflictData!.theirs).toBe('disk changed');
     });
 
     test('awaitActive() resolves for conflict state, not just tracking', async () => {
@@ -984,8 +986,10 @@ describe('MergeHSM', () => {
 
       t.send(await diskChanged('modified content', Date.now()));
 
-      // Disk edit creates fork, fork reconciliation runs immediately (provider synced)
+      // Disk edit creates fork, fork reconciliation needs provider re-sync
       await t.hsm.awaitIdleAutoMerge();
+      t.send(connected());
+      t.send(providerSynced());
       await t.hsm.awaitForkReconcile();
 
       // End state should be clean after auto-merge
@@ -1212,6 +1216,8 @@ describe('MergeHSM', () => {
 
       // Wait for fork creation and reconciliation
       await t.hsm.awaitIdleAutoMerge();
+      t.send(connected());
+      t.send(providerSynced());
       await t.hsm.awaitForkReconcile();
 
       // Should auto-merge and emit SYNC_TO_REMOTE
@@ -1241,6 +1247,8 @@ describe('MergeHSM', () => {
 
       // Wait for fork reconciliation (3-way merge)
       await t.hsm.awaitIdleAutoMerge();
+      t.send(connected());
+      t.send(providerSynced());
       await t.hsm.awaitForkReconcile();
 
       // 3-way merge should succeed - back to clean
@@ -1419,6 +1427,8 @@ describe('MergeHSM', () => {
       // Disk changes but remote hasn't changed since LCA
       t.send(await diskChanged('original modified', 2000));
       await t.hsm.awaitIdleAutoMerge();
+      t.send(connected());
+      t.send(providerSynced());
       await t.hsm.awaitForkReconcile();
 
       // Fork reconciliation emits SYNC_TO_REMOTE (push disk content to remote)
@@ -1478,6 +1488,8 @@ describe('MergeHSM', () => {
       // Disk changes first
       t.send(await diskChanged('base disk', 2000));
       await t.hsm.awaitIdleAutoMerge();
+      t.send(connected());
+      t.send(providerSynced());
       await t.hsm.awaitForkReconcile();
 
       // After fork reconciliation, we're back to synced with updated LCA

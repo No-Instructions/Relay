@@ -276,6 +276,8 @@ export interface HSMHandle {
   seedIndexedDB?(updates: Uint8Array): void;
   /** Sync remoteDoc with updates to share CRDT history (optional, used by loadToIdle) */
   syncRemoteWithUpdate?(update: Uint8Array): void;
+  /** Directly set provider synced state without triggering a state transition */
+  setProviderSynced?(value: boolean): void;
 }
 
 export interface LoadAndActivateOptions {
@@ -425,6 +427,9 @@ export async function loadToIdle(
   hsm.send(persistenceLoaded(updates, lca));
   // 3. SET_MODE_IDLE → idle.loading → idle.synced (or other idle substate)
   hsm.send({ type: 'SET_MODE_IDLE' });
+  // 4. Mark provider as synced so idle auto-merges can proceed.
+  //    Set directly to avoid the PROVIDER_SYNCED event causing a state transition.
+  hsm.setProviderSynced?.(true);
 
   // Wait for persistence to sync (localDoc to have expected content).
   // With async delays enabled, the persistence callback fires asynchronously.
@@ -591,6 +596,7 @@ export async function loadToConflict(
   });
 
   hsm.send({ type: 'SET_MODE_IDLE' });
+  hsm.setProviderSynced?.(true);
 
   // Wait for any auto-merge attempts to complete
   await hsm.awaitIdleAutoMerge?.();
