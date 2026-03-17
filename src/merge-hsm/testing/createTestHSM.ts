@@ -106,6 +106,9 @@ export interface TestHSM {
   /** Wait for any pending idle auto-merge to complete */
   awaitIdleAutoMerge(): Promise<void>;
 
+  /** Directly set the provider synced state without triggering a state transition */
+  setProviderSynced(value: boolean): void;
+
   /**
    * Seed the mock IndexedDB with updates.
    * Call this before ACQUIRE_LOCK to simulate content that was persisted
@@ -331,6 +334,11 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   // Capture effects for test assertions
   hsm.subscribe(effect => {
     effects.push(effect);
+    // Fork creation emits REQUEST_PROVIDER_SYNC, meaning the provider
+    // needs to re-sync. Reset providerState to match production behavior.
+    if (effect.type === 'REQUEST_PROVIDER_SYNC') {
+      providerState.synced = false;
+    }
   });
 
   // Track state changes
@@ -440,6 +448,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     getRemoteUpdate,
     setRemoteContent,
     syncRemoteWithUpdate,
+    setProviderSynced: (value: boolean) => { providerState.synced = value; },
   };
 }
 
