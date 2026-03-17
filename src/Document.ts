@@ -837,20 +837,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	async connectForForkReconcile(): Promise<void> {
 		if (!this._hsm) return;
 
-		// If already connected (active mode), tear down the existing
-		// provider integration so we can create a fresh remoteDoc from
-		// the server. The existing remoteDoc may contain local edits
-		// that would corrupt fork-reconcile's 3-way merge.
-		if (this._providerIntegration) {
-			this._providerIntegration.destroy();
-			this._providerIntegration = null;
+		// Only tear down and recreate when there is an active fork that
+		// requires a fresh remoteDoc from the server. The existing
+		// remoteDoc may contain local edits from syncLocalToRemote which
+		// would corrupt fork-reconcile's 3-way merge. When no fork is
+		// active (e.g. idle.diverged download path), preserve the working
+		// provider to avoid destroying a synced connection.
+		const hasFork = this._hsm.hasFork?.() ?? false;
+		if (hasFork) {
+			if (this._providerIntegration) {
+				this._providerIntegration.destroy();
+				this._providerIntegration = null;
+			}
+			this.destroyRemoteDoc();
+		} else if (this._providerIntegration) {
+			// Provider is already connected and no fork requires a fresh
+			// remoteDoc — nothing to do.
+			return;
 		}
-
-		// Destroy the existing remoteDoc so we get a fresh one populated
-		// purely from the server. The old remoteDoc may contain local edits
-		// from the active session (via syncLocalToRemote), which would
-		// prevent fork-reconcile from detecting true divergence.
-		this.destroyRemoteDoc();
 
 		const remoteDoc = this.ensureRemoteDoc();
 		this._hsm.setRemoteDoc(remoteDoc);
