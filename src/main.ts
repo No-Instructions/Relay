@@ -558,7 +558,7 @@ export default class Live extends Plugin {
 			endpointManager,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
-		this.relayDebugAPI = new RelayDebugAPI();
+		this.relayDebugAPI = new RelayDebugAPI(this);
 		this.deviceManager = new DeviceManager(
 			this.appId,
 			this.vault.getName(),
