@@ -14,6 +14,21 @@ import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } fro
 import type { SessionLogOptions } from './debug';
 
 // =============================================================================
+// Types
+// =============================================================================
+
+export interface DocumentContentSnapshot {
+  path: string;
+  guid: string;
+  folder: string;
+  local: { content: string; stateVector: string } | null;
+  remote: { content: string; stateVector: string } | null;
+  idb: { content: string; stateVector: string } | null;
+  disk: { content: string; mtime: number } | null;
+  server: { content: string; stateVector: string; updateSize: number } | null;
+}
+
+// =============================================================================
 // Global interface exposed via CDP
 // =============================================================================
 
@@ -38,6 +53,8 @@ export interface RelayDebugGlobal {
   readIdbContent: (guid: string, appId: string) => Promise<{ content: string; stateVector: Uint8Array } | null>;
   /** Get plugin log entries from the current session, with optional level/pattern filtering */
   getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
+  /** Get a snapshot of all content views for a document */
+  getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
 }
 
 // =============================================================================
@@ -47,8 +64,10 @@ export interface RelayDebugGlobal {
 export class RelayDebugAPI {
   private bridges = new Map<string, E2ERecordingBridge>();
   private activeRecordingName: string | null = null;
+  private plugin: any;
 
-  constructor() {
+  constructor(plugin?: any) {
+    this.plugin = plugin;
     this.installGlobal();
   }
 
@@ -155,9 +174,118 @@ export class RelayDebugAPI {
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
+      getDocumentContent: async (path) => this.getDocumentContent(path),
     };
 
     (g as any).__relayDebug = api;
+  }
+
+  /**
+   * Encode a Uint8Array as a hex string for JSON serialization.
+   */
+  private toHex(bytes: Uint8Array): string {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /**
+   * Get a snapshot of all content views (local, remote, IDB, disk, server) for a document.
+   */
+  private async getDocumentContent(path: string): Promise<DocumentContentSnapshot> {
+    if (!this.plugin?.sharedFolders?._set) {
+      throw new Error('No shared folders available');
+    }
+
+    // Find the document across all shared folders
+    let foundDoc: any = null;
+    let foundFolder: any = null;
+
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if (folder.files) {
+        for (const doc of folder.files.values()) {
+          if (doc.path === path) {
+            foundDoc = doc;
+            foundFolder = folder;
+            break;
+          }
+        }
+      }
+      if (foundDoc) break;
+    }
+
+    if (!foundDoc || !foundFolder) {
+      throw new Error(`Document not found: ${path}`);
+    }
+
+    const result: DocumentContentSnapshot = {
+      path: foundDoc.path,
+      guid: foundDoc.guid,
+      folder: foundFolder.path || foundFolder.name,
+      local: null,
+      remote: null,
+      idb: null,
+      disk: null,
+      server: null,
+    };
+
+    // Local doc
+    try {
+      const localDoc = foundDoc.localDoc;
+      if (localDoc) {
+        result.local = {
+          content: localDoc.getText('contents').toString(),
+          stateVector: this.toHex(Y.encodeStateVector(localDoc)),
+        };
+      }
+    } catch { /* localDoc not available */ }
+
+    // Remote doc (ydoc)
+    try {
+      const remoteDoc = foundDoc.ydoc;
+      if (remoteDoc) {
+        result.remote = {
+          content: remoteDoc.getText('contents').toString(),
+          stateVector: this.toHex(Y.encodeStateVector(remoteDoc)),
+        };
+      }
+    } catch { /* remoteDoc not available */ }
+
+    // IDB
+    try {
+      const idbResult = await readIdbContent(foundDoc.guid, foundFolder.appId);
+      if (idbResult) {
+        result.idb = {
+          content: idbResult.content,
+          stateVector: this.toHex(idbResult.stateVector),
+        };
+      }
+    } catch { /* IDB not available */ }
+
+    // Disk
+    try {
+      const adapter = this.plugin.app.vault.adapter;
+      const content = await adapter.read(foundDoc.path);
+      const stat = await adapter.stat(foundDoc.path);
+      result.disk = {
+        content,
+        mtime: stat?.mtime ?? 0,
+      };
+    } catch { /* disk read failed */ }
+
+    // Server
+    try {
+      const response = await foundFolder.backgroundSync.downloadItem(foundDoc);
+      const rawUpdate = new Uint8Array(response.arrayBuffer);
+      const tempDoc = new Y.Doc();
+      Y.applyUpdate(tempDoc, rawUpdate);
+      result.server = {
+        content: tempDoc.getText('contents').toString(),
+        stateVector: this.toHex(Y.encodeStateVector(tempDoc)),
+        updateSize: rawUpdate.byteLength,
+      };
+      tempDoc.destroy();
+    } catch { /* server download failed */ }
+
+    return result;
   }
 
   /**
