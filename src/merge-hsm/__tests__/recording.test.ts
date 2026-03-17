@@ -70,7 +70,6 @@ describe('HSM Recording', () => {
         type: 'CM6_CHANGE',
         changes: [{ from: 0, to: 5, insert: 'hello' }],
         docText: 'hello world',
-        isFromYjs: false,
       };
 
       const serialized = serializeEvent(event);

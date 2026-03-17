@@ -110,7 +110,11 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
-    test('user edit with isFromYjs=true does not emit SYNC_TO_REMOTE', async () => {
+    test('echo suppression is handled at CM6Integration level via ySyncAnnotation', async () => {
+      // Echo suppression for Yjs-originated changes is handled by the
+      // ySyncAnnotation check in CM6Integration.onEditorUpdate() and
+      // HSMEditorPlugin.update(), not at the state machine level.
+      // CM6_CHANGE events that reach the HSM are always user edits.
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello');
       t.clearEffects();
@@ -118,10 +122,9 @@ describe('MergeHSM', () => {
       t.send(cm6Change(
         [{ from: 5, to: 5, insert: ' world' }],
         'hello world',
-        true // isFromYjs
       ));
 
-      expectNoEffect(t.effects, 'SYNC_TO_REMOTE');
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
     test('multiple edits each emit SYNC_TO_REMOTE', async () => {

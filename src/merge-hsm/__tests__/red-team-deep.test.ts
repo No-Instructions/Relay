@@ -372,7 +372,7 @@ describe('Malformed events', () => {
     const t = await createTestHSM();
     await loadAndActivate(t, 'test');
 
-    t.send({ type: 'CM6_CHANGE', changes: [], docText: 'test', isFromYjs: false });
+    t.send({ type: 'CM6_CHANGE', changes: [], docText: 'test' });
     expect(t.statePath).toBe('active.tracking');
   });
 });

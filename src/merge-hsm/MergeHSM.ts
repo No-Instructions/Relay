@@ -239,7 +239,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private _accumulatedEvents: Array<
 		| { type: "REMOTE_UPDATE"; update: Uint8Array }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
-		| { type: "CM6_CHANGE"; changes: any[]; docText: string; isFromYjs: boolean }
+		| { type: "CM6_CHANGE"; changes: any[]; docText: string }
 	> = [];
 
 	// Mode decision during loading state (null = not decided, 'idle' or 'active')
@@ -255,10 +255,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		captureMark: number;
 		registeredAt: number;
 	}> = [];
-	// Texts of machine edits consumed by an incoming remote CRDT before the
-	// corresponding CM6 transaction fired. Any delayed CM6 event matching one
-	// of these texts must be skipped — the CRDT content is already correct.
-	private _consumedMachineEditTexts: Set<string> = new Set();
 	private _suppressLocalObserver = false;
 
 
@@ -473,11 +469,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			e => e.captureMark === entry.captureMark,
 		);
 		if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
-	}
-
-	/** @internal Used by SyncBridge */
-	addConsumedMachineEditText(text: string): void {
-		this._consumedMachineEditTexts.add(text);
 	}
 
 	/** @internal Used by SyncBridge */
@@ -968,7 +959,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				return localText === diskText;
 			},
 			isRecoveryMode: () => this._lca === null,
-			isFromYjs: (_hsm, event) => (event as any).isFromYjs === true,
 		};
 	}
 
@@ -1283,7 +1273,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					type: "CM6_CHANGE",
 					changes: e.changes,
 					docText: e.docText,
-					isFromYjs: false,
 				});
 			},
 			accumulateDiskChanged: (_hsm, event) => {
@@ -1321,12 +1310,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						(me) => me.expectedText === e.docText,
 					);
 
-					if (this._consumedMachineEditTexts.has(e.docText)) {
-						// Remote CRDT arrived and updated localDoc before this
-						// CM6 transaction fired. The CRDT content is already
-						// correct — skip the CRDT op to avoid duplication.
-						this._consumedMachineEditTexts.delete(e.docText);
-					} else if (machineEditIdx >= 0) {
+					if (machineEditIdx >= 0) {
 						// Machine edit: apply via a temp proxy Y.Doc so the
 						// items get the proxy's clientID, not localDoc's. This
 						// decouples user edits from machine edits at the state
@@ -2837,7 +2821,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			}
 		}
 		this._pendingMachineEdits.length = 0;
-		this._consumedMachineEditTexts.clear();
 		this._bridge.flushOutbound();
 	}
 

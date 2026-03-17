@@ -29,7 +29,6 @@ export class CM6Integration {
   private hsm: MergeHSM;
   private view: EditorView;
   private unsubscribe: (() => void) | null = null;
-  private suppressNextChange = false;
   private destroyed = false;
   private log: (...args: unknown[]) => void;
   private warn: (...args: unknown[]) => void;
@@ -80,16 +79,11 @@ export class CM6Integration {
       insert: change.insert,
     }));
 
-    // Set flag to suppress the resulting editor change event
-    this.suppressNextChange = true;
-
     this.view.dispatch({
       changes: cmChanges,
       // Mark as coming from Yjs/HSM to prevent feedback loops
       annotations: [ySyncAnnotation.of(this.view)],
     });
-
-    this.suppressNextChange = false;
   }
 
   /**
@@ -97,13 +91,13 @@ export class CM6Integration {
    * Call this from a ViewPlugin's update method.
    */
   onEditorUpdate(update: ViewUpdate): void {
-    // Skip if this change originated from HSM (dispatched by us)
-    if (this.suppressNextChange) {
+    // Only process if there are actual document changes
+    if (!update.docChanged) {
       return;
     }
 
-    // Only process if there are actual document changes
-    if (!update.docChanged) {
+    // Skip changes originating from Yjs/HSM dispatches (annotation-based echo suppression)
+    if (update.transactions.some((tr) => tr.annotation(ySyncAnnotation))) {
       return;
     }
 
@@ -132,7 +126,6 @@ export class CM6Integration {
         type: 'CM6_CHANGE',
         changes,
         docText: update.state.doc.toString(),
-        isFromYjs: false,
       });
     }
   }

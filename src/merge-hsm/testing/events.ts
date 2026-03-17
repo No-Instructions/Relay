@@ -103,9 +103,8 @@ export function saveComplete(mtime: number, hash: string = 'test-hash'): SaveCom
 export function cm6Change(
   changes: PositionedChange[],
   docText: string,
-  isFromYjs: boolean = false
 ): CM6ChangeEvent {
-  return { type: 'CM6_CHANGE', changes, docText, isFromYjs };
+  return { type: 'CM6_CHANGE', changes, docText };
 }
 
 /**

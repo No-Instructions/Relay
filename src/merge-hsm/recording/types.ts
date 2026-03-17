@@ -148,7 +148,7 @@ export type SerializableEvent =
   | { type: 'DISK_CHANGED'; contents: string; mtime: number; hash: string }
   | { type: 'REMOTE_UPDATE'; update: string } // base64
   | { type: 'SAVE_COMPLETE'; mtime: number; hash: string }
-  | { type: 'CM6_CHANGE'; changes: Array<{ from: number; to: number; insert: string }>; docText: string; isFromYjs: boolean }
+  | { type: 'CM6_CHANGE'; changes: Array<{ from: number; to: number; insert: string }>; docText: string }
   | { type: 'PROVIDER_SYNCED' }
   | { type: 'CONNECTED' }
   | { type: 'DISCONNECTED' }
