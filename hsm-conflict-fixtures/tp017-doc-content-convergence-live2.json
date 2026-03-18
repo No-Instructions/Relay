@@ -1,0 +1,20 @@
+{
+  "path": "/TP-017-conflict.md",
+  "guid": "4cf4916f-c591-46b0-8355-bd25ce94dd81",
+  "folder": "private",
+  "local": null,
+  "remote": {
+    "content": "# Conflict Test\n\nLine 1: Original content\nLine 2: LOCAL DISK EDIT from live1\nLine 3: More original content\n",
+    "stateVector": "03b6c5c3a90f6d94c6bb9e0501eab3ed9b0424"
+  },
+  "idb": {
+    "content": "# Conflict Test\n\nLine 1: Original content\nLine 2: LOCAL DISK EDIT from live1Line 2: REMOTE EDIT from live2\nLine 3: More original content\n",
+    "stateVector": "07b6c5c3a90f6de3f4f1a60c049bcc90bf0b20e9c89fb0060194c6bb9e0501eab3ed9b042486c7c6c90301"
+  },
+  "disk": null,
+  "server": {
+    "content": "# Conflict Test\n\nLine 1: Original content\nLine 2: LOCAL DISK EDIT from live1\nLine 3: More original content\n",
+    "stateVector": "03b6c5c3a90f6d94c6bb9e0501eab3ed9b0424",
+    "updateSize": 305
+  }
+}
