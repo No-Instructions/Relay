@@ -169,22 +169,16 @@ describe('Provider Integration Lifecycle', () => {
     ctx.vaultA.send({ type: 'SET_MODE_ACTIVE' });
     ctx.vaultA.send({ type: 'ACQUIRE_LOCK', editorContent: 'Line 1\nLine 2 LOCAL\nLine 3' });
 
-    // Wait for fork reconcile
-    await ctx.vaultA.hsm.hsm.awaitForkReconcile();
+    // ACQUIRE_LOCK resets providerSynced. The real provider is already synced,
+    // so ProviderIntegration would fire PROVIDER_SYNCED on reconnect — but
+    // ACQUIRE_LOCK clears it. Resend to trigger reconcileForkInActive.
+    ctx.vaultA.send({ type: 'PROVIDER_SYNCED' });
 
     const statePath = ctx.vaultA.hsm.statePath;
 
-    // diff3 should detect conflict on Line 2:
+    // diff3 detects conflict on Line 2:
     // base="Line 2", local="Line 2 LOCAL", remote="Line 2 REMOTE"
-    if (statePath === 'idle.diverged' || statePath.includes('conflict')) {
-      // diff3 detected the conflict correctly
-      expect(true).toBe(true);
-    } else if (statePath === 'idle.synced' || statePath === 'active.tracking') {
-      // CRDT auto-resolved — document the behavior
-      const localText = ctx.vaultA.getLocalText();
-      console.log('[TP-015] CRDT auto-resolved. Final text:', JSON.stringify(localText));
-      console.log('[TP-015] State path:', statePath);
-    }
+    expect(statePath === 'idle.diverged' || statePath.includes('conflict')).toBe(true);
 
     ctx.destroy();
   });

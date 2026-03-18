@@ -12,6 +12,7 @@ import { createTestHSM } from './createTestHSM';
 import type { TestHSM } from './createTestHSM';
 import type { MergeEffect } from '../types';
 import { ProviderIntegration } from '../integration/ProviderIntegration';
+import { reconnectProvider } from '../integration/ProviderLifecycle';
 import { MockYjsProvider } from './MockYjsProvider';
 
 // =============================================================================
@@ -295,41 +296,74 @@ export async function createCrossVaultTest(options: CrossVaultTestOptions = {}):
     // Override disconnect/reconnect to go through the mock provider
     vaultA.disconnect = () => {
       aConnected = false;
-      providerA.disconnect();
+      vaultA.provider!.disconnect();
     };
     vaultA.reconnect = () => {
       aConnected = true;
-      providerA.connect();
-      // Push any pending local changes to server
-      providerA.pushToServer('vaultA');
+      const result = reconnectProvider({
+        hsm: hsmA.hsm as any,
+        integration: vaultA.integration ?? null,
+        createFreshRemoteDoc: () => new Y.Doc(),
+        destroyCurrentRemoteDoc: () => {
+          hsmA.hsm.setRemoteDoc(null as any);
+        },
+        createAndConnectProvider: (remoteDoc) => {
+          const provider = new MockYjsProvider(remoteDoc, server);
+          provider.connect();
+          vaultA.provider = provider;
+          return provider;
+        },
+      });
+      vaultA.integration = result.integration;
+      vaultA.provider!.pushToServer('vaultA');
     };
     vaultB.disconnect = () => {
       bConnected = false;
-      providerB.disconnect();
+      vaultB.provider!.disconnect();
     };
     vaultB.reconnect = () => {
       bConnected = true;
-      providerB.connect();
-      providerB.pushToServer('vaultB');
+      const result = reconnectProvider({
+        hsm: hsmB.hsm as any,
+        integration: vaultB.integration ?? null,
+        createFreshRemoteDoc: () => new Y.Doc(),
+        destroyCurrentRemoteDoc: () => {
+          hsmB.hsm.setRemoteDoc(null as any);
+        },
+        createAndConnectProvider: (remoteDoc) => {
+          const provider = new MockYjsProvider(remoteDoc, server);
+          provider.connect();
+          vaultB.provider = provider;
+          return provider;
+        },
+      });
+      vaultB.integration = result.integration;
+      vaultB.provider!.pushToServer('vaultB');
     };
 
-    // Override syncFn to route through providers
+    // Override syncFn to route through providers (uses current provider/remoteDoc
+    // from vault handles since reconnect() replaces them)
     syncFn = function providerSync() {
+      const curProviderA = vaultA.provider!;
+      const curProviderB = vaultB.provider!;
+      const curRemoteDocA = hsmA.hsm.getRemoteDoc()!;
+      const curRemoteDocB = hsmB.hsm.getRemoteDoc()!;
+
       // First: push vault remoteDocs to server via providers
-      if (aConnected) providerA.pushToServer('vaultA');
-      if (bConnected) providerB.pushToServer('vaultB');
+      if (aConnected) curProviderA.pushToServer('vaultA');
+      if (bConnected) curProviderB.pushToServer('vaultB');
 
       // Then: pull server updates into each vault's remoteDoc via provider
       if (aConnected) {
-        const updateForA = Y.encodeStateAsUpdate(server, Y.encodeStateVector(remoteDocA));
+        const updateForA = Y.encodeStateAsUpdate(server, Y.encodeStateVector(curRemoteDocA));
         if (updateForA.length > 2) {
-          providerA.receiveServerUpdate(updateForA);
+          curProviderA.receiveServerUpdate(updateForA);
         }
       }
       if (bConnected) {
-        const updateForB = Y.encodeStateAsUpdate(server, Y.encodeStateVector(remoteDocB));
+        const updateForB = Y.encodeStateAsUpdate(server, Y.encodeStateVector(curRemoteDocB));
         if (updateForB.length > 2) {
-          providerB.receiveServerUpdate(updateForB);
+          curProviderB.receiveServerUpdate(updateForB);
         }
       }
     };

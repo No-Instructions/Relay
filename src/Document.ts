@@ -18,6 +18,7 @@ import { diffMatchPatch } from "./y-diffMatchPatch";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import type { EditorViewRef } from "./merge-hsm/types";
 import { ProviderIntegration, type YjsProvider } from "./merge-hsm/integration/ProviderIntegration";
+import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
 
 export function isDocument(file?: IFile): file is Document {
@@ -842,28 +843,37 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// provider to avoid destroying a synced connection.
 		const hasFork = this._hsm.hasFork?.() ?? false;
 		if (hasFork) {
-			if (this._providerIntegration) {
-				this._providerIntegration.destroy();
-				this._providerIntegration = null;
-			}
-			this.destroyRemoteDoc();
+			const result = reconnectProvider({
+				hsm: this._hsm,
+				integration: this._providerIntegration,
+				createFreshRemoteDoc: () => this.ensureRemoteDoc(),
+				destroyCurrentRemoteDoc: () => this.destroyRemoteDoc(),
+				createAndConnectProvider: (remoteDoc) => {
+					this.connect();
+					return this._provider as YjsProvider;
+				},
+			});
+			this._providerIntegration = result.integration;
 		} else if (this._providerIntegration) {
 			// Provider is already connected and no fork requires a fresh
 			// remoteDoc — nothing to do.
 			return;
-		}
+		} else {
+			const remoteDoc = this.ensureRemoteDoc();
+			this._hsm.setRemoteDoc(remoteDoc);
 
-		const remoteDoc = this.ensureRemoteDoc();
-		this._hsm.setRemoteDoc(remoteDoc);
+			await this.connect();
 
-		await this.connect();
+			if (!this._provider || !this._hsm) return;
 
-		if (this._provider && this._hsm) {
 			this._providerIntegration = new ProviderIntegration(
 				this._hsm,
 				remoteDoc,
 				this._provider as YjsProvider,
 			);
+		}
+
+		if (this._hsm) {
 
 			// Tear down when transitioning to another idle state (fork resolved
 			// or diverged). Don't tear down when transitioning to active —
