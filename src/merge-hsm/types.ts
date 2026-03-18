@@ -754,6 +754,13 @@ export interface MergeHSMConfig {
 	 * If not provided, defaults to checking internal _syncGate state.
 	 */
 	isProviderSynced?: () => boolean;
+
+	/**
+	 * When true, invoke sources return never-resolving promises instead of
+	 * running real async operations. Use for replay-based testing where
+	 * recorded done.invoke.* events drive transitions explicitly.
+	 */
+	replayMode?: boolean;
 }
 
 // =============================================================================

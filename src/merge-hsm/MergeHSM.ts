@@ -207,6 +207,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private _diskLoader: DiskLoader;
 	private _isProviderSynced: () => boolean;
 	private _captureOpts: CaptureOpts | null;
+	private _replayMode: boolean;
 
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
@@ -272,6 +273,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._diskLoader = config.diskLoader;
 		this._bridge = new SyncBridge(this);
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
+		this._replayMode = config.replayMode ?? false;
 		this._captureOpts = {
 			scope: "contents",
 			trackedOrigins: new Set([DISK_ORIGIN, MACHINE_EDIT_ORIGIN]),
@@ -316,12 +318,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	send(event: MergeEvent): void {
 		const fromState = this._statePath;
-		if (this._onTransition) this._pendingEffects = [];
+		const captureEffects = !!this._onTransition;
+		const savedEffects = this._pendingEffects;
+		if (captureEffects) this._pendingEffects = [];
 		this.handleEvent(event);
 		const toState = this._statePath;
-		if (this._onTransition && this._pendingEffects) {
-			this._onTransition({ from: fromState, to: toState, event, effects: this._pendingEffects });
-			this._pendingEffects = null;
+		const myEffects = this._pendingEffects;
+		this._pendingEffects = savedEffects;
+		if (captureEffects && myEffects) {
+			this._onTransition!({ from: fromState, to: toState, event, effects: myEffects });
 		}
 		// Always notify even if statePath unchanged — subscribers rely on
 		// property changes (e.g. diskMtime) that can occur without transitions.
@@ -1561,6 +1566,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	private buildInvokeSources(): Record<string, InvokeSourceFn> {
+		if (this._replayMode) {
+			// In replay mode, invoke sources return never-resolving promises.
+			// Recorded done.invoke.* events drive transitions explicitly.
+			const neverResolve = () => new Promise<never>(() => {});
+			return {
+				'idle-merge': neverResolve,
+				'fork-reconcile': neverResolve,
+				'cleanup': neverResolve,
+			};
+		}
 		return {
 			'idle-merge': async (_hsm, signal) => {
 				// Entry action ensureLocalDocForIdle creates localDoc +

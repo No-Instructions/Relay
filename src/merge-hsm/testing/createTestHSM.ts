@@ -61,6 +61,12 @@ export interface TestHSMOptions {
    * Default: returns empty content.
    */
   diskLoader?: DiskLoader;
+
+  /**
+   * When true, invoke sources return never-resolving promises.
+   * Use for replay-based testing where recorded events drive transitions.
+   */
+  replayMode?: boolean;
 }
 
 export interface TestHSM {
@@ -329,6 +335,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     createPersistence,
     diskLoader,
     isProviderSynced: () => providerState.synced,
+    replayMode: options.replayMode,
   });
 
   // Capture effects for test assertions
