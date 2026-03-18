@@ -93,13 +93,17 @@ describe('TP-018 Recording Replay', () => {
 
     ctx.vaultA.hsm.seedIndexedDB(multiClientUpdate);
     ctx.vaultB.hsm.seedIndexedDB(multiClientUpdate);
-    // Seed remoteDocs so SyncBridge can apply deltas correctly.
-    // In production, the provider syncs server state into remoteDoc
-    // during the initial connection.
+    // Seed server with only client 1's ops (matching production where
+    // the server only has partial enrollment state).
+    Y.applyUpdate(ctx.server, client1Update, 'enrollment');
+    // Seed A's remoteDoc with full state (will be replaced on reconnect)
     ctx.vaultA.hsm.syncRemoteWithUpdate(multiClientUpdate);
-    ctx.vaultB.hsm.syncRemoteWithUpdate(multiClientUpdate);
-    // Seed the server with the full multi-client state
-    Y.applyUpdate(ctx.server, multiClientUpdate, 'enrollment');
+    // Seed B's remoteDoc with PARTIAL state (client 1 only) to match
+    // production where the provider delivers incomplete initial sync.
+    // This is the sender-side root cause: B's SyncBridge applies deltas
+    // against a partial remoteDoc, producing updates that don't include
+    // the delete of client 2's items.
+    ctx.vaultB.hsm.syncRemoteWithUpdate(client1Update);
 
     // Track all state transitions for comparison
     const transitionsA: Array<{ event: string; from: string; to: string }> = [];
@@ -286,6 +290,11 @@ describe('TP-018 Recording Replay', () => {
         ctx.vaultA.provider?.connect();
       }
       if (vault === 'B' && vaultHandle.hsm.statePath === 'active.tracking' && !ctx.vaultB.provider?.synced) {
+        // Disable forwarding on B's provider to match production where
+        // B's ops never reach the server (transport-level failure).
+        // The exact production cause is unknown but the effect is clear:
+        // server never receives B's CRDT ops.
+        ctx.vaultB.provider!.forwardingEnabled = false;
         ctx.vaultB.provider?.connect();
       }
 
@@ -347,6 +356,8 @@ describe('TP-018 Recording Replay', () => {
     }
 
     expect(divergences.length).toBe(0);
+
+    // (debug removed — doc-content comparison is below)
 
     // === doc-content state assertions ===
     //
