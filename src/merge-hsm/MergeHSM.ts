@@ -555,6 +555,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			registeredAt: this.timeProvider.now(),
 		});
 
+		console.warn(
+			`[MergeHSM] registerMachineEdit | guid=${this._guid} | ` +
+			`expectedLen=${expectedText.length} | captureMark=${captureMark} | ` +
+			`pendingCount=${this._pendingMachineEdits.length}`
+		);
+
 		// Schedule expiry check at TTL + 100ms
 		const MACHINE_EDIT_TTL = 5000;
 		this.timeProvider.setTimeout(() => {
@@ -1494,6 +1500,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 				// Remote changed — need three-way merge
 				const remoteContent = this.remoteDoc.getText("contents").toString();
+				console.log('[DEBUG reconcileForkInActive]', JSON.stringify({ base: fork.base, local: localContent, remote: remoteContent }));
 				const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 				if (!mergeResult.success) {
@@ -1850,6 +1857,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		const remoteContent = this.remoteDoc.getText("contents").toString();
 
+		console.log('[DEBUG reconcileForkInIdle]', JSON.stringify({ base: fork.base, local: localContent, remote: remoteContent }));
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
