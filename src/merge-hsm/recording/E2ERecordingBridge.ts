@@ -79,8 +79,43 @@ export class E2ERecordingBridge {
   }
 
   // ===========================================================================
-  // Push-based entry point (called by MergeManager's onTransition callback)
+  // Push-based entry points
   // ===========================================================================
+
+  /**
+   * Record a provider lifecycle event. These events are not HSM transitions
+   * but are critical for replay: they capture when the provider disconnects,
+   * reconnects, or creates a fresh remoteDoc.
+   *
+   * Recorded as HSMLogEntry with synthetic event types so they appear
+   * inline in the JSONL alongside HSM transitions.
+   */
+  recordProviderEvent(
+    guid: string,
+    path: string,
+    eventType: 'PROVIDER_DISCONNECT' | 'PROVIDER_RECONNECT',
+    currentStatePath: string,
+  ): void {
+    const tracker = this.getOrCreateTracker(guid, path, currentStatePath as StatePath);
+    const seq = tracker.seqCounter++;
+    tracker.eventCounts[eventType] = (tracker.eventCounts[eventType] || 0) + 1;
+    tracker.eventTotal++;
+
+    if (this.onEntry) {
+      const timestamp = this.timeProvider.now();
+      this.onEntry({
+        ns: 'mergeHSM',
+        ts: new Date(timestamp).toISOString(),
+        guid,
+        path: this._getFullPath(guid) ?? path,
+        seq,
+        event: { type: eventType } as any,
+        from: currentStatePath,
+        to: currentStatePath,
+        effects: [],
+      });
+    }
+  }
 
   /**
    * Record a single HSM transition. Called by MergeManager for every
