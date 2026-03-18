@@ -334,6 +334,13 @@ describe('TP-018 Recording Replay', () => {
 
     expect(divergences.length).toBe(0);
 
+    // === doc-content state assertions (matches TP-018 step 1.5.1) ===
+    //
+    // BUG-123 sender-side: B's SYNC_TO_REMOTE effects fire but ops never
+    // reach the server. The server should have B's edit but doesn't.
+    const serverText = ctx.server.getText('contents').toString();
+    expect(serverText).toContain('REMOTE EDIT from live2');
+
     // === BUG-123 check (TP-018 step 3.2) ===
     // The test plan requires both sides of the conflict to have content.
     // BUG-123: theirs is "" because the provider delivered partial CRDT state.
