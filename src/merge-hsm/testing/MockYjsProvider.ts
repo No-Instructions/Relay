@@ -28,16 +28,21 @@ export class MockYjsProvider implements YjsProvider {
   forwardedCount = 0;
   /** When false, updates are silently dropped (simulates transport failure) */
   forwardingEnabled = true;
+  /** True when the WebSocket is "open" — set after deferred sync completes.
+   * Matches y-websocket's wsconnected flag: false until onopen fires. */
+  wsReady = false;
 
   constructor(remoteDoc: Y.Doc, serverDoc: Y.Doc) {
     this._remoteDoc = remoteDoc;
     this._serverDoc = serverDoc;
 
     // Forward remoteDoc updates to server (like y-websocket does).
-    // Skip updates that originated from this provider (server → remoteDoc echo).
-    // Also skip when forwardingEnabled is false (simulates provider transport failure).
+    // Only forwards when wsReady is true — matches y-websocket's broadcastMessage
+    // which checks wsconnected && ws.readyState === OPEN. Updates that arrive
+    // before the WebSocket opens are SILENTLY DROPPED (BUG-123 sender-side root cause).
     this._updateHandler = (update: Uint8Array, origin: unknown) => {
-      if (origin === 'provider' || this._destroyed || this.connectionState.status !== 'connected') return;
+      if (origin === 'provider' || this._destroyed) return;
+      if (!this.wsReady) return;  // WebSocket not open yet — drop silently
       if (!this.forwardingEnabled) return;
       this.forwardedCount++;
       Y.applyUpdate(this._serverDoc, update, 'provider-forward');
@@ -80,6 +85,7 @@ export class MockYjsProvider implements YjsProvider {
         Y.applyUpdate(this._remoteDoc, serverUpdate, 'provider');
       }
 
+      this.wsReady = true;  // WebSocket is "open" — start forwarding
       this.synced = true;
       this.emit('sync');
     });

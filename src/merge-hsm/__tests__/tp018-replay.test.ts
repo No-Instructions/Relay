@@ -93,8 +93,9 @@ describe('TP-018 Recording Replay', () => {
 
     ctx.vaultA.hsm.seedIndexedDB(multiClientUpdate);
     ctx.vaultB.hsm.seedIndexedDB(multiClientUpdate);
-    // Seed server with only client 1's ops (matching production where
-    // the server only has partial enrollment state).
+    // Seed server with client 1 only — matching production where the
+    // server also received partial enrollment state via the provider
+    // (same wsReady timing issue during initial enrollment).
     Y.applyUpdate(ctx.server, client1Update, 'enrollment');
     // Seed A's remoteDoc with full state (will be replaced on reconnect)
     ctx.vaultA.hsm.syncRemoteWithUpdate(multiClientUpdate);
@@ -284,17 +285,17 @@ describe('TP-018 Recording Replay', () => {
         capturedConflictData = ctx.vaultA.hsm.hsm.getConflictData();
       }
 
-      // Connect providers when vaults reach active.tracking
-      // (matches production where SharedFolder connects the provider)
+      // Connect A's provider when A reaches active.tracking
       if (vault === 'A' && vaultHandle.hsm.statePath === 'active.tracking' && !ctx.vaultA.provider?.synced) {
         ctx.vaultA.provider?.connect();
       }
-      if (vault === 'B' && vaultHandle.hsm.statePath === 'active.tracking' && !ctx.vaultB.provider?.synced) {
-        // Disable forwarding on B's provider to match production where
-        // B's ops never reach the server (transport-level failure).
-        // The exact production cause is unknown but the effect is clear:
-        // server never receives B's CRDT ops.
-        ctx.vaultB.provider!.forwardingEnabled = false;
+      // B's provider: connect AFTER B closes the file (RELEASE_LOCK).
+      // In production, Document.connect() is async — the WebSocket opens
+      // AFTER B starts typing. The y-websocket provider's broadcastMessage
+      // silently drops updates when wsconnected is false. By the time the
+      // WebSocket opens, B has already finished editing. The deferred sync
+      // pulls server state but doesn't replay the dropped outbound updates.
+      if (vault === 'B' && eventType === 'RELEASE_LOCK' && !ctx.vaultB.provider?.synced) {
         ctx.vaultB.provider?.connect();
       }
 
