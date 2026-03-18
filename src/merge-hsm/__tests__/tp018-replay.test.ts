@@ -334,16 +334,38 @@ describe('TP-018 Recording Replay', () => {
 
     expect(divergences.length).toBe(0);
 
-    // === doc-content state assertions (matches TP-018 step 1.5.1) ===
+    // === doc-content state assertions ===
     //
-    // BUG-123 sender-side: B's SYNC_TO_REMOTE effects fire but ops never
-    // reach the server. The server should have B's edit but doesn't.
+    // Compare the twin's state against the production doc-content snapshot
+    // (tp017-doc-content-after-conflict.json). The snapshot captures what
+    // every layer (local, remote, idb, server) contained at the moment
+    // the conflict was detected in production.
+    //
+    // Expected (correct) state — what TP-018 step 1.5.1 asserts:
+    //   server.content: should contain "REMOTE EDIT from live2"
+    //   local.content:  should contain "LOCAL DISK EDIT from live1"
+    //   remote.content: should match server
+    //
+    // Production (buggy) state — from doc-content snapshot:
+    //   server.content: "...\n\nLine 3:..." (line 2 blank — B's ops missing)
+    //   remote.content: same as server (line 2 blank)
+    //   local.content:  "...LOCAL DISK EDIT from live1..." (correct)
+
     const serverText = ctx.server.getText('contents').toString();
+    const localText = ctx.vaultA.hsm.hsm.getLocalDoc()?.getText('contents').toString() ?? '';
+    const remoteText = ctx.vaultA.hsm.hsm.getRemoteDoc()?.getText('contents').toString() ?? '';
+
+    // TP-018 step 1.5.1: server MUST have B's edit
     expect(serverText).toContain('REMOTE EDIT from live2');
+
+    // Local must have A's disk edit
+    expect(localText).toContain('LOCAL DISK EDIT from live1');
+
+    // Remote should match server (whatever the server has)
+    expect(remoteText).toBe(serverText);
 
     // === BUG-123 check (TP-018 step 3.2) ===
     // The test plan requires both sides of the conflict to have content.
-    // BUG-123: theirs is "" because the provider delivered partial CRDT state.
     expect(capturedConflictData).not.toBeNull();
     expect(capturedConflictData.ours).toContain('LOCAL DISK EDIT from live1');
     expect(capturedConflictData.theirs).toContain('REMOTE EDIT from live2');
