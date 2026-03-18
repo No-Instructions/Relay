@@ -93,8 +93,9 @@ export class E2ERecordingBridge {
   recordProviderEvent(
     guid: string,
     path: string,
-    eventType: 'PROVIDER_DISCONNECT' | 'PROVIDER_RECONNECT',
+    eventType: 'PROVIDER_DISCONNECT' | 'PROVIDER_RECONNECT' | 'MACHINE_EDIT_REGISTERED',
     currentStatePath: string,
+    extra?: Record<string, unknown>,
   ): void {
     const tracker = this.getOrCreateTracker(guid, path, currentStatePath as StatePath);
     const seq = tracker.seqCounter++;
@@ -109,7 +110,7 @@ export class E2ERecordingBridge {
         guid,
         path: this._getFullPath(guid) ?? path,
         seq,
-        event: { type: eventType } as any,
+        event: { type: eventType, ...(extra ?? {}) } as any,
         from: currentStatePath,
         to: currentStatePath,
         effects: [],
