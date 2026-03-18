@@ -348,70 +348,68 @@ describe('TP-018 Recording Replay', () => {
 
     expect(divergences.length).toBe(0);
 
-    // === Debug: check B's state after editing ===
-    const bLocalDoc = ctx.vaultB.hsm.hsm.getLocalDoc();
-    const bRemoteDoc = ctx.vaultB.hsm.hsm.getRemoteDoc();
-    // Check if B's SYNC_TO_REMOTE effects have actual update data
-    console.log('[B PROVIDER]', {
-      provider: ctx.vaultB.provider ? 'exists' : 'null',
-      providerSynced: ctx.vaultB.provider?.synced,
-      providerStatus: ctx.vaultB.provider?.connectionState?.status,
-    });
-    const syncEffects = ctx.vaultB.effects.filter((e: any) => e.type === 'SYNC_TO_REMOTE');
-    const totalUpdateBytes = syncEffects.reduce((sum: number, e: any) => sum + (e.update?.length ?? 0), 0);
-    console.log('[B STATE]', {
-      statePath: ctx.vaultB.hsm.statePath,
-      localDoc: bLocalDoc ? bLocalDoc.getText('contents').toString().slice(0, 60) : 'NULL',
-      remoteDoc: bRemoteDoc ? bRemoteDoc.getText('contents').toString().slice(0, 60) : 'NULL',
-      syncEffects: syncEffects.length,
-      totalUpdateBytes,
-      // Apply all sync effects to a test doc to see what they produce
-    });
-    if (syncEffects.length > 0 && bRemoteDoc) {
-      const testDoc = new Y.Doc();
-      Y.applyUpdate(testDoc, Y.encodeStateAsUpdate(bRemoteDoc));
-      for (const e of syncEffects) {
-        if ((e as any).update) {
-          Y.applyUpdate(testDoc, (e as any).update);
-        }
-      }
-      console.log('[B SYNC_TO_REMOTE applied]', JSON.stringify(testDoc.getText('contents').toString().slice(0, 80)));
-      testDoc.destroy();
-    }
-
     // === doc-content state assertions ===
     //
     // Compare the twin's state against the production doc-content snapshot
-    // (tp017-doc-content-after-conflict.json). The snapshot captures what
-    // every layer (local, remote, idb, server) contained at the moment
-    // the conflict was detected in production.
+    // (tp017-doc-content-after-conflict.json). This is the ground truth
+    // from the actual TP-017 run.
     //
-    // Expected (correct) state — what TP-018 step 1.5.1 asserts:
-    //   server.content: should contain "REMOTE EDIT from live2"
-    //   local.content:  should contain "LOCAL DISK EDIT from live1"
-    //   remote.content: should match server
+    // Production snapshot at conflict detection:
+    //   local.content:  "...LOCAL DISK EDIT from live1..."
+    //   remote.content: "...\n\nLine 3:..." (line 2 blank)
+    //   server.content: "...\n\nLine 3:..." (line 2 blank)
     //
-    // Production (buggy) state — from doc-content snapshot:
-    //   server.content: "...\n\nLine 3:..." (line 2 blank — B's ops missing)
-    //   remote.content: same as server (line 2 blank)
-    //   local.content:  "...LOCAL DISK EDIT from live1..." (correct)
+    // The twin should match this EXACT state at the conflict point.
+
+    const prodSnapshot = JSON.parse(
+      fs.readFileSync(path.join(FIXTURES_DIR, 'tp017-doc-content-after-conflict.json'), 'utf-8')
+    );
 
     const serverText = ctx.server.getText('contents').toString();
     const localText = ctx.vaultA.hsm.hsm.getLocalDoc()?.getText('contents').toString() ?? '';
     const remoteText = ctx.vaultA.hsm.hsm.getRemoteDoc()?.getText('contents').toString() ?? '';
 
-    // TP-018 step 1.5.1: server MUST have B's edit
+    // Local must match production snapshot
+    expect(localText).toBe(prodSnapshot.local.content);
+
+    // Server state vector client count should match production
+    // (production had 1 client, meaning B's ops never arrived)
+    const serverSV = Y.decodeStateVector(Y.encodeStateVector(ctx.server));
+    const prodServerSVClientCount = (prodSnapshot.server.stateVector.length - 2) / 6; // rough hex decode
+    console.log('[doc-content]', {
+      twinServerClients: serverSV.size,
+      twinServer: JSON.stringify(serverText.slice(0, 60)),
+      prodServer: JSON.stringify(prodSnapshot.server.content.slice(0, 60)),
+      twinRemote: JSON.stringify(remoteText.slice(0, 60)),
+      prodRemote: JSON.stringify(prodSnapshot.remote.content.slice(0, 60)),
+      twinLocal: JSON.stringify(localText.slice(0, 60)),
+      prodLocal: JSON.stringify(prodSnapshot.local.content.slice(0, 60)),
+    });
+
+    // === doc-content match check ===
+    //
+    // Twin vs production snapshot comparison:
+    //   local:  MATCH (both have LOCAL DISK EDIT)
+    //   server: MISMATCH — twin has B's edit (MockYjsProvider forwards
+    //           correctly); production server was missing B's edit.
+    //           Root cause of production's sender-side failure is unknown.
+    //   remote: MISMATCH — twin has A's disk edit (from old provider sync);
+    //           production had blank line 2 (same as server).
+    //
+    // Despite the server mismatch, the BUG-123 failure mode is reproduced:
+    // A's old provider on reconnect doesn't deliver server state to the
+    // fresh remoteDoc → conflictData.theirs is empty.
+
+    // === TP-018 pass criteria (step 1.5.1 + step 3.2) ===
+    // These assert CORRECT behavior. They FAIL when BUG-123 is present.
+
+    // Server MUST have B's edit
     expect(serverText).toContain('REMOTE EDIT from live2');
 
-    // Local must have A's disk edit
-    expect(localText).toContain('LOCAL DISK EDIT from live1');
+    // Remote should match server
+    expect(remoteText).toBe(serverText);
 
-    // Remote should match server — but with BUG-123 (old provider on
-    // reconnect), A's remoteDoc may be stale.
-    // expect(remoteText).toBe(serverText);
-
-    // === BUG-123 check (TP-018 step 3.2) ===
-    // The test plan requires both sides of the conflict to have content.
+    // conflictData.theirs MUST have remote content
     expect(capturedConflictData).not.toBeNull();
     expect(capturedConflictData.ours).toContain('LOCAL DISK EDIT from live1');
     expect(capturedConflictData.theirs).toContain('REMOTE EDIT from live2');
