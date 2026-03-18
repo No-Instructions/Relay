@@ -23,9 +23,19 @@ export class MockYjsProvider implements YjsProvider {
    * @param remoteDoc - The remoteDoc this provider is "attached" to
    * @param serverDoc - The shared server Y.Doc to sync against
    */
+  private _updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
+
   constructor(remoteDoc: Y.Doc, serverDoc: Y.Doc) {
     this._remoteDoc = remoteDoc;
     this._serverDoc = serverDoc;
+
+    // Forward remoteDoc updates to server (like y-websocket does).
+    // Skip updates that originated from this provider (server → remoteDoc echo).
+    this._updateHandler = (update: Uint8Array, origin: unknown) => {
+      if (origin === 'provider' || this._destroyed || this.connectionState.status !== 'connected') return;
+      Y.applyUpdate(this._serverDoc, update, 'provider-forward');
+    };
+    this._remoteDoc.on('update', this._updateHandler);
   }
 
   on(event: string, callback: EventCallback): void {
@@ -47,17 +57,25 @@ export class MockYjsProvider implements YjsProvider {
     if (this._destroyed) return;
     this.connectionState = { status: 'connected' };
 
-    // Simulate initial sync: pull server state into remoteDoc
-    const serverUpdate = Y.encodeStateAsUpdate(
-      this._serverDoc,
-      Y.encodeStateVector(this._remoteDoc),
-    );
-    if (serverUpdate.length > 2) {
-      Y.applyUpdate(this._remoteDoc, serverUpdate, 'provider');
-    }
+    // Defer sync to match production timing: the WebSocket provider
+    // connects, data arrives asynchronously, then 'sync' fires.
+    // Data is applied BEFORE sync fires — sync means "initial state
+    // is fully loaded into remoteDoc."
+    Promise.resolve().then(() => {
+      if (this._destroyed || this.connectionState.status !== 'connected') return;
 
-    this.synced = true;
-    this.emit('sync');
+      // Pull server state into remoteDoc
+      const serverUpdate = Y.encodeStateAsUpdate(
+        this._serverDoc,
+        Y.encodeStateVector(this._remoteDoc),
+      );
+      if (serverUpdate.length > 2) {
+        Y.applyUpdate(this._remoteDoc, serverUpdate, 'provider');
+      }
+
+      this.synced = true;
+      this.emit('sync');
+    });
   }
 
   disconnect(): void {
@@ -69,6 +87,10 @@ export class MockYjsProvider implements YjsProvider {
 
   destroy(): void {
     this._destroyed = true;
+    if (this._updateHandler) {
+      this._remoteDoc.off('update', this._updateHandler);
+      this._updateHandler = null;
+    }
     this.listeners.clear();
   }
 
