@@ -24,6 +24,10 @@ export class MockYjsProvider implements YjsProvider {
    * @param serverDoc - The shared server Y.Doc to sync against
    */
   private _updateHandler: ((update: Uint8Array, origin: unknown) => void) | null = null;
+  /** Count of updates forwarded to server (for debugging) */
+  forwardedCount = 0;
+  /** When false, updates are silently dropped (simulates transport failure) */
+  forwardingEnabled = true;
 
   constructor(remoteDoc: Y.Doc, serverDoc: Y.Doc) {
     this._remoteDoc = remoteDoc;
@@ -31,8 +35,11 @@ export class MockYjsProvider implements YjsProvider {
 
     // Forward remoteDoc updates to server (like y-websocket does).
     // Skip updates that originated from this provider (server → remoteDoc echo).
+    // Also skip when forwardingEnabled is false (simulates provider transport failure).
     this._updateHandler = (update: Uint8Array, origin: unknown) => {
       if (origin === 'provider' || this._destroyed || this.connectionState.status !== 'connected') return;
+      if (!this.forwardingEnabled) return;
+      this.forwardedCount++;
       Y.applyUpdate(this._serverDoc, update, 'provider-forward');
     };
     this._remoteDoc.on('update', this._updateHandler);
