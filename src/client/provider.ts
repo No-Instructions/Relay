@@ -245,15 +245,27 @@ const setupWS = (provider: YSweetProvider) => {
 	}
 };
 
+let _broadcastSentCount = 0;
+let _broadcastDropCount = 0;
 const broadcastMessage = (provider: YSweetProvider, buf: ArrayBuffer) => {
 	const ws = provider.ws;
 	if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
+		_broadcastSentCount++;
 		ws.send(buf);
+	} else {
+		_broadcastDropCount++;
+		console.warn(
+			`[broadcastMessage] DROPPED #${_broadcastDropCount} docId=${provider.roomname} ` +
+			`bufSize=${buf.byteLength} wsconnected=${provider.wsconnected} ` +
+			`readyState=${ws?.readyState ?? 'no-ws'} wsNull=${ws === null}`
+		);
 	}
 	if (provider.bcconnected) {
 		bc.publish(provider.bcChannel, buf, provider);
 	}
 };
+// Expose counters for debugging
+(globalThis as any).__broadcastStats = () => ({ sent: _broadcastSentCount, dropped: _broadcastDropCount });
 
 type WebSocketPolyfillType = {
 	new (url: string | URL, protocols?: string | string[] | undefined): WebSocket;
@@ -436,6 +448,8 @@ export class YSweetProvider extends Observable<string> {
 				encoding.writeVarUint(encoder, messageSync);
 				syncProtocol.writeUpdate(encoder, update);
 				broadcastMessage(this, encoding.toUint8Array(encoder));
+			} else {
+				// Skipped because origin === this (our own sync response)
 			}
 		};
 
