@@ -119,6 +119,7 @@ describe('TP-018 Recording Replay', () => {
 
     const divergences: string[] = [];
     let capturedConflictData: any = null;
+    let capturedDocContent: any = null;
 
     for (const recorded of allRecorded) {
       const { vault, seq, type: eventType, from: expectedFrom, to: expectedTo } = recorded;
@@ -232,22 +233,11 @@ describe('TP-018 Recording Replay', () => {
           await new Promise(r => setTimeout(r, 20));
           try { await vaultHandle.hsm.awaitIdleAutoMerge(); } catch {}
 
-          // NOW reconnect with old provider (after fork exists).
-          // BUG-123: old provider syncs to old remoteDoc, fresh one stays empty.
-          if (ctx.vaultA.integration) {
-            ctx.vaultA.integration.destroy();
-            ctx.vaultA.integration = null;
-          }
-          const freshRemoteDoc = new Y.Doc();
-          ctx.vaultA.hsm.hsm.setRemoteDoc(freshRemoteDoc);
-          const oldProvider = ctx.vaultA.provider!;
-          const { ProviderIntegration } = require('../integration/ProviderIntegration');
-          ctx.vaultA.integration = new ProviderIntegration(
-            ctx.vaultA.hsm.hsm as any,
-            freshRemoteDoc,
-            oldProvider,
-          );
-          oldProvider.connect();
+          // Reconnect A with a NEW provider (matching production's
+          // ensureRemoteDoc which creates new _ydoc + _provider pair).
+          // The new provider syncs server state (blank line 2) into
+          // the fresh remoteDoc.
+          ctx.vaultA.reconnect();
 
           // Wait for fork-reconcile to settle
           for (let i = 0; i < 20; i++) {
@@ -280,9 +270,16 @@ describe('TP-018 Recording Replay', () => {
         });
       }
 
-      // Capture conflictData when A reaches bannerShown
+      // Capture conflictData AND doc-content state when A reaches bannerShown
+      // (matches TP-018 step 1.5.1 checkpoint — before resolution)
       if (vault === 'A' && ctx.vaultA.hsm.statePath === 'active.conflict.bannerShown' && !capturedConflictData) {
         capturedConflictData = ctx.vaultA.hsm.hsm.getConflictData();
+        capturedDocContent = {
+          server: ctx.server.getText('contents').toString(),
+          serverClients: Y.decodeStateVector(Y.encodeStateVector(ctx.server)).size,
+          local: ctx.vaultA.hsm.hsm.getLocalDoc()?.getText('contents').toString() ?? '',
+          remote: ctx.vaultA.hsm.hsm.getRemoteDoc()?.getText('contents').toString() ?? '',
+        };
       }
 
       // Connect A's provider when A reaches active.tracking
@@ -358,8 +355,6 @@ describe('TP-018 Recording Replay', () => {
 
     expect(divergences.length).toBe(0);
 
-    // (debug removed — doc-content comparison is below)
-
     // === doc-content state assertions ===
     //
     // Compare the twin's state against the production doc-content snapshot
@@ -373,55 +368,30 @@ describe('TP-018 Recording Replay', () => {
     //
     // The twin should match this EXACT state at the conflict point.
 
+    // Use doc-content captured at the conflict detection point (step 1.5.1)
+    expect(capturedDocContent).not.toBeNull();
+
     const prodSnapshot = JSON.parse(
       fs.readFileSync(path.join(FIXTURES_DIR, 'tp017-doc-content-after-conflict.json'), 'utf-8')
     );
 
-    const serverText = ctx.server.getText('contents').toString();
-    const localText = ctx.vaultA.hsm.hsm.getLocalDoc()?.getText('contents').toString() ?? '';
-    const remoteText = ctx.vaultA.hsm.hsm.getRemoteDoc()?.getText('contents').toString() ?? '';
+    // Exact match: local content
+    expect(capturedDocContent.local).toBe(prodSnapshot.local.content);
 
-    // Local must match production snapshot
-    expect(localText).toBe(prodSnapshot.local.content);
+    // Exact match: server content (blank line 2, single client)
+    expect(capturedDocContent.server).toBe(prodSnapshot.server.content);
+    expect(capturedDocContent.serverClients).toBe(1);
 
-    // Server state vector client count should match production
-    // (production had 1 client, meaning B's ops never arrived)
-    const serverSV = Y.decodeStateVector(Y.encodeStateVector(ctx.server));
-    const prodServerSVClientCount = (prodSnapshot.server.stateVector.length - 2) / 6; // rough hex decode
-    console.log('[doc-content]', {
-      twinServerClients: serverSV.size,
-      twinServer: JSON.stringify(serverText.slice(0, 60)),
-      prodServer: JSON.stringify(prodSnapshot.server.content.slice(0, 60)),
-      twinRemote: JSON.stringify(remoteText.slice(0, 60)),
-      prodRemote: JSON.stringify(prodSnapshot.remote.content.slice(0, 60)),
-      twinLocal: JSON.stringify(localText.slice(0, 60)),
-      prodLocal: JSON.stringify(prodSnapshot.local.content.slice(0, 60)),
-    });
-
-    // === doc-content match check ===
-    //
-    // Twin vs production snapshot comparison:
-    //   local:  MATCH (both have LOCAL DISK EDIT)
-    //   server: MISMATCH — twin has B's edit (MockYjsProvider forwards
-    //           correctly); production server was missing B's edit.
-    //           Root cause of production's sender-side failure is unknown.
-    //   remote: MISMATCH — twin has A's disk edit (from old provider sync);
-    //           production had blank line 2 (same as server).
-    //
-    // Despite the server mismatch, the BUG-123 failure mode is reproduced:
-    // A's old provider on reconnect doesn't deliver server state to the
-    // fresh remoteDoc → conflictData.theirs is empty.
+    // Exact match: remote content (same as server)
+    expect(capturedDocContent.remote).toBe(prodSnapshot.remote.content);
 
     // === TP-018 pass criteria (step 1.5.1 + step 3.2) ===
     // These assert CORRECT behavior. They FAIL when BUG-123 is present.
 
-    // Server MUST have B's edit
-    expect(serverText).toContain('REMOTE EDIT from live2');
+    // Step 1.5.1: server MUST have B's edit
+    expect(capturedDocContent.server).toContain('REMOTE EDIT from live2');
 
-    // Remote should match server
-    expect(remoteText).toBe(serverText);
-
-    // conflictData.theirs MUST have remote content
+    // Step 3.2: conflictData.theirs MUST have remote content
     expect(capturedConflictData).not.toBeNull();
     expect(capturedConflictData.ours).toContain('LOCAL DISK EDIT from live1');
     expect(capturedConflictData.theirs).toContain('REMOTE EDIT from live2');
