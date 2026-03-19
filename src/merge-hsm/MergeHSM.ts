@@ -1053,6 +1053,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this.emitEffect({ type: "SYNC_TO_REMOTE", update });
 				}
 			},
+			requestHibernate: () => {
+				this.emitEffect({ type: "REQUEST_HIBERNATE", guid: this._guid });
+			},
 			scheduleIdleRetry: () => {
 				setTimeout(() => {
 					if (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null) {

@@ -530,6 +530,11 @@ export interface RequestProviderSyncEffect {
 	guid: string;
 }
 
+export interface RequestHibernateEffect {
+	type: "REQUEST_HIBERNATE";
+	guid: string;
+}
+
 export type MergeEffect =
 	| DispatchCM6Effect
 	| WriteDiskEffect
@@ -538,7 +543,8 @@ export type MergeEffect =
 	| StatusChangedEffect
 	| ShowConflictDecorationsEffect
 	| HideConflictDecorationEffect
-	| RequestProviderSyncEffect;
+	| RequestProviderSyncEffect
+	| RequestHibernateEffect;
 
 // =============================================================================
 // Persistence Types

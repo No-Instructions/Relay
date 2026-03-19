@@ -367,6 +367,11 @@ export class MergeManager {
     // Must be wired before SET_MODE_IDLE because the idle invoke can emit
     // REQUEST_PROVIDER_SYNC synchronously during the send() call below.
     hsm.subscribe((effect) => {
+      if (effect.type === 'REQUEST_HIBERNATE') {
+        // Hibernate on next microtask so the current transition completes first
+        Promise.resolve().then(() => this.hibernate(guid));
+        return;
+      }
       if (effect.type === 'REQUEST_PROVIDER_SYNC') {
         const connect = () => {
           const doc = this._getDocument(guid);
