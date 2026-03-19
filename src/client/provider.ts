@@ -218,6 +218,18 @@ const setupWS = (provider: YSweetProvider) => {
 			encoding.writeVarUint(encoder, messageSync);
 			syncProtocol.writeSyncStep1(encoder, provider.doc);
 			websocket.send(encoding.toUint8Array(encoder));
+			// Flush messages that were buffered while disconnected.
+			// These are sync update frames that broadcastMessage couldn't
+			// send because the WebSocket wasn't ready. The sync step 1/2
+			// exchange above handles catch-up via state vectors, but
+			// flushing the buffer ensures real-time updates that arrived
+			// during the disconnect window are delivered promptly.
+			if (provider._pendingMessages.length > 0) {
+				for (const pending of provider._pendingMessages) {
+					websocket.send(pending);
+				}
+				provider._pendingMessages = [];
+			}
 			// Re-subscribe to events after reconnection
 			if (provider.eventSubscriptions.size > 0) {
 				const eventTypes = Array.from(provider.eventSubscriptions);
@@ -245,27 +257,18 @@ const setupWS = (provider: YSweetProvider) => {
 	}
 };
 
-let _broadcastSentCount = 0;
-let _broadcastDropCount = 0;
 const broadcastMessage = (provider: YSweetProvider, buf: ArrayBuffer) => {
 	const ws = provider.ws;
 	if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
-		_broadcastSentCount++;
 		ws.send(buf);
 	} else {
-		_broadcastDropCount++;
-		console.warn(
-			`[broadcastMessage] DROPPED #${_broadcastDropCount} docId=${provider.roomname} ` +
-			`bufSize=${buf.byteLength} wsconnected=${provider.wsconnected} ` +
-			`readyState=${ws?.readyState ?? 'no-ws'} wsNull=${ws === null}`
-		);
+		// Buffer the message — flushed in onopen when WebSocket connects
+		provider._pendingMessages.push(buf);
 	}
 	if (provider.bcconnected) {
 		bc.publish(provider.bcChannel, buf, provider);
 	}
 };
-// Expose counters for debugging
-(globalThis as any).__broadcastStats = () => ({ sent: _broadcastSentCount, dropped: _broadcastDropCount });
 
 type WebSocketPolyfillType = {
 	new (url: string | URL, protocols?: string | string[] | undefined): WebSocket;
@@ -339,6 +342,8 @@ export class YSweetProvider extends Observable<string> {
 	disableBc: boolean;
 	wsUnsuccessfulReconnects: number;
 	messageHandlers: Array<HandlerFunction>;
+	/** Messages buffered while WebSocket was not ready. Flushed on next send. */
+	_pendingMessages: ArrayBuffer[];
 	_synced: boolean;
 	ws: WebSocket | null;
 	wsLastMessageReceived: number;
@@ -404,6 +409,7 @@ export class YSweetProvider extends Observable<string> {
 		this._WS = WebSocketPolyfill;
 		this.awareness = awareness;
 		this.wsconnected = false;
+		this._pendingMessages = [];
 		this.wsconnecting = false;
 		this.bcconnected = false;
 		this.disableBc = disableBc;
