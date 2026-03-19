@@ -414,6 +414,8 @@ export class MergeManager {
     this.clearHibernateTimer(guid);
     this._syncStatus.delete(guid);
     this.activeDocs.delete(guid);
+    this._lcaCache.delete(guid);
+    this._localStateVectorCache.delete(guid);
   }
 
   // ===========================================================================

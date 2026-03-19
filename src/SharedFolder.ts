@@ -58,11 +58,14 @@ import {
 	type HSMLogEntry,
 } from "./merge-hsm/recording";
 import { recordHSMEntry } from "./debug";
+import { awaitOnReload } from "./reloadUtils";
 import { generateHash } from "./hashing";
 import {
 	saveState as saveMergeState,
 	openDatabase as openMergeHSMDatabase,
 	getAllStates,
+	deleteState as deleteMergeState,
+	deleteIndex as deleteMergeIndex,
 } from "./merge-hsm/persistence";
 import * as Y from "yjs";
 
@@ -2046,6 +2049,10 @@ export class SharedFolder extends HasProvider {
 				}
 			}, this);
 			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
+			const p = openMergeHSMDatabase().then(db =>
+				deleteMergeState(db, guid).finally(() => db.close())
+			).catch(() => {});
+			awaitOnReload(p);
 		} else {
 			// syncStore entry already gone (remote delete) - find by path
 			const doc = this.fset.find((f) => f.path === vpath);
@@ -2056,6 +2063,10 @@ export class SharedFolder extends HasProvider {
 				doc.cleanup();
 				doc.destroy();
 				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${docGuid}`);
+				const p = openMergeHSMDatabase().then(db =>
+					deleteMergeState(db, docGuid).finally(() => db.close())
+				).catch(() => {});
+				awaitOnReload(p);
 			}
 		}
 	}
@@ -2237,6 +2248,11 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		for (const name of dbNames) {
 			indexedDB.deleteDatabase(name);
 		}
+		// Delete folder-level index from global HSM database
+		const p = openMergeHSMDatabase().then(db =>
+			deleteMergeIndex(db, item.guid).finally(() => db.close())
+		).catch(() => {});
+		awaitOnReload(p);
 		return deleted;
 	}
 

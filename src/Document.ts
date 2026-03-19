@@ -20,6 +20,11 @@ import type { EditorViewRef } from "./merge-hsm/types";
 import { ProviderIntegration, type YjsProvider } from "./merge-hsm/integration/ProviderIntegration";
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
+import {
+	openDatabase as openMergeHSMDatabase,
+	deleteState as deleteMergeState,
+} from "./merge-hsm/persistence";
+import { awaitOnReload } from "./reloadUtils";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -693,6 +698,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		} catch {
 			// IDB cleanup is best-effort
 		}
+
+		// Delete the old GUID's persisted HSM state from the global database
+		const p = openMergeHSMDatabase().then(db =>
+			deleteMergeState(db, oldGuid).finally(() => db.close())
+		).catch(() => {});
+		awaitOnReload(p);
 
 		// Update the Document's identity to the new GUID
 		this.guid = newGuid;
