@@ -372,6 +372,30 @@ export class SyncBridge {
 					this.host.getOpCapture()?.notifySynced();
 				}
 			}
+
+			// Safety net: sync any localDoc state not yet in remoteDoc.
+			// After queue drain this should be a no-op (unless machine-edit
+			// entries are deferred). If it fires, an update was applied to
+			// localDoc without being queued for outbound sync.
+			if (toDefer.length === 0) {
+				const svBefore = Y.encodeStateVector(remoteDoc);
+				const catchUp = Y.encodeStateAsUpdate(localDoc, svBefore);
+				if (catchUp.length > 2) { // Empty YJS update is 2 bytes
+					const remoteText = remoteDoc.getText("contents").toString();
+					const localText = localDoc.getText("contents").toString();
+					this.host.emitEffect({
+						type: "DIAGNOSTIC",
+						code: "OUTBOUND_INTEGRITY",
+						message: `flushOutbound safety net fired — update bypassed queue`,
+						detail: {
+							updateBytes: catchUp.length,
+							queueLength: toSend.length,
+							changes: this.host.computeDiffChanges(remoteText, localText),
+						},
+					});
+					this.syncToRemote(catchUp);
+				}
+			}
 			return;
 		}
 
@@ -494,11 +518,21 @@ export class SyncBridge {
 		// Safety net: apply any remoteDoc state not yet in localDoc.
 		// After queue drain this should be a no-op. If it isn't, an update
 		// slipped past the queue — log an error so we can track it down.
+		const localTextBefore = localDoc.getText("contents").toString();
 		const svBefore = Y.encodeStateVector(localDoc);
 		const update = Y.encodeStateAsUpdate(remoteDoc, svBefore);
 		this.syncToLocal(update);
 		if (stateVectorIsAhead(Y.encodeStateVector(localDoc), svBefore)) {
-			console.error("[SyncBridge] flushInbound safety net fired — update bypassed queue");
+			const localTextAfter = localDoc.getText("contents").toString();
+			this.host.emitEffect({
+				type: "DIAGNOSTIC",
+				code: "INBOUND_INTEGRITY",
+				message: "flushInbound safety net fired — update bypassed queue",
+				detail: {
+					updateBytes: update.length,
+					changes: this.host.computeDiffChanges(localTextBefore, localTextAfter),
+				},
+			});
 		}
 	}
 

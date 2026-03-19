@@ -535,6 +535,13 @@ export interface RequestHibernateEffect {
 	guid: string;
 }
 
+export interface DiagnosticEffect {
+	type: "DIAGNOSTIC";
+	code: string;
+	message: string;
+	detail?: Record<string, unknown>;
+}
+
 export type MergeEffect =
 	| DispatchCM6Effect
 	| WriteDiskEffect
@@ -544,7 +551,8 @@ export type MergeEffect =
 	| ShowConflictDecorationsEffect
 	| HideConflictDecorationEffect
 	| RequestProviderSyncEffect
-	| RequestHibernateEffect;
+	| RequestHibernateEffect
+	| DiagnosticEffect;
 
 // =============================================================================
 // Persistence Types
