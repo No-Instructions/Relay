@@ -172,6 +172,7 @@ export interface TestableHSM {
   getLocalDoc(): Y.Doc | null;
   getLocalDocLength(): Promise<number>;
   getRemoteDoc(): Y.Doc | null;
+  setRemoteDoc(doc: Y.Doc | null): void;
   getSyncStatus(): SyncStatus;
   checkAndCorrectDrift(actualEditorText?: string): boolean;
   subscribe(listener: (effect: MergeEffect) => void): () => void;
