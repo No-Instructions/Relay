@@ -200,9 +200,9 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
 				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
-				{ target: 'idle.diverged' }, // 3-way conflict — stay diverged
+				{ target: 'idle.diverged', actions: ['requestHibernate'] }, // 3-way conflict — nothing to do autonomously
 			],
-			onError: { target: 'idle.diverged' },
+			onError: { target: 'idle.diverged', actions: ['requestHibernate'] },
 		},
 		on: {
 			IDLE_RETRY: { target: 'idle.diverged', reenter: true },

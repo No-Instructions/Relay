@@ -86,6 +86,11 @@ function handleInvokeEvent(
 
 	if (stateNode.invoke.src !== invokeId) return false;
 
+	// The invoke has completed — clear the active invoke reference so that
+	// getActiveInvoke() returns null. Without this, internal self-transitions
+	// (which skip cancelInvoke) leave a stale reference that blocks hibernation.
+	hsm.setActiveInvoke(null);
+
 	const handler = isDone ? stateNode.invoke.onDone : stateNode.invoke.onError;
 	if (!handler) return true; // No handler for this event type — consume silently
 
