@@ -34,6 +34,7 @@ import {
   load,
   createLCA,
   createYjsUpdate,
+  mockEditorViewRef,
   // State transition helpers
   loadAndActivate,
   loadToIdle,
@@ -612,7 +613,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', {
         mtime: Date.now() - 1000,
-        editorViewRef: { dirty: false },
+        editorViewRef: mockEditorViewRef('hello', false),
       });
 
       const oldLca = t.state.lca;
@@ -632,7 +633,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', {
         mtime: Date.now() - 1000,
-        editorViewRef: { dirty: true },
+        editorViewRef: mockEditorViewRef('hello', true),
       });
 
       const oldLca = t.state.lca;
@@ -760,6 +761,42 @@ describe('MergeHSM', () => {
       expectLocalDocText(t, 'hello merged');
       expectEffect(t.effects, { type: 'DISPATCH_CM6' });
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
+    });
+
+    test('RESOLVE never emits WRITE_DISK (active mode invariant)', async () => {
+      const t = await createTestHSM();
+      await loadToResolving(t, {
+        base: 'hello',
+        remote: 'hello remote',
+        disk: 'hello disk',
+      });
+      t.clearEffects();
+
+      t.send(resolve('hello merged'));
+
+      expectState(t, 'active.tracking');
+      expectNoEffect(t.effects, 'WRITE_DISK');
+    });
+
+    test('beginReleaseLock captures editor content into lastKnownEditorText', async () => {
+      const t = await createTestHSM();
+      // Use a mutable container so the mock can return updated content
+      let editorContent = 'hello';
+      const ref = { dirty: false, getViewData: () => editorContent };
+
+      await loadAndActivate(t, 'hello', { editorViewRef: ref });
+      expectState(t, 'active.tracking');
+
+      // Simulate DISPATCH_CM6 changing the editor without a CM6_CHANGE echo
+      // (ySyncAnnotation suppresses the echo in real code). The HSM's
+      // lastKnownEditorText is now stale — still 'hello'.
+      editorContent = 'hello world';
+
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup?.();
+
+      // beginReleaseLock should have read the definitive content from the editor
+      expect(t.state.lastKnownEditorText).toBe('hello world');
     });
 
     test('CANCEL from resolving returns to bannerShown', async () => {
