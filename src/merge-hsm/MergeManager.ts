@@ -29,6 +29,7 @@ import { ObservableMap } from '../observable/ObservableMap';
 import { awaitOnReload } from '../reloadUtils';
 import { validateUpdate } from '../storage/yjs-validation';
 import { classifyUpdate as classifyUpdateSV } from './state-vectors';
+import { metrics } from '../debug';
 
 // =============================================================================
 // Types
@@ -264,6 +265,21 @@ export class MergeManager {
   // ===========================================================================
 
   /**
+   * Wake queue slot usage for the resource meter UI.
+   */
+  getWakeQueueStats(): { used: number; pending: number; total: number } {
+    let warmCount = 0;
+    for (const [, state] of this._hibernationState) {
+      if (state === 'warm') warmCount++;
+    }
+    return {
+      used: warmCount + this._wakingDocs.size,
+      pending: this._wakeQueue.length,
+      total: this._maxConcurrentWarm,
+    };
+  }
+
+  /**
    * Get sync status for all registered documents (ObservableMap per spec).
    */
   get syncStatus(): ObservableMap<string, SyncStatus> {
@@ -483,6 +499,7 @@ export class MergeManager {
 
     this._wakeQueue.push(request);
     this.sortWakeQueue();
+    this._updateWakeQueueMetrics();
     this.processWakeQueue();
   }
 
@@ -519,6 +536,7 @@ export class MergeManager {
 
     this._hibernationState.set(guid, 'warm');
     this.resetHibernateTimer(guid);
+    this._updateWakeQueueMetrics();
   }
 
   /**
@@ -554,6 +572,7 @@ export class MergeManager {
 
     this.clearHibernateTimer(guid);
     this._hibernationState.set(guid, 'hibernated');
+    this._updateWakeQueueMetrics();
     this.processWakeQueue();
   }
 
@@ -762,6 +781,7 @@ export class MergeManager {
     // Transition to warm — hibernate timer will eventually move to hibernated
     this._hibernationState.set(guid, 'warm');
     this.resetHibernateTimer(guid);
+    this._updateWakeQueueMetrics();
   }
 
   /**
@@ -1058,6 +1078,12 @@ export class MergeManager {
     } finally {
       this._isProcessingWakeQueue = false;
     }
+    this._updateWakeQueueMetrics();
+  }
+
+  private _updateWakeQueueMetrics(): void {
+    const stats = this.getWakeQueueStats();
+    metrics.setWakeQueueSlots(stats.used, stats.pending, stats.total);
   }
 
   // ===========================================================================

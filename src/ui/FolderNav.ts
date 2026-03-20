@@ -19,7 +19,7 @@ import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
-import { curryLog } from "src/debug";
+import { curryLog, metrics } from "src/debug";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -784,6 +784,7 @@ export class FolderNavigationDecorations {
 
 	quickRefresh() {
 		if (!this.layoutReady) return;
+		const t0 = performance.now();
 		const fileExplorers = this.getFileExplorers();
 		const sharedFolders = this.sharedFolders.map((folder) => folder.path);
 		for (const fileExplorer of fileExplorers) {
@@ -802,10 +803,12 @@ export class FolderNavigationDecorations {
 				}
 			}
 		}
+		metrics.observeFoldernavRefresh("quick", (performance.now() - t0) / 1000);
 	}
 
 	refresh() {
 		if (!this.layoutReady) return;
+		const t0 = performance.now();
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
@@ -821,6 +824,7 @@ export class FolderNavigationDecorations {
 				walker.walk(root);
 			}
 		}
+		metrics.observeFoldernavRefresh("full", (performance.now() - t0) / 1000);
 	}
 
 	destroy() {
