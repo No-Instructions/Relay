@@ -62,6 +62,8 @@ export interface Fork {
 	created: number;
 	/** OpCapture position at fork creation — boundary for sinceByOrigin() */
 	captureMark: number;
+	/** Transform function from vault.process (machine-edit forks only) */
+	machineEditFn?: (data: string) => string;
 }
 
 /**
