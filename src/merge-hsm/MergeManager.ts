@@ -140,7 +140,7 @@ export interface RegisteredDocument {
 // =============================================================================
 
 /** Memory state for a document */
-export type HibernationState = 'hibernated' | 'warm' | 'active';
+export type HibernationState = 'hibernated' | 'working' | 'cached' | 'active';
 
 /** Wake priority levels (lower number = higher priority) */
 export enum WakePriority {
@@ -270,7 +270,7 @@ export class MergeManager {
   getWakeQueueStats(): { used: number; pending: number; total: number } {
     let warmCount = 0;
     for (const [, state] of this._hibernationState) {
-      if (state === 'warm') warmCount++;
+      if (state === 'working') warmCount++;
     }
     return {
       used: warmCount + this._wakingDocs.size,
@@ -419,7 +419,7 @@ export class MergeManager {
    */
   notifyHSMCreated(guid: string): void {
     if (this.destroyed) return;
-    this._hibernationState.set(guid, 'warm');
+    this._hibernationState.set(guid, 'cached');
     this.resetHibernateTimer(guid);
   }
 
@@ -451,6 +451,10 @@ export class MergeManager {
     return this._hibernationState.get(guid) ?? 'hibernated';
   }
 
+  private isLoaded(state: HibernationState): boolean {
+    return state === 'working' || state === 'cached' || state === 'active';
+  }
+
   /**
    * Get the buffered update bytes for a hibernated document.
    * Returns null if no updates are buffered.
@@ -477,7 +481,7 @@ export class MergeManager {
     }
 
     // Already active or warm — just reset the hibernate timer
-    if (currentState === 'active' || currentState === 'warm') {
+    if (this.isLoaded(currentState)) {
       this.resetHibernateTimer(request.guid);
       return;
     }
@@ -534,7 +538,7 @@ export class MergeManager {
     // Remove from wake queue if present
     this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
 
-    this._hibernationState.set(guid, 'warm');
+    this._hibernationState.set(guid, 'cached');
     this.resetHibernateTimer(guid);
     this._updateWakeQueueMetrics();
   }
@@ -778,8 +782,8 @@ export class MergeManager {
 
     // HSM stays alive in idle.* state
     // Sync status preserved
-    // Transition to warm — hibernate timer will eventually move to hibernated
-    this._hibernationState.set(guid, 'warm');
+    // Transition to cached — hibernate timer will eventually move to hibernated
+    this._hibernationState.set(guid, 'cached');
     this.resetHibernateTimer(guid);
     this._updateWakeQueueMetrics();
   }
@@ -816,7 +820,7 @@ export class MergeManager {
     hsm.send({ type: 'REMOTE_UPDATE', update });
 
     // Reset hibernate timer if warm
-    if (state === 'warm') {
+    if (this.isLoaded(state) && state !== 'active') {
       this.resetHibernateTimer(guid);
     }
   }
@@ -992,8 +996,9 @@ export class MergeManager {
     this.clearHibernateTimer(guid);
     const timerId = this.timeProvider.setTimeout(() => {
       this._hibernateTimers.delete(guid);
-      // Only hibernate if still warm (not active)
-      if (this.getHibernationState(guid) === 'warm') {
+      // Only hibernate if still loaded but not active
+      const s = this.getHibernationState(guid);
+      if (s === 'working' || s === 'cached') {
         this.hibernate(guid);
       }
     }, this._hibernateTimeoutMs);
@@ -1031,7 +1036,7 @@ export class MergeManager {
         // Count currently warm (non-active) documents
         let warmCount = 0;
         for (const [, state] of this._hibernationState) {
-          if (state === 'warm') warmCount++;
+          if (state === 'working') warmCount++;
         }
 
         // Check concurrency limit (warm + currently waking)
@@ -1066,7 +1071,7 @@ export class MergeManager {
           this._hibernationBuffer.delete(request.guid);
         }
 
-        this._hibernationState.set(request.guid, 'warm');
+        this._hibernationState.set(request.guid, 'working');
         this.resetHibernateTimer(request.guid);
         this._wakingDocs.delete(request.guid);
 
