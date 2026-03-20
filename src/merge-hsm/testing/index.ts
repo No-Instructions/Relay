@@ -50,6 +50,7 @@ export {
   remoteDocUpdated,
   error,
   // Helpers
+  mockEditorViewRef,
   createLCA,
   sha256,
   createYjsUpdate,

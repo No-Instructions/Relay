@@ -48,6 +48,15 @@ export function unload(): UnloadEvent {
 }
 
 /**
+ * Create a mock EditorViewRef for testing.
+ * @param content - The editor content returned by getViewData().
+ * @param dirty - Whether the editor has unsaved changes.
+ */
+export function mockEditorViewRef(content: string = '', dirty: boolean = false): EditorViewRef {
+  return { dirty, getViewData: () => content };
+}
+
+/**
  * Create an ACQUIRE_LOCK event.
  * @param editorContent - The current editor/disk content at the moment of opening.
  */

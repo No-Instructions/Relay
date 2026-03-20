@@ -1304,6 +1304,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.handleResolveHunk(event as ResolveHunkEvent);
 			},
 			beginReleaseLock: () => {
+				// Capture definitive editor content before releasing the ref.
+				// deactivateEditor uses this to determine the correct LCA.
+				if (this._editorViewRef) {
+					this.lastKnownEditorText = this._editorViewRef.getViewData();
+				}
 				this._editorViewRef = null;
 				this._cleanupWasConflict = this._statePath.includes("conflict");
 				this._cleanupType = 'release';
