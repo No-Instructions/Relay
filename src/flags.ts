@@ -18,6 +18,7 @@ export interface FeatureFlags {
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
 	enableDraftMode: boolean;
+	enableResourceMeter: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -40,6 +41,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDeviceManagement: false,
 	enableHSMRecording: false,
 	enableDraftMode: false,
+	enableResourceMeter: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

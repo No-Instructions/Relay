@@ -22,6 +22,7 @@ import { LiveViewManager } from "./LiveViews";
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
+import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
 import { EndpointConfigModal } from "./ui/EndpointConfigModal";
@@ -117,6 +118,7 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
+	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
 	private relayDebugAPI!: RelayDebugAPI;
@@ -914,6 +916,8 @@ export default class Live extends Plugin {
 		);
 		this.folderNavDecorations.refresh();
 
+		this.resourceMeter = new ResourceMeterMount(this.app.workspace, this.sharedFolders);
+
 		this.addSettingTab(this.settingsTab);
 
 		const workspaceLog = curryLog("[Live][Workspace]", "log");
@@ -1312,6 +1316,9 @@ export default class Live extends Plugin {
 		this.timeProvider?.destroy();
 
 		this.folderNavDecorations?.destroy();
+
+		this.resourceMeter?.destroy();
+		this.resourceMeter = null;
 
 		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
