@@ -704,6 +704,17 @@ export class LiveView<ViewType extends TextFileView>
 				// Refresh ViewActions after lock acquired — HSM may have
 				// reached active.tracking during the async acquireLock.
 				this.setConnectionDot();
+
+				// Push-initialize CM6Integration now that the document is ready.
+				// This replaces the polling approach (every CM6 update()) with a
+				// single targeted call when acquireLock completes.
+				if (this.view instanceof MarkdownView) {
+					const cm = (this.view.editor as any)?.cm as EditorView;
+					if (cm) {
+						const plugin = cm.plugin(HSMEditorPlugin);
+						plugin?.initializeIfReady();
+					}
+				}
 			})
 			.catch((e) => {
 				this.warn("[LiveView.attach] acquireLock failed:", e);

@@ -84,7 +84,7 @@ class HSMEditorPluginValue implements PluginValue {
   /**
    * Initialize CM6Integration if document and HSM are ready.
    */
-  private initializeIfReady(): boolean {
+  initializeIfReady(): boolean {
     if (this.cm6Integration) return true;
     if (this.destroyed) return false;
 
@@ -211,8 +211,6 @@ class HSMEditorPluginValue implements PluginValue {
       return;
     }
 
-    // Lazy initialization: HSM might not be available during constructor
-    // if acquireLock() hasn't completed yet
     if (!this.cm6Integration && !this.initializeIfReady()) {
       // Buffer the actual CM6 changes so they can be replayed once initialized
       const changes: PositionedChange[] = [];
