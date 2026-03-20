@@ -1768,15 +1768,32 @@ describe('MergeHSM', () => {
       expectLocalDocText(t, content);
     });
 
-    test('unsynced provider opens file → goes to active.tracking', async () => {
+    test('unsynced provider opens file with LCA → goes to active.tracking', async () => {
+      const t = await createTestHSM();
+      t.send(load('test-guid', 'test.md'));
+      // Provide an LCA so the persistenceEmptyAndProviderNotSynced guard passes
+      t.send(persistenceLoaded(new Uint8Array(), {
+        contents: 'user content',
+        meta: { hash: 'h', mtime: 1 },
+        stateVector: new Uint8Array([0]),
+      }));
+      t.send({ type: 'SET_MODE_ACTIVE' });
+      await sendAcquireLock(t, 'user content');
+
+      // With empty IDB, unsynced provider, and LCA present, user can edit immediately
+      expectState(t, 'active.tracking');
+    });
+
+    test('unsynced provider opens file without LCA → goes to recovery mode', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
       await sendAcquireLock(t, 'user content');
 
-      // With empty IDB and unsynced provider, user can edit immediately
-      expectState(t, 'active.tracking');
+      // Without LCA, the guard requires reconciliation via the server
+      // to prevent skipping conflict detection in recovery scenarios
+      expectState(t, 'active.conflict.bannerShown');
     });
 
     test('PROVIDER_SYNCED in active.tracking with divergent content triggers reconciliation', async () => {
