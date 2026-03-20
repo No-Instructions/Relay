@@ -529,43 +529,93 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 *
 	 * @param fn - The text transform function from vault.process()
 	 */
-	registerMachineEdit(fn: (data: string) => string): void {
-		if (this._statePath !== "active.tracking" || !this.localDoc) return;
+	async registerMachineEdit(fn: (data: string) => string): Promise<void> {
+		// Active mode: existing behavior (machine-edit deferral via SyncBridge)
+		if (this._statePath === "active.tracking") {
+			if (!this.localDoc) return;
+			const ytext = this.localDoc.getText("contents");
+			const currentText = ytext.toString();
 
-		const ytext = this.localDoc.getText("contents");
-		const currentText = ytext.toString();
+			let expectedText: string;
+			try {
+				expectedText = fn(currentText);
+			} catch {
+				return;
+			}
 
-		let expectedText: string;
-		try {
-			expectedText = fn(currentText);
-		} catch {
+			// fn is a no-op for this file — skip registration
+			if (expectedText === currentText) return;
+
+			const opCapture = this.getOpCapture();
+			const captureMark = opCapture?.mark() ?? 0;
+
+			this._pendingMachineEdits.push({
+				fn,
+				expectedText,
+				captureMark,
+				registeredAt: this.timeProvider.now(),
+			});
+
+			console.warn(
+				`[MergeHSM] registerMachineEdit | guid=${this._guid} | ` +
+				`expectedLen=${expectedText.length} | captureMark=${captureMark} | ` +
+				`pendingCount=${this._pendingMachineEdits.length}`
+			);
+
+			// Schedule expiry check at TTL + 100ms
+			const MACHINE_EDIT_TTL = 5000;
+			this.timeProvider.setTimeout(() => {
+				this.expireMachineEdits();
+			}, MACHINE_EDIT_TTL + 100);
 			return;
 		}
 
-		// fn is a no-op for this file — skip registration
-		if (expectedText === currentText) return;
+		// Idle mode: pre-create fork to gate remote ops.
+		// Two phases: (1) set fork synchronously using LCA to gate REMOTE_UPDATE
+		// via hasFork, (2) await persistence sync so OpCapture is functional,
+		// then set the real captureMark.
+		if (!this._statePath.startsWith("idle.") || this._fork || !this._lca) return;
 
-		const opCapture = this.getOpCapture();
-		const captureMark = opCapture?.mark() ?? 0;
+		const baseText = this._lca.contents;
 
-		this._pendingMachineEdits.push({
-			fn,
-			expectedText,
-			captureMark,
-			registeredAt: this.timeProvider.now(),
-		});
+		let expectedText: string;
+		try {
+			expectedText = fn(baseText);
+		} catch {
+			return;
+		}
+		if (expectedText === baseText) return;
+
+		// Phase 1: synchronous. Create localDoc + localPersistence, set fork
+		// with placeholder captureMark. hasFork gates REMOTE_UPDATE immediately.
+		this.ensureLocalDocForIdle();
+
+		this._fork = {
+			base: baseText,
+			localStateVector: this._lca.stateVector ?? new Uint8Array([0]),
+			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+			origin: 'machine-edit',
+			created: this.timeProvider.now(),
+			captureMark: 0,
+			machineEditFn: fn,
+		};
+
+		// Phase 2: async. Wait for IDB to load so OpCapture is wired to a
+		// populated doc. Then set the real captureMark and localStateVector.
+		if (this.localPersistence && !this.localPersistence.synced) {
+			await this.localPersistence.whenSynced;
+		}
+
+		// Guard: state may have changed during the await
+		if (!this._fork || !this.localDoc) return;
+
+		this._fork.captureMark = this.getOpCapture()?.mark() ?? 0;
+		this._fork.localStateVector = Y.encodeStateVector(this.localDoc);
 
 		console.warn(
-			`[MergeHSM] registerMachineEdit | guid=${this._guid} | ` +
-			`expectedLen=${expectedText.length} | captureMark=${captureMark} | ` +
-			`pendingCount=${this._pendingMachineEdits.length}`
+			`[MergeHSM] registerMachineEdit (idle fork) | guid=${this._guid} | ` +
+			`state=${this._statePath} | captureMark=${this._fork.captureMark}`
 		);
-
-		// Schedule expiry check at TTL + 100ms
-		const MACHINE_EDIT_TTL = 5000;
-		this.timeProvider.setTimeout(() => {
-			this.expireMachineEdits();
-		}, MACHINE_EDIT_TTL + 100);
 	}
 
 	/**
@@ -1024,7 +1074,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// === Idle merge completion ===
 			applyIdleMergeResult: (_hsm, event) => {
 				const result = (event as any).data;
-				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates}`);
+				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates} localDoc=${!!this.localDoc}`);
 				if (!result?.success || result.noop) return;
 
 				if (result.updates && this.localDoc) {
@@ -1684,6 +1734,28 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 			const mergedContent = tempDoc.getText("contents").toString();
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContent=${JSON.stringify(mergedContent.substring(0, 80))}`);
+
+			// Check if this remote update carries an edit already applied by
+			// fork-reconcile (machine edit). The LCA was set to the merged
+			// result by fork-reconcile. If any pending machine edit's
+			// expectedText matches the current LCA, the remote CRDT is
+			// delivering the same edit we already have — skip to prevent
+			// CRDT duplication.
+			if (this._lca) {
+				const now = this.timeProvider.now();
+				const machineIdx = this._pendingMachineEdits.findIndex(entry =>
+					now - entry.registeredAt <= MergeHSM.MACHINE_EDIT_TTL &&
+					entry.expectedText === this._lca!.contents
+				);
+				if (machineIdx >= 0) {
+					this._pendingMachineEdits.splice(machineIdx, 1);
+					console.warn(
+						`[MergeHSM] idle-merge: skipped duplicate machine edit | guid=${this._guid}`
+					);
+					return { success: true, newLCA: this._lca, noop: true };
+				}
+			}
+
 			const hash = await this.hashFn(mergedContent);
 			if (signal.aborted) return { success: false };
 
@@ -1706,22 +1778,21 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		const diskContent = this.pendingDiskContents;
 
-		// Snapshot fork BEFORE ingesting disk edit.
-		// The fork captures localDoc's state so that when the provider reconnects
-		// and syncs, we can perform three-way reconciliation (fork.base vs localDoc vs remoteDoc).
-		const fork: Fork = {
-			base: this.localDoc.getText("contents").toString(),
-			localStateVector: Y.encodeStateVector(this.localDoc),
-			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
-			origin: 'disk-edit',
-			created: this.timeProvider.now(),
-			captureMark: this.getOpCapture()?.mark() ?? 0,
-		};
+		// If fork was pre-created by registerMachineEdit, reuse it.
+		// Otherwise create one now.
+		if (!this._fork) {
+			this._fork = {
+				base: this.localDoc.getText("contents").toString(),
+				localStateVector: Y.encodeStateVector(this.localDoc),
+				remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+				origin: 'disk-edit',
+				created: this.timeProvider.now(),
+				captureMark: this.getOpCapture()?.mark() ?? 0,
+			};
+		}
 
 		// Apply disk content to localDoc using diff-based updates.
 		this.applyContentToLocalDoc(diskContent, DISK_ORIGIN);
-
-		this._fork = fork;
 		this._ingestionTexts.push(diskContent);
 		this._bridge.providerSynced = false;
 		this.pendingDiskContents = null;
@@ -1860,16 +1931,25 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		const remoteContent = this.remoteDoc.getText("contents").toString();
 
-		console.log('[DEBUG reconcileForkInIdle]', JSON.stringify({ base: fork.base, local: localContent, remote: remoteContent }));
+		console.warn('[MergeHSM] reconcileForkInIdle', JSON.stringify({
+			guid: this._guid, base: fork.base.slice(0, 80), local: localContent.slice(0, 80),
+			remote: remoteContent.slice(0, 80), captureMark: fork.captureMark, origin: fork.origin,
+		}));
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
 			// Cancel all disk ops — fork gates outbound sync so no peer
 			// has seen them. The merged result will be applied fresh via DMP.
 			const opCapture = this.getOpCapture();
-			if (opCapture && fork.captureMark != null) {
-				const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
-				opCapture.cancel(diskOps);
+			const diskOps = (opCapture && fork.captureMark != null)
+				? opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN)
+				: [];
+			console.warn('[MergeHSM] fork-reconcile cancel', JSON.stringify({
+				guid: this._guid, hasOpCapture: !!opCapture, captureMark: fork.captureMark,
+				diskOpsCount: diskOps.length, merged: mergeResult.merged.slice(0, 80),
+			}));
+			if (diskOps.length > 0) {
+				opCapture!.cancel(diskOps);
 			}
 			this._ingestionTexts = [];
 
@@ -1898,6 +1978,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				contents: mergeResult.merged,
 			});
 			this._bridge.syncToRemote(update);
+
+			// If fork originated from a machine edit, register as pending so
+			// the late-arriving remote CRDT (same edit from the other vault)
+			// is detected and skipped by idle-merge.
+			if (fork.origin === 'machine-edit' && fork.machineEditFn) {
+				this._pendingMachineEdits.push({
+					fn: fork.machineEditFn,
+					expectedText: mergeResult.merged,
+					captureMark: fork.captureMark,
+					registeredAt: this.timeProvider.now(),
+				});
+				const MACHINE_EDIT_TTL = 5000;
+				this.timeProvider.setTimeout(() => {
+					this.expireMachineEdits();
+				}, MACHINE_EDIT_TTL + 100);
+			}
 
 			return {
 				success: true,

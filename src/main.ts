@@ -1150,7 +1150,8 @@ export default class Live extends Plugin {
 
 		getPatcher().patch(this.app.vault, {
 			process(old: any) {
-				return function (
+				return async function (
+					this: any,
 					tfile: any,
 					fn: (data: string) => string,
 					options: any,
@@ -1160,11 +1161,9 @@ export default class Live extends Plugin {
 						if (folder) {
 							const file = folder.proxy.getFile(tfile);
 							if (tfile instanceof TFile && file && isDocument(file)) {
-								if (file.process(fn)) {
-									// process() returned true: suppress the disk write.
-									// The CRDT from the active vault will arrive and
-									// idle-merge will apply it to disk.
-									return;
+								const hsm = file.hsm;
+								if (hsm) {
+									await hsm.registerMachineEdit(fn);
 								}
 							}
 						}
@@ -1172,7 +1171,6 @@ export default class Live extends Plugin {
 						plugin.log(e);
 					}
 
-					// @ts-ignore
 					return old.call(this, tfile, fn, options);
 				};
 			},

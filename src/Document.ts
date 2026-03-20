@@ -170,13 +170,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	process(fn: (data: string) => string): boolean {
 		if (this._hsm) {
-			if (this._hsm.isActive()) {
-				this._hsm.registerMachineEdit(fn);
-				return false;
-			}
-			// Idle mode: let Obsidian write to disk. The HSM will detect the
-			// disk change, create a fork, and reconcile with any remote CRDT
-			// that carries the same (or different) edit.
+			this._hsm.registerMachineEdit(fn);
 		}
 		return false;
 	}
