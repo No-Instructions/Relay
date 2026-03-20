@@ -244,6 +244,34 @@ export class SyncBridge {
 	}
 
 	/**
+	 * Re-wire the inbound handler to the current remoteDoc.
+	 * Called when remoteDoc is replaced (e.g., provider reconnect) so the
+	 * inbound queue captures updates from the new doc instead of the old one.
+	 */
+	rewireRemoteDoc(): void {
+		// Detach from any previous remoteDoc (we don't have a reference to it,
+		// but nulling the handler prevents double-install in setupUpdateQueues)
+		if (this._remoteDocUpdateHandler) {
+			// The old handler is orphaned on the old doc — Y.Doc.destroy()
+			// or GC will clean it up. We can't detach it here because we
+			// don't have a reference to the old doc.
+			this._remoteDocUpdateHandler = null;
+		}
+		// Clear stale inbound entries from the old doc
+		this._inboundQueue = [];
+
+		// Re-install on the new remoteDoc
+		const remoteDoc = this.host.getRemoteDoc();
+		if (remoteDoc) {
+			this._remoteDocUpdateHandler = (update: Uint8Array, origin: unknown) => {
+				if (origin === this.host) return;              // outbound echo
+				this._inboundQueue.push(update);
+			};
+			remoteDoc.on('update', this._remoteDocUpdateHandler);
+		}
+	}
+
+	/**
 	 * Capture and null handler references for async cleanup (destroyLocalDoc).
 	 * Returns the captured handlers so the caller can detach them from
 	 * potentially-replaced doc instances.

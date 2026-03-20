@@ -435,10 +435,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * a remoteDoc when waking from hibernation.
 	 */
 	setRemoteDoc(doc: Y.Doc | null): void {
+		const oldDoc = this.remoteDoc;
 		this.remoteDoc = doc;
 		if (!doc) {
 			this._bridge.providerSynced = false;
 			this._providerSynced = false;
+		}
+		// Re-wire the SyncBridge inbound handler when remoteDoc changes.
+		// Without this, the handler stays on the old doc and inbound updates
+		// from the new provider are not queued (only caught by the safety net).
+		if (doc && doc !== oldDoc) {
+			this._bridge.rewireRemoteDoc();
 		}
 	}
 
@@ -1016,7 +1023,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// === Active entering/tracking guards ===
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
-				(event as any).hasContent !== true && !this._providerSynced,
+				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
 			hasPreexistingConflict: () => this.conflictData !== null,
 			contentMatchesAtReconcile: () => {
 				const localText = this.localDoc?.getText("contents").toString() ?? "";
@@ -1369,6 +1376,18 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			startTwoWayMerge: () => {
+				// In recovery mode (no LCA), remote CRDT updates were applied
+				// to remoteDoc during idle but never synced to localDoc.
+				// Apply them now so "ours" reflects the full CRDT state.
+				if (this.localDoc && this.remoteDoc) {
+					const update = Y.encodeStateAsUpdate(
+						this.remoteDoc,
+						Y.encodeStateVector(this.localDoc),
+					);
+					if (update.byteLength > 0) {
+						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+					}
+				}
 				const localText = this.localDoc?.getText("contents").toString() ?? "";
 				const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
 				this.performTwoWayMerge(localText, diskText);
