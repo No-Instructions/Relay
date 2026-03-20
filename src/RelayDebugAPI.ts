@@ -177,7 +177,10 @@ export class RelayDebugAPI {
       getDocumentContent: async (path) => this.getDocumentContent(path),
     };
 
-    (g as any).__relayDebug = api;
+    (g as any).__relayDebug = {
+      ...api,
+      registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
+    };
   }
 
   /**
