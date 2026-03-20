@@ -122,7 +122,7 @@ describe('Hibernation Lifecycle', () => {
   describe('initial state', () => {
     test('registered documents start warm', () => {
       createMockDocument('doc-1', 'test.md');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
     });
 
     test('unknown documents return hibernated', () => {
@@ -184,7 +184,7 @@ describe('Hibernation Lifecycle', () => {
 
     test('warm documents receive updates directly (no buffer)', () => {
       createMockDocument('doc-1', 'test.md');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       const update = createUpdate('hello');
       manager.handleRemoteUpdate('doc-1', update);
@@ -209,7 +209,7 @@ describe('Hibernation Lifecycle', () => {
       const remoteDoc = new Y.Doc();
       manager.wake('doc-1', remoteDoc);
 
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
       remoteDoc.destroy();
     });
 
@@ -259,7 +259,7 @@ describe('Hibernation Lifecycle', () => {
   describe('hibernate()', () => {
     test('hibernate transitions from warm to hibernated', () => {
       createMockDocument('doc-1', 'test.md');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       manager.hibernate('doc-1');
       expect(manager.getHibernationState('doc-1')).toBe('hibernated');
@@ -303,7 +303,7 @@ describe('Hibernation Lifecycle', () => {
   describe('hibernate timer', () => {
     test('warm documents re-hibernate after timeout', () => {
       createMockDocument('doc-1', 'test.md');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       // Advance time past the hibernate timeout
       timeProvider.setTime(timeProvider.now() + 61_000);
@@ -312,11 +312,11 @@ describe('Hibernation Lifecycle', () => {
 
     test('activity resets the hibernate timer', async () => {
       createMockDocument('doc-1', 'test.md');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       // Advance 30 seconds
       timeProvider.setTime(timeProvider.now() + 30_000);
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       // Send a remote update (resets timer and starts idle-merge invoke)
       const update = createUpdate('activity');
@@ -329,7 +329,7 @@ describe('Hibernation Lifecycle', () => {
       // Timer was reset at T=30_000, fires at T=90_000.
       // 45s later → T=75_000, before the reset timer fires
       timeProvider.setTime(timeProvider.now() + 45_000);
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       // 20s more → T=95_000, past the 60s window since activity
       timeProvider.setTime(timeProvider.now() + 20_000);
@@ -358,7 +358,7 @@ describe('Hibernation Lifecycle', () => {
       expect(manager.getHibernationState('doc-1')).toBe('active');
 
       await manager.unload('doc-1');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       // Should eventually hibernate
       timeProvider.setTime(timeProvider.now() + 61_000);
@@ -379,7 +379,7 @@ describe('Hibernation Lifecycle', () => {
       });
 
       // Background wake should have processed
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('working');
     });
 
     test('enqueueWake respects bounded concurrency', () => {
@@ -400,7 +400,7 @@ describe('Hibernation Lifecycle', () => {
       // Max 3 concurrent warm
       let warmCount = 0;
       for (let i = 1; i <= 5; i++) {
-        if (manager.getHibernationState(`doc-${i}`) === 'warm') {
+        if (manager.getHibernationState(`doc-${i}`) === 'working') {
           warmCount++;
         }
       }
@@ -431,7 +431,7 @@ describe('Hibernation Lifecycle', () => {
         guid: 'occupant',
         priority: WakePriority.REMOTE_UPDATE,
       });
-      expect(strictManager.getHibernationState('occupant')).toBe('warm');
+      expect(strictManager.getHibernationState('occupant')).toBe('working');
 
       // Enqueue waiter — blocked by concurrency limit
       strictManager.enqueueWake({
@@ -443,7 +443,7 @@ describe('Hibernation Lifecycle', () => {
       // Hibernate occupant — frees the slot, should drain waiter from queue
       strictManager.hibernate('occupant');
       expect(strictManager.getHibernationState('occupant')).toBe('hibernated');
-      expect(strictManager.getHibernationState('waiter')).toBe('warm');
+      expect(strictManager.getHibernationState('waiter')).toBe('working');
 
       strictManager.destroy();
     });
@@ -474,7 +474,7 @@ describe('Hibernation Lifecycle', () => {
       });
 
       // Low should have been processed (concurrency 1)
-      expect(strictManager.getHibernationState('low')).toBe('warm');
+      expect(strictManager.getHibernationState('low')).toBe('working');
       expect(strictManager.getHibernationState('high')).toBe('hibernated');
 
       // Hibernate the low-priority doc to free up slot
@@ -484,7 +484,7 @@ describe('Hibernation Lifecycle', () => {
         guid: 'high',
         priority: WakePriority.OPEN_DOC,
       });
-      expect(strictManager.getHibernationState('high')).toBe('warm');
+      expect(strictManager.getHibernationState('high')).toBe('working');
 
       strictManager.destroy();
     });
@@ -502,13 +502,13 @@ describe('Hibernation Lifecycle', () => {
 
       // Buffer should have been drained by wake
       expect(manager.getHibernationBuffer('doc-1')).toBeNull();
-      // Doc should be warm after wake
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      // Doc should be working after background wake
+      expect(manager.getHibernationState('doc-1')).toBe('working');
     });
 
     test('enqueueWake is no-op for warm documents', () => {
       createMockDocument('doc-1', 'test.md');
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
 
       manager.enqueueWake({
         guid: 'doc-1',
@@ -516,7 +516,7 @@ describe('Hibernation Lifecycle', () => {
       });
 
       // Still warm, timer just reset
-      expect(manager.getHibernationState('doc-1')).toBe('warm');
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
     });
 
     test('enqueueWake upgrades priority for queued requests', () => {
