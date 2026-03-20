@@ -20,7 +20,7 @@ import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
-import { curryLog, HasLogging, RelayInstances } from "./debug";
+import { curryLog, HasLogging, RelayInstances, metrics } from "./debug";
 import { Banner } from "./ui/Banner";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
@@ -1312,7 +1312,9 @@ export class LiveViewManager {
 		log("loading plugins");
 		this.load();
 		const now = moment.utc();
-		log(`refresh completed in ${now.diff(queuedAt)}ms`, ctx);
+		const durationMs = now.diff(queuedAt);
+		log(`refresh completed in ${durationMs}ms`, ctx);
+		metrics.observeLiveviewsRefresh(durationMs / 1000);
 		return true;
 	}
 
@@ -1323,6 +1325,7 @@ export class LiveViewManager {
 		this.refreshQueue.push(() => {
 			return this._refreshViews(context, queuedAt);
 		});
+		metrics.setLiveviewsQueueDepth(this.refreshQueue.length);
 		if (this._activePromise !== null) {
 			return false;
 		}

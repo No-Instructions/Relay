@@ -5,7 +5,7 @@ import { S3RN, S3RemoteCanvas, S3RemoteDocument } from "./S3RN";
 import { isDocument, type Document } from "./Document";
 import { isCanvas } from "./Canvas";
 import type { TimeProvider } from "./TimeProvider";
-import { HasLogging, RelayInstances } from "./debug";
+import { HasLogging, RelayInstances, metrics } from "./debug";
 import type { Subscriber, Unsubscriber } from "./observable/Observable";
 import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
@@ -195,6 +195,8 @@ export class BackgroundSync extends HasLogging {
 		if (this.isPaused || this.isProcessingSync) return;
 		this.isProcessingSync = true;
 
+		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
+
 		// Filter for items with connected folders
 		const connectableItems = this.syncQueue.filter(
 			(item) => item.sharedFolder.connected,
@@ -211,7 +213,10 @@ export class BackgroundSync extends HasLogging {
 			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
 			item.status = "running";
+			const opStart = performance.now();
 			this.activeSync.add(item);
+			metrics.setBgSyncActive("sync", this.activeSync.size);
+			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
 			try {
 				const doc = item.doc;
@@ -226,6 +231,7 @@ export class BackgroundSync extends HasLogging {
 				syncPromise
 					.then(() => {
 						item.status = "completed";
+						metrics.incBgSyncOps("sync", "completed");
 						const callback = this.syncCompletionCallbacks.get(item.guid);
 						if (callback) {
 							callback.resolve();
@@ -257,6 +263,7 @@ export class BackgroundSync extends HasLogging {
 					})
 					.catch((error) => {
 						item.status = "failed";
+						metrics.incBgSyncOps("sync", "failed");
 
 						const callback = this.syncCompletionCallbacks.get(item.guid);
 						if (callback) {
@@ -274,7 +281,9 @@ export class BackgroundSync extends HasLogging {
 						}
 					})
 					.finally(() => {
+						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 						this.activeSync.delete(item);
+						metrics.setBgSyncActive("sync", this.activeSync.size);
 						this.inProgressSyncs.delete(item.guid);
 
 						// Unwind the call stack before checking for more work
@@ -284,6 +293,8 @@ export class BackgroundSync extends HasLogging {
 					});
 			} catch (error) {
 				item.status = "failed";
+				metrics.incBgSyncOps("sync", "failed");
+				metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 
 				const callback = this.syncCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -301,6 +312,7 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				this.activeSync.delete(item);
+				metrics.setBgSyncActive("sync", this.activeSync.size);
 				this.inProgressSyncs.delete(item.guid);
 			}
 		}
@@ -311,6 +323,8 @@ export class BackgroundSync extends HasLogging {
 	private async processDownloadQueue() {
 		if (this.isPaused || this.isProcessingDownloads) return;
 		this.isProcessingDownloads = true;
+
+		metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
 		// Filter for items with connected folders
 		const connectableItems = this.downloadQueue.filter(
@@ -330,7 +344,10 @@ export class BackgroundSync extends HasLogging {
 			);
 
 			item.status = "running";
+			const opStart = performance.now();
 			this.activeDownloads.add(item);
+			metrics.setBgSyncActive("download", this.activeDownloads.size);
+			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
 			try {
 				let downloadPromise: Promise<any>;
@@ -347,6 +364,7 @@ export class BackgroundSync extends HasLogging {
 				downloadPromise
 					.then((result) => {
 						item.status = "completed";
+						metrics.incBgSyncOps("download", "completed");
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
@@ -366,6 +384,7 @@ export class BackgroundSync extends HasLogging {
 					})
 					.catch((error) => {
 						item.status = "failed";
+						metrics.incBgSyncOps("download", "failed");
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
@@ -383,7 +402,9 @@ export class BackgroundSync extends HasLogging {
 						this.error("[processDownloadQueue]", error);
 					})
 					.finally(() => {
+						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 						this.activeDownloads.delete(item);
+						metrics.setBgSyncActive("download", this.activeDownloads.size);
 						this.inProgressDownloads.delete(item.guid);
 
 						// Unwind the call stack before checking for more work
@@ -393,6 +414,8 @@ export class BackgroundSync extends HasLogging {
 					});
 			} catch (error) {
 				item.status = "failed";
+				metrics.incBgSyncOps("download", "failed");
+				metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 
 				const callback = this.downloadCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -410,6 +433,7 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				this.activeDownloads.delete(item);
+				metrics.setBgSyncActive("download", this.activeDownloads.size);
 				this.inProgressDownloads.delete(item.guid);
 			}
 		}
