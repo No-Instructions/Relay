@@ -2543,7 +2543,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (finalContent !== null && this._disk) {
 			const contentHash = await this.hashFn(finalContent);
 			const hashMatches = contentHash === this._disk.hash;
-			// Fallback to content comparison if hash doesn't match
+			// Fallback to content comparison when disk hash is stale
+			// (save completed but file watcher hasn't fired yet)
 			const contentMatches =
 				hashMatches ||
 				this.pendingDiskContents === finalContent ||
