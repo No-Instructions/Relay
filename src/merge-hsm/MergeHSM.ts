@@ -1025,11 +1025,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
 			hasPreexistingConflict: () => this.conflictData !== null,
-			contentMatchesAtReconcile: () => {
-				const localText = this.localDoc?.getText("contents").toString() ?? "";
-				const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
-				return localText === diskText;
-			},
 			isRecoveryMode: () => this._lca === null,
 		};
 	}
@@ -2207,24 +2202,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		const diskText =
 			this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
 		const baseText = this._lca?.contents ?? "";
-
-		// If local and disk have identical content, skip merge entirely.
-		// This can happen when reopening from idle.diverged after an edit+save session
-		// where IDB and disk both have the updated content. Skipping prevents
-		// duplication from diff3 merge when both sides made identical changes relative to LCA.
-		if (localText === diskText) {
-			this.pendingEditorContent = null;
-			this.send({
-				type: "MERGE_SUCCESS",
-				newLCA: this._lca ?? {
-					contents: "",
-					meta: { hash: "", mtime: 0 },
-					stateVector: new Uint8Array([0]),
-				},
-			});
-			this._bridge.flushInbound();
-			return;
-		}
 
 		const mergeResult = performThreeWayMerge(baseText, localText, diskText);
 
