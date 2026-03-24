@@ -574,6 +574,10 @@ export class SyncBridge {
 	 * Called after the queue-based flush completes (not during nested
 	 * flushOutbound calls from flushInbound's machine-edit-match path).
 	 */
+	assertConvergence(): void {
+		this.assertStateVectorConvergence();
+	}
+
 	private assertStateVectorConvergence(): void {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
@@ -583,6 +587,9 @@ export class SyncBridge {
 		// will diverge until the deferred entries are matched or expire.
 		if (this.host.getPendingMachineEdits().length > 0) return;
 		if (this._outboundQueue.some(e => e.machineEditMark !== null)) return;
+
+		// Local-only mode gates all remote sync -- SV divergence is expected.
+		if (this._syncGate.localOnly) return;
 
 		// Fork gates outbound sync -- SV divergence is expected while it exists.
 		if (this.host.hasFork()) return;
