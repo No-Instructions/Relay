@@ -1369,6 +1369,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.pendingEditorContent = null;
 			},
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
+			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			startTwoWayMerge: () => {
 				// In recovery mode (no LCA), remote CRDT updates were applied

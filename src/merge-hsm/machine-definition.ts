@@ -321,7 +321,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.tracking': {
-		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal'],
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'assertConvergence'],
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
 			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal'] },
