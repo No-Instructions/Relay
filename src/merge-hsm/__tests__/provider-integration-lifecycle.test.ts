@@ -103,6 +103,8 @@ describe('Provider Integration Lifecycle', () => {
 
     // Reconnect — provider connect triggers sync event → PROVIDER_SYNCED
     ctx.vaultA.reconnect();
+    // Provider sync is deferred to a microtask — await it
+    await Promise.resolve();
     expect(ctx.vaultA.provider!.synced).toBe(true);
 
     ctx.destroy();
@@ -127,6 +129,8 @@ describe('Provider Integration Lifecycle', () => {
 
     // Reconnect vault A — provider pulls server state
     ctx.vaultA.reconnect();
+    // Provider sync is deferred to a microtask — await it
+    await Promise.resolve();
 
     // A's remoteDoc should have B's edit after provider sync
     expect(ctx.vaultA.getRemoteText()).toBe('Base content + B edit');
@@ -164,6 +168,8 @@ describe('Provider Integration Lifecycle', () => {
 
     // Reconnect A — provider pulls server state into A's remoteDoc
     ctx.vaultA.reconnect();
+    // Provider sync is deferred to a microtask — await it
+    await Promise.resolve();
 
     // Re-acquire lock to trigger fork reconciliation
     ctx.vaultA.send({ type: 'SET_MODE_ACTIVE' });
