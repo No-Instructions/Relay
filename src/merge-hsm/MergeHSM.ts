@@ -2168,10 +2168,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	/**
 	 * Perform two-way merge when no LCA is available.
-	 * Per spec: always shows diff UI for user resolution.
-	 * Edits in differ write immediately to CRDT/disk.
+	 * If both sides match, resolves immediately. Otherwise shows diff UI.
 	 */
 	private performTwoWayMerge(localText: string, diskText: string): void {
+		if (localText === diskText) {
+			this.send({ type: "RESOLVE", contents: localText });
+			return;
+		}
+
 		// Populate conflictData for the diff UI
 		this.conflictData = {
 			base: "", // No baseline available
@@ -2184,7 +2188,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			positionedConflicts: [],
 		};
 
-		// Two-way merge always shows diff UI - send MERGE_CONFLICT to transition
 		this.send({
 			type: "MERGE_CONFLICT",
 			base: "",
