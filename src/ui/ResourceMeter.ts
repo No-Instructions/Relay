@@ -55,16 +55,12 @@ export class ResourceMeterMount {
 	}
 
 	private refreshStats(): void {
-		let used = 0;
-		let pending = 0;
-		let total = 0;
+		const folders: { name: string; used: number; pending: number; total: number }[] = [];
 		this.sharedFolders.forEach((folder) => {
 			const stats = folder.mergeManager.getWakeQueueStats();
-			used += stats.used;
-			pending += stats.pending;
-			total += stats.total;
+			folders.push({ name: folder.name, ...stats });
 		});
-		this.component?.$set({ used, pending, total });
+		this.component?.$set({ folders });
 	}
 
 	private mount(): void {
@@ -79,10 +75,7 @@ export class ResourceMeterMount {
 			target: this.containerEl,
 			props: {
 				label: "Wake Queue",
-				itemLabel: "Slots",
-				used: 0,
-				pending: 0,
-				total: 0,
+				folders: [],
 			},
 		});
 	}
