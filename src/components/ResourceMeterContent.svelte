@@ -2,45 +2,53 @@
 	/**
 	 * A compact resource usage indicator with hover popover.
 	 *
-	 * Displays colored bars representing slot utilization.
-	 * All filled bars share one color based on overall utilization:
+	 * Displays colored bars representing slot utilization across multiple folders.
+	 * The bars reflect the highest-utilization folder:
 	 *   - green: plenty of headroom
 	 *   - yellow: mostly used
 	 *   - red: maxed out
 	 *   - empty slots: gray
 	 *
-	 * On hover, a popover shows a labeled progress bar with usage details.
+	 * On hover, a popover shows per-folder progress bars with usage details.
 	 */
 
-	export let label = "Resource Usage";
-	export let used = 0;
-	export let total = 3;
-	export let itemLabel = "Slots";
-	export let helpText = "";
+	export interface FolderStats {
+		name: string;
+		used: number;
+		pending: number;
+		total: number;
+	}
 
-	/** Number of queued items waiting for a slot */
-	export let pending = 0;
+	export let label = "Wake Queue";
+	export let folders: FolderStats[] = [];
 
 	let isVisible = false;
 	let containerEl: HTMLDivElement;
 	let popoverEl: HTMLDivElement;
 	let position: "above" | "below" = "below";
 
-	$: pct = total > 0 ? used / total : 0;
-	$: percent = Math.round(pct * 100);
+	// Derive bars from the worst-case folder utilization
+	$: worstPct = folders.reduce((max, f) => {
+		const p = f.total > 0 ? f.used / f.total : 0;
+		return p > max ? p : max;
+	}, 0);
 
-	// 3 bars with individual colors based on utilization thresholds
-	$: bar1 = pct >= 0.3 ? "green" : "empty";
-	$: bar2 = pct >= 0.7 ? "yellow" : "empty";
-	$: bar3 = pct >= 1.0 ? "red" : "empty";
+	$: bar1 = worstPct >= 0.3 ? "green" : "empty";
+	$: bar2 = worstPct >= 0.7 ? "yellow" : "empty";
+	$: bar3 = worstPct >= 1.0 ? "red" : "empty";
 
-	// When at capacity, all bars turn red
-	$: bars = pct >= 1.0
+	$: bars = worstPct >= 1.0
 		? ["red", "red", "red"]
 		: [bar1, bar2, bar3];
 
-	// Overall level for the progress bar in popover
-	$: level = pct >= 1.0 ? "red" : pct >= 0.7 ? "yellow" : "green";
+	function levelFor(f: FolderStats): string {
+		const p = f.total > 0 ? f.used / f.total : 0;
+		return p >= 1.0 ? "red" : p >= 0.7 ? "yellow" : "green";
+	}
+
+	function percentFor(f: FolderStats): number {
+		return f.total > 0 ? Math.round((f.used / f.total) * 100) : 0;
+	}
 
 	let popoverStyle = "";
 
@@ -86,22 +94,26 @@
 		>
 			<div class="arrow" class:above={position === "above"} class:below={position === "below"} style={position === "above" ? "bottom: -5px;" : "top: -5px;"} />
 			<h4 class="popover-title">{label}</h4>
-			<div class="popover-row">
-				<span class="popover-label">
-					{itemLabel}
-					{#if helpText}
-						<span class="help-icon" title={helpText}>i</span>
+			{#each folders as f}
+				<div class="folder-section">
+					<div class="popover-row">
+						<span class="popover-label">{f.name}</span>
+						<span class="popover-value">{f.used}/{f.total}</span>
+					</div>
+					<div class="progress-track">
+						<div class="progress-fill {levelFor(f)}" style="width: {percentFor(f)}%;" />
+					</div>
+					{#if f.pending > 0}
+						<div class="popover-row pending-row">
+							<span class="popover-label">Queued</span>
+							<span class="popover-value">{f.pending}</span>
+						</div>
 					{/if}
-				</span>
-				<span class="popover-value">{used}/{total}</span>
-			</div>
-			<div class="progress-track">
-				<div class="progress-fill {level}" style="width: {percent}%;" />
-			</div>
-			{#if pending > 0}
-				<div class="popover-row pending-row">
-					<span class="popover-label">Queued</span>
-					<span class="popover-value">{pending}</span>
+				</div>
+			{/each}
+			{#if folders.length === 0}
+				<div class="popover-row">
+					<span class="popover-label empty-label">No shared folders</span>
 				</div>
 			{/if}
 		</div>
@@ -150,7 +162,7 @@
 	.popover {
 		position: fixed;
 		z-index: var(--layer-popover);
-		width: 180px;
+		width: 200px;
 		padding: 10px 12px;
 		font-size: var(--font-ui-small);
 		background-color: var(--background-primary);
@@ -194,6 +206,12 @@
 		letter-spacing: 0.05em;
 	}
 
+	.folder-section {
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+
 	.popover-row {
 		display: flex;
 		align-items: center;
@@ -206,27 +224,20 @@
 		gap: 4px;
 		font-size: var(--font-ui-smaller);
 		color: var(--text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+
+	.empty-label {
+		font-style: italic;
 	}
 
 	.popover-value {
 		font-size: var(--font-ui-smaller);
 		font-weight: 500;
 		color: var(--text-normal);
-	}
-
-	.help-icon {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 14px;
-		height: 14px;
-		font-size: 10px;
-		font-style: normal;
-		font-weight: 600;
-		color: var(--text-faint);
-		background-color: var(--background-modifier-hover);
-		border-radius: 50%;
-		cursor: help;
 	}
 
 	.progress-track {
