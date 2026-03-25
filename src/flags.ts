@@ -18,6 +18,7 @@ export interface FeatureFlags {
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
 	enableDraftMode: boolean;
+	enableNewSyncStatus: boolean;
 	enableResourceMeter: boolean;
 }
 
@@ -41,6 +42,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDeviceManagement: false,
 	enableHSMRecording: false,
 	enableDraftMode: false,
+	enableNewSyncStatus: false,
 	enableResourceMeter: false,
 } as const;
 

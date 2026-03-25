@@ -524,7 +524,7 @@ export class SharedFolder extends HasProvider {
 		pending: Uint8Array[],
 	): void {
 		this._pendingKeyframeUpdates.set(guid, pending);
-		this.backgroundSync.enqueueDownload(file).then((keyframe) => {
+		this.backgroundSync.enqueueDownload(file, !flags().enableNewSyncStatus).then((keyframe) => {
 			const buf = this._pendingKeyframeUpdates.get(guid);
 			this._pendingKeyframeUpdates.delete(guid);
 			if (!buf || buf.length === 0) return;
@@ -1839,7 +1839,7 @@ export class SharedFolder extends HasProvider {
 			this.whenReady().then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueDownload(doc);
+					this.backgroundSync.enqueueDownload(doc, !flags().enableNewSyncStatus);
 				} else if (this.pendingUpload.get(doc.path)) {
 					this.backgroundSync.enqueueSync(doc);
 				}
