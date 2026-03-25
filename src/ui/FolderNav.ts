@@ -201,10 +201,13 @@ class PillDecoration {
 			this.sharedFolder.backgroundSync.subscribeToGroupProgress(
 				this.sharedFolder,
 				(progress) => {
-					if (progress) {
+					const effective = flags().enableNewSyncStatus
+						? this.sharedFolder.backgroundSync.getUserVisibleProgress(this.sharedFolder)
+						: progress;
+					if (effective) {
 						this.pill.$set({
-							progress: progress.percent,
-							syncStatus: progress.status,
+							progress: effective.percent,
+							syncStatus: effective.status,
 						});
 					}
 				},

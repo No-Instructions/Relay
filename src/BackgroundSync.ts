@@ -16,6 +16,7 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
+import { flags } from "./flagManager";
 
 export interface QueueItem {
 	guid: string;
@@ -23,6 +24,7 @@ export interface QueueItem {
 	doc: Document | Canvas | SyncFile;
 	status: "pending" | "running" | "completed" | "failed";
 	sharedFolder: SharedFolder;
+	userVisible: boolean;
 }
 
 export interface SyncGroup {
@@ -34,6 +36,8 @@ export interface SyncGroup {
 	syncs: number;
 	completedDownloads: number;
 	completedSyncs: number;
+	userDownloads: number;
+	completedUserDownloads: number;
 }
 
 export interface SyncProgress {
@@ -177,6 +181,35 @@ export class BackgroundSync extends HasLogging {
 			downloadPercent: Math.round(downloadPercent),
 			sharedFolder,
 			status: group.status,
+		};
+	}
+
+	/**
+	 * Returns download-only progress for a shared folder.
+	 * Used when enableNewSyncStatus is on to show only user-visible downloads.
+	 */
+	getUserVisibleProgress(sharedFolder: SharedFolder): GroupProgress | null {
+		const group = this.syncGroups.get(sharedFolder);
+		if (!group) return null;
+
+		const total = group.userDownloads;
+		const completed = group.completedUserDownloads;
+		const percent = total > 0 ? (completed / total) * 100 : 0;
+		const status =
+			total === 0
+				? group.status
+				: completed === total
+					? "completed"
+					: group.status === "failed"
+						? "failed"
+						: "running";
+
+		return {
+			percent: Math.round(percent),
+			syncPercent: 0,
+			downloadPercent: Math.round(percent),
+			sharedFolder,
+			status,
 		};
 	}
 
@@ -376,6 +409,9 @@ export class BackgroundSync extends HasLogging {
 						if (group) {
 							group.completedDownloads++;
 							group.completed++;
+							if (item.userVisible) {
+								group.completedUserDownloads++;
+							}
 							if (group.completed === group.total) {
 								group.status = "completed";
 							}
@@ -476,6 +512,7 @@ export class BackgroundSync extends HasLogging {
 			doc: item,
 			status: "pending",
 			sharedFolder,
+			userVisible: false,
 		};
 
 		// Get or create the sync group
@@ -490,6 +527,8 @@ export class BackgroundSync extends HasLogging {
 				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
 			};
 		}
 		group.total++;
@@ -523,6 +562,7 @@ export class BackgroundSync extends HasLogging {
 	 */
 	enqueueDownload(
 		item: SyncFile | Document | Canvas,
+		userVisible = true,
 	): Promise<Uint8Array | undefined> {
 		// Skip if already in progress
 		if (this.inProgressDownloads.has(item.guid)) {
@@ -557,12 +597,17 @@ export class BackgroundSync extends HasLogging {
 				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
 			};
 		}
 
 		// Update the counters for individual document download
 		group.downloads++;
 		group.total++;
+		if (userVisible) {
+			group.userDownloads++;
+		}
 		this.syncGroups.set(sharedFolder, group);
 
 		// Create the queue item
@@ -572,6 +617,7 @@ export class BackgroundSync extends HasLogging {
 			doc: item,
 			status: "pending",
 			sharedFolder,
+			userVisible,
 		};
 
 		// Mark as in progress
@@ -618,6 +664,8 @@ export class BackgroundSync extends HasLogging {
 			syncs: allItems.length,
 			completedDownloads: 0,
 			completedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
 		};
 
 		// Register the group before enqueueing items
@@ -676,6 +724,7 @@ export class BackgroundSync extends HasLogging {
 			doc: item,
 			status: "pending",
 			sharedFolder,
+			userVisible: false,
 		};
 
 		this.inProgressSyncs.add(item.guid);
