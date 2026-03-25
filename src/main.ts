@@ -54,6 +54,7 @@ import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
+import { SyncStatusModal } from "./ui/SyncStatusModal";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
@@ -1181,6 +1182,30 @@ export default class Live extends Plugin {
 		});
 
 		this.patchWebviewer();
+
+		{
+			const registeredFolderGuids = new Set<string>();
+			const registerSyncStatusCommands = () => {
+				if (!flags().enableNewSyncStatus) return;
+				this.sharedFolders.forEach((folder) => {
+					if (registeredFolderGuids.has(folder.guid)) return;
+					registeredFolderGuids.add(folder.guid);
+					this.addCommand({
+						id: `show-sync-status-${folder.guid}`,
+						name: `Show sync status: ${folder.name}`,
+						callback: () => {
+							const modal = new SyncStatusModal(this.app, folder, this.timeProvider);
+							this.openModals.push(modal);
+							modal.open();
+						},
+					});
+				});
+			};
+			this.register(this.sharedFolders.subscribe(registerSyncStatusCommands));
+			this.register(
+				FeatureFlagManager.getInstance().subscribe(registerSyncStatusCommands),
+			);
+		}
 
 		withFlag(flag.enableNewLinkFormat, () => {
 			getPatcher().patch(MetadataCache.prototype, {
