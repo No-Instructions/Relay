@@ -297,6 +297,8 @@ export interface PersistenceLoadedEvent {
 	lca: LCAState | null;
 	/** Pre-computed state vector from cache (avoids per-document IDB opens) */
 	localStateVector?: Uint8Array | null;
+	/** Persisted fork data (loaded async from per-document state) */
+	fork?: Fork | null;
 }
 
 export interface PersistenceSyncedEvent {

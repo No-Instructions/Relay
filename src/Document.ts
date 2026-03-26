@@ -812,20 +812,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
-	private async handlePersistState(state: import("./merge-hsm/types").PersistedMergeState): Promise<void> {
-		const mergeManager = this.sharedFolder?.mergeManager;
-		if (!mergeManager) return;
-
-		// Update LCA cache in MergeManager
-		if (state.lca) {
-			mergeManager.setLCA(this.guid, {
-				contents: state.lca.contents,
-				meta: { hash: state.lca.hash, mtime: state.lca.mtime },
-				stateVector: state.lca.stateVector,
-			});
-		} else {
-			mergeManager.setLCA(this.guid, null);
-		}
+	private async handlePersistState(_state: import("./merge-hsm/types").PersistedMergeState): Promise<void> {
+		// MergeManager.handleHSMEffect handles both LCA cache updates
+		// and IDB persistence via onEffect. No action needed here —
+		// Document's subscriber exists for other effect types only.
 	}
 
 	/**
