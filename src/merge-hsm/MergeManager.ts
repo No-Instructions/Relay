@@ -80,6 +80,13 @@ export interface MergeManagerConfig {
    */
   loadAllStates?: () => Promise<PersistedMergeState[]>;
 
+  /**
+   * Callback to load a single document's persisted state.
+   * Called during createHSM to load fork and other per-document data
+   * that is too heavy for the bulk cache.
+   */
+  loadState?: (guid: string) => Promise<PersistedMergeState | null>;
+
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void;
 
@@ -194,6 +201,9 @@ export class MergeManager {
   // Used for idle mode sync status display without opening per-document IDBs
   private _localStateVectorCache = new Map<string, Uint8Array | null>();
 
+  // Documents with an in-flight async load (createHSM → loadState)
+  private _pendingLoads = new Set<string>();
+
   // =========================================================================
   // Hibernation State
   // =========================================================================
@@ -236,6 +246,7 @@ export class MergeManager {
     hash: string;
   } | null>;
   private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
+  private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
@@ -250,6 +261,7 @@ export class MergeManager {
     this.onEffect = config.onEffect;
     this.getDiskState = config.getDiskState;
     this._persistIndex = config.persistIndex;
+    this.loadState = config.loadState;
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
     this.userId = config.userId;
@@ -369,19 +381,7 @@ export class MergeManager {
       });
     }
 
-    // Send LOAD and PERSISTENCE_LOADED to initialize the HSM
-    hsm.send({ type: 'LOAD', guid });
-    hsm.send({
-      type: 'PERSISTENCE_LOADED',
-      updates: new Uint8Array(), // No updates needed - we pass state vector directly
-      lca,
-      localStateVector,
-    });
-
-    // Handle REQUEST_PROVIDER_SYNC by connecting the document's provider.
-    // This creates a live WebSocket so fork-reconcile can sync with the server.
-    // Must be wired before SET_MODE_IDLE because the idle invoke can emit
-    // REQUEST_PROVIDER_SYNC synchronously during the send() call below.
+    // Wire effect handler before any events — effects can fire during send().
     hsm.subscribe((effect) => {
       if (effect.type === 'REQUEST_HIBERNATE') {
         // Hibernate on next microtask so the current transition completes first
@@ -405,10 +405,38 @@ export class MergeManager {
           Promise.resolve().then(connect);
         }
       }
+      // Forward all effects to onEffect handler for IDB persistence etc.
+      this.handleHSMEffect(guid, effect);
     });
 
-    // Start in idle mode by default (caller can send SET_MODE_ACTIVE if needed)
-    hsm.send({ type: 'SET_MODE_IDLE' });
+    // Enter loading state — HSM accumulates events until async load completes
+    hsm.send({ type: 'LOAD', guid });
+
+    // Async-load per-document state from IDB, then send PERSISTENCE_LOADED + SET_MODE_IDLE
+    const loadStateFn = this.loadState ?? (() => Promise.resolve(null));
+    this._pendingLoads.add(guid);
+    loadStateFn(guid).then((state) => {
+      this._pendingLoads.delete(guid);
+      if (this.destroyed) return;
+      hsm.send({
+        type: 'PERSISTENCE_LOADED',
+        updates: new Uint8Array(),
+        lca,
+        localStateVector,
+        fork: state?.fork ?? null,
+      });
+      hsm.send({ type: 'SET_MODE_IDLE' });
+    }).catch((err) => {
+      this._pendingLoads.delete(guid);
+      console.error(`[MergeManager] Failed to load state for ${guid}:`, err);
+      hsm.send({
+        type: 'PERSISTENCE_LOADED',
+        updates: new Uint8Array(),
+        lca,
+        localStateVector,
+      });
+      hsm.send({ type: 'SET_MODE_IDLE' });
+    });
 
     return hsm;
   }
@@ -637,6 +665,7 @@ export class MergeManager {
         localStateVector: hsm.state.localStateVector,
         lastStatePath: hsm.state.statePath,
         deferredConflict: hsm.state.deferredConflict,
+        fork: hsm.state.fork,
         persistedAt: this.timeProvider.now(),
       };
 
@@ -747,6 +776,9 @@ export class MergeManager {
       const statePath = hsm.state.statePath;
 
       if (statePath === 'loading') {
+        // Skip HSMs with an in-flight async load — they will receive
+        // SET_MODE_IDLE when the load completes in createHSM.
+        if (this._pendingLoads.has(guid)) continue;
         if (activeGuids.has(guid)) {
           hsm.send({ type: 'SET_MODE_ACTIVE' });
         } else {
@@ -1104,7 +1136,9 @@ export class MergeManager {
 
     // Forward to external handler
     if (this.onEffect) {
-      this.onEffect(guid, effect);
+      Promise.resolve(this.onEffect(guid, effect)).catch((err) => {
+        console.error(`[MergeManager] onEffect error for ${guid}:`, err);
+      });
     }
 
     // Handle specific effects

@@ -62,6 +62,7 @@ import { awaitOnReload } from "./reloadUtils";
 import { generateHash } from "./hashing";
 import {
 	saveState as saveMergeState,
+	loadState as loadMergeState,
 	openDatabase as openMergeHSMDatabase,
 	getAllStates,
 	deleteState as deleteMergeState,
@@ -331,6 +332,18 @@ export class SharedFolder extends HasProvider {
 					}
 				} catch {
 					return [];
+				}
+			},
+			loadState: async (guid: string) => {
+				try {
+					const db = await openMergeHSMDatabase();
+					try {
+						return await loadMergeState(db, guid);
+					} finally {
+						db.close();
+					}
+				} catch {
+					return null;
 				}
 			},
 			onEffect: async (guid, effect) => {

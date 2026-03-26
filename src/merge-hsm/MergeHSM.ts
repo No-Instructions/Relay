@@ -968,6 +968,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				return !this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
 			},
 			localAheadAtLoad: () => {
+				// Persisted fork means we were in localAhead before — go straight
+				// back so fork-reconcile runs instead of re-creating the fork.
+				if (this._fork) return true;
 				if (!this._lca) {
 					// No LCA: local ahead if we have local state
 					return !!this._localStateVector && this._localStateVector.length > 1;
