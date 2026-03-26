@@ -829,6 +829,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	async connectForForkReconcile(): Promise<void> {
 		if (!this._hsm) return;
+		if (!this.sharedFolder.shouldConnect) return;
 
 		// Only tear down and recreate when there is an active fork that
 		// requires a fresh remoteDoc from the server. The existing

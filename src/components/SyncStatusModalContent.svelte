@@ -82,10 +82,10 @@
 			const hsm = doc.hsm;
 			if (!hsm) continue;
 			const sp: StatePath = hsm.statePath;
-			if (sp === "active.conflict.bannerShown") {
+			if (sp === "active.conflict.bannerShown" || sp === "active.conflict.resolving") {
+				result.push({ guid, path: file.path, category: "conflict", label: sp === "active.conflict.resolving" ? "Resolving" : "Conflict detected" });
+			} else if (hsm.getConflictData()) {
 				result.push({ guid, path: file.path, category: "conflict", label: "Conflict detected" });
-			} else if (sp === "active.conflict.resolving") {
-				result.push({ guid, path: file.path, category: "conflict", label: "Resolving conflict" });
 			} else if (sp === "idle.error") {
 				result.push({ guid, path: file.path, category: "error", label: "Error" });
 			}
@@ -112,9 +112,9 @@
 			const hsm = doc.hsm;
 			if (hsm) {
 				const sp: StatePath = hsm.statePath;
-				if (sp === "idle.synced") synced++;
+				if (sp.startsWith("active.conflict") || hsm.getConflictData()) conflict++;
+				else if (sp === "idle.synced") synced++;
 				else if (sp === "active.tracking" || sp.startsWith("active.entering")) editing++;
-				else if (sp.startsWith("active.conflict")) conflict++;
 				else if (sp === "idle.error") error++;
 				else syncing++;
 			} else {
@@ -339,7 +339,7 @@
 	{#if activityLog.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Recent Activity</div>
-			{#each activityLog as entry (entry.guid)}
+			{#each activityLog.filter(e => e.status !== "conflict") as entry (entry.guid)}
 				<div class="sync-status-row activity-row">
 					<span class="sync-status-icon activity">
 						{#if entry.status === "synced"}
@@ -455,8 +455,8 @@
 		font-size: var(--font-ui-smaller);
 		color: var(--text-faint);
 		flex-shrink: 0;
-		width: 55px;
 		text-align: right;
+		white-space: nowrap;
 	}
 
 	.sync-status-author {
