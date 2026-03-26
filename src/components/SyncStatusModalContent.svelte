@@ -310,9 +310,10 @@
 					<span class="sync-status-path">{relativePath(file.path)}</span>
 					<span class="sync-status-state">{file.label}</span>
 					<button
-						class="mod-warning"
+						class="mod-cta"
 						on:click={() => {
-							const abstractFile = app.vault.getAbstractFileByPath(file.path);
+							const vaultPath = sharedFolder.path + file.path;
+							const abstractFile = app.vault.getAbstractFileByPath(vaultPath);
 							if (abstractFile && abstractFile instanceof TFile) {
 								const leaf = app.workspace.getLeaf();
 								leaf.openFile(abstractFile);
@@ -484,7 +485,7 @@
 		padding: 24px 0;
 	}
 
-	button.mod-warning {
+	button.mod-cta {
 		flex-shrink: 0;
 	}
 </style>
