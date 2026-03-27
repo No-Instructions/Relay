@@ -38,7 +38,7 @@ describe('MergeManager', () => {
   let documents: Map<string, MockDocument>;
 
   // Helper to create a mock document and its HSM
-  function createMockDocument(guid: string, path: string): MockDocument {
+  async function createMockDocument(guid: string, path: string): Promise<MockDocument> {
     const remoteDoc = new Y.Doc();
     const doc: MockDocument = {
       guid,
@@ -60,6 +60,9 @@ describe('MergeManager', () => {
 
     // Notify manager that HSM was created
     manager.notifyHSMCreated(guid);
+
+    // Wait for async createHSM initialization (loadState → PERSISTENCE_LOADED → SET_MODE_IDLE)
+    await Promise.resolve();
 
     return doc;
   }
@@ -284,7 +287,7 @@ describe('MergeManager', () => {
 
       // Reassign manager for createMockDocument to use
       manager = managerWithEffects;
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
 
       const newLCA = {
         contents: 'new content',
@@ -314,7 +317,7 @@ describe('MergeManager', () => {
 
       // Reassign manager for createMockDocument to use
       manager = managerWithEffects;
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
       effects.length = 0; // Clear effects from creation
 
       const newLCA = {
@@ -361,7 +364,7 @@ describe('MergeManager', () => {
 
       // Reassign manager for createMockDocument to use
       manager = managerWithInit;
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
 
       // Should have LCA from initialize
       expect(managerWithInit.getLCA('doc-1')).not.toBeNull();
@@ -383,7 +386,7 @@ describe('MergeManager', () => {
 
       // Reassign manager for createMockDocument to use
       manager = managerNoEffects;
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
 
       const newLCA = {
         contents: 'new content',
@@ -420,25 +423,25 @@ describe('MergeManager', () => {
   });
 
   describe('HSM creation via factory', () => {
-    test('createHSM creates HSM in idle state', () => {
-      const doc = createMockDocument('doc-1', 'notes/test.md');
+    test('createHSM creates HSM in idle state', async () => {
+      const doc = await createMockDocument('doc-1', 'notes/test.md');
 
       expect(doc.hsm).toBeDefined();
       expect(doc.hsm?.state.statePath).toBe('idle.synced');
     });
 
-    test('isRegistered returns true for created HSM', () => {
-      createMockDocument('doc-1', 'notes/test.md');
+    test('isRegistered returns true for created HSM', async () => {
+      await createMockDocument('doc-1', 'notes/test.md');
 
       expect(manager.isRegistered('doc-1')).toBe(true);
     });
 
-    test('isRegistered returns false for unknown doc', () => {
+    test('isRegistered returns false for unknown doc', async () => {
       expect(manager.isRegistered('unknown-doc')).toBe(false);
     });
 
-    test('notifyHSMDestroyed cleans up registration', () => {
-      createMockDocument('doc-1', 'notes/test.md');
+    test('notifyHSMDestroyed cleans up registration', async () => {
+      await createMockDocument('doc-1', 'notes/test.md');
 
       expect(manager.isRegistered('doc-1')).toBe(true);
 
@@ -457,8 +460,8 @@ describe('MergeManager', () => {
       manager.markActive(doc.guid);
     }
 
-    test('HSM transitions to active on ACQUIRE_LOCK', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('HSM transitions to active on ACQUIRE_LOCK', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       expect(doc.hsm?.state.statePath).toBe('idle.synced');
 
@@ -470,7 +473,7 @@ describe('MergeManager', () => {
     });
 
     test('unload releases lock and returns to idle', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       acquireLock(doc);
       expect(manager.isActive('doc-1')).toBe(true);
@@ -482,7 +485,7 @@ describe('MergeManager', () => {
     });
 
     test('HSM survives multiple lock cycles', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       // First open/close cycle
       acquireLock(doc);
@@ -496,7 +499,7 @@ describe('MergeManager', () => {
     });
 
     test('unload on non-active doc is no-op', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       // Never sent ACQUIRE_LOCK, so not active
       expect(manager.isActive('doc-1')).toBe(false);
@@ -507,8 +510,8 @@ describe('MergeManager', () => {
       expect(doc.hsm?.state.statePath).toBe('idle.synced');
     });
 
-    test('getIdleHSM returns HSM via getDocument callback', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('getIdleHSM returns HSM via getDocument callback', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       const hsm = manager.getIdleHSM('doc-1');
 
@@ -516,14 +519,14 @@ describe('MergeManager', () => {
       expect(hsm?.isIdle()).toBe(true);
     });
 
-    test('getIdleHSM returns undefined for unknown doc', () => {
+    test('getIdleHSM returns undefined for unknown doc', async () => {
       expect(manager.getIdleHSM('unknown-doc')).toBeUndefined();
     });
   });
 
   describe('idle mode updates', () => {
     test('handleRemoteUpdate forwards to HSM', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       const update = createTestUpdate('hello');
       await manager.handleRemoteUpdate('doc-1', update);
@@ -536,7 +539,7 @@ describe('MergeManager', () => {
     });
 
     test('handleRemoteUpdate works for active HSM too', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
       doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: '' });
       manager.markActive('doc-1');
 
@@ -550,7 +553,7 @@ describe('MergeManager', () => {
       expect(doc.hsm?.isActive()).toBe(true);
     });
 
-    test('handleRemoteUpdate ignores unknown documents', () => {
+    test('handleRemoteUpdate ignores unknown documents', async () => {
       const update = createTestUpdate('hello');
 
       // Should not throw (returns void, no-op for unknown docs)
@@ -568,7 +571,7 @@ describe('MergeManager', () => {
         notified = true;
       });
 
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
       // Advance time to trigger PostOffice notifications
       timeProvider.setTime(timeProvider.now() + 100);
 
@@ -588,7 +591,7 @@ describe('MergeManager', () => {
         callCount++;
       });
 
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
       // Advance time to trigger PostOffice notifications
       timeProvider.setTime(timeProvider.now() + 100);
       const initialCount = callCount;
@@ -604,7 +607,7 @@ describe('MergeManager', () => {
 
   describe('idle ↔ active transitions', () => {
     test('state preserved across lock cycles', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       // Get to active mode
       doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: '' });
@@ -655,25 +658,25 @@ describe('MergeManager', () => {
 
       // Reassign manager for createMockDocument to use
       manager = managerWithPersistence;
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       expect(doc.hsm?.state.lca?.contents).toBe('persisted content');
     });
   });
 
   describe('isActive', () => {
-    test('isActive returns false for unknown doc', () => {
+    test('isActive returns false for unknown doc', async () => {
       expect(manager.isActive('unknown-doc')).toBe(false);
     });
 
-    test('isActive returns false for idle doc', () => {
-      createMockDocument('doc-1', 'test.md');
+    test('isActive returns false for idle doc', async () => {
+      await createMockDocument('doc-1', 'test.md');
 
       expect(manager.isActive('doc-1')).toBe(false);
     });
 
-    test('isActive returns true for active doc', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('isActive returns true for active doc', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
       doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: '' });
       manager.markActive('doc-1');
 
@@ -681,7 +684,7 @@ describe('MergeManager', () => {
     });
 
     test('isActive reflects lock state through lifecycle', async () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       expect(manager.isActive('doc-1')).toBe(false);
 
@@ -695,10 +698,10 @@ describe('MergeManager', () => {
   });
 
   describe('setActiveDocuments', () => {
-    test('setActiveDocuments only affects HSMs in loading state', () => {
+    test('setActiveDocuments only affects HSMs in loading state', async () => {
       // Create documents - HSMs will auto-transition to idle.synced
-      const doc1 = createMockDocument('doc-1', 'test1.md');
-      const doc2 = createMockDocument('doc-2', 'test2.md');
+      const doc1 = await createMockDocument('doc-1', 'test1.md');
+      const doc2 = await createMockDocument('doc-2', 'test2.md');
 
       // Both should be in idle.synced (not loading)
       expect(doc1.hsm?.state.statePath).toBe('idle.synced');
@@ -713,7 +716,7 @@ describe('MergeManager', () => {
       expect(doc2.hsm?.state.statePath).toBe('idle.synced');
     });
 
-    test('setActiveDocuments is a no-op when destroyed', () => {
+    test('setActiveDocuments is a no-op when destroyed', async () => {
       const managerToDestroy = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
@@ -722,7 +725,7 @@ describe('MergeManager', () => {
 
       // Reassign manager for createMockDocument to use
       manager = managerToDestroy;
-      createMockDocument('doc-1', 'test.md');
+      await createMockDocument('doc-1', 'test.md');
 
       managerToDestroy.destroy();
 
@@ -732,20 +735,20 @@ describe('MergeManager', () => {
   });
 
   describe('state exposure', () => {
-    test('state.pendingEditorContent is undefined in idle mode', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('state.pendingEditorContent is undefined in idle mode', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       expect(doc.hsm?.state.pendingEditorContent).toBeUndefined();
     });
 
-    test('state.lastKnownEditorText is undefined in idle mode', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('state.lastKnownEditorText is undefined in idle mode', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       expect(doc.hsm?.state.lastKnownEditorText).toBeUndefined();
     });
 
-    test('state.lastKnownEditorText is set after ACQUIRE_LOCK', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('state.lastKnownEditorText is set after ACQUIRE_LOCK', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
 
       // Start in idle mode
       expect(doc.hsm?.matches('idle')).toBe(true);
@@ -758,8 +761,8 @@ describe('MergeManager', () => {
       expect(doc.hsm?.state.lastKnownEditorText).toBe('editor text here');
     });
 
-    test('state.lastKnownEditorText is set by ACQUIRE_LOCK and updated by CM6_CHANGE', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('state.lastKnownEditorText is set by ACQUIRE_LOCK and updated by CM6_CHANGE', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
       doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: 'initial' });
 
       // lastKnownEditorText should be set from ACQUIRE_LOCK
@@ -767,8 +770,8 @@ describe('MergeManager', () => {
       expect(doc.hsm?.isActive()).toBe(true);
     });
 
-    test('state.pendingEditorContent is set by ACQUIRE_LOCK for async transition', () => {
-      const doc = createMockDocument('doc-1', 'test.md');
+    test('state.pendingEditorContent is set by ACQUIRE_LOCK for async transition', async () => {
+      const doc = await createMockDocument('doc-1', 'test.md');
       doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: 'pending' });
 
       // HSM is in active (entering) state
