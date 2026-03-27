@@ -53,6 +53,10 @@
 	function handleCborEvent(event: any) {
 		const guid = extractGuidFromDocId(event.doc_id ?? "");
 		if (!guid || !sharedFolder.files.has(guid)) return;
+		// Skip own-user echoes — the server echoes back our own updates.
+		// Without this filter, local edits get attributed to "you" in the
+		// activity log, overwriting the correct remote author.
+		if (event.user && event.user === localUserId) return;
 		if (event.user) {
 			lastAuthorByGuid.set(guid, event.user);
 		}
