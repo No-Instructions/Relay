@@ -433,15 +433,11 @@ describe('Hibernation Lifecycle', () => {
       });
       expect(strictManager.getHibernationState('occupant')).toBe('working');
 
-      // Enqueue waiter — blocked by concurrency limit
+      // Enqueue waiter — LRU evicts occupant to make room
       strictManager.enqueueWake({
         guid: 'waiter',
         priority: WakePriority.REMOTE_UPDATE,
       });
-      expect(strictManager.getHibernationState('waiter')).toBe('hibernated');
-
-      // Hibernate occupant — frees the slot, should drain waiter from queue
-      strictManager.hibernate('occupant');
       expect(strictManager.getHibernationState('occupant')).toBe('hibernated');
       expect(strictManager.getHibernationState('waiter')).toBe('working');
 

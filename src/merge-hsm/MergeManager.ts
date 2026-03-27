@@ -223,6 +223,13 @@ export class MergeManager {
   /** Currently waking documents (bounded concurrency). */
   private _wakingDocs = new Set<string>();
 
+  /**
+   * LRU cache of warm document GUIDs. Insertion order = access order
+   * (least recently used first). Capacity bounded by _maxConcurrentWarm.
+   * When full, the oldest entry is evicted (hibernated) to make room.
+   */
+  private _warmLRU = new Map<string, number>();
+
   /** Whether the wake queue processor is currently running. */
   private _isProcessingWakeQueue = false;
 
@@ -461,6 +468,7 @@ export class MergeManager {
     this._hibernationBuffer.delete(guid);
     this._trackedRemoteSV.delete(guid);
     this.clearHibernateTimer(guid);
+    this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
     this.activeDocs.delete(guid);
     this._lcaCache.delete(guid);
@@ -603,6 +611,7 @@ export class MergeManager {
     }
 
     this.clearHibernateTimer(guid);
+    this.removeFromWarmLRU(guid);
     this._hibernationState.set(guid, 'hibernated');
     this._updateWakeQueueMetrics();
     this.processWakeQueue();
@@ -740,6 +749,7 @@ export class MergeManager {
     this.activeDocs.add(guid);
     this._hibernationState.set(guid, 'active');
     this.clearHibernateTimer(guid);
+    this.removeFromWarmLRU(guid);
   }
 
   /**
@@ -816,6 +826,7 @@ export class MergeManager {
     // Sync status preserved
     // Transition to cached — hibernate timer will eventually move to hibernated
     this._hibernationState.set(guid, 'cached');
+    this.touchWarmLRU(guid);
     this.resetHibernateTimer(guid);
     this._updateWakeQueueMetrics();
   }
@@ -851,8 +862,9 @@ export class MergeManager {
     // Warm or active: forward to HSM directly
     hsm.send({ type: 'REMOTE_UPDATE', update });
 
-    // Reset hibernate timer if warm
+    // Touch LRU and reset hibernate timer if warm
     if (this.isLoaded(state) && state !== 'active') {
+      this.touchWarmLRU(guid);
       this.resetHibernateTimer(guid);
     }
   }
@@ -1001,6 +1013,7 @@ export class MergeManager {
     this._trackedRemoteSV.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
+    this._warmLRU.clear();
   }
 
   // ===========================================================================
@@ -1049,6 +1062,41 @@ export class MergeManager {
   }
 
   /**
+   * Touch a document in the warm LRU cache (move to most-recent position).
+   * Resets the hibernate timer since the doc is actively receiving updates.
+   */
+  private touchWarmLRU(guid: string): void {
+    this._warmLRU.delete(guid);
+    this._warmLRU.set(guid, this.timeProvider.now());
+  }
+
+  /**
+   * Remove a document from the warm LRU cache.
+   */
+  private removeFromWarmLRU(guid: string): void {
+    this._warmLRU.delete(guid);
+  }
+
+  /**
+   * Evict the least recently used warm doc to free a slot.
+   * Skips docs with active async invokes (they shouldn't be interrupted).
+   * Returns true if a slot was freed.
+   */
+  private evictLRU(): boolean {
+    for (const [guid] of this._warmLRU) {
+      const doc = this._getDocument(guid);
+      const hsm = doc?.hsm;
+      // Skip docs with in-flight async work
+      if (hsm?.getActiveInvoke()) continue;
+      // Skip active docs (shouldn't be in LRU, but guard anyway)
+      if (this.getHibernationState(guid) === 'active') continue;
+      this.hibernate(guid);
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Sort the wake queue by priority (lower number = higher priority).
    */
   private sortWakeQueue(): void {
@@ -1073,7 +1121,11 @@ export class MergeManager {
 
         // Check concurrency limit (warm + currently waking)
         if (warmCount + this._wakingDocs.size >= this._maxConcurrentWarm) {
-          break;
+          // Try to evict the least recently used warm doc to free a slot
+          if (!this.evictLRU()) {
+            break; // All warm docs have active invokes — can't evict
+          }
+          continue; // Slot freed — re-check counts on next iteration
         }
 
         const request = this._wakeQueue.shift()!;
@@ -1104,6 +1156,7 @@ export class MergeManager {
         }
 
         this._hibernationState.set(request.guid, 'working');
+        this.touchWarmLRU(request.guid);
         this.resetHibernateTimer(request.guid);
         this._wakingDocs.delete(request.guid);
 
