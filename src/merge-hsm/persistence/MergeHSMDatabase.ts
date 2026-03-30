@@ -68,8 +68,41 @@ export async function saveState(
   db: IDBDatabase,
   state: PersistedMergeState
 ): Promise<void> {
+  // Allow-list all fields to prevent non-serializable values (closures, DOM refs)
+  // from reaching IDB's structured clone algorithm.
+  const sanitized: PersistedMergeState = {
+    guid: state.guid,
+    path: state.path,
+    lca: state.lca
+      ? {
+          contents: state.lca.contents,
+          hash: state.lca.hash,
+          mtime: state.lca.mtime,
+          stateVector: state.lca.stateVector,
+        }
+      : null,
+    disk: state.disk
+      ? { hash: state.disk.hash, mtime: state.disk.mtime }
+      : null,
+    localStateVector: state.localStateVector,
+    lastStatePath: state.lastStatePath,
+    deferredConflict: state.deferredConflict
+      ? { diskHash: state.deferredConflict.diskHash, localHash: state.deferredConflict.localHash }
+      : undefined,
+    fork: state.fork
+      ? {
+          base: state.fork.base,
+          localStateVector: state.fork.localStateVector,
+          remoteStateVector: state.fork.remoteStateVector,
+          origin: state.fork.origin,
+          created: state.fork.created,
+          captureMark: state.fork.captureMark,
+        }
+      : null,
+    persistedAt: state.persistedAt,
+  };
   const [store] = idb.transact(db, [STORES.states], 'readwrite');
-  await idb.put(store, state as unknown as string);
+  await idb.put(store, sanitized as unknown as string);
 }
 
 /**
