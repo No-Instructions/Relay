@@ -252,7 +252,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			const localDoc = this._hsm.getLocalDoc();
 			if (localDoc && !this._hsm.hasFork()) {
 				const update = Y.encodeStateAsUpdate(localDoc);
-				Y.applyUpdate(doc, update);
+				// Use the provider as origin so _updateHandler skips this —
+				// it's rehydration from local state, not a new edit.
+				Y.applyUpdate(doc, update, this._provider);
 			}
 		}
 		return doc;
