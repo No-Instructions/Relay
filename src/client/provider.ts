@@ -16,6 +16,7 @@ import { Observable } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
+import { metrics } from "../debug";
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
@@ -24,6 +25,8 @@ export const messageAuth = 2;
 export const messageEvent = 4;
 export const messageEventSubscribe = 5;
 export const messageEventUnsubscribe = 6;
+export const messageQuerySubdocs = 7;
+export const messageSubdocs = 8;
 
 export type HandlerFunction = (
 	encoder: encoding.Encoder,
@@ -123,6 +126,24 @@ messageHandlers[messageEvent] = (
 	}
 };
 
+messageHandlers[messageSubdocs] = (
+	_encoder,
+	decoder,
+	provider,
+	_emitSynced,
+	_messageType,
+) => {
+	const cborLength = decoding.readVarUint(decoder);
+	const cborData = decoding.readUint8Array(decoder, cborLength);
+
+	try {
+		const subdocIndex: Record<string, Uint8Array> = decodeCBOR(cborData);
+		provider.handleSubdocIndex(subdocIndex);
+	} catch (error) {
+		console.error('Failed to decode subdoc state vector index:', error);
+	}
+};
+
 // @todo - this should depend on awareness.outdatedTime
 const messageReconnectTimeout = 30000;
 
@@ -139,6 +160,13 @@ const readMessage = (
 	const messageType = decoding.readVarUint(decoder);
 	const messageHandler = provider.messageHandlers[messageType];
 	if (/** @type {any} */ messageHandler) {
+		if (messageType === messageSync) {
+			metrics.recordProtocolMessage("sync", "in", buf.length);
+		} else if (messageType === messageEvent) {
+			metrics.recordProtocolMessage("event", "in", buf.length);
+		} else if (messageType === messageSubdocs) {
+			metrics.recordProtocolMessage("subdoc_index", "in", buf.length);
+		}
 		messageHandler(encoder, decoder, provider, emitSynced, messageType);
 	} else {
 		console.error("Unable to compute message");
@@ -235,6 +263,10 @@ const setupWS = (provider: YSweetProvider) => {
 				const eventTypes = Array.from(provider.eventSubscriptions);
 				provider.sendEventSubscribe(eventTypes);
 			}
+			// Query subdoc state vectors for catch-up
+			if (provider.onSubdocIndex) {
+				provider.sendQuerySubdocs();
+			}
 			// broadcast local awareness state
 			if (provider.awareness.getLocalState() !== null) {
 				const encoderAwarenessState = encoding.createEncoder();
@@ -316,6 +348,10 @@ export interface EventMessage {
 
 export type EventCallback = (event: EventMessage) => void;
 
+export type SubdocIndexCallback = (
+	serverIndex: Record<string, Uint8Array>,
+) => void;
+
 /**
  * Websocket Provider for Yjs. Creates a websocket connection to sync the shared document.
  * The document name is attached to the provided url. I.e. the following example
@@ -362,6 +398,7 @@ export class YSweetProvider extends Observable<string> {
 	maxConnectionErrors: number;
 	eventSubscriptions: Set<string>;
 	eventCallbacks: Map<string, EventCallback[]>;
+	onSubdocIndex: SubdocIndexCallback | null;
 
 	/**
 	 * @param serverUrl - server url
@@ -422,6 +459,7 @@ export class YSweetProvider extends Observable<string> {
 		this.maxConnectionErrors = maxConnectionErrors;
 		this.eventSubscriptions = new Set();
 		this.eventCallbacks = new Map();
+		this.onSubdocIndex = null;
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -450,6 +488,7 @@ export class YSweetProvider extends Observable<string> {
 		 */
 		this._updateHandler = (update: Uint8Array, origin: any) => {
 			if (origin !== this) {
+				metrics.recordProtocolMessage("sync", "out", update.length);
 				const encoder = encoding.createEncoder();
 				encoding.writeVarUint(encoder, messageSync);
 				syncProtocol.writeUpdate(encoder, update);
@@ -808,4 +847,18 @@ export class YSweetProvider extends Observable<string> {
 		});
 	}
 
+	sendQuerySubdocs() {
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			const encoder = encoding.createEncoder();
+			encoding.writeVarUint(encoder, messageQuerySubdocs);
+			this.ws.send(encoding.toUint8Array(encoder));
+			console.log('[YSweetProvider] sent MSG_QUERY_SUBDOCS');
+		}
+	}
+
+	handleSubdocIndex(serverIndex: Record<string, Uint8Array>) {
+		this.onSubdocIndex?.(serverIndex);
+	}
+
 }
+
