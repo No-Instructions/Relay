@@ -79,11 +79,28 @@ export class CM6Integration {
       insert: change.insert,
     }));
 
-    this.view.dispatch({
-      changes: cmChanges,
-      // Mark as coming from Yjs/HSM to prevent feedback loops
-      annotations: [ySyncAnnotation.of(this.view)],
-    });
+    try {
+      this.view.dispatch({
+        changes: cmChanges,
+        // Mark as coming from Yjs/HSM to prevent feedback loops
+        annotations: [ySyncAnnotation.of(this.view)],
+      });
+    } catch (e) {
+      // CM6 throws if dispatch is called during an update (re-entrant).
+      // Defer to the next microtask to break the synchronous cycle.
+      if (e instanceof Error && e.message.includes("update is in progress")) {
+        requestAnimationFrame(() => {
+          if (!this.destroyed && this.isEditorStillValid()) {
+            this.view.dispatch({
+              changes: cmChanges,
+              annotations: [ySyncAnnotation.of(this.view)],
+            });
+          }
+        });
+      } else {
+        throw e;
+      }
+    }
   }
 
   /**
