@@ -809,6 +809,7 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
+		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
 		// if the local file is synced, then we do the two step process
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
