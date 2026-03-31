@@ -427,6 +427,10 @@ class RelayMetrics {
 	// Wake queue
 	private wakeQueueSlots: MetricInstance | null = null;
 
+	// Protocol IO
+	private protocolMessageCount: MetricInstance | null = null;
+	private protocolBytes: MetricInstance | null = null;
+
 	/**
 	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
 	 * Safe to call multiple times - metric creation is idempotent.
@@ -512,6 +516,18 @@ class RelayMetrics {
 			help: "Wake queue slot utilization",
 			labelNames: ["state"],
 		});
+
+		// Protocol IO
+		this.protocolMessageCount = api.createCounter({
+			name: "relay_protocol_message_count",
+			help: "Sync protocol messages by type and direction",
+			labelNames: ["type", "direction"],
+		});
+		this.protocolBytes = api.createCounter({
+			name: "relay_protocol_bytes",
+			help: "Sync protocol bytes by type and direction",
+			labelNames: ["type", "direction"],
+		});
 	}
 
 	// -- Existing metrics --
@@ -571,6 +587,13 @@ class RelayMetrics {
 
 	incBgSyncOps(operation: "sync" | "download", result: "completed" | "failed"): void {
 		this.bgSyncOpsTotal?.labels({ operation, result }).inc();
+	}
+
+	// -- Protocol IO --
+
+	recordProtocolMessage(type: "sync" | "event" | "subdoc_index", direction: "in" | "out", bytes: number): void {
+		this.protocolMessageCount?.labels({ type, direction }).inc();
+		this.protocolBytes?.labels({ type, direction }).inc(bytes);
 	}
 
 	// -- Wake queue --
