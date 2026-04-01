@@ -581,10 +581,10 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
-		// Skip if a live provider handles sync (active mode or fork-reconcile).
-		if (file.userLock || this.mergeManager?.isActive(guid) || file.hasProviderIntegration()) {
+		// Skip if the editor has the file open — active mode syncs via ProviderIntegration.
+		if (file.userLock) {
 			this.debug?.(
-				`[handleIdleSyncToRemote] Document ${guid} has live provider, skipping`,
+				`[handleIdleSyncToRemote] Document ${guid} has user lock, skipping`,
 			);
 			return;
 		}
