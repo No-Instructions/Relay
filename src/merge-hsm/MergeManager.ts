@@ -236,6 +236,9 @@ export class MergeManager {
   /** Tracked remote state vector per document (clientId → clock). Used for gap detection. */
   private _trackedRemoteSV = new Map<string, Map<number, number>>();
 
+  /** Per-HSM effect subscription unsubscribers, keyed by guid. */
+  private _hsmUnsubs = new Map<string, () => void>();
+
   // Hibernation configuration
   private _hibernateTimeoutMs: number;
   private _maxConcurrentWarm: number;
@@ -389,7 +392,7 @@ export class MergeManager {
     }
 
     // Wire effect handler before any events — effects can fire during send().
-    hsm.subscribe((effect) => {
+    const unsub = hsm.subscribe((effect) => {
       if (effect.type === 'REQUEST_HIBERNATE') {
         // Hibernate on next microtask so the current transition completes first
         Promise.resolve().then(() => this.hibernate(guid));
@@ -415,6 +418,7 @@ export class MergeManager {
       // Forward all effects to onEffect handler for IDB persistence etc.
       this.handleHSMEffect(guid, effect);
     });
+    this._hsmUnsubs.set(guid, unsub);
 
     // Enter loading state — HSM accumulates events until async load completes
     hsm.send({ type: 'LOAD', guid });
@@ -464,6 +468,8 @@ export class MergeManager {
    */
   notifyHSMDestroyed(guid: string): void {
     if (this.destroyed) return;
+    this._hsmUnsubs.get(guid)?.();
+    this._hsmUnsubs.delete(guid);
     this._hibernationState.delete(guid);
     this._hibernationBuffer.delete(guid);
     this._trackedRemoteSV.delete(guid);
@@ -1005,6 +1011,12 @@ export class MergeManager {
     for (const [guid] of this._hibernateTimers) {
       this.clearHibernateTimer(guid);
     }
+
+    // Unsubscribe from all HSM effect subscriptions
+    for (const unsub of this._hsmUnsubs.values()) {
+      unsub();
+    }
+    this._hsmUnsubs.clear();
 
     this.activeDocs.clear();
     this._syncStatus.clear();

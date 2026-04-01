@@ -221,14 +221,18 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		});
 
 		// Subscribe to effects
-		this._hsm.subscribe((effect) => {
-			this.handleEffect(effect);
-		});
+		this.unsubscribes.push(
+			this._hsm.subscribe((effect) => {
+				this.handleEffect(effect);
+			}),
+		);
 
 		// Subscribe to state changes for sync status updates
-		this._hsm.onStateChange(() => {
-			mergeManager.updateSyncStatus(this.guid, this._hsm!.getSyncStatus());
-		});
+		this.unsubscribes.push(
+			this._hsm.onStateChange(() => {
+				mergeManager.updateSyncStatus(this.guid, this._hsm!.getSyncStatus());
+			}),
+		);
 
 		// Notify MergeManager for hibernation tracking
 		mergeManager.notifyHSMCreated(this.guid);
