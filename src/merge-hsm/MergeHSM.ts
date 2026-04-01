@@ -3291,7 +3291,7 @@ function mergeAdjacentChanges(changes: PositionedChange[]): PositionedChange[] {
 		if (
 			i + 1 < changes.length &&
 			current.insert === "" &&
-			changes[i + 1].from === current.from &&
+			changes[i + 1].from === current.to &&
 			changes[i + 1].to === changes[i + 1].from
 		) {
 			merged.push({
