@@ -1256,8 +1256,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				if (this.lastKnownEditorText == null) {
 					throw new Error("resolveConflict: lastKnownEditorText is null — editor should always be active during conflict resolution");
 				}
+				this.crdtLog(
+					`resolveConflict: contents=${contents.length} chars, ` +
+					`lastKnown=${this.lastKnownEditorText.length} chars, ` +
+					`equal=${contents === this.lastKnownEditorText}, ` +
+					`contents=${JSON.stringify(contents.substring(0, 100))}, ` +
+					`lastKnown=${JSON.stringify(this.lastKnownEditorText.substring(0, 100))}`
+				);
 				if (contents !== this.lastKnownEditorText) {
 					const changes = this.computeDiffChanges(this.lastKnownEditorText, contents);
+					this.crdtLog(`resolveConflict: ${changes.length} changes: ${JSON.stringify(changes)}`);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
 					}

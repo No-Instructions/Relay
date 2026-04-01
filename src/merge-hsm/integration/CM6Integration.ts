@@ -8,14 +8,14 @@
  * - Connects conflict decoration plugin to HSM for inline resolution
  */
 
-import type { EditorView, ViewUpdate } from '@codemirror/view';
-import type { MergeHSM } from '../MergeHSM';
-import type { PositionedChange } from '../types';
+import type { EditorView, ViewUpdate } from "@codemirror/view";
+import type { MergeHSM } from "../MergeHSM";
+import type { PositionedChange } from "../types";
 // Import the shared annotation to prevent feedback loops
-import { ySyncAnnotation } from './annotations';
+import { ySyncAnnotation } from "./annotations";
 // Import conflict decoration plugin accessor
-import { getConflictDecorationPlugin } from '../../y-codemirror.next/ConflictDecorationPlugin';
-import { curryLog } from '../../debug';
+import { getConflictDecorationPlugin } from "../../y-codemirror.next/ConflictDecorationPlugin";
+import { curryLog } from "../../debug";
 
 /**
  * Callback to verify the editor is still bound to the expected document.
@@ -29,183 +29,222 @@ export type EditorValidityCheck = () => boolean;
 // =============================================================================
 
 export class CM6Integration {
-  private hsm: MergeHSM;
-  private view: EditorView;
-  private unsubscribe: (() => void) | null = null;
-  private conflictPluginConnected = false;
-  private destroyed = false;
-  private log: (...args: unknown[]) => void;
-  private warn: (...args: unknown[]) => void;
-  private isEditorStillValid: EditorValidityCheck;
-  private driftCheckInterval: ReturnType<typeof setInterval> | null = null;
+	private hsm: MergeHSM;
+	private view: EditorView;
+	private unsubscribe: (() => void) | null = null;
+	private conflictPluginConnected = false;
+	private destroyed = false;
+	private log: (...args: unknown[]) => void;
+	private warn: (...args: unknown[]) => void;
+	private isEditorStillValid: EditorValidityCheck;
+	private driftCheckTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /** How often to check for editor↔CRDT drift (ms) */
-  private static readonly DRIFT_CHECK_INTERVAL = 5000;
+	/** Delay after last data-flow event before checking for drift (ms) */
+	private static readonly DRIFT_CHECK_DELAY = 3000;
 
-  constructor(hsm: MergeHSM, view: EditorView, isEditorStillValid: EditorValidityCheck) {
-    this.hsm = hsm;
-    this.view = view;
-    this.isEditorStillValid = isEditorStillValid;
-    this.log = curryLog('[CM6Integration]', 'log');
-    this.warn = curryLog('[CM6Integration]', 'warn');
+	constructor(
+		hsm: MergeHSM,
+		view: EditorView,
+		isEditorStillValid: EditorValidityCheck,
+	) {
+		this.hsm = hsm;
+		this.view = view;
+		this.isEditorStillValid = isEditorStillValid;
+		this.log = curryLog("[CM6Integration]", "log");
+		this.warn = curryLog("[CM6Integration]", "warn");
 
-    // Subscribe to HSM effects
-    this.unsubscribe = hsm.effects.subscribe((effect) => {
-      if (effect.type === 'DISPATCH_CM6') {
-        this.dispatchToEditor(effect.changes);
-      }
-    });
+		// Subscribe to HSM effects
+		this.unsubscribe = hsm.effects.subscribe((effect) => {
+			if (effect.type === "DISPATCH_CM6") {
+				this.dispatchToEditor(effect.changes);
+			}
+			// Reset drift debounce on any data-flow effect, not just DISPATCH_CM6.
+			// REMOTE_UPDATE processing (mergeRemoteToLocal) may not emit DISPATCH_CM6
+			// (e.g., machine edit rewind where net text is unchanged), but the pipeline
+			// is still active and the editor may not have settled yet.
+			if (
+				effect.type === "DISPATCH_CM6" ||
+				effect.type === "SYNC_TO_REMOTE" ||
+				effect.type === "DIAGNOSTIC" ||
+				effect.type === "STATUS_CHANGED" ||
+				effect.type === "PERSIST_STATE"
+			) {
+				this.scheduleDriftCheck();
+			}
+		});
 
-    // Connect the conflict decoration plugin to HSM
-    this.connectConflictPlugin();
+		// Connect the conflict decoration plugin to HSM
+		this.connectConflictPlugin();
+	}
 
-    // Start periodic drift detection
-    this.startDriftCheck();
-  }
+	/**
+	 * Connect the conflict decoration plugin to the HSM for inline resolution.
+	 */
+	private connectConflictPlugin(): void {
+		if (this.conflictPluginConnected) return;
 
-  /**
-   * Connect the conflict decoration plugin to the HSM for inline resolution.
-   */
-  private connectConflictPlugin(): void {
-    if (this.conflictPluginConnected) return;
+		const conflictPlugin = getConflictDecorationPlugin(this.view);
+		if (conflictPlugin) {
+			conflictPlugin.setHSM(this.hsm);
+			this.conflictPluginConnected = true;
+		}
+	}
 
-    const conflictPlugin = getConflictDecorationPlugin(this.view);
-    if (conflictPlugin) {
-      conflictPlugin.setHSM(this.hsm);
-      this.conflictPluginConnected = true;
-    }
-  }
+	/**
+	 * Dispatch changes from HSM to the editor.
+	 * Uses ySyncAnnotation to prevent feedback loop.
+	 */
+	private dispatchToEditor(changes: PositionedChange[]): void {
+		if (changes.length === 0) return;
+		if (this.destroyed) return;
 
-  /**
-   * Dispatch changes from HSM to the editor.
-   * Uses ySyncAnnotation to prevent feedback loop.
-   */
-  private dispatchToEditor(changes: PositionedChange[]): void {
-    if (changes.length === 0) return;
-    if (this.destroyed) return;
+		// Verify the editor is still bound to our document.
+		// If the editor has been reused for a different file, dispatching would
+		// corrupt the wrong document.
+		if (!this.isEditorStillValid()) {
+			this.log("Skipping dispatch: editor is no longer bound to this document");
+			return;
+		}
 
-    // Verify the editor is still bound to our document.
-    // If the editor has been reused for a different file, dispatching would
-    // corrupt the wrong document.
-    if (!this.isEditorStillValid()) {
-      this.log('Skipping dispatch: editor is no longer bound to this document');
-      return;
-    }
+		// Convert PositionedChange[] to CodeMirror ChangeSpec[]
+		const cmChanges = changes.map((change) => ({
+			from: change.from,
+			to: change.to,
+			insert: change.insert,
+		}));
 
-    // Convert PositionedChange[] to CodeMirror ChangeSpec[]
-    const cmChanges = changes.map((change) => ({
-      from: change.from,
-      to: change.to,
-      insert: change.insert,
-    }));
+		try {
+			const editorBefore = this.view.state.doc.length;
+			this.log(
+				`dispatchToEditor: ${changes.length} changes, editor=${editorBefore} chars before`,
+			);
+			this.view.dispatch({
+				changes: cmChanges,
+				// Mark as coming from Yjs/HSM to prevent feedback loops
+				annotations: [ySyncAnnotation.of(this.view)],
+			});
+			const editorAfter = this.view.state.doc.length;
+			this.log(`dispatchToEditor: editor=${editorAfter} chars after`);
+		} catch (e) {
+			// CM6 throws if dispatch is called during an update (re-entrant).
+			// Defer to the next microtask to break the synchronous cycle.
+			if (e instanceof Error && e.message.includes("update is in progress")) {
+				this.warn(
+					`dispatchToEditor: DEFERRED due to re-entrant update. ${changes.length} changes queued for rAF`,
+				);
+				requestAnimationFrame(() => {
+					if (!this.destroyed && this.isEditorStillValid()) {
+						const editorBefore = this.view.state.doc.length;
+						this.log(
+							`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
+						);
+						this.view.dispatch({
+							changes: cmChanges,
+							annotations: [ySyncAnnotation.of(this.view)],
+						});
+						const editorAfter = this.view.state.doc.length;
+						this.log(
+							`dispatchToEditor (rAF): editor=${editorAfter} chars after`,
+						);
+					}
+				});
+			} else {
+				throw e;
+			}
+		}
+	}
 
-    try {
-      this.view.dispatch({
-        changes: cmChanges,
-        // Mark as coming from Yjs/HSM to prevent feedback loops
-        annotations: [ySyncAnnotation.of(this.view)],
-      });
-    } catch (e) {
-      // CM6 throws if dispatch is called during an update (re-entrant).
-      // Defer to the next microtask to break the synchronous cycle.
-      if (e instanceof Error && e.message.includes("update is in progress")) {
-        requestAnimationFrame(() => {
-          if (!this.destroyed && this.isEditorStillValid()) {
-            this.view.dispatch({
-              changes: cmChanges,
-              annotations: [ySyncAnnotation.of(this.view)],
-            });
-          }
-        });
-      } else {
-        throw e;
-      }
-    }
-  }
+	/**
+	 * Handle editor updates from CodeMirror.
+	 * Call this from a ViewPlugin's update method.
+	 */
+	onEditorUpdate(update: ViewUpdate): void {
+		// Try to connect conflict plugin if not yet connected
+		if (!this.conflictPluginConnected) {
+			this.connectConflictPlugin();
+		}
 
-  /**
-   * Handle editor updates from CodeMirror.
-   * Call this from a ViewPlugin's update method.
-   */
-  onEditorUpdate(update: ViewUpdate): void {
-    // Try to connect conflict plugin if not yet connected
-    if (!this.conflictPluginConnected) {
-      this.connectConflictPlugin();
-    }
+		// Only process if there are actual document changes
+		if (!update.docChanged) {
+			return;
+		}
 
-    // Only process if there are actual document changes
-    if (!update.docChanged) {
-      return;
-    }
+		// Skip changes originating from Yjs/HSM dispatches (annotation-based echo suppression)
+		if (update.transactions.some((tr) => tr.annotation(ySyncAnnotation))) {
+			return;
+		}
 
-    // Skip changes originating from Yjs/HSM dispatches (annotation-based echo suppression)
-    if (update.transactions.some((tr) => tr.annotation(ySyncAnnotation))) {
-      return;
-    }
+		// Verify the editor is still bound to our document.
+		// When editor views are reused, an old CM6Integration might receive
+		// updates for a different file. Sending these to the wrong HSM causes
+		// content corruption.
+		if (!this.isEditorStillValid()) {
+			this.log(
+				"Skipping editor update: editor is no longer bound to this document",
+			);
+			return;
+		}
 
-    // Verify the editor is still bound to our document.
-    // When editor views are reused, an old CM6Integration might receive
-    // updates for a different file. Sending these to the wrong HSM causes
-    // content corruption.
-    if (!this.isEditorStillValid()) {
-      this.log('Skipping editor update: editor is no longer bound to this document');
-      return;
-    }
+		// Convert CodeMirror changes to PositionedChange[]
+		const changes: PositionedChange[] = [];
+		update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+			changes.push({
+				from: fromA,
+				to: toA,
+				insert: inserted.toString(),
+			});
+		});
 
-    // Convert CodeMirror changes to PositionedChange[]
-    const changes: PositionedChange[] = [];
-    update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-      changes.push({
-        from: fromA,
-        to: toA,
-        insert: inserted.toString(),
-      });
-    });
+		// Send to HSM
+		if (changes.length > 0) {
+			this.hsm.send({
+				type: "CM6_CHANGE",
+				changes,
+				docText: update.state.doc.toString(),
+			});
+			this.scheduleDriftCheck();
+		}
+	}
 
-    // Send to HSM
-    if (changes.length > 0) {
-      this.hsm.send({
-        type: 'CM6_CHANGE',
-        changes,
-        docText: update.state.doc.toString(),
-      });
-    }
-  }
+	/**
+	 * Schedule a drift check after data-flow activity settles.
+	 * Each call resets the timer so the check only fires once
+	 * things have been quiet for DRIFT_CHECK_DELAY ms.
+	 */
+	private scheduleDriftCheck(): void {
+		if (this.destroyed) return;
+		if (this.driftCheckTimer !== null) {
+			clearTimeout(this.driftCheckTimer);
+		}
+		this.driftCheckTimer = setTimeout(() => {
+			this.driftCheckTimer = null;
+			if (this.destroyed) return;
+			if (!this.isEditorStillValid()) return;
 
-  /**
-   * Start periodic drift detection between editor and CRDT.
-   * Reads the actual editor content and compares against localDoc.
-   * If drift is found, logs diagnostics and corrects (CRDT wins).
-   */
-  private startDriftCheck(): void {
-    this.driftCheckInterval = setInterval(() => {
-      if (this.destroyed) return;
-      if (!this.isEditorStillValid()) return;
+			const editorText = this.view.state.doc.toString();
+			const driftDetected = this.hsm.checkAndCorrectDrift(editorText);
 
-      const editorText = this.view.state.doc.toString();
-      const driftDetected = this.hsm.checkAndCorrectDrift(editorText);
+			if (driftDetected) {
+				this.warn(
+					`Drift detected for ${this.hsm.guid}. ` +
+						`This indicates a change reached the editor without going through the HSM.`,
+				);
+			}
+		}, CM6Integration.DRIFT_CHECK_DELAY);
+	}
 
-      if (driftDetected) {
-        this.warn(
-          `Drift corrected for ${this.hsm.guid}. ` +
-          `This indicates a change reached the editor without going through the HSM.`,
-        );
-      }
-    }, CM6Integration.DRIFT_CHECK_INTERVAL);
-  }
-
-  /**
-   * Destroy the integration and unsubscribe from HSM.
-   */
-  destroy(): void {
-    this.destroyed = true;
-    if (this.driftCheckInterval !== null) {
-      clearInterval(this.driftCheckInterval);
-      this.driftCheckInterval = null;
-    }
-    if (this.unsubscribe) {
-      this.unsubscribe();
-      this.unsubscribe = null;
-    }
-  }
+	/**
+	 * Destroy the integration and unsubscribe from HSM.
+	 */
+	destroy(): void {
+		this.destroyed = true;
+		if (this.driftCheckTimer !== null) {
+			clearTimeout(this.driftCheckTimer);
+			this.driftCheckTimer = null;
+		}
+		if (this.unsubscribe) {
+			this.unsubscribe();
+			this.unsubscribe = null;
+		}
+	}
 }
