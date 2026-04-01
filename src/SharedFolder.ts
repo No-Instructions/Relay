@@ -12,6 +12,7 @@ import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
+import type { TimeProvider } from "./TimeProvider";
 import type { EventMessage } from "./client/provider";
 import { Document } from "./Document";
 import { ObservableSet } from "./observable/ObservableSet";
@@ -49,6 +50,7 @@ import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
+import { ColdSyncManager } from "./ColdSyncManager";
 import { flags } from "./flagManager";
 
 export interface SharedFolderSettings {
@@ -156,6 +158,7 @@ export class SharedFolder extends HasProvider {
 	proxy: SharedFolder;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
+	private coldSyncManager: ColdSyncManager;
 
 	constructor(
 		public appId: string,
@@ -169,6 +172,7 @@ export class SharedFolder extends HasProvider {
 		private hashStore: ContentAddressedFileStore,
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
+		private timeProvider: TimeProvider,
 		relayId?: string,
 		awaitingUpdates: boolean = true,
 	) {
@@ -266,6 +270,8 @@ export class SharedFolder extends HasProvider {
 		if (loginManager.loggedIn) {
 			this.connect();
 		}
+
+		this.coldSyncManager = new ColdSyncManager(timeProvider);
 
 		this.cas = new ContentAddressedStore(this);
 
@@ -1676,6 +1682,14 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	private coerceToUint8Array(update: any): Uint8Array | null {
+		if (update instanceof Uint8Array) return update;
+		if (Array.isArray(update)) return new Uint8Array(update);
+		if (typeof update === 'object' && update.constructor?.name === 'Uint8Array') return new Uint8Array(Object.values(update));
+		if (typeof update === 'object' && 'data' in update) return new Uint8Array(update.data);
+		return null;
+	}
+
 	private setupEventSubscriptions() {
 		// Subscribe to document.updated events for this shared folder
 		if (this._provider && this._provider.wsconnected) {
@@ -1757,7 +1771,21 @@ export class SharedFolder extends HasProvider {
 				this.debug(`No Y.js update data in event for ${file.path}`);
 			}
 		} else {
-			this.debug(`Received update for unknown document ${event.doc_id} (extracted: ${documentId})`);
+			// File not loaded in memory — route to cold sync
+			const vpath = this.syncStore.getPathByGuid(documentId);
+			if (!vpath || !event.update || event.update.length === 0) {
+				this.debug(`Skipping cold sync for ${documentId}: ${!vpath ? 'not in syncStore' : 'no update data'}`);
+				return;
+			}
+
+			const updateBytes = this.coerceToUint8Array(event.update);
+			if (!updateBytes) {
+				this.warn(`Unknown update format for cold sync ${vpath}`);
+				return;
+			}
+
+			this.debug(`Routing to cold sync: ${vpath} (${documentId})`);
+			this.coldSyncManager.enqueueUpdate(this, documentId, vpath, updateBytes);
 		}
 	}
 
@@ -1768,6 +1796,9 @@ export class SharedFolder extends HasProvider {
 		if (this._provider) {
 			this._provider.unsubscribeFromEvents(['document.updated']);
 		}
+		
+		// Destroy cold sync manager
+		this.coldSyncManager.destroy();
 		
 		this.unsubscribes.forEach((unsub) => {
 			unsub();

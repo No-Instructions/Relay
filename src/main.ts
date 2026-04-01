@@ -749,6 +749,7 @@ export default class Live extends Plugin {
 			this.hashStore,
 			this.backgroundSync,
 			folderSettings,
+			this.timeProvider,
 			relayId,
 			awaitingUpdates,
 		);

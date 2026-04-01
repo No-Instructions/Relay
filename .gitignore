@@ -19,3 +19,4 @@ data.json
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
 vaults/
+CONTINUOUS_SYNC_SPEC.md

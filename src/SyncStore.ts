@@ -23,6 +23,7 @@ export class SyncStore extends Observable<SyncStore> {
 	deleteSet: Set<string>;
 	typeRegistry: TypeRegistry;
 	renames: Map<string, string>;
+	private _reverseMap: Map<string, string> | null = null; // guid -> vpath cache
 
 	constructor(
 		public ydoc: Y.Doc,
@@ -80,6 +81,7 @@ export class SyncStore extends Observable<SyncStore> {
 		this.log("moving file", oldVPath, "to", newVPath);
 		this.assertVPath(oldVPath);
 		this.assertVPath(newVPath);
+		this._invalidateReverseMap();
 		this.renames.set(oldVPath, newVPath);
 		const guid = this.pendingUpload.get(oldVPath);
 		if (guid) {
@@ -108,6 +110,7 @@ export class SyncStore extends Observable<SyncStore> {
 		this.assertVPath(vpath);
 		const guid = uuidv4();
 		this.pendingUpload.set(vpath, guid);
+		this._invalidateReverseMap();
 		return guid;
 	}
 
@@ -166,6 +169,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	set(vpath: string, meta: Meta) {
 		this.assertVPath(vpath);
+		this._invalidateReverseMap();
 		if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
 			this.legacyIds.set(vpath, meta.id);
 		}
@@ -342,6 +346,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	delete(vpath: string) {
 		this.assertVPath(vpath);
+		this._invalidateReverseMap();
 		this.legacyIds.delete(vpath);
 		this.pendingUpload.delete(vpath);
 		return this.meta.delete(vpath);
@@ -417,6 +422,7 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	private moveFolder(oldFolder: string, newFolder: string) {
+		this._invalidateReverseMap();
 		this.log("moving folder", oldFolder, "to", newFolder);
 
 		// First, collect all metadata that needs to be moved
@@ -464,6 +470,7 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.meta.get(vpath)?.id === guid) {
 			return;
 		}
+		this._invalidateReverseMap();
 
 		const folders = new Set<string>();
 		const parts = vpath.split(sep);
@@ -499,11 +506,56 @@ export class SyncStore extends Observable<SyncStore> {
 		});
 	}
 
+	/**
+	 * Reverse lookup: find the virtual path for a given GUID.
+	 * Uses a cached reverse map that is invalidated on SyncStore changes.
+	 */
+	getPathByGuid(guid: string): string | null {
+		if (!this._reverseMap) {
+			this._buildReverseMap();
+		}
+		return this._reverseMap!.get(guid) ?? null;
+	}
+
+	private _buildReverseMap(): void {
+		const map = new Map<string, string>();
+		// meta entries (primary source)
+		this.meta.forEach((meta, path) => {
+			if (!this.deleteSet.has(path)) {
+				map.set(meta.id, path);
+			}
+		});
+		// overlay entries
+		this.overlay.forEach((meta, path) => {
+			if (!this.deleteSet.has(path)) {
+				map.set(meta.id, path);
+			}
+		});
+		// legacyIds entries (path -> guid)
+		this.legacyIds.forEach((guid, path) => {
+			if (!this.deleteSet.has(path) && !map.has(guid)) {
+				map.set(guid, path);
+			}
+		});
+		// pendingUpload entries (path -> guid)
+		this.pendingUpload.forEach((guid, path) => {
+			if (!this.deleteSet.has(path) && !map.has(guid)) {
+				map.set(guid, path);
+			}
+		});
+		this._reverseMap = map;
+	}
+
+	private _invalidateReverseMap(): void {
+		this._reverseMap = null;
+	}
+
 	destroy() {
 		super.destroy();
 		this.overlay.clear();
 		this.deleteSet.clear();
 		this.renames.clear();
+		this._reverseMap = null;
 		this.legacyIds = null as any;
 		this.meta = null as any;
 	}
