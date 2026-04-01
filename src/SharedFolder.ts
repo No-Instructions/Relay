@@ -7,6 +7,8 @@ import {
 	Vault,
 	debounce,
 	normalizePath,
+	parseYaml,
+	stringifyYaml,
 } from "obsidian";
 import {
 	IndexeddbPersistence,
@@ -377,6 +379,7 @@ export class SharedFolder extends HasProvider {
 				};
 			},
 			userId: loginManager?.user?.id,
+			yaml: { parse: parseYaml, stringify: stringifyYaml },
 		});
 
 		// Create per-folder recording bridge and register with the debug API.

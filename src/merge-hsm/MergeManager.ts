@@ -129,6 +129,9 @@ export interface MergeManagerConfig {
 
   /** Push-based transition callback for recording bridge */
   onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
+
+  /** YAML parser/serializer for frontmatter Y.Map mirroring. Omit to disable. */
+  yaml?: { parse: (yaml: string) => any; stringify: (obj: any) => string };
 }
 
 export interface PollOptions {
@@ -260,6 +263,7 @@ export class MergeManager {
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
+  private _yaml: { parse: (yaml: string) => any; stringify: (obj: any) => string } | null = null;
   private _onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
 
   constructor(config: MergeManagerConfig) {
@@ -275,6 +279,7 @@ export class MergeManager {
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
     this.userId = config.userId;
+    this._yaml = config.yaml ?? null;
     this._onTransition = config.onTransition;
 
     // Hibernation defaults
@@ -381,6 +386,7 @@ export class MergeManager {
       persistenceMetadata: getPersistenceMetadata?.(),
       userId: this.userId,
       diskLoader: getDiskContent,
+      yaml: this._yaml ?? undefined,
     });
 
     // Wire push-based transition callback for recording

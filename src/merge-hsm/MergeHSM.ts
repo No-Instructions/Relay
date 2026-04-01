@@ -64,6 +64,8 @@ import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 
+const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
+
 // =============================================================================
 // Simple Observable for HSM
 // =============================================================================
@@ -185,6 +187,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
 		| null = null;
 
+	// Y.Map("frontmatter") observer: tracks whether a remote update touched the map.
+	// Repair is only valid when the remote client also populates the Y.Map.
+	private _remoteFrontmatterMapUpdated = false;
+
 	// Observables (per spec)
 	private readonly _effects = new SimpleObservable<MergeEffect>();
 	private readonly _stateChanges = new SimpleObservable<MergeState>();
@@ -223,6 +229,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
+
+	// YAML parser/serializer for frontmatter mirroring (injected from Obsidian)
+	private _yaml: { parse: (yaml: string) => any; stringify: (obj: any) => string } | null = null;
 
 	getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
@@ -274,6 +283,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._bridge = new SyncBridge(this);
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
 		this._replayMode = config.replayMode ?? false;
+		this._yaml = config.yaml ?? null;
 		this._captureOpts = {
 			scope: "contents",
 			trackedOrigins: new Set([DISK_ORIGIN, MACHINE_EDIT_ORIGIN]),
@@ -1372,6 +1382,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.pendingEditorContent = null;
 			},
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
+			repairFrontmatter: () => this.repairFrontmatterFromMap(),
 			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			startTwoWayMerge: () => {
@@ -1394,6 +1405,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			startThreeWayMerge: () => this.performThreeWayMergeFromState(),
 			applyCM6ToLocalDoc: (_hsm, event) => {
 				const e = event as any;
+				if (this.localDoc) {
+					const ytext = this.localDoc.getText("contents");
+					const ytextStr = ytext.toString();
+					const prevEditor = this.lastKnownEditorText;
+					if (prevEditor !== null && ytextStr !== prevEditor) {
+						const ytextFM = ytextStr.split("\n---\n")[0];
+						const prevFM = prevEditor.split("\n---\n")[0];
+						const docTextFM = (e.docText as string).split("\n---\n")[0];
+					}
+				}
 				this.lastKnownEditorText = e.docText;
 				if (this.localDoc) {
 					// Check if this CM6 change matches a pending machine edit
@@ -1430,7 +1451,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 							proxyDoc,
 							Y.encodeStateVector(this.localDoc),
 						);
-						Y.applyUpdate(this.localDoc, diff, MACHINE_EDIT_ORIGIN);
+						this.localDoc.transact(() => {
+							Y.applyUpdate(this.localDoc!, diff, MACHINE_EDIT_ORIGIN);
+							this.syncFrontmatterToMap();
+						}, MACHINE_EDIT_ORIGIN);
 						proxyDoc.destroy();
 
 						this._bridge.currentMachineEditMark = null;
@@ -1446,6 +1470,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 									ytext.insert(change.from, change.insert);
 								}
 							}
+							this.syncFrontmatterToMap();
 						}, this);
 					}
 				}
@@ -2461,13 +2486,61 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// Remote-originated changes use remoteDoc as origin, so they pass through.
 			if (tr.origin === this) return;
 
+			// Skip frontmatter repair ops. repairFrontmatterFromMap corrects the
+			// Y.Text to match the Y.Map — the editor already has clean content
+			// from the Y.Map dispatch path, so these Y.Text-only corrections
+			// must not be forwarded as raw deltas.
+			if (tr.origin === FRONTMATTER_MIRROR_ORIGIN) return;
+
 			// Only dispatch in tracking state
 			if (this._statePath !== "active.tracking") return;
 
-			// Convert delta to positioned changes
+			// When the same transaction also updated Y.Map("frontmatter"),
+			// dispatch the Y.Map-derived frontmatter instead of raw Y.Text delta.
+			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
+			const ymap = this.localDoc!.getMap("frontmatter");
+			const ymapChangedInTx = tr.changed.has(ymap);
+			if (ymapChangedInTx && this._yaml) {
+				// Flag for deferred repairFrontmatterFromMap action
+				this._remoteFrontmatterMapUpdated = true;
+				const correctDoc = this.buildDocFromYMap();
+				this.crdtLog(
+					`Y.Map dispatch: ymapChanged=true, correctDoc=${correctDoc !== null ? correctDoc.length + ' chars' : 'null'}, ` +
+					`lastKnown=${this.lastKnownEditorText !== null ? this.lastKnownEditorText.length + ' chars' : 'null'}, ` +
+					`origin=${String(tr.origin)}`
+				);
+				if (correctDoc !== null && this.lastKnownEditorText !== null) {
+					const changes = this.computeDiffChanges(
+						this.lastKnownEditorText, correctDoc
+					);
+					if (changes.length > 0) {
+						this.crdtLog(`Y.Map dispatch: ${changes.length} changes to CM6`);
+						this.emitEffect({ type: "DISPATCH_CM6", changes });
+						this.lastKnownEditorText = correctDoc;
+					} else {
+						this.crdtLog("Y.Map dispatch: no diff, skipping");
+					}
+					return; // skip delta-based dispatch
+				}
+			}
+
+			// Default: delta-based dispatch (body changes, old clients)
 			const changes = this.deltaToPositionedChanges(event.delta);
 			if (changes.length > 0) {
+				this.crdtLog(
+					`delta dispatch: ${changes.length} changes, ` +
+					`delta=${JSON.stringify(event.delta)}, ` +
+					`origin=${String(tr.origin)}, ` +
+					`ymapInTx=${tr.changed.has(this.localDoc!.getMap("frontmatter"))}`
+				);
 				this.emitEffect({ type: "DISPATCH_CM6", changes });
+				// Keep lastKnownEditorText in sync so Y.Map dispatch
+				// has an accurate base for its full-document diff.
+				if (this.lastKnownEditorText !== null) {
+					this.lastKnownEditorText = this.applyChangesToText(
+						this.lastKnownEditorText, changes
+					);
+				}
 			}
 		};
 		ytext.observe(this.localTextObserver);
@@ -2584,6 +2657,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.localTextObserver = null;
 		}
 
+		this._remoteFrontmatterMapUpdated = false;
+
 		// Clean up update queue listeners (editor-specific)
 		this._bridge.teardownUpdateQueues();
 
@@ -2615,6 +2690,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.localDoc = null;
 		this.localPersistence = null;
 		this.localTextObserver = null;
+		this._remoteFrontmatterMapUpdated = false;
 
 		// Clean up captured references
 		if (doc && observer) {
@@ -2678,6 +2754,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						ytext.delete(cursor, text.length);
 						break;
 				}
+			}
+
+			// Mirror frontmatter to Y.Map atomically with the content change
+			if (origin !== FRONTMATTER_MIRROR_ORIGIN) {
+				this.syncFrontmatterToMap();
 			}
 		}, origin ?? this);
 	}
@@ -3068,6 +3149,172 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Reset the state machine to unloaded so it can be re-initialized
 		this._statePath = "unloaded";
+	}
+
+	// =========================================================================
+	// Frontmatter Y.Map mirror — concurrent edit repair
+	// =========================================================================
+
+	/**
+	 * Apply positioned changes to a text string (mirrors what CM6 does).
+	 */
+	private applyChangesToText(text: string, changes: PositionedChange[]): string {
+		// Apply in reverse order so positions remain valid
+		const sorted = [...changes].sort((a, b) => b.from - a.from);
+		let result = text;
+		for (const change of sorted) {
+			result = result.slice(0, change.from) + change.insert + result.slice(change.to);
+		}
+		return result;
+	}
+
+	/**
+	 * Build a "correct" document by combining Y.Map frontmatter (LWW winners)
+	 * with Y.Text body. Returns null if Y.Map is empty or YAML is unavailable.
+	 */
+	private buildDocFromYMap(): string | null {
+		if (!this.localDoc || !this._yaml) return null;
+
+		const ymap = this.localDoc.getMap("frontmatter");
+		if (ymap.size === 0) return null;
+
+		// Reconstruct frontmatter from Y.Map
+		const mapObj: Record<string, any> = {};
+		for (const [key, value] of ymap.entries()) {
+			try { mapObj[key] = JSON.parse(value as string); }
+			catch { mapObj[key] = value; }
+		}
+		const yamlBody = this._yaml.stringify(mapObj);
+		const frontmatter = `---\n${yamlBody}---`;
+
+		// Get body from Y.Text (everything after the frontmatter region)
+		const text = this.localDoc.getText("contents").toString();
+		const match = text.match(/^---\r?\n[\s\S]*?\r?\n---/);
+		const body = match ? text.slice(match[0].length) : text;
+
+		return frontmatter + body;
+	}
+
+	/**
+	 * Extract the frontmatter region and parse it using the injected YAML parser.
+	 * Returns null if no frontmatter block or no YAML parser configured.
+	 */
+	private parseFrontmatter(text: string): { start: number; end: number; parsed: Record<string, any>; raw: string } | null {
+		if (!this._yaml) return null;
+
+		const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+		if (!match) return null;
+
+		const raw = match[1];
+		const end = match[0].length;
+
+		try {
+			const parsed = this._yaml.parse(raw);
+			if (!parsed || typeof parsed !== "object") return null;
+			return { start: 0, end, parsed, raw };
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Sync frontmatter properties from Y.Text to Y.Map("frontmatter").
+	 *
+	 * MUST be called from inside an existing Y.Doc transaction so the
+	 * Y.Map update is atomic with the Y.Text content change. When no
+	 * enclosing transaction exists (e.g., initial seed), the caller is
+	 * responsible for wrapping in transact().
+	 */
+	private syncFrontmatterToMap(): void {
+		if (!this.localDoc || !this._yaml) return;
+
+		const text = this.localDoc.getText("contents").toString();
+		const fm = this.parseFrontmatter(text);
+		const ymap = this.localDoc.getMap("frontmatter");
+
+		if (!fm) return; // Can't parse — don't touch the map
+
+		const parsedKeys = Object.keys(fm.parsed);
+
+		// Safety: if the parsed frontmatter has fewer keys than the Y.Map,
+		// the Y.Text is likely corrupted (e.g., double --- delimiters causing
+		// a truncated parse). Skip the sync to avoid destroying Y.Map data.
+		if (ymap.size > 0 && parsedKeys.length < ymap.size) return;
+
+		// Store each property value as a JSON string for faithful round-tripping.
+		// Y.Map uses LWW per key, so concurrent writes produce a clean winner.
+		for (const [key, value] of Object.entries(fm.parsed)) {
+			const serialized = JSON.stringify(value);
+			if (ymap.get(key) !== serialized) {
+				ymap.set(key, serialized);
+			}
+		}
+		// Only delete keys when the parsed frontmatter is plausibly complete
+		for (const key of [...ymap.keys()]) {
+			if (!(key in fm.parsed)) {
+				ymap.delete(key);
+			}
+		}
+	}
+
+	/**
+	 * Detect frontmatter corruption by comparing Y.Text frontmatter against
+	 * Y.Map("frontmatter"). If mismatched, reconstruct from Y.Map and apply.
+	 * Called after merging remote updates into localDoc.
+	 */
+	private repairFrontmatterFromMap(): void {
+		if (!this.localDoc || !this._yaml) return;
+
+		// Only repair if the remote update contained Y.Map changes,
+		// meaning the remote client also populates the map.
+		if (!this._remoteFrontmatterMapUpdated) return;
+		this._remoteFrontmatterMapUpdated = false;
+
+		const ymap = this.localDoc.getMap("frontmatter");
+		if (ymap.size === 0) return;
+
+		const text = this.localDoc.getText("contents").toString();
+		const fm = this.parseFrontmatter(text);
+
+		if (!fm) return; // No frontmatter block to repair
+
+		// Reconstruct the frontmatter object from Y.Map (LWW winners)
+		const mapObj: Record<string, any> = {};
+		for (const [key, value] of ymap.entries()) {
+			try {
+				mapObj[key] = JSON.parse(value as string);
+			} catch {
+				mapObj[key] = value;
+			}
+		}
+
+		// Compare parsed values — if they match, no corruption
+		let corrupted = false;
+		const parsedKeys = Object.keys(fm.parsed);
+		const mapKeys = Object.keys(mapObj);
+		if (parsedKeys.length !== mapKeys.length) {
+			corrupted = true;
+		} else {
+			for (const key of mapKeys) {
+				if (JSON.stringify(fm.parsed[key]) !== JSON.stringify(mapObj[key])) {
+					corrupted = true;
+					break;
+				}
+			}
+		}
+
+		if (!corrupted) return;
+
+		this.crdtLog("frontmatter corruption detected — repairing from Y.Map");
+
+		// Use Obsidian's YAML serializer to produce correct formatting
+		const yamlBody = this._yaml.stringify(mapObj);
+		const canonicalFrontmatter = `---\n${yamlBody}---`;
+
+		// Replace the frontmatter region in the full text
+		const newText = canonicalFrontmatter + text.slice(fm.end);
+
+		this.applyContentToLocalDoc(newText, FRONTMATTER_MIRROR_ORIGIN);
 	}
 }
 
