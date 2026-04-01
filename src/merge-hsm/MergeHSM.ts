@@ -822,6 +822,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.lastKnownEditorText = actualEditorText;
 		}
 
+		// Compare against raw Y.Text — the Y.Map may be stale if edits
+		// arrived through paths that didn't call syncFrontmatterToMap.
 		const yjsText = this.localDoc.getText("contents").toString();
 
 		if (editorText === yjsText) {
@@ -830,20 +832,24 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Drift detected — this indicates a bug in the sync pipeline.
 		// Log diagnostics so the root cause can be investigated.
+		this.send({
+			type: "DRIFT_CHECK",
+			editorLen: editorText.length,
+			yjsLen: yjsText.length,
+			delta: editorText.length - yjsText.length,
+		});
 		this.logDrift(editorText, yjsText);
 
-		// localDoc (Yjs) wins — dispatch correction to the editor
-		const changes = this.computeDiffChanges(editorText, yjsText);
-
-		if (changes.length > 0) {
-			this.emitEffect({
-				type: "DISPATCH_CM6",
-				changes,
-			});
-		}
-
-		// Update our tracking to reflect the corrected state
-		this.lastKnownEditorText = yjsText;
+		this.send({
+			type: "MERGE_CONFLICT",
+			origin: "drift",
+			base: yjsText,
+			ours: yjsText,
+			theirs: editorText,
+			oursLabel: "Remote",
+			theirsLabel: "Local",
+			conflictRegions: [],
+		});
 
 		return true;
 	}
@@ -2092,7 +2098,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			|| event.type === 'OBSIDIAN_METADATA_SYNC'
 			|| event.type === 'OBSIDIAN_VIEW_REUSED'
 			|| event.type === 'OBSIDIAN_THREE_WAY_MERGE'
-			|| event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL') {
+			|| event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL'
+			|| event.type === 'DRIFT_CHECK') {
 			return; // Diagnostic only, no state transition
 		}
 
