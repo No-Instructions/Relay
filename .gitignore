@@ -22,6 +22,9 @@ data.json
 # build status feedback
 .build-status/
 
+# local archive
+archive/
+
 # igit
 .igit
 .igitignore

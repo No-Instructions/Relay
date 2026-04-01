@@ -15,7 +15,7 @@ module.exports = {
 		"^yjs$": yjsIndex,
 		"^yjs/dist/src/internals$": yjsInternals,
 	},
-	testPathIgnorePatterns: ["/__tests__/mocks/"],
+	testPathIgnorePatterns: ["/__tests__/mocks/", "archive/", ".claude"],
     globals: {
         "BUILD_TYPE": "production",
     },
