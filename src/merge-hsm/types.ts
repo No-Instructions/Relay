@@ -781,6 +781,16 @@ export interface MergeHSMConfig {
 	 * recorded done.invoke.* events drive transitions explicitly.
 	 */
 	replayMode?: boolean;
+
+	/**
+	 * YAML parser/serializer for frontmatter operations.
+	 * In production, pass Obsidian's parseYaml/stringifyYaml.
+	 * Omit to disable frontmatter Y.Map mirroring.
+	 */
+	yaml?: {
+		parse: (yaml: string) => any;
+		stringify: (obj: any) => string;
+	};
 }
 
 // =============================================================================
