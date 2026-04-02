@@ -23,7 +23,6 @@ import type {
 // =============================================================================
 
 const DB_NAME = 'RelayMergeHSM';
-const DB_VERSION = 1;
 
 const STORES = {
   states: 'states',

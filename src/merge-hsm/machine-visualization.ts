@@ -9,7 +9,6 @@ import type {
 	StatePath,
 	MachineDefinition,
 	EventHandler,
-	TransitionCandidate,
 } from "./types";
 import { normalizeToCandidates } from "./machine-interpreter";
 

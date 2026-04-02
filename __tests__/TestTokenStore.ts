@@ -6,6 +6,7 @@ interface TestToken {
 	token: string;
 }
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function _testTokenStore() {
 	// Setup
 	const testTimeProvider = new MockTimeProvider();
@@ -95,12 +96,14 @@ describe("token store", () => {
 
 		try {
 			await store.getToken("doc1", "doc1", () => undefined);
-		} catch (_) {}
+		} catch (_) { // no-op
+		}
 		expect((store as any).tokenMap.get("doc1").attempts).toBe(1);
 
 		try {
 			await store.getToken("doc1", "doc1", () => undefined);
-		} catch (_) {}
+		} catch (_) { // no-op
+		}
 
 		expect((store as any).tokenMap.get("doc1").attempts).toBe(2);
 

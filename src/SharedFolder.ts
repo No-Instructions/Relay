@@ -13,7 +13,6 @@ import {
 import {
 	IndexeddbPersistence,
 } from "./storage/y-indexeddb";
-import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
 import type { EventMessage } from "./client/provider";
@@ -303,7 +302,6 @@ export class SharedFolder extends HasProvider {
 		this.cas = new ContentAddressedStore(this);
 
 		// Create MergeManager for this SharedFolder (per-folder instance)
-		const folderPath = this.path; // Capture for closure
 		this.mergeManager = new MergeManager({
 			getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
 			getDocument: (guid: string) => {

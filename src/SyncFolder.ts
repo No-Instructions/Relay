@@ -3,7 +3,6 @@ import { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
 import { type Vault, TFolder } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
-import type { RelayManager } from "./RelayManager";
 import { uuidv4 } from "lib0/random";
 import type { IFile } from "./IFile";
 

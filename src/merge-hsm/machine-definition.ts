@@ -106,6 +106,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.synced': {
+		entry: ['resetIdleRetryCount'],
 		on: {
 			REMOTE_UPDATE: [
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },

@@ -336,7 +336,8 @@ export class OpCapture {
 							(struct: Item | GC) => {
 								if (struct instanceof Item) {
 									if (struct.redone !== null) {
-										let { item, diff } = followRedone(store, struct.id);
+										const { item: rawItem, diff } = followRedone(store, struct.id);
+										let item = rawItem;
 										if (diff > 0) {
 											item = getItemCleanStart(
 												transaction,
@@ -495,7 +496,8 @@ export class OpCapture {
 							(struct: Item | GC) => {
 								if (struct instanceof Item) {
 									if (struct.redone !== null) {
-										let { item, diff } = followRedone(store, struct.id);
+										const { item: rawItem, diff } = followRedone(store, struct.id);
+										let item = rawItem;
 										if (diff > 0) {
 											item = getItemCleanStart(
 												transaction,

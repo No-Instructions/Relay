@@ -3,8 +3,6 @@ import { EditorView } from "@codemirror/view";
 import {
 	App,
 	MarkdownView,
-	Platform,
-	requireApiVersion,
 	TFile,
 	TextFileView,
 	Workspace,

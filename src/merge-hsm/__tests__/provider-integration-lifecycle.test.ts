@@ -8,8 +8,7 @@
 
 import * as Y from 'yjs';
 import { createCrossVaultTest } from '../testing/createCrossVaultTest';
-import type { CrossVaultTest } from '../testing/createCrossVaultTest';
-import { loadAndActivate, createLCA, createYjsUpdate } from '../testing';
+import { loadAndActivate, createLCA } from '../testing';
 
 // =============================================================================
 // Helpers

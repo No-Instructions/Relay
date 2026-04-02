@@ -242,7 +242,6 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		if (this.destroyed) {
 			return;
 		}
-		const editor: EditorView = update.view;
 		this.document = this.getDocument();
 		const ytext = this.document?.localDoc?.getText("contents") ?? this.document?.ytext;
 		if (!(this.document && ytext && ytext.doc)) {

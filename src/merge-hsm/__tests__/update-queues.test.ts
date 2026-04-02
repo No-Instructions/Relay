@@ -9,7 +9,6 @@
  * flushInbound(), with machine-edit matching and cancel.
  */
 
-import * as Y from "yjs";
 import { diff_match_patch } from "diff-match-patch";
 import {
 	createTestHSM,

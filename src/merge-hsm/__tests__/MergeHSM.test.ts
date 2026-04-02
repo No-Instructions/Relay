@@ -358,7 +358,8 @@ describe('MergeHSM', () => {
 
       // Verify initial LCA
       expect(t.state.lca?.contents).toBe(originalContent);
-      const originalLcaHash = t.state.lca?.meta.hash;
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _originalLcaHash = t.state.lca?.meta.hash;
 
       // Open file
       await sendAcquireLockToTracking(t, originalContent);

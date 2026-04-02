@@ -15,7 +15,7 @@ import {
   base64ToUint8Array,
   E2ERecordingBridge,
 } from '../recording';
-import type { HSMLogEntry, ReplayResult } from '../recording';
+import type { HSMLogEntry } from '../recording';
 import { createTestHSM, cm6Insert, loadAndActivate } from '../testing';
 import type { MergeEvent, MergeEffect, RemoteUpdateEvent } from '../types';
 
