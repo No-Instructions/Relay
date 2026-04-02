@@ -201,7 +201,7 @@ describe('MergeManager', () => {
   });
 
   describe('LCA cache', () => {
-    test('getLCA returns null for unknown guid', async () => {
+    test('getLCAMeta returns null for unknown guid', async () => {
       const managerWithInit = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
@@ -210,26 +210,21 @@ describe('MergeManager', () => {
 
       await managerWithInit.initialize();
 
-      expect(managerWithInit.getLCA('unknown-guid')).toBeNull();
+      expect(managerWithInit.getLCAMeta('unknown-guid')).toBeNull();
     });
 
-    test('getLCA returns LCA from cache after initialize', async () => {
-      const testLCA = {
-        contents: 'test content',
-        hash: 'test-hash',
-        mtime: 1000,
-        stateVector: new Uint8Array([1, 2, 3]),
-      };
-
+    test('getLCAMeta returns metadata from cache after initialize', async () => {
       const mockLoadAllStates = jest.fn().mockResolvedValue([
         {
           guid: 'doc-1',
           path: 'test.md',
-          lca: testLCA,
+          lcaMeta: {
+            meta: { hash: 'test-hash', mtime: 1000 },
+            stateVector: new Uint8Array([1, 2, 3]),
+          },
           disk: null,
           localStateVector: null,
           lastStatePath: 'idle.synced',
-          persistedAt: Date.now(),
         },
       ]);
 
@@ -242,23 +237,22 @@ describe('MergeManager', () => {
 
       await managerWithInit.initialize();
 
-      const lca = managerWithInit.getLCA('doc-1');
-      expect(lca).not.toBeNull();
-      expect(lca?.contents).toBe('test content');
-      expect(lca?.meta.hash).toBe('test-hash');
-      expect(lca?.meta.mtime).toBe(1000);
+      const lcaMeta = managerWithInit.getLCAMeta('doc-1');
+      expect(lcaMeta).not.toBeNull();
+      expect(lcaMeta?.meta.hash).toBe('test-hash');
+      expect(lcaMeta?.meta.mtime).toBe(1000);
+      expect(lcaMeta?.stateVector).toEqual(new Uint8Array([1, 2, 3]));
     });
 
-    test('getLCA returns null for doc with null LCA', async () => {
+    test('getLCAMeta returns null for doc with null LCA', async () => {
       const mockLoadAllStates = jest.fn().mockResolvedValue([
         {
           guid: 'doc-no-lca',
           path: 'test.md',
-          lca: null,
+          lcaMeta: null,
           disk: null,
           localStateVector: null,
           lastStatePath: 'idle.synced',
-          persistedAt: Date.now(),
         },
       ]);
 
@@ -271,7 +265,7 @@ describe('MergeManager', () => {
 
       await managerWithInit.initialize();
 
-      expect(managerWithInit.getLCA('doc-no-lca')).toBeNull();
+      expect(managerWithInit.getLCAMeta('doc-no-lca')).toBeNull();
     });
 
     test('setLCA updates cache immediately', async () => {
@@ -297,11 +291,11 @@ describe('MergeManager', () => {
 
       await managerWithEffects.setLCA('doc-1', newLCA);
 
-      // Cache should be updated immediately
-      const cachedLCA = managerWithEffects.getLCA('doc-1');
-      expect(cachedLCA).not.toBeNull();
-      expect(cachedLCA?.contents).toBe('new content');
-      expect(cachedLCA?.meta.hash).toBe('new-hash');
+      // Cache should be updated immediately (metadata only, no contents)
+      const cachedMeta = managerWithEffects.getLCAMeta('doc-1');
+      expect(cachedMeta).not.toBeNull();
+      expect(cachedMeta?.meta.hash).toBe('new-hash');
+      expect(cachedMeta?.meta.mtime).toBe(2000);
     });
 
     test('setLCA emits PERSIST_STATE effect', async () => {
@@ -339,16 +333,13 @@ describe('MergeManager', () => {
         {
           guid: 'doc-1',
           path: 'test.md',
-          lca: {
-            contents: 'existing content',
-            hash: 'existing-hash',
-            mtime: 1000,
+          lcaMeta: {
+            meta: { hash: 'existing-hash', mtime: 1000 },
             stateVector: stateVectorFor('existing content'),
           },
           disk: null,
           localStateVector: null,
           lastStatePath: 'idle.synced',
-          persistedAt: Date.now(),
         },
       ]);
 
@@ -366,14 +357,14 @@ describe('MergeManager', () => {
       manager = managerWithInit;
       await createMockDocument('doc-1', 'test.md');
 
-      // Should have LCA from initialize
-      expect(managerWithInit.getLCA('doc-1')).not.toBeNull();
+      // Should have LCA metadata from initialize
+      expect(managerWithInit.getLCAMeta('doc-1')).not.toBeNull();
 
       // Set to null
       await managerWithInit.setLCA('doc-1', null);
 
       // Should now be null
-      expect(managerWithInit.getLCA('doc-1')).toBeNull();
+      expect(managerWithInit.getLCAMeta('doc-1')).toBeNull();
     });
 
     test('setLCA without onEffect callback does not throw', async () => {
@@ -397,8 +388,8 @@ describe('MergeManager', () => {
       // Should not throw
       await expect(managerNoEffects.setLCA('doc-1', newLCA)).resolves.toBeUndefined();
 
-      // Cache should still be updated
-      expect(managerNoEffects.getLCA('doc-1')?.contents).toBe('new content');
+      // Cache should still be updated (metadata only)
+      expect(managerNoEffects.getLCAMeta('doc-1')?.meta.hash).toBe('new-hash');
     });
 
     test('setLCA for unknown doc still updates cache', async () => {
@@ -417,8 +408,8 @@ describe('MergeManager', () => {
       // Set LCA for doc that doesn't have HSM yet
       await managerWithInit.setLCA('unknown-doc', newLCA);
 
-      // Cache should still have it
-      expect(managerWithInit.getLCA('unknown-doc')?.contents).toBe('orphan content');
+      // Cache should still have it (metadata only)
+      expect(managerWithInit.getLCAMeta('unknown-doc')?.meta.hash).toBe('orphan-hash');
     });
   });
 
@@ -630,8 +621,8 @@ describe('MergeManager', () => {
   });
 
   describe('persistence callbacks', () => {
-    test('LCA is read from cache during HSM creation', async () => {
-      const mockLoadAllStates = jest.fn().mockResolvedValue([{
+    test('LCA is loaded from per-document state during HSM creation', async () => {
+      const persistedState = {
         guid: 'doc-1',
         path: 'test.md',
         lca: {
@@ -644,13 +635,17 @@ describe('MergeManager', () => {
         localStateVector: null,
         lastStatePath: 'idle.synced',
         persistedAt: Date.now(),
-      }]);
+      };
+
+      const mockLoadAllStates = jest.fn().mockResolvedValue([persistedState]);
+      const mockLoadState = jest.fn().mockResolvedValue(persistedState);
 
       const managerWithPersistence = new MergeManager({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
         loadAllStates: mockLoadAllStates,
+        loadState: mockLoadState,
       });
 
       // Initialize to populate cache
@@ -659,6 +654,9 @@ describe('MergeManager', () => {
       // Reassign manager for createMockDocument to use
       manager = managerWithPersistence;
       const doc = await createMockDocument('doc-1', 'test.md');
+
+      // Wait for async loadState → PERSISTENCE_LOADED → SET_MODE_IDLE to complete
+      await doc.hsm!.awaitIdle();
 
       expect(doc.hsm?.state.lca?.contents).toBe('persisted content');
     });
