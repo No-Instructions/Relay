@@ -12,7 +12,7 @@
 
 import * as Y from "yjs";
 import { OpCapture } from "src/merge-hsm/undo/OpCapture";
-import { MACHINE_EDIT_ORIGIN } from "src/merge-hsm/undo/origins";
+import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN } from "src/merge-hsm/undo/origins";
 import type { CapturedOp } from "src/merge-hsm/undo/OpCapture";
 import { diff_match_patch } from "diff-match-patch";
 import {
@@ -321,6 +321,36 @@ describe("OpCapture.cancel", () => {
 
 		const mark = capture.mark();
 		expect(capture.sinceByOrigin(mark, MACHINE_EDIT_ORIGIN).length).toBe(0);
+	});
+
+	it("editor ops survive disk op cancellation (anchored to CRDT positions)", () => {
+		// Spec scenario: disk ingest adds content, user types on top of it,
+		// then disk ops are cancelled during fork reconciliation. User's edits
+		// must survive because they are anchored to neighbouring CRDT items,
+		// not absolute byte offsets.
+		const { doc: localDoc, ytext: localYText } = makeDoc("Hello");
+		const capture = new OpCapture(localYText, {
+			trackedOrigins: new Set([DISK_ORIGIN]),
+			captureTimeout: 0,
+		});
+
+		// Disk ingest: "Hello" → "Hello World" (adds " World")
+		const mark = capture.mark();
+		applyDiffWithOrigin(localDoc, localYText, "Hello World", DISK_ORIGIN);
+		expect(localYText.toString()).toBe("Hello World");
+
+		// User types "!" at the end (no tracked origin — editor keystrokes)
+		localDoc.transact(() => {
+			localYText.insert(localYText.toString().length, "!");
+		});
+		expect(localYText.toString()).toBe("Hello World!");
+
+		// Cancel disk ops — " World" is tombstoned, "!" stays anchored
+		const diskOps = capture.sinceByOrigin(mark, DISK_ORIGIN);
+		expect(diskOps.length).toBeGreaterThan(0);
+		capture.cancel(diskOps);
+
+		expect(localYText.toString()).toBe("Hello!");
 	});
 });
 
