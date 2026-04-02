@@ -17,6 +17,9 @@ import type {
 	InterpreterConfig,
 	MachineHSM,
 } from "./types";
+import { curryLog } from "../debug";
+
+const interpreterError = curryLog("[MergeHSM:Interpreter]", "error");
 
 // =============================================================================
 // Main Event Processing
@@ -173,7 +176,7 @@ function startInvoke(
 	const { src } = stateNode.invoke;
 	const invokeFn = config.invokeSources[src];
 	if (!invokeFn) {
-		console.error(`[MergeHSM:Interpreter] Unknown invoke source: ${src}`);
+		interpreterError(`Unknown invoke source: ${src}`);
 		return;
 	}
 
@@ -241,7 +244,7 @@ function resolveAlwaysTransitions(
 		}
 		if (!matched) return; // All guards failed — stable
 	}
-	console.error("[MergeHSM:Interpreter] Always-transition loop exceeded max iterations");
+	interpreterError("Always-transition loop exceeded max iterations");
 }
 
 // =============================================================================
@@ -276,7 +279,7 @@ function runActions(
 	for (const name of actionNames) {
 		const action = config.actions[name];
 		if (!action) {
-			console.error(`[MergeHSM:Interpreter] Unknown action: ${name}`);
+			interpreterError(`Unknown action: ${name}`);
 			continue;
 		}
 		action(hsm, event);

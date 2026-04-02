@@ -9,6 +9,9 @@
 
 import * as Y from 'yjs';
 import type { MergeHSM } from '../MergeHSM';
+import { curryLog } from '../../debug';
+
+const providerError = curryLog("[ProviderIntegration]", "error");
 
 // =============================================================================
 // Provider Interface
@@ -105,8 +108,8 @@ export class ProviderIntegration {
     if (sv.length <= 1) {
       // State vector is empty — no ops were delivered.
       // This should not happen if the provider truly synced.
-      console.error(
-        '[ProviderIntegration] PROVIDER_SYNCED fired but remoteDoc state vector is empty. ' +
+      providerError(
+        'PROVIDER_SYNCED fired but remoteDoc state vector is empty. ' +
         'The provider reported sync before delivering document data.'
       );
     }

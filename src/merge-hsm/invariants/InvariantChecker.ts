@@ -5,7 +5,7 @@
  *
  * Usage:
  *   const checker = new InvariantChecker(hsm, {
- *     onViolation: (v) => console.warn('Invariant violated:', v),
+ *     onViolation: (v) => handleViolation(v),
  *   });
  *
  *   // Check manually
@@ -27,6 +27,9 @@ import type {
 } from './types';
 import { DEFAULT_INVARIANT_CONFIG } from './types';
 import { STANDARD_INVARIANTS, getInvariantsForState, getInvariantsByTrigger } from './definitions';
+import { curryLog } from '../../debug';
+
+const invariantWarn = curryLog("[Invariant]", "warn");
 
 // =============================================================================
 // Types
@@ -401,7 +404,7 @@ export class InvariantChecker {
     // Log to console if enabled
     if (this.config.logToConsole) {
       const prefix = `[Invariant] [${violation.severity.toUpperCase()}]`;
-      console.warn(`${prefix} ${violation.invariantId}: ${violation.message}`);
+      invariantWarn(`[${violation.severity.toUpperCase()}] ${violation.invariantId}: ${violation.message}`);
     }
 
     // Call callback if provided

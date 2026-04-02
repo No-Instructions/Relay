@@ -55,6 +55,7 @@ import type {
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
 import { curryLog, recordHSMEntry } from "../debug";
+import { flags } from "../flagManager";
 import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
@@ -246,6 +247,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// CRDT operation logging
 	private crdtLog = curryLog("[MergeHSM:CRDT]", "debug");
 	private idleMergeLog = curryLog("[MergeHSM:IdleMerge]", "log");
+	private hsmWarn = curryLog("[MergeHSM]", "warn");
+	private hsmError = curryLog("[MergeHSM]", "error");
 
 	// Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
 	// and replayed after mode transition (to idle.* or active.*)
@@ -576,8 +579,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				registeredAt: this.timeProvider.now(),
 			});
 
-			console.warn(
-				`[MergeHSM] registerMachineEdit | guid=${this._guid} | ` +
+			this.hsmWarn(
+				`registerMachineEdit | guid=${this._guid} | ` +
 				`expectedLen=${expectedText.length} | captureMark=${captureMark} | ` +
 				`pendingCount=${this._pendingMachineEdits.length}`
 			);
@@ -632,8 +635,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._fork.captureMark = this.getOpCapture()?.mark() ?? 0;
 		this._fork.localStateVector = Y.encodeStateVector(this.localDoc);
 
-		console.warn(
-			`[MergeHSM] registerMachineEdit (idle fork) | guid=${this._guid} | ` +
+		this.hsmWarn(
+			`registerMachineEdit (idle fork) | guid=${this._guid} | ` +
 			`state=${this._statePath} | captureMark=${this._fork.captureMark}`
 		);
 	}
@@ -1067,7 +1070,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					try {
 						this._remoteStateVector = Y.encodeStateVectorFromUpdate(update);
 					} catch (e) {
-						console.error(`[MergeHSM] Dropping unparseable remote update for ${this._guid} (${update.byteLength} bytes):`, e);
+						this.hsmError(`Dropping unparseable remote update for ${this._guid} (${update.byteLength} bytes): ${e}`);
 					}
 				}
 			},
@@ -1747,7 +1750,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					try {
 						await this.deactivateEditor();
 					} catch (err) {
-						console.error("[MergeHSM] Error during release lock cleanup:", err);
+						this.hsmError(`Error during release lock cleanup: ${err}`);
 					}
 					return { type: 'release', wasConflict };
 				}
@@ -1755,7 +1758,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				try {
 					await this.destroyLocalDoc();
 				} catch (err) {
-					console.error("[MergeHSM] Error during unload cleanup:", err);
+					this.hsmError(`Error during unload cleanup: ${err}`);
 				}
 				return { type: 'unload' };
 			},
@@ -1803,7 +1806,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			}
 
 			const mergedContent = tempDoc.getText("contents").toString();
-			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContent=${JSON.stringify(mergedContent.substring(0, 80))}`);
+			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContentLen=${mergedContent.length}`);
+			if (flags().enableDeltaLogging) {
+				this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContent=${JSON.stringify(mergedContent)}`);
+			}
 
 			// Check if this remote update carries an edit already applied by
 			// fork-reconcile (machine edit). The LCA was set to the merged
@@ -1819,8 +1825,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				);
 				if (machineIdx >= 0) {
 					this._pendingMachineEdits.splice(machineIdx, 1);
-					console.warn(
-						`[MergeHSM] idle-merge: skipped duplicate machine edit | guid=${this._guid}`
+					this.hsmWarn(
+						`idle-merge: skipped duplicate machine edit | guid=${this._guid}`
 					);
 					return { success: true, newLCA: this._lca, noop: true };
 				}
@@ -2001,9 +2007,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		const remoteContent = this.remoteDoc.getText("contents").toString();
 
-		console.warn('[MergeHSM] reconcileForkInIdle', JSON.stringify({
-			guid: this._guid, base: fork.base.slice(0, 80), local: localContent.slice(0, 80),
-			remote: remoteContent.slice(0, 80), captureMark: fork.captureMark, origin: fork.origin,
+		this.hsmWarn('reconcileForkInIdle', JSON.stringify({
+			guid: this._guid, captureMark: fork.captureMark, origin: fork.origin,
+			baseLen: fork.base.length, localLen: localContent.length, remoteLen: remoteContent.length,
+			...(flags().enableDeltaLogging ? { base: fork.base, local: localContent, remote: remoteContent } : {}),
 		}));
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
@@ -2014,9 +2021,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			const diskOps = (opCapture && fork.captureMark != null)
 				? opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN)
 				: [];
-			console.warn('[MergeHSM] fork-reconcile cancel', JSON.stringify({
+			this.hsmWarn('fork-reconcile cancel', JSON.stringify({
 				guid: this._guid, hasOpCapture: !!opCapture, captureMark: fork.captureMark,
-				diskOpsCount: diskOps.length, merged: mergeResult.merged.slice(0, 80),
+				diskOpsCount: diskOps.length, mergedLen: mergeResult.merged.length,
+				...(flags().enableDeltaLogging ? { merged: mergeResult.merged } : {}),
 			}));
 			if (diskOps.length > 0) {
 				opCapture!.cancel(diskOps);

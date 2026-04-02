@@ -17,6 +17,9 @@ import type { SyncGate, MergeEffect, PositionedChange } from "./types";
 import type { OpCapture } from "./undo";
 import { MACHINE_EDIT_ORIGIN } from "./undo";
 import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
+import { curryLog } from "../debug";
+
+const bridgeError = curryLog("[SyncBridge]", "error");
 
 // =============================================================================
 // Host Interface
@@ -608,7 +611,7 @@ export class SyncBridge {
 			`localTextLen=${localText.length}, remoteTextLen=${remoteText.length}, ` +
 			`textMatch=${localText === remoteText})`;
 
-		console.error(msg);
+		bridgeError(msg);
 		if (process.env.NODE_ENV === 'test') {
 			throw new Error(msg);
 		}
