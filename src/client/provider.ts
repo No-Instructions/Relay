@@ -16,7 +16,9 @@ import { Observable } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
-import { metrics } from "../debug";
+import { metrics, curryLog } from "../debug";
+
+const providerError = curryLog("[YSweetProvider]", "error");
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
@@ -122,7 +124,7 @@ messageHandlers[messageEvent] = (
 			provider.processEvent(eventMessage);
 		}
 	} catch (error) {
-		console.error('Failed to decode event message:', error);
+		providerError(`Failed to decode event message: ${error}`);
 	}
 };
 
@@ -140,7 +142,7 @@ messageHandlers[messageSubdocs] = (
 		const subdocIndex: Record<string, Uint8Array> = decodeCBOR(cborData);
 		provider.handleSubdocIndex(subdocIndex);
 	} catch (error) {
-		console.error('Failed to decode subdoc state vector index:', error);
+		providerError(`Failed to decode subdoc state vector index: ${error}`);
 	}
 };
 
@@ -842,7 +844,7 @@ export class YSweetProvider extends Observable<string> {
 			try {
 				callback(eventMessage);
 			} catch (error) {
-				console.error('Event callback error:', error);
+				providerError(`Event callback error: ${error}`);
 			}
 		});
 	}

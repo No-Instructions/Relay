@@ -30,7 +30,7 @@ import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
 import { validateUpdate } from '../storage/yjs-validation';
 import { classifyUpdate as classifyUpdateSV } from './state-vectors';
-import { metrics } from '../debug';
+import { metrics, curryLog } from '../debug';
 
 // =============================================================================
 // Types
@@ -197,6 +197,9 @@ export class MergeManager {
 
   // Track initialized state - initialize() must be called before registering HSMs
   private _initialized = false;
+
+  private _warn = curryLog("[MergeManager]", "warn");
+  private _error = curryLog("[MergeManager]", "error");
 
   // LCA cache - bulk-loaded during initialize(), owned by MergeManager
   private _lcaCache = new Map<string, LCAMeta | null>();
@@ -410,7 +413,7 @@ export class MergeManager {
           const doc = this._getDocument(guid);
           if (!doc) return;
           doc.connectForForkReconcile().catch((err) => {
-            console.error(`[MergeManager] connectForForkReconcile failed:`, err);
+            this._error(`connectForForkReconcile failed: ${err}`);
           });
         };
         // The document may not be registered in SharedFolder.files yet when
@@ -450,7 +453,7 @@ export class MergeManager {
       hsm.send({ type: 'SET_MODE_IDLE' });
     }).catch((err) => {
       this._pendingLoads.delete(guid);
-      console.error(`[MergeManager] Failed to load state for ${guid}:`, err);
+      this._error(`Failed to load state for ${guid}: ${err}`);
       // On IDB failure, pass null LCA — metadata without contents would
       // produce wrong merge results. The HSM treats null as "no prior state".
       const lca: LCAState | null = null;
@@ -852,7 +855,7 @@ export class MergeManager {
 
     const updateError = validateUpdate(update);
     if (updateError) {
-      console.error(`[MergeManager] Dropping invalid remote update for ${guid} (${update.byteLength} bytes):`, updateError);
+      this._error(`Dropping invalid remote update for ${guid} (${update.byteLength} bytes): ${updateError}`);
       return;
     }
 
@@ -1205,7 +1208,7 @@ export class MergeManager {
     // Forward to external handler
     if (this.onEffect) {
       Promise.resolve(this.onEffect(guid, effect)).catch((err) => {
-        console.error(`[MergeManager] onEffect error for ${guid}:`, err);
+        this._error(`onEffect error for ${guid}: ${err}`);
       });
     }
 
