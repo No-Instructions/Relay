@@ -19,6 +19,8 @@ export type {
   StatePath,
   MergeMetadata,
   LCAState,
+  LCAMeta,
+  PersistedStateMeta,
   SyncStatus,
   SyncStatusType,
 
@@ -85,6 +87,7 @@ export {
   deleteState,
   getAllStateGuids,
   getAllStates,
+  getAllStateMeta,
   saveIndex,
   loadIndex,
   deleteIndex,

@@ -43,6 +43,12 @@ export interface LCAState {
 	stateVector: Uint8Array;
 }
 
+/** Lightweight LCA metadata for in-memory caching (no contents string). */
+export interface LCAMeta {
+	meta: MergeMetadata;
+	stateVector: Uint8Array;
+}
+
 // =============================================================================
 // Fork and SyncGate Types
 // =============================================================================
@@ -592,6 +598,21 @@ export interface PersistedMergeState {
 		localHash: string;
 	};
 	fork?: Fork | null;
+	persistedAt: number;
+}
+
+/** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork). */
+export interface PersistedStateMeta {
+	guid: string;
+	path: string;
+	lcaMeta: LCAMeta | null;
+	disk: MergeMetadata | null;
+	localStateVector: Uint8Array | null;
+	lastStatePath: StatePath;
+	deferredConflict?: {
+		diskHash: string;
+		localHash: string;
+	};
 	persistedAt: number;
 }
 

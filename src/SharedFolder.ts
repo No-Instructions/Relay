@@ -65,7 +65,7 @@ import {
 	saveState as saveMergeState,
 	loadState as loadMergeState,
 	openDatabase as openMergeHSMDatabase,
-	getAllStates,
+	getAllStateMeta,
 	deleteState as deleteMergeState,
 	deleteIndex as deleteMergeIndex,
 } from "./merge-hsm/persistence";
@@ -326,7 +326,7 @@ export class SharedFolder extends HasProvider {
 				try {
 					const db = await openMergeHSMDatabase();
 					try {
-						return await getAllStates(db);
+						return await getAllStateMeta(db);
 					} finally {
 						db.close();
 					}

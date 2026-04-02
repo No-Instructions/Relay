@@ -21,6 +21,7 @@ export {
   deleteState,
   getAllStateGuids,
   getAllStates,
+  getAllStateMeta,
 
   // Index store
   saveIndex,
