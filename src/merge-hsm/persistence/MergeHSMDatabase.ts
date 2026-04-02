@@ -14,6 +14,7 @@
 import * as idb from 'lib0/indexeddb';
 import type {
   PersistedMergeState,
+  PersistedStateMeta,
   MergeIndex,
   SyncStatus,
 } from '../types';
@@ -138,12 +139,43 @@ export async function getAllStateGuids(db: IDBDatabase): Promise<string[]> {
 
 /**
  * Load all HSM states from the database.
- * Used by MergeManager.initialize() for bulk LCA cache loading.
  */
 export async function getAllStates(db: IDBDatabase): Promise<PersistedMergeState[]> {
   const [store] = idb.transact(db, [STORES.states], 'readonly');
   const states = await idb.getAll(store);
   return (states as unknown as PersistedMergeState[]) ?? [];
+}
+
+/**
+ * Load lightweight metadata for all HSM states (no lca.contents or fork).
+ * Uses a cursor so each full row is deserialized then discarded, keeping
+ * only the small fields in the returned array.
+ */
+export function getAllStateMeta(db: IDBDatabase): Promise<PersistedStateMeta[]> {
+  const [store] = idb.transact(db, [STORES.states], 'readonly');
+  const results: PersistedStateMeta[] = [];
+  return new Promise((resolve, reject) => {
+    const req = store.openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) { resolve(results); return; }
+      const s = cursor.value as PersistedMergeState;
+      results.push({
+        guid: s.guid,
+        path: s.path,
+        lcaMeta: s.lca
+          ? { meta: { hash: s.lca.hash, mtime: s.lca.mtime }, stateVector: s.lca.stateVector }
+          : null,
+        disk: s.disk,
+        localStateVector: s.localStateVector,
+        lastStatePath: s.lastStatePath,
+        deferredConflict: s.deferredConflict,
+        persistedAt: s.persistedAt,
+      });
+      cursor.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
 }
 
 // =============================================================================

@@ -19,9 +19,11 @@ import type {
   SyncStatus,
   MergeEffect,
   PersistedMergeState,
+  PersistedStateMeta,
   CreatePersistence,
   PersistenceMetadata,
   LCAState,
+  LCAMeta,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -72,12 +74,12 @@ export interface MergeManagerConfig {
   hashFn?: (contents: string) => Promise<string>;
 
   /**
-   * Callback to load all persisted states for bulk LCA cache initialization.
-   * Called during initialize() to bulk-load all LCA states into cache.
-   * Production: pass a function that uses getAllStates from MergeHSMDatabase.
+   * Callback to bulk-load lightweight state metadata for cache initialization.
+   * Called during initialize() to populate LCA metadata and state vector caches.
+   * Production: pass a function that uses getAllStateMeta from MergeHSMDatabase.
    * Tests: can omit for default empty array.
    */
-  loadAllStates?: () => Promise<PersistedMergeState[]>;
+  loadAllStates?: () => Promise<PersistedStateMeta[]>;
 
   /**
    * Callback to load a single document's persisted state.
@@ -197,7 +199,7 @@ export class MergeManager {
   private _initialized = false;
 
   // LCA cache - bulk-loaded during initialize(), owned by MergeManager
-  private _lcaCache = new Map<string, LCAState | null>();
+  private _lcaCache = new Map<string, LCAMeta | null>();
 
   // Local state vector cache - bulk-loaded during initialize()
   // Used for idle mode sync status display without opening per-document IDBs
@@ -250,7 +252,7 @@ export class MergeManager {
   private _getDocument: (guid: string) => MergeManagerDocument | undefined;
   private timeProvider: TimeProvider;
   private hashFn?: (contents: string) => Promise<string>;
-  private loadAllStates?: () => Promise<PersistedMergeState[]>;
+  private loadAllStates?: () => Promise<PersistedStateMeta[]>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
   private getDiskState?: (path: string) => Promise<{
     contents: string;
@@ -370,8 +372,8 @@ export class MergeManager {
   }): MergeHSM {
     const { guid, getPath, remoteDoc, getDiskContent, getPersistenceMetadata } = config;
 
-    // Get LCA and localStateVector from cache (bulk-loaded during initialize())
-    const lca = this.getLCA(guid);
+    // Get lightweight metadata from cache (bulk-loaded during initialize())
+    const lcaMeta = this.getLCAMeta(guid);
     const localStateVector = this.getLocalStateVector(guid);
 
     const hsm = new MergeHSM({
@@ -428,12 +430,16 @@ export class MergeManager {
     // Enter loading state — HSM accumulates events until async load completes
     hsm.send({ type: 'LOAD', guid });
 
-    // Async-load per-document state from IDB, then send PERSISTENCE_LOADED + SET_MODE_IDLE
+    // Async-load full per-document state from IDB (includes lca.contents and fork)
     const loadStateFn = this.loadState ?? (() => Promise.resolve(null));
     this._pendingLoads.add(guid);
     loadStateFn(guid).then((state) => {
       this._pendingLoads.delete(guid);
       if (this.destroyed) return;
+      // Build full LCA from IDB state (the source of truth for contents)
+      const lca: LCAState | null = state?.lca
+        ? { contents: state.lca.contents, meta: { hash: state.lca.hash, mtime: state.lca.mtime }, stateVector: state.lca.stateVector }
+        : null;
       hsm.send({
         type: 'PERSISTENCE_LOADED',
         updates: new Uint8Array(),
@@ -445,6 +451,9 @@ export class MergeManager {
     }).catch((err) => {
       this._pendingLoads.delete(guid);
       console.error(`[MergeManager] Failed to load state for ${guid}:`, err);
+      // On IDB failure, pass null LCA — metadata without contents would
+      // produce wrong merge results. The HSM treats null as "no prior state".
+      const lca: LCAState | null = null;
       hsm.send({
         type: 'PERSISTENCE_LOADED',
         updates: new Uint8Array(),
@@ -633,13 +642,10 @@ export class MergeManager {
   // ===========================================================================
 
   /**
-   * Get LCA from cache (synchronous).
-   * Returns the cached LCA state, or null if not found or not in cache.
-   *
-   * HSMs should call this instead of receiving LCA via PERSISTENCE_LOADED event.
+   * Get LCA metadata from cache (synchronous, no contents string).
    * The cache is populated during initialize() via bulk load.
    */
-  getLCA(guid: string): LCAState | null {
+  getLCAMeta(guid: string): LCAMeta | null {
     return this._lcaCache.get(guid) ?? null;
   }
 
@@ -662,8 +668,11 @@ export class MergeManager {
    * @param lca - New LCA state, or null to clear
    */
   async setLCA(guid: string, lca: LCAState | null): Promise<void> {
-    // Update cache immediately (synchronous)
-    this._lcaCache.set(guid, lca);
+    // Update cache with metadata only (no contents string)
+    this._lcaCache.set(guid, lca
+      ? { meta: lca.meta, stateVector: lca.stateVector }
+      : null
+    );
 
     // Persist to storage via the onEffect callback
     // The integration layer handles actual IndexedDB writes
@@ -717,22 +726,11 @@ export class MergeManager {
       return; // Don't initialize if destroyed
     }
 
-    // Bulk-load all persisted states into LCA cache
+    // Bulk-load lightweight metadata into caches (no lca.contents or fork)
     if (this.loadAllStates) {
-      const allStates = await this.loadAllStates();
-      for (const state of allStates) {
-        if (state.lca) {
-          this._lcaCache.set(state.guid, {
-            contents: state.lca.contents,
-            meta: {
-              hash: state.lca.hash,
-              mtime: state.lca.mtime,
-            },
-            stateVector: state.lca.stateVector,
-          });
-        } else {
-          this._lcaCache.set(state.guid, null);
-        }
+      const allMeta = await this.loadAllStates();
+      for (const state of allMeta) {
+        this._lcaCache.set(state.guid, state.lcaMeta);
 
         // Also cache localStateVector for idle mode sync status
         this._localStateVectorCache.set(
@@ -1218,10 +1216,9 @@ export class MergeManager {
         break;
 
       case 'PERSIST_STATE':
-        // Update LCA cache from HSM's persisted state
+        // Update LCA metadata cache (no contents — kept lightweight)
         if (effect.state.lca) {
           this._lcaCache.set(guid, {
-            contents: effect.state.lca.contents,
             meta: {
               hash: effect.state.lca.hash,
               mtime: effect.state.lca.mtime,
