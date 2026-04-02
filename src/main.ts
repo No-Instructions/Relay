@@ -63,7 +63,6 @@ import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 import { UpdateManager } from "./UpdateManager";
 import type { PluginWithApp } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
-import { CompactionManager } from "./workers/CompactionManager";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
@@ -1334,9 +1333,6 @@ export default class Live extends Plugin {
 
 		// Cleanup all monkeypatches and destroy the singleton
 		Patcher.destroy();
-
-		// Terminate the compaction worker
-		CompactionManager.destroy();
 
 		this.timeProvider?.destroy();
 
