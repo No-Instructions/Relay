@@ -59,6 +59,31 @@ describe('Three-way merge with provider sync states', () => {
 		expect(t.matches('idle.synced') || t.matches('idle.localAhead')).toBe(true);
 	});
 
+	test('adjacent-line edits by different sides auto-merge (newline-as-token)', async () => {
+		// Regression: if tokenization uses s.split("\n") instead of s.split(/(\n)/),
+		// adjacent changed lines form a single diff3 conflict region → false conflict.
+		// With newline-as-explicit-token, the unchanged \n separates the regions.
+		const t = await createTestHSM();
+		await loadToIdle(t, { content: 'line 1\nline 2\nline 3', mtime: 1000 });
+
+		// Disk changes line 2 first (creates fork before remote arrives)
+		t.send(await diskChanged('line 1\nDISK 2\nline 3', 2000));
+		await t.hsm.awaitIdleAutoMerge();
+
+		// Remote changes line 1 — adjacent to disk edit but non-overlapping
+		t.setRemoteContent('REMOTE 1\nline 2\nline 3');
+
+		// Provider syncs → fork reconciliation runs diff3(localDoc, fork.base, remoteDoc)
+		t.send(connected());
+		t.send(providerSynced());
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
+		await t.hsm.awaitIdleAutoMerge();
+
+		// Must auto-merge, not conflict
+		expect(t.matches('idle.synced') || t.matches('idle.localAhead')).toBe(true);
+		expectLocalDocText(t, 'REMOTE 1\nDISK 2\nline 3');
+	});
+
 	test('provider synced → conflicting edits via fork path → diverged', async () => {
 		const t = await createTestHSM();
 		await loadToIdle(t, { content: 'aaa bbb ccc', mtime: 1000 });
