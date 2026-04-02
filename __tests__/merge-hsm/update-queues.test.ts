@@ -22,8 +22,8 @@ import {
 	expectEffectCount,
 	expectLocalDocText,
 	expectRemoteDocText,
-} from "../testing";
-import type { TestHSM } from "../testing";
+} from "src/merge-hsm/testing";
+import type { TestHSM } from "src/merge-hsm/testing";
 
 // ===========================================================================
 // Helpers

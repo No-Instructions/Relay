@@ -9,10 +9,10 @@
  */
 
 import * as Y from 'yjs';
-import { MergeManager } from '../MergeManager';
-import { MergeHSM } from '../MergeHSM';
-import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
-import { PostOffice } from '../../../src/observable/Postie';
+import { MergeManager } from 'src/merge-hsm/MergeManager';
+import { MergeHSM } from 'src/merge-hsm/MergeHSM';
+import { MockTimeProvider } from '../mocks/MockTimeProvider';
+import { PostOffice } from 'src/observable/Postie';
 
 // Simulates a Document that owns an HSM
 interface MockDocument {
@@ -794,3 +794,292 @@ function createTestUpdate(content: string): Uint8Array {
   doc.destroy();
   return update;
 }
+
+// =============================================================================
+// Multi-HSM and lifecycle tests (using test harness)
+// =============================================================================
+
+import {
+  createTestHSM,
+  loadToIdle,
+  loadAndActivate,
+  loadToConflict,
+  diskChanged,
+  sendAcquireLockToTracking,
+  releaseLock,
+  resolve,
+  cm6Insert,
+  providerSynced,
+  connected,
+  disconnected,
+  unload,
+  load,
+  persistenceLoaded,
+  expectState,
+} from 'src/merge-hsm/testing';
+import type { TestHSM } from 'src/merge-hsm/testing';
+
+async function createHSMs(n: number): Promise<TestHSM[]> {
+  const hsms: TestHSM[] = [];
+  for (let i = 0; i < n; i++) {
+    hsms.push(await createTestHSM({
+      guid: `guid-${i}`,
+      path: `file-${i}.md`,
+      vaultId: `vault-${i}`,
+    }));
+  }
+  return hsms;
+}
+
+// =============================================================================
+// Multi-HSM independence
+// =============================================================================
+
+describe('Multi-HSM independence', () => {
+  test('5 HSMs in different states do not interfere', async () => {
+    const hsms = await createHSMs(5);
+
+    // HSM 0: idle.synced
+    await loadToIdle(hsms[0], { content: 'idle content', guid: 'guid-0' });
+    expectState(hsms[0], 'idle.synced');
+
+    // HSM 1: active.tracking
+    await loadAndActivate(hsms[1], 'active content', { guid: 'guid-1' });
+    expectState(hsms[1], 'active.tracking');
+
+    // HSM 2: active.conflict
+    await loadToConflict(hsms[2], {
+      base: 'base text',
+      remote: 'remote changed',
+      disk: 'disk changed',
+      guid: 'guid-2',
+    });
+    expectState(hsms[2], 'active.conflict.bannerShown');
+
+    // HSM 3: loading (not yet mode-determined)
+    hsms[3].send(load('guid-3'));
+    hsms[3].send(persistenceLoaded(new Uint8Array(), null));
+    expectState(hsms[3], 'loading');
+
+    // HSM 4: unloaded
+    expectState(hsms[4], 'unloaded');
+
+    // Verify each HSM retained its state independently
+    expectState(hsms[0], 'idle.synced');
+    expectState(hsms[1], 'active.tracking');
+    expectState(hsms[2], 'active.conflict.bannerShown');
+    expectState(hsms[3], 'loading');
+    expectState(hsms[4], 'unloaded');
+  });
+
+  test('editing one active HSM does not affect another', async () => {
+    const [a, b] = await createHSMs(2);
+    await loadAndActivate(a, 'doc A', { guid: 'guid-0' });
+    await loadAndActivate(b, 'doc B', { guid: 'guid-1' });
+
+    // Edit doc A
+    a.send(cm6Insert(5, ' edited', 'doc A edited'));
+
+    // Doc B should be unchanged
+    expect(b.getLocalDocText()).toBe('doc B');
+    expectState(b, 'active.tracking');
+  });
+
+  test('unloading one HSM does not affect others', async () => {
+    const [a, b] = await createHSMs(2);
+    await loadAndActivate(a, 'doc A', { guid: 'guid-0' });
+    await loadAndActivate(b, 'doc B', { guid: 'guid-1' });
+
+    // Unload doc A
+    a.send(releaseLock());
+    a.send(unload());
+    await a.hsm.awaitCleanup();
+
+    // Doc B should be fully intact
+    expectState(b, 'active.tracking');
+    expect(b.getLocalDocText()).toBe('doc B');
+  });
+
+  test('remote update to one HSM does not leak to another', async () => {
+    const [a, b] = await createHSMs(2);
+    await loadAndActivate(a, 'shared base', { guid: 'guid-0' });
+    await loadAndActivate(b, 'shared base', { guid: 'guid-1' });
+
+    a.send(connected());
+    a.send(providerSynced());
+
+    // Apply remote change only to HSM a
+    a.applyRemoteChange('shared base + remote A');
+
+    // HSM b should not have this change
+    expect(b.getLocalDocText()).toBe('shared base');
+  });
+});
+
+// =============================================================================
+// Concurrent cross-file operations
+// =============================================================================
+
+describe('Concurrent cross-file operations', () => {
+  test('one file in conflict while another tracks edits normally', async () => {
+    const [tracking, conflicting] = await createHSMs(2);
+
+    await loadAndActivate(tracking, 'tracking content', { guid: 'guid-0' });
+    await loadToConflict(conflicting, {
+      base: 'base',
+      remote: 'remote version',
+      disk: 'disk version',
+      guid: 'guid-1',
+    });
+
+    // Edit the tracking document
+    tracking.send(cm6Insert(16, '!', 'tracking content!'));
+    expectState(tracking, 'active.tracking');
+
+    // Resolve the conflict on the other
+    conflicting.send(resolve('resolved content'));
+
+    // Both should be stable
+    expectState(tracking, 'active.tracking');
+    // After resolve, conflicting transitions to tracking or stays in conflict.resolving
+    expect(
+      conflicting.matches('active.tracking') ||
+      conflicting.matches('active.merging') ||
+      conflicting.matches('active.conflict')
+    ).toBe(true);
+  });
+
+  test('releasing lock on one file while another is in idle auto-merge', async () => {
+    const [active, idle] = await createHSMs(2);
+
+    await loadAndActivate(active, 'active doc', { guid: 'guid-0' });
+    await loadToIdle(idle, { content: 'idle doc', guid: 'guid-1' });
+
+    // Trigger idle auto-merge on the idle doc
+    idle.applyRemoteChange('idle doc updated');
+
+    // Release lock on active doc simultaneously
+    active.send(releaseLock());
+
+    // Wait for idle auto-merge to finish
+    await idle.hsm.awaitIdleAutoMerge();
+
+    // Both should be in valid states
+    expect(idle.matches('idle')).toBe(true);
+    // active should be in idle or unloading after release
+    expect(
+      active.matches('idle') || active.matches('unloading')
+    ).toBe(true);
+  });
+
+  test('disk changes arriving for multiple idle files simultaneously', async () => {
+    const hsms = await createHSMs(3);
+
+    for (let i = 0; i < 3; i++) {
+      await loadToIdle(hsms[i], { content: `file ${i}`, guid: `guid-${i}` });
+    }
+
+    // Send disk changes to all three simultaneously
+    const diskEvents = await Promise.all([
+      diskChanged(`file 0 modified`, 2000),
+      diskChanged(`file 1 modified`, 2001),
+      diskChanged(`file 2 modified`, 2002),
+    ]);
+
+    hsms[0].send(diskEvents[0]);
+    hsms[1].send(diskEvents[1]);
+    hsms[2].send(diskEvents[2]);
+
+    // Wait for all auto-merges
+    await Promise.all(hsms.map(h => h.hsm.awaitIdleAutoMerge()));
+
+    // All should be in a valid idle state
+    for (const h of hsms) {
+      expect(h.matches('idle')).toBe(true);
+    }
+  });
+});
+
+// =============================================================================
+// Memory leak scenarios
+// =============================================================================
+
+describe('Memory leak scenarios', () => {
+  test('rapid create-load-unload cycles clean up', async () => {
+    for (let i = 0; i < 20; i++) {
+      const t = await createTestHSM({ guid: `rapid-${i}` });
+      await loadToIdle(t, { content: `cycle ${i}`, guid: `rapid-${i}` });
+
+      t.send(unload());
+      await t.hsm.awaitCleanup();
+
+      // localDoc should be null after unload
+      expect(t.getLocalDocText()).toBeNull();
+    }
+  });
+
+  test('rapid acquire-release cycles preserve content', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'preserved content', mtime: 1000 });
+
+    for (let i = 0; i < 10; i++) {
+      // Acquire lock
+      await sendAcquireLockToTracking(t, 'preserved content');
+      expectState(t, 'active.tracking');
+      expect(t.getLocalDocText()).toBe('preserved content');
+
+      // Release lock
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+
+      // Should return to idle
+      expect(t.matches('idle')).toBe(true);
+    }
+  });
+
+  test('effect subscribers are cleaned up after unsubscribe', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'test' });
+
+    const captured: any[] = [];
+    const unsub = t.hsm.subscribe((effect) => {
+      captured.push(effect);
+    });
+
+    // Verify subscriber receives effects
+    t.send(await diskChanged('test edited', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+    const countBefore = captured.length;
+    expect(countBefore).toBeGreaterThan(0);
+
+    // Unsubscribe
+    unsub();
+
+    // Further events should not be captured
+    t.send(await diskChanged('test edited again', 3000));
+    await t.hsm.awaitIdleAutoMerge();
+    expect(captured.length).toBe(countBefore);
+  });
+
+  test('state change listeners are cleaned up after unsubscribe', async () => {
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: 'test' });
+
+    const transitions: string[] = [];
+    const unsub = t.hsm.onStateChange((from, to) => {
+      transitions.push(`${from}->${to}`);
+    });
+
+    // Trigger a transition
+    t.send(await diskChanged('test change', 2000));
+    await t.hsm.awaitIdleAutoMerge();
+    const countBefore = transitions.length;
+
+    unsub();
+
+    // Further transitions should not be captured
+    t.send(await diskChanged('test change 2', 3000));
+    await t.hsm.awaitIdleAutoMerge();
+    expect(transitions.length).toBe(countBefore);
+  });
+});

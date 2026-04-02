@@ -17,7 +17,7 @@ import {
 	expectState,
 	expectLocalDocText,
 	expectRemoteDocText,
-} from "../testing";
+} from "src/merge-hsm/testing";
 
 // ===========================================================================
 // 1. SharedFolder Document GUID remap logic
@@ -200,7 +200,7 @@ describe("HSMEditorPlugin GUID-change detection", () => {
 		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const path = require("path");
 		const source = fs.readFileSync(
-			path.resolve(__dirname, "../integration/HSMEditorPlugin.ts"),
+			path.resolve(__dirname, "../../src/merge-hsm/integration/HSMEditorPlugin.ts"),
 			"utf-8",
 		);
 
@@ -220,7 +220,7 @@ describe("HSMEditorPlugin GUID-change detection", () => {
 		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const path = require("path");
 		const source = fs.readFileSync(
-			path.resolve(__dirname, "../integration/HSMEditorPlugin.ts"),
+			path.resolve(__dirname, "../../src/merge-hsm/integration/HSMEditorPlugin.ts"),
 			"utf-8",
 		);
 

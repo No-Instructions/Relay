@@ -11,9 +11,9 @@
  */
 
 import * as Y from "yjs";
-import { OpCapture } from "../undo/OpCapture";
-import { MACHINE_EDIT_ORIGIN } from "../undo/origins";
-import type { CapturedOp } from "../undo/OpCapture";
+import { OpCapture } from "src/merge-hsm/undo/OpCapture";
+import { MACHINE_EDIT_ORIGIN } from "src/merge-hsm/undo/origins";
+import type { CapturedOp } from "src/merge-hsm/undo/OpCapture";
 import { diff_match_patch } from "diff-match-patch";
 import {
 	createTestHSM,
@@ -24,8 +24,10 @@ import {
 	expectEffect,
 	expectNoEffect,
 	expectLocalDocText,
-} from "../testing";
-import type { TestHSM } from "../testing";
+	createLCA,
+} from "src/merge-hsm/testing";
+import type { TestHSM } from "src/merge-hsm/testing";
+import { createCrossVaultTest } from "src/merge-hsm/testing/createCrossVaultTest";
 
 // ===========================================================================
 // Helpers — CRDT primitive tests
@@ -437,4 +439,246 @@ describe("machine edit rewind - HSM integration", () => {
 		// Syncs immediately — docText doesn't match expectedText
 		expectEffect(t.effects, { type: "SYNC_TO_REMOTE" });
 	});
+});
+
+// ===========================================================================
+// Machine edit: source active on A, idle on B
+// ===========================================================================
+
+async function setupVariant2(content: string) {
+  const ctx = await createCrossVaultTest();
+
+  await loadAndActivate(ctx.vaultA.hsm, content);
+  ctx.vaultA.disk.content = content;
+  ctx.vaultA.disk.mtime = Date.now();
+
+  const localDocA = ctx.vaultA.hsm.hsm.getLocalDoc()!;
+  const canonicalUpdate = Y.encodeStateAsUpdate(localDocA);
+  Y.applyUpdate(ctx.server, canonicalUpdate, 'vaultA');
+
+  ctx.vaultB.hsm.seedIndexedDB(canonicalUpdate);
+  ctx.vaultB.hsm.syncRemoteWithUpdate(canonicalUpdate);
+
+  const mtime = Date.now();
+  const stateVector = Y.encodeStateVectorFromUpdate(canonicalUpdate);
+  const lca = await createLCA(content, mtime, stateVector);
+
+  ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
+  ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates: canonicalUpdate, lca });
+  ctx.vaultB.send({ type: 'SET_MODE_IDLE' });
+  ctx.vaultB.hsm.setProviderSynced?.(true);
+
+  await ctx.vaultB.hsm.hsm.awaitState?.((s: string) => s === 'idle.synced');
+  ctx.vaultB.disk.content = content;
+  ctx.vaultB.disk.mtime = mtime;
+
+  expect(ctx.vaultA.hsm.statePath).toBe('active.tracking');
+  expect(ctx.vaultB.hsm.statePath).toBe('idle.synced');
+
+  ctx.vaultA.clearEffects();
+  ctx.vaultB.clearEffects();
+
+  return ctx;
+}
+
+describe('Machine edit: source active on A, idle on B', () => {
+  test('disk edit on B first, then A CRDT arrives = no duplication', async () => {
+    const content = 'Source file.\nLink: [[target]]\nEnd of file.';
+    const renamed = 'Source file.\nLink: [[renamed]]\nEnd of file.';
+    const ctx = await setupVariant2(content);
+
+    // Vault A: machine edit
+    ctx.vaultA.editText(renamed);
+
+    // Vault B: vault.process() writes to disk (before A's CRDT arrives)
+    await ctx.vaultB.writeFile(renamed);
+
+    // Wait for fork reconcile on B (A's CRDT not on server yet)
+    await new Promise(r => setTimeout(r, 200));
+
+    console.log('[Phase 1] B state:', ctx.vaultB.hsm.statePath);
+    console.log('[Phase 1] B localDoc:', JSON.stringify(ctx.vaultB.getLocalText()));
+
+    // Now sync A's CRDT to server, then deliver to B
+    ctx.sync();
+
+    // Wait for B to process the REMOTE_UPDATE
+    await new Promise(r => setTimeout(r, 200));
+
+    const bText = ctx.vaultB.getLocalText();
+    const bDisk = ctx.vaultB.disk.content;
+
+    console.log('[Phase 2] B state:', ctx.vaultB.hsm.statePath);
+    console.log('[Phase 2] B localDoc:', JSON.stringify(bText));
+    console.log('[Phase 2] B disk:', JSON.stringify(bDisk));
+
+    expect(bText).toBe(renamed);
+    expect(bText).not.toContain('renamedrenamed');
+    expect(bDisk).toBe(renamed);
+    expect(bDisk).not.toContain('renamedrenamed');
+
+    ctx.destroy();
+  });
+
+  test('A CRDT arrives at B first (idle sync), then disk unchanged = correct', async () => {
+    const content = 'Source file.\nLink: [[target]]\nEnd of file.';
+    const renamed = 'Source file.\nLink: [[renamed]]\nEnd of file.';
+    const ctx = await setupVariant2(content);
+
+    // Vault A: machine edit
+    ctx.vaultA.editText(renamed);
+
+    // Sync A's CRDT to server and deliver to B as REMOTE_UPDATE
+    ctx.sync();
+
+    // Wait for idle-merge on B
+    await new Promise(r => setTimeout(r, 200));
+
+    const bText = ctx.vaultB.getLocalText();
+    const bDisk = ctx.vaultB.disk.content;
+
+    console.log('[Scenario 2] B state:', ctx.vaultB.hsm.statePath);
+    console.log('[Scenario 2] B localDoc:', JSON.stringify(bText));
+    console.log('[Scenario 2] B disk:', JSON.stringify(bDisk));
+
+    expect(bText).toBe(renamed);
+    expect(bDisk).toBe(renamed);
+    expect(bText).not.toContain('renamedrenamed');
+
+    ctx.destroy();
+  });
+
+  test('A CRDT and B disk edit arrive simultaneously = no duplication', async () => {
+    const content = 'Source file.\nLink: [[target]]\nEnd of file.';
+    const renamed = 'Source file.\nLink: [[renamed]]\nEnd of file.';
+    const ctx = await setupVariant2(content);
+
+    // Vault A: machine edit
+    ctx.vaultA.editText(renamed);
+
+    // Both happen "simultaneously": B writes disk AND A's CRDT arrives
+    await ctx.vaultB.writeFile(renamed);
+    ctx.sync();  // A's CRDT arrives at B
+
+    // Wait for merge
+    await new Promise(r => setTimeout(r, 500));
+
+    const bText = ctx.vaultB.getLocalText();
+    const bDisk = ctx.vaultB.disk.content;
+
+    console.log('[Scenario 3] B state:', ctx.vaultB.hsm.statePath);
+    console.log('[Scenario 3] B localDoc:', JSON.stringify(bText));
+    console.log('[Scenario 3] B disk:', JSON.stringify(bDisk));
+
+    expect(bText).toBe(renamed);
+    expect(bDisk).toBe(renamed);
+    expect(bText).not.toContain('renamedrenamed');
+
+    ctx.destroy();
+  });
+});
+
+// ===========================================================================
+// Machine edit: both vaults active
+// ===========================================================================
+
+async function bootBothVaultsActive(content: string) {
+  const ctx = await createCrossVaultTest();
+
+  await loadAndActivate(ctx.vaultA.hsm, content);
+  ctx.vaultA.disk.content = content;
+  ctx.vaultA.disk.mtime = Date.now();
+
+  const localDocA = ctx.vaultA.hsm.hsm.getLocalDoc()!;
+  const canonicalUpdate = Y.encodeStateAsUpdate(localDocA);
+  Y.applyUpdate(ctx.server, canonicalUpdate, 'vaultA');
+
+  if (content) {
+    ctx.vaultB.hsm.seedIndexedDB(canonicalUpdate);
+    ctx.vaultB.hsm.syncRemoteWithUpdate(canonicalUpdate);
+  }
+
+  const mtime = Date.now();
+  const stateVector = content ? Y.encodeStateVectorFromUpdate(canonicalUpdate) : new Uint8Array([0]);
+  const lca = await createLCA(content, mtime, stateVector);
+  const updates = content ? canonicalUpdate : new Uint8Array();
+
+  ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
+  ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates, lca });
+  ctx.vaultB.send({ type: 'SET_MODE_ACTIVE' });
+  ctx.vaultB.send({ type: 'ACQUIRE_LOCK', editorContent: content });
+
+  await ctx.vaultB.hsm.hsm.awaitState?.((s: string) => s === 'active.tracking');
+  ctx.vaultB.disk.content = content;
+  ctx.vaultB.disk.mtime = mtime;
+
+  ctx.sync();
+  ctx.vaultA.clearEffects();
+  ctx.vaultB.clearEffects();
+
+  return ctx;
+}
+
+describe('Machine edit: both vaults active', () => {
+  test('REMOTE_UPDATE produces DISPATCH_CM6 on vault B', async () => {
+    const content = 'Source file.\nLink: [[target]]\nEnd of file.';
+    const ctx = await bootBothVaultsActive(content);
+
+    // Vault A edits (wikilink rename)
+    ctx.vaultA.editText('Source file.\nLink: [[renamed]]\nEnd of file.');
+
+    // Sync through server
+    ctx.sync();
+
+    const dispatchEffects = ctx.vaultB.effects.filter(e => e.type === 'DISPATCH_CM6');
+    expect(ctx.vaultB.getLocalText()).toBe('Source file.\nLink: [[renamed]]\nEnd of file.');
+    expect(dispatchEffects.length).toBeGreaterThan(0);
+
+    ctx.destroy();
+  });
+
+  test('REMOTE_UPDATE during active.entering is accumulated and applied on tracking entry', async () => {
+    const content = 'Source file.\nLink: [[target]]\nEnd of file.';
+    const ctx = await createCrossVaultTest();
+
+    // Boot vault A and make the edit
+    await loadAndActivate(ctx.vaultA.hsm, content);
+    ctx.vaultA.disk.content = content;
+    ctx.vaultA.disk.mtime = Date.now();
+
+    const localDocA = ctx.vaultA.hsm.hsm.getLocalDoc()!;
+    const canonicalUpdate = Y.encodeStateAsUpdate(localDocA);
+    Y.applyUpdate(ctx.server, canonicalUpdate, 'vaultA');
+
+    ctx.vaultA.editText('Source file.\nLink: [[renamed]]\nEnd of file.');
+    ctx.sync(); // A -> server
+
+    // Boot vault B with OLD IDB content (simulates re-acquire-lock)
+    ctx.vaultB.hsm.seedIndexedDB(canonicalUpdate);
+    ctx.vaultB.hsm.syncRemoteWithUpdate(canonicalUpdate);
+
+    const mtime = Date.now();
+    const stateVector = Y.encodeStateVectorFromUpdate(canonicalUpdate);
+    const lca = await createLCA(content, mtime, stateVector);
+
+    ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
+    ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates: canonicalUpdate, lca });
+    ctx.vaultB.send({ type: 'SET_MODE_ACTIVE' });
+    ctx.vaultB.send({ type: 'ACQUIRE_LOCK', editorContent: content });
+
+    // Deliver vault A's update to B's remoteDoc and HSM during entering phase
+    const remoteDocB = ctx.vaultB.hsm.hsm.getRemoteDoc()!;
+    const updateForB = Y.encodeStateAsUpdate(ctx.server, Y.encodeStateVector(remoteDocB));
+    if (updateForB.length > 0) {
+      Y.applyUpdate(remoteDocB, updateForB, 'provider');
+      ctx.vaultB.send({ type: 'REMOTE_UPDATE', update: updateForB });
+    }
+
+    await ctx.vaultB.hsm.hsm.awaitState?.((s: string) => s === 'active.tracking');
+
+    // Vault B should have the renamed link after entering tracking
+    expect(ctx.vaultB.getLocalText()).toBe('Source file.\nLink: [[renamed]]\nEnd of file.');
+
+    ctx.destroy();
+  });
 });

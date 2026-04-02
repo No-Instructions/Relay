@@ -1,5 +1,5 @@
-import { toMermaid, toDOT } from '../machine-visualization';
-import { MACHINE } from '../machine-definition';
+import { toMermaid, toDOT } from 'src/merge-hsm/machine-visualization';
+import { MACHINE } from 'src/merge-hsm/machine-definition';
 
 describe('Machine Visualization', () => {
   test('toMermaid generates valid state diagram', () => {

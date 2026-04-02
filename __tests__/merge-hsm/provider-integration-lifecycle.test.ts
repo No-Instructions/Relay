@@ -7,8 +7,8 @@
  */
 
 import * as Y from 'yjs';
-import { createCrossVaultTest } from '../testing/createCrossVaultTest';
-import { loadAndActivate, createLCA } from '../testing';
+import { createCrossVaultTest } from 'src/merge-hsm/testing/createCrossVaultTest';
+import { loadAndActivate, createLCA } from 'src/merge-hsm/testing';
 
 // =============================================================================
 // Helpers
