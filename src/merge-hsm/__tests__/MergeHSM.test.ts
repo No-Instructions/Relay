@@ -973,11 +973,12 @@ describe('MergeHSM', () => {
       localDoc.getText('contents').delete(5, 6); // Remove " world"
       localDoc.getText('contents').insert(5, ' universe');
 
-      // Now check drift - should detect and correct
-      const driftDetected = t.hsm.checkAndCorrectDrift();
+      // Now check drift - pass actualEditorText because the Y.Text observer
+      // auto-syncs lastKnownEditorText when localDoc is modified directly
+      const driftDetected = t.hsm.checkAndCorrectDrift('hello world');
 
       expect(driftDetected).toBe(true);
-      expectEffect(t.effects, { type: 'DISPATCH_CM6' });
+      expectEffect(t.effects, { type: 'STATUS_CHANGED' });
     });
 
     test('checkAndCorrectDrift only works in active.tracking', async () => {

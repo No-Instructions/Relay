@@ -9,6 +9,7 @@
  */
 
 import * as Y from 'yjs';
+import * as jsyaml from 'js-yaml';
 import { diff_match_patch } from 'diff-match-patch';
 import type {
   MergeState,
@@ -155,6 +156,21 @@ export interface TestHSM {
    * This ensures subsequent changes can be properly merged.
    */
   syncRemoteWithUpdate(update: Uint8Array): void;
+
+  /**
+   * Replay all stored IDB updates into a fresh Y.Doc and return the text.
+   * Used to verify that IDB state matches in-memory state after cancel/resolve.
+   */
+  replayFromIDB(): string;
+
+  /** Number of update entries currently stored in mock IDB */
+  getStoredUpdateCount(): number;
+
+  /** Keys of entries in the mock OpCapture storage */
+  getStoredUpdateKeys(): number[];
+
+  /** Raw binary updates stored in mock IDB (for CRDT-aware replay) */
+  getStoredUpdates(): Uint8Array | null;
 }
 
 /**
@@ -180,6 +196,8 @@ export interface TestableHSM {
   awaitCleanup(): Promise<void>;
   awaitIdleAutoMerge(): Promise<void>;
   awaitForkReconcile(): Promise<void>;
+  hasFork(): boolean;
+  awaitState(predicate: (statePath: string) => boolean): Promise<void>;
 }
 
 // =============================================================================
@@ -198,34 +216,34 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   const stateHistory: Array<{ from: StatePath; to: StatePath; event: MergeEvent['type'] }> = [];
 
   // Stateful mock IndexedDB - persists across lock cycles within the same test.
-  // This simulates the real y-indexeddb behavior where:
-  // 1. On destroy(), the current doc state is persisted
-  // 2. On next createPersistence(), that state is loaded into the new doc
+  // This simulates real y-indexeddb behavior where updates are stored as
+  // individual rows, not eagerly merged. This is critical for OpCapture.cancel()
+  // which needs to selectively remove disk-origin update rows from IDB.
+  // Compaction only happens on destroy() (like real y-indexeddb periodic compaction).
   //
   // IMPORTANT: Per docs/how-we-bootstrap-collaboration.md, disk content should only
   // be inserted into the CRDT exactly ONCE during initial enrollment. This stateful
   // mock ensures that reopening a file loads persisted content rather than relying
   // on any LCA fallback mechanisms.
-  let storedUpdates: Uint8Array | null = options.indexedDBUpdates ?? null;
+  let updateRows: Array<{ key: number; update: Uint8Array; origin: any }> = [];
+  let updateRowKeyCounter = 0;
+  if (options.indexedDBUpdates) {
+    updateRows.push({ key: ++updateRowKeyCounter, update: options.indexedDBUpdates, origin: 'seed' });
+  }
 
   // Shared capture state — persists across lock cycles like real IDB
   let captureEntries = new Map<number, any>();
   let captureKeyCounter = 0;
 
   const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string, captureOpts?: CaptureOpts | null): IYDocPersistence => {
-    // Subscribe to doc updates to track changes
-    const updateHandler = (update: Uint8Array) => {
-      // Merge with stored updates (like y-indexeddb does)
-      if (storedUpdates) {
-        storedUpdates = Y.mergeUpdates([storedUpdates, update]);
-      } else {
-        storedUpdates = update;
-      }
+    // Subscribe to doc updates to track changes as individual rows
+    const updateHandler = (update: Uint8Array, origin: any) => {
+      updateRows.push({ key: ++updateRowKeyCounter, update, origin });
     };
     doc.on('update', updateHandler);
 
     // Track if IDB had content at sync time (before any new updates)
-    const hadContentAtSync = storedUpdates !== null;
+    const hadContentAtSync = updateRows.length > 0;
 
     // Random delay for IndexedDB sync simulation (only when TEST_ASYNC_DELAYS=1)
     const syncDelay = delaysEnabled() ? nextDelay(0, 10) : null;
@@ -260,8 +278,8 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     };
 
     const doSync = () => {
-      if (storedUpdates) {
-        Y.applyUpdate(doc, storedUpdates);
+      for (const row of updateRows) {
+        Y.applyUpdate(doc, row.update);
       }
       initCapture();
     };
@@ -288,10 +306,8 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
           persistence.opCapture.destroy();
           persistence.opCapture = null;
         }
-        const finalUpdate = Y.encodeStateAsUpdate(doc);
-        if (finalUpdate.length > 1) {
-          storedUpdates = finalUpdate;
-        }
+        // No compaction on destroy — matches real y-indexeddb behavior.
+        // Rows persist as-is for the next createPersistence() call.
         doc.off('update', updateHandler);
       },
       whenSynced: syncDelay ?? Promise.resolve(),
@@ -337,6 +353,10 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     diskLoader,
     isProviderSynced: () => providerState.synced,
     replayMode: options.replayMode,
+    yaml: {
+      parse: (raw: string) => jsyaml.load(raw, { schema: jsyaml.JSON_SCHEMA }) as any,
+      stringify: (obj: any) => jsyaml.dump(obj, { schema: jsyaml.JSON_SCHEMA, flowLevel: -1, lineWidth: -1 }),
+    },
   });
 
   // Capture effects for test assertions
@@ -372,11 +392,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
 
   // Function to seed mock IndexedDB - exposed via TestHSM interface
   const seedIndexedDB = (updates: Uint8Array) => {
-    if (storedUpdates) {
-      storedUpdates = Y.mergeUpdates([storedUpdates, updates]);
-    } else {
-      storedUpdates = updates;
-    }
+    updateRows.push({ key: ++updateRowKeyCounter, update: updates, origin: 'seed' });
   };
 
   // Track remoteDoc state vector for delta encoding
@@ -457,6 +473,22 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     setRemoteContent,
     syncRemoteWithUpdate,
     setProviderSynced: (value: boolean) => { providerState.synced = value; },
+    replayFromIDB: () => {
+      if (updateRows.length === 0) return '';
+      const replayDoc = new Y.Doc();
+      for (const row of updateRows) {
+        Y.applyUpdate(replayDoc, row.update);
+      }
+      const text = replayDoc.getText('contents').toString();
+      replayDoc.destroy();
+      return text;
+    },
+    getStoredUpdateCount: () => captureEntries.size,
+    getStoredUpdateKeys: () => [...captureEntries.keys()],
+    getStoredUpdates: () => {
+      if (updateRows.length === 0) return null;
+      return Y.mergeUpdates(updateRows.map(r => r.update));
+    },
   };
 }
 
