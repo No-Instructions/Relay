@@ -9,6 +9,7 @@ import {
   createTestHSM,
   loadToIdle,
   loadAndActivate,
+  sendAcquireLockToTracking,
   cm6Insert,
   releaseLock,
   providerSynced,
@@ -120,5 +121,26 @@ describe('Content edge cases', () => {
     const t = await createTestHSM();
     await loadAndActivate(t, content);
     expect(t.getLocalDocText()).toBe(content);
+  });
+
+  test('client ID is reused across lock cycles', async () => {
+    // Invariant #5: the localDoc client ID must be preserved across lock cycles.
+    // If a different client ID is used, the same content enrolled from IDB appears
+    // as two independent insertions, causing content duplication.
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'hello world');
+
+    const firstClientID = t.hsm.getLocalDoc()!.clientID;
+    expect(firstClientID).toBeDefined();
+
+    // Close the file (release lock → idle)
+    t.send(releaseLock());
+    await t.hsm.awaitIdle();
+
+    // Reopen the file (acquire lock → active.tracking)
+    await sendAcquireLockToTracking(t, 'hello world');
+
+    const secondClientID = t.hsm.getLocalDoc()!.clientID;
+    expect(secondClientID).toBe(firstClientID);
   });
 });
