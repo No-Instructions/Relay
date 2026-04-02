@@ -15,7 +15,7 @@ import {
   diskChanged,
   persistenceLoaded,
   expectState,
-} from '../testing';
+} from 'src/merge-hsm/testing';
 
 describe('E2E Recorded: clean-disk-file-test', () => {
   const guid = '54ee6157-07ff-4387-b538-3df037759c05';
@@ -44,7 +44,7 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     const t = await createTestHSM();
 
     // Use loadAndActivate helper which properly sets up LCA
-    const { loadAndActivate } = await import('../testing');
+    const { loadAndActivate } = await import('src/merge-hsm/testing');
     await loadAndActivate(t, initialContent, { guid, path });
 
     // From E2E recording: initial state was active.tracking
@@ -55,7 +55,7 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     const t = await createTestHSM();
 
     // Setup to active.tracking using loadAndActivate helper
-    const { loadAndActivate } = await import('../testing');
+    const { loadAndActivate } = await import('src/merge-hsm/testing');
     await loadAndActivate(t, initialContent, { guid, path });
     expectState(t, 'active.tracking');
 
@@ -79,7 +79,7 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     const t = await createTestHSM();
 
     // Setup to active.tracking using loadAndActivate helper
-    const { loadAndActivate } = await import('../testing');
+    const { loadAndActivate } = await import('src/merge-hsm/testing');
     await loadAndActivate(t, initialContent, { guid, path });
     expectState(t, 'active.tracking');
 

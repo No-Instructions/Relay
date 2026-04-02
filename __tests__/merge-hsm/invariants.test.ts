@@ -13,10 +13,10 @@ import {
   EDITOR_MATCHES_LOCAL_DOC,
   SYNCED_MEANS_DISK_MATCHES_LCA,
   ACTIVE_HAS_LOCAL_DOC,
-} from '../invariants';
-import type { InvariantViolation, InvariantCheckContext } from '../invariants';
-import { createTestHSM, loadAndActivate } from '../testing';
-import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
+} from 'src/merge-hsm/invariants';
+import type { InvariantViolation, InvariantCheckContext } from 'src/merge-hsm/invariants';
+import { createTestHSM, loadAndActivate } from 'src/merge-hsm/testing';
+import { MockTimeProvider } from '../mocks/MockTimeProvider';
 
 describe('Invariant Checking', () => {
   let timeProvider: MockTimeProvider;

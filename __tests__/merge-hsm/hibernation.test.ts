@@ -11,10 +11,10 @@
  */
 
 import * as Y from 'yjs';
-import { MergeManager, WakePriority } from '../MergeManager';
-import { MergeHSM } from '../MergeHSM';
-import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
-import { PostOffice } from '../../../src/observable/Postie';
+import { MergeManager, WakePriority } from 'src/merge-hsm/MergeManager';
+import { MergeHSM } from 'src/merge-hsm/MergeHSM';
+import { MockTimeProvider } from '../mocks/MockTimeProvider';
+import { PostOffice } from 'src/observable/Postie';
 
 // Simulates a Document that owns an HSM
 interface MockDocument {

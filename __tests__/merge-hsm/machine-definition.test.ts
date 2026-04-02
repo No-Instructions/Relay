@@ -12,10 +12,10 @@ import {
 	MACHINE,
 	deriveTransitions,
 	validateMachine,
-} from "../machine-definition";
-import { normalizeToCandidates } from "../machine-interpreter";
-import type { StatePath, MachineDefinition, EventHandler } from "../types";
-import { createTestHSM } from "../testing";
+} from "src/merge-hsm/machine-definition";
+import { normalizeToCandidates } from "src/merge-hsm/machine-interpreter";
+import type { StatePath, MachineDefinition, EventHandler } from "src/merge-hsm/types";
+import { createTestHSM } from "src/merge-hsm/testing";
 
 // All valid state paths (must match the StatePath union in types.ts)
 const ALL_STATE_PATHS: StatePath[] = [

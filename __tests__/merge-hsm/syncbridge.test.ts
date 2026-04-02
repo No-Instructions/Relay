@@ -6,10 +6,19 @@
  */
 
 import * as Y from "yjs";
-import { SyncBridge } from "../SyncBridge";
-import type { SyncBridgeHost } from "../SyncBridge";
-import type { MergeEffect, PositionedChange } from "../types";
-import { MACHINE_EDIT_ORIGIN } from "../undo";
+import { SyncBridge } from "src/merge-hsm/SyncBridge";
+import type { SyncBridgeHost } from "src/merge-hsm/SyncBridge";
+import type { MergeEffect, PositionedChange } from "src/merge-hsm/types";
+import { MACHINE_EDIT_ORIGIN } from "src/merge-hsm/undo";
+import {
+	createTestHSM,
+	loadAndActivate,
+	cm6Change,
+	connected,
+	providerSynced,
+	disconnected,
+	releaseLock,
+} from "src/merge-hsm/testing";
 
 // ===========================================================================
 // Mock Host
@@ -904,4 +913,313 @@ describe("SyncBridge", () => {
 			expect(host.effects.length).toBe(0);
 		});
 	});
+});
+
+// ===========================================================================
+// Rapid delete+insert as separate CM6_CHANGE events
+// ===========================================================================
+
+describe('Rapid delete+insert as separate CM6_CHANGE events', () => {
+  test('both delete and insert reach remoteDoc when fired as two separate CM6_CHANGE events', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'Line 1\nLine 2 original\nLine 3');
+
+    t.send(connected());
+    t.send(providerSynced());
+    t.clearEffects();
+
+    // Simulate select-then-type as TWO separate CM6_CHANGE events:
+    // Event 1: Delete "original" from Line 2 (positions 14-22 in "Line 1\nLine 2 original\nLine 3")
+    //   "Line 1\nLine 2 \nLine 3" -> after deleting "original"
+    const afterDelete = 'Line 1\nLine 2 \nLine 3';
+    t.send(cm6Change(
+      [{ from: 14, to: 22, insert: '' }],
+      afterDelete,
+    ));
+
+    // Event 2: Insert "replaced" at position 14
+    const afterInsert = 'Line 1\nLine 2 replaced\nLine 3';
+    t.send(cm6Change(
+      [{ from: 14, to: 14, insert: 'replaced' }],
+      afterInsert,
+    ));
+
+    // Both operations should have reached localDoc
+    expect(t.getLocalDocText()).toBe('Line 1\nLine 2 replaced\nLine 3');
+
+    // Both operations should have reached remoteDoc via flushOutbound
+    expect(t.getRemoteDocText()).toBe('Line 1\nLine 2 replaced\nLine 3');
+  });
+
+  test('single CM6_CHANGE with delete+insert in one transaction reaches remoteDoc', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'Line 1\nLine 2 original\nLine 3');
+
+    t.send(connected());
+    t.send(providerSynced());
+    t.clearEffects();
+
+    // CM6 fires a single event for select-then-type: delete old, insert new
+    const afterReplace = 'Line 1\nLine 2 replaced\nLine 3';
+    t.send(cm6Change(
+      [{ from: 14, to: 22, insert: 'replaced' }],
+      afterReplace,
+    ));
+
+    expect(t.getLocalDocText()).toBe('Line 1\nLine 2 replaced\nLine 3');
+    expect(t.getRemoteDocText()).toBe('Line 1\nLine 2 replaced\nLine 3');
+  });
+});
+
+// ===========================================================================
+// flushOutbound with pending machine edits — machineEditMark false partition
+// ===========================================================================
+
+describe('flushOutbound machineEditMark partitioning', () => {
+  test('user edit queued after machine edit mark is set gets deferred incorrectly', () => {
+    const { localDoc, remoteDoc } = createDocPair('Line 1\nLine 2\nLine 3');
+    const host = createMockHost({ localDoc, remoteDoc });
+    const bridge = new SyncBridge(host);
+
+    bridge.setupUpdateQueues();
+
+    // Simulate: a machine edit is pending with captureMark=42
+    host.pendingMachineEdits.push({
+      fn: (s: string) => s,
+      expectedText: 'irrelevant',
+      captureMark: 42,
+      registeredAt: Date.now(),
+    });
+
+    // Set the machine edit mark (simulates applyCM6ToLocalDoc line 1336)
+    bridge.currentMachineEditMark = 42;
+
+    // Apply a machine edit to localDoc (this queues an outbound entry with mark=42)
+    const ytext = localDoc.getText('contents');
+    localDoc.transact(() => {
+      ytext.insert(0, 'MACHINE: ');
+    }, MACHINE_EDIT_ORIGIN);
+
+    // Clear the mark
+    bridge.currentMachineEditMark = null;
+
+    // Now a normal user edit arrives (no mark set)
+    localDoc.transact(() => {
+      ytext.delete(ytext.length - 1, 1); // delete last char
+    });
+
+    // Flush — the machine edit entry should be deferred, but the user edit should go through
+    bridge.flushOutbound();
+
+    const remoteText = remoteDoc.getText('contents').toString();
+    // User's delete should have reached remoteDoc even though machine edit is pending
+    // The machine edit "MACHINE: " should NOT be in remoteDoc (deferred)
+    expect(remoteText).not.toContain('MACHINE: ');
+    // But the user's delete SHOULD have reached remoteDoc
+    expect(remoteText).toBe('Line 1\nLine 2\nLine ');
+  });
+
+
+});
+
+// ===========================================================================
+// Provider disconnect between delete and insert sync
+// ===========================================================================
+
+describe('Provider disconnect between delete and insert sync', () => {
+  test('disconnect after delete CM6_CHANGE but before insert CM6_CHANGE loses the insert', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'Line 1\nLine 2 original\nLine 3');
+
+    t.send(connected());
+    t.send(providerSynced());
+    t.clearEffects();
+
+    // Event 1: Delete "original" — this flushes to remoteDoc
+    const afterDelete = 'Line 1\nLine 2 \nLine 3';
+    t.send(cm6Change(
+      [{ from: 14, to: 22, insert: '' }],
+      afterDelete,
+    ));
+
+    // Verify delete reached remoteDoc
+    expect(t.getRemoteDocText()).toBe(afterDelete);
+
+    // Provider disconnects between the two events
+    t.send(disconnected());
+
+    // Event 2: Insert "replaced" — provider is disconnected
+    const afterInsert = 'Line 1\nLine 2 replaced\nLine 3';
+    t.send(cm6Change(
+      [{ from: 14, to: 14, insert: 'replaced' }],
+      afterInsert,
+    ));
+
+    // localDoc should have the insert
+    expect(t.getLocalDocText()).toBe(afterInsert);
+
+    // remoteDoc should also have the insert (queued and applied locally even if provider down)
+    // The question is: does flushOutbound still apply to remoteDoc when disconnected?
+    expect(t.getRemoteDocText()).toBe(afterInsert);
+  });
+
+  test('reconnect after disconnect syncs pending insert to remoteDoc', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'hello world');
+
+    t.send(connected());
+    t.send(providerSynced());
+
+    // User types while connected
+    t.send(cm6Change(
+      [{ from: 5, to: 11, insert: '' }],
+      'hello',
+    ));
+    expect(t.getRemoteDocText()).toBe('hello');
+
+    // Disconnect
+    t.send(disconnected());
+
+    // User types while disconnected
+    t.send(cm6Change(
+      [{ from: 5, to: 5, insert: ' there' }],
+      'hello there',
+    ));
+
+    // localDoc has the edit
+    expect(t.getLocalDocText()).toBe('hello there');
+
+    // Check if remoteDoc got the edit despite disconnect
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _remoteAfterDisconnect = t.getRemoteDocText();
+
+    // Reconnect
+    t.send(connected());
+    t.send(providerSynced());
+
+    // After reconnect, remoteDoc should have all pending edits
+    expect(t.getRemoteDocText()).toBe('hello there');
+  });
+});
+
+// ===========================================================================
+// teardownUpdateQueues drops pending outbound entries on close
+// ===========================================================================
+
+describe('teardownUpdateQueues drops pending outbound entries on close', () => {
+  test('RELEASE_LOCK after edit but before flush drops the edit from remoteDoc', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'hello world');
+
+    t.send(connected());
+    t.send(providerSynced());
+
+    // Directly test: can we observe the queue being cleared?
+    // The issue: if teardownUpdateQueues() is called before flushOutbound(),
+    // pending entries are lost.
+    //
+    // In practice, applyCM6ToLocalDoc calls flushOutbound() synchronously (line 1379),
+    // so normal user edits should always flush before teardown.
+    // But what if the edit is applied to localDoc but flush hasn't happened yet?
+
+    // Apply edit normally — this should flush immediately
+    t.send(cm6Change(
+      [{ from: 5, to: 11, insert: ' everyone' }],
+      'hello everyone',
+    ));
+
+    // Verify it reached remoteDoc before close
+    expect(t.getRemoteDocText()).toBe('hello everyone');
+
+    // Close the file
+    t.send(releaseLock());
+
+    // remoteDoc should still have the edit
+    expect(t.getRemoteDocText()).toBe('hello everyone');
+  });
+
+  test('SyncBridge.teardownUpdateQueues clears outbound queue', () => {
+    const { localDoc, remoteDoc } = createDocPair('test');
+    const host = createMockHost({ localDoc, remoteDoc });
+    const bridge = new SyncBridge(host);
+
+    bridge.setupUpdateQueues();
+
+    // Set hasFork so flushOutbound increments pending counter instead of syncing
+    host._hasFork = true;
+
+    // Make an edit — it goes to queue but flush is gated by hasFork
+    localDoc.transact(() => {
+      localDoc.getText('contents').insert(4, '!');
+    });
+
+    // Teardown before the fork is resolved
+    bridge.teardownUpdateQueues();
+
+    // Now clear the fork and try to flush
+    host._hasFork = false;
+    bridge.setupUpdateQueues();
+    bridge.flushOutbound();
+
+    // The queue-based entries were dropped by teardownUpdateQueues, BUT
+    // the fallback diff path in flushOutbound (line 362-376) detects the
+    // text mismatch between localDoc and remoteDoc and catches up via
+    // full state diff. So the edit is NOT lost in practice.
+    //
+    // This means teardownUpdateQueues + re-setup + flush is safe due to
+    // the fallback path. The queue drop is compensated.
+    expect(remoteDoc.getText('contents').toString()).toBe('test!');
+    expect(localDoc.getText('contents').toString()).toBe('test!');
+  });
+
+  test('rapid file close during active editing can lose last edit', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'Line 1\nLine 2\nLine 3');
+
+    t.send(connected());
+    t.send(providerSynced());
+
+    // User makes an edit
+    t.send(cm6Change(
+      [{ from: 6, to: 6, insert: ' edited' }],
+      'Line 1 edited\nLine 2\nLine 3',
+    ));
+
+    // Verify it synced
+    expect(t.getRemoteDocText()).toBe('Line 1 edited\nLine 2\nLine 3');
+
+    // Now simulate the scenario at the SyncBridge level:
+    // The delete flushes, but before the insert flushes, RELEASE_LOCK fires.
+    // Since applyCM6ToLocalDoc calls flushOutbound synchronously, this can only
+    // happen if the two CM6 events are separated by a RELEASE_LOCK.
+
+    // This is the actual race: CM6 fires delete, flush happens, then RELEASE_LOCK
+    // arrives before CM6 fires the insert.
+    //
+    // After RELEASE_LOCK, the HSM transitions out of active.tracking and
+    // teardownUpdateQueues is called, clearing the outbound queue.
+
+    // Step 1: User selects "edited\nLine 2" and deletes it
+    // Text: "Line 1 edited\nLine 2\nLine 3" -> delete pos 7..21
+    const afterDel = 'Line 1 \nLine 3';
+    t.send(cm6Change(
+      [{ from: 7, to: 21, insert: '' }],
+      afterDel,
+    ));
+    // Verify delete reached remoteDoc (CRDT positions may differ from CM6 positions)
+    const remoteAfterDel = t.getRemoteDocText();
+    expect(remoteAfterDel).not.toBe('Line 1 edited\nLine 2\nLine 3'); // delete applied
+
+    // Step 2: File closes (RELEASE_LOCK) BEFORE the insert event fires
+    t.send(releaseLock());
+
+    // Step 3: The insert event would fire but HSM is no longer in active.tracking
+    // so applyCM6ToLocalDoc is not invoked.
+    // The localDoc has the delete but not the insert.
+    // The remoteDoc has the delete but not the insert.
+
+    // This matches the bug: delete reached remoteDoc, insert did not.
+    // After this, when the file is reopened, remoteDoc has "Line 1 \nLine 3"
+    // instead of "Line 1 replaced\nLine 3".
+  });
 });

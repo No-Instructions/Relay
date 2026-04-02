@@ -14,7 +14,7 @@ import {
   connected,
   expectState,
   expectLocalDocText,
-} from '../testing';
+} from 'src/merge-hsm/testing';
 
 describe('Provider sync guard: invokeIdleThreeWayAutoMerge', () => {
   test('defers merge when fork exists and provider has not synced', async () => {

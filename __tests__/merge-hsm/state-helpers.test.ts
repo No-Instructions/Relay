@@ -9,7 +9,7 @@ import {
   loadToIdle,
   loadToLoading,
   createYjsUpdate,
-} from '../testing';
+} from 'src/merge-hsm/testing';
 
 describe('State Transition Helpers', () => {
   describe('loadAndActivate', () => {

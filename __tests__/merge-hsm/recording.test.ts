@@ -14,10 +14,10 @@ import {
   uint8ArrayToBase64,
   base64ToUint8Array,
   E2ERecordingBridge,
-} from '../recording';
-import type { HSMLogEntry } from '../recording';
-import { createTestHSM, cm6Insert, loadAndActivate } from '../testing';
-import type { MergeEvent, MergeEffect, RemoteUpdateEvent } from '../types';
+} from 'src/merge-hsm/recording';
+import type { HSMLogEntry } from 'src/merge-hsm/recording';
+import { createTestHSM, cm6Insert, loadAndActivate } from 'src/merge-hsm/testing';
+import type { MergeEvent, MergeEffect, RemoteUpdateEvent } from 'src/merge-hsm/types';
 
 describe('HSM Recording', () => {
   describe('Base64 Encoding', () => {

@@ -11,7 +11,7 @@ import {
   loadToConflict,
   openDiffView,
   expectState,
-} from '../testing';
+} from 'src/merge-hsm/testing';
 
 // =============================================================================
 // Multi-hunk conflict position recalculation

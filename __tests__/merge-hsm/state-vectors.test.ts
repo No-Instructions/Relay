@@ -1,5 +1,12 @@
 import * as Y from "yjs";
 import {
+	createTestHSM,
+	loadToIdle,
+	load,
+	persistenceLoaded,
+	createYjsUpdate,
+} from 'src/merge-hsm/testing';
+import {
 	svEqual,
 	svIsAhead,
 	svIsStale,
@@ -8,7 +15,7 @@ import {
 	stateVectorsEqual,
 	stateVectorIsAhead,
 	decodeSV,
-} from "../state-vectors";
+} from "src/merge-hsm/state-vectors";
 
 /**
  * Simulate two peers collaborating on a shared Y.Doc.
@@ -355,5 +362,39 @@ describe("state-vectors", () => {
 			)).toBe(false);
 			destroy();
 		});
+	});
+});
+
+// =============================================================================
+// State vector edge cases
+// =============================================================================
+
+describe('State vector edge cases', () => {
+	test('PERSISTENCE_LOADED with empty updates', async () => {
+		const t = await createTestHSM();
+		t.send(load('test-guid'));
+		t.send(persistenceLoaded(new Uint8Array(), null));
+
+		expect(t.statePath).toBe('loading');
+	});
+
+	test('remoteDoc and localDoc with completely independent histories', async () => {
+		// This simulates a worst-case scenario where two clients started
+		// from scratch and created content independently
+		const t = await createTestHSM();
+		await loadToIdle(t, { content: 'local content', mtime: 1000 });
+
+		// Apply a completely independent change to remoteDoc
+		// (new content from a different client that shares no CRDT history)
+		const independentDoc = new Y.Doc();
+		independentDoc.getText('contents').insert(0, 'independent remote');
+		const independentUpdate = Y.encodeStateAsUpdate(independentDoc);
+		independentDoc.destroy();
+
+		t.send({ type: 'REMOTE_UPDATE', update: independentUpdate });
+		await t.hsm.awaitIdleAutoMerge();
+
+		// Should not crash — content may be duplicated but HSM should be in valid state
+		expect(t.matches('idle')).toBe(true);
 	});
 });
