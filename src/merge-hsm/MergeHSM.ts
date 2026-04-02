@@ -2514,7 +2514,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// dispatch the Y.Map-derived frontmatter instead of raw Y.Text delta.
 			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
 			const ymap = this.localDoc!.getMap("frontmatter");
-			const ymapChangedInTx = tr.changed.has(ymap);
+			const ymapChangedInTx = tr.changed.has(ymap as any);
 			if (ymapChangedInTx && this._yaml) {
 				// Flag for deferred repairFrontmatterFromMap action
 				this._remoteFrontmatterMapUpdated = true;
@@ -2546,7 +2546,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					`delta dispatch: ${changes.length} changes, ` +
 					`delta=${JSON.stringify(event.delta)}, ` +
 					`origin=${String(tr.origin)}, ` +
-					`ymapInTx=${tr.changed.has(this.localDoc!.getMap("frontmatter"))}`
+					`ymapInTx=${tr.changed.has(this.localDoc!.getMap("frontmatter") as any)}`
 				);
 				this.emitEffect({ type: "DISPATCH_CM6", changes });
 				// Keep lastKnownEditorText in sync so Y.Map dispatch

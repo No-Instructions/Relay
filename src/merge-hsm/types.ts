@@ -313,10 +313,20 @@ export interface MergeSuccessEvent {
 
 export interface MergeConflictEvent {
 	type: "MERGE_CONFLICT";
+	origin?: string;
 	base: string;
 	ours: string;
 	theirs: string;
+	oursLabel?: string;
+	theirsLabel?: string;
 	conflictRegions?: ConflictRegion[];
+}
+
+export interface DriftCheckEvent {
+	type: "DRIFT_CHECK";
+	editorLen: number;
+	yjsLen: number;
+	delta: number;
 }
 
 // Per-hunk conflict resolution event
@@ -459,7 +469,8 @@ export type MergeEvent =
 	| ObsidianFileUnloadedEvent
 	| ObsidianViewReusedEvent
 	| ObsidianSaveFrontmatterEvent
-	| ObsidianMetadataSyncEvent;
+	| ObsidianMetadataSyncEvent
+	| DriftCheckEvent;
 
 // =============================================================================
 // Effect Types
