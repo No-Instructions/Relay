@@ -59,7 +59,7 @@ import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
-import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture, CapturedOp } from "./undo";
+import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
@@ -172,6 +172,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	// Pending updates for idle mode auto-merge (received via REMOTE_UPDATE)
 	private pendingIdleUpdates: Uint8Array | null = null;
+
+	// Consecutive idle retry count — used for backoff when drain rate < queue rate
+	private idleRetryCount = 0;
 
 	// Initial updates from PERSISTENCE_LOADED (applied when YDocs are created)
 	private initialPersistenceUpdates: Uint8Array | null = null;
@@ -1124,15 +1127,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this.emitEffect({ type: "SYNC_TO_REMOTE", update });
 				}
 			},
+			resetIdleRetryCount: () => {
+				this.idleRetryCount = 0;
+			},
 			requestHibernate: () => {
 				this.emitEffect({ type: "REQUEST_HIBERNATE", guid: this._guid });
 			},
 			scheduleIdleRetry: () => {
+				this.idleRetryCount++;
+				// Backoff: immediate for first 3 retries, then exponential up to 5s.
+				// This prevents hot-looping when updates arrive faster than we can drain.
+				const delay = this.idleRetryCount <= 3 ? 0 : Math.min(2 ** (this.idleRetryCount - 3) * 250, 5000);
 				setTimeout(() => {
 					if (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null) {
 						this.send({ type: 'IDLE_RETRY' });
 					}
-				}, 0);
+				}, delay);
 			},
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = (event as any).data;
@@ -1424,9 +1434,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					const ytextStr = ytext.toString();
 					const prevEditor = this.lastKnownEditorText;
 					if (prevEditor !== null && ytextStr !== prevEditor) {
-						const ytextFM = ytextStr.split("\n---\n")[0];
-						const prevFM = prevEditor.split("\n---\n")[0];
-						const docTextFM = (e.docText as string).split("\n---\n")[0];
+					// Frontmatter drift detected — no action needed currently
 					}
 				}
 				this.lastKnownEditorText = e.docText;
@@ -3397,7 +3405,7 @@ const defaultCreatePersistence: CreatePersistence = (
 	_userId?: string,
 	_captureOpts?: CaptureOpts | null,
 ): IYDocPersistence => {
-	let hasContent = false;
+	const hasContent = false;
 	return {
 		synced: false,
 		once(_event: "synced", cb: () => void) {

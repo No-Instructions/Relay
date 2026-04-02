@@ -104,6 +104,7 @@ describe('State Transition Helpers', () => {
     });
 
     test('update can be applied to Y.Doc', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const Y = require('yjs');
       const update = createYjsUpdate('hello world');
 

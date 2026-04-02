@@ -11,7 +11,6 @@
  *    (tested structurally since the plugin depends on Obsidian internals)
  */
 
-import * as Y from "yjs";
 import {
 	createTestHSM,
 	loadAndActivate,
@@ -196,7 +195,9 @@ describe("HSMEditorPlugin GUID-change detection", () => {
 	test("GUID check precedes docChanged guard in update()", () => {
 		// Read the source to verify ordering
 		// This is a structural/smoke test — the real coverage comes from E2E tests
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const fs = require("fs");
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const path = require("path");
 		const source = fs.readFileSync(
 			path.resolve(__dirname, "../integration/HSMEditorPlugin.ts"),
@@ -214,7 +215,9 @@ describe("HSMEditorPlugin GUID-change detection", () => {
 	});
 
 	test("initializeIfReady() is called after GUID mismatch teardown", () => {
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const fs = require("fs");
+		// eslint-disable-next-line @typescript-eslint/no-var-requires
 		const path = require("path");
 		const source = fs.readFileSync(
 			path.resolve(__dirname, "../integration/HSMEditorPlugin.ts"),

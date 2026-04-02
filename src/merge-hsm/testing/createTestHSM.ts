@@ -225,14 +225,14 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   // be inserted into the CRDT exactly ONCE during initial enrollment. This stateful
   // mock ensures that reopening a file loads persisted content rather than relying
   // on any LCA fallback mechanisms.
-  let updateRows: Array<{ key: number; update: Uint8Array; origin: any }> = [];
+  const updateRows: Array<{ key: number; update: Uint8Array; origin: any }> = [];
   let updateRowKeyCounter = 0;
   if (options.indexedDBUpdates) {
     updateRows.push({ key: ++updateRowKeyCounter, update: options.indexedDBUpdates, origin: 'seed' });
   }
 
   // Shared capture state — persists across lock cycles like real IDB
-  let captureEntries = new Map<number, any>();
+  const captureEntries = new Map<number, any>();
   let captureKeyCounter = 0;
 
   const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string, captureOpts?: CaptureOpts | null): IYDocPersistence => {

@@ -29,7 +29,6 @@ import {
   expectRemoteDocText,
 } from '../testing';
 
-import * as Y from 'yjs';
 
 describe('Fork Model', () => {
   test('disk edit in idle always creates fork, transitions to idle.localAhead', async () => {

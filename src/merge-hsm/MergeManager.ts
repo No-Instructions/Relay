@@ -26,7 +26,6 @@ import type {
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
-import { awaitOnReload } from '../reloadUtils';
 import { validateUpdate } from '../storage/yjs-validation';
 import { classifyUpdate as classifyUpdateSV } from './state-vectors';
 import { metrics } from '../debug';

@@ -7,7 +7,7 @@
 
 import * as Y from "yjs";
 import { SyncBridge } from "../SyncBridge";
-import type { SyncBridgeHost, OutboundEntry } from "../SyncBridge";
+import type { SyncBridgeHost } from "../SyncBridge";
 import type { MergeEffect, PositionedChange } from "../types";
 import { MACHINE_EDIT_ORIGIN } from "../undo";
 

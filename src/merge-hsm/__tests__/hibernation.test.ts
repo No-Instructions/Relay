@@ -11,7 +11,7 @@
  */
 
 import * as Y from 'yjs';
-import { MergeManager, WakePriority, type HibernationState } from '../MergeManager';
+import { MergeManager, WakePriority } from '../MergeManager';
 import { MergeHSM } from '../MergeHSM';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
 import { PostOffice } from '../../../src/observable/Postie';

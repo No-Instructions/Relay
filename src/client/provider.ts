@@ -385,15 +385,15 @@ export class YSweetProvider extends Observable<string> {
 	wsLastMessageReceived: number;
 	shouldConnect: boolean;
 	_resyncInterval: ReturnType<typeof setInterval> | number; // TODO: is setting this to 0 used as null?
-	_bcSubscriber: Function;
+	_bcSubscriber: (...args: any[]) => any;
 	_updateHandler: (
 		arg0: Uint8Array,
 		arg1: any,
 		arg2: Y.Doc,
 		arg3: Y.Transaction,
 	) => void;
-	_awarenessUpdateHandler: Function;
-	_unloadHandler: Function;
+	_awarenessUpdateHandler: (...args: any[]) => any;
+	_unloadHandler: (...args: any[]) => any;
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	maxConnectionErrors: number;
 	eventSubscriptions: Set<string>;

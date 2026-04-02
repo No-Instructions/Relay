@@ -23,19 +23,10 @@ import {
 	disconnected,
 	providerSynced,
 	cm6Insert,
-	cm6Change,
-	remoteUpdate,
 	openDiffView,
-	resolve,
-	dismissConflict,
 	expectState,
-	expectEffect,
-	expectNoEffect,
 	expectLocalDocText,
-	expectRemoteDocText,
 } from '../testing';
-
-import * as Y from 'yjs';
 
 // =============================================================================
 // 1. Three-way merge with various provider sync states
@@ -58,7 +49,7 @@ describe('Three-way merge with provider sync states', () => {
 
 		// Wait for all merge attempts
 		await t.hsm.awaitIdleAutoMerge();
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Non-conflicting edits should auto-merge
@@ -79,7 +70,7 @@ describe('Three-way merge with provider sync states', () => {
 		// Provider syncs — fork reconciliation uses diff3(fork.base, localDoc, remoteDoc)
 		t.send(connected());
 		t.send(providerSynced());
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Fork reconciliation detects conflict via diff3
@@ -280,7 +271,7 @@ describe('Idle path conflict detection', () => {
 		// Now provider syncs — fork reconciliation should proceed
 		t.send(connected());
 		t.send(providerSynced());
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Remote hasn't changed, so fork should reconcile to synced
@@ -301,7 +292,7 @@ describe('Idle path conflict detection', () => {
 		// Provider syncs — fork-reconcile runs diff3(fork.base, localDoc, remoteDoc)
 		t.send(connected());
 		t.send(providerSynced());
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Fork reconciliation detects conflict
@@ -322,7 +313,7 @@ describe('Idle path conflict detection', () => {
 		t.send(await diskChanged('line 1\nline 2\ndisk line 3', 2000));
 
 		await t.hsm.awaitIdleAutoMerge();
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Non-conflicting edits should auto-merge
@@ -353,7 +344,7 @@ describe('Multi-path consistency', () => {
 		// Provider syncs — fork-reconcile detects conflict
 		t.send(connected());
 		t.send(providerSynced());
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		expectState(t, 'idle.diverged');
@@ -402,7 +393,7 @@ describe('Multi-path consistency', () => {
 		// Provider syncs
 		t.send(connected());
 		t.send(providerSynced());
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Open and go to conflict
@@ -572,7 +563,7 @@ describe('Provider sync timing', () => {
 		t.send(providerSynced());
 
 		await t.hsm.awaitIdleAutoMerge();
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 
 		// Should reach a stable idle state
 		expect(t.matches('idle')).toBe(true);
@@ -593,7 +584,7 @@ describe('Provider sync timing', () => {
 		// Provider syncs — should trigger reconciliation with accumulated remote
 		t.send(connected());
 		t.send(providerSynced());
-		try { await t.hsm.awaitForkReconcile(); } catch {}
+		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Should reach stable state

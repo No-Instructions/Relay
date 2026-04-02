@@ -323,7 +323,6 @@ export async function loadAndActivate(
   opts?: LoadAndActivateOptions
 ): Promise<void> {
   const guid = opts?.guid ?? 'test-guid';
-  const path = opts?.path ?? 'test.md';
   const mtime = opts?.mtime ?? Date.now();
 
   // Create LCA and updates for the content
@@ -408,7 +407,6 @@ export async function loadToIdle(
   opts?: LoadToIdleOptions
 ): Promise<void> {
   const guid = opts?.guid ?? 'test-guid';
-  const path = opts?.path ?? 'test.md';
   const content = opts?.content ?? '';
   const mtime = opts?.mtime ?? Date.now();
 
@@ -495,7 +493,6 @@ export async function loadToLoading(
   opts?: LoadToLoadingOptions
 ): Promise<void> {
   const guid = opts?.guid ?? 'test-guid';
-  const path = opts?.path ?? 'test.md';
   const updates = opts?.updates ?? new Uint8Array();
   const lca = opts?.lca ?? null;
 
@@ -552,7 +549,6 @@ export async function loadToConflict(
   opts: LoadToConflictOptions
 ): Promise<void> {
   const guid = opts.guid ?? 'test-guid';
-  const path = opts.path ?? 'test.md';
 
   // INVARIANT: Per docs/how-we-bootstrap-collaboration.md, content is inserted
   // into the CRDT exactly ONCE during initial enrollment. We NEVER do:

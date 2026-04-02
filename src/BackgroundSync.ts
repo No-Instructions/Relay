@@ -16,7 +16,6 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
-import { flags } from "./flagManager";
 
 export interface QueueItem {
 	guid: string;

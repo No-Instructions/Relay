@@ -14,7 +14,6 @@ import {
   connected,
   expectState,
   expectLocalDocText,
-  expectRemoteDocText,
 } from '../testing';
 
 describe('Provider sync guard: invokeIdleThreeWayAutoMerge', () => {

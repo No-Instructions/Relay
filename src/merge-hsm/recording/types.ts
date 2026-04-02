@@ -16,7 +16,6 @@ import type {
   StatePath,
   SyncStatus,
   SerializableSnapshot,
-  LCAState,
   MergeMetadata,
 } from '../types';
 

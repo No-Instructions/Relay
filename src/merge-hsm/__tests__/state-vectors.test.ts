@@ -240,7 +240,8 @@ describe("state-vectors", () => {
 			alice.getText("t").insert(10, "d");
 			// Compute delta of only batch 3's ops (what alice has beyond batch 2's end)
 			// We need alice's SV after batch 2 to get only batch 3
-			const svAfterBatch2 = Y.encodeStateVector(alice);
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
+			const _svAfterBatch2 = Y.encodeStateVector(alice);
 			// Actually we need to snapshot SV between batch 2 and 3. Let me redo:
 			destroy();
 

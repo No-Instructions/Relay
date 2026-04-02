@@ -11,7 +11,6 @@ import {
   loadToConflict,
   openDiffView,
   expectState,
-  expectLocalDocText,
 } from '../testing';
 
 // =============================================================================
@@ -40,7 +39,8 @@ describe('recalculateConflictPositions', () => {
     expect(cd!.positionedConflicts.length).toBeGreaterThanOrEqual(2);
 
     // Record hunk 1's original position
-    const hunk1Before = { ...cd!.positionedConflicts[1] };
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const _hunk1Before = { ...cd!.positionedConflicts[1] };
 
     // Resolve hunk 0 with "local" (keep ours)
     t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'local' } as any);

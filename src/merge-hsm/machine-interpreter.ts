@@ -9,7 +9,6 @@
  */
 
 import type {
-	StatePath,
 	MergeEvent,
 	MachineDefinition,
 	StateNode,
@@ -78,7 +77,6 @@ function handleInvokeEvent(
 	if (!stateNode.invoke) return false;
 
 	const isDone = event.type.startsWith("done.invoke.");
-	const isError = event.type.startsWith("error.invoke.");
 
 	const invokeId = isDone
 		? event.type.slice("done.invoke.".length)
