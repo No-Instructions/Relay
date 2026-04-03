@@ -106,6 +106,14 @@ export class CanvasPlugin extends HasLogging {
 			return;
 		}
 
+		// Only markdown embeds have CM6 editors that need ViewHookPlugin + HSM.
+		// Canvas embeds render as canvas views, and media (images, SVG, PDF)
+		// are SyncFiles — neither uses a text editor.
+		const path: string = embedView.file.path;
+		if (!path.endsWith(".md")) {
+			return;
+		}
+
 		this.trackedEmbedViews.add(embedView);
 		this.unsubscribes.push(
 			(() => {

@@ -992,7 +992,9 @@ export class LiveViewManager {
 				const child = (node as any).child ?? nodeData?.child;
 				if (!child?.file) continue;
 
-				const filePath = child.file.path;
+				const filePath: string = child.file.path;
+				if (!filePath.endsWith(".md")) continue;
+
 				const folder = this.sharedFolders.lookup(filePath);
 				if (!folder?.mergeManager || !folder.ready) continue;
 
