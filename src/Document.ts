@@ -18,10 +18,6 @@ import type { EditorViewRef } from "./merge-hsm/types";
 import { ProviderIntegration, type YjsProvider } from "./merge-hsm/integration/ProviderIntegration";
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
-import {
-	openDatabase as openMergeHSMDatabase,
-	deleteState as deleteMergeState,
-} from "./merge-hsm/persistence";
 import { awaitOnReload } from "./reloadUtils";
 
 export function isDocument(file?: IFile): file is Document {
@@ -47,6 +43,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		mtime: number;
 		size: number;
 	};
+	destroyed = false;
 	unsubscribes: Unsubscriber[] = [];
 	pendingOps: ((data: string) => string)[] = [];
 
@@ -638,6 +635,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	destroy() {
+		this.destroyed = true;
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
@@ -663,123 +661,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	public async cleanup(): Promise<void> {
 		this.sharedFolder?.mergeManager?.notifyHSMDestroyed(this.guid);
-	}
-
-	/**
-	 * Handle a GUID remap: the server uses a different GUID for this file path.
-	 * The local CRDT (under the old GUID) has independent document history that
-	 * cannot be merged with the server's CRDT, so we discard it entirely.
-	 *
-	 * After reset, the HSM is re-initialized under the new GUID with no CRDT
-	 * history and no LCA. When the provider syncs, fork reconciliation compares
-	 * disk content against the server's CRDT content (two-way merge).
-	 */
-	async handleGuidRemap(newGuid: string): Promise<void> {
-		const mergeManager = this.sharedFolder?.mergeManager;
-		const oldGuid = this.guid;
-
-		// Destroy the remote doc (it's connected to the old GUID's provider)
-		if (this.isRemoteDocLoaded) {
-			this.destroyRemoteDoc();
-		}
-
-		// Clean up MergeManager caches for the old GUID
-		if (mergeManager) {
-			mergeManager.notifyHSMDestroyed(oldGuid);
-		}
-
-		// Update the Document's identity to the new GUID
-		this.guid = newGuid;
-
-		// Update S3RN for the new GUID
-		if (this.sharedFolder.relayId) {
-			this.s3rn = new S3RemoteDocument(
-				this.sharedFolder.relayId,
-				this.sharedFolder.guid,
-				newGuid,
-			);
-		} else {
-			this.s3rn = new S3Document(this.sharedFolder.guid, newGuid);
-		}
-
-		// Refresh clientToken for the new S3RN so that provider connections
-		// (e.g. connectForForkReconcile) use the correct GUID's token.
-		const newToken = this.tokenStore.getTokenSync(S3RN.encode(this.s3rn));
-		if (newToken) {
-			this.clientToken = newToken;
-		}
-
-		// Reset the HSM under the new GUID if it exists
-		if (this._hsm) {
-			const newVaultId = mergeManager
-				? mergeManager.getVaultId(newGuid)
-				: `relay-doc-${newGuid}`;
-
-			// Read disk content before reset so the HSM knows about existing
-			// file content. After remap, the old CRDT is discarded — disk
-			// content must be reconciled with the server's CRDT via three-way
-			// merge (empty base, disk local, remote server).
-			let diskState: { content: string; hash: string; mtime: number } | undefined;
-			try {
-				diskState = await this.readDiskContent();
-			} catch {
-				// File may not exist on disk (e.g., remote-only creation)
-			}
-
-			await this._hsm.resetForGuidRemap(newGuid, newVaultId);
-
-			// Delete the old GUID's IndexedDB database. Done AFTER
-			// resetForGuidRemap so the persistence connection is closed
-			// first (avoids IDB deleteDatabase blocked event).
-			try {
-				const appId = this.sharedFolder?.appId;
-				if (appId) {
-					indexedDB.deleteDatabase(`${appId}-relay-doc-${oldGuid}`);
-				}
-			} catch {
-				// IDB cleanup is best-effort
-			}
-
-			// Delete the old GUID's persisted HSM state from the global database
-			const p = openMergeHSMDatabase().then(db =>
-				deleteMergeState(db, oldGuid).finally(() => db.close())
-			).catch(() => {});
-			awaitOnReload(p);
-
-			// Re-register with MergeManager under the new GUID BEFORE any
-			// HSM events fire. initializePostRemap sends DISK_CHANGED which
-			// triggers idle-merge → REQUEST_PROVIDER_SYNC effects. The
-			// subscription must be active to handle these effects.
-			if (mergeManager) {
-				mergeManager.resubscribeHSMForRemap(this._hsm, newGuid);
-				mergeManager.notifyHSMCreated(newGuid);
-			}
-
-			// Re-initialize the HSM (mirrors ensureHSM's initialization sequence)
-			this._hsm.send({ type: 'LOAD', guid: newGuid });
-			this._hsm.send({
-				type: 'PERSISTENCE_LOADED',
-				updates: new Uint8Array(),
-				lca: null,
-				localStateVector: null,
-			});
-			this._hsm.send({ type: 'SET_MODE_IDLE' });
-
-			// Attach a remoteDoc so idle-merge can read server CRDT content.
-			// After remap, remoteDoc is null — without it, idle-merge bails
-			// before 3-way merge and never emits REQUEST_PROVIDER_SYNC.
-			// The SharedFolder's Y.Doc for the new GUID already has the
-			// server's content (it triggered the remap), so ensureRemoteDoc()
-			// creates a doc seeded from that state.
-			const remoteDoc = this.ensureRemoteDoc();
-			this._hsm.setRemoteDoc(remoteDoc);
-			this._hsm.markProviderSyncedForRemap();
-
-			// Establish post-remap baseline with disk state. This sets an
-			// empty LCA and sends DISK_CHANGED so the HSM detects divergence
-			// between disk content and the (empty) baseline.
-			this._hsm.initializePostRemap(diskState);
-		}
 	}
 
 	// Helper method to update file stats
