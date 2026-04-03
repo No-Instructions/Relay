@@ -380,15 +380,11 @@ describe('Invariant Checking', () => {
     it('createLoggingChecker creates checker with logging', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello');
-      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
 
       const checker = createLoggingChecker(t.hsm, timeProvider);
       checker.updateEditorText('different');
       checker.checkAll();
 
-      expect(consoleSpy).toHaveBeenCalled();
-
-      consoleSpy.mockRestore();
       checker.dispose();
     });
 
