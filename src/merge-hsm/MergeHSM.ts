@@ -794,6 +794,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				stateVector,
 			};
 			this._localStateVector = stateVector;
+			this.emitPersistState();
+
+			// Re-fire PERSISTENCE_SYNCED now that IDB has content.
+			// handleLocalPersistenceSynced suppressed the event when IDB was empty.
+			if (this.matches("active.entering.awaitingPersistence")) {
+				this.send({ type: "PERSISTENCE_SYNCED", hasContent: true });
+			}
 		}
 
 		return didEnroll;
@@ -2474,8 +2481,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Set up observer for remote updates (converts deltas to positioned changes)
 		this.setupLocalDocObserver();
 
-		// Signal persistence sync complete with IDB content status
-		this.send({ type: "PERSISTENCE_SYNCED", hasContent });
+		// Only signal persistence sync when IDB has content.
+		// If IDB is empty, the document hasn't been enrolled yet.
+		// Stay in awaitingPersistence — initializeWithContent will
+		// re-fire after enrollment completes.
+		if (hasContent) {
+			this.send({ type: "PERSISTENCE_SYNCED", hasContent });
+		}
 	}
 
 
