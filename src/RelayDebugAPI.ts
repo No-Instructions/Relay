@@ -8,6 +8,7 @@
  */
 
 import * as Y from 'yjs';
+import { diff_match_patch } from 'diff-match-patch';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
@@ -55,6 +56,8 @@ export interface RelayDebugGlobal {
   getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
   /** Get a snapshot of all content views for a document */
   getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
+  /** Set the active editor's content via minimal CM6 transactions (simulates user typing) */
+  setEditorContent: (content: string) => { success: boolean; changeCount: number } | { error: string };
 }
 
 // =============================================================================
@@ -175,6 +178,52 @@ export class RelayDebugAPI {
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
       getDocumentContent: async (path) => this.getDocumentContent(path),
+
+      setEditorContent: (content: string) => {
+        const editor = (this.plugin?.app as any)?.workspace?.activeEditor?.editor;
+        if (!editor) return { error: 'No active editor' };
+        const cm = editor.cm;
+        if (!cm) return { error: 'No CM6 EditorView' };
+
+        const before = cm.state.doc.toString();
+        if (before === content) return { success: true, changeCount: 0 };
+
+        const dmp = new diff_match_patch();
+        const diffs = dmp.diff_main(before, content);
+        dmp.diff_cleanupSemantic(diffs);
+
+        const changes: { from: number; to: number; insert: string }[] = [];
+        let pos = 0;
+        for (const [op, text] of diffs) {
+          if (op === 0) {
+            pos += text.length;
+          } else if (op === -1) {
+            changes.push({ from: pos, to: pos + text.length, insert: '' });
+            pos += text.length;
+          } else if (op === 1) {
+            changes.push({ from: pos, to: pos, insert: text });
+          }
+        }
+
+        // Merge adjacent delete+insert into replacements
+        const merged: typeof changes = [];
+        let i = 0;
+        while (i < changes.length) {
+          const cur = changes[i];
+          if (i + 1 < changes.length && cur.insert === '' &&
+              changes[i + 1].from === cur.to && changes[i + 1].to === changes[i + 1].from) {
+            merged.push({ from: cur.from, to: cur.to, insert: changes[i + 1].insert });
+            i += 2;
+          } else {
+            merged.push(cur);
+            i++;
+          }
+        }
+
+        // Dispatch without ySyncAnnotation so HSM treats this as a user edit
+        cm.dispatch({ changes: merged });
+        return { success: true, changeCount: merged.length };
+      },
     };
 
     (g as any).__relayDebug = {
