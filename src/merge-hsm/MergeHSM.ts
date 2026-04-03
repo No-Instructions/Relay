@@ -61,7 +61,7 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
-import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
+import { classifyUpdate, decodeSV, stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 
@@ -1134,7 +1134,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// Sync to remote (three-way merge)
 				if (result.needsSync && this.localDoc) {
 					const update = Y.encodeStateAsUpdate(this.localDoc);
-					this.emitEffect({ type: "SYNC_TO_REMOTE", update });
+					this._bridge.syncToRemote(update);
 				}
 			},
 			resetIdleRetryCount: () => {
@@ -2454,10 +2454,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.pendingIdleUpdates.length > 0 &&
 			this.localDoc
 		) {
-			const localText = this.localDoc.getText("contents").toString();
+			// Only apply if localDoc has no CRDT history - safe to apply remote content.
+			// Check state vector size, not text content: an empty note with CRDT
+			// history (tombstones, deletions) must not be treated as "no content".
+			const localHasCrdtHistory = Y.encodeStateVector(this.localDoc).length > 1;
 
-			// Only apply if localDoc is empty - safe to apply remote content
-			if (localText === "") {
+			if (!localHasCrdtHistory) {
 				Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
 			}
 			// If localDoc has content, DO NOT apply - let flushInbound() handle it
@@ -2481,11 +2483,19 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Set up observer for remote updates (converts deltas to positioned changes)
 		this.setupLocalDocObserver();
 
-		// Only signal persistence sync when IDB has content.
-		// If IDB is empty, the document hasn't been enrolled yet.
-		// Stay in awaitingPersistence — initializeWithContent will
-		// re-fire after enrollment completes.
-		if (hasContent) {
+		// Signal persistence sync when IDB has content, OR when in recovery
+		// mode (no LCA) AND remoteDoc has content from the server.
+		// After GUID remap, IDB is intentionally empty and there is no LCA.
+		// The remote CRDT was received during idle mode. The reconciliation
+		// path handles this by routing to two-way merge which compares disk
+		// vs remote content.
+		// Without this, the HSM stays stuck in awaitingPersistence because
+		// initializeWithContent is only called on the upload path, not when
+		// opening a file in active mode after GUID remap.
+		const remoteHasContent =
+			this.remoteDoc &&
+			Y.encodeStateVector(this.remoteDoc).length > 1;
+		if (hasContent || (this._lca === null && remoteHasContent)) {
 			this.send({ type: "PERSISTENCE_SYNCED", hasContent });
 		}
 	}
@@ -2498,11 +2508,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private applyRemoteToLocalIfNeeded(): void {
 		if (!this.localDoc || !this.remoteDoc) return;
 
-		const localText = this.localDoc.getText("contents").toString();
-		const remoteText = this.remoteDoc.getText("contents").toString();
+		// Only apply if localDoc has no CRDT history and remoteDoc does.
+		// Check state vector size, not text content: an empty note with CRDT
+		// history (tombstones, deletions) must not be treated as "no content".
+		const localHasCrdtHistory = Y.encodeStateVector(this.localDoc).length > 1;
+		const remoteHasCrdtHistory = Y.encodeStateVector(this.remoteDoc).length > 1;
 
-		// Only apply if localDoc is empty and remoteDoc has content
-		if (localText === "" && remoteText !== "") {
+		if (!localHasCrdtHistory && remoteHasCrdtHistory) {
 			const update = Y.encodeStateAsUpdate(
 				this.remoteDoc,
 				Y.encodeStateVector(this.localDoc),
@@ -3161,6 +3173,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * the server's content (two-way, since there's no shared LCA).
 	 */
 	async resetForGuidRemap(newGuid: string, newVaultId: string): Promise<void> {
+		// Cancel any running invoke (idle-merge, fork-reconcile) so that
+		// stale async completions don't fire done.invoke.* events into the
+		// re-initialized state machine.
+		if (this._activeInvoke) {
+			this._activeInvoke.controller.abort();
+			this._asyncOps.delete(this._activeInvoke.id);
+			this._activeInvoke = null;
+		}
+
 		// Destroy localDoc + IDB persistence for the old GUID
 		await this.destroyLocalDoc();
 
@@ -3168,8 +3189,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.remoteDoc = null;
 
 		// Clear all state that was computed under the old GUID
-		this._lca = null;
-		this._disk = null;
 		this._localStateVector = null;
 		this._remoteStateVector = null;
 		this._fork = null;
@@ -3186,12 +3205,53 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._providerSynced = false;
 		this._localDocClientID = null;
 
+		this._lca = null;
+		this._disk = null;
+
 		// Update identity to the new GUID
 		this._guid = newGuid;
 		this.vaultId = newVaultId;
 
 		// Reset the state machine to unloaded so it can be re-initialized
 		this._statePath = "unloaded";
+	}
+
+	/**
+	 * Establish post-GUID-remap baseline. Call AFTER the LOAD + PERSISTENCE_LOADED
+	 * + SET_MODE_IDLE re-initialization sequence completes.
+	 *
+	 * Sets an empty-string LCA as the agreement point (the old CRDT was discarded)
+	 * and records current disk state. This enables the idle merge machinery to
+	 * detect that disk content differs from the (empty) LCA and route through
+	 * idle.diskAhead → fork reconciliation when remote content arrives.
+	 *
+	 * Without this, _lca stays null and hasDiskChangedSinceLCA() returns false,
+	 * causing REMOTE_UPDATE to silently overwrite disk content via remoteAhead.
+	 */
+	initializePostRemap(diskState?: { content: string; hash: string; mtime: number }): void {
+		// Use a deterministic placeholder for the empty-string hash.
+		// The exact value doesn't matter — it just needs to differ from any
+		// non-empty content hash so hasDiskChangedSinceLCA() returns true.
+		const emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+		this._lca = {
+			contents: "",
+			meta: { hash: emptyHash, mtime: 0 },
+			stateVector: new Uint8Array([0]),
+		};
+
+		if (diskState && diskState.content.length > 0) {
+			// Send DISK_CHANGED so the HSM transitions from idle.synced to
+			// idle.diskAhead. The storeDiskMetadata action records _disk and
+			// pendingDiskContents from the event.
+			this.send({
+				type: 'DISK_CHANGED',
+				contents: diskState.content,
+				mtime: diskState.mtime,
+				hash: diskState.hash,
+			});
+		}
+
+		this.emitPersistState();
 	}
 
 	// =========================================================================
