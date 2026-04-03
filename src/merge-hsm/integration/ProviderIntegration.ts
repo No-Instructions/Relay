@@ -43,7 +43,6 @@ export class ProviderIntegration {
   private hsm: MergeHSM;
   private remoteDoc: Y.Doc;
   private provider: YjsProvider;
-  private unsubscribeHSM: (() => void) | null = null;
 
   // Bound event handlers for cleanup
   private onSync: () => void;
@@ -73,18 +72,6 @@ export class ProviderIntegration {
 
     // Observe remoteDoc for updates from provider
     this.remoteDoc.on('update', this.onRemoteUpdate);
-
-    // Subscribe to HSM effects for SYNC_TO_REMOTE
-    this.unsubscribeHSM = hsm.effects.subscribe((effect) => {
-      if (effect.type === 'SYNC_TO_REMOTE') {
-        // In active mode, syncLocalToRemote() already applied the update
-        // to remoteDoc. In idle mode (fork-reconcile), the HSM emits the
-        // effect expecting us to apply it.
-        if (!this.hsm.isActive()) {
-          Y.applyUpdate(this.remoteDoc, effect.update, this);
-        }
-      }
-    });
 
     // Send initial state if already connected/synced
     // (in case ProviderIntegration is created after provider is already connected)
@@ -166,12 +153,6 @@ export class ProviderIntegration {
    * Note: Does NOT destroy the provider - it outlives the integration.
    */
   destroy(): void {
-    // Unsubscribe from HSM
-    if (this.unsubscribeHSM) {
-      this.unsubscribeHSM();
-      this.unsubscribeHSM = null;
-    }
-
     // Unsubscribe from provider events
     this.provider.off('sync', this.onSync as (...args: unknown[]) => void);
     this.provider.off('connection-close', this.onDisconnect as (...args: unknown[]) => void);
