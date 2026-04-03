@@ -353,8 +353,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
 		const mergeManager = this.sharedFolder?.mergeManager;
 		if (mergeManager) {
-			// MergeManager.unload() sends RELEASE_LOCK
-			mergeManager.unload(this.guid);
+			// MergeManager.unload() sends RELEASE_LOCK and awaits IDB cleanup
+			const p = mergeManager.unload(this.guid);
+			awaitOnReload(p);
 		}
 	}
 
