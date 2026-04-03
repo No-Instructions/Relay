@@ -3,8 +3,6 @@ import { normalizePath } from "obsidian";
 import type { Relay } from "src/Relay";
 import type { SharedFolders } from "src/SharedFolder";
 import type { RelayManager } from "src/RelayManager";
-import { uuidv4 } from "lib0/random";
-
 export class FolderCreateModal extends Modal {
 	private folderPath: string = "";
 	private isPrivate: boolean = false;
@@ -133,12 +131,9 @@ export class FolderCreateModal extends Modal {
 				}
 
 				// Create new shared folder
-				const guid = uuidv4();
-				const sharedFolder = this.sharedFolders.new(
+				const sharedFolder = this.sharedFolders.init(
 					normalizedPath,
-					guid,
 					this.relay.guid,
-					true,
 				);
 
 				// Create remote folder
