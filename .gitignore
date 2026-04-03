@@ -44,6 +44,7 @@ infra/
 scripts/
 tickets/
 specs/
+arch/
 unit/
 templates/
 test-plans/
