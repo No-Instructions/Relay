@@ -2204,6 +2204,7 @@ export class RelayManager extends HasLogging {
 		this._offLoginManager?.();
 		this._offLoginManager = null as any;
 		this.pb?.cancelAllRequests();
+		this.pb?.realtime?.unsubscribe();
 		this.loginManager = null as any;
 		this.store?.destroy();
 		this.pb = null as any;
