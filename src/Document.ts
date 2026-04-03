@@ -687,22 +687,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			mergeManager.notifyHSMDestroyed(oldGuid);
 		}
 
-		// Delete the old GUID's IndexedDB database
-		try {
-			const appId = this.sharedFolder?.appId;
-			if (appId) {
-				indexedDB.deleteDatabase(`${appId}-relay-doc-${oldGuid}`);
-			}
-		} catch {
-			// IDB cleanup is best-effort
-		}
-
-		// Delete the old GUID's persisted HSM state from the global database
-		const p = openMergeHSMDatabase().then(db =>
-			deleteMergeState(db, oldGuid).finally(() => db.close())
-		).catch(() => {});
-		awaitOnReload(p);
-
 		// Update the Document's identity to the new GUID
 		this.guid = newGuid;
 
@@ -717,12 +701,58 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this.s3rn = new S3Document(this.sharedFolder.guid, newGuid);
 		}
 
+		// Refresh clientToken for the new S3RN so that provider connections
+		// (e.g. connectForForkReconcile) use the correct GUID's token.
+		const newToken = this.tokenStore.getTokenSync(S3RN.encode(this.s3rn));
+		if (newToken) {
+			this.clientToken = newToken;
+		}
+
 		// Reset the HSM under the new GUID if it exists
 		if (this._hsm) {
 			const newVaultId = mergeManager
 				? mergeManager.getVaultId(newGuid)
 				: `relay-doc-${newGuid}`;
+
+			// Read disk content before reset so the HSM knows about existing
+			// file content. After remap, the old CRDT is discarded — disk
+			// content must be reconciled with the server's CRDT via three-way
+			// merge (empty base, disk local, remote server).
+			let diskState: { content: string; hash: string; mtime: number } | undefined;
+			try {
+				diskState = await this.readDiskContent();
+			} catch {
+				// File may not exist on disk (e.g., remote-only creation)
+			}
+
 			await this._hsm.resetForGuidRemap(newGuid, newVaultId);
+
+			// Delete the old GUID's IndexedDB database. Done AFTER
+			// resetForGuidRemap so the persistence connection is closed
+			// first (avoids IDB deleteDatabase blocked event).
+			try {
+				const appId = this.sharedFolder?.appId;
+				if (appId) {
+					indexedDB.deleteDatabase(`${appId}-relay-doc-${oldGuid}`);
+				}
+			} catch {
+				// IDB cleanup is best-effort
+			}
+
+			// Delete the old GUID's persisted HSM state from the global database
+			const p = openMergeHSMDatabase().then(db =>
+				deleteMergeState(db, oldGuid).finally(() => db.close())
+			).catch(() => {});
+			awaitOnReload(p);
+
+			// Re-register with MergeManager under the new GUID BEFORE any
+			// HSM events fire. initializePostRemap sends DISK_CHANGED which
+			// triggers idle-merge → REQUEST_PROVIDER_SYNC effects. The
+			// subscription must be active to handle these effects.
+			if (mergeManager) {
+				mergeManager.resubscribeHSMForRemap(this._hsm, newGuid);
+				mergeManager.notifyHSMCreated(newGuid);
+			}
 
 			// Re-initialize the HSM (mirrors ensureHSM's initialization sequence)
 			this._hsm.send({ type: 'LOAD', guid: newGuid });
@@ -734,10 +764,20 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			});
 			this._hsm.send({ type: 'SET_MODE_IDLE' });
 
-			// Re-register with MergeManager under the new GUID
-			if (mergeManager) {
-				mergeManager.notifyHSMCreated(newGuid);
-			}
+			// Attach a remoteDoc so idle-merge can read server CRDT content.
+			// After remap, remoteDoc is null — without it, idle-merge bails
+			// before 3-way merge and never emits REQUEST_PROVIDER_SYNC.
+			// The SharedFolder's Y.Doc for the new GUID already has the
+			// server's content (it triggered the remap), so ensureRemoteDoc()
+			// creates a doc seeded from that state.
+			const remoteDoc = this.ensureRemoteDoc();
+			this._hsm.setRemoteDoc(remoteDoc);
+			this._hsm.markProviderSyncedForRemap();
+
+			// Establish post-remap baseline with disk state. This sets an
+			// empty LCA and sends DISK_CHANGED so the HSM detects divergence
+			// between disk content and the (empty) baseline.
+			this._hsm.initializePostRemap(diskState);
 		}
 	}
 
@@ -780,9 +820,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				break;
 			case "PERSIST_STATE":
 				await this.handlePersistState(effect.state);
-				break;
-			case "SYNC_TO_REMOTE":
-				await this.handleSyncToRemote(effect.update);
 				break;
 			// Other effects (DISPATCH_CM6, STATUS_CHANGED, etc.) are handled elsewhere
 		}
@@ -907,17 +944,6 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	hasProviderIntegration(): boolean {
 		return this._providerIntegration !== null;
-	}
-
-	private async handleSyncToRemote(update: Uint8Array): Promise<void> {
-		// Skip if ProviderIntegration handles it (active mode or fork-reconcile)
-		if (this.userLock || this._providerIntegration || this.sharedFolder?.mergeManager?.isActive(this.guid)) {
-			return;
-		}
-
-		// Apply update to remoteDoc (intentionally triggers lazy creation / wake from hibernation)
-		const remoteDoc = this.ensureRemoteDoc();
-		Y.applyUpdate(remoteDoc, update, "idle-sync");
 	}
 
 }

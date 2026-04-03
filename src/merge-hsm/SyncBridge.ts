@@ -302,7 +302,10 @@ export class SyncBridge {
 	 */
 	syncToRemote(update: Uint8Array): void {
 		const remoteDoc = this.host.getRemoteDoc();
-		if (!remoteDoc) return;
+		if (!remoteDoc) {
+			bridgeError("syncToRemote called but remoteDoc is null");
+			return;
+		}
 		Y.applyUpdate(remoteDoc, update, this.host);
 		this.host.emitEffect({ type: "SYNC_TO_REMOTE", update });
 	}
