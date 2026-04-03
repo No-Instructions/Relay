@@ -58,6 +58,10 @@ export interface RelayDebugGlobal {
   getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
   /** Set the active editor's content via minimal CM6 transactions (simulates user typing) */
   setEditorContent: (content: string) => { success: boolean; changeCount: number } | { error: string };
+  /** Look up a document by vault-scoped path (e.g. "private/foo.md"). Returns document, HSM, folder, and GUID. */
+  lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
+  /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
+  lookupFolder: (path: string) => any | null;
 }
 
 // =============================================================================
@@ -224,6 +228,56 @@ export class RelayDebugAPI {
         cm.dispatch({ changes: merged });
         return { success: true, changeCount: merged.length };
       },
+
+      lookupFolder: (path: string) => {
+        if (!this.plugin?.sharedFolders?._set) return null;
+        for (const folder of this.plugin.sharedFolders._set.values()) {
+          if ((folder as any).path === path) return folder;
+        }
+        // Also try matching as a prefix (e.g. "private" matches folder at path "private")
+        for (const folder of this.plugin.sharedFolders._set.values()) {
+          if (path.startsWith((folder as any).path + '/')) return folder;
+        }
+        return null;
+      },
+
+      lookupDocument: (path: string) => {
+        if (!this.plugin?.sharedFolders?._set) return null;
+        const folders = Array.from(this.plugin.sharedFolders._set.values()) as any[];
+
+        // Resolve folder scope from vault path (e.g. "private/foo.md")
+        let targetFolder: any = null;
+        let relativePath = path;
+        for (const folder of folders) {
+          if (path.startsWith(folder.path + '/')) {
+            targetFolder = folder;
+            relativePath = path.slice(folder.path.length);
+            break;
+          }
+        }
+
+        const search = targetFolder ? [targetFolder] : folders;
+        for (const folder of search) {
+          const mm = folder.mergeManager;
+          if (!mm?._syncStatus) continue;
+          for (const [guid, _status] of mm._syncStatus.entries()) {
+            const doc = mm._getDocument(guid);
+            const hsm = doc?._hsm;
+            if (!hsm) continue;
+            let filePath = hsm.path || guid;
+
+            if (guid === path) return { doc, hsm, guid, folder, filePath };
+            const normFile = filePath.replace(/^\/+/, '');
+            const normRel = relativePath.replace(/^\/+/, '');
+            if (targetFolder && (filePath === relativePath || normFile === normRel))
+              return { doc, hsm, guid, folder, filePath };
+            if (!targetFolder && (filePath === path || normFile === path.replace(/^\/+/, '')))
+              return { doc, hsm, guid, folder, filePath };
+          }
+        }
+        return null;
+      },
+
     };
 
     (g as any).__relayDebug = {
