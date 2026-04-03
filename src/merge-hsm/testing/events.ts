@@ -334,8 +334,20 @@ export async function loadAndActivate(
   // This simulates content that was persisted in a previous session.
   // Per docs/how-we-bootstrap-collaboration.md, content should only be inserted
   // into the CRDT once during enrollment, and loaded from persistence thereafter.
-  if (content && hsm.seedIndexedDB) {
-    hsm.seedIndexedDB(updates);
+  // Always seed — even for empty content — so persistence reports hasContent=true.
+  // Without this, the HSM stays in awaitingPersistence waiting for enrollment.
+  if (hsm.seedIndexedDB) {
+    if (content) {
+      hsm.seedIndexedDB(updates);
+    } else {
+      // For empty content, create a minimal Y.Doc update so IDB has a row.
+      // This simulates an enrolled empty document.
+      const emptyDoc = new Y.Doc();
+      emptyDoc.getText('contents'); // touch the text field
+      const emptyUpdate = Y.encodeStateAsUpdate(emptyDoc);
+      hsm.seedIndexedDB(emptyUpdate);
+      emptyDoc.destroy();
+    }
   }
 
   // Drive through transitions:
@@ -383,8 +395,8 @@ export interface LoadToIdleOptions {
   guid?: string;
   /** Document path (default: 'test.md') */
   path?: string;
-  /** LCA content (default: '') */
-  content?: string;
+  /** LCA content (default: ''). Pass null to skip IDB seeding (unenrolled doc). */
+  content?: string | null;
   /** LCA mtime (default: Date.now()) */
   mtime?: number;
 }
@@ -413,12 +425,19 @@ export async function loadToIdle(
   // Create LCA
   const updates = content ? createYjsUpdate(content) : new Uint8Array();
   const stateVector = content ? Y.encodeStateVectorFromUpdate(updates) : new Uint8Array([0]);
-  const lca = await createLCA(content, mtime, stateVector);
+  const lca = await createLCA(content ?? '', mtime, stateVector);
 
   // Seed the mock IndexedDB with the content BEFORE any transitions.
-  // This simulates content that was persisted in a previous session.
-  if (content && hsm.seedIndexedDB) {
-    hsm.seedIndexedDB(updates);
+  // content=null means unenrolled (don't seed). content='' means enrolled empty doc (seed).
+  if (opts?.content !== null && hsm.seedIndexedDB) {
+    if (updates.length > 0) {
+      hsm.seedIndexedDB(updates);
+    } else {
+      const enrollDoc = new Y.Doc();
+      enrollDoc.getText('contents');
+      hsm.seedIndexedDB(Y.encodeStateAsUpdate(enrollDoc));
+      enrollDoc.destroy();
+    }
   }
 
   // Sync remoteDoc with the same updates so it shares CRDT history with local.

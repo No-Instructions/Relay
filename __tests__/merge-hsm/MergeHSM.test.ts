@@ -1848,17 +1848,16 @@ describe('MergeHSM', () => {
       t.send(persistenceLoaded(updates, lca));
       t.send({ type: 'SET_MODE_ACTIVE' });
 
-      // Don't seed IndexedDB — we want to observe the substate directly.
-      // When IDB is empty and provider not synced, HSM skips to tracking
-      // so the user can edit immediately (reconciliation happens on PROVIDER_SYNCED).
+      // Don't seed IndexedDB — unenrolled document.
+      // When IDB is empty, HSM stays in awaitingPersistence until enrollment.
       const t2 = await createTestHSM();
       t2.send(load('test-guid', 'test.md'));
       t2.send(persistenceLoaded(new Uint8Array(), null));
       t2.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t2, '');
+      t2.send(acquireLock(''));
 
-      // IDB is empty, provider not synced → goes straight to tracking
-      expectState(t2, 'active.tracking');
+      // IDB is empty (unenrolled) → stays in awaitingPersistence
+      expectState(t2, 'active.entering.awaitingPersistence');
     });
 
     test('PERSISTENCE_SYNCED(hasContent=true) → reconciling → tracking', async () => {
@@ -1871,56 +1870,48 @@ describe('MergeHSM', () => {
       expectLocalDocText(t, content);
     });
 
-    test('unsynced provider opens file with LCA → goes to active.tracking', async () => {
+    test('unenrolled doc with LCA → stays in awaitingPersistence', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
-      // Provide an LCA so the persistenceEmptyAndProviderNotSynced guard passes
       t.send(persistenceLoaded(new Uint8Array(), {
         contents: 'user content',
         meta: { hash: 'h', mtime: 1 },
         stateVector: new Uint8Array([0]),
       }));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, 'user content');
+      t.send(acquireLock('user content'));
 
-      // With empty IDB, unsynced provider, and LCA present, user can edit immediately
-      expectState(t, 'active.tracking');
+      // IDB is empty (unenrolled) → stays in awaitingPersistence
+      expectState(t, 'active.entering.awaitingPersistence');
     });
 
-    test('unsynced provider opens file without LCA → goes to recovery mode', async () => {
+    test('unenrolled doc without LCA → stays in awaitingPersistence', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, 'user content');
+      t.send(acquireLock('user content'));
 
-      // Without LCA, the guard requires reconciliation via the server
-      // to prevent skipping conflict detection in recovery scenarios
-      expectState(t, 'active.conflict.bannerShown');
+      // IDB is empty (unenrolled) → stays in awaitingPersistence
+      expectState(t, 'active.entering.awaitingPersistence');
     });
 
-    test('PROVIDER_SYNCED in active.tracking with divergent content triggers reconciliation', async () => {
+    test('unenrolled doc waits in awaitingPersistence, enrollment re-fires PERSISTENCE_SYNCED', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      await sendAcquireLock(t, '');
+      t.send(acquireLock(''));
 
-      // Should be in tracking (not blocked)
+      // IDB is empty → stays in awaitingPersistence
+      expectState(t, 'active.entering.awaitingPersistence');
+
+      // Simulate enrollment completing (re-fires PERSISTENCE_SYNCED)
+      t.send({ type: 'PERSISTENCE_SYNCED', hasContent: true });
+
+      // hasContent=true, no LCA → reconciling → twoWay (recovery mode)
+      // Empty editor + empty localDoc → no divergence → tracking
       expectState(t, 'active.tracking');
-
-      // Simulate remote content arriving via provider sync
-      t.applyRemoteChange('server content');
-
-      // Send PROVIDER_SYNCED — reconcileForkInActive detects divergence
-      t.send(providerSynced());
-
-      // Should have triggered reconciliation (merge or conflict)
-      expect(
-        t.matches('active.tracking') ||
-        t.matches('active.merging') ||
-        t.matches('active.conflict')
-      ).toBe(true);
     });
 
     test('PROVIDER_SYNCED before PERSISTENCE_SYNCED is captured by flag', async () => {

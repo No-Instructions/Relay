@@ -441,7 +441,7 @@
 		// If folder doesn't exist as shared folder yet, create it
 		if (!folder) {
 			const guid = uuidv4();
-			folder = sharedFolders.new(normalizedPath, guid, relay.guid, true);
+			folder = sharedFolders.new(normalizedPath, guid, relay.guid, false);
 		} else {
 			folder.relayId = relay.guid;
 		}
