@@ -481,42 +481,6 @@ export class MergeManager {
   }
 
   /**
-   * Re-subscribe MergeManager effect handling for an HSM after GUID remap.
-   * The old GUID's subscription was removed by notifyHSMDestroyed; this
-   * wires up the same effect handler (REQUEST_PROVIDER_SYNC, REQUEST_HIBERNATE,
-   * PERSIST_STATE, STATUS_CHANGED) under the new GUID.
-   */
-  resubscribeHSMForRemap(hsm: MergeHSM, newGuid: string): void {
-    if (this.destroyed) return;
-    // Remove any stale subscription (shouldn't exist, but be safe)
-    this._hsmUnsubs.get(newGuid)?.();
-
-    const guid = newGuid;
-    const unsub = hsm.subscribe((effect) => {
-      if (effect.type === 'REQUEST_HIBERNATE') {
-        Promise.resolve().then(() => this.hibernate(guid));
-        return;
-      }
-      if (effect.type === 'REQUEST_PROVIDER_SYNC') {
-        const connect = () => {
-          const doc = this._getDocument(guid);
-          if (!doc) return;
-          doc.connectForForkReconcile().catch((err) => {
-            this._error(`connectForForkReconcile failed: ${err}`);
-          });
-        };
-        if (this._getDocument(guid)) {
-          connect();
-        } else {
-          Promise.resolve().then(connect);
-        }
-      }
-      this.handleHSMEffect(guid, effect);
-    });
-    this._hsmUnsubs.set(guid, unsub);
-  }
-
-  /**
    * Notify MergeManager that an HSM was destroyed for a document.
    * Cleans up hibernation tracking.
    */

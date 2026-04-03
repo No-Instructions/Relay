@@ -465,18 +465,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 	}
 
-	/**
-	 * Mark the provider as synced after GUID remap. In idle mode, remote
-	 * content arrives via SharedFolder events, not a document-level provider.
-	 * After remap, the SharedFolder's Y.Doc already contains the server's
-	 * CRDT state, so the remoteDoc is authoritative. Without this,
-	 * idle-merge bails at the _isProviderSynced() check and never creates
-	 * a fork, deadlocking the HSM in idle.diverged.
-	 */
-	markProviderSyncedForRemap(): void {
-		this._bridge.providerSynced = true;
-	}
-
 	// ===========================================================================
 	// SyncBridgeHost Implementation
 	// ===========================================================================
@@ -3167,104 +3155,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		for (const listener of this.stateChangeListeners) {
 			listener(from, to, event);
 		}
-	}
-
-	/**
-	 * Reset the HSM for a GUID remap. When the server assigns a different GUID
-	 * to a file path, the local CRDT (under the old GUID) has independent
-	 * document history that cannot be merged with the server's CRDT.
-	 *
-	 * This method:
-	 * 1. Destroys the local Yjs doc and its IDB persistence (old GUID data)
-	 * 2. Clears the LCA (computed for the old GUID's document)
-	 * 3. Detaches the remote doc
-	 * 4. Resets the HSM to its initial state under the new GUID
-	 *
-	 * After calling this, the caller should re-initialize the HSM with LOAD +
-	 * PERSISTENCE_LOADED + SET_MODE_IDLE so it starts fresh. When the provider
-	 * syncs the server's CRDT, fork reconciliation compares disk content against
-	 * the server's content (two-way, since there's no shared LCA).
-	 */
-	async resetForGuidRemap(newGuid: string, newVaultId: string): Promise<void> {
-		// Cancel any running invoke (idle-merge, fork-reconcile) so that
-		// stale async completions don't fire done.invoke.* events into the
-		// re-initialized state machine.
-		if (this._activeInvoke) {
-			this._activeInvoke.controller.abort();
-			this._asyncOps.delete(this._activeInvoke.id);
-			this._activeInvoke = null;
-		}
-
-		// Destroy localDoc + IDB persistence for the old GUID
-		await this.destroyLocalDoc();
-
-		// Detach remoteDoc (it belongs to the old GUID's provider)
-		this.remoteDoc = null;
-
-		// Clear all state that was computed under the old GUID
-		this._localStateVector = null;
-		this._remoteStateVector = null;
-		this._fork = null;
-		this._ingestionTexts = [];
-		this._deferredConflict = undefined;
-		this._error = undefined;
-		this.pendingIdleUpdates = null;
-		this.pendingDiskContents = null;
-		this.pendingEditorContent = null;
-		this.initialPersistenceUpdates = null;
-		this.conflictData = null;
-		this._accumulatedEvents = [];
-		this._modeDecision = null;
-		this._providerSynced = false;
-		this._localDocClientID = null;
-
-		this._lca = null;
-		this._disk = null;
-
-		// Update identity to the new GUID
-		this._guid = newGuid;
-		this.vaultId = newVaultId;
-
-		// Reset the state machine to unloaded so it can be re-initialized
-		this._statePath = "unloaded";
-	}
-
-	/**
-	 * Establish post-GUID-remap baseline. Call AFTER the LOAD + PERSISTENCE_LOADED
-	 * + SET_MODE_IDLE re-initialization sequence completes.
-	 *
-	 * Sets an empty-string LCA as the agreement point (the old CRDT was discarded)
-	 * and records current disk state. This enables the idle merge machinery to
-	 * detect that disk content differs from the (empty) LCA and route through
-	 * idle.diskAhead → fork reconciliation when remote content arrives.
-	 *
-	 * Without this, _lca stays null and hasDiskChangedSinceLCA() returns false,
-	 * causing REMOTE_UPDATE to silently overwrite disk content via remoteAhead.
-	 */
-	initializePostRemap(diskState?: { content: string; hash: string; mtime: number }): void {
-		// Use a deterministic placeholder for the empty-string hash.
-		// The exact value doesn't matter — it just needs to differ from any
-		// non-empty content hash so hasDiskChangedSinceLCA() returns true.
-		const emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-		this._lca = {
-			contents: "",
-			meta: { hash: emptyHash, mtime: 0 },
-			stateVector: new Uint8Array([0]),
-		};
-
-		if (diskState && diskState.content.length > 0) {
-			// Send DISK_CHANGED so the HSM transitions from idle.synced to
-			// idle.diskAhead. The storeDiskMetadata action records _disk and
-			// pendingDiskContents from the event.
-			this.send({
-				type: 'DISK_CHANGED',
-				contents: diskState.content,
-				mtime: diskState.mtime,
-				hash: diskState.hash,
-			});
-		}
-
-		this.emitPersistState();
 	}
 
 	// =========================================================================

@@ -169,6 +169,15 @@ class HSMEditorPluginValue implements PluginValue {
     // GUID remap during shared folder reconciliation. Checked before the
     // docChanged guard so that GUID remaps (which are remote-only and
     // produce no editor transaction) still trigger re-initialization.
+    if (this.document?.destroyed) {
+      if (this.cm6Integration) {
+        this.cm6Integration.destroy();
+        this.cm6Integration = null;
+      }
+      this.document = null;
+      this.initializeIfReady();
+    }
+
     if (this.document) {
       const currentDoc = this.resolveCurrentDocument();
       if (currentDoc && currentDoc.guid !== this.document.guid) {

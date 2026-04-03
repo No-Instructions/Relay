@@ -1136,14 +1136,44 @@ export class SharedFolder extends HasProvider {
 				if (localGuid && localFile && isDocument(localFile) && isDocumentMeta(meta)) {
 					// Document with different GUID — the local CRDT (under the old
 					// GUID) has independent history from the server's CRDT and cannot
-					// be merged. Discard the old CRDT/LCA entirely and adopt the
-					// server's GUID. Fork reconciliation handles content differences
-					// once the provider syncs.
+					// be merged. Destroy the old Document and create a fresh one
+					// under the server's GUID. Fork reconciliation handles content
+					// differences once the provider syncs.
+
+					// Tear down old Document
 					this.files.delete(localGuid);
-					const promise = localFile.handleGuidRemap(guid).then(() => {
-						this.files.set(guid, localFile);
-					});
+					this.fset.delete(localFile);
+					localFile.cleanup();
+					localFile.destroy();
+
+					// Delete old GUID's IDB databases
+					try {
+						indexedDB.deleteDatabase(`${this.appId}-relay-doc-${localGuid}`);
+					} catch {}
+					const p = openMergeHSMDatabase().then(db =>
+						deleteMergeState(db, localGuid).finally(() => db.close())
+					).catch(() => {});
+					awaitOnReload(p);
+
 					this.syncStore.pendingUpload.delete(path);
+
+					// Create fresh Document under the server's GUID.
+					// getOrCreateDoc creates the Document + HSM. The HSM enters
+					// idle mode via the LOAD → PERSISTENCE_LOADED → SET_MODE_IDLE
+					// sequence. initializeWithContent enrolls disk content into
+					// the CRDT. enqueueSync connects the provider — when remote
+					// state arrives, the HSM detects divergence and fork-reconciles.
+					const newDoc = this.getOrCreateDoc(guid, path);
+					this.files.set(guid, newDoc);
+					this.fset.add(newDoc, true);
+
+					const promise = (async () => {
+						const enrolled = await newDoc.hsm?.initializeWithContent();
+						if (enrolled) {
+							await this.backgroundSync.enqueueSync(newDoc);
+						}
+					})();
+
 					this.log(
 						`Remapped Document ${path} from local GUID ${localGuid} to remote GUID ${guid}`,
 					);
