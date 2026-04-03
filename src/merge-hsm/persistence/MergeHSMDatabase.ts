@@ -1,7 +1,7 @@
 /**
  * MergeHSM IndexedDB Persistence
  *
- * Database: RelayMergeHSM
+ * Database: {appId}-relay-hsm
  * Stores:
  *   - states: HSM state per document (PersistedMergeState)
  *   - index: Folder-level sync status (MergeIndex)
@@ -23,7 +23,7 @@ import type {
 // Database Configuration
 // =============================================================================
 
-const DB_NAME = 'RelayMergeHSM';
+const getDbName = (appId: string) => `${appId}-relay-hsm`;
 
 const STORES = {
   states: 'states',
@@ -39,8 +39,8 @@ const STORES = {
 /**
  * Open or create the RelayMergeHSM database.
  */
-export async function openDatabase(): Promise<IDBDatabase> {
-  return idb.openDB(DB_NAME, (db) => {
+export async function openDatabase(appId: string): Promise<IDBDatabase> {
+  return idb.openDB(getDbName(appId), (db) => {
     // Create stores if they don't exist
     // NOTE: No 'updates' store - use y-indexeddb for Yjs update storage
     idb.createStores(db, [
@@ -270,9 +270,9 @@ export async function clearAllData(db: IDBDatabase): Promise<void> {
 /**
  * Delete the entire database.
  */
-export async function deleteDatabase(): Promise<void> {
+export async function deleteDatabase(appId: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.deleteDatabase(DB_NAME);
+    const request = indexedDB.deleteDatabase(getDbName(appId));
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
