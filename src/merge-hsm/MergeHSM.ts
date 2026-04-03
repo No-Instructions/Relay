@@ -465,6 +465,18 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 	}
 
+	/**
+	 * Mark the provider as synced after GUID remap. In idle mode, remote
+	 * content arrives via SharedFolder events, not a document-level provider.
+	 * After remap, the SharedFolder's Y.Doc already contains the server's
+	 * CRDT state, so the remoteDoc is authoritative. Without this,
+	 * idle-merge bails at the _isProviderSynced() check and never creates
+	 * a fork, deadlocking the HSM in idle.diverged.
+	 */
+	markProviderSyncedForRemap(): void {
+		this._bridge.providerSynced = true;
+	}
+
 	// ===========================================================================
 	// SyncBridgeHost Implementation
 	// ===========================================================================
@@ -1096,7 +1108,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			updateLCAMtime: (_hsm, event) => {
 				const e = event as any;
-				if (this._lca && this._lca.meta.hash === e.hash) {
+				if (this._lca && !this._fork && this._lca.meta.hash === e.hash) {
 					this._lca = {
 						...this._lca,
 						meta: { ...this._lca.meta, mtime: e.mtime },
@@ -1520,10 +1532,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._disk = { hash: e.hash, mtime: e.mtime };
 				this.pendingDiskContents = e.contents;
 
-				// Advance LCA when Obsidian's auto-save has flushed (dirty === false).
-				// At this point disk and localDoc agree — a safe LCA snapshot.
+				// Advance LCA when Obsidian's auto-save has flushed (dirty === false)
+				// and no fork is active. LCA must be frozen while a fork exists
+				// to preserve the merge base for reconciliation.
 				const dirty = this._editorViewRef?.dirty;
-				if (this._editorViewRef && !dirty && this.localDoc) {
+				if (this._editorViewRef && !dirty && !this._fork && this.localDoc) {
 					const stateVector = Y.encodeStateVector(this.localDoc);
 					this._lca = {
 						contents: e.contents,
@@ -2684,7 +2697,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.pendingDiskContents === finalContent ||
 				this.lastKnownEditorText === finalContent;
 
-			if (contentMatches) {
+			if (contentMatches && !this._fork) {
 				// Disk matches localDoc - update LCA to reflect the synced state.
 				// Use disk.hash (not contentHash) to ensure hasDiskChangedSinceLCA()
 				// returns false, even if hash functions differ between sources.
