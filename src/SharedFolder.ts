@@ -325,7 +325,7 @@ export class SharedFolder extends HasProvider {
 			},
 			loadAllStates: async () => {
 				try {
-					const db = await openMergeHSMDatabase();
+					const db = await openMergeHSMDatabase(this.appId);
 					try {
 						return await getAllStateMeta(db);
 					} finally {
@@ -337,7 +337,7 @@ export class SharedFolder extends HasProvider {
 			},
 			loadState: async (guid: string) => {
 				try {
-					const db = await openMergeHSMDatabase();
+					const db = await openMergeHSMDatabase(this.appId);
 					try {
 						return await loadMergeState(db, guid);
 					} finally {
@@ -351,7 +351,7 @@ export class SharedFolder extends HasProvider {
 				this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
 				if (effect.type === "PERSIST_STATE") {
 					try {
-						const db = await openMergeHSMDatabase();
+						const db = await openMergeHSMDatabase(this.appId);
 						try {
 							await saveMergeState(db, effect.state);
 						} finally {
@@ -1150,7 +1150,7 @@ export class SharedFolder extends HasProvider {
 					try {
 						indexedDB.deleteDatabase(`${this.appId}-relay-doc-${localGuid}`);
 					} catch {}
-					const p = openMergeHSMDatabase().then(db =>
+					const p = openMergeHSMDatabase(this.appId).then(db =>
 						deleteMergeState(db, localGuid).finally(() => db.close())
 					).catch(() => {});
 					awaitOnReload(p);
@@ -2093,7 +2093,7 @@ export class SharedFolder extends HasProvider {
 				}
 			}, this);
 			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
-			const p = openMergeHSMDatabase().then(db =>
+			const p = openMergeHSMDatabase(this.appId).then(db =>
 				deleteMergeState(db, guid).finally(() => db.close())
 			).catch(() => {});
 			awaitOnReload(p);
@@ -2107,7 +2107,7 @@ export class SharedFolder extends HasProvider {
 				doc.cleanup();
 				doc.destroy();
 				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${docGuid}`);
-				const p = openMergeHSMDatabase().then(db =>
+				const p = openMergeHSMDatabase(this.appId).then(db =>
 					deleteMergeState(db, docGuid).finally(() => db.close())
 				).catch(() => {});
 				awaitOnReload(p);
@@ -2293,7 +2293,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			indexedDB.deleteDatabase(name);
 		}
 		// Delete folder-level index from global HSM database
-		const p = openMergeHSMDatabase().then(db =>
+		const p = openMergeHSMDatabase(this.appId).then(db =>
 			deleteMergeIndex(db, item.guid).finally(() => db.close())
 		).catch(() => {});
 		awaitOnReload(p);
