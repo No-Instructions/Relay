@@ -117,7 +117,7 @@
 		}
 
 		// Add the folder to SharedFolders
-		const folder = plugin.sharedFolders.new(
+		const folder = plugin.sharedFolders.clone(
 			vaultRelativePath,
 			remoteFolder.guid,
 			remoteFolder.relay.guid,

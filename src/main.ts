@@ -762,7 +762,7 @@ export default class Live extends Plugin {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean,
+		authoritative?: boolean,
 	): SharedFolder {
 		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
 		if (!guid || !S3RN.validateUUID(guid)) {
@@ -806,7 +806,7 @@ export default class Live extends Plugin {
 			this.backgroundSync,
 			folderSettings,
 			relayId,
-			awaitingUpdates,
+			authoritative,
 		);
 		return folder;
 	}

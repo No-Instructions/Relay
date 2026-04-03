@@ -314,11 +314,10 @@
 			if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
 				await plugin.vault.createFolder(vaultRelativePath);
 			}
-			const folder = plugin.sharedFolders.new(
+			const folder = plugin.sharedFolders.clone(
 				vaultRelativePath,
 				remoteFolder.guid,
 				remoteFolder.relay.guid,
-				true,
 			);
 			folder.remote = remoteFolder;
 			plugin.sharedFolders.notifyListeners();

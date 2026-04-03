@@ -1,4 +1,5 @@
 "use strict";
+import { uuidv4 } from "lib0/random";
 import {
 	FileManager,
 	TAbstractFile,
@@ -196,7 +197,7 @@ export class SharedFolder extends HasProvider {
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		relayId?: string,
-		awaitingUpdates: boolean = true,
+		authoritative: boolean = false,
 	) {
 		const s3rn = relayId
 			? new S3RemoteFolder(relayId, guid)
@@ -227,7 +228,7 @@ export class SharedFolder extends HasProvider {
 		this._shouldConnect = this.settings.connect ?? true;
 		this._localOnly = this.settings.localOnly ?? false;
 
-		this.authoritative = !awaitingUpdates;
+		this.authoritative = authoritative;
 
 		this.syncSettingsManager = this._settings.getChild<
 			Record<keyof SyncFlags, boolean>,
@@ -431,11 +432,11 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 
-		const authoritative = this.authoritative;
+		const isAuthoritative = this.authoritative;
 		(async () => {
 			const serverSynced = await this.getServerSynced();
 			if (!serverSynced) {
-				if (authoritative) {
+				if (isAuthoritative) {
 					await this.markSynced();
 				} else {
 					await this.onceProviderSynced();
@@ -2206,7 +2207,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean,
+		authoritative?: boolean,
 	) => SharedFolder;
 	private _offRemoteUpdates?: () => void;
 
@@ -2217,7 +2218,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			path: string,
 			guid: string,
 			relayId?: string,
-			awaitingUpdates?: boolean,
+			authoritative?: boolean,
 		) => SharedFolder,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
 	) {
@@ -2341,7 +2342,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean,
+		authoritative?: boolean,
 	): SharedFolder {
 		// Validate inputs
 		if (!path) {
@@ -2370,13 +2371,22 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		if (samePath) {
 			throw new Error("Conflict: Tracked folder exists at this location.");
 		}
-		const folder = this.folderBuilder(path, guid, relayId, awaitingUpdates);
+		const folder = this.folderBuilder(path, guid, relayId, authoritative);
 		this._set.add(folder);
 		return folder;
 	}
 
-	new(path: string, guid: string, relayId?: string, awaitingUpdates?: boolean) {
-		const folder = this._new(path, guid, relayId, awaitingUpdates);
+	/** Share a local folder — user is authoritative (source of truth). */
+	init(path: string, relayId?: string): SharedFolder {
+		const guid = uuidv4();
+		const folder = this._new(path, guid, relayId, true);
+		this.notifyListeners();
+		return folder;
+	}
+
+	/** Download a remote folder — server is authoritative. */
+	clone(path: string, guid: string, relayId?: string): SharedFolder {
+		const folder = this._new(path, guid, relayId, false);
 		this.notifyListeners();
 		return folder;
 	}
