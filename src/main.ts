@@ -52,6 +52,8 @@ import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, flags, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
+import { HSMStore } from "./merge-hsm/persistence";
+import { awaitOnReload } from "./reloadUtils";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
 import { SyncStatusModal } from "./ui/SyncStatusModal";
@@ -140,6 +142,7 @@ export default class Live extends Plugin {
 	version = GIT_TAG;
 	repo = REPOSITORY;
 	hashStore!: ContentAddressedFileStore;
+	private _hsmStore!: HSMStore;
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -570,11 +573,13 @@ export default class Live extends Plugin {
 			vaultId: this.appId,
 			deviceId: this.deviceManager.getDeviceId(),
 		});
+		this._hsmStore = new HSMStore(this.appId);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this.vault,
 			this._createSharedFolder.bind(this),
 			this.folderSettings,
+			this._hsmStore,
 		);
 
 		this.tokenStore = new LiveTokenStore(
@@ -805,6 +810,7 @@ export default class Live extends Plugin {
 			this.hashStore,
 			this.backgroundSync,
 			folderSettings,
+			this._hsmStore,
 			relayId,
 			authoritative,
 		);
@@ -1374,6 +1380,11 @@ export default class Live extends Plugin {
 
 		this.sharedFolders?.destroy();
 		this.sharedFolders = null as any;
+
+		// Flush pending HSM writes and close the database after SharedFolders
+		// are destroyed (no more writes will be queued).
+		awaitOnReload(this._hsmStore?.destroy());
+		this._hsmStore = null as any;
 
 		this.settingsTab?.destroy();
 		this.settingsTab = null as any;

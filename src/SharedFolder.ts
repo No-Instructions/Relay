@@ -63,12 +63,7 @@ import { recordHSMEntry } from "./debug";
 import { awaitOnReload } from "./reloadUtils";
 import { generateHash } from "./hashing";
 import {
-	saveState as saveMergeState,
-	loadState as loadMergeState,
-	openDatabase as openMergeHSMDatabase,
-	getAllStateMeta,
-	deleteState as deleteMergeState,
-	deleteIndex as deleteMergeIndex,
+	HSMStore,
 } from "./merge-hsm/persistence";
 import * as Y from "yjs";
 
@@ -196,6 +191,7 @@ export class SharedFolder extends HasProvider {
 		private hashStore: ContentAddressedFileStore,
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
+		private _hsmStore: HSMStore,
 		relayId?: string,
 		authoritative: boolean = false,
 	) {
@@ -325,24 +321,14 @@ export class SharedFolder extends HasProvider {
 			},
 			loadAllStates: async () => {
 				try {
-					const db = await openMergeHSMDatabase(this.appId);
-					try {
-						return await getAllStateMeta(db);
-					} finally {
-						db.close();
-					}
+					return await this._hsmStore.getAllStateMeta();
 				} catch {
 					return [];
 				}
 			},
 			loadState: async (guid: string) => {
 				try {
-					const db = await openMergeHSMDatabase(this.appId);
-					try {
-						return await loadMergeState(db, guid);
-					} finally {
-						db.close();
-					}
+					return await this._hsmStore.loadState(guid);
 				} catch {
 					return null;
 				}
@@ -350,16 +336,7 @@ export class SharedFolder extends HasProvider {
 			onEffect: async (guid, effect) => {
 				this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
 				if (effect.type === "PERSIST_STATE") {
-					try {
-						const db = await openMergeHSMDatabase(this.appId);
-						try {
-							await saveMergeState(db, effect.state);
-						} finally {
-							db.close();
-						}
-					} catch (e) {
-						this.warn(`[MergeManager] Failed to persist state for ${guid}:`, e);
-					}
+					this._hsmStore.saveState(guid, effect.state);
 				} else if (effect.type === "SYNC_TO_REMOTE") {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
@@ -1152,9 +1129,7 @@ export class SharedFolder extends HasProvider {
 					try {
 						indexedDB.deleteDatabase(`${this.appId}-relay-doc-${localGuid}`);
 					} catch {}
-					const p = openMergeHSMDatabase(this.appId).then(db =>
-						deleteMergeState(db, localGuid).finally(() => db.close())
-					).catch(() => {});
+					const p = this._hsmStore.deleteState(localGuid).catch(() => {});
 					awaitOnReload(p);
 
 					this.syncStore.pendingUpload.delete(path);
@@ -2090,9 +2065,7 @@ export class SharedFolder extends HasProvider {
 				}
 			}, this);
 			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
-			const p = openMergeHSMDatabase(this.appId).then(db =>
-				deleteMergeState(db, guid).finally(() => db.close())
-			).catch(() => {});
+			const p = this._hsmStore.deleteState(guid).catch(() => {});
 			awaitOnReload(p);
 		} else {
 			// syncStore entry already gone (remote delete) - find by path
@@ -2104,9 +2077,7 @@ export class SharedFolder extends HasProvider {
 				doc.cleanup();
 				doc.destroy();
 				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${docGuid}`);
-				const p = openMergeHSMDatabase(this.appId).then(db =>
-					deleteMergeState(db, docGuid).finally(() => db.close())
-				).catch(() => {});
+				const p = this._hsmStore.deleteState(docGuid).catch(() => {});
 				awaitOnReload(p);
 			}
 		}
@@ -2248,6 +2219,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			authoritative?: boolean,
 		) => SharedFolder,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
+		private _hsmStore: HSMStore,
 	) {
 		super();
 		this.folderBuilder = folderBuilder;
@@ -2290,9 +2262,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			indexedDB.deleteDatabase(name);
 		}
 		// Delete folder-level index from global HSM database
-		const p = openMergeHSMDatabase(this.appId).then(db =>
-			deleteMergeIndex(db, item.guid).finally(() => db.close())
-		).catch(() => {});
+		const p = this._hsmStore.deleteIndex(item.guid).catch(() => {});
 		awaitOnReload(p);
 		return deleted;
 	}
