@@ -170,6 +170,7 @@ export class SharedFolder extends HasProvider {
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	private pendingDeletes: Set<string> = new Set();
+	private enabledSyncTypes: Set<SyncType> = new Set();
 
 
 	private _persistence: IndexeddbPersistence;
@@ -420,7 +421,6 @@ export class SharedFolder extends HasProvider {
 			if (!this.destroyed) {
 				// Bulk-load LCA cache before registering HSMs
 				await this.mergeManager.initialize();
-
 				this.syncFileTree();
 			}
 		});
@@ -436,6 +436,9 @@ export class SharedFolder extends HasProvider {
 			// installed, so replay both local doc discovery and file-tree sync after
 			// start() to avoid missing the first batch of remote entries.
 			if (!this.destroyed) {
+				this.enabledSyncTypes = new Set(
+					this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+				);
 				this.addLocalDocs();
 				await this.syncFileTree();
 			}
@@ -827,8 +830,17 @@ export class SharedFolder extends HasProvider {
 		return false;
 	}
 
-	private addLocalDocs = () => {
-		const syncTFiles = this.getSyncFiles();
+	private addLocalDocs = (types?: SyncType[]) => {
+		let syncTFiles = this.getSyncFiles();
+		if (types) {
+			syncTFiles = syncTFiles.filter((tfile) => {
+				if (tfile instanceof TFolder) return false;
+				const vpath = this.getVirtualPath(tfile.path);
+				const fileType =
+					this.syncStore.typeRegistry.getTypeForPath(vpath);
+				return types.includes(fileType);
+			});
+		}
 		const files: IFile[] = [];
 		// Reserve GUIDs for new files before processing
 		this.placeHold(syncTFiles);
@@ -1527,6 +1539,17 @@ export class SharedFolder extends HasProvider {
 
 		const promiseFn = async (): Promise<void> => {
 			try {
+				// When file types are newly enabled, enqueue their local
+				// files for syncing before the rest of the tree sync runs.
+				const currentTypes = this.syncStore.typeRegistry.getEnabledFileSyncTypes();
+				const newlyEnabled = currentTypes.filter(
+					(t) => !this.enabledSyncTypes.has(t),
+				);
+				this.enabledSyncTypes = new Set(currentTypes);
+				if (newlyEnabled.length > 0) {
+					this.addLocalDocs(newlyEnabled);
+				}
+
 				const ops: Operation[] = [];
 				const diffLog: string[] = [];
 
