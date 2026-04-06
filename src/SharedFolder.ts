@@ -409,6 +409,7 @@ export class SharedFolder extends HasProvider {
 				// Bulk-load LCA cache before registering HSMs
 				await this.mergeManager.initialize();
 
+				this.addLocalDocs();
 				this.syncFileTree();
 
 				// Transition all HSMs to idle mode since no editor is open yet.
@@ -860,6 +861,7 @@ export class SharedFolder extends HasProvider {
 
 	async netSync() {
 		await this.whenReady();
+		this.addLocalDocs();
 		await this.syncFileTree();
 		this.backgroundSync.enqueueSharedFolderSync(this);
 	}
@@ -1326,11 +1328,6 @@ export class SharedFolder extends HasProvider {
 
 		const promiseFn = async (): Promise<void> => {
 			try {
-				// Ensure all local syncable files are registered before reconciling.
-				// Without this, files that became syncable (e.g., after a settings
-				// change) would be treated as "remotely deleted" and trashed.
-				this.addLocalDocs();
-
 				const ops: Operation[] = [];
 				const diffLog: string[] = [];
 
