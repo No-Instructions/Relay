@@ -78,19 +78,8 @@ export type {
 // NOTE: Yjs updates are stored in y-indexeddb, not here.
 // Persistence writes to IDB automatically via localDoc's _storeUpdate handler.
 export {
-  openDatabase,
-  closeDatabase,
+  HSMStore,
   deleteDatabase,
-  clearAllData,
-  saveState,
-  loadState,
-  deleteState,
-  getAllStateGuids,
-  getAllStates,
-  getAllStateMeta,
-  saveIndex,
-  loadIndex,
-  deleteIndex,
 } from './persistence';
 
 // Integration classes
