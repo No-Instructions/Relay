@@ -137,6 +137,9 @@ jobs:
           # Load R2 credentials
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
+          # Obsidian path for Linux slot scripts
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
+
           # Start virtual display for headless Obsidian
           export DISPLAY=:99
           Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
