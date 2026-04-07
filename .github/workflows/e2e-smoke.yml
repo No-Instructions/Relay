@@ -1,6 +1,8 @@
 name: E2E Smoke Tests
 
 on:
+  push:
+    branches: [merge-hsm]
   workflow_dispatch:
     inputs:
       branch:
@@ -98,9 +100,21 @@ jobs:
             --tunnel-through-iap 2>/dev/null
           rm -f /tmp/deploy-key
 
+          # GitHub App private key for posting Check Runs
+          echo '${{ secrets.GITHUB_APP_KEY }}' > /tmp/github-app-key.pem
+          chmod 600 /tmp/github-app-key.pem
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="mkdir -p ~/.config/relay-e2e" 2>/dev/null
+          gcloud compute scp --quiet /tmp/github-app-key.pem "$VM_NAME":~/.config/relay-e2e/github-app-key.pem \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null
+          rm -f /tmp/github-app-key.pem
+
       - name: Run smoke tests on VM
         run: |
-          BRANCH="${{ github.event.inputs.branch }}"
+          BRANCH="${{ github.event.inputs.branch || format('origin/{0}', github.ref_name) }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
@@ -153,7 +167,7 @@ jobs:
           cd ~/relay-harness
 
           TEST_EXIT=0
-          ./scripts/test-branch.sh "$BRANCH" --upload || TEST_EXIT=$?
+          ./scripts/test-branch.sh "$BRANCH" --upload --checks || TEST_EXIT=$?
 
           # Extract results for the GitHub Actions runner
           LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
@@ -162,7 +176,7 @@ jobs:
 
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
-            REPORT_URL="https://storage.googleapis.com/relay-e2e-screenshots/runs/${COMMIT}/${EXEC_ID}/index.html"
+            REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
             echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
           else
             echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
@@ -181,7 +195,7 @@ jobs:
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key" 2>/dev/null || true
+            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/github-app-key.pem" 2>/dev/null || true
 
       - name: Fetch results
         if: always()
