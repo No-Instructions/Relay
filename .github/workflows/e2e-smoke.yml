@@ -112,6 +112,17 @@ jobs:
             --tunnel-through-iap 2>/dev/null
           rm -f /tmp/github-app-key.pem
 
+          # R2 credentials for ci.system3.dev uploads
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
+          export CI_R2_ENDPOINT='${{ secrets.CI_R2_ENDPOINT }}'
+          export CI_R2_ACCESS_KEY_ID='${{ secrets.CI_R2_ACCESS_KEY_ID }}'
+          export CI_R2_SECRET_ACCESS_KEY='${{ secrets.CI_R2_SECRET_ACCESS_KEY }}'
+          CREDS
+          chmod 600 ~/.config/relay-e2e/r2-env.sh" 2>/dev/null
+
       - name: Run smoke tests on VM
         run: |
           BRANCH="${{ github.event.inputs.branch || format('origin/{0}', github.ref_name) }}"
@@ -122,6 +133,9 @@ jobs:
             --command="bash -s -- '$BRANCH'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           BRANCH="$1"
+
+          # Load R2 credentials
+          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
           # Start virtual display for headless Obsidian
           export DISPLAY=:99
@@ -195,7 +209,7 @@ jobs:
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/github-app-key.pem" 2>/dev/null || true
+            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/github-app-key.pem ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
 
       - name: Fetch results
         if: always()
