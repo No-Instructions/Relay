@@ -101,7 +101,7 @@ jobs:
           rm -f /tmp/deploy-key
 
           # GitHub App private key for posting Check Runs
-          echo '${{ secrets.GITHUB_APP_KEY }}' > /tmp/github-app-key.pem
+          echo '${{ secrets.E2E_APP_KEY }}' > /tmp/github-app-key.pem
           chmod 600 /tmp/github-app-key.pem
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
