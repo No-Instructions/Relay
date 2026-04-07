@@ -137,8 +137,17 @@ jobs:
           # Load R2 credentials
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
-          # Obsidian path for Linux slot scripts
+          # Ensure Obsidian AppImage is installed
           export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
+          if [ ! -f "$OBSIDIAN_PATH" ]; then
+            echo "Installing Obsidian AppImage..."
+            mkdir -p ~/obsidian
+            OBSIDIAN_VERSION="1.8.9"
+            wget -q -O "$OBSIDIAN_PATH" \
+              "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+            chmod +x "$OBSIDIAN_PATH"
+            echo "Installed Obsidian $OBSIDIAN_VERSION"
+          fi
 
           # Start virtual display for headless Obsidian
           export DISPLAY=:99
