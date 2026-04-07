@@ -167,6 +167,8 @@ jobs:
           fi
           cd ~/relay-plugin
           git fetch --all --prune
+          git checkout -- .
+          git clean -fd
           # Detached HEAD checkout — works for origin/branch, tags, and SHAs
           git checkout --detach "$BRANCH"
 
