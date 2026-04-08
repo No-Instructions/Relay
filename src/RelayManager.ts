@@ -138,6 +138,28 @@ interface Collection<D, A> {
 	delete(id: string): void;
 }
 
+/**
+ * Marker interface for records that maintain a PocketBase realtime
+ * per-record subscription in addition to the top-level collection stream.
+ * RelayManager.resubscribeRecords() scans every Store collection for tagged
+ * items on reconnect and re-installs their subscriptions.
+ */
+interface HasRecordSubscription {
+	id: string;
+	collectionName: string;
+	offRecordSubscription?: Unsubscriber;
+}
+
+function hasRecordSubscription(x: unknown): x is HasRecordSubscription {
+	return (
+		typeof x === "object" &&
+		x !== null &&
+		typeof (x as HasRecordSubscription).id === "string" &&
+		typeof (x as HasRecordSubscription).collectionName === "string" &&
+		"offRecordSubscription" in x
+	);
+}
+
 class RoleCollection implements Collection<RoleDAO, RoleDAO> {
 	collectionName: string = "roles";
 	roles: ObservableMap<string, RoleDAO>;
@@ -196,8 +218,9 @@ class Auto implements hasRoot, hasPermissionParents {
 
 class StorageQuotaAuto
 	extends Observable<StorageQuota>
-	implements StorageQuota
+	implements StorageQuota, HasRecordSubscription
 {
+	public readonly collectionName = "storage_quotas";
 	public offRecordSubscription?: Unsubscriber;
 
 	constructor(
@@ -1461,6 +1484,7 @@ export class RelayManager extends HasLogging {
 	store?: Store;
 	policyManager?: IPolicyManager;
 	_offLoginManager: Unsubscriber;
+	private _isSubscribed = false;
 	private pb: PocketBase | null;
 	destroyed = false;
 
@@ -1641,6 +1665,10 @@ export class RelayManager extends HasLogging {
 		this.store?.clear();
 		this.user = undefined;
 		this.store = undefined;
+		// LoginManager.logout() calls pb.realtime.unsubscribe() which wipes
+		// the client-side subscription map; clear our flag so the next login
+		// re-registers.
+		this._isSubscribed = false;
 	}
 
 	async rotateKey(relayInvitation: RelayInvitation): Promise<RelayInvitation> {
@@ -1766,6 +1794,15 @@ export class RelayManager extends HasLogging {
 			{ name: "subscriptions", expand: ["user", "relay"] },
 		];
 
+		// Idempotent. PocketBase's subscribe() stacks listener closures onto
+		// a per-topic array with no dedup, so calling this twice would fire
+		// our _handleEvent twice per server event. offline(), logout(), and
+		// destroy() clear the flag so the next call re-registers.
+		if (this._isSubscribed) {
+			return;
+		}
+		this._isSubscribed = true;
+
 		for (const collection of collections) {
 			this.pb
 				.collection(collection.name)
@@ -1773,6 +1810,58 @@ export class RelayManager extends HasLogging {
 					expand: collection.expand.join(","),
 					fetch: customFetch,
 				});
+		}
+	}
+
+	/**
+	 * Tear down every PocketBase realtime subscription and close the SSE
+	 * stream. Called from the network offline handler to stop PB's infinite
+	 * reconnect loop while the browser reports no connectivity.
+	 *
+	 * pb.realtime.unsubscribe() wipes PB's entire subscriptions map,
+	 * including per-record subscriptions held by tagged records in the
+	 * store. online() rebuilds both layers.
+	 */
+	offline(): void {
+		if (!this.pb) return;
+		this.pb.realtime.unsubscribe();
+		this._isSubscribed = false;
+	}
+
+	/**
+	 * Rebuild all PocketBase realtime state after coming back online:
+	 * re-register the top-level collection streams, reinstall per-record
+	 * subscriptions on tagged records already in the store, then refresh
+	 * the store contents via a full list fetch.
+	 */
+	async online(): Promise<void> {
+		await this.subscribe();
+		await this.resubscribeRecords();
+		await this.update();
+	}
+
+	/**
+	 * Scan every Store collection for records implementing
+	 * HasRecordSubscription and (re)install their per-record realtime
+	 * subscriptions. Safe to call repeatedly; each record's existing
+	 * subscription handle is released before a fresh one is installed.
+	 */
+	private async resubscribeRecords(): Promise<void> {
+		if (!this.store?.collections) return;
+		for (const collection of this.store.collections.values()) {
+			for (const item of collection.items()) {
+				if (!hasRecordSubscription(item)) continue;
+				try {
+					await item.offRecordSubscription?.();
+				} catch (e) {
+					this.debug("stale record unsubscribe failed", e);
+				}
+				item.offRecordSubscription = await this.subscribeRecord(
+					item.collectionName,
+					item.id,
+					[],
+				);
+			}
 		}
 	}
 
@@ -2205,6 +2294,7 @@ export class RelayManager extends HasLogging {
 		this._offLoginManager = null as any;
 		this.pb?.cancelAllRequests();
 		this.pb?.realtime?.unsubscribe();
+		this._isSubscribed = false;
 		this.loginManager = null as any;
 		this.store?.destroy();
 		this.pb = null as any;

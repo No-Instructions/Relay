@@ -680,13 +680,13 @@ export default class Live extends Plugin {
 				// We can't run network status on iOS or it will always be offline.
 				this.networkStatus.addEventListener("offline", () => {
 					this.tokenStore.stop();
+					this.relayManager.offline();
 					this.sharedFolders.forEach((folder) => folder.disconnect());
 					this._liveViews.goOffline();
 				});
 				this.networkStatus.addEventListener("online", () => {
 					this.tokenStore.start();
-					this.relayManager.subscribe();
-					this.relayManager.update();
+					this.relayManager.online();
 					this._liveViews.goOnline();
 				});
 				this.networkStatus.start();
