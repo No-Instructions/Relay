@@ -366,7 +366,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'active.tracking', actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal', 'repairFrontmatter'] },
 			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },
 			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
-			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote'] },
+			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
 			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'reconcileForkInActive'] },
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
