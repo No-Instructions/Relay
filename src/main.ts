@@ -106,6 +106,7 @@ declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
 	appId!: string;
+	private _instanceId!: string;
 	webviewerPatched = false;
 	openModals: Modal[] = [];
 	loadTime?: number;
@@ -323,6 +324,29 @@ export default class Live extends Plugin {
 		}
 	}
 	async onload() {
+		// Detect leaked plugin instances from a previous onunload() that
+		// crashed or was skipped. We track active instance IDs on a
+		// window-level Set: each load adds an ID, each clean unload
+		// removes it. A non-empty set at load time means a previous
+		// lifecycle did not finish teardown, which surfaces as stale
+		// WebSocket subscribers, duplicate event listeners, orphaned
+		// PostOffice deliveries, and other ghost-plugin symptoms. Loud
+		// error is the point — silent leaks used to manifest as
+		// flaky test runs days later.
+		const w = window as any;
+		if (!w.__relayInstances) w.__relayInstances = new Set<string>();
+		const leaked: string[] = Array.from(w.__relayInstances);
+		if (leaked.length > 0) {
+			console.error(
+				`[Relay] leaked plugin instance(s) from a previous lifecycle: ${leaked.join(", ")}. ` +
+				`Previous onunload() did not complete — expect stale listeners, ` +
+				`duplicate WebSocket subscribers, and ghost state. ` +
+				`Reload Obsidian to recover.`,
+			);
+		}
+		this._instanceId = Math.random().toString(36).slice(2, 10);
+		w.__relayInstances.add(this._instanceId);
+
 		this.appId = (this.app as any).appId;
 		const start = moment.now();
 		RelayInstances.set(this, "plugin");
@@ -1429,6 +1453,12 @@ export default class Live extends Plugin {
 
 		auditTeardown();
 		flushLogs();
+
+		// Clear our instance ID from the leak-detection set LAST — if
+		// anything above throws, we leave the ID in place so the next
+		// load surfaces it as a leak. The pre-clear warning at the top
+		// of onload() turns this into an actionable signal.
+		(window as any).__relayInstances?.delete(this._instanceId);
 	}
 
 	async loadSettings() {
