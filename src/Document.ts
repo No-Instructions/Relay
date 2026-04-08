@@ -818,6 +818,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				}
 			}
 		});
+		this.unsubscribes.push(unsub);
 	}
 
 	/**
