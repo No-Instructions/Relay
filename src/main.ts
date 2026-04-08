@@ -61,6 +61,7 @@ import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
+import { diffMatchPatch } from "./y-diffMatchPatch";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { SelfHostModal } from "./ui/SelfHostModal";
 
@@ -975,6 +976,18 @@ export default class Live extends Plugin {
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
 						file.sync();
+					}
+					// Apply external disk writes (e.g. MegaMem CLI, Claude Code, Obsidian
+					// Bases, Quadro, rename link-updates) directly into the CRDT so that
+					// opening a file that was modified outside an active editor never shows
+					// a false merge conflict.
+					if (file && isDocument(file) && flags().enableAutomaticDiffResolution) {
+						folder.read(file).then((diskContents) => {
+							const normalized = diskContents.replace(/\r\n/g, "\n");
+							if (file.text !== normalized) {
+								diffMatchPatch(file.ydoc, normalized, file);
+							}
+						}).catch(() => {});
 					}
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
