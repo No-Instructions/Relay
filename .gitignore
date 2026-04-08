@@ -1,3 +1,6 @@
+# roo local config (contains PATs — never commit)
+.roo/
+
 # vscode
 .vscode
 

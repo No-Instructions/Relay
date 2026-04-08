@@ -4,7 +4,7 @@
 	"description": "Real-time collaborative workspace for Obsidian.",
 	"main": "main.js",
 	"scripts": {
-		"dev": "node esbuild.config.mjs watch",
+		"dev": "node esbuild.config.mjs watch \"E:/GIT/LOCAL/obsidian-graphiti-mcp/test-vault/.obsidian/plugins/system3-relay\"",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs develop",
 		"release": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"beta": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs debug",
