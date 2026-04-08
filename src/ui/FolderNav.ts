@@ -677,12 +677,43 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	backgroundSync: BackgroundSync;
-	offFolderListener: () => void;
-	offDocumentListeners: Map<SharedFolder, () => void>;
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 	layoutReady: boolean = false;
-	unsubscribes: Unsubscribe[];
+
+	/**
+	 * Subscriptions to plugin-global observables (background sync
+	 * stores, workspace layout). Attached once in the constructor and
+	 * released once in destroy(). Never changes over the lifetime.
+	 */
+	private globalSubs: Unsubscribe[] = [];
+
+	/**
+	 * Root subscription on the SharedFolders ObservableSet itself —
+	 * fires when a folder is added or removed from the plugin.
+	 */
+	private rootSub: Unsubscribe | null = null;
+
+	/**
+	 * Folders we've already attached the main subscription bundle to
+	 * (syncSettings, folder, syncStore). Per-folder cleanup is
+	 * registered via `folder.onDestroy(...)` so it fires automatically
+	 * when the folder is destroyed — no per-subscriber teardown map
+	 * here. The WeakSet is just dedup: the sharedFolders observer
+	 * re-fires on every add/remove, and we only want to subscribe to
+	 * each folder once over its lifetime.
+	 */
+	private subscribedFolders = new WeakSet<SharedFolder>();
+
+	/**
+	 * Separate dedup for the `fset.on` subscription, which is gated by
+	 * `flag.enableDocumentStatus`. Tracked separately from
+	 * `subscribedFolders` so that if the flag is flipped on mid-session
+	 * the fset subscription is still attached on the next sharedFolders
+	 * notification — matching the behavior of the original
+	 * `offDocumentListeners` map.
+	 */
+	private subscribedFolderFsets = new WeakSet<SharedFolder>();
 
 	constructor(
 		vault: Vault,
@@ -699,51 +730,65 @@ export class FolderNavigationDecorations {
 			this.layoutReady = true;
 			this.refresh();
 		});
-		this.unsubscribes = [];
 
-		this.unsubscribes.push(
+		this.globalSubs.push(
 			backgroundSync.activeSync.subscribe(() => this.quickRefresh()),
 			backgroundSync.activeDownloads.subscribe(() => this.quickRefresh()),
 			backgroundSync.syncGroups.subscribe(() => this.quickRefresh()),
 		);
 
-		this.offDocumentListeners = new Map();
-		this.offFolderListener = this.sharedFolders.subscribe(() => {
+		// Subscribe to the SharedFolders set. On every notification,
+		// attach refresh-trigger subscriptions to any folders we
+		// haven't seen yet. Cleanup is registered with each folder
+		// via `folder.onDestroy(...)` — SharedFolder runs its own
+		// unsubscribe queue at the top of destroy(), so external
+		// subscriptions are released before any internal observable
+		// is torn down. No per-folder diff loop needed here.
+		//
+		// Behavior contract (matches the pre-refactor structure):
+		//   - whenReady().then(refresh) fires on every notification
+		//   - fset.on has its own dedup gated by the feature flag so
+		//     a mid-session flag flip can attach it late
+		//   - the other three subs (syncSettings/folder/syncStore)
+		//     are dedup'd per folder (the pre-refactor code leaked
+		//     them on every notification — that was the teardown bug)
+		this.rootSub = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
 				withAnyOf([flag.enableDocumentStatus], () => {
-					const docsetListener = this.offDocumentListeners.get(folder);
-					if (!docsetListener) {
-						this.offDocumentListeners.set(
-							folder,
+					if (!this.subscribedFolderFsets.has(folder)) {
+						this.subscribedFolderFsets.add(folder);
+						folder.onDestroy(
 							folder.fset.on(() => {
-								// XXX a full refresh is only needed when a document is moved
-								// outside of a shared folder.
+								// XXX a full refresh is only needed when a document
+								// is moved outside of a shared folder.
 								this.refresh();
 							}),
 						);
 					}
 				});
-				folder.whenReady().then(() => {
-					this.refresh();
-				});
-				this.unsubscribes.push(
-					folder.syncSettingsManager.subscribe((settings) => {
-						this.quickRefresh();
-					}),
+
+				// Refresh once the folder finishes its own load so we
+				// paint decorations as soon as data is available. This
+				// intentionally runs on every notification — matches
+				// the pre-refactor behavior (the .then handler is
+				// attached to the same cached promise each time, so
+				// after resolution every repeat handler fires once).
+				folder.whenReady().then(() => this.refresh());
+
+				if (this.subscribedFolders.has(folder)) return;
+				this.subscribedFolders.add(folder);
+
+				folder.onDestroy(
+					folder.syncSettingsManager.subscribe(() => this.quickRefresh()),
 				);
-				this.unsubscribes.push(
-					folder.subscribe(this, () => {
-						this.quickRefresh();
-					}),
-				);
-				this.unsubscribes.push(
-					folder.syncStore.subscribe((syncStore) => {
-						this.quickRefresh();
-					}),
+				folder.onDestroy(folder.subscribe(this, () => this.quickRefresh()));
+				folder.onDestroy(
+					folder.syncStore.subscribe(() => this.quickRefresh()),
 				);
 			});
 			this.refresh();
 		});
+
 		this.offLayoutChange = (() => {
 			const ref = this.workspace.on("layout-change", () => this.quickRefresh());
 			return () => {
@@ -751,6 +796,7 @@ export class FolderNavigationDecorations {
 			};
 		})();
 	}
+
 
 	makeVisitors(): FileSystemVisitor<Destroyable>[] {
 		const visitors = [];
@@ -831,14 +877,22 @@ export class FolderNavigationDecorations {
 	}
 
 	destroy() {
-		this.offFolderListener?.();
-		this.offDocumentListeners.forEach((off) => off());
-		this.offDocumentListeners.clear();
-		this.unsubscribes.forEach((unsub) => unsub());
-		this.unsubscribes.length = 0;
-		this.treeState.forEach((walker) => {
-			walker.destroy();
-		});
+		// Release the root SharedFolders subscription first so no further
+		// folder-add notifications can arrive while we're tearing down.
+		this.rootSub?.();
+		this.rootSub = null;
+
+		// Release the plugin-global subscriptions. Per-folder subs are
+		// not touched here — they are registered with each SharedFolder
+		// via folder.onDestroy(), so they fire automatically when the
+		// folder is destroyed (either at runtime delete or as part of
+		// sharedFolders.destroy() during plugin unload).
+		for (const unsub of this.globalSubs) {
+			try { unsub(); } catch { /* observable torn down first */ }
+		}
+		this.globalSubs.length = 0;
+
+		this.treeState.forEach((walker) => walker.destroy());
 		this.treeState.clear();
 		this.offLayoutChange();
 
@@ -846,6 +900,5 @@ export class FolderNavigationDecorations {
 		this.workspace = null as any;
 		this.sharedFolders = null as any;
 		this.backgroundSync = null as any;
-		this.offFolderListener = null as any;
 	}
 }
