@@ -43,6 +43,11 @@ export class ResourceMeterMount {
 		if (!this.layoutReady) return;
 
 		const enabled = flags().enableResourceMeter;
+		// If our container was detached (e.g. sidebar re-rendered), drop it so
+		// we can remount cleanly instead of leaving a stale instance behind.
+		if (this.component && !this.containerEl?.isConnected) {
+			this.unmount();
+		}
 		if (enabled && !this.component) {
 			this.mount();
 		} else if (!enabled && this.component) {
@@ -66,6 +71,13 @@ export class ResourceMeterMount {
 	private mount(): void {
 		const target = this.findVaultActions();
 		if (!target) return;
+
+		// Guard against duplicates: remove any stray meter elements that may
+		// have been left behind by a previous mount (e.g. plugin reload or
+		// sidebar re-render) before inserting a new one.
+		document
+			.querySelectorAll(".system3-resource-meter")
+			.forEach((el) => el.remove());
 
 		this.containerEl = document.createElement("span");
 		this.containerEl.classList.add("clickable-icon", "system3-resource-meter");
