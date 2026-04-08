@@ -29,6 +29,53 @@ export interface DocumentContentSnapshot {
   server: { content: string; stateVector: string; updateSize: number } | null;
 }
 
+export interface HsmStateTransition {
+  ts: number;
+  seq: number;
+  event: string;
+  from: string;
+  to: string;
+}
+
+export interface HsmSyncGate {
+  providerConnected: boolean;
+  providerSynced: boolean;
+  localOnly: boolean;
+  pendingInbound: number;
+  pendingOutbound: number;
+}
+
+/**
+ * Rich snapshot of an HSM's state, covering every layer the test harness
+ * routinely inspects: state path + sync gate (from the machine), LCA meta
+ * and content (from the HSM), localDoc length/content/frontmatter (from
+ * the in-memory Y.Doc), disk content + mtime (via the vault adapter), and
+ * recent HSM transitions (via the disk log). Replaces the ad-hoc 120-line
+ * eval blob that used to live in the Python CLI.
+ */
+export interface HsmStateSnapshot {
+  path: string;
+  guid: string;
+  folder: string;
+  statePath: string;
+  syncGate: HsmSyncGate | null;
+  hasLCA: boolean;
+  lcaHash: string | null;
+  lcaContentLength: number | null;
+  lcaContent: string | null;
+  hasConflict: boolean;
+  conflictData: any | null;
+  localDocLength: number;
+  idbContent: string | null;
+  diskMtime: number | null;
+  diskContent: string | null;
+  stateVectorsEqual: boolean | null;
+  diskMatchesIdb: boolean;
+  idbMatchesLca: boolean;
+  frontmatterMap: Record<string, any> | null;
+  recentTransitions: HsmStateTransition[];
+}
+
 // =============================================================================
 // Global interface exposed via CDP
 // =============================================================================
@@ -62,6 +109,8 @@ export interface RelayDebugGlobal {
   lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
   lookupFolder: (path: string) => any | null;
+  /** Get a rich HSM state snapshot for the test harness — state path, LCA, disk, IDB, SV, frontmatter, recent transitions. */
+  getHsmStateSnapshot: (path: string) => Promise<HsmStateSnapshot>;
 }
 
 // =============================================================================
@@ -182,6 +231,7 @@ export class RelayDebugAPI {
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
       getDocumentContent: async (path) => this.getDocumentContent(path),
+      getHsmStateSnapshot: async (path) => this.getHsmStateSnapshot(path),
 
       setEditorContent: (content: string) => {
         const editor = (this.plugin?.app as any)?.workspace?.activeEditor?.editor;
@@ -392,6 +442,134 @@ export class RelayDebugAPI {
     } catch { /* server download failed */ }
 
     return result;
+  }
+
+  /**
+   * Build the HsmStateSnapshot for a document. Factored here so the CLI
+   * and the Python RelayClient can both reach the same shape via a
+   * single `__relayDebug.getHsmStateSnapshot(path)` call.
+   */
+  private async getHsmStateSnapshot(path: string): Promise<HsmStateSnapshot> {
+    const g = typeof window !== 'undefined' ? window : globalThis;
+    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    if (!lookup) {
+      throw new Error(`HSM not found: ${path}`);
+    }
+    const { doc, hsm, guid, folder, filePath } = lookup;
+
+    const lca = (hsm as any)._lca;
+    const hasValidLCA = !!(lca && lca.contents !== undefined && lca.meta?.hash);
+    const lcaContent: string | null = hasValidLCA ? lca.contents : null;
+
+    // Disk — prefer the vault adapter so we see exactly what the HSM sees.
+    const vaultPath = (folder as any).path + filePath;
+    let diskContent: string | null = null;
+    try {
+      diskContent = await this.plugin.app.vault.adapter.read(vaultPath);
+    } catch {
+      diskContent = null;
+    }
+
+    // IDB — prefer the in-memory localDoc so we don't open a parallel
+    // IndexeddbPersistence when the HSM is warm.
+    let idbContent: string | null = null;
+    let idbStateVector: Uint8Array | null = null;
+    if ((hsm as any).localDoc) {
+      idbContent = (hsm as any).localDoc.getText('contents').toString();
+      idbStateVector = (hsm as any)._localStateVector || null;
+    } else {
+      try {
+        const result = await readIdbContent(
+          guid,
+          (hsm as any)._persistenceMetadata?.appId,
+        );
+        if (result) {
+          idbContent = result.content;
+          idbStateVector = result.stateVector;
+        }
+      } catch { /* noop */ }
+    }
+
+    // SV equality — only meaningful if both sides exist.
+    let stateVectorsEqual: boolean | null = null;
+    try {
+      const remoteStateVector: Uint8Array | null =
+        (hsm as any)._remoteStateVector || null;
+      if (idbStateVector && remoteStateVector) {
+        const localArr = Array.from(idbStateVector);
+        const remoteArr = Array.from(remoteStateVector);
+        stateVectorsEqual = JSON.stringify(localArr) === JSON.stringify(remoteArr);
+      }
+    } catch { /* noop */ }
+
+    const diskMatchesIdb =
+      diskContent !== null && idbContent !== null && diskContent === idbContent;
+    const idbMatchesLca =
+      idbContent !== null && lcaContent !== null && idbContent === lcaContent;
+
+    // Recent transitions from the HSM disk log.
+    let recentTransitions: HsmStateTransition[] = [];
+    try {
+      const entries = await getRecentEntries(guid, 10);
+      recentTransitions = entries.map((raw: any) => ({
+        ts: raw.ts,
+        seq: raw.seq,
+        event: typeof raw.event === 'object' ? raw.event.type : raw.event,
+        from: raw.from,
+        to: raw.to,
+      }));
+    } catch { /* noop */ }
+
+    // Frontmatter Y.Map snapshot.
+    let frontmatterMap: Record<string, any> | null = null;
+    if ((hsm as any).localDoc) {
+      try {
+        const ymap = (hsm as any).localDoc.getMap('frontmatter');
+        if (ymap.size > 0) {
+          frontmatterMap = {};
+          for (const [k, v] of ymap.entries()) {
+            try { frontmatterMap[k] = JSON.parse(v as string); }
+            catch { frontmatterMap[k] = v; }
+          }
+        }
+      } catch { /* noop */ }
+    }
+
+    const syncGateRaw = (hsm as any)._syncGate;
+    const syncGate: HsmSyncGate | null = syncGateRaw ? {
+      providerConnected: !!syncGateRaw.providerConnected,
+      providerSynced: !!syncGateRaw.providerSynced,
+      localOnly: !!syncGateRaw.localOnly,
+      pendingInbound: syncGateRaw.pendingInbound ?? 0,
+      pendingOutbound: syncGateRaw.pendingOutbound ?? 0,
+    } : null;
+
+    void doc; // referenced for future expansion; silences lint
+
+    return {
+      path: filePath,
+      guid,
+      folder: (folder as any).name,
+      statePath: (hsm as any)._statePath || 'unknown',
+      syncGate,
+      hasLCA: hasValidLCA,
+      lcaHash: lca?.meta?.hash || null,
+      lcaContentLength: lca?.contents?.length ?? null,
+      lcaContent,
+      hasConflict: !!(hsm as any).conflictData,
+      conflictData: (hsm as any).conflictData || null,
+      localDocLength: (hsm as any).localDoc
+        ? ((hsm as any).localDoc.getText?.('contents')?.toString()?.length ?? 0)
+        : 0,
+      idbContent,
+      diskMtime: (hsm as any)._disk?.mtime || null,
+      diskContent,
+      stateVectorsEqual,
+      diskMatchesIdb,
+      idbMatchesLca,
+      frontmatterMap,
+      recentTransitions,
+    };
   }
 
   /**
