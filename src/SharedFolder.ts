@@ -2189,7 +2189,6 @@ export class SharedFolder extends HasProvider {
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
 		super.destroy();
-		this.ydoc.destroy();
 		this.fset.clear();
 		this._settings.destroy();
 		this._settings = null as any;
