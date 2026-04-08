@@ -178,6 +178,12 @@ export interface RelayDebugGlobal {
   getIdbHistory: (path: string) => Promise<IdbHistorySnapshot>;
   /** Snapshot in-memory and persisted fork state for a document. */
   getIdbFork: (path: string) => Promise<IdbForkSnapshot>;
+  /**
+   * Wait for an HSM to reach a state path that starts with `statePrefix`,
+   * subject to a timeout. Resolves with the final state path on success.
+   * Thin bridge over `MergeHSM.awaitState` — event-driven, no polling.
+   */
+  awaitHsmState: (path: string, statePrefix: string, timeoutMs: number) => Promise<string>;
 }
 
 // =============================================================================
@@ -302,6 +308,8 @@ export class RelayDebugAPI {
       getIdbContent: async (path) => this.getIdbContent(path),
       getIdbHistory: async (path) => this.getIdbHistory(path),
       getIdbFork: async (path) => this.getIdbFork(path),
+      awaitHsmState: async (path, statePrefix, timeoutMs) =>
+        this.awaitHsmState(path, statePrefix, timeoutMs),
 
       setEditorContent: (content: string) => {
         const editor = (this.plugin?.app as any)?.workspace?.activeEditor?.editor;
@@ -640,6 +648,55 @@ export class RelayDebugAPI {
       frontmatterMap,
       recentTransitions,
     };
+  }
+
+  /**
+   * Wait for an HSM to reach a state path that starts with `statePrefix`,
+   * racing against a timeout. Thin bridge over `MergeHSM.awaitState`,
+   * which is event-driven (subscribes to `stateChanges` and resolves
+   * as soon as the predicate matches) — no polling, no per-tick
+   * Python↔JS round-trips.
+   *
+   * Resolves with the final state path on success. Rejects with a
+   * timeout error that includes the current state path for debugging.
+   *
+   * Use from the Python library to compose "open file and wait for
+   * active" or "close and wait for idle" flows without baking the
+   * wait into the action primitives themselves.
+   */
+  private async awaitHsmState(
+    path: string,
+    statePrefix: string,
+    timeoutMs: number,
+  ): Promise<string> {
+    const g = typeof window !== 'undefined' ? window : globalThis;
+    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    if (!lookup) throw new Error(`HSM not found: ${path}`);
+    const hsm = lookup.hsm as any;
+
+    const matcher = (s: string) => s.startsWith(statePrefix);
+    if (matcher(hsm._statePath)) return hsm._statePath;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        hsm.awaitState(matcher),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(
+                `awaitHsmState timeout after ${timeoutMs}ms waiting for ` +
+                  `${path} to reach state starting with "${statePrefix}" ` +
+                  `(current: ${hsm._statePath})`,
+              ),
+            );
+          }, timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+    return hsm._statePath;
   }
 
   /**
