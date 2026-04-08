@@ -169,6 +169,7 @@ export const MACHINE: MachineDefinition = {
 		},
 		on: {
 			IDLE_RETRY: { target: 'idle.remoteAhead', reenter: true },
+			PROVIDER_SYNCED: { target: 'idle.remoteAhead', actions: ['markProviderSynced'], reenter: true },
 			DISK_CHANGED: [
 				{ target: 'idle.remoteAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
@@ -191,6 +192,7 @@ export const MACHINE: MachineDefinition = {
 			onError: { target: 'idle.diverged' },
 		},
 		on: {
+			PROVIDER_SYNCED: { target: 'idle.diskAhead', actions: ['markProviderSynced'], reenter: true },
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
 			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
@@ -213,6 +215,7 @@ export const MACHINE: MachineDefinition = {
 		},
 		on: {
 			IDLE_RETRY: { target: 'idle.diverged', reenter: true },
+			PROVIDER_SYNCED: { target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
 			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
