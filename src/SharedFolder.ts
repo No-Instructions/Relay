@@ -858,8 +858,11 @@ export class SharedFolder extends HasProvider {
 				if (result && this.mergeManager) {
 					// Clear tracked SVs so the first event on this connection
 					// triggers an HTTP full-sync to establish a baseline.
+					// The provider preserves eventCallbacks across reconnects
+					// and re-sends the server subscribe frame itself, so the
+					// callbacks registered by the constructor's
+					// setupEventSubscriptions() call stay live.
 					this.mergeManager.clearTrackedRemoteSVs();
-					this.setupEventSubscriptions();
 				}
 				return result;
 			}
