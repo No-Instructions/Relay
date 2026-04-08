@@ -583,7 +583,6 @@ export class LoginManager extends Observable<LoginManager> {
 					this.off(isLoggedIn);
 					resolve(true);
 				}
-				resolve(false);
 			};
 			this.on(isLoggedIn);
 		});
