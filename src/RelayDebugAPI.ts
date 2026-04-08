@@ -45,6 +45,67 @@ export interface HsmSyncGate {
   pendingOutbound: number;
 }
 
+export interface IdbContentSnapshot {
+  path: string;
+  guid: string;
+  folder: string;
+  dbName: string;
+  metadata: Record<string, any>;
+  updatesCount: number;
+  idbContent: string | null;
+  idbLength: number;
+  diskContent: string | null;
+  diskLength: number | null;
+  match: boolean;
+}
+
+export interface IdbHistoryEntry {
+  key: IDBValidKey;
+  origin: any;
+  timestamp: number | null;
+  time: string | null;
+  insertionsBytes: number;
+  deletionsBytes: number;
+}
+
+export interface IdbHistorySnapshot {
+  path: string;
+  guid: string;
+  folder: string;
+  dbName: string;
+  historyCount: number;
+  inMemoryCount: number | null;
+  entries: IdbHistoryEntry[];
+  note?: string;
+}
+
+export interface ForkSnapshot {
+  base: string | null;
+  baseLength: number;
+  origin: string | null;
+  created: number | null;
+  createdTime: string | null;
+  captureMark: any;
+  localStateVectorBytes: number;
+  remoteStateVectorBytes: number;
+}
+
+export interface IdbForkSnapshot {
+  path: string;
+  guid: string;
+  folder: string;
+  statePath: string;
+  hasFork: boolean;
+  inMemoryFork: ForkSnapshot | null;
+  persistedFork: ForkSnapshot | { error: string } | null;
+  persistedMeta: {
+    lastStatePath: string | null;
+    persistedAt: number | null;
+    persistedAtTime: string | null;
+    hasForkInPersistedState: boolean;
+  } | null;
+}
+
 /**
  * Rich snapshot of an HSM's state, covering every layer the test harness
  * routinely inspects: state path + sync gate (from the machine), LCA meta
@@ -111,6 +172,12 @@ export interface RelayDebugGlobal {
   lookupFolder: (path: string) => any | null;
   /** Get a rich HSM state snapshot for the test harness — state path, LCA, disk, IDB, SV, frontmatter, recent transitions. */
   getHsmStateSnapshot: (path: string) => Promise<HsmStateSnapshot>;
+  /** Snapshot the per-doc IndexedDB: updates count, custom metadata, IDB content, disk content, match flag. */
+  getIdbContent: (path: string) => Promise<IdbContentSnapshot>;
+  /** Snapshot the OpCapture history store for a document. */
+  getIdbHistory: (path: string) => Promise<IdbHistorySnapshot>;
+  /** Snapshot in-memory and persisted fork state for a document. */
+  getIdbFork: (path: string) => Promise<IdbForkSnapshot>;
 }
 
 // =============================================================================
@@ -232,6 +299,9 @@ export class RelayDebugAPI {
       getSessionLogs: (options) => getSessionLogs(options),
       getDocumentContent: async (path) => this.getDocumentContent(path),
       getHsmStateSnapshot: async (path) => this.getHsmStateSnapshot(path),
+      getIdbContent: async (path) => this.getIdbContent(path),
+      getIdbHistory: async (path) => this.getIdbHistory(path),
+      getIdbFork: async (path) => this.getIdbFork(path),
 
       setEditorContent: (content: string) => {
         const editor = (this.plugin?.app as any)?.workspace?.activeEditor?.editor;
@@ -569,6 +639,233 @@ export class RelayDebugAPI {
       idbMatchesLca,
       frontmatterMap,
       recentTransitions,
+    };
+  }
+
+  /**
+   * Shared helper: resolve a vault path to a lookup + dbName, so the
+   * getIdb* methods don't each duplicate the prelude. Throws if the
+   * document can't be found or has no persistence metadata.
+   */
+  private resolveIdbTarget(path: string): {
+    hsm: any; guid: string; folder: any; filePath: string; dbName: string;
+  } {
+    const g = typeof window !== 'undefined' ? window : globalThis;
+    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    if (!lookup) throw new Error(`HSM not found: ${path}`);
+    const { hsm, guid, folder, filePath } = lookup;
+    const appId = (hsm as any)._persistenceMetadata?.appId;
+    if (!appId) throw new Error('No appId in persistence metadata');
+    return { hsm, guid, folder, filePath, dbName: `${appId}-relay-doc-${guid}` };
+  }
+
+  /**
+   * Open an IndexedDB database by name and return the handle. Promise
+   * rejects if the open request errors.
+   */
+  private openDb(dbName: string): Promise<IDBDatabase> {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(dbName);
+      request.onerror = () => reject(new Error(`Failed to open DB: ${dbName}`));
+      request.onsuccess = () => resolve(request.result);
+    });
+  }
+
+  /**
+   * Await an IDBRequest as a Promise.
+   */
+  private awaitRequest<T>(request: IDBRequest<T>, label: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+      request.onerror = () => reject(new Error(`Failed: ${label}`));
+      request.onsuccess = () => resolve(request.result);
+    });
+  }
+
+  /**
+   * Snapshot the per-doc IndexedDB + compare against disk. Replaces the
+   * ~100-line inline JS blob that used to live in cmd_relay_idb_content.
+   */
+  private async getIdbContent(path: string): Promise<IdbContentSnapshot> {
+    const { hsm, guid, folder, filePath, dbName } = this.resolveIdbTarget(path);
+
+    const db = await this.openDb(dbName);
+    try {
+      const tx = db.transaction(['updates', 'custom'], 'readonly');
+      const updates = await this.awaitRequest(
+        tx.objectStore('updates').getAll(),
+        'read updates',
+      );
+      const customKeys = await this.awaitRequest(
+        tx.objectStore('custom').getAllKeys(),
+        'read custom keys',
+      );
+      const customValues = await this.awaitRequest(
+        tx.objectStore('custom').getAll(),
+        'read custom values',
+      );
+      const metadata: Record<string, any> = {};
+      for (let i = 0; i < customKeys.length; i++) {
+        metadata[String(customKeys[i])] = customValues[i];
+      }
+
+      // Prefer the in-memory localDoc text (matches the HSM's view).
+      // When hibernated, fall back to opening IndexeddbPersistence via
+      // readIdbContent.
+      let idbContent: string | null = null;
+      if ((hsm as any).localDoc) {
+        idbContent = (hsm as any).localDoc.getText('contents').toString();
+      } else {
+        try {
+          const result = await readIdbContent(guid, (hsm as any)._persistenceMetadata?.appId);
+          if (result) idbContent = result.content;
+        } catch { /* noop */ }
+      }
+
+      // Read disk for comparison.
+      const vaultPath = (folder as any).path + filePath;
+      let diskContent: string | null = null;
+      try {
+        diskContent = await this.plugin.app.vault.adapter.read(vaultPath);
+      } catch (e: any) {
+        diskContent = `[Error reading disk: ${e.message}]`;
+      }
+
+      return {
+        path: filePath,
+        guid,
+        folder: (folder as any).name,
+        dbName,
+        metadata,
+        updatesCount: updates.length,
+        idbContent,
+        idbLength: idbContent?.length ?? 0,
+        diskContent,
+        diskLength: diskContent?.length ?? null,
+        match: diskContent === idbContent,
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Snapshot the OpCapture history store for a document. Replaces the
+   * ~90-line inline JS blob that used to live in cmd_relay_idb_history.
+   */
+  private async getIdbHistory(path: string): Promise<IdbHistorySnapshot> {
+    const { hsm, guid, folder, filePath, dbName } = this.resolveIdbTarget(path);
+
+    const db = await this.openDb(dbName);
+    try {
+      if (!db.objectStoreNames.contains('history')) {
+        return {
+          path: filePath,
+          guid,
+          folder: (folder as any).name,
+          dbName,
+          historyCount: 0,
+          inMemoryCount: null,
+          entries: [],
+          note: 'No history store (DB version < 2)',
+        };
+      }
+
+      const tx = db.transaction(['history'], 'readonly');
+      const store = tx.objectStore('history');
+      const keys = await this.awaitRequest(store.getAllKeys(), 'read history keys');
+      const values = await this.awaitRequest(store.getAll(), 'read history values');
+
+      const entries: IdbHistoryEntry[] = keys.map((key, i) => {
+        const v = values[i] as any;
+        return {
+          key,
+          origin: v.origin ?? null,
+          timestamp: v.timestamp ?? null,
+          time: v.timestamp ? new Date(v.timestamp).toISOString() : null,
+          insertionsBytes: v.insertions?.byteLength ?? 0,
+          deletionsBytes: v.deletions?.byteLength ?? 0,
+        };
+      });
+
+      const persistence = (hsm as any)._persistenceMetadata?.persistence;
+      const inMemoryCount = persistence?.opCapture?.entries?.length ?? null;
+
+      return {
+        path: filePath,
+        guid,
+        folder: (folder as any).name,
+        dbName,
+        historyCount: entries.length,
+        inMemoryCount,
+        entries,
+      };
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Snapshot in-memory + persisted fork state for a document. Replaces
+   * the ~90-line inline JS blob that used to live in cmd_relay_idb_fork.
+   */
+  private async getIdbFork(path: string): Promise<IdbForkSnapshot> {
+    const { hsm, guid, folder, filePath } = this.resolveIdbTarget(path);
+
+    const toSnapshot = (f: any): ForkSnapshot => ({
+      base: f.base ?? null,
+      baseLength: f.base?.length ?? 0,
+      origin: f.origin ?? null,
+      created: f.created ?? null,
+      createdTime: f.created ? new Date(f.created).toISOString() : null,
+      captureMark: f.captureMark ?? null,
+      localStateVectorBytes: f.localStateVector?.byteLength ?? 0,
+      remoteStateVectorBytes: f.remoteStateVector?.byteLength ?? 0,
+    });
+
+    const inMemoryFork = (hsm as any)._fork;
+    const inMemory: ForkSnapshot | null = inMemoryFork ? toSnapshot(inMemoryFork) : null;
+
+    // Read persisted fork from the shared HSM store. Swallow errors so
+    // a broken IDB doesn't hide the in-memory snapshot the caller wants.
+    let persistedFork: ForkSnapshot | { error: string } | null = null;
+    let persistedMeta: IdbForkSnapshot['persistedMeta'] = null;
+    try {
+      const db = await this.openDb('RelayMergeHSM');
+      try {
+        if (db.objectStoreNames.contains('states')) {
+          const tx = db.transaction(['states'], 'readonly');
+          const state = await this.awaitRequest(
+            tx.objectStore('states').get(guid),
+            'read persisted state',
+          ) as any;
+          if (state?.fork) {
+            persistedFork = toSnapshot(state.fork);
+          }
+          if (state) {
+            persistedMeta = {
+              lastStatePath: state.lastStatePath ?? null,
+              persistedAt: state.persistedAt ?? null,
+              persistedAtTime: state.persistedAt ? new Date(state.persistedAt).toISOString() : null,
+              hasForkInPersistedState: !!state.fork,
+            };
+          }
+        }
+      } finally {
+        db.close();
+      }
+    } catch (e: any) {
+      persistedFork = { error: e.message };
+    }
+
+    return {
+      path: filePath,
+      guid,
+      folder: (folder as any).name,
+      statePath: (hsm as any)._statePath || 'unknown',
+      hasFork: inMemoryFork != null,
+      inMemoryFork: inMemory,
+      persistedFork,
+      persistedMeta,
     };
   }
 
