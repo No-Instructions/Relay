@@ -2188,6 +2188,16 @@ export class SharedFolder extends HasProvider {
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
+		// IndexeddbPersistence self-destructs on the ydoc's 'destroy' event,
+		// but its async teardown promise (awaiting pending writes and
+		// compaction before closing the DB) is dropped inside that event
+		// handler. Capture it here so awaitOnReload holds plugin re-enable
+		// until IDB has flushed. Calling destroy() removes the 'destroy'
+		// listener synchronously, so super.destroy() below won't double-fire.
+		if (this._persistence) {
+			const p = this._persistence.destroy().catch(() => {});
+			awaitOnReload(p);
+		}
 		super.destroy();
 		this.fset.clear();
 		this._settings.destroy();
