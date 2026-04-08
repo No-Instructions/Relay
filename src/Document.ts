@@ -622,6 +622,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	destroy() {
 		this.destroyed = true;
+		(this.requestSave as unknown as { cancel?: () => void }).cancel?.();
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
