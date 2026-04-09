@@ -99,7 +99,7 @@
 			{app}
 			{sharedFolders}
 			selectedFolder={folderLocation}
-			disabled={availableFolders.length === 0}
+			disabled={!selectedRemoteFolder}
 		/>
 	</SettingItem>
 

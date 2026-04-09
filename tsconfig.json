@@ -26,6 +26,7 @@
   "exclude": [
     "**/*.test.ts",
     "node_modules",
-    "vaults"
+    "vaults",
+    "archive"
   ]
 }

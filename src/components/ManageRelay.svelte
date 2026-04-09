@@ -22,7 +22,6 @@
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import { join } from "path-browserify";
 	import SettingsControl from "./SettingsControl.svelte";
-	import { uuidv4 } from "lib0/random";
 	import Lock from "./Lock.svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 	import DiskUsage from "./DiskUsage.svelte";
@@ -440,8 +439,7 @@
 
 		// If folder doesn't exist as shared folder yet, create it
 		if (!folder) {
-			const guid = uuidv4();
-			folder = sharedFolders.new(normalizedPath, guid, relay.guid, true);
+			folder = sharedFolders.init(normalizedPath, relay.guid);
 		} else {
 			folder.relayId = relay.guid;
 		}
@@ -494,11 +492,10 @@
 			if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
 				await plugin.vault.createFolder(vaultRelativePath);
 			}
-			const folder = plugin.sharedFolders.new(
+			const folder = plugin.sharedFolders.clone(
 				vaultRelativePath,
 				remoteFolder.guid,
 				remoteFolder.relay.guid,
-				true,
 			);
 			folder.remote = remoteFolder;
 			plugin.sharedFolders.notifyListeners();

@@ -63,7 +63,7 @@ describe("NamespacedSettings", () => {
 		 */
 		const nested = new NamespacedSettings(settings, "deeply/nested/path");
 		await nested.set({ foo: "test", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			deeply: {
@@ -86,7 +86,7 @@ describe("NamespacedSettings", () => {
 		};
 
 		await namespaced.set(testData);
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(namespaced.get()).toEqual(testData);
 		expect(settings.get()).toEqual({
@@ -105,10 +105,10 @@ describe("NamespacedSettings", () => {
 		const path2 = new NamespacedSettings(settings, "a/b/d");
 
 		await path1.set({ foo: "path1", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		await path2.set({ foo: "path2", count: 2 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			a: {
@@ -127,13 +127,13 @@ describe("NamespacedSettings", () => {
 		 */
 		const namespaced = new NamespacedSettings(settings, "test/path");
 		await namespaced.set({ foo: "initial", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		await namespaced.update((current) => ({
 			...current,
 			count: current.count + 1,
 		}));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(namespaced.get()).toEqual({
 			foo: "initial",
@@ -150,7 +150,7 @@ describe("NamespacedSettings", () => {
 		const parent = child.getParent();
 
 		await child.set({ foo: "test", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(parent.get()).toEqual({
 			child: { foo: "test", count: 1 },
@@ -166,7 +166,7 @@ describe("NamespacedSettings", () => {
 		const child = parent.getChild<TestData>("child");
 
 		await child.set({ foo: "test", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			parent: {
@@ -181,7 +181,7 @@ describe("NamespacedSettings", () => {
 		 */
 		const namespaced = new NamespacedSettings(settings, "test/path");
 		await namespaced.set({ foo: "test", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(namespaced.exists()).toBe(true);
 	});
@@ -202,10 +202,10 @@ describe("NamespacedSettings", () => {
 		 */
 		const namespaced = new NamespacedSettings(settings, "test/path");
 		await namespaced.set({ foo: "test", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		await namespaced.delete();
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(namespaced.exists()).toBe(false);
 		expect(namespaced.get()).toEqual({});
@@ -228,7 +228,7 @@ describe("NamespacedSettings", () => {
 			foo: "new",
 			count: 2,
 		});
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		// Called once upon subscription and once after setting a new value
 		expect(listener).toHaveBeenCalledTimes(2);
@@ -250,12 +250,12 @@ describe("NamespacedSettings", () => {
 		await namespaced.set({
 			debugging: true,
 		});
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		await namespaced.set({
 			debugging: false,
 		});
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 		// Called once upon subscription and once after setting a new value
 		expect(listener).toHaveBeenCalledTimes(3);
 		expect(namespaced.get()).toEqual({
@@ -276,7 +276,7 @@ describe("NamespacedSettings", () => {
 			foo: "new",
 			count: 42,
 		});
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		// Only called once upon initial subscription
 		expect(listener).toHaveBeenCalledTimes(1);
@@ -303,7 +303,7 @@ describe("NamespacedSettings", () => {
 
 		// Force update notification
 		await settings.update((current) => ({ ...current }));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		// Now check both the raw settings and the namespaced view
 		expect(settings.get()).toEqual({
@@ -343,7 +343,7 @@ describe("NamespacedSettings", () => {
 			],
 		}));
 		await settings.save();
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		const listItem = new NamespacedSettings(
 			settings,
@@ -356,7 +356,7 @@ describe("NamespacedSettings", () => {
 
 		// Force update notification
 		await settings.update((current) => ({ ...current }));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		// Check both raw settings and namespaced view
 		expect(settings.get()).toEqual({
@@ -385,12 +385,12 @@ describe("NamespacedSettings", () => {
 				{ guid: "456", foo: "other", count: 2 },
 			],
 		}));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		const listItem = new NamespacedSettings(settings, "folders/[guid=123]");
 
 		await listItem.delete();
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			folders: [{ guid: "456", foo: "other", count: 2 }],
@@ -408,7 +408,7 @@ describe("NamespacedSettings", () => {
 			"test-2": 4,
 			other: 5,
 		}));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		const testSettings = new NamespacedSettings(settings, "(test-*)");
 		expect(testSettings.get()).toEqual({
@@ -428,7 +428,7 @@ describe("NamespacedSettings", () => {
 			"feature-2": false,
 			"not-matching": "should be ignored",
 		});
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			"feature-1": true,
@@ -445,7 +445,7 @@ describe("NamespacedSettings", () => {
 		const child = parent.getChild<TestData>("child");
 
 		await child.set({ foo: "value", count: 10 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			parent: {
@@ -503,7 +503,7 @@ describe("NamespacedSettings", () => {
 		namespaced.subscribe(listener);
 
 		await namespaced.flush();
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		// Called once upon subscription and once after flush
 		expect(listener).toHaveBeenCalledTimes(2);
@@ -526,11 +526,11 @@ describe("NamespacedSettings", () => {
 				data: true,
 			},
 		}));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		const namespaced = new NamespacedSettings(settings, "new/namespace");
 		await namespaced.set({ foo: "test", count: 1 });
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(settings.get()).toEqual({
 			existing: {
@@ -558,7 +558,7 @@ describe("NamespacedSettings", () => {
 				path: { foo: "external", count: 99 },
 			},
 		}));
-		mockTime.setTime(mockTime.getTime() + 30);
+		mockTime.setTime(mockTime.now() + 30);
 
 		expect(listener).toHaveBeenCalledTimes(2);
 		expect(namespaced.get()).toEqual({

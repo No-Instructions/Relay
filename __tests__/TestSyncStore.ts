@@ -744,4 +744,163 @@ describe("SyncStore", () => {
 			expect(store.has(oldPath)).toBeFalsy();
 		});
 	});
+
+	describe("move to root path handling", () => {
+		test("moving folder to root via move() produces valid paths (no double slashes)", () => {
+			// Set up a folder with files at /Locations
+			store.set("/Locations", makeFolderMeta("loc-folder-guid"));
+			store.set(
+				"/Locations/Feywild.md",
+				makeDocumentMeta("feywild-guid"),
+			);
+			store.set(
+				"/Locations/Barovia.md",
+				makeDocumentMeta("barovia-guid"),
+			);
+
+			// Move the folder to root "/"
+			store.move("/Locations", "/");
+			store.resolveAll();
+
+			// Files should be at /Feywild.md and /Barovia.md, not //Feywild.md
+			expect(store.getMeta("/Feywild.md")?.id).toBe("feywild-guid");
+			expect(store.getMeta("/Barovia.md")?.id).toBe("barovia-guid");
+
+			// Corrupted double-slash paths should NOT exist
+			expect(store.has("//Feywild.md")).toBeFalsy();
+			expect(store.has("//Barovia.md")).toBeFalsy();
+
+			// Old paths should be gone
+			expect(store.has("/Locations/Feywild.md")).toBeFalsy();
+			expect(store.has("/Locations/Barovia.md")).toBeFalsy();
+			expect(store.has("/Locations")).toBeFalsy();
+		});
+
+		test("moving folder with mixed file types to root via move()", () => {
+			store.set("/Locations", makeFolderMeta("loc-guid"));
+			store.set(
+				"/Locations/Feywild.md",
+				makeDocumentMeta("feywild-guid"),
+			);
+			store.set(
+				"/Locations/map.png",
+				makeFileMeta(
+					SyncType.Image,
+					"map-guid",
+					"image/png",
+					"hash1",
+				),
+			);
+			store.set(
+				"/Locations/notes.pdf",
+				makeFileMeta(
+					SyncType.PDF,
+					"pdf-guid",
+					"application/pdf",
+					"hash2",
+				),
+			);
+
+			store.move("/Locations", "/");
+			store.resolveAll();
+
+			// All files should be at root with clean paths
+			expect(store.getMeta("/map.png")?.id).toBe("map-guid");
+			expect(store.getMeta("/notes.pdf")?.id).toBe("pdf-guid");
+
+			// No double-slash corruption
+			expect(store.has("//map.png")).toBeFalsy();
+			expect(store.has("//notes.pdf")).toBeFalsy();
+			expect(store.has("//Feywild.md")).toBeFalsy();
+		});
+
+		test("legacy client moving file from subfolder to root does not corrupt sibling paths", () => {
+			// Set up initial folder structure with metadata
+			store.set("/Locations", makeFolderMeta("loc-folder-guid"));
+			store.set(
+				"/Locations/Feywild.md",
+				makeDocumentMeta("feywild-guid"),
+			);
+			store.set(
+				"/Locations/map.png",
+				makeFileMeta(
+					SyncType.Image,
+					"map-guid",
+					"image/png",
+					"hash1",
+				),
+			);
+
+			// Legacy client only knows about markdown files.
+			// It moves Feywild.md from /Locations/ to root /
+			internal(store).legacyIds.delete("/Locations/Feywild.md");
+			internal(store).legacyIds.set("/Feywild.md", "feywild-guid");
+
+			// detectFolderMoves sees:
+			//   dirname("/Locations/Feywild.md") = "/Locations"
+			//   dirname("/Feywild.md") = "/"
+			// and calls moveFolder("/Locations", "/")
+			store.migrateUp();
+			store.commit();
+			store.resolveAll();
+
+			// map.png should be at /map.png (moved with the folder), not //map.png
+			expect(store.getMeta("/map.png")?.id).toBe("map-guid");
+
+			// No double-slash corruption
+			expect(store.has("//Feywild.md")).toBeFalsy();
+			expect(store.has("//map.png")).toBeFalsy();
+		});
+
+		test("moving deeply nested folder to root does not produce triple slashes", () => {
+			// Set up nested structure /A/B/doc.md
+			store.set("/A", makeFolderMeta("a-guid"));
+			store.set("/A/B", makeFolderMeta("b-guid"));
+			store.set("/A/B/doc.md", makeDocumentMeta("doc-guid"));
+			store.set(
+				"/A/B/image.png",
+				makeFileMeta(
+					SyncType.Image,
+					"img-guid",
+					"image/png",
+					"hash1",
+				),
+			);
+
+			// Move /A/B to root
+			store.move("/A/B", "/");
+			store.resolveAll();
+
+			// Files should be at root with clean paths
+			expect(store.getMeta("/doc.md")?.id).toBe("doc-guid");
+			expect(store.getMeta("/image.png")?.id).toBe("img-guid");
+
+			// No double-slash or triple-slash corruption
+			expect(store.has("//doc.md")).toBeFalsy();
+			expect(store.has("//image.png")).toBeFalsy();
+		});
+
+		test("forEach does not yield paths with double slashes after move to root", () => {
+			store.set("/Locations", makeFolderMeta("loc-guid"));
+			store.set(
+				"/Locations/Feywild.md",
+				makeDocumentMeta("feywild-guid"),
+			);
+			store.set(
+				"/Locations/Barovia.md",
+				makeDocumentMeta("barovia-guid"),
+			);
+
+			store.move("/Locations", "/");
+			store.resolveAll();
+
+			// Collect all paths
+			const paths: string[] = [];
+			store.forEach((_, path) => paths.push(path));
+
+			// No path should contain "//"
+			const corruptedPaths = paths.filter((p) => p.includes("//"));
+			expect(corruptedPaths).toEqual([]);
+		});
+	});
 });

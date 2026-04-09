@@ -19,11 +19,18 @@ data.json
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
 
+# build status feedback
+.build-status/
+
+# local archive
+archive/
+
 # igit
 .igit
 .igitignore
 
 # developer harness
+.mcp.json
 AGENTS.md
 CLAUDE.md
 AGENTS.md
@@ -37,10 +44,12 @@ infra/
 scripts/
 tickets/
 specs/
+arch/
 unit/
 templates/
 test-plans/
 test-results/
+merge-queue/
 prompts/
 vision/
 

@@ -21,7 +21,7 @@ export class ViewHookPlugin extends HasLogging {
 	private renderers: ViewRenderer[];
 	private unsubscribes: Array<() => void> = [];
 	private observer?: (event: YTextEvent, tr: Transaction) => void;
-	private _ytext: YText;
+	private _ytext: YText | null = null;
 	private destroyed = false;
 	private saving = false;
 
@@ -37,10 +37,35 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.push(new PreviewRenderer(view));
 		this.renderers.push(new MetadataRenderer(view));
 
-		this._ytext = this.document.ytext;
 		this.installMarkdownHooks(this.view);
+	}
+
+	/**
+	 * Attach the document observer once localDoc is available.
+	 * Waits for the HSM to enter active mode if needed.
+	 */
+	async initialize(): Promise<void> {
+		// Wait for localDoc to become available (HSM entering active mode)
+		let localDoc = this.document.localDoc;
+		if (!localDoc) {
+			const hsm = this.document.hsm;
+			if (hsm?.awaitState) {
+				await hsm.awaitState((s) => s.startsWith("active."));
+			}
+			localDoc = this.document.localDoc;
+		}
+		if (this.destroyed || !localDoc) return;
+
+		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
+
+		// Perform initial render using localDoc content
+		// @ts-ignore
+		this.view.previewMode.renderer.set(this.document.localText);
 		this.renderAll();
+
+		this.document.connect();
+		this.debug("initialized");
 	}
 
 	/**
@@ -58,6 +83,10 @@ export class ViewHookPlugin extends HasLogging {
 					saveFrontmatter(old: any) {
 						return function (data: any) {
 							that.debug("saveFrontmatter hook triggered");
+							that.document.hsm?.send({
+								type: 'OBSIDIAN_SAVE_FRONTMATTER',
+								path: that.document.path,
+							});
 							that.saving = true;
 							// @ts-ignore
 							const result = old.call(this, data);
@@ -79,10 +108,16 @@ export class ViewHookPlugin extends HasLogging {
 						const result = old.call(this, data);
 						try {
 							// @ts-ignore
-							if (that.view.getMode?.() === "preview" && that.saving) {
+							const viewMode = that.view.getMode?.() ?? "unknown";
+							if (viewMode === "preview" && that.saving) {
 								that.debug("Syncing metadata changes to CRDT during save");
+								that.document.hsm?.send({
+									type: 'OBSIDIAN_METADATA_SYNC',
+									path: that.document.path,
+									mode: viewMode,
+								});
 								diffMatchPatch(
-									that.document.ydoc,
+									that.document.getWritableDoc(),
 									// @ts-ignore
 									that.view.text,
 									that.document,
@@ -117,7 +152,7 @@ export class ViewHookPlugin extends HasLogging {
 									that.debug("Dispatched preview edit to CodeMirror");
 								} else {
 									// Otherwise sync directly to CRDT
-									diffMatchPatch(that.document.ydoc, data, that.document);
+									diffMatchPatch(that.document.getWritableDoc(), data, that.document);
 									that.debug("Synced preview edit directly to CRDT");
 								}
 								return;
@@ -136,6 +171,8 @@ export class ViewHookPlugin extends HasLogging {
 	 * Setup document observer to trigger UI updates
 	 */
 	private setupDocumentObserver(): void {
+		if (!this._ytext) return;
+
 		this.observer = async (event: YTextEvent, tr: Transaction) => {
 			if (!this.active()) {
 				this.debug("Received yjs event against a non-active view");
@@ -146,7 +183,6 @@ export class ViewHookPlugin extends HasLogging {
 				return;
 			}
 
-			this.debug("Document changed, updating all renderers");
 			this.renderAll();
 		};
 
@@ -167,8 +203,6 @@ export class ViewHookPlugin extends HasLogging {
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
-		this.debug(`Rendering all components for mode: ${viewMode}`);
-
 		this.renderers.forEach((renderer) => {
 			try {
 				renderer.render(this.document, viewMode);
@@ -188,45 +222,52 @@ export class ViewHookPlugin extends HasLogging {
 		dmp.diff_cleanupSemantic(diffs);
 
 		const changes: ChangeSpec[] = [];
-		let currentPos = 0;
+		let pos = 0;
 
 		for (const [type, text] of diffs) {
 			switch (type) {
 				case 0: // EQUAL
-					currentPos += text.length;
+					pos += text.length;
 					break;
 				case 1: // INSERT
 					changes.push({
-						from: currentPos,
-						to: currentPos,
+						from: pos,
+						to: pos,
 						insert: text,
 					});
-					currentPos += text.length;
 					break;
 				case -1: // DELETE
 					changes.push({
-						from: currentPos,
-						to: currentPos + text.length,
+						from: pos,
+						to: pos + text.length,
 						insert: "",
 					});
+					pos += text.length;
 					break;
 			}
 		}
-		return changes;
-	}
-	/**
-	 * Initialize the plugin after document is ready
-	 */
-	async initialize(): Promise<void> {
-		await this.document.whenReady();
 
-		// Perform initial render
-		// @ts-ignore
-		this.view.previewMode.renderer.set(this.document.text);
-		this.renderAll();
-
-		this.document.connect();
-		this.debug("ViewHookPlugin initialized");
+		// Merge adjacent delete+insert pairs into single replacements.
+		// CM6 silently drops split delete/insert at the same boundary.
+		const merged: ChangeSpec[] = [];
+		let i = 0;
+		while (i < changes.length) {
+			const current = changes[i] as { from: number; to: number; insert: string };
+			const next = changes[i + 1] as { from: number; to: number; insert: string } | undefined;
+			if (
+				next &&
+				current.insert === "" &&
+				next.from === current.to &&
+				next.to === next.from
+			) {
+				merged.push({ from: current.from, to: current.to, insert: next.insert });
+				i += 2;
+			} else {
+				merged.push(current);
+				i++;
+			}
+		}
+		return merged;
 	}
 
 	/**

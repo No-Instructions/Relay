@@ -15,11 +15,20 @@ import * as awarenessProtocol from "y-protocols/awareness";
 import { Observable } from "lib0/observable";
 import * as math from "lib0/math";
 import * as url from "lib0/url";
+import { decode as decodeCBOR } from "cbor-x";
+import { metrics, curryLog } from "../debug";
+
+const providerError = curryLog("[YSweetProvider]", "error");
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
 export const messageAwareness = 1;
 export const messageAuth = 2;
+export const messageEvent = 4;
+export const messageEventSubscribe = 5;
+export const messageEventUnsubscribe = 6;
+export const messageQuerySubdocs = 7;
+export const messageSubdocs = 8;
 
 export type HandlerFunction = (
 	encoder: encoding.Encoder,
@@ -97,6 +106,46 @@ messageHandlers[messageAuth] = (
 	);
 };
 
+messageHandlers[messageEvent] = (
+	_encoder,
+	decoder,
+	provider,
+	_emitSynced,
+	_messageType,
+) => {
+	const cborLength = decoding.readVarUint(decoder);
+	const cborData = decoding.readUint8Array(decoder, cborLength);
+
+	try {
+		const eventMessage = decodeCBOR(cborData);
+
+		// Only process if we're subscribed to this event type
+		if (provider.eventSubscriptions.has(eventMessage.event_type)) {
+			provider.processEvent(eventMessage);
+		}
+	} catch (error) {
+		providerError(`Failed to decode event message: ${error}`);
+	}
+};
+
+messageHandlers[messageSubdocs] = (
+	_encoder,
+	decoder,
+	provider,
+	_emitSynced,
+	_messageType,
+) => {
+	const cborLength = decoding.readVarUint(decoder);
+	const cborData = decoding.readUint8Array(decoder, cborLength);
+
+	try {
+		const subdocIndex: Record<string, Uint8Array> = decodeCBOR(cborData);
+		provider.handleSubdocIndex(subdocIndex);
+	} catch (error) {
+		providerError(`Failed to decode subdoc state vector index: ${error}`);
+	}
+};
+
 // @todo - this should depend on awareness.outdatedTime
 const messageReconnectTimeout = 30000;
 
@@ -113,6 +162,13 @@ const readMessage = (
 	const messageType = decoding.readVarUint(decoder);
 	const messageHandler = provider.messageHandlers[messageType];
 	if (/** @type {any} */ messageHandler) {
+		if (messageType === messageSync) {
+			metrics.recordProtocolMessage("sync", "in", buf.length);
+		} else if (messageType === messageEvent) {
+			metrics.recordProtocolMessage("event", "in", buf.length);
+		} else if (messageType === messageSubdocs) {
+			metrics.recordProtocolMessage("subdoc_index", "in", buf.length);
+		}
 		messageHandler(encoder, decoder, provider, emitSynced, messageType);
 	} else {
 		console.error("Unable to compute message");
@@ -192,6 +248,27 @@ const setupWS = (provider: YSweetProvider) => {
 			encoding.writeVarUint(encoder, messageSync);
 			syncProtocol.writeSyncStep1(encoder, provider.doc);
 			websocket.send(encoding.toUint8Array(encoder));
+			// Flush messages that were buffered while disconnected.
+			// These are sync update frames that broadcastMessage couldn't
+			// send because the WebSocket wasn't ready. The sync step 1/2
+			// exchange above handles catch-up via state vectors, but
+			// flushing the buffer ensures real-time updates that arrived
+			// during the disconnect window are delivered promptly.
+			if (provider._pendingMessages.length > 0) {
+				for (const pending of provider._pendingMessages) {
+					websocket.send(pending);
+				}
+				provider._pendingMessages = [];
+			}
+			// Re-subscribe to events after reconnection
+			if (provider.eventSubscriptions.size > 0) {
+				const eventTypes = Array.from(provider.eventSubscriptions);
+				provider.sendEventSubscribe(eventTypes);
+			}
+			// Query subdoc state vectors for catch-up
+			if (provider.onSubdocIndex) {
+				provider.sendQuerySubdocs();
+			}
 			// broadcast local awareness state
 			if (provider.awareness.getLocalState() !== null) {
 				const encoderAwarenessState = encoding.createEncoder();
@@ -218,6 +295,9 @@ const broadcastMessage = (provider: YSweetProvider, buf: ArrayBuffer) => {
 	const ws = provider.ws;
 	if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
 		ws.send(buf);
+	} else {
+		// Buffer the message — flushed in onopen when WebSocket connects
+		provider._pendingMessages.push(buf);
 	}
 	if (provider.bcconnected) {
 		bc.publish(provider.bcChannel, buf, provider);
@@ -258,6 +338,22 @@ export interface ConnectionState {
 	intent: ConnectionIntent;
 }
 
+export interface EventMessage {
+	event_id: string;
+	event_type: string;
+	doc_id: string;
+	timestamp: number;
+	user?: string;
+	metadata?: Record<string, any>;
+	update?: Uint8Array;
+}
+
+export type EventCallback = (event: EventMessage) => void;
+
+export type SubdocIndexCallback = (
+	serverIndex: Record<string, Uint8Array>,
+) => void;
+
 /**
  * Websocket Provider for Yjs. Creates a websocket connection to sync the shared document.
  * The document name is attached to the provided url. I.e. the following example
@@ -284,22 +380,27 @@ export class YSweetProvider extends Observable<string> {
 	disableBc: boolean;
 	wsUnsuccessfulReconnects: number;
 	messageHandlers: Array<HandlerFunction>;
+	/** Messages buffered while WebSocket was not ready. Flushed on next send. */
+	_pendingMessages: ArrayBuffer[];
 	_synced: boolean;
 	ws: WebSocket | null;
 	wsLastMessageReceived: number;
 	shouldConnect: boolean;
 	_resyncInterval: ReturnType<typeof setInterval> | number; // TODO: is setting this to 0 used as null?
-	_bcSubscriber: Function;
+	_bcSubscriber: (...args: any[]) => any;
 	_updateHandler: (
 		arg0: Uint8Array,
 		arg1: any,
 		arg2: Y.Doc,
 		arg3: Y.Transaction,
 	) => void;
-	_awarenessUpdateHandler: Function;
-	_unloadHandler: Function;
+	_awarenessUpdateHandler: (...args: any[]) => any;
+	_unloadHandler: (...args: any[]) => any;
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	maxConnectionErrors: number;
+	eventSubscriptions: Set<string>;
+	eventCallbacks: Map<string, EventCallback[]>;
+	onSubdocIndex: SubdocIndexCallback | null;
 
 	/**
 	 * @param serverUrl - server url
@@ -347,6 +448,7 @@ export class YSweetProvider extends Observable<string> {
 		this._WS = WebSocketPolyfill;
 		this.awareness = awareness;
 		this.wsconnected = false;
+		this._pendingMessages = [];
 		this.wsconnecting = false;
 		this.bcconnected = false;
 		this.disableBc = disableBc;
@@ -357,6 +459,9 @@ export class YSweetProvider extends Observable<string> {
 		this.wsLastMessageReceived = 0;
 		this.shouldConnect = connect;
 		this.maxConnectionErrors = maxConnectionErrors;
+		this.eventSubscriptions = new Set();
+		this.eventCallbacks = new Map();
+		this.onSubdocIndex = null;
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -385,10 +490,13 @@ export class YSweetProvider extends Observable<string> {
 		 */
 		this._updateHandler = (update: Uint8Array, origin: any) => {
 			if (origin !== this) {
+				metrics.recordProtocolMessage("sync", "out", update.length);
 				const encoder = encoding.createEncoder();
 				encoding.writeVarUint(encoder, messageSync);
 				syncProtocol.writeUpdate(encoder, update);
 				broadcastMessage(this, encoding.toUint8Array(encoder));
+			} else {
+				// Skipped because origin === this (our own sync response)
 			}
 		};
 
@@ -662,4 +770,97 @@ export class YSweetProvider extends Observable<string> {
 		return this.url === expectedUrl;
 	}
 
+	subscribeToEvents(eventTypes: string[], callback: EventCallback) {
+		eventTypes.forEach(type => {
+			this.eventSubscriptions.add(type);
+
+			if (!this.eventCallbacks.has(type)) {
+				this.eventCallbacks.set(type, []);
+			}
+			this.eventCallbacks.get(type)!.push(callback);
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.sendEventSubscribe(eventTypes);
+		}
+	}
+
+	unsubscribeFromEvents(eventTypes: string[], callback?: EventCallback) {
+		eventTypes.forEach(type => {
+			if (callback && this.eventCallbacks.has(type)) {
+				const callbacks = this.eventCallbacks.get(type)!;
+				const index = callbacks.indexOf(callback);
+				if (index > -1) {
+					callbacks.splice(index, 1);
+				}
+				if (callbacks.length === 0) {
+					this.eventSubscriptions.delete(type);
+					this.eventCallbacks.delete(type);
+				}
+			} else {
+				this.eventSubscriptions.delete(type);
+				this.eventCallbacks.delete(type);
+			}
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.sendEventUnsubscribe(eventTypes);
+		}
+	}
+
+	sendEventSubscribe(eventTypes: string[]) {
+		const encoder = encoding.createEncoder();
+		encoding.writeVarUint(encoder, messageEventSubscribe);
+		encoding.writeVarUint(encoder, eventTypes.length);
+
+		eventTypes.forEach(type => {
+			encoding.writeVarString(encoder, type);
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.ws.send(encoding.toUint8Array(encoder));
+		}
+	}
+
+	sendEventUnsubscribe(eventTypes: string[]) {
+		const encoder = encoding.createEncoder();
+		encoding.writeVarUint(encoder, messageEventUnsubscribe);
+		encoding.writeVarUint(encoder, eventTypes.length);
+
+		eventTypes.forEach(type => {
+			encoding.writeVarString(encoder, type);
+		});
+
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			this.ws.send(encoding.toUint8Array(encoder));
+		}
+	}
+
+	processEvent(eventMessage: EventMessage) {
+		this.emit('event', [eventMessage]);
+
+		const callbacks = this.eventCallbacks.get(eventMessage.event_type) || [];
+		callbacks.forEach(callback => {
+			try {
+				callback(eventMessage);
+			} catch (error) {
+				providerError(`Event callback error: ${error}`);
+			}
+		});
+	}
+
+	sendQuerySubdocs() {
+		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			const encoder = encoding.createEncoder();
+			encoding.writeVarUint(encoder, messageQuerySubdocs);
+			this.ws.send(encoding.toUint8Array(encoder));
+			console.log('[YSweetProvider] sent MSG_QUERY_SUBDOCS');
+		}
+	}
+
+	handleSubdocIndex(serverIndex: Record<string, Uint8Array>) {
+		this.onSubdocIndex?.(serverIndex);
+	}
+
 }
+

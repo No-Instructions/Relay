@@ -72,23 +72,37 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 	}
 
 	off(listener: () => void): void {
-		this._listeners.delete(listener);
+		// May be called during plugin teardown after destroy() nulled
+		// _listeners — e.g. FolderNavigationDecorations holds off() closures
+		// from SharedFolder.fset.on() and fires them in its own destroy.
+		// If the SharedFolder was destroyed first, _listeners is null by
+		// the time the closure runs. Match unsubscribe()'s null guard.
+		this._listeners?.delete(listener);
+		PostOffice.getInstance().cancel(listener);
 	}
 
 	unsubscribe(run: Subscriber<T>): void {
 		if (this._listeners) {
 			this._listeners.delete(run);
 		}
+		PostOffice.getInstance().cancel(run);
 	}
 
 	destroy() {
 		this.destroyed = true;
+		observables.delete(this);
 		if (this.unsubscribes) {
 			this.unsubscribes.forEach((unsub) => {
 				unsub();
 			});
 		}
-		this._listeners?.clear();
+		if (this._listeners) {
+			const postie = PostOffice.getInstance();
+			for (const listener of this._listeners) {
+				postie.cancel(listener);
+			}
+			this._listeners.clear();
+		}
 		this._listeners = null as any;
 	}
 }

@@ -19,7 +19,7 @@ import type { PluginValue, DecorationSet } from "@codemirror/view";
 import {
 	LiveViewManager,
 	LiveView,
-	ConnectionManagerStateField,
+	getConnectionManager,
 } from "../LiveViews";
 
 import * as Y from "yjs";
@@ -171,9 +171,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	constructor(editor: EditorView) {
 		this.editor = editor;
 		this.decorations = RangeSet.of([]);
-		this.connectionManager = this.editor.state.field(
-			ConnectionManagerStateField,
-		);
+		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 
 		// Allowlist: Check for live editing markers (same as LiveEditPlugin)
 		const sourceView = this.editor.dom.closest(".markdown-source-view");
@@ -244,10 +242,16 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		if (this.destroyed) {
 			return;
 		}
-		const editor: EditorView = update.view;
 		this.document = this.getDocument();
-		const ytext = this.document?.ytext;
+		const ytext = this.document?.localDoc?.getText("contents") ?? this.document?.ytext;
 		if (!(this.document && ytext && ytext.doc)) {
+			return;
+		}
+		// Disable cursors when the fork gate is blocking local↔remote traffic.
+		// Positions created from localDoc won't resolve correctly on remote peers
+		// when the docs have diverged.
+		if (this.document.hsm?.hasFork()) {
+			this.decorations = Decoration.none;
 			return;
 		}
 		const provider = this.document._provider;
@@ -289,13 +293,20 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 					!Y.compareRelativePositions(currentAnchor, anchor) ||
 					!Y.compareRelativePositions(currentHead, head)
 				) {
-					awareness.setLocalStateField("cursor", {
-						anchor,
-						head,
+					// Defer awareness update to avoid re-entrant EditorView.update calls.
+					// awareness.setLocalStateField emits synchronously, and listeners
+					// may dispatch to the editor which is not allowed during update().
+					queueMicrotask(() => {
+						awareness.setLocalStateField("cursor", {
+							anchor,
+							head,
+						});
 					});
 				}
 			} else if (localAwarenessState.cursor != null && hasFocus) {
-				awareness.setLocalStateField("cursor", null);
+				queueMicrotask(() => {
+					awareness.setLocalStateField("cursor", null);
+				});
 			}
 		}
 

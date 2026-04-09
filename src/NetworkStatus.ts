@@ -1,6 +1,7 @@
-import { requestUrl } from "obsidian";
+import { apiVersion, requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
+import { getDeviceManagementHeaders } from "./customFetch";
 
 declare const GIT_TAG: string;
 
@@ -77,7 +78,11 @@ class NetworkStatus {
 		return requestUrl({
 			url: this.url,
 			method: "GET",
-			headers: { "Relay-Version": GIT_TAG },
+			headers: {
+				"Relay-Version": GIT_TAG,
+				"Obsidian-Version": apiVersion,
+				...getDeviceManagementHeaders(),
+			},
 		})
 			.then((response) => {
 				if (response.status === 200) {

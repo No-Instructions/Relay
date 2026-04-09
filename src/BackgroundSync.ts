@@ -5,7 +5,7 @@ import { S3RN, S3RemoteCanvas, S3RemoteDocument } from "./S3RN";
 import { isDocument, type Document } from "./Document";
 import { isCanvas } from "./Canvas";
 import type { TimeProvider } from "./TimeProvider";
-import { HasLogging, RelayInstances } from "./debug";
+import { HasLogging, RelayInstances, metrics } from "./debug";
 import type { Subscriber, Unsubscriber } from "./observable/Observable";
 import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
@@ -23,6 +23,7 @@ export interface QueueItem {
 	doc: Document | Canvas | SyncFile;
 	status: "pending" | "running" | "completed" | "failed";
 	sharedFolder: SharedFolder;
+	userVisible: boolean;
 }
 
 export interface SyncGroup {
@@ -34,6 +35,8 @@ export interface SyncGroup {
 	syncs: number;
 	completedDownloads: number;
 	completedSyncs: number;
+	userDownloads: number;
+	completedUserDownloads: number;
 }
 
 export interface SyncProgress {
@@ -78,7 +81,7 @@ export class BackgroundSync extends HasLogging {
 	private downloadCompletionCallbacks = new Map<
 		string,
 		{
-			resolve: () => void;
+			resolve: (result?: Uint8Array) => void;
 			reject: (error: Error) => void;
 		}
 	>();
@@ -100,6 +103,13 @@ export class BackgroundSync extends HasLogging {
 			this.processSyncQueue();
 			this.processDownloadQueue();
 		}, 1000);
+
+		// Add polling timer for disk changes (poll all folders)
+		this.timeProvider.setInterval(() => {
+			this.sharedFolders.forEach((folder) => {
+				folder.poll();
+			});
+		}, 5000); // Poll every 5 seconds
 	}
 
 	/**
@@ -173,6 +183,35 @@ export class BackgroundSync extends HasLogging {
 		};
 	}
 
+	/**
+	 * Returns download-only progress for a shared folder.
+	 * Used when enableNewSyncStatus is on to show only user-visible downloads.
+	 */
+	getUserVisibleProgress(sharedFolder: SharedFolder): GroupProgress | null {
+		const group = this.syncGroups.get(sharedFolder);
+		if (!group) return null;
+
+		const total = group.userDownloads;
+		const completed = group.completedUserDownloads;
+		const percent = total > 0 ? (completed / total) * 100 : 0;
+		const status =
+			total === 0
+				? group.status
+				: completed === total
+					? "completed"
+					: group.status === "failed"
+						? "failed"
+						: "running";
+
+		return {
+			percent: Math.round(percent),
+			syncPercent: 0,
+			downloadPercent: Math.round(percent),
+			sharedFolder,
+			status,
+		};
+	}
+
 	getAllGroupsProgress(): GroupProgress[] {
 		const progress: GroupProgress[] = [];
 		this.syncGroups.forEach((group, sharedFolder) => {
@@ -187,6 +226,8 @@ export class BackgroundSync extends HasLogging {
 	private async processSyncQueue() {
 		if (this.isPaused || this.isProcessingSync) return;
 		this.isProcessingSync = true;
+
+		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
 		// Filter for items with connected folders
 		const connectableItems = this.syncQueue.filter(
@@ -204,7 +245,10 @@ export class BackgroundSync extends HasLogging {
 			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
 			item.status = "running";
+			const opStart = performance.now();
 			this.activeSync.add(item);
+			metrics.setBgSyncActive("sync", this.activeSync.size);
+			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
 			try {
 				const doc = item.doc;
@@ -219,6 +263,7 @@ export class BackgroundSync extends HasLogging {
 				syncPromise
 					.then(() => {
 						item.status = "completed";
+						metrics.incBgSyncOps("sync", "completed");
 						const callback = this.syncCompletionCallbacks.get(item.guid);
 						if (callback) {
 							callback.resolve();
@@ -250,6 +295,7 @@ export class BackgroundSync extends HasLogging {
 					})
 					.catch((error) => {
 						item.status = "failed";
+						metrics.incBgSyncOps("sync", "failed");
 
 						const callback = this.syncCompletionCallbacks.get(item.guid);
 						if (callback) {
@@ -267,7 +313,9 @@ export class BackgroundSync extends HasLogging {
 						}
 					})
 					.finally(() => {
+						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 						this.activeSync.delete(item);
+						metrics.setBgSyncActive("sync", this.activeSync.size);
 						this.inProgressSyncs.delete(item.guid);
 
 						// Unwind the call stack before checking for more work
@@ -277,6 +325,8 @@ export class BackgroundSync extends HasLogging {
 					});
 			} catch (error) {
 				item.status = "failed";
+				metrics.incBgSyncOps("sync", "failed");
+				metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 
 				const callback = this.syncCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -294,6 +344,7 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				this.activeSync.delete(item);
+				metrics.setBgSyncActive("sync", this.activeSync.size);
 				this.inProgressSyncs.delete(item.guid);
 			}
 		}
@@ -304,6 +355,8 @@ export class BackgroundSync extends HasLogging {
 	private async processDownloadQueue() {
 		if (this.isPaused || this.isProcessingDownloads) return;
 		this.isProcessingDownloads = true;
+
+		metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
 		// Filter for items with connected folders
 		const connectableItems = this.downloadQueue.filter(
@@ -323,7 +376,10 @@ export class BackgroundSync extends HasLogging {
 			);
 
 			item.status = "running";
+			const opStart = performance.now();
 			this.activeDownloads.add(item);
+			metrics.setBgSyncActive("download", this.activeDownloads.size);
+			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
 			try {
 				let downloadPromise: Promise<any>;
@@ -338,12 +394,13 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				downloadPromise
-					.then(() => {
+					.then((result) => {
 						item.status = "completed";
+						metrics.incBgSyncOps("download", "completed");
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
-							callback.resolve();
+							callback.resolve(result as Uint8Array | undefined);
 							this.downloadCompletionCallbacks.delete(item.guid);
 						}
 
@@ -351,6 +408,9 @@ export class BackgroundSync extends HasLogging {
 						if (group) {
 							group.completedDownloads++;
 							group.completed++;
+							if (item.userVisible) {
+								group.completedUserDownloads++;
+							}
 							if (group.completed === group.total) {
 								group.status = "completed";
 							}
@@ -359,6 +419,7 @@ export class BackgroundSync extends HasLogging {
 					})
 					.catch((error) => {
 						item.status = "failed";
+						metrics.incBgSyncOps("download", "failed");
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
@@ -376,7 +437,9 @@ export class BackgroundSync extends HasLogging {
 						this.error("[processDownloadQueue]", error);
 					})
 					.finally(() => {
+						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 						this.activeDownloads.delete(item);
+						metrics.setBgSyncActive("download", this.activeDownloads.size);
 						this.inProgressDownloads.delete(item.guid);
 
 						// Unwind the call stack before checking for more work
@@ -386,6 +449,8 @@ export class BackgroundSync extends HasLogging {
 					});
 			} catch (error) {
 				item.status = "failed";
+				metrics.incBgSyncOps("download", "failed");
+				metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 
 				const callback = this.downloadCompletionCallbacks.get(item.guid);
 				if (callback) {
@@ -403,6 +468,7 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				this.activeDownloads.delete(item);
+				metrics.setBgSyncActive("download", this.activeDownloads.size);
 				this.inProgressDownloads.delete(item.guid);
 			}
 		}
@@ -445,6 +511,7 @@ export class BackgroundSync extends HasLogging {
 			doc: item,
 			status: "pending",
 			sharedFolder,
+			userVisible: false,
 		};
 
 		// Get or create the sync group
@@ -459,6 +526,8 @@ export class BackgroundSync extends HasLogging {
 				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
 			};
 		}
 		group.total++;
@@ -490,7 +559,10 @@ export class BackgroundSync extends HasLogging {
 	 * @param item The document to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueDownload(item: SyncFile | Document | Canvas): Promise<void> {
+	enqueueDownload(
+		item: SyncFile | Document | Canvas,
+		userVisible = true,
+	): Promise<Uint8Array | undefined> {
 		// Skip if already in progress
 		if (this.inProgressDownloads.has(item.guid)) {
 			this.debug(
@@ -501,13 +573,13 @@ export class BackgroundSync extends HasLogging {
 			const existingCallback = this.downloadCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
 				this.processDownloadQueue();
-				return new Promise<void>((resolve, reject) => {
+				return new Promise<Uint8Array | undefined>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
 				});
 			}
 			this.processDownloadQueue();
-			return Promise.resolve();
+			return Promise.resolve(undefined);
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -524,12 +596,17 @@ export class BackgroundSync extends HasLogging {
 				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
 			};
 		}
 
 		// Update the counters for individual document download
 		group.downloads++;
 		group.total++;
+		if (userVisible) {
+			group.userDownloads++;
+		}
 		this.syncGroups.set(sharedFolder, group);
 
 		// Create the queue item
@@ -539,15 +616,18 @@ export class BackgroundSync extends HasLogging {
 			doc: item,
 			status: "pending",
 			sharedFolder,
+			userVisible,
 		};
 
 		// Mark as in progress
 		this.inProgressDownloads.add(item.guid);
 
 		// Create a promise that will resolve when the download completes
-		const downloadPromise = new Promise<void>((resolve, reject) => {
-			this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
-		});
+		const downloadPromise = new Promise<Uint8Array | undefined>(
+			(resolve, reject) => {
+				this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
+			},
+		);
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
@@ -583,6 +663,8 @@ export class BackgroundSync extends HasLogging {
 			syncs: allItems.length,
 			completedDownloads: 0,
 			completedSyncs: 0,
+			userDownloads: 0,
+			completedUserDownloads: 0,
 		};
 
 		// Register the group before enqueueing items
@@ -641,6 +723,7 @@ export class BackgroundSync extends HasLogging {
 			doc: item,
 			status: "pending",
 			sharedFolder,
+			userVisible: false,
 		};
 
 		this.inProgressSyncs.add(item.guid);
@@ -725,46 +808,33 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
+		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
 		// if the local file is synced, then we do the two step process
-		// check if file is tracking
-		let currentFileContents = "";
-
-		// Handle different document types
-		let currentTextStr = "";
-		let currentCanvasData: CanvasData | null = null;
-
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
-			currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
-			currentTextStr = JSON.stringify(currentCanvasData);
-		} else if (isDocument(doc)) {
-			currentTextStr = doc.text;
-		}
-		try {
-			currentFileContents = await doc.sharedFolder.read(doc);
-		} catch (e) {
-			// File does not exist
-		}
+			const currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
+			try {
+				const currentFileContents = await doc.sharedFolder.read(doc);
 
-		// Only proceed with update if file matches current ydoc state
-		let contentsMatch = false;
-		if (isCanvas(doc) && currentCanvasData) {
-			// For canvas, use deep object comparison instead of string equality
-			const currentFileJson = currentFileContents
-				? JSON.parse(currentFileContents)
-				: { nodes: [], edges: [] };
-			contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
-		} else {
-			contentsMatch = currentTextStr === currentFileContents;
+				// Only proceed with update if file matches current ydoc state
+				let contentsMatch = false;
+				if (isCanvas(doc) && currentCanvasData) {
+					// For canvas, use deep object comparison instead of string equality
+					const currentFileJson = currentFileContents
+						? JSON.parse(currentFileContents)
+						: { nodes: [], edges: [] };
+					contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
+					if (!contentsMatch && currentFileContents) {
+						this.log(
+							"file is not tracking local disk. resolve merge conflicts before syncing.",
+						);
+						return false;
+					}
+				}
+			} catch (e) {
+				// File does not exist
+			}
 		}
-
-		if (!contentsMatch && currentFileContents) {
-			this.log(
-				"file is not tracking local disk. resolve merge conflicts before syncing.",
-			);
-			return false;
-		}
-
 		const promise = doc.onceProviderSynced();
 		const intent = doc.intent;
 		doc.connect();
@@ -773,7 +843,8 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		// promise can take some time
-		if (intent === "disconnected" && !doc.userLock) {
+		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
+		if (intent === "disconnected" && !isActive) {
 			doc.disconnect();
 			doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
 		}
@@ -785,7 +856,7 @@ export class BackgroundSync extends HasLogging {
 	 * @param canvas The canvas to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueCanvasDownload(canvas: Canvas): Promise<void> {
+	enqueueCanvasDownload(canvas: Canvas): Promise<Uint8Array | undefined> {
 		return this.enqueueDownload(canvas);
 	}
 
@@ -828,26 +899,17 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
-	private async getDocument(doc: Document, retry = 3, wait = 3000) {
+	private async getDocument(
+		doc: Document,
+		retry = 3,
+		wait = 3000,
+	): Promise<Uint8Array | undefined> {
 		try {
-			// Get the current contents before applying the update
-			const currentText = doc.text;
-			let currentFileContents = "";
-			try {
-				currentFileContents = await doc.sharedFolder.read(doc);
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = currentText === currentFileContents;
-			const hasContents = currentFileContents !== "";
-
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
-			// Check for newly created documents without content, and reject them
+			// Validate: reject uninitialized documents
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
 			const users = newDoc.getMap("users");
@@ -855,7 +917,6 @@ export class BackgroundSync extends HasLogging {
 
 			if (contents === "") {
 				if (users.size === 0) {
-					// Hack for better compat with < 0.4.2.
 					this.log(
 						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
 						users.size,
@@ -867,28 +928,20 @@ export class BackgroundSync extends HasLogging {
 							this.getDocument(doc, retry - 1, wait * 2);
 						}, wait);
 					}
-					return;
+					return undefined;
 				}
 				if (doc.text) {
 					this.log(
 						"[getDocument] local crdt has contents, but remote is empty",
 					);
 					this.enqueueSync(doc);
-					return;
+					return undefined;
 				}
 			}
 
 			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (doc.sharedFolder.syncStore.has(doc.path)) {
-				doc.sharedFolder.flush(doc, doc.text);
-				this.log("[getDocument] flushed");
-			}
+			return updateBytes;
 		} catch (e) {
 			this.error(e);
 			throw e;

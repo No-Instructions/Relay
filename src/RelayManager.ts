@@ -1876,14 +1876,14 @@ export class RelayManager extends HasLogging {
 				expand: "relay,user",
 			}),
 		];
-		promises.forEach(async (promise) => {
+		await Promise.all(promises.map(async (promise) => {
 			const result = await promise;
 			for (const record of result) {
 				if (!this.destroyed && this.store) {
 					this.store.ingest(record);
 				}
 			}
-		});
+		}));
 	}
 
 	async acceptInvitation(shareKey: string): Promise<Relay> {
@@ -2041,7 +2041,7 @@ export class RelayManager extends HasLogging {
 		} else {
 			this.warn("No role found to leave relay");
 		}
-		this.store?.cascade("relay", relay.id);
+		this.store?.cascade("relays", relay.id);
 	}
 
 	async kick(relay_role: RelayRole) {
@@ -2204,6 +2204,7 @@ export class RelayManager extends HasLogging {
 		this._offLoginManager?.();
 		this._offLoginManager = null as any;
 		this.pb?.cancelAllRequests();
+		this.pb?.realtime?.unsubscribe();
 		this.loginManager = null as any;
 		this.store?.destroy();
 		this.pb = null as any;

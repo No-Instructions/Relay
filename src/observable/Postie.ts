@@ -1,7 +1,7 @@
 "use strict";
 
 import { DefaultTimeProvider, type TimeProvider } from "../TimeProvider";
-import { RelayInstances, curryLog } from "../debug";
+import { RelayInstances, curryLog, metrics } from "../debug";
 import type { IObservable } from "./Observable";
 
 export interface Mail<T> {
@@ -50,6 +50,14 @@ export class PostOffice {
 		if (!this.isDelivering) {
 			this.scheduleDelivery();
 		}
+	}
+
+	/**
+	 * Cancel any pending deliveries for a recipient.
+	 * Call this when unsubscribing to prevent stale notifications.
+	 */
+	cancel(recipient: (value: any) => void): void {
+		this.mailboxes.delete(recipient);
 	}
 
 	send<T>(
@@ -105,10 +113,13 @@ export class PostOffice {
 	}
 
 	private deliver(): void {
+		const t0 = performance.now();
+		metrics.setPostieMailboxDepth(this.mailboxes.size);
 		const log = curryLog("[postie]", "debug");
 		for (const [recipient, senders] of this.mailboxes) {
 			for (const sender of senders) {
 				recipient(sender);
+				metrics.incPostieDeliveries();
 				log("send", sender.constructor.name, recipient);
 				this.deliveredMailLog.push({
 					sender,
@@ -120,6 +131,7 @@ export class PostOffice {
 			}
 			senders.clear();
 		}
+		metrics.observePostieDelivery((performance.now() - t0) / 1000);
 	}
 
 	getAllMailLog(): Mail<any>[] {

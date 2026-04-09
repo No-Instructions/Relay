@@ -51,15 +51,23 @@ function makeProvider(
 	return provider;
 }
 
+/** Disconnected state returned when no provider exists */
+const DISCONNECTED_STATE: ConnectionState = {
+	status: "disconnected",
+} as ConnectionState;
+
 type Listener = (state: ConnectionState) => void;
 
 export class HasProvider extends HasLogging {
-	_provider: YSweetProvider;
+	_provider: YSweetProvider | null = null;
 	path?: string;
-	ydoc: Y.Doc;
+	private _ydoc: Y.Doc | null = null;
 	clientToken: ClientToken;
-	private _offConnectionError: () => void;
-	private _offState: () => void;
+	// Track if provider has ever synced. We use our own flag because
+	// _provider.synced can be reset to false on reconnection.
+	_providerSynced: boolean = false;
+	private _offConnectionError: (() => void) | null = null;
+	private _offState: (() => void) | null = null;
 	listeners: Map<unknown, Listener>;
 
 	constructor(
@@ -71,29 +79,61 @@ export class HasProvider extends HasLogging {
 		super();
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
-		const user = this.loginManager?.user;
-		this.ydoc = new Y.Doc();
-
-		if (flags().enableDocumentHistory) {
-			this.ydoc.gc = false;
-		}
-
-		if (user) {
-			const permanentUserData = new Y.PermanentUserData(this.ydoc);
-			permanentUserData.setUserMapping(this.ydoc, this.ydoc.clientID, user.id);
-		}
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
 			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
 			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
+	}
 
-		this._provider = makeProvider(this.clientToken, this.ydoc, user);
+	/**
+	 * Get the remote YDoc. Lazily creates it on first access.
+	 * Most callers should use this property for backward compatibility.
+	 */
+	public get ydoc(): Y.Doc {
+		if (!this._ydoc) {
+			this.ensureRemoteDoc();
+		}
+		return this._ydoc!;
+	}
+
+	/**
+	 * Get the remote YDoc without creating it.
+	 * Returns null if the remoteDoc has not been created yet.
+	 */
+	public get remoteDocOrNull(): Y.Doc | null {
+		return this._ydoc;
+	}
+
+	/**
+	 * Check if the remote YDoc and provider are currently loaded.
+	 */
+	public get isRemoteDocLoaded(): boolean {
+		return this._ydoc !== null;
+	}
+
+	/**
+	 * Create the remote YDoc and provider if they don't exist.
+	 * Returns the YDoc for convenience.
+	 */
+	ensureRemoteDoc(): Y.Doc {
+		if (this._ydoc) {
+			return this._ydoc;
+		}
+
+		const user = this.loginManager?.user;
+		this._ydoc = new Y.Doc();
+
+		if (flags().enableDocumentHistory) {
+			this._ydoc.gc = false;
+		}
+
+		this._provider = makeProvider(this.clientToken, this._ydoc, user);
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
 				this.log(`[${this.path}] disconnection event`, event);
-				const shouldConnect = this._provider.canReconnect();
+				const shouldConnect = this._provider?.canReconnect() ?? false;
 				this.disconnect();
 				if (shouldConnect) {
 					this.connect();
@@ -110,6 +150,32 @@ export class HasProvider extends HasLogging {
 		);
 		stateSub.on();
 		this._offState = stateSub.off;
+
+		return this._ydoc;
+	}
+
+	/**
+	 * Destroy the remote YDoc and provider, freeing memory.
+	 * The document can be re-created later via ensureRemoteDoc().
+	 */
+	destroyRemoteDoc(): void {
+		if (this._offConnectionError) {
+			this._offConnectionError();
+			this._offConnectionError = null;
+		}
+		if (this._offState) {
+			this._offState();
+			this._offState = null;
+		}
+		if (this._provider) {
+			this._provider.destroy();
+			this._provider = null;
+		}
+		if (this._ydoc) {
+			this._ydoc.destroy();
+			this._ydoc = null;
+		}
+		this._providerSynced = false;
 	}
 
 	public get s3rn(): S3RNType {
@@ -118,7 +184,9 @@ export class HasProvider extends HasLogging {
 
 	public set s3rn(value: S3RNType) {
 		this._s3rn = value;
-		this.refreshProvider(this.clientToken);
+		if (this._provider) {
+			this.refreshProvider(this.clientToken);
+		}
 	}
 
 	public get debuggerUrl(): string {
@@ -156,7 +224,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	providerActive() {
-		if (this.clientToken) {
+		if (this.clientToken && this._provider) {
 			const tokenIsSet = this._provider.hasUrl(this.clientToken.url);
 			const expired = Date.now() > (this.clientToken?.expiryTime || 0);
 			return tokenIsSet && !expired;
@@ -169,7 +237,8 @@ export class HasProvider extends HasLogging {
 		this.clientToken = clientToken;
 
 		if (!this._provider) {
-			throw new Error("missing provider!");
+			// No provider yet - token will be used when ensureRemoteDoc() is called
+			return;
 		}
 
 		const result = this._provider.refreshToken(
@@ -195,10 +264,12 @@ export class HasProvider extends HasLogging {
 		if (this.connected) {
 			return Promise.resolve(true);
 		}
+		// Ensure remoteDoc exists before connecting
+		this.ensureRemoteDoc();
 		return this.getProviderToken()
 			.then((clientToken) => {
 				this.refreshProvider(clientToken); // XXX is this still needed?
-				this._provider.connect();
+				this._provider!.connect();
 				this.notifyListeners();
 				return true;
 			})
@@ -208,19 +279,27 @@ export class HasProvider extends HasLogging {
 	}
 
 	public get state(): ConnectionState {
+		if (!this._provider) {
+			return DISCONNECTED_STATE;
+		}
 		return this._provider.connectionState;
 	}
 
 	get intent(): ConnectionIntent {
+		if (!this._provider) {
+			return "disconnected" as ConnectionIntent;
+		}
 		return this._provider.intent;
 	}
 
 	public get synced(): boolean {
-		return this._provider.synced;
+		return this._providerSynced;
 	}
 
 	disconnect() {
-		this._provider.disconnect();
+		if (this._provider) {
+			this._provider.disconnect();
+		}
 		this.tokenStore.removeFromRefreshQueue(this.guid);
 		this.notifyListeners();
 	}
@@ -237,23 +316,26 @@ export class HasProvider extends HasLogging {
 	}
 
 	onceConnected(): Promise<void> {
+		this.ensureRemoteDoc();
 		return new Promise((resolve) => {
 			const resolveOnConnect = (state: ConnectionState) => {
 				if (state.status === "connected") {
+					this._provider!.off("status", resolveOnConnect);
 					resolve();
 				}
 			};
-			// provider observers are manually cleared in destroy()
-			this._provider.on("status", resolveOnConnect);
+			this._provider!.on("status", resolveOnConnect);
 		});
 	}
 
 	onceProviderSynced(): Promise<void> {
-		if (this._provider.synced) {
+		if (this._providerSynced) {
 			return Promise.resolve();
 		}
+		this.ensureRemoteDoc();
 		return new Promise((resolve) => {
-			this._provider.once("synced", () => {
+			this._provider!.once("synced", () => {
+				this._providerSynced = true;
 				resolve();
 			});
 		});
@@ -274,10 +356,10 @@ export class HasProvider extends HasLogging {
 		f: (event: Event) => void,
 	): Subscription {
 		const on = () => {
-			this._provider.on("connection-error", f);
+			this._provider?.on("connection-error", f);
 		};
 		const off = () => {
-			this._provider.off("connection-error", f);
+			this._provider?.off("connection-error", f);
 		};
 		return { on, off } as Subscription;
 	}
@@ -286,24 +368,16 @@ export class HasProvider extends HasLogging {
 		f: (state: ConnectionState) => void,
 	): Subscription {
 		const on = () => {
-			this._provider.on("status", f);
+			this._provider?.on("status", f);
 		};
 		const off = () => {
-			this._provider.off("status", f);
+			this._provider?.off("status", f);
 		};
 		return { on, off } as Subscription;
 	}
 
 	destroy() {
-		if (this._offConnectionError) {
-			this._offConnectionError();
-		}
-		if (this._offState) {
-			this._offState();
-		}
-		if (this._provider) {
-			this._provider.destroy();
-		}
+		this.destroyRemoteDoc();
 		this.loginManager = null as any;
 	}
 }

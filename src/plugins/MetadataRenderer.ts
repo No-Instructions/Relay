@@ -1,7 +1,6 @@
 import { MarkdownView, getFrontMatterInfo, parseYaml } from "obsidian";
 import { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
-import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 
 /**
@@ -21,38 +20,33 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 
 	render(document: Document, viewMode: string): void {
 		if (this.destroyed) {
-			this.debug("Skipping render - renderer destroyed");
-			return;
-		}
-
-		if (!flags().enableMetadataViewHooks) {
-			this.debug("Metadata view hooks disabled via flags");
 			return;
 		}
 
 		try {
-			this.debug("Rendering metadata from document");
-			
 			// @ts-ignore - accessing internal Obsidian API
 			const metadataEditor = this.view.metadataEditor;
-			
+
 			if (!metadataEditor) {
-				this.debug("No metadata editor available");
 				return;
 			}
 
-			// Parse frontmatter from document text
-			const fmi = getFrontMatterInfo(document.text);
+			// Parse frontmatter from localDoc content
+			const fmi = getFrontMatterInfo(document.localText);
 			const fm = fmi.frontmatter;
-			
+
 			if (fm) {
-				// Synchronize the metadata editor with parsed frontmatter
 				metadataEditor.synchronize(parseYaml(fm));
+
+				// Re-render each property, but skip the one the user is
+				// actively editing so we don't destroy their input context.
+				const focused = globalThis.document?.activeElement;
 				for (const prop of metadataEditor.rendered) {
-					prop.renderProperty(prop.entry, true); // true = force
+					if (focused && prop.containerEl?.contains(focused)) {
+						continue;
+					}
+					prop.renderProperty(prop.entry, true);
 				}
-			} else {
-				this.debug("No frontmatter found in document");
 			}
 		} catch (error) {
 			this.error("Error rendering metadata:", error);
