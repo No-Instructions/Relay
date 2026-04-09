@@ -2162,6 +2162,14 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	onDestroy(cb: () => void): void {
+		if (this.destroyed) {
+			try { cb(); } catch { /* caller's problem */ }
+			return;
+		}
+		this.unsubscribes.push(cb);
+	}
+
 	destroy() {
 		this.destroyed = true;
 		this.unsubscribes.forEach((unsub) => {
