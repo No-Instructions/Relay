@@ -712,11 +712,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			const content = this.localDoc!.getText("contents").toString();
 			const hash = await this.hashFn(content);
 			const stateVector = Y.encodeStateVector(this.localDoc!);
-			this._lca = {
-				contents: content,
-				meta: { hash, mtime },
-				stateVector,
-			};
+
+			// Check if disk content matches the remote CRDT content.
+			// If they differ (e.g. GUID remap with independent edits),
+			// leave _lca null so the HSM enters idle.diverged and shows
+			// a conflict banner instead of silently overwriting content.
+			const diskData = await this._diskLoader();
+			const diskMatchesRemote = diskData.hash === hash;
+
+			if (diskMatchesRemote) {
+				this._lca = {
+					contents: content,
+					meta: { hash, mtime },
+					stateVector,
+				};
+			}
+
 			this._localStateVector = stateVector;
 			this.emitPersistState();
 		}

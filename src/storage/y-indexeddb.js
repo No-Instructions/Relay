@@ -126,8 +126,9 @@ export class IndexeddbPersistence extends Observable {
    * @param {Y.Doc} doc
    * @param {string|null} [userId] - User ID for PermanentUserData tracking
    * @param {{ scope: string, trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture)
+   * @param {string|null} [migrateFrom] - Old DB name to migrate data from (one-time, then deleted)
    */
-  constructor (name, doc, userId = null, captureOpts = null) {
+  constructor (name, doc, userId = null, captureOpts = null, migrateFrom = null) {
     super()
     this.doc = doc
     this.name = name
@@ -136,6 +137,7 @@ export class IndexeddbPersistence extends Observable {
     this._destroyed = false
     this._userId = userId
     this._captureOpts = captureOpts
+    this._migrateFromName = migrateFrom
     /**
      * @type {IDBDatabase|null}
      */
@@ -175,6 +177,12 @@ export class IndexeddbPersistence extends Observable {
 
     this._db.then(db => {
       this.db = db
+
+      const migrationDone = this._migrateFromName
+        ? this._migrateFromOldDb(this._migrateFromName)
+        : Promise.resolve()
+
+      return migrationDone.then(() => {
       // Capture pending state before loading from IDB
       /** @type {Uint8Array|null} */
       let pendingState = null
@@ -221,6 +229,7 @@ export class IndexeddbPersistence extends Observable {
             this.emit('synced', [this])
           }
         })
+      }) // migrationDone
     })
     /**
      * Timeout in ms untill data is merged and persisted in idb.
@@ -447,6 +456,79 @@ export class IndexeddbPersistence extends Observable {
    */
   hasUserData () {
     return this._dbsize > 0
+  }
+
+  /**
+   * One-time migration: copy raw blobs from an old-named IDB into the new DB.
+   * The old DB is left in place — multiple vaults in the same process may share
+   * the same old DB name and each needs to migrate independently.
+   * @param {string} oldName
+   * @returns {Promise<void>}
+   * @private
+   */
+  _migrateFromOldDb (oldName) {
+    // Check if we already migrated (marker in custom store)
+    const [customStore] = idb.transact(this.db, [customStoreName], 'readonly')
+    return idb.get(customStore, 'migratedFrom').then(existing => {
+      if (existing === oldName) return // already migrated
+      return new Promise(resolve => {
+        const req = indexedDB.open(oldName)
+        req.onerror = () => resolve()
+        req.onsuccess = () => {
+          const oldDb = req.result
+          const storeNames = [updatesStoreName, customStoreName, historyStoreName]
+            .filter(s => oldDb.objectStoreNames.contains(s))
+          if (storeNames.length === 0) {
+            oldDb.close()
+            return resolve()
+          }
+          // Read all entries from each store in the old DB
+          const readTx = oldDb.transaction(storeNames, 'readonly')
+          const reads = storeNames.map(name => {
+            const store = readTx.objectStore(name)
+            return new Promise((res, rej) => {
+              const entries = []
+              const cursor = store.openCursor()
+              cursor.onsuccess = () => {
+                const c = cursor.result
+                if (c) {
+                  entries.push({ key: c.key, value: c.value })
+                  c.continue()
+                } else {
+                  res({ name, entries })
+                }
+              }
+              cursor.onerror = () => rej(cursor.error)
+            })
+          })
+          Promise.all(reads).then(stores => {
+            // Write all entries into the new DB, plus migration marker
+            const writeStoreNames = [customStoreName, ...stores.filter(s => s.entries.length > 0).map(s => s.name)]
+            const unique = [...new Set(writeStoreNames)]
+            const writeTx = this.db.transaction(unique, 'readwrite')
+            writeTx.objectStore(customStoreName).put(oldName, 'migratedFrom')
+            for (const { name, entries } of stores) {
+              if (entries.length === 0) continue
+              const dest = writeTx.objectStore(name)
+              for (const { key, value } of entries) {
+                dest.put(value, key)
+              }
+            }
+            writeTx.oncomplete = () => {
+              oldDb.close()
+              resolve()
+            }
+            writeTx.onerror = () => {
+              oldDb.close()
+              resolve()
+            }
+          }).catch(() => {
+            oldDb.close()
+            resolve()
+          })
+        }
+      })
+    })
   }
 
   /**
