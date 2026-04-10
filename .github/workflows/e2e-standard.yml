@@ -165,13 +165,7 @@ jobs:
           mkdir -p ~/.ssh
           cp ~/ci-deploy-key ~/.ssh/ci-deploy-key
           chmod 600 ~/.ssh/ci-deploy-key
-          if ! grep -q 'ci-deploy-key' ~/.ssh/config 2>/dev/null; then
-            cat >> ~/.ssh/config << 'SSHCFG'
-          Host github.com
-            IdentityFile ~/.ssh/ci-deploy-key
-            StrictHostKeyChecking accept-new
-          SSHCFG
-          fi
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ci-deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 
           # Clone or update relay-plugin (public)
           if [ ! -d ~/relay-plugin ]; then
@@ -188,7 +182,10 @@ jobs:
           if [ ! -d ~/relay-harness ]; then
             git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
           fi
-          cd ~/relay-harness && git checkout main && git pull
+          cd ~/relay-harness
+          git fetch origin
+          git checkout main
+          git pull
 
           # Install playwright test dependencies
           cd ~/relay-harness/playwright && npm install --ignore-scripts 2>/dev/null
