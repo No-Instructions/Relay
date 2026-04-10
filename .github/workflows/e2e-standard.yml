@@ -1,10 +1,12 @@
-name: E2E Smoke Tests
+name: E2E standard suite
 
 on:
+  push:
+    branches: [merge-hsm]
   workflow_dispatch:
     inputs:
-      branch:
-        description: 'Branch to test (e.g. origin/main, origin/feature-x)'
+      ref:
+        description: 'Ref to test (e.g. origin/main, origin/feature-x, a tag, or a SHA)'
         required: true
         default: 'origin/main'
 
@@ -15,7 +17,7 @@ env:
   GCP_USE_IAP: "true"
 
 jobs:
-  smoke-test:
+  standard-test:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -98,16 +100,54 @@ jobs:
             --tunnel-through-iap 2>/dev/null
           rm -f /tmp/deploy-key
 
-      - name: Run smoke tests on VM
+          # GitHub App private key for posting Check Runs
+          echo '${{ secrets.E2E_APP_KEY }}' > /tmp/github-app-key.pem
+          chmod 600 /tmp/github-app-key.pem
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="mkdir -p ~/.config/relay-e2e" 2>/dev/null
+          gcloud compute scp --quiet /tmp/github-app-key.pem "$VM_NAME":~/.config/relay-e2e/github-app-key.pem \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null
+          rm -f /tmp/github-app-key.pem
+
+          # R2 credentials for ci.system3.dev uploads
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
+          export CI_R2_ENDPOINT='${{ secrets.CI_R2_ENDPOINT }}'
+          export CI_R2_ACCESS_KEY_ID='${{ secrets.CI_R2_ACCESS_KEY_ID }}'
+          export CI_R2_SECRET_ACCESS_KEY='${{ secrets.CI_R2_SECRET_ACCESS_KEY }}'
+          CREDS
+          chmod 600 ~/.config/relay-e2e/r2-env.sh" 2>/dev/null
+
+      - name: Run standard suite on VM
         run: |
-          BRANCH="${{ github.event.inputs.branch }}"
+          REF="${{ github.event.inputs.ref || format('origin/{0}', github.ref_name) }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$BRANCH'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
-          BRANCH="$1"
+          REF="$1"
+
+          # Load R2 credentials
+          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
+
+          # Ensure Obsidian AppImage is installed
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
+          if [ ! -f "$OBSIDIAN_PATH" ]; then
+            echo "Installing Obsidian AppImage..."
+            mkdir -p ~/obsidian
+            OBSIDIAN_VERSION="1.8.9"
+            wget -q -O "$OBSIDIAN_PATH" \
+              "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+            chmod +x "$OBSIDIAN_PATH"
+            echo "Installed Obsidian $OBSIDIAN_VERSION"
+          fi
 
           # Start virtual display for headless Obsidian
           export DISPLAY=:99
@@ -137,7 +177,12 @@ jobs:
           if [ ! -d ~/relay-plugin ]; then
             git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
           fi
-          cd ~/relay-plugin && git fetch --all && git checkout "$BRANCH" 2>/dev/null || git checkout -b "$(basename "$BRANCH")" "$BRANCH"
+          cd ~/relay-plugin
+          git fetch --all --prune
+          git checkout -- .
+          git clean -fd
+          # Detached HEAD checkout — works for origin/branch, tags, and SHAs
+          git checkout --detach "$REF"
 
           # Clone or update relay-harness (private)
           if [ ! -d ~/relay-harness ]; then
@@ -148,12 +193,12 @@ jobs:
           # Install playwright test dependencies
           cd ~/relay-harness/playwright && npm install --ignore-scripts 2>/dev/null
 
-          # Run tests using the harness test-branch.sh orchestrator
+          # Run tests using the harness standard-suite orchestrator
           export RELAY_PLUGIN_DIR=~/relay-plugin
           cd ~/relay-harness
 
           TEST_EXIT=0
-          ./scripts/test-branch.sh "$BRANCH" --upload || TEST_EXIT=$?
+          ./scripts/run-e2e-suite.sh "$REF" --upload --checks || TEST_EXIT=$?
 
           # Extract results for the GitHub Actions runner
           LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
@@ -162,7 +207,7 @@ jobs:
 
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
-            REPORT_URL="https://storage.googleapis.com/relay-e2e-screenshots/runs/${COMMIT}/${EXEC_ID}/index.html"
+            REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
             echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
           else
             echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
@@ -181,7 +226,7 @@ jobs:
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key" 2>/dev/null || true
+            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/github-app-key.pem ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
 
       - name: Fetch results
         if: always()
@@ -204,7 +249,7 @@ jobs:
             try {
               summary = JSON.parse(fs.readFileSync('summary.json', 'utf-8'));
             } catch {
-              core.summary.addRaw('## E2E Smoke Test Results\n\n:x: **Failed to retrieve test results from VM**\n');
+              core.summary.addRaw('## E2E standard suite results\n\n:x: **Failed to retrieve test results from VM**\n');
               await core.summary.write();
               core.setFailed('No test results available');
               return;
@@ -237,7 +282,7 @@ jobs:
             if (s.expectedFail) parts.push(`${s.expectedFail} expected-fail`);
             if (s.unexpectedPass) parts.push(`${s.unexpectedPass} unexpected-pass`);
 
-            let md = `## E2E Smoke Test Results\n\n`;
+            let md = `## E2E standard suite results\n\n`;
             md += `${verdictEmoji} **${verdictText}** | ${parts.join(', ')} | ${totalDur}s`;
             if (metadata.reportUrl) {
               md += ` | [Full Report](${metadata.reportUrl})`;
