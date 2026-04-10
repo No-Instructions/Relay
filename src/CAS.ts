@@ -51,14 +51,19 @@ export class ContentAddressedStore extends HasLogging {
 			method: "GET",
 			headers: { Authorization: `Bearer ${token.token}` },
 		});
-		if (response.status === 404) {
+		if (!response.ok) {
 			throw new Error(
-				`[${this.sharedFolder.path}] File is missing: ${syncFile.guid} ${syncFile.meta.hash} ${syncFile.meta.type}`,
+				`[${this.sharedFolder.path}] File download-url failed: ${response.status} for ${syncFile.guid} ${syncFile.meta.hash} ${syncFile.meta.type}`,
 			);
 		}
 		const responseJson = await response.json();
 		const presignedUrl = responseJson.downloadUrl;
 		const downloadResponse = await customFetch(presignedUrl);
+		if (!downloadResponse.ok) {
+			throw new Error(
+				`[${this.sharedFolder.path}] File download failed: ${downloadResponse.status} for ${syncFile.guid}`,
+			);
+		}
 		return downloadResponse.arrayBuffer();
 	}
 
