@@ -807,6 +807,77 @@ export class BackgroundSync extends HasLogging {
 		return response;
 	}
 
+	/**
+	 * Download raw CRDT bytes for a document by guid, without needing a
+	 * Document instance. Used by the SharedFolder guid-remap path, where
+	 * the server's content must be fetched *before* the old Document is
+	 * destroyed — a failure here leaves old state intact and retriable.
+	 *
+	 * Does not participate in the download queue, syncGroups, or
+	 * in-progress tracking. It is a bare HTTP fetch.
+	 *
+	 * Returns undefined if the server has the guid registered but no
+	 * peer has uploaded content yet (empty contents, empty users map).
+	 */
+	async downloadByGuid(
+		sharedFolder: SharedFolder,
+		guid: string,
+		path: string,
+	): Promise<Uint8Array | undefined> {
+		const entity = new S3RemoteDocument(
+			sharedFolder.relayId!,
+			sharedFolder.guid,
+			guid,
+		);
+		this.log("[downloadByGuid]", path, S3RN.encode(entity));
+
+		const clientToken = await sharedFolder.tokenStore.getToken(
+			S3RN.encode(entity),
+			path,
+			() => {},
+		);
+		const headers = this.getAuthHeader(clientToken);
+		const baseUrl = this.getBaseUrl(clientToken, entity);
+		const url = `${baseUrl}/as-update`;
+
+		const response = await requestUrl({
+			url,
+			method: "GET",
+			headers,
+			throw: false,
+		});
+
+		if (response.status !== 200) {
+			this.error(
+				"[downloadByGuid]",
+				path,
+				url,
+				response.status,
+				response.text,
+			);
+			throw new Error(
+				`downloadByGuid: status ${response.status} for ${S3RN.encode(entity)}`,
+			);
+		}
+
+		const updateBytes = new Uint8Array(response.arrayBuffer);
+
+		// Peek at the update in a throwaway doc to detect empty-server.
+		// Same detection as getDocument(): empty contents AND empty users.
+		const tmpDoc = new Y.Doc();
+		Y.applyUpdate(tmpDoc, updateBytes);
+		const users = tmpDoc.getMap("users");
+		const contents = tmpDoc.getText("contents").toString();
+		if (contents === "" && users.size === 0) {
+			this.log(
+				"[downloadByGuid] server has guid registered but no content",
+				path,
+			);
+			return undefined;
+		}
+		return updateBytes;
+	}
+
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
 		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
 		// if the local file is synced, then we do the two step process

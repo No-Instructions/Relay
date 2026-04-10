@@ -279,7 +279,10 @@ export class SharedFolder extends HasProvider {
 		});
 
 		try {
-			this._persistence = new IndexeddbPersistence(this.guid, this.ydoc);
+			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
+			this._persistence = new IndexeddbPersistence(
+				folderDbName, this.ydoc, null, null, this.guid
+			);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
@@ -1116,47 +1119,96 @@ export class SharedFolder extends HasProvider {
 				}
 
 				if (localGuid && localFile && isDocument(localFile) && isDocumentMeta(meta)) {
-					// Document with different GUID — the local CRDT (under the old
-					// GUID) has independent history from the server's CRDT and cannot
-					// be merged. Destroy the old Document and create a fresh one
-					// under the server's GUID. Fork reconciliation handles content
-					// differences once the provider syncs.
-
-					// Tear down old Document
-					this.files.delete(localGuid);
-					this.fset.delete(localFile);
-					localFile.cleanup();
-					localFile.destroy();
-
-					// Delete old GUID's IDB databases
-					try {
-						indexedDB.deleteDatabase(`${this.appId}-relay-doc-${localGuid}`);
-					} catch {}
-					const p = this._hsmStore.deleteState(localGuid).catch(() => {});
-					awaitOnReload(p);
-
-					this.syncStore.pendingUpload.delete(path);
-
-					// Create fresh Document under the server's GUID.
-					// getOrCreateDoc creates the Document + HSM. The HSM enters
-					// idle mode via the LOAD → PERSISTENCE_LOADED → SET_MODE_IDLE
-					// sequence. initializeWithContent enrolls disk content into
-					// the CRDT. enqueueSync connects the provider — when remote
-					// state arrives, the HSM detects divergence and fork-reconciles.
-					const newDoc = this.getOrCreateDoc(guid, path);
-					this.files.set(guid, newDoc);
-					this.fset.add(newDoc, true);
-
+					// Document with different GUID — the local CRDT (under the
+					// old GUID) has independent history from the server's CRDT
+					// and cannot be merged. Download the server's content
+					// first (non-destructive), then destroy the old Document
+					// and create a fresh one under the server's GUID populated
+					// from the downloaded bytes. Disk stays untouched; if it
+					// differs from remote, poll() triggers DISK_CHANGED and
+					// the normal fork / fork-reconcile path pushes the diff
+					// upstream.
 					const promise = (async () => {
-						const enrolled = await newDoc.hsm?.initializeWithContent();
-						if (enrolled) {
-							await this.backgroundSync.enqueueSync(newDoc);
+						// Offline: defer. Next meta event retries on reconnect.
+						if (!this.connected) {
+							this.log(
+								`[${path}] remap deferred: folder offline`,
+							);
+							return;
 						}
+
+						// 1. Download remote CRDT first. Non-destructive — if
+						// this fails, old state is intact and the next meta
+						// event can retry.
+						let updateBytes: Uint8Array | undefined;
+						try {
+							updateBytes = await this.backgroundSync.downloadByGuid(
+								this,
+								guid,
+								path,
+							);
+						} catch (e) {
+							this.warn(
+								`[${path}] remap download failed, deferring`,
+								e,
+							);
+							return;
+						}
+
+						// SharedFolder may have been destroyed or the old
+						// doc removed during the await. Bail out — state has
+						// moved on without us. This also handles concurrent
+						// meta events racing into the same remap.
+						if (
+							this.destroyed ||
+							!this.files.has(localGuid)
+						) {
+							this.log(
+								`[${path}] remap aborted: state changed during download`,
+							);
+							return;
+						}
+
+						// 2. Tear down old Document.
+						this.files.delete(localGuid);
+						this.fset.delete(localFile);
+						localFile.cleanup();
+						localFile.destroy();
+
+						try {
+							indexedDB.deleteDatabase(
+								`${this.appId}-relay-doc-${localGuid}`,
+							);
+						} catch {}
+						const p = this._hsmStore
+							.deleteState(localGuid)
+							.catch(() => {});
+						awaitOnReload(p);
+
+						this.syncStore.pendingUpload.delete(path);
+
+						// 3. Create fresh Document under the server's GUID.
+						const newDoc = this.getOrCreateDoc(guid, path);
+						this.files.set(guid, newDoc);
+						this.fset.add(newDoc, true);
+
+						// 4. Enroll remote content (if any) and start the HSM.
+						// If the server has the guid but no content yet,
+						// `updateBytes` is undefined and the HSM starts with
+						// no LCA; provider sync will deliver content later.
+						if (updateBytes) {
+							await newDoc.hsm!.initializeFromRemote(
+								updateBytes,
+								Date.now(),
+							);
+						}
+						await this.poll([guid]);
+
+						this.log(
+							`Remapped Document ${path} from local GUID ${localGuid} to remote GUID ${guid}`,
+						);
 					})();
 
-					this.log(
-						`Remapped Document ${path} from local GUID ${localGuid} to remote GUID ${guid}`,
-					);
 					return { op: "update", path, promise };
 				}
 			}

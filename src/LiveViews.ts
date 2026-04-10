@@ -622,6 +622,7 @@ export class LiveView<ViewType extends TextFileView>
 			const hsm = this.document.hsm;
 			if (hsm && !this._hsmStateUnsubscribe) {
 				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
+					if (!this.document.sharedFolder) return;
 					this._viewActions?.$set({
 						tracking: state.statePath === "active.tracking",
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
