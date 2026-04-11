@@ -31,6 +31,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	_tfile: TFile | null;
 	name: string;
 	userLock: boolean = false;
+	destroyed: boolean = false;
 	extension: string;
 	basename: string;
 	vault: Vault;
@@ -384,6 +385,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	destroy() {
+		this.destroyed = true;
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});

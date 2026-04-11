@@ -271,6 +271,7 @@ export class SyncFile
 	caf: ContentAddressedFile;
 	ready: boolean = false;
 	connected: boolean = true;
+	destroyed: boolean = false;
 	offFileInfo: Unsubscriber = () => {};
 	uploadError?: string = undefined;
 
@@ -556,6 +557,7 @@ export class SyncFile
 	cleanup() {}
 
 	destroy() {
+		this.destroyed = true;
 		this.offFileInfo?.();
 		this.offFileInfo = null as any;
 
