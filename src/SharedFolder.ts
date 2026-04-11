@@ -1193,10 +1193,7 @@ export class SharedFolder extends HasProvider {
 						// `updateBytes` is undefined and the HSM starts with
 						// no LCA; provider sync will deliver content later.
 						if (updateBytes) {
-							await newDoc.hsm!.initializeFromRemote(
-								updateBytes,
-								Date.now(),
-							);
+							await newDoc.hsm!.initializeFromRemote(updateBytes);
 						}
 						await this.poll([guid]);
 
@@ -1836,11 +1833,11 @@ export class SharedFolder extends HasProvider {
 		const updateBytes = await this.backgroundSync.enqueueDownload(doc);
 
 		if (updateBytes) {
-			await doc.hsm?.initializeFromRemote(updateBytes, Date.now());
+			await doc.hsm?.initializeFromRemote(updateBytes);
 
-			// Flush remoteDoc content to disk
 			if (this.syncStore.has(doc.path)) {
 				await this.flush(doc, doc.text);
+				await doc.hsm?.setLCA();
 			}
 		}
 
