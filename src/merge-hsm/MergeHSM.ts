@@ -2966,6 +2966,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.emitEffect({ type: "DISPATCH_CM6", changes });
 		}
 
+		// Keep lastKnownEditorText in sync. The DISPATCH_CM6 above uses
+		// ySyncAnnotation, so CM6Integration suppresses the CM6_CHANGE
+		// feedback and trackEditorText never fires. Without this update,
+		// resolveConflict (auto-triggered after the last hunk) computes
+		// a second DISPATCH_CM6 against the stale lastKnownEditorText,
+		// corrupting the editor.
+		this.lastKnownEditorText = afterText;
+
 		// Update stored local content
 		this.conflictData.ours = afterText;
 
