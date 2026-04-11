@@ -9,6 +9,10 @@ on:
         description: 'Ref to test (e.g. origin/main, origin/feature-x, a tag, or a SHA)'
         required: true
         default: 'origin/main'
+      tests:
+        description: 'Optional comma-separated Level 2 strands to run (e.g. test-basic-open-close,test-share-folder)'
+        required: false
+        default: ''
 
 env:
   VM_NAME: ${{ secrets.GCP_VM_NAME }}
@@ -134,13 +138,15 @@ jobs:
       - name: Run standard suite on VM
         run: |
           REF="${{ github.event.inputs.ref || format('origin/{0}', github.ref_name) }}"
+          TARGETED_TESTS="${{ github.event.inputs.tests || '' }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$TARGETED_TESTS'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
+          TARGETED_TESTS="$2"
 
           # Load R2 credentials
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
@@ -209,7 +215,11 @@ jobs:
           cd ~/relay-harness
 
           TEST_EXIT=0
-          ./scripts/run-e2e-suite.sh "$REF" --upload --checks || TEST_EXIT=$?
+          TEST_CMD=(./scripts/run-e2e-suite.sh "$REF" --upload --checks)
+          if [ -n "$TARGETED_TESTS" ]; then
+            TEST_CMD+=("--tests=$TARGETED_TESTS")
+          fi
+          "${TEST_CMD[@]}" || TEST_EXIT=$?
 
           # Extract results for the GitHub Actions runner
           LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
