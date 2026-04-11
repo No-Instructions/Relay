@@ -1635,7 +1635,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 				// Remote changed — need three-way merge
 				const remoteContent = this.remoteDoc.getText("contents").toString();
-				console.log('[DEBUG reconcileForkInActive]', JSON.stringify({ base: fork.base, local: localContent, remote: remoteContent }));
 				const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 				if (!mergeResult.success) {
