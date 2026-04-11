@@ -311,6 +311,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				);
 			}
 
+			// Ensure provider is connected. After idle-mode fork
+			// reconciliation, destroyIdleProviderIntegration disconnects
+			// the provider. Without reconnecting, SYNC_TO_REMOTE updates
+			// from conflict resolution are buffered but never sent.
+			// connect() is a no-op if already connected.
+			this.connect();
+
 			// Wait for HSM to reach a post-entering active state
 			await this._hsm.awaitActive();
 
