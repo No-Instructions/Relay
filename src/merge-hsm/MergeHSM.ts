@@ -692,47 +692,37 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	/**
-	 * Initialize localDoc from downloaded CRDT bytes.
-	 * Applies bytes to localDoc via persistence, then derives LCA from localDoc.
-	 * No remoteDoc dependency — bytes flow directly from the download.
-	 *
-	 * @param updateBytes - Raw CRDT update bytes from the server
-	 * @param mtime - Modification time from disk
-	 * @returns true if initialization happened, false if already initialized
+	/**
+	 * Enroll remote CRDT bytes into localDoc. Does not set LCA.
 	 */
 	async initializeFromRemote(
 		updateBytes: Uint8Array,
-		mtime: number,
 	): Promise<boolean> {
 		await this.ensurePersistence();
 
 		const didInitialize = await this.localPersistence!.initializeFromRemote!(updateBytes, this.remoteDoc);
 
 		if (didInitialize) {
-			const content = this.localDoc!.getText("contents").toString();
-			const hash = await this.hashFn(content);
-			const stateVector = Y.encodeStateVector(this.localDoc!);
-
-			// Check if disk content matches the remote CRDT content.
-			// If they differ (e.g. GUID remap with independent edits),
-			// leave _lca null so the HSM enters idle.diverged and shows
-			// a conflict banner instead of silently overwriting content.
-			const diskData = await this._diskLoader();
-			const diskMatchesRemote = diskData.hash === hash;
-
-			if (diskMatchesRemote) {
-				this._lca = {
-					contents: content,
-					meta: { hash, mtime },
-					stateVector,
-				};
-			}
-
-			this._localStateVector = stateVector;
+			this._localStateVector = Y.encodeStateVector(this.localDoc!);
 			this.emitPersistState();
 		}
 
 		return didInitialize;
+	}
+
+	/**
+	 * Snapshot the current localDoc as the LCA.
+	 */
+	async setLCA(): Promise<void> {
+		if (!this.localDoc) return;
+		const content = this.localDoc.getText("contents").toString();
+		const hash = await this.hashFn(content);
+		this._lca = {
+			contents: content,
+			meta: { hash, mtime: Date.now() },
+			stateVector: Y.encodeStateVector(this.localDoc),
+		};
+		this.emitPersistState();
 	}
 
 	/**
