@@ -25,15 +25,17 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 
 function withLoginManager(
 	loginManager: LoginManager,
+	deviceId: string,
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	fn: (...args: any[]) => void,
 ) {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	return (...args: any[]) => fn(loginManager, ...args);
+	return (...args: any[]) => fn(loginManager, deviceId, ...args);
 }
 
 async function refresh(
 	loginManager: LoginManager,
+	deviceId: string,
 	documentId: string,
 	onSuccess: (clientToken: ClientToken) => void,
 	onError: (err: Error) => void,
@@ -42,31 +44,31 @@ async function refresh(
 	const error = curryLog("[TokenStore][Refresh]", "error");
 	debug(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
-	let payload: string;
+	let payloadObj: Record<string, string>;
 	if (entity instanceof S3RemoteDocument) {
-		payload = JSON.stringify({
+		payloadObj = {
 			docId: entity.documentId,
 			relay: entity.relayId,
 			folder: entity.folderId,
-		});
+		};
 	} else if (entity instanceof S3RemoteCanvas) {
-		payload = JSON.stringify({
+		payloadObj = {
 			docId: entity.canvasId,
 			relay: entity.relayId,
 			folder: entity.folderId,
-		});
+		};
 	} else if (entity instanceof S3RemoteFolder) {
-		payload = JSON.stringify({
+		payloadObj = {
 			docId: entity.folderId,
 			relay: entity.relayId,
 			folder: entity.folderId,
-		});
+		};
 	} else if (entity instanceof S3RemoteFile) {
-		payload = JSON.stringify({
+		payloadObj = {
 			docId: entity.fileId,
 			relay: entity.relayId,
 			folder: entity.folderId,
-		});
+		};
 	} else {
 		onError(new Error("No remote to connect to"));
 		return;
@@ -75,6 +77,10 @@ async function refresh(
 		onError(Error("Not logged in"));
 		return;
 	}
+	if (deviceId) {
+		payloadObj.device = deviceId;
+	}
+	const payload = JSON.stringify(payloadObj);
 	const headers = {
 		Authorization: `Bearer ${loginManager.user?.token}`,
 		"Relay-Version": GIT_TAG,
@@ -103,16 +109,19 @@ async function refresh(
 }
 
 export class LiveTokenStore extends TokenStore<ClientToken> {
+	private deviceId: string;
+
 	constructor(
 		private loginManager: LoginManager,
 		timeProvider: TimeProvider,
 		vaultName: string,
+		deviceId: string,
 		maxConnections = 5,
 	) {
 		super(
 			{
 				log: curryLog("[LiveTokenStore]", "debug"),
-				refresh: withLoginManager(loginManager, refresh),
+				refresh: withLoginManager(loginManager, deviceId, refresh),
 				getJwtExpiry: getJwtExpiryFromClientToken,
 				getStorage: function () {
 					return new LocalStorage<TokenInfo<ClientToken>>(
@@ -125,6 +134,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			},
 			maxConnections,
 		);
+		this.deviceId = deviceId;
 	}
 
 	private async getFileTokenFromNetwork(
@@ -180,14 +190,18 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		const entity: S3RNType = S3RN.decode(documentId);
 		let payload: string;
 		if (entity instanceof S3RemoteFile) {
-			payload = JSON.stringify({
+			const payloadObj: Record<string, string | number> = {
 				docId: entity.fileId,
 				relay: entity.relayId,
 				folder: entity.folderId,
 				hash: fileHash,
 				contentType,
 				contentLength,
-			});
+			};
+			if (this.deviceId) {
+				payloadObj.device = this.deviceId;
+			}
+			payload = JSON.stringify(payloadObj);
 		} else {
 			throw new Error(`No remote to connect to for ${documentId}`);
 		}
