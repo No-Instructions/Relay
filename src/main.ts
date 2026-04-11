@@ -610,6 +610,7 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.timeProvider,
 			vaultName,
+			this.deviceManager.getDeviceId(),
 			3,
 		);
 
