@@ -2828,19 +2828,34 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	): PositionedConflict[] {
 		if (regions.length === 0) return [];
 
-		const lines = localContent.split("\n");
-		const lineStarts: number[] = [0];
-		for (let i = 0; i < lines.length; i++) {
-			lineStarts.push(lineStarts[i] + lines[i].length + 1);
-		}
-
-		return regions.map((region, index) => ({
-			index,
-			localStart: lineStarts[region.baseStart] ?? 0,
-			localEnd: lineStarts[region.baseEnd] ?? localContent.length,
-			oursContent: region.oursContent,
-			theirsContent: region.theirsContent,
-		}));
+		// Find each region's oursContent in the local text by string search.
+		// baseStart/baseEnd are diff3 token indices (not line numbers), so
+		// we cannot use them as line-map lookups.  Searching for the literal
+		// oursContent is reliable as long as each hunk's text is unique.
+		let searchFrom = 0;
+		return regions.map((region, index) => {
+			const text = region.oursContent;
+			if (!text) {
+				return {
+					index,
+					localStart: searchFrom,
+					localEnd: searchFrom,
+					oursContent: region.oursContent,
+					theirsContent: region.theirsContent,
+				};
+			}
+			const pos = localContent.indexOf(text, searchFrom);
+			const start = pos !== -1 ? pos : searchFrom;
+			const end = pos !== -1 ? pos + text.length : searchFrom;
+			searchFrom = end;
+			return {
+				index,
+				localStart: start,
+				localEnd: end,
+				oursContent: region.oursContent,
+				theirsContent: region.theirsContent,
+			};
+		});
 	}
 
 	/**
