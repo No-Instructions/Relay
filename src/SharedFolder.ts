@@ -452,10 +452,6 @@ export class SharedFolder extends HasProvider {
 		const docId = event.doc_id;
 		if (!docId) return;
 
-		// Skip events from our own user (server echo of our own updates)
-		if (event.user && event.user === this.loginManager?.user?.id) {
-			return;
-		}
 
 		// Extract the guid from the doc_id
 		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
