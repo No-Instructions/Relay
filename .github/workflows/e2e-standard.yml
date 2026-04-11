@@ -207,6 +207,10 @@ jobs:
           git checkout main
           git pull
 
+          # Clear stale repo-local test instances left by canceled or crashed runs
+          echo "Clearing stale repo-local slots..."
+          ./scripts/stop-obsidian.sh >/dev/null 2>&1 || true
+
           # Install playwright test dependencies
           cd ~/relay-harness/playwright && npm install --ignore-scripts 2>/dev/null
 
