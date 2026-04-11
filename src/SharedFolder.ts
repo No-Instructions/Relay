@@ -1879,12 +1879,9 @@ export class SharedFolder extends HasProvider {
 				// HSM handles enrollment check and lazy disk loading internally.
 				// initializeWithContent() checks origin in one IDB session, only reads
 				// disk if not already enrolled, and sets origin atomically.
-				const enrolled = await doc.hsm?.initializeWithContent();
-				if (enrolled) {
-					this.log(`[${doc.path}] Uploading file`);
-					await this.backgroundSync.enqueueSync(doc);
-					this.markUploaded(doc);
-				}
+				await doc.hsm?.initializeWithContent();
+				await this.backgroundSync.enqueueSync(doc);
+				this.markUploaded(doc);
 			}
 		})();
 
@@ -2107,6 +2104,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	deleteFile(vpath: string) {
+		this.pendingUpload.delete(vpath);
 		const guid = this.syncStore?.get(vpath);
 		if (guid) {
 			this.ydoc.transact(() => {
