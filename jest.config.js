@@ -19,7 +19,7 @@ module.exports = {
     globals: {
         "BUILD_TYPE": "production",
     },
-	transformIgnorePatterns: ["/node_modules/(?!(yjs|lib0)/)"],
+	transformIgnorePatterns: ["[\\/]node_modules[\\/](?!(yjs|lib0)[\\/])"],
 	transform: {
 		"\\.ts$": [
 			"ts-jest",
@@ -38,7 +38,7 @@ module.exports = {
 				useESM: true,
 			},
 		],
-		"node_modules/(yjs|lib0)/.+\\.js$": [
+		"node_modules[\\/](yjs|lib0)[\\/].+\\.js$": [
 			"ts-jest",
 			{
 				isolatedModules: true,
