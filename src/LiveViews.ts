@@ -13,7 +13,6 @@ import {
 import ViewActions from "src/components/ViewActions.svelte";
 import * as Y from "yjs";
 import { Document } from "./Document";
-import type { EditorViewRef } from "./merge-hsm/types";
 import type { ConnectionState } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import NetworkStatus from "./NetworkStatus";
@@ -51,7 +50,6 @@ export function getConnectionManager(editor: EditorView): LiveViewManager | null
 	return (fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ?? null;
 }
 
-const BACKGROUND_CONNECTIONS = 3;
 
 function iterateCanvasViews(
 	workspace: Workspace,
@@ -699,10 +697,8 @@ export class LiveView<ViewType extends TextFileView>
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
 		// Use HSM acquireLock if available, otherwise falls back to userLock internally
-		// Pass view as EditorViewRef so HSM can read the live dirty flag
-		const viewRef: EditorViewRef = this.view as unknown as EditorViewRef;
 		this.document
-			.acquireLock(undefined, viewRef)
+			.acquireLock(this.view)
 			.then(() => {
 				// Refresh ViewActions after lock acquired — HSM may have
 				// reached active.tracking during the async acquireLock.
@@ -816,7 +812,7 @@ export class LiveView<ViewType extends TextFileView>
 		this._plugin?.destroy();
 		this._plugin = undefined;
 		this.document.disconnect();
-		this.document.releaseLock();
+		this.document.releaseLock(this.view);
 	}
 
 	destroy() {
@@ -950,82 +946,11 @@ export class LiveViewManager {
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
 			folder.connect();
 		});
-		this.viewsAttachedWithConnectionPool(this.views);
+		this.viewsAttached(this.views);
 	}
 
 	docIsOpen(doc: Document): boolean {
 		return this.views.some((view) => view.document === doc);
-	}
-
-	/**
-	 * Notify MergeManagers which documents have open editors.
-	 * Groups views by their shared folder and calls setActiveDocuments() on each.
-	 * This transitions HSMs from 'loading' to the appropriate mode (idle or active).
-	 *
-	 * Per spec (Gap 8): LiveViews sends bulk update to MergeManager indicating which
-	 * documents have open editors. MergeManager fans out SET_MODE_ACTIVE to those HSMs,
-	 * and SET_MODE_IDLE to all others.
-	 */
-	private async updateMergeManagerActiveDocuments(views: S3View[]): Promise<void> {
-		// Group document GUIDs by their shared folder
-		const folderToGuids = new Map<SharedFolder, Set<string>>();
-
-		for (const view of views) {
-			const doc = view.document;
-			if (!doc) continue;
-
-			const folder = doc.sharedFolder;
-			if (!folder?.mergeManager) continue;
-
-			if (!folderToGuids.has(folder)) {
-				folderToGuids.set(folder, new Set());
-			}
-			folderToGuids.get(folder)!.add(doc.guid);
-		}
-
-		// Also discover embedded markdown files inside canvas views.
-		// Canvas nodes with type='file' have a child TextFileView whose file
-		// may belong to a shared folder. Their HSMs need active mode too.
-		for (const view of views) {
-			if (!(view instanceof RelayCanvasView)) continue;
-			const canvas = view.view.canvas;
-			if (!canvas?.nodes) continue;
-
-			for (const [, node] of canvas.nodes) {
-				const nodeData = node.getData?.();
-				// @ts-ignore — child is not typed on CanvasNode, only on CanvasNodeData
-				const child = (node as any).child ?? nodeData?.child;
-				if (!child?.file) continue;
-
-				const filePath: string = child.file.path;
-				if (!filePath.endsWith(".md")) continue;
-
-				const folder = this.sharedFolders.lookup(filePath);
-				if (!folder?.mergeManager || !folder.ready) continue;
-
-				const embeddedDoc = folder.proxy.getDoc(filePath);
-				if (!embeddedDoc) continue;
-
-				if (!folderToGuids.has(folder)) {
-					folderToGuids.set(folder, new Set());
-				}
-				folderToGuids.get(folder)!.add(embeddedDoc.guid);
-			}
-		}
-
-		// Call setActiveDocuments on each folder's MergeManager
-		for (const [folder, guids] of folderToGuids) {
-			const allGuids = Array.from(folder.files.keys());
-			folder.mergeManager.setActiveDocuments(guids, allGuids);
-		}
-
-		// Also notify folders with no active views (all HSMs should be idle)
-		for (const folder of this.sharedFolders.items()) {
-			if (!folderToGuids.has(folder) && folder.mergeManager) {
-				const allGuids = Array.from(folder.files.keys());
-				folder.mergeManager.setActiveDocuments(new Set(), allGuids);
-			}
-		}
 	}
 
 	private releaseViews(views: S3View[]) {
@@ -1171,54 +1096,6 @@ export class LiveViewManager {
 		});
 	}
 
-	private async viewsReady(views: S3View[]): Promise<LiveView<TextFileView>[]> {
-		return await Promise.all(
-			views
-				.filter(isLive)
-				.map(async (view) => view.document.whenReady().then((_) => view)),
-		);
-	}
-
-	private async viewsAttachedWithConnectionPool(
-		views: S3View[],
-		backgroundConnections: number = BACKGROUND_CONNECTIONS,
-	): Promise<S3View[]> {
-		const activeView =
-			this.workspace.getActiveViewOfType<TextFileView>(TextFileView);
-
-		let attemptedConnections = 0;
-
-		const viewHistory = views.sort(
-			(a, b) =>
-				(b.view.leaf as any).activeTime - (a.view.leaf as any).activeTime,
-		);
-		const connectedDocuments = new Set<Document>();
-		for (const view of viewHistory) {
-			if (view instanceof LiveView) {
-				if (view.view === activeView || connectedDocuments.has(view.document)) {
-					view.canConnect = true;
-					connectedDocuments.add(view.document);
-				} else if (attemptedConnections < backgroundConnections) {
-					view.canConnect = true;
-					connectedDocuments.add(view.document);
-					attemptedConnections++;
-				} else {
-					view.canConnect = false;
-				}
-			}
-		}
-
-		if (attemptedConnections > backgroundConnections) {
-			this.warn(
-				`[System 3][Relay][Live Views] connection pool (max ${backgroundConnections}): rejected connections for ${
-					attemptedConnections - backgroundConnections
-				} views`,
-			);
-		}
-
-		return this.viewsAttached(views);
-	}
-
 	private async viewsAttached(views: S3View[]): Promise<S3View[]> {
 		return await Promise.all(
 			views.map(async (view) => {
@@ -1283,10 +1160,6 @@ export class LiveViewManager {
 		}
 		const activeDocumentFolders = this.findFolders();
 
-		// Notify MergeManagers which documents have open editors (Gap 8: mode determination)
-		// This transitions HSMs from 'loading' to the appropriate mode before attach() calls acquireLock()
-		await this.updateMergeManagerActiveDocuments(views);
-
 		if (activeDocumentFolders.length === 0 && views.length === 0) {
 			logViews("Releasing Views", this.views);
 			this.releaseViews(this.views);
@@ -1308,16 +1181,10 @@ export class LiveViewManager {
 		logViews("Releasing Views", stale);
 		this.releaseViews(stale);
 		if (stale.length === 0 && ViewsetsEqual(matching, this.views)) {
-			// We can assume all views are ready.
-			const attachedViews = await this.viewsAttachedWithConnectionPool(
-				this.views,
-			);
+			const attachedViews = await this.viewsAttached(this.views);
 			logViews("Attached Views", attachedViews);
 		} else {
-			const readyViews = await this.viewsReady(matching);
-			logViews("Ready Views", readyViews);
-			const attachedViews =
-				await this.viewsAttachedWithConnectionPool(readyViews);
+			const attachedViews = await this.viewsAttached(matching);
 			logViews("Attached Views", attachedViews);
 			this.views = matching;
 		}

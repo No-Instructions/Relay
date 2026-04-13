@@ -7,14 +7,10 @@ import {
 	type DecorationSet,
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
-import { TextFileView } from "obsidian";
-import {
-	LiveView,
-	LiveViewManager,
-	getConnectionManager,
-} from "../LiveViews";
 import { curryLog } from "src/debug";
-import type { App, CachedMetadata } from "obsidian";
+import type { App, CachedMetadata, TFile } from "obsidian";
+import { Document } from "../Document";
+import { getApp, getSharedFolders, getEditorFile, getRelayPlugin } from "../editorContext";
 
 export const invalidLinkSyncAnnotation = Annotation.define();
 
@@ -44,16 +40,15 @@ export class InvalidLinkPluginValue {
 	app?: App;
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
-	view?: LiveView<TextFileView>;
-	connectionManager?: LiveViewManager;
+	document?: Document;
 	decorationAnchors: number[];
 	decorations: DecorationSet;
 	cb: (data: string, cache: CachedMetadata) => void;
 	log: (message: string) => void = (message: string) => {};
+	private subscribedTFile?: TFile;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 		this.decorations = Decoration.none;
 		this.decorationAnchors = [];
 		this.metadata = new Map();
@@ -65,45 +60,48 @@ export class InvalidLinkPluginValue {
 			});
 		};
 
-		if (!this.connectionManager) {
-			curryLog(
-				"[InvalidLinkPluginValue]",
-				"warn",
-			)("ConnectionManager not found in InvalidLinkPlugin");
-			return;
-		}
-		this.app = this.connectionManager.app;
-		this.view = this.connectionManager.findView(editor);
+		this.app = getApp(this.editor) ?? undefined;
+		this.document = this.resolveDocument();
 
-		if (!this.view) {
+		if (!this.document) {
 			return;
 		}
 
 		this.log = curryLog(
-			`[InvalidLinkPluginValue][${this.view.view.file?.path}]`,
+			`[InvalidLinkPluginValue][${this.document.path}]`,
 			"debug",
 		);
 		this.log("created");
 
-		if (this.view.document) {
-			const hsm = this.view.document.hsm;
-			if (!hsm?.awaitState) return;
-			hsm.awaitState((s) => s.startsWith("active.")).then(() => {
-				const tfile = this.view?.document?.getTFile();
-				if (this.connectionManager && this.app && this.editor && tfile) {
-					this.connectionManager.onMeta(tfile, this.cb);
-					const fileCache = this.app.metadataCache.getFileCache(tfile);
-					if (fileCache) {
-						this.updateFromMetadata(fileCache);
-						this.editor.dispatch({
-							effects: metadataChangeEffect.of(null),
-						});
-					}
-				} else {
-					this.log("unable to subscribe to metadata updates");
+		const hsm = this.document.hsm;
+		if (!hsm?.awaitState) return;
+		hsm.awaitState((s) => s.startsWith("active.")).then(() => {
+			const tfile = this.document?.getTFile();
+			const plugin = getRelayPlugin(this.editor);
+			if (plugin && this.app && this.editor && tfile) {
+				plugin.onMeta(tfile, this.cb);
+				this.subscribedTFile = tfile;
+				const fileCache = this.app.metadataCache.getFileCache(tfile);
+				if (fileCache) {
+					this.updateFromMetadata(fileCache);
+					this.editor.dispatch({
+						effects: metadataChangeEffect.of(null),
+					});
 				}
-			});
-		}
+			} else {
+				this.log("unable to subscribe to metadata updates");
+			}
+		});
+	}
+
+	private resolveDocument(): Document | undefined {
+		const file = getEditorFile(this.editor);
+		if (!file) return undefined;
+		const sharedFolders = getSharedFolders(this.editor);
+		if (!sharedFolders) return undefined;
+		const folder = sharedFolders.lookup(file.path);
+		if (!folder) return undefined;
+		return folder.proxy.getDoc(file.path);
 	}
 
 	findInternalLinks(view: EditorView) {
@@ -142,25 +140,19 @@ export class InvalidLinkPluginValue {
 	}
 
 	updateFromMetadata(cache: CachedMetadata) {
-		if (this.connectionManager) {
-			this.view = this.connectionManager.findView(this.editor);
-		}
-		if (!this.view || !this.view.document || !this.app) return;
-		if (!this.view?.document?.sharedFolder) {
-			return;
-		}
-		if (!this.view?.document?.tfile) {
-			return;
-		}
+		this.document = this.resolveDocument();
+		if (!this.document || !this.app) return;
+		if (!this.document.sharedFolder) return;
+		if (!this.document.tfile) return;
 		const cacheLinks = new Map();
 		for (const link of cache?.links || []) {
 			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				link.link,
-				this.view.document.path,
+				this.document.path,
 			);
 			if (
 				linkedFile &&
-				!this.view.document.sharedFolder.checkPath(linkedFile.path)
+				!this.document.sharedFolder.checkPath(linkedFile.path)
 			) {
 				cacheLinks.set(link.position.start.offset, {
 					from: link.position.start.offset,
@@ -173,11 +165,11 @@ export class InvalidLinkPluginValue {
 		for (const embed of cache?.embeds || []) {
 			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				embed.link,
-				this.view.document.path,
+				this.document.path,
 			);
 			if (
 				linkedFile &&
-				!this.view.document.sharedFolder.checkPath(linkedFile.path)
+				!this.document.sharedFolder.checkPath(linkedFile.path)
 			) {
 				cacheLinks.set(embed.position.start.offset, {
 					from: embed.position.start.offset,
@@ -206,19 +198,10 @@ export class InvalidLinkPluginValue {
 	}
 
 	updateFromEditor(update: ViewUpdate) {
-		// The metadata cache is slower to update than the document.
-		// We use the cache to get link information, but rely on the document links for
-		// position information to avoid any delays or positioning bugs.
-		if (this.connectionManager) {
-			this.view = this.connectionManager.findView(this.editor);
-		}
-		if (!this.view || !this.view.document || !this.app) return;
-		if (!this.view?.document?.sharedFolder) {
-			return;
-		}
-		if (!this.view?.document?.tfile) {
-			return;
-		}
+		this.document = this.resolveDocument();
+		if (!this.document || !this.app) return;
+		if (!this.document.sharedFolder) return;
+		if (!this.document.tfile) return;
 
 		const invalidAnchors: number[] = [];
 		const cacheLinks = new Map(this.metadata);
@@ -226,7 +209,6 @@ export class InvalidLinkPluginValue {
 		for (const link of editorLinks) {
 			let _cacheLink = null;
 			for (const [cacheFrom, cacheLink] of cacheLinks) {
-				// Use metadata from link cache based on any overlap.
 				if (link.from <= cacheLink.to && link.to >= cacheLink.from) {
 					_cacheLink = cacheLink;
 					cacheLinks.delete(cacheFrom);
@@ -238,11 +220,11 @@ export class InvalidLinkPluginValue {
 			}
 			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				_cacheLink.link,
-				this.view.document.path,
+				this.document.path,
 			);
 			const isInvalid =
 				linkedFile &&
-				!this.view.document.sharedFolder.checkPath(linkedFile.path);
+				!this.document.sharedFolder.checkPath(linkedFile.path);
 			if (isInvalid) {
 				invalidAnchors.push(link.from);
 			}
@@ -287,11 +269,12 @@ export class InvalidLinkPluginValue {
 	}
 
 	destroy() {
-		if (this.connectionManager && this.view?.document?.tfile) {
-			this.connectionManager.offMeta(this.view.document.tfile);
+		if (this.subscribedTFile) {
+			const plugin = getRelayPlugin(this.editor);
+			plugin?.offMeta(this.subscribedTFile);
+			this.subscribedTFile = undefined;
 		}
-		this.connectionManager = null as any;
-		this.view = undefined;
+		this.document = undefined;
 		this.metadata.clear();
 		this.metadata = null as any;
 		this.editor = null as any;

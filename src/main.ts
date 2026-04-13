@@ -12,6 +12,8 @@ import {
 	requireApiVersion,
 	Modal,
 	moment,
+	type CachedMetadata,
+	type EventRef,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -139,6 +141,8 @@ export default class Live extends Plugin {
 	warn!: (...args: unknown[]) => void;
 	error!: (...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
+	private _metadataListeners: Map<TFile, (data: string, cache: CachedMetadata) => void> = new Map();
+	private _metadataEventRef: EventRef | null = null;
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 	repo = REPOSITORY;
@@ -626,6 +630,11 @@ export default class Live extends Plugin {
 		if (!this.loginManager.setup()) {
 			new Notice("Please sign in to use relay");
 		}
+
+		this._metadataEventRef = this.app.metadataCache.on("changed", (tfile: TFile, data: string, cache: CachedMetadata) => {
+			this._metadataListeners.get(tfile)?.(data, cache);
+		});
+		this.registerEvent(this._metadataEventRef);
 
 		this.app.workspace.onLayoutReady(() => {
 			this.sharedFolders.load();
@@ -1357,7 +1366,18 @@ export default class Live extends Plugin {
 		}
 	}
 
+	onMeta(tfile: TFile, cb: (data: string, cache: CachedMetadata) => void) {
+		this._metadataListeners.set(tfile, cb);
+	}
+
+	offMeta(tfile: TFile) {
+		this._metadataListeners.delete(tfile);
+	}
+
 	onunload() {
+		this._metadataListeners.clear();
+		this._metadataEventRef = null;
+
 		// Clean up debug API globals
 		this.relayDebugAPI?.destroy();
 		this.relayDebugAPI = null as any;

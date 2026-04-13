@@ -134,7 +134,7 @@ export class CanvasPlugin extends HasLogging {
 				// Read editor content: the embed's CM6 editor may start empty,
 				// so use the child view's data (which holds the disk content).
 				const editorContent = embedView.data ?? "";
-				document.acquireLock(editorContent).catch((error: unknown) => {
+				document.acquireLock(embedView, editorContent).catch((error: unknown) => {
 					this.error(
 						"Error acquiring lock for canvas embed:",
 						error,
@@ -144,7 +144,7 @@ export class CanvasPlugin extends HasLogging {
 				return () => {
 					this.trackedEmbedViews.delete(embedView);
 					plugin.destroy();
-					document.releaseLock();
+					document.releaseLock(embedView);
 				};
 			})(),
 		);

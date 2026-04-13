@@ -1,10 +1,10 @@
 import { Annotation, ChangeSet } from "@codemirror/state";
 import { EditorView, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import { TextFileView } from "obsidian";
-import { LiveView, LiveViewManager, getConnectionManager } from "./LiveViews";
 import { hasKey, updateFrontMatter } from "./Frontmatter";
 import { diffChars } from "diff";
+import { Document } from "./Document";
+import { getSharedFolders, getEditorFile } from "./editorContext";
 
 export const shareLinkAnnotation = Annotation.define();
 
@@ -53,42 +53,46 @@ function diffToChangeSet(originalText: string, newText: string): ChangeSet {
 
 export class ShareLinkPluginValue implements PluginValue {
 	editor: EditorView;
-	view?: LiveView<TextFileView>;
-	connectionManager: LiveViewManager;
+	document?: Document;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = getConnectionManager(this.editor)!;
-		this.view = this.connectionManager.findView(editor);
-		this.editor = editor;
-		if (this.view) {
-			const hsm = this.view.document?.hsm;
+		this.document = this.resolveDocument();
+		if (this.document) {
+			const hsm = this.document.hsm;
 			if (!hsm?.awaitState) return;
 			hsm.awaitState((s) => s.startsWith("active.")).then(async () => {
-				const hasKnownPeers = await this.view?.document?.hasKnownPeers();
-				if (this.view?.document?.text || !hasKnownPeers) {
+				const hasKnownPeers = await this.document?.hasKnownPeers();
+				if (this.document?.text || !hasKnownPeers) {
 					this.updateFrontMatter();
 				}
 			});
 		}
 	}
 
+	private resolveDocument(): Document | undefined {
+		const file = getEditorFile(this.editor);
+		if (!file) return undefined;
+		const sharedFolders = getSharedFolders(this.editor);
+		if (!sharedFolders) return undefined;
+		const folder = sharedFolders.lookup(file.path);
+		if (!folder) return undefined;
+		return folder.proxy.getDoc(file.path);
+	}
+
 	updateFrontMatter() {
-		if (!(this.view instanceof LiveView)) {
+		if (!this.document) {
 			return;
 		}
-		if (!this.view || !this.view.shouldConnect) {
-			return;
-		}
-		if (this.view.document.localText != this.editor.state.doc.toString()) {
+		if (this.document.localText != this.editor.state.doc.toString()) {
 			return;
 		}
 		const text = this.editor.state.doc.toString();
-		const shareLink = `https://ydoc.live/${this.view.document.guid}`;
+		const shareLink = `https://ydoc.live/${this.document.guid}`;
 		const withShareLink = updateFrontMatter(text, {
 			shareLink: shareLink,
 		});
-		if (!(text || this.view.document.localText)) {
+		if (!(text || this.document.localText)) {
 			// document is empty
 			this.editor.dispatch({
 				changes: { from: 0, insert: withShareLink },

@@ -16,17 +16,11 @@ import {
 
 import type { PluginValue, DecorationSet } from "@codemirror/view";
 
-import {
-	LiveViewManager,
-	LiveView,
-	getConnectionManager,
-} from "../LiveViews";
-
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
-import { TextFileView, editorInfoField } from "obsidian";
 import { Document } from "../Document";
+import { getSharedFolders, getEditorFile } from "../editorContext";
 
 export const yRemoteSelectionsTheme = EditorView.baseTheme({
 	".cm-ySelection": {},
@@ -160,8 +154,6 @@ type AwarenessChangeHandler = (
 
 export class YRemoteSelectionsPluginValue implements PluginValue {
 	editor: EditorView;
-	connectionManager?: LiveViewManager;
-	view?: LiveView<TextFileView>;
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
@@ -171,7 +163,6 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	constructor(editor: EditorView) {
 		this.editor = editor;
 		this.decorations = RangeSet.of([]);
-		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 
 		// Allowlist: Check for live editing markers (same as LiveEditPlugin)
 		const sourceView = this.editor.dom.closest(".markdown-source-view");
@@ -187,9 +178,10 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			return;
 		}
 
-		this.view = this.connectionManager?.findView(editor);
-		if (this.view && this.view instanceof LiveView) {
-			const provider = this.view.document?._provider;
+		const doc = this.resolveDocument();
+		if (doc) {
+			this.document = doc;
+			const provider = doc._provider;
 			this._listener = ({ added, updated, removed }, s, t) => {
 				const clients = added.concat(updated).concat(removed);
 				if (
@@ -207,24 +199,25 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		}
 	}
 
-	getDocument(): Document | undefined {
-		const fileInfo = this.editor.state.field(editorInfoField);
-		const file = fileInfo.file;
-		
-		if (file) {
-			if (this.document?._tfile === file) {
-				return this.document;
-			}
-			const folder = this.connectionManager?.sharedFolders.lookup(file.path);
-			if (folder) {
-				this.document = folder.proxy.getDoc(file.path);
-				return this.document;
-			}
+	private resolveDocument(): Document | undefined {
+		const file = getEditorFile(this.editor);
+		if (!file) return undefined;
+
+		if (this.document?._tfile === file) {
+			return this.document;
 		}
-		
-		// Fallback to using view
-		this.view = this.connectionManager?.findView(this.editor);
-		return this.view?.document;
+
+		const sharedFolders = getSharedFolders(this.editor);
+		if (!sharedFolders) return undefined;
+
+		const folder = sharedFolders.lookup(file.path);
+		if (!folder) return undefined;
+
+		return folder.proxy.getDoc(file.path);
+	}
+
+	getDocument(): Document | undefined {
+		return this.resolveDocument();
 	}
 
 	destroy() {
@@ -233,8 +226,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			this._awareness?.off("change", this._listener);
 			this._listener = undefined;
 		}
-		this.connectionManager = null as any;
-		this.view = null as any;
+		this.document = undefined;
 		this.editor = null as any;
 	}
 

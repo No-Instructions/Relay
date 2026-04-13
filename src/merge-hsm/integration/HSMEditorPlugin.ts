@@ -15,8 +15,7 @@
 
 import { ViewPlugin, EditorView, ViewUpdate } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import { editorInfoField } from "obsidian";
-import { getConnectionManager } from "../../LiveViews";
+import { getSharedFolders, getEditorFile } from "../../editorContext";
 import { Document } from "../../Document";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
@@ -68,14 +67,13 @@ class HSMEditorPluginValue implements PluginValue {
    * Returns null if the file isn't in a shared folder.
    */
   private resolveCurrentDocument(): Document | null {
-    const connectionManager = getConnectionManager(this.editor);
-    if (!connectionManager) return null;
+    const sharedFolders = getSharedFolders(this.editor);
+    if (!sharedFolders) return null;
 
-    const fileInfo = this.editor.state.field(editorInfoField, false);
-    const file = fileInfo?.file;
+    const file = getEditorFile(this.editor);
     if (!file) return null;
 
-    const folder = connectionManager.sharedFolders.lookup(file.path);
+    const folder = sharedFolders.lookup(file.path);
     if (!folder) return null;
 
     return folder.proxy.getDoc(file.path) as Document;
@@ -87,9 +85,6 @@ class HSMEditorPluginValue implements PluginValue {
   initializeIfReady(): boolean {
     if (this.cm6Integration) return true;
     if (this.destroyed) return false;
-
-    const connectionManager = getConnectionManager(this.editor);
-    if (!connectionManager) return false;
 
     // Detect embedded canvas editors (no MarkdownView wrapper, no auto-save)
     const sourceView = this.editor.dom.closest(".markdown-source-view");
@@ -105,8 +100,7 @@ class HSMEditorPluginValue implements PluginValue {
     // When multiple SharedFolders have files with the same relative path
     // (e.g., multiple e2e-fixture-* folders each with /test-1.md),
     // we must ensure we're connecting to the correct HSM.
-    const fileInfo = this.editor.state.field(editorInfoField, false);
-    const editorFile = fileInfo?.file;
+    const editorFile = getEditorFile(this.editor);
 
     // Verify the Document's TFile matches the editor's TFile
     const documentTFile = this.document.tfile;

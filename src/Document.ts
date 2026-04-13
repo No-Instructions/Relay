@@ -5,7 +5,7 @@ import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
-import type { TFile, Vault, TFolder } from "obsidian";
+import type { TFile, Vault, TFolder, TextFileView } from "obsidian";
 import { debounce } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency } from "./promiseUtils";
@@ -65,6 +65,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Used to distinguish our writes from external modifications.
 	 */
 	private _isSaving: boolean = false;
+	private _lockHolders: Set<TextFileView> = new Set();
 
 	constructor(
 		path: string,
@@ -270,39 +271,37 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 *   merge operations. Pass the content from the editor or read from disk.
 	 * @returns The MergeHSM instance, or null if HSM is not enabled
 	 */
-	async acquireLock(editorContent?: string, editorViewRef?: EditorViewRef): Promise<MergeHSM | null> {
+	async acquireLock(view: TextFileView, editorContent?: string): Promise<MergeHSM | null> {
+		this._lockHolders.add(view);
+		this.userLock = true;
+
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (!mergeManager || !this._hsm) {
-			this.userLock = true; // Fallback if MergeManager/HSM not available
 			return null;
 		}
 
+		if (this._lockHolders.size > 1) {
+			return this._hsm;
+		}
+
 		try {
-			// v6: If editorContent not provided, read from disk (fallback for backward compatibility)
 			let content = editorContent;
 			if (content === undefined) {
 				const tfile = this.tfile;
 				if (tfile) {
 					content = await this.vault.read(tfile);
 				} else {
-					content = "";  // New file, no content yet
+					content = "";
 				}
 			}
 
-			// Ensure remoteDoc and provider exist before entering active mode.
-			// This wakes the document from hibernation if needed.
 			const remoteDoc = this.ensureRemoteDoc();
 			this._hsm.setRemoteDoc(remoteDoc);
 
-			// Send ACQUIRE_LOCK with editorContent to transition from idle to active.
-			// Always send (don't guard with isLoaded) because releaseLock() doesn't await
-			// unload(), so activeDocs may not be cleared when file is quickly reopened.
-			// The HSM handles duplicate ACQUIRE_LOCK gracefully (no-op if already active).
+			const editorViewRef = view as unknown as EditorViewRef;
 			this._hsm.send({ type: "ACQUIRE_LOCK", editorContent: content, editorViewRef });
 			mergeManager.markActive(this.guid);
 
-			// Create ProviderIntegration BEFORE awaiting so it can deliver
-			// PROVIDER_SYNCED during the entering phase (needed for empty-IDB flow).
 			if (!this._providerIntegration) {
 				this._providerIntegration = new ProviderIntegration(
 					this._hsm,
@@ -311,31 +310,19 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				);
 			}
 
-			// Ensure provider is connected. After idle-mode fork
-			// reconciliation, destroyIdleProviderIntegration disconnects
-			// the provider. Without reconnecting, SYNC_TO_REMOTE updates
-			// from conflict resolution are buffered but never sent.
-			// connect() is a no-op if already connected.
 			this.connect();
 
-			// Wait for HSM to reach a post-entering active state
 			await this._hsm.awaitActive();
 
-			// Guard against race: releaseLock() may have been called while we
-			// were awaiting. If so, the HSM has already transitioned back to idle
-			// and we must not keep a ProviderIntegration (it would leak).
-			if (!this.userLock && !mergeManager.isActive(this.guid)) {
+			if (this._lockHolders.size === 0 && !mergeManager.isActive(this.guid)) {
 				this._providerIntegration.destroy();
 				this._providerIntegration = null;
 				return null;
 			}
 
-			this.userLock = true; // Keep for compatibility
-
 			return this._hsm;
 		} catch (e) {
 			this.warn("[acquireLock] Failed to acquire HSM lock:", e);
-			this.userLock = true; // Fallback
 			return null;
 		}
 	}
@@ -345,19 +332,22 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Transitions HSM from active back to idle mode.
 	 * Call this when editor closes (replaces userLock = false).
 	 */
-	releaseLock(): void {
-		this.userLock = false; // Keep for compatibility
+	releaseLock(view: TextFileView): void {
+		this._lockHolders.delete(view);
 
-		// Destroy ProviderIntegration (unsubscribes from events)
+		if (this._lockHolders.size > 0) {
+			return;
+		}
+
+		this.userLock = false;
+
 		if (this._providerIntegration) {
 			this._providerIntegration.destroy();
 			this._providerIntegration = null;
 		}
 
-		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
 		const mergeManager = this.sharedFolder?.mergeManager;
 		if (mergeManager) {
-			// MergeManager.unload() sends RELEASE_LOCK and awaits IDB cleanup
 			const p = mergeManager.unload(this.guid);
 			awaitOnReload(p);
 		}
@@ -647,9 +637,19 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			unsubscribe();
 		});
 
-		// Release HSM lock if held
-		if (this._hsm) {
-			this.releaseLock();
+		// Force-release HSM lock regardless of remaining holders
+		if (this._hsm && this._lockHolders.size > 0) {
+			this._lockHolders.clear();
+			this.userLock = false;
+			if (this._providerIntegration) {
+				this._providerIntegration.destroy();
+				this._providerIntegration = null;
+			}
+			const mergeManager = this.sharedFolder?.mergeManager;
+			if (mergeManager) {
+				const p = mergeManager.unload(this.guid);
+				awaitOnReload(p);
+			}
 		}
 
 		super.destroy();

@@ -695,43 +695,6 @@ describe('MergeManager', () => {
     });
   });
 
-  describe('setActiveDocuments', () => {
-    test('setActiveDocuments only affects HSMs in loading state', async () => {
-      // Create documents - HSMs will auto-transition to idle.synced
-      const doc1 = await createMockDocument('doc-1', 'test1.md');
-      const doc2 = await createMockDocument('doc-2', 'test2.md');
-
-      // Both should be in idle.synced (not loading)
-      expect(doc1.hsm?.state.statePath).toBe('idle.synced');
-      expect(doc2.hsm?.state.statePath).toBe('idle.synced');
-
-      // setActiveDocuments should have no effect since HSMs are not in loading state
-      const allGuids = Array.from(documents.keys());
-      manager.setActiveDocuments(new Set(['doc-1']), allGuids);
-
-      // HSMs should remain in their current states
-      expect(doc1.hsm?.state.statePath).toBe('idle.synced');
-      expect(doc2.hsm?.state.statePath).toBe('idle.synced');
-    });
-
-    test('setActiveDocuments is a no-op when destroyed', async () => {
-      const managerToDestroy = new MergeManager({
-        getVaultId: (guid) => `test-${guid}`,
-        getDocument: (guid) => documents.get(guid),
-        timeProvider,
-      });
-
-      // Reassign manager for createMockDocument to use
-      manager = managerToDestroy;
-      await createMockDocument('doc-1', 'test.md');
-
-      managerToDestroy.destroy();
-
-      // Should not throw
-      expect(() => managerToDestroy.setActiveDocuments(new Set(['doc-1']), ['doc-1'])).not.toThrow();
-    });
-  });
-
   describe('state exposure', () => {
     test('state.pendingEditorContent is undefined in idle mode', async () => {
       const doc = await createMockDocument('doc-1', 'test.md');
