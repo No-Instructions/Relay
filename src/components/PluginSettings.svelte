@@ -349,10 +349,10 @@
 		max-height: var(--modal-max-height);
 		position: relative;
 	}
-	.system3-announcement-banner {
+	:global(.system3-announcement-banner) {
 		padding-left: 48px !important;
 	}
-	.system3-announcement {
+	:global(.system3-announcement) {
 		color: var(--text-on-accent);
 	}
 </style>
