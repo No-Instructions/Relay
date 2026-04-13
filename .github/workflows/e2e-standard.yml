@@ -52,6 +52,8 @@ jobs:
       VM_NAME: ${{ format('{0}-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
       SHARD_NAME: ${{ matrix.shard.name }}
       SHARD_TESTS: ${{ matrix.shard.tests }}
+      GCP_VM_DISK_SIZE: 20GB
+      GCP_VM_DISK_TYPE: pd-balanced
 
     steps:
       - name: Auth to GCP
@@ -139,6 +141,7 @@ jobs:
             echo "VM does not exist. Creating via harness infra scripts..."
             cd ~/relay-harness
             GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" GCP_VM_NAME="$VM_NAME" \
+              GCP_VM_DISK_SIZE="$GCP_VM_DISK_SIZE" GCP_VM_DISK_TYPE="$GCP_VM_DISK_TYPE" \
               ./infra/gcp-linux-vm.sh create
           elif [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
             echo "Starting stopped VM..."
