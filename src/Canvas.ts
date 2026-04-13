@@ -8,6 +8,7 @@ import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
 import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import { Dependency } from "./promiseUtils";
+import { awaitOnReload } from "./reloadUtils";
 import type { Unsubscriber } from "./observable/Observable";
 import type {
 	CanvasData,
@@ -389,6 +390,10 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
+		if (this._persistence) {
+			const p = this._persistence.destroy().catch(() => {});
+			awaitOnReload(p);
+		}
 		super.destroy();
 		this.ydoc.destroy();
 		this.whenSyncedPromise?.destroy();
