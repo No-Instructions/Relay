@@ -909,10 +909,25 @@ export class BackgroundSync extends HasLogging {
 		}
 		const intent = doc.intent;
 		if (doc.destroyed) return false;
-		const providerSynced = doc.onceProviderSynced().then(() => true);
 		doc.connect();
-		if (intent === "disconnected") {
-			await providerSynced;
+		// Always wait for provider sync — _providerSynced fast-path resolves
+		// immediately if already synced.  Connected does not imply synced.
+		// Timeout prevents hanging the sync queue if the connection drops.
+		const SYNC_TIMEOUT_MS = 10_000;
+		let timerId: number | undefined;
+		const synced = await Promise.race([
+			doc.onceProviderSynced().then(() => true),
+			new Promise<false>((resolve) => {
+				timerId = this.timeProvider.setTimeout(
+					() => resolve(false),
+					SYNC_TIMEOUT_MS,
+				);
+			}),
+		]);
+		if (timerId !== undefined) this.timeProvider.clearTimeout(timerId);
+		if (!synced) {
+			this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
+			return false;
 		}
 
 		// promise can take some time
