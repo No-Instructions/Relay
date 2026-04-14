@@ -63,8 +63,9 @@ export class HasProvider extends HasLogging {
 	path?: string;
 	private _ydoc: Y.Doc | null = null;
 	clientToken: ClientToken;
-	// Track if provider has ever synced. We use our own flag because
-	// _provider.synced can be reset to false on reconnection.
+	// Track whether the current provider connection has completed sync.
+	// This must reset on disconnect so reconnect flows do not treat a
+	// stale connection as ready.
 	_providerSynced: boolean = false;
 	private _offConnectionError: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
@@ -145,6 +146,9 @@ export class HasProvider extends HasLogging {
 
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
+				if (state.status !== "connected") {
+					this._providerSynced = false;
+				}
 				this.notifyListeners();
 			},
 		);
@@ -297,6 +301,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	disconnect() {
+		this._providerSynced = false;
 		if (this._provider) {
 			this._provider.disconnect();
 		}
