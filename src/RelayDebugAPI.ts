@@ -265,6 +265,14 @@ export interface RelayDebugGlobal {
   lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
   lookupFolder: (path: string) => any | null;
+  /** Folder-scoped sync rows from MergeManager.syncStatus keyed by guid. */
+  getFolderSyncStatus: (folderGuid: string) => { guid: string; path: string; status: string }[];
+  /** Folder-scoped subset of sync rows where status === "error". */
+  getFolderSyncErrors: (folderGuid: string) => { guid: string; path: string; status: string }[];
+  /** Folder-scoped subset of sync rows where status === "conflict". */
+  getFolderConflicts: (folderGuid: string) => { guid: string; path: string }[];
+  /** All files currently in conflict state across every shared folder. */
+  listAllConflicts: () => { folderGuid: string; folderPath: string; guid: string; path: string }[];
   /** Get a rich HSM state snapshot for the test harness — state path, LCA, disk, IDB, SV, frontmatter, recent transitions. */
   getHsmStateSnapshot: (path: string) => Promise<HsmStateSnapshot>;
   /** Snapshot the per-doc IndexedDB: updates count, custom metadata, IDB content, disk content, match flag. */
@@ -533,6 +541,10 @@ export class RelayDebugAPI {
         }
         return null;
       },
+      getFolderSyncStatus: (folderGuid: string) => this.getFolderSyncStatus(folderGuid),
+      getFolderSyncErrors: (folderGuid: string) => this.getFolderSyncErrors(folderGuid),
+      getFolderConflicts: (folderGuid: string) => this.getFolderConflicts(folderGuid),
+      listAllConflicts: () => this.listAllConflicts(),
 
       lookupDocument: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
@@ -1202,6 +1214,59 @@ export class RelayDebugAPI {
       if (r.guid === guid) return r;
     }
     return null;
+  }
+
+  private getFolderByGuid(folderGuid: string): any | null {
+    if (!this.plugin?.sharedFolders?._set) return null;
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if ((folder as any).guid === folderGuid) return folder;
+    }
+    return null;
+  }
+
+  private getFolderSyncStatus(folderGuid: string): { guid: string; path: string; status: string }[] {
+    const folder = this.getFolderByGuid(folderGuid);
+    const mm = folder?.mergeManager;
+    if (!mm?.syncStatus) return [];
+
+    const rows: { guid: string; path: string; status: string }[] = [];
+    for (const [guid, syncStatus] of mm.syncStatus.entries()) {
+      const doc = mm._getDocument?.(guid);
+      rows.push({
+        guid,
+        path: doc?.path ?? guid,
+        status: syncStatus?.status ?? 'unknown',
+      });
+    }
+    rows.sort((a, b) => a.path.localeCompare(b.path));
+    return rows;
+  }
+
+  private getFolderSyncErrors(folderGuid: string): { guid: string; path: string; status: string }[] {
+    return this.getFolderSyncStatus(folderGuid).filter((row) => row.status === 'error');
+  }
+
+  private getFolderConflicts(folderGuid: string): { guid: string; path: string }[] {
+    return this.getFolderSyncStatus(folderGuid)
+      .filter((row) => row.status === 'conflict')
+      .map(({ guid, path }) => ({ guid, path }));
+  }
+
+  private listAllConflicts(): { folderGuid: string; folderPath: string; guid: string; path: string }[] {
+    if (!this.plugin?.sharedFolders?._set) return [];
+    const out: { folderGuid: string; folderPath: string; guid: string; path: string }[] = [];
+    for (const folder of this.plugin.sharedFolders._set.values() as Iterable<any>) {
+      const folderGuid = folder.guid;
+      const folderPath = folder.path ?? '';
+      for (const row of this.getFolderConflicts(folderGuid)) {
+        // Emit a vault-relative path with a leading slash so it round-trips
+        // through lookupDocument — copy/paste-friendly into `conflict info`.
+        const inner = row.path.replace(/^\/+/, '');
+        const fullPath = folderPath ? `/${folderPath}/${inner}` : `/${inner}`;
+        out.push({ folderGuid, folderPath, guid: row.guid, path: fullPath });
+      }
+    }
+    return out;
   }
 
   private async clearLca(path: string): Promise<void> {
