@@ -307,9 +307,12 @@ jobs:
           RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" "${TEST_CMD[@]}" || TEST_EXIT=$?
 
           # Extract results for the GitHub Actions runner
-          LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
-          if [ -n "$LATEST" ] && [ -f "$LATEST/summary.json" ]; then
-            cp "$LATEST/summary.json" ~/test-summary.json
+          LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null \
+            | head -1)
+          if [ -n "$LATEST_SUMMARY" ]; then
+            LATEST="$(dirname "$LATEST_SUMMARY")"
+            cp "$LATEST_SUMMARY" ~/test-summary.json
 
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
