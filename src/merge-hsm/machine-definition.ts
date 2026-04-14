@@ -30,6 +30,10 @@ import { normalizeToCandidates } from "./machine-interpreter";
  * Spread into each idle state's `on` map to avoid repetition.
  */
 const IDLE_LIFECYCLE: Record<string, EventHandler> = {
+	// PERSISTENCE_LOADED may arrive after an early SET_MODE_IDLE/SET_MODE_ACTIVE
+	// (e.g. startup/reload races). Re-enter idle.loading so always-transitions
+	// re-evaluate with the loaded LCA/fork data.
+	PERSISTENCE_LOADED: { target: 'idle.loading', actions: ['storePersistenceData'] },
 	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 	LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -286,6 +290,9 @@ export const MACHINE: MachineDefinition = {
 
 	'active.loading': {
 		on: {
+			// Late persistence payload (after an early SET_MODE_ACTIVE) should
+			// still hydrate LCA/fork data for entering reconciliation.
+			PERSISTENCE_LOADED: { target: 'active.loading', actions: ['storePersistenceData'] },
 			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 			CM6_CHANGE: { target: 'active.loading', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'active.loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
@@ -299,6 +306,12 @@ export const MACHINE: MachineDefinition = {
 	'active.entering.awaitingPersistence': {
 		entry: ['createYDocs'],
 		on: {
+			// If persistence arrives after we already entered active.entering,
+			// hydrate state in-place and let existing guards continue.
+			PERSISTENCE_LOADED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['storePersistenceData'],
+			},
 			PERSISTENCE_SYNCED: [
 				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent' },
 				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
