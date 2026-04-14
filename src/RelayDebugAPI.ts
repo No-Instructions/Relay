@@ -961,8 +961,8 @@ export class RelayDebugAPI {
       lcaHash: lca?.meta?.hash || null,
       lcaContentLength: lca?.contents?.length ?? null,
       lcaContent,
-      hasConflict: !!(hsm as any).conflictData,
-      conflictData: (hsm as any).conflictData || null,
+      hasConflict: !!(hsm as any).getConflictData?.(),
+      conflictData: (hsm as any).getConflictData?.() || null,
       localDocLength: (hsm as any).localDoc
         ? ((hsm as any).localDoc.getText?.('contents')?.toString()?.length ?? 0)
         : 0,
@@ -1071,7 +1071,10 @@ export class RelayDebugAPI {
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const { hsm, guid } = lookup;
 
-    const cd = (hsm as any).conflictData || null;
+    // `getConflictData` derives on-demand from current HSM materials when
+    // there's no live resolution session — diverged docs without an open
+    // banner still report correct hunks.
+    const cd = (hsm as any).getConflictData?.() || null;
     const regions = (cd?.conflictRegions as any[] | undefined) ?? [];
     const resolved = (cd?.resolvedIndices as Set<number> | undefined) ?? new Set<number>();
 
@@ -1170,7 +1173,7 @@ export class RelayDebugAPI {
     if (typeof indexOrId === 'number') {
       index = indexOrId;
     } else {
-      const cd = hsm.conflictData;
+      const cd = hsm.getConflictData?.();
       if (!cd?.conflictRegions) {
         throw new Error(`No active conflict on ${path}`);
       }

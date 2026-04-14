@@ -26,6 +26,7 @@
 import * as Y from "yjs";
 import { diff3Merge } from "node-diff3";
 import { diff_match_patch } from "diff-match-patch";
+import { Conflict, computeConflict, type ConflictData } from "./conflict";
 import type {
 	MergeState,
 	MergeEvent,
@@ -156,17 +157,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
 	private pendingEditorContent: string | null = null;
 
-	// Conflict data (enhanced for inline resolution)
-	private conflictData: {
-		base: string;
-		ours: string;
-		theirs: string;
-		oursLabel: string;
-		theirsLabel: string;
-		conflictRegions: ConflictRegion[];
-		resolvedIndices: Set<number>;
-		positionedConflicts: PositionedConflict[];
-	} | null = null;
+	// Active conflict resolution session. Built when conflict detected;
+	// cleared when resolved or superseded by a fresh sync. Read via
+	// `getConflictData()`.
+	private _conflict: Conflict | null = null;
 
 	// Track previous sync status for change detection
 	private lastSyncStatus: SyncStatusType = "synced";
@@ -456,17 +450,28 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return 0;
 	}
 
-	getConflictData(): {
-		base: string;
-		ours: string;
-		theirs: string;
-		oursLabel: string;
-		theirsLabel: string;
-		conflictRegions?: ConflictRegion[];
-		resolvedIndices?: Set<number>;
-		positionedConflicts?: PositionedConflict[];
-	} | null {
-		return this.conflictData;
+	/**
+	 * Current conflict snapshot. Returns null when the file is clean.
+	 *
+	 * Returns the active resolution session if one is in progress. For
+	 * `idle.diverged`, derives a read-only snapshot on demand from
+	 * `_lca` + `localDoc` + `remoteDoc` so callers can inspect unresolved hunks
+	 * without opening the banner. The derived snapshot is intentionally not
+	 * cached to keep read APIs side-effect free.
+	 */
+	getConflictData(): ConflictData | null {
+		if (this._conflict) return this._conflict.toData();
+		// Do not derive conflicts outside idle.diverged. In states like
+		// idle.localAhead, remoteDoc may be intentionally unsynced and transient
+		// derivations can produce false conflicts that poison future transitions.
+		if (this._statePath !== "idle.diverged") return null;
+		if (!this._lca?.contents || !this.localDoc || !this.remoteDoc) return null;
+		const base = this._lca.contents;
+		const ours = this.localDoc.getText("contents").toString();
+		const theirs = this.remoteDoc.getText("contents").toString();
+		const { hasConflict, regions } = computeConflict(base, ours, theirs);
+		if (!hasConflict) return null;
+		return new Conflict({ base, ours, theirs, regions }).toData();
 	}
 
 	getRemoteDoc(): Y.Doc | null {
@@ -1084,7 +1089,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
-			hasPreexistingConflict: () => this.conflictData !== null,
+			hasPreexistingConflict: () => this._conflict !== null,
 			isRecoveryMode: () => this._lca === null,
 		};
 	}
@@ -1274,7 +1279,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				const contents = (event as any).contents as string;
 
 				if (!this.localDoc || !this.remoteDoc) {
-					this.conflictData = null;
+					this._conflict = null;
 					return;
 				}
 
@@ -1327,32 +1332,27 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// Clear fork and conflict state
 				this._fork = null;
 				this._ingestionTexts = [];
-				this.conflictData = null;
+				this._conflict = null;
 				this.pendingDiskContents = null;
 				this.pendingEditorContent = null;
 			},
 			storeConflictData: (_hsm, event) => {
 				const e = event as any;
-				const conflictRegions = e.conflictRegions ?? [];
-				const positionedConflicts = this.calculateConflictPositions(
-					conflictRegions,
-					e.ours,
-				);
-				this.conflictData = {
+				const regions = e.conflictRegions ?? [];
+				this._conflict = new Conflict({
 					base: e.base,
 					ours: e.ours,
 					theirs: e.theirs,
 					oursLabel: e.oursLabel ?? "Remote",
 					theirsLabel: e.theirsLabel ?? "Local file",
-					conflictRegions,
-					resolvedIndices: new Set(),
-					positionedConflicts,
-				};
-				if (positionedConflicts.length > 0) {
+					regions,
+				});
+				const positions = this._conflict.positions;
+				if (positions.length > 0) {
 					this.emitEffect({
 						type: "SHOW_CONFLICT_DECORATIONS",
-						conflictRegions,
-						positions: positionedConflicts,
+						conflictRegions: regions,
+						positions,
 					});
 				}
 			},
@@ -1920,7 +1920,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// If fork-reconcile already detected a conflict, don't re-attempt the
 		// merge — the conflict data is authoritative and must be surfaced to
 		// the user when they open the file.
-		if (this.conflictData) {
+		if (this._conflict) {
 			this.pendingDiskContents = null;
 			this.pendingIdleUpdates = null;
 			return { success: false };
@@ -2119,23 +2119,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 
 		// Merge conflict — can't auto-resolve.
-		// Populate conflictData so the diff UI is available when the user opens
-		// the file from idle.diverged. Without this, CRDT merge during provider
-		// sync would make localDoc and disk identical, causing the active.entering
-		// reconciliation to skip conflict detection (localText === diskText).
-		this.conflictData = {
+		// Build the active conflict so the diff UI is available when the user
+		// opens the file from idle.diverged. Without this, CRDT merge during
+		// provider sync would make localDoc and disk identical, causing the
+		// active.entering reconciliation to skip conflict detection
+		// (localText === diskText).
+		this._conflict = new Conflict({
 			base: fork.base,
 			ours: localContent,
 			theirs: remoteContent,
-			oursLabel: "Local",
-			theirsLabel: "Remote",
-			conflictRegions: mergeResult.conflictRegions ?? [],
-			resolvedIndices: new Set(),
-			positionedConflicts: this.calculateConflictPositions(
-				mergeResult.conflictRegions ?? [],
-				localContent,
-			),
-		};
+			regions: mergeResult.conflictRegions ?? [],
+		});
 		return { success: false };
 	}
 
@@ -2274,19 +2268,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		const conflictRegions = computeTwoWayConflictRegions(localText, diskText);
 
-		this.conflictData = {
+		this._conflict = new Conflict({
 			base: localText,
 			ours: localText,
 			theirs: diskText,
 			oursLabel: "Remote",
 			theirsLabel: "Local file",
-			conflictRegions,
-			resolvedIndices: new Set(),
-			positionedConflicts: this.calculateConflictPositions(
-				conflictRegions,
-				localText,
-			),
-		};
+			regions: conflictRegions,
+		});
 
 		this.send({
 			type: "MERGE_CONFLICT",
@@ -2346,20 +2335,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// by the mergeRemoteToLocal entry action on active.tracking.
 			this.pendingEditorContent = null;
 		} else {
-			// Merge has conflicts - populate conflictData for banner/diff view
-			this.conflictData = {
+			// Merge has conflicts - build conflict for banner/diff view
+			this._conflict = new Conflict({
 				base: baseText,
 				ours: localText,
 				theirs: diskText,
 				oursLabel: "Remote",
 				theirsLabel: "Local file",
-				conflictRegions: mergeResult.conflictRegions ?? [],
-				resolvedIndices: new Set(),
-				positionedConflicts: this.calculateConflictPositions(
-					mergeResult.conflictRegions ?? [],
-					localText,
-				),
-			};
+				regions: mergeResult.conflictRegions ?? [],
+			});
 
 			// Send MERGE_CONFLICT to transition to conflict state
 			this.send({
@@ -2853,100 +2837,21 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	/**
-	 * Calculate character positions for conflict regions based on line numbers.
-	 */
-	private calculateConflictPositions(
-		regions: ConflictRegion[],
-		localContent: string,
-	): PositionedConflict[] {
-		if (regions.length === 0) return [];
-
-		// Find each region's oursContent in the local text by string search.
-		// baseStart/baseEnd are diff3 token indices (not line numbers), so
-		// we cannot use them as line-map lookups.  Searching for the literal
-		// oursContent is reliable as long as each hunk's text is unique.
-		let searchFrom = 0;
-		return regions.map((region, index) => {
-			const text = region.oursContent;
-			if (!text) {
-				return {
-					index,
-					localStart: searchFrom,
-					localEnd: searchFrom,
-					oursContent: region.oursContent,
-					theirsContent: region.theirsContent,
-				};
-			}
-			const pos = localContent.indexOf(text, searchFrom);
-			const start = pos !== -1 ? pos : searchFrom;
-			const end = pos !== -1 ? pos + text.length : searchFrom;
-			searchFrom = end;
-			return {
-				index,
-				localStart: start,
-				localEnd: end,
-				oursContent: region.oursContent,
-				theirsContent: region.theirsContent,
-			};
-		});
-	}
-
-	/**
-	 * Recalculate conflict positions after a hunk is resolved.
-	 * Positions shift when earlier hunks are resolved.
-	 */
-	private recalculateConflictPositions(): void {
-		if (!this.conflictData || !this.localDoc) return;
-
-		const currentContent = this.localDoc.getText("contents").toString();
-		this.conflictData.ours = currentContent;
-
-		const positioned = this.conflictData.positionedConflicts;
-
-		// For each unresolved conflict, find its oursContent in the updated document
-		for (let i = 0; i < positioned.length; i++) {
-			if (this.conflictData.resolvedIndices.has(i)) continue;
-
-			const conflict = positioned[i];
-			const searchText = conflict.oursContent;
-
-			if (!searchText) {
-				// Empty oursContent — zero-width region; find by surrounding context
-				conflict.localStart = 0;
-				conflict.localEnd = 0;
-				continue;
-			}
-
-			const foundIndex = currentContent.indexOf(searchText, Math.max(0, conflict.localStart - 100));
-			if (foundIndex !== -1) {
-				conflict.localStart = foundIndex;
-				conflict.localEnd = foundIndex + searchText.length;
-			} else {
-				// Fallback: search from the beginning
-				const fallbackIndex = currentContent.indexOf(searchText);
-				if (fallbackIndex !== -1) {
-					conflict.localStart = fallbackIndex;
-					conflict.localEnd = fallbackIndex + searchText.length;
-				}
-			}
-		}
-	}
-
-	/**
 	 * Handle per-hunk conflict resolution from inline decorations.
 	 */
 	private handleResolveHunk(event: ResolveHunkEvent): void {
 		// Allow resolving from either bannerShown or resolving state
 		if (!this._statePath.includes("conflict")) return;
-		if (!this.conflictData || !this.localDoc) return;
+		if (!this._conflict || !this.localDoc) return;
 
 		const { index, resolution } = event;
+		const conflict = this._conflict;
 
 		// Skip if already resolved
-		if (this.conflictData.resolvedIndices.has(index)) return;
+		if (conflict.resolved.has(index)) return;
 
-		const region = this.conflictData.conflictRegions[index];
-		const positioned = this.conflictData.positionedConflicts[index];
+		const region = conflict.regions[index];
+		const positioned = conflict.positions[index];
 
 		if (!region || !positioned) return;
 
@@ -2982,7 +2887,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}, this);
 
 		// Mark as resolved
-		this.conflictData.resolvedIndices.add(index);
+		conflict.markResolved(index);
 
 		// Emit effect to hide this conflict's decoration
 		this.emitEffect({
@@ -3007,20 +2912,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// corrupting the editor.
 		this.lastKnownEditorText = afterText;
 
-		// Update stored local content
-		this.conflictData.ours = afterText;
-
-		// Recalculate positions for remaining conflicts (they shift!)
-		this.recalculateConflictPositions();
+		// Update stored local content + reposition the remaining hunks (they shift!)
+		conflict.updateOurs(afterText);
 
 		// Sync to remote → collaborators see immediately
 		this._bridge.flushOutbound();
 
 		// Check if all conflicts resolved
-		if (
-			this.conflictData.resolvedIndices.size ===
-			this.conflictData.conflictRegions.length
-		) {
+		if (conflict.isFullyResolved) {
 			// All hunks resolved — localDoc already has the final content.
 			const finalContent = this.localDoc.getText("contents").toString();
 			this.send({ type: "RESOLVE", contents: finalContent });
@@ -3564,7 +3463,7 @@ function extractConflictRegions(
 /**
  * Build per-hunk ConflictRegions from a two-way diff (no LCA).
  * Uses local text as the positional reference so that
- * calculateConflictPositions can find each hunk by string search.
+ * `positionRegions` (in conflict.ts) can find each hunk by string search.
  */
 function computeTwoWayConflictRegions(
 	localText: string,
