@@ -185,41 +185,69 @@ jobs:
       - name: Provision VM credentials
         if: steps.select-tests.outputs.should_run == 'true'
         run: |
+          scp_retry() {
+            local src="$1"
+            local dest="$2"
+            local label="$3"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute scp --quiet "$src" "$VM_NAME":"$dest" \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap; then
+                return 0
+              fi
+              echo "Retrying $label scp ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed to copy $label to VM after 5 attempts"
+            return 1
+          }
+
+          ssh_retry() {
+            local label="$1"
+            local command="$2"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute ssh "$VM_NAME" --quiet \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap \
+                --command="$command"; then
+                return 0
+              fi
+              echo "Retrying $label ssh command ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed $label ssh command after 5 attempts"
+            return 1
+          }
+
           echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
-          gcloud compute scp --quiet /tmp/sa-key.json "$VM_NAME":~/ci-sa-key.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null
+          scp_retry /tmp/sa-key.json ~/ci-sa-key.json "service-account key"
           rm -f /tmp/sa-key.json
 
           echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
-          gcloud compute scp --quiet /tmp/deploy-key "$VM_NAME":~/ci-deploy-key \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null
+          scp_retry /tmp/deploy-key ~/ci-deploy-key "deploy key"
           rm -f /tmp/deploy-key
 
           # GitHub App private key for posting Check Runs
           echo '${{ secrets.E2E_APP_KEY }}' > /tmp/github-app-key.pem
           chmod 600 /tmp/github-app-key.pem
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap \
-            --command="mkdir -p ~/.config/relay-e2e" 2>/dev/null
-          gcloud compute scp --quiet /tmp/github-app-key.pem "$VM_NAME":~/.config/relay-e2e/github-app-key.pem \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null
+          ssh_retry "relay-e2e config dir creation" "mkdir -p ~/.config/relay-e2e"
+          scp_retry /tmp/github-app-key.pem ~/.config/relay-e2e/github-app-key.pem "GitHub App key"
           rm -f /tmp/github-app-key.pem
 
           # R2 credentials for ci.system3.dev uploads
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap \
-            --command="cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
+          ssh_retry "R2 env write" "cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
           export CI_R2_ENDPOINT='${{ secrets.CI_R2_ENDPOINT }}'
           export CI_R2_ACCESS_KEY_ID='${{ secrets.CI_R2_ACCESS_KEY_ID }}'
           export CI_R2_SECRET_ACCESS_KEY='${{ secrets.CI_R2_SECRET_ACCESS_KEY }}'
           CREDS
-          chmod 600 ~/.config/relay-e2e/r2-env.sh" 2>/dev/null
+          chmod 600 ~/.config/relay-e2e/r2-env.sh"
 
       - name: Run standard suite on VM
         if: steps.select-tests.outputs.should_run == 'true'
