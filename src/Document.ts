@@ -500,13 +500,11 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public get ready(): boolean {
-		if (!this._persistence) return this.synced;
-		return this._persistence.isReady(this.synced);
+		return this.persistenceSynced && this._awaitingUpdates === false;
 	}
 
 	hasLocalDB(): boolean {
-		if (!this._persistence) return false;
-		return this._persistence.hasServerSync || this._persistence.hasUserData();
+		return this._hsm?.hasPersistenceUserData() ?? false;
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
@@ -527,6 +525,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	async whenReady(): Promise<Document> {
 		const promiseFn = async (): Promise<Document> => {
+			await this.whenSynced();
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
@@ -536,7 +535,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				this.log("connected");
 				await this.onceProviderSynced();
 				this.log("synced");
-				return this;
+				this._awaitingUpdates = false;
 			}
 			return this;
 		};
@@ -551,24 +550,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	whenSynced(): Promise<void> {
 		const promiseFn = async (): Promise<void> => {
 			await this.sharedFolder.whenSynced();
-
-			return new Promise<void>((resolve) => {
-				if (this.persistenceSynced) {
-					resolve();
-					return;
-				}
-
-				if (!this._persistence) {
-					this.persistenceSynced = true;
-					resolve();
-					return;
-				}
-
-				this._persistence.once("synced", () => {
-					this.persistenceSynced = true;
-					resolve();
-				});
-			});
+			await this._hsm?.awaitPersistenceReady();
+			this.persistenceSynced = true;
 		};
 
 		this.whenSyncedPromise =
@@ -628,13 +611,11 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	requestSave = debounce(this.save, 2000);
 
 	async markSynced(): Promise<void> {
-		if (!this._persistence) return;
-		await this._persistence.markServerSynced();
+		await this._hsm?.markPersistenceServerSynced();
 	}
 
 	async getServerSynced(): Promise<boolean> {
-		if (!this._persistence) return false;
-		return this._persistence.getServerSynced();
+		return (await this._hsm?.getPersistenceServerSynced()) ?? false;
 	}
 
 	static checkExtension(vpath: string): boolean {
