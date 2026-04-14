@@ -2,9 +2,9 @@
  * ConflictDecorationPlugin - Inline conflict decorations for CodeMirror 6
  *
  * Renders inline conflict resolution UI directly in the editor:
- * - Conflict header with Accept Local / Accept Remote / Accept Both buttons
- * - Local content highlighted with green background
- * - Remote content shown as widget decoration
+ * - Conflict header with Accept {oursLabel} / Accept {theirsLabel} / Accept Both buttons
+ * - Ours content highlighted with green background
+ * - Theirs content shown as widget decoration
  * - Integrates with MergeHSM for conflict state management
  */
 
@@ -29,6 +29,8 @@ import type { PositionedConflict } from '../merge-hsm/types';
 class ConflictHeaderWidget extends WidgetType {
   constructor(
     private index: number,
+    private oursLabel: string,
+    private theirsLabel: string,
     private onResolve: (index: number, resolution: 'local' | 'remote' | 'both') => void
   ) {
     super();
@@ -48,8 +50,9 @@ class ConflictHeaderWidget extends WidgetType {
     const buttons = document.createElement('div');
     buttons.className = 'cm-conflict-buttons';
 
+    // 'local' resolution applies region.oursContent (the ours side).
     const localBtn = document.createElement('button');
-    localBtn.textContent = 'Accept Local';
+    localBtn.textContent = `Accept ${this.oursLabel}`;
     localBtn.className = 'cm-conflict-btn cm-conflict-btn-local';
     localBtn.onclick = (e) => {
       e.preventDefault();
@@ -57,8 +60,9 @@ class ConflictHeaderWidget extends WidgetType {
       this.onResolve(this.index, 'local');
     };
 
+    // 'remote' resolution applies region.theirsContent (the theirs side).
     const remoteBtn = document.createElement('button');
-    remoteBtn.textContent = 'Accept Remote';
+    remoteBtn.textContent = `Accept ${this.theirsLabel}`;
     remoteBtn.className = 'cm-conflict-btn cm-conflict-btn-remote';
     remoteBtn.onclick = (e) => {
       e.preventDefault();
@@ -84,7 +88,11 @@ class ConflictHeaderWidget extends WidgetType {
   }
 
   eq(other: ConflictHeaderWidget): boolean {
-    return this.index === other.index;
+    return (
+      this.index === other.index &&
+      this.oursLabel === other.oursLabel &&
+      this.theirsLabel === other.theirsLabel
+    );
   }
 
   ignoreEvent(): boolean {
@@ -98,7 +106,8 @@ class ConflictHeaderWidget extends WidgetType {
 class ConflictRemoteContentWidget extends WidgetType {
   constructor(
     private remoteContent: string,
-    private index: number
+    private index: number,
+    private theirsLabel: string
   ) {
     super();
   }
@@ -110,7 +119,7 @@ class ConflictRemoteContentWidget extends WidgetType {
     // Separator
     const separator = document.createElement('div');
     separator.className = 'cm-conflict-separator';
-    separator.textContent = '═══════════ Remote/Disk ═══════════';
+    separator.textContent = `═══════════ ${this.theirsLabel} ═══════════`;
     container.appendChild(separator);
 
     // Remote content
@@ -131,7 +140,11 @@ class ConflictRemoteContentWidget extends WidgetType {
   }
 
   eq(other: ConflictRemoteContentWidget): boolean {
-    return this.index === other.index && this.remoteContent === other.remoteContent;
+    return (
+      this.index === other.index &&
+      this.remoteContent === other.remoteContent &&
+      this.theirsLabel === other.theirsLabel
+    );
   }
 
   ignoreEvent(): boolean {
@@ -152,6 +165,8 @@ class ConflictDecorationPluginValue {
   private unsubscribe: (() => void) | null = null;
   private conflicts: PositionedConflict[] = [];
   private resolvedIndices: Set<number> = new Set();
+  private oursLabel: string = 'Remote';
+  private theirsLabel: string = 'Local file';
 
   constructor(private view: EditorView) {}
 
@@ -169,6 +184,11 @@ class ConflictDecorationPluginValue {
       if (effect.type === 'SHOW_CONFLICT_DECORATIONS') {
         this.conflicts = effect.positions;
         this.resolvedIndices.clear();
+        const cd = hsm.getConflictData();
+        if (cd) {
+          this.oursLabel = cd.oursLabel;
+          this.theirsLabel = cd.theirsLabel;
+        }
         this.updateDecorations();
       } else if (effect.type === 'HIDE_CONFLICT_DECORATION') {
         this.resolvedIndices.add(effect.index);
@@ -203,7 +223,12 @@ class ConflictDecorationPluginValue {
       // Header widget with buttons (block decoration before conflict)
       decorationRanges.push(
         Decoration.widget({
-          widget: new ConflictHeaderWidget(conflict.index, this.handleResolve.bind(this)),
+          widget: new ConflictHeaderWidget(
+            conflict.index,
+            this.oursLabel,
+            this.theirsLabel,
+            this.handleResolve.bind(this)
+          ),
           block: true,
           side: -1,
         }).range(localStart)
@@ -221,7 +246,11 @@ class ConflictDecorationPluginValue {
       // Remote content widget (shown after local content)
       decorationRanges.push(
         Decoration.widget({
-          widget: new ConflictRemoteContentWidget(conflict.theirsContent, conflict.index),
+          widget: new ConflictRemoteContentWidget(
+            conflict.theirsContent,
+            conflict.index,
+            this.theirsLabel
+          ),
           block: true,
           side: 1,
         }).range(localEnd)

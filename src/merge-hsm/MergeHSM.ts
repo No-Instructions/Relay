@@ -1315,8 +1315,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					base: e.base,
 					ours: e.ours,
 					theirs: e.theirs,
-					oursLabel: e.oursLabel ?? "Editor",
-					theirsLabel: e.theirsLabel ?? "Disk",
+					oursLabel: e.oursLabel ?? "Remote",
+					theirsLabel: e.theirsLabel ?? "Local file",
 					conflictRegions,
 					resolvedIndices: new Set(),
 					positionedConflicts,
@@ -2248,8 +2248,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			base: "", // No baseline available
 			ours: localText,
 			theirs: diskText,
-			oursLabel: "Editor",
-			theirsLabel: "Disk",
+			oursLabel: "Remote",
+			theirsLabel: "Local file",
 			conflictRegions: [], // No regions - entire content is in conflict
 			resolvedIndices: new Set(),
 			positionedConflicts: [],
@@ -2318,8 +2318,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				base: baseText,
 				ours: localText,
 				theirs: diskText,
-				oursLabel: "Editor",
-				theirsLabel: "Disk",
+				oursLabel: "Remote",
+				theirsLabel: "Local file",
 				conflictRegions: mergeResult.conflictRegions ?? [],
 				resolvedIndices: new Set(),
 				positionedConflicts: this.calculateConflictPositions(

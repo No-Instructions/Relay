@@ -246,8 +246,8 @@ export class DifferencesView extends ItemView {
 			cls: "flex flex-row gap-1 py-0-5",
 		});
 
-		const oursLabel = this.state?.oursLabel ?? "Editor";
-		const theirsLabel = this.state?.theirsLabel ?? "Disk";
+		const oursLabel = this.state?.oursLabel ?? "Remote";
+		const theirsLabel = this.state?.theirsLabel ?? "Local file";
 
 		// Left file (top)
 		new ActionLineButton({
