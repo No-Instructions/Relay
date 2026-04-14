@@ -173,6 +173,7 @@ export class SharedFolder extends HasProvider {
 
 	private _persistence: IndexeddbPersistence;
 	proxy: SharedFolder;
+	private revokeProxy: (() => void) | null = null;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
 	mergeManager: MergeManager;
@@ -274,9 +275,11 @@ export class SharedFolder extends HasProvider {
 			}),
 		);
 
-		this.proxy = createPathProxy(this, this.path, (globalPath: string) => {
+		const { proxy, revoke } = createPathProxy(this, this.path, (globalPath: string) => {
 			return this.getVirtualPath(globalPath);
 		});
+		this.proxy = proxy;
+		this.revokeProxy = revoke;
 
 		try {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
@@ -2245,6 +2248,9 @@ export class SharedFolder extends HasProvider {
 		this.fset.clear();
 		this._settings.destroy();
 		this._settings = null as any;
+		this.revokeProxy?.();
+		this.revokeProxy = null;
+		this.proxy = null as any;
 		this.relayManager = null as any;
 		this.backgroundSync = null as any;
 		this.loginManager = null as any;
