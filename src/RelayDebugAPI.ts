@@ -13,6 +13,7 @@ import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
+import { getRecentPromises } from './trackPromise';
 
 // =============================================================================
 // Types
@@ -298,6 +299,10 @@ export interface RelayDebugGlobal {
    * `isRecoveryMode` and routes to two-way merge.
    */
   clearLca: (path: string) => Promise<void>;
+
+  // -- Promise tracking --
+  getPendingPromises: () => { label: string; ageMs: number; owner?: string }[];
+  getRecentPromises: () => { label: string; created: number; settledAt: number; state: "fulfilled" | "rejected"; owner?: string }[];
 }
 
 // =============================================================================
@@ -431,6 +436,8 @@ export class RelayDebugAPI {
       openDiffView: async (path) => this.sendConflictEvent(path, { type: 'OPEN_DIFF_VIEW' }),
       cancelDiffView: async (path) => this.sendConflictEvent(path, { type: 'CANCEL' }),
       clearLca: async (path) => this.clearLca(path),
+      getPendingPromises: () => this.plugin?.promises?.getPending() ?? [],
+      getRecentPromises: () => getRecentPromises(),
 
       setEditorContent: (content: string) => {
         const editor = (this.plugin?.app as any)?.workspace?.activeEditor?.editor;
