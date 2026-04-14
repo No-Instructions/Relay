@@ -78,7 +78,15 @@ class HSMEditorPluginValue implements PluginValue {
     const folder = connectionManager.sharedFolders.lookup(file.path);
     if (!folder) return null;
 
-    return folder.proxy.getDoc(file.path) as Document;
+    try {
+      return folder.proxy.getDoc(file.path) as Document;
+    } catch (error) {
+      this.debug("resolveCurrentDocument failed", {
+        filePath: file.path,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
   }
 
   /**
