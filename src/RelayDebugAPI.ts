@@ -198,7 +198,45 @@ export interface HsmStateSnapshot {
 // Global interface exposed via CDP
 // =============================================================================
 
+/**
+ * A stable reference to an editor leaf. Resolved by matching windowId+leafId;
+ * operations that require the leaf to still be showing the same file verify
+ * `handle.path` against the leaf's current file.
+ */
+export interface EditorHandle {
+  windowId: string;
+  leafId: string;
+  path: string;
+}
+
+export interface OpenEditorResult {
+  handle: EditorHandle;
+  viewType: string | null;
+  mode: string | null;
+}
+
+export interface EditorInfo {
+  handle: EditorHandle;
+  /** The leaf's current file path. Differs from handle.path if the leaf drifted. Null if the leaf is gone. */
+  currentPath: string | null;
+  viewType: string | null;
+  mode: string | null;
+  active: boolean;
+}
+
+export type SetEditorContentResult =
+  | { success: true; changeCount: number }
+  | { success: false; error: string };
+
 export interface RelayDebugGlobal {
+  /** Open PATH in an editor leaf. Pass `{ newLeaf: true }` to force a new tab. */
+  openEditor: (path: string, opts?: { newLeaf?: boolean }) => Promise<OpenEditorResult>;
+  /** Close the exact leaf identified by HANDLE. No-op if already gone. */
+  closeEditor: (handle: EditorHandle) => Promise<void>;
+  /** Read the editor text from the exact leaf. Throws if the leaf drifted. */
+  getEditorContent: (handle: EditorHandle) => Promise<string>;
+  /** Inspect a handle without mutating focus or throwing on drift. */
+  getEditorInfo: (handle: EditorHandle) => EditorInfo;
   /** Start recording all HSM activity */
   startRecording: (name?: string) => E2ERecordingState;
   /** Stop recording and return lightweight summary JSON */
@@ -221,8 +259,8 @@ export interface RelayDebugGlobal {
   getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
   /** Get a snapshot of all content views for a document */
   getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
-  /** Set the active editor's content via minimal CM6 transactions (simulates user typing) */
-  setEditorContent: (content: string) => { success: boolean; changeCount: number } | { error: string };
+  /** Set the editor text via minimal CM6 transactions. Throws if the leaf drifted. */
+  setEditorContent: (handle: EditorHandle, content: string) => Promise<SetEditorContentResult>;
   /** Look up a document by vault-scoped path (e.g. "private/foo.md"). Returns document, HSM, folder, and GUID. */
   lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
@@ -436,6 +474,10 @@ export class RelayDebugAPI {
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
+      openEditor: (path, opts) => this.openEditor(path, opts),
+      closeEditor: (handle) => this.closeEditor(handle),
+      getEditorContent: (handle) => this.getEditorContent(handle),
+      getEditorInfo: (handle) => this.getEditorInfo(handle),
       getDocumentContent: async (path) => this.getDocumentContent(path),
       getHsmStateSnapshot: async (path) => this.getHsmStateSnapshot(path),
       getIdbContent: async (path) => this.getIdbContent(path),
@@ -453,51 +495,7 @@ export class RelayDebugAPI {
       getPendingPromises: () => this.plugin?.promises?.getPending() ?? [],
       getRecentPromises: () => getRecentPromises(),
 
-      setEditorContent: (content: string) => {
-        const editor = (this.plugin?.app as any)?.workspace?.activeEditor?.editor;
-        if (!editor) return { error: 'No active editor' };
-        const cm = editor.cm;
-        if (!cm) return { error: 'No CM6 EditorView' };
-
-        const before = cm.state.doc.toString();
-        if (before === content) return { success: true, changeCount: 0 };
-
-        const dmp = new diff_match_patch();
-        const diffs = dmp.diff_main(before, content);
-        dmp.diff_cleanupSemantic(diffs);
-
-        const changes: { from: number; to: number; insert: string }[] = [];
-        let pos = 0;
-        for (const [op, text] of diffs) {
-          if (op === 0) {
-            pos += text.length;
-          } else if (op === -1) {
-            changes.push({ from: pos, to: pos + text.length, insert: '' });
-            pos += text.length;
-          } else if (op === 1) {
-            changes.push({ from: pos, to: pos, insert: text });
-          }
-        }
-
-        // Merge adjacent delete+insert into replacements
-        const merged: typeof changes = [];
-        let i = 0;
-        while (i < changes.length) {
-          const cur = changes[i];
-          if (i + 1 < changes.length && cur.insert === '' &&
-              changes[i + 1].from === cur.to && changes[i + 1].to === changes[i + 1].from) {
-            merged.push({ from: cur.from, to: cur.to, insert: changes[i + 1].insert });
-            i += 2;
-          } else {
-            merged.push(cur);
-            i++;
-          }
-        }
-
-        // Dispatch without ySyncAnnotation so HSM treats this as a user edit
-        cm.dispatch({ changes: merged });
-        return { success: true, changeCount: merged.length };
-      },
+      setEditorContent: (handle, content) => this.setEditorContent(handle, content),
 
       lookupFolder: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
@@ -555,6 +553,191 @@ export class RelayDebugAPI {
       ...api,
       registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
     };
+  }
+
+  /**
+   * Locate the leaf identified by HANDLE.windowId + HANDLE.leafId. Does NOT
+   * verify the path — callers that require path match call resolveAndVerify.
+   */
+  private findLeaf(handle: EditorHandle): any | null {
+    let found: any = null;
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
+      if (found) return;
+      const ids = this.leafIds(leaf);
+      if (ids.windowId === handle.windowId && ids.leafId === handle.leafId) {
+        found = leaf;
+      }
+    });
+    return found;
+  }
+
+  /**
+   * Resolve the exact leaf for HANDLE and verify it still shows handle.path.
+   * Throws a precise error on every failure mode the caller cares about.
+   */
+  private resolveAndVerify(handle: EditorHandle): any {
+    const leaf = this.findLeaf(handle);
+    if (!leaf) {
+      throw new Error(`leaf not found: windowId=${handle.windowId} leafId=${handle.leafId}`);
+    }
+    const currentPath = leaf.view?.file?.path ?? null;
+    if (currentPath !== handle.path) {
+      throw new Error(`leaf drifted to ${currentPath ?? '<no file>'} (expected ${handle.path})`);
+    }
+    return leaf;
+  }
+
+  /**
+   * Stable IDs for a leaf. Uses Obsidian's internal leaf.id and derives a
+   * windowId from the leaf's root (main window vs popout).
+   */
+  private leafIds(leaf: any): { windowId: string; leafId: string } {
+    const leafId: string = leaf?.id ?? '';
+    const root = leaf?.getRoot?.();
+    const rootId: string | undefined = root?.id;
+    const mainRoot = this.plugin?.app?.workspace?.rootSplit;
+    let windowId: string;
+    if (!root || root === mainRoot) {
+      windowId = 'main';
+    } else if (rootId) {
+      windowId = `popout:${rootId}`;
+    } else {
+      // Fallback: identify by the window containing the leaf's DOM.
+      const ownerWin = leaf?.view?.containerEl?.ownerDocument?.defaultView;
+      windowId = ownerWin && ownerWin !== window ? 'popout:unknown' : 'main';
+    }
+    return { windowId, leafId };
+  }
+
+  private leafViewInfo(leaf: any): { viewType: string | null; mode: string | null; currentPath: string | null } {
+    const view = leaf?.view;
+    return {
+      viewType: view?.getViewType?.() ?? null,
+      mode: view?.getMode?.() ?? null,
+      currentPath: view?.file?.path ?? null,
+    };
+  }
+
+  private async openEditor(
+    path: string,
+    opts?: { newLeaf?: boolean },
+  ): Promise<OpenEditorResult> {
+    const file = this.plugin?.app?.vault?.getAbstractFileByPath(path);
+    if (!file) {
+      throw new Error(`File not found: ${path}`);
+    }
+    const leaf = this.plugin.app.workspace.getLeaf(opts?.newLeaf ? 'tab' : false);
+    await leaf.openFile(file);
+    this.plugin.app.workspace.setActiveLeaf?.(leaf, { focus: true });
+
+    // Markdown views default to preview; flip to source so the editor is live.
+    // setViewState is used instead of view.setMode because setMode expects a
+    // mode instance (from view.modes), not a string — passing a string leaves
+    // view.currentMode as the string and corrupts the view.
+    const view = leaf.view;
+    if (view?.getViewType?.() === 'markdown' && view.getMode?.() !== 'source') {
+      if (typeof leaf.setViewState === 'function') {
+        const state = leaf.getViewState?.() ?? { type: 'markdown', state: {} };
+        await leaf.setViewState({
+          ...state,
+          state: { ...(state.state || {}), file: path, mode: 'source' },
+        }, { focus: true });
+      }
+    }
+
+    const ids = this.leafIds(leaf);
+    const info = this.leafViewInfo(leaf);
+    return {
+      handle: { windowId: ids.windowId, leafId: ids.leafId, path },
+      viewType: info.viewType,
+      mode: info.mode,
+    };
+  }
+
+  private getEditorInfo(handle: EditorHandle): EditorInfo {
+    const leaf = this.findLeaf(handle);
+    if (!leaf) {
+      return {
+        handle,
+        currentPath: null,
+        viewType: null,
+        mode: null,
+        active: false,
+      };
+    }
+    const info = this.leafViewInfo(leaf);
+    const active = this.plugin?.app?.workspace?.activeLeaf === leaf;
+    return {
+      handle,
+      currentPath: info.currentPath,
+      viewType: info.viewType,
+      mode: info.mode,
+      active,
+    };
+  }
+
+  private async getEditorContent(handle: EditorHandle): Promise<string> {
+    const leaf = this.resolveAndVerify(handle);
+    const editor = leaf.view?.editor;
+    if (!editor) {
+      throw new Error(`leaf has no editor: ${handle.path}`);
+    }
+    return editor.getValue();
+  }
+
+  private async setEditorContent(
+    handle: EditorHandle,
+    content: string,
+  ): Promise<SetEditorContentResult> {
+    const leaf = this.resolveAndVerify(handle);
+    const editor = leaf.view?.editor;
+    const cm = editor?.cm;
+    if (!cm) return { success: false, error: 'leaf has no CM6 EditorView' };
+
+    const before = cm.state.doc.toString();
+    if (before === content) return { success: true, changeCount: 0 };
+
+    const dmp = new diff_match_patch();
+    const diffs = dmp.diff_main(before, content);
+    dmp.diff_cleanupSemantic(diffs);
+
+    const changes: { from: number; to: number; insert: string }[] = [];
+    let pos = 0;
+    for (const [op, text] of diffs) {
+      if (op === 0) {
+        pos += text.length;
+      } else if (op === -1) {
+        changes.push({ from: pos, to: pos + text.length, insert: '' });
+        pos += text.length;
+      } else if (op === 1) {
+        changes.push({ from: pos, to: pos, insert: text });
+      }
+    }
+
+    // Merge adjacent delete+insert into replacements
+    const merged: typeof changes = [];
+    let i = 0;
+    while (i < changes.length) {
+      const cur = changes[i];
+      if (i + 1 < changes.length && cur.insert === '' &&
+          changes[i + 1].from === cur.to && changes[i + 1].to === changes[i + 1].from) {
+        merged.push({ from: cur.from, to: cur.to, insert: changes[i + 1].insert });
+        i += 2;
+      } else {
+        merged.push(cur);
+        i++;
+      }
+    }
+
+    // Dispatch without ySyncAnnotation so HSM treats this as a user edit
+    cm.dispatch({ changes: merged });
+    return { success: true, changeCount: merged.length };
+  }
+
+  private async closeEditor(handle: EditorHandle): Promise<void> {
+    const leaf = this.findLeaf(handle);
+    if (!leaf) return; // already gone — no-op
+    leaf.detach?.();
   }
 
   /**
