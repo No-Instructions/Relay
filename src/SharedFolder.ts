@@ -370,7 +370,7 @@ export class SharedFolder extends HasProvider {
 					s3rn: s3rn ? S3RN.encode(s3rn) : "",
 				};
 			},
-			userId: loginManager?.user?.id,
+			userId: flags().enablePermanentUserData ? loginManager?.user?.id : undefined,
 			yaml: { parse: parseYaml, stringify: stringifyYaml },
 		});
 
