@@ -7,14 +7,17 @@ import {
 	type DecorationSet,
 } from "@codemirror/view";
 import { WidgetType } from "@codemirror/view";
-import { TextFileView } from "obsidian";
-import {
-	LiveView,
-	LiveViewManager,
-	getConnectionManager,
-} from "../LiveViews";
 import { curryLog } from "src/debug";
-import type { App, CachedMetadata } from "obsidian";
+import type { App, CachedMetadata, TFile } from "obsidian";
+import { Document, isDocument } from "../Document";
+import {
+	getApp,
+	getSharedFolders,
+	getEditorFile,
+	getRelayPlugin,
+	type MetadataBridge,
+} from "../editorContext";
+import { trackPromise } from "../trackPromise";
 
 export const invalidLinkSyncAnnotation = Annotation.define();
 
@@ -44,66 +47,140 @@ export class InvalidLinkPluginValue {
 	app?: App;
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
-	view?: LiveView<TextFileView>;
-	connectionManager?: LiveViewManager;
+	document?: Document;
 	decorationAnchors: number[];
 	decorations: DecorationSet;
 	cb: (data: string, cache: CachedMetadata) => void;
 	log: (message: string) => void = (message: string) => {};
+	private subscribedTFile?: TFile;
+	private metadataBridge?: MetadataBridge;
+	private destroyed = false;
+	private contextVersion = 0;
+	private awaitingGuid?: string;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
-		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 		this.decorations = Decoration.none;
 		this.decorationAnchors = [];
 		this.metadata = new Map();
 		this.cb = (data: string, cache: CachedMetadata) => {
-			if (!this.editor) return;
+			if (this.destroyed || !this.editor) return;
 			this.updateFromMetadata(cache);
 			this.editor.dispatch({
 				effects: metadataChangeEffect.of(null),
 			});
 		};
 
-		if (!this.connectionManager) {
-			curryLog(
-				"[InvalidLinkPluginValue]",
-				"warn",
-			)("ConnectionManager not found in InvalidLinkPlugin");
+		this.app = getApp(this.editor) ?? undefined;
+		this.document = this.resolveDocument();
+		if (this.document) {
+			this.log = curryLog(
+				`[InvalidLinkPluginValue][${this.document.path}]`,
+				"debug",
+			);
+			this.log("created");
+		}
+		this.refreshMetadataSubscription();
+	}
+
+	private resolveDocument(): Document | undefined {
+		if (this.destroyed || !this.editor) return undefined;
+		const file = getEditorFile(this.editor);
+		if (!file) return undefined;
+		const sharedFolders = getSharedFolders(this.editor);
+		if (!sharedFolders) return undefined;
+		const folder = sharedFolders.lookup(file.path);
+		if (!folder) return undefined;
+		try {
+			const doc = folder.proxy.getDoc(file.path);
+			if (!isDocument(doc)) return undefined;
+			return doc;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private unsubscribeMetadata(): void {
+		if (this.subscribedTFile) {
+			this.metadataBridge?.offMeta(this.subscribedTFile);
+			this.subscribedTFile = undefined;
+		}
+	}
+
+	private refreshMetadataSubscription(): void {
+		if (this.destroyed || !this.editor || !this.app) return;
+		const nextDocument = this.resolveDocument();
+		const previousGuid = this.document?.guid;
+		this.document = nextDocument;
+
+		const nextTFile = nextDocument?.getTFile();
+		if (!nextDocument || !nextTFile) {
+			this.unsubscribeMetadata();
+			this.metadata.clear();
+			this.decorationAnchors = [];
+			this.decorations = Decoration.none;
+			this.contextVersion += 1;
+			this.awaitingGuid = undefined;
 			return;
 		}
-		this.app = this.connectionManager.app;
-		this.view = this.connectionManager.findView(editor);
 
-		if (!this.view) {
+		if (this.subscribedTFile === nextTFile && previousGuid === nextDocument.guid) {
+			return;
+		}
+		if (this.awaitingGuid === nextDocument.guid) {
 			return;
 		}
 
-		this.log = curryLog(
-			`[InvalidLinkPluginValue][${this.view.view.file?.path}]`,
-			"debug",
-		);
-		this.log("created");
+		this.unsubscribeMetadata();
+		this.metadata.clear();
+		this.decorationAnchors = [];
+		this.decorations = Decoration.none;
 
-		if (this.view.document) {
-			const hsm = this.view.document.hsm;
-			if (!hsm?.awaitState) return;
-			hsm.awaitState((s) => s.startsWith("active.")).then(() => {
-				const tfile = this.view?.document?.getTFile();
-				if (this.connectionManager && this.app && this.editor && tfile) {
-					this.connectionManager.onMeta(tfile, this.cb);
-					const fileCache = this.app.metadataCache.getFileCache(tfile);
-					if (fileCache) {
-						this.updateFromMetadata(fileCache);
-						this.editor.dispatch({
-							effects: metadataChangeEffect.of(null),
-						});
-					}
-				} else {
-					this.log("unable to subscribe to metadata updates");
-				}
+		const plugin = getRelayPlugin(this.editor);
+		const metadataBridge = plugin?.metadataBridge;
+		if (!metadataBridge) {
+			this.metadataBridge = undefined;
+			this.contextVersion += 1;
+			this.awaitingGuid = undefined;
+			this.log("unable to subscribe to metadata updates");
+			return;
+		}
+
+		this.metadataBridge = metadataBridge;
+		const contextVersion = ++this.contextVersion;
+		const expectedGuid = nextDocument.guid;
+		this.awaitingGuid = expectedGuid;
+		const hsm = nextDocument.hsm;
+		if (!hsm?.awaitState) {
+			this.awaitingGuid = undefined;
+			return;
+		}
+
+		trackPromise(
+			`invalidLink:awaitActive:${nextDocument.path}`,
+			hsm.awaitState((s) => s.startsWith("active.")),
+		).then(() => {
+			this.awaitingGuid = undefined;
+			if (this.destroyed || contextVersion !== this.contextVersion) return;
+			const currentDocument = this.resolveDocument();
+			if (!currentDocument || currentDocument.guid !== expectedGuid) return;
+			const currentTFile = currentDocument.getTFile();
+			if (!currentTFile || !this.editor || !this.app) return;
+
+			metadataBridge.onMeta(currentTFile, this.cb);
+			this.subscribedTFile = currentTFile;
+
+			const fileCache = this.app.metadataCache.getFileCache(currentTFile);
+			if (!fileCache) return;
+			this.updateFromMetadata(fileCache);
+			this.editor.dispatch({
+				effects: metadataChangeEffect.of(null),
 			});
-		}
+		}).catch(() => {
+			if (contextVersion === this.contextVersion) {
+				this.awaitingGuid = undefined;
+			}
+		});
 	}
 
 	findInternalLinks(view: EditorView) {
@@ -142,25 +219,19 @@ export class InvalidLinkPluginValue {
 	}
 
 	updateFromMetadata(cache: CachedMetadata) {
-		if (this.connectionManager) {
-			this.view = this.connectionManager.findView(this.editor);
-		}
-		if (!this.view || !this.view.document || !this.app) return;
-		if (!this.view?.document?.sharedFolder) {
-			return;
-		}
-		if (!this.view?.document?.tfile) {
-			return;
-		}
+		this.document = this.resolveDocument();
+		if (!this.document || !this.app) return;
+		if (!this.document.sharedFolder) return;
+		if (!this.document.tfile) return;
 		const cacheLinks = new Map();
 		for (const link of cache?.links || []) {
 			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				link.link,
-				this.view.document.path,
+				this.document.path,
 			);
 			if (
 				linkedFile &&
-				!this.view.document.sharedFolder.checkPath(linkedFile.path)
+				!this.document.sharedFolder.checkPath(linkedFile.path)
 			) {
 				cacheLinks.set(link.position.start.offset, {
 					from: link.position.start.offset,
@@ -173,11 +244,11 @@ export class InvalidLinkPluginValue {
 		for (const embed of cache?.embeds || []) {
 			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				embed.link,
-				this.view.document.path,
+				this.document.path,
 			);
 			if (
 				linkedFile &&
-				!this.view.document.sharedFolder.checkPath(linkedFile.path)
+				!this.document.sharedFolder.checkPath(linkedFile.path)
 			) {
 				cacheLinks.set(embed.position.start.offset, {
 					from: embed.position.start.offset,
@@ -209,16 +280,10 @@ export class InvalidLinkPluginValue {
 		// The metadata cache is slower to update than the document.
 		// We use the cache to get link information, but rely on the document links for
 		// position information to avoid any delays or positioning bugs.
-		if (this.connectionManager) {
-			this.view = this.connectionManager.findView(this.editor);
-		}
-		if (!this.view || !this.view.document || !this.app) return;
-		if (!this.view?.document?.sharedFolder) {
-			return;
-		}
-		if (!this.view?.document?.tfile) {
-			return;
-		}
+		this.document = this.resolveDocument();
+		if (!this.document || !this.app) return;
+		if (!this.document.sharedFolder) return;
+		if (!this.document.tfile) return;
 
 		const invalidAnchors: number[] = [];
 		const cacheLinks = new Map(this.metadata);
@@ -226,7 +291,6 @@ export class InvalidLinkPluginValue {
 		for (const link of editorLinks) {
 			let _cacheLink = null;
 			for (const [cacheFrom, cacheLink] of cacheLinks) {
-				// Use metadata from link cache based on any overlap.
 				if (link.from <= cacheLink.to && link.to >= cacheLink.from) {
 					_cacheLink = cacheLink;
 					cacheLinks.delete(cacheFrom);
@@ -238,11 +302,11 @@ export class InvalidLinkPluginValue {
 			}
 			const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
 				_cacheLink.link,
-				this.view.document.path,
+				this.document.path,
 			);
 			const isInvalid =
 				linkedFile &&
-				!this.view.document.sharedFolder.checkPath(linkedFile.path);
+				!this.document.sharedFolder.checkPath(linkedFile.path);
 			if (isInvalid) {
 				invalidAnchors.push(link.from);
 			}
@@ -270,6 +334,7 @@ export class InvalidLinkPluginValue {
 	}
 
 	update(update: ViewUpdate) {
+		this.refreshMetadataSubscription();
 		let metadataUpdate = false;
 		update.transactions.forEach((tr) => {
 			if (tr.effects.some((e) => e.is(metadataChangeEffect))) {
@@ -287,11 +352,12 @@ export class InvalidLinkPluginValue {
 	}
 
 	destroy() {
-		if (this.connectionManager && this.view?.document?.tfile) {
-			this.connectionManager.offMeta(this.view.document.tfile);
-		}
-		this.connectionManager = null as any;
-		this.view = undefined;
+		this.destroyed = true;
+		this.contextVersion += 1;
+		this.awaitingGuid = undefined;
+		this.unsubscribeMetadata();
+		this.metadataBridge = undefined;
+		this.document = undefined;
 		this.metadata.clear();
 		this.metadata = null as any;
 		this.editor = null as any;
