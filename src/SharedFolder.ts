@@ -2224,6 +2224,7 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
+		this.unsubscribes = [];
 
 		this.files.forEach((doc: IFile) => {
 			doc.destroy();
@@ -2231,6 +2232,7 @@ export class SharedFolder extends HasProvider {
 		});
 
 		this.recordingBridge?.dispose();
+		this.cas.destroy();
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
@@ -2256,6 +2258,7 @@ export class SharedFolder extends HasProvider {
 		this.loginManager = null as any;
 		this.tokenStore = null as any;
 		this.fileManager = null as any;
+		this.cas = null as any;
 		this.syncStore = null as any;
 		this.syncSettingsManager = null as any;
 		this.mergeManager = null as any;
