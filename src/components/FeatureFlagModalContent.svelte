@@ -27,56 +27,64 @@
 
 <div class="feature-flag-toggle-modal">
 	<h2>Feature Flags</h2>
-	{#each Object.entries(settings)
-		.filter(([k, v]) => isKeyOfFeatureFlags(k))
-		.sort() as [flagName, value]}
-		<div class="feature-flag-item setting-item">
-			<div class="setting-item-info">
-				<div class="setting-item-name">{flagName}</div>
-				<div class="setting-item-description">Toggle {flagName} on or off</div>
-			</div>
-			<div class="setting-item-control">
-				<div
-					role="checkbox"
-					aria-checked={value}
-					tabindex="0"
-					on:keypress={() => {
-						if (!isKeyOfFeatureFlags(flagName))
-							throw new Error("Unexpected feature flag!");
-						toggleFlag(flagName);
-					}}
-					class="checkbox-container"
-					class:is-enabled={value}
-					on:click={() => {
-						if (!isKeyOfFeatureFlags(flagName))
-							throw new Error("Unexpected feature flag!");
-						toggleFlag(flagName);
-					}}
-				>
-					<input type="checkbox" tabindex="-1" checked={value} />
-					<div class="checkbox-toggle"></div>
+	<div class="feature-flag-list">
+		{#each Object.entries(settings)
+			.filter(([k, v]) => isKeyOfFeatureFlags(k))
+			.sort() as [flagName, value]}
+			<div class="feature-flag-item setting-item">
+				<div class="setting-item-info">
+					<div class="setting-item-name">{flagName}</div>
+					<div class="setting-item-description">Toggle {flagName} on or off</div>
+				</div>
+				<div class="setting-item-control">
+					<div
+						role="checkbox"
+						aria-checked={value}
+						tabindex="0"
+						on:keypress={() => {
+							if (!isKeyOfFeatureFlags(flagName))
+								throw new Error("Unexpected feature flag!");
+							toggleFlag(flagName);
+						}}
+						class="checkbox-container"
+						class:is-enabled={value}
+						on:click={() => {
+							if (!isKeyOfFeatureFlags(flagName))
+								throw new Error("Unexpected feature flag!");
+							toggleFlag(flagName);
+						}}
+					>
+						<input type="checkbox" tabindex="-1" checked={value} />
+						<div class="checkbox-toggle"></div>
+					</div>
 				</div>
 			</div>
-		</div>
-	{/each}
+		{/each}
+	</div>
 
-	<div class="setting-item">
-		<div class="setting-item-control">
-			<button
-				aria-label="apply flag settings"
-				on:click={reload}
-				on:keypress={reload}
-				tabindex="0"
-			>
-				Apply
-			</button>
-		</div>
+	<div class="feature-flag-footer">
+		<button
+			aria-label="apply flag settings"
+			on:click={reload}
+			on:keypress={reload}
+			tabindex="0"
+		>
+			Apply
+		</button>
 	</div>
 </div>
 
 <style>
 	.feature-flag-toggle-modal {
 		padding: 1rem;
+		display: flex;
+		flex-direction: column;
+		max-height: 70vh;
+	}
+	.feature-flag-list {
+		overflow-y: auto;
+		flex: 1;
+		min-height: 0;
 	}
 	.feature-flag-item {
 		display: flex;
@@ -84,6 +92,13 @@
 		align-items: center;
 		padding: 0.5rem 0;
 		border-top: 1px solid var(--background-modifier-border);
+	}
+	.feature-flag-footer {
+		padding-top: 1rem;
+		border-top: 1px solid var(--background-modifier-border);
+		display: flex;
+		justify-content: flex-end;
+		flex-shrink: 0;
 	}
 	.checkbox-container {
 		cursor: pointer;
