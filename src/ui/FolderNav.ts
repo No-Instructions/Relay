@@ -895,10 +895,15 @@ export class FolderNavigationDecorations {
 		this.treeState.forEach((walker) => walker.destroy());
 		this.treeState.clear();
 		this.offLayoutChange();
+		this.offLayoutChange = null as any;
 
 		this.vault = null as any;
 		this.workspace = null as any;
 		this.sharedFolders = null as any;
 		this.backgroundSync = null as any;
+		this.treeState = null as any;
+		this.globalSubs = null as any;
+		this.subscribedFolders = null as any;
+		this.subscribedFolderFsets = null as any;
 	}
 }
