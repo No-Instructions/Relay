@@ -62,7 +62,7 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
-import { classifyUpdate, decodeSV, stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
+import { classifyUpdate, decodeSV, isEmptyDoc, stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 
@@ -2473,11 +2473,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.localDoc
 		) {
 			// Only apply if localDoc has no CRDT history - safe to apply remote content.
-			// Check state vector size, not text content: an empty note with CRDT
-			// history (tombstones, deletions) must not be treated as "no content".
-			const localHasCrdtHistory = Y.encodeStateVector(this.localDoc).length > 1;
-
-			if (!localHasCrdtHistory) {
+			if (isEmptyDoc(this.localDoc)) {
 				Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
 			}
 			// If localDoc has content, DO NOT apply - let flushInbound() handle it
@@ -2511,8 +2507,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// initializeWithContent is only called on the upload path, not when
 		// opening a file in active mode after GUID remap.
 		const remoteHasContent =
-			this.remoteDoc &&
-			Y.encodeStateVector(this.remoteDoc).length > 1;
+			this.remoteDoc && !isEmptyDoc(this.remoteDoc);
 		if (hasContent || (this._lca === null && remoteHasContent)) {
 			this.send({ type: "PERSISTENCE_SYNCED", hasContent });
 		}
@@ -2527,12 +2522,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (!this.localDoc || !this.remoteDoc) return;
 
 		// Only apply if localDoc has no CRDT history and remoteDoc does.
-		// Check state vector size, not text content: an empty note with CRDT
-		// history (tombstones, deletions) must not be treated as "no content".
-		const localHasCrdtHistory = Y.encodeStateVector(this.localDoc).length > 1;
-		const remoteHasCrdtHistory = Y.encodeStateVector(this.remoteDoc).length > 1;
-
-		if (!localHasCrdtHistory && remoteHasCrdtHistory) {
+		if (isEmptyDoc(this.localDoc) && !isEmptyDoc(this.remoteDoc)) {
 			const update = Y.encodeStateAsUpdate(
 				this.remoteDoc,
 				Y.encodeStateVector(this.localDoc),
