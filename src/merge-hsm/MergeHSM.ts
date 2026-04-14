@@ -1568,17 +1568,35 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this._bridge.flushOutbound();
 				}
 			},
-			setOffline: () => {
-				this._isOnline = false;
-				this._bridge.providerSynced = false;
-			},
-			markProviderSynced: () => {
-				this._bridge.providerSynced = true;
-			},
-			clearForkAndUpdateLCA: (_hsm, event) => {
-				this._fork = null;
-				this._ingestionTexts = [];
-				this.pendingIdleUpdates = null;
+				setOffline: () => {
+					this._isOnline = false;
+					this._providerSynced = false;
+					this._bridge.providerSynced = false;
+				},
+				markProviderSynced: () => {
+					this._providerSynced = true;
+					this._bridge.providerSynced = true;
+				},
+				maybeSignalPersistenceSyncedForRecovery: () => {
+					if (!this.matches("active.entering.awaitingPersistence")) {
+						return;
+					}
+					if (this._lca !== null) {
+						return;
+					}
+					if (!this.localPersistence || !this.localPersistence.synced) {
+						return;
+					}
+					const hasContent = this.localPersistence.hasUserData();
+					const remoteHasContent = !!this.remoteDoc && !isEmptyDoc(this.remoteDoc);
+					if (hasContent || remoteHasContent) {
+						this.send({ type: "PERSISTENCE_SYNCED", hasContent });
+					}
+				},
+				clearForkAndUpdateLCA: (_hsm, event) => {
+					this._fork = null;
+					this._ingestionTexts = [];
+					this.pendingIdleUpdates = null;
 				const result = (event as any).data;
 				if (result?.newLCA) {
 					this._lca = result.newLCA;

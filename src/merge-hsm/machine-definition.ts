@@ -310,15 +310,26 @@ export const MACHINE: MachineDefinition = {
 			// hydrate state in-place and let existing guards continue.
 			PERSISTENCE_LOADED: {
 				target: 'active.entering.awaitingPersistence',
-				actions: ['storePersistenceData'],
+				actions: ['storePersistenceData', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			PERSISTENCE_SYNCED: [
 				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent' },
 				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
 				{ target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
 			],
+			PROVIDER_SYNCED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['markProviderSynced', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
 			CM6_CHANGE: { target: 'active.entering.awaitingPersistence', actions: ['accumulateCM6Change'] },
-			REMOTE_UPDATE: { target: 'active.entering.awaitingPersistence', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			REMOTE_UPDATE: {
+				target: 'active.entering.awaitingPersistence',
+				actions: [
+					'applyRemoteToRemoteDoc',
+					'accumulateRemoteUpdate',
+					'maybeSignalPersistenceSyncedForRecovery',
+				],
+			},
 			DISK_CHANGED: { target: 'active.entering.awaitingPersistence', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
