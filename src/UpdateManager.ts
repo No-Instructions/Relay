@@ -83,6 +83,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 	private lastReleaseCheck: number = 0;
 	private lastChannelCheck: number = 0;
 	private readonly CHECK_INTERVAL = 1000 * 60 * 60 * 24;
+	private updateGeneration: number = 0;
 	observableName = "UpdateManager";
 
 	constructor(
@@ -96,6 +97,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 	}
 
 	public get releases(): Release[] {
+		if (this.destroyed) {
+			return [];
+		}
 		return [...this.githubReleases.values()].sort((a, b) =>
 			b.tag_name.localeCompare(a.tag_name, undefined, {
 				numeric: true,
@@ -105,11 +109,21 @@ export class UpdateManager extends Observable<UpdateManager> {
 	}
 
 	public get beta(): Release | undefined {
+		if (this.destroyed) {
+			return undefined;
+		}
 		return this.releaseChannels.get("beta");
 	}
 
 	public get stable(): Release | undefined {
+		if (this.destroyed) {
+			return undefined;
+		}
 		return this.releaseChannels.get("stable");
+	}
+
+	private isActiveGeneration(generation: number): boolean {
+		return !this.destroyed && generation === this.updateGeneration;
 	}
 
 	private async fetchReleases(): Promise<Release[]> {
@@ -161,6 +175,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 	public async fetchLatestTagFromChannel(
 		channel: "beta" | "stable",
 	): Promise<string | null> {
+		if (this.destroyed) {
+			return null;
+		}
 		try {
 			const manifestPath = {
 				beta: "manifest-beta.json",
@@ -182,6 +199,10 @@ export class UpdateManager extends Observable<UpdateManager> {
 	}
 
 	public async getReleases(): Promise<Release[]> {
+		const generation = this.updateGeneration;
+		if (!this.isActiveGeneration(generation)) {
+			return [];
+		}
 		try {
 			// Only fetch if we haven't fetched in a while to avoid rate limiting
 			const now = Date.now();
@@ -197,6 +218,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 			this.lastReleaseCheck = now;
 
 			const releases = await this.fetchReleases();
+			if (!this.isActiveGeneration(generation)) {
+				return [];
+			}
 			const localReleases = new Set<string>([...this.githubReleases.keys()]);
 			const remoteReleases = new Set<string>();
 			releases.forEach((release: Release) => {
@@ -212,6 +236,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 			});
 
 			const latest = await this.fetchLatestRelease();
+			if (!this.isActiveGeneration(generation)) {
+				return [];
+			}
 			if (latest) {
 				latest.latest = true;
 				this.githubReleases.set(latest.tag_name, latest);
@@ -220,12 +247,21 @@ export class UpdateManager extends Observable<UpdateManager> {
 			// Notify subscribers that we have new releases data
 			this.notifyListeners();
 		} catch (error) {
-			this.error("Failed to fetch GitHub releases:", error);
+			if (this.isActiveGeneration(generation)) {
+				this.error("Failed to fetch GitHub releases:", error);
+			}
+		}
+		if (!this.isActiveGeneration(generation)) {
+			return [];
 		}
 		return [...this.githubReleases.values()];
 	}
 
 	private async getChannelRelease(): Promise<Release | null> {
+		const generation = this.updateGeneration;
+		if (!this.isActiveGeneration(generation)) {
+			return null;
+		}
 		const now = Date.now();
 		const channelRelease = this.releaseChannels.get(
 			this.releaseSettings.get().channel,
@@ -236,6 +272,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 		this.lastReleaseCheck = now;
 
 		const releases = await this.getReleases();
+		if (!this.isActiveGeneration(generation)) {
+			return null;
+		}
 		if (releases.length === 0) {
 			this.debug("No releases found");
 			return null;
@@ -245,6 +284,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 		if (!channel) return null;
 
 		const version = await this.fetchLatestTagFromChannel(channel);
+		if (!this.isActiveGeneration(generation)) {
+			return null;
+		}
 		if (!version) return null;
 
 		const release = releases.find((release) => {
@@ -259,14 +301,22 @@ export class UpdateManager extends Observable<UpdateManager> {
 	}
 
 	private async update() {
+		const generation = this.updateGeneration;
 		await this.getReleases();
+		if (!this.isActiveGeneration(generation)) {
+			return;
+		}
 		await this.getChannelRelease();
 	}
 
 	public start(): void {
-		this.update();
+		if (this.destroyed) {
+			return;
+		}
+		this.updateGeneration += 1;
+		void this.update();
 		this.updateCheckInterval = this.timeProvider.setInterval(
-			() => this.update(),
+			() => void this.update(),
 			this.CHECK_INTERVAL,
 		);
 	}
@@ -384,8 +434,12 @@ export class UpdateManager extends Observable<UpdateManager> {
 	}
 
 	override destroy(): void {
+		if (this.destroyed) {
+			return;
+		}
 		// Stop periodic update checking
 		this.stop();
+		this.updateGeneration += 1;
 
 		// Set state to null before destroying
 		this.githubReleases = null as any;
