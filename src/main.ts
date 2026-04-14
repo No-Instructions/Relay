@@ -1372,105 +1372,187 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
+		const teardownStep = (name: string, fn: () => void) => {
+			this.debug(`[onunload] ${name}`);
+			try {
+				fn();
+			} catch (error) {
+				console.error(`[Relay] onunload failed at step: ${name}`, error);
+				throw error;
+			}
+		};
 		setActiveTracker(null);
 		this.promises.destroy();
 		this.promises = null as any;
 		// Clean up debug API globals
-		this.relayDebugAPI?.destroy();
+		teardownStep("relayDebugAPI.destroy", () => {
+			this.relayDebugAPI?.destroy();
+		});
 		this.relayDebugAPI = null as any;
 
 		// Cleanup all monkeypatches and destroy the singleton
-		Patcher.destroy();
+		teardownStep("Patcher.destroy", () => {
+			Patcher.destroy();
+		});
 
-		this.timeProvider?.destroy();
+		teardownStep("timeProvider.destroy", () => {
+			this.timeProvider?.destroy();
+		});
+		this.timeProvider = null as any;
 
-		this.folderNavDecorations?.destroy();
+		teardownStep("folderNavDecorations.destroy", () => {
+			this.folderNavDecorations?.destroy();
+		});
+		this.folderNavDecorations = null as any;
 
-		this.resourceMeter?.destroy();
+		teardownStep("resourceMeter.destroy", () => {
+			this.resourceMeter?.destroy();
+		});
 		this.resourceMeter = null;
 
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+		teardownStep("detachLeavesOfType", () => {
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+		});
 
 		// Explicitly destroy the update manager
 		if (this.updateManager) {
-			this.updateManager.destroy();
+			teardownStep("updateManager.destroy", () => {
+				this.updateManager.destroy();
+			});
 			this.updateManager = null as any;
 		}
 
-		this._liveViews?.destroy();
+		teardownStep("liveViews.destroy", () => {
+			this._liveViews?.destroy();
+		});
 		this._liveViews = null as any;
 
-		this.relayManager?.destroy();
+		teardownStep("relayManager.destroy", () => {
+			this.relayManager?.destroy();
+		});
 		this.relayManager = null as any;
 
-		this.deviceManager?.destroy();
+		teardownStep("deviceManager.destroy", () => {
+			this.deviceManager?.destroy();
+		});
 		this.deviceManager = null as any;
 
-		this.tokenStore?.stop();
-		this.tokenStore?.clearState();
-		this.tokenStore?.destroy();
+		teardownStep("tokenStore.stop", () => {
+			this.tokenStore?.stop();
+		});
+		teardownStep("tokenStore.clearState", () => {
+			this.tokenStore?.clearState();
+		});
+		teardownStep("tokenStore.destroy", () => {
+			this.tokenStore?.destroy();
+		});
 		this.tokenStore = null as any;
 
-		this.networkStatus?.stop();
-		this.networkStatus?.destroy();
+		teardownStep("networkStatus.stop", () => {
+			this.networkStatus?.stop();
+		});
+		teardownStep("networkStatus.destroy", () => {
+			this.networkStatus?.destroy();
+		});
 		this.networkStatus = null as any;
 
-		this.openModals.forEach((modal) => {
-			modal.close();
+		teardownStep("openModals.close", () => {
+			this.openModals.forEach((modal) => {
+				modal.close();
+			});
 		});
 		this.openModals.length = 0;
 
-		this.sharedFolders?.destroy();
+		teardownStep("sharedFolders.destroy", () => {
+			this.sharedFolders?.destroy();
+		});
 		this.sharedFolders = null as any;
 
 		// Flush pending HSM writes and close the database after SharedFolders
 		// are destroyed (no more writes will be queued).
-		awaitOnReload(this._hsmStore?.destroy(), `plugin:teardown:hsmStore.destroy:${this._instanceId}`);
+		teardownStep("hsmStore.destroy", () => {
+			awaitOnReload(this._hsmStore?.destroy(), `plugin:teardown:hsmStore.destroy:${this._instanceId}`);
+		});
 		this._hsmStore = null as any;
 
-		this.settingsTab?.destroy();
+		teardownStep("settingsTab.destroy", () => {
+			this.settingsTab?.destroy();
+		});
 		this.settingsTab = null as any;
 
-		this.loginManager?.destroy();
+		teardownStep("loginManager.destroy", () => {
+			this.loginManager?.destroy();
+		});
 		this.loginManager = null as any;
 
-		this.backgroundSync?.destroy();
+		teardownStep("backgroundSync.destroy", () => {
+			this.backgroundSync?.destroy();
+		});
 		this.backgroundSync = null as any;
 
-		this.hashStore.destroy();
+		teardownStep("hashStore.destroy", () => {
+			this.hashStore.destroy();
+		});
 		this.hashStore = null as any;
 
-		this.app?.workspace.updateOptions();
+		teardownStep("workspace.updateOptions", () => {
+			this.app?.workspace.updateOptions();
+		});
 		(this.app as any).reloadRelay = undefined;
 		this.app = null as any;
 		this.fileManager = null as any;
 		this.manifest = null as any;
 		this.vault = null as any;
 
-		this.debugSettings.destroy();
+		teardownStep("debugSettings.destroy", () => {
+			this.debugSettings.destroy();
+		});
 		this.debugSettings = null as any;
-		this.folderSettings.destroy();
+		teardownStep("folderSettings.destroy", () => {
+			this.folderSettings.destroy();
+		});
 		this.folderSettings = null as any;
 
 		// Destroy FeatureFlagManager before destroying featureSettings
-		FeatureFlagManager.destroy();
+		teardownStep("FeatureFlagManager.destroy", () => {
+			FeatureFlagManager.destroy();
+		});
 
-		this.featureSettings.destroy();
+		teardownStep("featureSettings.destroy", () => {
+			this.featureSettings.destroy();
+		});
 		this.featureSettings = null as any;
-		this.releaseSettings.destroy();
+		teardownStep("releaseSettings.destroy", () => {
+			this.releaseSettings.destroy();
+		});
 		this.releaseSettings = null as any;
-		this.loginSettings.destroy();
+		teardownStep("loginSettings.destroy", () => {
+			this.loginSettings.destroy();
+		});
 		this.loginSettings = null as any;
-		this.endpointSettings.destroy();
+		teardownStep("endpointSettings.destroy", () => {
+			this.endpointSettings.destroy();
+		});
 		this.endpointSettings = null as any;
+		teardownStep("settings.destroy", () => {
+			this.settings.destroy();
+		});
+		this.settings = null as any;
 
 		this.interceptedUrls.length = 0;
-		PostOffice.destroy();
+		teardownStep("PostOffice.destroy", () => {
+			PostOffice.destroy();
+		});
 
 		this.notifier = null as any;
 
-		auditTeardown();
-		flushLogs();
+		teardownStep("auditTeardown", () => {
+			auditTeardown();
+		});
+		teardownStep("flushLogs", () => {
+			flushLogs();
+		});
+		this.promises = null as any;
 
 		// Clear our instance ID from the leak-detection set LAST — if
 		// anything above throws, we leave the ID in place so the next
