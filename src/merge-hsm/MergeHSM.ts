@@ -2235,7 +2235,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	/**
 	 * Perform two-way merge when no LCA is available.
-	 * If both sides match, resolves immediately. Otherwise shows diff UI.
+	 * If both sides match, resolves immediately. Otherwise computes
+	 * per-hunk conflict regions so the user can accept/reject individual
+	 * differences rather than choosing one entire side.
 	 */
 	private performTwoWayMerge(localText: string, diskText: string): void {
 		if (localText === diskText) {
@@ -2243,24 +2245,28 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return;
 		}
 
-		// Populate conflictData for the diff UI
+		const conflictRegions = computeTwoWayConflictRegions(localText, diskText);
+
 		this.conflictData = {
-			base: "", // No baseline available
+			base: localText,
 			ours: localText,
 			theirs: diskText,
 			oursLabel: "Remote",
 			theirsLabel: "Local file",
-			conflictRegions: [], // No regions - entire content is in conflict
+			conflictRegions,
 			resolvedIndices: new Set(),
-			positionedConflicts: [],
+			positionedConflicts: this.calculateConflictPositions(
+				conflictRegions,
+				localText,
+			),
 		};
 
 		this.send({
 			type: "MERGE_CONFLICT",
-			base: "",
+			base: localText,
 			ours: localText,
 			theirs: diskText,
-			conflictRegions: [],
+			conflictRegions,
 		});
 	}
 
@@ -3524,6 +3530,59 @@ function extractConflictRegions(
 			lineOffset += region.ok.length;
 		}
 	}
+
+	return regions;
+}
+
+/**
+ * Build per-hunk ConflictRegions from a two-way diff (no LCA).
+ * Uses local text as the positional reference so that
+ * calculateConflictPositions can find each hunk by string search.
+ */
+function computeTwoWayConflictRegions(
+	localText: string,
+	diskText: string,
+): ConflictRegion[] {
+	const dmp = new diff_match_patch();
+	const diffs = dmp.diff_main(localText, diskText);
+	dmp.diff_cleanupSemantic(diffs);
+
+	const regions: ConflictRegion[] = [];
+	let localPos = 0;
+	let oursAccum = "";
+	let theirsAccum = "";
+	let hunkStart = -1;
+
+	const flushHunk = () => {
+		if (hunkStart === -1) return;
+		regions.push({
+			baseStart: hunkStart,
+			baseEnd: localPos,
+			oursContent: oursAccum,
+			theirsContent: theirsAccum,
+		});
+		oursAccum = "";
+		theirsAccum = "";
+		hunkStart = -1;
+	};
+
+	for (const [op, text] of diffs) {
+		if (op === 0) {
+			// Equal — flush any pending hunk
+			flushHunk();
+			localPos += text.length;
+		} else if (op === -1) {
+			// Deleted from local (present in local, absent in disk)
+			if (hunkStart === -1) hunkStart = localPos;
+			oursAccum += text;
+			localPos += text.length;
+		} else if (op === 1) {
+			// Inserted in disk (absent in local, present in disk)
+			if (hunkStart === -1) hunkStart = localPos;
+			theirsAccum += text;
+		}
+	}
+	flushHunk();
 
 	return regions;
 }
