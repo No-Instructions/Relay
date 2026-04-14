@@ -32,6 +32,7 @@ import { ObservableMap } from '../observable/ObservableMap';
 import { validateUpdate } from '../storage/yjs-validation';
 import { classifyUpdate as classifyUpdateSV } from './state-vectors';
 import { metrics, curryLog } from '../debug';
+import { trackPromise } from '../trackPromise';
 
 // =============================================================================
 // Types
@@ -826,7 +827,7 @@ export class MergeManager {
       hsm.send({ type: 'RELEASE_LOCK' });
       this.activeDocs.delete(guid);
       // Wait for cleanup to complete (IndexedDB writes)
-      await hsm.awaitCleanup();
+      await trackPromise(`awaitCleanup:${guid}`, hsm.awaitCleanup());
     }
 
     if (this.destroyed) return;
