@@ -7,6 +7,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { diffMatchPatch } from "./y-diffMatchPatch";
+import { trackPromise } from "./trackPromise";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;
@@ -106,7 +107,7 @@ export class TextFileViewPlugin extends HasLogging {
 
 			const hsm = this.doc.hsm;
 			if (hsm?.awaitState) {
-				await hsm.awaitState((s) => s.startsWith("active."));
+				await trackPromise(`textView:awaitActive:${this.doc?.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
 			} else {
 				return;
 			}
