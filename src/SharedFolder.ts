@@ -342,7 +342,17 @@ export class SharedFolder extends HasProvider {
 			onEffect: async (guid, effect) => {
 				this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
 				if (effect.type === "PERSIST_STATE") {
-					this._hsmStore.saveState(guid, effect.state);
+					// Keep reload gating aware of pending HSM state writes so
+					// plugin re-enable doesn't race persisted fork/LCA state.
+					const p = this._hsmStore
+						.saveState(guid, effect.state)
+						.catch((err) => {
+							this.error(
+								`[MergeManager] saveState failed for ${guid}:`,
+								err,
+							);
+						});
+					awaitOnReload(p);
 				} else if (effect.type === "SYNC_TO_REMOTE") {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
@@ -2224,6 +2234,7 @@ export class SharedFolder extends HasProvider {
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
+		this.unsubscribes = [];
 
 		this.files.forEach((doc: IFile) => {
 			doc.destroy();
@@ -2231,6 +2242,7 @@ export class SharedFolder extends HasProvider {
 		});
 
 		this.recordingBridge?.dispose();
+		this.cas.destroy();
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
@@ -2256,6 +2268,7 @@ export class SharedFolder extends HasProvider {
 		this.loginManager = null as any;
 		this.tokenStore = null as any;
 		this.fileManager = null as any;
+		this.cas = null as any;
 		this.syncStore = null as any;
 		this.syncSettingsManager = null as any;
 		this.mergeManager = null as any;
