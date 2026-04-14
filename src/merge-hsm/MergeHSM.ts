@@ -418,6 +418,33 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return this.localDoc;
 	}
 
+	async awaitPersistenceReady(): Promise<void> {
+		if (!this.localPersistence) {
+			await this.awaitState((statePath) => statePath !== "loading");
+		}
+		if (this.localPersistence && !this.localPersistence.synced) {
+			await this.localPersistence.whenSynced;
+		}
+	}
+
+	hasPersistenceUserData(): boolean {
+		return this.localPersistence?.hasUserData() ?? false;
+	}
+
+	async getPersistenceServerSynced(): Promise<boolean> {
+		const persistence = this.localPersistence as
+			| (IYDocPersistence & { getServerSynced?: () => Promise<boolean> })
+			| null;
+		return (await persistence?.getServerSynced?.()) ?? false;
+	}
+
+	async markPersistenceServerSynced(): Promise<void> {
+		const persistence = this.localPersistence as
+			| (IYDocPersistence & { markServerSynced?: () => Promise<void> })
+			| null;
+		await persistence?.markServerSynced?.();
+	}
+
 	/**
 	 * Get the length of the local document content.
 	 * localDoc is always alive in idle mode, so this returns immediately.
