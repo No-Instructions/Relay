@@ -51,6 +51,7 @@ jobs:
     env:
       VM_NAME: ${{ format('{0}-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
       SHARD_NAME: ${{ matrix.shard.name }}
+      SHARD_SLUG: ${{ matrix.shard.slug }}
       SHARD_TESTS: ${{ matrix.shard.tests }}
       GCP_VM_DISK_SIZE: 20GB
       GCP_VM_DISK_TYPE: pd-standard
@@ -301,7 +302,7 @@ jobs:
           TEST_EXIT=0
           TEST_CMD=(./scripts/run-e2e-suite.sh "$REF" --upload)
           TEST_CMD+=("--tests=$SELECTED_TESTS")
-          "${TEST_CMD[@]}" || TEST_EXIT=$?
+          RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" "${TEST_CMD[@]}" || TEST_EXIT=$?
 
           # Extract results for the GitHub Actions runner
           LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
