@@ -3,6 +3,7 @@ import { MarkdownView } from "obsidian";
 import { Document } from "./Document";
 import { type LiveView } from "./LiveViews";
 import UserAwareness from "./components/UserAwareness.svelte";
+import { trackPromise } from "./trackPromise";
 export class AwarenessViewPlugin extends HasLogging {
 	view: LiveView<MarkdownView>;
 	doc: Document;
@@ -30,7 +31,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		this.wrapTitle();
 
 		// Wait for the document to be ready
-		await this.doc.whenReady();
+		await trackPromise(`awareness:whenReady:${this.doc.guid}`, this.doc.whenReady());
 
 		if (this.destroyed) return;
 
