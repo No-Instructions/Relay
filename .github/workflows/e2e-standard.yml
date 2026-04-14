@@ -220,14 +220,16 @@ jobs:
         run: |
           REF="${{ github.event.inputs.ref || format('origin/{0}', github.ref_name) }}"
           SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
+          SHARD_SLUG_ARG="${{ matrix.shard.slug }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
+          SHARD_SLUG="$3"
 
           # Load R2 credentials
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
