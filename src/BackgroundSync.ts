@@ -78,6 +78,7 @@ export class BackgroundSync extends HasLogging {
 			reject: (error: Error) => void;
 		}
 	>();
+	private syncPromises = new Map<string, Promise<void>>();
 	private downloadCompletionCallbacks = new Map<
 		string,
 		{
@@ -85,6 +86,7 @@ export class BackgroundSync extends HasLogging {
 			reject: (error: Error) => void;
 		}
 	>();
+	private downloadPromises = new Map<string, Promise<Uint8Array | undefined>>();
 
 	// A map to track items we've already logged to avoid duplicates
 	private loggedItems = new Map<string, boolean>();
@@ -227,6 +229,17 @@ export class BackgroundSync extends HasLogging {
 		if (this.isPaused || this.isProcessingSync) return;
 		this.isProcessingSync = true;
 
+		// Evict destroyed documents from the queue and clean up their inProgress entries
+		const destroyed = this.syncQueue.filter((item) => item.doc.destroyed);
+		for (const item of destroyed) {
+			this.inProgressSyncs.delete(item.guid);
+			const callback = this.syncCompletionCallbacks.get(item.guid);
+			if (callback) callback.reject(new Error("Document destroyed"));
+			this.syncCompletionCallbacks.delete(item.guid);
+			this.syncPromises.delete(item.guid);
+		}
+		this.syncQueue = this.syncQueue.filter((item) => !item.doc.destroyed);
+
 		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
 		// Filter for items with connected folders
@@ -268,6 +281,7 @@ export class BackgroundSync extends HasLogging {
 						if (callback) {
 							callback.resolve();
 							this.syncCompletionCallbacks.delete(item.guid);
+							this.syncPromises.delete(item.guid);
 						}
 
 						const group = this.syncGroups.get(item.sharedFolder);
@@ -303,6 +317,7 @@ export class BackgroundSync extends HasLogging {
 								error instanceof Error ? error : new Error(String(error)),
 							);
 							this.syncCompletionCallbacks.delete(item.guid);
+							this.syncPromises.delete(item.guid);
 						}
 
 						const group = this.syncGroups.get(item.sharedFolder);
@@ -334,6 +349,7 @@ export class BackgroundSync extends HasLogging {
 						error instanceof Error ? error : new Error(String(error)),
 					);
 					this.syncCompletionCallbacks.delete(item.guid);
+					this.syncPromises.delete(item.guid);
 				}
 
 				const group = this.syncGroups.get(item.sharedFolder);
@@ -355,6 +371,17 @@ export class BackgroundSync extends HasLogging {
 	private async processDownloadQueue() {
 		if (this.isPaused || this.isProcessingDownloads) return;
 		this.isProcessingDownloads = true;
+
+		// Evict destroyed documents from the queue and clean up their inProgress entries
+		const destroyedDownloads = this.downloadQueue.filter((item) => item.doc.destroyed);
+		for (const item of destroyedDownloads) {
+			this.inProgressDownloads.delete(item.guid);
+			const callback = this.downloadCompletionCallbacks.get(item.guid);
+			if (callback) callback.reject(new Error("Document destroyed"));
+			this.downloadCompletionCallbacks.delete(item.guid);
+			this.downloadPromises.delete(item.guid);
+		}
+		this.downloadQueue = this.downloadQueue.filter((item) => !item.doc.destroyed);
 
 		metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
@@ -402,6 +429,7 @@ export class BackgroundSync extends HasLogging {
 						if (callback) {
 							callback.resolve(result as Uint8Array | undefined);
 							this.downloadCompletionCallbacks.delete(item.guid);
+							this.downloadPromises.delete(item.guid);
 						}
 
 						const group = this.syncGroups.get(item.sharedFolder);
@@ -427,6 +455,7 @@ export class BackgroundSync extends HasLogging {
 								error instanceof Error ? error : new Error(String(error)),
 							);
 							this.downloadCompletionCallbacks.delete(item.guid);
+							this.downloadPromises.delete(item.guid);
 						}
 
 						const group = this.syncGroups.get(item.sharedFolder);
@@ -458,6 +487,7 @@ export class BackgroundSync extends HasLogging {
 						error instanceof Error ? error : new Error(String(error)),
 					);
 					this.downloadCompletionCallbacks.delete(item.guid);
+					this.downloadPromises.delete(item.guid);
 				}
 
 				const group = this.syncGroups.get(item.sharedFolder);
@@ -486,22 +516,12 @@ export class BackgroundSync extends HasLogging {
 	 * @returns A promise that resolves when the sync completes
 	 */
 	async enqueueSync(item: SyncFile | Document | Canvas): Promise<void> {
-		// Skip if already in progress
+		// Skip if already in progress — return the same promise all callers share
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
-				`[enqueueSync] Item ${item.guid} already in progress, skipping`,
+				`[enqueueSync] Item ${item.guid} already in progress, sharing promise`,
 			);
-
-			// Return existing promise if already processing
-			const existingCallback = this.syncCompletionCallbacks.get(item.guid);
-			if (existingCallback) {
-				return new Promise<void>((resolve, reject) => {
-					existingCallback.resolve = resolve;
-					existingCallback.reject = reject;
-				});
-			}
-			this.processSyncQueue();
-			return Promise.resolve();
+			return this.syncPromises.get(item.guid) ?? Promise.resolve();
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -542,6 +562,7 @@ export class BackgroundSync extends HasLogging {
 				reject,
 			});
 		});
+		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
 		this.syncQueue.sort(compareFilePaths);
@@ -563,23 +584,12 @@ export class BackgroundSync extends HasLogging {
 		item: SyncFile | Document | Canvas,
 		userVisible = true,
 	): Promise<Uint8Array | undefined> {
-		// Skip if already in progress
+		// Skip if already in progress — return the same promise all callers share
 		if (this.inProgressDownloads.has(item.guid)) {
 			this.debug(
-				`[enqueueDownload] Item ${item.guid} already in progress, skipping`,
+				`[enqueueDownload] Item ${item.guid} already in progress, sharing promise`,
 			);
-
-			// Return existing promise if already processing
-			const existingCallback = this.downloadCompletionCallbacks.get(item.guid);
-			if (existingCallback) {
-				this.processDownloadQueue();
-				return new Promise<Uint8Array | undefined>((resolve, reject) => {
-					existingCallback.resolve = resolve;
-					existingCallback.reject = reject;
-				});
-			}
-			this.processDownloadQueue();
-			return Promise.resolve(undefined);
+			return this.downloadPromises.get(item.guid) ?? Promise.resolve(undefined);
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -628,6 +638,7 @@ export class BackgroundSync extends HasLogging {
 				this.downloadCompletionCallbacks.set(item.guid, { resolve, reject });
 			},
 		);
+		this.downloadPromises.set(item.guid, downloadPromise);
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
@@ -698,22 +709,12 @@ export class BackgroundSync extends HasLogging {
 	private async enqueueForGroupSync(
 		item: Document | Canvas | SyncFile,
 	): Promise<void> {
-		// Skip if already in progress
+		// Skip if already in progress — return the same promise all callers share
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
-				`[enqueueForGroupSync] Item ${item.guid} already in progress, skipping`,
+				`[enqueueForGroupSync] Item ${item.guid} already in progress, sharing promise`,
 			);
-
-			// Return existing promise if already processing
-			const existingCallback = this.syncCompletionCallbacks.get(item.guid);
-			if (existingCallback) {
-				this.processSyncQueue();
-				return new Promise<void>((resolve, reject) => {
-					existingCallback.resolve = resolve;
-					existingCallback.reject = reject;
-				});
-			}
-			return Promise.resolve();
+			return this.syncPromises.get(item.guid) ?? Promise.resolve();
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -734,6 +735,7 @@ export class BackgroundSync extends HasLogging {
 				reject,
 			});
 		});
+		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
 		this.syncQueue.sort(compareFilePaths);
@@ -1165,6 +1167,8 @@ export class BackgroundSync extends HasLogging {
 		this.downloadQueue = [];
 		this.inProgressSyncs.clear();
 		this.inProgressDownloads.clear();
+		this.syncPromises.clear();
+		this.downloadPromises.clear();
 		this.loggedItems.clear();
 
 		// Clean up references
