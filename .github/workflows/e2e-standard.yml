@@ -347,13 +347,20 @@ jobs:
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
 
-      - name: Stop shard VM
+      - name: Request shard VM stop
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
-          if [ -d ~/relay-harness ]; then
-            cd ~/relay-harness
-            GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" GCP_VM_NAME="$VM_NAME" \
-              ./infra/gcp-linux-vm.sh stop 2>/dev/null || true
+          STATUS=$(gcloud compute instances describe "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "RUNNING" ]; then
+            echo "Requesting asynchronous stop for shard VM..."
+            gcloud compute instances stop "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --quiet --async 2>/dev/null || true
+          else
+            echo "Skipping stop request (status: $STATUS)"
           fi
 
       - name: Generate job summary
