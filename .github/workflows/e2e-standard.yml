@@ -53,7 +53,7 @@ jobs:
       SHARD_NAME: ${{ matrix.shard.name }}
       SHARD_TESTS: ${{ matrix.shard.tests }}
       GCP_VM_DISK_SIZE: 20GB
-      GCP_VM_DISK_TYPE: pd-balanced
+      GCP_VM_DISK_TYPE: pd-standard
 
     steps:
       - name: Auth to GCP
