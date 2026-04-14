@@ -313,6 +313,7 @@ export class RelayDebugAPI {
   private bridges = new Map<string, E2ERecordingBridge>();
   private activeRecordingName: string | null = null;
   private plugin: any;
+  private destroyed = false;
 
   constructor(plugin?: any) {
     this.plugin = plugin;
@@ -324,6 +325,11 @@ export class RelayDebugAPI {
    * Returns a cleanup function to call when the folder is destroyed.
    */
   registerBridge(folderPath: string, bridge: E2ERecordingBridge): () => void {
+    if (this.destroyed) {
+      return () => {
+        bridge.dispose();
+      };
+    }
     this.bridges.set(folderPath, bridge);
 
     // Auto-start recording if one is currently active
@@ -338,7 +344,9 @@ export class RelayDebugAPI {
     return () => {
       bridge.dispose();
       this.bridges.delete(folderPath);
-      this.installGlobal();
+      if (!this.destroyed) {
+        this.installGlobal();
+      }
     };
   }
 
@@ -347,6 +355,12 @@ export class RelayDebugAPI {
    */
   private installGlobal(): void {
     const g = typeof window !== 'undefined' ? window : globalThis;
+    if (this.destroyed) {
+      if ((g as any).__relayDebug?.__owner === this) {
+        delete (g as any).__relayDebug;
+      }
+      return;
+    }
 
     const api: RelayDebugGlobal = {
       startRecording: (name) => {
@@ -537,6 +551,7 @@ export class RelayDebugAPI {
     };
 
     (g as any).__relayDebug = {
+      __owner: this,
       ...api,
       registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
     };
@@ -1237,14 +1252,21 @@ export class RelayDebugAPI {
    * Call in plugin onunload().
    */
   destroy(): void {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
     for (const bridge of this.bridges.values()) {
       bridge.dispose();
     }
     this.bridges.clear();
     this.activeRecordingName = null;
+    this.plugin = null;
 
     const g = typeof window !== 'undefined' ? window : globalThis;
-    delete (g as any).__relayDebug;
+    if ((g as any).__relayDebug?.__owner === this) {
+      delete (g as any).__relayDebug;
+    }
   }
 }
 
