@@ -881,6 +881,7 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
+		if (doc.destroyed) return false;
 		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
 		// if the local file is synced, then we do the two step process
 		if (isCanvas(doc)) {
@@ -908,11 +909,12 @@ export class BackgroundSync extends HasLogging {
 				// File does not exist
 			}
 		}
-		const promise = doc.onceProviderSynced();
 		const intent = doc.intent;
+		if (doc.destroyed) return false;
+		const providerSynced = doc.onceProviderSynced().then(() => true);
 		doc.connect();
 		if (intent === "disconnected") {
-			await promise;
+			await providerSynced;
 		}
 
 		// promise can take some time
@@ -1029,16 +1031,22 @@ export class BackgroundSync extends HasLogging {
 		await file.pull();
 	}
 
-	private async syncDocument(doc: Document | Canvas) {
+	private async syncDocument(doc: Document | Canvas): Promise<void> {
+		if (doc.destroyed) {
+			throw new Error(`[syncDocument] Document destroyed before sync: ${doc.guid}`);
+		}
 		try {
-			if (isDocument(doc)) {
-				await this.syncDocumentWebsocket(doc);
-			} else if (isCanvas(doc)) {
-				await this.syncDocumentWebsocket(doc);
+			if (isDocument(doc) || isCanvas(doc)) {
+				const synced = await this.syncDocumentWebsocket(doc);
+				if (!synced) {
+					throw new Error(
+						`[syncDocument] Document sync failed: ${doc.path} (${doc.guid})`,
+					);
+				}
 			}
 		} catch (e) {
-			console.error(e);
-			return;
+			this.error(e);
+			throw e;
 		}
 	}
 
