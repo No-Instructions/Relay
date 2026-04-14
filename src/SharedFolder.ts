@@ -65,6 +65,7 @@ import { generateHash } from "./hashing";
 import {
 	HSMStore,
 } from "./merge-hsm/persistence";
+import { trackPromise } from "./trackPromise";
 import * as Y from "yjs";
 
 export interface SharedFolderSettings {
@@ -179,6 +180,17 @@ export class SharedFolder extends HasProvider {
 	mergeManager: MergeManager;
 	private recordingBridge: E2ERecordingBridge;
 	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
+	private onFolderYDocUpdate = (_update: Uint8Array, origin: unknown): void => {
+		// Folder metadata updates can arrive before SyncStore observers are active,
+		// or with origins that bypass SyncStore-level callbacks. Reconcile directly
+		// from Y.Doc updates so file materialization is not missed.
+		if (this.destroyed || origin === this) {
+			return;
+		}
+		trackPromise(`folder:ydocUpdateSync:${this.guid}`, this.syncFileTree()).catch(
+			(e) => this.error("syncFileTree on ydoc update failed", e),
+		);
+	};
 
 	constructor(
 		public appId: string,
@@ -240,6 +252,11 @@ export class SharedFolder extends HasProvider {
 		);
 		this.syncStore.on(async () => {
 			await this.syncFileTree();
+		});
+		const subscribedYdoc = this.ydoc;
+		subscribedYdoc.on("update", this.onFolderYDocUpdate);
+		this.unsubscribes.push(() => {
+			subscribedYdoc.off("update", this.onFolderYDocUpdate);
 		});
 
 		this.unsubscribes.push(
