@@ -20,6 +20,7 @@ export interface FeatureFlags {
 	enableDraftMode: boolean;
 	enableNewSyncStatus: boolean;
 	enableResourceMeter: boolean;
+	enablePermanentUserData: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -44,6 +45,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDraftMode: false,
 	enableNewSyncStatus: false,
 	enableResourceMeter: false,
+	enablePermanentUserData: true,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {
