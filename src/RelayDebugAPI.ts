@@ -511,15 +511,19 @@ export class RelayDebugAPI {
 
       lookupDocument: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
+        if (!path.startsWith('/')) {
+          throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
+        }
         const folders = Array.from(this.plugin.sharedFolders._set.values()) as any[];
 
-        // Resolve folder scope from vault path (e.g. "private/foo.md")
+        // Resolve folder scope from vault path (e.g. "/private/foo.md")
         let targetFolder: any = null;
         let relativePath = path;
         for (const folder of folders) {
-          if (path.startsWith(folder.path + '/')) {
+          const prefix = '/' + folder.path + '/';
+          if (path.startsWith(prefix)) {
             targetFolder = folder;
-            relativePath = path.slice(folder.path.length);
+            relativePath = path.slice(prefix.length - 1); // keep leading slash
             break;
           }
         }
@@ -618,6 +622,16 @@ export class RelayDebugAPI {
     };
   }
 
+  private findLeavesByPath(path: string): any[] {
+    const matches: any[] = [];
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
+      if (leaf?.view?.file?.path === path) {
+        matches.push(leaf);
+      }
+    });
+    return matches;
+  }
+
   private async openEditor(
     path: string,
     opts?: { newLeaf?: boolean },
@@ -646,8 +660,20 @@ export class RelayDebugAPI {
       }
     }
 
-    const ids = this.leafIds(leaf);
-    const info = this.leafViewInfo(leaf);
+    // Let Obsidian finish any async view replacement caused by mode switches.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const activeLeaf = this.plugin.app.workspace.activeLeaf;
+    const candidates = this.findLeavesByPath(path);
+    const resolvedLeaf = (
+      (activeLeaf?.view?.file?.path === path ? activeLeaf : null)
+      ?? candidates.find((candidate) => candidate === leaf)
+      ?? candidates[0]
+      ?? leaf
+    );
+
+    const ids = this.leafIds(resolvedLeaf);
+    const info = this.leafViewInfo(resolvedLeaf);
     return {
       handle: { windowId: ids.windowId, leafId: ids.leafId, path },
       viewType: info.viewType,
@@ -737,8 +763,17 @@ export class RelayDebugAPI {
 
   private async closeEditor(handle: EditorHandle): Promise<void> {
     const leaf = this.findLeaf(handle);
-    if (!leaf) return; // already gone — no-op
-    leaf.detach?.();
+    if (leaf && leaf?.view?.file?.path === handle.path) {
+      leaf.detach?.();
+      return;
+    }
+
+    // If the original leaf was rebuilt and its id drifted, close by path.
+    const matches = this.findLeavesByPath(handle.path);
+    if (matches.length === 0) return;
+    for (const match of matches) {
+      match.detach?.();
+    }
   }
 
   /**
