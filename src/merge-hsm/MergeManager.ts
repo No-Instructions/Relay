@@ -776,49 +776,6 @@ export class MergeManager {
   }
 
   /**
-   * Set which documents have open editors.
-   * Called by LiveViews after scanning the workspace.
-   *
-   * - Documents in activeGuids: HSM receives SET_MODE_ACTIVE
-   * - Documents NOT in activeGuids: HSM receives SET_MODE_IDLE
-   *
-   * For HSMs in `loading` state, sends mode determination events.
-   * Also detects HSMs stuck in `active.*` mode without a corresponding
-   * open editor and sends RELEASE_LOCK to recover them to idle.
-   *
-   * @param activeGuids - GUIDs of documents with open editors
-   * @param allGuids - All document GUIDs to iterate (required since Document owns HSM)
-   */
-  setActiveDocuments(activeGuids: Set<string>, allGuids: string[]): void {
-    if (this.destroyed) return;
-
-    for (const guid of allGuids) {
-      const doc = this._getDocument(guid);
-      const hsm = doc?.hsm;
-      if (!hsm) continue;
-
-      const statePath = hsm.state.statePath;
-
-      if (statePath === 'loading') {
-        // Skip HSMs with an in-flight async load — they will receive
-        // SET_MODE_IDLE when the load completes in createHSM.
-        if (this._pendingLoads.has(guid)) continue;
-        if (activeGuids.has(guid)) {
-          hsm.send({ type: 'SET_MODE_ACTIVE' });
-        } else {
-          hsm.send({ type: 'SET_MODE_IDLE' });
-        }
-      } else if (statePath.startsWith('active.') && !activeGuids.has(guid) && !this.activeDocs.has(guid)) {
-        // HSM is in active mode but no editor is open and MergeManager doesn't
-        // consider it active. This can happen when a stale ACQUIRE_LOCK arrives
-        // (e.g., from a race between async acquireLock and sync releaseLock).
-        // Send RELEASE_LOCK to recover the HSM to idle mode.
-        hsm.send({ type: 'RELEASE_LOCK' });
-      }
-    }
-  }
-
-  /**
    * Release lock on an HSM, transitioning back to idle mode.
    * The HSM stays alive and continues processing events.
    * Waits for IndexedDB writes to complete before returning.

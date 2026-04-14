@@ -12,6 +12,8 @@ import {
 	requireApiVersion,
 	Modal,
 	moment,
+	type CachedMetadata,
+	type EventRef,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -42,6 +44,7 @@ import NetworkStatus from "./NetworkStatus";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
+import { PromiseTracker, setActiveTracker, trackPromise } from "./trackPromise";
 import { Plugin } from "obsidian";
 
 import {
@@ -139,11 +142,14 @@ export default class Live extends Plugin {
 	warn!: (...args: unknown[]) => void;
 	error!: (...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
+	private _metadataListeners: Map<TFile, (data: string, cache: CachedMetadata) => void> = new Map();
+	private _metadataEventRef: EventRef | null = null;
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 	repo = REPOSITORY;
 	hashStore!: ContentAddressedFileStore;
 	private _hsmStore!: HSMStore;
+	promises = new PromiseTracker();
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -354,6 +360,17 @@ export default class Live extends Plugin {
 		this.register(() => {
 			this.timeProvider.destroy();
 		});
+
+		setActiveTracker(this.promises);
+		this.promises.setDefaultOwner(`plugin:${this._instanceId}`);
+
+		let onloadComplete!: () => void;
+		trackPromise(
+			`plugin:onload:${this._instanceId}`,
+			new Promise<void>((resolve) => {
+				onloadComplete = resolve;
+			}),
+		);
 
 		const logFilePath = normalizePath(
 			`${this.app.vault.configDir}/plugins/${this.manifest.id}/relay.log`,
@@ -627,6 +644,11 @@ export default class Live extends Plugin {
 			new Notice("Please sign in to use relay");
 		}
 
+		this._metadataEventRef = this.app.metadataCache.on("changed", (tfile: TFile, data: string, cache: CachedMetadata) => {
+			this._metadataListeners.get(tfile)?.(data, cache);
+		});
+		this.registerEvent(this._metadataEventRef);
+
 		this.app.workspace.onLayoutReady(() => {
 			this.sharedFolders.load();
 			this._liveViews = new LiveViewManager(
@@ -781,6 +803,7 @@ export default class Live extends Plugin {
 			this.setup();
 			this._liveViews.refresh("init");
 			this.loadTime = moment.now() - start;
+			onloadComplete();
 		});
 	}
 
@@ -1357,7 +1380,21 @@ export default class Live extends Plugin {
 		}
 	}
 
+	onMeta(tfile: TFile, cb: (data: string, cache: CachedMetadata) => void) {
+		this._metadataListeners.set(tfile, cb);
+	}
+
+	offMeta(tfile: TFile) {
+		this._metadataListeners.delete(tfile);
+	}
+
 	onunload() {
+		this._metadataListeners.clear();
+		this._metadataEventRef = null;
+		setActiveTracker(null);
+		this.promises.destroy();
+		this.promises = null as any;
+
 		// Clean up debug API globals
 		this.relayDebugAPI?.destroy();
 		this.relayDebugAPI = null as any;
@@ -1408,7 +1445,7 @@ export default class Live extends Plugin {
 
 		// Flush pending HSM writes and close the database after SharedFolders
 		// are destroyed (no more writes will be queued).
-		awaitOnReload(this._hsmStore?.destroy());
+		awaitOnReload(this._hsmStore?.destroy(), `plugin:teardown:hsmStore.destroy:${this._instanceId}`);
 		this._hsmStore = null as any;
 
 		this.settingsTab?.destroy();

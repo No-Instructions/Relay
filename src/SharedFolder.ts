@@ -392,12 +392,6 @@ export class SharedFolder extends HasProvider {
 				this.addLocalDocs();
 				this.syncFileTree();
 
-				// Transition all HSMs to idle mode since no editor is open yet.
-				// HSMs start in 'loading', then receive SET_MODE_IDLE from MergeManager.
-				if (this.mergeManager) {
-					const allGuids = Array.from(this.files.keys());
-					this.mergeManager.setActiveDocuments(new Set(), allGuids);
-				}
 			}
 		});
 
@@ -678,11 +672,7 @@ export class SharedFolder extends HasProvider {
 					});
 				}
 			} catch (e) {
-				// File might have been deleted - ignore
-				this.debug?.(
-					`[poll] Failed to read disk state for ${guid}:`,
-					e,
-				);
+				// File might have been deleted
 			}
 
 			// Connect forked documents awaiting provider sync
