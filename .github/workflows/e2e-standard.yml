@@ -14,16 +14,53 @@ on:
         required: false
         default: ''
 
+concurrency:
+  group: e2e-standard-linux
+  cancel-in-progress: false
+
 env:
-  VM_NAME: ${{ secrets.GCP_VM_NAME }}
   VM_ZONE: ${{ secrets.GCP_VM_ZONE }}
   GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
   GCP_USE_IAP: "true"
 
 jobs:
   standard-test:
+    name: ${{ format('standard-test ({0})', matrix.shard.name) }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 7
+      matrix:
+        shard:
+          - name: foundation-core
+            slug: foundation-core
+            tests: test-basic-open-close,test-folder-lifecycle,test-view-reuse-file-switching
+          - name: foundation-share
+            slug: foundation-share
+            tests: test-share-folder,test-in-note-status
+          - name: sync-state
+            slug: sync-state
+            tests: test-idle-registration,test-active-editor-sync,test-offline-banner,test-binary-free-user
+          - name: conflicts-differ
+            slug: conflicts-differ
+            tests: test-differ-resolve,test-trigger-differ,test-differ-dismissal
+          - name: conflicts-resolution
+            slug: conflicts-resolution
+            tests: test-conflict-dismiss,test-conflict-cancel,test-upgrade-no-lca-conflict
+          - name: bulk-upload
+            slug: bulk
+            tests: test-bulk-upload
+          - name: restart-heavy
+            slug: restart
+            tests: test-bases-checkbox-sync,test-obsidian-restart,test-cold-reopen-external-edit
+    env:
+      VM_NAME: ${{ format('{0}-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
+      SHARD_NAME: ${{ matrix.shard.name }}
+      SHARD_SLUG: ${{ matrix.shard.slug }}
+      SHARD_TESTS: ${{ matrix.shard.tests }}
+      GCP_VM_DISK_SIZE: 20GB
+      GCP_VM_DISK_TYPE: pd-standard
 
     steps:
       - name: Auth to GCP
@@ -34,7 +71,52 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Select tests for shard
+        id: select-tests
+        run: |
+          TARGETED_TESTS="${{ github.event.inputs.tests || '' }}"
+          SHARD_TESTS="${{ matrix.shard.tests }}"
+
+          select_tests() {
+            local available="$1"
+            local wanted="$2"
+            local filtered=""
+            local test match
+
+            IFS=',' read -r -a available_tests <<< "$available"
+            IFS=',' read -r -a wanted_tests <<< "$wanted"
+
+            for test in "${available_tests[@]}"; do
+              test="${test//[[:space:]]/}"
+              [ -n "$test" ] || continue
+              for match in "${wanted_tests[@]}"; do
+                match="${match//[[:space:]]/}"
+                [ -n "$match" ] || continue
+                if [ "$test" = "$match" ]; then
+                  filtered="${filtered:+$filtered,}$test"
+                  break
+                fi
+              done
+            done
+
+            printf '%s' "$filtered"
+          }
+
+          SELECTED_TESTS="$SHARD_TESTS"
+          if [ -n "$TARGETED_TESTS" ]; then
+            SELECTED_TESTS="$(select_tests "$SHARD_TESTS" "$TARGETED_TESTS")"
+          fi
+
+          if [ -n "$SELECTED_TESTS" ]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+            echo "selected_tests=$SELECTED_TESTS" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "selected_tests=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Clone relay-harness
+        if: steps.select-tests.outputs.should_run == 'true'
         run: |
           mkdir -p ~/.ssh
           echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > ~/.ssh/harness-key
@@ -56,6 +138,7 @@ jobs:
           git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
 
       - name: Ensure VM is running
+        if: steps.select-tests.outputs.should_run == 'true'
         run: |
           STATUS=$(gcloud compute instances describe "$VM_NAME" \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
@@ -64,7 +147,9 @@ jobs:
           if [ "$STATUS" = "NOT_FOUND" ]; then
             echo "VM does not exist. Creating via harness infra scripts..."
             cd ~/relay-harness
-            GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" ./infra/gcp-linux-vm.sh create
+            GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" GCP_VM_NAME="$VM_NAME" \
+              GCP_VM_DISK_SIZE="$GCP_VM_DISK_SIZE" GCP_VM_DISK_TYPE="$GCP_VM_DISK_TYPE" \
+              ./infra/gcp-linux-vm.sh create
           elif [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
             echo "Starting stopped VM..."
             gcloud compute instances start "$VM_NAME" \
@@ -98,55 +183,87 @@ jobs:
           done
 
       - name: Provision VM credentials
+        if: steps.select-tests.outputs.should_run == 'true'
         run: |
+          scp_retry() {
+            local src="$1"
+            local dest="$2"
+            local label="$3"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute scp --quiet "$src" "$VM_NAME":"$dest" \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap; then
+                return 0
+              fi
+              echo "Retrying $label scp ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed to copy $label to VM after 5 attempts"
+            return 1
+          }
+
+          ssh_retry() {
+            local label="$1"
+            local command="$2"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute ssh "$VM_NAME" --quiet \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap \
+                --command="$command"; then
+                return 0
+              fi
+              echo "Retrying $label ssh command ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed $label ssh command after 5 attempts"
+            return 1
+          }
+
           echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
-          gcloud compute scp --quiet /tmp/sa-key.json "$VM_NAME":~/ci-sa-key.json \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null
+          scp_retry /tmp/sa-key.json ~/ci-sa-key.json "service-account key"
           rm -f /tmp/sa-key.json
 
           echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
           chmod 600 /tmp/deploy-key
-          gcloud compute scp --quiet /tmp/deploy-key "$VM_NAME":~/ci-deploy-key \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null
+          scp_retry /tmp/deploy-key ~/ci-deploy-key "deploy key"
           rm -f /tmp/deploy-key
 
           # GitHub App private key for posting Check Runs
           echo '${{ secrets.E2E_APP_KEY }}' > /tmp/github-app-key.pem
           chmod 600 /tmp/github-app-key.pem
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap \
-            --command="mkdir -p ~/.config/relay-e2e" 2>/dev/null
-          gcloud compute scp --quiet /tmp/github-app-key.pem "$VM_NAME":~/.config/relay-e2e/github-app-key.pem \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap 2>/dev/null
+          ssh_retry "relay-e2e config dir creation" "mkdir -p ~/.config/relay-e2e"
+          scp_retry /tmp/github-app-key.pem ~/.config/relay-e2e/github-app-key.pem "GitHub App key"
           rm -f /tmp/github-app-key.pem
 
           # R2 credentials for ci.system3.dev uploads
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --tunnel-through-iap \
-            --command="cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
+          ssh_retry "R2 env write" "cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
           export CI_R2_ENDPOINT='${{ secrets.CI_R2_ENDPOINT }}'
           export CI_R2_ACCESS_KEY_ID='${{ secrets.CI_R2_ACCESS_KEY_ID }}'
           export CI_R2_SECRET_ACCESS_KEY='${{ secrets.CI_R2_SECRET_ACCESS_KEY }}'
           CREDS
-          chmod 600 ~/.config/relay-e2e/r2-env.sh" 2>/dev/null
+          chmod 600 ~/.config/relay-e2e/r2-env.sh"
 
       - name: Run standard suite on VM
+        if: steps.select-tests.outputs.should_run == 'true'
         run: |
           REF="${{ github.event.inputs.ref || format('origin/{0}', github.ref_name) }}"
-          TARGETED_TESTS="${{ github.event.inputs.tests || '' }}"
+          SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
+          SHARD_SLUG_ARG="${{ matrix.shard.slug }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$TARGETED_TESTS'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
-          TARGETED_TESTS="$2"
+          SELECTED_TESTS="$2"
+          SHARD_SLUG="$3"
 
           # Load R2 credentials
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
@@ -219,16 +336,17 @@ jobs:
           cd ~/relay-harness
 
           TEST_EXIT=0
-          TEST_CMD=(./scripts/run-e2e-suite.sh "$REF" --upload --checks)
-          if [ -n "$TARGETED_TESTS" ]; then
-            TEST_CMD+=("--tests=$TARGETED_TESTS")
-          fi
-          "${TEST_CMD[@]}" || TEST_EXIT=$?
+          TEST_CMD=(./scripts/run-e2e-suite.sh "$REF" --upload)
+          TEST_CMD+=("--tests=$SELECTED_TESTS")
+          RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" "${TEST_CMD[@]}" || TEST_EXIT=$?
 
           # Extract results for the GitHub Actions runner
-          LATEST=$(ls -td /tmp/test-reports/runs/*/* 2>/dev/null | head -1)
-          if [ -n "$LATEST" ] && [ -f "$LATEST/summary.json" ]; then
-            cp "$LATEST/summary.json" ~/test-summary.json
+          LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null \
+            | head -1)
+          if [ -n "$LATEST_SUMMARY" ]; then
+            LATEST="$(dirname "$LATEST_SUMMARY")"
+            cp "$LATEST_SUMMARY" ~/test-summary.json
 
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
@@ -246,7 +364,7 @@ jobs:
           REMOTE_SCRIPT
 
       - name: Clean up VM credentials
-        if: always()
+        if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
@@ -254,7 +372,7 @@ jobs:
             --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/github-app-key.pem ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
 
       - name: Fetch results
-        if: always()
+        if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
@@ -263,18 +381,42 @@ jobs:
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
 
+      - name: Request shard VM stop
+        if: always() && steps.select-tests.outputs.should_run == 'true'
+        run: |
+          STATUS=$(gcloud compute instances describe "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "RUNNING" ]; then
+            echo "Requesting asynchronous stop for shard VM..."
+            gcloud compute instances stop "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --quiet --async 2>/dev/null || true
+          else
+            echo "Skipping stop request (status: $STATUS)"
+          fi
+
       - name: Generate job summary
         if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const shardName = process.env.SHARD_NAME || 'shard';
+            const shouldRun = process.env.RUN_SHARD === 'true';
+
+            if (!shouldRun) {
+              core.summary.addRaw(`## E2E standard suite results (${shardName})\n\n:warning: **SKIPPED** | no matching tests for this shard\n`);
+              await core.summary.write();
+              return;
+            }
 
             let summary, metadata;
             try {
               summary = JSON.parse(fs.readFileSync('summary.json', 'utf-8'));
             } catch {
-              core.summary.addRaw('## E2E standard suite results\n\n:x: **Failed to retrieve test results from VM**\n');
+              core.summary.addRaw(`## E2E standard suite results (${shardName})\n\n:x: **Failed to retrieve test results from VM**\n`);
               await core.summary.write();
               core.setFailed('No test results available');
               return;
@@ -307,7 +449,7 @@ jobs:
             if (s.expectedFail) parts.push(`${s.expectedFail} expected-fail`);
             if (s.unexpectedPass) parts.push(`${s.unexpectedPass} unexpected-pass`);
 
-            let md = `## E2E standard suite results\n\n`;
+            let md = `## E2E standard suite results (${shardName})\n\n`;
             md += `${verdictEmoji} **${verdictText}** | ${parts.join(', ')} | ${totalDur}s`;
             if (metadata.reportUrl) {
               md += ` | [Full Report](${metadata.reportUrl})`;
@@ -343,3 +485,5 @@ jobs:
             } else if ((s.fail || 0) > 0) {
               core.setFailed(`${s.fail} test(s) failed`);
             }
+        env:
+          RUN_SHARD: ${{ steps.select-tests.outputs.should_run }}
