@@ -457,6 +457,22 @@ export class SharedFolder extends HasProvider {
 				this.handleDocumentUpdateEvent(event);
 			},
 		);
+
+		// On (re)connect, the provider issues MSG_QUERY_SUBDOCS and receives
+		// the server's complete view of this folder's docs: guid → state
+		// vector. Seed tracked SVs from that one message and fire a full
+		// syncFileTree sweep; applyRemoteState + applyPendingUpload handle
+		// both inbound reconciliation and outbound pending-upload retry.
+		const provider = this._provider;
+		provider.onSubdocIndex = (serverIndex) => {
+			for (const [guid, svBytes] of Object.entries(serverIndex)) {
+				this.mergeManager?.seedTrackedRemoteSVFromBytes(guid, svBytes);
+			}
+			this.syncFileTree();
+		};
+		this.unsubscribes.push(() => {
+			provider.onSubdocIndex = null;
+		});
 	}
 
 	private handleDocumentUpdateEvent(event: EventMessage) {

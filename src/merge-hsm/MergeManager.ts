@@ -948,6 +948,22 @@ export class MergeManager {
   }
 
   /**
+   * Seed the tracked SV directly from raw state vector bytes. Used when the
+   * server supplies the SV (e.g. the subdoc-index response on reconnect),
+   * rather than a full update we'd derive the SV from.
+   */
+  seedTrackedRemoteSVFromBytes(guid: string, svBytes: Uint8Array): void {
+    try {
+      const sv = Y.decodeStateVector(svBytes);
+      this._trackedRemoteSV.set(guid, sv);
+    } catch {
+      // Parse failure — remove tracking so next event falls back to HTTP
+      // keyframe, same as seedTrackedRemoteSV.
+      this._trackedRemoteSV.delete(guid);
+    }
+  }
+
+  /**
    * Clear all tracked remote SVs. Called on WebSocket reconnect so the first
    * event on the new connection triggers an HTTP full-sync to establish a baseline.
    */
