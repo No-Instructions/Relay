@@ -265,6 +265,14 @@ export interface RelayDebugGlobal {
   lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
   lookupFolder: (path: string) => any | null;
+  /** Folder-scoped sync rows from MergeManager.syncStatus keyed by guid. */
+  getFolderSyncStatus: (folderGuid: string) => { guid: string; path: string; status: string }[];
+  /** Folder-scoped subset of sync rows where status === "error". */
+  getFolderSyncErrors: (folderGuid: string) => { guid: string; path: string; status: string }[];
+  /** Folder-scoped subset of sync rows where status === "conflict". */
+  getFolderConflicts: (folderGuid: string) => { guid: string; path: string }[];
+  /** All files currently in conflict state across every shared folder. */
+  listAllConflicts: () => { folderGuid: string; folderPath: string; guid: string; path: string }[];
   /** Get a rich HSM state snapshot for the test harness — state path, LCA, disk, IDB, SV, frontmatter, recent transitions. */
   getHsmStateSnapshot: (path: string) => Promise<HsmStateSnapshot>;
   /** Snapshot the per-doc IndexedDB: updates count, custom metadata, IDB content, disk content, match flag. */
@@ -341,6 +349,11 @@ export interface RelayDebugGlobal {
   // -- Promise tracking --
   getPendingPromises: () => { label: string; ageMs: number; owner?: string }[];
   getRecentPromises: () => { label: string; created: number; settledAt: number; state: "fulfilled" | "rejected"; owner?: string }[];
+
+  // -- Relay server CRUD --
+  createRelay: (name: string) => Promise<{ guid: string; name: string }>;
+  renameRelay: (guid: string, newName: string) => Promise<{ guid: string; name: string }>;
+  deleteRelay: (guid: string) => Promise<boolean>;
 }
 
 // =============================================================================
@@ -495,6 +508,26 @@ export class RelayDebugAPI {
       getPendingPromises: () => this.plugin?.promises?.getPending() ?? [],
       getRecentPromises: () => getRecentPromises(),
 
+      createRelay: async (name) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = await this.plugin.relayManager.createRelay(name);
+        return { guid: relay.guid, name: relay.name };
+      },
+      renameRelay: async (guid, newName) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = this.findRelayByGuid(guid);
+        if (!relay) throw new Error(`Relay not found: ${guid}`);
+        relay.name = newName;
+        await this.plugin.relayManager.updateRelay(relay);
+        return { guid: relay.guid, name: relay.name };
+      },
+      deleteRelay: async (guid) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = this.findRelayByGuid(guid);
+        if (!relay) throw new Error(`Relay not found: ${guid}`);
+        return await this.plugin.relayManager.destroyRelay(relay);
+      },
+
       setEditorContent: (handle, content) => this.setEditorContent(handle, content),
 
       lookupFolder: (path: string) => {
@@ -508,18 +541,26 @@ export class RelayDebugAPI {
         }
         return null;
       },
+      getFolderSyncStatus: (folderGuid: string) => this.getFolderSyncStatus(folderGuid),
+      getFolderSyncErrors: (folderGuid: string) => this.getFolderSyncErrors(folderGuid),
+      getFolderConflicts: (folderGuid: string) => this.getFolderConflicts(folderGuid),
+      listAllConflicts: () => this.listAllConflicts(),
 
       lookupDocument: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
+        if (!path.startsWith('/')) {
+          throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
+        }
         const folders = Array.from(this.plugin.sharedFolders._set.values()) as any[];
 
-        // Resolve folder scope from vault path (e.g. "private/foo.md")
+        // Resolve folder scope from vault path (e.g. "/private/foo.md")
         let targetFolder: any = null;
         let relativePath = path;
         for (const folder of folders) {
-          if (path.startsWith(folder.path + '/')) {
+          const prefix = '/' + folder.path + '/';
+          if (path.startsWith(prefix)) {
             targetFolder = folder;
-            relativePath = path.slice(folder.path.length);
+            relativePath = path.slice(prefix.length - 1); // keep leading slash
             break;
           }
         }
@@ -618,6 +659,16 @@ export class RelayDebugAPI {
     };
   }
 
+  private findLeavesByPath(path: string): any[] {
+    const matches: any[] = [];
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
+      if (leaf?.view?.file?.path === path) {
+        matches.push(leaf);
+      }
+    });
+    return matches;
+  }
+
   private async openEditor(
     path: string,
     opts?: { newLeaf?: boolean },
@@ -646,8 +697,20 @@ export class RelayDebugAPI {
       }
     }
 
-    const ids = this.leafIds(leaf);
-    const info = this.leafViewInfo(leaf);
+    // Let Obsidian finish any async view replacement caused by mode switches.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const activeLeaf = this.plugin.app.workspace.activeLeaf;
+    const candidates = this.findLeavesByPath(path);
+    const resolvedLeaf = (
+      (activeLeaf?.view?.file?.path === path ? activeLeaf : null)
+      ?? candidates.find((candidate) => candidate === leaf)
+      ?? candidates[0]
+      ?? leaf
+    );
+
+    const ids = this.leafIds(resolvedLeaf);
+    const info = this.leafViewInfo(resolvedLeaf);
     return {
       handle: { windowId: ids.windowId, leafId: ids.leafId, path },
       viewType: info.viewType,
@@ -737,8 +800,17 @@ export class RelayDebugAPI {
 
   private async closeEditor(handle: EditorHandle): Promise<void> {
     const leaf = this.findLeaf(handle);
-    if (!leaf) return; // already gone — no-op
-    leaf.detach?.();
+    if (leaf && leaf?.view?.file?.path === handle.path) {
+      leaf.detach?.();
+      return;
+    }
+
+    // If the original leaf was rebuilt and its id drifted, close by path.
+    const matches = this.findLeavesByPath(handle.path);
+    if (matches.length === 0) return;
+    for (const match of matches) {
+      match.detach?.();
+    }
   }
 
   /**
@@ -1138,6 +1210,66 @@ export class RelayDebugAPI {
    * that reproduces the no-LCA state after upgrading from a plugin
    * version without LCA tracking.
    */
+  private findRelayByGuid(guid: string) {
+    for (const r of this.plugin.relayManager.relays._map.values()) {
+      if (r.guid === guid) return r;
+    }
+    return null;
+  }
+
+  private getFolderByGuid(folderGuid: string): any | null {
+    if (!this.plugin?.sharedFolders?._set) return null;
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if ((folder as any).guid === folderGuid) return folder;
+    }
+    return null;
+  }
+
+  private getFolderSyncStatus(folderGuid: string): { guid: string; path: string; status: string }[] {
+    const folder = this.getFolderByGuid(folderGuid);
+    const mm = folder?.mergeManager;
+    if (!mm?.syncStatus) return [];
+
+    const rows: { guid: string; path: string; status: string }[] = [];
+    for (const [guid, syncStatus] of mm.syncStatus.entries()) {
+      const doc = mm._getDocument?.(guid);
+      rows.push({
+        guid,
+        path: doc?.path ?? guid,
+        status: syncStatus?.status ?? 'unknown',
+      });
+    }
+    rows.sort((a, b) => a.path.localeCompare(b.path));
+    return rows;
+  }
+
+  private getFolderSyncErrors(folderGuid: string): { guid: string; path: string; status: string }[] {
+    return this.getFolderSyncStatus(folderGuid).filter((row) => row.status === 'error');
+  }
+
+  private getFolderConflicts(folderGuid: string): { guid: string; path: string }[] {
+    return this.getFolderSyncStatus(folderGuid)
+      .filter((row) => row.status === 'conflict')
+      .map(({ guid, path }) => ({ guid, path }));
+  }
+
+  private listAllConflicts(): { folderGuid: string; folderPath: string; guid: string; path: string }[] {
+    if (!this.plugin?.sharedFolders?._set) return [];
+    const out: { folderGuid: string; folderPath: string; guid: string; path: string }[] = [];
+    for (const folder of this.plugin.sharedFolders._set.values() as Iterable<any>) {
+      const folderGuid = folder.guid;
+      const folderPath = folder.path ?? '';
+      for (const row of this.getFolderConflicts(folderGuid)) {
+        // Emit a vault-relative path with a leading slash so it round-trips
+        // through lookupDocument — copy/paste-friendly into `conflict info`.
+        const inner = row.path.replace(/^\/+/, '');
+        const fullPath = folderPath ? `/${folderPath}/${inner}` : `/${inner}`;
+        out.push({ folderGuid, folderPath, guid: row.guid, path: fullPath });
+      }
+    }
+    return out;
+  }
+
   private async clearLca(path: string): Promise<void> {
     const g = typeof window !== 'undefined' ? window : globalThis;
     const lookup = (g as any).__relayDebug?.lookupDocument?.(path);

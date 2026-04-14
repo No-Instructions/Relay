@@ -183,6 +183,7 @@ const setupWS = (provider: YSweetProvider) => {
 		provider.ws = websocket;
 		provider.wsconnecting = true;
 		provider.wsconnected = false;
+		provider.wsConnectStartTime = time.getUnixTime();
 		provider.synced = false;
 
 		websocket.onmessage = (event) => {
@@ -199,6 +200,7 @@ const setupWS = (provider: YSweetProvider) => {
 			provider.emit("connection-close", [event, provider]);
 			provider.ws = null;
 			provider.wsconnecting = false;
+			provider.wsConnectStartTime = 0;
 			if (provider.wsconnected) {
 				provider.wsconnected = false;
 				provider.synced = false;
@@ -236,6 +238,7 @@ const setupWS = (provider: YSweetProvider) => {
 			provider.wsLastMessageReceived = time.getUnixTime();
 			provider.wsconnecting = false;
 			provider.wsconnected = true;
+			provider.wsConnectStartTime = 0;
 			provider.wsUnsuccessfulReconnects = 0;
 			provider.emit("status", [
 				{
@@ -385,6 +388,7 @@ export class YSweetProvider extends Observable<string> {
 	_synced: boolean;
 	ws: WebSocket | null;
 	wsLastMessageReceived: number;
+	wsConnectStartTime: number;
 	shouldConnect: boolean;
 	_resyncInterval: ReturnType<typeof setInterval> | number; // TODO: is setting this to 0 used as null?
 	_bcSubscriber: (...args: any[]) => any;
@@ -457,6 +461,7 @@ export class YSweetProvider extends Observable<string> {
 		this._synced = false;
 		this.ws = null;
 		this.wsLastMessageReceived = 0;
+		this.wsConnectStartTime = 0;
 		this.shouldConnect = connect;
 		this.maxConnectionErrors = maxConnectionErrors;
 		this.eventSubscriptions = new Set();
@@ -546,6 +551,17 @@ export class YSweetProvider extends Observable<string> {
 			) {
 				// no message received in a long time - not even your own awareness
 				// updates (which are updated every 15 seconds)
+				this.ws?.close();
+			}
+			if (
+				this.wsconnecting &&
+				this.ws?.readyState === WebSocket.CONNECTING &&
+				this.wsConnectStartTime > 0 &&
+				messageReconnectTimeout <
+					time.getUnixTime() - this.wsConnectStartTime
+			) {
+				// Connection attempt is stuck in CONNECTING with no transition.
+				// Force-close so onclose can run backoff/retry logic.
 				this.ws?.close();
 			}
 		}, messageReconnectTimeout / 10);
@@ -712,6 +728,8 @@ export class YSweetProvider extends Observable<string> {
 	disconnect() {
 		this.shouldConnect = false;
 		this.wsconnected = false;
+		this.wsconnecting = false;
+		this.wsConnectStartTime = 0;
 		this.disconnectBc();
 		if (this.ws !== null) {
 			this.ws.close();
@@ -723,6 +741,10 @@ export class YSweetProvider extends Observable<string> {
 	connect() {
 		this.shouldConnect = true;
 		if (!this.wsconnected && this.ws === null) {
+			// Explicit connect requests should start a fresh retry budget.
+			// Without this, a previous exhausted reconnect cycle can leave the
+			// provider permanently offline until the plugin is recreated.
+			this.wsUnsuccessfulReconnects = 0;
 			setupWS(this);
 			this.connectBc();
 		}
@@ -864,4 +886,3 @@ export class YSweetProvider extends Observable<string> {
 	}
 
 }
-

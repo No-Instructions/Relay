@@ -32,6 +32,7 @@ import { ObservableMap } from '../observable/ObservableMap';
 import { validateUpdate } from '../storage/yjs-validation';
 import { classifyUpdate as classifyUpdateSV } from './state-vectors';
 import { metrics, curryLog } from '../debug';
+import { trackPromise } from '../trackPromise';
 
 // =============================================================================
 // Types
@@ -826,7 +827,7 @@ export class MergeManager {
       hsm.send({ type: 'RELEASE_LOCK' });
       this.activeDocs.delete(guid);
       // Wait for cleanup to complete (IndexedDB writes)
-      await hsm.awaitCleanup();
+      await trackPromise(`awaitCleanup:${guid}`, hsm.awaitCleanup());
     }
 
     if (this.destroyed) return;
@@ -943,6 +944,22 @@ export class MergeManager {
       this._trackedRemoteSV.set(guid, sv);
     } catch {
       // Parse failure — remove tracking so next event falls back to HTTP
+      this._trackedRemoteSV.delete(guid);
+    }
+  }
+
+  /**
+   * Seed the tracked SV directly from raw state vector bytes. Used when the
+   * server supplies the SV (e.g. the subdoc-index response on reconnect),
+   * rather than a full update we'd derive the SV from.
+   */
+  seedTrackedRemoteSVFromBytes(guid: string, svBytes: Uint8Array): void {
+    try {
+      const sv = Y.decodeStateVector(svBytes);
+      this._trackedRemoteSV.set(guid, sv);
+    } catch {
+      // Parse failure — remove tracking so next event falls back to HTTP
+      // keyframe, same as seedTrackedRemoteSV.
       this._trackedRemoteSV.delete(guid);
     }
   }

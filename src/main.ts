@@ -17,6 +17,7 @@ import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
+import type { MetadataBridge } from "./editorContext";
 import { S3RN } from "./S3RN";
 import { LiveViewManager } from "./LiveViews";
 
@@ -140,6 +141,9 @@ export default class Live extends Plugin {
 	warn!: (...args: unknown[]) => void;
 	error!: (...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
+	get metadataBridge(): MetadataBridge | undefined {
+		return this._liveViews;
+	}
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 	repo = REPOSITORY;

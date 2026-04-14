@@ -14,6 +14,7 @@ import { HasLogging } from "src/debug";
 import * as Y from "yjs";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { flags } from "./flagManager";
+import type { EditorViewRef } from "./merge-hsm/types";
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -134,17 +135,32 @@ export class CanvasPlugin extends HasLogging {
 				// Read editor content: the embed's CM6 editor may start empty,
 				// so use the child view's data (which holds the disk content).
 				const editorContent = embedView.data ?? "";
-				document.acquireLock(editorContent).catch((error: unknown) => {
-					this.error(
-						"Error acquiring lock for canvas embed:",
-						error,
-					);
-				});
+				document
+					.whenReady()
+					.then(() => {
+						const viewRef = embedView as EditorViewRef;
+						const lockHolder = embedView.leaf ?? undefined;
+						return this.connectionManager.acquireDocumentLock(
+							document,
+							viewRef,
+							lockHolder,
+							editorContent,
+						);
+					})
+					.catch((error: unknown) => {
+						this.error(
+							"Error acquiring lock for canvas embed:",
+							error,
+						);
+					});
 
 				return () => {
 					this.trackedEmbedViews.delete(embedView);
 					plugin.destroy();
-					document.releaseLock();
+					this.connectionManager.releaseDocumentLock(
+						document,
+						embedView.leaf ?? undefined,
+					);
 				};
 			})(),
 		);

@@ -16,6 +16,7 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
+import { isEmptyDoc } from "./merge-hsm/state-vectors";
 
 export interface QueueItem {
 	guid: string;
@@ -865,12 +866,9 @@ export class BackgroundSync extends HasLogging {
 		const updateBytes = new Uint8Array(response.arrayBuffer);
 
 		// Peek at the update in a throwaway doc to detect empty-server.
-		// Same detection as getDocument(): empty contents AND empty users.
 		const tmpDoc = new Y.Doc();
 		Y.applyUpdate(tmpDoc, updateBytes);
-		const users = tmpDoc.getMap("users");
-		const contents = tmpDoc.getText("contents").toString();
-		if (contents === "" && users.size === 0) {
+		if (isEmptyDoc(tmpDoc)) {
 			this.log(
 				"[downloadByGuid] server has guid registered but no content",
 				path,
@@ -911,10 +909,25 @@ export class BackgroundSync extends HasLogging {
 		}
 		const intent = doc.intent;
 		if (doc.destroyed) return false;
-		const providerSynced = doc.onceProviderSynced().then(() => true);
 		doc.connect();
-		if (intent === "disconnected") {
-			await providerSynced;
+		// Always wait for provider sync — _providerSynced fast-path resolves
+		// immediately if already synced.  Connected does not imply synced.
+		// Timeout prevents hanging the sync queue if the connection drops.
+		const SYNC_TIMEOUT_MS = 10_000;
+		let timerId: number | undefined;
+		const synced = await Promise.race([
+			doc.onceProviderSynced().then(() => true),
+			new Promise<false>((resolve) => {
+				timerId = this.timeProvider.setTimeout(
+					() => resolve(false),
+					SYNC_TIMEOUT_MS,
+				);
+			}),
+		]);
+		if (timerId !== undefined) this.timeProvider.clearTimeout(timerId);
+		if (!synced) {
+			this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
+			return false;
 		}
 
 		// promise can take some time
@@ -984,34 +997,29 @@ export class BackgroundSync extends HasLogging {
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
-			// Validate: reject uninitialized documents
+			// Validate: reject uninitialized documents.
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
-			const users = newDoc.getMap("users");
-			const contents = newDoc.getText("contents").toString();
 
-			if (contents === "") {
-				if (users.size === 0) {
-					this.log(
-						"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
-						users.size,
-						retry,
-						wait,
-					);
-					if (retry > 0) {
-						this.timeProvider.setTimeout(() => {
-							this.getDocument(doc, retry - 1, wait * 2);
-						}, wait);
-					}
-					return undefined;
-				}
+			if (isEmptyDoc(newDoc)) {
 				if (doc.text) {
 					this.log(
-						"[getDocument] local crdt has contents, but remote is empty",
+						"[getDocument] server CRDT empty, local has content — uploading",
 					);
 					this.enqueueSync(doc);
 					return undefined;
 				}
+				this.log(
+					"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
+					retry,
+					wait,
+				);
+				if (retry > 0) {
+					this.timeProvider.setTimeout(() => {
+						this.getDocument(doc, retry - 1, wait * 2);
+					}, wait);
+				}
+				return undefined;
 			}
 
 			this.log("[getDocument] applying content from server");

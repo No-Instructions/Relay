@@ -7,6 +7,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { diffMatchPatch } from "./y-diffMatchPatch";
+import { trackPromise } from "./trackPromise";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;
@@ -33,14 +34,21 @@ export class TextFileViewPlugin extends HasLogging {
 				file.path,
 			);
 			if (folder) {
-				const newDoc = folder.proxy.getDoc(file.path);
-				this.warn("[TextViewPlugin] getDocument() found:", {
-					newDocPath: newDoc.path,
-					newDocGuid: newDoc.guid,
-					newDocTFile: newDoc._tfile?.path,
-				});
-				this.doc = newDoc;
-				return this.doc;
+				try {
+					const newDoc = folder.proxy.getDoc(file.path);
+					this.warn("[TextViewPlugin] getDocument() found:", {
+						newDocPath: newDoc.path,
+						newDocGuid: newDoc.guid,
+						newDocTFile: newDoc._tfile?.path,
+					});
+					this.doc = newDoc;
+					return this.doc;
+				} catch (error) {
+					this.warn("[TextViewPlugin] getDocument() failed:", {
+						filePath: file.path,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 			}
 		}
 		// Fallback to the LiveView's document
@@ -106,7 +114,7 @@ export class TextFileViewPlugin extends HasLogging {
 
 			const hsm = this.doc.hsm;
 			if (hsm?.awaitState) {
-				await hsm.awaitState((s) => s.startsWith("active."));
+				await trackPromise(`textView:awaitActive:${this.doc?.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
 			} else {
 				return;
 			}

@@ -17,6 +17,7 @@ import type {
 	CanvasView,
 } from "./CanvasView";
 import { areObjectsEqual } from "./areObjectsEqual";
+import { trackPromise } from "./trackPromise";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -99,7 +100,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			(async () => {
 				const serverSynced = await this.getServerSynced();
 				if (!serverSynced) {
-					await this.onceProviderSynced();
+					await trackPromise(`canvasSync:${this.guid}`, this.onceProviderSynced());
 					await this.markSynced();
 				}
 			})();
@@ -198,9 +199,9 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 				this.log("awaiting updates");
 				this.connect();
-				await this.onceConnected();
+				await trackPromise(`canvasConnected:${this.guid}`, this.onceConnected());
 				this.log("connected");
-				await this.onceProviderSynced();
+				await trackPromise(`canvasReady:${this.guid}`, this.onceProviderSynced());
 				this.log("synced");
 				return this;
 			}
@@ -211,7 +212,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			new Dependency<Canvas>(promiseFn, (): [boolean, Canvas] => {
 				return [this.ready, this];
 			});
-		return this.readyPromise.getPromise();
+		return trackPromise(`canvas:whenReady:${this.guid}`, this.readyPromise.getPromise());
 	}
 
 	whenSynced(): Promise<void> {
@@ -239,13 +240,13 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			new Dependency<void>(promiseFn, (): [boolean, void] => {
 				return [this.persistenceSynced, undefined];
 			});
-		return this.whenSyncedPromise.getPromise();
+		return trackPromise(`canvas:whenSynced:${this.guid}`, this.whenSyncedPromise.getPromise());
 	}
 
 	/**
 	 * Release lock on this canvas.
 	 * Transitions HSM from active back to idle mode.
-	 * Call this when editor closes (replaces userLock = false).
+	 * Call this when editor closes.
 	 */
 	releaseLock(): void {
 		this.userLock = false;

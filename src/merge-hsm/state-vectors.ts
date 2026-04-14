@@ -109,6 +109,14 @@ export function classifyUpdate(
 	return hasNewOps ? "apply" : "stale";
 }
 
+/**
+ * Check whether a Y.Doc is empty (no CRDT operations from any client).
+ * An empty Y.Doc has a zero-entry state vector.
+ */
+export function isEmptyDoc(doc: Y.Doc): boolean {
+	return decodeSV(Y.encodeStateVector(doc)).size === 0;
+}
+
 // ---- Convenience wrappers for encoded Uint8Array inputs ----
 
 /**
