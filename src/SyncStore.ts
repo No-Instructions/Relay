@@ -181,7 +181,11 @@ export class SyncStore extends Observable<SyncStore> {
 		}
 		this.log("metadata write (path, existing, meta)", vpath, existing, meta);
 		this.meta.set(vpath, meta);
-		if (this.pendingUpload.has(vpath)) {
+		const pendingGuid = this.pendingUpload.get(vpath);
+		if (
+			pendingGuid &&
+			pendingGuid === meta.id
+		) {
 			this.pendingUpload.delete(vpath);
 		}
 	}
