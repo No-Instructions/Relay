@@ -8,6 +8,7 @@ import { diffMatchPatch } from "../y-diffMatchPatch";
 import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 import type { ChangeSpec } from "@codemirror/state";
+import { trackPromise } from "../trackPromise";
 import diff_match_patch from "diff-match-patch";
 import { MetadataRenderer } from "./MetadataRenderer";
 
@@ -50,7 +51,7 @@ export class ViewHookPlugin extends HasLogging {
 		if (!localDoc) {
 			const hsm = this.document.hsm;
 			if (hsm?.awaitState) {
-				await hsm.awaitState((s) => s.startsWith("active."));
+				await trackPromise(`viewHook:awaitActive:${this.document.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
 			}
 			localDoc = this.document.localDoc;
 		}

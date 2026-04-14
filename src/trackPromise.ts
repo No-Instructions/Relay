@@ -16,7 +16,7 @@ export interface CompletedEntry {
 
 // Module-level ring buffer of recent completions. Survives plugin reload so
 // completed promises from a prior instance remain inspectable.
-const RECENT_CAPACITY = 100;
+const RECENT_CAPACITY = 1000;
 const _recent: CompletedEntry[] = [];
 
 function recordSettled(entry: TrackedEntry, state: "fulfilled" | "rejected"): void {
