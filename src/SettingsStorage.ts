@@ -249,6 +249,15 @@ export class Settings<T> extends Observable<T> {
 			listener(this.data);
 		}
 	}
+
+	override destroy() {
+		if (this.destroyed) return;
+		super.destroy();
+		this.data = null as any;
+		this._loaded = false;
+		(this as any).storage = null;
+		(this as any).defaults = null;
+	}
 }
 
 export class NamespacedSettings<
