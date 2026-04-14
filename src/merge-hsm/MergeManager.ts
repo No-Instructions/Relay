@@ -209,8 +209,6 @@ export class MergeManager {
   // Used for idle mode sync status display without opening per-document IDBs
   private _localStateVectorCache = new Map<string, Uint8Array | null>();
 
-  // Documents with an in-flight async load (createHSM → loadState)
-  private _pendingLoads = new Set<string>();
 
   // =========================================================================
   // Hibernation State
@@ -436,9 +434,7 @@ export class MergeManager {
 
     // Async-load full per-document state from IDB (includes lca.contents and fork)
     const loadStateFn = this.loadState ?? (() => Promise.resolve(null));
-    this._pendingLoads.add(guid);
     loadStateFn(guid).then((state) => {
-      this._pendingLoads.delete(guid);
       if (this.destroyed) return;
       // Build full LCA from IDB state (the source of truth for contents)
       const lca: LCAState | null = state?.lca
@@ -453,7 +449,6 @@ export class MergeManager {
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
     }).catch((err) => {
-      this._pendingLoads.delete(guid);
       this._error(`Failed to load state for ${guid}: ${err}`);
       // On IDB failure, pass null LCA — metadata without contents would
       // produce wrong merge results. The HSM treats null as "no prior state".
@@ -800,9 +795,6 @@ export class MergeManager {
       const statePath = hsm.state.statePath;
 
       if (statePath === 'loading') {
-        // Skip HSMs with an in-flight async load — they will receive
-        // SET_MODE_IDLE when the load completes in createHSM.
-        if (this._pendingLoads.has(guid)) continue;
         if (activeGuids.has(guid)) {
           hsm.send({ type: 'SET_MODE_ACTIVE' });
         } else {
@@ -824,6 +816,7 @@ export class MergeManager {
    * Waits for IndexedDB writes to complete before returning.
    */
   async unload(guid: string): Promise<void> {
+    if (this.destroyed) return;
     const doc = this._getDocument(guid);
     const hsm = doc?.hsm;
     if (!hsm) return;
@@ -835,6 +828,8 @@ export class MergeManager {
       // Wait for cleanup to complete (IndexedDB writes)
       await hsm.awaitCleanup();
     }
+
+    if (this.destroyed) return;
 
     // HSM stays alive in idle.* state
     // Sync status preserved
@@ -1034,6 +1029,23 @@ export class MergeManager {
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
     this._warmLRU.clear();
+
+    // These callbacks close over SharedFolder and related plugin services.
+    // Clear them so a retained MergeManager shell does not pin the folder graph.
+    this._getVaultId = null as any;
+    this._getDocument = null as any;
+    this.timeProvider = null as any;
+    this.hashFn = undefined;
+    this.loadAllStates = undefined;
+    this.onEffect = undefined;
+    this.getDiskState = undefined;
+    this._persistIndex = undefined;
+    this.loadState = undefined;
+    this.createPersistence = undefined;
+    this.getPersistenceMetadata = undefined;
+    this.userId = undefined;
+    this._yaml = null;
+    this._onTransition = undefined;
   }
 
   // ===========================================================================
@@ -1086,6 +1098,9 @@ export class MergeManager {
    * Resets the hibernate timer since the doc is actively receiving updates.
    */
   private touchWarmLRU(guid: string): void {
+    if (this.destroyed || !this.timeProvider) {
+      return;
+    }
     this._warmLRU.delete(guid);
     this._warmLRU.set(guid, this.timeProvider.now());
   }
