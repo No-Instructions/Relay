@@ -341,6 +341,11 @@ export interface RelayDebugGlobal {
   // -- Promise tracking --
   getPendingPromises: () => { label: string; ageMs: number; owner?: string }[];
   getRecentPromises: () => { label: string; created: number; settledAt: number; state: "fulfilled" | "rejected"; owner?: string }[];
+
+  // -- Relay server CRUD --
+  createRelay: (name: string) => Promise<{ guid: string; name: string }>;
+  renameRelay: (guid: string, newName: string) => Promise<{ guid: string; name: string }>;
+  deleteRelay: (guid: string) => Promise<boolean>;
 }
 
 // =============================================================================
@@ -494,6 +499,26 @@ export class RelayDebugAPI {
       clearLca: async (path) => this.clearLca(path),
       getPendingPromises: () => this.plugin?.promises?.getPending() ?? [],
       getRecentPromises: () => getRecentPromises(),
+
+      createRelay: async (name) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = await this.plugin.relayManager.createRelay(name);
+        return { guid: relay.guid, name: relay.name };
+      },
+      renameRelay: async (guid, newName) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = this.findRelayByGuid(guid);
+        if (!relay) throw new Error(`Relay not found: ${guid}`);
+        relay.name = newName;
+        await this.plugin.relayManager.updateRelay(relay);
+        return { guid: relay.guid, name: relay.name };
+      },
+      deleteRelay: async (guid) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = this.findRelayByGuid(guid);
+        if (!relay) throw new Error(`Relay not found: ${guid}`);
+        return await this.plugin.relayManager.destroyRelay(relay);
+      },
 
       setEditorContent: (handle, content) => this.setEditorContent(handle, content),
 
@@ -1173,6 +1198,13 @@ export class RelayDebugAPI {
    * that reproduces the no-LCA state after upgrading from a plugin
    * version without LCA tracking.
    */
+  private findRelayByGuid(guid: string) {
+    for (const r of this.plugin.relayManager.relays._map.values()) {
+      if (r.guid === guid) return r;
+    }
+    return null;
+  }
+
   private async clearLca(path: string): Promise<void> {
     const g = typeof window !== 'undefined' ? window : globalThis;
     const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
