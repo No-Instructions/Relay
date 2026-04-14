@@ -30,24 +30,18 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 7
+      max-parallel: 5
       matrix:
         shard:
-          - name: foundation-core
-            slug: foundation-core
-            tests: test-basic-open-close,test-folder-lifecycle,test-view-reuse-file-switching
-          - name: foundation-share
-            slug: foundation-share
-            tests: test-share-folder,test-in-note-status
+          - name: foundation
+            slug: foundation
+            tests: test-basic-open-close,test-share-folder,test-folder-lifecycle,test-view-reuse-file-switching,test-in-note-status
           - name: sync-state
             slug: sync-state
             tests: test-idle-registration,test-active-editor-sync,test-offline-banner,test-binary-free-user
-          - name: conflicts-differ
-            slug: conflicts-differ
-            tests: test-differ-resolve,test-trigger-differ,test-differ-dismissal
-          - name: conflicts-resolution
-            slug: conflicts-resolution
-            tests: test-conflict-dismiss,test-conflict-cancel,test-upgrade-no-lca-conflict
+          - name: conflicts
+            slug: conflicts
+            tests: test-differ-resolve,test-trigger-differ,test-conflict-dismiss,test-conflict-cancel,test-upgrade-no-lca-conflict,test-differ-dismissal
           - name: bulk-upload
             slug: bulk
             tests: test-bulk-upload
