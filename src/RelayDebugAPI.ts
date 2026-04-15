@@ -548,23 +548,22 @@ export class RelayDebugAPI {
 
       lookupDocument: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
-        if (!path.startsWith('/')) {
-          throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
-        }
+        const normalizedPath = this.normalizeLookupPath(path);
         const folders = Array.from(this.plugin.sharedFolders._set.values()) as any[];
 
         // Resolve folder scope from vault path (e.g. "/private/foo.md")
         let targetFolder: any = null;
-        let relativePath = path;
+        let relativePath = normalizedPath;
         for (const folder of folders) {
           const prefix = '/' + folder.path + '/';
-          if (path.startsWith(prefix)) {
+          if (normalizedPath.startsWith(prefix)) {
             targetFolder = folder;
-            relativePath = path.slice(prefix.length - 1); // keep leading slash
+            relativePath = normalizedPath.slice(prefix.length - 1); // keep leading slash
             break;
           }
         }
 
+        const barePath = normalizedPath.replace(/^\/+/, '');
         const search = targetFolder ? [targetFolder] : folders;
         for (const folder of search) {
           const mm = folder.mergeManager;
@@ -575,12 +574,12 @@ export class RelayDebugAPI {
             if (!hsm) continue;
             let filePath = hsm.path || guid;
 
-            if (guid === path) return { doc, hsm, guid, folder, filePath };
+            if (guid === normalizedPath || guid === barePath) return { doc, hsm, guid, folder, filePath };
             const normFile = filePath.replace(/^\/+/, '');
             const normRel = relativePath.replace(/^\/+/, '');
             if (targetFolder && (filePath === relativePath || normFile === normRel))
               return { doc, hsm, guid, folder, filePath };
-            if (!targetFolder && (filePath === path || normFile === path.replace(/^\/+/, '')))
+            if (!targetFolder && (filePath === normalizedPath || normFile === barePath))
               return { doc, hsm, guid, folder, filePath };
           }
         }
@@ -594,6 +593,13 @@ export class RelayDebugAPI {
       ...api,
       registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
     };
+  }
+
+  private normalizeLookupPath(path: string): string {
+    if (typeof path !== 'string' || path.length === 0) {
+      throw new Error(`Document path must be a non-empty string (got: ${JSON.stringify(path)})`);
+    }
+    return path.startsWith('/') ? path : `/${path}`;
   }
 
   /**
