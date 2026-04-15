@@ -34,14 +34,21 @@ export class TextFileViewPlugin extends HasLogging {
 				file.path,
 			);
 			if (folder) {
-				const newDoc = folder.proxy.getDoc(file.path);
-				this.warn("[TextViewPlugin] getDocument() found:", {
-					newDocPath: newDoc.path,
-					newDocGuid: newDoc.guid,
-					newDocTFile: newDoc._tfile?.path,
-				});
-				this.doc = newDoc;
-				return this.doc;
+				try {
+					const newDoc = folder.proxy.getDoc(file.path);
+					this.warn("[TextViewPlugin] getDocument() found:", {
+						newDocPath: newDoc.path,
+						newDocGuid: newDoc.guid,
+						newDocTFile: newDoc._tfile?.path,
+					});
+					this.doc = newDoc;
+					return this.doc;
+				} catch (error) {
+					this.warn("[TextViewPlugin] getDocument() failed:", {
+						filePath: file.path,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 			}
 		}
 		// Fallback to the LiveView's document

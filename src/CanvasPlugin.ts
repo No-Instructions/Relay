@@ -8,12 +8,17 @@ import type {
 	CanvasView,
 	ObsidianCanvas,
 } from "src/CanvasView";
-import type { RelayCanvasView, LiveViewManager } from "src/LiveViews";
+import type {
+	RelayCanvasView,
+	DocumentViewer,
+	LiveViewManager,
+} from "src/LiveViews";
 import { HasLogging } from "src/debug";
 
 import * as Y from "yjs";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { flags } from "./flagManager";
+import type { EditorViewRef } from "./merge-hsm/types";
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -122,6 +127,9 @@ export class CanvasPlugin extends HasLogging {
 					embedView,
 					document,
 				);
+				const viewer: DocumentViewer =
+					embedView.leaf ?? Symbol(`canvas-embed:${embedView.file.path}`);
+				let cancelled = false;
 				plugin.initialize().catch((error) => {
 					this.error(
 						"Error initializing ViewHookPlugin for canvas embed:",
@@ -134,19 +142,37 @@ export class CanvasPlugin extends HasLogging {
 				// Read editor content: the embed's CM6 editor may start empty,
 				// so use the child view's data (which holds the disk content).
 				const editorContent = embedView.data ?? "";
-				document.acquireLock(editorContent).catch((error: unknown) => {
-					this.error(
-						"Error acquiring lock for canvas embed:",
-						error,
-					);
+				document
+					.whenReady()
+					.then(() => {
+						if (cancelled) {
+							return;
+						}
+						const viewRef = embedView as EditorViewRef;
+						return this.connectionManager.acquireDocumentLock(
+							document,
+							viewRef,
+							viewer,
+							editorContent,
+						);
+					})
+					.catch((error: unknown) => {
+						this.error(
+							"Error acquiring lock for canvas embed:",
+							error,
+						);
 				});
 
-				return () => {
-					this.trackedEmbedViews.delete(embedView);
-					plugin.destroy();
-					document.releaseLock();
-				};
-			})(),
+					return () => {
+						cancelled = true;
+						this.trackedEmbedViews.delete(embedView);
+						plugin.destroy();
+						this.connectionManager.releaseDocumentLock(
+							document,
+							viewer,
+						);
+					};
+				})(),
 		);
 	}
 
