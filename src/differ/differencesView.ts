@@ -27,6 +27,7 @@ import {
 	Workspace,
 	ItemView,
 	TFile,
+	TAbstractFile,
 	type ViewStateResult,
 	WorkspaceLeaf,
 } from "obsidian";
@@ -53,6 +54,9 @@ export interface ViewState {
 	onResolve?: () => Promise<void>;
 	onCancel?: () => void;
 	originalLeaf?: WorkspaceLeaf;
+	// Optional source file in vault-space. Used to close the diff if the
+	// backing file is deleted or renamed while the diff is open.
+	sourceVaultPath?: string;
 	[key: string]: unknown;
 }
 
@@ -86,6 +90,8 @@ export class DifferencesView extends ItemView {
 	private file1Lines: string[] = [];
 	private file2Lines: string[] = [];
 	private resolved = false;
+	private sourceGuardsInstalled = false;
+	private closingForSourceMissing = false;
 	protected log;
 
 	constructor(leaf: WorkspaceLeaf) {
@@ -122,6 +128,7 @@ export class DifferencesView extends ItemView {
 	): Promise<void> {
 		super.setState(state, result);
 		this.state = state;
+		this.installSourceGuards();
 
 		await this.updateState();
 		this.build();
@@ -139,6 +146,59 @@ export class DifferencesView extends ItemView {
 			this.app.workspace.setActiveLeaf(this.state.originalLeaf, { focus: true });
 		}
 		this.leaf.detach();
+	}
+
+	private normalizePath(path: string | undefined): string | null {
+		if (!path) return null;
+		return path.startsWith("/") ? path.slice(1) : path;
+	}
+
+	private getWatchedPaths(): string[] {
+		if (!this.state) return [];
+		const paths = new Set<string>();
+		const sourcePath = this.normalizePath(this.state.sourceVaultPath);
+		if (sourcePath) {
+			paths.add(sourcePath);
+		}
+
+		const file1Path = this.normalizePath(this.state.file1?.path);
+		if (file1Path) {
+			paths.add(file1Path);
+		}
+		const file2Path = this.normalizePath(this.state.file2?.path);
+		if (file2Path) {
+			paths.add(file2Path);
+		}
+		return Array.from(paths);
+	}
+
+	private watchesPath(path: string): boolean {
+		const normalized = this.normalizePath(path);
+		if (!normalized) return false;
+		return this.getWatchedPaths().includes(normalized);
+	}
+
+	private closeBecauseSourceMissing(reason: string, file: TAbstractFile): void {
+		if (this.closingForSourceMissing) return;
+		this.closingForSourceMissing = true;
+		this.log(`[diff] closing: ${reason}`, file.path);
+		if (!this.resolved) {
+			this.state?.onCancel?.();
+			this.resolved = true;
+		}
+		this.closeAndReturnToOriginal();
+	}
+
+	private installSourceGuards(): void {
+		if (this.sourceGuardsInstalled) return;
+		this.sourceGuardsInstalled = true;
+
+		this.registerEvent(
+			this.app.vault.on("delete", (file) => {
+				if (!this.watchesPath(file.path)) return;
+				this.closeBecauseSourceMissing("source file deleted", file);
+			}),
+		);
 	}
 
 	private async updateState(): Promise<void> {
