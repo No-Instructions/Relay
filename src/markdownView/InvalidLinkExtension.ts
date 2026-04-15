@@ -55,6 +55,8 @@ export class InvalidLinkPluginValue {
 	private subscribedTFile?: TFile;
 	private metadataBridge?: MetadataBridge;
 	private destroyed = false;
+	private contextVersion = 0;
+	private awaitingGuid?: string;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -71,61 +73,114 @@ export class InvalidLinkPluginValue {
 
 		this.app = getApp(this.editor) ?? undefined;
 		this.document = this.resolveDocument();
-
-		if (!this.document) {
-			return;
+		if (this.document) {
+			this.log = curryLog(
+				`[InvalidLinkPluginValue][${this.document.path}]`,
+				"debug",
+			);
+			this.log("created");
 		}
-
-		this.log = curryLog(
-			`[InvalidLinkPluginValue][${this.document.path}]`,
-			"debug",
-		);
-		this.log("created");
-
-		const hsm = this.document.hsm;
-		if (!hsm?.awaitState) return;
-		trackPromise(
-			`invalidLink:awaitActive:${this.document.path}`,
-			hsm.awaitState((s) => s.startsWith("active.")),
-		).then(() => {
-			if (this.destroyed) return;
-			const tfile = this.document?.getTFile();
-			const plugin = getRelayPlugin(this.editor);
-			const metadataBridge = plugin?.metadataBridge;
-			if (metadataBridge && this.app && tfile) {
-				this.metadataBridge = metadataBridge;
-				metadataBridge.onMeta(tfile, this.cb);
-				this.subscribedTFile = tfile;
-				const fileCache = this.app.metadataCache.getFileCache(tfile);
-				if (fileCache) {
-					this.updateFromMetadata(fileCache);
-					this.editor.dispatch({
-						effects: metadataChangeEffect.of(null),
-					});
-				}
-			} else {
-				this.log("unable to subscribe to metadata updates");
-			}
-		});
+		this.refreshMetadataSubscription();
 	}
 
 	private resolveDocument(): Document | undefined {
 		if (this.destroyed || !this.editor) return undefined;
-		if (this.document && this.document.tfile) {
-			return this.document;
-		}
 		const file = getEditorFile(this.editor);
 		if (!file) return undefined;
 		const sharedFolders = getSharedFolders(this.editor);
 		if (!sharedFolders) return undefined;
 		const folder = sharedFolders.lookup(file.path);
 		if (!folder) return undefined;
-		const vpath = folder.getVirtualPath(file.path);
-		const id = folder.syncStore.get(vpath);
-		if (id === undefined) return undefined;
-		const doc = folder.files.get(id);
-		if (!doc || !isDocument(doc)) return undefined;
-		return doc;
+		try {
+			const doc = folder.proxy.getDoc(file.path);
+			if (!isDocument(doc)) return undefined;
+			return doc;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private unsubscribeMetadata(): void {
+		if (this.subscribedTFile) {
+			this.metadataBridge?.offMeta(this.subscribedTFile);
+			this.subscribedTFile = undefined;
+		}
+	}
+
+	private refreshMetadataSubscription(): void {
+		if (this.destroyed || !this.editor || !this.app) return;
+		const nextDocument = this.resolveDocument();
+		const previousGuid = this.document?.guid;
+		this.document = nextDocument;
+
+		const nextTFile = nextDocument?.getTFile();
+		if (!nextDocument || !nextTFile) {
+			this.unsubscribeMetadata();
+			this.metadata.clear();
+			this.decorationAnchors = [];
+			this.decorations = Decoration.none;
+			this.contextVersion += 1;
+			this.awaitingGuid = undefined;
+			return;
+		}
+
+		if (this.subscribedTFile === nextTFile && previousGuid === nextDocument.guid) {
+			return;
+		}
+		if (this.awaitingGuid === nextDocument.guid) {
+			return;
+		}
+
+		this.unsubscribeMetadata();
+		this.metadata.clear();
+		this.decorationAnchors = [];
+		this.decorations = Decoration.none;
+
+		const plugin = getRelayPlugin(this.editor);
+		const metadataBridge = plugin?.metadataBridge;
+		if (!metadataBridge) {
+			this.metadataBridge = undefined;
+			this.contextVersion += 1;
+			this.awaitingGuid = undefined;
+			this.log("unable to subscribe to metadata updates");
+			return;
+		}
+
+		this.metadataBridge = metadataBridge;
+		const contextVersion = ++this.contextVersion;
+		const expectedGuid = nextDocument.guid;
+		this.awaitingGuid = expectedGuid;
+		const hsm = nextDocument.hsm;
+		if (!hsm?.awaitState) {
+			this.awaitingGuid = undefined;
+			return;
+		}
+
+		trackPromise(
+			`invalidLink:awaitActive:${nextDocument.path}`,
+			hsm.awaitState((s) => s.startsWith("active.")),
+		).then(() => {
+			this.awaitingGuid = undefined;
+			if (this.destroyed || contextVersion !== this.contextVersion) return;
+			const currentDocument = this.resolveDocument();
+			if (!currentDocument || currentDocument.guid !== expectedGuid) return;
+			const currentTFile = currentDocument.getTFile();
+			if (!currentTFile || !this.editor || !this.app) return;
+
+			metadataBridge.onMeta(currentTFile, this.cb);
+			this.subscribedTFile = currentTFile;
+
+			const fileCache = this.app.metadataCache.getFileCache(currentTFile);
+			if (!fileCache) return;
+			this.updateFromMetadata(fileCache);
+			this.editor.dispatch({
+				effects: metadataChangeEffect.of(null),
+			});
+		}).catch(() => {
+			if (contextVersion === this.contextVersion) {
+				this.awaitingGuid = undefined;
+			}
+		});
 	}
 
 	findInternalLinks(view: EditorView) {
@@ -279,6 +334,7 @@ export class InvalidLinkPluginValue {
 	}
 
 	update(update: ViewUpdate) {
+		this.refreshMetadataSubscription();
 		let metadataUpdate = false;
 		update.transactions.forEach((tr) => {
 			if (tr.effects.some((e) => e.is(metadataChangeEffect))) {
@@ -297,10 +353,9 @@ export class InvalidLinkPluginValue {
 
 	destroy() {
 		this.destroyed = true;
-		if (this.subscribedTFile) {
-			this.metadataBridge?.offMeta(this.subscribedTFile);
-			this.subscribedTFile = undefined;
-		}
+		this.contextVersion += 1;
+		this.awaitingGuid = undefined;
+		this.unsubscribeMetadata();
 		this.metadataBridge = undefined;
 		this.document = undefined;
 		this.metadata.clear();
