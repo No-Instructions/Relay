@@ -8,6 +8,7 @@ import {
 	Workspace,
 	editorInfoField,
 	moment,
+	type WorkspaceLeaf,
 	type CachedMetadata,
 } from "obsidian";
 import ViewActions from "src/components/ViewActions.svelte";
@@ -40,15 +41,21 @@ import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
+import { trackPromise } from "./trackPromise";
 
 /**
  * Access the LiveViewManager singleton via the Obsidian plugin registry.
  * Replaces ConnectionManagerStateField — no CM6 state field needed since
  * the plugin is a singleton reachable from any EditorView.
  */
-export function getConnectionManager(editor: EditorView): LiveViewManager | null {
+export function getConnectionManager(
+	editor: EditorView,
+): LiveViewManager | null {
 	const fileInfo = editor.state.field(editorInfoField, false);
-	return (fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ?? null;
+	return (
+		(fileInfo as any)?.app?.plugins?.plugins?.["system3-relay"]?._liveViews ??
+		null
+	);
 }
 
 const BACKGROUND_CONNECTIONS = 3;
@@ -87,7 +94,7 @@ function iterateTextFileViews(
 		if (leaf.view instanceof TextFileView) {
 			const viewType = leaf.view.getViewType();
 			if (viewType === "canvas") return;
-			if (ALLOWED_TEXT_FILE_VIEWS.contains(viewType)) {
+			if (ALLOWED_TEXT_FILE_VIEWS.includes(viewType)) {
 				fn(leaf.view);
 			}
 		}
@@ -318,8 +325,10 @@ export class RelayCanvasView implements S3View {
 		}
 
 		return new Promise((resolve) => {
-			return this.canvas
-				.whenReady()
+			return trackPromise(
+				`canvasView:whenReady:${this.canvas.guid}`,
+				this.canvas.whenReady(),
+			)
 				.then((doc) => {
 					if (
 						this._parent.networkStatus.online &&
@@ -393,6 +402,7 @@ export class LiveView<ViewType extends TextFileView>
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
+	private _hasLock = false;
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -597,8 +607,8 @@ export class LiveView<ViewType extends TextFileView>
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
 						enableDraftMode: flags().enableDraftMode,
 						folderConnected: this.document.sharedFolder.connected,
-						pendingOutbound: this.document.hsm!.pendingOutbound,
-						pendingInbound: this.document.hsm!.pendingInbound,
+						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
+						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					},
 				});
 				this.offConnectionStatusSubscription = this.document.subscribe(
@@ -612,8 +622,8 @@ export class LiveView<ViewType extends TextFileView>
 							localOnly: this.document.hsm?.isLocalOnly ?? false,
 							enableDraftMode: flags().enableDraftMode,
 							folderConnected: this.document.sharedFolder.connected,
-							pendingOutbound: this.document.hsm!.pendingOutbound,
-							pendingInbound: this.document.hsm!.pendingInbound,
+							pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
+							pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 						});
 					},
 				);
@@ -628,15 +638,19 @@ export class LiveView<ViewType extends TextFileView>
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
 						enableDraftMode: flags().enableDraftMode,
 						folderConnected: this.document.sharedFolder.connected,
-						pendingOutbound: this.document.hsm!.pendingOutbound,
-						pendingInbound: this.document.hsm!.pendingInbound,
+						pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
+						pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 					});
 					const isConflict = state.statePath.includes("conflict");
 					if (isConflict && !this._banner) {
-						this.log("[LiveView] HSM entered conflict state, showing merge banner");
+						this.log(
+							"[LiveView] HSM entered conflict state, showing merge banner",
+						);
 						this.mergeBanner();
 					} else if (!isConflict && this._banner) {
-						this.log("[LiveView] HSM exited conflict state, hiding merge banner");
+						this.log(
+							"[LiveView] HSM exited conflict state, hiding merge banner",
+						);
 						this._banner.destroy();
 						this._banner = undefined;
 					}
@@ -650,8 +664,8 @@ export class LiveView<ViewType extends TextFileView>
 				localOnly: this.document.hsm?.isLocalOnly ?? false,
 				enableDraftMode: flags().enableDraftMode,
 				folderConnected: this.document.sharedFolder.connected,
-				pendingOutbound: this.document.hsm!.pendingOutbound,
-				pendingInbound: this.document.hsm!.pendingInbound,
+				pendingOutbound: this.document.hsm?.pendingOutbound ?? 0,
+				pendingInbound: this.document.hsm?.pendingInbound ?? 0,
 			});
 		}
 	}
@@ -696,32 +710,32 @@ export class LiveView<ViewType extends TextFileView>
 		}
 	}
 
+	private initializeEditorIntegration(): void {
+		if (!(this.view instanceof MarkdownView)) {
+			return;
+		}
+		const cm = (this.view.editor as any)?.cm as EditorView | undefined;
+		if (!cm) {
+			return;
+		}
+		const plugin = cm.plugin(HSMEditorPlugin);
+		plugin?.initializeIfReady();
+	}
+
 	attach(): Promise<this> {
 		// can be called multiple times, whereas release is only ever called once
-		// Use HSM acquireLock if available, otherwise falls back to userLock internally
-		// Pass view as EditorViewRef so HSM can read the live dirty flag
-		const viewRef: EditorViewRef = this.view as unknown as EditorViewRef;
-		this.document
-			.acquireLock(undefined, viewRef)
-			.then(() => {
-				// Refresh ViewActions after lock acquired — HSM may have
-				// reached active.tracking during the async acquireLock.
-				this.setConnectionDot();
-
-				// Push-initialize CM6Integration now that the document is ready.
-				// This replaces the polling approach (every CM6 update()) with a
-				// single targeted call when acquireLock completes.
-				if (this.view instanceof MarkdownView) {
-					const cm = (this.view.editor as any)?.cm as EditorView;
-					if (cm) {
-						const plugin = cm.plugin(HSMEditorPlugin);
-						plugin?.initializeIfReady();
-					}
-				}
-			})
-			.catch((e) => {
-				this.warn("[LiveView.attach] acquireLock failed:", e);
-			});
+		// Acquire a lock synchronously. Subsequent attach calls for the same view
+		// are idempotent until release().
+		if (!this._hasLock) {
+			this._parent.acquireDocumentLock(
+				this.document,
+				this.view as unknown as EditorViewRef,
+				this.view.leaf ?? undefined,
+				this.view.getViewData(),
+			);
+			this._hasLock = true;
+		}
+		this.initializeEditorIntegration();
 
 		// Add CSS class to indicate this view should have live editing
 		if (this.view instanceof MarkdownView) {
@@ -763,9 +777,12 @@ export class LiveView<ViewType extends TextFileView>
 		}
 
 		return new Promise((resolve) => {
-			return this.document
-				.whenReady()
+			return trackPromise(
+				`liveView:whenReady:${this.document.guid}`,
+				this.document.whenReady(),
+			)
 				.then((doc) => {
+					this.initializeEditorIntegration();
 					if (
 						this._parent.networkStatus.online &&
 						this.document.sharedFolder.shouldConnect &&
@@ -790,6 +807,9 @@ export class LiveView<ViewType extends TextFileView>
 
 	release() {
 		// Called when a view is released from management
+		if (!this.document || !this.view) {
+			return;
+		}
 
 		// Remove the live editor class
 		if (this.view instanceof MarkdownView) {
@@ -815,8 +835,19 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewHookPlugin = undefined;
 		this._plugin?.destroy();
 		this._plugin = undefined;
-		this.document.disconnect();
-		this.document.releaseLock();
+		const sharedFolder = this.document.sharedFolder;
+		const preservePendingUpload =
+			!!sharedFolder && sharedFolder.isPendingUpload(this.document.path);
+		if (!preservePendingUpload) {
+			this.document.disconnect();
+		}
+		if (this._hasLock) {
+			this._parent.releaseDocumentLock(
+				this.document,
+				this.view.leaf ?? undefined,
+			);
+			this._hasLock = false;
+		}
 	}
 
 	destroy() {
@@ -846,6 +877,7 @@ export class LiveViewManager {
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
 	refreshQueue: (() => Promise<boolean>)[];
+	private documentLockHolders: Map<string, Set<WorkspaceLeaf>>;
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
 
@@ -863,6 +895,7 @@ export class LiveViewManager {
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
+		this.documentLockHolders = new Map();
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -887,8 +920,10 @@ export class LiveViewManager {
 		const folderSub = (folder: SharedFolder) => {
 			if (!folder.ready) {
 				(async () => {
-					folder
-						.whenReady()
+					trackPromise(
+						`liveViews:folderReady:${folder.guid}`,
+						folder.whenReady(),
+					)
 						.then(() => {
 							this.refresh("[Shared Folder Ready]");
 						})
@@ -957,6 +992,88 @@ export class LiveViewManager {
 		return this.views.some((view) => view.document === doc);
 	}
 
+	private isDocumentOpenInWorkspace(document: Document): boolean {
+		const sharedFolder = document.sharedFolder;
+		if (!sharedFolder) return false;
+		const fullPath = sharedFolder.getPath(document.path);
+		let open = false;
+		this.workspace.iterateAllLeaves((leaf) => {
+			if (open) return;
+			if ((leaf.view as any)?.file?.path === fullPath) {
+				open = true;
+			}
+		});
+		return open;
+	}
+
+	acquireDocumentLock(
+		document: Document,
+		editorViewRef: EditorViewRef,
+		lockHolder: WorkspaceLeaf | undefined,
+		editorContent: string,
+	): void {
+		if (!lockHolder) {
+			document.userLock = true;
+			document.acquireLock(editorContent, editorViewRef);
+			return;
+		}
+
+		let holders = this.documentLockHolders.get(document.guid);
+		if (!holders) {
+			holders = new Set();
+			this.documentLockHolders.set(document.guid, holders);
+		}
+
+		const wasEmpty = holders.size === 0;
+		holders.add(lockHolder);
+		document.userLock = true;
+
+		if (wasEmpty) {
+			document.acquireLock(editorContent, editorViewRef);
+		}
+	}
+
+	releaseDocumentLock(
+		document: Document,
+		lockHolder?: WorkspaceLeaf,
+	): void {
+		if (!lockHolder) {
+			this.documentLockHolders.delete(document.guid);
+			if (this.isDocumentOpenInWorkspace(document)) {
+				document.userLock = true;
+				return;
+			}
+			document.userLock = false;
+			document.releaseLock();
+			return;
+		}
+
+		const holders = this.documentLockHolders.get(document.guid);
+		if (!holders) {
+			if (this.isDocumentOpenInWorkspace(document)) {
+				document.userLock = true;
+				return;
+			}
+			document.userLock = false;
+			document.releaseLock();
+			return;
+		}
+
+		holders.delete(lockHolder);
+		if (holders.size > 0) {
+			document.userLock = true;
+			return;
+		}
+
+		this.documentLockHolders.delete(document.guid);
+		if (this.isDocumentOpenInWorkspace(document)) {
+			document.userLock = true;
+			return;
+		}
+		document.userLock = false;
+		document.releaseLock();
+	}
+
 	/**
 	 * Notify MergeManagers which documents have open editors.
 	 * Groups views by their shared folder and calls setActiveDocuments() on each.
@@ -966,7 +1083,9 @@ export class LiveViewManager {
 	 * documents have open editors. MergeManager fans out SET_MODE_ACTIVE to those HSMs,
 	 * and SET_MODE_IDLE to all others.
 	 */
-	private async updateMergeManagerActiveDocuments(views: S3View[]): Promise<void> {
+	private async updateMergeManagerActiveDocuments(
+		views: S3View[],
+	): Promise<void> {
 		// Group document GUIDs by their shared folder
 		const folderToGuids = new Map<SharedFolder, Set<string>>();
 
@@ -1030,7 +1149,11 @@ export class LiveViewManager {
 
 	private releaseViews(views: S3View[]) {
 		views.forEach((view) => {
-			view.release();
+			try {
+				view.release();
+			} catch (e) {
+				this.warn("[LiveViews] error releasing stale view", e);
+			}
 		});
 	}
 
@@ -1091,7 +1214,9 @@ export class LiveViewManager {
 		if (folders.size === 0) {
 			return [];
 		}
-		const readyFolders = [...folders].map((folder) => folder.whenReady());
+		const readyFolders = [...folders].map((folder) =>
+			trackPromise(`liveViews:findFolders:${folder.guid}`, folder.whenReady()),
+		);
 		return Promise.all(readyFolders);
 	}
 
@@ -1227,10 +1352,38 @@ export class LiveViewManager {
 		);
 	}
 
+	private getExpectedViewPath(document: S3View["document"]): string | null {
+		if (!document?.path) {
+			return null;
+		}
+		const sharedFolder = document.sharedFolder;
+		if (!sharedFolder) {
+			return null;
+		}
+		return sharedFolder.getPath(document.path);
+	}
+
 	private deduplicate(views: S3View[]): [S3View[], S3View[]] {
 		const stale: S3View[] = [];
 		const matching: S3View[] = [];
 		this.views.forEach((oldView) => {
+			const viewPath = oldView.view?.file?.path;
+			const expectedViewPath = this.getExpectedViewPath(oldView.document);
+			if (
+				oldView.document?.path &&
+				viewPath &&
+				expectedViewPath &&
+				viewPath !== expectedViewPath
+			) {
+				this.warn("[LiveViews] stale view path mismatch", {
+					viewPath,
+					expectedViewPath,
+					documentPath: oldView.document.path,
+					viewType: oldView.view.getViewType?.(),
+				});
+				stale.push(oldView);
+				return;
+			}
 			const found = views.find((newView) => {
 				if (
 					oldView.document == newView.document &&
@@ -1385,6 +1538,8 @@ export class LiveViewManager {
 		this.folderListeners.forEach((off) => off());
 		this.folderListeners.clear();
 		this.folderListeners = null as any;
+		this.documentLockHolders.clear();
+		this.documentLockHolders = null as any;
 		this.views.forEach((view) => view.destroy());
 		this.views = [];
 		this.wipe();
@@ -1397,4 +1552,3 @@ export class LiveViewManager {
 		this.workspace = null as any;
 	}
 }
-

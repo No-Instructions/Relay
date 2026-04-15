@@ -1918,10 +1918,6 @@ export class SharedFolder extends HasProvider {
 		}
 		doc.move(vpath, this);
 
-		// Document creates its own HSM via ensureHSM() - no need to register separately.
-		// Just ensure the HSM exists after the move.
-		doc.ensureHSM();
-
 		if (this._localOnly && doc.hsm) {
 			doc.hsm.setLocalOnly(true);
 		}
