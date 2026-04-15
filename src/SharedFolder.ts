@@ -414,25 +414,25 @@ export class SharedFolder extends HasProvider {
 		// Wire folder-level event subscriptions for idle mode remote updates
 		this.setupEventSubscriptions();
 
-		this.whenReady().then(async () => {
+		trackPromise(`folder:whenReady:${this.guid}`, this.whenReady()).then(async () => {
 			if (!this.destroyed) {
 				// Bulk-load LCA cache before registering HSMs
 				await this.mergeManager.initialize();
 
 				this.addLocalDocs();
 				this.syncFileTree();
-
-				// Transition all HSMs to idle mode since no editor is open yet.
-				// HSMs start in 'loading', then receive SET_MODE_IDLE from MergeManager.
-				if (this.mergeManager) {
-					const allGuids = Array.from(this.files.keys());
-					this.mergeManager.setActiveDocuments(new Set(), allGuids);
-				}
 			}
 		});
 
-		this.whenSynced().then(async () => {
+		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced()).then(async () => {
 			this.syncStore.start();
+			// Remote folder metadata can land before SyncStore observers are installed.
+			// Replay local doc discovery and file-tree sync after start() so cloned
+			// folders do not miss their first batch of remote entries.
+			if (!this.destroyed) {
+				this.addLocalDocs();
+				await this.syncFileTree();
+			}
 			try {
 				this._persistence.set("path", this.path);
 				this._persistence.set("relay", this.relayId || "");
@@ -450,7 +450,7 @@ export class SharedFolder extends HasProvider {
 				if (isAuthoritative) {
 					await this.markSynced();
 				} else {
-					await this.onceProviderSynced();
+					await trackPromise(`folderSync:${this.guid}`, this.onceProviderSynced());
 					await this.markSynced();
 				}
 			} else if (!authoritative) {
@@ -458,7 +458,7 @@ export class SharedFolder extends HasProvider {
 				// provider to sync so _providerSynced is set. Without this,
 				// the folder's `synced` getter stays false and downstream
 				// flows (syncFileTree downloads) can fail.
-				await this.onceProviderSynced();
+				await trackPromise(`folderProviderSync:${this.guid}`, this.onceProviderSynced());
 			}
 		})();
 
@@ -1000,8 +1000,8 @@ export class SharedFolder extends HasProvider {
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 				this.connect();
-				await this.onceConnected();
-				await this.onceProviderSynced();
+				await trackPromise(`folderConnected:${this.guid}`, this.onceConnected());
+				await trackPromise(`folderReady:${this.guid}`, this.onceProviderSynced());
 				return this;
 			}
 			// If this is a shared folder with edits, then we can behave as though we're just offline.
@@ -1012,7 +1012,7 @@ export class SharedFolder extends HasProvider {
 			new Dependency<SharedFolder>(promiseFn, (): [boolean, SharedFolder] => {
 				return [this.ready, this];
 			});
-		return this.readyPromise.getPromise();
+		return trackPromise(`folder:whenReady:${this.guid}`, this.readyPromise.getPromise());
 	}
 
 	whenSynced(): Promise<void> {
@@ -1039,7 +1039,7 @@ export class SharedFolder extends HasProvider {
 				}
 				return [this.persistenceSynced, undefined];
 			});
-		return this.whenSyncedPromise.getPromise();
+		return trackPromise(`folder:whenSynced:${this.guid}`, this.whenSyncedPromise.getPromise());
 	}
 
 	public get intent(): ConnectionIntent {
@@ -1498,7 +1498,7 @@ export class SharedFolder extends HasProvider {
 
 		this.syncFileTreePromise = new SharedPromise<void>(promiseFn);
 
-		return this.syncFileTreePromise.getPromise();
+		return trackPromise(`folder:syncFileTree:${this.guid}`, this.syncFileTreePromise.getPromise());
 	}
 
 	move(path: string) {
@@ -1859,7 +1859,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 
 		(async () => {
-			this.whenReady().then(async () => {
+			trackPromise(`folder:canvasReady:${canvas.guid}`, this.whenReady()).then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueCanvasDownload(canvas);
@@ -2010,7 +2010,7 @@ export class SharedFolder extends HasProvider {
 		const doc = this.getOrCreateDoc(guid, vpath);
 
 		(async () => {
-			this.whenReady().then(async () => {
+			trackPromise(`folder:docReady:${doc.guid}`, this.whenReady()).then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueDownload(doc, !flags().enableNewSyncStatus);
