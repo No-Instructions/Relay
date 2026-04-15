@@ -508,45 +508,53 @@ export class LiveView<ViewType extends TextFileView>
 							);
 						}
 
-						// Get CURRENT localDoc content (not stale conflictData.ours)
+						// Use the conflict payload sides directly so labels and hunk actions
+						// stay aligned with what the HSM declared as ours/theirs.
+						const oursContent = conflictData.ours;
+						const theirsContent = conflictData.theirs;
 						const currentLocalContent = localDoc.getText("contents").toString();
-						const diskContent = conflictData.theirs;
+						if (currentLocalContent !== oursContent) {
+							this.log(
+								`[mergeBanner] conflict side drift detected: localDoc=${currentLocalContent.length}, conflict.ours=${oursContent.length}`,
+							);
+						}
 
 						this.log(
-							`[mergeBanner] localDoc: ${currentLocalContent.length} chars, disk: ${diskContent.length} chars`,
+							`[mergeBanner] ours: ${oursContent.length} chars, theirs: ${theirsContent.length} chars`,
 						);
 
 						// Create DiskBuffer wrappers (differ expects TFile-like objects)
 						// Use DiskBuffer for BOTH sides to ensure we show correct content
 						const oursLabel = conflictData.oursLabel ?? "Editor";
 						const theirsLabel = conflictData.theirsLabel ?? "Disk";
-						const localFile = new DiskBuffer(
+						const oursFile = new DiskBuffer(
 							this._parent.app.vault,
 							this.document.path + ` (${oursLabel})`,
-							currentLocalContent,
+							oursContent,
 						);
-						const diskFile = new DiskBuffer(
+						const theirsFile = new DiskBuffer(
 							this._parent.app.vault,
 							this.document.path + ` (${theirsLabel})`,
-							diskContent,
+							theirsContent,
 						);
 
 						// Transition HSM to resolving state
 						hsm.send({ type: "OPEN_DIFF_VIEW" });
 
-						// Open diff view: localDoc (left) vs disk (right)
+						// Open diff view: conflict "ours" (left) vs "theirs" (right)
 						this._parent.openDiffView({
-							file1: localFile,
-							file2: diskFile,
+							file1: oursFile,
+							file2: theirsFile,
 							showMergeOption: true,
 							oursLabel,
 							theirsLabel,
+							sourceVaultPath: this.document.tfile?.path,
 							onResolve: async () => {
 								this.log("[mergeBanner] HSM conflict resolved via diff view");
 
-								// The differ modifies file1 (localFile) in-place via its contents.
+								// The differ modifies file1 (oursFile) in-place via its contents.
 								// Get the resolved content and apply it to HSM's localDoc.
-								const resolvedContent = localFile.contents;
+								const resolvedContent = oursFile.contents;
 
 								hsm.send({ type: "RESOLVE", contents: resolvedContent });
 
