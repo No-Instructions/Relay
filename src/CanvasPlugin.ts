@@ -10,6 +10,7 @@ import type {
 } from "src/CanvasView";
 import type {
 	RelayCanvasView,
+	DocumentViewer,
 	LiveViewManager,
 } from "src/LiveViews";
 import { HasLogging } from "src/debug";
@@ -126,6 +127,9 @@ export class CanvasPlugin extends HasLogging {
 					embedView,
 					document,
 				);
+				const viewer: DocumentViewer =
+					embedView.leaf ?? Symbol(`canvas-embed:${embedView.file.path}`);
+				let cancelled = false;
 				plugin.initialize().catch((error) => {
 					this.error(
 						"Error initializing ViewHookPlugin for canvas embed:",
@@ -141,12 +145,14 @@ export class CanvasPlugin extends HasLogging {
 				document
 					.whenReady()
 					.then(() => {
+						if (cancelled) {
+							return;
+						}
 						const viewRef = embedView as EditorViewRef;
-						const lockHolder = embedView.leaf ?? undefined;
 						return this.connectionManager.acquireDocumentLock(
 							document,
 							viewRef,
-							lockHolder,
+							viewer,
 							editorContent,
 						);
 					})
@@ -157,15 +163,16 @@ export class CanvasPlugin extends HasLogging {
 						);
 				});
 
-				return () => {
-					this.trackedEmbedViews.delete(embedView);
-					plugin.destroy();
-					this.connectionManager.releaseDocumentLock(
-						document,
-						embedView.leaf ?? undefined,
-					);
-				};
-			})(),
+					return () => {
+						cancelled = true;
+						this.trackedEmbedViews.delete(embedView);
+						plugin.destroy();
+						this.connectionManager.releaseDocumentLock(
+							document,
+							viewer,
+						);
+					};
+				})(),
 		);
 	}
 

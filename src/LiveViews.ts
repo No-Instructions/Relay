@@ -54,6 +54,8 @@ export function getConnectionManager(
 	);
 }
 
+export type DocumentViewer = WorkspaceLeaf | symbol;
+
 const BACKGROUND_CONNECTIONS = 3;
 
 function iterateCanvasViews(
@@ -399,6 +401,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
 	private _hasLock = false;
+	private readonly _fallbackViewer = Symbol("live-view-viewer");
 
 	constructor(
 		connectionManager: LiveViewManager,
@@ -726,7 +729,7 @@ export class LiveView<ViewType extends TextFileView>
 			this._parent.acquireDocumentLock(
 				this.document,
 				this.view as unknown as EditorViewRef,
-				this.view.leaf ?? undefined,
+				this.view.leaf ?? this._fallbackViewer,
 				this.view.getViewData(),
 			);
 			this._hasLock = true;
@@ -834,15 +837,16 @@ export class LiveView<ViewType extends TextFileView>
 		const sharedFolder = this.document.sharedFolder;
 		const preservePendingUpload =
 			!!sharedFolder && sharedFolder.isPendingUpload(this.document.path);
-		if (!preservePendingUpload) {
-			this.document.disconnect();
-		}
+		let stillLocked = this.document.userLock;
 		if (this._hasLock) {
-			this._parent.releaseDocumentLock(
+			stillLocked = this._parent.releaseDocumentLock(
 				this.document,
-				this.view.leaf ?? undefined,
+				this.view.leaf ?? this._fallbackViewer,
 			);
 			this._hasLock = false;
+		}
+		if (!preservePendingUpload && !stillLocked) {
+			this.document.disconnect();
 		}
 	}
 
@@ -873,7 +877,7 @@ export class LiveViewManager {
 	extensions: Extension[];
 	networkStatus: NetworkStatus;
 	refreshQueue: (() => Promise<boolean>)[];
-	private documentLockHolders: Map<string, Set<WorkspaceLeaf>>;
+	private documentViewers: Map<string, Set<DocumentViewer>>;
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
 
@@ -891,7 +895,7 @@ export class LiveViewManager {
 		this.loginManager = loginManager;
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
-		this.documentLockHolders = new Map();
+		this.documentViewers = new Map();
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -1005,23 +1009,22 @@ export class LiveViewManager {
 	acquireDocumentLock(
 		document: Document,
 		editorViewRef: EditorViewRef,
-		lockHolder: WorkspaceLeaf | undefined,
+		viewer: DocumentViewer,
 		editorContent: string,
 	): void {
-		if (!lockHolder) {
+		let viewers = this.documentViewers.get(document.guid);
+		if (!viewers) {
+			viewers = new Set();
+			this.documentViewers.set(document.guid, viewers);
+		}
+
+		if (viewers.has(viewer)) {
 			document.userLock = true;
-			document.acquireLock(editorContent, editorViewRef);
 			return;
 		}
 
-		let holders = this.documentLockHolders.get(document.guid);
-		if (!holders) {
-			holders = new Set();
-			this.documentLockHolders.set(document.guid, holders);
-		}
-
-		const wasEmpty = holders.size === 0;
-		holders.add(lockHolder);
+		const wasEmpty = viewers.size === 0;
+		viewers.add(viewer);
 		document.userLock = true;
 
 		if (wasEmpty) {
@@ -1031,43 +1034,33 @@ export class LiveViewManager {
 
 	releaseDocumentLock(
 		document: Document,
-		lockHolder?: WorkspaceLeaf,
-	): void {
-		if (!lockHolder) {
-			this.documentLockHolders.delete(document.guid);
+		viewer: DocumentViewer,
+	): boolean {
+		const viewers = this.documentViewers.get(document.guid);
+		if (!viewers) {
 			if (this.isDocumentOpenInWorkspace(document)) {
 				document.userLock = true;
-				return;
+				return true;
 			}
 			document.userLock = false;
 			document.releaseLock();
-			return;
+			return false;
 		}
 
-		const holders = this.documentLockHolders.get(document.guid);
-		if (!holders) {
-			if (this.isDocumentOpenInWorkspace(document)) {
-				document.userLock = true;
-				return;
-			}
-			document.userLock = false;
-			document.releaseLock();
-			return;
-		}
-
-		holders.delete(lockHolder);
-		if (holders.size > 0) {
+		viewers.delete(viewer);
+		if (viewers.size > 0) {
 			document.userLock = true;
-			return;
+			return true;
 		}
 
-		this.documentLockHolders.delete(document.guid);
+		this.documentViewers.delete(document.guid);
 		if (this.isDocumentOpenInWorkspace(document)) {
 			document.userLock = true;
-			return;
+			return true;
 		}
 		document.userLock = false;
 		document.releaseLock();
+		return false;
 	}
 
 	/**
@@ -1532,8 +1525,8 @@ export class LiveViewManager {
 		this.folderListeners.forEach((off) => off());
 		this.folderListeners.clear();
 		this.folderListeners = null as any;
-		this.documentLockHolders.clear();
-		this.documentLockHolders = null as any;
+		this.documentViewers.clear();
+		this.documentViewers = null as any;
 		this.views.forEach((view) => view.destroy());
 		this.views = [];
 		this.wipe();
