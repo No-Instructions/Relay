@@ -1926,21 +1926,25 @@ export class SharedFolder extends HasProvider {
 		if (!guid) {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
+		const updateBytes = await this.backgroundSync.downloadByGuid(this, guid, vpath);
+
+		if (!updateBytes) {
+			throw new Error("failed to download");
+		}
+
+		const tempDoc = new Y.Doc();
+		Y.applyUpdate(tempDoc, updateBytes);
+		const contents = tempDoc.getText("contents").toString();
 		const doc = this.getOrCreateDoc(guid, vpath);
+		await doc.hsm?.initializeFromRemote(updateBytes);
 
-		// Download via queue — returns raw CRDT bytes applied to remoteDoc
-		const updateBytes = await this.backgroundSync.enqueueDownload(doc);
-
-		if (updateBytes) {
-			await doc.hsm?.initializeFromRemote(updateBytes);
-
-			if (this.syncStore.has(doc.path)) {
-				await this.flush(doc, doc.text);
-				await doc.hsm?.setLCA();
-			}
+		if (!this.syncStore.has(doc.path)) {
+			throw new Error("file no longer wanted");
 		}
 
 		this.files.set(guid, doc);
+		await doc.hsm?.setLCA();
+		await this.flush(doc, contents);
 		this.fset.add(doc, update);
 
 		return doc;
