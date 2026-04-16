@@ -11,7 +11,13 @@ import { trackPromise } from "./trackPromise";
  */
 export function awaitOnReload(p: Promise<void>, label?: string): void {
 	const tracked = label ? trackPromise(label, p) : p;
+	const awaited = tracked.catch((error) => {
+		console.error(
+			`[Relay] reloadAwait promise rejected${label ? ` (${label})` : ""}:`,
+			error,
+		);
+	});
 	if (typeof window !== 'undefined') {
-		(window as any).app?._reloadAwait?.push(tracked);
+		(window as any).app?._reloadAwait?.push(awaited);
 	}
 }
