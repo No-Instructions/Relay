@@ -58,10 +58,9 @@ export function mockEditorViewRef(content: string = '', dirty: boolean = false):
 
 /**
  * Create an ACQUIRE_LOCK event.
- * @param editorContent - The current editor/disk content at the moment of opening.
  */
-export function acquireLock(editorContent: string = '', editorViewRef?: EditorViewRef): AcquireLockEvent {
-  return { type: 'ACQUIRE_LOCK', editorContent, editorViewRef };
+export function acquireLock(editorViewRef?: EditorViewRef): AcquireLockEvent {
+  return { type: 'ACQUIRE_LOCK', editorViewRef };
 }
 
 /**
@@ -69,8 +68,8 @@ export function acquireLock(editorContent: string = '', editorViewRef?: EditorVi
  * After this, state will be in active.tracking, active.entering.reconciling,
  * or active.conflict.* if there's a deferred conflict.
  */
-export async function sendAcquireLock(hsm: HSMHandle, editorContent: string = ''): Promise<void> {
-  hsm.send(acquireLock(editorContent));
+export async function sendAcquireLock(hsm: HSMHandle): Promise<void> {
+  hsm.send(acquireLock());
   // Wait for state to leave awaitingPersistence (persistence has synced)
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence'));
 }
@@ -78,8 +77,8 @@ export async function sendAcquireLock(hsm: HSMHandle, editorContent: string = ''
 /**
  * Send ACQUIRE_LOCK and wait all the way to active.tracking.
  */
-export async function sendAcquireLockToTracking(hsm: HSMHandle, editorContent: string = ''): Promise<void> {
-  hsm.send(acquireLock(editorContent));
+export async function sendAcquireLockToTracking(hsm: HSMHandle): Promise<void> {
+  hsm.send(acquireLock());
   // Wait for tracking (or conflict)
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking' || s.includes('conflict'));
 }
@@ -364,7 +363,7 @@ export async function loadAndActivate(
   //    Persistence syncs asynchronously (may have random delay in tests).
   //    If IDB had content (hasContent=true) → reconciling → tracking.
   //    If IDB was empty (hasContent=false) and provider not synced → tracking directly.
-  hsm.send(acquireLock(content, opts?.editorViewRef));
+  hsm.send(acquireLock(opts?.editorViewRef));
 
   // Wait for state to reach tracking
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking');
@@ -648,7 +647,7 @@ export async function loadToConflict(
   }
 
   // Step 4: Acquire lock - this triggers conflict detection
-  hsm.send(acquireLock(opts.disk));
+  hsm.send(acquireLock());
   // Wait for persistence to sync and state to settle
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence') && !s.includes('entering'));
 

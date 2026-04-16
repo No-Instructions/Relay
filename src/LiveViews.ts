@@ -738,7 +738,6 @@ export class LiveView<ViewType extends TextFileView>
 				this.document,
 				this.view as unknown as EditorViewRef,
 				this.view.leaf ?? this._fallbackViewer,
-				this.view.getViewData(),
 			);
 			this._hasLock = true;
 		}
@@ -1018,7 +1017,6 @@ export class LiveViewManager {
 		document: Document,
 		editorViewRef: EditorViewRef,
 		viewer: DocumentViewer,
-		editorContent: string,
 	): void {
 		let viewers = this.documentViewers.get(document.guid);
 		if (!viewers) {
@@ -1036,7 +1034,7 @@ export class LiveViewManager {
 		document.userLock = true;
 
 		if (wasEmpty) {
-			document.acquireLock(editorContent, editorViewRef);
+			document.acquireLock(editorViewRef);
 		}
 	}
 

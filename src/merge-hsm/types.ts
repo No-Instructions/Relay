@@ -208,12 +208,6 @@ export interface UnloadEvent {
 export interface AcquireLockEvent {
 	type: "ACQUIRE_LOCK";
 	/**
-	 * The current editor/disk content at the moment of opening.
-	 * Since the editor content equals the disk content when a file is first opened
-	 * (before CRDT loads), this provides accurate disk content for merge operations.
-	 */
-	editorContent: string;
-	/**
 	 * Live reference to the editor view's dirty flag.
 	 * When present, enables LCA advancement during active.tracking
 	 * when DISK_CHANGED fires and dirty === false (auto-save has flushed).

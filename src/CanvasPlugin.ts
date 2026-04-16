@@ -141,7 +141,6 @@ export class CanvasPlugin extends HasLogging {
 				// transitions to active mode and can process CM6 events.
 				// Read editor content: the embed's CM6 editor may start empty,
 				// so use the child view's data (which holds the disk content).
-				const editorContent = embedView.data ?? "";
 				document
 					.whenReady()
 					.then(() => {
@@ -153,7 +152,6 @@ export class CanvasPlugin extends HasLogging {
 							document,
 							viewRef,
 							viewer,
-							editorContent,
 						);
 					})
 					.catch((error: unknown) => {

@@ -113,7 +113,6 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'ACQUIRE_LOCK':
       return {
         type: 'ACQUIRE_LOCK',
-        editorContent: event.editorContent,
       } as unknown as SerializableEvent;
 
     // Events without binary data pass through
