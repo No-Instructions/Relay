@@ -140,9 +140,9 @@ export interface ConflictHunkInfo {
   baseEnd: number;
   /** Whether the HSM has marked this hunk resolved via RESOLVE_HUNK. */
   resolved: boolean;
-  /** Local/editor side of the hunk (what resolution="local" picks). */
+  /** Raw "ours" side from the conflict payload. */
   oursContent: string;
-  /** Remote/peer side of the hunk (what resolution="remote" picks). */
+  /** Raw "theirs" side from the conflict payload. */
   theirsContent: string;
 }
 
@@ -308,9 +308,9 @@ export interface RelayDebugGlobal {
    *   - string → matched against `ConflictHunkInfo.id`; throws on
    *     ambiguous (collision) or missing
    *
-   * `resolution` picks the content:
-   *   - "local"  → the hunk's oursContent
-   *   - "remote" → the hunk's theirsContent
+   * `resolution` picks the semantic side declared by the conflict labels:
+   *   - "local"  → whichever side is labeled local/local file
+   *   - "remote" → whichever side is labeled remote/peer
    *   - "both"   → oursContent + "\n" + theirsContent
    *
    * The HSM mutates localDoc in place at the hunk's positioned region,
