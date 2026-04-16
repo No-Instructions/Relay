@@ -372,8 +372,16 @@ export class MergeManager {
     remoteDoc: Y.Doc | null;
     getDiskContent: () => Promise<{ content: string; hash: string; mtime: number }>;
     getPersistenceMetadata?: () => PersistenceMetadata;
+    isFolderConnected?: () => boolean;
   }): MergeHSM {
-    const { guid, getPath, remoteDoc, getDiskContent, getPersistenceMetadata } = config;
+    const {
+      guid,
+      getPath,
+      remoteDoc,
+      getDiskContent,
+      getPersistenceMetadata,
+      isFolderConnected,
+    } = config;
 
     // Get lightweight metadata from cache (bulk-loaded during initialize())
     const lcaMeta = this.getLCAMeta(guid);
@@ -390,6 +398,7 @@ export class MergeManager {
       persistenceMetadata: getPersistenceMetadata?.(),
       userId: this.userId,
       diskLoader: getDiskContent,
+      isFolderConnected,
       yaml: this._yaml ?? undefined,
     });
 
