@@ -1087,8 +1087,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 			// === Active entering/tracking guards ===
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
+			persistenceHasContentAndEditorAvailable: (_hsm, event) =>
+				(event as any).hasContent === true && this.lastKnownEditorText !== null,
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
+			editorContentAvailable: () => this.lastKnownEditorText !== null,
 			hasPreexistingConflict: () => this._conflict !== null,
 			isRecoveryMode: () => this._lca === null,
 		};
@@ -2157,11 +2160,19 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this._obsidianFileOpen = false;
 			return; // Diagnostic only, no state transition
 		}
+		if (event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL') {
+			// Seed lastKnownEditorText with the content Obsidian just installed
+			// into the view. This is the one authoritative moment we can read
+			// it — CM6's "set" transaction is a no-op when the buffer is
+			// already the same (e.g. empty new notes), so we can't rely on
+			// CM6_CHANGE to catch this.
+			this.lastKnownEditorText = event.editorContent;
+			return; // Diagnostic only, no state transition
+		}
 		if (event.type === 'OBSIDIAN_SAVE_FRONTMATTER'
 			|| event.type === 'OBSIDIAN_METADATA_SYNC'
 			|| event.type === 'OBSIDIAN_VIEW_REUSED'
 			|| event.type === 'OBSIDIAN_THREE_WAY_MERGE'
-			|| event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL'
 			|| event.type === 'DRIFT_CHECK') {
 			return; // Diagnostic only, no state transition
 		}

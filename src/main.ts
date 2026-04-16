@@ -1154,8 +1154,6 @@ export default class Live extends Plugin {
 			},
 		});
 
-		// Patch loadFileInternal on TextFileView prototype (parent of MarkdownView)
-		// to send diagnostic events to MergeHSM for debugging visibility
 		const TextFileViewPrototype = Object.getPrototypeOf(MarkdownView.prototype);
 		getPatcher().patch(TextFileViewPrototype, {
 			loadFileInternal(old: any) {
@@ -1185,6 +1183,7 @@ export default class Live extends Plugin {
 									dirty,
 									contentChanged,
 									willMerge,
+									editorContent: this.getViewData(),
 								});
 
 								// If merge was triggered, send the merge event too

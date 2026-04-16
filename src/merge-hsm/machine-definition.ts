@@ -40,6 +40,7 @@ const IDLE_LIFECYCLE: Record<string, EventHandler> = {
 	ERROR: { target: 'idle.error', actions: ['storeError'] },
 };
 
+
 // =============================================================================
 // Machine Definition
 // =============================================================================
@@ -313,13 +314,25 @@ export const MACHINE: MachineDefinition = {
 				actions: ['storePersistenceData', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			PERSISTENCE_SYNCED: [
-				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent' },
+				{ target: 'active.entering.reconciling', guard: 'persistenceHasContentAndEditorAvailable' },
 				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
-				{ target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
+				{ target: 'active.entering.reconciling', guard: 'editorContentAvailable', actions: ['applyRemoteToLocalIfNeeded'] },
+				// Editor content not yet delivered. Stay put; when a subsequent
+				// CM6_CHANGE or OBSIDIAN_LOAD_FILE_INTERNAL seeds lastKnownEditorText,
+				// reconciliation can proceed.
+				{ target: 'active.entering.awaitingPersistence' },
 			],
 			PROVIDER_SYNCED: {
 				target: 'active.entering.awaitingPersistence',
 				actions: ['markProviderSynced', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			CONNECTED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['flushPendingToRemote', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			DISCONNECTED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['setOffline', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			CM6_CHANGE: { target: 'active.entering.awaitingPersistence', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: {
