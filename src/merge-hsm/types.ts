@@ -361,6 +361,13 @@ export interface ObsidianLoadFileInternalEvent {
 	contentChanged: boolean;
 	/** True if three-way merge will be triggered (dirty && contentChanged && isPlaintext) */
 	willMerge: boolean;
+	/**
+	 * Editor content after the view installed its buffer for this file.
+	 * The HSM uses this to seed lastKnownEditorText so reconciliation and
+	 * drift correction reason against the actual buffer — including empty
+	 * new notes where CM6 produces no observable transaction.
+	 */
+	editorContent: string;
 }
 
 /**
