@@ -110,8 +110,9 @@ function deserializeIndex(stored: StoredMergeIndex): MergeIndex {
  */
 export class HSMStore {
   private _db: Promise<IDBDatabase>;
-  private _pendingWrites = new Set<Promise<void>>();
+  private _pendingWrites = new Set<Promise<unknown>>();
   private _destroyed = false;
+  private _destroyPromise: Promise<void> | null = null;
 
   constructor(appId: string) {
     this._db = idb.openDB(getDbName(appId), (db) => {
@@ -129,10 +130,16 @@ export class HSMStore {
   async saveState(guid: string, state: PersistedMergeState): Promise<void> {
     if (this._destroyed) return;
     const sanitized = sanitizeState({ ...state, guid });
-    const p = this._db.then(db => {
-      const [store] = idb.transact(db, [STORES.states], 'readwrite');
-      return idb.put(store, sanitized as unknown as string);
-    });
+    const p = this._db
+      .then(db => {
+        if (this._destroyed) return;
+        const [store] = idb.transact(db, [STORES.states], 'readwrite');
+        return idb.put(store, sanitized as unknown as string);
+      })
+      .catch(err => {
+        if (this._shouldIgnoreClosingError(err)) return;
+        throw err;
+      });
     this._trackWrite(p);
     await p;
   }
@@ -146,10 +153,16 @@ export class HSMStore {
 
   async deleteState(guid: string): Promise<void> {
     if (this._destroyed) return;
-    const p = this._db.then(db => {
-      const [store] = idb.transact(db, [STORES.states], 'readwrite');
-      return idb.del(store, guid);
-    });
+    const p = this._db
+      .then(db => {
+        if (this._destroyed) return;
+        const [store] = idb.transact(db, [STORES.states], 'readwrite');
+        return idb.del(store, guid);
+      })
+      .catch(err => {
+        if (this._shouldIgnoreClosingError(err)) return;
+        throw err;
+      });
     this._trackWrite(p);
     await p;
   }
@@ -203,10 +216,16 @@ export class HSMStore {
   async saveIndex(folderGuid: string, index: MergeIndex): Promise<void> {
     if (this._destroyed) return;
     const storable = serializeIndex({ ...index, folderGuid });
-    const p = this._db.then(db => {
-      const [store] = idb.transact(db, [STORES.index], 'readwrite');
-      return idb.put(store, storable as unknown as string);
-    });
+    const p = this._db
+      .then(db => {
+        if (this._destroyed) return;
+        const [store] = idb.transact(db, [STORES.index], 'readwrite');
+        return idb.put(store, storable as unknown as string);
+      })
+      .catch(err => {
+        if (this._shouldIgnoreClosingError(err)) return;
+        throw err;
+      });
     this._trackWrite(p);
     await p;
   }
@@ -221,10 +240,16 @@ export class HSMStore {
 
   async deleteIndex(folderGuid: string): Promise<void> {
     if (this._destroyed) return;
-    const p = this._db.then(db => {
-      const [store] = idb.transact(db, [STORES.index], 'readwrite');
-      return idb.del(store, folderGuid);
-    });
+    const p = this._db
+      .then(db => {
+        if (this._destroyed) return;
+        const [store] = idb.transact(db, [STORES.index], 'readwrite');
+        return idb.del(store, folderGuid);
+      })
+      .catch(err => {
+        if (this._shouldIgnoreClosingError(err)) return;
+        throw err;
+      });
     this._trackWrite(p);
     await p;
   }
@@ -235,17 +260,23 @@ export class HSMStore {
 
   async clearAllData(): Promise<void> {
     if (this._destroyed) return;
-    const p = this._db.then(db => {
-      const [statesStore, indexStore] = idb.transact(
-        db,
-        [STORES.states, STORES.index],
-        'readwrite'
-      );
-      return Promise.all([
-        idb.del(statesStore, IDBKeyRange.lowerBound('')),
-        idb.del(indexStore, IDBKeyRange.lowerBound('')),
-      ]).then(() => {});
-    });
+    const p = this._db
+      .then(db => {
+        if (this._destroyed) return;
+        const [statesStore, indexStore] = idb.transact(
+          db,
+          [STORES.states, STORES.index],
+          'readwrite'
+        );
+        return Promise.all([
+          idb.del(statesStore, IDBKeyRange.lowerBound('')),
+          idb.del(indexStore, IDBKeyRange.lowerBound('')),
+        ]).then(() => {});
+      })
+      .catch(err => {
+        if (this._shouldIgnoreClosingError(err)) return;
+        throw err;
+      });
     this._trackWrite(p);
     await p;
   }
@@ -257,25 +288,39 @@ export class HSMStore {
   /** Wait for all in-flight writes to complete. */
   async flush(): Promise<void> {
     if (this._pendingWrites.size > 0) {
-      await Promise.all(this._pendingWrites);
+      await Promise.allSettled([...this._pendingWrites]);
     }
   }
 
   /** Flush pending writes and close the database connection. */
   async destroy(): Promise<void> {
-    this._destroyed = true;
-    await this.flush();
-    const db = await this._db;
-    db.close();
+    if (this._destroyPromise) return this._destroyPromise;
+    this._destroyPromise = (async () => {
+      // Drain writes that were already queued when teardown started.
+      await this.flush();
+      // Block new writes from this point onward and drain once more to catch
+      // operations that queued while the first drain was in progress.
+      this._destroyed = true;
+      await this.flush();
+      const db = await this._db;
+      db.close();
+    })();
+    return this._destroyPromise;
   }
 
   // ===========================================================================
   // Internals
   // ===========================================================================
 
-  private _trackWrite(p: Promise<void>): void {
+  private _trackWrite(p: Promise<unknown>): void {
     this._pendingWrites.add(p);
     p.finally(() => this._pendingWrites.delete(p));
+  }
+
+  private _shouldIgnoreClosingError(err: unknown): boolean {
+    if (!this._destroyed) return false;
+    if (!(err instanceof DOMException)) return false;
+    return err.name === 'InvalidStateError';
   }
 }
 

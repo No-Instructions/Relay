@@ -514,14 +514,21 @@ export default class Live extends Plugin {
 			}),
 		);
 
-		const code = `async function() {
-			const app = window.app;
-			app._reloadAwait = [];
-			await app.plugins.disablePlugin("system3-relay");
-			await Promise.all(app._reloadAwait || []);
-			app._reloadAwait = null;
-			await app.plugins.enablePlugin("system3-relay");
-		}`;
+			const code = `async function() {
+				const app = window.app;
+				app._reloadAwait = [];
+				await app.plugins.disablePlugin("system3-relay");
+				const results = await Promise.allSettled(app._reloadAwait || []);
+				const rejected = results.filter((r) => r.status === "rejected");
+				if (rejected.length > 0) {
+					console.error(
+						"[Relay] reloadAwait had rejected teardown promise(s):",
+						rejected,
+					);
+				}
+				app._reloadAwait = null;
+				await app.plugins.enablePlugin("system3-relay");
+			}`;
 		(this.app as any).reloadRelay = new Function("return " + code);
 
 		this.addCommand({
@@ -1472,12 +1479,20 @@ export default class Live extends Plugin {
 		});
 		this.sharedFolders = null as any;
 
-		// Flush pending HSM writes and close the database after SharedFolders
-		// are destroyed (no more writes will be queued).
-		teardownStep("hsmStore.destroy", () => {
-			awaitOnReload(this._hsmStore?.destroy(), `plugin:teardown:hsmStore.destroy:${this._instanceId}`);
-		});
-		this._hsmStore = null as any;
+			// Flush pending HSM writes and close the database after SharedFolders
+			// are destroyed (no more writes will be queued).
+			teardownStep("hsmStore.destroy", () => {
+				const reloadAwait = (window as any).app?._reloadAwait;
+				const priorTeardown = Array.isArray(reloadAwait)
+					? Promise.allSettled([...reloadAwait]).then(() => {})
+					: Promise.resolve();
+				const p = priorTeardown.then(() => this._hsmStore?.destroy());
+				awaitOnReload(
+					p,
+					`plugin:teardown:hsmStore.destroy:${this._instanceId}`,
+				);
+			});
+			this._hsmStore = null as any;
 
 		teardownStep("settingsTab.destroy", () => {
 			this.settingsTab?.destroy();
