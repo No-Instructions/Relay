@@ -30,6 +30,7 @@ import {
 	RelayInstances,
 	initializeLogger,
 	flushLogs,
+	initializeMetrics,
 } from "./debug";
 import { getPatcher, Patcher } from "./Patcher";
 import { LiveTokenStore } from "./LiveTokenStore";
@@ -329,6 +330,7 @@ export default class Live extends Plugin {
 				disableConsole: false, // Disable console logging
 			},
 		);
+		initializeMetrics(this.app, (ref) => this.registerEvent(ref));
 		this.notifier = new ObsidianNotifier();
 
 		this.debug = curryLog("[System 3][Relay]", "debug");
