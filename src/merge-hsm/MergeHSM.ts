@@ -210,6 +210,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private _persistenceMetadata?: PersistenceMetadata;
 	private _diskLoader: DiskLoader;
 	private _isProviderSynced: () => boolean;
+	private _isFolderConnected: () => boolean;
 	private _captureOpts: CaptureOpts | null;
 	private _replayMode: boolean;
 
@@ -282,6 +283,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._diskLoader = config.diskLoader;
 		this._bridge = new SyncBridge(this);
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
+		this._isFolderConnected = config.isFolderConnected ?? (() => this._isOnline);
 		this._replayMode = config.replayMode ?? false;
 		this._yaml = config.yaml ?? null;
 		this._captureOpts = {
@@ -731,10 +733,20 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		updateBytes: Uint8Array,
 	): Promise<boolean> {
 		await this.ensurePersistence();
+		const persistence = this.localPersistence;
+		if (!persistence || !this.hasUsableLocalDoc()) {
+			return false;
+		}
 
-		const didInitialize = await this.localPersistence!.initializeFromRemote!(updateBytes, this.remoteDoc);
+		const didInitialize = await persistence.initializeFromRemote!(
+			updateBytes,
+			this.remoteDoc,
+		);
 
 		if (didInitialize) {
+			if (!this.hasUsableLocalDoc()) {
+				return false;
+			}
 			this._localStateVector = Y.encodeStateVector(this.localDoc!);
 			this.emitPersistState();
 		}
@@ -789,6 +801,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			);
 		}
 		await this.localPersistence.whenSynced;
+	}
+
+	private hasUsableLocalDoc(): boolean {
+		return !!this.localDoc && (this.localDoc as any).store != null;
 	}
 
 	/**
@@ -1573,20 +1589,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this._bridge.providerSynced = true;
 				},
 				maybeSignalPersistenceSyncedForRecovery: () => {
-					if (!this.matches("active.entering.awaitingPersistence")) {
-						return;
-					}
-					if (this._lca !== null) {
-						return;
-					}
-					if (!this.localPersistence || !this.localPersistence.synced) {
-						return;
-					}
-					const hasContent = this.localPersistence.hasUserData();
-					const remoteHasContent = !!this.remoteDoc && !isEmptyDoc(this.remoteDoc);
-					if (hasContent || remoteHasContent) {
-						this.send({ type: "PERSISTENCE_SYNCED", hasContent });
-					}
+					this.maybeSignalPersistenceReady("event");
 				},
 				clearForkAndUpdateLCA: (_hsm, event) => {
 					this._fork = null;
@@ -2438,6 +2441,35 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * Called either immediately if persistence was already synced,
 	 * or via the 'synced' event callback.
 	 */
+	private maybeSignalPersistenceReady(source: "event" | "localSync"): void {
+		if (!this.matches("active.entering.awaitingPersistence")) {
+			return;
+		}
+		if (!this.localPersistence || !this.localPersistence.synced) {
+			return;
+		}
+
+		const hasContent = this.localPersistence.hasUserData();
+		const remoteHasContent = !!this.remoteDoc && !isEmptyDoc(this.remoteDoc);
+		const folderConnected = this._isFolderConnected();
+		const canProceed =
+			hasContent ||
+			remoteHasContent ||
+			this._providerSynced ||
+			!folderConnected;
+
+		if (!canProceed) {
+			return;
+		}
+
+		this.crdtLog(
+			`persistence ready signal | source=${source} | hasContent=${hasContent} | ` +
+				`remoteHasContent=${remoteHasContent} | providerSynced=${this._providerSynced} | ` +
+				`folderConnected=${folderConnected} | hsmOnline=${this._isOnline}`,
+		);
+		this.send({ type: "PERSISTENCE_SYNCED", hasContent });
+	}
+
 	private handleLocalPersistenceSynced(): void {
 		// Guard: If we're no longer in awaitingPersistence (e.g., lock was released
 		// or unload happened during async persistence load), ignore this callback.
@@ -2518,20 +2550,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Set up observer for remote updates (converts deltas to positioned changes)
 		this.setupLocalDocObserver();
 
-		// Signal persistence sync when IDB has content, OR when in recovery
-		// mode (no LCA) AND remoteDoc has content from the server.
-		// After GUID remap, IDB is intentionally empty and there is no LCA.
-		// The remote CRDT was received during idle mode. The reconciliation
-		// path handles this by routing to two-way merge which compares disk
-		// vs remote content.
-		// Without this, the HSM stays stuck in awaitingPersistence because
-		// initializeWithContent is only called on the upload path, not when
-		// opening a file in active mode after GUID remap.
-		const remoteHasContent =
-			this.remoteDoc && !isEmptyDoc(this.remoteDoc);
-		if (hasContent || (this._lca === null && remoteHasContent)) {
-			this.send({ type: "PERSISTENCE_SYNCED", hasContent });
-		}
+		// Signal readiness once persistence is synced and either:
+		// 1) IDB has content, or
+		// 2) remote content has arrived, or
+		// 3) provider has synced (authoritative empty state), or
+		// 4) we're offline and must proceed with local reconciliation.
+		this.maybeSignalPersistenceReady("localSync");
 	}
 
 
@@ -2866,14 +2890,45 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		if (!region || !positioned) return;
 
+		const isLocalLabel = (label: string | undefined): boolean => {
+			const normalized = (label ?? "").toLowerCase();
+			return normalized.includes("local") || normalized.includes("disk");
+		};
+		const isRemoteLabel = (label: string | undefined): boolean => {
+			const normalized = (label ?? "").toLowerCase();
+			return normalized.includes("remote") || normalized.includes("peer");
+		};
+
+		const pickSemanticSide = (semantic: "local" | "remote"): string => {
+			const oursLabel = conflict.oursLabel;
+			const theirsLabel = conflict.theirsLabel;
+			const oursMatches =
+				semantic === "local"
+					? isLocalLabel(oursLabel)
+					: isRemoteLabel(oursLabel);
+			const theirsMatches =
+				semantic === "local"
+					? isLocalLabel(theirsLabel)
+					: isRemoteLabel(theirsLabel);
+
+			if (oursMatches && !theirsMatches) return region.oursContent;
+			if (theirsMatches && !oursMatches) return region.theirsContent;
+
+			// Fallback to the historical mapping when labels are absent or
+			// ambiguous so existing conflict payloads keep working.
+			return semantic === "local"
+				? region.oursContent
+				: region.theirsContent;
+		};
+
 		// Determine content to apply based on resolution type
 		let newContent: string;
 		switch (resolution) {
 			case "local":
-				newContent = region.oursContent;
+				newContent = pickSemanticSide("local");
 				break;
 			case "remote":
-				newContent = region.theirsContent;
+				newContent = pickSemanticSide("remote");
 				break;
 			case "both":
 				newContent = region.oursContent + "\n" + region.theirsContent;

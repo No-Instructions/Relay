@@ -444,16 +444,21 @@ export class SharedFolder extends HasProvider {
 		});
 
 		const isAuthoritative = this.authoritative;
+		const canAwaitProviderSync =
+			this.s3rn instanceof S3RemoteFolder &&
+			this.shouldConnect &&
+			this.loginManager.loggedIn &&
+			this.remote !== undefined;
 		(async () => {
 			const serverSynced = await this.getServerSynced();
 			if (!serverSynced) {
 				if (isAuthoritative) {
 					await this.markSynced();
-				} else {
+				} else if (canAwaitProviderSync) {
 					await trackPromise(`folderSync:${this.guid}`, this.onceProviderSynced());
 					await this.markSynced();
 				}
-			} else if (!authoritative) {
+			} else if (!isAuthoritative && canAwaitProviderSync) {
 				// Even when IDB already has serverSync, we still need the
 				// provider to sync so _providerSynced is set. Without this,
 				// the folder's `synced` getter stays false and downstream
@@ -700,6 +705,9 @@ export class SharedFolder extends HasProvider {
 			const hsm = file.hsm;
 			if (!hsm) continue;
 
+			const exists = this.existsSync(file.path);
+			if (!exists) continue;
+
 			// Check disk state
 			try {
 				const diskState = await file.readDiskContent();
@@ -715,10 +723,6 @@ export class SharedFolder extends HasProvider {
 				}
 			} catch (e) {
 				// File might have been deleted - ignore
-				this.debug?.(
-					`[poll] Failed to read disk state for ${guid}:`,
-					e,
-				);
 			}
 
 			// Connect forked documents awaiting provider sync
@@ -1168,9 +1172,20 @@ export class SharedFolder extends HasProvider {
 		const newDoc = this.getOrCreateDoc(toGuid, path);
 		this.files.set(toGuid, newDoc);
 		this.fset.add(newDoc, true);
+		const isCurrentDoc = () =>
+			!this.destroyed && !newDoc.destroyed && this.files.get(toGuid) === newDoc;
+
+		if (!isCurrentDoc()) {
+			this.log(`[${path}] remap aborted: new document is stale`);
+			return;
+		}
 
 		if (updateBytes) {
 			await newDoc.hsm?.initializeFromRemote(updateBytes);
+		}
+		if (!isCurrentDoc()) {
+			this.log(`[${path}] remap aborted after enroll: new document is stale`);
+			return;
 		}
 		await this.poll([toGuid]);
 

@@ -782,6 +782,13 @@ export interface MergeHSMConfig {
 	isProviderSynced?: () => boolean;
 
 	/**
+	 * Query whether the owning shared folder is currently connected.
+	 * Used during active entry to distinguish true offline mode from a
+	 * newly-created HSM that has not yet received its own CONNECTED event.
+	 */
+	isFolderConnected?: () => boolean;
+
+	/**
 	 * When true, invoke sources return never-resolving promises instead of
 	 * running real async operations. Use for replay-based testing where
 	 * recorded done.invoke.* events drive transitions explicitly.
