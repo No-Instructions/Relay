@@ -261,7 +261,7 @@ export interface RelayDebugGlobal {
   getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
   /** Set the editor text via minimal CM6 transactions. Throws if the leaf drifted. */
   setEditorContent: (handle: EditorHandle, content: string) => Promise<SetEditorContentResult>;
-  /** Look up a document by vault-scoped path (e.g. "private/foo.md"). Returns document, HSM, folder, and GUID. */
+  /** Look up a document by vault-level path including the shared-folder prefix (e.g. "/private/foo.md"). Returns document, HSM, folder, and GUID. */
   lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
   lookupFolder: (path: string) => any | null;
@@ -547,44 +547,34 @@ export class RelayDebugAPI {
       listAllConflicts: () => this.listAllConflicts(),
 
       lookupDocument: (path: string) => {
-        if (!this.plugin?.sharedFolders?._set) return null;
+        const sharedFolders = this.plugin?.sharedFolders;
+        if (!sharedFolders) return null;
         if (!path.startsWith('/')) {
+          for (const folder of (sharedFolders as any)._set.values()) {
+            const doc = folder.mergeManager?._getDocument(path);
+            const hsm = doc?._hsm;
+            if (hsm) return { doc, hsm, guid: path, folder, filePath: hsm.path || path };
+          }
           throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
         }
-        const folders = Array.from(this.plugin.sharedFolders._set.values()) as any[];
-
-        // Resolve folder scope from vault path (e.g. "/private/foo.md")
-        let targetFolder: any = null;
-        let relativePath = path;
-        for (const folder of folders) {
-          const prefix = '/' + folder.path + '/';
-          if (path.startsWith(prefix)) {
-            targetFolder = folder;
-            relativePath = path.slice(prefix.length - 1); // keep leading slash
-            break;
-          }
+        const vaultPath = path.slice(1);
+        const folder: any = sharedFolders.lookup(vaultPath);
+        if (!folder) {
+          const available = Array.from((sharedFolders as any)._set.values())
+            .map((f: any) => '/' + f.path + '/')
+            .join(', ') || '(none)';
+          throw new Error(
+            `Document path must be a vault-level path under a shared folder ` +
+            `(got: ${JSON.stringify(path)}; shared folders: ${available})`
+          );
         }
-
-        const search = targetFolder ? [targetFolder] : folders;
-        for (const folder of search) {
-          const mm = folder.mergeManager;
-          if (!mm?._syncStatus) continue;
-          for (const [guid, _status] of mm._syncStatus.entries()) {
-            const doc = mm._getDocument(guid);
-            const hsm = doc?._hsm;
-            if (!hsm) continue;
-            let filePath = hsm.path || guid;
-
-            if (guid === path) return { doc, hsm, guid, folder, filePath };
-            const normFile = filePath.replace(/^\/+/, '');
-            const normRel = relativePath.replace(/^\/+/, '');
-            if (targetFolder && (filePath === relativePath || normFile === normRel))
-              return { doc, hsm, guid, folder, filePath };
-            if (!targetFolder && (filePath === path || normFile === path.replace(/^\/+/, '')))
-              return { doc, hsm, guid, folder, filePath };
-          }
-        }
-        return null;
+        const vpath = folder.getVirtualPath(vaultPath);
+        const guid = folder.syncStore?.get(vpath);
+        if (!guid) return null;
+        const doc = folder.mergeManager?._getDocument(guid);
+        const hsm = doc?._hsm;
+        if (!hsm) return null;
+        return { doc, hsm, guid, folder, filePath: hsm.path || vpath };
       },
 
     };
