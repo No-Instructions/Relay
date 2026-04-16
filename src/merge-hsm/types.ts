@@ -241,6 +241,7 @@ export interface CM6ChangeEvent {
 	type: "CM6_CHANGE";
 	changes: PositionedChange[];
 	docText: string;
+	viewId?: string;
 }
 
 export interface ProviderSyncedEvent {
@@ -478,6 +479,7 @@ export type MergeEvent =
 export interface DispatchCM6Effect {
 	type: "DISPATCH_CM6";
 	changes: PositionedChange[];
+	originView?: string;
 }
 
 export interface WriteDiskEffect {

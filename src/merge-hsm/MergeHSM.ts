@@ -1546,6 +1546,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					}
 				}
 
+				// Broadcast to sibling views. The originView tag lets the
+				// source integration skip its own dispatch (it already has
+				// the edit from user typing).
+				this.emitEffect({
+					type: "DISPATCH_CM6",
+					changes: e.changes,
+					originView: e.viewId,
+				});
+
 				// Always flush — the queue handles filtering
 				this._bridge.flushOutbound();
 			},

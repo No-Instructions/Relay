@@ -26,6 +26,8 @@ export type EditorValidityCheck = () => boolean;
 // CM6Integration Class
 // =============================================================================
 
+let viewIdCounter = 0;
+
 export class CM6Integration {
 	private hsm: MergeHSM;
 	private view: EditorView;
@@ -35,6 +37,7 @@ export class CM6Integration {
 	private warn: (...args: unknown[]) => void;
 	private isEditorStillValid: EditorValidityCheck;
 	private driftCheckTimer: ReturnType<typeof setTimeout> | null = null;
+	readonly viewId: string;
 
 	/** Delay after last data-flow event before checking for drift (ms) */
 	private static readonly DRIFT_CHECK_DELAY = 3000;
@@ -47,12 +50,14 @@ export class CM6Integration {
 		this.hsm = hsm;
 		this.view = view;
 		this.isEditorStillValid = isEditorStillValid;
+		this.viewId = `cm6-${++viewIdCounter}`;
 		this.log = curryLog("[CM6Integration]", "log");
 		this.warn = curryLog("[CM6Integration]", "warn");
 
 		// Subscribe to HSM effects
 		this.unsubscribe = hsm.effects.subscribe((effect) => {
 			if (effect.type === "DISPATCH_CM6") {
+				if (effect.originView === this.viewId) return;
 				this.dispatchToEditor(effect.changes);
 			}
 			// Reset drift debounce on any data-flow effect, not just DISPATCH_CM6.
@@ -177,6 +182,7 @@ export class CM6Integration {
 				type: "CM6_CHANGE",
 				changes,
 				docText: update.state.doc.toString(),
+				viewId: this.viewId,
 			});
 			this.scheduleDriftCheck();
 		}
