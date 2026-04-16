@@ -684,16 +684,6 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Handle REQUEST_PROVIDER_SYNC effect for fork reconciliation.
-	 *
-	 * When a fork is created (disk edit in idle mode), the HSM needs remote
-	 * state to reconcile. This handler:
-	 * 1. Downloads latest state from server via backgroundSync
-	 * 2. Applies updates to remoteDoc
-	 * 3. Sends CONNECTED + PROVIDER_SYNCED to HSM
-	 * 4. HSM then runs fork reconciliation
-	 */
-	/**
 	 * Poll for disk changes on all documents in this SharedFolder.
 	 * Only sends DISK_CHANGED if the disk state actually differs from HSM's knowledge.
 	 * Works for all documents regardless of hibernation state.

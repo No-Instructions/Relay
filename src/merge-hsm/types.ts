@@ -335,13 +335,6 @@ export interface DriftCheckEvent {
 	delta: number;
 }
 
-// Per-hunk conflict resolution event
-export interface ResolveHunkEvent {
-	type: "RESOLVE_HUNK";
-	index: number;
-	resolution: "local" | "remote" | "both";
-}
-
 export interface RemoteDocUpdatedEvent {
 	type: "REMOTE_DOC_UPDATED";
 }
@@ -458,7 +451,6 @@ export type MergeEvent =
 	| DismissConflictEvent
 	| OpenDiffViewEvent
 	| CancelEvent
-	| ResolveHunkEvent
 	// Internal
 	| PersistenceLoadedEvent
 	| PersistenceSyncedEvent
@@ -528,23 +520,6 @@ export interface PositionedConflict {
 }
 
 /**
- * Effect to show inline conflict decorations in the editor.
- */
-export interface ShowConflictDecorationsEffect {
-	type: "SHOW_CONFLICT_DECORATIONS";
-	conflictRegions: ConflictRegion[];
-	positions: PositionedConflict[];
-}
-
-/**
- * Effect to hide a specific conflict decoration after resolution.
- */
-export interface HideConflictDecorationEffect {
-	type: "HIDE_CONFLICT_DECORATION";
-	index: number;
-}
-
-/**
  * Request provider sync for fork reconciliation.
  * Emitted when a fork is created and needs remote state to reconcile.
  */
@@ -571,8 +546,6 @@ export type MergeEffect =
 	| PersistStateEffect
 	| SyncToRemoteEffect
 	| StatusChangedEffect
-	| ShowConflictDecorationsEffect
-	| HideConflictDecorationEffect
 	| RequestProviderSyncEffect
 	| RequestHibernateEffect
 	| DiagnosticEffect;

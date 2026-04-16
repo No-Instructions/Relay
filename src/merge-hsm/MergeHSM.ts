@@ -1347,14 +1347,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					theirsLabel: e.theirsLabel ?? "Local file",
 					regions,
 				});
-				const positions = this._conflict.positions;
-				if (positions.length > 0) {
-					this.emitEffect({
-						type: "SHOW_CONFLICT_DECORATIONS",
-						conflictRegions: regions,
-						positions,
-					});
-				}
 			},
 			storeDeferredConflict: () => {
 				this._deferredConflict = {
@@ -2896,12 +2888,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Mark as resolved
 		conflict.markResolved(index);
-
-		// Emit effect to hide this conflict's decoration
-		this.emitEffect({
-			type: "HIDE_CONFLICT_DECORATION",
-			index,
-		});
 
 		// Get updated content
 		const afterText = this.localDoc.getText("contents").toString();
