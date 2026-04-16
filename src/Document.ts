@@ -257,15 +257,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	/**
 	 * Acquire lock on this document for active editing.
 	 * Transitions HSM from idle to active mode.
-	 * Call this when editor opens.
 	 *
-	 * @param editorContent - The current editor/disk content. Since the editor
-	 *   content equals the disk content when a file is first opened (before
-	 *   CRDT loads), this provides accurate disk content for merge operations.
-	 *   Pass the content from the editor or read from disk.
-	 * @returns The MergeHSM instance
+	 * Editor content flows in via CM6_CHANGE events (from HSMEditorPlugin) —
+	 * not passed here, because callers can't reliably observe post-setViewData
+	 * content at this moment (Obsidian's view-reuse window produces stale reads).
 	 */
-	acquireLock(editorContent: string, editorViewRef: EditorViewRef): MergeHSM {
+	acquireLock(editorViewRef: EditorViewRef): MergeHSM {
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (!mergeManager) {
 			throw new Error("no merge manager");
@@ -287,13 +284,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const remoteDoc = this.ensureRemoteDoc();
 		hsm.setRemoteDoc(remoteDoc);
 
-		// Send ACQUIRE_LOCK with editorContent to transition from idle to active.
-		// Always send (don't guard with isLoaded) because releaseLock() doesn't await
-		// unload(), so activeDocs may not be cleared when file is quickly reopened.
-		// The HSM handles duplicate ACQUIRE_LOCK gracefully (no-op if already active).
 		hsm.send({
 			type: "ACQUIRE_LOCK",
-			editorContent: editorContent,
 			editorViewRef,
 		});
 		mergeManager.markActive(this.guid);
