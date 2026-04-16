@@ -126,15 +126,42 @@ export function repositionUnresolved(
 	resolved: ReadonlySet<number>,
 	localContent: string,
 ): PositionedConflict[] {
+	const max = localContent.length;
+	const clamp = (n: number) => Math.max(0, Math.min(n, max));
+	let searchFrom = 0;
+
 	return current.map((c, i) => {
-		if (resolved.has(i)) return c;
+		if (resolved.has(i)) {
+			searchFrom = clamp(Math.max(searchFrom, c.localStart));
+			return c;
+		}
+
 		const text = c.oursContent;
-		if (!text) return { ...c, localStart: 0, localEnd: 0 };
-		const near = localContent.indexOf(text, Math.max(0, c.localStart - 100));
-		if (near !== -1) return { ...c, localStart: near, localEnd: near + text.length };
-		const fallback = localContent.indexOf(text);
-		if (fallback !== -1) return { ...c, localStart: fallback, localEnd: fallback + text.length };
-		return c;
+		const orderedFrom = clamp(Math.max(searchFrom, c.localStart));
+		if (!text) {
+			searchFrom = orderedFrom;
+			return { ...c, localStart: orderedFrom, localEnd: orderedFrom };
+		}
+
+		let pos = localContent.indexOf(text, orderedFrom);
+		if (pos === -1) {
+			const nearFrom = clamp(Math.max(searchFrom, c.localStart - 100));
+			pos = localContent.indexOf(text, nearFrom);
+		}
+		if (pos === -1) {
+			pos = localContent.indexOf(text, clamp(searchFrom));
+		}
+		if (pos !== -1) {
+			const end = pos + text.length;
+			searchFrom = clamp(end);
+			return { ...c, localStart: pos, localEnd: end };
+		}
+
+		// Keep stale positions in-bounds so downstream replace ranges stay valid.
+		const clampedStart = clamp(Math.max(searchFrom, c.localStart));
+		const clampedEnd = clamp(Math.max(clampedStart, c.localEnd));
+		searchFrom = clampedEnd;
+		return { ...c, localStart: clampedStart, localEnd: clampedEnd };
 	});
 }
 

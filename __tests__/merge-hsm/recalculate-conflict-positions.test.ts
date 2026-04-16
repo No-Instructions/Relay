@@ -12,12 +12,32 @@ import {
   openDiffView,
   expectState,
 } from 'src/merge-hsm/testing';
+import { EditorState } from '@codemirror/state';
 
 // =============================================================================
 // Multi-hunk conflict position recalculation
 // =============================================================================
 
 describe('recalculateConflictPositions', () => {
+  function isDispatchEffect(
+    effect: unknown,
+  ): effect is { type: 'DISPATCH_CM6'; changes: Array<{ from: number; to: number; insert: string }> } {
+    return !!effect && typeof effect === 'object' && (effect as { type?: string }).type === 'DISPATCH_CM6';
+  }
+
+  function findOccurrences(haystack: string, needle: string): number[] {
+    if (!needle) return [];
+    const out: number[] = [];
+    let from = 0;
+    while (from <= haystack.length) {
+      const pos = haystack.indexOf(needle, from);
+      if (pos === -1) break;
+      out.push(pos);
+      from = pos + 1;
+    }
+    return out;
+  }
+
   it('updates positions of remaining hunks after resolving an earlier hunk', async () => {
     // Create content with two distinct conflict regions.
     // The base has two paragraphs; local and disk each change different words
@@ -116,5 +136,102 @@ describe('recalculateConflictPositions', () => {
     expect(finalText.length).toBeGreaterThan(0);
     // Should not contain garbage from wrong position slicing
     expect(finalText).not.toContain('undefined');
+  });
+
+  it('keeps emitted DISPATCH_CM6 ranges valid while resolving all hunks', async () => {
+    const base = [
+      'section A: base',
+      'separator 1',
+      'section B: base',
+      'separator 2',
+      'section C: base',
+      'separator 3',
+      'section D: base',
+    ].join('\n');
+    const remote = [
+      'section A: remote-short',
+      'separator 1',
+      'section B: remote-very-very-long-content',
+      'separator 2',
+      'section C: remote',
+      'separator 3',
+      'section D: remote-with-extra-trailer',
+    ].join('\n');
+    const disk = [
+      'section A: disk-very-very-long-content',
+      'separator 1',
+      'section B: disk',
+      'separator 2',
+      'section C: disk-with-extra-trailer',
+      'separator 3',
+      'section D: disk',
+    ].join('\n');
+
+    const t = await createTestHSM();
+    await loadToConflict(t, { base, remote, disk });
+    t.send(openDiffView());
+    expectState(t, 'active.conflict.resolving');
+
+    let editorState = EditorState.create({
+      doc: t.hsm.getLocalDoc()!.getText('contents').toString(),
+    });
+    const conflictData = t.hsm.getConflictData();
+    expect(conflictData).not.toBeNull();
+    const hunkCount = conflictData!.positionedConflicts.length;
+    expect(hunkCount).toBeGreaterThanOrEqual(3);
+    t.clearEffects();
+
+    for (let index = 0; index < hunkCount; index++) {
+      const resolution = index % 2 === 0 ? 'remote' : 'local';
+      t.send({ type: 'RESOLVE_HUNK', index, resolution } as any);
+
+      const dispatches = t.effects.filter(isDispatchEffect);
+      for (const dispatch of dispatches) {
+        const beforeLen = editorState.doc.length;
+        for (const change of dispatch.changes) {
+          expect(change.from).toBeGreaterThanOrEqual(0);
+          expect(change.to).toBeGreaterThanOrEqual(change.from);
+          expect(change.to).toBeLessThanOrEqual(beforeLen);
+        }
+        editorState = editorState.update({ changes: dispatch.changes }).state;
+      }
+      t.clearEffects();
+    }
+
+    const finalDoc = t.hsm.getLocalDoc()!.getText('contents').toString();
+    expect(editorState.doc.toString()).toBe(finalDoc);
+  });
+
+  it('repositions duplicate-content hunks to the correct remaining occurrence', async () => {
+    const base = 'top\nbase\nmiddle\nbase\nbottom';
+    const remote = 'top\nREMOTE2 EXTRA\nmiddle\nREMOTE2\nbottom';
+    const disk = 'top\nDISK\nmiddle\nDISK\nbottom';
+
+    const t = await createTestHSM();
+    await loadToConflict(t, { base, remote, disk });
+    t.send(openDiffView());
+    expectState(t, 'active.conflict.resolving');
+
+    const before = t.hsm.getConflictData();
+    expect(before).not.toBeNull();
+    expect(before!.positionedConflicts.length).toBe(2);
+
+    // Resolve first hunk to local (ours), leaving the second unresolved.
+    t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'local' } as any);
+    const afterFirst = t.hsm.getConflictData();
+    expect(afterFirst).not.toBeNull();
+
+    const unresolved = afterFirst!.positionedConflicts[1];
+    const textAfterFirst = t.hsm.getLocalDoc()!.getText('contents').toString();
+    expect(textAfterFirst.slice(unresolved.localStart, unresolved.localEnd)).toBe(unresolved.oursContent);
+
+    const occurrences = findOccurrences(textAfterFirst, unresolved.oursContent);
+    expect(occurrences.length).toBeGreaterThanOrEqual(2);
+    expect(unresolved.localStart).toBe(occurrences[occurrences.length - 1]);
+
+    // Resolving the second hunk to local should produce the exact "remote" text.
+    t.send({ type: 'RESOLVE_HUNK', index: 1, resolution: 'local' } as any);
+    const finalText = t.hsm.getLocalDoc()!.getText('contents').toString();
+    expect(finalText).toBe(remote);
   });
 });
