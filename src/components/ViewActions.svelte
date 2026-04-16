@@ -88,7 +88,7 @@
 				: 'notebook'}"
 			aria-label={tracking
 				? "Tracking changes: local file and update log are in sync"
-				: "Not tracking changes: local file and update log are not in sync -- click to check"}
+				: "Not tracking changes: local file and update log are not in sync"}
 			tabindex="0"
 			data-filename={view.view.file?.name}
 			on:click={handleLayersClick}
@@ -135,7 +135,7 @@
 			: 'notebook'}"
 		aria-label={tracking
 			? "Tracking changes: local file and update log are in sync"
-			: "Not tracking changes: local file and update log are not in sync -- click to check"}
+			: "Not tracking changes: local file and update log are not in sync"}
 		tabindex="0"
 		data-filename={view.view.file?.name}
 		on:click={handleLayersClick}
