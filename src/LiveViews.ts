@@ -853,7 +853,9 @@ export class LiveView<ViewType extends TextFileView>
 			this._hasLock = false;
 		}
 		if (!preservePendingUpload && !stillLocked) {
-			this.document.disconnect();
+			if (!this.document.deferDisconnectForPendingMessages()) {
+				this.document.disconnect();
+			}
 		}
 	}
 
