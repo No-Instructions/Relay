@@ -279,6 +279,12 @@ export interface ResolveEvent {
 	contents: string;
 }
 
+export interface ResolveHunkEvent {
+	type: "RESOLVE_HUNK";
+	index: number;
+	resolution: "ours" | "theirs" | "both" | "neither";
+}
+
 export interface DismissConflictEvent {
 	type: "DISMISS_CONFLICT";
 }
@@ -450,6 +456,7 @@ export type MergeEvent =
 	| SetModeIdleEvent
 	// User
 	| ResolveEvent
+	| ResolveHunkEvent
 	| DismissConflictEvent
 	| OpenDiffViewEvent
 	| CancelEvent
