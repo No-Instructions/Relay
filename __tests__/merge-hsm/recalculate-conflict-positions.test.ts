@@ -216,8 +216,8 @@ describe('recalculateConflictPositions', () => {
     expect(before).not.toBeNull();
     expect(before!.positionedConflicts.length).toBe(2);
 
-    // Resolve first hunk to local (ours), leaving the second unresolved.
-    t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'local' } as any);
+    // Resolve first hunk to ours, leaving the second unresolved.
+    t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'ours' } as any);
     const afterFirst = t.hsm.getConflictData();
     expect(afterFirst).not.toBeNull();
 
@@ -229,8 +229,8 @@ describe('recalculateConflictPositions', () => {
     expect(occurrences.length).toBeGreaterThanOrEqual(2);
     expect(unresolved.localStart).toBe(occurrences[occurrences.length - 1]);
 
-    // Resolving the second hunk to local should produce the exact "remote" text.
-    t.send({ type: 'RESOLVE_HUNK', index: 1, resolution: 'local' } as any);
+    // Resolving the second hunk to ours should produce the exact "remote" text.
+    t.send({ type: 'RESOLVE_HUNK', index: 1, resolution: 'ours' } as any);
     const finalText = t.hsm.getLocalDoc()!.getText('contents').toString();
     expect(finalText).toBe(remote);
   });
