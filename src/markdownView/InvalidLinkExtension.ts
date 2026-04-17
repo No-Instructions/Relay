@@ -150,15 +150,10 @@ export class InvalidLinkPluginValue {
 		const contextVersion = ++this.contextVersion;
 		const expectedGuid = nextDocument.guid;
 		this.awaitingGuid = expectedGuid;
-		const hsm = nextDocument.hsm;
-		if (!hsm?.awaitState) {
-			this.awaitingGuid = undefined;
-			return;
-		}
 
 		trackPromise(
-			`invalidLink:awaitActive:${nextDocument.path}`,
-			hsm.awaitState((s) => s.startsWith("active.")),
+			`invalidLink:whenSynced:${nextDocument.path}`,
+			nextDocument.whenSynced(),
 		).then(() => {
 			this.awaitingGuid = undefined;
 			if (this.destroyed || contextVersion !== this.contextVersion) return;
