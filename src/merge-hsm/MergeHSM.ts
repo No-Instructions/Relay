@@ -2529,13 +2529,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		const hasContent = this.localPersistence.hasUserData();
 		const remoteHasContent = !!this.remoteDoc && !isEmptyDoc(this.remoteDoc);
-		const folderConnected = this._isFolderConnected();
 		const canProceed =
-			hasContent ||
-			remoteHasContent ||
-			this._providerSynced ||
-			!folderConnected;
+			hasContent || remoteHasContent || this._providerSynced;
 
+		// System Invariant #3: when IDB is empty, consult the server before
+		// making a merge decision. Proceeding offline with no persisted CRDT
+		// and no server-delivered remote state risks content duplication once
+		// the server's history arrives. Stay in awaitingPersistence until
+		// enrollment writes content or the provider syncs.
 		if (!canProceed) {
 			return;
 		}
@@ -2543,7 +2544,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.crdtLog(
 			`persistence ready signal | source=${source} | hasContent=${hasContent} | ` +
 				`remoteHasContent=${remoteHasContent} | providerSynced=${this._providerSynced} | ` +
-				`folderConnected=${folderConnected} | hsmOnline=${this._isOnline}`,
+				`hsmOnline=${this._isOnline}`,
 		);
 		this.send({ type: "PERSISTENCE_SYNCED", hasContent });
 	}
