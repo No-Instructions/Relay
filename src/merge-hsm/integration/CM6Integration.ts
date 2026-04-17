@@ -9,6 +9,7 @@
  */
 
 import type { EditorView, ViewUpdate } from "@codemirror/view";
+import { Transaction } from "@codemirror/state";
 import type { MergeHSM } from "../MergeHSM";
 import type { PositionedChange } from "../types";
 // Import the shared annotation to prevent feedback loops
@@ -178,11 +179,15 @@ export class CM6Integration {
 
 		// Send to HSM
 		if (changes.length > 0) {
+			const userEvent = update.transactions
+				.map((tr) => tr.annotation(Transaction.userEvent))
+				.find((e) => e != null);
 			this.hsm.send({
 				type: "CM6_CHANGE",
 				changes,
 				docText: update.state.doc.toString(),
 				viewId: this.viewId,
+				userEvent,
 			});
 			this.scheduleDriftCheck();
 		}

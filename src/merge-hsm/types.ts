@@ -242,6 +242,7 @@ export interface CM6ChangeEvent {
 	changes: PositionedChange[];
 	docText: string;
 	viewId?: string;
+	userEvent?: string;
 }
 
 export interface ProviderSyncedEvent {
