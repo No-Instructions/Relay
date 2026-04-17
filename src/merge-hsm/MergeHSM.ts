@@ -1499,6 +1499,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			accumulateCM6Change: (_hsm, event) => {
 				const e = event as any;
+				const wasNull = this.lastKnownEditorText === null;
 				if (e.docText !== undefined) {
 					this.lastKnownEditorText = e.docText;
 				}
@@ -1507,6 +1508,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					changes: e.changes,
 					docText: e.docText,
 				});
+				if (wasNull && this.lastKnownEditorText !== null) {
+					this.maybeSignalPersistenceReady("event");
+				}
 			},
 			accumulateDiskChanged: (_hsm, event) => {
 				const e = event as any;
@@ -2242,13 +2246,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return; // Diagnostic only, no state transition
 		}
 		if (event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL') {
-			// Seed lastKnownEditorText with the content Obsidian just installed
-			// into the view. This is the one authoritative moment we can read
-			// it — CM6's "set" transaction is a no-op when the buffer is
-			// already the same (e.g. empty new notes), so we can't rely on
-			// CM6_CHANGE to catch this.
 			this.lastKnownEditorText = event.editorContent;
-			return; // Diagnostic only, no state transition
+			this.maybeSignalPersistenceReady("event");
+			return;
 		}
 		if (event.type === 'OBSIDIAN_SAVE_FRONTMATTER'
 			|| event.type === 'OBSIDIAN_METADATA_SYNC'
