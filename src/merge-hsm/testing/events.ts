@@ -67,18 +67,26 @@ export function acquireLock(editorViewRef?: EditorViewRef): AcquireLockEvent {
  * Send ACQUIRE_LOCK and wait for persistence to sync.
  * After this, state will be in active.tracking, active.entering.reconciling,
  * or active.conflict.* if there's a deferred conflict.
+ *
+ * The optional editorContent seeds lastKnownEditorText via the mock
+ * editorViewRef, satisfying the PERSISTENCE_SYNCED guards that gate
+ * progress out of awaitingPersistence on editor availability.
  */
-export async function sendAcquireLock(hsm: HSMHandle): Promise<void> {
-  hsm.send(acquireLock());
+export async function sendAcquireLock(hsm: HSMHandle, editorContent?: string): Promise<void> {
+  hsm.send(acquireLock(editorContent !== undefined ? mockEditorViewRef(editorContent) : undefined));
   // Wait for state to leave awaitingPersistence (persistence has synced)
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence'));
 }
 
 /**
  * Send ACQUIRE_LOCK and wait all the way to active.tracking.
+ *
+ * The optional editorContent seeds lastKnownEditorText via the mock
+ * editorViewRef, satisfying the PERSISTENCE_SYNCED guards that gate
+ * progress out of awaitingPersistence on editor availability.
  */
-export async function sendAcquireLockToTracking(hsm: HSMHandle): Promise<void> {
-  hsm.send(acquireLock());
+export async function sendAcquireLockToTracking(hsm: HSMHandle, editorContent?: string): Promise<void> {
+  hsm.send(acquireLock(editorContent !== undefined ? mockEditorViewRef(editorContent) : undefined));
   // Wait for tracking (or conflict)
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking' || s.includes('conflict'));
 }
@@ -363,7 +371,12 @@ export async function loadAndActivate(
   //    Persistence syncs asynchronously (may have random delay in tests).
   //    If IDB had content (hasContent=true) → reconciling → tracking.
   //    If IDB was empty (hasContent=false) and provider not synced → tracking directly.
-  hsm.send(acquireLock(opts?.editorViewRef));
+  // Default to a mock editorViewRef carrying the seeded content so
+  // storeEditorContent can seed lastKnownEditorText. The
+  // PERSISTENCE_SYNCED guard chain requires it to advance out of
+  // awaitingPersistence when IDB has content.
+  const editorViewRef = opts?.editorViewRef ?? mockEditorViewRef(content);
+  hsm.send(acquireLock(editorViewRef));
 
   // Wait for state to reach tracking
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking');
@@ -646,8 +659,10 @@ export async function loadToConflict(
     }
   }
 
-  // Step 4: Acquire lock - this triggers conflict detection
-  hsm.send(acquireLock());
+  // Step 4: Acquire lock - this triggers conflict detection.
+  // Seed lastKnownEditorText with disk content so the PERSISTENCE_SYNCED
+  // guard chain can advance out of awaitingPersistence.
+  hsm.send(acquireLock(mockEditorViewRef(opts.disk)));
   // Wait for persistence to sync and state to settle
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence') && !s.includes('entering'));
 
