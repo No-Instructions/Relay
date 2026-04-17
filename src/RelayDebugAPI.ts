@@ -237,6 +237,8 @@ export interface RelayDebugGlobal {
   getEditorContent: (handle: EditorHandle) => Promise<string>;
   /** Inspect a handle without mutating focus or throwing on drift. */
   getEditorInfo: (handle: EditorHandle) => EditorInfo;
+  /** Enumerate every open markdown editor leaf with its handle and state. */
+  listEditors: () => EditorInfo[];
   /** Start recording all HSM activity */
   startRecording: (name?: string) => E2ERecordingState;
   /** Stop recording and return lightweight summary JSON */
@@ -492,6 +494,7 @@ export class RelayDebugAPI {
       closeEditor: (handle) => this.closeEditor(handle),
       getEditorContent: (handle) => this.getEditorContent(handle),
       getEditorInfo: (handle) => this.getEditorInfo(handle),
+      listEditors: () => this.listEditors(),
       getDocumentContent: async (path) => this.getDocumentContent(path),
       getHsmStateSnapshot: async (path) => this.getHsmStateSnapshot(path),
       getIdbContent: async (path) => this.getIdbContent(path),
@@ -731,6 +734,26 @@ export class RelayDebugAPI {
     };
   }
 
+  private listEditors(): EditorInfo[] {
+    const out: EditorInfo[] = [];
+    const activeLeaf = this.plugin?.app?.workspace?.activeLeaf;
+    this.plugin?.app?.workspace?.iterateAllLeaves?.((leaf: any) => {
+      const info = this.leafViewInfo(leaf);
+      // Only markdown leaves have an editor; other view types can't be targeted
+      // by editor commands, so listing them would just add noise.
+      if (info.viewType !== 'markdown' || !info.currentPath) return;
+      const ids = this.leafIds(leaf);
+      out.push({
+        handle: { windowId: ids.windowId, leafId: ids.leafId, path: info.currentPath },
+        currentPath: info.currentPath,
+        viewType: info.viewType,
+        mode: info.mode,
+        active: leaf === activeLeaf,
+      });
+    });
+    return out;
+  }
+
   private async getEditorContent(handle: EditorHandle): Promise<string> {
     const leaf = this.resolveAndVerify(handle);
     const editor = leaf.view?.editor;
@@ -815,35 +838,15 @@ export class RelayDebugAPI {
    * Get a snapshot of all content views (local, remote, IDB, disk, server) for a document.
    */
   private async getDocumentContent(path: string): Promise<DocumentContentSnapshot> {
-    if (!this.plugin?.sharedFolders?._set) {
-      throw new Error('No shared folders available');
-    }
-
-    // Find the document across all shared folders
-    let foundDoc: any = null;
-    let foundFolder: any = null;
-
-    for (const folder of this.plugin.sharedFolders._set.values()) {
-      if (folder.files) {
-        for (const doc of folder.files.values()) {
-          if (doc.path === path) {
-            foundDoc = doc;
-            foundFolder = folder;
-            break;
-          }
-        }
-      }
-      if (foundDoc) break;
-    }
-
-    if (!foundDoc || !foundFolder) {
-      throw new Error(`Document not found: ${path}`);
-    }
+    const g = typeof window !== 'undefined' ? window : globalThis;
+    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    if (!lookup) throw new Error(`Document not found: ${path}`);
+    const { doc, folder, guid, filePath } = lookup;
 
     const result: DocumentContentSnapshot = {
-      path: foundDoc.path,
-      guid: foundDoc.guid,
-      folder: foundFolder.path || foundFolder.name,
+      path: this.toVaultPath(folder, filePath),
+      guid,
+      folder: folder.path || folder.name,
       local: null,
       remote: null,
       idb: null,
@@ -853,7 +856,7 @@ export class RelayDebugAPI {
 
     // Local doc
     try {
-      const localDoc = foundDoc.localDoc;
+      const localDoc = doc.localDoc;
       if (localDoc) {
         result.local = {
           content: localDoc.getText('contents').toString(),
@@ -864,7 +867,7 @@ export class RelayDebugAPI {
 
     // Remote doc (ydoc)
     try {
-      const remoteDoc = foundDoc.ydoc;
+      const remoteDoc = doc.ydoc;
       if (remoteDoc) {
         result.remote = {
           content: remoteDoc.getText('contents').toString(),
@@ -875,7 +878,7 @@ export class RelayDebugAPI {
 
     // IDB
     try {
-      const idbResult = await readIdbContent(foundDoc.guid, foundFolder.appId);
+      const idbResult = await readIdbContent(guid, folder.appId);
       if (idbResult) {
         result.idb = {
           content: idbResult.content,
@@ -887,8 +890,9 @@ export class RelayDebugAPI {
     // Disk
     try {
       const adapter = this.plugin.app.vault.adapter;
-      const content = await adapter.read(foundDoc.path);
-      const stat = await adapter.stat(foundDoc.path);
+      const vaultRelativePath = folder.getPath(filePath);
+      const content = await adapter.read(vaultRelativePath);
+      const stat = await adapter.stat(vaultRelativePath);
       result.disk = {
         content,
         mtime: stat?.mtime ?? 0,
@@ -897,7 +901,7 @@ export class RelayDebugAPI {
 
     // Server
     try {
-      const response = await foundFolder.backgroundSync.downloadItem(foundDoc);
+      const response = await folder.backgroundSync.downloadItem(doc);
       const rawUpdate = new Uint8Array(response.arrayBuffer);
       const tempDoc = new Y.Doc();
       Y.applyUpdate(tempDoc, rawUpdate);
@@ -1015,7 +1019,7 @@ export class RelayDebugAPI {
     void doc; // referenced for future expansion; silences lint
 
     return {
-      path: filePath,
+      path: this.toVaultPath(folder, filePath),
       guid,
       folder: (folder as any).name,
       statePath: (hsm as any)._statePath || 'unknown',
@@ -1132,7 +1136,7 @@ export class RelayDebugAPI {
     const g = typeof window !== 'undefined' ? window : globalThis;
     const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const { hsm, guid } = lookup;
+    const { hsm, guid, folder, filePath } = lookup;
 
     // `getConflictData` derives on-demand from current HSM materials when
     // there's no live resolution session — diverged docs without an open
@@ -1157,7 +1161,7 @@ export class RelayDebugAPI {
     }));
 
     return {
-      path,
+      path: this.toVaultPath(folder, filePath),
       guid,
       statePath: (hsm as any)._statePath || 'unknown',
       hasConflict: !!cd,
@@ -1216,6 +1220,16 @@ export class RelayDebugAPI {
     return null;
   }
 
+  /**
+   * Canonical vault-path form: leading-slash, includes the shared-folder
+   * prefix (e.g. `/private/foo.md`). All debug-API outputs emit paths in
+   * this shape so CLI output can round-trip through any path-accepting
+   * command.
+   */
+  private toVaultPath(folder: any, vpath: string): string {
+    return '/' + folder.getPath(vpath);
+  }
+
   private getFolderSyncStatus(folderGuid: string): { guid: string; path: string; status: string }[] {
     const folder = this.getFolderByGuid(folderGuid);
     const mm = folder?.mergeManager;
@@ -1224,9 +1238,10 @@ export class RelayDebugAPI {
     const rows: { guid: string; path: string; status: string }[] = [];
     for (const [guid, syncStatus] of mm.syncStatus.entries()) {
       const doc = mm._getDocument?.(guid);
+      const vpath = doc?.path;
       rows.push({
         guid,
-        path: doc?.path ?? guid,
+        path: vpath ? this.toVaultPath(folder, vpath) : guid,
         status: syncStatus?.status ?? 'unknown',
       });
     }
@@ -1251,11 +1266,7 @@ export class RelayDebugAPI {
       const folderGuid = folder.guid;
       const folderPath = folder.path ?? '';
       for (const row of this.getFolderConflicts(folderGuid)) {
-        // Emit a vault-relative path with a leading slash so it round-trips
-        // through lookupDocument — copy/paste-friendly into `conflict info`.
-        const inner = row.path.replace(/^\/+/, '');
-        const fullPath = folderPath ? `/${folderPath}/${inner}` : `/${inner}`;
-        out.push({ folderGuid, folderPath, guid: row.guid, path: fullPath });
+        out.push({ folderGuid, folderPath, guid: row.guid, path: row.path });
       }
     }
     return out;
@@ -1419,7 +1430,7 @@ export class RelayDebugAPI {
       }
 
       return {
-        path: filePath,
+        path: this.toVaultPath(folder, filePath),
         guid,
         folder: (folder as any).name,
         dbName,
@@ -1447,7 +1458,7 @@ export class RelayDebugAPI {
     try {
       if (!db.objectStoreNames.contains('history')) {
         return {
-          path: filePath,
+          path: this.toVaultPath(folder, filePath),
           guid,
           folder: (folder as any).name,
           dbName,
@@ -1479,7 +1490,7 @@ export class RelayDebugAPI {
       const inMemoryCount = persistence?.opCapture?.entries?.length ?? null;
 
       return {
-        path: filePath,
+        path: this.toVaultPath(folder, filePath),
         guid,
         folder: (folder as any).name,
         dbName,
@@ -1546,7 +1557,7 @@ export class RelayDebugAPI {
     }
 
     return {
-      path: filePath,
+      path: this.toVaultPath(folder, filePath),
       guid,
       folder: (folder as any).name,
       statePath: (hsm as any)._statePath || 'unknown',
