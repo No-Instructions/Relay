@@ -1,9 +1,13 @@
 /**
- * State vector comparison utilities.
+ * Yjs snapshot helpers.
  *
- * Y.js state vectors are Map<clientId, clock> encoded as Uint8Array.
- * These functions compare decoded state vectors to determine the
- * relationship between two CRDT states.
+ * A Yjs document snapshot is defined by both:
+ * - state vector: insertion clocks per client
+ * - delete set: tombstone ranges
+ *
+ * State-vector-only comparisons are useful for gap detection and transport
+ * routing, but they are not sufficient to answer "are these documents equal?"
+ * because delete-only changes can leave the state vector unchanged.
  */
 
 import * as Y from "yjs";
@@ -11,11 +15,56 @@ import * as Y from "yjs";
 /** Decoded state vector: Map<clientId, clock> */
 export type DecodedSV = Map<number, number>;
 
+export interface DeleteRange {
+	clock: number;
+	len: number;
+}
+
+/** Decoded delete set: Map<clientId, sorted merged delete ranges> */
+export type DecodedDeleteSet = Map<number, DeleteRange[]>;
+
+export interface YjsSnapshot {
+	snapshot: Uint8Array;
+}
+
+type SnapshotLike = {
+	sv: DecodedSV;
+	ds: {
+		clients: DecodedDeleteSet;
+	};
+};
+
+function toSnapshotLike(snapshot: unknown): SnapshotLike {
+	return snapshot as SnapshotLike;
+}
+
+function snapshotDataFromDoc(doc: Y.Doc): SnapshotLike {
+	return toSnapshotLike(Y.snapshot(doc));
+}
+
+function decodeSnapshotData(snapshot: YjsSnapshot): SnapshotLike {
+	return toSnapshotLike(Y.decodeSnapshot(snapshot.snapshot));
+}
+
+function decodeUpdateData(update: Uint8Array) {
+	return Y.decodeUpdate(update);
+}
+
 /**
  * Decode a Uint8Array state vector into a Map<clientId, clock>.
  */
 export function decodeSV(sv: Uint8Array): DecodedSV {
 	return Y.decodeStateVector(sv);
+}
+
+/**
+ * Check if `superset` contains every client clock present in `subset`.
+ */
+export function svContains(superset: DecodedSV, subset: DecodedSV): boolean {
+	for (const [clientId, clock] of subset) {
+		if ((superset.get(clientId) ?? 0) < clock) return false;
+	}
+	return true;
 }
 
 /**
@@ -60,7 +109,7 @@ export function svIsStale(a: DecodedSV, b: DecodedSV): boolean {
  * have before this delta can be meaningfully applied.
  */
 export function extractDependencySV(update: Uint8Array): DecodedSV {
-	const decoded = Y.decodeUpdate(update);
+	const decoded = decodeUpdateData(update);
 	const dep: DecodedSV = new Map();
 	for (const struct of decoded.structs) {
 		const { client, clock } = struct.id;
@@ -89,7 +138,7 @@ export function classifyUpdate(
 ): "apply" | "stale" | "gap" {
 	if (!tracked) return "gap";
 
-	const decoded = Y.decodeUpdate(update);
+	const decoded = decodeUpdateData(update);
 	if (decoded.structs.length === 0) return "stale";
 
 	let hasNewOps = false;
@@ -115,6 +164,126 @@ export function classifyUpdate(
  */
 export function isEmptyDoc(doc: Y.Doc): boolean {
 	return decodeSV(Y.encodeStateVector(doc)).size === 0;
+}
+
+/**
+ * Check if every tombstone range in `subset` is covered by `superset`.
+ */
+export function deleteSetContains(superset: DecodedDeleteSet, subset: DecodedDeleteSet): boolean {
+	for (const [clientId, subsetRanges] of subset) {
+		const supersetRanges = superset.get(clientId) ?? [];
+		let supersetIndex = 0;
+
+		for (const range of subsetRanges) {
+			let coveredUntil = range.clock;
+			const rangeEnd = range.clock + range.len;
+
+			while (
+				supersetIndex < supersetRanges.length &&
+				supersetRanges[supersetIndex].clock + supersetRanges[supersetIndex].len <= coveredUntil
+			) {
+				supersetIndex++;
+			}
+
+			let scanIndex = supersetIndex;
+			while (scanIndex < supersetRanges.length && coveredUntil < rangeEnd) {
+				const candidate = supersetRanges[scanIndex];
+				if (candidate.clock > coveredUntil) return false;
+				coveredUntil = Math.max(coveredUntil, candidate.clock + candidate.len);
+				scanIndex++;
+			}
+
+			if (coveredUntil < rangeEnd) return false;
+			supersetIndex = Math.max(supersetIndex, scanIndex - 1);
+		}
+	}
+
+	return true;
+}
+
+/**
+ * Capture the full Yjs snapshot for a document: insert clocks + delete set.
+ */
+export function snapshotFromDoc(doc: Y.Doc): YjsSnapshot {
+	return { snapshot: Y.encodeSnapshot(Y.snapshot(doc)) };
+}
+
+/**
+ * Build a Yjs snapshot from a standalone update.
+ */
+export function snapshotFromUpdate(update: Uint8Array): YjsSnapshot {
+	const doc = new Y.Doc();
+	try {
+		Y.applyUpdate(doc, update);
+		return snapshotFromDoc(doc);
+	} finally {
+		doc.destroy();
+	}
+}
+
+/**
+ * Check if snapshot `superset` contains all structs and tombstones in `subset`.
+ */
+export function snapshotContains(superset: YjsSnapshot, subset: YjsSnapshot): boolean {
+	const sup = decodeSnapshotData(superset);
+	const sub = decodeSnapshotData(subset);
+	return svContains(sup.sv, sub.sv) && deleteSetContains(sup.ds.clients, sub.ds.clients);
+}
+
+/**
+ * Check if two snapshots are exactly equal.
+ */
+export function snapshotsEqual(a: YjsSnapshot, b: YjsSnapshot): boolean {
+	return Y.equalSnapshots(
+		Y.decodeSnapshot(a.snapshot),
+		Y.decodeSnapshot(b.snapshot),
+	);
+}
+
+/**
+ * Check whether UPDATE is already covered by SNAPSHOT.
+ */
+export function snapshotContainsUpdate(snapshot: YjsSnapshot, update: Uint8Array): boolean {
+	return Y.snapshotContainsUpdate(Y.decodeSnapshot(snapshot.snapshot), update);
+}
+
+/**
+ * Check if snapshot `ahead` strictly dominates `behind`.
+ */
+export function snapshotIsAhead(ahead: YjsSnapshot, behind: YjsSnapshot): boolean {
+	return snapshotContains(ahead, behind) && !snapshotsEqual(ahead, behind);
+}
+
+/**
+ * Check if two live docs are exactly equal in Yjs terms (SV + delete set).
+ */
+export function yjsDocsEqual(a: Y.Doc, b: Y.Doc): boolean {
+	return Y.equalSnapshots(Y.snapshot(a), Y.snapshot(b));
+}
+
+/**
+ * Check if `ahead` strictly dominates `behind` in Yjs terms.
+ */
+export function yjsDocIsAhead(ahead: Y.Doc, behind: Y.Doc): boolean {
+	const decodedAhead = snapshotDataFromDoc(ahead);
+	const decodedBehind = snapshotDataFromDoc(behind);
+	return svContains(decodedAhead.sv, decodedBehind.sv)
+		&& deleteSetContains(decodedAhead.ds.clients, decodedBehind.ds.clients)
+		&& !Y.equalSnapshots(Y.snapshot(ahead), Y.snapshot(behind));
+}
+
+/**
+ * Check whether UPDATE would change DOC.
+ */
+export function yjsUpdateIsNoop(doc: Y.Doc, update: Uint8Array): boolean {
+	return Y.snapshotContainsUpdate(Y.snapshot(doc), update);
+}
+
+/**
+ * Check whether UPDATE carries any delete-set entries.
+ */
+export function updateHasDeleteSet(update: Uint8Array): boolean {
+	return decodeUpdateData(update).ds.clients.size > 0;
 }
 
 // ---- Convenience wrappers for encoded Uint8Array inputs ----

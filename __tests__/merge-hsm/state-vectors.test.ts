@@ -15,6 +15,12 @@ import {
 	stateVectorsEqual,
 	stateVectorIsAhead,
 	decodeSV,
+	snapshotContains,
+	snapshotsEqual,
+	snapshotFromDoc,
+	snapshotIsAhead,
+	yjsDocsEqual,
+	yjsUpdateIsNoop,
 } from "src/merge-hsm/state-vectors";
 
 /**
@@ -362,6 +368,53 @@ describe("state-vectors", () => {
 			)).toBe(false);
 			destroy();
 		});
+	});
+});
+
+describe("yjs snapshot helpers", () => {
+	test("delete-only changes can keep SV equal while docs differ", () => {
+		const { alice, bob, syncBoth, destroy } = createPeers();
+		alice.getText("t").insert(0, "Line A\nLine B\n");
+		syncBoth();
+
+		alice.getText("t").delete(7, 7);
+
+		expect(stateVectorsEqual(
+			Y.encodeStateVector(alice),
+			Y.encodeStateVector(bob),
+		)).toBe(true);
+		expect(yjsDocsEqual(alice, bob)).toBe(false);
+		destroy();
+	});
+
+	test("update noop detection is delete-set aware", () => {
+		const { alice, bob, syncBoth, deltaAliceToBob, destroy } = createPeers();
+		alice.getText("t").insert(0, "Line A\nLine B\n");
+		syncBoth();
+
+		alice.getText("t").delete(7, 7);
+		const update = deltaAliceToBob();
+
+		expect(yjsUpdateIsNoop(bob, update)).toBe(false);
+		Y.applyUpdate(bob, update);
+		expect(yjsUpdateIsNoop(bob, update)).toBe(true);
+		destroy();
+	});
+
+	test("snapshot containment tracks delete-only dominance", () => {
+		const { alice, bob, syncBoth, destroy } = createPeers();
+		alice.getText("t").insert(0, "Line A\nLine B\n");
+		syncBoth();
+
+		const before = snapshotFromDoc(bob);
+		alice.getText("t").delete(7, 7);
+		const after = snapshotFromDoc(alice);
+
+		expect(snapshotContains(after, before)).toBe(true);
+		expect(snapshotContains(before, after)).toBe(false);
+		expect(snapshotsEqual(after, before)).toBe(false);
+		expect(snapshotIsAhead(after, before)).toBe(true);
+		destroy();
 	});
 });
 
