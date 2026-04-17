@@ -487,7 +487,7 @@ export class LiveView<ViewType extends TextFileView>
 				// HSM-aware conflict resolution path
 				const hsm = this.document.hsm;
 				if (hsm) {
-					const conflictData = hsm.getConflictData();
+					const conflictData = hsm.getConflictData({ fresh: true });
 					const localDoc = hsm.getLocalDoc();
 					if (
 						conflictData &&

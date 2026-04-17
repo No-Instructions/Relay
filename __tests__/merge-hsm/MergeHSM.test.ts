@@ -47,6 +47,7 @@ import {
   expectState,
   expectLocalDocText,
 } from 'src/merge-hsm/testing';
+import { Conflict } from 'src/merge-hsm/conflict';
 
 import * as Y from 'yjs';
 
@@ -831,6 +832,36 @@ describe('MergeHSM', () => {
       // Fork-reconcile: ours=localDoc (CRDT with remote content), theirs=remoteDoc
       expect(conflictData!.ours).toBe('remote changed');
       expect(conflictData!.theirs).toBe('disk changed');
+    });
+
+    test('fresh conflict snapshot uses current editor text after banner creation', async () => {
+      const t = await createTestHSM();
+      const localDoc = new Y.Doc();
+      localDoc.getText('contents').insert(0, 'remote changed');
+      const remoteDoc = new Y.Doc();
+      remoteDoc.getText('contents').insert(0, 'remote changed');
+
+      (t.hsm as any)._statePath = 'active.conflict.bannerShown';
+      (t.hsm as any).localDoc = localDoc;
+      (t.hsm as any).remoteDoc = remoteDoc;
+      (t.hsm as any).lastKnownEditorText = 'disk edited again changed';
+      (t.hsm as any)._conflict = new Conflict({
+        base: 'original',
+        ours: 'remote changed',
+        theirs: 'disk changed',
+        oursLabel: 'Remote',
+        theirsLabel: 'Local file',
+        regions: [],
+      });
+
+      const stale = t.hsm.getConflictData();
+      const fresh = t.hsm.getConflictData({ fresh: true });
+
+      expect(stale).not.toBeNull();
+      expect(fresh).not.toBeNull();
+      expect(stale!.theirs).toBe('disk changed');
+      expect(fresh!.theirs).toBe('disk edited again changed');
+      expect(fresh!.ours).toBe('remote changed');
     });
 
     test('awaitActive() resolves for conflict state, not just tracking', async () => {

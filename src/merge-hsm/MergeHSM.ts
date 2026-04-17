@@ -461,7 +461,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * without opening the banner. The derived snapshot is intentionally not
 	 * cached to keep read APIs side-effect free.
 	 */
-	getConflictData(): ConflictData | null {
+	getConflictData(options?: { fresh?: boolean }): ConflictData | null {
+		if (options?.fresh && this._statePath === "active.conflict.bannerShown") {
+			const fresh = this.getFreshConflictDataForBanner();
+			if (fresh) return fresh;
+		}
 		if (this._conflict) return this._conflict.toData();
 		// Do not derive conflicts outside idle.diverged. In states like
 		// idle.localAhead, remoteDoc may be intentionally unsynced and transient
@@ -474,6 +478,58 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
 		if (!hasConflict) return null;
 		return new Conflict({ base, ours, theirs, regions }).toData();
+	}
+
+	private readCurrentEditorText(): string | null {
+		if (this._editorViewRef) {
+			try {
+				const actual = this._editorViewRef.getViewData();
+				this.lastKnownEditorText = actual;
+				return actual;
+			} catch {
+				// Fall through to cached state.
+			}
+		}
+		return this.lastKnownEditorText ?? this.pendingEditorContent;
+	}
+
+	private getFreshConflictDataForBanner(): ConflictData | null {
+		if (!this._conflict) return null;
+
+		const theirs = this.readCurrentEditorText() ?? this._conflict.theirs;
+		const oursLabel = this._conflict.oursLabel;
+		const theirsLabel = this._conflict.theirsLabel;
+		const preferRemote =
+			oursLabel.toLowerCase().includes("remote")
+			|| oursLabel.toLowerCase().includes("peer");
+		const ours =
+			(preferRemote ? this.remoteDoc : this.localDoc)
+				?.getText("contents")
+				.toString()
+			?? this.localDoc?.getText("contents").toString()
+			?? this._conflict.ours;
+
+		if (this._lca) {
+			const base = this._lca.contents;
+			const { regions } = computeConflict(base, ours, theirs);
+			return new Conflict({
+				base,
+				ours,
+				theirs,
+				oursLabel,
+				theirsLabel,
+				regions,
+			}).toData();
+		}
+
+		return new Conflict({
+			base: ours,
+			ours,
+			theirs,
+			oursLabel,
+			theirsLabel,
+			regions: computeTwoWayConflictRegions(ours, theirs),
+		}).toData();
 	}
 
 	getRemoteDoc(): Y.Doc | null {

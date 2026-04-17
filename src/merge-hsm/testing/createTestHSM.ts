@@ -198,7 +198,7 @@ export interface TestableHSM {
   awaitForkReconcile(): Promise<void>;
   hasFork(): boolean;
   awaitState(predicate: (statePath: string) => boolean): Promise<void>;
-  getConflictData(): { base: string; ours: string; theirs: string } | null;
+  getConflictData(options?: { fresh?: boolean }): { base: string; ours: string; theirs: string } | null;
 }
 
 // =============================================================================
