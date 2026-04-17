@@ -317,9 +317,6 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'active.entering.reconciling', guard: 'persistenceHasContentAndEditorAvailable' },
 				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
 				{ target: 'active.entering.reconciling', guard: 'editorContentAvailable', actions: ['applyRemoteToLocalIfNeeded'] },
-				// Editor content not yet delivered. Stay put; when a subsequent
-				// CM6_CHANGE or OBSIDIAN_LOAD_FILE_INTERNAL seeds lastKnownEditorText,
-				// reconciliation can proceed.
 				{ target: 'active.entering.awaitingPersistence' },
 			],
 			PROVIDER_SYNCED: {
