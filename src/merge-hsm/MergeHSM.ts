@@ -1681,7 +1681,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this._remoteStateVector = stateVector;
 					this._bridge.resetPendingCounters();
 					this.emitPersistState();
-					this.patchLCAHash(localContent, stateVector);
+					this.patchLCAHash(localContent);
 					return;
 				}
 
@@ -1748,7 +1748,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._remoteStateVector = stateVector;
 				this._bridge.resetPendingCounters();
 				this.emitPersistState();
-				this.patchLCAHash(mergeResult.merged, stateVector);
+				this.patchLCAHash(mergeResult.merged);
 
 				// Sync merged result to remote
 				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
@@ -2696,15 +2696,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	/**
 	 * Asynchronously compute the hash for a just-established LCA and patch it in.
 	 * Called after reconcileForkInActive sets an LCA with an empty hash placeholder.
-	 * Checks that the LCA state vector still matches before patching, so stale
-	 * results from superseded reconciliations are safely ignored.
+	 * Checks that the LCA still refers to the same content before patching, so
+	 * stale results from superseded reconciliations are safely ignored.
 	 */
-	private patchLCAHash(content: string, stateVector: Uint8Array): void {
+	private patchLCAHash(content: string): void {
 		this.hashFn(content).then((hash) => {
 			if (
 				this._lca &&
 				this._lca.meta.hash === "" &&
-				stateVectorsEqual(this._lca.stateVector, stateVector)
+				this._lca.contents === content
 			) {
 				this._lca = { ...this._lca, meta: { ...this._lca.meta, hash } };
 				this.emitPersistState();
