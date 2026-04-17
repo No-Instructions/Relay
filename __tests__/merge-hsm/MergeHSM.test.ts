@@ -1115,6 +1115,19 @@ describe('MergeHSM', () => {
       expect(t.getLocalDocText()).toBe('hello');
     });
 
+    test('REMOTE_UPDATE in idle applies delete-only updates', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'Line A\nLine B\nLine C\n', mtime: 1000 });
+      t.clearEffects();
+
+      t.applyRemoteChange('Line A\nLine C\n');
+      await t.hsm.awaitIdleAutoMerge();
+
+      expectState(t, 'idle.synced');
+      expectEffect(t.effects, { type: 'WRITE_DISK' });
+      expect(t.getLocalDocText()).toBe('Line A\nLine C\n');
+    });
+
     test('DISK_CHANGED in idle triggers auto-merge and returns to synced', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'original', mtime: 1000 });
