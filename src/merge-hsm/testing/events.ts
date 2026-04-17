@@ -49,11 +49,18 @@ export function unload(): UnloadEvent {
 
 /**
  * Create a mock EditorViewRef for testing.
- * @param content - The editor content returned by getViewData().
+ * @param content - Either a static string, or a getter that is invoked on
+ * every getViewData() call. Production EditorViewRefs read live editor
+ * state, so a getter keeps tests honest when the HSM consults the ref
+ * after a CM6 change.
  * @param dirty - Whether the editor has unsaved changes.
  */
-export function mockEditorViewRef(content: string = '', dirty: boolean = false): EditorViewRef {
-  return { dirty, getViewData: () => content };
+export function mockEditorViewRef(
+  content: string | (() => string) = '',
+  dirty: boolean = false,
+): EditorViewRef {
+  const getViewData = typeof content === 'function' ? content : () => content;
+  return { dirty, getViewData };
 }
 
 /**
@@ -64,16 +71,28 @@ export function acquireLock(editorViewRef?: EditorViewRef): AcquireLockEvent {
 }
 
 /**
+ * Build a mockEditorViewRef that reflects the HSM's live localDoc, falling
+ * back to the initial seed when localDoc has not yet been populated.
+ * Mirrors production, where EditorViewRef.getViewData() returns the current
+ * editor buffer — callers that consult the ref mid-session (e.g.,
+ * beginReleaseLock) must see post-CM6 content, not the acquire-time snapshot.
+ */
+function liveMockEditorViewRef(hsm: HSMHandle, initial: string): EditorViewRef {
+  return mockEditorViewRef(() => hsm.getLocalDocText() ?? initial);
+}
+
+/**
  * Send ACQUIRE_LOCK and wait for persistence to sync.
  * After this, state will be in active.tracking, active.entering.reconciling,
  * or active.conflict.* if there's a deferred conflict.
  *
- * The optional editorContent seeds lastKnownEditorText via the mock
+ * The optional editorContent seeds lastKnownEditorText via a live mock
  * editorViewRef, satisfying the PERSISTENCE_SYNCED guards that gate
  * progress out of awaitingPersistence on editor availability.
  */
 export async function sendAcquireLock(hsm: HSMHandle, editorContent?: string): Promise<void> {
-  hsm.send(acquireLock(editorContent !== undefined ? mockEditorViewRef(editorContent) : undefined));
+  const ref = editorContent !== undefined ? liveMockEditorViewRef(hsm, editorContent) : undefined;
+  hsm.send(acquireLock(ref));
   // Wait for state to leave awaitingPersistence (persistence has synced)
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence'));
 }
@@ -81,12 +100,13 @@ export async function sendAcquireLock(hsm: HSMHandle, editorContent?: string): P
 /**
  * Send ACQUIRE_LOCK and wait all the way to active.tracking.
  *
- * The optional editorContent seeds lastKnownEditorText via the mock
+ * The optional editorContent seeds lastKnownEditorText via a live mock
  * editorViewRef, satisfying the PERSISTENCE_SYNCED guards that gate
  * progress out of awaitingPersistence on editor availability.
  */
 export async function sendAcquireLockToTracking(hsm: HSMHandle, editorContent?: string): Promise<void> {
-  hsm.send(acquireLock(editorContent !== undefined ? mockEditorViewRef(editorContent) : undefined));
+  const ref = editorContent !== undefined ? liveMockEditorViewRef(hsm, editorContent) : undefined;
+  hsm.send(acquireLock(ref));
   // Wait for tracking (or conflict)
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking' || s.includes('conflict'));
 }
@@ -389,7 +409,7 @@ export async function loadAndActivate(
     });
     hsm.send(acquireLock());
   } else {
-    const editorViewRef = opts?.editorViewRef ?? mockEditorViewRef(content);
+    const editorViewRef = opts?.editorViewRef ?? liveMockEditorViewRef(hsm, content);
     hsm.send(acquireLock(editorViewRef));
   }
 
