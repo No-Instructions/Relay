@@ -421,16 +421,20 @@ export class SharedFolder extends HasProvider {
 				// Bulk-load LCA cache before registering HSMs
 				await this.mergeManager.initialize();
 
-				this.addLocalDocs();
 				this.syncFileTree();
 			}
 		});
 
 		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced()).then(async () => {
 			this.syncStore.start();
-			// Remote folder metadata can land before SyncStore observers are installed.
-			// Replay local doc discovery and file-tree sync after start() so cloned
-			// folders do not miss their first batch of remote entries.
+			// Wait until syncStore is observing the committed file metadata before
+			// creating docs from local disk. On reload, addLocalDocs() can otherwise
+			// reserve placeholder GUIDs for already-shared files and build HSMs that
+			// miss their persisted fork/LCA state.
+			//
+			// Remote folder metadata can also land before SyncStore observers are
+			// installed, so replay both local doc discovery and file-tree sync after
+			// start() to avoid missing the first batch of remote entries.
 			if (!this.destroyed) {
 				this.addLocalDocs();
 				await this.syncFileTree();
@@ -1730,6 +1734,26 @@ export class SharedFolder extends HasProvider {
 						committedGuid: committedMeta.id,
 					},
 				);
+				// Server metadata already chose a different GUID for this path.
+				// The local upload succeeded, but the path must adopt the
+				// committed identity instead of leaving pendingUpload to shadow
+				// every later path lookup.
+				if (
+					isDocument(file) &&
+					isDocumentMeta(committedMeta) &&
+					!this._pendingRemaps.has(file.path)
+				) {
+					this._pendingRemaps.add(file.path);
+					this.executeRemap({
+						path: file.path,
+						fromGuid: file.guid,
+						toGuid: committedMeta.id,
+					}).catch((e) => {
+						this.warn(`[${file.path}] remap retry from markUploaded failed`, e);
+					}).finally(() => {
+						this._pendingRemaps.delete(file.path);
+					});
+				}
 				return;
 			}
 
