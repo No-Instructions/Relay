@@ -1,14 +1,16 @@
 import * as Y from 'yjs'
 import * as idb from 'lib0/indexeddb'
-import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
-import { metrics } from '../debug'
+import { metrics, curryLog } from '../debug'
+
+const idbWarn = curryLog('[IndexeddbPersistence]', 'warn')
 import { OpCapture } from '../merge-hsm/undo'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
 const historyStoreName = 'history'
 const DB_VERSION = 2
+const IDB_OPEN_TIMEOUT_MS = 10000
 
 /**
  * Compare two Uint8Arrays for equality
@@ -143,6 +145,8 @@ export class IndexeddbPersistence extends Observable {
      */
     this.db = null
     this.synced = false
+    this._syncFailed = false
+    this._syncError = null
     this._serverSynced = undefined
     this._origin = undefined
     /**
@@ -167,13 +171,39 @@ export class IndexeddbPersistence extends Observable {
           db.createObjectStore(historyStoreName, { autoIncrement: true })
         }
       }
-      request.onerror = () => reject(request.error)
+      request.onblocked = () => {
+        idbWarn(`indexedDB.open blocked for ${name}`)
+      }
+      request.onerror = () => reject(request.error || new Error(`indexedDB.open failed for ${name}`))
       request.onsuccess = () => resolve(request.result)
     })
     /**
      * @type {Promise<IndexeddbPersistence>}
      */
-    this.whenSynced = promise.create(resolve => this.on('synced', () => resolve(this)))
+    this.whenSynced = new Promise((resolve, reject) => {
+      if (this.synced) {
+        resolve(this)
+        return
+      }
+      if (this._syncFailed) {
+        reject(this._syncError || new Error(`IndexedDB sync failed for ${this.name}`))
+        return
+      }
+      const onSynced = () => {
+        this.off('failed', onFailed)
+        resolve(this)
+      }
+      const onFailed = (err) => {
+        this.off('synced', onSynced)
+        reject(err || this._syncError || new Error(`IndexedDB sync failed for ${this.name}`))
+      }
+      this.on('synced', onSynced)
+      this.on('failed', onFailed)
+    })
+
+    this._db.catch((err) => {
+      this._failSync(err)
+    })
 
     this._db.then(db => {
       this.db = db
@@ -228,6 +258,9 @@ export class IndexeddbPersistence extends Observable {
             this.synced = true
             this.emit('synced', [this])
           }
+        })
+        .catch((err) => {
+          this._failSync(err)
         })
       }) // migrationDone
     })
@@ -300,7 +333,19 @@ export class IndexeddbPersistence extends Observable {
       setTimeout(() => f(this), 0)
       return this
     }
+    if (name === 'failed' && this._syncFailed) {
+      setTimeout(() => f(this._syncError), 0)
+      return this
+    }
     return super.once(name, f)
+  }
+
+  _failSync (err) {
+    if (this._destroyed || this._syncFailed) return
+    this._syncFailed = true
+    this._syncError = err instanceof Error ? err : new Error(String(err))
+    idbWarn(`sync failed for ${this.name}:`, this._syncError)
+    this.emit('failed', [this._syncError])
   }
 
   /**
@@ -472,15 +517,29 @@ export class IndexeddbPersistence extends Observable {
     return idb.get(customStore, 'migratedFrom').then(existing => {
       if (existing === oldName) return // already migrated
       return new Promise(resolve => {
+        let finished = false
+        const done = () => {
+          if (finished) return
+          finished = true
+          clearTimeout(timeoutId)
+          resolve()
+        }
         const req = indexedDB.open(oldName)
-        req.onerror = () => resolve()
+        const timeoutId = setTimeout(() => {
+          idbWarn(`migration open timed out for ${oldName}`)
+          done()
+        }, IDB_OPEN_TIMEOUT_MS)
+        req.onblocked = () => {
+          idbWarn(`migration open blocked for ${oldName}`)
+        }
+        req.onerror = () => done()
         req.onsuccess = () => {
           const oldDb = req.result
           const storeNames = [updatesStoreName, customStoreName, historyStoreName]
             .filter(s => oldDb.objectStoreNames.contains(s))
           if (storeNames.length === 0) {
             oldDb.close()
-            return resolve()
+            return done()
           }
           // Read all entries from each store in the old DB
           const readTx = oldDb.transaction(storeNames, 'readonly')
@@ -516,15 +575,15 @@ export class IndexeddbPersistence extends Observable {
             }
             writeTx.oncomplete = () => {
               oldDb.close()
-              resolve()
+              done()
             }
             writeTx.onerror = () => {
               oldDb.close()
-              resolve()
+              done()
             }
           }).catch(() => {
             oldDb.close()
-            resolve()
+            done()
           })
         }
       })
@@ -536,9 +595,70 @@ export class IndexeddbPersistence extends Observable {
    * @private
    */
   _setupPermanentUserData () {
-    if (!this._userId) return
-    const permanentUserData = new Y.PermanentUserData(this.doc)
-    permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
+    if (!this._userId || this._destroyed || !this._hasLiveDoc()) return
+
+    if (this._hasInvalidPermanentUserData()) {
+      idbWarn(`[y-indexeddb] Invalid PermanentUserData detected for ${this.name}; resetting users map`)
+      this._resetPermanentUserData()
+    }
+
+    try {
+      const permanentUserData = new Y.PermanentUserData(this.doc)
+      permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
+    } catch (err) {
+      idbWarn(`[y-indexeddb] PermanentUserData setup failed for ${this.name}; retrying with cleared users map`, err)
+      try {
+        this._resetPermanentUserData()
+        if (this._destroyed || !this._hasLiveDoc()) return
+        const permanentUserData = new Y.PermanentUserData(this.doc)
+        permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
+      } catch (retryErr) {
+        idbWarn(`[y-indexeddb] PermanentUserData setup retry failed for ${this.name}`, retryErr)
+      }
+    }
+  }
+
+  _hasLiveDoc () {
+    return !!this.doc && this.doc.store != null
+  }
+
+  _hasInvalidPermanentUserData () {
+    if (!this._hasLiveDoc()) return false
+    const users = this.doc.getMap("users")
+    let invalid = false
+    users.forEach((entry) => {
+      if (invalid) return
+      if (!(entry instanceof Y.Map)) {
+        invalid = true
+        return
+      }
+      const ids = entry.get("ids")
+      const ds = entry.get("ds")
+      if (!(ids instanceof Y.Array) || !(ds instanceof Y.Array)) {
+        invalid = true
+        return
+      }
+      ids.forEach((id) => {
+        if (typeof id !== "number" || !Number.isFinite(id)) {
+          invalid = true
+        }
+      })
+      ds.forEach((encodedDs) => {
+        if (!(encodedDs instanceof Uint8Array)) {
+          invalid = true
+        }
+      })
+    })
+    return invalid
+  }
+
+  _resetPermanentUserData () {
+    if (!this._hasLiveDoc()) return
+    const users = this.doc.getMap("users")
+    if (users.size === 0) return
+    this.doc.transact(() => {
+      users.clear()
+    }, this)
   }
 
   /**
@@ -610,9 +730,11 @@ export class IndexeddbPersistence extends Observable {
    */
   async initializeWithContent (contentLoader, fieldName = 'contents') {
     await this.whenSynced
+    if (this._destroyed || !this._hasLiveDoc()) return false
 
     // Check if already enrolled (origin set = previously initialized)
     const existingOrigin = await this.getOrigin()
+    if (this._destroyed || !this._hasLiveDoc()) return false
     if (existingOrigin !== undefined) {
       return false
     }
@@ -628,6 +750,7 @@ export class IndexeddbPersistence extends Observable {
     // Set up PermanentUserData BEFORE content insertion
     if (this._userId) {
       this._setupPermanentUserData()
+      if (this._destroyed || !this._hasLiveDoc()) return false
     }
 
     // Insert content
@@ -638,6 +761,7 @@ export class IndexeddbPersistence extends Observable {
 
     // Mark origin
     await this.setOrigin('local')
+    if (this._destroyed || !this._hasLiveDoc()) return false
 
     return true
   }
@@ -651,9 +775,11 @@ export class IndexeddbPersistence extends Observable {
    */
   async initializeFromRemote (update, origin) {
     await this.whenSynced
+    if (this._destroyed || !this._hasLiveDoc()) return false
 
     // Check if already initialized (origin set = previously initialized)
     const existingOrigin = await this.getOrigin()
+    if (this._destroyed || !this._hasLiveDoc()) return false
     if (existingOrigin !== undefined) {
       return false
     }
@@ -666,6 +792,7 @@ export class IndexeddbPersistence extends Observable {
     // Set up PermanentUserData BEFORE applying update
     if (this._userId) {
       this._setupPermanentUserData()
+      if (this._destroyed || !this._hasLiveDoc()) return false
     }
 
     // Apply remote CRDT state — origin must differ from `this` so _storeUpdate persists to IDB
@@ -673,6 +800,7 @@ export class IndexeddbPersistence extends Observable {
 
     // Mark origin
     await this.setOrigin('remote')
+    if (this._destroyed || !this._hasLiveDoc()) return false
 
     return true
   }
@@ -700,5 +828,3 @@ export class IndexeddbPersistence extends Observable {
     return !serverSynced && origin !== "local" && !this.hasUserData()
   }
 }
-
-
