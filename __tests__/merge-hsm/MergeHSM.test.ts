@@ -544,7 +544,7 @@ describe('MergeHSM', () => {
       expect(t.hsm.isIdle()).toBe(true);
       expect(t.hsm.isActive()).toBe(false);
 
-      await sendAcquireLockToTracking(t);
+      await sendAcquireLockToTracking(t, '');
 
       expect(t.hsm.isIdle()).toBe(false);
       expect(t.hsm.isActive()).toBe(true);
@@ -1356,7 +1356,7 @@ describe('MergeHSM', () => {
       // localDoc already alive in idle mode
       expect(t.hsm.getLocalDoc()).not.toBeNull();
 
-      await sendAcquireLockToTracking(t);
+      await sendAcquireLockToTracking(t, '');
 
       // Still alive in active mode
       expect(t.hsm.getLocalDoc()).not.toBeNull();
@@ -1898,7 +1898,7 @@ describe('MergeHSM', () => {
       t2.send(load('test-guid', 'test.md'));
       t2.send(persistenceLoaded(new Uint8Array(), null));
       t2.send({ type: 'SET_MODE_ACTIVE' });
-      t2.send(acquireLock(''));
+      t2.send(acquireLock());
 
       // IDB is empty (unenrolled) → stays in awaitingPersistence
       expectState(t2, 'active.entering.awaitingPersistence');
@@ -1923,7 +1923,7 @@ describe('MergeHSM', () => {
         stateVector: new Uint8Array([0]),
       }));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock('user content'));
+      t.send(acquireLock());
 
       // IDB is empty (unenrolled) → stays in awaitingPersistence
       expectState(t, 'active.entering.awaitingPersistence');
@@ -1934,7 +1934,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock('user content'));
+      t.send(acquireLock());
 
       // IDB is empty (unenrolled) → stays in awaitingPersistence
       expectState(t, 'active.entering.awaitingPersistence');
@@ -1945,7 +1945,7 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock(''));
+      t.send(acquireLock());
 
       // IDB is empty → stays in awaitingPersistence
       expectState(t, 'active.entering.awaitingPersistence');
@@ -2058,7 +2058,7 @@ describe('MergeHSM', () => {
       await loadToIdle(t, { content: 'hello' });
 
       // Send ACQUIRE_LOCK to enter active.entering states
-      t.send(acquireLock('hello'));
+      t.send(acquireLock(mockEditorViewRef('hello')));
 
       // Wait for entering state
       await t.hsm?.awaitState?.((s) =>
