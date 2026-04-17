@@ -2896,45 +2896,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		if (!region || !positioned) return;
 
-		const isLocalLabel = (label: string | undefined): boolean => {
-			const normalized = (label ?? "").toLowerCase();
-			return normalized.includes("local") || normalized.includes("disk");
-		};
-		const isRemoteLabel = (label: string | undefined): boolean => {
-			const normalized = (label ?? "").toLowerCase();
-			return normalized.includes("remote") || normalized.includes("peer");
-		};
-
-		const pickSemanticSide = (semantic: "local" | "remote"): string => {
-			const oursLabel = conflict.oursLabel;
-			const theirsLabel = conflict.theirsLabel;
-			const oursMatches =
-				semantic === "local"
-					? isLocalLabel(oursLabel)
-					: isRemoteLabel(oursLabel);
-			const theirsMatches =
-				semantic === "local"
-					? isLocalLabel(theirsLabel)
-					: isRemoteLabel(theirsLabel);
-
-			if (oursMatches && !theirsMatches) return region.oursContent;
-			if (theirsMatches && !oursMatches) return region.theirsContent;
-
-			// Fallback to the historical mapping when labels are absent or
-			// ambiguous so existing conflict payloads keep working.
-			return semantic === "local"
-				? region.oursContent
-				: region.theirsContent;
-		};
-
-		// Determine content to apply based on resolution type
+		// Determine content to apply based on resolution type.
 		let newContent: string;
 		switch (resolution) {
-			case "local":
-				newContent = pickSemanticSide("local");
+			case "ours":
+				newContent = region.oursContent;
 				break;
-			case "remote":
-				newContent = pickSemanticSide("remote");
+			case "theirs":
+				newContent = region.theirsContent;
+				break;
+			case "neither":
+				newContent = "";
 				break;
 			case "both":
 				newContent = region.oursContent + "\n" + region.theirsContent;

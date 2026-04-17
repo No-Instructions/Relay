@@ -308,10 +308,11 @@ export interface RelayDebugGlobal {
    *   - string → matched against `ConflictHunkInfo.id`; throws on
    *     ambiguous (collision) or missing
    *
-   * `resolution` picks the semantic side declared by the conflict labels:
-   *   - "local"  → whichever side is labeled local/local file
-   *   - "remote" → whichever side is labeled remote/peer
-   *   - "both"   → oursContent + "\n" + theirsContent
+   * `resolution` picks the side to apply:
+   *   - "ours"    → oursContent
+   *   - "theirs"  → theirsContent
+   *   - "both"    → oursContent + "\n" + theirsContent
+   *   - "neither" → remove the hunk entirely
    *
    * The HSM mutates localDoc in place at the hunk's positioned region,
    * marks the index resolved, and once every hunk is resolved it
@@ -321,7 +322,7 @@ export interface RelayDebugGlobal {
   resolveHunk: (
     path: string,
     indexOrId: number | string,
-    resolution: 'local' | 'remote' | 'both',
+    resolution: 'ours' | 'theirs' | 'both' | 'neither',
   ) => Promise<string>;
   /**
    * Dispatch an `OPEN_DIFF_VIEW` event — the state-machine-level
@@ -1283,7 +1284,7 @@ export class RelayDebugAPI {
   private async resolveHunk(
     path: string,
     indexOrId: number | string,
-    resolution: 'local' | 'remote' | 'both',
+    resolution: 'ours' | 'theirs' | 'both' | 'neither',
   ): Promise<string> {
     const g = typeof window !== 'undefined' ? window : globalThis;
     const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
