@@ -650,7 +650,10 @@ describe('MergeHSM', () => {
 
     test('DISK_CHANGED does NOT advance LCA when no editorViewRef', async () => {
       const t = await createTestHSM();
-      await loadAndActivate(t, 'hello', { mtime: Date.now() - 1000 });
+      await loadAndActivate(t, 'hello', {
+        mtime: Date.now() - 1000,
+        editorViewRef: null,
+      });
 
       const oldLca = t.state.lca;
 
@@ -1818,9 +1821,14 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
     });
 
-    test('DISK_CHANGED in active mode does not update LCA (per spec)', async () => {
+    test('DISK_CHANGED in active mode does not update LCA when editor is dirty', async () => {
       const t = await createTestHSM();
-      await loadAndActivate(t, 'hello', { mtime: 1000 });
+      // Dirty editor indicates unsaved changes — LCA must stay frozen so
+      // the save boundary continues to act as the merge base.
+      await loadAndActivate(t, 'hello', {
+        mtime: 1000,
+        editorViewRef: mockEditorViewRef('hello', true),
+      });
 
       // Edit localDoc so it differs from LCA
       t.send(cm6Insert(5, ' world', 'hello world'));
@@ -1829,8 +1837,7 @@ describe('MergeHSM', () => {
       // Disk change in active.tracking mode
       t.send(await diskChanged('hello world', Date.now()));
 
-      // Per spec: LCA is never touched during active.* states
-      // No PERSIST_STATE should be emitted for LCA updates
+      // Editor is dirty → LCA stays put → no PERSIST_STATE emitted.
       const persistEffects = t.effects.filter(e => e.type === 'PERSIST_STATE');
       expect(persistEffects).toHaveLength(0);
     });

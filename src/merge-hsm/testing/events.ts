@@ -303,8 +303,13 @@ export interface LoadAndActivateOptions {
   path?: string;
   /** LCA mtime (default: Date.now()) */
   mtime?: number;
-  /** Editor view ref for LCA advancement during active.tracking */
-  editorViewRef?: EditorViewRef;
+  /**
+   * Editor view ref for LCA advancement during active.tracking.
+   * Pass null to simulate the no-editorViewRef case; editor content is
+   * still seeded via OBSIDIAN_LOAD_FILE_INTERNAL so the HSM can advance
+   * past awaitingPersistence.
+   */
+  editorViewRef?: EditorViewRef | null;
 }
 
 /**
@@ -375,8 +380,18 @@ export async function loadAndActivate(
   // storeEditorContent can seed lastKnownEditorText. The
   // PERSISTENCE_SYNCED guard chain requires it to advance out of
   // awaitingPersistence when IDB has content.
-  const editorViewRef = opts?.editorViewRef ?? mockEditorViewRef(content);
-  hsm.send(acquireLock(editorViewRef));
+  // editorViewRef === null opts out of the ref but still seeds editor
+  // text via OBSIDIAN_LOAD_FILE_INTERNAL so the HSM can advance.
+  if (opts?.editorViewRef === null) {
+    hsm.send({
+      type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
+      editorContent: content,
+    });
+    hsm.send(acquireLock());
+  } else {
+    const editorViewRef = opts?.editorViewRef ?? mockEditorViewRef(content);
+    hsm.send(acquireLock(editorViewRef));
+  }
 
   // Wait for state to reach tracking
   await hsm.hsm?.awaitState?.((s) => s === 'active.tracking');
