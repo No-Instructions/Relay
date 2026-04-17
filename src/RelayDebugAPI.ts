@@ -1347,7 +1347,7 @@ export class RelayDebugAPI {
    * document can't be found or has no persistence metadata.
    */
   private resolveIdbTarget(path: string): {
-    hsm: any; guid: string; folder: any; filePath: string; dbName: string;
+    hsm: any; guid: string; folder: any; filePath: string; dbName: string; hsmDbName: string;
   } {
     const g = typeof window !== 'undefined' ? window : globalThis;
     const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
@@ -1355,7 +1355,14 @@ export class RelayDebugAPI {
     const { hsm, guid, folder, filePath } = lookup;
     const appId = (hsm as any)._persistenceMetadata?.appId;
     if (!appId) throw new Error('No appId in persistence metadata');
-    return { hsm, guid, folder, filePath, dbName: `${appId}-relay-doc-${guid}` };
+    return {
+      hsm,
+      guid,
+      folder,
+      filePath,
+      dbName: `${appId}-relay-doc-${guid}`,
+      hsmDbName: `${appId}-relay-hsm`,
+    };
   }
 
   /**
@@ -1508,7 +1515,7 @@ export class RelayDebugAPI {
    * the ~90-line inline JS blob that used to live in cmd_relay_idb_fork.
    */
   private async getIdbFork(path: string): Promise<IdbForkSnapshot> {
-    const { hsm, guid, folder, filePath } = this.resolveIdbTarget(path);
+    const { hsm, guid, folder, filePath, hsmDbName } = this.resolveIdbTarget(path);
 
     const toSnapshot = (f: any): ForkSnapshot => ({
       base: f.base ?? null,
@@ -1529,7 +1536,7 @@ export class RelayDebugAPI {
     let persistedFork: ForkSnapshot | { error: string } | null = null;
     let persistedMeta: IdbForkSnapshot['persistedMeta'] = null;
     try {
-      const db = await this.openDb('RelayMergeHSM');
+      const db = await this.openDb(hsmDbName);
       try {
         if (db.objectStoreNames.contains('states')) {
           const tx = db.transaction(['states'], 'readonly');
