@@ -43,6 +43,40 @@ export class CM6Integration {
 	/** Delay after last data-flow event before checking for drift (ms) */
 	private static readonly DRIFT_CHECK_DELAY = 3000;
 
+	private isRecoverableDispatchError(error: unknown): error is Error {
+		if (!(error instanceof Error)) return false;
+		return (
+			error.message.includes("Invalid change range") ||
+			error.message.includes("wrong length")
+		);
+	}
+
+	private recoverFromDispatchError(
+		error: unknown,
+		changes: PositionedChange[],
+		phase: "dispatch" | "dispatch-rAF",
+	): boolean {
+		if (!this.isRecoverableDispatchError(error)) {
+			return false;
+		}
+		const message = error.message;
+
+		if (this.destroyed || !this.isEditorStillValid()) {
+			this.warn(
+				`${phase}: stale CM6 patch after view invalidation; dropping ${changes.length} changes`,
+			);
+			return true;
+		}
+
+		const editorText = this.view.state.doc.toString();
+		const driftDetected = this.hsm.checkAndCorrectDrift(editorText);
+		this.warn(
+			`${phase}: CM6 rejected patch (${message}). ` +
+				`${driftDetected ? "Triggered drift recovery." : "Editor/localDoc already match; dropping stale patch."}`,
+		);
+		return true;
+	}
+
 	constructor(
 		hsm: MergeHSM,
 		view: EditorView,
@@ -121,20 +155,34 @@ export class CM6Integration {
 				);
 				requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
-						const editorBefore = this.view.state.doc.length;
-						this.log(
-							`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
-						);
-						this.view.dispatch({
-							changes: cmChanges,
-							annotations: [ySyncAnnotation.of(this.view)],
-						});
-						const editorAfter = this.view.state.doc.length;
-						this.log(
-							`dispatchToEditor (rAF): editor=${editorAfter} chars after`,
-						);
+						try {
+							const editorBefore = this.view.state.doc.length;
+							this.log(
+								`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
+							);
+							this.view.dispatch({
+								changes: cmChanges,
+								annotations: [ySyncAnnotation.of(this.view)],
+							});
+							const editorAfter = this.view.state.doc.length;
+							this.log(
+								`dispatchToEditor (rAF): editor=${editorAfter} chars after`,
+							);
+						} catch (deferredError) {
+							if (
+								!this.recoverFromDispatchError(
+									deferredError,
+									changes,
+									"dispatch-rAF",
+								)
+							) {
+								throw deferredError;
+							}
+						}
 					}
 				});
+			} else if (this.recoverFromDispatchError(e, changes, "dispatch")) {
+				return;
 			} else {
 				throw e;
 			}
