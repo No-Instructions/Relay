@@ -432,6 +432,13 @@ export class IndexeddbPersistence extends Observable {
       this.opCapture.destroy()
       this.opCapture = null
     }
+    // If indexedDB.open never resolved, `this.db` is null and queued
+    // writes/compaction are chained on `_db` — awaiting them would
+    // hang destroy forever. Close the db if it eventually resolves.
+    if (!this.db) {
+      this._db.then(db => db.close()).catch(() => {})
+      return
+    }
     // Wait for all pending writes to complete before closing
     if (this._pendingWrites.size > 0) {
       await Promise.all(this._pendingWrites)
@@ -440,8 +447,7 @@ export class IndexeddbPersistence extends Observable {
     if (this._pendingCompaction) {
       await this._pendingCompaction
     }
-    const db = await this._db
-    db.close()
+    this.db.close()
   }
 
   /**
