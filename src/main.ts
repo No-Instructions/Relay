@@ -1158,13 +1158,27 @@ export default class Live extends Plugin {
 		getPatcher().patch(TextFileViewPrototype, {
 			loadFileInternal(old: any) {
 				return async function (this: any, file: TFile, isInitialLoad: boolean) {
+					// Mark the critical section: view.file has already been
+					// reassigned by the caller; view.data is still stale until
+					// setData runs inside the original call. The getViewData
+					// patch above throws while this flag is set.
+					this.__relayLoading = true;
+
 					// Capture state before calling original
 					const dirty = this.dirty;
 					const lastSavedData = this.lastSavedData;
 					const isPlaintext = this.isPlaintext;
 
 					// Call original (may trigger three-way merge internally)
-					const result = await old.call(this, file, isInitialLoad);
+					let result;
+					try {
+						result = await old.call(this, file, isInitialLoad);
+					} finally {
+						// Clear the guard before any post-load reads (below and
+						// elsewhere). Cleared in finally so a thrown original
+						// doesn't leave the view permanently unreadable.
+						this.__relayLoading = false;
+					}
 
 					// After original completes, send diagnostic event if this is a Relay file
 					try {

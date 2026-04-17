@@ -1284,6 +1284,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this.lastKnownEditorText = e.editorContent;
 				}
 				this._editorViewRef = e.editorViewRef ?? null;
+				// Fallback: read editor content directly from the view ref. Needed
+				// for plugin reload where the file was already open before Relay
+				// patched loadFileInternal, so OBSIDIAN_LOAD_FILE_INTERNAL never
+				// fires. Skip the read if loadFileInternal is in-flight — `view.data`
+				// is still the PREVIOUS file's content during that window, and the
+				// post-await OBSIDIAN_LOAD_FILE_INTERNAL will seed us with the
+				// correct value. The `__relayLoading` flag is stamped on the view
+				// by the TextFileViewPrototype patch in main.ts.
+				if (this.lastKnownEditorText === null && this._editorViewRef) {
+					const ref = this._editorViewRef as any;
+					if (!ref.__relayLoading) {
+						try {
+							this.lastKnownEditorText = ref.getViewData();
+						} catch { /* ignore — OBSIDIAN_LOAD_FILE_INTERNAL will seed */ }
+					}
+				}
 				if (this._statePath.startsWith("idle.")) {
 					this._enteringFromDiverged = this._statePath === "idle.diverged";
 				}
