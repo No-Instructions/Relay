@@ -401,6 +401,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
 	private _hasLock = false;
+	private _released = false;
 	private readonly _fallbackViewer = Symbol("live-view-viewer");
 
 	constructor(
@@ -730,6 +731,8 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	attach(): Promise<this> {
+		this._released = false;
+
 		// can be called multiple times, whereas release is only ever called once
 		// Acquire a lock synchronously. Subsequent attach calls for the same view
 		// are idempotent until release().
@@ -813,9 +816,10 @@ export class LiveView<ViewType extends TextFileView>
 
 	release() {
 		// Called when a view is released from management
-		if (!this.document || !this.view) {
+		if (!this.document || !this.view || this._released) {
 			return;
 		}
+		this._released = true;
 
 		// Remove the live editor class
 		if (this.view instanceof MarkdownView) {
@@ -841,7 +845,7 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewHookPlugin = undefined;
 		this._plugin?.destroy();
 		this._plugin = undefined;
-		const sharedFolder = this.document.sharedFolder;
+		const sharedFolder = this.document.destroyed ? null : this.document.sharedFolder;
 		const preservePendingUpload =
 			!!sharedFolder && sharedFolder.isPendingUpload(this.document.path);
 		let stillLocked = this.document.userLock;
