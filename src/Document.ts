@@ -445,27 +445,46 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	async connect(): Promise<boolean> {
-		if (this.sharedFolder.s3rn instanceof S3Folder) {
+		if (this.destroyed) {
+			return false;
+		}
+
+		const sharedFolder = this._parent;
+		if (!sharedFolder || sharedFolder.destroyed) {
+			return false;
+		}
+
+		if (sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
 			return false;
 		} else if (this.s3rn instanceof S3Document) {
 			// convert to remote document
-			if (this.sharedFolder.relayId) {
+			if (sharedFolder.relayId) {
 				this.s3rn = new S3RemoteDocument(
-					this.sharedFolder.relayId,
-					this.sharedFolder.guid,
+					sharedFolder.relayId,
+					sharedFolder.guid,
 					this.guid,
 				);
 			} else {
-				this.s3rn = new S3Document(this.sharedFolder.guid, this.guid);
+				this.s3rn = new S3Document(sharedFolder.guid, this.guid);
 			}
 		}
-		return (
-			this.sharedFolder.shouldConnect &&
-			this.sharedFolder.connect().then((connected) => {
-				return super.connect();
-			})
-		);
+
+		if (!sharedFolder.shouldConnect) {
+			return false;
+		}
+
+		const folderConnected = await sharedFolder.connect().catch(() => false);
+		if (
+			!folderConnected ||
+			this.destroyed ||
+			!this._parent ||
+			this._parent.destroyed
+		) {
+			return false;
+		}
+
+		return super.connect();
 	}
 
 	public get ready(): boolean {
@@ -609,6 +628,14 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 		// Release HSM lock if held
 		this.releaseLock();
+
+		// The HSM's cleanup invoke closes per-document IDB asynchronously.
+		// Capture it so the reload pipeline waits for all DB connections to
+		// close before the new plugin instance opens them.
+		if (this._hsm) {
+			const p = this._hsm.awaitAsync('cleanup').catch(() => {});
+			awaitOnReload(p, `doc:cleanup:${this.guid}`);
+		}
 
 		super.destroy();
 		// Note: super.destroy() calls destroyRemoteDoc() which handles ydoc cleanup.
