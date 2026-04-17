@@ -62,7 +62,7 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
-import { classifyUpdate, decodeSV, isEmptyDoc, stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
+import { classifyUpdate, decodeSV, isEmptyDoc, stateVectorsEqual, stateVectorIsAhead, yjsUpdateIsNoop } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 
@@ -1855,15 +1855,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// localDoc is NOT mutated — the onDone action applies the result.
 		const tempDoc = new Y.Doc();
 		try {
-			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(this.localDoc), this);
-			const beforeSV = Y.encodeStateVector(tempDoc);
-			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
-			const afterSV = Y.encodeStateVector(tempDoc);
-
-			// If the update didn't advance the state vector, it's a noop
-			if (stateVectorsEqual(beforeSV, afterSV)) {
+			if (yjsUpdateIsNoop(this.localDoc, updates)) {
 				return { success: true, newLCA: this._lca, noop: true };
 			}
+
+			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(this.localDoc), this);
+			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
 
 			const mergedContent = tempDoc.getText("contents").toString();
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} mergedContentLen=${mergedContent.length}`);

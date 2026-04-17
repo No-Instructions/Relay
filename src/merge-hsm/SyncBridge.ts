@@ -16,7 +16,7 @@ import * as Y from "yjs";
 import type { SyncGate, MergeEffect, PositionedChange } from "./types";
 import type { OpCapture } from "./undo";
 import { MACHINE_EDIT_ORIGIN } from "./undo";
-import { stateVectorsEqual, stateVectorIsAhead } from "./state-vectors";
+import { snapshotFromDoc, snapshotsEqual, yjsDocsEqual } from "./state-vectors";
 import { curryLog } from "../debug";
 
 const bridgeError = curryLog("[SyncBridge]", "error");
@@ -552,11 +552,12 @@ export class SyncBridge {
 		// Safety net: apply any remoteDoc state not yet in localDoc.
 		// After queue drain this should be a no-op. If it isn't, an update
 		// slipped past the queue — log an error so we can track it down.
+		const snapshotBefore = snapshotFromDoc(localDoc);
 		const localTextBefore = localDoc.getText("contents").toString();
 		const svBefore = Y.encodeStateVector(localDoc);
 		const update = Y.encodeStateAsUpdate(remoteDoc, svBefore);
 		this.syncToLocal(update);
-		if (stateVectorIsAhead(Y.encodeStateVector(localDoc), svBefore)) {
+		if (!snapshotsEqual(snapshotBefore, snapshotFromDoc(localDoc))) {
 			const localTextAfter = localDoc.getText("contents").toString();
 			this.host.emitEffect({
 				type: "DIAGNOSTIC",
@@ -600,10 +601,10 @@ export class SyncBridge {
 		// Fork gates outbound sync -- SV divergence is expected while it exists.
 		if (this.host.hasFork()) return;
 
+		if (yjsDocsEqual(localDoc, remoteDoc)) return;
+
 		const localSV = Y.encodeStateVector(localDoc);
 		const remoteSV = Y.encodeStateVector(remoteDoc);
-		if (stateVectorsEqual(localSV, remoteSV)) return;
-
 		const localText = localDoc.getText("contents").toString();
 		const remoteText = remoteDoc.getText("contents").toString();
 
