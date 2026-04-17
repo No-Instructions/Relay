@@ -94,7 +94,7 @@ describe('HSM Recording', () => {
 
     it('passes through simple events unchanged', () => {
       const events: MergeEvent[] = [
-        { type: 'ACQUIRE_LOCK', editorContent: 'test content' },
+        { type: 'ACQUIRE_LOCK' },
         { type: 'RELEASE_LOCK' },
         { type: 'UNLOAD' },
         { type: 'PROVIDER_SYNCED' },
