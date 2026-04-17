@@ -1945,7 +1945,9 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-      t.send(acquireLock());
+      // Seed lastKnownEditorText='' so persistenceHasContentAndEditorAvailable
+      // can match once enrollment re-fires PERSISTENCE_SYNCED{hasContent:true}.
+      t.send(acquireLock(mockEditorViewRef('')));
 
       // IDB is empty → stays in awaitingPersistence
       expectState(t, 'active.entering.awaitingPersistence');
