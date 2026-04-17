@@ -200,6 +200,67 @@ describe('MergeManager', () => {
     });
   });
 
+  describe('remote update classification', () => {
+    test('delete-only incremental update is applied after keyframe seed', () => {
+      const guid = 'doc-delete-keyframe';
+      const server = new Y.Doc();
+      const tracked = new Y.Doc();
+
+      server.getText('contents').insert(0, 'Line A\nLine B\n');
+      const keyframe = Y.encodeStateAsUpdate(server);
+      Y.applyUpdate(tracked, keyframe);
+      manager.seedTrackedRemoteSV(guid, keyframe);
+
+      server.getText('contents').delete(7, 7);
+      const deleteOnly = Y.encodeStateAsUpdate(server, Y.encodeStateVector(tracked));
+
+      expect(manager.classifyUpdate(guid, deleteOnly)).toBe('apply');
+
+      manager.advanceTrackedRemoteSV(guid, deleteOnly);
+      expect(manager.classifyUpdate(guid, deleteOnly)).toBe('stale');
+
+      server.destroy();
+      tracked.destroy();
+    });
+
+    test('delete-only incremental update is not dropped when only SV is known', () => {
+      const guid = 'doc-delete-sv-only';
+      const server = new Y.Doc();
+      const tracked = new Y.Doc();
+
+      server.getText('contents').insert(0, 'Line A\nLine B\n');
+      const keyframe = Y.encodeStateAsUpdate(server);
+      Y.applyUpdate(tracked, keyframe);
+
+      manager.seedTrackedRemoteSVFromBytes(guid, Y.encodeStateVector(server));
+
+      server.getText('contents').delete(7, 7);
+      const deleteOnly = Y.encodeStateAsUpdate(server, Y.encodeStateVector(tracked));
+
+      expect(manager.classifyUpdate(guid, deleteOnly)).toBe('apply');
+
+      server.destroy();
+      tracked.destroy();
+    });
+
+    test('stale struct-only incremental update is still dropped with SV-only tracking', () => {
+      const guid = 'doc-stale-struct-only';
+      const server = new Y.Doc();
+      const tracked = new Y.Doc();
+
+      server.getText('contents').insert(0, 'hello');
+      const update = Y.encodeStateAsUpdate(server);
+      Y.applyUpdate(tracked, update);
+
+      manager.seedTrackedRemoteSVFromBytes(guid, Y.encodeStateVector(server));
+
+      expect(manager.classifyUpdate(guid, update)).toBe('stale');
+
+      server.destroy();
+      tracked.destroy();
+    });
+  });
+
   describe('LCA cache', () => {
     test('getLCAMeta returns null for unknown guid', async () => {
       const managerWithInit = new MergeManager({

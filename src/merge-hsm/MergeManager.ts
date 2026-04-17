@@ -30,7 +30,12 @@ import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
 import { validateUpdate } from '../storage/yjs-validation';
-import { classifyUpdate as classifyUpdateSV } from './state-vectors';
+import {
+  classifyUpdate as classifyUpdateSV,
+  snapshotContainsUpdate,
+  snapshotFromUpdate,
+  updateHasDeleteSet,
+} from './state-vectors';
 import { metrics, curryLog } from '../debug';
 import { trackPromise } from '../trackPromise';
 
@@ -242,6 +247,13 @@ export class MergeManager {
 
   /** Tracked remote state vector per document (clientId → clock). Used for gap detection. */
   private _trackedRemoteSV = new Map<string, Map<number, number>>();
+
+  /**
+   * Tracked remote full-state update per document when available.
+   * Seeded from keyframes and advanced by incremental updates. Used for
+   * delete-set-aware stale detection.
+   */
+  private _trackedRemoteUpdate = new Map<string, Uint8Array>();
 
   /** Per-HSM effect subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
@@ -496,6 +508,7 @@ export class MergeManager {
     this._hibernationState.delete(guid);
     this._hibernationBuffer.delete(guid);
     this._trackedRemoteSV.delete(guid);
+    this._trackedRemoteUpdate.delete(guid);
     this.clearHibernateTimer(guid);
     this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
@@ -910,7 +923,26 @@ export class MergeManager {
    */
   classifyUpdate(guid: string, update: Uint8Array): 'apply' | 'stale' | 'gap' {
     try {
-      return classifyUpdateSV(update, this._trackedRemoteSV.get(guid));
+      const trackedSV = this._trackedRemoteSV.get(guid);
+      const structClassification = classifyUpdateSV(update, trackedSV);
+      if (structClassification === 'gap') {
+        return 'gap';
+      }
+
+      const trackedUpdate = this._trackedRemoteUpdate.get(guid);
+      if (trackedUpdate) {
+        const trackedSnapshot = snapshotFromUpdate(trackedUpdate);
+        return snapshotContainsUpdate(trackedSnapshot, update) ? 'stale' : 'apply';
+      }
+
+      // When only an SV is available (e.g. subdoc-index seed), we can still
+      // drop clearly stale struct-only updates. Delete-bearing updates remain
+      // conservatively applicable because SVs do not encode delete sets.
+      if (structClassification === 'stale' && !updateHasDeleteSet(update)) {
+        return 'stale';
+      }
+
+      return 'apply';
     } catch {
       return 'gap';
     }
@@ -936,6 +968,11 @@ export class MergeManager {
         const existing = tracked.get(clientId) ?? 0;
         tracked.set(clientId, Math.max(existing, clock));
       }
+
+      const trackedUpdate = this._trackedRemoteUpdate.get(guid);
+      if (trackedUpdate) {
+        this._trackedRemoteUpdate.set(guid, Y.mergeUpdates([trackedUpdate, update]));
+      }
     } catch {
       // Parse failure — leave tracked SV unchanged
     }
@@ -951,9 +988,11 @@ export class MergeManager {
       const svBytes = Y.encodeStateVectorFromUpdate(update);
       const sv = Y.decodeStateVector(svBytes);
       this._trackedRemoteSV.set(guid, sv);
+      this._trackedRemoteUpdate.set(guid, update);
     } catch {
       // Parse failure — remove tracking so next event falls back to HTTP
       this._trackedRemoteSV.delete(guid);
+      this._trackedRemoteUpdate.delete(guid);
     }
   }
 
@@ -966,10 +1005,12 @@ export class MergeManager {
     try {
       const sv = Y.decodeStateVector(svBytes);
       this._trackedRemoteSV.set(guid, sv);
+      this._trackedRemoteUpdate.delete(guid);
     } catch {
       // Parse failure — remove tracking so next event falls back to HTTP
       // keyframe, same as seedTrackedRemoteSV.
       this._trackedRemoteSV.delete(guid);
+      this._trackedRemoteUpdate.delete(guid);
     }
   }
 
@@ -1052,6 +1093,7 @@ export class MergeManager {
     this._hibernationState.clear();
     this._hibernationBuffer.clear();
     this._trackedRemoteSV.clear();
+    this._trackedRemoteUpdate.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
     this._warmLRU.clear();
