@@ -80,13 +80,13 @@ export interface SharedFolderSettings {
 interface Operation {
 	op: "create" | "rename" | "delete" | "update" | "upgrade" | "noop";
 	path: string;
-	promise: Promise<void> | Promise<IFile>;
+	promise: Promise<void | IFile | undefined>;
 }
 
 interface Create extends Operation {
 	op: "create";
 	path: string;
-	promise: Promise<IFile>;
+	promise: Promise<IFile | undefined>;
 }
 
 interface Rename extends Operation {
@@ -180,6 +180,8 @@ export class SharedFolder extends HasProvider {
 	mergeManager: MergeManager;
 	private recordingBridge: E2ERecordingBridge;
 	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
+	private _pendingRemaps: Set<string> = new Set();
+	private _pendingDownloads: Set<string> = new Set();
 	private onFolderYDocUpdate = (_update: Uint8Array, origin: unknown): void => {
 		// Folder metadata updates can arrive before SyncStore observers are active,
 		// or with origins that bypass SyncStore-level callbacks. Reconcile directly
@@ -514,7 +516,11 @@ export class SharedFolder extends HasProvider {
 		if (!match) return;
 		const guid = match[1];
 
-		if (!this.files.has(guid)) return;
+		if (!this.files.has(guid)) {
+			this.retryDeferredDownloadForGuid(guid);
+			this.retryDeferredRemapForGuid(guid);
+			return;
+		}
 
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) return;
@@ -551,6 +557,66 @@ export class SharedFolder extends HasProvider {
 				this._fetchKeyframeAndDeliver(file, guid, [update]);
 				break;
 		}
+	}
+
+	private findCommittedPathByGuid(guid: string): string | null {
+		let match: string | null = null;
+		this.syncStore.forEach((meta, path) => {
+			if (!match && meta.id === guid) {
+				match = path;
+			}
+		});
+		return match;
+	}
+
+	private retryDeferredRemapForGuid(guid: string): void {
+		const path = this.findCommittedPathByGuid(guid);
+		if (!path || this._pendingRemaps.has(path)) return;
+
+		const localGuid = this.syncStore.get(path);
+		if (!localGuid || localGuid === guid) return;
+
+		const localFile = this.files.get(localGuid);
+		const committedMeta = this.syncStore.getCommittedMeta(path);
+		if (!localFile || !isDocument(localFile) || !isDocumentMeta(committedMeta)) {
+			return;
+		}
+		if (committedMeta.id !== guid) return;
+
+		this._pendingRemaps.add(path);
+		this.executeRemap({
+			path,
+			fromGuid: localGuid,
+			toGuid: guid,
+		}).catch((e) => {
+			this.warn(`[${path}] remap retry from update event failed`, e);
+		}).finally(() => {
+			this._pendingRemaps.delete(path);
+		});
+	}
+
+	private retryDeferredDownloadForGuid(guid: string): void {
+		const path = this.findCommittedPathByGuid(guid);
+		if (!path || this._pendingDownloads.has(path)) return;
+
+		const committedMeta = this.syncStore.getCommittedMeta(path);
+		if (!isDocumentMeta(committedMeta) || committedMeta.id !== guid) {
+			return;
+		}
+
+		const localGuid = this.syncStore.get(path);
+		if (!localGuid || localGuid !== guid || this.files.has(guid)) {
+			return;
+		}
+
+		this._pendingDownloads.add(path);
+		this.downloadDoc(path, true)
+			.catch((e) => {
+				this.warn(`[${path}] deferred download retry failed`, e);
+			})
+			.finally(() => {
+				this._pendingDownloads.delete(path);
+			});
 	}
 
 	/**
@@ -1068,7 +1134,7 @@ export class SharedFolder extends HasProvider {
 		vpath: string,
 		meta: Meta,
 		diffLog?: string[],
-	): Promise<IFile> {
+	): Promise<IFile | undefined> {
 		// Create directories as needed
 		const dir = dirname(vpath);
 		if (!this.existsSync(dir)) {
@@ -1076,8 +1142,13 @@ export class SharedFolder extends HasProvider {
 			diffLog?.push(`creating directory ${dir}`);
 		}
 		if (meta.type === "markdown") {
-			diffLog?.push(`created local .md file for remotely added doc ${vpath}`);
+			diffLog?.push(`creating local .md file for remotely added doc ${vpath}`);
 			const doc = await this.downloadDoc(vpath, false);
+			if (!doc) {
+				diffLog?.push(
+					`deferred local .md file for remotely added doc ${vpath} (server has guid but no content yet)`,
+				);
+			}
 			return doc;
 		}
 		if (meta.type === "canvas") {
@@ -1930,7 +2001,10 @@ export class SharedFolder extends HasProvider {
 		return doc;
 	}
 
-	async downloadDoc(vpath: string, update = true): Promise<Document> {
+	async downloadDoc(
+		vpath: string,
+		update = true,
+	): Promise<Document | undefined> {
 		if (!Document.checkExtension(vpath)) {
 			throw new Error("unexpected extension");
 		}
@@ -1944,7 +2018,8 @@ export class SharedFolder extends HasProvider {
 		const updateBytes = await this.backgroundSync.downloadByGuid(this, guid, vpath);
 
 		if (!updateBytes) {
-			throw new Error("failed to download");
+			this.log(`[${vpath}] download deferred: server has guid but no content yet`);
+			return undefined;
 		}
 
 		const tempDoc = new Y.Doc();
