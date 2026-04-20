@@ -76,7 +76,7 @@ export function acquireLock(editorViewRef?: EditorViewRef): AcquireLockEvent {
  * beginReleaseLock) must see post-CM6 content, not the acquire-time snapshot.
  */
 function liveMockEditorViewRef(hsm: HSMHandle, initial: string): EditorViewRef {
-  return mockEditorViewRef(() => hsm.getLocalDocText() ?? initial);
+  return mockEditorViewRef(() => hsm.getLocalDocText?.() ?? initial);
 }
 
 /**
@@ -84,11 +84,18 @@ function liveMockEditorViewRef(hsm: HSMHandle, initial: string): EditorViewRef {
  * After this, state will be in active.tracking, active.entering.reconciling,
  * or active.conflict.* if there's a deferred conflict.
  *
- * The optional editorContent seeds lastKnownEditorText via a live mock
- * editorViewRef, satisfying the PERSISTENCE_SYNCED guards that gate
- * progress out of awaitingPersistence on editor availability.
+ * The optional editorContent seeds a live mock editorViewRef so tests can
+ * model the current buffer without relying on direct view-content reads
+ * during active entry.
  */
 export async function sendAcquireLock(hsm: HSMHandle, editorContent?: string): Promise<void> {
+  if (editorContent !== undefined) {
+    hsm.send({
+      type: 'OBSIDIAN_SET_VIEW_DATA',
+      data: editorContent,
+      clear: true,
+    });
+  }
   const ref = editorContent !== undefined ? liveMockEditorViewRef(hsm, editorContent) : undefined;
   hsm.send(acquireLock(ref));
   // Wait for state to leave awaitingPersistence (persistence has synced)
@@ -98,11 +105,18 @@ export async function sendAcquireLock(hsm: HSMHandle, editorContent?: string): P
 /**
  * Send ACQUIRE_LOCK and wait all the way to active.tracking.
  *
- * The optional editorContent seeds lastKnownEditorText via a live mock
- * editorViewRef, satisfying the PERSISTENCE_SYNCED guards that gate
- * progress out of awaitingPersistence on editor availability.
+ * The optional editorContent seeds a live mock editorViewRef so tests can
+ * model the current buffer without relying on direct view-content reads
+ * during active entry.
  */
 export async function sendAcquireLockToTracking(hsm: HSMHandle, editorContent?: string): Promise<void> {
+  if (editorContent !== undefined) {
+    hsm.send({
+      type: 'OBSIDIAN_SET_VIEW_DATA',
+      data: editorContent,
+      clear: true,
+    });
+  }
   const ref = editorContent !== undefined ? liveMockEditorViewRef(hsm, editorContent) : undefined;
   hsm.send(acquireLock(ref));
   // Wait for tracking (or conflict)
@@ -294,6 +308,7 @@ export interface HSMHandle {
   send(event: MergeEvent): void;
   matches(path: string): boolean;
   readonly statePath?: string;
+  getLocalDocText?(): string | null;
   /** Wait for pending idle auto-merge to complete (optional, used by loadToConflict) */
   awaitIdleAutoMerge?(): Promise<void>;
   /** Wait for pending fork-reconcile to complete (optional, used by loadToConflict) */
@@ -323,9 +338,7 @@ export interface LoadAndActivateOptions {
   mtime?: number;
   /**
    * Editor view ref for LCA advancement during active.tracking.
-   * Pass null to simulate the no-editorViewRef case; editor content is
-   * still seeded via OBSIDIAN_LOAD_FILE_INTERNAL so the HSM can advance
-   * past awaitingPersistence.
+   * Pass null to simulate the no-editorViewRef case.
    */
   editorViewRef?: EditorViewRef | null;
 }
@@ -394,17 +407,14 @@ export async function loadAndActivate(
   //    Persistence syncs asynchronously (may have random delay in tests).
   //    If IDB had content (hasContent=true) → reconciling → tracking.
   //    If IDB was empty (hasContent=false) and provider not synced → tracking directly.
-  // Default to a mock editorViewRef carrying the seeded content so
-  // storeEditorContent can seed lastKnownEditorText. The
-  // PERSISTENCE_SYNCED guard chain requires it to advance out of
-  // awaitingPersistence when IDB has content.
-  // editorViewRef === null opts out of the ref but still seeds editor
-  // text via OBSIDIAN_LOAD_FILE_INTERNAL so the HSM can advance.
+  // Default to a live mock editorViewRef so tests can exercise dirty-state
+  // and release-lock behavior without relying on direct view-content reads.
+  hsm.send({
+    type: 'OBSIDIAN_SET_VIEW_DATA',
+    data: content,
+    clear: true,
+  });
   if (opts?.editorViewRef === null) {
-    hsm.send({
-      type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
-      editorContent: content,
-    });
     hsm.send(acquireLock());
   } else {
     const editorViewRef = opts?.editorViewRef ?? liveMockEditorViewRef(hsm, content);
@@ -693,8 +703,13 @@ export async function loadToConflict(
   }
 
   // Step 4: Acquire lock - this triggers conflict detection.
-  // Seed lastKnownEditorText with disk content so the PERSISTENCE_SYNCED
-  // guard chain can advance out of awaitingPersistence.
+  // Seed the disk side explicitly so active entering reconciles against
+  // authoritative disk content rather than a direct editor read.
+  hsm.send({
+    type: 'OBSIDIAN_SET_VIEW_DATA',
+    data: opts.disk,
+    clear: true,
+  });
   hsm.send(acquireLock(mockEditorViewRef(opts.disk)));
   // Wait for persistence to sync and state to settle
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence') && !s.includes('entering'));

@@ -806,25 +806,35 @@ describe('MergeManager', () => {
       expect(doc.hsm?.state.lastKnownEditorText).toBeUndefined();
     });
 
-    test('state.lastKnownEditorText is set after ACQUIRE_LOCK', async () => {
+    test('state.lastKnownEditorText is set by CM6_CHANGE docText', async () => {
       const doc = await createMockDocument('doc-1', 'test.md');
 
       // Start in idle mode
       expect(doc.hsm?.matches('idle')).toBe(true);
       expect(doc.hsm?.state.lastKnownEditorText).toBeUndefined();
 
-      // Send ACQUIRE_LOCK to transition to active
-      doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: 'editor text here' });
+      // Enter active mode then simulate Obsidian's setViewData.
+      doc.hsm?.send({ type: 'ACQUIRE_LOCK' });
+      doc.hsm?.send({
+        type: 'CM6_CHANGE',
+        changes: [{ from: 0, to: 0, insert: 'editor text here' }],
+        docText: 'editor text here',
+        userEvent: 'set',
+      });
 
-      // After ACQUIRE_LOCK, lastKnownEditorText should be set
       expect(doc.hsm?.state.lastKnownEditorText).toBe('editor text here');
     });
 
-    test('state.lastKnownEditorText is set by ACQUIRE_LOCK and updated by CM6_CHANGE', async () => {
+    test('state.lastKnownEditorText updates across successive CM6_CHANGE events', async () => {
       const doc = await createMockDocument('doc-1', 'test.md');
-      doc.hsm?.send({ type: 'ACQUIRE_LOCK', editorContent: 'initial' });
+      doc.hsm?.send({ type: 'ACQUIRE_LOCK' });
+      doc.hsm?.send({
+        type: 'CM6_CHANGE',
+        changes: [{ from: 0, to: 0, insert: 'initial' }],
+        docText: 'initial',
+        userEvent: 'set',
+      });
 
-      // lastKnownEditorText should be set from ACQUIRE_LOCK
       expect(doc.hsm?.state.lastKnownEditorText).toBe('initial');
       expect(doc.hsm?.isActive()).toBe(true);
     });
