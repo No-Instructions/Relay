@@ -25,6 +25,7 @@ import type {
   PersistenceMetadata,
   LCAState,
   LCAMeta,
+  FrontMatterPrimitives,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -138,8 +139,14 @@ export interface MergeManagerConfig {
   /** Push-based transition callback for recording bridge */
   onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
 
-  /** YAML parser/serializer for frontmatter Y.Map mirroring. Omit to disable. */
-  yaml?: { parse: (yaml: string) => any; stringify: (obj: any) => string };
+  /**
+   * Obsidian's frontmatter logic primitives. Omit to disable frontmatter
+   * Y.Map mirroring entirely. Using Obsidian's own `parseYaml`,
+   * `stringifyYaml`, and `getFrontMatterInfo` ensures the text we
+   * reconstruct matches bit-for-bit what Obsidian produces, so our writes
+   * never fight its own.
+   */
+  yaml?: FrontMatterPrimitives;
 }
 
 export interface PollOptions {
@@ -279,7 +286,7 @@ export class MergeManager {
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
-  private _yaml: { parse: (yaml: string) => any; stringify: (obj: any) => string } | null = null;
+  private _yaml: FrontMatterPrimitives | null = null;
   private _onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
 
   constructor(config: MergeManagerConfig) {
