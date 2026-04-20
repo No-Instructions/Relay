@@ -357,6 +357,22 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     yaml: {
       parse: (raw: string) => jsyaml.load(raw, { schema: jsyaml.JSON_SCHEMA }) as any,
       stringify: (obj: any) => jsyaml.dump(obj, { schema: jsyaml.JSON_SCHEMA, flowLevel: -1, lineWidth: -1 }),
+      // Test-only approximation of Obsidian's getFrontMatterInfo. Production
+      // always uses Obsidian's real implementation via SharedFolder.
+      getFrontMatterInfo: (content: string) => {
+        const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (!match) {
+          return { exists: false, frontmatter: "", from: 0, to: 0, contentStart: 0 };
+        }
+        const from = match[0].indexOf(match[1]);
+        return {
+          exists: true,
+          frontmatter: match[1],
+          from,
+          to: from + match[1].length,
+          contentStart: match[0].length,
+        };
+      },
     },
   });
 

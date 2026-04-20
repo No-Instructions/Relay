@@ -7,6 +7,7 @@ import {
 	TFolder,
 	Vault,
 	debounce,
+	getFrontMatterInfo,
 	normalizePath,
 	parseYaml,
 	stringifyYaml,
@@ -391,7 +392,7 @@ export class SharedFolder extends HasProvider {
 				};
 			},
 			userId: flags().enablePermanentUserData ? loginManager?.user?.id : undefined,
-			yaml: { parse: parseYaml, stringify: stringifyYaml },
+			yaml: { parse: parseYaml, stringify: stringifyYaml, getFrontMatterInfo },
 		});
 
 		// Create per-folder recording bridge and register with the debug API.

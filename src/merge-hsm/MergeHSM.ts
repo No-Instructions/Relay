@@ -65,6 +65,7 @@ import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import { classifyUpdate, decodeSV, isEmptyDoc, stateVectorsEqual, stateVectorIsAhead, yjsUpdateIsNoop } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
+import type { FrontMatterPrimitives } from "./types";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 
@@ -229,8 +230,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// Network connectivity status (does not block state transitions)
 	private _isOnline: boolean = false;
 
-	// YAML parser/serializer for frontmatter mirroring (injected from Obsidian)
-	private _yaml: { parse: (yaml: string) => any; stringify: (obj: any) => string } | null = null;
+	// Obsidian's frontmatter primitives (injected). Using Obsidian's own
+	// parseYaml, stringifyYaml, and getFrontMatterInfo keeps our reconstructed
+	// text byte-identical to what Obsidian writes, so we never fight its saves.
+	private _yaml: FrontMatterPrimitives | null = null;
 
 	getOpCapture(): OpCapture | null {
 		return this.localPersistence?.opCapture ?? null;
@@ -3250,40 +3253,65 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		const ymap = this.localDoc.getMap("frontmatter");
 		if (ymap.size === 0) return null;
 
-		// Reconstruct frontmatter from Y.Map
-		const mapObj: Record<string, any> = {};
-		for (const [key, value] of ymap.entries()) {
-			try { mapObj[key] = JSON.parse(value as string); }
-			catch { mapObj[key] = value; }
-		}
-		const yamlBody = this._yaml.stringify(mapObj);
-		const frontmatter = `---\n${yamlBody}---`;
-
-		// Get body from Y.Text (everything after the frontmatter region)
+		// Mirror Obsidian's processFrontMatter: parse the current
+		// frontmatter, mutate the parsed object in place, then stringify.
+		// Obsidian's stringifyYaml preserves JS object property order and
+		// YAML parsing preserves on-disk key order, so existing keys stay
+		// put and only truly-new keys are appended. Building the object
+		// in Y.Map iteration order instead would reorder lines, and the
+		// resulting delete-at-A + insert-at-B pair (separated by an
+		// intervening unchanged region) can't be coalesced and CM6 may
+		// apply only one side — producing duplicated frontmatter lines.
 		const text = this.localDoc.getText("contents").toString();
-		const match = text.match(/^---\r?\n[\s\S]*?\r?\n---/);
-		const body = match ? text.slice(match[0].length) : text;
+		const fm = this.parseFrontmatter(text);
+		const obj: Record<string, any> = fm ? { ...fm.parsed } : {};
+
+		for (const [key, value] of ymap.entries()) {
+			let parsed: any;
+			try { parsed = JSON.parse(value as string); }
+			catch { parsed = value; }
+			obj[key] = parsed;
+		}
+		for (const key of Object.keys(obj)) {
+			if (!ymap.has(key)) delete obj[key];
+		}
+
+		const yamlBody = this._yaml.stringify(obj);
+		// Trailing `\n` on the canonical frontmatter is required so that
+		// concatenation with `text.slice(fm.end)` (which begins with the
+		// blank-line `\n`) preserves the `\n\n` frontmatter-to-body
+		// separator. Omitting it drops the blank line on every Y.Map
+		// dispatch — the shape producing `---\nhello` on disk for
+		// live1/live2 butter.md after Properties toggles.
+		const frontmatter = `---\n${yamlBody}---\n`;
+		const body = fm ? text.slice(fm.end) : text;
 
 		return frontmatter + body;
 	}
 
 	/**
-	 * Extract the frontmatter region and parse it using the injected YAML parser.
-	 * Returns null if no frontmatter block or no YAML parser configured.
+	 * Extract the frontmatter region and parse it using Obsidian's own
+	 * primitives. `getFrontMatterInfo` locates the block, `parseYaml`
+	 * parses the YAML body — same two calls Obsidian uses internally in
+	 * `processFrontMatter`, so our region detection and value decoding
+	 * stay in lockstep with disk writes.
+	 *
+	 * Returned shape is kept stable for call sites:
+	 *   start: always 0 (Obsidian's frontmatter is anchored at file start)
+	 *   end:   `contentStart` — offset where the body begins
+	 *   raw:   the YAML body text (between the `---` delimiters)
+	 *   parsed: parsed object, with on-disk key order preserved
 	 */
 	private parseFrontmatter(text: string): { start: number; end: number; parsed: Record<string, any>; raw: string } | null {
 		if (!this._yaml) return null;
 
-		const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-		if (!match) return null;
-
-		const raw = match[1];
-		const end = match[0].length;
+		const info = this._yaml.getFrontMatterInfo(text);
+		if (!info.exists) return null;
 
 		try {
-			const parsed = this._yaml.parse(raw);
+			const parsed = this._yaml.parse(info.frontmatter);
 			if (!parsed || typeof parsed !== "object") return null;
-			return { start: 0, end, parsed, raw };
+			return { start: 0, end: info.contentStart, parsed, raw: info.frontmatter };
 		} catch {
 			return null;
 		}
@@ -3350,25 +3378,33 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		if (!fm) return; // No frontmatter block to repair
 
-		// Reconstruct the frontmatter object from Y.Map (LWW winners)
-		const mapObj: Record<string, any> = {};
+		// Mirror Obsidian's processFrontMatter: start from the parsed
+		// frontmatter (preserves on-disk key order) and mutate in place
+		// using Y.Map's LWW values. Keys absent from Y.Map are dropped.
+		// Keys present in Y.Map but absent from the parsed frontmatter
+		// are appended. This keeps Obsidian's writes and our repairs
+		// emitting the same key order so DMP only sees content-level
+		// changes, never reorders.
+		const obj: Record<string, any> = { ...fm.parsed };
 		for (const [key, value] of ymap.entries()) {
-			try {
-				mapObj[key] = JSON.parse(value as string);
-			} catch {
-				mapObj[key] = value;
-			}
+			let parsed: any;
+			try { parsed = JSON.parse(value as string); }
+			catch { parsed = value; }
+			obj[key] = parsed;
+		}
+		for (const key of Object.keys(obj)) {
+			if (!ymap.has(key)) delete obj[key];
 		}
 
-		// Compare parsed values — if they match, no corruption
+		// Corruption check: values differ, or the set of keys differs.
 		let corrupted = false;
 		const parsedKeys = Object.keys(fm.parsed);
-		const mapKeys = Object.keys(mapObj);
-		if (parsedKeys.length !== mapKeys.length) {
+		const objKeys = Object.keys(obj);
+		if (parsedKeys.length !== objKeys.length) {
 			corrupted = true;
 		} else {
-			for (const key of mapKeys) {
-				if (JSON.stringify(fm.parsed[key]) !== JSON.stringify(mapObj[key])) {
+			for (const key of objKeys) {
+				if (JSON.stringify(fm.parsed[key]) !== JSON.stringify(obj[key])) {
 					corrupted = true;
 					break;
 				}
@@ -3379,11 +3415,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		this.crdtLog("frontmatter corruption detected — repairing from Y.Map");
 
-		// Use Obsidian's YAML serializer to produce correct formatting
-		const yamlBody = this._yaml.stringify(mapObj);
-		const canonicalFrontmatter = `---\n${yamlBody}---`;
-
-		// Replace the frontmatter region in the full text
+		const yamlBody = this._yaml.stringify(obj);
+		// Obsidian's getFrontMatterInfo sets contentStart to the position
+		// immediately after the closing `---\n`, so text.slice(fm.end)
+		// begins with the blank-line `\n` (or with body text when the file
+		// has no separator). The canonical frontmatter block must therefore
+		// end with its own `\n` to preserve the blank-line separator when
+		// concatenated — omitting it drops the blank line and produces
+		// `---\nbody` on disk.
+		const canonicalFrontmatter = `---\n${yamlBody}---\n`;
 		const newText = canonicalFrontmatter + text.slice(fm.end);
 
 		this.applyContentToLocalDoc(newText, FRONTMATTER_MIRROR_ORIGIN);

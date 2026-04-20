@@ -6,6 +6,30 @@
  */
 
 // =============================================================================
+// Obsidian Frontmatter Primitives
+// =============================================================================
+
+/**
+ * The subset of Obsidian's frontmatter API the HSM consumes. In production
+ * `parse` is Obsidian's `parseYaml`, `stringify` is `stringifyYaml`, and
+ * `getFrontMatterInfo` is Obsidian's own function. Routing every parse,
+ * serialize, and region-detection call through Obsidian's code keeps our
+ * reconstructed bytes identical to what Obsidian writes, so our edits
+ * never race its saves.
+ */
+export interface FrontMatterPrimitives {
+	parse: (yaml: string) => any;
+	stringify: (obj: any) => string;
+	getFrontMatterInfo: (content: string) => {
+		exists: boolean;
+		frontmatter: string;
+		from: number;
+		to: number;
+		contentStart: number;
+	};
+}
+
+// =============================================================================
 // View Reference Types
 // =============================================================================
 
@@ -806,14 +830,11 @@ export interface MergeHSMConfig {
 	replayMode?: boolean;
 
 	/**
-	 * YAML parser/serializer for frontmatter operations.
-	 * In production, pass Obsidian's parseYaml/stringifyYaml.
-	 * Omit to disable frontmatter Y.Map mirroring.
+	 * Obsidian's frontmatter logic primitives.
+	 * In production, pass Obsidian's `parseYaml`, `stringifyYaml`, and
+	 * `getFrontMatterInfo`. Omit to disable frontmatter Y.Map mirroring.
 	 */
-	yaml?: {
-		parse: (yaml: string) => any;
-		stringify: (obj: any) => string;
-	};
+	yaml?: FrontMatterPrimitives;
 }
 
 // =============================================================================
