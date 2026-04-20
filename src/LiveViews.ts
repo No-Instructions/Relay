@@ -124,65 +124,24 @@ export class LoggedOutView implements S3View {
 		this.login = login;
 	}
 
-	setLoginIcon(): void {
-		const viewHeaderElement =
-			this.view.containerEl.querySelector(".view-header");
-		const viewHeaderLeftElement = 
-			this.view.containerEl.querySelector(".view-header-left");
-		
-		if (viewHeaderElement && viewHeaderLeftElement) {
-			this.clearLoginButton();
-			
-			// Create login button element
-			const loginButton = document.createElement("button");
-			loginButton.className = "view-header-left system3-login-button";
-			loginButton.textContent = "Login to enable Live edits";
-			loginButton.setAttribute("aria-label", "Login to enable Live edits");
-			loginButton.setAttribute("tabindex", "0");
-			
-			// Add click handler
-			loginButton.addEventListener("click", async () => {
-				await this.login();
-			});
-			
-			// Insert after view-header-left
-			viewHeaderLeftElement.insertAdjacentElement("afterend", loginButton);
-		}
-	}
-
-	clearLoginButton() {
-		const existingButton = this.view.containerEl.querySelector(".system3-login-button");
-		if (existingButton) {
-			existingButton.remove();
-		}
-	}
-
 	attach(): Promise<S3View> {
-		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
-		if (Platform.isMobile && requireApiVersion("1.11.0")) {
-			this.setLoginIcon();
-		} else {
-			this.banner = new Banner(
-				this.view,
-				"Login to enable Live edits",
-				async () => {
-					return await this.login();
-				},
-			);
-		}
+		this.banner = new Banner(
+			this.view,
+			{ short: "Login to Relay", long: "Login to enable Live edits" },
+			async () => {
+				return await this.login();
+			},
+		);
 		return Promise.resolve(this);
 	}
 
 	release() {
 		this.banner?.destroy();
-		this.clearLoginButton();
 	}
 
 	destroy() {
-		this.release();
 		this.banner?.destroy();
 		this.banner = undefined;
-		this.clearLoginButton();
 		this.view = null as any;
 	}
 }
@@ -260,7 +219,7 @@ export class RelayCanvasView implements S3View {
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
-				"You're offline -- click to reconnect",
+				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
@@ -475,29 +434,15 @@ export class LiveView<ViewType extends TextFileView>
 		}
 	}
 
-	setMergeButton(): void {
-		const viewHeaderElement =
-			this.view.containerEl.querySelector(".view-header");
-		const viewHeaderLeftElement = 
-			this.view.containerEl.querySelector(".view-header-left");
-		
-		if (viewHeaderElement && viewHeaderLeftElement) {
-			this.clearMergeButton();
-			
-			// Create merge button element
-			const mergeButton = document.createElement("button");
-			mergeButton.className = "view-header-left system3-merge-button";
-			mergeButton.textContent = "Merge conflict";
-			mergeButton.setAttribute("aria-label", "Merge conflict -- click to resolve");
-			mergeButton.setAttribute("tabindex", "0");
-			
-			// Add click handler
-			mergeButton.addEventListener("click", async () => {
+	mergeBanner(): () => void {
+		this._banner = new Banner(
+			this.view,
+			{ short: "Merge conflict", long: "Merge conflict -- click to resolve" },
+			async () => {
 				const diskBuffer = await this.document.diskBuffer();
 				const stale = await this.document.checkStale();
 				if (!stale) {
-					this.clearMergeButton();
-					return;
+					return true;
 				}
 				this._parent.openDiffView({
 					file1: this.document,
@@ -505,7 +450,7 @@ export class LiveView<ViewType extends TextFileView>
 					showMergeOption: true,
 					onResolve: async () => {
 						this.document.clearDiskBuffer();
-						this.clearMergeButton();
+						this._banner?.destroy();
 						// Force view to sync to CRDT state after differ resolution
 						if (
 							this._plugin &&
@@ -515,53 +460,9 @@ export class LiveView<ViewType extends TextFileView>
 						}
 					},
 				});
-			});
-			
-			// Insert after view-header-left
-			viewHeaderLeftElement.insertAdjacentElement("afterend", mergeButton);
-		}
-	}
-
-	clearMergeButton() {
-		const existingButton = this.view.containerEl.querySelector(".system3-merge-button");
-		if (existingButton) {
-			existingButton.remove();
-		}
-	}
-
-	mergeBanner(): () => void {
-		// Use header button approach on mobile for Obsidian >=1.11.0 to avoid banner positioning issues
-		if (Platform.isMobile && requireApiVersion("1.11.0")) {
-			this.setMergeButton();
-		} else {
-			this._banner = new Banner(
-				this.view,
-				"Merge conflict -- click to resolve",
-				async () => {
-					const diskBuffer = await this.document.diskBuffer();
-					const stale = await this.document.checkStale();
-					if (!stale) {
-						return true;
-					}
-					this._parent.openDiffView({
-						file1: this.document,
-						file2: diskBuffer,
-						showMergeOption: true,
-						onResolve: async () => {
-							this.document.clearDiskBuffer();
-							// Force view to sync to CRDT state after differ resolution
-							if (
-								this._plugin &&
-								typeof this._plugin.syncViewToCRDT === "function"
-							) {
-								await this._plugin.syncViewToCRDT();
-							}
-						},
-					});
-					return true;
-				},
-			);
-		}
+				return true;
+			},
+		);
 		return () => {};
 	}
 
@@ -569,7 +470,7 @@ export class LiveView<ViewType extends TextFileView>
 		if (this.shouldConnect) {
 			const banner = new Banner(
 				this.view,
-				"You're offline -- click to reconnect",
+				{ short: "Offline", long: "You're offline -- click to reconnect" },
 				async () => {
 					this._parent.networkStatus.checkStatus();
 					this.connect();
@@ -725,7 +626,6 @@ export class LiveView<ViewType extends TextFileView>
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
-		this.clearMergeButton();
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
@@ -741,7 +641,6 @@ export class LiveView<ViewType extends TextFileView>
 	destroy() {
 		this.release();
 		this.clearViewActions();
-		this.clearMergeButton();
 		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
