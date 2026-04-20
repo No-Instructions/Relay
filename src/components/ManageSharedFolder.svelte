@@ -31,6 +31,8 @@
 	}
 </script>
 
+<!-- E2E: data-view for test selectors -->
+<div data-view="manage-shared-folder">
 <Breadcrumbs
 	items={[
 		{
@@ -83,3 +85,4 @@
 		</SettingItem>
 	</SettingGroup>
 {/if}
+</div>

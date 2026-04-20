@@ -387,6 +387,8 @@
 	}
 </script>
 
+<!-- E2E: data-view for test selectors -->
+<div data-view="manage-remote-folder">
 <Breadcrumbs
 	items={[
 		{
@@ -635,6 +637,7 @@
 		{/if}
 	</SettingGroup>
 {/if}
+</div>
 
 <style>
 	div.spacer {
