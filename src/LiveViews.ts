@@ -991,21 +991,21 @@ export class LiveViewManager {
 			}
 			const folder = this.sharedFolders.lookup(viewFilePath);
 			if (folder && canvasView.file) {
-				const canvas = folder.getFile(canvasView.file);
-				if (isCanvas(canvas)) {
-					if (!this.loginManager.loggedIn) {
-						const view = new LoggedOutView(this, canvasView, () => {
-							return this.loginManager.openLoginPage();
-						});
-						views.push(view);
-					} else if (folder.ready) {
+				if (!this.loginManager.loggedIn) {
+					const view = new LoggedOutView(this, canvasView, () => {
+						return this.loginManager.openLoginPage();
+					});
+					views.push(view);
+				} else if (folder.ready) {
+					const canvas = folder.getFile(canvasView.file);
+					if (isCanvas(canvas)) {
 						const view = new RelayCanvasView(this, canvasView, canvas);
 						views.push(view);
 					} else {
-						this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+						this.log(`Skipping canvas view connection for ${viewFilePath}`);
 					}
 				} else {
-					this.log(`Skipping canvas view connection for ${viewFilePath}`);
+					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
 			}
 		});
