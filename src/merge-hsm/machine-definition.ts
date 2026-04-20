@@ -239,10 +239,16 @@ export const MACHINE: MachineDefinition = {
 	// =========================================================================
 
 	'active.merging.twoWay': {
-		entry: ['replayAccumulatedEvents', 'startTwoWayMerge'],
+		entry: ['replayAccumulatedEvents'],
+		invoke: {
+			src: 'two-way-merge',
+			onDone: [
+				{ target: 'active.tracking', guard: 'twoWayMergeClean', actions: ['applyTwoWayCleanMerge'] },
+				{ target: 'active.conflict.bannerShown', guard: 'twoWayMergeConflict', actions: ['storeTwoWayConflict'] },
+			],
+			onError: { target: 'active.conflict.bannerShown', actions: ['storeTwoWayError'] },
+		},
 		on: {
-			RESOLVE: { target: 'active.tracking', actions: ['resolveConflict'] },
-			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			CM6_CHANGE: { target: 'active.merging.twoWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.twoWay', actions: ['applyRemoteToRemoteDoc'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -251,10 +257,16 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.merging.threeWay': {
-		entry: ['replayAccumulatedEvents', 'startThreeWayMerge'],
+		entry: ['replayAccumulatedEvents'],
+		invoke: {
+			src: 'three-way-merge',
+			onDone: [
+				{ target: 'active.tracking', guard: 'threeWayMergeSucceeded', actions: ['applyThreeWayMergeResult'] },
+				{ target: 'active.conflict.bannerShown', guard: 'threeWayMergeConflict', actions: ['storeThreeWayConflict'] },
+			],
+			onError: { target: 'active.conflict.bannerShown', actions: ['storeThreeWayError'] },
+		},
 		on: {
-			MERGE_SUCCESS: 'active.tracking',
-			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -317,9 +329,9 @@ export const MACHINE: MachineDefinition = {
 				actions: ['storePersistenceData', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			PERSISTENCE_SYNCED: [
-				{ target: 'active.entering.reconciling', guard: 'persistenceHasContentAndEditorAvailable' },
+				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent', actions: ['applyRemoteToLocalIfNeeded'] },
 				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
-				{ target: 'active.entering.reconciling', guard: 'editorContentAvailable', actions: ['applyRemoteToLocalIfNeeded'] },
+				{ target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
 				{ target: 'active.entering.awaitingPersistence' },
 			],
 			PROVIDER_SYNCED: {

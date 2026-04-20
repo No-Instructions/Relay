@@ -395,6 +395,16 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   });
 
   const wrappedSend = (event: MergeEvent) => {
+    const rawEvent = event as any;
+    if (rawEvent.type === 'ACQUIRE_LOCK') {
+      if (rawEvent.editorContent !== undefined) {
+	      hsm.send({
+	        type: 'OBSIDIAN_SET_VIEW_DATA',
+	        data: rawEvent.editorContent,
+	        clear: true,
+	      });
+      }
+    }
     // Track provider state to simulate querying provider.synced
     if (event.type === 'CONNECTED') {
       providerState.connected = true;

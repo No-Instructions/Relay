@@ -378,7 +378,7 @@ export type IdleMergeCompleteEvent =
 
 /**
  * Fired when Obsidian's loadFileInternal is called.
- * This is the entry point for Obsidian's disk change handling.
+ * This is a diagnostic event describing Obsidian's internal load path.
  */
 export interface ObsidianLoadFileInternalEvent {
 	type: "OBSIDIAN_LOAD_FILE_INTERNAL";
@@ -390,13 +390,25 @@ export interface ObsidianLoadFileInternalEvent {
 	contentChanged: boolean;
 	/** True if three-way merge will be triggered (dirty && contentChanged && isPlaintext) */
 	willMerge: boolean;
-	/**
-	 * Editor content after the view installed its buffer for this file.
-	 * The HSM uses this to seed lastKnownEditorText so reconciliation and
-	 * drift correction reason against the actual buffer — including empty
-	 * new notes where CM6 produces no observable transaction.
-	 */
-	editorContent: string;
+}
+
+/**
+ * Fired when Obsidian calls `setViewData` on a TextFileView (markdown,
+ * canvas, kanban, …). The patch intercepts synchronously, so this event
+ * arrives before the view finishes loading and before any downstream
+ * ACQUIRE_LOCK or three-way merge runs.
+ *
+ * When `clear=true` Obsidian is doing a fresh load (initial open, external
+ * edit, file switch). That's the authoritative disk→CRDT ingest point.
+ * When `clear=false` the call is an internal state update (metadata
+ * renderer, properties panel). Treat it as informational.
+ */
+export interface ObsidianSetViewDataEvent {
+	type: "OBSIDIAN_SET_VIEW_DATA";
+	/** The data Obsidian is about to set on the view. */
+	data: string;
+	/** `true` when Obsidian is replacing the whole view, `false` for updates. */
+	clear: boolean;
 }
 
 /**
@@ -493,6 +505,7 @@ export type MergeEvent =
 	| { type: 'IDLE_RETRY' }
 	// Diagnostic (from Obsidian monkeypatches)
 	| ObsidianLoadFileInternalEvent
+	| ObsidianSetViewDataEvent
 	| ObsidianThreeWayMergeEvent
 	| ObsidianFileOpenedEvent
 	| ObsidianFileUnloadedEvent

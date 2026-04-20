@@ -1156,6 +1156,44 @@ export default class Live extends Plugin {
 
 		const TextFileViewPrototype = Object.getPrototypeOf(MarkdownView.prototype);
 		getPatcher().patch(TextFileViewPrototype, {
+			setViewData(old: any) {
+				return function (this: any, data: string, clear: boolean) {
+					// Universal disk→CRDT ingest point for every TextFileView
+					// subclass (markdown, canvas, kanban, …). Obsidian calls
+					// setViewData synchronously inside loadFileInternal before
+					// the editor is populated and before Relay emits
+					// ACQUIRE_LOCK, so sending the data to the HSM here lets
+					// the three-way merge consult the authoritative disk text
+					// even when the open race orders ACQUIRE_LOCK before
+					// OBSIDIAN_LOAD_FILE_INTERNAL's post-await dispatch.
+					//
+					// `__relaySaving` is set by integrations that push CRDT
+					// content back into the view; skipping the event in that
+					// case prevents a reflection loop where our own write is
+					// treated as fresh disk content.
+					if (!this.__relaySaving) {
+						try {
+							const file = this.file;
+							if (file instanceof TFile) {
+								const folder = plugin.sharedFolders.lookup(file.path);
+								if (folder) {
+									const doc = folder.proxy.getFile(file);
+									if (doc && isDocument(doc) && doc.hsm) {
+										doc.hsm.send({
+											type: 'OBSIDIAN_SET_VIEW_DATA',
+											data,
+											clear,
+										});
+									}
+								}
+							}
+						} catch (e) {
+							plugin.debug('Error in setViewData patch:', e);
+						}
+					}
+					return old.call(this, data, clear);
+				};
+			},
 			loadFileInternal(old: any) {
 				return async function (this: any, file: TFile, isInitialLoad: boolean) {
 					// Mark the critical section: view.file has already been
@@ -1180,35 +1218,29 @@ export default class Live extends Plugin {
 						this.__relayLoading = false;
 					}
 
-					// After original completes, send diagnostic event if this is a Relay file
-					try {
-						const folder = plugin.sharedFolders.lookup(file.path);
-						if (folder) {
-							const doc = folder.proxy.getFile(file);
-							if (doc && isDocument(doc) && doc.hsm) {
-								// Read disk content to check if it changed
-								const diskContent = await plugin.app.vault.read(file);
-								const contentChanged = lastSavedData !== diskContent;
-								const willMerge = dirty && contentChanged && isPlaintext;
+						// After original completes, send a diagnostic-only event if this is a Relay file
+						try {
+							const folder = plugin.sharedFolders.lookup(file.path);
+							if (folder) {
+								const doc = folder.proxy.getFile(file);
+								if (doc && isDocument(doc) && doc.hsm) {
+									// Read disk content only to compute diagnostic flags.
+									const diskContent = await plugin.app.vault.read(file);
+									const contentChanged = lastSavedData !== diskContent;
+									const willMerge = dirty && contentChanged && isPlaintext;
 
-								doc.hsm.send({
-									type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
-									isInitialLoad,
-									dirty,
-									contentChanged,
-									willMerge,
-									editorContent: this.getViewData(),
-								});
-
-								// If merge was triggered, send the merge event too
-								if (willMerge) {
 									doc.hsm.send({
-										type: 'OBSIDIAN_THREE_WAY_MERGE',
-										lcaLength: lastSavedData?.length ?? 0,
-										editorLength: this.getViewData?.()?.length ?? 0,
-										diskLength: diskContent.length,
+									type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
+										isInitialLoad,
+										dirty,
+										contentChanged,
+										willMerge,
 									});
-								}
+
+								// OBSIDIAN_THREE_WAY_MERGE remains a supported diagnostic
+								// event in the HSM, but open-time reconciliation should
+								// use disk/CRDT state rather than reading the editor
+								// buffer directly during load.
 							}
 						}
 					} catch (e) {

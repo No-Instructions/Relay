@@ -1162,13 +1162,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 			// === Active entering/tracking guards ===
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
-			persistenceHasContentAndEditorAvailable: (_hsm, event) =>
-				(event as any).hasContent === true && this.lastKnownEditorText !== null,
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
-			editorContentAvailable: () => this.lastKnownEditorText !== null,
 			hasPreexistingConflict: () => this._conflict !== null,
 			isRecoveryMode: () => this._lca === null,
+
+			// === Active merge invoke guards ===
+			threeWayMergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
+			threeWayMergeConflict: (_hsm, event) => (event as any).data?.success === false,
+			twoWayMergeClean: (_hsm, event) => (event as any).data?.clean === true,
+			twoWayMergeConflict: (_hsm, event) => (event as any).data?.clean === false,
 		};
 	}
 
@@ -1282,27 +1285,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// === ACQUIRE_LOCK from idle ===
 			storeEditorContent: (_hsm, event) => {
 				const e = event as any;
-				if (e.editorContent !== undefined) {
-					this.pendingEditorContent = e.editorContent;
-					this.lastKnownEditorText = e.editorContent;
-				}
 				this._editorViewRef = e.editorViewRef ?? null;
-				// Fallback: read editor content directly from the view ref. Needed
-				// for plugin reload where the file was already open before Relay
-				// patched loadFileInternal, so OBSIDIAN_LOAD_FILE_INTERNAL never
-				// fires. Skip the read if loadFileInternal is in-flight — `view.data`
-				// is still the PREVIOUS file's content during that window, and the
-				// post-await OBSIDIAN_LOAD_FILE_INTERNAL will seed us with the
-				// correct value. The `__relayLoading` flag is stamped on the view
-				// by the TextFileViewPrototype patch in main.ts.
-				if (this.lastKnownEditorText === null && this._editorViewRef) {
-					const ref = this._editorViewRef as any;
-					if (!ref.__relayLoading) {
-						try {
-							this.lastKnownEditorText = ref.getViewData();
-						} catch { /* ignore — OBSIDIAN_LOAD_FILE_INTERNAL will seed */ }
-					}
-				}
 				if (this._statePath.startsWith("idle.")) {
 					this._enteringFromDiverged = this._statePath === "idle.diverged";
 				}
@@ -1404,23 +1387,26 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 				// Step 4: Dispatch resolved content to CM6. The localDoc
 				// observer skips origin=this, so we emit explicitly.
-				if (this.lastKnownEditorText == null) {
-					throw new Error("resolveConflict: lastKnownEditorText is null — editor should always be active during conflict resolution");
-				}
+				const beforeText =
+					this.lastKnownEditorText
+					?? this.pendingDiskContents
+					?? this.pendingEditorContent
+					?? "";
 				this.crdtLog(
 					`resolveConflict: contents=${contents.length} chars, ` +
-					`lastKnown=${this.lastKnownEditorText.length} chars, ` +
-					`equal=${contents === this.lastKnownEditorText}, ` +
+					`before=${beforeText.length} chars, ` +
+					`equal=${contents === beforeText}, ` +
 					`contents=${JSON.stringify(contents.substring(0, 100))}, ` +
-					`lastKnown=${JSON.stringify(this.lastKnownEditorText.substring(0, 100))}`
+					`before=${JSON.stringify(beforeText.substring(0, 100))}`
 				);
-				if (contents !== this.lastKnownEditorText) {
-					const changes = this.computeDiffChanges(this.lastKnownEditorText, contents);
+				if (contents !== beforeText) {
+					const changes = this.computeDiffChanges(beforeText, contents);
 					this.crdtLog(`resolveConflict: ${changes.length} changes: ${JSON.stringify(changes)}`);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
 					}
 				}
+				this.lastKnownEditorText = contents;
 
 				// Step 5: Sync localDoc → remoteDoc and server. Histories are
 				// now converged so the update is clean.
@@ -1548,24 +1534,93 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
 			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
-			startTwoWayMerge: () => {
-				// In recovery mode (no LCA), remote CRDT updates were applied
-				// to remoteDoc during idle but never synced to localDoc.
-				// Apply them now so "ours" reflects the full CRDT state.
-				if (this.localDoc && this.remoteDoc) {
-					const update = Y.encodeStateAsUpdate(
-						this.remoteDoc,
-						Y.encodeStateVector(this.localDoc),
-					);
-					if (update.byteLength > 0) {
-						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+			applyThreeWayMergeResult: (_hsm, event) => {
+				const data = (event as any).data;
+				if (!data || !this.localDoc) return;
+
+				this.applyContentToLocalDoc(data.merged);
+				this._bridge.flushOutbound();
+
+				// Dispatch editor patches only when the editor's current text
+				// (diskText, since reconciling started from disk) differs from
+				// the merged result. If disk already matched merged, the editor
+				// is already showing the correct content.
+				if (data.patches && data.patches.length > 0 && data.diskText !== data.merged) {
+					const editorPatches = computeDiffMatchPatchChanges(data.diskText, data.merged);
+					if (editorPatches.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes: editorPatches });
 					}
 				}
-				const localText = this.localDoc?.getText("contents").toString() ?? "";
-				const diskText = this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
-				this.performTwoWayMerge(localText, diskText);
+
+				this.pendingEditorContent = null;
 			},
-			startThreeWayMerge: () => this.performThreeWayMergeFromState(),
+			storeThreeWayConflict: (_hsm, event) => {
+				const data = (event as any).data;
+				this._conflict = new Conflict({
+					base: data.baseText,
+					ours: data.localText,
+					theirs: data.diskText,
+					oursLabel: "Remote",
+					theirsLabel: "Local file",
+					regions: data.conflictRegions ?? [],
+				});
+			},
+			storeThreeWayError: (_hsm, event) => {
+				const error = (event as any).data;
+				this.hsmError(`three-way merge failed: ${error}`);
+				this._error = error instanceof Error ? error : new Error(String(error));
+				const localText = this.localDoc?.getText("contents").toString() ?? "";
+				const diskText = this.pendingDiskContents ?? this.lastKnownEditorText ?? "";
+				this._conflict = new Conflict({
+					base: this._lca?.contents ?? localText,
+					ours: localText,
+					theirs: diskText,
+					oursLabel: "Remote",
+					theirsLabel: "Local file",
+					regions: [],
+				});
+			},
+			applyTwoWayCleanMerge: (_hsm, event) => {
+				const data = (event as any).data;
+				if (!data || !this.localDoc) return;
+
+				// localDoc already contains remoteDoc state (merged in the invoke);
+				// disk matches local. Sync to remote and clear residual state.
+				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+				this._bridge.clearOutboundQueue();
+				this.lastKnownEditorText = data.localText;
+				this._fork = null;
+				this._ingestionTexts = [];
+				this._conflict = null;
+				this.pendingDiskContents = null;
+				this.pendingEditorContent = null;
+			},
+			storeTwoWayConflict: (_hsm, event) => {
+				const data = (event as any).data;
+				this._conflict = new Conflict({
+					base: data.localText,
+					ours: data.localText,
+					theirs: data.diskText,
+					oursLabel: "Remote",
+					theirsLabel: "Local file",
+					regions: data.conflictRegions ?? [],
+				});
+			},
+			storeTwoWayError: (_hsm, event) => {
+				const error = (event as any).data;
+				this.hsmError(`two-way merge failed: ${error}`);
+				this._error = error instanceof Error ? error : new Error(String(error));
+				const localText = this.localDoc?.getText("contents").toString() ?? "";
+				const diskText = this.pendingDiskContents ?? this.lastKnownEditorText ?? "";
+				this._conflict = new Conflict({
+					base: localText,
+					ours: localText,
+					theirs: diskText,
+					oursLabel: "Remote",
+					theirsLabel: "Local file",
+					regions: [],
+				});
+			},
 			applyCM6ToLocalDoc: (_hsm, event) => {
 				const e = event as any;
 				if (this.localDoc) {
@@ -1909,9 +1964,100 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				'idle-merge': neverResolve,
 				'fork-reconcile': neverResolve,
 				'cleanup': neverResolve,
+				'three-way-merge': neverResolve,
+				'two-way-merge': neverResolve,
 			};
 		}
 		return {
+			'three-way-merge': async (_hsm, signal) => {
+				if (this.localPersistence && !this.localPersistence.synced) {
+					await this.localPersistence.whenSynced;
+					if (signal.aborted) return { success: false };
+				}
+				if (!this.localDoc) {
+					throw new Error('three-way-merge: localDoc not available');
+				}
+
+				// Use cached disk contents if DISK_CHANGED already landed;
+				// otherwise read from disk. Defaulting to "" here would let
+				// diff3 interpret missing disk info as "file wiped" and
+				// produce a whole-file-delete conflict on reload.
+				let diskText: string;
+				if (this.pendingDiskContents !== null) {
+					diskText = this.pendingDiskContents;
+				} else {
+					const diskContent = await this._diskLoader();
+					if (signal.aborted) return { success: false };
+					diskText = diskContent.content;
+				}
+
+				const localText = this.localDoc.getText('contents').toString();
+				const baseText = this._lca?.contents ?? '';
+				const mergeResult = performThreeWayMerge(baseText, localText, diskText);
+				if (signal.aborted) return { success: false };
+
+				if (mergeResult.success) {
+					return {
+						success: true,
+						merged: mergeResult.merged,
+						patches: mergeResult.patches,
+						baseText,
+						localText,
+						diskText,
+					};
+				}
+				return {
+					success: false,
+					conflictRegions: mergeResult.conflictRegions,
+					baseText,
+					localText,
+					diskText,
+				};
+			},
+			'two-way-merge': async (_hsm, signal) => {
+				if (this.localPersistence && !this.localPersistence.synced) {
+					await this.localPersistence.whenSynced;
+					if (signal.aborted) return { success: false };
+				}
+				if (!this.localDoc) {
+					throw new Error('two-way-merge: localDoc not available');
+				}
+
+				// Recovery-mode (no LCA) entry point. Merge remoteDoc → localDoc
+				// first so "ours" reflects the full CRDT state, then compare
+				// against disk.
+				if (this.remoteDoc) {
+					const update = Y.encodeStateAsUpdate(
+						this.remoteDoc,
+						Y.encodeStateVector(this.localDoc),
+					);
+					if (update.byteLength > 0) {
+						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+					}
+				}
+
+				let diskText: string;
+				if (this.pendingDiskContents !== null) {
+					diskText = this.pendingDiskContents;
+				} else {
+					const diskContent = await this._diskLoader();
+					if (signal.aborted) return { success: false };
+					diskText = diskContent.content;
+				}
+
+				const localText = this.localDoc.getText('contents').toString();
+				if (signal.aborted) return { success: false };
+
+				if (localText === diskText) {
+					return { clean: true, localText };
+				}
+				return {
+					clean: false,
+					localText,
+					diskText,
+					conflictRegions: computeTwoWayConflictRegions(localText, diskText),
+				};
+			},
 			'idle-merge': async (_hsm, signal) => {
 				// Entry action ensureLocalDocForIdle creates localDoc +
 				// persistence. Await persistence sync before merging
@@ -2307,13 +2453,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this._obsidianFileOpen = true;
 			return; // Diagnostic only, no state transition
 		}
-		if (event.type === 'OBSIDIAN_FILE_UNLOADED') {
-			this._obsidianFileOpen = false;
-			return; // Diagnostic only, no state transition
-		}
-		if (event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL') {
-			this.lastKnownEditorText = event.editorContent;
-			this.maybeSignalPersistenceReady("event");
+			if (event.type === 'OBSIDIAN_FILE_UNLOADED') {
+				this._obsidianFileOpen = false;
+				return; // Diagnostic only, no state transition
+			}
+			if (event.type === 'OBSIDIAN_LOAD_FILE_INTERNAL') {
+				return; // Diagnostic only, no state transition
+			}
+		if (event.type === 'OBSIDIAN_SET_VIEW_DATA') {
+			// Ingest synchronously during loadFileInternal, before ACQUIRE_LOCK
+			// or the three-way merge run. Only `clear=true` carries a fresh
+			// disk load; partial updates (metadata renderer, properties panel)
+			// pass `clear=false` and must not shadow the authoritative disk
+			// text.
+			if (event.clear) {
+				this.pendingDiskContents = event.data;
+			}
 			return;
 		}
 		if (event.type === 'OBSIDIAN_SAVE_FRONTMATTER'
@@ -2420,108 +2575,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Check if remote has operations not in LCA
 		return stateVectorIsAhead(remoteSV, lcaSV);
-	}
-
-	/**
-	 * Perform two-way merge when no LCA is available.
-	 * If both sides match, resolves immediately. Otherwise computes
-	 * per-hunk conflict regions so the user can accept/reject individual
-	 * differences rather than choosing one entire side.
-	 */
-	private performTwoWayMerge(localText: string, diskText: string): void {
-		if (localText === diskText) {
-			this.send({ type: "RESOLVE", contents: localText });
-			return;
-		}
-
-		const conflictRegions = computeTwoWayConflictRegions(localText, diskText);
-
-		this._conflict = new Conflict({
-			base: localText,
-			ours: localText,
-			theirs: diskText,
-			oursLabel: "Remote",
-			theirsLabel: "Local file",
-			regions: conflictRegions,
-		});
-
-		this.send({
-			type: "MERGE_CONFLICT",
-			base: localText,
-			ours: localText,
-			theirs: diskText,
-			conflictRegions,
-		});
-	}
-
-	/**
-	 * Perform three-way merge when LCA is available.
-	 * Per spec: attempts auto-resolve, shows conflict UI only if truly unresolvable.
-	 */
-	private performThreeWayMergeFromState(): void {
-		const localText = this.localDoc?.getText("contents").toString() ?? "";
-		const diskText =
-			this.lastKnownEditorText ?? this.pendingEditorContent ?? "";
-		const baseText = this._lca?.contents ?? "";
-
-		const mergeResult = performThreeWayMerge(baseText, localText, diskText);
-
-		if (mergeResult.success) {
-			// Merge succeeded - apply to localDoc and dispatch to editor
-			this.applyContentToLocalDoc(mergeResult.merged);
-			this._bridge.flushOutbound();
-
-			// Only dispatch patches to editor if editor content differs from merged result.
-			// The patches are computed from localText→merged, but the editor has diskText.
-			// If diskText === merged (common case when local === base), skip dispatch to avoid duplication.
-			if (mergeResult.patches.length > 0 && diskText !== mergeResult.merged) {
-				// Editor content differs from merge result - compute patches from disk→merged
-				const editorPatches = computeDiffMatchPatchChanges(
-					diskText,
-					mergeResult.merged,
-				);
-				if (editorPatches.length > 0) {
-					this.emitEffect({ type: "DISPATCH_CM6", changes: editorPatches });
-				}
-			}
-
-			// Per spec: LCA is never touched during active.* states.
-			// Send MERGE_SUCCESS to transition to tracking. LCA will be
-			// established when file transitions to idle mode.
-			// Note: newLCA is required by the event type but ignored by handler.
-			this.send({
-				type: "MERGE_SUCCESS",
-				newLCA: this._lca ?? {
-					contents: "",
-					meta: { hash: "", mtime: 0 },
-					stateVector: new Uint8Array([0]),
-				},
-			});
-
-			// Clear pending editor content.
-			// Note: inbound remote content accumulated during entering is flushed
-			// by the mergeRemoteToLocal entry action on active.tracking.
-			this.pendingEditorContent = null;
-		} else {
-			// Merge has conflicts - build conflict for banner/diff view
-			this._conflict = new Conflict({
-				base: baseText,
-				ours: localText,
-				theirs: diskText,
-				oursLabel: "Remote",
-				theirsLabel: "Local file",
-				regions: mergeResult.conflictRegions ?? [],
-			});
-
-			// Send MERGE_CONFLICT to transition to conflict state
-			this.send({
-				type: "MERGE_CONFLICT",
-				base: baseText,
-				ours: localText,
-				theirs: diskText,
-				conflictRegions: mergeResult.conflictRegions,
-			});
-		}
 	}
 
 

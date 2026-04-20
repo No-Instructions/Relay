@@ -174,10 +174,22 @@ describe('Provider Integration Lifecycle', () => {
     ctx.vaultA.send({ type: 'SET_MODE_ACTIVE' });
     ctx.vaultA.send({ type: 'ACQUIRE_LOCK', editorContent: 'Line 1\nLine 2 LOCAL\nLine 3' });
 
+    // Wait for the entering three-way merge invoke to settle before firing
+    // PROVIDER_SYNCED — reconcileForkInActive only runs as a PROVIDER_SYNCED
+    // action in active.tracking, and the merging state would drop the event.
+    await ctx.vaultA.hsm.hsm.awaitState?.(
+      (s: string) => s === 'active.tracking' || s.includes('conflict'),
+    );
+
     // ACQUIRE_LOCK resets providerSynced. The real provider is already synced,
     // so ProviderIntegration would fire PROVIDER_SYNCED on reconnect — but
     // ACQUIRE_LOCK clears it. Resend to trigger reconcileForkInActive.
     ctx.vaultA.send({ type: 'PROVIDER_SYNCED' });
+
+    // Wait for any pending fork reconciliation.
+    await ctx.vaultA.hsm.hsm.awaitState?.(
+      (s: string) => s === 'idle.diverged' || s.includes('conflict') || s === 'active.tracking',
+    );
 
     const statePath = ctx.vaultA.hsm.statePath;
 
