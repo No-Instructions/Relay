@@ -612,11 +612,15 @@ describe('MergeHSM', () => {
       expectState(t, 'active.tracking');
     });
 
-    test('DISK_CHANGED advances LCA when editorViewRef.dirty is false', async () => {
+    test('DISK_CHANGED does not advance LCA when disk differs from localDoc', async () => {
+      // storeDiskMetadataOnly advances LCA only when localDoc.getText()
+      // already matches the new disk content. Mismatch silently skips —
+      // prevents the ghost-LCA race where DISK_CHANGED lands before CM6
+      // has propagated an external-editor change to localDoc.
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', {
         mtime: Date.now() - 1000,
-        editorViewRef: mockEditorViewRef('hello', false),
+        editorViewRef: mockEditorViewRef('hello'),
       });
 
       const oldLca = t.state.lca;
@@ -625,43 +629,31 @@ describe('MergeHSM', () => {
       t.send(await diskChanged('hello updated', newMtime));
 
       expectState(t, 'active.tracking');
+      expect(t.state.disk?.mtime).toBe(newMtime);
+      expect(t.state.lca).toEqual(oldLca);
+    });
+
+    test('DISK_CHANGED advances LCA when disk matches localDoc', async () => {
+      // The autosave path: our own write lands on disk with the same
+      // content localDoc already holds, so LCA advances to the new mtime.
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello', {
+        mtime: Date.now() - 1000,
+        editorViewRef: mockEditorViewRef('hello'),
+      });
+
+      const oldLca = t.state.lca;
+      expect(oldLca).not.toBeNull();
+
+      const newMtime = Date.now();
+      t.send(await diskChanged('hello', newMtime));
+
+      expectState(t, 'active.tracking');
       const newLca = t.state.lca;
       expect(newLca).not.toBeNull();
-      expect(newLca!.contents).toBe('hello updated');
+      expect(newLca!.contents).toBe('hello');
       expect(newLca!.meta.mtime).toBe(newMtime);
-      expect(newLca).not.toEqual(oldLca);
-    });
-
-    test('DISK_CHANGED does NOT advance LCA when editorViewRef.dirty is true', async () => {
-      const t = await createTestHSM();
-      await loadAndActivate(t, 'hello', {
-        mtime: Date.now() - 1000,
-        editorViewRef: mockEditorViewRef('hello', true),
-      });
-
-      const oldLca = t.state.lca;
-
-      t.send(await diskChanged('hello updated', Date.now()));
-
-      expectState(t, 'active.tracking');
-      const newLca = t.state.lca;
-      expect(newLca!.contents).toBe(oldLca!.contents);
-    });
-
-    test('DISK_CHANGED does NOT advance LCA when no editorViewRef', async () => {
-      const t = await createTestHSM();
-      await loadAndActivate(t, 'hello', {
-        mtime: Date.now() - 1000,
-        editorViewRef: null,
-      });
-
-      const oldLca = t.state.lca;
-
-      t.send(await diskChanged('hello updated', Date.now()));
-
-      expectState(t, 'active.tracking');
-      const newLca = t.state.lca;
-      expect(newLca!.contents).toBe(oldLca!.contents);
+      expect(newLca!.meta.mtime).not.toBe(oldLca!.meta.mtime);
     });
   });
 
@@ -1819,27 +1811,6 @@ describe('MergeHSM', () => {
       t.send(dismissConflict());
 
       expectEffect(t.effects, { type: 'PERSIST_STATE' });
-    });
-
-    test('DISK_CHANGED in active mode does not update LCA when editor is dirty', async () => {
-      const t = await createTestHSM();
-      // Dirty editor indicates unsaved changes — LCA must stay frozen so
-      // the save boundary continues to act as the merge base.
-      await loadAndActivate(t, 'hello', {
-        mtime: 1000,
-        editorViewRef: mockEditorViewRef('hello', true),
-      });
-
-      // Edit localDoc so it differs from LCA
-      t.send(cm6Insert(5, ' world', 'hello world'));
-      t.clearEffects();
-
-      // Disk change in active.tracking mode
-      t.send(await diskChanged('hello world', Date.now()));
-
-      // Editor is dirty → LCA stays put → no PERSIST_STATE emitted.
-      const persistEffects = t.effects.filter(e => e.type === 'PERSIST_STATE');
-      expect(persistEffects).toHaveLength(0);
     });
 
     test('STATUS_CHANGED emitted on state transition that changes sync status', async () => {
