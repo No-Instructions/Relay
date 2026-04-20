@@ -53,14 +53,12 @@ export function unload(): UnloadEvent {
  * every getViewData() call. Production EditorViewRefs read live editor
  * state, so a getter keeps tests honest when the HSM consults the ref
  * after a CM6 change.
- * @param dirty - Whether the editor has unsaved changes.
  */
 export function mockEditorViewRef(
   content: string | (() => string) = '',
-  dirty: boolean = false,
 ): EditorViewRef {
   const getViewData = typeof content === 'function' ? content : () => content;
-  return { dirty, getViewData };
+  return { getViewData };
 }
 
 /**

@@ -35,12 +35,9 @@ export interface FrontMatterPrimitives {
 
 /**
  * Narrow interface for reading editor view state.
- * Used to determine if Obsidian's auto-save has flushed (dirty === false),
- * enabling safe LCA advancement during active.tracking.
- * Also used to capture the definitive editor content on release.
+ * Used to capture the definitive editor content on release.
  */
 export interface EditorViewRef {
-	readonly dirty: boolean;
 	getViewData(): string;
 }
 

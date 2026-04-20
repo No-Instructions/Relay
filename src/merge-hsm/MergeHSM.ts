@@ -820,11 +820,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (!this.localDoc) return;
 		const content = this.localDoc.getText("contents").toString();
 		const hash = await this.hashFn(content);
-		this._lca = {
+		this._setLCA({
 			contents: content,
 			meta: { hash, mtime: Date.now() },
 			stateVector: Y.encodeStateVector(this.localDoc),
-		};
+		});
 		this.emitPersistState();
 	}
 
@@ -896,11 +896,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// Enrollment happened - set LCA to match initial content
 			const { content, hash, mtime } = cachedDiskContent;
 			const stateVector = Y.encodeStateVector(this.localDoc!);
-			this._lca = {
+			this._setLCA({
 				contents: content,
 				meta: { hash, mtime },
 				stateVector,
-			};
+			});
 			this._localStateVector = stateVector;
 			this.emitPersistState();
 
@@ -1208,10 +1208,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			updateLCAMtime: (_hsm, event) => {
 				const e = event as any;
 				if (this._lca && !this._fork && this._lca.meta.hash === e.hash) {
-					this._lca = {
+					this._setLCA({
 						...this._lca,
 						meta: { ...this._lca.meta, mtime: e.mtime },
-					};
+					});
 					this.emitPersistState();
 				}
 			},
@@ -1268,7 +1268,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = (event as any).data;
 				if (result?.newLCA) {
-					this._lca = result.newLCA;
+					this._setLCA(result.newLCA);
 					this._localStateVector = result.newLCA.stateVector;
 					this._remoteStateVector = result.newLCA.stateVector;
 					// The idle-merge emits WRITE_DISK, so disk now matches LCA
@@ -1328,6 +1328,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			storePersistenceData: (_hsm, event) => {
 				const e = event as any;
 				if (!this._lca && e.lca) {
+					// Trusted restoration path: localDoc hasn't been created yet,
+					// so the _setLCA content-equality check has nothing to verify
+					// against. The persisted LCA was captured by a prior session
+					// under the same invariant, so we load it directly.
 					this._lca = e.lca;
 				}
 				if (e.localStateVector) {
@@ -1642,23 +1646,27 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._disk = { mtime: e.mtime, hash: e.hash };
 			},
 			storeDiskMetadataOnly: (_hsm, event) => {
-				// In active.tracking, only update disk metadata (no state changes)
 				const e = event as any;
 				this._disk = { hash: e.hash, mtime: e.mtime };
 				this.pendingDiskContents = e.contents;
 
-				// Advance LCA when Obsidian's auto-save has flushed (dirty === false)
-				// and no fork is active. LCA must be frozen while a fork exists
-				// to preserve the merge base for reconciliation.
-				const dirty = this._editorViewRef?.dirty;
-				if (this._editorViewRef && !dirty && !this._fork && this.localDoc) {
-					const stateVector = Y.encodeStateVector(this.localDoc);
-					this._lca = {
-						contents: e.contents,
-						meta: { hash: e.hash, mtime: e.mtime },
-						stateVector,
-					};
-					this.emitPersistState();
+				// Advance LCA when localDoc already matches the new disk
+				// content and no fork is active. The match check is the
+				// real invariant (LCA captures a state both sides agreed
+				// on); it silently skips the external-change race where
+				// DISK_CHANGED lands before CM6 propagates localDoc.
+				// Routed through _setLCA so its warn stays a canary for
+				// genuinely bad captures.
+				if (!this._fork && this.localDoc) {
+					const localText = this.localDoc.getText("contents").toString();
+					if (localText === e.contents) {
+						this._setLCA({
+							contents: e.contents,
+							meta: { hash: e.hash, mtime: e.mtime },
+							stateVector: Y.encodeStateVector(this.localDoc),
+						});
+						this.emitPersistState();
+					}
 				}
 			},
 			flushPendingToRemote: () => {
@@ -1685,7 +1693,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this.pendingIdleUpdates = null;
 				const result = (event as any).data;
 				if (result?.newLCA) {
-					this._lca = result.newLCA;
+					this._setLCA(result.newLCA);
 					this._localStateVector = result.newLCA.stateVector;
 					this._remoteStateVector = result.newLCA.stateVector;
 				}
@@ -1751,11 +1759,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					// Clear fork and update LCA
 					this._fork = null;
 					this._ingestionTexts = [];
-					this._lca = {
+					this._setLCA({
 						contents: localContent,
 						meta: { hash: "", mtime: this.timeProvider.now() },
 						stateVector,
-					};
+					});
 					this._localStateVector = stateVector;
 					this._remoteStateVector = stateVector;
 					this._bridge.resetPendingCounters();
@@ -1818,11 +1826,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				const stateVector = Y.encodeStateVector(this.localDoc);
 				this._fork = null;
 				this._ingestionTexts = [];
-				this._lca = {
+				this._setLCA({
 					contents: mergeResult.merged,
 					meta: { hash: "", mtime: this.timeProvider.now() },
 					stateVector,
-				};
+				});
 				this._localStateVector = stateVector;
 				this._remoteStateVector = stateVector;
 				this._bridge.resetPendingCounters();
@@ -2786,7 +2794,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._lca.meta.hash === "" &&
 				this._lca.contents === content
 			) {
-				this._lca = { ...this._lca, meta: { ...this._lca.meta, hash } };
+				this._setLCA({ ...this._lca, meta: { ...this._lca.meta, hash } });
 				this.emitPersistState();
 			}
 		}).catch(() => {
@@ -2827,14 +2835,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// Disk matches localDoc - update LCA to reflect the synced state.
 				// Use disk.hash (not contentHash) to ensure hasDiskChangedSinceLCA()
 				// returns false, even if hash functions differ between sources.
-				this._lca = {
+				this._setLCA({
 					contents: finalContent,
 					meta: {
 						hash: this._disk.hash,
 						mtime: this._disk.mtime,
 					},
 					stateVector: this._localStateVector ?? new Uint8Array([0]),
-				};
+				});
 			}
 		}
 
@@ -2906,8 +2914,47 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 	}
 
-
-
+	/**
+	 * Central chokepoint for LCA *capture* (when we believe we've reached a
+	 * new common-ancestor state with the CRDT).
+	 *
+	 * Invariant: when localDoc exists, the captured LCA.contents must equal
+	 * localDoc.getText("contents"). LCA is the Last Common Ancestor — a
+	 * snapshot of content both sides agreed on. Capturing a value that
+	 * disagrees with the current CRDT creates a ghost baseline (the live1
+	 * falssssse pathology: disk/LCA frozen at one value while localDoc
+	 * evolved to another).
+	 *
+	 * Bypass: loading an LCA from persisted state (storePersistenceData)
+	 * is a trusted restoration — localDoc hasn't been built yet, there's
+	 * nothing to verify against, and the stored LCA was captured by a
+	 * prior session that already satisfied this invariant.
+	 */
+	private _setLCA(lca: LCAState | null): void {
+		// Never wipe a valid LCA by writing null — doing so drops the
+		// merge baseline and forces recovery mode on next boot. No
+		// production path should do this; the debug clearLca API
+		// bypasses the class boundary via `as any` on purpose.
+		if (lca === null && this._lca !== null) {
+			this.hsmWarn(
+				`setLCA: refusing to overwrite non-null LCA with null | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return;
+		}
+		if (lca !== null && this.localDoc) {
+			const actualText = this.localDoc.getText("contents").toString();
+			if (actualText !== lca.contents) {
+				this.hsmWarn(
+					`setLCA: content mismatch — refusing capture | ` +
+						`guid=${this._guid} state=${this._statePath} ` +
+						`actualLen=${actualText.length} lcaLen=${lca.contents.length}`,
+				);
+				return;
+			}
+		}
+		this._lca = lca;
+	}
 
 
 	/**
