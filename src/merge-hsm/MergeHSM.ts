@@ -253,7 +253,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private _accumulatedEvents: Array<
 		| { type: "REMOTE_UPDATE"; update: Uint8Array }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
-		| { type: "CM6_CHANGE"; changes: any[]; docText: string }
+		| { type: "CM6_CHANGE"; changes: any[]; docText: string; userEvent?: string; viewId?: string }
 	> = [];
 
 	// Mode decision during loading state (null = not decided, 'idle' or 'active')
@@ -1506,18 +1506,25 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			accumulateCM6Change: (_hsm, event) => {
 				const e = event as any;
-				const wasNull = this.lastKnownEditorText === null;
 				if (e.docText !== undefined) {
 					this.lastKnownEditorText = e.docText;
+				}
+				if (e.userEvent === "set") {
+					// setViewData wholesale-replaces the editor (e.g. Properties
+					// panel, preview-mode toggles). Prior accumulated CM6_CHANGEs
+					// describe deltas against the pre-replace buffer — their
+					// from/to indices no longer align — drop them.
+					this._accumulatedEvents = this._accumulatedEvents.filter(
+						(ev) => ev.type !== "CM6_CHANGE",
+					);
 				}
 				this._accumulatedEvents.push({
 					type: "CM6_CHANGE",
 					changes: e.changes,
 					docText: e.docText,
+					userEvent: e.userEvent,
+					viewId: e.viewId,
 				});
-				if (wasNull && this.lastKnownEditorText !== null) {
-					this.maybeSignalPersistenceReady("event");
-				}
 			},
 			accumulateDiskChanged: (_hsm, event) => {
 				const e = event as any;
@@ -1582,7 +1589,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						// decouples user edits from machine edits at the state
 						// vector level — non-adjacent user edits flow to
 						// remoteDoc immediately even while the machine edit
-						// is deferred.
+						// is deferred. Ops carry MACHINE_EDIT_ORIGIN so
+						// OpCapture tracks them; when the same edit echoes
+						// back via remote sync, SyncBridge.flushInbound's
+						// matchMachineEdit path cancel()s them idempotently
+						// (flipping the deleted flag rather than creating new
+						// items) so no duplication occurs. Do NOT short-circuit
+						// this branch for userEvent === "set" — Properties-panel
+						// and preview-mode edits go through vault.process →
+						// registerMachineEdit → setViewData, which requires
+						// the machine-edit capture to prevent peer-side
+						// duplication (the live2 butter.md concat shape).
 						this._bridge.currentMachineEditMark =
 							this._pendingMachineEdits[machineEditIdx].captureMark;
 
@@ -1590,16 +1607,46 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						Y.applyUpdate(proxyDoc, Y.encodeStateAsUpdate(this.localDoc));
 
 						const proxyText = proxyDoc.getText("contents");
-						proxyDoc.transact(() => {
-							for (const change of e.changes) {
-								if (change.to > change.from) {
-									proxyText.delete(change.from, change.to - change.from);
-								}
-								if (change.insert) {
-									proxyText.insert(change.from, change.insert);
-								}
+						if (e.userEvent === "set" && e.docText !== undefined) {
+							// CM6 from/to indices on a "set" event reference the
+							// pre-buffer, which may be stale relative to localDoc.
+							// Ingest via docText DMP'd against the proxy's current
+							// state so ops are bounded to valid offsets.
+							const currentText = proxyText.toString();
+							if (currentText !== e.docText) {
+								const dmp = new diff_match_patch();
+								const diffs = dmp.diff_main(currentText, e.docText);
+								dmp.diff_cleanupSemantic(diffs);
+								proxyDoc.transact(() => {
+									let cursor = 0;
+									for (const [operation, text] of diffs) {
+										switch (operation) {
+											case 1:
+												proxyText.insert(cursor, text);
+												cursor += text.length;
+												break;
+											case 0:
+												cursor += text.length;
+												break;
+											case -1:
+												proxyText.delete(cursor, text.length);
+												break;
+										}
+									}
+								});
 							}
-						});
+						} else {
+							proxyDoc.transact(() => {
+								for (const change of e.changes) {
+									if (change.to > change.from) {
+										proxyText.delete(change.from, change.to - change.from);
+									}
+									if (change.insert) {
+										proxyText.insert(change.from, change.insert);
+									}
+								}
+							});
+						}
 
 						const diff = Y.encodeStateAsUpdate(
 							proxyDoc,
@@ -1612,6 +1659,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						proxyDoc.destroy();
 
 						this._bridge.currentMachineEditMark = null;
+					} else if (e.userEvent === "set") {
+						// setViewData with no matching machine edit: ingest via
+						// docText DMP'd against current localDoc. The from/to
+						// indices on "set" events reference the CM6 pre-buffer
+						// and can be stale, so we can't use them directly.
+						if (e.docText !== undefined) {
+							this.applyContentToLocalDoc(e.docText);
+						}
 					} else {
 						// Normal user edit: apply directly to localDoc
 						const ytext = this.localDoc.getText("contents");

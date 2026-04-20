@@ -388,6 +388,48 @@ describe("machine edit rewind - HSM integration", () => {
 		expect(syncEffects.length).toBeLessThanOrEqual(1);
 	});
 
+	it('CM6_CHANGE with userEvent="set" matching a machine edit still takes the machine-edit path (no cancel = per-toggle concat on peers)', async () => {
+		// Regression guard: Properties-panel and preview-mode edits flow as
+		// vault.process → registerMachineEdit → setViewData → CM6_CHANGE with
+		// userEvent: "set". The "set" event MUST still route through the
+		// machine-edit path (proxy Y.Doc + MACHINE_EDIT_ORIGIN) so the ops
+		// are captured by OpCapture and can be cancel()'d when the same
+		// edit echoes back via remote sync. A previous iteration of the
+		// userEvent="set" handling short-circuited before the machine-edit
+		// match check — that skipped OpCapture, produced uncaptured ops,
+		// and any subsequent remote update carrying the same edit caused
+		// peer-side concatenation (the live2 butter.md `in stock: falssse`
+		// shape). Do not reintroduce that short-circuit.
+		const t = await setupActive("Hello [[B]] world");
+		const fn = (text: string) => text.replace("[[B]]", "[[C]]");
+
+		t.hsm.registerMachineEdit(fn);
+
+		// setViewData-style CM6 event: docText matches the registered
+		// machine edit's expected post-transform text.
+		t.send({
+			type: "CM6_CHANGE",
+			changes: computeCM6Changes("Hello [[B]] world", "Hello [[C]] world"),
+			docText: "Hello [[C]] world",
+			userEvent: "set",
+		} as any);
+
+		expectLocalDocText(t, "Hello [[C]] world");
+
+		// Deferral is the key indicator: the machine-edit path holds the
+		// outbound update in the queue waiting for a remote match.
+		// A "set"-short-circuit would bypass this and ship immediately.
+		expectNoEffect(t.effects, "SYNC_TO_REMOTE");
+
+		// Remote confirms the edit. matchMachineEdit fires, cancel() undoes
+		// the local MACHINE_EDIT_ORIGIN ops, remote update applies cleanly.
+		t.applyRemoteChange("Hello [[C]] world");
+
+		expectLocalDocText(t, "Hello [[C]] world");
+		const syncEffects = t.effects.filter(e => e.type === "SYNC_TO_REMOTE");
+		expect(syncEffects.length).toBeLessThanOrEqual(1);
+	});
+
 	it("syncs ops on TTL expiry (originator vault)", async () => {
 		const t = await setupActive("Hello [[B]] world");
 		const fn = (text: string) => text.replace("[[B]]", "[[C]]");
