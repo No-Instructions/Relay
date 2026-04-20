@@ -63,6 +63,8 @@ import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { SelfHostModal } from "./ui/SelfHostModal";
+import { DeviceManager } from "./DeviceManager";
+import { setDeviceManagementConfig } from "./customFetch";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -109,6 +111,7 @@ export default class Live extends Plugin {
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
 	relayManager!: RelayManager;
+	deviceManager!: DeviceManager;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -529,6 +532,15 @@ export default class Live extends Plugin {
 			endpointManager,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
+		this.deviceManager = new DeviceManager(
+			this.appId,
+			this.vault.getName(),
+			this.loginManager,
+		);
+		setDeviceManagementConfig({
+			vaultId: this.appId,
+			deviceId: this.deviceManager.getDeviceId(),
+		});
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this.vault,
@@ -771,6 +783,9 @@ export default class Live extends Plugin {
 		this.sharedFolders.load();
 		this.relayManager?.login();
 		this._liveViews.refresh("login");
+		withFlag(flag.enableDeviceManagement, () => {
+			this.deviceManager.register();
+		});
 	}
 
 	async openSettings(path: string = "/") {
@@ -1166,6 +1181,9 @@ export default class Live extends Plugin {
 
 		this.relayManager?.destroy();
 		this.relayManager = null as any;
+
+		this.deviceManager?.destroy();
+		this.deviceManager = null as any;
 
 		this.tokenStore?.stop();
 		this.tokenStore?.clearState();
