@@ -2766,7 +2766,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				pos += d.retain;
 			}
 		}
-		return changes;
+		// Collapse adjacent delete+insert pairs into a single replacement.
+		// CM6 can drop a zero-width insert that lands on the trailing
+		// boundary of a preceding delete, which manifests as the delete
+		// taking effect but the insert being lost.
+		return mergeAdjacentChanges(changes);
 	}
 
 	/**
