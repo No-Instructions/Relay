@@ -207,6 +207,75 @@ describe('MergeHSM', () => {
       expect(t.hsm.checkAndCorrectDrift()).toBe(false);
     });
 
+    test('CM6_CHANGE with userEvent="set" emits ops that do not corrupt a peer with divergent history', async () => {
+      // Reproduces TP-008 (Properties panel frontmatter edit) against a
+      // stale CM6 buffer. setViewData emits from/to indices relative to the
+      // CM6 pre-buffer, which may not match the Yjs localDoc. Applying
+      // those indices as raw delete+insert ops produces Yjs updates whose
+      // delete tombstones exceed the originator's items. On a single
+      // doc, Yjs silently caps the delete — but when the update ships to
+      // a peer whose Yjs history has items the originator doesn't know
+      // about (e.g. a local-only op or an in-flight remote update),
+      // the tombstones miss those items and the insert concatenates.
+      //
+      // The HSM must ingest via docText (DMP against current localDoc)
+      // so the emitted ops are bounded to the originator's state.
+      const initial =
+        "---\nname: eggs\nin stock: true\nmodified: 2026-03-31T23:01:56-07:00\n---\n\n# Eggs";
+      const afterToggle =
+        "---\nname: eggs\nin stock: false\nmodified: 2026-03-31T23:01:56-07:00\n---\n\n# Eggs";
+
+      const t = await createTestHSM();
+      await loadAndActivate(t, initial);
+
+      // Peer Y.Doc with INDEPENDENT history: inserted `initial` under a
+      // different clientID without seeing the originator's updates.
+      // Mirrors the live pathology where both vaults enrolled content
+      // before any shared history was established. Visible text matches
+      // the originator, but the items are distinct at the CRDT level.
+      const peer = new Y.Doc();
+      peer.clientID = 0xDEADBEEF;
+      peer.getText('contents').insert(0, initial);
+
+      // Merge originator's canonical state into peer — peer now holds
+      // both its own items and the originator's items, all tombstoned
+      // or visible according to the merged state. Visible text is
+      // still `initial`.
+      Y.applyUpdate(peer, Y.encodeStateAsUpdate(t.hsm.getLocalDoc()!));
+
+      // Same direction: merge peer's items into the originator so both
+      // docs share a converged state before the set event. Without
+      // this, the test would fail on the concat that emerges from
+      // independent enrollment itself (unrelated to this bug).
+      Y.applyUpdate(t.hsm.getLocalDoc()!, Y.encodeStateAsUpdate(peer));
+
+      // Both now show a merged-but-synced state. Capture peer's SV so
+      // we only ship the post-event delta below.
+      const peerSV = Y.encodeStateVector(peer);
+      const originatorTextBeforeEvent = t.hsm.getLocalDoc()!.getText('contents').toString();
+      expect(peer.getText('contents').toString()).toBe(originatorTextBeforeEvent);
+
+      // Fire the stale-indices setViewData event.
+      t.send({
+        type: 'CM6_CHANGE',
+        changes: [{ from: 4, to: 153, insert: afterToggle.slice(4) }],
+        docText: afterToggle,
+        userEvent: 'set',
+      } as any);
+
+      // Originator should reach afterToggle locally.
+      expect(t.hsm.getLocalDoc()!.getText('contents').toString()).toBe(afterToggle);
+
+      // Ship delta since peer's snapshot.
+      const update = Y.encodeStateAsUpdate(t.hsm.getLocalDoc()!, peerSV);
+      Y.applyUpdate(peer, update);
+
+      // Peer must converge to the same afterToggle — no concat.
+      expect(peer.getText('contents').toString()).toBe(afterToggle);
+
+      peer.destroy();
+    });
+
     test('SAVE_COMPLETE updates disk state but not LCA (per spec)', async () => {
       const t = await createTestHSM();
       await loadAndActivate(t, 'hello', { mtime: 1000 });
