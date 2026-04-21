@@ -4,7 +4,6 @@ import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { PreviewRenderer } from "./PreviewRenderer";
-import { diffMatchPatch } from "../y-diffMatchPatch";
 import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 import type { ChangeSpec } from "@codemirror/state";
@@ -55,6 +54,25 @@ export class ViewHookPlugin extends HasLogging {
 				delete view.__relaySaving;
 			}
 		}
+	}
+
+	private syncViewTextToHsm(text: string, reason: string): void {
+		const hsm = this.document.hsm;
+		if (!hsm) {
+			this.debug(`Skipping ${reason}: no HSM`);
+			return;
+		}
+
+		if (this.document.localText === text) {
+			return;
+		}
+
+		hsm.send({
+			type: "CM6_CHANGE",
+			changes: hsm.computeDiffChanges(this.document.localText, text),
+			docText: text,
+			userEvent: "set",
+		});
 	}
 
 	/**
@@ -119,28 +137,24 @@ export class ViewHookPlugin extends HasLogging {
 
 		// Hook 2: Coordinate saves between pathways
 		this.unsubscribes.push(
-				getPatcher().patch(view, {
-					// @ts-ignore
-					save(old: any) {
-						return function (this: any, ...args: any[]) {
+			getPatcher().patch(view, {
+				// @ts-ignore
+				save(old: any) {
+					return function (this: any, ...args: any[]) {
+						// @ts-ignore
+						const result = old.apply(this, args);
+						try {
 							// @ts-ignore
-							const result = old.apply(this, args);
-							try {
-								// @ts-ignore
-								const viewMode = that.view.getMode?.() ?? "unknown";
-								if (viewMode === "preview" && that.saving) {
-								that.debug("Syncing metadata changes to CRDT during save");
+							const viewMode = that.view.getMode?.() ?? "unknown";
+							if (viewMode === "preview" && that.saving) {
+								that.debug("Syncing metadata changes through HSM during save");
 								that.document.hsm?.send({
-									type: 'OBSIDIAN_METADATA_SYNC',
+									type: "OBSIDIAN_METADATA_SYNC",
 									path: that.document.path,
 									mode: viewMode,
 								});
-								diffMatchPatch(
-									that.document.getWritableDoc(),
-									// @ts-ignore
-									that.view.text,
-									that.document,
-								);
+								// @ts-ignore
+								that.syncViewTextToHsm(that.view.text, "preview.save");
 							}
 						} catch (e) {
 							that.error("Error syncing during save:", e);
@@ -170,9 +184,9 @@ export class ViewHookPlugin extends HasLogging {
 									});
 									that.debug("Dispatched preview edit to CodeMirror");
 								} else {
-									// Otherwise sync directly to CRDT
-									diffMatchPatch(that.document.getWritableDoc(), data, that.document);
-									that.debug("Synced preview edit directly to CRDT");
+									// Otherwise route the preview edit through HSM.
+									that.syncViewTextToHsm(data, "preview.edit");
+									that.debug("Synced preview edit through HSM");
 								}
 								return;
 							}
