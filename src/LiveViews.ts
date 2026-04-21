@@ -199,6 +199,7 @@ export class RelayCanvasView implements S3View {
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _awarenessPlugin?: AwarenessViewPlugin;
 	tracking: boolean;
 
 	constructor(
@@ -233,6 +234,10 @@ export class RelayCanvasView implements S3View {
 		} else {
 			this.canvas.disconnect();
 		}
+	}
+
+	toggleLocalOnly() {
+		this.toggleConnection();
 	}
 
 	offlineBanner(): () => void {
@@ -271,6 +276,8 @@ export class RelayCanvasView implements S3View {
 						state: this.canvas.state,
 						remote: this.canvas.sharedFolder.remote,
 						tracking: this.tracking,
+						enableDraftMode: flags().enableDraftMode,
+						folderConnected: this.canvas.sharedFolder.connected,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -281,6 +288,8 @@ export class RelayCanvasView implements S3View {
 							state: state,
 							remote: this.canvas.sharedFolder.remote,
 							tracking: this.tracking,
+							enableDraftMode: flags().enableDraftMode,
+							folderConnected: this.canvas.sharedFolder.connected,
 						});
 					},
 				);
@@ -290,6 +299,8 @@ export class RelayCanvasView implements S3View {
 				state: this.canvas.state,
 				remote: this.canvas.sharedFolder.remote,
 				tracking: this.tracking,
+				enableDraftMode: flags().enableDraftMode,
+				folderConnected: this.canvas.sharedFolder.connected,
 			});
 		}
 	}
@@ -320,6 +331,39 @@ export class RelayCanvasView implements S3View {
 
 		if (!this.plugin) {
 			this.plugin = new CanvasPlugin(this._parent, this);
+		}
+
+		if (!this._awarenessPlugin && flags().enablePresenceAvatars) {
+			const viewEl = this.view.containerEl;
+			this._awarenessPlugin = new AwarenessViewPlugin(
+				{
+					view: this.view,
+					doc: this.canvas,
+					resolveAnchor: (containerEl) => {
+						const viewContent = containerEl.querySelector(
+							".view-content",
+						) as HTMLElement | null;
+						return viewContent
+							? { anchor: viewContent, position: "afterbegin" }
+							: null;
+					},
+					vertical: true,
+					configureContainer: (el) => {
+						const controls = viewEl.querySelector(
+							".canvas-controls",
+						) as HTMLElement | null;
+						const gap = 12;
+						const top = controls
+							? controls.offsetTop + controls.offsetHeight + gap
+							: gap;
+						el.style.top = `${top}px`;
+						const isMobile =
+							document.body.classList.contains("is-mobile");
+						el.style.right = isMobile ? "12px" : "6px";
+					},
+				},
+				this._parent.sharedFolders.manager.users,
+			);
 		}
 
 		return new Promise((resolve) => {
@@ -358,6 +402,8 @@ export class RelayCanvasView implements S3View {
 
 		this.plugin?.destroy();
 		this.plugin = undefined;
+		this._awarenessPlugin?.destroy();
+		this._awarenessPlugin = undefined;
 		this._viewActions?.$destroy();
 		this._viewActions = undefined;
 		this._banner?.destroy();
@@ -780,7 +826,18 @@ export class LiveView<ViewType extends TextFileView>
 			flags().enablePresenceAvatars
 		) {
 			this._awarenessPlugin = new AwarenessViewPlugin(
-				this,
+				{
+					view: this.view,
+					doc: this.document,
+					resolveAnchor: (containerEl) => {
+						const inlineTitle = containerEl.querySelector(
+							".inline-title",
+						) as HTMLElement | null;
+						return inlineTitle
+							? { anchor: inlineTitle, position: "afterend" }
+							: null;
+					},
+				},
 				this._parent.sharedFolders.manager.users,
 			);
 		}

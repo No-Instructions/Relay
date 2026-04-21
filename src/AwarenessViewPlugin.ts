@@ -1,37 +1,62 @@
 import { HasLogging } from "./debug";
-import { MarkdownView } from "obsidian";
-import { Document } from "./Document";
-import { type LiveView } from "./LiveViews";
+import { View } from "obsidian";
 import UserAwareness from "./components/UserAwareness.svelte";
 import { trackPromise } from "./trackPromise";
+import type { HasProvider } from "./HasProvider";
+
+export interface AwarenessHost {
+	/** The Obsidian view whose containerEl owns the avatar overlay. */
+	view: View;
+	/**
+	 * The provider-backed doc (Document or Canvas). Must expose `_provider`,
+	 * `whenReady()`, `guid`, and optionally `path` for logger tagging.
+	 */
+	doc: HasProvider & { whenReady(): Promise<unknown>; path?: string };
+	/**
+	 * Resolves the anchor inside `containerEl` that the avatar element is
+	 * inserted relative to, along with the insertion position. Called once
+	 * during `install()`. Returning `null` skips mounting.
+	 */
+	resolveAnchor(containerEl: HTMLElement): {
+		anchor: HTMLElement;
+		position: InsertPosition;
+	} | null;
+	/** Extra class applied to the container (e.g. layout variant). */
+	variantClass?: string;
+	/** Optional hook to apply inline styles after the container is inserted. */
+	configureContainer?: (el: HTMLElement) => void;
+	/** Lay out the stack vertically (column) instead of horizontally (row). */
+	vertical?: boolean;
+}
+
 export class AwarenessViewPlugin extends HasLogging {
-	view: LiveView<MarkdownView>;
-	doc: Document;
+	private host: AwarenessHost;
 	private destroyed = false;
 	private awarenessComponent?: UserAwareness;
-	private targetElement?: HTMLElement;
 	private awarenessElement?: HTMLElement;
 	private relayUsersStore: any;
 
-	constructor(view: LiveView<MarkdownView>, relayUsersStore: any) {
+	constructor(host: AwarenessHost, relayUsersStore: any) {
 		super();
-		this.view = view;
-		this.doc = view.document;
+		this.host = host;
 		this.relayUsersStore = relayUsersStore;
-		this.setLoggers(`[AwarenessView](${this.doc.path})`);
+		this.setLoggers(`[AwarenessView](${this.host.doc.path ?? this.host.doc.guid})`);
 		this.install();
 	}
 
 	private async install() {
-		if (!this.view || this.destroyed) return;
+		if (!this.host || this.destroyed) return;
 
-		this.log("Installing awareness component for", this.view.view.file?.path);
+		this.log("Installing awareness component");
 
 		// Wrap the title immediately to avoid focus loss later
 		this.wrapTitle();
 
 		// Wait for the document to be ready
-		await trackPromise(`awareness:whenReady:${this.doc.guid}`, this.doc.whenReady());
+		await trackPromise(
+			`awareness:whenReady:${this.host.doc.guid}`,
+			this.host.doc.whenReady(),
+		);
 
 		if (this.destroyed) return;
 
@@ -40,34 +65,37 @@ export class AwarenessViewPlugin extends HasLogging {
 	}
 
 	private wrapTitle() {
-		if (!this.view.view.containerEl || this.destroyed) return;
+		const containerEl = this.host.view?.containerEl;
+		if (!containerEl || this.destroyed) return;
 
 		// Already created
 		if (this.awarenessElement) return;
 
-		// Find the target element (inline-title) to position relative to
-		const inlineTitle = this.view.view.containerEl.querySelector(
-			".inline-title",
-		) as HTMLElement;
-		if (!inlineTitle) {
-			this.warn(
-				"Could not find inline-title element to position awareness component",
-			);
+		const resolved = this.host.resolveAnchor(containerEl);
+		if (!resolved) {
+			this.warn("Could not resolve anchor for awareness component");
 			return;
 		}
 
 		// Create container for the awareness component
 		this.awarenessElement = document.createElement("div");
 		this.awarenessElement.className = "user-awareness-container";
+		if (this.host.variantClass) {
+			this.awarenessElement.classList.add(this.host.variantClass);
+		}
 
-		// Insert as sibling after the inline-title (more robust than wrapping)
-		// Use absolute positioning via CSS to place it next to the title
-		inlineTitle.insertAdjacentElement("afterend", this.awarenessElement);
+		resolved.anchor.insertAdjacentElement(resolved.position, this.awarenessElement);
 
-		// Make the parent position relative so we can position absolutely
-		const parent = inlineTitle.parentElement;
-		if (parent) {
-			parent.style.position = "relative";
+		this.host.configureContainer?.(this.awarenessElement);
+
+		// The CSS pins the container top-right of its positioning parent. Make
+		// sure that parent can host absolute children.
+		const positioningParent =
+			resolved.position === "afterbegin" || resolved.position === "beforeend"
+				? resolved.anchor
+				: resolved.anchor.parentElement;
+		if (positioningParent) {
+			positioningParent.style.position = "relative";
 		}
 	}
 
@@ -75,7 +103,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		if (!this.awarenessElement || this.destroyed) return;
 
 		// Get the awareness instance from the provider
-		const provider = this.doc._provider;
+		const provider = this.host.doc._provider;
 		if (!provider?.awareness) {
 			this.warn("No awareness provider available");
 			return;
@@ -88,6 +116,7 @@ export class AwarenessViewPlugin extends HasLogging {
 				props: {
 					awareness: provider.awareness,
 					relayUsers: this.relayUsersStore,
+					vertical: this.host.vertical ?? false,
 				},
 			});
 
@@ -115,7 +144,6 @@ export class AwarenessViewPlugin extends HasLogging {
 			this.awarenessElement = undefined;
 		}
 
-		this.view = null as any;
-		this.doc = null as any;
+		this.host = null as any;
 	}
 }
