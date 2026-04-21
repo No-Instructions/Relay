@@ -7,6 +7,7 @@
 
 	export let awareness: Awareness;
 	export let relayUsers: any;
+	export let vertical = false;
 
 	let showPopover = false;
 	let popoverElement: HTMLElement;
@@ -165,7 +166,7 @@
 </script>
 
 {#if $allUsers.length > 0}
-	<div class="user-awareness" bind:this={popoverElement}>
+	<div class="user-awareness" class:vertical bind:this={popoverElement}>
 		<!-- Stacked avatars -->
 		<div
 			class="avatar-stack"
@@ -179,7 +180,7 @@
 			{#each $displayUsers as user, index (user.id)}
 				<div
 					class="stacked-avatar"
-					style="z-index: {10 - index}; margin-left: {getAvatarSpacing(
+					style="z-index: {10 - index}; {vertical ? 'margin-top' : 'margin-left'}: {getAvatarSpacing(
 						index,
 					)}; transition: all 0.2s ease;"
 					aria-label={user.name}
@@ -202,7 +203,7 @@
 			{#if $allUsers.length > VISIBLE_AVATAR_COUNT}
 				<div
 					class="more-indicator"
-					style="z-index: 11; margin-top: 1em; margin-left: -1em; transition: all 0.2s ease;"
+					style="z-index: 11; {vertical ? 'margin-top: -1em' : 'margin-top: 1em; margin-left: -1em'}; transition: all 0.2s ease;"
 				>
 					+{$allUsers.length - VISIBLE_AVATAR_COUNT}
 				</div>
@@ -252,6 +253,10 @@
 {/if}
 
 <style>
+	/* The outer container is created by AwarenessViewPlugin and is therefore
+	 * outside this component's scope — reached via :global(). Axis-specific
+	 * positioning (vertical offset) lives in AwarenessViewPlugin's
+	 * configureContainer hook, not here. */
 	:global(.user-awareness-container) {
 		position: absolute;
 		top: 0;
@@ -277,19 +282,39 @@
 		overflow: visible;
 	}
 
+	.user-awareness.vertical .avatar-stack {
+		flex-direction: column;
+	}
+
 	.stacked-avatar {
 		position: relative;
 	}
 
-	.avatar-stack.multi-user .stacked-avatar {
+	/* Transition axis follows the layout axis so hover overlap animates. */
+	.user-awareness:not(.vertical) .avatar-stack.multi-user .stacked-avatar {
 		transition: margin-left 0.2s ease;
 	}
+	.user-awareness.vertical .avatar-stack.multi-user .stacked-avatar {
+		transition: margin-top 0.2s ease;
+	}
 
-	/* Only enable hover expand on devices with hover capability (non-touch) */
+	/* Hover fan-out: horizontal variant fans out along X, vertical variant
+	 * fans out along Y but only for avatars 2+ so the stack top stays put.
+	 * `!important` is needed to override the inline per-avatar offset
+	 * (margin-left in horizontal, margin-top in vertical). */
 	@media (hover: hover) and (pointer: fine) {
-		.avatar-stack.multi-user:hover .stacked-avatar {
+		.user-awareness:not(.vertical)
+			.avatar-stack.multi-user:hover
+			.stacked-avatar {
 			margin-left: -10px !important;
 			margin-right: 2px;
+			transition-delay: 300ms;
+		}
+		.user-awareness.vertical
+			.avatar-stack.multi-user:hover
+			.stacked-avatar:nth-child(n + 2) {
+			margin-top: -10px !important;
+			margin-bottom: 2px;
 			transition-delay: 300ms;
 		}
 	}
@@ -323,6 +348,14 @@
 		z-index: 1000;
 	}
 
+	/* Vertical stacks open the popover to the left of the column rather
+	 * than below it, since the column hugs the right edge of the view. */
+	.user-awareness.vertical .user-popover {
+		top: 0;
+		right: calc(100% + 8px);
+		margin-top: 0;
+	}
+
 	.user-popover::before {
 		content: "";
 		position: absolute;
@@ -345,6 +378,11 @@
 		border-left: 8px solid transparent;
 		border-right: 8px solid transparent;
 		border-bottom: 8px solid var(--background-secondary);
+	}
+
+	.user-awareness.vertical .user-popover::before,
+	.user-awareness.vertical .user-popover::after {
+		display: none;
 	}
 
 	.popover-header {
