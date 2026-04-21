@@ -6,7 +6,6 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
-import { diffMatchPatch } from "./y-diffMatchPatch";
 import { trackPromise } from "./trackPromise";
 
 export class TextFileViewPlugin extends HasLogging {
@@ -98,6 +97,15 @@ export class TextFileViewPlugin extends HasLogging {
 		this.install();
 	}
 
+	private requestNativeViewSave(): void {
+		this.saving = true;
+		try {
+			this.view.view.requestSave();
+		} finally {
+			this.saving = false;
+		}
+	}
+
 	async resync() {
 		if (
 			isLive(this.view) &&
@@ -164,9 +172,12 @@ export class TextFileViewPlugin extends HasLogging {
 		) {
 			this.warn("Syncing view to CRDT - setViewData");
 			this.saving = true;
-			this.view.view.setViewData(this.doc.localText, false);
-			this.doc.save();
-			this.saving = false;
+			try {
+				this.view.view.setViewData(this.doc.localText, false);
+			} finally {
+				this.saving = false;
+			}
+			this.requestNativeViewSave();
 			this.view.tracking = true;
 		}
 	}
@@ -237,13 +248,18 @@ export class TextFileViewPlugin extends HasLogging {
 						if (isLive(that.view) && !that.saving && that.doc) {
 							if (that.view.tracking && !that.saving) {
 								that.warn("tracking - applying diff");
-								diffMatchPatch(
-									that.doc.getWritableDoc(),
-									that.view.view.getViewData(),
-									that.doc,
-								);
-								that.doc.save();
-								return;
+								const hsm = that.doc.hsm;
+								const docText = that.view.view.getViewData();
+								if (!hsm) {
+									throw new Error("TextFileViewPlugin requestSave: no HSM");
+								}
+								hsm.send({
+									type: "CM6_CHANGE",
+									changes: hsm.computeDiffChanges(that.doc.localText, docText),
+									docText,
+									userEvent: "set",
+								});
+								return old.call(this);
 							} else {
 								that.warn("not tracking - resync");
 								that.resync();
@@ -274,18 +290,24 @@ export class TextFileViewPlugin extends HasLogging {
 
 			// Called when a yjs event is received. Results in view update
 			if (tr.origin !== this.doc) {
+				if (tr.origin === this.doc.hsm) {
+					return;
+				}
 				if (!this.view.tracking) {
 					this.warn("resync from update, not tracking");
 					this.resync();
 				}
 				this.warn("setting view data");
 				this.saving = true;
-				this.view.view.setViewData(this.doc.localText, false);
-				this.view.view.requestSave();
-				this.saving = false;
+				try {
+					this.view.view.setViewData(this.doc.localText, false);
+				} finally {
+					this.saving = false;
+				}
+				this.requestNativeViewSave();
 				this.view.tracking = true;
 			}
-		};
+			};
 
 		this.resync();
 
