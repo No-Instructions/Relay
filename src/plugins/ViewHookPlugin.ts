@@ -1,7 +1,7 @@
 import { MarkdownView } from "obsidian";
 import { getPatcher } from "../Patcher";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
-import { Document } from "../Document";
+import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { PreviewRenderer } from "./PreviewRenderer";
 import { diffMatchPatch } from "../y-diffMatchPatch";
@@ -41,6 +41,22 @@ export class ViewHookPlugin extends HasLogging {
 		this.installMarkdownHooks(this.view);
 	}
 
+	private runWithRelaySaving<T>(fn: () => T): T {
+		const view = this.view as any;
+		const hadOwnFlag = Object.prototype.hasOwnProperty.call(view, "__relaySaving");
+		const previous = view.__relaySaving;
+		view.__relaySaving = true;
+		try {
+			return fn();
+		} finally {
+			if (hadOwnFlag) {
+				view.__relaySaving = previous;
+			} else {
+				delete view.__relaySaving;
+			}
+		}
+	}
+
 	/**
 	 * Attach the document observer once localDoc is available.
 	 * Waits for the HSM to enter active mode if needed.
@@ -61,8 +77,10 @@ export class ViewHookPlugin extends HasLogging {
 		this.setupDocumentObserver();
 
 		// Perform initial render using localDoc content
-		// @ts-ignore
-		this.view.previewMode.renderer.set(this.document.localText);
+		this.runWithRelaySaving(() => {
+			// @ts-ignore
+			this.view.previewMode.renderer.set(this.document.localText);
+		});
 		this.renderAll();
 
 		this.document.connect();
@@ -101,16 +119,16 @@ export class ViewHookPlugin extends HasLogging {
 
 		// Hook 2: Coordinate saves between pathways
 		this.unsubscribes.push(
-			getPatcher().patch(view, {
-				// @ts-ignore
-				save(old: any) {
-					return function (data: any) {
-						// @ts-ignore
-						const result = old.call(this, data);
-						try {
+				getPatcher().patch(view, {
+					// @ts-ignore
+					save(old: any) {
+						return function (this: any, ...args: any[]) {
 							// @ts-ignore
-							const viewMode = that.view.getMode?.() ?? "unknown";
-							if (viewMode === "preview" && that.saving) {
+							const result = old.apply(this, args);
+							try {
+								// @ts-ignore
+								const viewMode = that.view.getMode?.() ?? "unknown";
+								if (viewMode === "preview" && that.saving) {
 								that.debug("Syncing metadata changes to CRDT during save");
 								that.document.hsm?.send({
 									type: 'OBSIDIAN_METADATA_SYNC',
@@ -204,12 +222,14 @@ export class ViewHookPlugin extends HasLogging {
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
-		this.renderers.forEach((renderer) => {
-			try {
-				renderer.render(this.document, viewMode);
-			} catch (error) {
-				this.error("Error in renderer:", error);
-			}
+		this.runWithRelaySaving(() => {
+			this.renderers.forEach((renderer) => {
+				try {
+					renderer.render(this.document, viewMode);
+				} catch (error) {
+					this.error("Error in renderer:", error);
+				}
+			});
 		});
 	}
 	/**
