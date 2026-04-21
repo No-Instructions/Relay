@@ -54,6 +54,7 @@ export type {
   // Effect types
   MergeEffect,
   DispatchCM6Effect,
+  SetCM6Effect,
   WriteDiskEffect,
   PersistStateEffect,
   SyncToRemoteEffect,

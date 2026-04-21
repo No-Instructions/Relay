@@ -164,6 +164,13 @@ class HSMEditorPluginValue implements PluginValue {
     );
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
+    if (this.pendingEdits.length === 0) {
+      hsm.bootstrapEditorView(
+        this.cm6Integration.viewId,
+        this.editor.state.doc.toString(),
+      );
+    }
+
     // Replay any edits that arrived before initialization completed.
     // The editor may have changed while the HSM/Document weren't ready yet.
     if (this.pendingEdits.length > 0) {
