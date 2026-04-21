@@ -90,6 +90,28 @@ class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
+   * Check whether this EditorView is still the active editor instance for the
+   * expected document. GUID matching alone is insufficient because Obsidian can
+   * replace the editor while keeping the same file open.
+   */
+  private isCurrentEditorInstance(expectedGuid: string): boolean {
+    const connectionManager = getConnectionManager(this.editor);
+    if (!connectionManager) return false;
+
+    if (this.embed) {
+      const currentDoc = this.resolveCurrentDocument();
+      return (
+        currentDoc !== null &&
+        currentDoc.guid === expectedGuid &&
+        connectionManager.findCanvas(this.editor) !== undefined
+      );
+    }
+
+    const liveView = connectionManager.findView(this.editor);
+    return liveView !== undefined && liveView.document.guid === expectedGuid;
+  }
+
+  /**
    * Initialize CM6Integration if document and HSM are ready.
    */
   initializeIfReady(): boolean {
@@ -133,13 +155,13 @@ class HSMEditorPluginValue implements PluginValue {
     // This is stable across renames — unlike paths.
     const expectedGuid = this.document.guid;
 
-    // Create CM6Integration with a validity check that uses GUID identity.
-    // The check resolves the editor's current document and compares GUIDs,
-    // so it survives file renames and detects view reuse.
-    this.cm6Integration = new CM6Integration(hsm, this.editor, () => {
-      const currentDoc = this.resolveCurrentDocument();
-      return currentDoc !== null && currentDoc.guid === expectedGuid;
-    });
+    // Create CM6Integration with a validity check that requires both the
+    // expected document GUID and the current editor identity. This detects
+    // same-file editor replacement where the old EditorView still resolves to
+    // the same document but is no longer the active editor instance.
+    this.cm6Integration = new CM6Integration(hsm, this.editor, () =>
+      this.isCurrentEditorInstance(expectedGuid)
+    );
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
     // Replay any edits that arrived before initialization completed.
