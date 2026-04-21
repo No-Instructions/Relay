@@ -304,8 +304,9 @@ export class SharedFolder extends HasProvider {
 
 		try {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
+			const migrateFrom = flags().enableFolderIdbMigration ? this.guid : null;
 			this._persistence = new IndexeddbPersistence(
-				folderDbName, this.ydoc, null, null, this.guid
+				folderDbName, this.ydoc, null, null, migrateFrom
 			);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
