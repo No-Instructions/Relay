@@ -2810,14 +2810,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// Flag for deferred repairFrontmatterFromMap action
 				this._remoteFrontmatterMapUpdated = true;
 				const correctDoc = this.buildDocFromYMap();
+				const cachedEditorText = this.lastKnownEditorText;
+				const editorText = this.readCurrentEditorText();
 				this.crdtLog(
 					`Y.Map dispatch: ymapChanged=true, correctDoc=${correctDoc !== null ? correctDoc.length + ' chars' : 'null'}, ` +
-					`lastKnown=${this.lastKnownEditorText !== null ? this.lastKnownEditorText.length + ' chars' : 'null'}, ` +
+					`lastKnown=${cachedEditorText !== null ? cachedEditorText.length + ' chars' : 'null'}, ` +
+					`editorBase=${editorText !== null ? editorText.length + ' chars' : 'null'}, ` +
 					`origin=${String(tr.origin)}`
 				);
-				if (correctDoc !== null && this.lastKnownEditorText !== null) {
-					const changes = this.computeDiffChanges(
-						this.lastKnownEditorText, correctDoc
+				if (correctDoc !== null && editorText !== null) {
+					// Frontmatter map updates are full-document repairs from the
+					// receiver side. Use a single contiguous replacement diff for
+					// CM6 here; split DMP edits against repeated characters can be
+					// dropped or replayed incorrectly by the editor.
+					const changes = computePositionedChanges(
+						editorText,
+						correctDoc,
 					);
 					if (changes.length > 0) {
 						this.crdtLog(`Y.Map dispatch: ${changes.length} changes to CM6`);
