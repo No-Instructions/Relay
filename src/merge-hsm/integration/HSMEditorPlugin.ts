@@ -22,6 +22,7 @@ import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
 import type { PositionedChange } from "../types";
+import { buildBufferedCM6ReplayEvents } from "./replayBufferedEdits";
 
 /**
  * Plugin value class that handles the editor ↔ HSM integration.
@@ -175,12 +176,11 @@ class HSMEditorPluginValue implements PluginValue {
     // The editor may have changed while the HSM/Document weren't ready yet.
     if (this.pendingEdits.length > 0) {
       this.log(`Replaying ${this.pendingEdits.length} buffered edits for ${expectedGuid}`);
-      for (const edit of this.pendingEdits) {
-        hsm.send({
-          type: 'CM6_CHANGE',
-          changes: edit.changes,
-          docText: edit.docText,
-        });
+      for (const event of buildBufferedCM6ReplayEvents(
+        this.pendingEdits,
+        this.cm6Integration.viewId,
+      )) {
+        hsm.send(event);
       }
       this.pendingEdits = [];
     }
