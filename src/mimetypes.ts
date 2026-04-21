@@ -13,6 +13,7 @@ const mimeTypes: { [key: string]: string } = {
 	svg: "image/svg+xml",
 	pdf: "application/pdf",
 	canvas: "application/canvas+json",
+	base: "application/vnd.obsidian.base+yaml",
 	webp: "image/webp",
 	avif: "image/avif",
 	bmp: "image/bmp",

@@ -1,11 +1,11 @@
 import { NamespacedSettings, Settings } from "./SettingsStorage";
-import { flags } from "./flagManager";
 
 export interface SyncCategory {
 	enabled: boolean;
 	extensions: string[];
 	description: string;
 	name: string;
+	requiresStorage: boolean;
 }
 
 export interface SyncFlags {
@@ -13,6 +13,8 @@ export interface SyncFlags {
 	audio?: boolean;
 	videos?: boolean;
 	pdfs?: boolean;
+	canvas?: boolean;
+	bases?: boolean;
 	otherTypes?: boolean;
 }
 
@@ -21,18 +23,34 @@ interface TypeSettings {
 	description: string;
 	extensions: string[];
 	defaultEnabled: boolean;
+	requiresStorage: boolean;
 }
 
 export class SyncSettingsManager extends NamespacedSettings<
 	Record<keyof SyncFlags, boolean>
 > {
 	private static readonly schema: Record<keyof SyncFlags, TypeSettings> = {
+		canvas: {
+			name: "Canvas",
+			description: "Sync Canvas files (.canvas)",
+			extensions: ["canvas"],
+			defaultEnabled: true,
+			requiresStorage: false,
+		},
+		bases: {
+			name: "Bases",
+			description: "Sync Bases files (.base)",
+			extensions: ["base"],
+			defaultEnabled: true,
+			requiresStorage: true,
+		},
 		images: {
 			name: "Images",
 			description:
 				"Sync image files (.bmp, .png, .jpg, .jpeg, .gif, .svg, .webp, .avif)",
 			extensions: ["bmp", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		audio: {
 			name: "Audio",
@@ -40,24 +58,28 @@ export class SyncSettingsManager extends NamespacedSettings<
 				"Sync audio files (.mp3, .wav, .m4a, .3gp, .flac, .ogg, .oga, .opus)",
 			extensions: ["mp3", "wav", "m4a", "3gp", "flac", "ogg", "oga", "opus"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		videos: {
 			name: "Videos",
 			description: "Sync video files (.mp4, .webm, .ogv, .mov, .mkv)",
 			extensions: ["mp4", "webm", "ogv", "mov", "mkv"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		pdfs: {
 			name: "PDFs",
 			description: "Sync PDF files (.pdf)",
 			extensions: ["pdf"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		otherTypes: {
 			name: "Other files",
 			description: "Sync unsupported file types",
 			extensions: [],
 			defaultEnabled: false,
+			requiresStorage: true,
 		},
 	};
 
@@ -81,8 +103,6 @@ export class SyncSettingsManager extends NamespacedSettings<
 		const normalizedExt = extension.toLowerCase();
 
 		if (normalizedExt === "md") return true;
-
-		if (flags().enableCanvasSync && normalizedExt === "canvas") return true;
 
 		if (!this.enabled) {
 			return false;
@@ -110,6 +130,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 			name: schema.name,
 			description: schema.description,
 			extensions: schema.extensions,
+			requiresStorage: schema.requiresStorage,
 		};
 	}
 
