@@ -277,7 +277,6 @@ export class RelayCanvasView implements S3View {
 						remote: this.canvas.sharedFolder.remote,
 						tracking: this.tracking,
 						enableDraftMode: flags().enableDraftMode,
-						folderConnected: this.canvas.sharedFolder.connected,
 					},
 				});
 				this.offConnectionStatusSubscription = this.canvas.subscribe(
@@ -289,7 +288,6 @@ export class RelayCanvasView implements S3View {
 							remote: this.canvas.sharedFolder.remote,
 							tracking: this.tracking,
 							enableDraftMode: flags().enableDraftMode,
-							folderConnected: this.canvas.sharedFolder.connected,
 						});
 					},
 				);
@@ -300,7 +298,6 @@ export class RelayCanvasView implements S3View {
 				remote: this.canvas.sharedFolder.remote,
 				tracking: this.tracking,
 				enableDraftMode: flags().enableDraftMode,
-				folderConnected: this.canvas.sharedFolder.connected,
 			});
 		}
 	}
