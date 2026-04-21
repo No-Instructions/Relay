@@ -1386,27 +1386,39 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.applyContentToLocalDoc(contents);
 
 				// Step 4: Dispatch resolved content to CM6. The localDoc
-				// observer skips origin=this, so we emit explicitly.
-				const beforeText =
+				// observer skips origin=this, so we emit explicitly. Use the
+				// current editor buffer after the remote merge above, not the
+				// stale cached value from before RESOLVE. Otherwise the same
+				// patch can be replayed onto an editor that already matches the
+				// resolved text, progressively corrupting the frontmatter.
+				const resolvedText = this.localDoc.getText("contents").toString();
+				const cachedEditorText =
 					this.lastKnownEditorText
-					?? this.pendingDiskContents
-					?? this.pendingEditorContent
-					?? "";
+					?? this.pendingEditorContent;
+				const beforeText =
+					cachedEditorText === resolvedText
+						? cachedEditorText
+						: (
+							this.readCurrentEditorText()
+							?? cachedEditorText
+							?? this.pendingDiskContents
+							?? ""
+						);
 				this.crdtLog(
-					`resolveConflict: contents=${contents.length} chars, ` +
+					`resolveConflict: contents=${resolvedText.length} chars, ` +
 					`before=${beforeText.length} chars, ` +
-					`equal=${contents === beforeText}, ` +
-					`contents=${JSON.stringify(contents.substring(0, 100))}, ` +
+					`equal=${resolvedText === beforeText}, ` +
+					`contents=${JSON.stringify(resolvedText.substring(0, 100))}, ` +
 					`before=${JSON.stringify(beforeText.substring(0, 100))}`
 				);
-				if (contents !== beforeText) {
-					const changes = this.computeDiffChanges(beforeText, contents);
+				if (resolvedText !== beforeText) {
+					const changes = this.computeDiffChanges(beforeText, resolvedText);
 					this.crdtLog(`resolveConflict: ${changes.length} changes: ${JSON.stringify(changes)}`);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
 					}
 				}
-				this.lastKnownEditorText = contents;
+				this.lastKnownEditorText = resolvedText;
 
 				// Step 5: Sync localDoc → remoteDoc and server. Histories are
 				// now converged so the update is clean.

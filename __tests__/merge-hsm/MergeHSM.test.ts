@@ -830,6 +830,55 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
+    test('RESOLVE does not replay a stale CM6 patch onto an already-resolved editor', async () => {
+      const t = await createTestHSM();
+      const base = [
+        '---',
+        'modified: 2026-03-31T01:02:30-07:00',
+        'name: butter',
+        'in stock: maybe',
+        'tags:',
+        '  - a',
+        '  - b',
+        '  - c',
+        'test_field: hello there',
+        '---',
+        '',
+        '',
+        '',
+        'hello from butter.huihello',
+        'yesnomaybe',
+      ].join('\n');
+      const remote = base.replace('in stock: maybe', 'in stock: true');
+      const disk = base.replace('in stock: maybe', 'in stock: false');
+
+      await loadToResolving(t, { base, remote, disk });
+
+      let editorText = remote;
+      (t.hsm as any)._editorViewRef = {
+        getViewData: () => editorText,
+      };
+      (t.hsm as any).lastKnownEditorText = disk;
+
+      const unsubscribe = t.hsm.subscribe((effect) => {
+        if (effect.type !== 'DISPATCH_CM6') return;
+        for (const change of effect.changes) {
+          editorText =
+            editorText.slice(0, change.from) +
+            change.insert +
+            editorText.slice(change.to);
+        }
+      });
+
+      t.clearEffects();
+      t.send(resolve(remote));
+      unsubscribe();
+
+      expectState(t, 'active.tracking');
+      expectLocalDocText(t, remote);
+      expect(editorText).toBe(remote);
+    });
+
     test('RESOLVE never emits WRITE_DISK (active mode invariant)', async () => {
       const t = await createTestHSM();
       await loadToResolving(t, {
