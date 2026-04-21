@@ -139,7 +139,12 @@
 	// Type the entries
 	type CategoryEntry = [
 		keyof SyncFlags,
-		{ name: string; description: string; enabled: boolean },
+		{
+			name: string;
+			description: string;
+			enabled: boolean;
+			requiresStorage: boolean;
+		},
 	];
 	$: settingEntries = syncSettings
 		? (Object.entries(syncSettings.getCategories()) as CategoryEntry[])
@@ -148,8 +153,8 @@
 	let isUpdating = false;
 	async function handleToggle(name: keyof SyncFlags, value: boolean) {
 		if (isUpdating) return;
-		if ($noStorage) return;
 		if (!syncSettings) return;
+		if ($noStorage && syncSettings.getCategory(name).requiresStorage) return;
 		isUpdating = true;
 		try {
 			await syncSettings.toggleCategory(name, value);
@@ -546,23 +551,25 @@
 			</SettingItem>
 		{/if}
 		{#each settingEntries as [name, category]}
+			{@const locked = $noStorage && category.requiresStorage}
+			{@const on = category.enabled && !locked}
 			<SlimSettingItem name={category.name} description={category.description}>
 				<div class="setting-item-control">
-					{#if $noStorage}
+					{#if locked}
 						<Lock />
 					{/if}
 					<div
 						role="checkbox"
-						aria-checked={$syncSettings[name] && !$noStorage}
+						aria-checked={on}
 						tabindex="0"
-						on:keypress={() => handleToggle(name, !$syncSettings[name])}
+						on:keypress={() => handleToggle(name, !category.enabled)}
 						class="checkbox-container"
-						class:is-enabled={$syncSettings[name] && !$noStorage}
-						on:click={() => handleToggle(name, !$syncSettings[name])}
+						class:is-enabled={on}
+						on:click={() => handleToggle(name, !category.enabled)}
 					>
 						<input
 							type="checkbox"
-							checked={$syncSettings[name] && !$noStorage}
+							checked={on}
 							disabled={isUpdating}
 							on:change={(e) => handleToggle(name, e.currentTarget.checked)}
 						/>

@@ -1862,7 +1862,10 @@ export class SharedFolder extends HasProvider {
 			if (Document.checkExtension(vpath)) {
 				return this.getDoc(vpath);
 			}
-			if (Canvas.checkExtension(vpath) && flags().enableCanvasSync) {
+			if (
+				Canvas.checkExtension(vpath) &&
+				this.syncSettingsManager.isExtensionEnabled(vpath)
+			) {
 				return this.getCanvas(vpath);
 			}
 			if (this.syncStore.canSync(vpath)) {
@@ -2319,7 +2322,10 @@ export class SharedFolder extends HasProvider {
 			if (Document.checkExtension(vpath)) {
 				return this.uploadDoc(vpath, update);
 			}
-			if (Canvas.checkExtension(vpath) && flags().enableCanvasSync) {
+			if (
+				Canvas.checkExtension(vpath) &&
+				this.syncSettingsManager.isExtensionEnabled(vpath)
+			) {
 				return this.uploadCanvas(vpath, update);
 			}
 			if (this.syncStore.canSync(vpath)) {

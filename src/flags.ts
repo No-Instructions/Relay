@@ -5,7 +5,6 @@ export interface FeatureFlags {
 	enableDocumentHistory: boolean;
 	enableEditorTweens: boolean;
 	enableNetworkLogging: boolean;
-	enableCanvasSync: boolean;
 	enableVerifyUploads: boolean;
 	enableDiscordLogin: boolean;
 	enableSelfManageHosts: boolean;
@@ -31,7 +30,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDocumentHistory: false,
 	enableEditorTweens: false,
 	enableNetworkLogging: false,
-	enableCanvasSync: false,
 	enableVerifyUploads: false,
 	enableDiscordLogin: false,
 	enableSelfManageHosts: true,
