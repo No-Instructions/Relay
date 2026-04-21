@@ -134,6 +134,19 @@ describe('HSM Recording', () => {
 
       expect(deserialized).toEqual(effect);
     });
+
+    it('serializes and deserializes SET_CM6 effect', () => {
+      const effect: MergeEffect = {
+        type: 'SET_CM6',
+        targetView: 'cm6-1',
+        text: 'test',
+      };
+
+      const serialized = serializeEffect(effect);
+      const deserialized = deserializeEffect(serialized);
+
+      expect(deserialized).toEqual(effect);
+    });
   });
 
   describe('Log-Based Replay', () => {

@@ -524,6 +524,17 @@ export interface DispatchCM6Effect {
 	originView?: string;
 }
 
+/**
+ * Full-buffer editor bootstrap for a specific CM6 view.
+ * Used when a new editor attaches to an already-tracking HSM and must be
+ * brought to the current localDoc text before incremental patches begin.
+ */
+export interface SetCM6Effect {
+	type: "SET_CM6";
+	targetView: string;
+	text: string;
+}
+
 export interface WriteDiskEffect {
 	type: "WRITE_DISK";
 	guid: string;
@@ -587,6 +598,7 @@ export interface DiagnosticEffect {
 
 export type MergeEffect =
 	| DispatchCM6Effect
+	| SetCM6Effect
 	| WriteDiskEffect
 	| PersistStateEffect
 	| SyncToRemoteEffect

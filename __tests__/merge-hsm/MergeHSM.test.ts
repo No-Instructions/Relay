@@ -113,6 +113,30 @@ describe('MergeHSM', () => {
       expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
+    test('new editor bootstrap emits SET_CM6 from current localDoc', async () => {
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello world');
+      t.clearEffects();
+
+      t.bootstrapEditorView('cm6-stale', 'hello');
+
+      expectEffect(t.effects, {
+        type: 'SET_CM6',
+        targetView: 'cm6-stale',
+        text: 'hello world',
+      });
+    });
+
+    test('new editor bootstrap skips emit when editor already matches localDoc', async () => {
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello world');
+      t.clearEffects();
+
+      t.bootstrapEditorView('cm6-current', 'hello world');
+
+      expectNoEffect(t.effects, 'SET_CM6');
+    });
+
     test('echo suppression is handled at CM6Integration level via ySyncAnnotation', async () => {
       // Echo suppression for Yjs-originated changes is handled by the
       // ySyncAnnotation check in CM6Integration.onEditorUpdate() and

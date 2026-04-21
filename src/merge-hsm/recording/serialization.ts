@@ -223,6 +223,7 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
 
     // Effects without binary data pass through
     case 'DISPATCH_CM6':
+    case 'SET_CM6':
     case 'WRITE_DISK':
       return effect as unknown as SerializableEffect;
 

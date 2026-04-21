@@ -1026,6 +1026,31 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	/**
+	 * Send the current localDoc text to a newly attached editor view.
+	 * Only valid once active mode has finished reconciling and localDoc is
+	 * authoritative for all open editors.
+	 */
+	bootstrapEditorView(viewId: string, currentText?: string): void {
+		if (this._statePath !== "active.tracking") {
+			return;
+		}
+		if (!this.localDoc) {
+			return;
+		}
+
+		const localText = this.localDoc.getText("contents").toString();
+		if (currentText !== undefined && currentText === localText) {
+			return;
+		}
+
+		this.emitEffect({
+			type: "SET_CM6",
+			targetView: viewId,
+			text: localText,
+		});
+	}
+
+	/**
 	 * Subscribe to state changes with detailed transition info (for test harness).
 	 */
 	onStateChange(

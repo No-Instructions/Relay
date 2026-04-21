@@ -95,6 +95,10 @@ export class CM6Integration {
 				if (effect.originView === this.viewId) return;
 				this.dispatchToEditor(effect.changes);
 			}
+			if (effect.type === "SET_CM6") {
+				if (effect.targetView !== this.viewId) return;
+				this.setEditorText(effect.text);
+			}
 			// Reset drift debounce on any data-flow effect, not just DISPATCH_CM6.
 			// REMOTE_UPDATE processing (mergeRemoteToLocal) may not emit DISPATCH_CM6
 			// (e.g., machine edit rewind where net text is unchanged), but the pipeline
@@ -184,6 +188,56 @@ export class CM6Integration {
 			} else if (this.recoverFromDispatchError(e, changes, "dispatch")) {
 				return;
 			} else {
+				throw e;
+			}
+		}
+	}
+
+	private setEditorText(text: string): void {
+		if (this.destroyed) return;
+
+		if (!this.isEditorStillValid()) {
+			this.log("Skipping SET_CM6: editor is no longer bound to this document");
+			return;
+		}
+
+		const currentText = this.view.state.doc.toString();
+		if (currentText === text) {
+			return;
+		}
+
+		const changes = [{
+			from: 0,
+			to: this.view.state.doc.length,
+			insert: text,
+		}];
+
+		try {
+			this.log(
+				`setEditorText: replacing ${currentText.length} chars with ${text.length} chars`,
+			);
+			this.view.dispatch({
+				changes,
+				annotations: [ySyncAnnotation.of(this.view)],
+			});
+		} catch (e) {
+			if (e instanceof Error && e.message.includes("update is in progress")) {
+				this.warn("setEditorText: DEFERRED due to re-entrant update");
+				requestAnimationFrame(() => {
+					if (!this.destroyed && this.isEditorStillValid()) {
+						this.view.dispatch({
+							changes,
+							annotations: [ySyncAnnotation.of(this.view)],
+						});
+					}
+				});
+			} else if (
+				!this.recoverFromDispatchError(
+					e,
+					[{ from: 0, to: currentText.length, insert: text }],
+					"dispatch",
+				)
+			) {
 				throw e;
 			}
 		}
