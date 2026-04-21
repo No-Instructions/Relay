@@ -21,6 +21,7 @@ export interface FeatureFlags {
 	enableNewSyncStatus: boolean;
 	enableResourceMeter: boolean;
 	enablePermanentUserData: boolean;
+	enableFolderIdbMigration: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -46,6 +47,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNewSyncStatus: false,
 	enableResourceMeter: false,
 	enablePermanentUserData: true,
+	enableFolderIdbMigration: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

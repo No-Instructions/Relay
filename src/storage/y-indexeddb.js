@@ -524,11 +524,23 @@ export class IndexeddbPersistence extends Observable {
       if (existing === oldName) return // already migrated
       return new Promise(resolve => {
         let finished = false
+        // onupgradeneeded fires iff indexedDB.open had to create a new DB at
+        // v1 (i.e. oldName did not previously exist). We use it as a sentinel
+        // to distinguish "legacy data present" from "nothing to migrate, and
+        // we just auto-created an empty husk we need to clean up".
+        let didNotExist = false
         const done = () => {
           if (finished) return
           finished = true
           clearTimeout(timeoutId)
           resolve()
+        }
+        const markMigrated = () => {
+          // Record completion in the new DB so subsequent boots skip this
+          // whole path. Failure here is non-fatal — worst case we retry next
+          // boot and converge then.
+          const [writeStore] = idb.transact(this.db, [customStoreName])
+          return idb.put(writeStore, oldName, 'migratedFrom').catch(() => {})
         }
         const req = indexedDB.open(oldName)
         const timeoutId = setTimeout(() => {
@@ -539,13 +551,35 @@ export class IndexeddbPersistence extends Observable {
           idbWarn(`migration open blocked for ${oldName}`)
         }
         req.onerror = () => done()
+        req.onupgradeneeded = () => {
+          didNotExist = true
+        }
         req.onsuccess = () => {
           const oldDb = req.result
+          if (didNotExist) {
+            // We auto-created an empty v1 DB. Drop it and mark migrated so
+            // we don't re-enter this branch on every boot. Concurrent peers
+            // sharing this oldName will each reach the same conclusion
+            // independently; the deleteDatabase attempt races harmlessly.
+            oldDb.close()
+            const delReq = indexedDB.deleteDatabase(oldName)
+            const finish = () => { markMigrated().finally(done) }
+            delReq.onsuccess = finish
+            delReq.onerror = finish
+            delReq.onblocked = () => {
+              idbWarn(`deleteDatabase blocked for ${oldName}`)
+            }
+            return
+          }
           const storeNames = [updatesStoreName, customStoreName, historyStoreName]
             .filter(s => oldDb.objectStoreNames.contains(s))
           if (storeNames.length === 0) {
+            // Old DB exists but has no relevant stores (e.g. a husk from a
+            // prior crashed run). Nothing to copy; record completion so we
+            // stop probing it.
             oldDb.close()
-            return done()
+            markMigrated().finally(done)
+            return
           }
           // Read all entries from each store in the old DB
           const readTx = oldDb.transaction(storeNames, 'readonly')
