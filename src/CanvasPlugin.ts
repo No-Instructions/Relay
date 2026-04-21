@@ -179,6 +179,47 @@ export class CanvasPlugin extends HasLogging {
 		}
 	}
 
+	private requestNativeEmbedSave(
+		embedView: any,
+		state: { saving: boolean },
+	): void {
+		state.saving = true;
+		try {
+			embedView.requestSave();
+		} finally {
+			state.saving = false;
+		}
+	}
+
+	private syncDocumentToEmbedView(
+		document: Document,
+		embedView: any,
+		viewRef: EditorViewRef,
+		state: { saving: boolean; tracking: boolean },
+		reason: string,
+	): boolean {
+		if (typeof embedView?.setViewData !== "function") {
+			return false;
+		}
+
+		const contents = document.localText;
+		if (viewRef.getViewData() === contents) {
+			state.tracking = true;
+			return false;
+		}
+
+		this.debug("syncing canvas embed HSM to view", document.path, reason);
+		state.saving = true;
+		try {
+			embedView.setViewData(contents, false);
+		} finally {
+			state.saving = false;
+		}
+		this.requestNativeEmbedSave(embedView, state);
+		state.tracking = true;
+		return true;
+	}
+
 	private connectEmbedView(embedView: any): void {
 		if (!embedView.file) {
 			return;
@@ -198,41 +239,37 @@ export class CanvasPlugin extends HasLogging {
 				const document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
 				const viewRef = this.createEmbedEditorViewRef(embedView);
 				const syncEmbedViewToDocument = this.syncEmbedViewToDocument.bind(this);
+				const syncDocumentToEmbedView = this.syncDocumentToEmbedView.bind(this);
 				const logError = this.error.bind(this);
 				const plugin = new ViewHookPlugin(
 					embedView,
 					document,
 				);
+				const state = { saving: false, tracking: false };
+				let observedYText: Y.Text | null = null;
+				let ytextObserver:
+					| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
+					| null = null;
 				const requestSaveUnsubscribe = getPatcher().patch(embedView, {
 					requestSave: (old: any) => {
 						return function (this: any) {
-							const result = old.call(this);
-							this?.app?.metadataCache?.trigger?.("resolve", this.file);
-							// Canvas embeds do not run through TextViewPlugin, so
-							// preview/frontmatter edits need an explicit requestSave
-							// bridge back into the active HSM document.
-							document.whenReady().then(() => {
-								if (!cancelled && !document.destroyed) {
-									// `requestSave()` fires after preview metadata commits
-									// (Enter/blur) and mirrors the regular editor path.
-									// Sync the embed buffer to localDoc before Relay's
-									// debounced save writes the file to disk.
-									const changed = syncEmbedViewToDocument(
+							if (!state.saving && !this?.__relaySaving) {
+								try {
+									syncEmbedViewToDocument(
 										document,
 										viewRef,
 										"requestSave",
 									);
-									if (changed) {
-										document.requestSave();
-									}
+									state.tracking = true;
+								} catch (error: unknown) {
+									logError(
+										"Error syncing canvas embed during requestSave:",
+										error,
+									);
 								}
-							}).catch((error: unknown) => {
-								logError(
-									"Error waiting for canvas embed document readiness during requestSave:",
-									error,
-								);
-							});
-							return result;
+							}
+							this?.app?.metadataCache?.trigger?.("resolve", this.file);
+							return old.call(this);
 						};
 					},
 				});
@@ -243,7 +280,7 @@ export class CanvasPlugin extends HasLogging {
 
 				document
 					.whenReady()
-					.then(() => {
+					.then(async () => {
 						if (cancelled) {
 							return;
 						}
@@ -275,6 +312,43 @@ export class CanvasPlugin extends HasLogging {
 							return;
 						}
 
+						const hsm = document.hsm;
+						if (hsm?.awaitState) {
+							await hsm.awaitState((state) => state.startsWith("active."));
+							if (cancelled) {
+								return;
+							}
+						}
+
+						const localDoc = document.localDoc;
+						if (localDoc) {
+							observedYText = localDoc.getText("contents");
+							ytextObserver = (_event: Y.YTextEvent, tr: Y.Transaction) => {
+								if (cancelled || document.destroyed) {
+									return;
+								}
+								if (tr.origin === document || tr.origin === document.hsm) {
+									return;
+								}
+								syncDocumentToEmbedView(
+									document,
+									embedView,
+									viewRef,
+									state,
+									"localDoc.observe",
+								);
+							};
+							observedYText.observe(ytextObserver);
+						}
+
+						syncDocumentToEmbedView(
+							document,
+							embedView,
+							viewRef,
+							state,
+							"initial-sync",
+						);
+
 						const cm = (embedView.editor as any)?.cm;
 						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
 						hsmEditorPlugin?.initializeIfReady();
@@ -297,6 +371,9 @@ export class CanvasPlugin extends HasLogging {
 					cancelled = true;
 					this.trackedEmbedViews.delete(embedView);
 					requestSaveUnsubscribe();
+					if (observedYText && ytextObserver) {
+						observedYText.unobserve(ytextObserver);
+					}
 					plugin.destroy();
 					if (lockAcquired) {
 						this.connectionManager.releaseDocumentLock(
