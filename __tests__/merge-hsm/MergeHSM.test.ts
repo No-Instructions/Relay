@@ -13,7 +13,6 @@ import {
   createTestHSM,
   // Event factories
   acquireLock,
-  sendAcquireLock,
   sendAcquireLockToTracking,
   releaseLock,
   unload,
@@ -2065,11 +2064,11 @@ describe('MergeHSM', () => {
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoaded(new Uint8Array(), null));
       t.send({ type: 'SET_MODE_ACTIVE' });
-	      t.send({
-	        type: 'OBSIDIAN_SET_VIEW_DATA',
-	        data: '',
-	        clear: true,
-	      });
+      t.send({
+        type: 'OBSIDIAN_SET_VIEW_DATA',
+        data: '',
+        clear: true,
+      });
       t.send(acquireLock(mockEditorViewRef('')));
 
       // IDB is empty → stays in awaitingPersistence
@@ -2183,12 +2182,12 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'hello' });
 
-	      // Send ACQUIRE_LOCK to enter active.entering states
-	      t.send({
-	        type: 'OBSIDIAN_SET_VIEW_DATA',
-	        data: 'hello',
-	        clear: true,
-	      });
+      // Send ACQUIRE_LOCK to enter active.entering states
+      t.send({
+        type: 'OBSIDIAN_SET_VIEW_DATA',
+        data: 'hello',
+        clear: true,
+      });
       t.send(acquireLock(mockEditorViewRef('hello')));
 
       // Wait for entering state
@@ -2635,7 +2634,7 @@ describe('Diagnostic events are no-ops', () => {
     { type: 'OBSIDIAN_FILE_UNLOADED' as const, path: 'test.md' },
     { type: 'OBSIDIAN_SAVE_FRONTMATTER' as const, path: 'test.md' },
     { type: 'OBSIDIAN_METADATA_SYNC' as const, path: 'test.md', mode: 'source' },
-	    { type: 'OBSIDIAN_LOAD_FILE_INTERNAL' as const, isInitialLoad: false, dirty: false, contentChanged: false, willMerge: false },
+    { type: 'OBSIDIAN_LOAD_FILE_INTERNAL' as const, isInitialLoad: false, dirty: false, contentChanged: false, willMerge: false },
     { type: 'OBSIDIAN_THREE_WAY_MERGE' as const, lcaLength: 0, editorLength: 0, diskLength: 0 },
     { type: 'OBSIDIAN_VIEW_REUSED' as const, oldPath: 'old.md', newPath: 'new.md' },
   ];

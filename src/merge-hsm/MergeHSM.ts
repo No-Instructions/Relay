@@ -44,7 +44,6 @@ import type {
 	CreatePersistence,
 	PersistenceMetadata,
 	ConflictRegion,
-	PositionedConflict,
 	ResolveHunkEvent,
 	DiskLoader,
 	MachineHSM,
@@ -62,7 +61,7 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
-import { classifyUpdate, decodeSV, isEmptyDoc, stateVectorsEqual, stateVectorIsAhead, yjsUpdateIsNoop } from "./state-vectors";
+import { isEmptyDoc, stateVectorIsAhead, yjsUpdateIsNoop } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";

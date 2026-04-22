@@ -1,5 +1,5 @@
 import { MarkdownView } from "obsidian";
-import { Document } from "../Document";
+import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
