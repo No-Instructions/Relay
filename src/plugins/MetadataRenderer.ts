@@ -1,5 +1,5 @@
 import { MarkdownView, getFrontMatterInfo, parseYaml } from "obsidian";
-import { Document } from "../Document";
+import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { HasLogging } from "../debug";
 
