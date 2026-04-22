@@ -676,13 +676,12 @@ export class RelayDebugAPI {
     this.plugin.app.workspace.setActiveLeaf?.(leaf, { focus: true });
 
     // Markdown views default to preview; flip to source so the editor is live.
+    // setViewState is used instead of view.setMode because setMode expects a
+    // mode instance (from view.modes), not a string — passing a string leaves
+    // view.currentMode as the string and corrupts the view.
     const view = leaf.view;
-    if (view?.getViewType?.() === 'markdown') {
-      if (typeof view.setMode === 'function') {
-        if (view.getMode?.() !== 'source') {
-          await view.setMode('source');
-        }
-      } else if (typeof leaf.setViewState === 'function') {
+    if (view?.getViewType?.() === 'markdown' && view.getMode?.() !== 'source') {
+      if (typeof leaf.setViewState === 'function') {
         const state = leaf.getViewState?.() ?? { type: 'markdown', state: {} };
         await leaf.setViewState({
           ...state,
