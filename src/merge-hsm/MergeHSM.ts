@@ -56,6 +56,7 @@ import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
 import { curryLog, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
+import { generateHash } from "../hashing";
 import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
@@ -3632,11 +3633,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 // =============================================================================
 
 /**
- * Check if two state vectors represent the same CRDT state.
- * Uses proper CRDT semantics: decodes the state vectors and compares
- * client clocks, rather than byte-by-byte comparison.
+ * Compute a single contiguous text replacement that transforms `before`
+ * into `after` by trimming the shared prefix and suffix.
  */
-
 function computePositionedChanges(
 	before: string,
 	after: string,
@@ -3671,16 +3670,6 @@ function computePositionedChanges(
 	return [{ from, to, insert }];
 }
 
-function simpleHash(contents: string): string {
-	let hash = 0;
-	for (let i = 0; i < contents.length; i++) {
-		const char = contents.charCodeAt(i);
-		hash = (hash << 5) - hash + char;
-		hash = hash & hash;
-	}
-	return "hash:" + Math.abs(hash).toString(16);
-}
-
 /**
  * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
  * Production code should pass a real factory that creates IndexeddbPersistence.
@@ -3710,14 +3699,8 @@ const defaultCreatePersistence: CreatePersistence = (
 };
 
 async function defaultHashFn(contents: string): Promise<string> {
-	if (typeof crypto !== "undefined" && crypto.subtle) {
-		const encoder = new TextEncoder();
-		const data = encoder.encode(contents);
-		const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-		const hashArray = Array.from(new Uint8Array(hashBuffer));
-		return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
-	}
-	return simpleHash(contents);
+	const encoder = new TextEncoder();
+	return generateHash(encoder.encode(contents).buffer);
 }
 
 // =============================================================================
