@@ -252,15 +252,23 @@ export class MergeManager {
   /** Whether the wake queue processor is currently running. */
   private _isProcessingWakeQueue = false;
 
-  /** Tracked remote state vector per document (clientId → clock). Used for gap detection. */
-  private _trackedRemoteSV = new Map<string, Map<number, number>>();
+  /**
+   * Remote state we have actually incorporated locally, tracked as an SV for
+   * gap detection against later incremental updates.
+   */
+  private _appliedRemoteSV = new Map<string, Map<number, number>>();
 
   /**
-   * Tracked remote full-state update per document when available.
-   * Seeded from keyframes and advanced by incremental updates. Used for
-   * delete-set-aware stale detection.
+   * Remote state we have actually incorporated locally, tracked as a merged
+   * full update when available. Used for delete-set-aware stale detection.
    */
-  private _trackedRemoteUpdate = new Map<string, Uint8Array>();
+  private _appliedRemoteUpdate = new Map<string, Uint8Array>();
+
+  /**
+   * Server-advertised head SV from the folder subdoc index. This is metadata
+   * about what the server has, not proof of what we have applied locally.
+   */
+  private _serverAdvertisedSV = new Map<string, Map<number, number>>();
 
   /** Per-HSM effect subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
@@ -514,8 +522,9 @@ export class MergeManager {
     this._hsmUnsubs.delete(guid);
     this._hibernationState.delete(guid);
     this._hibernationBuffer.delete(guid);
-    this._trackedRemoteSV.delete(guid);
-    this._trackedRemoteUpdate.delete(guid);
+    this._appliedRemoteSV.delete(guid);
+    this._appliedRemoteUpdate.delete(guid);
+    this._serverAdvertisedSV.delete(guid);
     this.clearHibernateTimer(guid);
     this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
@@ -913,38 +922,29 @@ export class MergeManager {
   // ===========================================================================
 
   /**
-   * Check if an incremental remote update can be applied directly (without HTTP fallback).
-   * Returns true if we have a tracked SV for this document and the update's ops
-   * aren't stale (no client clock regression).
-   *
-   * Returns false (triggering HTTP fallback) when:
-   * - No tracked SV exists (first event after connect or reconnect)
-   * - The update bytes can't be parsed
-   * - Any client in the update's SV has a clock behind our tracked clock
-   */
-  /**
-   * Classify an incremental remote update relative to the tracked SV.
-   * - 'apply': contiguous, safe to deliver and advance SV
-   * - 'stale': all ops already covered by tracked SV, safe to drop
-   * - 'gap': no tracked SV exists, need a keyframe first
+   * Classify an incremental remote update relative to the remote state we have
+   * already applied locally.
+   * - 'apply': contiguous, safe to deliver and advance the applied baseline
+   * - 'stale': all ops already covered by the applied baseline, safe to drop
+   * - 'gap': no applied baseline exists, or the update depends on missing ops
    */
   classifyUpdate(guid: string, update: Uint8Array): 'apply' | 'stale' | 'gap' {
     try {
-      const trackedSV = this._trackedRemoteSV.get(guid);
-      const structClassification = classifyUpdateSV(update, trackedSV);
+      const appliedSV = this._appliedRemoteSV.get(guid);
+      const structClassification = classifyUpdateSV(update, appliedSV);
       if (structClassification === 'gap') {
         return 'gap';
       }
 
-      const trackedUpdate = this._trackedRemoteUpdate.get(guid);
-      if (trackedUpdate) {
-        const trackedSnapshot = snapshotFromUpdate(trackedUpdate);
-        return snapshotContainsUpdate(trackedSnapshot, update) ? 'stale' : 'apply';
+      const appliedUpdate = this._appliedRemoteUpdate.get(guid);
+      if (appliedUpdate) {
+        const appliedSnapshot = snapshotFromUpdate(appliedUpdate);
+        return snapshotContainsUpdate(appliedSnapshot, update) ? 'stale' : 'apply';
       }
 
-      // When only an SV is available (e.g. subdoc-index seed), we can still
-      // drop clearly stale struct-only updates. Delete-bearing updates remain
-      // conservatively applicable because SVs do not encode delete sets.
+      // When only an applied SV is available, we can still drop clearly stale
+      // struct-only updates. Delete-bearing updates remain conservatively
+      // applicable because SVs do not encode delete sets.
       if (structClassification === 'stale' && !updateHasDeleteSet(update)) {
         return 'stale';
       }
@@ -957,14 +957,14 @@ export class MergeManager {
 
 
   /**
-   * After successfully applying an incremental update, merge its per-client clocks
-   * into the tracked SV (taking the max for each client).
+   * After successfully applying an incremental update, merge its per-client
+   * clocks into the applied remote SV (taking the max for each client).
    */
-  advanceTrackedRemoteSV(guid: string, update: Uint8Array): void {
-    let tracked = this._trackedRemoteSV.get(guid);
-    if (!tracked) {
-      tracked = new Map();
-      this._trackedRemoteSV.set(guid, tracked);
+  advanceAppliedRemoteUpdate(guid: string, update: Uint8Array): void {
+    let applied = this._appliedRemoteSV.get(guid);
+    if (!applied) {
+      applied = new Map();
+      this._appliedRemoteSV.set(guid, applied);
     }
 
     try {
@@ -972,61 +972,60 @@ export class MergeManager {
       const updateSV = Y.decodeStateVector(updateSVBytes);
 
       for (const [clientId, clock] of updateSV) {
-        const existing = tracked.get(clientId) ?? 0;
-        tracked.set(clientId, Math.max(existing, clock));
+        const existing = applied.get(clientId) ?? 0;
+        applied.set(clientId, Math.max(existing, clock));
       }
 
-      const trackedUpdate = this._trackedRemoteUpdate.get(guid);
-      if (trackedUpdate) {
-        this._trackedRemoteUpdate.set(guid, Y.mergeUpdates([trackedUpdate, update]));
+      const appliedUpdate = this._appliedRemoteUpdate.get(guid);
+      if (appliedUpdate) {
+        this._appliedRemoteUpdate.set(guid, Y.mergeUpdates([appliedUpdate, update]));
       }
     } catch {
-      // Parse failure — leave tracked SV unchanged
+      // Parse failure — leave applied baseline unchanged
     }
   }
 
   /**
-   * After an HTTP full-sync, replace the tracked SV for this document.
-   * The full-state update represents complete server state, so we replace
-   * rather than merge.
+   * After an HTTP full-sync, replace the applied remote baseline for this
+   * document. The full-state update represents complete remote state, so we
+   * replace rather than merge.
    */
-  seedTrackedRemoteSV(guid: string, update: Uint8Array): void {
+  seedAppliedRemoteUpdate(guid: string, update: Uint8Array): void {
     try {
       const svBytes = Y.encodeStateVectorFromUpdate(update);
       const sv = Y.decodeStateVector(svBytes);
-      this._trackedRemoteSV.set(guid, sv);
-      this._trackedRemoteUpdate.set(guid, update);
+      this._appliedRemoteSV.set(guid, sv);
+      this._appliedRemoteUpdate.set(guid, update);
     } catch {
-      // Parse failure — remove tracking so next event falls back to HTTP
-      this._trackedRemoteSV.delete(guid);
-      this._trackedRemoteUpdate.delete(guid);
+      // Parse failure — remove the applied baseline so next event falls back
+      // to HTTP keyframe fetch.
+      this._appliedRemoteSV.delete(guid);
+      this._appliedRemoteUpdate.delete(guid);
     }
   }
 
   /**
-   * Seed the tracked SV directly from raw state vector bytes. Used when the
-   * server supplies the SV (e.g. the subdoc-index response on reconnect),
-   * rather than a full update we'd derive the SV from.
+   * Record the server-advertised head SV directly from raw state vector bytes.
+   * This is reconnect metadata only. It must not be used to decide whether an
+   * incremental payload is stale because SVs do not encode delete sets and do
+   * not prove local application.
    */
-  seedTrackedRemoteSVFromBytes(guid: string, svBytes: Uint8Array): void {
+  seedServerAdvertisedSVFromBytes(guid: string, svBytes: Uint8Array): void {
     try {
       const sv = Y.decodeStateVector(svBytes);
-      this._trackedRemoteSV.set(guid, sv);
-      this._trackedRemoteUpdate.delete(guid);
+      this._serverAdvertisedSV.set(guid, sv);
     } catch {
-      // Parse failure — remove tracking so next event falls back to HTTP
-      // keyframe, same as seedTrackedRemoteSV.
-      this._trackedRemoteSV.delete(guid);
-      this._trackedRemoteUpdate.delete(guid);
+      this._serverAdvertisedSV.delete(guid);
     }
   }
 
   /**
-   * Clear all tracked remote SVs. Called on WebSocket reconnect so the first
-   * event on the new connection triggers an HTTP full-sync to establish a baseline.
+   * Clear the server-advertised reconnect metadata for all documents. The
+   * applied remote baseline is preserved across reconnects because it reflects
+   * what this vault has already incorporated locally.
    */
-  clearTrackedRemoteSVs(): void {
-    this._trackedRemoteSV.clear();
+  clearServerAdvertisedSVs(): void {
+    this._serverAdvertisedSV.clear();
   }
 
   /**
@@ -1099,8 +1098,9 @@ export class MergeManager {
     this._syncStatus.clear();
     this._hibernationState.clear();
     this._hibernationBuffer.clear();
-    this._trackedRemoteSV.clear();
-    this._trackedRemoteUpdate.clear();
+    this._appliedRemoteSV.clear();
+    this._appliedRemoteUpdate.clear();
+    this._serverAdvertisedSV.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
     this._warmLRU.clear();

@@ -209,21 +209,21 @@ describe('MergeManager', () => {
       server.getText('contents').insert(0, 'Line A\nLine B\n');
       const keyframe = Y.encodeStateAsUpdate(server);
       Y.applyUpdate(tracked, keyframe);
-      manager.seedTrackedRemoteSV(guid, keyframe);
+      manager.seedAppliedRemoteUpdate(guid, keyframe);
 
       server.getText('contents').delete(7, 7);
       const deleteOnly = Y.encodeStateAsUpdate(server, Y.encodeStateVector(tracked));
 
       expect(manager.classifyUpdate(guid, deleteOnly)).toBe('apply');
 
-      manager.advanceTrackedRemoteSV(guid, deleteOnly);
+      manager.advanceAppliedRemoteUpdate(guid, deleteOnly);
       expect(manager.classifyUpdate(guid, deleteOnly)).toBe('stale');
 
       server.destroy();
       tracked.destroy();
     });
 
-    test('delete-only incremental update is not dropped when only SV is known', () => {
+    test('server-advertised SV alone does not classify delete-only updates as applied', () => {
       const guid = 'doc-delete-sv-only';
       const server = new Y.Doc();
       const tracked = new Y.Doc();
@@ -232,18 +232,18 @@ describe('MergeManager', () => {
       const keyframe = Y.encodeStateAsUpdate(server);
       Y.applyUpdate(tracked, keyframe);
 
-      manager.seedTrackedRemoteSVFromBytes(guid, Y.encodeStateVector(server));
+      manager.seedServerAdvertisedSVFromBytes(guid, Y.encodeStateVector(server));
 
       server.getText('contents').delete(7, 7);
       const deleteOnly = Y.encodeStateAsUpdate(server, Y.encodeStateVector(tracked));
 
-      expect(manager.classifyUpdate(guid, deleteOnly)).toBe('apply');
+      expect(manager.classifyUpdate(guid, deleteOnly)).toBe('gap');
 
       server.destroy();
       tracked.destroy();
     });
 
-    test('stale struct-only incremental update is still dropped with SV-only tracking', () => {
+    test('server-advertised SV alone does not classify struct-only updates as stale', () => {
       const guid = 'doc-stale-struct-only';
       const server = new Y.Doc();
       const tracked = new Y.Doc();
@@ -252,9 +252,30 @@ describe('MergeManager', () => {
       const update = Y.encodeStateAsUpdate(server);
       Y.applyUpdate(tracked, update);
 
-      manager.seedTrackedRemoteSVFromBytes(guid, Y.encodeStateVector(server));
+      manager.seedServerAdvertisedSVFromBytes(guid, Y.encodeStateVector(server));
 
-      expect(manager.classifyUpdate(guid, update)).toBe('stale');
+      expect(manager.classifyUpdate(guid, update)).toBe('gap');
+
+      server.destroy();
+      tracked.destroy();
+    });
+
+    test('reconnect metadata reset does not discard the applied remote baseline', () => {
+      const guid = 'doc-reconnect-baseline';
+      const server = new Y.Doc();
+      const tracked = new Y.Doc();
+
+      server.getText('contents').insert(0, 'hello');
+      const keyframe = Y.encodeStateAsUpdate(server);
+      Y.applyUpdate(tracked, keyframe);
+      manager.seedAppliedRemoteUpdate(guid, keyframe);
+      manager.seedServerAdvertisedSVFromBytes(guid, Y.encodeStateVector(server));
+      manager.clearServerAdvertisedSVs();
+
+      server.getText('contents').insert(5, ' world');
+      const delta = Y.encodeStateAsUpdate(server, Y.encodeStateVector(tracked));
+
+      expect(manager.classifyUpdate(guid, delta)).toBe('apply');
 
       server.destroy();
       tracked.destroy();

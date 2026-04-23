@@ -493,13 +493,13 @@ export class SharedFolder extends HasProvider {
 
 		// On (re)connect, the provider issues MSG_QUERY_SUBDOCS and receives
 		// the server's complete view of this folder's docs: guid → state
-		// vector. Seed tracked SVs from that one message and fire a full
+		// vector. Seed server-advertised heads from that one message and fire a full
 		// syncFileTree sweep; applyRemoteState + applyPendingUpload handle
 		// both inbound reconciliation and outbound pending-upload retry.
 		const provider = this._provider;
 		provider.onSubdocIndex = (serverIndex) => {
 			for (const [guid, svBytes] of Object.entries(serverIndex)) {
-				this.mergeManager?.seedTrackedRemoteSVFromBytes(guid, svBytes);
+				this.mergeManager?.seedServerAdvertisedSVFromBytes(guid, svBytes);
 			}
 			this.syncFileTree();
 		};
@@ -558,10 +558,10 @@ export class SharedFolder extends HasProvider {
 		switch (classification) {
 			case 'apply':
 				this.mergeManager.handleRemoteUpdate(guid, update);
-				this.mergeManager.advanceTrackedRemoteSV(guid, update);
+				this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
 				break;
 			case 'stale':
-				break; // already covered by tracked SV
+				break; // already covered by the applied remote baseline
 			case 'gap':
 				this._fetchKeyframeAndDeliver(file, guid, [update]);
 				break;
@@ -644,14 +644,14 @@ export class SharedFolder extends HasProvider {
 
 			if (keyframe) {
 				this.mergeManager.handleRemoteUpdate(guid, keyframe);
-				this.mergeManager.seedTrackedRemoteSV(guid, keyframe);
+				this.mergeManager.seedAppliedRemoteUpdate(guid, keyframe);
 			}
 
 			for (const u of buf) {
 				const c = this.mergeManager.classifyUpdate(guid, u);
 				if (c === 'apply') {
 					this.mergeManager.handleRemoteUpdate(guid, u);
-					this.mergeManager.advanceTrackedRemoteSV(guid, u);
+					this.mergeManager.advanceAppliedRemoteUpdate(guid, u);
 				}
 				// 'stale' → drop (subsumed by keyframe)
 				// 'gap' shouldn't happen after a keyframe, but if it does
@@ -979,13 +979,15 @@ export class SharedFolder extends HasProvider {
 			if (this.connected || this.shouldConnect) {
 				const result = await super.connect();
 				if (result && this.mergeManager) {
-					// Clear tracked SVs so the first event on this connection
-					// triggers an HTTP full-sync to establish a baseline.
+					// Clear server-advertised reconnect metadata so the next
+					// subdoc-index response reflects the current connection's
+					// server view. The applied remote baseline stays intact
+					// because it reflects state already incorporated locally.
 					// The provider preserves eventCallbacks across reconnects
 					// and re-sends the server subscribe frame itself, so the
 					// callbacks registered by the constructor's
 					// setupEventSubscriptions() call stay live.
-					this.mergeManager.clearTrackedRemoteSVs();
+					this.mergeManager.clearServerAdvertisedSVs();
 				}
 				return result;
 			}
