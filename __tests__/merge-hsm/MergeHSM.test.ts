@@ -50,6 +50,18 @@ import { Conflict } from 'src/merge-hsm/conflict';
 
 import * as Y from 'yjs';
 
+function applyPositionedChanges(
+  text: string,
+  changes: Array<{ from: number; to: number; insert: string }>,
+): string {
+  const sorted = [...changes].sort((a, b) => b.from - a.from);
+  let result = text;
+  for (const change of sorted) {
+    result = result.slice(0, change.from) + change.insert + result.slice(change.to);
+  }
+  return result;
+}
+
 // =============================================================================
 // Remote Update Testing
 // =============================================================================
@@ -1029,7 +1041,7 @@ describe('MergeHSM', () => {
       expect(conflictData!.theirs).toBe('disk changed');
     });
 
-    test('fresh conflict snapshot uses current editor text after banner creation', async () => {
+    test('fresh conflict snapshot preserves stored sides for active conflicts', async () => {
       const t = await createTestHSM();
       const localDoc = new Y.Doc();
       localDoc.getText('contents').insert(0, 'remote changed');
@@ -1054,9 +1066,60 @@ describe('MergeHSM', () => {
 
       expect(stale).not.toBeNull();
       expect(fresh).not.toBeNull();
+      expect(stale).toEqual(fresh);
+      expect(stale!.ours).toBe('remote changed');
       expect(stale!.theirs).toBe('disk changed');
-      expect(fresh!.theirs).toBe('disk edited again changed');
-      expect(fresh!.ours).toBe('remote changed');
+      expect(fresh!.theirs).toBe('disk changed');
+    });
+
+    test('resolving a reopened conflict diffs against the reattached editor buffer', async () => {
+      const t = await createTestHSM();
+      const base = [
+        '---',
+        'name: onions',
+        'in stock: false',
+        '---',
+        '',
+        '# Onions',
+        '',
+        'funions are',
+      ].join('\n');
+      const local = `${base} bad`;
+      const remote = `${base} good`;
+
+      await loadToResolving(t, {
+        base,
+        remote,
+        disk: local,
+      });
+      t.clearEffects();
+
+      (t.hsm as any)._editorViewRef = mockEditorViewRef(() => {
+        throw new Error('stale editor');
+      });
+      (t.hsm as any).lastKnownEditorText = null;
+      (t.hsm as any).pendingEditorContent = null;
+      (t.hsm as any).pendingDiskContents = null;
+
+      let reopenedEditorText = local;
+      t.attachEditorView(
+        mockEditorViewRef(() => reopenedEditorText),
+        reopenedEditorText,
+      );
+
+      t.send(resolve(remote));
+
+      expectState(t, 'active.tracking');
+      expectLocalDocText(t, remote);
+
+      const dispatch = [...t.effects].reverse().find(
+        (effect): effect is {
+          type: 'DISPATCH_CM6';
+          changes: Array<{ from: number; to: number; insert: string }>;
+        } => effect.type === 'DISPATCH_CM6',
+      );
+      expect(dispatch).toBeDefined();
+      expect(applyPositionedChanges(reopenedEditorText, dispatch!.changes)).toBe(remote);
     });
 
     test('awaitActive() resolves for conflict state, not just tracking', async () => {

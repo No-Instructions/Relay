@@ -165,10 +165,16 @@ class HSMEditorPluginValue implements PluginValue {
     );
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
+    const currentText = this.editor.state.doc.toString();
+    hsm.attachEditorView(
+      { getViewData: () => this.editor.state.doc.toString() },
+      currentText,
+    );
+
     if (this.pendingEdits.length === 0) {
       hsm.bootstrapEditorView(
         this.cm6Integration.viewId,
-        this.editor.state.doc.toString(),
+        currentText,
       );
     }
 

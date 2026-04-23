@@ -504,11 +504,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * without opening the banner. The derived snapshot is intentionally not
 	 * cached to keep read APIs side-effect free.
 	 */
-	getConflictData(options?: { fresh?: boolean }): ConflictData | null {
-		if (options?.fresh && this._statePath === "active.conflict.bannerShown") {
-			const fresh = this.getFreshConflictDataForBanner();
-			if (fresh) return fresh;
-		}
+	getConflictData(_options?: { fresh?: boolean }): ConflictData | null {
 		if (this._conflict) return this._conflict.toData();
 		// Do not derive conflicts outside idle.diverged. In states like
 		// idle.localAhead, remoteDoc may be intentionally unsynced and transient
@@ -536,43 +532,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return this.lastKnownEditorText ?? this.pendingEditorContent;
 	}
 
-	private getFreshConflictDataForBanner(): ConflictData | null {
-		if (!this._conflict) return null;
-
-		const theirs = this.readCurrentEditorText() ?? this._conflict.theirs;
-		const oursLabel = this._conflict.oursLabel;
-		const theirsLabel = this._conflict.theirsLabel;
-		const preferRemote =
-			oursLabel.toLowerCase().includes("remote")
-			|| oursLabel.toLowerCase().includes("peer");
-		const ours =
-			(preferRemote ? this.remoteDoc : this.localDoc)
-				?.getText("contents")
-				.toString()
-			?? this.localDoc?.getText("contents").toString()
-			?? this._conflict.ours;
-
-		if (this._lca) {
-			const base = this._lca.contents;
-			const { regions } = computeConflict(base, ours, theirs);
-			return new Conflict({
-				base,
-				ours,
-				theirs,
-				oursLabel,
-				theirsLabel,
-				regions,
-			}).toData();
+	/**
+	 * Rebind the HSM to the current editor view after the editor is recreated.
+	 */
+	attachEditorView(editorViewRef: EditorViewRef, currentText?: string): void {
+		this._editorViewRef = editorViewRef;
+		if (currentText !== undefined) {
+			this.lastKnownEditorText = currentText;
 		}
-
-		return new Conflict({
-			base: ours,
-			ours,
-			theirs,
-			oursLabel,
-			theirsLabel,
-			regions: computeTwoWayConflictRegions(ours, theirs),
-		}).toData();
 	}
 
 	getRemoteDoc(): Y.Doc | null {
@@ -1468,16 +1435,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 							this.readCurrentEditorText()
 							?? cachedEditorText
 							?? this.pendingDiskContents
-							?? ""
+							?? null
 						);
 				this.crdtLog(
 					`resolveConflict: contents=${resolvedText.length} chars, ` +
-					`before=${beforeText.length} chars, ` +
+					`before=${beforeText?.length ?? -1} chars, ` +
 					`equal=${resolvedText === beforeText}, ` +
 					`contents=${JSON.stringify(resolvedText.substring(0, 100))}, ` +
-					`before=${JSON.stringify(beforeText.substring(0, 100))}`
+					`before=${JSON.stringify(beforeText?.substring(0, 100) ?? null)}`
 				);
-				if (resolvedText !== beforeText) {
+				if (beforeText !== null && resolvedText !== beforeText) {
 					const changes = this.computeDiffChanges(beforeText, resolvedText);
 					this.crdtLog(`resolveConflict: ${changes.length} changes: ${JSON.stringify(changes)}`);
 					if (changes.length > 0) {

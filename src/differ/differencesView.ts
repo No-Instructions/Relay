@@ -208,6 +208,9 @@ export class DifferencesView extends ItemView {
 
 		this.file1Content = await this.getContent(this.state.file1);
 		this.file2Content = await this.getContent(this.state.file2);
+		if (this.resolved) {
+			return;
+		}
 
 		this.file1Lines = this.file1Content
 			// Add trailing new line as this removes edge cases
@@ -232,6 +235,9 @@ export class DifferencesView extends ItemView {
 		this.fileDifferences = FileDifferences.fromParsedDiff(parsedDiff);
 
 		if (this.fileDifferences.differences.length === 0) {
+			if (this.resolved) {
+				return;
+			}
 			if (this.file1Content !== this.file2Content) {
 				this.log(
 					"byte level difference with differ equivalence",
@@ -266,6 +272,9 @@ export class DifferencesView extends ItemView {
 					}
 				}
 				await this.modify(this.state.file2, this.file1Content || "");
+				if (this.resolved) {
+					return;
+				}
 			}
 			this.resolved = true;
 			await this.state.onResolve?.();

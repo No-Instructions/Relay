@@ -12,6 +12,7 @@ import * as Y from 'yjs';
 import * as jsyaml from 'js-yaml';
 import { diff_match_patch } from 'diff-match-patch';
 import type {
+  EditorViewRef,
   MergeState,
   MergeEvent,
   MergeEffect,
@@ -116,6 +117,9 @@ export interface TestHSM {
   /** Bootstrap a named editor view against the current HSM state. */
   bootstrapEditorView(viewId: string, currentText?: string): void;
 
+  /** Rebind the HSM to the current editor view */
+  attachEditorView(editorViewRef: EditorViewRef, currentText?: string): void;
+
   /** Directly set the provider synced state without triggering a state transition */
   setProviderSynced(value: boolean): void;
 
@@ -203,6 +207,7 @@ export interface TestableHSM {
   awaitState(predicate: (statePath: string) => boolean): Promise<void>;
   getConflictData(options?: { fresh?: boolean }): { base: string; ours: string; theirs: string } | null;
   bootstrapEditorView(viewId: string, currentText?: string): void;
+  attachEditorView(editorViewRef: EditorViewRef, currentText?: string): void;
 }
 
 // =============================================================================
@@ -498,6 +503,8 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     snapshot: () => createSnapshot(hsm, effects, time),
     stateHistory,
     awaitIdleAutoMerge: () => hsm.awaitIdleAutoMerge(),
+    attachEditorView: (editorViewRef: EditorViewRef, currentText?: string) =>
+      hsm.attachEditorView(editorViewRef, currentText),
     bootstrapEditorView: (viewId: string, currentText?: string) =>
       hsm.bootstrapEditorView(viewId, currentText),
     seedIndexedDB,
