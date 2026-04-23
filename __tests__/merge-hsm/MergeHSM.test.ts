@@ -533,6 +533,65 @@ describe('MergeHSM', () => {
       expect(localDocContent!.length).toBeLessThan(divergedDiskContent.length * 2);
     });
 
+    test('reopen falls back to diskLoader when pendingDiskContents was superseded in idle', async () => {
+      const originalContent = [
+        '---',
+        'tags:',
+        '  - a',
+        '  - b',
+        '---',
+        'body',
+      ].join('\n');
+      const mergedContent = [
+        '---',
+        'tags:',
+        '  - a',
+        '---',
+        'body',
+      ].join('\n');
+
+      let diskContent = originalContent;
+      let diskMtime = 1000;
+      let diskReads = 0;
+      const t = await createTestHSM({
+        diskLoader: async () => {
+          diskReads++;
+          return {
+            content: diskContent,
+            hash: `disk-${diskMtime}`,
+            mtime: diskMtime,
+          };
+        },
+      });
+
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      await sendAcquireLockToTracking(t, originalContent);
+
+      // Active-mode disk echo leaves the old disk snapshot in memory.
+      t.send(await diskChanged(originalContent, 1000));
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+      expectState(t, 'idle.synced');
+
+      // Idle remote merge writes the tag deletion to disk and updates LCA.
+      t.applyRemoteChange(mergedContent);
+      await t.hsm.awaitIdleAutoMerge();
+      diskContent = mergedContent;
+      diskMtime = 2000;
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(mergedContent);
+
+      t.clearEffects();
+      t.send(acquireLock(mockEditorViewRef(mergedContent)));
+      await t.hsm.awaitState((s) => s === 'active.tracking' || s.includes('conflict'));
+
+      expectState(t, 'active.tracking');
+      expect(t.getLocalDocText()).toBe(mergedContent);
+      expectNoEffect(t.effects, 'DISPATCH_CM6');
+      expect(diskReads).toBeGreaterThan(0);
+    });
+
     // BUG-051: Test server echo scenario - the exact e2e failure case
     // When a file is edited, saved, closed, and the server echoes the update,
     // reopening should NOT duplicate content even though remoteDoc received the echo.

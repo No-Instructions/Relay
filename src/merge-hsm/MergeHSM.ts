@@ -68,6 +68,7 @@ import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
+type PendingDiskSource = "disk-event" | "view-data" | "derived";
 
 // =============================================================================
 // Simple Observable for HSM
@@ -154,6 +155,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	// Pending disk contents for merge (used in idle mode)
 	private pendingDiskContents: string | null = null;
+	private pendingDiskHash: string | null = null;
+	private pendingDiskSource: PendingDiskSource | null = null;
 
 	// Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
 	private pendingEditorContent: string | null = null;
@@ -299,6 +302,43 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			actions: this.buildActions(),
 			invokeSources: this.buildInvokeSources(),
 		});
+	}
+
+	private setPendingDiskContents(
+		contents: string,
+		source: PendingDiskSource,
+		hash: string | null = null,
+	): void {
+		this.pendingDiskContents = contents;
+		this.pendingDiskSource = source;
+		this.pendingDiskHash = hash;
+	}
+
+	private clearPendingDiskContents(): void {
+		this.pendingDiskContents = null;
+		this.pendingDiskSource = null;
+		this.pendingDiskHash = null;
+	}
+
+	private hasFreshPendingDiskContents(): boolean {
+		if (this.pendingDiskContents === null) return false;
+		if (this.pendingDiskSource === "view-data") return true;
+		if (this.pendingDiskHash === null || this._disk === null) return false;
+		return this.pendingDiskHash === this._disk.hash;
+	}
+
+	private discardSupersededPendingDiskContents(): void {
+		if (this.pendingDiskContents === null) return;
+		if (this.pendingDiskHash === null || this._disk === null) return;
+		if (this.pendingDiskHash === this._disk.hash) return;
+		this.clearPendingDiskContents();
+	}
+
+	private getPendingDiskTextForMerge(): string | null {
+		if (this.hasFreshPendingDiskContents()) {
+			return this.pendingDiskContents!;
+		}
+		return null;
 	}
 
 	// ===========================================================================
@@ -1231,7 +1271,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			storeDiskMetadata: (_hsm, event) => {
 				const e = event as any;
 				this._disk = { hash: e.hash, mtime: e.mtime };
-				this.pendingDiskContents = e.contents;
+				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
 			},
 			updateLCAMtime: (_hsm, event) => {
 				const e = event as any;
@@ -1302,6 +1342,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					// The idle-merge emits WRITE_DISK, so disk now matches LCA
 					if (result.newLCA.meta) {
 						this._disk = { hash: result.newLCA.meta.hash, mtime: result.newLCA.meta.mtime };
+						this.discardSupersededPendingDiskContents();
 					}
 					this.emitPersistState();
 				}
@@ -1454,7 +1495,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._fork = null;
 				this._ingestionTexts = [];
 				this._conflict = null;
-				this.pendingDiskContents = null;
+				this.clearPendingDiskContents();
 				this.pendingEditorContent = null;
 			},
 			storeConflictData: (_hsm, event) => {
@@ -1589,6 +1630,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					}
 				}
 
+				this.clearPendingDiskContents();
 				this.pendingEditorContent = null;
 			},
 			storeThreeWayConflict: (_hsm, event) => {
@@ -1629,7 +1671,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._fork = null;
 				this._ingestionTexts = [];
 				this._conflict = null;
-				this.pendingDiskContents = null;
+				this.clearPendingDiskContents();
 				this.pendingEditorContent = null;
 			},
 			storeTwoWayConflict: (_hsm, event) => {
@@ -1791,11 +1833,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			updateDiskFromSave: (_hsm, event) => {
 				const e = event as any;
 				this._disk = { mtime: e.mtime, hash: e.hash };
+				this.discardSupersededPendingDiskContents();
 			},
 			storeDiskMetadataOnly: (_hsm, event) => {
 				const e = event as any;
 				this._disk = { hash: e.hash, mtime: e.mtime };
-				this.pendingDiskContents = e.contents;
+				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
 
 				// Advance LCA when localDoc already matches the new disk
 				// content and no fork is active. The match check is the
@@ -1854,7 +1897,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// content). Without this, invokeIdleThreeWayAutoMerge falls back to LCA
 				// for the disk side and sees no disk changes, causing it to auto-accept
 				// and escape to idle.synced instead of staying diverged.
-				this.pendingDiskContents = this.localDoc?.getText("contents").toString() ?? null;
+				const diskText = this.localDoc?.getText("contents").toString();
+				if (diskText != null) {
+					this.setPendingDiskContents(diskText, "derived", this._disk?.hash ?? null);
+				} else {
+					this.clearPendingDiskContents();
+				}
 				// Keep the fork alive — it gates flushOutbound and holds the
 				// captureMark needed to reverse disk ops during conflict resolution.
 				// Clear pending remote updates — fork reconciliation already
@@ -2019,9 +2067,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// otherwise read from disk. Defaulting to "" here would let
 				// diff3 interpret missing disk info as "file wiped" and
 				// produce a whole-file-delete conflict on reload.
+				const pendingDisk = this.getPendingDiskTextForMerge();
 				let diskText: string;
-				if (this.pendingDiskContents !== null) {
-					diskText = this.pendingDiskContents;
+				if (pendingDisk !== null) {
+					diskText = pendingDisk;
 				} else {
 					const diskContent = await this._diskLoader();
 					if (signal.aborted) return { success: false };
@@ -2073,9 +2122,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					}
 				}
 
+				const pendingDisk = this.getPendingDiskTextForMerge();
 				let diskText: string;
-				if (this.pendingDiskContents !== null) {
-					diskText = this.pendingDiskContents;
+				if (pendingDisk !== null) {
+					diskText = pendingDisk;
 				} else {
 					const diskContent = await this._diskLoader();
 					if (signal.aborted) return { success: false };
@@ -2253,7 +2303,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.applyContentToLocalDoc(diskContent, DISK_ORIGIN);
 		this._ingestionTexts.push(diskContent);
 		this._bridge.providerSynced = false;
-		this.pendingDiskContents = null;
+		this.clearPendingDiskContents();
 		this.emitPersistState();
 
 		// Request provider sync for fork reconciliation
@@ -2268,12 +2318,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// merge — the conflict data is authoritative and must be surfaced to
 		// the user when they open the file.
 		if (this._conflict) {
-			this.pendingDiskContents = null;
+			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
 		if (!this._lca || !this.localDoc) {
-			this.pendingDiskContents = null;
+			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
@@ -2289,7 +2339,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// If remoteDoc isn't available yet (e.g. waking from hibernation), bail
 		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
 		if (!this.remoteDoc) {
-			this.pendingDiskContents = null;
+			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
@@ -2299,7 +2349,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// server's CRDT state.  Defer the merge until PROVIDER_SYNCED
 		// delivers the real remote content.
 		if (!this._isProviderSynced()) {
-			this.pendingDiskContents = null;
+			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
@@ -2308,7 +2358,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Snapshot and clear — new events accumulate fresh during await
 		this.pendingIdleUpdates = null;
-		this.pendingDiskContents = null;
+		this.clearPendingDiskContents();
 
 		// 3-way merge: lca (base), disk (local changes), crdt (remote changes)
 		const mergeResult = performThreeWayMerge(lcaContent, diskContent, crdtContent);
@@ -2504,7 +2554,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// pass `clear=false` and must not shadow the authoritative disk
 			// text.
 			if (event.clear) {
-				this.pendingDiskContents = event.data;
+				this.setPendingDiskContents(event.data, "view-data", this._disk?.hash ?? null);
 			}
 			return;
 		}
