@@ -1,12 +1,15 @@
 import { HasLogging } from "./debug";
-import { View } from "obsidian";
 import UserAwareness from "./components/UserAwareness.svelte";
 import { trackPromise } from "./trackPromise";
 import type { HasProvider } from "./HasProvider";
 
+type AwarenessHostView = {
+	containerEl: HTMLElement;
+};
+
 export interface AwarenessHost {
-	/** The Obsidian view whose containerEl owns the avatar overlay. */
-	view: View;
+	/** The view-like object whose containerEl owns the avatar overlay. */
+	view: AwarenessHostView;
 	/**
 	 * The provider-backed doc (Document or Canvas). Must expose `_provider`,
 	 * `whenReady()`, `guid`, and optionally `path` for logger tagging.

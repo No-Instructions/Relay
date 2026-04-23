@@ -1446,24 +1446,25 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				);
 				this._bridge.syncToLocal(remoteUpdate);
 
-				// Step 3: DMP the resolved text onto localDoc. After the CRDT
-				// merge the text may not match what the user chose (e.g. they
-				// accepted ours, or merged individual hunks). DMP fixes it up.
-				this.applyContentToLocalDoc(contents);
-
-				// Step 4: Dispatch resolved content to CM6. The localDoc
-				// observer skips origin=this, so we emit explicitly. Use the
-				// current editor buffer after the remote merge above, not the
-				// stale cached value from before RESOLVE. Otherwise the same
-				// patch can be replayed onto an editor that already matches the
-				// resolved text, progressively corrupting the frontmatter.
-				const resolvedText = this.localDoc.getText("contents").toString();
+				// Step 3: Capture the current editor buffer after the CRDT merge
+				// but before applying the selected resolution. A live EditorViewRef
+				// reads through to the current editor; reading it after localDoc is
+				// mutated can hide the CM6 patch that direct RESOLVE still needs.
 				const beforeText =
 					this.readCurrentEditorText()
 					?? this.lastKnownEditorText
 					?? this.pendingDiskContents
 					?? this.pendingEditorContent
 					?? "";
+
+				// Step 4: DMP the resolved text onto localDoc. After the CRDT
+				// merge the text may not match what the user chose (e.g. they
+				// accepted ours, or merged individual hunks). DMP fixes it up.
+				this.applyContentToLocalDoc(contents);
+
+				// Step 5: Dispatch resolved content to CM6. The localDoc
+				// observer skips origin=this, so we emit explicitly.
+				const resolvedText = this.localDoc.getText("contents").toString();
 				this.crdtLog(
 					`resolveConflict: contents=${resolvedText.length} chars, ` +
 					`before=${beforeText.length} chars, ` +
@@ -1480,7 +1481,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				}
 				this.lastKnownEditorText = resolvedText;
 
-				// Step 5: Sync localDoc → remoteDoc and server. Histories are
+				// Step 6: Sync localDoc → remoteDoc and server. Histories are
 				// now converged so the update is clean.
 				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
 				this._bridge.clearOutboundQueue();

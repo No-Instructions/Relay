@@ -113,6 +113,9 @@ export interface TestHSM {
   /** Wait for any pending idle auto-merge to complete */
   awaitIdleAutoMerge(): Promise<void>;
 
+  /** Seed or refresh the active editor buffer tracked by the HSM. */
+  bootstrapEditorView(viewId: string, currentText?: string): void;
+
   /** Directly set the provider synced state without triggering a state transition */
   setProviderSynced(value: boolean): void;
 

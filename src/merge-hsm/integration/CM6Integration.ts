@@ -9,7 +9,7 @@
  */
 
 import type { EditorView, ViewUpdate } from "@codemirror/view";
-import { Transaction } from "@codemirror/state";
+import { Transaction, type TransactionSpec } from "@codemirror/state";
 import { editorInfoField, getFrontMatterInfo } from "obsidian";
 import type { MergeHSM } from "../MergeHSM";
 import type { PositionedChange } from "../types";
@@ -173,11 +173,7 @@ export class CM6Integration {
 			this.log(
 				`dispatchToEditor: ${changes.length} changes, editor=${editorBefore} chars before`,
 			);
-			const dispatchSpec: {
-				changes: { from: number; to: number; insert: string }[];
-				annotations: unknown[];
-				filter?: boolean;
-			} = {
+			const dispatchSpec: TransactionSpec = {
 				changes: cmChanges,
 				// Mark as coming from Yjs/HSM to prevent feedback loops
 				annotations: [ySyncAnnotation.of(this.view)],
@@ -202,11 +198,7 @@ export class CM6Integration {
 							this.log(
 								`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
 							);
-							const dispatchSpec: {
-								changes: { from: number; to: number; insert: string }[];
-								annotations: unknown[];
-								filter?: boolean;
-							} = {
+							const dispatchSpec: TransactionSpec = {
 								changes: cmChanges,
 								annotations: [ySyncAnnotation.of(this.view)],
 							};
@@ -263,11 +255,7 @@ export class CM6Integration {
 				`setEditorText: replacing ${currentText.length} chars with ${text.length} chars`,
 			);
 			const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
-			const dispatchSpec: {
-				changes: { from: number; to: number; insert: string }[];
-				annotations: unknown[];
-				filter?: boolean;
-			} = {
+			const dispatchSpec: TransactionSpec = {
 				changes,
 				annotations: [ySyncAnnotation.of(this.view)],
 			};
@@ -285,11 +273,7 @@ export class CM6Integration {
 				requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
 						const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
-						const dispatchSpec: {
-							changes: { from: number; to: number; insert: string }[];
-							annotations: unknown[];
-							filter?: boolean;
-						} = {
+						const dispatchSpec: TransactionSpec = {
 							changes,
 							annotations: [ySyncAnnotation.of(this.view)],
 						};

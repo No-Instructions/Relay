@@ -710,7 +710,7 @@ export async function loadToConflict(
     data: opts.disk,
     clear: true,
   });
-  hsm.send(acquireLock(mockEditorViewRef(opts.disk)));
+  hsm.send(acquireLock(liveMockEditorViewRef(hsm, opts.disk)));
   // Wait for persistence to sync and state to settle
   await hsm.hsm?.awaitState?.((s) => !s.includes('awaitingPersistence') && !s.includes('entering'));
 
