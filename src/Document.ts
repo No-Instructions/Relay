@@ -768,43 +768,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!hsm) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
-		// Only tear down and recreate when there is an active fork that
-		// requires a fresh remoteDoc from the server. The existing
-		// remoteDoc may contain local edits from syncLocalToRemote which
-		// would corrupt fork-reconcile's 3-way merge. When no fork is
-		// active (e.g. idle.diverged download path), preserve the working
-		// provider to avoid destroying a synced connection.
-		const hasFork = hsm.hasFork();
-		if (hasFork) {
-			const result = reconnectProvider({
-				hsm,
-				integration: this._providerIntegration,
-				createFreshRemoteDoc: () => this.ensureRemoteDoc(),
-				destroyCurrentRemoteDoc: () => this.destroyRemoteDoc(),
-				createAndConnectProvider: (remoteDoc) => {
-					this.connect();
-					return this._provider as YjsProvider;
-				},
-			});
-			this._providerIntegration = result.integration;
-		} else if (this._providerIntegration) {
-			// Provider is already connected and no fork requires a fresh
-			// remoteDoc — nothing to do.
+		const createdIntegration = this.ensureIdleProviderIntegration({
+			freshRemoteDoc: hsm.hasFork(),
+		});
+		const connected = await this.connect();
+		if (!connected) {
+			if (createdIntegration && !hsm.isActive()) {
+				this.destroyIdleProviderIntegration();
+			}
 			return;
-		} else {
-			const remoteDoc = this.ensureRemoteDoc();
-			hsm.setRemoteDoc(remoteDoc);
-
-			await this.connect();
-
-			// HSM can be nulled during teardown while connect() is in flight.
-			if (!this._provider || this._hsm !== hsm) return;
-
-			this._providerIntegration = new ProviderIntegration(
-				hsm,
-				remoteDoc,
-				this._provider as YjsProvider,
-			);
 		}
 
 		// Tear down when transitioning to another idle state (fork resolved
@@ -831,6 +803,51 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this._providerIntegration = null;
 			this.disconnect();
 		}
+	}
+
+	/**
+	 * Ensure the HSM is attached to a live remoteDoc/provider bridge while the
+	 * document stays in idle mode.
+	 *
+	 * Returns true if this call created or replaced the idle integration, false
+	 * if an existing integration was already present or the document is not HSM-backed.
+	 */
+	ensureIdleProviderIntegration(options?: { freshRemoteDoc?: boolean }): boolean {
+		const hsm = this._hsm;
+		if (!hsm) return false;
+
+		const freshRemoteDoc = options?.freshRemoteDoc ?? false;
+		if (freshRemoteDoc) {
+			const result = reconnectProvider({
+				hsm,
+				integration: this._providerIntegration,
+				createFreshRemoteDoc: () => this.ensureRemoteDoc(),
+				destroyCurrentRemoteDoc: () => this.destroyRemoteDoc(),
+				createAndConnectProvider: (_remoteDoc) => {
+					void this.connect();
+					return this._provider as YjsProvider;
+				},
+			});
+			this._providerIntegration = result.integration;
+			return true;
+		}
+
+		if (this._providerIntegration) {
+			return false;
+		}
+
+		const remoteDoc = this.ensureRemoteDoc();
+		hsm.setRemoteDoc(remoteDoc);
+		if (!this._provider) {
+			return false;
+		}
+
+		this._providerIntegration = new ProviderIntegration(
+			hsm,
+			remoteDoc,
+			this._provider as YjsProvider,
+		);
+		return true;
 	}
 
 	/**

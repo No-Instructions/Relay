@@ -9,6 +9,7 @@
 import * as Y from 'yjs';
 import { createCrossVaultTest } from 'src/merge-hsm/testing/createCrossVaultTest';
 import { loadAndActivate, createLCA } from 'src/merge-hsm/testing';
+import { ProviderIntegration } from 'src/merge-hsm/integration/ProviderIntegration';
 
 // =============================================================================
 // Helpers
@@ -72,6 +73,38 @@ async function bootWithProvider(content: string) {
 // =============================================================================
 
 describe('Provider Integration Lifecycle', () => {
+
+  test('sync false event does not mark provider synced', () => {
+    const remoteDoc = new Y.Doc();
+    remoteDoc.getText('contents').insert(0, 'hello');
+    const listeners = new Map<string, Set<(...args: any[]) => void>>();
+    const provider = {
+      synced: false,
+      connectionState: { status: 'connected' },
+      on: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(cb);
+      }),
+      off: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        listeners.get(event)?.delete(cb);
+      }),
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      destroy: jest.fn(),
+    };
+    const hsm = { send: jest.fn() };
+
+    const integration = new ProviderIntegration(hsm as any, remoteDoc, provider as any);
+    hsm.send.mockClear();
+
+    listeners.get('sync')?.forEach((cb) => cb(false));
+
+    expect(hsm.send).not.toHaveBeenCalledWith({ type: 'PROVIDER_SYNCED' });
+    expect(hsm.send).not.toHaveBeenCalledWith({ type: 'CONNECTED' });
+
+    integration.destroy();
+    remoteDoc.destroy();
+  });
 
   test('stale providerSynced resets after fork (remoteDoc cleared)', async () => {
     const ctx = await bootWithProvider('Hello world');

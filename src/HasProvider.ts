@@ -407,11 +407,19 @@ export class HasProvider extends HasLogging {
 			return Promise.resolve();
 		}
 		this.ensureRemoteDoc();
+		const provider = this._provider!;
+		if (provider.synced) {
+			this._providerSynced = true;
+			return Promise.resolve();
+		}
 		return new Promise((resolve) => {
-			this._provider!.once("synced", () => {
+			const handleSynced = (synced: boolean) => {
+				if (!synced) return;
+				provider.off("synced", handleSynced);
 				this._providerSynced = true;
 				resolve();
-			});
+			};
+			provider.on("synced", handleSynced);
 		});
 	}
 

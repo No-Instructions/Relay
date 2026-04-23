@@ -6,6 +6,7 @@ jest.mock("../src/LiveTokenStore", () => ({
 	LiveTokenStore: class MockLiveTokenStore {},
 }));
 
+import * as Y from "yjs";
 import { HasProvider } from "../src/HasProvider";
 
 describe("HasProvider", () => {
@@ -34,5 +35,47 @@ describe("HasProvider", () => {
 		expect(disconnect).toHaveBeenCalled();
 		expect(provider.synced).toBe(false);
 		expect(tokenStore.removeFromRefreshQueue).toHaveBeenCalledWith("guid-1");
+	});
+
+	test("onceProviderSynced waits for a true synced event", async () => {
+		const tokenStore = {
+			getTokenSync: () => ({ token: "", url: "", docId: "-", expiryTime: 0 }),
+			removeFromRefreshQueue: jest.fn(),
+		};
+		const loginManager = { user: null };
+
+		const provider = new HasProvider(
+			"guid-1",
+			{} as any,
+			tokenStore as any,
+			loginManager as any,
+		) as any;
+
+		let syncedHandler: ((synced: boolean) => void) | null = null;
+		provider._ydoc = new Y.Doc();
+		provider._provider = {
+			synced: false,
+			on: jest.fn((_event: string, cb: (synced: boolean) => void) => {
+				syncedHandler = cb;
+			}),
+			off: jest.fn(),
+		};
+
+		let resolved = false;
+		const syncedPromise = provider.onceProviderSynced().then(() => {
+			resolved = true;
+		});
+
+		expect(provider._provider.on).toHaveBeenCalledWith("synced", expect.any(Function));
+
+		syncedHandler?.(false);
+		await Promise.resolve();
+		expect(resolved).toBe(false);
+
+		syncedHandler?.(true);
+		await syncedPromise;
+		expect(resolved).toBe(true);
+		expect(provider.synced).toBe(true);
+		expect(provider._provider.off).toHaveBeenCalledWith("synced", syncedHandler);
 	});
 });

@@ -22,7 +22,7 @@ const providerError = curryLog("[ProviderIntegration]", "error");
  * Compatible with YSweetProvider, y-websocket, etc.
  */
 export interface YjsProvider {
-  on(event: 'sync', callback: () => void): void;
+  on(event: 'sync', callback: (synced?: boolean) => void): void;
   on(event: 'connection-close' | 'disconnect', callback: () => void): void;
   on(event: 'connection-error', callback: (error: Error) => void): void;
   off(event: string, callback: (...args: unknown[]) => void): void;
@@ -45,7 +45,7 @@ export class ProviderIntegration {
   private provider: YjsProvider;
 
   // Bound event handlers for cleanup
-  private onSync: () => void;
+  private onSync: (synced?: boolean) => void;
   private onDisconnect: () => void;
   private onError: (error: Error) => void;
   private onRemoteUpdate: (update: Uint8Array, origin: unknown) => void;
@@ -90,7 +90,9 @@ export class ProviderIntegration {
    * If remoteDoc's state vector is empty after sync, the provider lied
    * about being synced (BUG-123).
    */
-  private handleSync(): void {
+  private handleSync(synced?: boolean): void {
+    if (synced === false) return;
+
     const sv = Y.encodeStateVector(this.remoteDoc);
     if (sv.length <= 1) {
       // State vector is empty — no ops were delivered.

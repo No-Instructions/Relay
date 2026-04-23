@@ -907,9 +907,41 @@ export class BackgroundSync extends HasLogging {
 				// File does not exist
 			}
 		}
-		const intent = doc.intent;
+		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
+		const hadProviderIntegration = isDocument(doc) && doc.hasProviderIntegration();
+		const createdIdleIntegration =
+			isDocument(doc) && !isActive
+				? doc.ensureIdleProviderIntegration({
+						freshRemoteDoc: !!doc.hsm?.hasFork(),
+					})
+				: false;
+		const shouldCleanupIdleSession = () =>
+			doc.intent === "disconnected" &&
+			!(doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid));
+		const cleanupIdleSession = () => {
+			if (!shouldCleanupIdleSession()) return;
+			if (isDocument(doc)) {
+				if (createdIdleIntegration) {
+					doc.destroyIdleProviderIntegration();
+					doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
+					return;
+				}
+				if (hadProviderIntegration || doc.hasProviderIntegration()) {
+					return;
+				}
+			}
+			doc.disconnect();
+			doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
+		};
 		if (doc.destroyed) return false;
-		doc.connect();
+		const connected = await doc.connect();
+		if (!connected) {
+			if (shouldCleanupIdleSession()) {
+				cleanupIdleSession();
+			}
+			this.warn(`[syncDocWS] failed to connect provider: ${doc.path} guid=${doc.guid}`);
+			return false;
+		}
 		// Always wait for provider sync — _providerSynced fast-path resolves
 		// immediately if already synced.  Connected does not imply synced.
 		// Timeout prevents hanging the sync queue if the connection drops.
@@ -926,15 +958,16 @@ export class BackgroundSync extends HasLogging {
 		]);
 		if (timerId !== undefined) this.timeProvider.clearTimeout(timerId);
 		if (!synced) {
+			if (shouldCleanupIdleSession()) {
+				cleanupIdleSession();
+			}
 			this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
 			return false;
 		}
 
 		// promise can take some time
-		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
-		if (intent === "disconnected" && !isActive) {
-			doc.disconnect();
-			doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
+		if (shouldCleanupIdleSession()) {
+			cleanupIdleSession();
 		}
 		return true;
 	}
