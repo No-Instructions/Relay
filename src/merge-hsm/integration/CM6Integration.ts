@@ -10,6 +10,7 @@
 
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { Transaction } from "@codemirror/state";
+import { editorInfoField, getFrontMatterInfo } from "obsidian";
 import type { MergeHSM } from "../MergeHSM";
 import type { PositionedChange } from "../types";
 // Import the shared annotation to prevent feedback loops
@@ -48,6 +49,35 @@ export class CM6Integration {
 		return (
 			error.message.includes("Invalid change range") ||
 			error.message.includes("wrong length")
+		);
+	}
+
+	private shouldBypassFrontmatterTransactionFilters(
+		changes: PositionedChange[],
+	): boolean {
+		const fileInfo = this.view.state.field(editorInfoField, false) as any;
+		const propertiesInDocument =
+			fileInfo?.app?.vault?.getConfig?.("propertiesInDocument") ?? null;
+		if (propertiesInDocument === "source") {
+			return false;
+		}
+
+		const info = getFrontMatterInfo(this.view.state.doc.toString());
+		if (!info.exists) {
+			return false;
+		}
+		const frontmatterEnd = info.contentStart;
+
+		const selectionTouchesFrontmatter =
+			this.view.state.selection.ranges.some(
+				(range) => range.from <= frontmatterEnd || range.to <= frontmatterEnd,
+			);
+		if (!selectionTouchesFrontmatter) {
+			return false;
+		}
+
+		return changes.some(
+			(change) => change.from < frontmatterEnd || change.to <= frontmatterEnd,
 		);
 	}
 
@@ -143,11 +173,19 @@ export class CM6Integration {
 			this.log(
 				`dispatchToEditor: ${changes.length} changes, editor=${editorBefore} chars before`,
 			);
-			this.view.dispatch({
+			const dispatchSpec: {
+				changes: { from: number; to: number; insert: string }[];
+				annotations: unknown[];
+				filter?: boolean;
+			} = {
 				changes: cmChanges,
 				// Mark as coming from Yjs/HSM to prevent feedback loops
 				annotations: [ySyncAnnotation.of(this.view)],
-			});
+			};
+			if (this.shouldBypassFrontmatterTransactionFilters(changes)) {
+				dispatchSpec.filter = false;
+			}
+			this.view.dispatch(dispatchSpec);
 			const editorAfter = this.view.state.doc.length;
 			this.log(`dispatchToEditor: editor=${editorAfter} chars after`);
 		} catch (e) {
@@ -164,10 +202,18 @@ export class CM6Integration {
 							this.log(
 								`dispatchToEditor (rAF): applying ${changes.length} deferred changes, editor=${editorBefore} chars before`,
 							);
-							this.view.dispatch({
+							const dispatchSpec: {
+								changes: { from: number; to: number; insert: string }[];
+								annotations: unknown[];
+								filter?: boolean;
+							} = {
 								changes: cmChanges,
 								annotations: [ySyncAnnotation.of(this.view)],
-							});
+							};
+							if (this.shouldBypassFrontmatterTransactionFilters(changes)) {
+								dispatchSpec.filter = false;
+							}
+							this.view.dispatch(dispatchSpec);
 							const editorAfter = this.view.state.doc.length;
 							this.log(
 								`dispatchToEditor (rAF): editor=${editorAfter} chars after`,
@@ -179,12 +225,12 @@ export class CM6Integration {
 									changes,
 									"dispatch-rAF",
 								)
-							) {
-								throw deferredError;
+								) {
+									throw deferredError;
+								}
 							}
 						}
-					}
-				});
+					});
 			} else if (this.recoverFromDispatchError(e, changes, "dispatch")) {
 				return;
 			} else {
@@ -216,19 +262,45 @@ export class CM6Integration {
 			this.log(
 				`setEditorText: replacing ${currentText.length} chars with ${text.length} chars`,
 			);
-			this.view.dispatch({
+			const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
+			const dispatchSpec: {
+				changes: { from: number; to: number; insert: string }[];
+				annotations: unknown[];
+				filter?: boolean;
+			} = {
 				changes,
 				annotations: [ySyncAnnotation.of(this.view)],
-			});
+			};
+			if (
+				this.shouldBypassFrontmatterTransactionFilters(
+					replacementChanges,
+				)
+			) {
+				dispatchSpec.filter = false;
+			}
+			this.view.dispatch(dispatchSpec);
 		} catch (e) {
 			if (e instanceof Error && e.message.includes("update is in progress")) {
 				this.warn("setEditorText: DEFERRED due to re-entrant update");
 				requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
-						this.view.dispatch({
+						const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
+						const dispatchSpec: {
+							changes: { from: number; to: number; insert: string }[];
+							annotations: unknown[];
+							filter?: boolean;
+						} = {
 							changes,
 							annotations: [ySyncAnnotation.of(this.view)],
-						});
+						};
+						if (
+							this.shouldBypassFrontmatterTransactionFilters(
+								replacementChanges,
+							)
+						) {
+							dispatchSpec.filter = false;
+						}
+						this.view.dispatch(dispatchSpec);
 					}
 				});
 			} else if (
