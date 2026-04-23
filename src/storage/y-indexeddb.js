@@ -793,8 +793,12 @@ export class IndexeddbPersistence extends Observable {
       if (this._destroyed || !this._hasLiveDoc()) return false
     }
 
-    // Insert content
+    // Insert content. The `relay` map carries a single op so every enrolled
+    // doc produces a non-empty state vector — lets the server (and peers)
+    // tell "uploaded" from "never uploaded" for truly-empty content.
     this.doc.transact(() => {
+      const header = this.doc.getMap('relay')
+      if (!header.has('v')) header.set('v', 0)
       const ytext = this.doc.getText(fieldName)
       ytext.insert(0, content)
     })
