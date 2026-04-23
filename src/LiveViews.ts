@@ -572,38 +572,49 @@ export class LiveView<ViewType extends TextFileView>
 							`[mergeBanner] ours: ${oursContent.length} chars, theirs: ${theirsContent.length} chars`,
 						);
 
-						// Create DiskBuffer wrappers (differ expects TFile-like objects)
-						// Use DiskBuffer for BOTH sides to ensure we show correct content
 						const oursLabel = conflictData.oursLabel ?? "Editor";
 						const theirsLabel = conflictData.theirsLabel ?? "Disk";
-						const oursFile = new DiskBuffer(
+						const showRemoteOnTop =
+							oursLabel.toLowerCase().includes("local")
+							&& (
+								theirsLabel.toLowerCase().includes("remote")
+								|| theirsLabel.toLowerCase().includes("peer")
+							);
+						const topContent = showRemoteOnTop ? theirsContent : oursContent;
+						const bottomContent = showRemoteOnTop ? oursContent : theirsContent;
+						const topLabel = showRemoteOnTop ? theirsLabel : oursLabel;
+						const bottomLabel = showRemoteOnTop ? oursLabel : theirsLabel;
+
+						// Create DiskBuffer wrappers (differ expects TFile-like objects).
+						// file1 is always shown on top/left in the differ.
+						const topFile = new DiskBuffer(
 							this._parent.app.vault,
-							this.document.path + ` (${oursLabel})`,
-							oursContent,
+							this.document.path + ` (${topLabel})`,
+							topContent,
 						);
-						const theirsFile = new DiskBuffer(
+						const bottomFile = new DiskBuffer(
 							this._parent.app.vault,
-							this.document.path + ` (${theirsLabel})`,
-							theirsContent,
+							this.document.path + ` (${bottomLabel})`,
+							bottomContent,
 						);
 
 						// Transition HSM to resolving state
 						hsm.send({ type: "OPEN_DIFF_VIEW" });
 
-						// Open diff view: conflict "ours" (left) vs "theirs" (right)
+						// Open diff view: file1 is rendered on top/left.
 						this._parent.openDiffView({
-							file1: oursFile,
-							file2: theirsFile,
+							file1: topFile,
+							file2: bottomFile,
 							showMergeOption: true,
-							oursLabel,
-							theirsLabel,
+							oursLabel: topLabel,
+							theirsLabel: bottomLabel,
 							sourceVaultPath: this.document.tfile?.path,
 							onResolve: async () => {
 								this.log("[mergeBanner] HSM conflict resolved via diff view");
 
-								// The differ modifies file1 (oursFile) in-place via its contents.
+								// The differ modifies file1 in-place via its contents.
 								// Get the resolved content and apply it to HSM's localDoc.
-								const resolvedContent = oursFile.contents;
+								const resolvedContent = topFile.contents;
 
 								hsm.send({ type: "RESOLVE", contents: resolvedContent });
 
