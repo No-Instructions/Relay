@@ -20,6 +20,10 @@ import type { SharedFolderSettings } from "./SharedFolder";
 import type { MetadataBridge } from "./editorContext";
 import { S3RN } from "./S3RN";
 import { LiveViewManager } from "./LiveViews";
+import {
+	isUserAttributionOn,
+	toggleUserAttribution,
+} from "./y-codemirror.next/UserAttributionPlugin";
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
@@ -550,6 +554,25 @@ export default class Live extends Plugin {
 			name: "Configure enterprise tenant",
 			callback: () => {
 				this.openEndpointConfigurationModal();
+			},
+		});
+
+		this.addCommand({
+			id: "enable-user-attribution",
+			name: "Enable user attribution highlighting",
+			editorCheckCallback: (checking, editor) => {
+				if (isUserAttributionOn(editor)) return false;
+				if (!checking) toggleUserAttribution(editor);
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "disable-user-attribution",
+			name: "Disable user attribution highlighting",
+			editorCheckCallback: (checking, editor) => {
+				if (!isUserAttributionOn(editor)) return false;
+				if (!checking) toggleUserAttribution(editor);
+				return true;
 			},
 		});
 

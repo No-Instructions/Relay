@@ -4,10 +4,56 @@
 	import type { Awareness } from "y-protocols/awareness.js";
 	import type { RelayUser } from "../Relay";
 	import { derived, writable } from "svelte/store";
+	import { Highlighter } from "lucide-svelte";
+	import {
+		getAttributionFilter,
+		toggleUserAttribution,
+		toggleUserAttributionForUser,
+		type AttributionFilter,
+	} from "../y-codemirror.next/UserAttributionPlugin";
 
 	export let awareness: Awareness;
 	export let relayUsers: any;
 	export let vertical = false;
+	export let getEditor: (() => unknown) | undefined = undefined;
+
+	const filterStore = writable<AttributionFilter>(null);
+	$: attributionAvailable = !!getEditor;
+
+	function refreshFilter() {
+		if (!getEditor) return;
+		const ed = getEditor();
+		filterStore.set(ed ? getAttributionFilter(ed) : null);
+	}
+
+	function onToggleGlobal() {
+		if (!getEditor) return;
+		const ed = getEditor();
+		if (!ed) return;
+		toggleUserAttribution(ed);
+		refreshFilter();
+	}
+
+	function onToggleUser(userId: string) {
+		if (!getEditor) return;
+		const ed = getEditor();
+		if (!ed) return;
+		toggleUserAttributionForUser(ed, userId);
+		refreshFilter();
+	}
+
+	function attributionIsOn(filter: AttributionFilter): boolean {
+		return filter !== null;
+	}
+
+	function userIsIncluded(
+		filter: AttributionFilter,
+		userId: string,
+	): boolean {
+		if (filter === null) return false;
+		if (filter.users.size === 0) return true;
+		return filter.users.has(userId);
+	}
 
 	let showPopover = false;
 	let popoverElement: HTMLElement;
@@ -130,6 +176,7 @@
 
 	function togglePopover() {
 		showPopover = !showPopover;
+		if (showPopover) refreshFilter();
 	}
 
 	function handleClickOutside(event: MouseEvent) {
@@ -214,11 +261,53 @@
 		{#if showPopover}
 			<div class="user-popover">
 				<div class="popover-header">
-					Active Users ({$allUsers.length})
+					<span class="popover-title"
+						>Active Users ({$allUsers.length})</span
+					>
+					{#if attributionAvailable}
+						<button
+							type="button"
+							class="clickable-icon attribution-toggle"
+							class:is-active={attributionIsOn($filterStore)}
+							aria-pressed={attributionIsOn($filterStore)}
+							aria-label={attributionIsOn($filterStore)
+								? "Turn off author highlighting"
+								: "Highlight text by author"}
+							title={attributionIsOn($filterStore)
+								? "Turn off author highlighting"
+								: "Highlight text by author"}
+							on:click|stopPropagation={onToggleGlobal}
+						>
+							<Highlighter class="svg-icon lucide-highlighter" size={14} />
+						</button>
+					{/if}
 				</div>
 				<div class="user-list">
 					{#each $allUsers as user, index (user.id)}
-						<div class="user-item" class:current-user={index === 0}>
+						{@const included = userIsIncluded($filterStore, user.id)}
+						<button
+							type="button"
+							class="user-item"
+							class:current-user={index === 0}
+							class:clickable={attributionAvailable}
+							class:attribution-on={attributionAvailable &&
+								attributionIsOn($filterStore) &&
+								included}
+							class:attribution-off={attributionAvailable &&
+								attributionIsOn($filterStore) &&
+								!included}
+							aria-pressed={attributionAvailable &&
+							attributionIsOn($filterStore)
+								? included
+								: undefined}
+							disabled={!attributionAvailable}
+							on:click={() => onToggleUser(user.id)}
+							title={attributionAvailable
+								? included
+									? `Hide ${user.name}'s highlights`
+									: `Highlight ${user.name}'s writing`
+								: undefined}
+						>
 							{#if user.relayUser}
 								<div
 									class="avatar-with-border"
@@ -244,7 +333,16 @@
 							<span class="user-name"
 								>{user.name}{index === 0 ? " (You)" : ""}</span
 							>
-						</div>
+							{#if attributionAvailable && attributionIsOn($filterStore)}
+								<span
+									class="attribution-dot"
+									class:active={included}
+									style="background-color: {included
+										? user.color
+										: 'transparent'}; border-color: {user.color};"
+								></span>
+							{/if}
+						</button>
 					{/each}
 				</div>
 			</div>
@@ -393,6 +491,53 @@
 		border-bottom: 1px solid var(--background-modifier-border);
 		background: var(--background-secondary);
 		border-radius: 8px 8px 0 0;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+
+	.popover-title {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.attribution-toggle {
+		width: 22px;
+		height: 22px;
+		padding: 3px;
+		border: 0;
+		background: none;
+		box-shadow: none;
+		color: inherit;
+	}
+
+	.attribution-toggle:hover,
+	.attribution-toggle:focus,
+	.attribution-toggle:active {
+		box-shadow: none;
+	}
+
+	.attribution-toggle.is-active {
+		color: var(--text-accent);
+		background-color: var(--background-modifier-hover);
+	}
+
+	.attribution-dot {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		border: 1.5px solid;
+		margin-left: auto;
+		flex-shrink: 0;
+	}
+
+	.user-item.clickable {
+		cursor: pointer;
+	}
+
+	.user-item.attribution-off {
+		opacity: 0.55;
 	}
 
 	.user-list {
@@ -405,12 +550,37 @@
 		display: flex;
 		align-items: center;
 		gap: 12px;
+		width: 100%;
 		padding: 6px 16px;
+		border: 0;
+		background: none;
+		box-shadow: none;
+		font: inherit;
+		color: inherit;
+		height: auto;
+		min-height: 0;
+		text-align: left;
 		cursor: default;
+		justify-content: flex-start;
 	}
 
-	.user-item:hover {
+	.user-item:hover:not(:disabled) {
 		background-color: var(--background-modifier-hover);
+		box-shadow: none;
+	}
+
+	.user-item:focus,
+	.user-item:active {
+		box-shadow: none;
+	}
+
+	.user-item:focus-visible {
+		outline: 1px solid var(--background-modifier-border-focus);
+		outline-offset: -2px;
+	}
+
+	.user-item:disabled {
+		opacity: 1;
 	}
 
 	.user-name {

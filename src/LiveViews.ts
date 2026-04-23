@@ -26,6 +26,11 @@ import {
 	yRemoteSelections,
 	yRemoteSelectionsTheme,
 } from "./y-codemirror.next/RemoteSelections";
+import {
+	attributionFilterField,
+	userAttributionPlugin,
+	userAttributionTheme,
+} from "./y-codemirror.next/UserAttributionPlugin";
 import { InvalidLinkPlugin } from "./markdownView/InvalidLinkExtension";
 import * as Differ from "./differ/differencesView";
 import type { CanvasView } from "./CanvasView";
@@ -834,6 +839,7 @@ export class LiveView<ViewType extends TextFileView>
 							? { anchor: inlineTitle, position: "afterend" }
 							: null;
 					},
+					getEditor: () => this.view.editor,
 				},
 				this._parent.sharedFolders.manager.users,
 			);
@@ -1576,6 +1582,9 @@ export class LiveViewManager {
 			LiveNode,
 			yRemoteSelectionsTheme,
 			yRemoteSelections,
+			attributionFilterField,
+			userAttributionTheme,
+			userAttributionPlugin,
 			InvalidLinkPlugin,
 		]);
 		this.workspace.updateOptions();

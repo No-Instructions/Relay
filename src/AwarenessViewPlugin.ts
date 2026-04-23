@@ -26,6 +26,11 @@ export interface AwarenessHost {
 	configureContainer?: (el: HTMLElement) => void;
 	/** Lay out the stack vertically (column) instead of horizontally (row). */
 	vertical?: boolean;
+	/**
+	 * Optional accessor for the CM6-backed editor this awareness surface is
+	 * attached to. When present, the popover exposes attribution controls.
+	 */
+	getEditor?: () => unknown;
 }
 
 export class AwarenessViewPlugin extends HasLogging {
@@ -116,6 +121,7 @@ export class AwarenessViewPlugin extends HasLogging {
 					awareness: provider.awareness,
 					relayUsers: this.relayUsersStore,
 					vertical: this.host.vertical ?? false,
+					getEditor: this.host.getEditor,
 				},
 			});
 
