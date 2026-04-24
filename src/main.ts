@@ -1164,11 +1164,33 @@ export default class Live extends Plugin {
 			}
 		};
 
+		const captureEditorContentForHSM = (file: TFile, contents: string) => {
+			try {
+				const folder = plugin.sharedFolders.lookup(file.path);
+				if (folder) {
+					const doc = folder.proxy.getFile(file);
+					if (doc && isDocument(doc) && doc.hsm) {
+						doc.hsm.captureEditorText(contents);
+					}
+				}
+			} catch (e) {
+				plugin.debug('Error capturing editor content:', e);
+			}
+		};
+
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old: any) {
-				return function (file: any) {
+				return function (this: MarkdownView, file: TFile) {
 					if (file instanceof TFile) {
+						try {
+							if (typeof this.getViewData === 'function') {
+								captureEditorContentForHSM(file, this.getViewData());
+							}
+						} catch {
+							// If Obsidian cannot provide view data here, keep
+							// the last CM6 snapshot already held by the HSM.
+						}
 						sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_UNLOADED', path: file.path });
 					}
 					// @ts-ignore

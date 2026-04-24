@@ -542,6 +542,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 	}
 
+	captureEditorText(contents: string): void {
+		this.lastKnownEditorText = contents;
+	}
+
 	getRemoteDoc(): Y.Doc | null {
 		return this.remoteDoc;
 	}
@@ -1502,9 +1506,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.handleResolveHunk(event as ResolveHunkEvent);
 			},
 			beginReleaseLock: () => {
-				// Capture definitive editor content before releasing the ref.
-				// deactivateEditor uses this to determine the correct LCA.
-				if (this._editorViewRef) {
+				// Capture definitive editor content before releasing the ref
+				// only while Obsidian still reports the file as open. After
+				// onUnloadFile, view refs may be recycled or cleared; that
+				// lifecycle hook captures the final text explicitly.
+				if (this._editorViewRef && this._obsidianFileOpen) {
 					this.lastKnownEditorText = this._editorViewRef.getViewData();
 				}
 				this._editorViewRef = null;

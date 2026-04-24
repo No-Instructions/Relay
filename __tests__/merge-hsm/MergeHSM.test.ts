@@ -996,6 +996,7 @@ describe('MergeHSM', () => {
 
       await loadAndActivate(t, 'hello', { editorViewRef: ref });
       expectState(t, 'active.tracking');
+      t.send({ type: 'OBSIDIAN_FILE_OPENED', path: 'test.md' });
 
       // Simulate DISPATCH_CM6 changing the editor without a CM6_CHANGE echo
       // (ySyncAnnotation suppresses the echo in real code). The HSM's
@@ -1007,6 +1008,30 @@ describe('MergeHSM', () => {
 
       // beginReleaseLock should have read the definitive content from the editor
       expect(t.state.lastKnownEditorText).toBe('hello world');
+    });
+
+    test('release keeps lifecycle-captured editor content when view ref is cleared', async () => {
+      const t = await createTestHSM();
+      const original = 'hello';
+      const edited = 'hello world';
+      const ref = { getViewData: () => '' };
+
+      await loadAndActivate(t, original, { editorViewRef: ref });
+      expectState(t, 'active.tracking');
+      t.send({ type: 'OBSIDIAN_FILE_OPENED', path: 'test.md' });
+
+      t.send(cm6Insert(5, ' world', edited));
+      expectLocalDocText(t, edited);
+
+      t.send(saveComplete(2000, 'saved-hash'));
+      t.hsm.captureEditorText(edited);
+      t.send({ type: 'OBSIDIAN_FILE_UNLOADED', path: 'test.md' });
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup?.();
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lastKnownEditorText).toBe(edited);
+      expect(t.state.lca?.contents).toBe(edited);
     });
 
     test('CANCEL from resolving returns to bannerShown', async () => {
