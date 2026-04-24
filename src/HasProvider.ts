@@ -137,12 +137,7 @@ export class HasProvider extends HasLogging {
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
-				this.log(`[${this.path}] disconnection event`, event);
-				const shouldConnect = this._provider?.canReconnect() ?? false;
-				this.disconnect();
-				if (shouldConnect) {
-					this.connect();
-				}
+				this.log(`[${this.path}] connection error`, event);
 			},
 		);
 		connectionErrorSub.on();

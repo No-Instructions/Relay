@@ -78,4 +78,39 @@ describe("HasProvider", () => {
 		expect(provider.synced).toBe(true);
 		expect(provider._provider.off).toHaveBeenCalledWith("synced", syncedHandler);
 	});
+
+	test("connection errors leave provider retry/backoff in charge", async () => {
+		const token = {
+			token: "token",
+			url: "ws://example.com",
+			docId: "room",
+			expiryTime: Date.now() + 60_000,
+		};
+		const tokenStore = {
+			getTokenSync: () => token,
+			getToken: jest.fn(() => Promise.resolve(token)),
+			removeFromRefreshQueue: jest.fn(),
+		};
+		const loginManager = { user: null };
+
+		const provider = new HasProvider(
+			"guid-1",
+			{} as any,
+			tokenStore as any,
+			loginManager as any,
+		) as any;
+		provider.ensureRemoteDoc();
+		provider._provider.shouldConnect = true;
+
+		const disconnectSpy = jest.spyOn(provider, "disconnect");
+		const connectSpy = jest.spyOn(provider, "connect");
+
+		provider._provider.emit("connection-error", [{} as Event, provider._provider]);
+		await Promise.resolve();
+
+		expect(disconnectSpy).not.toHaveBeenCalled();
+		expect(connectSpy).not.toHaveBeenCalled();
+
+		provider.destroy();
+	});
 });

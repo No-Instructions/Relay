@@ -187,6 +187,9 @@ const setupWS = (provider: YSweetProvider) => {
 		provider.synced = false;
 
 		websocket.onmessage = (event) => {
+			if (provider.ws !== websocket) {
+				return;
+			}
 			provider.wsLastMessageReceived = time.getUnixTime();
 			const encoder = readMessage(provider, new Uint8Array(event.data), true);
 			if (encoding.length(encoder) > 1) {
@@ -194,13 +197,20 @@ const setupWS = (provider: YSweetProvider) => {
 			}
 		};
 		websocket.onerror = (event) => {
+			if (provider.ws !== websocket) {
+				return;
+			}
 			provider.emit("connection-error", [event, provider]);
 		};
 		websocket.onclose = (event) => {
+			if (provider.ws !== websocket) {
+				return;
+			}
 			provider.emit("connection-close", [event, provider]);
 			provider.ws = null;
 			provider.wsconnecting = false;
 			provider.wsConnectStartTime = 0;
+			const wasConnected = provider.wsconnected;
 			if (provider.wsconnected) {
 				provider.wsconnected = false;
 				provider.synced = false;
@@ -212,29 +222,34 @@ const setupWS = (provider: YSweetProvider) => {
 					),
 					provider,
 				);
-				provider.emit("status", [
-					{
-						status: "disconnected",
-						intent: provider.intent,
-					},
-				]);
 			} else {
 				provider.wsUnsuccessfulReconnects++;
 			}
+			provider.emit("status", [
+				{
+					status: "disconnected",
+					intent: provider.intent,
+				},
+			]);
 			// Start with no reconnect timeout and increase timeout by
 			// using exponential backoff starting with 100ms
 			if (provider.canReconnect()) {
-				setTimeout(
-					setupWS,
-					math.min(
-						math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
-						provider.maxBackoffTime,
-					),
-					provider,
+				const delay = math.min(
+					math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
+					provider.maxBackoffTime,
 				);
+				provider._reconnectTimeout = setTimeout(() => {
+					provider._reconnectTimeout = null;
+					setupWS(provider);
+				}, delay);
+			} else if (!wasConnected) {
+				provider.wsUnsuccessfulReconnects = provider.maxConnectionErrors;
 			}
 		};
 		websocket.onopen = () => {
+			if (provider.ws !== websocket) {
+				return;
+			}
 			provider.wsLastMessageReceived = time.getUnixTime();
 			provider.wsconnecting = false;
 			provider.wsconnected = true;
@@ -401,6 +416,7 @@ export class YSweetProvider extends Observable<string> {
 	_awarenessUpdateHandler: (...args: any[]) => any;
 	_unloadHandler: (...args: any[]) => any;
 	_checkInterval: ReturnType<typeof setInterval> | number;
+	_reconnectTimeout: ReturnType<typeof setTimeout> | null;
 	maxConnectionErrors: number;
 	eventSubscriptions: Set<string>;
 	eventCallbacks: Map<string, EventCallback[]>;
@@ -565,6 +581,7 @@ export class YSweetProvider extends Observable<string> {
 				this.ws?.close();
 			}
 		}, messageReconnectTimeout / 10);
+		this._reconnectTimeout = null;
 		if (connect) {
 			this.connect();
 		}
@@ -633,6 +650,10 @@ export class YSweetProvider extends Observable<string> {
 			clearInterval(this._resyncInterval);
 		}
 		clearInterval(this._checkInterval);
+		if (this._reconnectTimeout !== null) {
+			clearTimeout(this._reconnectTimeout);
+			this._reconnectTimeout = null;
+		}
 
 		if (this.ws) {
 			this.ws.onopen = null;
@@ -731,6 +752,10 @@ export class YSweetProvider extends Observable<string> {
 		this.wsconnecting = false;
 		this.wsConnectStartTime = 0;
 		this.synced = false;
+		if (this._reconnectTimeout !== null) {
+			clearTimeout(this._reconnectTimeout);
+			this._reconnectTimeout = null;
+		}
 		this.disconnectBc();
 		if (this.ws !== null) {
 			this.ws.close();
@@ -740,12 +765,21 @@ export class YSweetProvider extends Observable<string> {
 
 
 	connect() {
+		const wasDisconnected = !this.shouldConnect;
 		this.shouldConnect = true;
+		if (this._reconnectTimeout !== null) {
+			return;
+		}
 		if (!this.wsconnected && this.ws === null) {
-			// Explicit connect requests should start a fresh retry budget.
+			// User-initiated reconnects should start a fresh retry budget.
 			// Without this, a previous exhausted reconnect cycle can leave the
 			// provider permanently offline until the plugin is recreated.
-			this.wsUnsuccessfulReconnects = 0;
+			if (
+				wasDisconnected ||
+				this.wsUnsuccessfulReconnects >= this.maxConnectionErrors
+			) {
+				this.wsUnsuccessfulReconnects = 0;
+			}
 			setupWS(this);
 			this.connectBc();
 		}
