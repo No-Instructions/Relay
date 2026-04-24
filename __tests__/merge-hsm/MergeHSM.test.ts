@@ -1987,6 +1987,33 @@ describe('MergeHSM', () => {
       expectNoEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
       expectState(t, 'idle.synced');
     });
+
+    test('metadata-only remote update during active tracking is absorbed on release', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'stable', mtime: 1000 });
+      await sendAcquireLockToTracking(t, 'stable');
+      t.clearEffects();
+
+      const remoteDoc = t.hsm.getRemoteDoc()!;
+      const beforeMetadata = Y.encodeStateVector(remoteDoc);
+      const pud = new Y.PermanentUserData(remoteDoc);
+      pud.setUserMapping(remoteDoc, remoteDoc.clientID, 'remote-user');
+      const metadataUpdate = Y.encodeStateAsUpdate(remoteDoc, beforeMetadata);
+
+      expect(remoteDoc.getText('contents').toString()).toBe('stable');
+
+      t.send({ type: 'REMOTE_UPDATE', update: metadataUpdate, affectsText: false });
+
+      expectLocalDocText(t, 'stable');
+      expect(t.hsm.getLocalDoc()!.getMap('users').size).toBeGreaterThan(0);
+      expectNoEffect(t.effects, { type: 'WRITE_DISK' });
+
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+
+      expectState(t, 'idle.synced');
+      expectNoEffect(t.effects, { type: 'WRITE_DISK' });
+    });
   });
 
   // ===========================================================================

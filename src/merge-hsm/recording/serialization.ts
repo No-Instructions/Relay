@@ -73,6 +73,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
       return {
         type: 'REMOTE_UPDATE',
         update: uint8ArrayToBase64(event.update),
+        ...(event.affectsText !== undefined ? { affectsText: event.affectsText } : {}),
       };
 
     case 'PERSISTENCE_LOADED':
@@ -149,6 +150,7 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
       return {
         type: 'REMOTE_UPDATE',
         update: base64ToUint8Array(event.update),
+        ...(event.affectsText !== undefined ? { affectsText: event.affectsText } : {}),
       };
 
     case 'PERSISTENCE_LOADED':

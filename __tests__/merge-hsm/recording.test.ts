@@ -54,6 +54,7 @@ describe('HSM Recording', () => {
       const event: RemoteUpdateEvent = {
         type: 'REMOTE_UPDATE',
         update: new Uint8Array([1, 2, 3, 4, 5]),
+        affectsText: false,
       };
 
       const serialized = serializeEvent(event);
@@ -63,6 +64,7 @@ describe('HSM Recording', () => {
       const deserialized = deserializeEvent(serialized) as RemoteUpdateEvent;
       expect(deserialized.type).toBe('REMOTE_UPDATE');
       expect(deserialized.update).toEqual(event.update);
+      expect(deserialized.affectsText).toBe(false);
     });
 
     it('serializes and deserializes CM6_CHANGE event', () => {

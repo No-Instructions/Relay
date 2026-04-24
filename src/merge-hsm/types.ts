@@ -250,6 +250,11 @@ export interface DiskChangedEvent {
 export interface RemoteUpdateEvent {
 	type: "REMOTE_UPDATE";
 	update: Uint8Array;
+	/**
+	 * Whether applying this update changed Y.Text("contents").
+	 * Undefined means the producer did not classify the update.
+	 */
+	affectsText?: boolean;
 }
 
 export interface SaveCompleteEvent {

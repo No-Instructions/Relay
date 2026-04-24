@@ -43,6 +43,7 @@ export class ProviderIntegration {
   private hsm: MergeHSM;
   private remoteDoc: Y.Doc;
   private provider: YjsProvider;
+  private lastRemoteText: string;
 
   // Bound event handlers for cleanup
   private onSync: (synced?: boolean) => void;
@@ -58,6 +59,7 @@ export class ProviderIntegration {
     this.hsm = hsm;
     this.remoteDoc = remoteDoc;
     this.provider = provider;
+    this.lastRemoteText = this.readRemoteText();
 
     // Create bound handlers
     this.onSync = this.handleSync.bind(this);
@@ -124,6 +126,10 @@ export class ProviderIntegration {
    * Handle updates received on remoteDoc from the provider.
    */
   private handleRemoteUpdate(update: Uint8Array, origin: unknown): void {
+    const currentRemoteText = this.readRemoteText();
+    const affectsText = currentRemoteText !== this.lastRemoteText;
+    this.lastRemoteText = currentRemoteText;
+
     // Skip updates originated by the HSM or this integration (our own writes)
     if (origin === this.hsm || origin === this) {
       return;
@@ -133,7 +139,11 @@ export class ProviderIntegration {
     // (including active.entering substates) can accumulate or apply it.
     // In active.tracking the applyRemoteToRemoteDoc action is a harmless
     // no-op because the provider already applied the update to remoteDoc.
-    this.hsm.send({ type: 'REMOTE_UPDATE', update });
+    this.hsm.send({ type: 'REMOTE_UPDATE', update, affectsText });
+  }
+
+  private readRemoteText(): string {
+    return this.remoteDoc.getText('contents').toString();
   }
 
   /**

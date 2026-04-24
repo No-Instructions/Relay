@@ -62,7 +62,7 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
-import { isEmptyDoc, stateVectorIsAhead, yjsUpdateIsNoop } from "./state-vectors";
+import { isEmptyDoc, stateVectorIsAhead, stateVectorsEqual, yjsUpdateIsNoop } from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
@@ -254,7 +254,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// Events like REMOTE_UPDATE and DISK_CHANGED are accumulated during loading
 	// and replayed after mode transition (to idle.* or active.*)
 	private _accumulatedEvents: Array<
-		| { type: "REMOTE_UPDATE"; update: Uint8Array }
+		| { type: "REMOTE_UPDATE"; update: Uint8Array; affectsText?: boolean }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
 		| { type: "CM6_CHANGE"; changes: any[]; docText: string; userEvent?: string; viewId?: string }
 	> = [];
@@ -1519,6 +1519,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// === Active entering/tracking actions ===
 			accumulateRemoteUpdate: (_hsm, event) => {
 				const update = (event as any).update as Uint8Array;
+				const affectsText = (event as any).affectsText as boolean | undefined;
 				const existingIdx = this._accumulatedEvents.findIndex(
 					(e) => e.type === "REMOTE_UPDATE",
 				);
@@ -1526,13 +1527,25 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					const existing = this._accumulatedEvents[existingIdx] as {
 						type: "REMOTE_UPDATE";
 						update: Uint8Array;
+						affectsText?: boolean;
 					};
+					const mergedAffectsText =
+						existing.affectsText === true || affectsText === true
+							? true
+							: existing.affectsText === false && affectsText === false
+								? false
+								: undefined;
 					this._accumulatedEvents[existingIdx] = {
 						type: "REMOTE_UPDATE",
 						update: Y.mergeUpdates([existing.update, update]),
+						...(mergedAffectsText !== undefined ? { affectsText: mergedAffectsText } : {}),
 					};
 				} else {
-					this._accumulatedEvents.push({ type: "REMOTE_UPDATE", update });
+					this._accumulatedEvents.push({
+						type: "REMOTE_UPDATE",
+						update,
+						...(affectsText !== undefined ? { affectsText } : {}),
+					});
 				}
 			},
 			accumulateCM6Change: (_hsm, event) => {
@@ -1577,6 +1590,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			mergeRemoteToLocal: () => this._bridge.flushInbound(),
 			repairFrontmatter: () => this.repairFrontmatterFromMap(),
+			absorbTextPreservingRemoteUpdate: (_hsm, event) =>
+				this.absorbTextPreservingRemoteUpdate(event as MergeEvent),
 			assertConvergence: () => this._bridge.assertConvergence(),
 			replayAccumulatedEvents: () => this.replayAccumulatedEvents(),
 			applyThreeWayMergeResult: (_hsm, event) => {
@@ -2601,6 +2616,32 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		for (const event of events) {
 			// Re-send the event - since we're now in idle/active mode, it will be processed normally
 			this.send(event as MergeEvent);
+		}
+	}
+
+	private absorbTextPreservingRemoteUpdate(event: MergeEvent): void {
+		if (event.type !== "REMOTE_UPDATE" || event.affectsText !== false) return;
+		if (!this._lca || !this.localDoc || !this.remoteDoc) return;
+		if (this._fork || this._conflict) return;
+
+		const localText = this.localDoc.getText("contents").toString();
+		const remoteText = this.remoteDoc.getText("contents").toString();
+		if (localText !== remoteText || localText !== this._lca.contents) return;
+		if (this._disk && this._disk.hash !== this._lca.meta.hash) return;
+
+		const localSV = Y.encodeStateVector(this.localDoc);
+		const remoteSV = Y.encodeStateVector(this.remoteDoc);
+		if (!stateVectorsEqual(localSV, remoteSV)) return;
+
+		this._localStateVector = localSV;
+		this._remoteStateVector = remoteSV;
+
+		if (!stateVectorsEqual(this._lca.stateVector, localSV)) {
+			this._setLCA({
+				...this._lca,
+				stateVector: localSV,
+			});
+			this.emitPersistState();
 		}
 	}
 

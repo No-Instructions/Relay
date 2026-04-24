@@ -106,6 +106,48 @@ describe('Provider Integration Lifecycle', () => {
     remoteDoc.destroy();
   });
 
+  test('remote update events report whether note text changed', () => {
+    const remoteDoc = new Y.Doc();
+    remoteDoc.getText('contents').insert(0, 'stable');
+    const provider = {
+      synced: false,
+      connectionState: { status: 'connected' },
+      on: jest.fn(),
+      off: jest.fn(),
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      destroy: jest.fn(),
+    };
+    const hsm = { send: jest.fn() };
+
+    const integration = new ProviderIntegration(hsm as any, remoteDoc, provider as any);
+    hsm.send.mockClear();
+
+    remoteDoc.transact(() => {
+      remoteDoc.getMap('users').set('remote-user', remoteDoc.clientID);
+    }, 'provider');
+
+    expect(hsm.send).toHaveBeenLastCalledWith({
+      type: 'REMOTE_UPDATE',
+      update: expect.any(Uint8Array),
+      affectsText: false,
+    });
+
+    hsm.send.mockClear();
+    remoteDoc.transact(() => {
+      remoteDoc.getText('contents').insert(6, ' text');
+    }, 'provider');
+
+    expect(hsm.send).toHaveBeenLastCalledWith({
+      type: 'REMOTE_UPDATE',
+      update: expect.any(Uint8Array),
+      affectsText: true,
+    });
+
+    integration.destroy();
+    remoteDoc.destroy();
+  });
+
   test('stale providerSynced resets after fork (remoteDoc cleared)', async () => {
     const ctx = await bootWithProvider('Hello world');
 

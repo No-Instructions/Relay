@@ -375,7 +375,15 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
 			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
-			REMOTE_UPDATE: { target: 'active.tracking', actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal', 'repairFrontmatter'] },
+			REMOTE_UPDATE: {
+				target: 'active.tracking',
+				actions: [
+					'applyRemoteToRemoteDoc',
+					'mergeRemoteToLocal',
+					'repairFrontmatter',
+					'absorbTextPreservingRemoteUpdate',
+				],
+			},
 			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },
 			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
 			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
