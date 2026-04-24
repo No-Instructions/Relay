@@ -2885,6 +2885,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (!this.localDoc) return;
 
 		const ytext = this.localDoc.getText("contents");
+		const ymap = this.localDoc.getMap("frontmatter");
 		this.localTextObserver = (event: Y.YTextEvent, tr: Y.Transaction) => {
 			// Skip when suppressed (during machine edit rewind)
 			if (this._suppressLocalObserver) return;
@@ -2905,7 +2906,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// When the same transaction also updated Y.Map("frontmatter"),
 			// dispatch the Y.Map-derived frontmatter instead of raw Y.Text delta.
 			// This avoids interleaved character-level ops corrupting frontmatter in CM6.
-			const ymap = this.localDoc!.getMap("frontmatter");
 			const ymapChangedInTx = tr.changed.has(ymap as any);
 			if (ymapChangedInTx && this._yaml) {
 				// Flag for deferred repairFrontmatterFromMap action
