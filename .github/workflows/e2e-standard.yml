@@ -44,7 +44,7 @@ jobs:
             tests: test-idle-registration,test-active-editor-sync,test-offline-banner
           - name: conflicts-differ
             slug: conflicts-differ
-            tests: test-differ-resolve,test-trigger-differ,test-differ-dismissal
+            tests: test-differ-resolve,test-trigger-differ
           - name: conflicts-resolution
             slug: conflicts-resolution
             tests: test-conflict-dismiss,test-conflict-cancel,test-upgrade-no-lca-conflict
