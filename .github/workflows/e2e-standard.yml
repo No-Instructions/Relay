@@ -41,7 +41,7 @@ jobs:
             tests: test-share-folder,test-in-note-status
           - name: sync-state
             slug: sync-state
-            tests: test-idle-registration,test-active-editor-sync,test-offline-banner
+            tests: test-idle-registration,test-active-editor-sync,test-offline-banner,test-binary-free-user
           - name: conflicts-differ
             slug: conflicts-differ
             tests: test-differ-resolve,test-trigger-differ,test-differ-dismissal
