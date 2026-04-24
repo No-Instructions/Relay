@@ -911,6 +911,7 @@ export class YSweetProvider extends Observable<string> {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			const encoder = encoding.createEncoder();
 			encoding.writeVarUint(encoder, messageQuerySubdocs);
+			encoding.writeVarUint(encoder, 0);
 			this.ws.send(encoding.toUint8Array(encoder));
 			console.log('[YSweetProvider] sent MSG_QUERY_SUBDOCS');
 		}
