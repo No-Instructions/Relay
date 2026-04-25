@@ -53,6 +53,19 @@
 .nav-folder-title-content {
 	margin-inline-end: auto;
 }
+.system3-sync-status-folder {
+	position: relative;
+	cursor: pointer;
+}
+
+.system3-sync-status-folder .nav-folder-title-content {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .inline-icon {
 	display: inline-block;
 	margin-right: auto;
@@ -140,6 +153,20 @@
 	font-size: var(--font-ui-medium);
 	font: var(--font-interface-theme);
 	text-shadow: var(--input-shadow);
+}
+
+.nav-file-title.system3-conflict::after {
+	content: "";
+	display: inline-block;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background-color: var(--text-warning, var(--color-orange));
+	box-shadow: 0 0 0 1px var(--background-primary);
+	margin-inline-start: auto;
+	margin-inline-end: 6px;
+	align-self: center;
+	flex-shrink: 0;
 }
 
 .system3-syncing:not(.is-active) {

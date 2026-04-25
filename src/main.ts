@@ -62,7 +62,12 @@ import { HSMStore } from "./merge-hsm/persistence";
 import { awaitOnReload } from "./reloadUtils";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
-import { SyncStatusModal } from "./ui/SyncStatusModal";
+import {
+	SyncStatusView,
+	VIEW_TYPE_SYNC_STATUS,
+	detachSyncStatusViews,
+	openSyncStatusView,
+} from "./ui/SyncStatusView";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
@@ -116,6 +121,7 @@ export default class Live extends Plugin {
 	webviewerPatched = false;
 	openModals: Modal[] = [];
 	loadTime?: number;
+	private _unloading = false;
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
 	notifier!: ObsidianNotifier;
@@ -653,6 +659,19 @@ export default class Live extends Plugin {
 			this._hsmStore,
 		);
 
+		// Register the sync-status view factory before the workspace layout
+		// is restored. Obsidian restores leaves during boot; leaves of an
+		// unregistered type fall back to a placeholder and the pane wouldn't
+		// come back after a restart.
+		this.registerView(
+			VIEW_TYPE_SYNC_STATUS,
+			(leaf) =>
+				new SyncStatusView(leaf, {
+					sharedFolders: this.sharedFolders,
+					timeProvider: this.timeProvider,
+				}),
+		);
+
 		this.tokenStore = new LiveTokenStore(
 			this.loginManager,
 			this.timeProvider,
@@ -675,6 +694,21 @@ export default class Live extends Plugin {
 		}
 
 		this.app.workspace.onLayoutReady(() => {
+			if (this._unloading) return;
+
+			detachSyncStatusViews(this.app.workspace);
+
+			// Ensure the sync-status pane has a leaf so its icon shows in the
+			// right-sidebar tab strip like Search/Bookmarks/etc. Not focused,
+			// so it doesn't steal attention on startup.
+			const leaf = this.app.workspace.getRightLeaf(false);
+			if (leaf) {
+				void leaf.setViewState({
+					type: VIEW_TYPE_SYNC_STATUS,
+					active: false,
+				});
+			}
+
 			this.sharedFolders.load();
 			this._liveViews = new LiveViewManager(
 				this.app,
@@ -1343,9 +1377,11 @@ export default class Live extends Plugin {
 						id: `show-sync-status-${folder.guid}`,
 						name: `Show sync status: ${folder.name}`,
 						callback: () => {
-							const modal = new SyncStatusModal(this.app, folder, this.timeProvider);
-							this.openModals.push(modal);
-							modal.open();
+							void openSyncStatusView(
+								this.app.workspace,
+								folder,
+								this.timeProvider,
+							);
 						},
 					});
 				});
@@ -1477,6 +1513,7 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
+		this._unloading = true;
 		const teardownStep = (name: string, fn: () => void) => {
 			this.debug(`[onunload] ${name}`);
 			try {
@@ -1517,6 +1554,7 @@ export default class Live extends Plugin {
 
 		teardownStep("detachLeavesOfType", () => {
 			this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_SYNC_STATUS);
 		});
 
 		// Explicitly destroy the update manager

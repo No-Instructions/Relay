@@ -2,6 +2,7 @@ import { App, Modal } from "obsidian";
 import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte";
 import type { SharedFolder } from "../SharedFolder";
 import type { TimeProvider } from "../TimeProvider";
+import { getSyncStatusActivityStore } from "./SyncStatusActivity";
 
 export class SyncStatusModal extends Modal {
 	private component?: SyncStatusModalContent;
@@ -24,6 +25,10 @@ export class SyncStatusModal extends Modal {
 				sharedFolder: this.sharedFolder,
 				app: this.app,
 				timeProvider: this.timeProvider,
+				activityStore: getSyncStatusActivityStore(
+					this.sharedFolder,
+					this.timeProvider,
+				),
 			},
 		});
 	}

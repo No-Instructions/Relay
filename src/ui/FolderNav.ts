@@ -17,6 +17,7 @@ import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
+import type { SyncStatus } from "src/merge-hsm/types";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog, metrics } from "src/debug";
@@ -150,6 +151,23 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 }
 
 type Unsubscribe = () => void;
+
+function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
+	const mergeManager = sharedFolder.mergeManager;
+	if (!mergeManager) return false;
+
+	const file = sharedFolder.files.get(guid) as any;
+	const hsm = file?.hsm;
+	if (hsm) {
+		const statePath = hsm.statePath as string | undefined;
+		if (statePath?.startsWith("active.conflict")) return true;
+		if (statePath === "idle.diverged") return true;
+		if (typeof hsm.getConflictData === "function" && hsm.getConflictData()) return true;
+		return false;
+	}
+	const status = mergeManager.syncStatus.get<SyncStatus>(guid);
+	return status?.status === "conflict";
+}
 
 class PillDecoration {
 	el: HTMLElement;
@@ -553,6 +571,79 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	}
 }
 
+class FileConflictDecoration implements Destroyable {
+	private applied = false;
+	private destroyed = false;
+	private unsubscribe: Unsubscribe = () => {};
+
+	constructor(
+		private el: HTMLElement,
+		private sharedFolder: SharedFolder,
+		private guid: string,
+	) {
+		const mergeManager = this.sharedFolder.mergeManager;
+		if (mergeManager) {
+			this.unsubscribe = mergeManager.syncStatus.subscribe(() => this.update());
+		}
+		this.sharedFolder.onDestroy(() => this.destroy());
+		this.update();
+	}
+
+	private update() {
+		if (this.destroyed) return;
+		const conflict = fileHasConflict(this.sharedFolder, this.guid);
+		if (conflict && !this.applied) {
+			this.el.classList.add("system3-conflict");
+			this.applied = true;
+		} else if (!conflict && this.applied) {
+			this.el.classList.remove("system3-conflict");
+			this.applied = false;
+		}
+	}
+
+	destroy() {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		this.unsubscribe();
+		this.unsubscribe = () => {};
+		if (this.applied) {
+			this.el.classList.remove("system3-conflict");
+			this.applied = false;
+		}
+	}
+}
+
+class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
+	visitFile(
+		file: TFile,
+		item: FileItem,
+		storage?: FileConflictDecoration,
+		sharedFolder?: SharedFolder,
+	): FileConflictDecoration | null {
+		if (
+			sharedFolder &&
+			sharedFolder.ready &&
+			Document.checkExtension(file.path)
+		) {
+			try {
+				const vpath = sharedFolder.getVirtualPath(file.path);
+				const guid = sharedFolder.syncStore.get(vpath);
+				if (!guid) {
+					if (storage) storage.destroy();
+					return null;
+				}
+				if (storage) return storage;
+				return new FileConflictDecoration(item.selfEl, sharedFolder, guid);
+			} catch (e) {
+				if (storage) storage.destroy();
+				return null;
+			}
+		}
+		if (storage) storage.destroy();
+		return null;
+	}
+}
+
 class FileExplorerWalker {
 	fileExplorer: WorkspaceLeaf;
 	sharedFolders: SharedFolders;
@@ -813,6 +904,7 @@ export class FolderNavigationDecorations {
 		});
 		visitors.push(new FilePillVisitor());
 		visitors.push(new NotSyncedPillVisitor());
+		visitors.push(new FileConflictVisitor());
 		return visitors;
 	}
 

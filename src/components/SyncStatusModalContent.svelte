@@ -5,6 +5,10 @@
 	import type { StatePath } from "../merge-hsm/types";
 	import type { SyncStatus } from "../merge-hsm/types";
 	import type { TimeProvider } from "../TimeProvider";
+	import type {
+		SyncStatusActivityEntry,
+		SyncStatusActivityStore,
+	} from "../ui/SyncStatusActivity";
 	import {
 		CheckCircle,
 		AlertTriangle,
@@ -17,56 +21,7 @@
 	export let sharedFolder: SharedFolder;
 	export let app: App;
 	export let timeProvider: TimeProvider;
-
-	const MAX_ACTIVITY = 30;
-
-	// ── Author tracking (from CBOR events) ─────────────────────────────
-
-	const lastAuthorByGuid = new Map<string, string>();
-	const localUserId = (sharedFolder as any).loginManager?.user?.id as string | undefined;
-
-	function resolveAuthorName(userId: string | undefined): string {
-		if (!userId) return "";
-		if (userId === localUserId) return "you";
-		// Try awareness for display name
-		const provider = sharedFolder._provider;
-		if (provider?.awareness) {
-			for (const [, state] of provider.awareness.getStates()) {
-				const user = state?.user;
-				if (user?.id === userId && user?.name) {
-					return user.name;
-				}
-			}
-		}
-		return userId.slice(0, 8);
-	}
-
-	function extractGuidFromDocId(docId: string): string | null {
-		const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-		const match = docId.match(new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"));
-		return match ? match[1] : null;
-	}
-
-	// Guids that received CBOR events since last recordActivity() call
-	const recentCborGuids = new Map<string, string | undefined>();
-
-	function handleCborEvent(event: any) {
-		const guid = extractGuidFromDocId(event.doc_id ?? "");
-		if (!guid || !sharedFolder.files.has(guid)) return;
-		// Skip own-user echoes — the server echoes back our own updates.
-		// Without this filter, local edits get attributed to "you" in the
-		// activity log, overwriting the correct remote author.
-		if (event.user && event.user === localUserId) return;
-		if (event.user) {
-			lastAuthorByGuid.set(guid, event.user);
-		}
-		recentCborGuids.set(guid, event.user);
-	}
-
-	const provider = sharedFolder._provider;
-	if (provider) {
-		provider.subscribeToEvents(["document.updated"], handleCborEvent);
-	}
+	export let activityStore: SyncStatusActivityStore;
 
 	// ── Actionable items (from HSM state) ──────────────────────────────
 
@@ -87,11 +42,33 @@
 			if (!hsm) continue;
 			const sp: StatePath = hsm.statePath;
 			if (sp === "active.conflict.bannerShown" || sp === "active.conflict.resolving") {
-				result.push({ guid, path: file.path, category: "conflict", label: sp === "active.conflict.resolving" ? "Resolving" : "Conflict detected" });
+				result.push({
+					guid,
+					path: file.path,
+					category: "conflict",
+					label: sp === "active.conflict.resolving" ? "Resolving" : "Conflict detected",
+				});
+			} else if (sp === "idle.diverged") {
+				result.push({
+					guid,
+					path: file.path,
+					category: "conflict",
+					label: "Diverged",
+				});
 			} else if (hsm.getConflictData()) {
-				result.push({ guid, path: file.path, category: "conflict", label: "Conflict detected" });
+				result.push({
+					guid,
+					path: file.path,
+					category: "conflict",
+					label: "Conflict detected",
+				});
 			} else if (sp === "idle.error") {
-				result.push({ guid, path: file.path, category: "error", label: "Error" });
+				result.push({
+					guid,
+					path: file.path,
+					category: "error",
+					label: "Error",
+				});
 			}
 		}
 		result.sort((a, b) => a.path.localeCompare(b.path));
@@ -116,11 +93,22 @@
 			const hsm = doc.hsm;
 			if (hsm) {
 				const sp: StatePath = hsm.statePath;
-				if (sp.startsWith("active.conflict") || hsm.getConflictData()) conflict++;
-				else if (sp === "idle.synced") synced++;
-				else if (sp === "active.tracking" || sp.startsWith("active.entering")) editing++;
-				else if (sp === "idle.error") error++;
-				else syncing++;
+				const hasConflict =
+					sp.startsWith("active.conflict") ||
+					sp === "idle.diverged" ||
+					hsm.getConflictData();
+				const isEditing =
+					sp.startsWith("active.entering") || sp.startsWith("active.tracking");
+				const isSynced =
+					sp === "idle.synced" || sp.startsWith("active.tracking");
+
+				if (hasConflict) conflict++;
+				if (isEditing) editing++;
+				if (isSynced) synced++;
+				if (sp === "idle.error") error++;
+				if (!hasConflict && !isEditing && !isSynced && sp !== "idle.error") {
+					syncing++;
+				}
 			} else {
 				const ss = sharedFolder.mergeManager.syncStatus.get<SyncStatus>(guid);
 				if (!ss || ss.status === "synced") synced++;
@@ -136,118 +124,67 @@
 		errorCount = error;
 	}
 
-	// ── Activity log (coalesced per file, from syncStatus notifications) ─
+	// ── Activity log ───────────────────────────────────────────────────
 
-	interface ActivityEntry {
-		guid: string;
-		path: string;
-		timestamp: number;
-		status: string;
-		description: string;
-		author: string;
-	}
-
-	// One entry per file, keyed by guid, sorted by most recent
-	let activityMap = new Map<string, ActivityEntry>();
-	let activityLog: ActivityEntry[] = [];
-
-	// Track previous syncStatus snapshot to detect which guids changed
-	let prevSnapshot = new Map<string, string>();
-
-	function guidToPath(guid: string): string {
-		const file = sharedFolder.files.get(guid);
-		return file ? relativePath(file.path) : guid.slice(0, 8);
-	}
-
-	function describeStatus(status: string): string {
-		switch (status) {
-			case "synced": return "Synced";
-			case "pending": return "Syncing";
-			case "conflict": return "Conflict detected";
-			case "error": return "Error";
-			default: return status;
-		}
-	}
-
-	function recordActivity() {
-		const ts = timeProvider.now();
-		const syncStatusMap = sharedFolder.mergeManager.syncStatus;
-		let changed = false;
-
-		for (const [guid] of sharedFolder.files) {
-			const ss = syncStatusMap.get<SyncStatus>(guid);
-			const currentStatus = ss?.status ?? "unknown";
-			const prevStatus = prevSnapshot.get(guid) ?? "unknown";
-
-			if (currentStatus !== prevStatus && prevStatus !== "unknown") {
-				activityMap.set(guid, {
-					guid,
-					path: guidToPath(guid),
-					timestamp: ts,
-					status: currentStatus,
-					description: describeStatus(currentStatus),
-					author: resolveAuthorName(lastAuthorByGuid.get(guid)),
-				});
-				changed = true;
-			}
-
-			prevSnapshot.set(guid, currentStatus);
-		}
-
-		// Also log CBOR-triggered files that may have synced too fast to show a status change.
-		// If we got a CBOR event for a guid since last check, log it even if status didn't change.
-		for (const [guid, userId] of recentCborGuids) {
-			if (!activityMap.has(guid) || activityMap.get(guid)!.timestamp < ts - 5000) {
-				const ss = syncStatusMap.get<SyncStatus>(guid);
-				activityMap.set(guid, {
-					guid,
-					path: guidToPath(guid),
-					timestamp: ts,
-					status: ss?.status ?? "synced",
-					description: "Synced",
-					author: resolveAuthorName(userId),
-				});
-				changed = true;
-			}
-		}
-		recentCborGuids.clear();
-
-		if (changed) {
-			const sorted = [...activityMap.values()].sort((a, b) => b.timestamp - a.timestamp);
-			if (sorted.length > MAX_ACTIVITY) {
-				for (const entry of sorted.slice(MAX_ACTIVITY)) {
-					activityMap.delete(entry.guid);
-				}
-			}
-			activityLog = sorted.slice(0, MAX_ACTIVITY);
-		}
-	}
+	let activityLog: SyncStatusActivityEntry[] = [];
+	$: visibleActivity = activityLog.filter(
+		(e) => e.status !== "conflict" && e.author !== "you",
+	);
 
 	// ── Lifecycle ──────────────────────────────────────────────────────
 
-	// Initialize snapshot without logging (don't flood with initial state)
-	// Initialize snapshot without logging
-	{
-		const syncStatusMap = sharedFolder.mergeManager.syncStatus;
-		for (const [guid] of sharedFolder.files) {
-			const ss = syncStatusMap.get<SyncStatus>(guid);
-			prevSnapshot.set(guid, ss?.status ?? "unknown");
-		}
-	}
 	refreshActionable();
 	refreshCounts();
 
-	const unsub = sharedFolder.mergeManager.syncStatus.subscribe(() => {
-		recordActivity();
+	const unsubscribeActivity = activityStore.subscribe((entries) => {
+		activityLog = entries;
+	});
+
+	const unsubscribeSyncStatus = sharedFolder.mergeManager.syncStatus.subscribe(() => {
 		refreshActionable();
 		refreshCounts();
 	});
 
 	onDestroy(() => {
-		unsub();
+		unsubscribeActivity();
+		unsubscribeSyncStatus();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────────
+
+	function getVaultFile(filePath: string): TFile | null {
+		// `filePath` may be either a `/foo/bar.md` virtual path (conflicts/errors
+		// entries) or a pre-relativized path (activity entries). Normalise to
+		// absolute vault path.
+		const normalized = filePath.startsWith("/") ? filePath : "/" + filePath;
+		const vaultPath = (sharedFolder.path + normalized).replace(/^\/+/, "");
+		const abstractFile = app.vault.getAbstractFileByPath(vaultPath);
+		return abstractFile instanceof TFile ? abstractFile : null;
+	}
+
+	function openFile(filePath: string) {
+		const file = getVaultFile(filePath);
+		if (file) {
+			app.workspace.getLeaf().openFile(file);
+		}
+	}
+
+	function fileLabel(filePath: string): string {
+		const file = getVaultFile(filePath);
+		if (!file) return stripMarkdownExtension(relativePath(filePath));
+		return app.metadataCache.fileToLinktext(file, sharedFolder.path, true);
+	}
+
+	function handlePathKeydown(event: KeyboardEvent, filePath: string) {
+		if (event.key === "Enter" || event.key === " ") {
+			event.preventDefault();
+			openFile(filePath);
+		}
+	}
+
+	function stripMarkdownExtension(path: string): string {
+		return path.endsWith(".md") ? path.slice(0, -3) : path;
+	}
 
 	function relativePath(fullPath: string): string {
 		if (fullPath.startsWith("/")) {
@@ -311,19 +248,16 @@
 			{#each conflicts as file}
 				<div class="sync-status-row">
 					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
-					<span class="sync-status-path">{relativePath(file.path)}</span>
-					<span class="sync-status-state">{file.label}</span>
-					<button
-						class="mod-cta"
-						on:click={() => {
-							const vaultPath = sharedFolder.path + file.path;
-							const abstractFile = app.vault.getAbstractFileByPath(vaultPath);
-							if (abstractFile && abstractFile instanceof TFile) {
-								const leaf = app.workspace.getLeaf();
-								leaf.openFile(abstractFile);
-							}
-						}}
-					>Resolve</button>
+					<span
+						class="sync-status-path"
+						role="link"
+						tabindex="0"
+						on:click={() => openFile(file.path)}
+						on:keydown={(e) => handlePathKeydown(e, file.path)}
+					>{fileLabel(file.path)}</span>
+					<div class="sync-status-meta">
+						<span class="sync-status-state">{file.label}</span>
+					</div>
 				</div>
 			{/each}
 		</div>
@@ -335,16 +269,22 @@
 			{#each errors as file}
 				<div class="sync-status-row">
 					<span class="sync-status-icon error"><XCircle size={14} /></span>
-					<span class="sync-status-path">{relativePath(file.path)}</span>
+					<span
+						class="sync-status-path"
+						role="link"
+						tabindex="0"
+						on:click={() => openFile(file.path)}
+						on:keydown={(e) => handlePathKeydown(e, file.path)}
+					>{fileLabel(file.path)}</span>
 				</div>
 			{/each}
 		</div>
 	{/if}
 
-	{#if activityLog.length > 0}
+	{#if visibleActivity.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Recent Activity</div>
-			{#each activityLog.filter(e => e.status !== "conflict") as entry (entry.guid)}
+			{#each visibleActivity as entry (entry.id)}
 				<div class="sync-status-row activity-row">
 					<span class="sync-status-icon activity">
 						{#if entry.status === "synced"}
@@ -359,19 +299,26 @@
 							<GitMerge size={14} />
 						{/if}
 					</span>
-					<span class="sync-status-path">{entry.path}</span>
-					{#if entry.author}
-						<span class="sync-status-author">{entry.author}</span>
-					{/if}
-					<span class="sync-status-state">{entry.description}</span>
-					<span class="sync-status-time">{timeAgo(entry.timestamp, now)}</span>
+					<span
+						class="sync-status-path"
+						role="link"
+						tabindex="0"
+						on:click={() => openFile(entry.path)}
+						on:keydown={(e) => handlePathKeydown(e, entry.path)}
+					>{fileLabel(entry.path)}</span>
+					<div class="sync-status-meta">
+						{#if entry.author}
+							<span class="sync-status-author">{entry.author}</span>
+						{/if}
+						<span class="sync-status-time">{timeAgo(entry.timestamp, now)}</span>
+					</div>
 				</div>
 			{/each}
 		</div>
 	{/if}
 
-	{#if conflicts.length === 0 && errors.length === 0 && activityLog.length === 0}
-		<div class="sync-status-empty">All files are synced. Activity will appear here as files sync.</div>
+	{#if conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
+		<div class="sync-status-empty">Activity will appear here as files sync.</div>
 	{/if}
 </div>
 
@@ -421,15 +368,22 @@
 	}
 
 	.sync-status-row {
-		display: flex;
-		align-items: center;
-		gap: 8px;
+		display: grid;
+		grid-template-columns: auto 1fr;
+		grid-template-areas:
+			"icon path"
+			"icon meta";
+		column-gap: 8px;
+		row-gap: 2px;
+		align-items: baseline;
 		padding: 4px 0;
 	}
 
 	.sync-status-icon {
+		grid-area: icon;
 		display: inline-flex;
 		flex-shrink: 0;
+		align-self: center;
 	}
 
 	.sync-status-icon.conflict {
@@ -444,52 +398,81 @@
 		color: var(--text-muted);
 	}
 
+	.activity-row {
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		grid-template-areas: "icon path meta";
+		align-items: center;
+	}
+
 	.activity-row :global(.sync-status-icon.activity svg) {
 		opacity: 0.7;
 	}
 
 	.sync-status-path {
-		flex: 1;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: var(--font-ui-small);
+		grid-area: path;
+		color: var(--nav-item-color, var(--text-normal));
+		font-size: var(--nav-item-size, var(--font-ui-small));
+		font-weight: var(--nav-item-weight, var(--font-normal));
+		overflow-wrap: break-word;
+		line-height: var(--line-height-tight);
+		min-width: 0;
+	}
+
+	.sync-status-path[role="link"] {
+		cursor: pointer;
+		text-decoration: none;
+	}
+
+	.sync-status-path[role="link"]:hover {
+		color: var(--nav-item-color-hover, var(--text-normal));
+	}
+
+	.sync-status-path[role="link"]:focus-visible {
+		outline: 1px solid var(--background-modifier-border-focus);
+		outline-offset: 2px;
+	}
+
+	.sync-status-meta {
+		grid-area: meta;
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		font-size: var(--font-ui-smaller);
+		color: var(--text-faint);
+		align-items: baseline;
+	}
+
+	.activity-row .sync-status-meta {
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0;
+		line-height: 1.2;
+		min-width: max-content;
 	}
 
 	.sync-status-state {
-		font-size: var(--font-ui-smaller);
-		color: var(--text-faint);
-		flex-shrink: 0;
-		text-align: right;
 		white-space: nowrap;
 	}
 
 	.sync-status-author {
-		font-size: var(--font-ui-smaller);
-		color: var(--text-accent);
-		flex-shrink: 0;
-		width: 100px;
-		text-align: right;
+		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
-		white-space: nowrap;
+		max-width: 100%;
 	}
 
 	.sync-status-time {
-		font-size: var(--font-ui-smaller);
-		color: var(--text-faint);
-		flex-shrink: 0;
-		width: 110px;
-		text-align: right;
+		white-space: nowrap;
+		margin-left: auto;
+	}
+
+	.activity-row .sync-status-time {
+		margin-left: 0;
 	}
 
 	.sync-status-empty {
 		text-align: center;
-		color: var(--text-muted);
+		color: var(--text-faint);
 		padding: 24px 0;
-	}
-
-	button.mod-cta {
-		flex-shrink: 0;
 	}
 </style>
