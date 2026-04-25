@@ -48,9 +48,14 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 			// @ts-ignore - accessing internal Obsidian API
 			this.view.previewMode.renderer.set(text);
 
-			// Trigger internal data change handler if available
+			// Live preview already applies Relay updates through CM6. Re-entering
+			// Obsidian's internal quick-preview pipeline from here can bounce back
+			// into setViewData while the view is mid-update.
 			// @ts-ignore - accessing internal Obsidian API
-			this.view.onInternalDataChange?.();
+			if (!this.view.editor?.cm) {
+				// @ts-ignore - accessing internal Obsidian API
+				this.view.onInternalDataChange?.();
+			}
 
 			this.debug("Preview render completed");
 		} catch (error) {
