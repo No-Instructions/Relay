@@ -67,6 +67,7 @@ import {
 	HSMStore,
 } from "./merge-hsm/persistence";
 import { trackPromise } from "./trackPromise";
+import { expandDesiredRemotePaths } from "./syncPathUtils";
 import * as Y from "yjs";
 
 export interface SharedFolderSettings {
@@ -1451,7 +1452,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private cleanupExtraLocalFiles(
-		remotePaths: string[],
+		remotePaths: ReadonlySet<string>,
 		diffLog: string[],
 	): Delete[] {
 		// Delete files that are no longer shared
@@ -1463,16 +1464,17 @@ export class SharedFolder extends HasProvider {
 			// If the file is in the shared folder and not in the map, move it to the Trash
 			const isSyncableFile = this.isSyncableTFile(file);
 			const fileInFolder = this.checkPath(file.path);
-			const fileInMap = remotePaths.contains(file.path.slice(this.path.length));
-			const filePending = this.pendingUpload.has(
-				this.getVirtualPath(file.path),
-			);
 			const vpath = this.getVirtualPath(file.path);
+			const fileInMap = remotePaths.has(vpath);
+			const filePending = this.pendingUpload.has(vpath);
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (fileInFolder && isSyncableFile && !fileInMap && !filePending) {
 				if (synced) {
 					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
-					const promise = this.vault.adapter.trashLocal(file.path);
+					this.markPendingDelete(vpath);
+					const promise = this.vault.adapter.trashLocal(file.path).finally(() => {
+						this.clearPendingDelete(vpath);
+					});
 					deletes.push({
 						op: "delete",
 						path: vpath,
@@ -1484,6 +1486,14 @@ export class SharedFolder extends HasProvider {
 		files.forEach(sync);
 		folders.forEach(sync);
 		return deletes;
+	}
+
+	private getDesiredRemotePaths(): Set<string> {
+		const paths = new Set<string>();
+		this.syncStore.forEachWithPending((_meta, path) => {
+			paths.add(path);
+		});
+		return expandDesiredRemotePaths(paths);
 	}
 
 	syncByType(
@@ -1609,7 +1619,6 @@ export class SharedFolder extends HasProvider {
 
 				const creates = ops.filter((op) => op.op === "create");
 				const renames = ops.filter((op) => op.op === "rename");
-				const remotePaths = ops.map((op) => op.path);
 
 				// Ensure these complete before checking for deletions
 				await Promise.all(
@@ -1618,11 +1627,12 @@ export class SharedFolder extends HasProvider {
 					),
 				);
 
+				const remotePaths = this.getDesiredRemotePaths();
 				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
 				if ([...ops, ...deletes].every((op) => op.op === "noop")) {
 					this.debug("sync: noop");
 				} else {
-					this.log("remote paths", remotePaths);
+					this.log("remote paths", Array.from(remotePaths));
 					this.log("operations", [...ops, ...deletes]);
 				}
 				if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
