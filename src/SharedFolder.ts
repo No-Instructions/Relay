@@ -497,15 +497,42 @@ export class SharedFolder extends HasProvider {
 		// syncFileTree sweep; applyRemoteState + applyPendingUpload handle
 		// both inbound reconciliation and outbound pending-upload retry.
 		const provider = this._provider;
+		provider.getSubdocQueryDocIds = () => {
+			if (!flags().enableSelectiveSubdocQuery || !this.relayId) return [];
+			const guids = this.syncStore.getCommittedSubdocGuids();
+			return guids.length > 0
+				? guids.map((guid) => this.serverDocIdForGuid(guid))
+				: [];
+		};
 		provider.onSubdocIndex = (serverIndex) => {
-			for (const [guid, svBytes] of Object.entries(serverIndex)) {
-				this.mergeManager?.seedServerAdvertisedSVFromBytes(guid, svBytes);
+			for (const [docId, entry] of Object.entries(serverIndex)) {
+				const guid = this.guidFromServerDocId(docId) ?? docId;
+				this.mergeManager?.seedServerAdvertisedSVFromBytes(
+					guid,
+					entry.stateVector,
+				);
 			}
-			this.syncFileTree();
+			this.syncFileTree()
+				.then(() => this.poll())
+				.catch((e) => this.error("subdoc index sync sweep failed", e));
 		};
 		this.unsubscribes.push(() => {
 			provider.onSubdocIndex = null;
+			provider.getSubdocQueryDocIds = null;
 		});
+	}
+
+	private serverDocIdForGuid(guid: string): string {
+		return `${this.relayId}-${guid}`;
+	}
+
+	private guidFromServerDocId(docId: string): string | null {
+		const uuidPattern =
+			"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+		const match = docId.match(
+			new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"),
+		);
+		return match?.[1] ?? null;
 	}
 
 	private handleDocumentUpdateEvent(event: EventMessage) {
@@ -517,13 +544,8 @@ export class SharedFolder extends HasProvider {
 
 		// Extract the guid from the doc_id
 		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
-		const uuidPattern =
-			"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-		const match = docId.match(
-			new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"),
-		);
-		if (!match) return;
-		const guid = match[1];
+		const guid = this.guidFromServerDocId(docId);
+		if (!guid) return;
 
 		if (!this.files.has(guid)) {
 			this.retryDeferredDownloadForGuid(guid);
@@ -808,6 +830,18 @@ export class SharedFolder extends HasProvider {
 				&& this.shouldConnect
 			) {
 				file.connectForForkReconcile().catch(() => {});
+			}
+
+			if (
+				this.shouldConnect &&
+				this.mergeManager?.isServerAdvertisedRemoteAhead(guid)
+			) {
+				this.backgroundSync.enqueueSync(file).catch((e) => {
+					this.warn(
+						`[poll] failed to enqueue server-advertised remote sync for ${file.path}`,
+						e,
+					);
+				});
 			}
 		}
 	}

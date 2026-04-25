@@ -908,6 +908,7 @@ export class BackgroundSync extends HasLogging {
 			}
 		}
 		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
+		const startedDisconnected = doc.intent === "disconnected";
 		const hadProviderIntegration = isDocument(doc) && doc.hasProviderIntegration();
 		const createdIdleIntegration =
 			isDocument(doc) && !isActive
@@ -916,7 +917,7 @@ export class BackgroundSync extends HasLogging {
 					})
 				: false;
 		const shouldCleanupIdleSession = () =>
-			doc.intent === "disconnected" &&
+			startedDisconnected &&
 			!(doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid));
 		const cleanupIdleSession = () => {
 			if (!shouldCleanupIdleSession()) return;

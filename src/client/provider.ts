@@ -139,7 +139,7 @@ messageHandlers[messageSubdocs] = (
 	const cborData = decoding.readUint8Array(decoder, cborLength);
 
 	try {
-		const subdocIndex: Record<string, Uint8Array> = decodeCBOR(cborData);
+		const subdocIndex = normalizeSubdocIndex(decodeCBOR(cborData));
 		provider.handleSubdocIndex(subdocIndex);
 	} catch (error) {
 		providerError(`Failed to decode subdoc state vector index: ${error}`);
@@ -368,9 +368,90 @@ export interface EventMessage {
 
 export type EventCallback = (event: EventMessage) => void;
 
-export type SubdocIndexCallback = (
-	serverIndex: Record<string, Uint8Array>,
-) => void;
+export interface SubdocIndexEntry {
+	stateVector: Uint8Array;
+	lastSeen?: number;
+}
+
+export type SubdocIndex = Record<string, SubdocIndexEntry>;
+export type SubdocIndexCallback = (serverIndex: SubdocIndex) => void;
+export type SubdocQueryDocIdsProvider = () => string[];
+
+export function normalizeSubdocIndex(rawIndex: unknown): SubdocIndex {
+	const index: SubdocIndex = {};
+
+	for (const [rawDocId, rawEntry] of readSubdocIndexEntries(rawIndex)) {
+		if (typeof rawDocId !== "string" || rawDocId.length === 0) continue;
+		const entry = normalizeSubdocIndexEntry(rawEntry);
+		if (entry) {
+			index[rawDocId] = entry;
+		}
+	}
+
+	return index;
+}
+
+function readSubdocIndexEntries(rawIndex: unknown): Array<[unknown, unknown]> {
+	if (rawIndex instanceof Map) {
+		return Array.from(rawIndex.entries());
+	}
+	if (!rawIndex || typeof rawIndex !== "object") {
+		return [];
+	}
+	return Object.entries(rawIndex as Record<string, unknown>);
+}
+
+function normalizeSubdocIndexEntry(rawEntry: unknown): SubdocIndexEntry | null {
+	const legacyStateVector = asUint8Array(rawEntry);
+	if (legacyStateVector) {
+		return { stateVector: legacyStateVector };
+	}
+
+	const stateVector =
+		asUint8Array(readSubdocIndexField(rawEntry, "state_vector")) ??
+		asUint8Array(readSubdocIndexField(rawEntry, "stateVector")) ??
+		asUint8Array(readSubdocIndexField(rawEntry, "sv"));
+	if (!stateVector) return null;
+
+	const lastSeen = normalizeSubdocLastSeen(
+		readSubdocIndexField(rawEntry, "last_seen") ??
+			readSubdocIndexField(rawEntry, "lastSeen"),
+	);
+	return lastSeen === undefined
+		? { stateVector }
+		: { stateVector, lastSeen };
+}
+
+function readSubdocIndexField(rawEntry: unknown, field: string): unknown {
+	if (rawEntry instanceof Map) {
+		return rawEntry.get(field);
+	}
+	if (!rawEntry || typeof rawEntry !== "object") {
+		return undefined;
+	}
+	return (rawEntry as Record<string, unknown>)[field];
+}
+
+function asUint8Array(value: unknown): Uint8Array | null {
+	return value instanceof Uint8Array ? value : null;
+}
+
+function normalizeSubdocLastSeen(value: unknown): number | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) {
+		return value;
+	}
+	if (value instanceof Date) {
+		const timestamp = value.getTime();
+		return Number.isFinite(timestamp) ? timestamp : undefined;
+	}
+	if (typeof value === "string" && value.length > 0) {
+		const numeric = Number(value);
+		if (Number.isFinite(numeric)) return numeric;
+		const parsed = Date.parse(value);
+		if (Number.isFinite(parsed)) return parsed;
+	}
+	return undefined;
+}
 
 /**
  * Websocket Provider for Yjs. Creates a websocket connection to sync the shared document.
@@ -421,6 +502,9 @@ export class YSweetProvider extends Observable<string> {
 	eventSubscriptions: Set<string>;
 	eventCallbacks: Map<string, EventCallback[]>;
 	onSubdocIndex: SubdocIndexCallback | null;
+	subdocIndexCallbacks: Set<SubdocIndexCallback>;
+	lastSubdocIndex: SubdocIndex | null;
+	getSubdocQueryDocIds: SubdocQueryDocIdsProvider | null;
 
 	/**
 	 * @param serverUrl - server url
@@ -483,6 +567,9 @@ export class YSweetProvider extends Observable<string> {
 		this.eventSubscriptions = new Set();
 		this.eventCallbacks = new Map();
 		this.onSubdocIndex = null;
+		this.subdocIndexCallbacks = new Set();
+		this.lastSubdocIndex = null;
+		this.getSubdocQueryDocIds = null;
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -672,6 +759,10 @@ export class YSweetProvider extends Observable<string> {
 		this.disconnect();
 		this.awareness.destroy();
 		this._observers.clear();
+		this.subdocIndexCallbacks.clear();
+		this.onSubdocIndex = null;
+		this.getSubdocQueryDocIds = null;
+		this.lastSubdocIndex = null;
 
 		if (typeof window !== "undefined") {
 			window.removeEventListener("unload", this._unloadHandler as any);
@@ -907,18 +998,41 @@ export class YSweetProvider extends Observable<string> {
 		});
 	}
 
-	sendQuerySubdocs() {
+	subscribeToSubdocIndex(callback: SubdocIndexCallback): () => void {
+		this.subdocIndexCallbacks.add(callback);
+		return () => {
+			this.subdocIndexCallbacks.delete(callback);
+		};
+	}
+
+	sendQuerySubdocs(docIds?: string[]) {
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+			const queryDocIds = Array.from(
+				new Set((docIds ?? this.getSubdocQueryDocIds?.() ?? []).filter(Boolean)),
+			);
 			const encoder = encoding.createEncoder();
 			encoding.writeVarUint(encoder, messageQuerySubdocs);
-			encoding.writeVarUint(encoder, 0);
+			encoding.writeVarUint(encoder, queryDocIds.length);
+			queryDocIds.forEach((docId) => {
+				encoding.writeVarString(encoder, docId);
+			});
 			this.ws.send(encoding.toUint8Array(encoder));
-			console.log('[YSweetProvider] sent MSG_QUERY_SUBDOCS');
+			console.log(
+				`[YSweetProvider] sent MSG_QUERY_SUBDOCS (${queryDocIds.length || "all"})`,
+			);
 		}
 	}
 
-	handleSubdocIndex(serverIndex: Record<string, Uint8Array>) {
+	handleSubdocIndex(serverIndex: SubdocIndex) {
+		this.lastSubdocIndex = serverIndex;
 		this.onSubdocIndex?.(serverIndex);
+		for (const callback of Array.from(this.subdocIndexCallbacks)) {
+			try {
+				callback(serverIndex);
+			} catch (error) {
+				providerError(`Subdoc index callback error: ${error}`);
+			}
+		}
 	}
 
 }

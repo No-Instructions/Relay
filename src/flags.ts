@@ -21,6 +21,7 @@ export interface FeatureFlags {
 	enableResourceMeter: boolean;
 	enablePermanentUserData: boolean;
 	enableFolderIdbMigration: boolean;
+	enableSelectiveSubdocQuery: boolean;
 }
 
 export const FeatureFlagDefaults: FeatureFlags = {
@@ -46,6 +47,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableResourceMeter: false,
 	enablePermanentUserData: true,
 	enableFolderIdbMigration: false,
+	enableSelectiveSubdocQuery: false,
 } as const;
 
 export function isKeyOfFeatureFlags(key: string): key is keyof FeatureFlags {

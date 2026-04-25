@@ -1,5 +1,22 @@
 import * as Y from "yjs";
-import { YSweetProvider } from "../../src/client/provider";
+import * as decoding from "lib0/decoding";
+import {
+	messageQuerySubdocs,
+	normalizeSubdocIndex,
+	YSweetProvider,
+} from "../../src/client/provider";
+
+const RELAY_GUID = "8d6b60a2-3ed9-456d-9722-64ffaa17ac12";
+const DOC_GUID_A = "d19f118d-1791-4c33-b933-9fce18677619";
+const DOC_GUID_B = "1ad0450b-4bc1-4d42-969a-df8d10f7141e";
+const DOC_GUID_C = "2c6c90c3-4bc9-4e3d-baa0-49727b0ed90f";
+const DOC_GUID_D = "7015676d-b1af-4697-b6e8-241cae87e0ce";
+const DOC_GUID_E = "f1257c45-17f8-4d0c-b564-8f92026c0b73";
+const DOC_ID_A = `${RELAY_GUID}-${DOC_GUID_A}`;
+const DOC_ID_B = `${RELAY_GUID}-${DOC_GUID_B}`;
+const DOC_ID_C = `${RELAY_GUID}-${DOC_GUID_C}`;
+const DOC_ID_D = `${RELAY_GUID}-${DOC_GUID_D}`;
+const DOC_ID_E = `${RELAY_GUID}-${DOC_GUID_E}`;
 
 class FakeWebSocket {
 	static CONNECTING = 0;
@@ -95,6 +112,113 @@ describe("YSweetProvider", () => {
 
 		jest.advanceTimersByTime(1);
 		expect(FakeWebSocket.instances).toHaveLength(2);
+
+		provider.destroy();
+	});
+
+	test("sendQuerySubdocs encodes full-index query as zero count", () => {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+		});
+		const ws = new FakeWebSocket("ws://example.com/room");
+		ws.readyState = FakeWebSocket.OPEN;
+		provider.ws = ws as any;
+
+		provider.sendQuerySubdocs();
+
+		const decoder = decoding.createDecoder(ws.sent[0] as Uint8Array);
+		expect(decoding.readVarUint(decoder)).toBe(messageQuerySubdocs);
+		expect(decoding.readVarUint(decoder)).toBe(0);
+
+		provider.destroy();
+	});
+
+	test("sendQuerySubdocs encodes selected server doc IDs", () => {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+		});
+		const ws = new FakeWebSocket("ws://example.com/room");
+		ws.readyState = FakeWebSocket.OPEN;
+		provider.ws = ws as any;
+		provider.getSubdocQueryDocIds = () => [
+			DOC_ID_A,
+			DOC_ID_A,
+			DOC_ID_B,
+		];
+
+		provider.sendQuerySubdocs();
+
+		const decoder = decoding.createDecoder(ws.sent[0] as Uint8Array);
+		expect(decoding.readVarUint(decoder)).toBe(messageQuerySubdocs);
+		expect(decoding.readVarUint(decoder)).toBe(2);
+		expect(decoding.readVarString(decoder)).toBe(DOC_ID_A);
+		expect(decoding.readVarString(decoder)).toBe(DOC_ID_B);
+
+		provider.destroy();
+	});
+
+	test("normalizes legacy and metadata subdoc index entries", () => {
+		const index = normalizeSubdocIndex({
+			[DOC_ID_A]: new Uint8Array([1, 2]),
+			[DOC_ID_B]: {
+				state_vector: new Uint8Array([3, 4]),
+				last_seen: "1710000000",
+			},
+			[DOC_ID_C]: {
+				stateVector: new Uint8Array([5, 6]),
+				lastSeen: "2026-04-24T19:31:39.593Z",
+			},
+			[DOC_ID_D]: {
+				sv: new Uint8Array([7, 8]),
+				last_seen: new Date("2026-04-24T19:32:00.000Z"),
+			},
+			[DOC_ID_E]: {},
+		});
+
+		expect(index[DOC_ID_A]).toEqual({
+			stateVector: new Uint8Array([1, 2]),
+		});
+		expect(index[DOC_ID_B]).toEqual({
+			stateVector: new Uint8Array([3, 4]),
+			lastSeen: 1710000000,
+		});
+		expect(index[DOC_ID_C]).toEqual({
+			stateVector: new Uint8Array([5, 6]),
+			lastSeen: Date.parse("2026-04-24T19:31:39.593Z"),
+		});
+		expect(index[DOC_ID_D]).toEqual({
+			stateVector: new Uint8Array([7, 8]),
+			lastSeen: Date.parse("2026-04-24T19:32:00.000Z"),
+		});
+		expect(index[DOC_ID_E]).toBeUndefined();
+	});
+
+	test("handleSubdocIndex stores and notifies subdoc index listeners", () => {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+		});
+		const observed: unknown[] = [];
+		const index = {
+			[DOC_ID_A]: {
+				stateVector: new Uint8Array([1, 2]),
+				lastSeen: 1710000000,
+			},
+		};
+
+		const unsubscribe = provider.subscribeToSubdocIndex((serverIndex) => {
+			observed.push(serverIndex);
+		});
+		provider.handleSubdocIndex(index);
+
+		expect(provider.lastSubdocIndex).toBe(index);
+		expect(observed).toEqual([index]);
+
+		unsubscribe();
+		provider.handleSubdocIndex(index);
+		expect(observed).toHaveLength(1);
 
 		provider.destroy();
 	});

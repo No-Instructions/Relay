@@ -8,6 +8,7 @@ import { flag } from "./flags";
 import {
 	SyncType,
 	TypeRegistry,
+	isCanvasMeta,
 	isDocumentMeta,
 	isSyncFolderMeta,
 	makeDocumentMeta,
@@ -123,6 +124,21 @@ export class SyncStore extends Observable<SyncStore> {
 				callbackFn(meta, path);
 			}
 		});
+	}
+
+	getCommittedSubdocGuids(): string[] {
+		const guids = new Set<string>();
+		this.meta.forEach((meta, path) => {
+			if (this.deleteSet.has(path)) return;
+			if (isDocumentMeta(meta) || isCanvasMeta(meta)) {
+				guids.add(meta.id);
+			}
+		});
+		this.legacyIds.forEach((guid, path) => {
+			if (this.deleteSet.has(path)) return;
+			guids.add(guid);
+		});
+		return Array.from(guids).sort();
 	}
 
 	/**

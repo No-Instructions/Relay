@@ -26,6 +26,8 @@ import type {
   LCAState,
   LCAMeta,
   FrontMatterPrimitives,
+  MergeEvent,
+  StatePath,
 } from './types';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
@@ -33,8 +35,10 @@ import { ObservableMap } from '../observable/ObservableMap';
 import { validateUpdate } from '../storage/yjs-validation';
 import {
   classifyUpdate as classifyUpdateSV,
+  decodeSV,
   snapshotContainsUpdate,
   snapshotFromUpdate,
+  svIsAhead,
   updateHasDeleteSet,
 } from './state-vectors';
 import { metrics, curryLog } from '../debug';
@@ -137,7 +141,7 @@ export interface MergeManagerConfig {
   hibernation?: HibernationConfig;
 
   /** Push-based transition callback for recording bridge */
-  onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
+  onTransition?: MergeTransitionCallback;
 
   /**
    * Obsidian's frontmatter logic primitives. Omit to disable frontmatter
@@ -159,6 +163,19 @@ export interface RegisteredDocument {
   path: string;
   syncStatus: SyncStatus;
 }
+
+export interface MergeTransitionInfo {
+  from: StatePath;
+  to: StatePath;
+  event: MergeEvent;
+  effects: MergeEffect[];
+}
+
+export type MergeTransitionCallback = (
+  guid: string,
+  path: string,
+  info: MergeTransitionInfo,
+) => void;
 
 // =============================================================================
 // Hibernation Types
@@ -295,7 +312,8 @@ export class MergeManager {
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private userId?: string;
   private _yaml: FrontMatterPrimitives | null = null;
-  private _onTransition?: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void;
+  private _onTransition?: MergeTransitionCallback;
+  private readonly _transitionListeners = new Set<MergeTransitionCallback>();
 
   constructor(config: MergeManagerConfig) {
     this._getVaultId = config.getVaultId;
@@ -376,10 +394,32 @@ export class MergeManager {
 
   /**
    * Set the push-based transition callback (used by recording bridge).
-   * Applies to HSMs created after this call.
+   * Applies to every HSM wired through this manager.
    */
-  setOnTransition(cb: (guid: string, path: string, info: { from: import('./types').StatePath; to: import('./types').StatePath; event: import('./types').MergeEvent; effects: import('./types').MergeEffect[] }) => void): void {
+  setOnTransition(cb: MergeTransitionCallback): void {
     this._onTransition = cb;
+  }
+
+  subscribeToTransitions(listener: MergeTransitionCallback): () => void {
+    this._transitionListeners.add(listener);
+    return () => {
+      this._transitionListeners.delete(listener);
+    };
+  }
+
+  private emitTransition(
+    guid: string,
+    path: string,
+    info: MergeTransitionInfo,
+  ): void {
+    this._onTransition?.(guid, path, info);
+    for (const listener of Array.from(this._transitionListeners)) {
+      try {
+        listener(guid, path, info);
+      } catch (error) {
+        this._error(`transition listener error for ${guid}: ${error}`);
+      }
+    }
   }
 
   // ===========================================================================
@@ -429,13 +469,9 @@ export class MergeManager {
       yaml: this._yaml ?? undefined,
     });
 
-    // Wire push-based transition callback for recording
-    if (this._onTransition) {
-      const onTransition = this._onTransition;
-      hsm.setOnTransition((info) => {
-        onTransition(guid, getPath(), info);
-      });
-    }
+    hsm.setOnTransition((info) => {
+      this.emitTransition(guid, getPath(), info);
+    });
 
     // Wire effect handler before any events — effects can fire during send().
     const unsub = hsm.subscribe((effect) => {
@@ -1020,6 +1056,39 @@ export class MergeManager {
   }
 
   /**
+   * Return true when the folder subdoc index says the server has operations
+   * newer than the local state we know about. This is only a transport hint:
+   * state vectors do not encode delete sets, so callers should use it to
+   * decide whether to connect a provider, not to declare convergence.
+   */
+  isServerAdvertisedRemoteAhead(guid: string): boolean {
+    const advertisedSV = this._serverAdvertisedSV.get(guid);
+    if (!advertisedSV) return false;
+
+    const localSVBytes = this.getKnownLocalStateVector(guid);
+    if (!localSVBytes) {
+      return advertisedSV.size > 0;
+    }
+
+    try {
+      return svIsAhead(advertisedSV, decodeSV(localSVBytes));
+    } catch {
+      return true;
+    }
+  }
+
+  private getKnownLocalStateVector(guid: string): Uint8Array | null {
+    const hsm = this._getDocument(guid)?.hsm;
+    const hsmStateVector = hsm?.state.localStateVector;
+    if (hsmStateVector) return hsmStateVector;
+
+    const cachedStateVector = this._localStateVectorCache.get(guid);
+    if (cachedStateVector) return cachedStateVector;
+
+    return this._lcaCache.get(guid)?.stateVector ?? null;
+  }
+
+  /**
    * Clear the server-advertised reconnect metadata for all documents. The
    * applied remote baseline is preserved across reconnects because it reflects
    * what this vault has already incorporated locally.
@@ -1121,6 +1190,7 @@ export class MergeManager {
     this.userId = undefined;
     this._yaml = null;
     this._onTransition = undefined;
+    this._transitionListeners.clear();
   }
 
   // ===========================================================================

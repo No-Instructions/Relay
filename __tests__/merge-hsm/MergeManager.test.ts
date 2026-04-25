@@ -280,6 +280,48 @@ describe('MergeManager', () => {
       server.destroy();
       tracked.destroy();
     });
+
+    test('server-advertised SV identifies remote-ahead cached documents', async () => {
+      const guid = 'doc-server-advertised-ahead';
+      const server = new Y.Doc();
+
+      server.getText('contents').insert(0, 'hello');
+      const localSV = Y.encodeStateVector(server);
+
+      const managerWithInit = new MergeManager({
+        getVaultId: (docGuid) => `test-${docGuid}`,
+        getDocument: (docGuid) => documents.get(docGuid),
+        timeProvider,
+        loadAllStates: async () => [
+          {
+            guid,
+            path: 'remote-ahead.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              stateVector: localSV,
+            },
+            disk: null,
+            localStateVector: localSV,
+            lastStatePath: 'idle.synced',
+          },
+        ],
+      });
+
+      await managerWithInit.initialize();
+
+      managerWithInit.seedServerAdvertisedSVFromBytes(guid, localSV);
+      expect(managerWithInit.isServerAdvertisedRemoteAhead(guid)).toBe(false);
+
+      server.getText('contents').insert(5, ' world');
+      managerWithInit.seedServerAdvertisedSVFromBytes(
+        guid,
+        Y.encodeStateVector(server),
+      );
+      expect(managerWithInit.isServerAdvertisedRemoteAhead(guid)).toBe(true);
+
+      managerWithInit.destroy();
+      server.destroy();
+    });
   });
 
   describe('LCA cache', () => {

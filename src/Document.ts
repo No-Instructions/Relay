@@ -771,8 +771,21 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const createdIntegration = this.ensureIdleProviderIntegration({
 			freshRemoteDoc: hsm.hasFork(),
 		});
+		let unsubscribeState: (() => void) | null = null;
+		const cleanupIfDone = () => {
+			if (hsm.matches("idle.localAhead")) return;
+			unsubscribeState?.();
+			unsubscribeState = null;
+			if (!hsm.isActive()) {
+				this.destroyIdleProviderIntegration();
+			}
+		};
+		unsubscribeState = hsm.onStateChange(cleanupIfDone);
+		this.unsubscribes.push(() => unsubscribeState?.());
 		const connected = await this.connect();
 		if (!connected) {
+			unsubscribeState?.();
+			unsubscribeState = null;
 			if (createdIntegration && !hsm.isActive()) {
 				this.destroyIdleProviderIntegration();
 			}
@@ -780,17 +793,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 
 		// Tear down when transitioning to another idle state (fork resolved
-		// or diverged). Don't tear down when transitioning to active —
-		// acquireLock adopts the existing provider and ProviderIntegration.
-		const unsub = hsm.onStateChange(() => {
-			if (!hsm.matches("idle.localAhead")) {
-				unsub();
-				if (!hsm.isActive()) {
-					this.destroyIdleProviderIntegration();
-				}
-			}
-		});
-		this.unsubscribes.push(unsub);
+		// or diverged). The transition may already have happened while connect()
+		// was awaiting the provider, so check once after connect resolves too.
+		cleanupIfDone();
 	}
 
 	/**
