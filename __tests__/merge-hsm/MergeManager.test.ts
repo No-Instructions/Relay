@@ -200,6 +200,47 @@ describe('MergeManager', () => {
     });
   });
 
+  describe('sync status notifications', () => {
+    function flushPostie() {
+      timeProvider.setTime(timeProvider.now() + 21);
+    }
+
+    test('does not notify subscribers when sync status is unchanged', () => {
+      const listener = jest.fn();
+      const localStateVector = stateVectorFor('local');
+      const remoteStateVector = stateVectorFor('remote');
+      const status = {
+        guid: 'doc-1',
+        status: 'synced' as const,
+        diskMtime: 123,
+        localStateVector,
+        remoteStateVector,
+      };
+
+      manager.syncStatus.subscribe(listener);
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      manager.updateSyncStatus('doc-1', status);
+      flushPostie();
+      expect(listener).toHaveBeenCalledTimes(2);
+
+      manager.updateSyncStatus('doc-1', {
+        ...status,
+        localStateVector: new Uint8Array(localStateVector),
+        remoteStateVector: new Uint8Array(remoteStateVector),
+      });
+      flushPostie();
+      expect(listener).toHaveBeenCalledTimes(2);
+
+      manager.updateSyncStatus('doc-1', {
+        ...status,
+        status: 'conflict',
+      });
+      flushPostie();
+      expect(listener).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe('remote update classification', () => {
     test('delete-only incremental update is applied after keyframe seed', () => {
       const guid = 'doc-delete-keyframe';

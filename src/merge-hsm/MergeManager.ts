@@ -177,6 +177,32 @@ export type MergeTransitionCallback = (
   info: MergeTransitionInfo,
 ) => void;
 
+function stateVectorsEqual(
+  a: Uint8Array | null | undefined,
+  b: Uint8Array | null | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.byteLength !== b.byteLength) return false;
+
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+
+  return true;
+}
+
+function syncStatusesEqual(a: SyncStatus | undefined, b: SyncStatus): boolean {
+  return (
+    !!a &&
+    a.guid === b.guid &&
+    a.status === b.status &&
+    a.diskMtime === b.diskMtime &&
+    stateVectorsEqual(a.localStateVector, b.localStateVector) &&
+    stateVectorsEqual(a.remoteStateVector, b.remoteStateVector)
+  );
+}
+
 // =============================================================================
 // Hibernation Types
 // =============================================================================
@@ -1411,6 +1437,7 @@ export class MergeManager {
   updateSyncStatus(guid: string, status: SyncStatus): void {
     // Skip updates during/after destruction to avoid PostOffice teardown errors
     if (this.destroyed) return;
+    if (syncStatusesEqual(this._syncStatus.get(guid), status)) return;
     this._syncStatus.set(guid, status);
   }
 }
