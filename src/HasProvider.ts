@@ -37,6 +37,7 @@ function makeProvider(
 			params: params,
 			disableBc: true,
 			maxConnectionErrors: 3,
+			readOnly: clientToken.authorization === "read-only",
 		},
 	);
 
@@ -248,6 +249,7 @@ export class HasProvider extends HasLogging {
 			clientToken.url,
 			clientToken.docId,
 			clientToken.token,
+			clientToken.authorization === "read-only",
 		);
 
 		if (result.urlChanged) {

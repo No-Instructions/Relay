@@ -47,13 +47,29 @@ messageHandlers[messageSync] = (
 	emitSynced,
 	_messageType,
 ) => {
+	const syncMessageType = decoding.readVarUint(decoder);
+	if (
+		provider.readOnly &&
+		syncMessageType === syncProtocol.messageYjsSyncStep1
+	) {
+		decoding.readVarUint8Array(decoder);
+		return;
+	}
+
 	encoding.writeVarUint(encoder, messageSync);
-	const syncMessageType = syncProtocol.readSyncMessage(
-		decoder,
-		encoder,
-		provider.doc,
-		provider,
-	);
+	switch (syncMessageType) {
+		case syncProtocol.messageYjsSyncStep1:
+			syncProtocol.readSyncStep1(decoder, encoder, provider.doc);
+			break;
+		case syncProtocol.messageYjsSyncStep2:
+			syncProtocol.readSyncStep2(decoder, provider.doc, provider);
+			break;
+		case syncProtocol.messageYjsUpdate:
+			syncProtocol.readUpdate(decoder, provider.doc, provider);
+			break;
+		default:
+			throw new Error("Unknown sync message type");
+	}
 	if (
 		emitSynced &&
 		syncMessageType === syncProtocol.messageYjsSyncStep2 &&
@@ -70,6 +86,9 @@ messageHandlers[messageQueryAwareness] = (
 	_emitSynced,
 	_messageType,
 ) => {
+	if (provider.readOnly) {
+		return;
+	}
 	encoding.writeVarUint(encoder, messageAwareness);
 	encoding.writeVarUint8Array(
 		encoder,
@@ -273,10 +292,14 @@ const setupWS = (provider: YSweetProvider) => {
 			// flushing the buffer ensures real-time updates that arrived
 			// during the disconnect window are delivered promptly.
 			if (provider._pendingMessages.length > 0) {
-				for (const pending of provider._pendingMessages) {
-					websocket.send(pending);
+				if (provider.readOnly) {
+					provider._pendingMessages = [];
+				} else {
+					for (const pending of provider._pendingMessages) {
+						websocket.send(pending);
+					}
+					provider._pendingMessages = [];
 				}
-				provider._pendingMessages = [];
 			}
 			// Re-subscribe to events after reconnection
 			if (provider.eventSubscriptions.size > 0) {
@@ -289,15 +312,17 @@ const setupWS = (provider: YSweetProvider) => {
 			}
 			// broadcast local awareness state
 			if (provider.awareness.getLocalState() !== null) {
-				const encoderAwarenessState = encoding.createEncoder();
-				encoding.writeVarUint(encoderAwarenessState, messageAwareness);
-				encoding.writeVarUint8Array(
-					encoderAwarenessState,
-					awarenessProtocol.encodeAwarenessUpdate(provider.awareness, [
-						provider.doc.clientID,
-					]),
-				);
-				websocket.send(encoding.toUint8Array(encoderAwarenessState));
+				if (!provider.readOnly) {
+					const encoderAwarenessState = encoding.createEncoder();
+					encoding.writeVarUint(encoderAwarenessState, messageAwareness);
+					encoding.writeVarUint8Array(
+						encoderAwarenessState,
+						awarenessProtocol.encodeAwarenessUpdate(provider.awareness, [
+							provider.doc.clientID,
+						]),
+					);
+					websocket.send(encoding.toUint8Array(encoderAwarenessState));
+				}
 			}
 		};
 		provider.emit("status", [
@@ -342,6 +367,7 @@ export type YSweetProviderParams = {
 	maxBackoffTime?: number;
 	disableBc?: boolean;
 	maxConnectionErrors?: number;
+	readOnly?: boolean;
 };
 
 export type ConnectionStatus =
@@ -499,6 +525,7 @@ export class YSweetProvider extends Observable<string> {
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	_reconnectTimeout: ReturnType<typeof setTimeout> | null;
 	maxConnectionErrors: number;
+	readOnly: boolean;
 	eventSubscriptions: Set<string>;
 	eventCallbacks: Map<string, EventCallback[]>;
 	onSubdocIndex: SubdocIndexCallback | null;
@@ -527,11 +554,12 @@ export class YSweetProvider extends Observable<string> {
 			connect = true,
 			awareness = new awarenessProtocol.Awareness(doc),
 			params = {},
-			WebSocketPolyfill = WebSocket,
+			WebSocketPolyfill = globalThis.WebSocket as WebSocketPolyfillType,
 			resyncInterval = -1,
 			maxBackoffTime = 2500,
 			disableBc = false,
 			maxConnectionErrors = 3,
+			readOnly = false,
 		}: YSweetProviderParams = {},
 	) {
 		super();
@@ -557,6 +585,7 @@ export class YSweetProvider extends Observable<string> {
 		this.bcconnected = false;
 		this.disableBc = disableBc;
 		this.wsUnsuccessfulReconnects = 0;
+		this.readOnly = readOnly;
 		this.messageHandlers = messageHandlers.slice();
 		this._synced = false;
 		this.ws = null;
@@ -598,6 +627,9 @@ export class YSweetProvider extends Observable<string> {
 		 */
 		this._updateHandler = (update: Uint8Array, origin: any) => {
 			if (origin !== this) {
+				if (this.readOnly) {
+					return;
+				}
 				metrics.recordProtocolMessage("sync", "out", update.length);
 				const encoder = encoding.createEncoder();
 				encoding.writeVarUint(encoder, messageSync);
@@ -621,6 +653,9 @@ export class YSweetProvider extends Observable<string> {
 			}: { added: Array<any>; updated: Array<any>; removed: Array<any> },
 			_origin: any,
 		) => {
+			if (this.readOnly) {
+				return;
+			}
 			const changedClients = added.concat(updated).concat(removed);
 			const encoder = encoding.createEncoder();
 			encoding.writeVarUint(encoder, messageAwareness);
@@ -789,11 +824,13 @@ export class YSweetProvider extends Observable<string> {
 		encoding.writeVarUint(encoderSync, messageSync);
 		syncProtocol.writeSyncStep1(encoderSync, this.doc);
 		bc.publish(this.bcChannel, encoding.toUint8Array(encoderSync), this);
-		// broadcast local state
-		const encoderState = encoding.createEncoder();
-		encoding.writeVarUint(encoderState, messageSync);
-		syncProtocol.writeSyncStep2(encoderState, this.doc);
-		bc.publish(this.bcChannel, encoding.toUint8Array(encoderState), this);
+		if (!this.readOnly) {
+			// broadcast local state
+			const encoderState = encoding.createEncoder();
+			encoding.writeVarUint(encoderState, messageSync);
+			syncProtocol.writeSyncStep2(encoderState, this.doc);
+			bc.publish(this.bcChannel, encoding.toUint8Array(encoderState), this);
+		}
 		// write queryAwareness
 		const encoderAwarenessQuery = encoding.createEncoder();
 		encoding.writeVarUint(encoderAwarenessQuery, messageQueryAwareness);
@@ -819,6 +856,13 @@ export class YSweetProvider extends Observable<string> {
 	}
 
 	disconnectBc() {
+		if (this.readOnly) {
+			if (this.bcconnected) {
+				bc.unsubscribe(this.bcChannel, this._bcSubscriber as any);
+				this.bcconnected = false;
+			}
+			return;
+		}
 		// broadcast message with local awareness state set to null (indicating disconnect)
 		const encoder = encoding.createEncoder();
 		encoding.writeVarUint(encoder, messageAwareness);
@@ -851,6 +895,13 @@ export class YSweetProvider extends Observable<string> {
 		if (this.ws !== null) {
 			this.ws.close();
 			this.ws = null;
+		}
+	}
+
+	setReadOnly(readOnly: boolean) {
+		this.readOnly = readOnly;
+		if (readOnly) {
+			this._pendingMessages = [];
 		}
 	}
 
@@ -887,7 +938,11 @@ export class YSweetProvider extends Observable<string> {
 		serverUrl: string,
 		roomname: string,
 		token: string,
+		readOnly?: boolean,
 	): { urlChanged: boolean; newUrl: string } {
+		if (readOnly !== undefined) {
+			this.setReadOnly(readOnly);
+		}
 		// ensure that url is always ends with /
 		while (serverUrl[serverUrl.length - 1] === "/") {
 			serverUrl = serverUrl.slice(0, serverUrl.length - 1);

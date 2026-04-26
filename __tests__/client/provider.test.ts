@@ -1,6 +1,9 @@
 import * as Y from "yjs";
+import * as encoding from "lib0/encoding";
 import * as decoding from "lib0/decoding";
+import * as syncProtocol from "y-protocols/sync";
 import {
+	messageSync,
 	messageQuerySubdocs,
 	normalizeSubdocIndex,
 	YSweetProvider,
@@ -48,6 +51,15 @@ class FakeWebSocket {
 		}
 		this.readyState = FakeWebSocket.CLOSED;
 		this.onclose?.({} as CloseEvent);
+	}
+
+	open() {
+		this.readyState = FakeWebSocket.OPEN;
+		this.onopen?.();
+	}
+
+	receive(data: Uint8Array) {
+		this.onmessage?.({ data: data.buffer } as MessageEvent);
 	}
 
 	fail() {
@@ -112,6 +124,65 @@ describe("YSweetProvider", () => {
 
 		jest.advanceTimersByTime(1);
 		expect(FakeWebSocket.instances).toHaveLength(2);
+
+		provider.destroy();
+	});
+
+	test("read-only provider connects with sync step 1 but drops queued outbound updates", () => {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+			WebSocketPolyfill: FakeWebSocket as any,
+			readOnly: true,
+		});
+		provider._pendingMessages.push(new Uint8Array([messageSync, 2, 1]).buffer);
+
+		provider.connect();
+		const ws = FakeWebSocket.instances[0];
+		ws.open();
+
+		expect(provider._pendingMessages).toHaveLength(0);
+		expect(ws.sent).toHaveLength(1);
+		const decoder = decoding.createDecoder(ws.sent[0] as Uint8Array);
+		expect(decoding.readVarUint(decoder)).toBe(messageSync);
+		expect(decoding.readVarUint(decoder)).toBe(syncProtocol.messageYjsSyncStep1);
+
+		provider.destroy();
+	});
+
+	test("read-only provider applies inbound updates but does not send local document state", () => {
+		const localDoc = new Y.Doc();
+		const remoteDoc = new Y.Doc();
+		remoteDoc.getText("contents").insert(0, "remote");
+		const provider = new YSweetProvider("ws://example.com", "room", localDoc, {
+			connect: false,
+			disableBc: true,
+			WebSocketPolyfill: FakeWebSocket as any,
+			readOnly: true,
+		});
+
+		provider.connect();
+		const ws = FakeWebSocket.instances[0];
+		ws.open();
+		ws.sent = [];
+
+		const inboundStep2 = encoding.createEncoder();
+		encoding.writeVarUint(inboundStep2, messageSync);
+		syncProtocol.writeSyncStep2(inboundStep2, remoteDoc);
+		ws.receive(encoding.toUint8Array(inboundStep2));
+
+		expect(localDoc.getText("contents").toString()).toBe("remote");
+		expect(ws.sent).toHaveLength(0);
+
+		const serverStep1 = encoding.createEncoder();
+		encoding.writeVarUint(serverStep1, messageSync);
+		syncProtocol.writeSyncStep1(serverStep1, new Y.Doc());
+		ws.receive(encoding.toUint8Array(serverStep1));
+
+		expect(ws.sent).toHaveLength(0);
+
+		localDoc.getText("contents").insert(6, " local");
+		expect(ws.sent).toHaveLength(0);
 
 		provider.destroy();
 	});
