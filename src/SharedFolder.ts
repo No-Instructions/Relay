@@ -1081,6 +1081,19 @@ export class SharedFolder extends HasProvider {
 		return this.path.split("/").pop() || "";
 	}
 
+	public getUserDisplayName(userId: string): string | undefined {
+		const name = this.relayManager?.users.get(userId)?.name?.trim();
+		return name || undefined;
+	}
+
+	public isLocalUserId(userId: string): boolean {
+		return [
+			this.loginManager?.user?.id,
+			this.relayManager?.user?.id,
+			this._provider?.awareness.getLocalState()?.user?.id,
+		].some((id) => id === userId);
+	}
+
 	public get location(): string {
 		return this.path.split("/").slice(0, -1).join("/");
 	}

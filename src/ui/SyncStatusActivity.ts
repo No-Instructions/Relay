@@ -79,7 +79,6 @@ export class SyncStatusActivityStore {
 	private readonly lastCborActivityAtByGuid = new Map<string, number>();
 	private readonly lastSeededActivityAtByGuid = new Map<string, number>();
 	private readonly provider = this.sharedFolder._provider;
-	private readonly localUserId = this.sharedFolder.loginManager?.user?.id;
 	private unsubscribeSyncStatus?: () => void;
 	private unsubscribeSubdocIndex?: () => void;
 	private unsubscribeHsmTransitions?: () => void;
@@ -92,7 +91,7 @@ export class SyncStatusActivityStore {
 
 		// The server echoes our own updates back through CBOR events. Ignore
 		// those so local edits do not overwrite the visible remote author.
-		if (event.user && event.user === this.localUserId) return;
+		if (event.user && this.sharedFolder.isLocalUserId(event.user)) return;
 		if (event.user) {
 			this.lastAuthorByGuid.set(guid, event.user);
 		}
@@ -285,7 +284,9 @@ export class SyncStatusActivityStore {
 
 	private resolveAuthorName(userId: string | undefined): string {
 		if (!userId) return "";
-		if (userId === this.localUserId) return "you";
+		if (this.sharedFolder.isLocalUserId(userId)) return "you";
+		const knownUserName = this.sharedFolder.getUserDisplayName(userId);
+		if (knownUserName) return knownUserName;
 		const awareness = this.sharedFolder._provider?.awareness;
 		if (awareness) {
 			for (const [, state] of awareness.getStates()) {
@@ -295,7 +296,7 @@ export class SyncStatusActivityStore {
 				}
 			}
 		}
-		return userId.slice(0, 8);
+		return "";
 	}
 
 	private notify(): void {
