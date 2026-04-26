@@ -2,6 +2,7 @@
 import { uuidv4 } from "lib0/random";
 import {
 	FileManager,
+	type MetadataCache,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -203,6 +204,7 @@ export class SharedFolder extends HasProvider {
 		path: string,
 		loginManager: LoginManager,
 		vault: Vault,
+		private metadataCache: MetadataCache | undefined,
 		fileManager: FileManager,
 		tokenStore: LiveTokenStore,
 		relayManager: RelayManager,
@@ -806,18 +808,22 @@ export class SharedFolder extends HasProvider {
 			const exists = this.existsSync(file.path);
 			if (!exists) continue;
 
-			// Check disk state
-			try {
-				const diskState = await file.readDiskContent();
-				const currentDisk = hsm.state.disk;
+			const currentDisk = hsm.state.disk;
 
-				if (this.shouldSendDiskChanged(currentDisk, diskState)) {
-					hsm.send({
-						type: "DISK_CHANGED",
-						contents: diskState.content,
-						mtime: diskState.mtime,
-						hash: diskState.hash,
-					});
+			// Check disk state only after the cheap stat comparison. Reading and
+			// hashing every document on every poll is too expensive for large vaults.
+			try {
+				if (this.shouldReadDiskForPoll(currentDisk, file)) {
+					const diskState = await file.readDiskContent();
+
+					if (this.shouldSendDiskChanged(currentDisk, diskState)) {
+						hsm.send({
+							type: "DISK_CHANGED",
+							contents: diskState.content,
+							mtime: diskState.mtime,
+							hash: diskState.hash,
+						});
+					}
 				}
 			} catch (e) {
 				// File might have been deleted - ignore
@@ -845,6 +851,47 @@ export class SharedFolder extends HasProvider {
 				});
 			}
 		}
+	}
+
+	private shouldReadDiskForPoll(
+		currentDisk: { hash: string; mtime: number } | null,
+		file: Document,
+	): boolean {
+		if (!currentDisk) return true;
+
+		const cachedDisk = this.getCachedDiskState(file);
+		if (cachedDisk) {
+			return cachedDisk.hash !== currentDisk.hash;
+		}
+
+		const tfile = this.getTFile(file);
+		if (!tfile) return false;
+
+		return tfile.stat.mtime !== currentDisk.mtime;
+	}
+
+	private getCachedDiskState(
+		file: Document,
+	): { hash: string; mtime: number } | null {
+		const tfile = this.getTFile(file);
+		if (!tfile) return null;
+
+		const fileCache = (this.metadataCache as any)?.fileCache;
+		const cached =
+			typeof fileCache?.get === "function"
+				? fileCache.get(tfile.path)
+				: fileCache?.[tfile.path];
+		if (
+			!cached ||
+			typeof cached.hash !== "string" ||
+			typeof cached.mtime !== "number"
+		) {
+			return null;
+		}
+
+		if (cached.mtime !== tfile.stat.mtime) return null;
+
+		return { hash: cached.hash, mtime: cached.mtime };
 	}
 
 	/**
