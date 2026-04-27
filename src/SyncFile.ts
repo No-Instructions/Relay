@@ -6,7 +6,7 @@ import {
 	S3Folder,
 	type S3RNType,
 } from "./S3RN";
-import { SharedFolder } from "./SharedFolder";
+import type { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
 import { type FileMeta, type FileMetas, type SyncFileType } from "./SyncTypes";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
@@ -336,10 +336,10 @@ export class SyncFile
 	}
 
 	public get tag() {
-		return this.inMeta
-			? ""
-			: this.uploadError
-				? this.uploadError
+		return this.uploadError
+			? this.uploadError
+			: this.inMeta
+				? ""
 				: this.pending
 					? "pending"
 					: "unknown";
@@ -384,7 +384,6 @@ export class SyncFile
 		if (!this.meta || (hash && this.meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
-				await this.sharedFolder.markUploaded(this);
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} catch (error) {
@@ -396,6 +395,7 @@ export class SyncFile
 				}
 				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
 				this.notifyListeners();
+				throw new Error(this.uploadError);
 			}
 		}
 		return;
@@ -446,6 +446,9 @@ export class SyncFile
 				return;
 			}
 		} catch (err) {
+			if (this.uploadError) {
+				throw err;
+			}
 			this.warn("unable to compute hash", err);
 		}
 	}
