@@ -180,7 +180,7 @@ class PillDecoration {
 
 		// clean up failed destroys
 		const stalePills = el.querySelectorAll(".system3-folder-icons");
-		if (stalePills.length > 1) {
+		if (stalePills.length > 0) {
 			stalePills?.forEach((pill) => {
 				pill.remove();
 			});
