@@ -2410,7 +2410,11 @@ export class SharedFolder extends HasProvider {
 		const meta = this.syncStore.getMeta(vpath);
 		if (!meta) {
 			this.log("get syncfile missing meta");
-			file.push();
+			void (async () => {
+				if (!this.pendingUpload.get(file.path)) return;
+				await this.backgroundSync.enqueueSync(file);
+				await this.markUploaded(file);
+			})();
 		} else {
 			file.pull();
 		}
