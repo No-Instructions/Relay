@@ -993,7 +993,22 @@ export class SharedFolder extends HasProvider {
 		const isExtensionEnabled =
 			this.syncSettingsManager.isExtensionEnabled(vpath);
 
-		return inFolder && isSupportedFileType && isExtensionEnabled;
+		return (
+			inFolder &&
+			isSupportedFileType &&
+			isExtensionEnabled &&
+			!this.isStorageBlockedTFile(tfile)
+		);
+	}
+
+	public isStorageBlockedTFile(tfile: TAbstractFile): boolean {
+		if (!(tfile instanceof TFile)) return false;
+		if (!this.checkPath(tfile.path)) return false;
+		const quota = this.remote?.relay.storageQuota?.quota ?? this.storageQuota;
+		if (quota !== 0) return false;
+		return this.syncSettingsManager.requiresStorage(
+			this.getVirtualPath(tfile.path),
+		);
 	}
 
 	private getSyncFiles(): TAbstractFile[] {

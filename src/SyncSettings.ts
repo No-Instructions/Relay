@@ -122,6 +122,21 @@ export class SyncSettingsManager extends NamespacedSettings<
 		);
 	}
 
+	public requiresStorage(path: string): boolean {
+		const extension = path.split(".").pop() || "";
+		const normalizedExt = extension.toLowerCase();
+
+		if (normalizedExt === "md") return false;
+
+		for (const schema of Object.values(SyncSettingsManager.schema)) {
+			if (schema.extensions.includes(normalizedExt)) {
+				return schema.requiresStorage;
+			}
+		}
+
+		return SyncSettingsManager.schema.otherTypes.requiresStorage;
+	}
+
 	getCategory(key: keyof SyncFlags): SyncCategory {
 		const schema = SyncSettingsManager.schema[key];
 		const enabled = this.get()[key] ?? schema.defaultEnabled;

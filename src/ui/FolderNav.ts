@@ -431,7 +431,10 @@ class NotSyncedPillDecoration {
 	pill: TextPill;
 	unsubscribe?: () => void;
 
-	constructor(private el: HTMLElement) {
+	constructor(
+		private el: HTMLElement,
+		label: string,
+	) {
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
 		});
@@ -440,9 +443,13 @@ class NotSyncedPillDecoration {
 			target: this.el,
 			props: {
 				text: "NOT SYNCED",
-				label: "Syncing this file type is disabled",
+				label,
 			},
 		});
+	}
+
+	setLabel(label: string) {
+		this.pill.$set({ label });
 	}
 
 	destroy() {
@@ -463,9 +470,17 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		if (
 			sharedFolder &&
 			sharedFolder.checkPath(file.path) &&
-			!sharedFolder.isSyncableTFile(file)
+			(sharedFolder.isStorageBlockedTFile(file) ||
+				!sharedFolder.isSyncableTFile(file))
 		) {
-			return storage || new NotSyncedPillDecoration(item.selfEl);
+			const label = sharedFolder.isStorageBlockedTFile(file)
+				? "Attachment storage is required to sync this file"
+				: "Syncing this file type is disabled";
+			if (storage) {
+				storage.setLabel(label);
+				return storage;
+			}
+			return new NotSyncedPillDecoration(item.selfEl, label);
 		}
 		if (storage) {
 			storage.destroy();
