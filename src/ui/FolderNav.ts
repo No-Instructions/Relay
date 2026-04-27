@@ -352,49 +352,19 @@ class FilePillDecoration {
 			el.remove();
 		});
 
-		// Subscribe to HSM sync status for UI updates
-		// Get mergeManager from the file's sharedFolder (per-folder instance)
-		const mergeManager = this.file.sharedFolder?.mergeManager;
-		if (mergeManager) {
-			this.unsubscribes.push(
-				mergeManager.syncStatus.subscribe(() => {
-					this.setTextFromHSM();
-				})
-			);
-		} else {
-			this.unsubscribes.push(
-				this.file.subscribe(() => {
-					this.setText();
-				}),
-			);
-		}
-	}
-
-	private setTextFromHSM() {
-		const mergeManager = this.file.sharedFolder?.mergeManager;
-		const status = mergeManager?.syncStatus.get(this.file.guid);
-		if (!status || status.status === 'synced') {
-			this.pill?.$destroy();
-			this.pill = undefined;
-			return;
-		}
-		const tag = status.status; // 'pending' | 'conflict' | 'error'
-
-		if (!this.pill) {
-			this.pill = new UploadPill({
-				target: this.el,
-				props: { text: tag },
-			});
-		} else {
-			this.pill.$set({ text: tag });
-		}
+		this.unsubscribes.push(
+			this.file.subscribe(() => {
+				this.setText();
+			}),
+		);
 	}
 
 	setText() {
 		if (!this.file) {
 			return;
 		}
-		if (this.file.inMeta) {
+		const tag = this.file.tag;
+		if (!tag) {
 			this.pill?.$destroy();
 			return;
 		}
@@ -402,12 +372,12 @@ class FilePillDecoration {
 			this.pill = new UploadPill({
 				target: this.el,
 				props: {
-					text: this.file.tag,
+					text: tag,
 				},
 			});
 		} else {
 			this.pill.$set({
-				text: this.file.tag,
+				text: tag,
 			});
 		}
 	}
