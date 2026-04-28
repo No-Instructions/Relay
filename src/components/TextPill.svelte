@@ -2,6 +2,8 @@
 	export let text: string;
 	export let label: string;
 	export let onClick: (() => void) | undefined = undefined;
+
+	function swallowEvent() {}
 </script>
 
 {#if onClick}
@@ -9,7 +11,8 @@
 		type="button"
 		class="nav-file-tag system3-filepill"
 		aria-label={label}
-		on:click={onClick}
+		on:mousedown|stopPropagation={swallowEvent}
+		on:click|stopPropagation|preventDefault={onClick}
 	>
 		<span>{text}</span>
 	</button>
