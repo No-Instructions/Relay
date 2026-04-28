@@ -2039,7 +2039,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas);
+		this.backgroundSync.enqueueCanvasDownload(canvas, update);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas, update);
