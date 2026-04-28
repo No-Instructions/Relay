@@ -20,6 +20,20 @@ async function makeSyncSettingsManager() {
 }
 
 describe("SyncSettingsManager", () => {
+	test("exposes markdown as an always-on category", async () => {
+		const manager = await makeSyncSettingsManager();
+
+		const markdown = manager.getCategories().markdown;
+
+		expect(markdown).toMatchObject({
+			name: "Markdown",
+			enabled: true,
+			extensions: ["md"],
+			requiresStorage: false,
+			canToggle: false,
+		});
+	});
+
 	test("classifies which file types require attachment storage", async () => {
 		const manager = await makeSyncSettingsManager();
 

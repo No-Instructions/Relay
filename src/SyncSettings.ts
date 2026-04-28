@@ -6,6 +6,7 @@ export interface SyncCategory {
 	description: string;
 	name: string;
 	requiresStorage: boolean;
+	canToggle: boolean;
 }
 
 export interface SyncFlags {
@@ -18,6 +19,8 @@ export interface SyncFlags {
 	otherTypes?: boolean;
 }
 
+export type SyncCategoryKey = keyof SyncFlags | "markdown";
+
 interface TypeSettings {
 	name: string;
 	description: string;
@@ -29,6 +32,16 @@ interface TypeSettings {
 export class SyncSettingsManager extends NamespacedSettings<
 	Record<keyof SyncFlags, boolean>
 > {
+	private static readonly alwaysEnabledSchema: Record<"markdown", TypeSettings> = {
+		markdown: {
+			name: "Markdown",
+			description: "Sync Markdown files (.md)",
+			extensions: ["md"],
+			defaultEnabled: true,
+			requiresStorage: false,
+		},
+	};
+
 	private static readonly schema: Record<keyof SyncFlags, TypeSettings> = {
 		canvas: {
 			name: "Canvas",
@@ -137,7 +150,19 @@ export class SyncSettingsManager extends NamespacedSettings<
 		return SyncSettingsManager.schema.otherTypes.requiresStorage;
 	}
 
-	getCategory(key: keyof SyncFlags): SyncCategory {
+	getCategory(key: SyncCategoryKey): SyncCategory {
+		if (key === "markdown") {
+			const schema = SyncSettingsManager.alwaysEnabledSchema[key];
+			return {
+				enabled: true,
+				name: schema.name,
+				description: schema.description,
+				extensions: schema.extensions,
+				requiresStorage: schema.requiresStorage,
+				canToggle: false,
+			};
+		}
+
 		const schema = SyncSettingsManager.schema[key];
 		const enabled = this.get()[key] ?? schema.defaultEnabled;
 		return {
@@ -146,17 +171,22 @@ export class SyncSettingsManager extends NamespacedSettings<
 			description: schema.description,
 			extensions: schema.extensions,
 			requiresStorage: schema.requiresStorage,
+			canToggle: true,
 		};
 	}
 
-	getCategories(): Record<keyof SyncFlags, SyncCategory> {
-		return Object.keys(SyncSettingsManager.schema).reduce(
-			(acc, key) => {
-				acc[key as keyof SyncFlags] = this.getCategory(key as keyof SyncFlags);
-				return acc;
-			},
-			{} as Record<keyof SyncFlags, SyncCategory>,
-		);
+	getCategories(): Record<SyncCategoryKey, SyncCategory> {
+		const categories = {
+			markdown: this.getCategory("markdown"),
+		} as Record<SyncCategoryKey, SyncCategory>;
+
+		for (const key of Object.keys(SyncSettingsManager.schema)) {
+			categories[key as keyof SyncFlags] = this.getCategory(
+				key as keyof SyncFlags,
+			);
+		}
+
+		return categories;
 	}
 
 	public async toggleCategory(
