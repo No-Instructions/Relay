@@ -81,6 +81,7 @@ export class PostOffice {
 
 		if (immediate) {
 			this.deliverImmediate(sender, recipient);
+			this.mailboxes.get(recipient)?.delete(sender);
 		} else if (!this.isInTransaction && !this.isDelivering) {
 			this.scheduleDelivery();
 		}

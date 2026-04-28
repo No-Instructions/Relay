@@ -221,6 +221,24 @@ describe("ObservableMap", () => {
 			expect(subscriber).toHaveBeenCalledWith(map);
 		});
 
+		it("should not replay immediate subscription delivery in later batches", () => {
+			const firstMap = new ObservableMap<string, number>();
+			const secondMap = new ObservableMap<string, number>();
+			const firstSubscriber = jest.fn();
+			const secondSubscriber = jest.fn();
+
+			firstMap.subscribe(firstSubscriber);
+			secondMap.subscribe(secondSubscriber);
+			firstSubscriber.mockClear();
+			secondSubscriber.mockClear();
+
+			secondMap.set("b", 2);
+			flushDeliveries();
+
+			expect(firstSubscriber).not.toHaveBeenCalled();
+			expect(secondSubscriber).toHaveBeenCalledTimes(1);
+		});
+
 		it("should notify subscribers on delete", () => {
 			const map = new ObservableMap<string, number>();
 			map.set("a", 1);
