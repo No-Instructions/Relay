@@ -363,6 +363,73 @@ describe('MergeManager', () => {
       managerWithInit.destroy();
       server.destroy();
     });
+
+    test('server-advertised sync predicate only accepts equal known state vectors', async () => {
+      const guid = 'doc-server-advertised-equal';
+      const server = new Y.Doc();
+
+      server.getText('contents').insert(0, 'hello');
+      const baseSV = Y.encodeStateVector(server);
+      server.getText('contents').insert(5, ' world');
+      const aheadSV = Y.encodeStateVector(server);
+
+      const managerWithInit = new MergeManager({
+        getVaultId: (docGuid) => `test-${docGuid}`,
+        getDocument: (docGuid) => documents.get(docGuid),
+        timeProvider,
+        loadAllStates: async () => [
+          {
+            guid,
+            path: 'already-synced.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              stateVector: baseSV,
+            },
+            disk: null,
+            localStateVector: baseSV,
+            lastStatePath: 'idle.synced',
+          },
+        ],
+      });
+
+      await managerWithInit.initialize();
+
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(false);
+
+      managerWithInit.seedServerAdvertisedSVFromBytes(guid, baseSV);
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(true);
+
+      managerWithInit.seedServerAdvertisedSVFromBytes(guid, aheadSV);
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(false);
+
+      managerWithInit.destroy();
+
+      const localAheadManager = new MergeManager({
+        getVaultId: (docGuid) => `test-${docGuid}`,
+        getDocument: (docGuid) => documents.get(docGuid),
+        timeProvider,
+        loadAllStates: async () => [
+          {
+            guid,
+            path: 'local-ahead.md',
+            lcaMeta: {
+              meta: { hash: 'hash-2', mtime: 2000 },
+              stateVector: aheadSV,
+            },
+            disk: null,
+            localStateVector: aheadSV,
+            lastStatePath: 'idle.synced',
+          },
+        ],
+      });
+
+      await localAheadManager.initialize();
+      localAheadManager.seedServerAdvertisedSVFromBytes(guid, baseSV);
+      expect(localAheadManager.isServerAdvertisedInSync(guid)).toBe(false);
+
+      localAheadManager.destroy();
+      server.destroy();
+    });
   });
 
   describe('LCA cache', () => {

@@ -38,6 +38,7 @@ import {
   decodeSV,
   snapshotContainsUpdate,
   snapshotFromUpdate,
+  svEqual,
   svIsAhead,
   updateHasDeleteSet,
 } from './state-vectors';
@@ -1100,6 +1101,25 @@ export class MergeManager {
       return svIsAhead(advertisedSV, decodeSV(localSVBytes));
     } catch {
       return true;
+    }
+  }
+
+  /**
+   * Return true when the folder subdoc index has advertised a server head and
+   * it matches the known local state vector. This is a queueing hint for
+   * folder-wide sync; it intentionally ignores delete sets.
+   */
+  isServerAdvertisedInSync(guid: string): boolean {
+    const advertisedSV = this._serverAdvertisedSV.get(guid);
+    if (!advertisedSV) return false;
+
+    const localSVBytes = this.getKnownLocalStateVector(guid);
+    if (!localSVBytes) return false;
+
+    try {
+      return svEqual(advertisedSV, decodeSV(localSVBytes));
+    } catch {
+      return false;
     }
   }
 

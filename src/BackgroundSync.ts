@@ -663,14 +663,16 @@ export class BackgroundSync extends HasLogging {
 		const docs = [...sharedFolder.files.values()].filter(isDocument);
 		const canvases = [...sharedFolder.files.values()].filter(isCanvas);
 		const syncFiles = [...sharedFolder.files.values()].filter(isSyncFile);
-		const allItems = [...docs, ...canvases, ...syncFiles];
+		const allItems = [...docs, ...canvases, ...syncFiles].filter((item) =>
+			this.shouldEnqueueForSharedFolderSync(item),
+		);
 
 		// Create sync group with properly initialized counters
 		const group: SyncGroup = {
 			sharedFolder,
 			total: allItems.length,
 			completed: 0,
-			status: "pending",
+			status: allItems.length > 0 ? "pending" : "completed",
 			downloads: 0,
 			syncs: allItems.length,
 			completedDownloads: 0,
@@ -681,11 +683,10 @@ export class BackgroundSync extends HasLogging {
 
 		// Register the group before enqueueing items
 		this.syncGroups.set(sharedFolder, group);
+		if (allItems.length === 0) return;
 
 		// Sort items by path for consistent sync order
-		const sortedDocs = [...docs, ...canvases, ...syncFiles].sort(
-			compareFilePaths,
-		);
+		const sortedDocs = allItems.sort(compareFilePaths);
 
 		for (const doc of sortedDocs) {
 			this.enqueueForGroupSync(doc);
@@ -694,6 +695,22 @@ export class BackgroundSync extends HasLogging {
 		// Update group status to running
 		group.status = "running";
 		this.syncGroups.set(sharedFolder, group);
+	}
+
+	private shouldEnqueueForSharedFolderSync(
+		item: Document | Canvas | SyncFile,
+	): boolean {
+		if (!isDocument(item)) return true;
+
+		const hsm = item.hsm;
+		if (!hsm) return true;
+		if (!hsm.state.lca) return true;
+		if (hsm.getSyncStatus().status !== "synced") return true;
+
+		const mergeManager = item.sharedFolder.mergeManager;
+		if (!mergeManager) return true;
+
+		return !mergeManager.isServerAdvertisedInSync(item.guid);
 	}
 
 	/**
