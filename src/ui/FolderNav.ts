@@ -437,6 +437,7 @@ class NotSyncedPillDecoration {
 	constructor(
 		private el: HTMLElement,
 		label: string,
+		onClick: () => void,
 	) {
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
@@ -447,6 +448,7 @@ class NotSyncedPillDecoration {
 			props: {
 				text: "NOT SYNCED",
 				label,
+				onClick,
 			},
 		});
 	}
@@ -464,6 +466,12 @@ class NotSyncedPillDecoration {
 }
 
 class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
+	constructor(
+		private openSettings: (path: string) => Promise<void> | void,
+	) {
+		super();
+	}
+
 	visitFile(
 		file: TFile,
 		item: FileItem,
@@ -483,7 +491,9 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 				storage.setLabel(label);
 				return storage;
 			}
-			return new NotSyncedPillDecoration(item.selfEl, label);
+			return new NotSyncedPillDecoration(item.selfEl, label, () => {
+				void this.openSettings(`/shared-folders?id=${sharedFolder.guid}`);
+			});
 		}
 		if (storage) {
 			storage.destroy();
@@ -756,6 +766,7 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	backgroundSync: BackgroundSync;
+	openSettings: (path: string) => Promise<void> | void;
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 	layoutReady: boolean = false;
@@ -799,11 +810,13 @@ export class FolderNavigationDecorations {
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
 		backgroundSync: BackgroundSync,
+		openSettings: (path: string) => Promise<void> | void,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 		this.backgroundSync = backgroundSync;
+		this.openSettings = openSettings;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => {
 			this.layoutReady = true;
@@ -891,7 +904,7 @@ export class FolderNavigationDecorations {
 			);
 		});
 		visitors.push(new FilePillVisitor());
-		visitors.push(new NotSyncedPillVisitor());
+		visitors.push(new NotSyncedPillVisitor(this.openSettings));
 		visitors.push(new FileConflictVisitor());
 		return visitors;
 	}

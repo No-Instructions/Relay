@@ -1027,6 +1027,7 @@ export default class Live extends Plugin {
 			this.app.workspace,
 			this.sharedFolders,
 			this.backgroundSync,
+			(path) => this.openSettings(path),
 		);
 		this.folderNavDecorations.refresh();
 
