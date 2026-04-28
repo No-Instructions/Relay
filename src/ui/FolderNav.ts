@@ -562,22 +562,17 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 class FileConflictDecoration implements Destroyable {
 	private applied = false;
 	private destroyed = false;
-	private unsubscribe: Unsubscribe = () => {};
 
 	constructor(
 		private el: HTMLElement,
 		private sharedFolder: SharedFolder,
 		private guid: string,
 	) {
-		const mergeManager = this.sharedFolder.mergeManager;
-		if (mergeManager) {
-			this.unsubscribe = mergeManager.syncStatus.subscribe(() => this.update());
-		}
 		this.sharedFolder.onDestroy(() => this.destroy());
 		this.update();
 	}
 
-	private update() {
+	update() {
 		if (this.destroyed) return;
 		const conflict = fileHasConflict(this.sharedFolder, this.guid);
 		if (conflict && !this.applied) {
@@ -592,8 +587,6 @@ class FileConflictDecoration implements Destroyable {
 	destroy() {
 		if (this.destroyed) return;
 		this.destroyed = true;
-		this.unsubscribe();
-		this.unsubscribe = () => {};
 		if (this.applied) {
 			this.el.classList.remove("system3-conflict");
 			this.applied = false;
@@ -620,7 +613,10 @@ class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
 					if (storage) storage.destroy();
 					return null;
 				}
-				if (storage) return storage;
+				if (storage) {
+					storage.update();
+					return storage;
+				}
 				return new FileConflictDecoration(item.selfEl, sharedFolder, guid);
 			} catch (e) {
 				if (storage) storage.destroy();
@@ -828,8 +824,8 @@ export class FolderNavigationDecorations {
 		//   - whenReady().then(refresh) fires on every notification
 		//   - fset.on has its own dedup gated by the feature flag so
 		//     a mid-session flag flip can attach it late
-		//   - the other three subs (syncSettings/folder/syncStore)
-		//     are dedup'd per folder (the pre-refactor code leaked
+		//   - the other folder-level refresh subs are dedup'd per folder
+		//     (the pre-refactor code leaked
 		//     them on every notification — that was the teardown bug)
 		this.rootSub = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
@@ -863,6 +859,9 @@ export class FolderNavigationDecorations {
 				folder.onDestroy(folder.subscribe(this, () => this.quickRefresh()));
 				folder.onDestroy(
 					folder.syncStore.subscribe(() => this.quickRefresh()),
+				);
+				folder.onDestroy(
+					folder.mergeManager.syncStatus.subscribe(() => this.quickRefresh()),
 				);
 			});
 			this.refresh();
