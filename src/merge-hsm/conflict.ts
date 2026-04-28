@@ -12,7 +12,7 @@
  */
 
 import { diff3Merge } from "node-diff3";
-import type { ConflictRegion, PositionedConflict, PositionedChange } from "./types";
+import type { ConflictRegion, PositionedConflict, PositionedChange, StatePath } from "./types";
 
 export interface ConflictData {
 	base: string;
@@ -21,8 +21,128 @@ export interface ConflictData {
 	oursLabel: string;
 	theirsLabel: string;
 	conflictRegions: ConflictRegion[];
-	resolvedIndices: Set<number>;
+	resolvedHunkIds: Set<string>;
 	positionedConflicts: PositionedConflict[];
+}
+
+/** A single conflict hunk addressed by stable content-derived id. */
+export interface ConflictHunkInfo {
+	id: string;
+	baseStart: number;
+	baseEnd: number;
+	resolved: boolean;
+	oursContent: string;
+	theirsContent: string;
+}
+
+/** Focused snapshot of an HSM's conflict state for API and harness callers. */
+export interface ConflictInfoSnapshot {
+	path: string;
+	guid: string;
+	statePath: StatePath;
+	hasConflict: boolean;
+	base: string | null;
+	ours: string | null;
+	theirs: string | null;
+	oursLabel: string | null;
+	theirsLabel: string | null;
+	hunks: ConflictHunkInfo[];
+	hunkCount: number;
+	resolvedHunkCount: number;
+}
+
+function hashString(s: string): string {
+	let h = 5381;
+	for (let i = 0; i < s.length; i++) {
+		h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+	}
+	return (h >>> 0).toString(16).padStart(8, "0");
+}
+
+export function conflictRegionId(
+	region: Pick<ConflictRegion, "oursContent" | "theirsContent">,
+): string {
+	return hashString(`${region.oursContent}\0${region.theirsContent}`);
+}
+
+export function minUniqueConflictPrefixLen(ids: readonly string[]): number {
+	if (ids.length <= 1) return 2;
+	for (let len = 2; len <= 8; len++) {
+		const seen = new Set<string>();
+		let collided = false;
+		for (const id of ids) {
+			const prefix = id.slice(0, len);
+			if (seen.has(prefix)) {
+				collided = true;
+				break;
+			}
+			seen.add(prefix);
+		}
+		if (!collided) return len;
+	}
+	return 8;
+}
+
+export function toConflictInfoSnapshot(args: {
+	path: string;
+	guid: string;
+	statePath: StatePath;
+	conflictData: ConflictData | null;
+}): ConflictInfoSnapshot {
+	const cd = args.conflictData;
+	const regions = cd?.conflictRegions ?? [];
+	const resolved = cd?.resolvedHunkIds ?? new Set<string>();
+	const fullIds = regions.map(conflictRegionId);
+	const prefixLen = minUniqueConflictPrefixLen(fullIds);
+
+	const hunks: ConflictHunkInfo[] = regions.map((region, offset) => ({
+		id: fullIds[offset].slice(0, prefixLen),
+		baseStart: region.baseStart,
+		baseEnd: region.baseEnd,
+		resolved: resolved.has(fullIds[offset]),
+		oursContent: region.oursContent,
+		theirsContent: region.theirsContent,
+	}));
+
+	return {
+		path: args.path,
+		guid: args.guid,
+		statePath: args.statePath,
+		hasConflict: !!cd,
+		base: cd?.base ?? null,
+		ours: cd?.ours ?? null,
+		theirs: cd?.theirs ?? null,
+		oursLabel: cd?.oursLabel ?? null,
+		theirsLabel: cd?.theirsLabel ?? null,
+		hunks,
+		hunkCount: regions.length,
+		resolvedHunkCount: resolved.size,
+	};
+}
+
+export function findConflictRegionOffset(
+	regions: readonly Pick<ConflictRegion, "oursContent" | "theirsContent">[],
+	hunkId: string,
+): number {
+	if (!hunkId) {
+		throw new Error("Hunk id must be non-empty");
+	}
+	const ids = regions.map(conflictRegionId);
+	const matches: number[] = [];
+	for (let offset = 0; offset < ids.length; offset++) {
+		if (ids[offset].startsWith(hunkId)) matches.push(offset);
+	}
+	if (matches.length === 0) {
+		throw new Error(`Hunk id ${JSON.stringify(hunkId)} not found`);
+	}
+	if (matches.length > 1) {
+		const candidates = matches.map((offset) => ids[offset].slice(0, 6)).join(", ");
+		throw new Error(
+			`Hunk id ${JSON.stringify(hunkId)} is ambiguous ` +
+			`(${matches.length} candidates: ${candidates}) - use a longer prefix`,
+		);
+	}
+	return matches[0];
 }
 
 /**
@@ -90,11 +210,10 @@ export function positionRegions(
 ): PositionedConflict[] {
 	if (regions.length === 0) return [];
 	let searchFrom = 0;
-	return regions.map((region, index) => {
+	return regions.map((region) => {
 		const text = region.oursContent;
 		if (!text) {
 			return {
-				index,
 				localStart: searchFrom,
 				localEnd: searchFrom,
 				oursContent: text,
@@ -106,7 +225,6 @@ export function positionRegions(
 		const end = pos !== -1 ? pos + text.length : searchFrom;
 		searchFrom = end;
 		return {
-			index,
 			localStart: start,
 			localEnd: end,
 			oursContent: text,
@@ -169,7 +287,7 @@ export function repositionUnresolved(
  * Conflict — a single resolution session.
  *
  * Construction = full diff (frozen regions). Lifetime methods are cheap:
- * `updateOurs(text)` repositions the unresolved regions; `markResolved(i)`
+ * `updateOurs(text)` repositions the unresolved regions; `markResolved(offset)`
  * records user choice. When underlying materials (base/theirs) change due
  * to sync events, throw this away and build a new `Conflict` from a fresh
  * `computeConflict` call.
@@ -219,8 +337,8 @@ export class Conflict {
 		this._positions = repositionUnresolved(this._positions, this.resolved, newOurs);
 	}
 
-	markResolved(index: number): void {
-		this.resolved.add(index);
+	markResolved(offset: number): void {
+		this.resolved.add(offset);
 	}
 
 	get isFullyResolved(): boolean {
@@ -236,7 +354,9 @@ export class Conflict {
 			oursLabel: this.oursLabel,
 			theirsLabel: this.theirsLabel,
 			conflictRegions: this.regions,
-			resolvedIndices: this.resolved,
+			resolvedHunkIds: new Set(
+				Array.from(this.resolved, (offset) => conflictRegionId(this.regions[offset])),
+			),
 			positionedConflicts: this._positions,
 		};
 	}

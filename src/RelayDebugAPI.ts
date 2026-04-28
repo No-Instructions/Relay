@@ -11,9 +11,12 @@ import * as Y from 'yjs';
 import { diff_match_patch } from 'diff-match-patch';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
+import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
+
+export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
 
 // =============================================================================
 // Types
@@ -115,62 +118,6 @@ export interface IdbForkSnapshot {
  * recent HSM transitions (via the disk log). Replaces the ad-hoc 120-line
  * eval blob that used to live in the Python CLI.
  */
-/**
- * A single conflict hunk with both a transient `index` (into the
- * current `conflictRegions` array) and a content-derived stable `id`.
- * Use `id` when you need to survive waits, re-entries, or persisted
- * conflict restoration; use `index` for tight loops within one session.
- */
-export interface ConflictHunkInfo {
-  /** Current array index — unstable if conflictData is re-created. */
-  index: number;
-  /**
-   * Content-hash prefix (grown to the minimum length that uniquely
-   * identifies the hunk among the current set — jj/git style). Derived
-   * from `oursContent + '\0' + theirsContent`, so it's stable across
-   * re-parses as long as the hunk's content is unchanged. Position is
-   * deliberately excluded so that earlier hunks resolving (which
-   * shifts later positions) doesn't invalidate the id. `resolveHunk`
-   * accepts any unambiguous prefix of the full hash.
-   */
-  id: string;
-  /** Line number in the base (LCA) text where the hunk starts. */
-  baseStart: number;
-  /** Line number in the base (LCA) text where the hunk ends. */
-  baseEnd: number;
-  /** Whether the HSM has marked this hunk resolved via RESOLVE_HUNK. */
-  resolved: boolean;
-  /** Raw "ours" side from the conflict payload. */
-  oursContent: string;
-  /** Raw "theirs" side from the conflict payload. */
-  theirsContent: string;
-}
-
-/**
- * Focused snapshot of an HSM's conflict state. Exposed so test scripts
- * can discover what `ours`/`theirs` hold without pulling the full
- * HsmStateSnapshot. The labels disambiguate which side is which: the
- * HSM internally uses `ours` for yjs/remote text and `theirs` for
- * editor/local text, but the labels carry the semantic meaning.
- */
-export interface ConflictInfoSnapshot {
-  path: string;
-  guid: string;
-  statePath: string;
-  hasConflict: boolean;
-  base: string | null;
-  ours: string | null;
-  theirs: string | null;
-  oursLabel: string | null;
-  theirsLabel: string | null;
-  /** Per-hunk detail with stable content-hash ids. */
-  hunks: ConflictHunkInfo[];
-  /** Total number of conflict hunks (regions) discovered. */
-  hunkCount: number;
-  /** Number of hunks already resolved via RESOLVE_HUNK. */
-  resolvedHunkCount: number;
-}
-
 export interface HsmStateSnapshot {
   path: string;
   guid: string;
@@ -296,19 +243,17 @@ export interface RelayDebugGlobal {
    */
   getConflictInfo: (path: string) => Promise<ConflictInfoSnapshot>;
   /**
-   * Dispatch a `RESOLVE` event to the HSM with the chosen final content.
-   * Goes through `hsm.send()` so the state machine drives the transition
-   * (editor must be active — the action reads `lastKnownEditorText`).
-   * Returns the state path after the event dispatch completes.
+   * Resolve the conflict with the chosen final content. Active conflicts use
+   * the normal HSM event path; idle.diverged conflicts resolve headlessly
+   * without opening editors or views.
    */
   resolveConflict: (path: string, contents: string) => Promise<string>;
   /**
    * Dispatch a `RESOLVE_HUNK` event for a single conflict hunk.
    *
-   * `indexOrId` picks the hunk:
-   *   - number → treated as the current array index (fast, session-local)
-   *   - string → matched against `ConflictHunkInfo.id`; throws on
-   *     ambiguous (collision) or missing
+   * `hunkId` is matched against `ConflictHunkInfo.id`; throws on
+   * ambiguous (collision) or missing. Numeric array indices are not
+   * accepted at this boundary because digit-only hash prefixes are valid ids.
    *
    * `resolution` picks the side to apply:
    *   - "ours"    → oursContent
@@ -317,13 +262,13 @@ export interface RelayDebugGlobal {
    *   - "neither" → remove the hunk entirely
    *
    * The HSM mutates localDoc in place at the hunk's positioned region,
-   * marks the index resolved, and once every hunk is resolved it
-   * auto-sends `RESOLVE` with the final content. Returns the state
-   * path after dispatch.
+   * marks the hunk resolved, and once every hunk is resolved commits
+   * the final content. idle.diverged conflicts resolve headlessly
+   * without opening editors or views.
    */
   resolveHunk: (
     path: string,
-    indexOrId: number | string,
+    hunkId: string,
     resolution: 'ours' | 'theirs' | 'both' | 'neither',
   ) => Promise<string>;
   /**
@@ -504,8 +449,8 @@ export class RelayDebugAPI {
         this.awaitHsmState(path, statePrefix, timeoutMs),
       getConflictInfo: async (path) => this.getConflictInfo(path),
       resolveConflict: async (path, contents) => this.resolveConflict(path, contents),
-      resolveHunk: async (path, indexOrId, resolution) =>
-        this.resolveHunk(path, indexOrId, resolution),
+      resolveHunk: async (path, hunkId, resolution) =>
+        this.resolveHunk(path, hunkId, resolution),
       openDiffView: async (path) => this.sendConflictEvent(path, { type: 'OPEN_DIFF_VIEW' }),
       cancelDiffView: async (path) => this.sendConflictEvent(path, { type: 'CANCEL' }),
       clearLca: async (path) => this.clearLca(path),
@@ -1093,112 +1038,43 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Build a focused conflict snapshot from a document's HSM. Exposes the
-   * same `conflictData` that `getHsmStateSnapshot` already carries, in a
-   * narrower shape so callers don't have to pull the full state dump.
+   * Conflict APIs translate vault paths into merge-layer targets. State,
+   * hunk lookup, waking, and mutation behavior live below this boundary.
    */
-  /**
-   * djb2-style 32-bit string hash, rendered as 8 hex chars. Not
-   * cryptographic — just a cheap stable fingerprint for hunk content.
-   * With 8 chars = 32 bits of entropy, collisions are negligible for
-   * the handful of hunks a single file ever produces.
-   */
-  private hashString(s: string): string {
-    let h = 5381;
-    for (let i = 0; i < s.length; i++) {
-      h = ((h << 5) + h + s.charCodeAt(i)) | 0;
-    }
-    return (h >>> 0).toString(16).padStart(8, '0');
-  }
-
-  /**
-   * Given the full per-hunk hashes, find the minimum prefix length
-   * that disambiguates every hunk — jj/git style. Minimum 2 chars for
-   * readability even when a 1-char prefix would already be unique.
-   */
-  private minUniquePrefixLen(hashes: string[]): number {
-    if (hashes.length <= 1) return 2;
-    for (let len = 2; len <= 8; len++) {
-      const seen = new Set<string>();
-      let collided = false;
-      for (const h of hashes) {
-        const p = h.slice(0, len);
-        if (seen.has(p)) { collided = true; break; }
-        seen.add(p);
-      }
-      if (!collided) return len;
-    }
-    return 8; // full hash as fallback
-  }
-
-  private async getConflictInfo(path: string): Promise<ConflictInfoSnapshot> {
+  private resolveConflictTarget(path: string): { manager: any; guid: string; folder: any; filePath: string } {
     const g = typeof window !== 'undefined' ? window : globalThis;
     const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const { hsm, guid, folder, filePath } = lookup;
-
-    // `getConflictData` derives on-demand from current HSM materials when
-    // there's no live resolution session — diverged docs without an open
-    // banner still report correct hunks.
-    const cd = (hsm as any).getConflictData?.() || null;
-    const regions = (cd?.conflictRegions as any[] | undefined) ?? [];
-    const resolved = (cd?.resolvedIndices as Set<number> | undefined) ?? new Set<number>();
-
-    const fullHashes = regions.map((r) =>
-      this.hashString(`${r.oursContent}\0${r.theirsContent}`),
-    );
-    const prefixLen = this.minUniquePrefixLen(fullHashes);
-
-    const hunks: ConflictHunkInfo[] = regions.map((r, index) => ({
-      index,
-      id: fullHashes[index].slice(0, prefixLen),
-      baseStart: r.baseStart,
-      baseEnd: r.baseEnd,
-      resolved: resolved.has(index),
-      oursContent: r.oursContent,
-      theirsContent: r.theirsContent,
-    }));
-
+    const manager = lookup.folder?.mergeManager;
+    if (!manager) throw new Error(`Merge manager not found: ${path}`);
     return {
-      path: this.toVaultPath(folder, filePath),
-      guid,
-      statePath: (hsm as any)._statePath || 'unknown',
-      hasConflict: !!cd,
-      base: cd?.base ?? null,
-      ours: cd?.ours ?? null,
-      theirs: cd?.theirs ?? null,
-      oursLabel: cd?.oursLabel ?? null,
-      theirsLabel: cd?.theirsLabel ?? null,
-      hunks,
-      hunkCount: regions.length,
-      resolvedHunkCount: resolved.size,
+      manager,
+      guid: lookup.guid,
+      folder: lookup.folder,
+      filePath: lookup.filePath,
     };
   }
 
-  /**
-   * Dispatch a `RESOLVE` event to the HSM with the chosen final content.
-   * The state machine runs the `resolveConflict` action, which merges
-   * remote CRDT into local, DMPs the chosen text onto localDoc, emits
-   * DISPATCH_CM6 to the editor, and clears fork/conflict state. Returns
-   * the state path after dispatch.
-   */
-  private async resolveConflict(path: string, contents: string): Promise<string> {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
-    if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const hsm = lookup.hsm as any;
-
-    hsm.send({ type: 'RESOLVE', contents });
-    return hsm._statePath || 'unknown';
+  private async getConflictInfo(path: string): Promise<ConflictInfoSnapshot> {
+    const { manager, guid, folder, filePath } = this.resolveConflictTarget(path);
+    if (typeof manager.getConflictInfo !== 'function') {
+      throw new Error(`Conflict info is not available: ${path}`);
+    }
+    const info = await manager.getConflictInfo(guid);
+    return {
+      ...info,
+      path: this.toVaultPath(folder, filePath),
+    };
   }
 
-  /**
-   * Dispatch a single `RESOLVE_HUNK` event. `indexOrId` may be a
-   * numeric array index (fast, session-local) or a string prefix of
-   * the content-hash id (stable across re-parses; any unique prefix
-   * is accepted, jj/git style). Unknown ids throw; ambiguous id
-   * prefixes throw with the candidate list.
-   */
+  private async resolveConflict(path: string, contents: string): Promise<string> {
+    const { manager, guid } = this.resolveConflictTarget(path);
+    if (typeof manager.resolveConflict !== 'function') {
+      throw new Error(`Conflict resolution is not available: ${path}`);
+    }
+    return manager.resolveConflict(guid, contents);
+  }
+
   /**
    * Clear the HSM's LCA in place. Low-level internal-state mutation
    * that reproduces the no-LCA state after upgrading from a plugin
@@ -1294,50 +1170,14 @@ export class RelayDebugAPI {
 
   private async resolveHunk(
     path: string,
-    indexOrId: number | string,
+    hunkId: string,
     resolution: 'ours' | 'theirs' | 'both' | 'neither',
   ): Promise<string> {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
-    if (!lookup) throw new Error(`HSM not found: ${path}`);
-    const hsm = lookup.hsm as any;
-
-    let index: number;
-    if (typeof indexOrId === 'number') {
-      index = indexOrId;
-    } else {
-      const cd = hsm.getConflictData?.();
-      if (!cd?.conflictRegions) {
-        throw new Error(`No active conflict on ${path}`);
-      }
-      const regions = cd.conflictRegions as any[];
-      const fullHashes = regions.map((r) =>
-        this.hashString(`${r.oursContent}\0${r.theirsContent}`),
-      );
-      const matches: number[] = [];
-      for (let i = 0; i < fullHashes.length; i++) {
-        if (fullHashes[i].startsWith(indexOrId)) matches.push(i);
-      }
-      if (matches.length === 0) {
-        throw new Error(
-          `Hunk id ${JSON.stringify(indexOrId)} not found on ${path} ` +
-            `(${regions.length} hunks present)`,
-        );
-      }
-      if (matches.length > 1) {
-        const candidates = matches
-          .map((m) => `${fullHashes[m].slice(0, 6)}(index=${m})`)
-          .join(', ');
-        throw new Error(
-          `Hunk id ${JSON.stringify(indexOrId)} is ambiguous on ${path} ` +
-            `(${matches.length} candidates: ${candidates}) — use a longer prefix`,
-        );
-      }
-      index = matches[0];
+    const { manager, guid } = this.resolveConflictTarget(path);
+    if (typeof manager.resolveConflictHunk !== 'function') {
+      throw new Error(`Conflict hunk resolution is not available: ${path}`);
     }
-
-    hsm.send({ type: 'RESOLVE_HUNK', index, resolution });
-    return hsm._statePath || 'unknown';
+    return manager.resolveConflictHunk(guid, hunkId, resolution);
   }
 
   /**

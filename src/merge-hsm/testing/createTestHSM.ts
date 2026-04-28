@@ -27,6 +27,7 @@ import { OpCapture } from '../undo';
 import type { TimeProvider } from '../../TimeProvider';
 import { MockTimeProvider } from '../../../__tests__/mocks/MockTimeProvider';
 import { MergeHSM } from '../MergeHSM';
+import type { ConflictData, ConflictInfoSnapshot } from '../conflict';
 import { nextDelay, delaysEnabled } from './random';
 
 // =============================================================================
@@ -206,7 +207,11 @@ export interface TestableHSM {
   awaitForkReconcile(): Promise<void>;
   hasFork(): boolean;
   awaitState(predicate: (statePath: string) => boolean): Promise<void>;
-  getConflictData(options?: { fresh?: boolean }): { base: string; ours: string; theirs: string } | null;
+  getConflictData(options?: { fresh?: boolean }): ConflictData | null;
+  getConflictInfoSnapshot(): ConflictInfoSnapshot;
+  resolveConflictHunk(hunkId: string, resolution: 'ours' | 'theirs' | 'both' | 'neither'): Promise<string>;
+  resolveConflictHeadless(contents: string): Promise<void>;
+  resolveHunkHeadless(hunkId: string, resolution: 'ours' | 'theirs' | 'both' | 'neither'): Promise<void>;
   bootstrapEditorView(viewId: string, currentText?: string): void;
   attachEditorView(editorViewRef: EditorViewRef, currentText?: string): void;
 }

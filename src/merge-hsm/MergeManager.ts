@@ -27,8 +27,10 @@ import type {
   LCAMeta,
   FrontMatterPrimitives,
   MergeEvent,
+  ResolveHunkEvent,
   StatePath,
 } from './types';
+import type { ConflictInfoSnapshot } from './conflict';
 import type { TimeProvider } from '../TimeProvider';
 import { DefaultTimeProvider } from '../TimeProvider';
 import { ObservableMap } from '../observable/ObservableMap';
@@ -417,6 +419,62 @@ export class MergeManager {
         hsm.setLocalOnly(localOnly);
       }
     }
+  }
+
+  /**
+   * Prepare an idle conflict for API access without opening an editor view.
+   * Hibernated conflicts keep HSM metadata but detach their Yjs docs; the
+   * normal wake path recreates those docs and drains any buffered remote data.
+   */
+  private async prepareHeadlessConflictResolution(guid: string): Promise<MergeHSM> {
+    if (this.destroyed) {
+      throw new Error(`Cannot prepare headless conflict for ${guid}: merge manager destroyed`);
+    }
+
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
+    if (!doc || !hsm) {
+      throw new Error(`Cannot prepare headless conflict for ${guid}: document not found`);
+    }
+
+    if (!hsm.matches('idle.diverged')) {
+      return hsm;
+    }
+
+    if (!hsm.getLocalDoc() || !hsm.getRemoteDoc()) {
+      const remoteDoc = doc.ensureRemoteDoc();
+      if (!remoteDoc) {
+        throw new Error(`Cannot prepare headless conflict for ${hsm.path}: remoteDoc unavailable`);
+      }
+      this.wake(guid, remoteDoc);
+    }
+
+    await hsm.awaitPersistenceReady();
+
+    if (!hsm.getLocalDoc() || !hsm.getRemoteDoc()) {
+      throw new Error(`Cannot prepare headless conflict for ${hsm.path}: localDoc/remoteDoc not ready`);
+    }
+
+    return hsm;
+  }
+
+  async getConflictInfo(guid: string): Promise<ConflictInfoSnapshot> {
+    const hsm = await this.prepareHeadlessConflictResolution(guid);
+    return hsm.getConflictInfoSnapshot();
+  }
+
+  async resolveConflict(guid: string, contents: string): Promise<StatePath> {
+    const hsm = await this.prepareHeadlessConflictResolution(guid);
+    return hsm.resolveConflictContents(contents);
+  }
+
+  async resolveConflictHunk(
+    guid: string,
+    hunkId: string,
+    resolution: ResolveHunkEvent['resolution'],
+  ): Promise<StatePath> {
+    const hsm = await this.prepareHeadlessConflictResolution(guid);
+    return hsm.resolveConflictHunk(hunkId, resolution);
   }
 
   /**

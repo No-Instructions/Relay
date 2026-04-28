@@ -12,6 +12,7 @@ import {
   openDiffView,
   expectState,
 } from 'src/merge-hsm/testing';
+import { conflictRegionId } from 'src/merge-hsm/conflict';
 import { EditorState } from '@codemirror/state';
 
 // =============================================================================
@@ -38,6 +39,13 @@ describe('recalculateConflictPositions', () => {
     return out;
   }
 
+  function hunkIdAt(
+    cd: { positionedConflicts: Array<{ oursContent: string; theirsContent: string }> },
+    offset: number,
+  ): string {
+    return conflictRegionId(cd.positionedConflicts[offset]);
+  }
+
   it('updates positions of remaining hunks after resolving an earlier hunk', async () => {
     // Create content with two distinct conflict regions.
     // The base has two paragraphs; local and disk each change different words
@@ -62,8 +70,8 @@ describe('recalculateConflictPositions', () => {
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const _hunk1Before = { ...cd!.positionedConflicts[1] };
 
-    // Resolve hunk 0 with "local" (keep ours)
-    t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'local' } as any);
+    // Resolve the first hunk.
+    t.send({ type: 'RESOLVE_HUNK', hunkId: hunkIdAt(cd!, 0), resolution: 'ours' });
 
     // After resolving hunk 0, hunk 1's positions should have been recalculated
     const cdAfter = t.hsm.getConflictData();
@@ -98,8 +106,8 @@ describe('recalculateConflictPositions', () => {
       return;
     }
 
-    // Resolve hunk 0 with "remote" (accept theirs — changes length)
-    t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'remote' } as any);
+    // Resolve the first hunk with a value that changes length.
+    t.send({ type: 'RESOLVE_HUNK', hunkId: hunkIdAt(cd!, 0), resolution: 'ours' });
 
     const cdAfter = t.hsm.getConflictData();
     expect(cdAfter).not.toBeNull();
@@ -126,8 +134,9 @@ describe('recalculateConflictPositions', () => {
     if (!cd || cd.positionedConflicts.length < 2) return;
 
     // Resolve all hunks sequentially — should not throw or corrupt
-    for (let i = 0; i < cd.positionedConflicts.length; i++) {
-      t.send({ type: 'RESOLVE_HUNK', index: i, resolution: 'local' } as any);
+    const hunkIds = cd.positionedConflicts.map(conflictRegionId);
+    for (const hunkId of hunkIds) {
+      t.send({ type: 'RESOLVE_HUNK', hunkId, resolution: 'theirs' });
     }
 
     // All hunks resolved — document should contain coherent text (no corruption)
@@ -182,8 +191,9 @@ describe('recalculateConflictPositions', () => {
     t.clearEffects();
 
     for (let index = 0; index < hunkCount; index++) {
-      const resolution = index % 2 === 0 ? 'remote' : 'local';
-      t.send({ type: 'RESOLVE_HUNK', index, resolution } as any);
+      const resolution = index % 2 === 0 ? 'ours' : 'theirs';
+      const hunkId = conflictRegionId(conflictData!.positionedConflicts[index]);
+      t.send({ type: 'RESOLVE_HUNK', hunkId, resolution });
 
       const dispatches = t.effects.filter(isDispatchEffect);
       for (const dispatch of dispatches) {
@@ -217,7 +227,7 @@ describe('recalculateConflictPositions', () => {
     expect(before!.positionedConflicts.length).toBe(2);
 
     // Resolve first hunk to ours, leaving the second unresolved.
-    t.send({ type: 'RESOLVE_HUNK', index: 0, resolution: 'ours' } as any);
+    t.send({ type: 'RESOLVE_HUNK', hunkId: hunkIdAt(before!, 0), resolution: 'ours' });
     const afterFirst = t.hsm.getConflictData();
     expect(afterFirst).not.toBeNull();
 
@@ -230,7 +240,7 @@ describe('recalculateConflictPositions', () => {
     expect(unresolved.localStart).toBe(occurrences[occurrences.length - 1]);
 
     // Resolving the second hunk to ours should produce the exact "remote" text.
-    t.send({ type: 'RESOLVE_HUNK', index: 1, resolution: 'ours' } as any);
+    t.send({ type: 'RESOLVE_HUNK', hunkId: hunkIdAt(before!, 1), resolution: 'ours' });
     const finalText = t.hsm.getLocalDoc()!.getText('contents').toString();
     expect(finalText).toBe(remote);
   });

@@ -152,6 +152,7 @@ export type SerializableEvent =
   | { type: 'CONNECTED' }
   | { type: 'DISCONNECTED' }
   | { type: 'RESOLVE'; contents: string }
+  | { type: 'RESOLVE_HUNK'; hunkId: string; resolution: 'ours' | 'theirs' | 'both' | 'neither' }
   | { type: 'DISMISS_CONFLICT' }
   | { type: 'OPEN_DIFF_VIEW' }
   | { type: 'CANCEL' }

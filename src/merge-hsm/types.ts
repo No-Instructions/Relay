@@ -308,7 +308,7 @@ export interface ResolveEvent {
 
 export interface ResolveHunkEvent {
 	type: "RESOLVE_HUNK";
-	index: number;
+	hunkId: string;
 	resolution: "ours" | "theirs" | "both" | "neither";
 }
 
@@ -568,8 +568,6 @@ export interface StatusChangedEffect {
  * Positioned conflict region with character offsets for CM6 decorations.
  */
 export interface PositionedConflict {
-	/** Index in the conflict regions array */
-	index: number;
 	/** Character position where conflict starts in editor */
 	localStart: number;
 	/** Character position where conflict ends in editor */

@@ -26,7 +26,14 @@
 import * as Y from "yjs";
 import { diff3Merge } from "node-diff3";
 import { diff_match_patch } from "diff-match-patch";
-import { Conflict, computeConflict, type ConflictData } from "./conflict";
+import {
+	Conflict,
+	computeConflict,
+	findConflictRegionOffset,
+	toConflictInfoSnapshot,
+	type ConflictData,
+	type ConflictInfoSnapshot,
+} from "./conflict";
 import type {
 	MergeState,
 	MergeEvent,
@@ -44,6 +51,7 @@ import type {
 	CreatePersistence,
 	PersistenceMetadata,
 	ConflictRegion,
+	ResolveEvent,
 	ResolveHunkEvent,
 	DiskLoader,
 	MachineHSM,
@@ -395,6 +403,31 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.notifyStateChange(fromState, toState, event);
 	}
 
+	private async runHeadlessApiMutation(
+		event: MergeEvent,
+		mutate: () => void | Promise<void>,
+	): Promise<void> {
+		const fromState = this._statePath;
+		const captureEffects = !!this._onTransition;
+		const savedEffects = this._pendingEffects;
+		let mutationCompleted = false;
+		if (captureEffects) this._pendingEffects = [];
+		try {
+			await mutate();
+			mutationCompleted = true;
+		} finally {
+			const toState = this._statePath;
+			const myEffects = this._pendingEffects;
+			this._pendingEffects = savedEffects;
+			if (mutationCompleted) {
+				if (captureEffects && myEffects) {
+					this._onTransition!({ from: fromState, to: toState, event, effects: myEffects });
+				}
+				this.notifyStateChange(fromState, toState, event);
+			}
+		}
+	}
+
 	matches(statePath: string): boolean {
 		return (
 			this._statePath === statePath ||
@@ -517,13 +550,142 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// idle.localAhead, remoteDoc may be intentionally unsynced and transient
 		// derivations can produce false conflicts that poison future transitions.
 		if (this._statePath !== "idle.diverged") return null;
-		if (!this._lca?.contents || !this.localDoc || !this.remoteDoc) return null;
+		if (!this._lca || !this.localDoc || !this.remoteDoc) return null;
 		const base = this._lca.contents;
 		const ours = this.localDoc.getText("contents").toString();
 		const theirs = this.remoteDoc.getText("contents").toString();
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
 		if (!hasConflict) return null;
 		return new Conflict({ base, ours, theirs, regions }).toData();
+	}
+
+	getConflictInfoSnapshot(): ConflictInfoSnapshot {
+		return toConflictInfoSnapshot({
+			path: this.path,
+			guid: this._guid,
+			statePath: this._statePath,
+			conflictData: this.getConflictData(),
+		});
+	}
+
+	private materializeIdleConflict(): Conflict | null {
+		if (this._conflict) return this._conflict;
+		if (this._statePath !== "idle.diverged") return null;
+		if (!this._lca || !this.localDoc || !this.remoteDoc) return null;
+		const base = this._lca.contents;
+		const ours = this.localDoc.getText("contents").toString();
+		const theirs = this.remoteDoc.getText("contents").toString();
+		const { hasConflict, regions } = computeConflict(base, ours, theirs);
+		if (!hasConflict) return null;
+		this._conflict = new Conflict({ base, ours, theirs, regions });
+		return this._conflict;
+	}
+
+	async resolveConflictContents(contents: string): Promise<StatePath> {
+		if (this._statePath === "idle.diverged") {
+			await this.resolveConflictHeadless(contents);
+			return this._statePath;
+		}
+		if (this._statePath === "active.conflict.bannerShown") {
+			this.send({ type: "OPEN_DIFF_VIEW" });
+		}
+		this.send({ type: "RESOLVE", contents });
+		return this._statePath;
+	}
+
+	async resolveConflictHunk(
+		hunkId: string,
+		resolution: ResolveHunkEvent["resolution"],
+	): Promise<StatePath> {
+		if (typeof hunkId !== "string") {
+			throw new Error(`Hunk id must be a string on ${this.path}`);
+		}
+		const conflictData = this.getConflictData();
+		if (!conflictData?.conflictRegions) {
+			throw new Error(`No active conflict on ${this.path}`);
+		}
+		findConflictRegionOffset(conflictData.conflictRegions, hunkId);
+
+		if (this._statePath === "idle.diverged") {
+			await this.resolveHunkHeadless(hunkId, resolution);
+			return this._statePath;
+		}
+		if (this._statePath === "active.conflict.bannerShown") {
+			this.send({ type: "OPEN_DIFF_VIEW" });
+		}
+		this.send({ type: "RESOLVE_HUNK", hunkId, resolution });
+		return this._statePath;
+	}
+
+	async resolveConflictHeadless(contents: string): Promise<void> {
+		if (this._statePath !== "idle.diverged") {
+			throw new Error(`resolveConflictHeadless requires idle.diverged, got ${this._statePath}`);
+		}
+		if (!this.getConflictData()) {
+			throw new Error("resolveConflictHeadless requires an active idle conflict");
+		}
+		if (!this.localDoc || !this.remoteDoc) {
+			throw new Error("resolveConflictHeadless requires localDoc and remoteDoc");
+		}
+
+		const hash = await this.hashFn(contents);
+		const mtime = this.timeProvider.now();
+		const event: ResolveEvent = { type: "RESOLVE", contents };
+
+		await this.runHeadlessApiMutation(event, () => {
+			const resolvedText = this.applyResolvedConflict(contents, { dispatchEditor: false });
+			if (!this.localDoc) {
+				throw new Error("resolveConflictHeadless requires localDoc");
+			}
+			const stateVector = Y.encodeStateVector(this.localDoc);
+			this._localStateVector = stateVector;
+			this._remoteStateVector = stateVector;
+			this._setLCA({
+				contents: resolvedText,
+				meta: { hash, mtime },
+				stateVector,
+			});
+			this._disk = { hash, mtime };
+			this.emitEffect({
+				type: "WRITE_DISK",
+				guid: this._guid,
+				contents: resolvedText,
+				mtime,
+			});
+			this.setStatePath("idle.synced");
+			this.emitPersistState();
+		});
+	}
+
+	async resolveHunkHeadless(
+		hunkId: string,
+		resolution: ResolveHunkEvent["resolution"],
+	): Promise<void> {
+		if (this._statePath !== "idle.diverged") {
+			throw new Error(`resolveHunkHeadless requires idle.diverged, got ${this._statePath}`);
+		}
+		if (!this.localDoc || !this.remoteDoc) {
+			throw new Error("resolveHunkHeadless requires localDoc and remoteDoc");
+		}
+		if (!this.materializeIdleConflict()) {
+			throw new Error("resolveHunkHeadless requires an active idle conflict");
+		}
+
+		const event: ResolveHunkEvent = { type: "RESOLVE_HUNK", hunkId, resolution };
+		await this.runHeadlessApiMutation(event, () => {
+			this.applyConflictHunkResolution(event, {
+				dispatchEditor: false,
+				autoFinalize: false,
+			});
+		});
+
+		if (this._conflict?.isFullyResolved) {
+			const finalContent = this.localDoc?.getText("contents").toString();
+			if (finalContent === undefined) {
+				throw new Error("resolveHunkHeadless requires localDoc");
+			}
+			await this.resolveConflictHeadless(finalContent);
+		}
 	}
 
 	private readCurrentEditorText(): string | null {
@@ -1488,79 +1650,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			resolveConflict: (_hsm, event) => {
 				const contents = (event as any).contents as string;
-
-				if (!this.localDoc || !this.remoteDoc) {
-					this._conflict = null;
-					return;
-				}
-
-				// Step 1: Cancel disk ops from OpCapture to erase the disk edit
-				// from localDoc's CRDT history. Safe because the fork gates
-				// outbound sync — no peer has seen these ops.
-				const opCapture = this.getOpCapture();
-				if (opCapture && this._fork?.captureMark != null) {
-					const diskOps = opCapture.sinceByOrigin(this._fork.captureMark, DISK_ORIGIN);
-					opCapture.cancel(diskOps);
-				}
-
-				// Step 2: Merge remote CRDT into local so histories converge.
-				const remoteUpdate = Y.encodeStateAsUpdate(
-					this.remoteDoc,
-					Y.encodeStateVector(this.localDoc),
-				);
-				this._bridge.syncToLocal(remoteUpdate);
-
-				// Step 3: DMP the resolved text onto localDoc. After the CRDT
-				// merge the text may not match what the user chose (e.g. they
-				// accepted ours, or merged individual hunks). DMP fixes it up.
-				this.applyContentToLocalDoc(contents);
-
-				// Step 4: Dispatch resolved content to CM6. The localDoc
-				// observer skips origin=this, so we emit explicitly. Use the
-				// current editor buffer after the remote merge above, not the
-				// stale cached value from before RESOLVE. Otherwise the same
-				// patch can be replayed onto an editor that already matches the
-				// resolved text, progressively corrupting the frontmatter.
-				const resolvedText = this.localDoc.getText("contents").toString();
-				const cachedEditorText =
-					this.lastKnownEditorText
-					?? this.pendingEditorContent;
-				const beforeText =
-					cachedEditorText === resolvedText
-						? cachedEditorText
-						: (
-							this.readCurrentEditorText()
-							?? cachedEditorText
-							?? this.pendingDiskContents
-							?? null
-						);
-				this.crdtLog(
-					`resolveConflict: contents=${resolvedText.length} chars, ` +
-					`before=${beforeText?.length ?? -1} chars, ` +
-					`equal=${resolvedText === beforeText}, ` +
-					`contents=${JSON.stringify(resolvedText.substring(0, 100))}, ` +
-					`before=${JSON.stringify(beforeText?.substring(0, 100) ?? null)}`
-				);
-				if (beforeText !== null && resolvedText !== beforeText) {
-					const changes = this.computeDiffChanges(beforeText, resolvedText);
-					this.crdtLog(`resolveConflict: ${changes.length} changes: ${JSON.stringify(changes)}`);
-					if (changes.length > 0) {
-						this.emitEffect({ type: "DISPATCH_CM6", changes });
-					}
-				}
-				this.lastKnownEditorText = resolvedText;
-
-				// Step 5: Sync localDoc → remoteDoc and server. Histories are
-				// now converged so the update is clean.
-				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
-				this._bridge.clearOutboundQueue();
-
-				// Clear fork and conflict state
-				this._fork = null;
-				this._ingestionTexts = [];
-				this._conflict = null;
-				this.clearPendingDiskContents();
-				this.pendingEditorContent = null;
+				this.applyResolvedConflict(contents, { dispatchEditor: true });
 			},
 			storeConflictData: (_hsm, event) => {
 				const e = event as any;
@@ -3314,26 +3404,97 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}, origin ?? this);
 	}
 
-	/**
-	 * Handle per-hunk conflict resolution from inline decorations.
-	 */
-	private handleResolveHunk(event: ResolveHunkEvent): void {
-		// Allow resolving from either bannerShown or resolving state
-		if (!this._statePath.includes("conflict")) return;
+	private applyResolvedConflict(
+		contents: string,
+		options: { dispatchEditor: boolean },
+	): string {
+		if (!this.localDoc || !this.remoteDoc) {
+			this._conflict = null;
+			return contents;
+		}
+
+		// Cancel disk ops from OpCapture to erase the disk edit from localDoc's
+		// CRDT history. Safe because the fork gates outbound sync; peers have
+		// not seen these ops.
+		const opCapture = this.getOpCapture();
+		if (opCapture && this._fork?.captureMark != null) {
+			const diskOps = opCapture.sinceByOrigin(this._fork.captureMark, DISK_ORIGIN);
+			opCapture.cancel(diskOps);
+		}
+
+		// Merge remote CRDT into local so histories converge before applying
+		// the user-selected text.
+		const remoteUpdate = Y.encodeStateAsUpdate(
+			this.remoteDoc,
+			Y.encodeStateVector(this.localDoc),
+		);
+		this._bridge.syncToLocal(remoteUpdate);
+
+		// DMP the resolved text onto localDoc. After the CRDT merge the text may
+		// not match what the user chose; this fixes it while preserving history.
+		this.applyContentToLocalDoc(contents);
+
+		const resolvedText = this.localDoc.getText("contents").toString();
+		if (options.dispatchEditor) {
+			// The localDoc observer skips origin=this, so active editor sessions
+			// need an explicit CM6 dispatch.
+			const cachedEditorText =
+				this.lastKnownEditorText
+				?? this.pendingEditorContent;
+			const beforeText =
+				cachedEditorText === resolvedText
+					? cachedEditorText
+					: (
+						this.readCurrentEditorText()
+						?? cachedEditorText
+						?? this.pendingDiskContents
+						?? null
+					);
+			this.crdtLog(
+				`resolveConflict: contents=${resolvedText.length} chars, ` +
+				`before=${beforeText?.length ?? -1} chars, ` +
+				`equal=${resolvedText === beforeText}, ` +
+				`contents=${JSON.stringify(resolvedText.substring(0, 100))}, ` +
+				`before=${JSON.stringify(beforeText?.substring(0, 100) ?? null)}`
+			);
+			if (beforeText !== null && resolvedText !== beforeText) {
+				const changes = this.computeDiffChanges(beforeText, resolvedText);
+				this.crdtLog(`resolveConflict: ${changes.length} changes: ${JSON.stringify(changes)}`);
+				if (changes.length > 0) {
+					this.emitEffect({ type: "DISPATCH_CM6", changes });
+				}
+			}
+		}
+		this.lastKnownEditorText = resolvedText;
+
+		this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+		this._bridge.clearOutboundQueue();
+
+		this._fork = null;
+		this._ingestionTexts = [];
+		this._conflict = null;
+		this.clearPendingDiskContents();
+		this.pendingEditorContent = null;
+		return resolvedText;
+	}
+
+	private applyConflictHunkResolution(
+		event: ResolveHunkEvent,
+		options: { dispatchEditor: boolean; autoFinalize: boolean },
+	): void {
 		if (!this._conflict || !this.localDoc) return;
 
-		const { index, resolution } = event;
+		const { hunkId, resolution } = event;
 		const conflict = this._conflict;
+		const regionOffset = findConflictRegionOffset(conflict.regions, hunkId);
 
-		// Skip if already resolved
-		if (conflict.resolved.has(index)) return;
+		if (conflict.resolved.has(regionOffset)) return;
 
-		const region = conflict.regions[index];
-		const positioned = conflict.positions[index];
+		const region = conflict.regions[regionOffset];
+		const positioned = conflict.positions[regionOffset];
 
 		if (!region || !positioned) return;
 
-		// Determine content to apply based on resolution type.
 		let newContent: string;
 		switch (resolution) {
 			case "ours":
@@ -3350,55 +3511,47 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				break;
 		}
 
-		// Get current editor state
 		const beforeText = this.localDoc.getText("contents").toString();
 
-		// Apply to localDoc at the conflict position
 		const ytext = this.localDoc.getText("contents");
 		this.localDoc.transact(() => {
-			// Delete the conflict region
 			const deleteLength = positioned.localEnd - positioned.localStart;
 			if (deleteLength > 0) {
 				ytext.delete(positioned.localStart, deleteLength);
 			}
-			// Insert resolved content
 			if (newContent) {
 				ytext.insert(positioned.localStart, newContent);
 			}
 		}, this);
 
-		// Mark as resolved
-		conflict.markResolved(index);
+		conflict.markResolved(regionOffset);
 
-		// Get updated content
 		const afterText = this.localDoc.getText("contents").toString();
-
-		// Emit DISPATCH_CM6 to update editor
 		const changes = computePositionedChanges(beforeText, afterText);
-		if (changes.length > 0) {
+		if (options.dispatchEditor && changes.length > 0) {
 			this.emitEffect({ type: "DISPATCH_CM6", changes });
 		}
 
-		// Keep lastKnownEditorText in sync. The DISPATCH_CM6 above uses
-		// ySyncAnnotation, so CM6Integration suppresses the CM6_CHANGE
-		// feedback and trackEditorText never fires. Without this update,
-		// resolveConflict (auto-triggered after the last hunk) computes
-		// a second DISPATCH_CM6 against the stale lastKnownEditorText,
-		// corrupting the editor.
 		this.lastKnownEditorText = afterText;
-
-		// Update stored local content + reposition the remaining hunks (they shift!)
 		conflict.updateOurs(afterText);
 
-		// Sync to remote → collaborators see immediately
 		this._bridge.flushOutbound();
 
-		// Check if all conflicts resolved
-		if (conflict.isFullyResolved) {
-			// All hunks resolved — localDoc already has the final content.
-			const finalContent = this.localDoc.getText("contents").toString();
-			this.send({ type: "RESOLVE", contents: finalContent });
+		if (options.autoFinalize && conflict.isFullyResolved) {
+			this.send({ type: "RESOLVE", contents: afterText });
 		}
+	}
+
+	/**
+	 * Handle per-hunk conflict resolution from inline decorations.
+	 */
+	private handleResolveHunk(event: ResolveHunkEvent): void {
+		// Allow resolving from either bannerShown or resolving state
+		if (!this._statePath.includes("conflict")) return;
+		this.applyConflictHunkResolution(event, {
+			dispatchEditor: true,
+			autoFinalize: true,
+		});
 	}
 
 	private async computeLocalHash(): Promise<string> {

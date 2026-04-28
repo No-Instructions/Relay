@@ -256,6 +256,43 @@ describe('Hibernation Lifecycle', () => {
     });
   });
 
+  describe('headless conflict preparation', () => {
+    test('prepares hibernated idle conflicts through the wake path', async () => {
+      const doc = createMockDocument('doc-1', 'test.md');
+      const ensureRemoteDoc = jest.spyOn(doc, 'ensureRemoteDoc');
+      (doc.hsm as any)._statePath = 'idle.diverged';
+
+      manager.hibernate('doc-1');
+      expect(doc.hsm?.getLocalDoc()).toBeNull();
+      expect(doc.hsm?.getRemoteDoc()).toBeNull();
+
+      const info = await manager.getConflictInfo('doc-1');
+
+      expect(info.guid).toBe('doc-1');
+      expect(ensureRemoteDoc).toHaveBeenCalledTimes(1);
+      expect(doc.hsm?.getLocalDoc()).not.toBeNull();
+      expect(doc.hsm?.getRemoteDoc()).toBe(doc.remoteDoc);
+      expect(manager.getHibernationState('doc-1')).toBe('cached');
+    });
+
+    test('resolves hunks through prepared HSM helpers', async () => {
+      const doc = createMockDocument('doc-1', 'test.md');
+      (doc.hsm as any)._statePath = 'idle.diverged';
+      manager.hibernate('doc-1');
+
+      const resolveConflictHunk = jest
+        .spyOn(doc.hsm!, 'resolveConflictHunk')
+        .mockResolvedValue('idle.synced' as any);
+
+      const statePath = await manager.resolveConflictHunk('doc-1', 'ab', 'theirs');
+
+      expect(statePath).toBe('idle.synced');
+      expect(doc.hsm?.getLocalDoc()).not.toBeNull();
+      expect(doc.hsm?.getRemoteDoc()).toBe(doc.remoteDoc);
+      expect(resolveConflictHunk).toHaveBeenCalledWith('ab', 'theirs');
+    });
+  });
+
   describe('hibernate()', () => {
     test('hibernate transitions from warm to hibernated', () => {
       createMockDocument('doc-1', 'test.md');
