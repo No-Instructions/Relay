@@ -62,7 +62,14 @@ import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
-import { isEmptyDoc, stateVectorIsAhead, stateVectorsEqual, yjsUpdateIsNoop } from "./state-vectors";
+import {
+	isEmptyDoc,
+	stateVectorIsAhead,
+	stateVectorsEqual,
+	yjsDocIsAhead,
+	yjsDocsEqual,
+	yjsUpdateIsNoop,
+} from "./state-vectors";
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
@@ -850,6 +857,92 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			localStateVector: this._localStateVector ?? new Uint8Array([0]),
 			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
 		};
+	}
+
+	/**
+	 * Try to establish the initial LCA for an upgraded/no-LCA document after a
+	 * sync/download job has made remote state available. This is intentionally
+	 * conservative: it only captures a baseline from a Yjs snapshot that is
+	 * provably equal to, or an ancestor of, the synced remote document.
+	 */
+	async bootstrapLCAFromDisk(disk: {
+		content: string;
+		hash: string;
+		mtime: number;
+	}): Promise<void> {
+		if (this._lca) return;
+
+		await this.awaitPersistenceReady();
+		if (!this.localDoc || !this.remoteDoc) return;
+
+		const localText = this.localDoc.getText("contents").toString();
+		const localStateVector = Y.encodeStateVector(this.localDoc);
+		const diskMatchesLocal = localText === disk.content;
+
+		if (yjsDocsEqual(this.localDoc, this.remoteDoc)) {
+			const lcaHash = diskMatchesLocal
+				? disk.hash
+				: await this.hashFn(localText);
+			const lcaMtime = diskMatchesLocal
+				? disk.mtime
+				: this.timeProvider.now();
+			this._localStateVector = localStateVector;
+			this._remoteStateVector = localStateVector;
+			this._conflict = null;
+			this.pendingIdleUpdates = null;
+			this.clearPendingDiskContents();
+			this._setLCA({
+				contents: localText,
+				meta: { hash: lcaHash, mtime: lcaMtime },
+				stateVector: localStateVector,
+			});
+			this.emitPersistState();
+			if (this._lca) {
+				this.setStatePath("idle.synced");
+				this.send({
+					type: "DISK_CHANGED",
+					contents: disk.content,
+					mtime: disk.mtime,
+					hash: disk.hash,
+				});
+			}
+			return;
+		}
+
+		if (yjsDocIsAhead(this.remoteDoc, this.localDoc)) {
+			const lcaHash = diskMatchesLocal
+				? disk.hash
+				: await this.hashFn(localText);
+			const lcaMtime = diskMatchesLocal
+				? disk.mtime
+				: this.timeProvider.now();
+			const remoteUpdate = Y.encodeStateAsUpdate(
+				this.remoteDoc,
+				localStateVector,
+			);
+			const remoteStateVector = Y.encodeStateVector(this.remoteDoc);
+			this._localStateVector = localStateVector;
+			this._remoteStateVector = remoteStateVector;
+			this._disk = { hash: disk.hash, mtime: disk.mtime };
+			this._conflict = null;
+			this.pendingIdleUpdates = remoteUpdate;
+			if (diskMatchesLocal) {
+				this.clearPendingDiskContents();
+			} else {
+				this.setPendingDiskContents(disk.content, "disk-event", disk.hash);
+			}
+			this._setLCA({
+				contents: localText,
+				meta: { hash: lcaHash, mtime: lcaMtime },
+				stateVector: localStateVector,
+			});
+			this.emitPersistState();
+			if (this._lca) {
+				this.setStatePath(diskMatchesLocal ? "idle.remoteAhead" : "idle.diverged");
+				this.send({ type: "IDLE_RETRY" });
+			}
+			return;
+		}
 	}
 
 	/**
@@ -3329,8 +3422,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return "error";
 		}
 
-		if (statePath.includes("conflict") || statePath === "idle.diverged") {
+		if (statePath.includes("conflict")) {
 			return "conflict";
+		}
+
+		if (this._conflict) {
+			return "conflict";
+		}
+
+		if (statePath === "idle.diverged") {
+			return this._lca ? "conflict" : "pending";
 		}
 
 		if (

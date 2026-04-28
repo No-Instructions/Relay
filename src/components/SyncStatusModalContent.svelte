@@ -34,6 +34,10 @@
 
 	let actionableFiles: ActionableFile[] = [];
 
+	function hasConflictStatus(status: SyncStatus | undefined): boolean {
+		return status?.status === "conflict";
+	}
+
 	function refreshActionable() {
 		const result: ActionableFile[] = [];
 		for (const [guid, file] of sharedFolder.files) {
@@ -41,19 +45,13 @@
 			const hsm = doc.hsm;
 			if (!hsm) continue;
 			const sp: StatePath = hsm.statePath;
-			if (sp === "active.conflict.bannerShown" || sp === "active.conflict.resolving") {
+			const ss = hsm.getSyncStatus?.() as SyncStatus | undefined;
+			if (hasConflictStatus(ss)) {
 				result.push({
 					guid,
 					path: file.path,
 					category: "conflict",
 					label: sp === "active.conflict.resolving" ? "Resolving" : "Conflict detected",
-				});
-			} else if (sp === "idle.diverged") {
-				result.push({
-					guid,
-					path: file.path,
-					category: "conflict",
-					label: "Diverged",
 				});
 			} else if (hsm.getConflictData()) {
 				result.push({
@@ -93,10 +91,8 @@
 			const hsm = doc.hsm;
 			if (hsm) {
 				const sp: StatePath = hsm.statePath;
-				const hasConflict =
-					sp.startsWith("active.conflict") ||
-					sp === "idle.diverged" ||
-					hsm.getConflictData();
+				const ss = hsm.getSyncStatus?.() as SyncStatus | undefined;
+				const hasConflict = hasConflictStatus(ss) || hsm.getConflictData();
 				const isEditing =
 					sp.startsWith("active.entering") || sp.startsWith("active.tracking");
 				const isSynced =
@@ -113,7 +109,7 @@
 				const ss = sharedFolder.mergeManager.syncStatus.get<SyncStatus>(guid);
 				if (!ss || ss.status === "synced") synced++;
 				else if (ss.status === "pending") syncing++;
-				else if (ss.status === "conflict") conflict++;
+				else if (hasConflictStatus(ss)) conflict++;
 				else if (ss.status === "error") error++;
 			}
 		}

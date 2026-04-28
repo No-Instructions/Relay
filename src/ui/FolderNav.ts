@@ -152,6 +152,10 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 
 type Unsubscribe = () => void;
 
+function syncStatusHasConflict(status: SyncStatus | undefined): boolean {
+	return status?.status === "conflict";
+}
+
 function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
 	const mergeManager = sharedFolder.mergeManager;
 	if (!mergeManager) return false;
@@ -159,14 +163,13 @@ function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
 	const file = sharedFolder.files.get(guid) as any;
 	const hsm = file?.hsm;
 	if (hsm) {
-		const statePath = hsm.statePath as string | undefined;
-		if (statePath?.startsWith("active.conflict")) return true;
-		if (statePath === "idle.diverged") return true;
+		const status = hsm.getSyncStatus?.() as SyncStatus | undefined;
+		if (syncStatusHasConflict(status)) return true;
 		if (typeof hsm.getConflictData === "function" && hsm.getConflictData()) return true;
 		return false;
 	}
 	const status = mergeManager.syncStatus.get<SyncStatus>(guid);
-	return status?.status === "conflict";
+	return syncStatusHasConflict(status);
 }
 
 class PillDecoration {

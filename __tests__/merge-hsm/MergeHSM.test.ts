@@ -2082,6 +2082,66 @@ describe('MergeHSM', () => {
       expect(status.status).toBe('pending');
     });
 
+    test('no-LCA diverged state reports pending during bootstrap', async () => {
+      const t = await createTestHSM();
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      t.applyRemoteChange('remote content');
+      t.send(await diskChanged('disk content', 123, 'disk-hash'));
+
+      expectState(t, 'idle.diverged');
+      const status = t.hsm.getSyncStatus();
+      expect(status.status).toBe('pending');
+    });
+
+    test('bootstrapLCAFromDisk establishes LCA when disk local and remote agree', async () => {
+      const content = 'same content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM();
+      t.seedIndexedDB(updates);
+      t.syncRemoteWithUpdate(updates);
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(updates, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      await t.awaitIdleAutoMerge();
+
+      await t.hsm.bootstrapLCAFromDisk({
+        content,
+        hash: 'same-hash',
+        mtime: 456,
+      });
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.hsm.getSyncStatus().status).toBe('synced');
+    });
+
+    test('bootstrapLCAFromDisk treats synced CRDT/disk mismatch as disk ahead', async () => {
+      const content = 'remote content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM();
+      t.seedIndexedDB(updates);
+      t.syncRemoteWithUpdate(updates);
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(updates, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      await t.awaitIdleAutoMerge();
+
+      await t.hsm.bootstrapLCAFromDisk({
+        content: 'disk content',
+        hash: 'disk-hash',
+        mtime: 789,
+      });
+      await t.awaitIdleAutoMerge();
+
+      const status = t.hsm.getSyncStatus();
+      expect(status.status).toBe('pending');
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.hsm.getConflictData()).toBeNull();
+    });
+
     test('returns conflict status in active.conflict.bannerShown', async () => {
       const t = await createTestHSM();
       await loadToConflict(t, {

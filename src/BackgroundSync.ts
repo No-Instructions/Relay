@@ -966,6 +966,10 @@ export class BackgroundSync extends HasLogging {
 			return false;
 		}
 
+		if (isDocument(doc)) {
+			await this.maybeBootstrapDocumentLCA(doc);
+		}
+
 		// promise can take some time
 		if (shouldCleanupIdleSession()) {
 			cleanupIdleSession();
@@ -1058,10 +1062,24 @@ export class BackgroundSync extends HasLogging {
 
 			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
+			doc.hsm?.setRemoteDoc(doc.ydoc);
+			await this.maybeBootstrapDocumentLCA(doc);
 			return updateBytes;
 		} catch (e) {
 			this.error(e);
 			throw e;
+		}
+	}
+
+	private async maybeBootstrapDocumentLCA(doc: Document): Promise<void> {
+		const hsm = doc.hsm;
+		if (!hsm || hsm.state.lca || hsm.isActive()) return;
+
+		try {
+			const diskState = await doc.readDiskContent();
+			await hsm.bootstrapLCAFromDisk(diskState);
+		} catch (e) {
+			this.warn(`[bootstrapLCA] failed for ${doc.path}`, e);
 		}
 	}
 
