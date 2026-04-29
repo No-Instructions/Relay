@@ -2607,6 +2607,10 @@ export class SharedFolder extends HasProvider {
 		});
 		this.unsubscribes = [];
 
+		// Mark the merge manager as shutting down before destroying docs so
+		// per-doc unloads don't schedule hibernate timers we'd just orphan.
+		this.mergeManager?.beginShutdown();
+
 		this.files.forEach((doc: IFile) => {
 			doc.destroy();
 			this.files.delete(doc.guid);

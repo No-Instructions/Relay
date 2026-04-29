@@ -248,6 +248,29 @@ export class MergeManager {
 
   // Track destroyed state to prevent operations after cleanup
   private destroyed = false;
+  private shuttingDown = false;
+
+  beginShutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    for (const [guid] of this._hibernateTimers) {
+      this.clearHibernateTimer(guid);
+    }
+    // Tear down each HSM's localPersistence so its IDB connection closes.
+    // Document.destroy → releaseLock only triggers a 'release' cleanup
+    // (deactivateEditor) and never destroys localPersistence; an open
+    // IDBDatabase is registered with Chrome's "Pending activities" tracker
+    // and pins the entire module's V8 context (and the Document class
+    // definition with it) until the connection closes.
+    for (const guid of this._hsmUnsubs.keys()) {
+      const hsm = this._getDocument?.(guid)?.hsm;
+      if (!hsm) continue;
+      awaitOnReload(
+        hsm.destroyLocalDoc().catch(() => {}),
+        `mergeManager:beginShutdown:destroyLocalDoc:${guid}`,
+      );
+    }
+  }
 
   // Track initialized state - initialize() must be called before registering HSMs
   private _initialized = false;
@@ -1310,6 +1333,7 @@ export class MergeManager {
    */
   private resetHibernateTimer(guid: string): void {
     this.clearHibernateTimer(guid);
+    if (this.shuttingDown || this.destroyed) return;
     const timerId = this.timeProvider.setTimeout(() => {
       this._hibernateTimers.delete(guid);
       // Only hibernate if still loaded but not active
