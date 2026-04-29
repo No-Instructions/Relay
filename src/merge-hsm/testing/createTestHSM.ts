@@ -251,7 +251,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   const captureEntries = new Map<number, any>();
   let captureKeyCounter = 0;
 
-  const createPersistence = (_vaultId: string, doc: Y.Doc, _userId?: string, captureOpts?: CaptureOpts | null): IYDocPersistence => {
+  const createPersistence = (_vaultId: string, doc: Y.Doc, captureOpts?: CaptureOpts | null): IYDocPersistence => {
     // Subscribe to doc updates to track changes as individual rows
     const updateHandler = (update: Uint8Array, origin: any) => {
       updateRows.push({ key: ++updateRowKeyCounter, update, origin });

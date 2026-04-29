@@ -19,7 +19,6 @@ export interface FeatureFlags {
 	enableDraftMode: boolean;
 	enableNewSyncStatus: boolean;
 	enableResourceMeter: boolean;
-	enablePermanentUserData: boolean;
 	enableFolderIdbMigration: boolean;
 	enableSelectiveSubdocQuery: boolean;
 }
@@ -45,7 +44,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDraftMode: false,
 	enableNewSyncStatus: false,
 	enableResourceMeter: false,
-	enablePermanentUserData: true,
 	enableFolderIdbMigration: false,
 	enableSelectiveSubdocQuery: false,
 } as const;

@@ -257,10 +257,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return this.localPersistence?.opCapture ?? null;
 	}
 
-	// User ID for PermanentUserData tracking
-	private _userId?: string;
-
-	// CRDT operation logging
 	private crdtLog = curryLog("[MergeHSM:CRDT]", "debug");
 	private idleMergeLog = curryLog("[MergeHSM:IdleMerge]", "log");
 	private hsmWarn = curryLog("[MergeHSM]", "warn");
@@ -300,7 +296,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._createPersistence =
 			config.createPersistence ?? defaultCreatePersistence;
 		this._persistenceMetadata = config.persistenceMetadata;
-		this._userId = config.userId;
 		this._diskLoader = config.diskLoader;
 		this._bridge = new SyncBridge(this);
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
@@ -1121,7 +1116,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.localPersistence = this._createPersistence(
 				this.vaultId,
 				this.localDoc,
-				this._userId,
 				this._captureOpts,
 			);
 		}
@@ -2757,7 +2751,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.localPersistence = this._createPersistence(
 				this.vaultId,
 				this.localDoc,
-				this._userId,
 				this._captureOpts,
 			);
 
@@ -2889,18 +2882,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Attach persistence to localDoc — it loads stored updates
 		// asynchronously and fires 'synced' when done.
 		// Reuse persistence if it already exists (e.g., from initializeFromRemote() enrollment)
-		// PermanentUserData is set up later in handleLocalPersistenceSynced()
-		// AFTER the DB is open and IDB is loaded. This is critical because PUD
-		// advances the client's Yjs clock. If PUD runs before IDB is loaded,
-		// subsequent content operations reference post-PUD clock positions.
-		// The _storeUpdate handler can't capture PUD operations (DB not open
-		// yet), and on reload the content operations become orphaned — they
-		// reference clock positions that don't exist, causing silent data loss.
 		if (!this.localPersistence) {
 			this.localPersistence = this._createPersistence(
 				this.vaultId,
 				this.localDoc,
-				this._userId,
 				this._captureOpts,
 			);
 		}
@@ -2984,8 +2969,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				"[MergeHSM] localPersistence is null in handleLocalPersistenceSynced",
 			);
 		}
-		// Check if IDB has stored content. PermanentUserData setup is handled
-		// automatically by persistence when it syncs (if userId was provided).
+		// Check if IDB has stored content.
 		const hasContent = this.localPersistence.hasUserData();
 		const localText = this.localDoc?.getText("contents").toString() ?? "";
 
@@ -4001,7 +3985,6 @@ function computePositionedChanges(
 const defaultCreatePersistence: CreatePersistence = (
 	_vaultId: string,
 	doc: Y.Doc,
-	_userId?: string,
 	_captureOpts?: CaptureOpts | null,
 ): IYDocPersistence => {
 	const hasContent = false;

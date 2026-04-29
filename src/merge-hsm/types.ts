@@ -749,13 +749,12 @@ export interface CaptureOpts {
 
 /**
  * Factory that creates a persistence instance for a YDoc.
- * Production: creates IndexeddbPersistence(vaultId, doc, userId, captureOpts).
+ * Production: creates IndexeddbPersistence(vaultId, doc, captureOpts).
  * Testing: can return a mock that fires 'synced' synchronously.
  */
 export type CreatePersistence = (
 	vaultId: string,
 	doc: Y.Doc,
-	userId?: string,
 	captureOpts?: CaptureOpts | null,
 ) => IYDocPersistence;
 
@@ -819,12 +818,6 @@ export interface MergeHSMConfig {
 	 * Set after persistence syncs.
 	 */
 	persistenceMetadata?: PersistenceMetadata;
-
-	/**
-	 * User ID for PermanentUserData tracking.
-	 * If provided, sets up user mapping on localDoc to track which user made changes.
-	 */
-	userId?: string;
 
 	/**
 	 * Function to lazily load disk content for local enrollment.

@@ -134,12 +134,6 @@ export interface MergeManagerConfig {
    */
   getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
 
-  /**
-   * User ID for PermanentUserData tracking.
-   * If provided, each HSM will set up user mapping on localDoc.
-   */
-  userId?: string;
-
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
 
@@ -339,7 +333,6 @@ export class MergeManager {
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
-  private userId?: string;
   private _yaml: FrontMatterPrimitives | null = null;
   private _onTransition?: MergeTransitionCallback;
   private readonly _transitionListeners = new Set<MergeTransitionCallback>();
@@ -356,7 +349,6 @@ export class MergeManager {
     this.loadState = config.loadState;
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
-    this.userId = config.userId;
     this._yaml = config.yaml ?? null;
     this._onTransition = config.onTransition;
 
@@ -548,7 +540,6 @@ export class MergeManager {
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
       persistenceMetadata: getPersistenceMetadata?.(),
-      userId: this.userId,
       diskLoader: getDiskContent,
       isFolderConnected,
       yaml: this._yaml ?? undefined,
@@ -1291,7 +1282,6 @@ export class MergeManager {
     this.loadState = undefined;
     this.createPersistence = undefined;
     this.getPersistenceMetadata = undefined;
-    this.userId = undefined;
     this._yaml = null;
     this._onTransition = undefined;
     this._transitionListeners.clear();

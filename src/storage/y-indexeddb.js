@@ -126,18 +126,16 @@ export class IndexeddbPersistence extends Observable {
   /**
    * @param {string} name
    * @param {Y.Doc} doc
-   * @param {string|null} [userId] - User ID for PermanentUserData tracking
    * @param {{ scope: string, trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture)
    * @param {string|null} [migrateFrom] - Old DB name to migrate data from (one-time, then deleted)
    */
-  constructor (name, doc, userId = null, captureOpts = null, migrateFrom = null) {
+  constructor (name, doc, captureOpts = null, migrateFrom = null) {
     super()
     this.doc = doc
     this.name = name
     this._dbref = 0
     this._dbsize = 0
     this._destroyed = false
-    this._userId = userId
     this._captureOpts = captureOpts
     this._migrateFromName = migrateFrom
     /**
@@ -235,15 +233,6 @@ export class IndexeddbPersistence extends Observable {
           if (changed) {
             idb.addAutoKey(updatesStore, pendingState)
           }
-        }
-        // Set up PermanentUserData if userId provided and DB has content.
-        // This MUST happen AFTER IDB is loaded because PUD advances the client's
-        // Yjs clock. If done before IDB loads, subsequent content operations
-        // reference post-PUD clock positions that don't exist in IDB.
-        // Only set up PUD if file is already enrolled (hasUserData), otherwise
-        // we'd write PUD ops before enrollment.
-        if (this._userId && this.hasUserData()) {
-          this._setupPermanentUserData()
         }
         // 'synced' is emitted after capture init (see below)
       }
@@ -630,75 +619,8 @@ export class IndexeddbPersistence extends Observable {
     })
   }
 
-  /**
-   * Set up PermanentUserData for user tracking.
-   * @private
-   */
-  _setupPermanentUserData () {
-    if (!this._userId || this._destroyed || !this._hasLiveDoc()) return
-
-    if (this._hasInvalidPermanentUserData()) {
-      idbWarn(`[y-indexeddb] Invalid PermanentUserData detected for ${this.name}; resetting users map`)
-      this._resetPermanentUserData()
-    }
-
-    try {
-      const permanentUserData = new Y.PermanentUserData(this.doc)
-      permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
-    } catch (err) {
-      idbWarn(`[y-indexeddb] PermanentUserData setup failed for ${this.name}; retrying with cleared users map`, err)
-      try {
-        this._resetPermanentUserData()
-        if (this._destroyed || !this._hasLiveDoc()) return
-        const permanentUserData = new Y.PermanentUserData(this.doc)
-        permanentUserData.setUserMapping(this.doc, this.doc.clientID, this._userId)
-      } catch (retryErr) {
-        idbWarn(`[y-indexeddb] PermanentUserData setup retry failed for ${this.name}`, retryErr)
-      }
-    }
-  }
-
   _hasLiveDoc () {
     return !!this.doc && this.doc.store != null
-  }
-
-  _hasInvalidPermanentUserData () {
-    if (!this._hasLiveDoc()) return false
-    const users = this.doc.getMap("users")
-    let invalid = false
-    users.forEach((entry) => {
-      if (invalid) return
-      if (!(entry instanceof Y.Map)) {
-        invalid = true
-        return
-      }
-      const ids = entry.get("ids")
-      const ds = entry.get("ds")
-      if (!(ids instanceof Y.Array) || !(ds instanceof Y.Array)) {
-        invalid = true
-        return
-      }
-      ids.forEach((id) => {
-        if (typeof id !== "number" || !Number.isFinite(id)) {
-          invalid = true
-        }
-      })
-      ds.forEach((encodedDs) => {
-        if (!(encodedDs instanceof Uint8Array)) {
-          invalid = true
-        }
-      })
-    })
-    return invalid
-  }
-
-  _resetPermanentUserData () {
-    if (!this._hasLiveDoc()) return
-    const users = this.doc.getMap("users")
-    if (users.size === 0) return
-    this.doc.transact(() => {
-      users.clear()
-    }, this)
   }
 
   /**
@@ -787,12 +709,6 @@ export class IndexeddbPersistence extends Observable {
     // Not initialized - load content lazily
     const { content } = await contentLoader()
 
-    // Set up PermanentUserData BEFORE content insertion
-    if (this._userId) {
-      this._setupPermanentUserData()
-      if (this._destroyed || !this._hasLiveDoc()) return false
-    }
-
     // Insert content. The `relay` map carries a single op so every enrolled
     // doc produces a non-empty state vector — lets the server (and peers)
     // tell "uploaded" from "never uploaded" for truly-empty content.
@@ -831,12 +747,6 @@ export class IndexeddbPersistence extends Observable {
     // Also check for user data (belt and suspenders)
     if (this.hasUserData()) {
       return false
-    }
-
-    // Set up PermanentUserData BEFORE applying update
-    if (this._userId) {
-      this._setupPermanentUserData()
-      if (this._destroyed || !this._hasLiveDoc()) return false
     }
 
     // Apply remote CRDT state — origin must differ from `this` so _storeUpdate persists to IDB

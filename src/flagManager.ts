@@ -1,5 +1,10 @@
 import type { NamespacedSettings } from "./SettingsStorage";
-import { type FeatureFlags, type Flag, FeatureFlagDefaults } from "./flags";
+import {
+	type FeatureFlags,
+	type Flag,
+	FeatureFlagDefaults,
+	isKeyOfFeatureFlags,
+} from "./flags";
 import { Observable } from "./observable/Observable";
 
 export function flags(): FeatureFlags {
@@ -37,6 +42,18 @@ interface ServerFlags {
 	override: boolean;
 }
 
+function pickKnownFeatureFlags(values: Partial<FeatureFlags>): Partial<FeatureFlags> {
+	const picked: Partial<FeatureFlags> = {};
+	for (const key of Object.keys(values)) {
+		if (isKeyOfFeatureFlags(key)) {
+			const value = values[key];
+			if (typeof value !== "boolean") continue;
+			picked[key] = value;
+		}
+	}
+	return picked;
+}
+
 export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	private static instance: FeatureFlagManager | null;
 	private settings?: NamespacedSettings<FeatureFlags>;
@@ -52,7 +69,9 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 
 		const overrides = serverFlags.filter((flag) => flag.override);
 		const flagsMap = overrides.reduce<Partial<FeatureFlags>>((acc, flag) => {
-			acc[flag.name as keyof FeatureFlags] = flag.value;
+			if (isKeyOfFeatureFlags(flag.name)) {
+				acc[flag.name] = flag.value;
+			}
 			return acc;
 		}, {});
 
@@ -80,8 +99,8 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 		this.unsubscribes.push(
 			this.settings.subscribe((newFlags) => {
 				this.flags = {
-					...this.flags,
-					...newFlags,
+					...FeatureFlagDefaults,
+					...pickKnownFeatureFlags(newFlags),
 				};
 				this.notifyListeners();
 			}),

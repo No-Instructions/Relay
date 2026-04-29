@@ -309,7 +309,10 @@ export class SharedFolder extends HasProvider {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
 			const migrateFrom = flags().enableFolderIdbMigration ? this.guid : null;
 			this._persistence = new IndexeddbPersistence(
-				folderDbName, this.ydoc, null, null, migrateFrom
+				folderDbName,
+				this.ydoc,
+				null,
+				migrateFrom,
 			);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
@@ -338,8 +341,8 @@ export class SharedFolder extends HasProvider {
 				return file;
 			},
 			timeProvider: undefined, // Use default
-			createPersistence: (vaultId, doc, userId, captureOpts) =>
-				new IndexeddbPersistence(vaultId, doc, userId, captureOpts),
+			createPersistence: (vaultId, doc, captureOpts) =>
+				new IndexeddbPersistence(vaultId, doc, captureOpts),
 			getDiskState: async (docPath: string) => {
 				// docPath is SharedFolder-relative (e.g., "/note.md")
 				const vaultPath = this.getPath(docPath);
@@ -395,7 +398,6 @@ export class SharedFolder extends HasProvider {
 					s3rn: s3rn ? S3RN.encode(s3rn) : "",
 				};
 			},
-			userId: flags().enablePermanentUserData ? loginManager?.user?.id : undefined,
 			yaml: { parse: parseYaml, stringify: stringifyYaml, getFrontMatterInfo },
 		});
 

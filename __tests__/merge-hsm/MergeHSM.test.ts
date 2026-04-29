@@ -2021,8 +2021,9 @@ describe('MergeHSM', () => {
 
       const remoteDoc = t.hsm.getRemoteDoc()!;
       const beforeMetadata = Y.encodeStateVector(remoteDoc);
-      const pud = new Y.PermanentUserData(remoteDoc);
-      pud.setUserMapping(remoteDoc, remoteDoc.clientID, 'remote-user');
+      const relayHeader = remoteDoc.getMap('relay');
+      const nextVersion = ((relayHeader.get('v') as number | undefined) ?? 0) + 1;
+      relayHeader.set('v', nextVersion);
       const metadataUpdate = Y.encodeStateAsUpdate(remoteDoc, beforeMetadata);
 
       expect(remoteDoc.getText('contents').toString()).toBe('stable');
@@ -2030,7 +2031,7 @@ describe('MergeHSM', () => {
       t.send({ type: 'REMOTE_UPDATE', update: metadataUpdate, affectsText: false });
 
       expectLocalDocText(t, 'stable');
-      expect(t.hsm.getLocalDoc()!.getMap('users').size).toBeGreaterThan(0);
+      expect(t.hsm.getLocalDoc()!.getMap('relay').get('v')).toBe(nextVersion);
       expectNoEffect(t.effects, { type: 'WRITE_DISK' });
 
       t.send(releaseLock());
@@ -2340,56 +2341,6 @@ describe('MergeHSM', () => {
 
 
   });
-
-  describe('PermanentUserData behavior', () => {
-    test('fresh Y.Doc has no CRDT operations', () => {
-      const doc = new Y.Doc();
-
-      // State vector should be minimal (just the header byte)
-      const sv = Y.encodeStateVector(doc);
-      expect(sv.length).toBe(1);
-      expect(sv[0]).toBe(0);
-    });
-
-    test('PermanentUserData DOES create CRDT operations (writes to users map)', () => {
-      // This test documents that PUD creates operations immediately.
-      // This is why we must NOT set up PUD before enrollment - it would
-      // make hasContent=true even for non-enrolled files.
-      const doc = new Y.Doc();
-
-      // Before PUD: no operations
-      const svBefore = Y.encodeStateVector(doc);
-      expect(svBefore.length).toBe(1);
-
-      // Set up PermanentUserData
-      const pud = new Y.PermanentUserData(doc);
-      pud.setUserMapping(doc, doc.clientID, 'test-user-id');
-
-      // After PUD: operations exist (writes to 'users' map)
-      const svAfter = Y.encodeStateVector(doc);
-      expect(svAfter.length).toBeGreaterThan(1);
-
-      // The 'users' map has content
-      const usersMap = doc.getMap('users');
-      expect(usersMap.size).toBeGreaterThan(0);
-    });
-
-    test('hasContent check (stateVector.length > 1) detects PUD operations', () => {
-      // This documents the hasContent logic used in handleLocalPersistenceSynced
-      const doc = new Y.Doc();
-
-      // Fresh doc: hasContent = false
-      let sv = Y.encodeStateVector(doc);
-      expect(sv.length > 1).toBe(false);
-
-      // After PUD: hasContent = true
-      const pud = new Y.PermanentUserData(doc);
-      pud.setUserMapping(doc, doc.clientID, 'test-user-id');
-      sv = Y.encodeStateVector(doc);
-      expect(sv.length > 1).toBe(true);
-    });
-  });
-
   // ===========================================================================
   // CM6 Change Buffering
   // ===========================================================================
