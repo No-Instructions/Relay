@@ -9,7 +9,11 @@
 import {
   createTestHSM,
   loadToIdle,
+  load,
   diskChanged,
+  acquireLock,
+  mockEditorViewRef,
+  persistenceLoaded,
   providerSynced,
   connected,
   expectState,
@@ -17,6 +21,33 @@ import {
 } from 'src/merge-hsm/testing';
 
 describe('Provider sync guard: invokeIdleThreeWayAutoMerge', () => {
+  test('empty IDB with empty remote waits for local enrollment after provider sync', async () => {
+    const diskText = '# Fork Test\n\nLine 1: Original content\n';
+    const t = await createTestHSM();
+
+    t.send(load('new-local-file'));
+    t.send(persistenceLoaded(new Uint8Array(), null));
+    t.send({ type: 'SET_MODE_IDLE' });
+
+    t.send(await diskChanged(diskText, 1000));
+    await t.hsm.awaitIdleAutoMerge();
+    expectState(t, 'idle.diverged');
+
+    t.send({
+      type: 'OBSIDIAN_SET_VIEW_DATA',
+      data: diskText,
+      clear: true,
+    });
+    t.send(acquireLock(mockEditorViewRef(diskText)));
+    expectState(t, 'active.entering.awaitingPersistence');
+
+    t.send(connected());
+    t.send(providerSynced());
+
+    expectState(t, 'active.entering.awaitingPersistence');
+    expect(t.hsm.getConflictData()).toBeNull();
+  });
+
   test('defers merge when fork exists and provider has not synced', async () => {
     const t = await createTestHSM();
     await loadToIdle(t, { content: 'base content', mtime: 1000 });

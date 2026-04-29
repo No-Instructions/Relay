@@ -2917,14 +2917,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		const hasContent = this.localPersistence.hasUserData();
 		const remoteHasContent = !!this.remoteDoc && !isEmptyDoc(this.remoteDoc);
-		const canProceed =
-			hasContent || remoteHasContent || this._providerSynced;
+		const canProceed = hasContent || remoteHasContent;
 
 		// System Invariant #3: when IDB is empty, consult the server before
 		// making a merge decision. Proceeding offline with no persisted CRDT
-		// and no server-delivered remote state risks content duplication once
-		// the server's history arrives. Stay in awaitingPersistence until
-		// enrollment writes content or the provider syncs.
+		// and no server-delivered remote state risks either content duplication
+		// or a whole-file two-way conflict. Stay in awaitingPersistence until
+		// enrollment writes content or remote content arrives.
 		if (!canProceed) {
 			return;
 		}
@@ -3018,9 +3017,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Signal readiness once persistence is synced and either:
 		// 1) IDB has content, or
-		// 2) remote content has arrived, or
-		// 3) provider has synced (authoritative empty state), or
-		// 4) we're offline and must proceed with local reconciliation.
+		// 2) remote content has arrived.
+		// An empty provider sync is not enough for a newly enrolled local file;
+		// initial disk enrollment must write the CRDT first.
 		this.maybeSignalPersistenceReady("localSync");
 	}
 
