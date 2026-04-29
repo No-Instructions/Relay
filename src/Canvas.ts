@@ -396,7 +396,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			awaitOnReload(p);
 		}
 		super.destroy();
-		this.ydoc.destroy();
 		this.whenSyncedPromise?.destroy();
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();
