@@ -17,6 +17,7 @@ import * as math from "lib0/math";
 import * as url from "lib0/url";
 import { decode as decodeCBOR } from "cbor-x";
 import { metrics, curryLog } from "../debug";
+import type { TimeProvider } from "../TimeProvider";
 
 const providerError = curryLog("[YSweetProvider]", "error");
 
@@ -257,7 +258,7 @@ const setupWS = (provider: YSweetProvider) => {
 					math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
 					provider.maxBackoffTime,
 				);
-				provider._reconnectTimeout = setTimeout(() => {
+				provider._reconnectTimeout = provider._setTimeout(() => {
 					provider._reconnectTimeout = null;
 					setupWS(provider);
 				}, delay);
@@ -368,6 +369,7 @@ export type YSweetProviderParams = {
 	disableBc?: boolean;
 	maxConnectionErrors?: number;
 	readOnly?: boolean;
+	timeProvider?: TimeProvider;
 };
 
 export type ConnectionStatus =
@@ -532,6 +534,47 @@ export class YSweetProvider extends Observable<string> {
 	subdocIndexCallbacks: Set<SubdocIndexCallback>;
 	lastSubdocIndex: SubdocIndex | null;
 	getSubdocQueryDocIds: SubdocQueryDocIdsProvider | null;
+	private _timeProvider: TimeProvider | null;
+
+	_setInterval(
+		callback: () => void,
+		ms: number,
+	): ReturnType<typeof setInterval> {
+		return this._timeProvider
+			? (this._timeProvider.setInterval(
+					callback,
+					ms,
+				) as unknown as ReturnType<typeof setInterval>)
+			: setInterval(callback, ms);
+	}
+
+	_clearInterval(timerId: ReturnType<typeof setInterval> | number): void {
+		if (this._timeProvider) {
+			this._timeProvider.clearInterval(timerId as number);
+		} else {
+			clearInterval(timerId as ReturnType<typeof setInterval>);
+		}
+	}
+
+	_setTimeout(
+		callback: () => void,
+		ms: number,
+	): ReturnType<typeof setTimeout> {
+		return this._timeProvider
+			? (this._timeProvider.setTimeout(
+					callback,
+					ms,
+				) as unknown as ReturnType<typeof setTimeout>)
+			: setTimeout(callback, ms);
+	}
+
+	_clearTimeout(timerId: ReturnType<typeof setTimeout> | number): void {
+		if (this._timeProvider) {
+			this._timeProvider.clearTimeout(timerId as number);
+		} else {
+			clearTimeout(timerId as ReturnType<typeof setTimeout>);
+		}
+	}
 
 	/**
 	 * @param serverUrl - server url
@@ -560,9 +603,11 @@ export class YSweetProvider extends Observable<string> {
 			disableBc = false,
 			maxConnectionErrors = 3,
 			readOnly = false,
+			timeProvider,
 		}: YSweetProviderParams = {},
 	) {
 		super();
+		this._timeProvider = timeProvider ?? null;
 		// ensure that url is always ends with /
 		while (serverUrl[serverUrl.length - 1] === "/") {
 			serverUrl = serverUrl.slice(0, serverUrl.length - 1);
@@ -602,7 +647,7 @@ export class YSweetProvider extends Observable<string> {
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
-			this._resyncInterval = setInterval(() => {
+			this._resyncInterval = this._setInterval(() => {
 				if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 					// resend sync step 1
 					const encoder = encoding.createEncoder();
@@ -681,7 +726,7 @@ export class YSweetProvider extends Observable<string> {
 		}
 
 		awareness.on("update", this._awarenessUpdateHandler);
-		this._checkInterval = setInterval(() => {
+		this._checkInterval = this._setInterval(() => {
 			if (
 				this.wsconnected &&
 				messageReconnectTimeout <
@@ -769,11 +814,11 @@ export class YSweetProvider extends Observable<string> {
 
 	destroy() {
 		if (this._resyncInterval !== 0) {
-			clearInterval(this._resyncInterval);
+			this._clearInterval(this._resyncInterval);
 		}
-		clearInterval(this._checkInterval);
+		this._clearInterval(this._checkInterval);
 		if (this._reconnectTimeout !== null) {
-			clearTimeout(this._reconnectTimeout);
+			this._clearTimeout(this._reconnectTimeout);
 			this._reconnectTimeout = null;
 		}
 
@@ -888,7 +933,7 @@ export class YSweetProvider extends Observable<string> {
 		this.wsConnectStartTime = 0;
 		this.synced = false;
 		if (this._reconnectTimeout !== null) {
-			clearTimeout(this._reconnectTimeout);
+			this._clearTimeout(this._reconnectTimeout);
 			this._reconnectTimeout = null;
 		}
 		this.disconnectBc();

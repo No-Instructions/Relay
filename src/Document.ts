@@ -79,6 +79,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			? new S3RemoteDocument(parent.relayId, parent.guid, guid)
 			: new S3Document(parent.guid, guid);
 		super(guid, s3rn, parent.tokenStore, loginManager);
+		this.timeProvider = parent.timeProvider;
 		this._parent = parent;
 		this.path = path;
 		this.name = "[CRDT] " + path.split("/").pop() || "";

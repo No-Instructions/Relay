@@ -69,6 +69,7 @@ import {
 } from "./merge-hsm/persistence";
 import { trackPromise } from "./trackPromise";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
+import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
 
 export interface SharedFolderSettings {
@@ -212,6 +213,7 @@ export class SharedFolder extends HasProvider {
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		private _hsmStore: HSMStore,
+		timeProvider: TimeProvider | undefined,
 		relayId?: string,
 		authoritative: boolean = false,
 	) {
@@ -220,6 +222,7 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
+		this.timeProvider = timeProvider;
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
@@ -340,7 +343,7 @@ export class SharedFolder extends HasProvider {
 				if (!file || !isDocument(file)) return undefined;
 				return file;
 			},
-			timeProvider: undefined, // Use default
+			timeProvider: this.timeProvider,
 			createPersistence: (vaultId, doc, captureOpts) =>
 				new IndexeddbPersistence(vaultId, doc, captureOpts),
 			getDiskState: async (docPath: string) => {

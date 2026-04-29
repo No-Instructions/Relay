@@ -917,6 +917,7 @@ export default class Live extends Plugin {
 			this.backgroundSync,
 			folderSettings,
 			this._hsmStore,
+			this.timeProvider,
 			relayId,
 			authoritative,
 		);

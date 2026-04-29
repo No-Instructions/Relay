@@ -14,6 +14,7 @@ import type { ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import { flags } from "./flagManager";
+import type { TimeProvider } from "./TimeProvider";
 
 export interface Subscription {
 	on: () => void;
@@ -24,6 +25,7 @@ function makeProvider(
 	clientToken: ClientToken,
 	ydoc: Y.Doc,
 	user?: User,
+	timeProvider?: TimeProvider,
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
@@ -38,6 +40,7 @@ function makeProvider(
 			disableBc: true,
 			maxConnectionErrors: 3,
 			readOnly: clientToken.authorization === "read-only",
+			timeProvider,
 		},
 	);
 
@@ -75,6 +78,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionError: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	listeners: Map<unknown, Listener>;
+	timeProvider: TimeProvider | undefined;
 
 	constructor(
 		public guid: string,
@@ -134,7 +138,12 @@ export class HasProvider extends HasLogging {
 			this._ydoc.gc = false;
 		}
 
-		this._provider = makeProvider(this.clientToken, this._ydoc, user);
+		this._provider = makeProvider(
+			this.clientToken,
+			this._ydoc,
+			user,
+			this.timeProvider,
+		);
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
