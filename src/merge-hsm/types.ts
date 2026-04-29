@@ -649,20 +649,6 @@ export interface PersistedStateMeta {
 	persistedAt: number;
 }
 
-// Yjs updates are stored in y-indexeddb per-document databases,
-// NOT in MergeHSMDatabase. Persistence writes to IDB automatically
-// via the _storeUpdate handler on localDoc.
-
-/**
- * Folder-level sync status index.
- * Stored in IndexedDB 'index' store.
- */
-export interface MergeIndex {
-	folderGuid: string;
-	documents: Map<string, SyncStatus>;
-	updatedAt: number;
-}
-
 // =============================================================================
 // Configuration Types
 // =============================================================================

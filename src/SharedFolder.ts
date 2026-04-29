@@ -2721,9 +2721,6 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		for (const name of dbNames) {
 			indexedDB.deleteDatabase(name);
 		}
-		// Delete folder-level index from global HSM database
-		const p = this._hsmStore.deleteIndex(item.guid).catch(() => {});
-		awaitOnReload(p);
 		return deleted;
 	}
 

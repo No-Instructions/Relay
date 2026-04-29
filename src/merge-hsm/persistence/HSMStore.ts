@@ -4,7 +4,6 @@
  * Database: {appId}-relay-hsm
  * Stores:
  *   - states: HSM state per document (PersistedMergeState)
- *   - index: Folder-level sync status (MergeIndex)
  *
  * NOTE: Yjs updates are stored in y-indexeddb (per-document databases),
  * NOT in this database. Persistence writes to IDB automatically
@@ -15,8 +14,6 @@ import * as idb from 'lib0/indexeddb';
 import type {
   PersistedMergeState,
   PersistedStateMeta,
-  MergeIndex,
-  SyncStatus,
 } from '../types';
 
 // =============================================================================
@@ -27,21 +24,12 @@ const getDbName = (appId: string) => `${appId}-relay-hsm`;
 
 const STORES = {
   states: 'states',
-  index: 'index',
 } as const;
 
 // =============================================================================
 // Serialization Helpers
 // =============================================================================
 
-/**
- * Serialized MergeIndex for storage (Map converted to object).
- */
-interface StoredMergeIndex {
-  folderGuid: string;
-  documents: Record<string, SyncStatus>;
-  updatedAt: number;
-}
 
 /**
  * Allow-list all fields to prevent non-serializable values (closures, DOM refs)
@@ -81,22 +69,6 @@ function sanitizeState(state: PersistedMergeState): PersistedMergeState {
   };
 }
 
-function serializeIndex(index: MergeIndex): StoredMergeIndex {
-  return {
-    folderGuid: index.folderGuid,
-    documents: Object.fromEntries(index.documents),
-    updatedAt: index.updatedAt,
-  };
-}
-
-function deserializeIndex(stored: StoredMergeIndex): MergeIndex {
-  return {
-    folderGuid: stored.folderGuid,
-    documents: new Map(Object.entries(stored.documents)),
-    updatedAt: stored.updatedAt,
-  };
-}
-
 // =============================================================================
 // HSMStore
 // =============================================================================
@@ -118,7 +90,6 @@ export class HSMStore {
     this._db = idb.openDB(getDbName(appId), (db) => {
       idb.createStores(db, [
         [STORES.states, { keyPath: 'guid' }],
-        [STORES.index, { keyPath: 'folderGuid' }],
       ]);
     });
   }
@@ -210,51 +181,6 @@ export class HSMStore {
   }
 
   // ===========================================================================
-  // Folder-scoped operations (index store)
-  // ===========================================================================
-
-  async saveIndex(folderGuid: string, index: MergeIndex): Promise<void> {
-    if (this._destroyed) return;
-    const storable = serializeIndex({ ...index, folderGuid });
-    const p = this._db
-      .then(db => {
-        if (this._destroyed) return;
-        const [store] = idb.transact(db, [STORES.index], 'readwrite');
-        return idb.put(store, storable as unknown as string);
-      })
-      .catch(err => {
-        if (this._shouldIgnoreClosingError(err)) return;
-        throw err;
-      });
-    this._trackWrite(p);
-    await p;
-  }
-
-  async loadIndex(folderGuid: string): Promise<MergeIndex | null> {
-    const db = await this._db;
-    const [store] = idb.transact(db, [STORES.index], 'readonly');
-    const result = await idb.get(store, folderGuid) as unknown as StoredMergeIndex | undefined;
-    if (!result) return null;
-    return deserializeIndex(result);
-  }
-
-  async deleteIndex(folderGuid: string): Promise<void> {
-    if (this._destroyed) return;
-    const p = this._db
-      .then(db => {
-        if (this._destroyed) return;
-        const [store] = idb.transact(db, [STORES.index], 'readwrite');
-        return idb.del(store, folderGuid);
-      })
-      .catch(err => {
-        if (this._shouldIgnoreClosingError(err)) return;
-        throw err;
-      });
-    this._trackWrite(p);
-    await p;
-  }
-
-  // ===========================================================================
   // Unscoped operations
   // ===========================================================================
 
@@ -263,15 +189,8 @@ export class HSMStore {
     const p = this._db
       .then(db => {
         if (this._destroyed) return;
-        const [statesStore, indexStore] = idb.transact(
-          db,
-          [STORES.states, STORES.index],
-          'readwrite'
-        );
-        return Promise.all([
-          idb.del(statesStore, IDBKeyRange.lowerBound('')),
-          idb.del(indexStore, IDBKeyRange.lowerBound('')),
-        ]).then(() => {});
+        const [statesStore] = idb.transact(db, [STORES.states], 'readwrite');
+        return idb.del(statesStore, IDBKeyRange.lowerBound(''));
       })
       .catch(err => {
         if (this._shouldIgnoreClosingError(err)) return;

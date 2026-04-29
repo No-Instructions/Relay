@@ -117,11 +117,6 @@ export interface MergeManagerConfig {
   } | null>;
 
   /**
-   * Callback to persist the sync status index.
-   */
-  persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
-
-  /**
    * Factory to create persistence for localDoc.
    * Production: pass IndexeddbPersistence constructor wrapper.
    * Tests: omit for default no-op persistence.
@@ -352,7 +347,6 @@ export class MergeManager {
     mtime: number;
     hash: string;
   } | null>;
-  private _persistIndex?: (status: Map<string, SyncStatus>) => Promise<void>;
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
   private createPersistence?: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
@@ -368,7 +362,6 @@ export class MergeManager {
     this.loadAllStates = config.loadAllStates;
     this.onEffect = config.onEffect;
     this.getDiskState = config.getDiskState;
-    this._persistIndex = config.persistIndex;
     this.loadState = config.loadState;
     this.createPersistence = config.createPersistence;
     this.getPersistenceMetadata = config.getPersistenceMetadata;
@@ -1236,23 +1229,6 @@ export class MergeManager {
   }
 
   /**
-   * Persist the sync status index.
-   */
-  async persistIndex(): Promise<void> {
-    if (!this._persistIndex) {
-      return; // No persistence provider configured
-    }
-
-    // Convert ObservableMap to regular Map for persistence
-    const statusMap = new Map<string, SyncStatus>();
-    for (const [guid, status] of this._syncStatus.entries()) {
-      statusMap.set(guid, status);
-    }
-
-    await this._persistIndex(statusMap);
-  }
-
-  /**
    * Get HSM without acquiring lock (for inspection/testing).
    * Returns undefined if document is not registered.
    */
@@ -1301,7 +1277,6 @@ export class MergeManager {
     this.loadAllStates = undefined;
     this.onEffect = undefined;
     this.getDiskState = undefined;
-    this._persistIndex = undefined;
     this.loadState = undefined;
     this.createPersistence = undefined;
     this.getPersistenceMetadata = undefined;

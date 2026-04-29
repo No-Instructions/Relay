@@ -70,9 +70,6 @@ export type {
   PersistedMergeState,
   SerializableSnapshot,
   SerializableEvent,
-
-  // Index types
-  MergeIndex,
 } from './types';
 
 // Persistence (IndexedDB)
