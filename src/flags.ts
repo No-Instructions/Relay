@@ -2,7 +2,6 @@ export interface FeatureFlags {
 	enableDocumentStatus: boolean;
 	enableNewLinkFormat: boolean;
 	enableDeltaLogging: boolean;
-	enableDocumentHistory: boolean;
 	enableNetworkLogging: boolean;
 	enableVerifyUploads: boolean;
 	enableDiscordLogin: boolean;
@@ -19,7 +18,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableDocumentStatus: false,
 	enableNewLinkFormat: false,
 	enableDeltaLogging: false,
-	enableDocumentHistory: false,
 	enableNetworkLogging: false,
 	enableVerifyUploads: false,
 	enableDiscordLogin: false,

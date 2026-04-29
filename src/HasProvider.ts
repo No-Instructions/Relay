@@ -13,7 +13,6 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
-import { flags } from "./flagManager";
 import type { TimeProvider } from "./TimeProvider";
 
 export interface Subscription {
@@ -133,10 +132,6 @@ export class HasProvider extends HasLogging {
 
 		const user = this.loginManager?.user;
 		this._ydoc = new Y.Doc();
-
-		if (flags().enableDocumentHistory) {
-			this._ydoc.gc = false;
-		}
 
 		this._provider = makeProvider(
 			this.clientToken,
