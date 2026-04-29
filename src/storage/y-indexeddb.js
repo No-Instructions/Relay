@@ -425,7 +425,13 @@ export class IndexeddbPersistence extends Observable {
     // writes/compaction are chained on `_db` — awaiting them would
     // hang destroy forever. Close the db if it eventually resolves.
     if (!this.db) {
-      this._db.then(db => db.close()).catch(() => {})
+      this._db.then(db => {
+        db.onversionchange = null
+        db.onerror = null
+        db.onabort = null
+        db.onclose = null
+        db.close()
+      }).catch(() => {})
       return
     }
     // Wait for all pending writes to complete before closing
@@ -436,7 +442,25 @@ export class IndexeddbPersistence extends Observable {
     if (this._pendingCompaction) {
       await this._pendingCompaction
     }
+    // lib0/indexeddb.openDB sets `db.onversionchange = () => db.close()`. The
+    // arrow function captures the surrounding module's lexical scope. Even
+    // after db.close(), Chrome's "Pending activities" tracker keeps the
+    // listener registered and pins the V8 context (and every class defined in
+    // the plugin module with it) until the listener is cleared. Clearing
+    // onversionchange and the other handlers explicitly lets the IDBDatabase
+    // graph go away on the next GC cycle.
+    this.db.onversionchange = null
+    this.db.onerror = null
+    this.db.onabort = null
+    this.db.onclose = null
     this.db.close()
+    // Clear the lib0/observable _observers map. The whenSynced promise
+    // registers an `on('synced', ...)` handler that only removes its sibling
+    // `failed` handler when it fires — leaving the synced listener attached
+    // for the lifetime of this instance. Each listener is an arrow whose
+    // closure captures Document/SharedFolder lexical scope, so a forgotten
+    // observer pins the entire plugin module across reload.
+    super.destroy()
   }
 
   /**
