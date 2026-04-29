@@ -40,6 +40,19 @@ export class PostOffice {
 		return PostOffice.instance;
 	}
 
+	/**
+	 * Returns the singleton if it exists, or null if PostOffice has been
+	 * destroyed or was never created. Use this from cleanup/destroy paths
+	 * that may run after `PostOffice.destroy()` (e.g. async work registered
+	 * with `awaitOnReload`) — calling `getInstance()` post-destroy throws
+	 * and creating a fresh singleton mid-teardown leaks the entire mail
+	 * graph (each entry's `recipient` closure pins module-level classes).
+	 */
+	static peekInstance(): PostOffice | null {
+		if (this._destroyed) return null;
+		return PostOffice.instance ?? null;
+	}
+
 	beginTransaction(): void {
 		this.isInTransaction = true;
 		this.currentTransactionId++;
@@ -205,6 +218,11 @@ export class PostOffice {
 	}
 
 	static destroy(): void {
+		// Always mark destroyed even if no instance was lazily created this
+		// cycle — otherwise subscribers that fire from async work post-disable
+		// would call getInstance() and silently create a fresh singleton (no
+		// teardown wired up), accumulating mail that pins the entire module.
+		PostOffice._destroyed = true;
 		if (PostOffice.instance) {
 			// Clear all mailboxes
 			PostOffice.instance.mailboxes = null as any;

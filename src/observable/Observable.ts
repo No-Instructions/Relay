@@ -44,11 +44,14 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 	}
 
 	notifyListeners(): void {
+		// Use peekInstance: late notifications from async work that finishes
+		// post-disable would otherwise auto-create a fresh PostOffice
+		// singleton (leaking the entire mail graph including recipient
+		// closures that capture SharedFolder/Document).
+		const postie = PostOffice.peekInstance();
+		if (!postie) return;
 		for (const recipient of this._listeners) {
-			PostOffice.getInstance().send(
-				this as unknown as T & IObservable<T>,
-				recipient,
-			);
+			postie.send(this as unknown as T & IObservable<T>, recipient);
 		}
 	}
 
@@ -61,7 +64,7 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 
 	subscribe(run: Subscriber<T>): Unsubscriber {
 		this._listeners.add(run);
-		PostOffice.getInstance().send(
+		PostOffice.peekInstance()?.send(
 			this as unknown as T & IObservable<T>,
 			run,
 			true,
@@ -78,14 +81,18 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		// If the SharedFolder was destroyed first, _listeners is null by
 		// the time the closure runs. Match unsubscribe()'s null guard.
 		this._listeners?.delete(listener);
-		PostOffice.getInstance().cancel(listener);
+		// Use peekInstance: getInstance() throws after PostOffice.destroy()
+		// and auto-creates a fresh singleton if instance is null, which
+		// would leak the entire mail graph through unbounded mailbox
+		// accumulation when off() runs from an awaitOnReload promise.
+		PostOffice.peekInstance()?.cancel(listener);
 	}
 
 	unsubscribe(run: Subscriber<T>): void {
 		if (this._listeners) {
 			this._listeners.delete(run);
 		}
-		PostOffice.getInstance().cancel(run);
+		PostOffice.peekInstance()?.cancel(run);
 	}
 
 	destroy() {
@@ -97,9 +104,11 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 			});
 		}
 		if (this._listeners) {
-			const postie = PostOffice.getInstance();
-			for (const listener of this._listeners) {
-				postie.cancel(listener);
+			const postie = PostOffice.peekInstance();
+			if (postie) {
+				for (const listener of this._listeners) {
+					postie.cancel(listener);
+				}
 			}
 			this._listeners.clear();
 		}

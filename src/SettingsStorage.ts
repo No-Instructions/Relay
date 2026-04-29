@@ -706,7 +706,7 @@ export class NamespacedSettings<
 		run(this.get());
 		return () => {
 			this._listeners.delete(run);
-			PostOffice.getInstance().cancel(run);
+			PostOffice.peekInstance()?.cancel(run);
 		};
 	}
 
