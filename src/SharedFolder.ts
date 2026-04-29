@@ -667,7 +667,7 @@ export class SharedFolder extends HasProvider {
 		pending: Uint8Array[],
 	): void {
 		this._pendingKeyframeUpdates.set(guid, pending);
-		this.backgroundSync.enqueueDownload(file, !flags().enableNewSyncStatus).then((keyframe) => {
+		this.backgroundSync.enqueueDownload(file, false).then((keyframe) => {
 			const buf = this._pendingKeyframeUpdates.get(guid);
 			this._pendingKeyframeUpdates.delete(guid);
 			if (!buf || buf.length === 0) return;
@@ -2044,7 +2044,7 @@ export class SharedFolder extends HasProvider {
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 		canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas);
+		this.backgroundSync.enqueueCanvasDownload(canvas, update);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas, update);
@@ -2271,7 +2271,7 @@ export class SharedFolder extends HasProvider {
 			trackPromise(`folder:docReady:${doc.guid}`, this.whenReady()).then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueDownload(doc, !flags().enableNewSyncStatus);
+					this.backgroundSync.enqueueDownload(doc, false);
 				} else if (this.pendingUpload.get(doc.path)) {
 					await this.backgroundSync.enqueueSync(doc);
 					await this.markUploaded(doc);

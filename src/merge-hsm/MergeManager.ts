@@ -1181,11 +1181,11 @@ export class MergeManager {
    * it matches the known local state vector. This is a queueing hint for
    * folder-wide sync; it intentionally ignores delete sets.
    */
-  isServerAdvertisedInSync(guid: string): boolean {
+  isServerAdvertisedInSync(guid: string, localStateVector?: Uint8Array): boolean {
     const advertisedSV = this._serverAdvertisedSV.get(guid);
     if (!advertisedSV) return false;
 
-    const localSVBytes = this.getKnownLocalStateVector(guid);
+    const localSVBytes = localStateVector ?? this.getKnownLocalStateVector(guid);
     if (!localSVBytes) return false;
 
     try {

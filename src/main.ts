@@ -448,22 +448,25 @@ export default class Live extends Plugin {
 			this.releaseSettings,
 		);
 
+		// Feature flags are user-facing — always available. The modal hides
+		// dangerous flags unless debugging is on.
+		this.addCommand({
+			id: "toggle-feature-flags",
+			name: "Show feature flags",
+			callback: () => {
+				const modal = new FeatureFlagToggleModal(this.app, () => {
+					this.reload();
+				});
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
+
 		this.register(
 			this.debugSettings.subscribe((settings) => {
 				if (settings.debugging) {
 					this.enableDebugging();
 					this.removeCommand("enable-debugging");
-					this.addCommand({
-						id: "toggle-feature-flags",
-						name: "Show feature flags",
-						callback: () => {
-							const modal = new FeatureFlagToggleModal(this.app, () => {
-								this.reload();
-							});
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
 					this.addCommand({
 						id: "send-bug-report",
 						name: "Send bug report",
@@ -508,7 +511,6 @@ export default class Live extends Plugin {
 						},
 					});
 				} else {
-					this.removeCommand("toggle-feature-flags");
 					this.removeCommand("send-bug-report");
 					this.removeCommand("show-debug-info");
 					this.removeCommand("show-release-manager");
@@ -1362,7 +1364,6 @@ export default class Live extends Plugin {
 		{
 			const registeredFolderGuids = new Set<string>();
 			const registerSyncStatusCommands = () => {
-				if (!flags().enableNewSyncStatus) return;
 				this.sharedFolders.forEach((folder) => {
 					if (registeredFolderGuids.has(folder.guid)) return;
 					registeredFolderGuids.add(folder.guid);
@@ -1380,9 +1381,6 @@ export default class Live extends Plugin {
 				});
 			};
 			this.register(this.sharedFolders.subscribe(registerSyncStatusCommands));
-			this.register(
-				FeatureFlagManager.getInstance().subscribe(registerSyncStatusCommands),
-			);
 		}
 
 		withFlag(flag.enableNewLinkFormat, () => {

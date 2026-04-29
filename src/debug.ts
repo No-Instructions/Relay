@@ -26,6 +26,10 @@ export function setDebugging(debug: boolean) {
 	debugging = debug;
 }
 
+export function isDebugging(): boolean {
+	return debugging;
+}
+
 interface LogConfig {
 	maxFileSize: number;
 	maxBackups: number;

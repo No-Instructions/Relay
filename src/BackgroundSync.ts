@@ -189,7 +189,7 @@ export class BackgroundSync extends HasLogging {
 
 	/**
 	 * Returns download-only progress for a shared folder.
-	 * Used when enableNewSyncStatus is on to show only user-visible downloads.
+	 * Used to show only user-visible downloads in folder progress indicators.
 	 */
 	getUserVisibleProgress(sharedFolder: SharedFolder): GroupProgress | null {
 		const group = this.syncGroups.get(sharedFolder);
@@ -717,6 +717,14 @@ export class BackgroundSync extends HasLogging {
 	private shouldEnqueueForSharedFolderSync(
 		item: Document | Canvas | SyncFile,
 	): boolean {
+		if (isCanvas(item)) {
+			const mergeManager = item.sharedFolder.mergeManager;
+			if (!mergeManager) return true;
+			return !mergeManager.isServerAdvertisedInSync(
+				item.guid,
+				Y.encodeStateVector(item.ydoc),
+			);
+		}
 		if (!isDocument(item)) return true;
 
 		const hsm = item.hsm;
@@ -1016,8 +1024,11 @@ export class BackgroundSync extends HasLogging {
 	 * @param canvas The canvas to download
 	 * @returns A promise that resolves when the download completes
 	 */
-	enqueueCanvasDownload(canvas: Canvas): Promise<Uint8Array | undefined> {
-		return this.enqueueDownload(canvas);
+	enqueueCanvasDownload(
+		canvas: Canvas,
+		userVisible = true,
+	): Promise<Uint8Array | undefined> {
+		return this.enqueueDownload(canvas, userVisible);
 	}
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {

@@ -9,6 +9,7 @@ export class FeatureFlagToggleModal extends Modal {
 		private reload: () => void,
 	) {
 		super(app);
+		this.setTitle("Feature flags");
 	}
 
 	onOpen() {
