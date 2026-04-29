@@ -7,13 +7,6 @@ export interface FeatureFlags {
 	enableNetworkLogging: boolean;
 	enableVerifyUploads: boolean;
 	enableDiscordLogin: boolean;
-	enableSelfManageHosts: boolean;
-	enableToasts: boolean;
-	enablePresenceAvatars: boolean;
-	enableLiveEmbeds: boolean;
-	enablePreviewViewHooks: boolean;
-	enableMetadataViewHooks: boolean;
-	enableKanbanView: boolean;
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
 	enableDraftMode: boolean;
@@ -32,13 +25,6 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableNetworkLogging: false,
 	enableVerifyUploads: false,
 	enableDiscordLogin: false,
-	enableSelfManageHosts: true,
-	enableToasts: true,
-	enablePresenceAvatars: true,
-	enableLiveEmbeds: true,
-	enablePreviewViewHooks: true,
-	enableMetadataViewHooks: true,
-	enableKanbanView: true,
 	enableDeviceManagement: true,
 	enableHSMRecording: false,
 	enableDraftMode: false,

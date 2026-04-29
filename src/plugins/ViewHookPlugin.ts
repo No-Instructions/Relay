@@ -4,7 +4,6 @@ import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { PreviewRenderer } from "./PreviewRenderer";
-import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 import type { ChangeSpec } from "@codemirror/state";
 import { trackPromise } from "../trackPromise";
@@ -112,28 +111,26 @@ export class ViewHookPlugin extends HasLogging {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const that = this;
 
-		// Hook 1: Track metadata saves (if enableMetadataViewHooks)
-		if (flags().enableMetadataViewHooks) {
-			this.unsubscribes.push(
-				getPatcher().patch(view, {
-					// @ts-ignore
-					saveFrontmatter(old: any) {
-						return function (data: any) {
-							that.debug("saveFrontmatter hook triggered");
-							that.document.hsm?.send({
-								type: 'OBSIDIAN_SAVE_FRONTMATTER',
-								path: that.document.path,
-							});
-							that.saving = true;
-							// @ts-ignore
-							const result = old.call(this, data);
-							that.saving = false;
-							return result;
-						};
-					},
-				}),
-			);
-		}
+		// Hook 1: Track metadata saves.
+		this.unsubscribes.push(
+			getPatcher().patch(view, {
+				// @ts-ignore
+				saveFrontmatter(old: any) {
+					return function (data: any) {
+						that.debug("saveFrontmatter hook triggered");
+						that.document.hsm?.send({
+							type: 'OBSIDIAN_SAVE_FRONTMATTER',
+							path: that.document.path,
+						});
+						that.saving = true;
+						// @ts-ignore
+						const result = old.call(this, data);
+						that.saving = false;
+						return result;
+					};
+				},
+			}),
+		);
 
 		// Hook 2: Coordinate saves between pathways
 		this.unsubscribes.push(
@@ -165,39 +162,37 @@ export class ViewHookPlugin extends HasLogging {
 			}),
 		);
 
-		// Hook 3: Preview mode direct edits (if enablePreviewViewHooks)
-		if (flags().enablePreviewViewHooks) {
-			this.unsubscribes.push(
-				getPatcher().patch(view.previewMode as any, {
-					edit(old: any) {
-						return function (data: string) {
-							that.debug("Preview edit hook triggered");
+		// Hook 3: Preview mode direct edits.
+		this.unsubscribes.push(
+			getPatcher().patch(view.previewMode as any, {
+				edit(old: any) {
+					return function (data: string) {
+						that.debug("Preview edit hook triggered");
+						//@ts-ignore
+						if (that.view.getMode?.() === "preview") {
 							//@ts-ignore
-							if (that.view.getMode?.() === "preview") {
-								//@ts-ignore
-								if (that.view.editor) {
-									// If CodeMirror editor is available, dispatch changes there
-									const changes = that.incrementalBufferChange(data);
-									// @ts-ignore
-									that.view.editor.cm.dispatch({
-										changes,
-									});
-									that.debug("Dispatched preview edit to CodeMirror");
-								} else {
-									// Otherwise route the preview edit through HSM.
-									that.syncViewTextToHsm(data, "preview.edit");
-									that.debug("Synced preview edit through HSM");
-								}
-								return;
+							if (that.view.editor) {
+								// If CodeMirror editor is available, dispatch changes there
+								const changes = that.incrementalBufferChange(data);
+								// @ts-ignore
+								that.view.editor.cm.dispatch({
+									changes,
+								});
+								that.debug("Dispatched preview edit to CodeMirror");
+							} else {
+								// Otherwise route the preview edit through HSM.
+								that.syncViewTextToHsm(data, "preview.edit");
+								that.debug("Synced preview edit through HSM");
 							}
+							return;
+						}
 
-							// @ts-ignore
-							return old.call(this, data);
-						};
-					},
-				}),
-			);
-		}
+						// @ts-ignore
+						return old.call(this, data);
+					};
+				},
+			}),
+		);
 	}
 
 	/**

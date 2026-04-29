@@ -582,24 +582,22 @@ export default class Live extends Plugin {
 			},
 		});
 
-		if (flags().enableSelfManageHosts) {
-			this.addCommand({
-				id: "register-host",
-				name: "Register self-hosted Relay Server",
-				callback: () => {
-					const modal = new SelfHostModal(
-						this.app,
-						this.relayManager,
-						(relay) => {
-							// Open relay settings after successful creation
-							this.openSettings(`/relays?id=${relay.id}`);
-						},
-					);
-					this.openModals.push(modal);
-					modal.open();
-				},
-			});
-		}
+		this.addCommand({
+			id: "register-host",
+			name: "Register self-hosted Relay Server",
+			callback: () => {
+				const modal = new SelfHostModal(
+					this.app,
+					this.relayManager,
+					(relay) => {
+						// Open relay settings after successful creation
+						this.openSettings(`/relays?id=${relay.id}`);
+					},
+				);
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
 
 		// Register handler for update availability changes
 		this.register(this.updateManager.subscribe(() => {

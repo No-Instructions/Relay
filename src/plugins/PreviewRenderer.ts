@@ -1,7 +1,6 @@
 import { MarkdownView } from "obsidian";
 import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
-import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 
 /**
@@ -22,11 +21,6 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 	render(document: Document, viewMode: string): void {
 		if (this.destroyed) {
 			this.debug("Skipping render - renderer destroyed");
-			return;
-		}
-
-		if (!flags().enablePreviewViewHooks) {
-			this.debug("Preview view hooks disabled via flags");
 			return;
 		}
 

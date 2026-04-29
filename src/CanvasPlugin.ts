@@ -17,7 +17,6 @@ import { HasLogging } from "src/debug";
 
 import * as Y from "yjs";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
-import { flags } from "./flagManager";
 import type { EditorViewRef } from "./merge-hsm/types";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import type { Document } from "./Document";
@@ -45,14 +44,11 @@ export class CanvasPlugin extends HasLogging {
 		this.trackedEmbedViews = new Set();
 		this.install();
 
-		// Enable embedded view synchronization if enableLiveEmbeds is true
-		if (flags().enableLiveEmbeds) {
-			for (const node of this.getEmbedViews()) {
-				if (!node.file) {
-					continue;
-				}
-				this.connectEmbedView(node);
+		for (const node of this.getEmbedViews()) {
+			if (!node.file) {
+				continue;
 			}
+			this.connectEmbedView(node);
 		}
 	}
 
@@ -477,12 +473,10 @@ export class CanvasPlugin extends HasLogging {
 						this.observeNode((node as CanvasNode).getData());
 						
 						// Check if this is a newly created embed node that needs ViewHookPlugin
-						if (flags().enableLiveEmbeds) {
-							//@ts-ignore
-							const embedView = node.child;
-							if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
-								this.connectEmbedView(embedView);
-							}
+						//@ts-ignore
+						const embedView = node.child;
+						if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
+							this.connectEmbedView(embedView);
 						}
 					}
 					this.canvas.markMoved(node);

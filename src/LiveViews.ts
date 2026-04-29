@@ -78,10 +78,7 @@ function iterateTextFileViews(
 	workspace: Workspace,
 	fn: (leaf: TextFileView) => void,
 ) {
-	const ALLOWED_TEXT_FILE_VIEWS = ["markdown"];
-	if (flags().enableKanbanView) {
-		ALLOWED_TEXT_FILE_VIEWS.push("kanban");
-	}
+	const ALLOWED_TEXT_FILE_VIEWS = ["markdown", "kanban"];
 	const allLeaves: any[] = [];
 
 	workspace.iterateAllLeaves((leaf) => {
@@ -335,7 +332,7 @@ export class RelayCanvasView implements S3View {
 			this.plugin = new CanvasPlugin(this._parent, this);
 		}
 
-		if (!this._awarenessPlugin && flags().enablePresenceAvatars) {
+		if (!this._awarenessPlugin) {
 			const viewEl = this.view.containerEl;
 			this._awarenessPlugin = new AwarenessViewPlugin(
 				{
@@ -832,12 +829,8 @@ export class LiveView<ViewType extends TextFileView>
 
 		this.setConnectionDot();
 
-		// Initialize awareness plugin if not already created and feature flag is enabled
-		if (
-			isLiveMd(this) &&
-			!this._awarenessPlugin &&
-			flags().enablePresenceAvatars
-		) {
+		// Initialize awareness plugin if not already created.
+		if (isLiveMd(this) && !this._awarenessPlugin) {
 			this._awarenessPlugin = new AwarenessViewPlugin(
 				{
 					view: this.view,
