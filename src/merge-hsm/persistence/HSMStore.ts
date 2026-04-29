@@ -303,6 +303,17 @@ export class HSMStore {
       this._destroyed = true;
       await this.flush();
       const db = await this._db;
+      // lib0/indexeddb.openDB installs `db.onversionchange = () => db.close()`.
+      // The arrow captures the surrounding module's lexical scope, so leaving
+      // the handler attached after close() pins the V8 context (and every
+      // class defined in the plugin module with it) until Chrome's "Pending
+      // activities" tracker fully releases the connection — which races
+      // plugin reload. Clearing all IDL handlers explicitly lets the wrapper
+      // and its captured closure go away on the next GC cycle.
+      (db as IDBDatabase & { onversionchange: unknown }).onversionchange = null;
+      (db as IDBDatabase & { onerror: unknown }).onerror = null;
+      (db as IDBDatabase & { onabort: unknown }).onabort = null;
+      (db as IDBDatabase & { onclose: unknown }).onclose = null;
       db.close();
     })();
     return this._destroyPromise;
