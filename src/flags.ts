@@ -39,7 +39,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enablePreviewViewHooks: true,
 	enableMetadataViewHooks: true,
 	enableKanbanView: true,
-	enableDeviceManagement: false,
+	enableDeviceManagement: true,
 	enableHSMRecording: false,
 	enableDraftMode: false,
 	enableNewSyncStatus: false,
