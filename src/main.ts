@@ -1519,8 +1519,17 @@ export default class Live extends Plugin {
 			try {
 				fn();
 			} catch (error) {
-				console.error(`[Relay] onunload failed at step: ${name}`, error);
-				throw error;
+				const e = error as { message?: string; stack?: string };
+				console.error(
+					`[Relay] onunload failed at step: ${name}: ${e?.message ?? error}\n${e?.stack ?? ""}`,
+				);
+				// Do NOT rethrow. A single step's failure must not abort the
+				// rest of onunload — every later step represents a distinct
+				// resource (timers, IDB connections, the PostOffice singleton,
+				// log buffer, leak-detection set). Skipping any of them strands
+				// the resource across plugin reload, where it pins the entire
+				// previous module's V8 context (every class definition,
+				// listener, and CRDT structure) until the page is reloaded.
 			}
 		};
 		setActiveTracker(null);
