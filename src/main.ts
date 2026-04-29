@@ -1611,13 +1611,18 @@ export default class Live extends Plugin {
 		this.sharedFolders = null as any;
 
 			// Flush pending HSM writes and close the database after SharedFolders
-			// are destroyed (no more writes will be queued).
+			// are destroyed (no more writes will be queued). Capture the store
+			// reference locally before clearing the field; otherwise the arrow
+			// runs after `this._hsmStore` has been nulled below and the
+			// optional-chain `?.destroy()` silently skips, leaving the IDB
+			// connection open across reload (it pins the V8 module context).
+			const hsmStoreRef = this._hsmStore;
 			teardownStep("hsmStore.destroy", () => {
 				const reloadAwait = (window as any).app?._reloadAwait;
 				const priorTeardown = Array.isArray(reloadAwait)
 					? Promise.allSettled([...reloadAwait]).then(() => {})
 					: Promise.resolve();
-				const p = priorTeardown.then(() => this._hsmStore?.destroy());
+				const p = priorTeardown.then(() => hsmStoreRef?.destroy());
 				awaitOnReload(
 					p,
 					`plugin:teardown:hsmStore.destroy:${this._instanceId}`,
