@@ -1,6 +1,9 @@
 "use strict";
 
 import { trackPromise } from "./trackPromise";
+import { curryLog } from "./debug";
+
+const error = curryLog("[reloadAwait]", "error");
 
 /**
  * Register a promise to be awaited before plugin re-enable during reload.
@@ -11,11 +14,8 @@ import { trackPromise } from "./trackPromise";
  */
 export function awaitOnReload(p: Promise<void>, label?: string): void {
 	const tracked = label ? trackPromise(label, p) : p;
-	const awaited = tracked.catch((error) => {
-		console.error(
-			`[Relay] reloadAwait promise rejected${label ? ` (${label})` : ""}:`,
-			error,
-		);
+	const awaited = tracked.catch((err) => {
+		error(`rejected${label ? ` (${label})` : ""}`, err);
 	});
 	if (typeof window !== 'undefined') {
 		(window as any).app?._reloadAwait?.push(awaited);

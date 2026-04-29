@@ -528,14 +528,7 @@ export default class Live extends Plugin {
 				const app = window.app;
 				app._reloadAwait = [];
 				await app.plugins.disablePlugin("system3-relay");
-				const results = await Promise.allSettled(app._reloadAwait || []);
-				const rejected = results.filter((r) => r.status === "rejected");
-				if (rejected.length > 0) {
-					console.error(
-						"[Relay] reloadAwait had rejected teardown promise(s):",
-						rejected,
-					);
-				}
+				await Promise.allSettled(app._reloadAwait || []);
 				app._reloadAwait = null;
 				await app.plugins.enablePlugin("system3-relay");
 			}`;
