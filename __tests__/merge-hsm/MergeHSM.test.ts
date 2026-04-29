@@ -443,6 +443,48 @@ describe('MergeHSM', () => {
       expect(t.state.lca?.contents).toBe(editedContent);
     });
 
+    test('late DISK_CHANGED after release recovers converged idle.diverged to synced', async () => {
+      const t = await createTestHSM();
+      const originalContent = 'hello';
+      const editedContent = 'hello world';
+
+      await loadToIdle(t, { content: originalContent, mtime: 1000 });
+      t.send(await diskChanged(originalContent, 1000));
+      expectState(t, 'idle.synced');
+
+      await sendAcquireLockToTracking(t, originalContent);
+      t.send(cm6Insert(5, ' world', editedContent));
+      expectLocalDocText(t, editedContent);
+      expect(t.getRemoteDocText()).toBe(editedContent);
+
+      // Simulate the close/save race from Obsidian: the peer is already
+      // converged in CRDT memory, but stale disk metadata classified the idle
+      // state as diverged before the disk watcher reported the saved content.
+      (t.hsm as any).captureEditorText(originalContent);
+      t.send(releaseLock());
+      await t.hsm.awaitCleanup();
+      (t.hsm as any).setStatePath('idle.diverged');
+      expectState(t, 'idle.diverged');
+
+      t.send(await diskChanged(editedContent, 2000));
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(editedContent);
+      expect(t.state.lca?.meta.mtime).toBe(2000);
+    });
+
+    test('DISK_CHANGED with converged docs stays synced even when LCA hash is stale', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+
+      t.send(await diskChanged('hello', 2000, 'stale-external-hash'));
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe('hello');
+      expect(t.state.lca?.meta.hash).toBe('stale-external-hash');
+      expect(t.state.lca?.meta.mtime).toBe(2000);
+    });
+
     // BUG-049: Test reopen from idle.diverged doesn't duplicate content
     // This test simulates the exact e2e scenario:
     // 1. File opens from idle.synced

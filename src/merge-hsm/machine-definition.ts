@@ -119,6 +119,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],
 			DISK_CHANGED: [
+				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
 				{ target: 'idle.synced', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
 				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
@@ -216,7 +217,10 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			IDLE_RETRY: { target: 'idle.diverged', reenter: true },
 			PROVIDER_SYNCED: { target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
-			DISK_CHANGED: { target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			DISK_CHANGED: [
+				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
+				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			],
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
 			...IDLE_LIFECYCLE,

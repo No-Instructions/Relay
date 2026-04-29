@@ -1416,6 +1416,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 			// Idle event guards (for REMOTE_UPDATE candidates)
 			diskChangedSinceLCA: () => this.hasDiskChangedSinceLCA(),
+			diskMatchesConvergedDocs: (_hsm, event) => {
+				const e = event as any;
+				if (typeof e.contents !== "string") return false;
+				if (this._fork || !this.localDoc || !this.remoteDoc) return false;
+				if (!yjsDocsEqual(this.localDoc, this.remoteDoc)) return false;
+				return this.localDoc.getText("contents").toString() === e.contents;
+			},
 			remoteOrLocalAhead: () =>
 				this.hasRemoteChangedSinceLCA() || this._statePath === "idle.localAhead",
 
@@ -2020,6 +2027,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 							meta: { hash: e.hash, mtime: e.mtime },
 							stateVector: Y.encodeStateVector(this.localDoc),
 						});
+						this.discardSupersededPendingDiskContents();
 						this.emitPersistState();
 					}
 				}
