@@ -128,7 +128,7 @@ export const FeatureFlagSchema: {
 			"Copy folder-level IndexedDB stores into the app-scoped folder database on next open.",
 	},
 	enableSelectiveSubdocQuery: {
-		default: false,
+		default: true,
 		category: "danger",
 		title: "Selective subdoc index query",
 		description:
