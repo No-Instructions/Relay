@@ -19,7 +19,7 @@
 		total: number;
 	}
 
-	export let label = "Wake Queue";
+	export let label = "Hibernation stats";
 	export let folders: FolderStats[] = [];
 
 	let isVisible = false;

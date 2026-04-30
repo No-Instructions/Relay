@@ -73,9 +73,9 @@ export const FeatureFlagSchema: {
 	enableResourceMeter: {
 		default: false,
 		category: "labs",
-		title: "Wake queue meter",
+		title: "Show hibernation stats",
 		description:
-			"Show a file-explorer toolbar meter for MergeHSM wake slots and queued work.",
+			"Show active document slot usage and documents waiting to resume in the file explorer toolbar.",
 	},
 	enableDeltaLogging: {
 		default: false,

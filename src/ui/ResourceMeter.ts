@@ -8,7 +8,7 @@ import type { SharedFolders } from "../SharedFolder";
  * inside `.workspace-drawer-vault-actions` (next to the help and settings icons).
  *
  * Gated behind the `enableResourceMeter` feature flag.
- * Reads wake queue stats from SharedFolders' MergeManagers on each layout change.
+ * Reads document hibernation pressure from SharedFolders' MergeManagers on each layout change.
  */
 export class ResourceMeterMount {
 	private component: ResourceMeterContent | null = null;
@@ -86,7 +86,7 @@ export class ResourceMeterMount {
 		this.component = new ResourceMeterContent({
 			target: this.containerEl,
 			props: {
-				label: "Wake Queue",
+				label: "Hibernation stats",
 				folders: [],
 			},
 		});
