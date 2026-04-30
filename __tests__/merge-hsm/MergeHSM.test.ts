@@ -2139,6 +2139,48 @@ describe('MergeHSM', () => {
       expect(status.status).toBe('pending');
     });
 
+    test('no-LCA localAhead disk event becomes diverged without ingesting disk', async () => {
+      const remoteContent = 'remote content';
+      const diskContent = 'disk content';
+      const updates = createYjsUpdate(remoteContent);
+      const t = await createTestHSM({
+        indexedDBUpdates: updates,
+        replayMode: true,
+      });
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.localAhead');
+      expect(t.hsm.hasFork()).toBe(false);
+
+      t.send(await diskChanged(diskContent, 123, 'disk-hash'));
+
+      expectState(t, 'idle.diverged');
+      expect(t.hsm.hasFork()).toBe(false);
+      expect(t.getLocalDocText()).toBe(remoteContent);
+    });
+
+    test('no-LCA disk conflict accumulated during loading becomes diverged', async () => {
+      const remoteContent = 'remote content';
+      const diskContent = 'disk content';
+      const updates = createYjsUpdate(remoteContent);
+      const t = await createTestHSM({
+        indexedDBUpdates: updates,
+        replayMode: true,
+      });
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(await diskChanged(diskContent, 123, 'disk-hash'));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.diverged');
+      expect(t.hsm.hasFork()).toBe(false);
+      expect(t.getLocalDocText()).toBe(remoteContent);
+    });
+
     test('bootstrapLCAFromDisk establishes LCA when disk local and remote agree', async () => {
       const content = 'same content';
       const updates = createYjsUpdate(content);
@@ -2161,7 +2203,7 @@ describe('MergeHSM', () => {
       expect(t.hsm.getSyncStatus().status).toBe('synced');
     });
 
-    test('bootstrapLCAFromDisk treats synced CRDT/disk mismatch as disk ahead', async () => {
+    test('bootstrapLCAFromDisk keeps no-LCA synced CRDT/disk mismatch diverged', async () => {
       const content = 'remote content';
       const updates = createYjsUpdate(content);
       const t = await createTestHSM();
@@ -2181,7 +2223,10 @@ describe('MergeHSM', () => {
 
       const status = t.hsm.getSyncStatus();
       expect(status.status).toBe('pending');
-      expect(t.state.lca?.contents).toBe(content);
+      expectState(t, 'idle.diverged');
+      expect(t.state.lca).toBeNull();
+      expect(t.hsm.hasFork()).toBe(false);
+      expect(t.getLocalDocText()).toBe(content);
       expect(t.hsm.getConflictData()).toBeNull();
     });
 
@@ -2379,6 +2424,113 @@ describe('MergeHSM', () => {
       // Mock persistence fires synchronously, so PERSISTENCE_SYNCED fires first.
       // With IDB content, goes straight to reconciling → tracking.
       expectState(t, 'active.tracking');
+    });
+
+    test('PROVIDER_SYNCED during active merge reconciles the fork on tracking entry', async () => {
+      const content = 'hello';
+      const updates = createYjsUpdate(content);
+      const lca = await createLCA(content, 1000);
+      const t = await createTestHSM({ replayMode: true });
+
+      t.syncRemoteWithUpdate(updates);
+      t.seedIndexedDB(updates);
+      t.send(load('test-guid'));
+      t.send(persistenceLoaded(updates, lca));
+      t.send({ type: 'SET_MODE_ACTIVE' });
+      t.send({
+        type: 'OBSIDIAN_SET_VIEW_DATA',
+        data: content,
+        clear: true,
+      });
+      t.send(acquireLock(mockEditorViewRef(content)));
+
+      expectState(t, 'active.merging.threeWay');
+      expect((t.hsm as any)._bridge.syncGate.providerSynced).toBe(false);
+
+      (t.hsm as any)._fork = {
+        base: content,
+        localStateVector: Y.encodeStateVector(t.hsm.getLocalDoc()!),
+        remoteStateVector: Y.encodeStateVector(t.hsm.getRemoteDoc()!),
+        origin: 'disk-edit',
+        created: 1000,
+        captureMark: 0,
+      };
+      t.hsm.getLocalDoc()!.getText('contents').insert(content.length, ' local');
+      t.send(providerSynced());
+      t.send(connected());
+      t.send({
+        type: 'done.invoke.three-way-merge',
+        data: {
+          success: true,
+          merged: 'hello local',
+          patches: [],
+          baseText: content,
+          localText: 'hello local',
+          diskText: 'hello local',
+        },
+      } as any);
+
+      expectState(t, 'active.tracking');
+      expect((t.hsm as any)._bridge.syncGate.providerSynced).toBe(true);
+      expect(t.hsm.hasFork()).toBe(false);
+      expect(t.getRemoteDocText()).toBe('hello local');
+      expect(t.effects.some((effect) => effect.type === 'SYNC_TO_REMOTE')).toBe(true);
+    });
+
+    test('active tracking entry waits for provider sync before reconciling a fork', async () => {
+      const content = 'hello';
+      const updates = createYjsUpdate(content);
+      const lca = await createLCA(content, 1000);
+      const t = await createTestHSM({ replayMode: true });
+
+      t.syncRemoteWithUpdate(updates);
+      t.seedIndexedDB(updates);
+      t.send(load('test-guid'));
+      t.send(persistenceLoaded(updates, lca));
+      t.send({ type: 'SET_MODE_ACTIVE' });
+      t.send({
+        type: 'OBSIDIAN_SET_VIEW_DATA',
+        data: content,
+        clear: true,
+      });
+      t.send(acquireLock(mockEditorViewRef(content)));
+
+      expectState(t, 'active.merging.threeWay');
+
+      (t.hsm as any)._fork = {
+        base: content,
+        localStateVector: Y.encodeStateVector(t.hsm.getLocalDoc()!),
+        remoteStateVector: Y.encodeStateVector(t.hsm.getRemoteDoc()!),
+        origin: 'disk-edit',
+        created: 1000,
+        captureMark: 0,
+      };
+      t.hsm.getLocalDoc()!.getText('contents').insert(content.length, ' local');
+
+      const syncEffectsBeforeTracking = t.effects.filter((effect) => effect.type === 'SYNC_TO_REMOTE').length;
+      t.send({
+        type: 'done.invoke.three-way-merge',
+        data: {
+          success: true,
+          merged: 'hello local',
+          patches: [],
+          baseText: content,
+          localText: 'hello local',
+          diskText: 'hello local',
+        },
+      } as any);
+
+      expectState(t, 'active.tracking');
+      expect(t.hsm.hasFork()).toBe(true);
+      expect(t.getRemoteDocText()).toBe(content);
+      expect(t.effects.filter((effect) => effect.type === 'SYNC_TO_REMOTE')).toHaveLength(syncEffectsBeforeTracking);
+
+      t.send(providerSynced());
+
+      expectState(t, 'active.tracking');
+      expect(t.hsm.hasFork()).toBe(false);
+      expect(t.getRemoteDocText()).toBe('hello local');
+      expect(t.effects.filter((effect) => effect.type === 'SYNC_TO_REMOTE')).toHaveLength(syncEffectsBeforeTracking + 1);
     });
 
 

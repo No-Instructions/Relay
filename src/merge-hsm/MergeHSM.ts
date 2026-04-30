@@ -1043,12 +1043,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		const diskMatchesLocal = localText === disk.content;
 
 		if (yjsDocsEqual(this.localDoc, this.remoteDoc)) {
-			const lcaHash = diskMatchesLocal
-				? disk.hash
-				: await this.hashFn(localText);
-			const lcaMtime = diskMatchesLocal
-				? disk.mtime
-				: this.timeProvider.now();
+			if (!diskMatchesLocal) {
+				this._localStateVector = localStateVector;
+				this._remoteStateVector = localStateVector;
+				this._disk = { hash: disk.hash, mtime: disk.mtime };
+				this.pendingIdleUpdates = null;
+				this.setPendingDiskContents(disk.content, "disk-event", disk.hash);
+				this.setStatePath("idle.diverged");
+				this.emitPersistState();
+				return;
+			}
+
 			this._localStateVector = localStateVector;
 			this._remoteStateVector = localStateVector;
 			this._conflict = null;
@@ -1056,7 +1061,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.clearPendingDiskContents();
 			this._setLCA({
 				contents: localText,
-				meta: { hash: lcaHash, mtime: lcaMtime },
+				meta: { hash: disk.hash, mtime: disk.mtime },
 				stateVector: localStateVector,
 			});
 			this.emitPersistState();
@@ -1405,6 +1410,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				}
 				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
 			},
+			noLCADiskConflictAtLoad: () => {
+				if (this._lca || this.pendingDiskContents === null) return false;
+				if (!this.localDoc || this.localPersistence?.synced !== true) return false;
+				if (!this._localStateVector || this._localStateVector.length <= 1) return false;
+				return this.localDoc.getText("contents").toString() !== this.pendingDiskContents;
+			},
 			remoteAheadAtLoad: () => {
 				if (!this._lca) return false;
 				return this.hasRemoteChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
@@ -1463,6 +1474,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
 			hasPreexistingConflict: () => this._conflict !== null,
+			hasNoLCA: () => this._lca === null,
 			isRecoveryMode: () => this._lca === null,
 
 			// === Active merge invoke guards ===
@@ -2101,6 +2113,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			reconcileForkInActive: () => {
 				// Reconcile fork when PROVIDER_SYNCED arrives in active mode
 				if (!this._fork || !this.localDoc || !this.remoteDoc) {
+					return;
+				}
+				// remoteDoc is authoritative for fork reconciliation only after provider sync.
+				if (!this._isProviderSynced()) {
 					return;
 				}
 

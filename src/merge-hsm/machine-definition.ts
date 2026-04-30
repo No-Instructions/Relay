@@ -103,6 +103,7 @@ export const MACHINE: MachineDefinition = {
 		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
 		always: [
 			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
+			{ target: 'idle.diverged', guard: 'noLCADiskConflictAtLoad' },
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
 			{ target: 'idle.diskAhead', guard: 'diskAheadAtLoad' },
@@ -149,6 +150,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],
 			DISK_CHANGED: [
+				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
@@ -253,6 +255,9 @@ export const MACHINE: MachineDefinition = {
 			onError: { target: 'active.conflict.bannerShown', actions: ['storeTwoWayError'] },
 		},
 		on: {
+			CONNECTED: { target: 'active.merging.twoWay', actions: ['flushPendingToRemote'] },
+			DISCONNECTED: { target: 'active.merging.twoWay', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.merging.twoWay', actions: ['markProviderSynced'] },
 			CM6_CHANGE: { target: 'active.merging.twoWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.twoWay', actions: ['applyRemoteToRemoteDoc'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -271,6 +276,9 @@ export const MACHINE: MachineDefinition = {
 			onError: { target: 'active.conflict.bannerShown', actions: ['storeThreeWayError'] },
 		},
 		on: {
+			CONNECTED: { target: 'active.merging.threeWay', actions: ['flushPendingToRemote'] },
+			DISCONNECTED: { target: 'active.merging.threeWay', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.merging.threeWay', actions: ['markProviderSynced'] },
 			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
@@ -375,7 +383,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.tracking': {
-		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'repairFrontmatter', 'assertConvergence'],
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
 			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
