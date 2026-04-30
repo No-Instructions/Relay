@@ -364,6 +364,16 @@ export default class Live extends Plugin {
 			this.releaseSettings,
 		);
 
+		this.addCommand({
+			id: "send-bug-report",
+			name: "Send bug report",
+			callback: () => {
+				const modal = new BugReportModal(this.app, this);
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
+
 		this.register(
 			this.debugSettings.subscribe((settings) => {
 				if (settings.debugging) {
@@ -374,15 +384,6 @@ export default class Live extends Plugin {
 						name: "Show feature flags",
 						callback: () => {
 							const modal = new FeatureFlagToggleModal(this.app);
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
-					this.addCommand({
-						id: "send-bug-report",
-						name: "Send bug report",
-						callback: () => {
-							const modal = new BugReportModal(this.app, this);
 							this.openModals.push(modal);
 							modal.open();
 						},
@@ -423,7 +424,6 @@ export default class Live extends Plugin {
 					});
 				} else {
 					this.removeCommand("toggle-feature-flags");
-					this.removeCommand("send-bug-report");
 					this.removeCommand("show-debug-info");
 					this.removeCommand("show-release-manager");
 					this.removeCommand("disable-debugging");
