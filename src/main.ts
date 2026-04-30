@@ -461,6 +461,15 @@ export default class Live extends Plugin {
 				modal.open();
 			},
 		});
+		this.addCommand({
+			id: "show-release-manager",
+			name: "Show releases",
+			callback: () => {
+				const modal = new ReleaseManager(this.app, this);
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
 
 		this.register(
 			this.debugSettings.subscribe((settings) => {
@@ -486,15 +495,6 @@ export default class Live extends Plugin {
 						},
 					});
 					this.addCommand({
-						id: "show-release-manager",
-						name: "Show releases",
-						callback: () => {
-							const modal = new ReleaseManager(this.app, this);
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
-					this.addCommand({
 						id: "analyze-indexeddb",
 						name: "Analyze database",
 						callback: () => {
@@ -513,7 +513,6 @@ export default class Live extends Plugin {
 				} else {
 					this.removeCommand("send-bug-report");
 					this.removeCommand("show-debug-info");
-					this.removeCommand("show-release-manager");
 					this.removeCommand("disable-debugging");
 					this.addCommand({
 						id: "enable-debugging",
