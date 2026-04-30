@@ -232,6 +232,30 @@
 	padding: 0.1rem 0;
 }
 
+.file-diff__link {
+	border-radius: 0.1875rem;
+	color: var(--link-color);
+	text-decoration-line: underline;
+	text-decoration-thickness: var(--link-decoration-thickness, auto);
+	text-underline-offset: 0.125em;
+}
+
+.file-diff__link--resolved {
+	background-color: color-mix(in srgb, var(--link-color) 8%, transparent);
+}
+
+.file-diff__link--unresolved {
+	background-color: color-mix(in srgb, var(--text-error) 10%, transparent);
+	color: var(--link-unresolved-color, var(--text-error));
+	text-decoration-style: dotted;
+	text-decoration-color: var(--link-unresolved-color, var(--text-error));
+}
+
+.file-diff__link-warning {
+	display: inline-flex;
+	vertical-align: text-bottom;
+}
+
 .file-diff__button-container {
 	text-align: right;
 }

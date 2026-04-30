@@ -1,6 +1,7 @@
 export interface FeatureFlags {
 	enableDocumentStatus: boolean;
 	enableNewLinkFormat: boolean;
+	enableDiffLinkStatus: boolean;
 	enableDeltaLogging: boolean;
 	enableNetworkLogging: boolean;
 	enableVerifyUploads: boolean;
@@ -55,6 +56,13 @@ export const FeatureFlagSchema: {
 		title: "Scope links to shared folders",
 		description:
 			"Generate link text for shared-folder files by name when unique, or by relative path when names collide.",
+	},
+	enableDiffLinkStatus: {
+		default: false,
+		category: "labs",
+		title: "Show link status in diff view",
+		description:
+			"Decorate links in conflict diffs as resolved or missing using Obsidian's link cache.",
 	},
 	enableDiscordLogin: {
 		default: false,

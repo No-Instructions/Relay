@@ -28,6 +28,7 @@ import {
 	ItemView,
 	TFile,
 	TAbstractFile,
+	parseLinktext,
 	type ViewStateResult,
 	WorkspaceLeaf,
 } from "obsidian";
@@ -44,6 +45,19 @@ import { flags } from "src/flagManager";
 import { curryLog } from "src/debug";
 
 export const VIEW_TYPE_DIFFERENCES = "system3-differences-view";
+
+interface DiffTextRun {
+	text: string;
+	className?: string;
+}
+
+interface DiffLinkRange {
+	from: number;
+	to: number;
+	target: string;
+	resolved: boolean;
+	resolvedPath?: string;
+}
 
 export interface ViewState {
 	file1: TFile;
@@ -391,11 +405,13 @@ export class DifferencesView extends ItemView {
 					lineCount1 <= lineCount2
 						? this.file1Lines[lineCount1]
 						: this.file2Lines[lineCount2];
-				container.createDiv({
+				const lineDiv = container.createDiv({
 					// Necessary to give the line a height when it's empty.
-					text: preventEmptyString(line),
 					cls: "file-diff__line",
 				});
+				lineDiv.appendChild(
+					this.buildDecoratedLine([{ text: preventEmptyString(line ?? "") }]),
+				);
 				lineCount1 += 1;
 				lineCount2 += 1;
 			}
@@ -477,37 +493,217 @@ export class DifferencesView extends ItemView {
 	}
 
 	private buildDiffLine(line1: string, line2: string, charClass: string) {
-		const fragment = document.createElement("div");
-
 		if (line1 != undefined && line1.length === 0) {
-			fragment.textContent = preventEmptyString(line1);
-		} else if (line1 != undefined && line2 != undefined) {
+			return this.buildDecoratedLine([{ text: preventEmptyString(line1) }]);
+		}
+
+		if (line1 != undefined && line2 != undefined) {
 			const differences = diffWords(line2, line1);
+			const runs: DiffTextRun[] = [];
 
 			for (const difference of differences) {
 				if (difference.removed) {
 					continue;
 				}
 
-				const span = document.createElement("span");
 				// Necessary to give the line a height when it's empty.
-				span.textContent = preventEmptyString(difference.value);
-				if (difference.added) {
-					span.classList.add(charClass);
-				}
-				fragment.appendChild(span);
+				runs.push({
+					text: preventEmptyString(difference.value),
+					className: difference.added ? charClass : undefined,
+				});
 			}
-		} else if (line1 != undefined && line2 == undefined) {
-			const span = document.createElement("span");
+
+			return this.buildDecoratedLine(runs);
+		}
+
+		if (line1 != undefined && line2 == undefined) {
 			// Necessary to give the line a height when it's empty.
-			span.textContent = preventEmptyString(line1);
-			span.classList.add(charClass);
+			return this.buildDecoratedLine([
+				{ text: preventEmptyString(line1), className: charClass },
+			]);
+		}
+
+		return this.buildDecoratedLine([{ text: preventEmptyString(line1) }]);
+	}
+
+	private buildDecoratedLine(runs: DiffTextRun[]): HTMLDivElement {
+		const fragment = document.createElement("div");
+		const text = runs.map((run) => run.text).join("");
+		if (text.length === 0) {
+			fragment.textContent = preventEmptyString(text);
+			return fragment;
+		}
+
+		const runRanges = this.buildRunRanges(runs);
+		const linkRanges = flags().enableDiffLinkStatus
+			? this.findInternalLinkRanges(text)
+			: [];
+		const boundaries = new Set<number>([0, text.length]);
+		for (const range of runRanges) {
+			boundaries.add(range.from);
+			boundaries.add(range.to);
+		}
+		for (const range of linkRanges) {
+			boundaries.add(range.from);
+			boundaries.add(range.to);
+		}
+
+		const orderedBoundaries = Array.from(boundaries).sort((a, b) => a - b);
+		for (let i = 0; i < orderedBoundaries.length - 1; i += 1) {
+			const from = orderedBoundaries[i];
+			const to = orderedBoundaries[i + 1];
+			if (from === to) continue;
+
+			const segment = text.slice(from, to);
+			const run = runRanges.find((range) => from >= range.from && to <= range.to);
+			const link = linkRanges.find(
+				(range) => from >= range.from && to <= range.to,
+			);
+			const span = document.createElement("span");
+			span.textContent = segment;
+			if (run?.className) {
+				span.classList.add(run.className);
+			}
+			if (link) {
+				this.decorateLinkSpan(span, link);
+			}
 			fragment.appendChild(span);
-		} else {
-			fragment.textContent = preventEmptyString(line1);
+			if (link && to === link.to && !link.resolved) {
+				fragment.appendChild(this.createBrokenLinkIcon(link));
+			}
 		}
 
 		return fragment;
+	}
+
+	private buildRunRanges(runs: DiffTextRun[]) {
+		let offset = 0;
+		return runs.map((run) => {
+			const from = offset;
+			offset += run.text.length;
+			return {
+				from,
+				to: offset,
+				className: run.className,
+			};
+		});
+	}
+
+	private decorateLinkSpan(span: HTMLSpanElement, link: DiffLinkRange): void {
+		span.classList.add(
+			"file-diff__link",
+			link.resolved
+				? "file-diff__link--resolved"
+				: "file-diff__link--unresolved",
+		);
+		span.dataset.linkResolved = String(link.resolved);
+		span.title = link.resolved
+			? `Link resolves to ${link.resolvedPath}`
+			: `Link target not found: ${link.target}`;
+	}
+
+	private createBrokenLinkIcon(link: DiffLinkRange): HTMLSpanElement {
+		const span = document.createElement("span");
+		span.classList.add("invalid-link", "file-diff__link-warning");
+		span.title = `Link target not found: ${link.target}`;
+		span.innerHTML =
+			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-warning"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+		return span;
+	}
+
+	private findInternalLinkRanges(text: string): DiffLinkRange[] {
+		const ranges: DiffLinkRange[] = [];
+		const wikiLinkRegex = /!?\[\[([^\]\n]+)\]\]/g;
+		for (const match of text.matchAll(wikiLinkRegex)) {
+			const from = match.index ?? 0;
+			const target = this.getWikiLinkTarget(match[1]);
+			if (!target) continue;
+			ranges.push({
+				from,
+				to: from + match[0].length,
+				target,
+				...this.resolveInternalLink(target),
+			});
+		}
+
+		const markdownLinkRegex = /!?\[[^\]\n]*\]\(([^)\n]+)\)/g;
+		for (const match of text.matchAll(markdownLinkRegex)) {
+			const from = match.index ?? 0;
+			if (this.overlapsLinkRange(from, from + match[0].length, ranges)) {
+				continue;
+			}
+			const target = this.getMarkdownLinkTarget(match[1]);
+			if (!target) continue;
+			ranges.push({
+				from,
+				to: from + match[0].length,
+				target,
+				...this.resolveInternalLink(target),
+			});
+		}
+
+		return ranges.sort((a, b) => a.from - b.from);
+	}
+
+	private getWikiLinkTarget(linkText: string): string | null {
+		const target = linkText.split("|")[0]?.trim();
+		return target || null;
+	}
+
+	private getMarkdownLinkTarget(rawTarget: string): string | null {
+		let target = rawTarget.trim();
+		if (!target) return null;
+		if (target.startsWith("<")) {
+			const closeIndex = target.indexOf(">");
+			if (closeIndex === -1) return null;
+			target = target.slice(1, closeIndex);
+		} else {
+			target = target.replace(/\s+["'][^"']*["']\s*$/, "");
+		}
+		try {
+			target = decodeURI(target);
+		} catch {
+			// Keep the raw target when it is not URI-encoded.
+		}
+		if (this.isExternalLinkTarget(target)) return null;
+		return target || null;
+	}
+
+	private isExternalLinkTarget(target: string): boolean {
+		return /^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith("//");
+	}
+
+	private overlapsLinkRange(
+		from: number,
+		to: number,
+		ranges: DiffLinkRange[],
+	): boolean {
+		return ranges.some((range) => from < range.to && to > range.from);
+	}
+
+	private resolveInternalLink(target: string): {
+		resolved: boolean;
+		resolvedPath?: string;
+	} {
+		const sourcePath = this.getLinkSourcePath();
+		if (!sourcePath) return { resolved: false };
+
+		const parsed = parseLinktext(target);
+		const linkPath = parsed.path || (target.startsWith("#") ? sourcePath : target);
+		const linkedFile = this.app.metadataCache.getFirstLinkpathDest(
+			linkPath,
+			sourcePath,
+		);
+		return {
+			resolved: !!linkedFile,
+			resolvedPath: linkedFile?.path,
+		};
+	}
+
+	private getLinkSourcePath(): string | null {
+		const sourcePath = this.normalizePath(this.state?.sourceVaultPath);
+		if (sourcePath) return sourcePath;
+		return this.normalizePath(this.state?.file1?.path);
 	}
 
 	private scrollToFirstDifference(): void {
