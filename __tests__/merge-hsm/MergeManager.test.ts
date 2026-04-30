@@ -32,6 +32,16 @@ function stateVectorFor(content: string, clientID: number = 1): Uint8Array {
   return sv;
 }
 
+/** Create a valid Yjs snapshot from content text. */
+function snapshotFor(content: string, clientID: number = 1): Uint8Array {
+  const doc = new Y.Doc();
+  doc.clientID = clientID;
+  doc.getText('contents').insert(0, content);
+  const snapshot = Y.encodeSnapshot(Y.snapshot(doc));
+  doc.destroy();
+  return snapshot;
+}
+
 describe('MergeManager', () => {
   let manager: MergeManager;
   let timeProvider: MockTimeProvider;
@@ -430,6 +440,165 @@ describe('MergeManager', () => {
       localAheadManager.destroy();
       server.destroy();
     });
+
+    test('server-advertised snapshots identify remote-ahead cached documents', async () => {
+      const guid = 'doc-server-advertised-snapshot-ahead';
+      const server = new Y.Doc();
+
+      server.getText('contents').insert(0, 'hello');
+      const localSV = Y.encodeStateVector(server);
+      const baseSnapshot = Y.encodeSnapshot(Y.snapshot(server));
+      server.getText('contents').insert(5, ' world');
+      const aheadSnapshot = Y.encodeSnapshot(Y.snapshot(server));
+
+      const managerWithInit = new MergeManager({
+        getVaultId: (docGuid) => `test-${docGuid}`,
+        getDocument: (docGuid) => documents.get(docGuid),
+        timeProvider,
+        loadAllStates: async () => [
+          {
+            guid,
+            path: 'remote-ahead-snapshot.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              stateVector: localSV,
+            },
+            disk: null,
+            localStateVector: localSV,
+            lastStatePath: 'idle.synced',
+          },
+        ],
+      });
+
+      await managerWithInit.initialize();
+
+      managerWithInit.seedServerAdvertisedSnapshotFromBytes(guid, baseSnapshot);
+      expect(managerWithInit.isServerAdvertisedRemoteAhead(guid)).toBe(false);
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(true);
+
+      managerWithInit.seedServerAdvertisedSnapshotFromBytes(guid, aheadSnapshot);
+      expect(managerWithInit.isServerAdvertisedRemoteAhead(guid)).toBe(true);
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(false);
+
+      managerWithInit.destroy();
+      server.destroy();
+    });
+
+    test('server-advertised snapshots preserve delete-only remote-ahead hints', async () => {
+      const guid = 'doc-server-advertised-snapshot-delete';
+      const server = new Y.Doc();
+      const text = server.getText('contents');
+      text.insert(0, 'hello');
+      const localSV = Y.encodeStateVector(server);
+      text.delete(0, 5);
+      const deletedSnapshot = Y.encodeSnapshot(Y.snapshot(server));
+
+      const managerWithInit = new MergeManager({
+        getVaultId: (docGuid) => `test-${docGuid}`,
+        getDocument: (docGuid) => documents.get(docGuid),
+        timeProvider,
+        loadAllStates: async () => [
+          {
+            guid,
+            path: 'delete-only-snapshot.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              stateVector: localSV,
+            },
+            disk: null,
+            localStateVector: localSV,
+            lastStatePath: 'idle.synced',
+          },
+        ],
+      });
+
+      await managerWithInit.initialize();
+
+      managerWithInit.seedServerAdvertisedSnapshotFromBytes(guid, deletedSnapshot);
+      expect(managerWithInit.isServerAdvertisedRemoteAhead(guid)).toBe(true);
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(false);
+
+      managerWithInit.destroy();
+      server.destroy();
+    });
+
+    test('server-advertised snapshots compare local delete sets when loaded', () => {
+      const guid = 'doc-server-advertised-snapshot-loaded-delete';
+      const localDoc = new Y.Doc();
+      const remoteDoc = new Y.Doc();
+      const text = localDoc.getText('contents');
+      text.insert(0, 'hello');
+      text.delete(0, 5);
+      const snapshot = Y.encodeSnapshot(Y.snapshot(localDoc));
+
+      documents.set(guid, {
+        guid,
+        path: 'loaded-delete-snapshot.md',
+        hsm: {
+          getLocalDoc: () => localDoc,
+        } as unknown as MergeHSM,
+        remoteDoc,
+      });
+
+      manager.seedServerAdvertisedSnapshotFromBytes(guid, snapshot);
+
+      expect(manager.isServerAdvertisedRemoteAhead(guid)).toBe(false);
+      expect(manager.isServerAdvertisedInSync(guid)).toBe(true);
+
+      localDoc.destroy();
+    });
+
+    test('server-advertised snapshots compare cached local snapshots', async () => {
+      const guid = 'doc-server-advertised-snapshot-cached-delete';
+      const localDoc = new Y.Doc();
+      const text = localDoc.getText('contents');
+      text.insert(0, 'hello');
+      text.delete(0, 5);
+      const snapshot = Y.encodeSnapshot(Y.snapshot(localDoc));
+
+      const managerWithInit = new MergeManager({
+        getVaultId: (docGuid) => `test-${docGuid}`,
+        getDocument: (docGuid) => documents.get(docGuid),
+        timeProvider,
+        loadAllStates: async () => [
+          {
+            guid,
+            path: 'cached-delete-snapshot.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              stateVector: Y.encodeStateVector(localDoc),
+              snapshot,
+            },
+            disk: null,
+            localSnapshot: snapshot,
+            localStateVector: Y.encodeStateVector(localDoc),
+            lastStatePath: 'idle.synced',
+          },
+        ],
+      });
+
+      await managerWithInit.initialize();
+      managerWithInit.seedServerAdvertisedSnapshotFromBytes(guid, snapshot);
+
+      expect(managerWithInit.isServerAdvertisedRemoteAhead(guid)).toBe(false);
+      expect(managerWithInit.isServerAdvertisedInSync(guid)).toBe(true);
+
+      managerWithInit.destroy();
+      localDoc.destroy();
+    });
+
+    test('invalid server-advertised snapshots clear the advertised head', () => {
+      const guid = 'doc-server-advertised-invalid-snapshot';
+      const snapshot = snapshotFor('base');
+
+      manager.seedServerAdvertisedSnapshotFromBytes(guid, snapshot);
+      expect(manager.isServerAdvertisedInSync(guid, snapshot)).toBe(true);
+
+      manager.seedServerAdvertisedSnapshotFromBytes(guid, new Uint8Array());
+
+      expect(manager.isServerAdvertisedRemoteAhead(guid)).toBe(false);
+      expect(manager.isServerAdvertisedInSync(guid, snapshot)).toBe(false);
+    });
   });
 
   describe('LCA cache', () => {
@@ -446,16 +615,17 @@ describe('MergeManager', () => {
     });
 
     test('getLCAMeta returns metadata from cache after initialize', async () => {
+      const snapshot = snapshotFor('test content');
       const mockLoadAllStates = jest.fn().mockResolvedValue([
         {
           guid: 'doc-1',
           path: 'test.md',
           lcaMeta: {
             meta: { hash: 'test-hash', mtime: 1000 },
-            stateVector: new Uint8Array([1, 2, 3]),
+            snapshot,
           },
           disk: null,
-          localStateVector: null,
+          localSnapshot: null,
           lastStatePath: 'idle.synced',
         },
       ]);
@@ -473,7 +643,8 @@ describe('MergeManager', () => {
       expect(lcaMeta).not.toBeNull();
       expect(lcaMeta?.meta.hash).toBe('test-hash');
       expect(lcaMeta?.meta.mtime).toBe(1000);
-      expect(lcaMeta?.stateVector).toEqual(new Uint8Array([1, 2, 3]));
+      expect(lcaMeta?.snapshot).toEqual(snapshot);
+      expect(lcaMeta?.stateVector).toBeUndefined();
     });
 
     test('getLCAMeta returns null for doc with null LCA', async () => {

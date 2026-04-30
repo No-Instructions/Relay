@@ -20,6 +20,7 @@ import { metrics, curryLog } from "../debug";
 import type { TimeProvider } from "../TimeProvider";
 
 const providerError = curryLog("[YSweetProvider]", "error");
+const providerLog = curryLog("[YSweetProvider]", "log");
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
@@ -30,6 +31,8 @@ export const messageEventSubscribe = 5;
 export const messageEventUnsubscribe = 6;
 export const messageQuerySubdocs = 7;
 export const messageSubdocs = 8;
+
+const SUBDOC_QUERY_PAGE_SIZE = 100;
 
 export type HandlerFunction = (
 	encoder: encoding.Encoder,
@@ -162,7 +165,7 @@ messageHandlers[messageSubdocs] = (
 		const subdocIndex = normalizeSubdocIndex(decodeCBOR(cborData));
 		provider.handleSubdocIndex(subdocIndex);
 	} catch (error) {
-		providerError(`Failed to decode subdoc state vector index: ${error}`);
+		providerError(`Failed to decode subdoc index: ${error}`);
 	}
 };
 
@@ -307,10 +310,12 @@ const setupWS = (provider: YSweetProvider) => {
 				const eventTypes = Array.from(provider.eventSubscriptions);
 				provider.sendEventSubscribe(eventTypes);
 			}
-			// Query subdoc state vectors for catch-up
-			if (provider.onSubdocIndex) {
-				provider.sendQuerySubdocs();
-			}
+			// Query subdoc snapshots after the parent sync handshake completes.
+			provider.once("synced", (synced) => {
+				if (synced && provider.ws === websocket && provider.onSubdocIndex) {
+					provider.sendQuerySubdocs();
+				}
+			});
 			// broadcast local awareness state
 			if (provider.awareness.getLocalState() !== null) {
 				if (!provider.readOnly) {
@@ -397,7 +402,8 @@ export interface EventMessage {
 export type EventCallback = (event: EventMessage) => void;
 
 export interface SubdocIndexEntry {
-	stateVector: Uint8Array;
+	stateVector?: Uint8Array;
+	snapshot?: Uint8Array;
 	lastSeen?: number;
 }
 
@@ -407,8 +413,9 @@ export type SubdocQueryDocIdsProvider = () => string[];
 
 export function normalizeSubdocIndex(rawIndex: unknown): SubdocIndex {
 	const index: SubdocIndex = {};
+	const rawEntries = readSubdocIndexEntries(readSubdocIndexData(rawIndex));
 
-	for (const [rawDocId, rawEntry] of readSubdocIndexEntries(rawIndex)) {
+	for (const [rawDocId, rawEntry] of rawEntries) {
 		if (typeof rawDocId !== "string" || rawDocId.length === 0) continue;
 		const entry = normalizeSubdocIndexEntry(rawEntry);
 		if (entry) {
@@ -417,6 +424,11 @@ export function normalizeSubdocIndex(rawIndex: unknown): SubdocIndex {
 	}
 
 	return index;
+}
+
+function readSubdocIndexData(rawIndex: unknown): unknown {
+	const data = readSubdocIndexField(rawIndex, "data");
+	return data ?? rawIndex;
 }
 
 function readSubdocIndexEntries(rawIndex: unknown): Array<[unknown, unknown]> {
@@ -430,24 +442,32 @@ function readSubdocIndexEntries(rawIndex: unknown): Array<[unknown, unknown]> {
 }
 
 function normalizeSubdocIndexEntry(rawEntry: unknown): SubdocIndexEntry | null {
-	const legacyStateVector = asUint8Array(rawEntry);
-	if (legacyStateVector) {
-		return { stateVector: legacyStateVector };
+	const rawBytes = asUint8Array(rawEntry);
+	if (rawBytes) {
+		return isEncodedSnapshot(rawBytes)
+			? { snapshot: rawBytes }
+			: { stateVector: rawBytes };
 	}
 
+	const snapshot =
+		asUint8Array(readSubdocIndexField(rawEntry, "snapshot")) ??
+		asUint8Array(readSubdocIndexField(rawEntry, "state_snapshot")) ??
+		asUint8Array(readSubdocIndexField(rawEntry, "stateSnapshot"));
 	const stateVector =
 		asUint8Array(readSubdocIndexField(rawEntry, "state_vector")) ??
 		asUint8Array(readSubdocIndexField(rawEntry, "stateVector")) ??
 		asUint8Array(readSubdocIndexField(rawEntry, "sv"));
-	if (!stateVector) return null;
+	if (!snapshot && !stateVector) return null;
 
 	const lastSeen = normalizeSubdocLastSeen(
 		readSubdocIndexField(rawEntry, "last_seen") ??
 			readSubdocIndexField(rawEntry, "lastSeen"),
 	);
-	return lastSeen === undefined
-		? { stateVector }
-		: { stateVector, lastSeen };
+	const entry: SubdocIndexEntry = {};
+	if (snapshot) entry.snapshot = snapshot;
+	if (stateVector) entry.stateVector = stateVector;
+	if (lastSeen !== undefined) entry.lastSeen = lastSeen;
+	return entry;
 }
 
 function readSubdocIndexField(rawEntry: unknown, field: string): unknown {
@@ -464,9 +484,27 @@ function asUint8Array(value: unknown): Uint8Array | null {
 	return value instanceof Uint8Array ? value : null;
 }
 
+function isEncodedSnapshot(value: Uint8Array): boolean {
+	try {
+		Y.decodeSnapshot(value);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 function normalizeSubdocLastSeen(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value)) {
 		return value;
+	}
+	if (typeof value === "bigint") {
+		if (
+			value >= BigInt(Number.MIN_SAFE_INTEGER) &&
+			value <= BigInt(Number.MAX_SAFE_INTEGER)
+		) {
+			return Number(value);
+		}
+		return undefined;
 	}
 	if (value instanceof Date) {
 		const timestamp = value.getTime();
@@ -534,6 +572,8 @@ export class YSweetProvider extends Observable<string> {
 	subdocIndexCallbacks: Set<SubdocIndexCallback>;
 	lastSubdocIndex: SubdocIndex | null;
 	getSubdocQueryDocIds: SubdocQueryDocIdsProvider | null;
+	private _pendingSubdocIndexResponses: number;
+	private _pendingSubdocIndex: SubdocIndex | null;
 	private _timeProvider: TimeProvider | null;
 
 	_setInterval(
@@ -644,6 +684,8 @@ export class YSweetProvider extends Observable<string> {
 		this.subdocIndexCallbacks = new Set();
 		this.lastSubdocIndex = null;
 		this.getSubdocQueryDocIds = null;
+		this._pendingSubdocIndexResponses = 0;
+		this._pendingSubdocIndex = null;
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
@@ -1110,21 +1152,59 @@ export class YSweetProvider extends Observable<string> {
 			const queryDocIds = Array.from(
 				new Set((docIds ?? this.getSubdocQueryDocIds?.() ?? []).filter(Boolean)),
 			);
-			const encoder = encoding.createEncoder();
-			encoding.writeVarUint(encoder, messageQuerySubdocs);
-			encoding.writeVarUint(encoder, queryDocIds.length);
-			queryDocIds.forEach((docId) => {
-				encoding.writeVarString(encoder, docId);
-			});
-			this.ws.send(encoding.toUint8Array(encoder));
-			console.log(
-				`[YSweetProvider] sent MSG_QUERY_SUBDOCS (${queryDocIds.length || "all"})`,
-			);
+			if (queryDocIds.length === 0) {
+				providerLog("skipped MSG_QUERY_SUBDOCS (no doc IDs)");
+				return;
+			}
+			const pageCount = Math.ceil(queryDocIds.length / SUBDOC_QUERY_PAGE_SIZE);
+			this._pendingSubdocIndexResponses = pageCount > 1 ? pageCount : 0;
+			this._pendingSubdocIndex = pageCount > 1 ? {} : null;
+			for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+				const pageDocIds = queryDocIds.slice(
+					pageIndex * SUBDOC_QUERY_PAGE_SIZE,
+					(pageIndex + 1) * SUBDOC_QUERY_PAGE_SIZE,
+				);
+				const encoder = encoding.createEncoder();
+				encoding.writeVarUint(encoder, messageQuerySubdocs);
+				encoding.writeVarUint(encoder, pageDocIds.length);
+				pageDocIds.forEach((docId) => {
+					encoding.writeVarString(encoder, docId);
+				});
+				this.ws.send(encoding.toUint8Array(encoder));
+				providerLog(`sent MSG_QUERY_SUBDOCS (${pageDocIds.length || "all"})`);
+			}
 		}
 	}
 
 	handleSubdocIndex(serverIndex: SubdocIndex) {
+		if (this._pendingSubdocIndexResponses > 0) {
+			this._pendingSubdocIndex = {
+				...(this._pendingSubdocIndex ?? {}),
+				...serverIndex,
+			};
+			this._pendingSubdocIndexResponses -= 1;
+			if (this._pendingSubdocIndexResponses > 0) {
+				providerLog(
+					`received MSG_SUBDOCS page (${Object.keys(serverIndex).length} docs; waiting for ${this._pendingSubdocIndexResponses} pages)`,
+				);
+				return;
+			}
+			const mergedIndex = this._pendingSubdocIndex;
+			this._pendingSubdocIndex = null;
+			this.notifySubdocIndex(mergedIndex ?? {});
+			return;
+		}
+		this.notifySubdocIndex(serverIndex);
+	}
+
+	private notifySubdocIndex(serverIndex: SubdocIndex) {
 		this.lastSubdocIndex = serverIndex;
+		const entries = Object.values(serverIndex);
+		const snapshotCount = entries.filter((entry) => entry.snapshot).length;
+		const stateVectorCount = entries.filter((entry) => entry.stateVector).length;
+		providerLog(
+			`received MSG_SUBDOCS (${entries.length} docs; ${snapshotCount} snapshots; ${stateVectorCount} stateVectors)`,
+		);
 		this.onSubdocIndex?.(serverIndex);
 		for (const callback of Array.from(this.subdocIndexCallbacks)) {
 			try {

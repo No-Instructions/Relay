@@ -15,11 +15,33 @@ const DOC_GUID_B = "1ad0450b-4bc1-4d42-969a-df8d10f7141e";
 const DOC_GUID_C = "2c6c90c3-4bc9-4e3d-baa0-49727b0ed90f";
 const DOC_GUID_D = "7015676d-b1af-4697-b6e8-241cae87e0ce";
 const DOC_GUID_E = "f1257c45-17f8-4d0c-b564-8f92026c0b73";
+const DOC_GUID_F = "9e3651c2-7370-4792-ac03-9727c7557ab8";
 const DOC_ID_A = `${RELAY_GUID}-${DOC_GUID_A}`;
 const DOC_ID_B = `${RELAY_GUID}-${DOC_GUID_B}`;
 const DOC_ID_C = `${RELAY_GUID}-${DOC_GUID_C}`;
 const DOC_ID_D = `${RELAY_GUID}-${DOC_GUID_D}`;
 const DOC_ID_E = `${RELAY_GUID}-${DOC_GUID_E}`;
+const DOC_ID_F = `${RELAY_GUID}-${DOC_GUID_F}`;
+
+function decodeSubdocQueryFrame(
+	frame: string | ArrayBufferLike | Blob | ArrayBufferView,
+): string[] {
+	const decoder = decoding.createDecoder(frame as Uint8Array);
+	expect(decoding.readVarUint(decoder)).toBe(messageQuerySubdocs);
+	const count = decoding.readVarUint(decoder);
+	const docIds: string[] = [];
+	for (let i = 0; i < count; i++) {
+		docIds.push(decoding.readVarString(decoder));
+	}
+	return docIds;
+}
+
+function readFrameMessageType(
+	frame: string | ArrayBufferLike | Blob | ArrayBufferView,
+): number {
+	const decoder = decoding.createDecoder(frame as Uint8Array);
+	return decoding.readVarUint(decoder);
+}
 
 class FakeWebSocket {
 	static CONNECTING = 0;
@@ -187,7 +209,41 @@ describe("YSweetProvider", () => {
 		provider.destroy();
 	});
 
-	test("sendQuerySubdocs encodes full-index query as zero count", () => {
+	test("queries subdoc index after parent sync", () => {
+		const localDoc = new Y.Doc();
+		const remoteDoc = new Y.Doc();
+		remoteDoc.getText("contents").insert(0, "remote");
+		const provider = new YSweetProvider("ws://example.com", "room", localDoc, {
+			connect: false,
+			disableBc: true,
+			WebSocketPolyfill: FakeWebSocket as any,
+		});
+		provider.onSubdocIndex = jest.fn();
+		provider.getSubdocQueryDocIds = () => [DOC_ID_A, DOC_ID_B];
+
+		provider.connect();
+		const ws = FakeWebSocket.instances[0];
+		ws.open();
+
+		expect(ws.sent.map(readFrameMessageType)).not.toContain(messageQuerySubdocs);
+
+		const inboundStep2 = encoding.createEncoder();
+		encoding.writeVarUint(inboundStep2, messageSync);
+		syncProtocol.writeSyncStep2(inboundStep2, remoteDoc);
+		ws.receive(encoding.toUint8Array(inboundStep2));
+
+		expect(readFrameMessageType(ws.sent[ws.sent.length - 1])).toBe(
+			messageQuerySubdocs,
+		);
+		expect(decodeSubdocQueryFrame(ws.sent[ws.sent.length - 1])).toEqual([
+			DOC_ID_A,
+			DOC_ID_B,
+		]);
+
+		provider.destroy();
+	});
+
+	test("sendQuerySubdocs skips empty doc ID queries", () => {
 		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
 			connect: false,
 			disableBc: true,
@@ -198,9 +254,7 @@ describe("YSweetProvider", () => {
 
 		provider.sendQuerySubdocs();
 
-		const decoder = decoding.createDecoder(ws.sent[0] as Uint8Array);
-		expect(decoding.readVarUint(decoder)).toBe(messageQuerySubdocs);
-		expect(decoding.readVarUint(decoder)).toBe(0);
+		expect(ws.sent).toHaveLength(0);
 
 		provider.destroy();
 	});
@@ -230,7 +284,81 @@ describe("YSweetProvider", () => {
 		provider.destroy();
 	});
 
+	test("sendQuerySubdocs paginates selected server doc IDs", () => {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+		});
+		const ws = new FakeWebSocket("ws://example.com/room");
+		ws.readyState = FakeWebSocket.OPEN;
+		provider.ws = ws as any;
+		const docIds = Array.from(
+			{ length: 205 },
+			(_, index) => `${RELAY_GUID}-doc-${index}`,
+		);
+		provider.getSubdocQueryDocIds = () => docIds;
+
+		provider.sendQuerySubdocs();
+
+		expect(ws.sent).toHaveLength(3);
+		expect(decodeSubdocQueryFrame(ws.sent[0])).toEqual(docIds.slice(0, 100));
+		expect(decodeSubdocQueryFrame(ws.sent[1])).toEqual(docIds.slice(100, 200));
+		expect(decodeSubdocQueryFrame(ws.sent[2])).toEqual(docIds.slice(200));
+
+		provider.destroy();
+	});
+
+	test("handleSubdocIndex batches paginated query responses", () => {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+			connect: false,
+			disableBc: true,
+		});
+		const ws = new FakeWebSocket("ws://example.com/room");
+		ws.readyState = FakeWebSocket.OPEN;
+		provider.ws = ws as any;
+		const docIds = Array.from(
+			{ length: 205 },
+			(_, index) => `${RELAY_GUID}-doc-${index}`,
+		);
+		const onSubdocIndex = jest.fn();
+		const callback = jest.fn();
+		provider.onSubdocIndex = onSubdocIndex;
+		provider.subscribeToSubdocIndex(callback);
+
+		provider.sendQuerySubdocs(docIds);
+		provider.handleSubdocIndex({
+			[docIds[0]]: { stateVector: new Uint8Array([0]) },
+		});
+		provider.handleSubdocIndex({
+			[docIds[100]]: { stateVector: new Uint8Array([1]) },
+		});
+
+		expect(onSubdocIndex).not.toHaveBeenCalled();
+		expect(callback).not.toHaveBeenCalled();
+
+		provider.handleSubdocIndex({
+			[docIds[204]]: { stateVector: new Uint8Array([2]) },
+		});
+
+		const expected = {
+			[docIds[0]]: { stateVector: new Uint8Array([0]) },
+			[docIds[100]]: { stateVector: new Uint8Array([1]) },
+			[docIds[204]]: { stateVector: new Uint8Array([2]) },
+		};
+		expect(onSubdocIndex).toHaveBeenCalledTimes(1);
+		expect(onSubdocIndex).toHaveBeenCalledWith(expected);
+		expect(callback).toHaveBeenCalledWith(expected);
+		expect(provider.lastSubdocIndex).toEqual(expected);
+
+		provider.destroy();
+	});
+
 	test("normalizes legacy and metadata subdoc index entries", () => {
+		const snapshotDoc = new Y.Doc();
+		snapshotDoc.getText("contents").insert(0, "snapshot content");
+		const snapshot = Y.encodeSnapshot(Y.snapshot(snapshotDoc));
+		snapshotDoc.destroy();
+
 		const index = normalizeSubdocIndex({
 			[DOC_ID_A]: new Uint8Array([1, 2]),
 			[DOC_ID_B]: {
@@ -246,6 +374,11 @@ describe("YSweetProvider", () => {
 				last_seen: new Date("2026-04-24T19:32:00.000Z"),
 			},
 			[DOC_ID_E]: {},
+			[DOC_ID_F]: {
+				snapshot,
+				last_seen: 1710000001n,
+			},
+			rawSnapshot: snapshot,
 		});
 
 		expect(index[DOC_ID_A]).toEqual({
@@ -264,6 +397,36 @@ describe("YSweetProvider", () => {
 			lastSeen: Date.parse("2026-04-24T19:32:00.000Z"),
 		});
 		expect(index[DOC_ID_E]).toBeUndefined();
+		expect(index[DOC_ID_F]).toEqual({
+			snapshot,
+			lastSeen: 1710000001,
+		});
+		expect(index.rawSnapshot).toEqual({
+			snapshot,
+		});
+	});
+
+	test("normalizes nested subdoc index data envelopes", () => {
+		const snapshotDoc = new Y.Doc();
+		snapshotDoc.getText("contents").insert(0, "nested snapshot content");
+		const snapshot = Y.encodeSnapshot(Y.snapshot(snapshotDoc));
+		snapshotDoc.destroy();
+
+		const index = normalizeSubdocIndex({
+			data: {
+				[DOC_ID_A]: {
+					snapshot,
+					last_seen: 1710000002,
+				},
+			},
+		});
+
+		expect(index).toEqual({
+			[DOC_ID_A]: {
+				snapshot,
+				lastSeen: 1710000002,
+			},
+		});
 	});
 
 	test("handleSubdocIndex stores and notifies subdoc index listeners", () => {

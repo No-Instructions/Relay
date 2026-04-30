@@ -183,7 +183,8 @@ export interface SerializableLCA {
   contents: string;
   hash: string;
   mtime: number;
-  stateVector: string; // base64
+  snapshot?: string; // base64
+  stateVector?: string; // base64
 }
 
 /**
@@ -194,7 +195,8 @@ export interface SerializablePersistedState {
   path: string;
   lca: SerializableLCA | null;
   disk: MergeMetadata | null;
-  localStateVector: string | null; // base64
+  localSnapshot?: string | null; // base64
+  localStateVector?: string | null; // base64
   lastStatePath: StatePath;
   deferredConflict?: { diskHash: string; localHash: string };
   persistedAt: number;

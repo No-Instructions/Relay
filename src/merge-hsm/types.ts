@@ -60,14 +60,19 @@ export interface LCAState {
 	/** Metadata at sync point */
 	meta: MergeMetadata;
 
-	/** Yjs state vector at this point (base64 encoded for serialization) */
+	/** Yjs state vector at this point, derived from snapshot when restored. */
 	stateVector: Uint8Array;
+
+	/** Yjs snapshot at this point, including insert clocks and delete set. */
+	snapshot?: Uint8Array;
 }
 
 /** Lightweight LCA metadata for in-memory caching (no contents string). */
 export interface LCAMeta {
 	meta: MergeMetadata;
-	stateVector: Uint8Array;
+	snapshot?: Uint8Array;
+	/** Existing records may have only state vectors; new metadata uses snapshots. */
+	stateVector?: Uint8Array;
 }
 
 // =============================================================================
@@ -85,6 +90,10 @@ export interface Fork {
 	localStateVector: Uint8Array;
 	/** Y.js state vector of remoteDoc at fork point */
 	remoteStateVector: Uint8Array;
+	/** Yjs snapshot of localDoc at fork point */
+	localSnapshot?: Uint8Array;
+	/** Yjs snapshot of remoteDoc at fork point */
+	remoteSnapshot?: Uint8Array;
 	/** What created this fork */
 	origin: string;
 	/** When the fork was created (ms since epoch) */
@@ -94,6 +103,22 @@ export interface Fork {
 	/** Transform function from vault.process (machine-edit forks only) */
 	machineEditFn?: (data: string) => string;
 }
+
+export interface PersistedFork {
+	/** localDoc content before changes were ingested */
+	base: string;
+	localSnapshot?: Uint8Array | null;
+	remoteSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors; new writes use snapshots. */
+	localStateVector?: Uint8Array;
+	/** Existing records may have only state vectors; new writes use snapshots. */
+	remoteStateVector?: Uint8Array;
+	origin: string;
+	created: number;
+	captureMark: number;
+	machineEditFn?: (data: string) => string;
+}
+
 
 /**
  * Controls whether CRDT ops flow between localDoc and remoteDoc.
@@ -621,16 +646,20 @@ export interface PersistedMergeState {
 		contents: string;
 		hash: string;
 		mtime: number;
-		stateVector: Uint8Array;
+		snapshot?: Uint8Array;
+		/** Existing records may have only state vectors; new writes use snapshots. */
+		stateVector?: Uint8Array;
 	} | null;
 	disk: MergeMetadata | null;
-	localStateVector: Uint8Array | null;
+	localSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors; new writes use snapshots. */
+	localStateVector?: Uint8Array | null;
 	lastStatePath: StatePath;
 	deferredConflict?: {
 		diskHash: string;
 		localHash: string;
 	};
-	fork?: Fork | null;
+	fork?: PersistedFork | null;
 	persistedAt: number;
 }
 
@@ -640,7 +669,9 @@ export interface PersistedStateMeta {
 	path: string;
 	lcaMeta: LCAMeta | null;
 	disk: MergeMetadata | null;
-	localStateVector: Uint8Array | null;
+	localSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors; new metadata uses snapshots. */
+	localStateVector?: Uint8Array | null;
 	lastStatePath: StatePath;
 	deferredConflict?: {
 		diskHash: string;

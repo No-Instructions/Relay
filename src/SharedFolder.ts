@@ -500,8 +500,8 @@ export class SharedFolder extends HasProvider {
 		);
 
 		// On (re)connect, the provider issues MSG_QUERY_SUBDOCS and receives
-		// the server's complete view of this folder's docs: guid → state
-		// vector. Seed server-advertised heads from that one message and fire a full
+		// the server's complete view of this folder's docs: guid → head
+		// metadata. Seed server-advertised heads from that one message and fire a full
 		// syncFileTree sweep; applyRemoteState + applyPendingUpload handle
 		// both inbound reconciliation and outbound pending-upload retry.
 		const provider = this._provider;
@@ -515,9 +515,9 @@ export class SharedFolder extends HasProvider {
 		provider.onSubdocIndex = (serverIndex) => {
 			for (const [docId, entry] of Object.entries(serverIndex)) {
 				const guid = this.guidFromServerDocId(docId) ?? docId;
-				this.mergeManager?.seedServerAdvertisedSVFromBytes(
+				this.mergeManager?.seedServerAdvertisedHeadFromBytes(
 					guid,
-					entry.stateVector,
+					entry,
 				);
 			}
 			this.syncFileTree()

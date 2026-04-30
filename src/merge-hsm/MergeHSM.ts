@@ -72,6 +72,7 @@ import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./typ
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
+	snapshotFromDoc,
 	stateVectorIsAhead,
 	stateVectorsEqual,
 	yjsDocIsAhead,
@@ -885,6 +886,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			base: baseText,
 			localStateVector: this._lca.stateVector ?? new Uint8Array([0]),
 			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+			localSnapshot: this._lca.snapshot,
+			remoteSnapshot: this.remoteDoc
+				? snapshotFromDoc(this.remoteDoc).snapshot
+				: undefined,
 			origin: 'machine-edit',
 			created: this.timeProvider.now(),
 			captureMark: 0,
@@ -902,6 +907,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		this._fork.captureMark = this.getOpCapture()?.mark() ?? 0;
 		this._fork.localStateVector = Y.encodeStateVector(this.localDoc);
+		this._fork.localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 
 		this.hsmWarn(
 			`registerMachineEdit (idle fork) | guid=${this._guid} | ` +
@@ -2466,6 +2472,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				base: this.localDoc.getText("contents").toString(),
 				localStateVector: Y.encodeStateVector(this.localDoc),
 				remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+				localSnapshot: snapshotFromDoc(this.localDoc).snapshot,
+				remoteSnapshot: this.remoteDoc
+					? snapshotFromDoc(this.remoteDoc).snapshot
+					: undefined,
 				origin: 'disk-edit',
 				created: this.timeProvider.now(),
 				captureMark: this.getOpCapture()?.mark() ?? 0,
@@ -2544,6 +2554,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					base: lcaContent,
 					localStateVector: Y.encodeStateVector(this.localDoc),
 					remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+					localSnapshot: snapshotFromDoc(this.localDoc).snapshot,
+					remoteSnapshot: this.remoteDoc
+						? snapshotFromDoc(this.remoteDoc).snapshot
+						: undefined,
 					origin: 'three-way-conflict',
 					created: this.timeProvider.now(),
 					captureMark: this.getOpCapture()?.mark() ?? 0,
@@ -3343,6 +3357,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				);
 				return;
 			}
+			if (!lca.snapshot) {
+				lca = { ...lca, snapshot: snapshotFromDoc(this.localDoc).snapshot };
+			}
 		}
 		this._lca = lca;
 	}
@@ -3695,6 +3712,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	private emitPersistState(): void {
+		const localSnapshot = this.localDoc
+			? snapshotFromDoc(this.localDoc).snapshot
+			: null;
+		const lcaSnapshot =
+			this._lca?.snapshot ??
+			(this._lca &&
+			this.localDoc?.getText("contents").toString() === this._lca.contents
+				? localSnapshot ?? undefined
+				: undefined);
+		const forkLocalSnapshot = this._fork?.localSnapshot;
+		const forkRemoteSnapshot = this._fork?.remoteSnapshot;
 		const persistedState: PersistedMergeState = {
 			guid: this._guid,
 			path: this.path,
@@ -3703,14 +3731,32 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						contents: this._lca.contents,
 						hash: this._lca.meta.hash,
 						mtime: this._lca.meta.mtime,
-						stateVector: this._lca.stateVector,
+						...(lcaSnapshot
+							? { snapshot: lcaSnapshot }
+							: { stateVector: this._lca.stateVector }),
 					}
 				: null,
 			disk: this._disk,
-			localStateVector: this._localStateVector,
+			localSnapshot,
+			...(!localSnapshot && this._localStateVector
+				? { localStateVector: this._localStateVector }
+				: {}),
 			lastStatePath: this._statePath,
 			deferredConflict: this._deferredConflict,
-			fork: this._fork,
+			fork: this._fork
+				? {
+						base: this._fork.base,
+						...(forkLocalSnapshot
+							? { localSnapshot: forkLocalSnapshot }
+							: { localStateVector: this._fork.localStateVector }),
+						...(forkRemoteSnapshot
+							? { remoteSnapshot: forkRemoteSnapshot }
+							: { remoteStateVector: this._fork.remoteStateVector }),
+						origin: this._fork.origin,
+						created: this._fork.created,
+						captureMark: this._fork.captureMark,
+					}
+				: null,
 			persistedAt: this.timeProvider.now(),
 		};
 

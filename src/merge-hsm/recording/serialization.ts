@@ -19,6 +19,7 @@ import type {
   SerializablePersistedState,
   SerializableSyncStatus,
 } from './types';
+import { stateVectorFromSnapshot } from '../state-vectors';
 
 // =============================================================================
 // Base64 Encoding/Decoding
@@ -268,6 +269,8 @@ export function deserializeEffect(effect: SerializableEffect): MergeEffect {
 // Internal helpers for effect serialization (not exported)
 
 function _serializePersistedState(state: PersistedMergeState): SerializablePersistedState {
+  const lcaSnapshot = state.lca?.snapshot;
+  const localSnapshot = state.localSnapshot ?? null;
   return {
     guid: state.guid,
     path: state.path,
@@ -275,12 +278,17 @@ function _serializePersistedState(state: PersistedMergeState): SerializablePersi
       contents: state.lca.contents,
       hash: state.lca.hash,
       mtime: state.lca.mtime,
-      stateVector: uint8ArrayToBase64(state.lca.stateVector),
+      ...(lcaSnapshot
+        ? { snapshot: uint8ArrayToBase64(lcaSnapshot) }
+        : state.lca.stateVector
+          ? { stateVector: uint8ArrayToBase64(state.lca.stateVector) }
+          : {}),
     } : null,
     disk: state.disk,
-    localStateVector: state.localStateVector
-      ? uint8ArrayToBase64(state.localStateVector)
-      : null,
+    localSnapshot: localSnapshot ? uint8ArrayToBase64(localSnapshot) : null,
+    ...(!localSnapshot && state.localStateVector
+      ? { localStateVector: uint8ArrayToBase64(state.localStateVector) }
+      : {}),
     lastStatePath: state.lastStatePath,
     deferredConflict: state.deferredConflict,
     persistedAt: state.persistedAt,
@@ -295,12 +303,20 @@ function _deserializePersistedState(state: SerializablePersistedState): Persiste
       contents: state.lca.contents,
       hash: state.lca.hash,
       mtime: state.lca.mtime,
-      stateVector: base64ToUint8Array(state.lca.stateVector),
+      ...(state.lca.snapshot
+        ? { snapshot: base64ToUint8Array(state.lca.snapshot) }
+        : {}),
+      ...(state.lca.stateVector
+        ? { stateVector: base64ToUint8Array(state.lca.stateVector) }
+        : {}),
     } : null,
     disk: state.disk,
+    localSnapshot: state.localSnapshot
+      ? base64ToUint8Array(state.localSnapshot)
+      : null,
     localStateVector: state.localStateVector
       ? base64ToUint8Array(state.localStateVector)
-      : null,
+      : undefined,
     lastStatePath: state.lastStatePath,
     deferredConflict: state.deferredConflict,
     persistedAt: state.persistedAt,
@@ -339,7 +355,9 @@ export function serializeLCA(lca: LCAState): SerializableLCA {
     contents: lca.contents,
     hash: lca.meta.hash,
     mtime: lca.meta.mtime,
-    stateVector: uint8ArrayToBase64(lca.stateVector),
+    ...(lca.snapshot
+      ? { snapshot: uint8ArrayToBase64(lca.snapshot) }
+      : { stateVector: uint8ArrayToBase64(lca.stateVector) }),
   };
 }
 
@@ -347,13 +365,18 @@ export function serializeLCA(lca: LCAState): SerializableLCA {
  * Deserialize a SerializableLCA back to an LCAState.
  */
 export function deserializeLCA(lca: SerializableLCA): LCAState {
+  const snapshot = lca.snapshot ? base64ToUint8Array(lca.snapshot) : undefined;
+  const stateVector = snapshot
+    ? stateVectorFromSnapshot({ snapshot })
+    : base64ToUint8Array(lca.stateVector!);
   return {
     contents: lca.contents,
     meta: {
       hash: lca.hash,
       mtime: lca.mtime,
     },
-    stateVector: base64ToUint8Array(lca.stateVector),
+    stateVector,
+    ...(snapshot ? { snapshot } : {}),
   };
 }
 

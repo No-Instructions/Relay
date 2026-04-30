@@ -19,6 +19,7 @@ import {
 	snapshotsEqual,
 	snapshotFromDoc,
 	snapshotIsAhead,
+	stateVectorFromSnapshot,
 	yjsDocsEqual,
 	yjsUpdateIsNoop,
 } from "src/merge-hsm/state-vectors";
@@ -415,6 +416,18 @@ describe("yjs snapshot helpers", () => {
 		expect(snapshotsEqual(after, before)).toBe(false);
 		expect(snapshotIsAhead(after, before)).toBe(true);
 		destroy();
+	});
+
+	test("snapshot exposes equivalent state-vector bytes", () => {
+		const doc = new Y.Doc();
+		doc.getText("t").insert(0, "hello");
+
+		expect(stateVectorsEqual(
+			stateVectorFromSnapshot(snapshotFromDoc(doc)),
+			Y.encodeStateVector(doc),
+		)).toBe(true);
+
+		doc.destroy();
 	});
 });
 

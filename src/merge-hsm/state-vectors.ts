@@ -11,6 +11,7 @@
  */
 
 import * as Y from "yjs";
+import * as encoding from "lib0/encoding";
 
 /** Decoded state vector: Map<clientId, clock> */
 export type DecodedSV = Map<number, number>;
@@ -219,6 +220,43 @@ export function snapshotFromUpdate(update: Uint8Array): YjsSnapshot {
 	} finally {
 		doc.destroy();
 	}
+}
+
+/**
+ * Extract the state vector portion from an encoded Yjs snapshot.
+ */
+export function snapshotStateVector(snapshot: YjsSnapshot): DecodedSV {
+	return new Map(decodeSnapshotData(snapshot).sv);
+}
+
+/**
+ * Encode a decoded state vector map into Yjs state-vector bytes.
+ */
+export function encodeSV(sv: DecodedSV): Uint8Array {
+	const encoder = encoding.createEncoder();
+	encoding.writeVarUint(encoder, sv.size);
+	for (const [clientId, clock] of sv) {
+		encoding.writeVarUint(encoder, clientId);
+		encoding.writeVarUint(encoder, clock);
+	}
+	return encoding.toUint8Array(encoder);
+}
+
+/**
+ * Extract encoded state-vector bytes from an encoded Yjs snapshot.
+ */
+export function stateVectorFromSnapshot(snapshot: YjsSnapshot): Uint8Array {
+	return encodeSV(snapshotStateVector(snapshot));
+}
+
+/**
+ * Check whether an encoded Yjs snapshot includes any tombstones.
+ */
+export function snapshotHasDeleteSet(snapshot: YjsSnapshot): boolean {
+	for (const ranges of decodeSnapshotData(snapshot).ds.clients.values()) {
+		if (ranges.length > 0) return true;
+	}
+	return false;
 }
 
 /**

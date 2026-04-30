@@ -25,6 +25,7 @@ import type {
   PersistenceMetadata,
   LCAState,
   LCAMeta,
+  Fork,
   FrontMatterPrimitives,
   MergeEvent,
   ResolveHunkEvent,
@@ -38,11 +39,19 @@ import { validateUpdate } from '../storage/yjs-validation';
 import {
   classifyUpdate as classifyUpdateSV,
   decodeSV,
+  type DecodedSV,
   snapshotContainsUpdate,
+  snapshotFromDoc,
   snapshotFromUpdate,
+  snapshotHasDeleteSet,
+  snapshotIsAhead,
+  snapshotStateVector,
+  snapshotsEqual,
+  stateVectorFromSnapshot,
   svEqual,
   svIsAhead,
   updateHasDeleteSet,
+  type YjsSnapshot,
 } from './state-vectors';
 import { metrics, curryLog } from '../debug';
 import { trackPromise } from '../trackPromise';
@@ -169,6 +178,84 @@ export type MergeTransitionCallback = (
   info: MergeTransitionInfo,
 ) => void;
 
+type ServerAdvertisedHead =
+  | {
+      kind: 'stateVector';
+      stateVector: DecodedSV;
+    }
+  | {
+      kind: 'snapshot';
+      snapshot: YjsSnapshot;
+    };
+
+function stateVectorFromPersistedSnapshot(snapshot: Uint8Array | null | undefined): Uint8Array | null {
+  if (!snapshot) return null;
+  try {
+    return stateVectorFromSnapshot({ snapshot });
+  } catch {
+    return null;
+  }
+}
+
+function stateVectorFromSnapshotOrLegacy(
+  snapshot: Uint8Array | null | undefined,
+  legacyStateVector: Uint8Array | null | undefined,
+): Uint8Array | null {
+  return stateVectorFromPersistedSnapshot(snapshot) ?? legacyStateVector ?? null;
+}
+
+function advertisedStateVector(head: ServerAdvertisedHead): DecodedSV {
+  return head.kind === 'snapshot'
+    ? snapshotStateVector(head.snapshot)
+    : head.stateVector;
+}
+
+function restorePersistedLCA(lca: PersistedMergeState['lca']): LCAState | null {
+  if (!lca) return null;
+  const stateVector = stateVectorFromSnapshotOrLegacy(
+    lca.snapshot,
+    lca.stateVector,
+  );
+  if (!stateVector) return null;
+  return {
+    contents: lca.contents,
+    meta: { hash: lca.hash, mtime: lca.mtime },
+    stateVector,
+    ...(lca.snapshot ? { snapshot: lca.snapshot } : {}),
+  };
+}
+
+function restorePersistedFork(fork: PersistedMergeState['fork']): Fork | null {
+  if (!fork) return null;
+  const localStateVector = stateVectorFromSnapshotOrLegacy(
+    fork.localSnapshot,
+    fork.localStateVector,
+  );
+  const remoteStateVector = stateVectorFromSnapshotOrLegacy(
+    fork.remoteSnapshot,
+    fork.remoteStateVector,
+  );
+  if (!localStateVector || !remoteStateVector) return null;
+  return {
+    base: fork.base,
+    localStateVector,
+    remoteStateVector,
+    ...(fork.localSnapshot ? { localSnapshot: fork.localSnapshot } : {}),
+    ...(fork.remoteSnapshot ? { remoteSnapshot: fork.remoteSnapshot } : {}),
+    origin: fork.origin,
+    created: fork.created,
+    captureMark: fork.captureMark,
+  };
+}
+
+function lcaToMeta(lca: LCAState): LCAMeta {
+  return {
+    meta: lca.meta,
+    ...(lca.snapshot ? { snapshot: lca.snapshot } : {}),
+    ...(!lca.snapshot ? { stateVector: lca.stateVector } : {}),
+  };
+}
+
 function stateVectorsEqual(
   a: Uint8Array | null | undefined,
   b: Uint8Array | null | undefined,
@@ -276,9 +363,12 @@ export class MergeManager {
   // LCA cache - bulk-loaded during initialize(), owned by MergeManager
   private _lcaCache = new Map<string, LCAMeta | null>();
 
-  // Local state vector cache - bulk-loaded during initialize()
-  // Used for idle mode sync status display without opening per-document IDBs
-  private _localStateVectorCache = new Map<string, Uint8Array | null>();
+  // Legacy local state vector cache - populated only for old records without snapshots.
+  private _legacyLocalStateVectorCache = new Map<string, Uint8Array | null>();
+
+  // Local snapshot cache - bulk-loaded during initialize()
+  // Used for delete-set-aware sync hints without opening per-document IDBs
+  private _localSnapshotCache = new Map<string, Uint8Array | null>();
 
 
   // =========================================================================
@@ -323,10 +413,10 @@ export class MergeManager {
   private _appliedRemoteUpdate = new Map<string, Uint8Array>();
 
   /**
-   * Server-advertised head SV from the folder subdoc index. This is metadata
-   * about what the server has, not proof of what we have applied locally.
+   * Server-advertised head metadata from the folder subdoc index. This is
+   * metadata about what the server has, not proof of what we have applied.
    */
-  private _serverAdvertisedSV = new Map<string, Map<number, number>>();
+  private _serverAdvertisedHeads = new Map<string, ServerAdvertisedHead>();
 
   /** Per-HSM effect subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
@@ -602,15 +692,18 @@ export class MergeManager {
     loadStateFn(guid).then((state) => {
       if (this.destroyed) return;
       // Build full LCA from IDB state (the source of truth for contents)
-      const lca: LCAState | null = state?.lca
-        ? { contents: state.lca.contents, meta: { hash: state.lca.hash, mtime: state.lca.mtime }, stateVector: state.lca.stateVector }
-        : null;
+      const lca = restorePersistedLCA(state?.lca ?? null);
       hsm.send({
         type: 'PERSISTENCE_LOADED',
         updates: new Uint8Array(),
         lca,
-        localStateVector,
-        fork: state?.fork ?? null,
+        localStateVector: state
+          ? stateVectorFromSnapshotOrLegacy(
+              state.localSnapshot,
+              state.localStateVector,
+            )
+          : localStateVector,
+        fork: restorePersistedFork(state?.fork ?? null),
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
     }).catch((err) => {
@@ -652,13 +745,14 @@ export class MergeManager {
     this._hibernationBuffer.delete(guid);
     this._appliedRemoteSV.delete(guid);
     this._appliedRemoteUpdate.delete(guid);
-    this._serverAdvertisedSV.delete(guid);
+    this._serverAdvertisedHeads.delete(guid);
     this.clearHibernateTimer(guid);
     this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
     this.activeDocs.delete(guid);
     this._lcaCache.delete(guid);
-    this._localStateVectorCache.delete(guid);
+    this._legacyLocalStateVectorCache.delete(guid);
+    this._localSnapshotCache.delete(guid);
   }
 
   // ===========================================================================
@@ -817,14 +911,15 @@ export class MergeManager {
   }
 
   /**
-   * Get localStateVector from cache (synchronous).
-   * Returns the cached state vector, or null if not found or not in cache.
-   *
-   * Used during HSM registration to avoid opening per-document IDBs.
-   * The cache is populated during initialize() via bulk load.
+   * Derive a local state vector from cached snapshot metadata.
+   * Used during HSM registration where Yjs still requires state-vector bytes.
    */
   getLocalStateVector(guid: string): Uint8Array | null {
-    return this._localStateVectorCache.get(guid) ?? null;
+    const cachedSnapshot = this._localSnapshotCache.get(guid);
+    if (cachedSnapshot) {
+      return stateVectorFromPersistedSnapshot(cachedSnapshot);
+    }
+    return this._legacyLocalStateVectorCache.get(guid) ?? null;
   }
 
   /**
@@ -835,33 +930,64 @@ export class MergeManager {
    * @param lca - New LCA state, or null to clear
    */
   async setLCA(guid: string, lca: LCAState | null): Promise<void> {
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
+    const localDoc = hsm?.getLocalDoc() ?? null;
+    const lcaSnapshot = lca?.snapshot ??
+      (lca && localDoc?.getText('contents').toString() === lca.contents
+        ? snapshotFromDoc(localDoc).snapshot
+        : undefined);
+    const lcaForPersistence = lca && lcaSnapshot
+      ? { ...lca, snapshot: lcaSnapshot }
+      : lca;
+
     // Update cache with metadata only (no contents string)
-    this._lcaCache.set(guid, lca
-      ? { meta: lca.meta, stateVector: lca.stateVector }
+    this._lcaCache.set(guid, lcaForPersistence
+      ? lcaToMeta(lcaForPersistence)
       : null
     );
 
     // Persist to storage via the onEffect callback
     // The integration layer handles actual IndexedDB writes
-    const doc = this._getDocument(guid);
-    const hsm = doc?.hsm;
     if (hsm && this.onEffect) {
+      const localSnapshot = localDoc ? snapshotFromDoc(localDoc).snapshot : null;
+      const fork = hsm.state.fork;
+      const forkLocalSnapshot = fork?.localSnapshot;
+      const forkRemoteSnapshot = fork?.remoteSnapshot;
       const persistedState: PersistedMergeState = {
         guid,
         path: hsm.state.path,
-        lca: lca
+        lca: lcaForPersistence
           ? {
-              contents: lca.contents,
-              hash: lca.meta.hash,
-              mtime: lca.meta.mtime,
-              stateVector: lca.stateVector,
+              contents: lcaForPersistence.contents,
+              hash: lcaForPersistence.meta.hash,
+              mtime: lcaForPersistence.meta.mtime,
+              ...(lcaForPersistence.snapshot
+                ? { snapshot: lcaForPersistence.snapshot }
+                : { stateVector: lcaForPersistence.stateVector }),
             }
           : null,
         disk: hsm.state.disk,
-        localStateVector: hsm.state.localStateVector,
+        localSnapshot,
+        ...(!localSnapshot && hsm.state.localStateVector
+          ? { localStateVector: hsm.state.localStateVector }
+          : {}),
         lastStatePath: hsm.state.statePath,
         deferredConflict: hsm.state.deferredConflict,
-        fork: hsm.state.fork,
+        fork: fork
+          ? {
+              base: fork.base,
+              ...(forkLocalSnapshot
+                ? { localSnapshot: forkLocalSnapshot }
+                : { localStateVector: fork.localStateVector }),
+              ...(forkRemoteSnapshot
+                ? { remoteSnapshot: forkRemoteSnapshot }
+                : { remoteStateVector: fork.remoteStateVector }),
+              origin: fork.origin,
+              created: fork.created,
+              captureMark: fork.captureMark,
+            }
+          : null,
         persistedAt: this.timeProvider.now(),
       };
 
@@ -899,11 +1025,13 @@ export class MergeManager {
       for (const state of allMeta) {
         this._lcaCache.set(state.guid, state.lcaMeta);
 
-        // Also cache localStateVector for idle mode sync status
-        this._localStateVectorCache.set(
+        // Cache snapshots as the canonical local head. State vectors are only
+        // retained for records written before snapshots were persisted.
+        this._legacyLocalStateVectorCache.set(
           state.guid,
-          state.localStateVector ?? null
+          state.localSnapshot ? null : state.localStateVector ?? null
         );
+        this._localSnapshotCache.set(state.guid, state.localSnapshot ?? null);
       }
     }
 
@@ -1133,7 +1261,7 @@ export class MergeManager {
   }
 
   /**
-   * Record the server-advertised head SV directly from raw state vector bytes.
+   * Record the server-advertised head directly from raw state vector bytes.
    * This is reconnect metadata only. It must not be used to decide whether an
    * incremental payload is stale because SVs do not encode delete sets and do
    * not prove local application.
@@ -1141,10 +1269,46 @@ export class MergeManager {
   seedServerAdvertisedSVFromBytes(guid: string, svBytes: Uint8Array): void {
     try {
       const sv = Y.decodeStateVector(svBytes);
-      this._serverAdvertisedSV.set(guid, sv);
+      this._serverAdvertisedHeads.set(guid, {
+        kind: 'stateVector',
+        stateVector: sv,
+      });
     } catch {
-      this._serverAdvertisedSV.delete(guid);
+      this._serverAdvertisedHeads.delete(guid);
     }
+  }
+
+  /**
+   * Record the server-advertised head directly from raw Yjs snapshot bytes.
+   * Snapshot advertisements retain delete-set information, so queueing hints
+   * can detect delete-only remote changes when a local snapshot is available.
+   */
+  seedServerAdvertisedSnapshotFromBytes(guid: string, snapshotBytes: Uint8Array): void {
+    try {
+      Y.decodeSnapshot(snapshotBytes);
+      const snapshot = { snapshot: snapshotBytes };
+      this._serverAdvertisedHeads.set(guid, {
+        kind: 'snapshot',
+        snapshot,
+      });
+    } catch {
+      this._serverAdvertisedHeads.delete(guid);
+    }
+  }
+
+  seedServerAdvertisedHeadFromBytes(
+    guid: string,
+    head: { stateVector?: Uint8Array; snapshot?: Uint8Array },
+  ): void {
+    if (head.snapshot) {
+      this.seedServerAdvertisedSnapshotFromBytes(guid, head.snapshot);
+      return;
+    }
+    if (head.stateVector) {
+      this.seedServerAdvertisedSVFromBytes(guid, head.stateVector);
+      return;
+    }
+    this._serverAdvertisedHeads.delete(guid);
   }
 
   /**
@@ -1154,16 +1318,35 @@ export class MergeManager {
    * decide whether to connect a provider, not to declare convergence.
    */
   isServerAdvertisedRemoteAhead(guid: string): boolean {
-    const advertisedSV = this._serverAdvertisedSV.get(guid);
-    if (!advertisedSV) return false;
+    const advertised = this._serverAdvertisedHeads.get(guid);
+    if (!advertised) return false;
+
+    if (advertised.kind === 'snapshot') {
+      const localSnapshot = this.getKnownLocalSnapshot(guid);
+      if (localSnapshot) {
+        try {
+          return snapshotIsAhead(advertised.snapshot, localSnapshot);
+        } catch {
+          return true;
+        }
+      }
+    }
 
     const localSVBytes = this.getKnownLocalStateVector(guid);
+    const advertisedSV = advertisedStateVector(advertised);
     if (!localSVBytes) {
-      return advertisedSV.size > 0;
+      return advertisedSV.size > 0 ||
+        (advertised.kind === 'snapshot' && snapshotHasDeleteSet(advertised.snapshot));
     }
 
     try {
-      return svIsAhead(advertisedSV, decodeSV(localSVBytes));
+      const localSV = decodeSV(localSVBytes);
+      if (svIsAhead(advertisedSV, localSV)) {
+        return true;
+      }
+      return advertised.kind === 'snapshot' &&
+        snapshotHasDeleteSet(advertised.snapshot) &&
+        svEqual(advertisedSV, localSV);
     } catch {
       return true;
     }
@@ -1171,20 +1354,55 @@ export class MergeManager {
 
   /**
    * Return true when the folder subdoc index has advertised a server head and
-   * it matches the known local state vector. This is a queueing hint for
-   * folder-wide sync; it intentionally ignores delete sets.
+   * it matches known local state. This is a queueing hint for folder-wide sync:
+   * snapshots are compared with delete sets when available, while state-vector
+   * entries remain state-vector-only compatibility metadata.
    */
-  isServerAdvertisedInSync(guid: string, localStateVector?: Uint8Array): boolean {
-    const advertisedSV = this._serverAdvertisedSV.get(guid);
-    if (!advertisedSV) return false;
+  isServerAdvertisedInSync(guid: string, localSnapshotBytes?: Uint8Array): boolean {
+    const advertised = this._serverAdvertisedHeads.get(guid);
+    if (!advertised) return false;
 
-    const localSVBytes = localStateVector ?? this.getKnownLocalStateVector(guid);
+    if (advertised.kind === 'snapshot') {
+      const localSnapshot = localSnapshotBytes
+        ? { snapshot: localSnapshotBytes }
+        : this.getKnownLocalSnapshot(guid);
+      if (localSnapshot) {
+        try {
+          return snapshotsEqual(advertised.snapshot, localSnapshot);
+        } catch {
+          return false;
+        }
+      }
+    }
+
+    const localSVBytes = localSnapshotBytes
+      ? stateVectorFromPersistedSnapshot(localSnapshotBytes)
+      : this.getKnownLocalStateVector(guid);
     if (!localSVBytes) return false;
 
     try {
-      return svEqual(advertisedSV, decodeSV(localSVBytes));
+      const advertisedSV = advertisedStateVector(advertised);
+      if (!svEqual(advertisedSV, decodeSV(localSVBytes))) {
+        return false;
+      }
+      return advertised.kind === 'stateVector' || !snapshotHasDeleteSet(advertised.snapshot);
     } catch {
       return false;
+    }
+  }
+
+  private getKnownLocalSnapshot(guid: string): YjsSnapshot | null {
+    const localDoc = this._getDocument(guid)?.hsm?.getLocalDoc();
+    if (!localDoc) {
+      const cachedSnapshot = this._localSnapshotCache.get(guid) ??
+        this._lcaCache.get(guid)?.snapshot;
+      return cachedSnapshot ? { snapshot: cachedSnapshot } : null;
+    }
+
+    try {
+      return snapshotFromDoc(localDoc);
+    } catch {
+      return null;
     }
   }
 
@@ -1193,10 +1411,15 @@ export class MergeManager {
     const hsmStateVector = hsm?.state.localStateVector;
     if (hsmStateVector) return hsmStateVector;
 
-    const cachedStateVector = this._localStateVectorCache.get(guid);
+    const cachedStateVector = this.getLocalStateVector(guid);
     if (cachedStateVector) return cachedStateVector;
 
-    return this._lcaCache.get(guid)?.stateVector ?? null;
+    const lcaMeta = this._lcaCache.get(guid);
+    if (!lcaMeta) return null;
+    return stateVectorFromSnapshotOrLegacy(
+      lcaMeta.snapshot,
+      lcaMeta.stateVector,
+    );
   }
 
   /**
@@ -1205,7 +1428,7 @@ export class MergeManager {
    * what this vault has already incorporated locally.
    */
   clearServerAdvertisedSVs(): void {
-    this._serverAdvertisedSV.clear();
+    this._serverAdvertisedHeads.clear();
   }
 
   /**
@@ -1261,9 +1484,12 @@ export class MergeManager {
     this._syncStatus.clear();
     this._hibernationState.clear();
     this._hibernationBuffer.clear();
+    this._lcaCache.clear();
+    this._legacyLocalStateVectorCache.clear();
+    this._localSnapshotCache.clear();
     this._appliedRemoteSV.clear();
     this._appliedRemoteUpdate.clear();
-    this._serverAdvertisedSV.clear();
+    this._serverAdvertisedHeads.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
     this._warmLRU.clear();
@@ -1476,19 +1702,19 @@ export class MergeManager {
       case 'PERSIST_STATE':
         // Update LCA metadata cache (no contents — kept lightweight)
         if (effect.state.lca) {
-          this._lcaCache.set(guid, {
-            meta: {
-              hash: effect.state.lca.hash,
-              mtime: effect.state.lca.mtime,
-            },
-            stateVector: effect.state.lca.stateVector,
-          });
+          const lca = restorePersistedLCA(effect.state.lca);
+          this._lcaCache.set(guid, lca ? lcaToMeta(lca) : null);
         } else {
           this._lcaCache.set(guid, null);
         }
 
-        // Update localStateVector cache
-        this._localStateVectorCache.set(guid, effect.state.localStateVector ?? null);
+        // Cache snapshots as the canonical local head. State vectors are only
+        // retained for records written before snapshots were persisted.
+        this._legacyLocalStateVectorCache.set(
+          guid,
+          effect.state.localSnapshot ? null : effect.state.localStateVector ?? null,
+        );
+        this._localSnapshotCache.set(guid, effect.state.localSnapshot ?? null);
 
         // Integration layer handles actual IDB persistence via onEffect above
         break;

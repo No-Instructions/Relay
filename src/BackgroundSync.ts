@@ -16,7 +16,7 @@ import { Canvas } from "./Canvas";
 import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
 import { SyncFile, isSyncFile } from "./SyncFile";
-import { isEmptyDoc } from "./merge-hsm/state-vectors";
+import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
 
 export interface QueueItem {
 	guid: string;
@@ -722,7 +722,7 @@ export class BackgroundSync extends HasLogging {
 			if (!mergeManager) return true;
 			return !mergeManager.isServerAdvertisedInSync(
 				item.guid,
-				Y.encodeStateVector(item.ydoc),
+				snapshotFromDoc(item.ydoc).snapshot,
 			);
 		}
 		if (!isDocument(item)) return true;

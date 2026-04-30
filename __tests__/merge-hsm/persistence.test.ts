@@ -75,6 +75,22 @@ describe('PersistedMergeState round-trips', () => {
     expect(state.fork).toBeFalsy();
   });
 
+  test('persist effects store snapshots when localDoc exists', async () => {
+    const t = await createTestHSM();
+    await loadAndActivate(t, 'hello world');
+
+    await t.hsm.setLCA();
+
+    const persistEffect = [...t.effects]
+      .reverse()
+      .find(e => e.type === 'PERSIST_STATE');
+
+    expect(persistEffect?.type).toBe('PERSIST_STATE');
+    if (persistEffect?.type !== 'PERSIST_STATE') return;
+    expect(persistEffect.state.localSnapshot).toBeInstanceOf(Uint8Array);
+    expect(persistEffect.state.lca?.snapshot).toBeInstanceOf(Uint8Array);
+  });
+
   test('state with fork persists fork fields', async () => {
     const t = await createTestHSM();
     await loadToIdle(t, { content: 'original', mtime: 1000 });
@@ -99,8 +115,10 @@ describe('PersistedMergeState round-trips', () => {
       expect(typeof s.persistedAt).toBe('number');
       if (s.fork) {
         expect(typeof s.fork.base).toBe('string');
-        expect(s.fork.localStateVector).toBeInstanceOf(Uint8Array);
-        expect(s.fork.remoteStateVector).toBeInstanceOf(Uint8Array);
+        expect(s.fork.localSnapshot).toBeInstanceOf(Uint8Array);
+        expect(s.fork.remoteSnapshot).toBeInstanceOf(Uint8Array);
+        expect(s.fork.localStateVector).toBeUndefined();
+        expect(s.fork.remoteStateVector).toBeUndefined();
         expect(typeof s.fork.origin).toBe('string');
         expect(typeof s.fork.created).toBe('number');
         expect(typeof s.fork.captureMark).toBe('number');
@@ -164,8 +182,8 @@ describe('PersistedMergeState round-trips', () => {
     }
   });
 
-  test('Uint8Array fields survive JSON round-trip via custom encoding', async () => {
-    const sv = new Uint8Array([1, 2, 3, 4, 5]);
+  test('snapshot fields survive JSON round-trip via custom encoding', async () => {
+    const snapshot = new Uint8Array([1, 2, 3, 4, 5]);
     const state: PersistedMergeState = {
       guid: 'test',
       path: 'test.md',
@@ -173,16 +191,16 @@ describe('PersistedMergeState round-trips', () => {
         contents: 'hello',
         hash: 'abc',
         mtime: 1000,
-        stateVector: sv,
+        snapshot,
       },
       disk: { hash: 'def', mtime: 2000 },
-      localStateVector: new Uint8Array([10, 20]),
+      localSnapshot: new Uint8Array([10, 20]),
       lastStatePath: 'idle.synced',
       persistedAt: 3000,
       fork: {
         base: 'base text',
-        localStateVector: new Uint8Array([30, 40]),
-        remoteStateVector: new Uint8Array([50, 60]),
+        localSnapshot: new Uint8Array([30, 40]),
+        remoteSnapshot: new Uint8Array([50, 60]),
         origin: 'disk',
         created: 1500,
         captureMark: 0,
@@ -203,9 +221,9 @@ describe('PersistedMergeState round-trips', () => {
       return value;
     });
 
-    expect(restored.lca.stateVector).toEqual(sv);
-    expect(restored.localStateVector).toEqual(new Uint8Array([10, 20]));
-    expect(restored.fork.localStateVector).toEqual(new Uint8Array([30, 40]));
-    expect(restored.fork.remoteStateVector).toEqual(new Uint8Array([50, 60]));
+    expect(restored.lca.snapshot).toEqual(snapshot);
+    expect(restored.localSnapshot).toEqual(new Uint8Array([10, 20]));
+    expect(restored.fork.localSnapshot).toEqual(new Uint8Array([30, 40]));
+    expect(restored.fork.remoteSnapshot).toEqual(new Uint8Array([50, 60]));
   });
 });
