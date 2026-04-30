@@ -470,21 +470,21 @@ export default class Live extends Plugin {
 				modal.open();
 			},
 		});
+		this.addCommand({
+			id: "send-bug-report",
+			name: "Send bug report",
+			callback: () => {
+				const modal = new BugReportModal(this.app, this);
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
 
 		this.register(
 			this.debugSettings.subscribe((settings) => {
 				if (settings.debugging) {
 					this.enableDebugging();
 					this.removeCommand("enable-debugging");
-					this.addCommand({
-						id: "send-bug-report",
-						name: "Send bug report",
-						callback: () => {
-							const modal = new BugReportModal(this.app, this);
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
 					this.addCommand({
 						id: "show-debug-info",
 						name: "Show debug info",
@@ -511,7 +511,6 @@ export default class Live extends Plugin {
 						},
 					});
 				} else {
-					this.removeCommand("send-bug-report");
 					this.removeCommand("show-debug-info");
 					this.removeCommand("disable-debugging");
 					this.addCommand({
