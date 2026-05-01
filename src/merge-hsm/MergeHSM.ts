@@ -59,6 +59,7 @@ import type {
 	Fork,
 	CaptureOpts,
 	EditorViewRef,
+	ResourcePresence,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -347,6 +348,100 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		};
 	}
 
+	private describeResourceContext(context: string): string {
+		return (
+			`context=${context} guid=${this._guid} path=${this.path} ` +
+			`state=${this._statePath} residency=${this.localDoc ? "awake" : "hibernated"} ` +
+			`localDoc=${!!this.localDoc} remoteDoc=${!!this.remoteDoc} ` +
+			`lcaMetadata=${!!this._lca} lcaContents=${this._lca?.contents !== null && this._lca?.contents !== undefined} ` +
+			`pendingDiskContents=${this.pendingDiskContents !== null} fork=${!!this._fork} conflict=${!!this._conflict}`
+		);
+	}
+
+	private assertMachineResources(context: string): void {
+		if (!flags().enableHSMResourceContracts) return;
+		const contract = MACHINE[this._statePath]?.resources;
+		if (!contract) return;
+		if (contract.lcaContents === "present" && this._lca?.contents === null) {
+			this.hydrateLCAContentsFromLocalDoc();
+		}
+
+		const errors: string[] = [];
+		const residency = this.localDoc ? "awake" : "hibernated";
+		if (contract.residency && !contract.residency.includes(residency)) {
+			errors.push(`residency expected ${contract.residency.join("|")} got ${residency}`);
+		}
+
+		this.checkResourcePresence(errors, "localDoc", contract.localDoc, this.localDoc !== null);
+		this.checkResourcePresence(errors, "remoteDoc", contract.remoteDoc, this.remoteDoc !== null);
+		this.checkResourcePresence(errors, "lcaMetadata", contract.lcaMetadata, this._lca !== null);
+		this.checkResourcePresence(
+			errors,
+			"lcaContents",
+			contract.lcaContents,
+			this._lca?.contents !== null && this._lca?.contents !== undefined,
+		);
+		this.checkResourcePresence(
+			errors,
+			"pendingDiskContents",
+			contract.pendingDiskContents,
+			this.pendingDiskContents !== null,
+		);
+		this.checkResourcePresence(errors, "fork", contract.fork, this._fork !== null);
+		this.checkResourcePresence(errors, "conflict", contract.conflict, this._conflict !== null);
+
+		if (errors.length === 0) return;
+
+		const message = `[HSM resource contract] ${errors.join("; ")} | ${this.describeResourceContext(context)}`;
+		this.hsmError(message);
+	}
+
+	private checkResourcePresence(
+		errors: string[],
+		resource: string,
+		expected: ResourcePresence | undefined,
+		actual: boolean,
+	): void {
+		if (expected === "present" && !actual) {
+			errors.push(`${resource} expected present`);
+		} else if (expected === "absent" && actual) {
+			errors.push(`${resource} expected absent`);
+		}
+	}
+
+	private requireLocalDoc(context: string): Y.Doc | null {
+		if (this.localDoc) return this.localDoc;
+		this.hsmError(`[HSM resource guard] localDoc missing | ${this.describeResourceContext(context)}`);
+		return null;
+	}
+
+	private requireRemoteDoc(context: string): Y.Doc | null {
+		if (this.remoteDoc) return this.remoteDoc;
+		this.hsmError(`[HSM resource guard] remoteDoc missing | ${this.describeResourceContext(context)}`);
+		return null;
+	}
+
+	private requireLcaContents(context: string): string | null {
+		if (!this._lca) {
+			this.hsmError(`[HSM resource guard] LCA metadata missing | ${this.describeResourceContext(context)}`);
+			return null;
+		}
+		if (this._lca.contents === null) {
+			this.hydrateLCAContentsFromLocalDoc();
+		}
+		if (this._lca.contents === null) {
+			this.hsmError(`[HSM resource guard] LCA contents missing | ${this.describeResourceContext(context)}`);
+			return null;
+		}
+		return this._lca.contents;
+	}
+
+	private requirePendingDiskContents(context: string): string | null {
+		if (this.pendingDiskContents !== null) return this.pendingDiskContents;
+		this.hsmError(`[HSM resource guard] pendingDiskContents missing | ${this.describeResourceContext(context)}`);
+		return null;
+	}
+
 	prepareForHibernate(): void {
 		this.clearSettledDiskContents();
 		if (
@@ -422,6 +517,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		const savedEffects = this._pendingEffects;
 		if (captureEffects) this._pendingEffects = [];
 		this.handleEvent(event);
+		if (!this._activeInvoke) {
+			this.assertMachineResources(`after ${event.type}`);
+		}
 		const toState = this._statePath;
 		const myEffects = this._pendingEffects;
 		this._pendingEffects = savedEffects;
@@ -580,12 +678,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// idle.localAhead, remoteDoc may be intentionally unsynced and transient
 		// derivations can produce false conflicts that poison future transitions.
 		if (this._statePath !== "idle.diverged") return null;
-		if (!this._lca || !this.localDoc || !this.remoteDoc) return null;
-		this.hydrateLCAContentsFromLocalDoc();
-		const base = this._lca.contents;
-		if (base === null) return null;
-		const ours = this.localDoc.getText("contents").toString();
-		const theirs = this.remoteDoc.getText("contents").toString();
+		if (!this._lca) return null;
+		this.assertMachineResources("before getConflictData");
+		const localDoc = this.requireLocalDoc("getConflictData");
+		const remoteDoc = this.requireRemoteDoc("getConflictData");
+		const base = this.requireLcaContents("getConflictData");
+		if (!localDoc || !remoteDoc || base === null) return null;
+		const ours = localDoc.getText("contents").toString();
+		const theirs = remoteDoc.getText("contents").toString();
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
 		if (!hasConflict) return null;
 		return new Conflict({ base, ours, theirs, regions }).toData();
@@ -603,12 +703,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private materializeIdleConflict(): Conflict | null {
 		if (this._conflict) return this._conflict;
 		if (this._statePath !== "idle.diverged") return null;
-		if (!this._lca || !this.localDoc || !this.remoteDoc) return null;
-		this.hydrateLCAContentsFromLocalDoc();
-		const base = this._lca.contents;
-		if (base === null) return null;
-		const ours = this.localDoc.getText("contents").toString();
-		const theirs = this.remoteDoc.getText("contents").toString();
+		if (!this._lca) return null;
+		this.assertMachineResources("before materializeIdleConflict");
+		const localDoc = this.requireLocalDoc("materializeIdleConflict");
+		const remoteDoc = this.requireRemoteDoc("materializeIdleConflict");
+		const base = this.requireLcaContents("materializeIdleConflict");
+		if (!localDoc || !remoteDoc || base === null) return null;
+		const ours = localDoc.getText("contents").toString();
+		const theirs = remoteDoc.getText("contents").toString();
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
 		if (!hasConflict) return null;
 		this._conflict = new Conflict({ base, ours, theirs, regions });
@@ -658,7 +760,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (!this.getConflictData()) {
 			throw new Error("resolveConflictHeadless requires an active idle conflict");
 		}
-		if (!this.localDoc || !this.remoteDoc) {
+		const localDoc = this.requireLocalDoc("resolveConflictHeadless");
+		const remoteDoc = this.requireRemoteDoc("resolveConflictHeadless");
+		if (!localDoc || !remoteDoc) {
 			throw new Error("resolveConflictHeadless requires localDoc and remoteDoc");
 		}
 
@@ -698,7 +802,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (this._statePath !== "idle.diverged") {
 			throw new Error(`resolveHunkHeadless requires idle.diverged, got ${this._statePath}`);
 		}
-		if (!this.localDoc || !this.remoteDoc) {
+		const localDoc = this.requireLocalDoc("resolveHunkHeadless");
+		const remoteDoc = this.requireRemoteDoc("resolveHunkHeadless");
+		if (!localDoc || !remoteDoc) {
 			throw new Error("resolveHunkHeadless requires localDoc and remoteDoc");
 		}
 		if (!this.materializeIdleConflict()) {
@@ -906,7 +1012,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// then set the real captureMark.
 		if (!this._statePath.startsWith("idle.") || this._fork || !this._lca) return;
 
-		const baseText = this._lca.contents;
+		const baseText = this.requireLcaContents("registerMachineEdit idle");
 		if (baseText === null) return;
 
 		let expectedText: string;
@@ -1564,6 +1670,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						...this._lca,
 						meta: { ...this._lca.meta, mtime: e.mtime },
 					});
+					this.clearPendingDiskContents();
 					this.emitPersistState();
 				}
 			},
@@ -2292,12 +2399,18 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		return {
 			'three-way-merge': async (_hsm, signal) => {
+				this.assertMachineResources("before three-way-merge");
 				if (this.localPersistence && !this.localPersistence.synced) {
 					await this.localPersistence.whenSynced;
 					if (signal.aborted) return { success: false };
 				}
-				if (!this.localDoc) {
+				const localDoc = this.requireLocalDoc("three-way-merge");
+				if (!localDoc) {
 					throw new Error('three-way-merge: localDoc not available');
+				}
+				const baseText = this.requireLcaContents("three-way-merge");
+				if (baseText === null) {
+					throw new Error('three-way-merge: LCA contents not available');
 				}
 
 				// Use cached disk contents if DISK_CHANGED already landed;
@@ -2314,8 +2427,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					diskText = diskContent.content;
 				}
 
-				const localText = this.localDoc.getText('contents').toString();
-				const baseText = this._lca?.contents ?? '';
+				const localText = localDoc.getText('contents').toString();
 				const mergeResult = performThreeWayMerge(baseText, localText, diskText);
 				if (signal.aborted) return { success: false };
 
@@ -2338,11 +2450,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				};
 			},
 			'two-way-merge': async (_hsm, signal) => {
+				this.assertMachineResources("before two-way-merge");
 				if (this.localPersistence && !this.localPersistence.synced) {
 					await this.localPersistence.whenSynced;
 					if (signal.aborted) return { success: false };
 				}
-				if (!this.localDoc) {
+				const localDoc = this.requireLocalDoc("two-way-merge");
+				if (!localDoc) {
 					throw new Error('two-way-merge: localDoc not available');
 				}
 
@@ -2352,10 +2466,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				if (this.remoteDoc) {
 					const update = Y.encodeStateAsUpdate(
 						this.remoteDoc,
-						Y.encodeStateVector(this.localDoc),
+						Y.encodeStateVector(localDoc),
 					);
 					if (update.byteLength > 0) {
-						Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+						Y.applyUpdate(localDoc, update, this.remoteDoc);
 					}
 				}
 
@@ -2369,7 +2483,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					diskText = diskContent.content;
 				}
 
-				const localText = this.localDoc.getText('contents').toString();
+				const localText = localDoc.getText('contents').toString();
 				if (signal.aborted) return { success: false };
 
 				if (localText === diskText) {
@@ -2383,6 +2497,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				};
 			},
 			'idle-merge': async (_hsm, signal) => {
+				this.assertMachineResources("before idle-merge");
 				// Entry action ensureLocalDocForIdle creates localDoc +
 				// persistence. Await persistence sync before merging
 				// (e.g. after waking from hibernation).
@@ -2411,6 +2526,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					await this.localPersistence.whenSynced;
 					if (signal.aborted) return { success: false };
 				}
+				this.assertMachineResources("before fork-reconcile");
 				return this.invokeForkReconcile(signal);
 			},
 			'cleanup': async (_hsm, _signal) => {
@@ -2443,8 +2559,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// ===========================================================================
 
 	private async invokeIdleRemoteAutoMerge(signal: AbortSignal): Promise<unknown> {
-		if (!this.pendingIdleUpdates || !this.localDoc) {
-			this.idleMergeLog(`[idle-merge-debug] ${this._guid} early-exit: pendingIdleUpdates=${!!this.pendingIdleUpdates} localDoc=${!!this.localDoc}`);
+		const localDoc = this.requireLocalDoc("idle remote merge");
+		if (!this.pendingIdleUpdates || !localDoc) {
+			this.idleMergeLog(`[idle-merge-debug] ${this._guid} early-exit: pendingIdleUpdates=${!!this.pendingIdleUpdates} localDoc=${!!localDoc}`);
 			return { success: false };
 		}
 
@@ -2468,11 +2585,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// localDoc is NOT mutated — the onDone action applies the result.
 		const tempDoc = new Y.Doc();
 		try {
-			if (yjsUpdateIsNoop(this.localDoc, updates)) {
+			if (yjsUpdateIsNoop(localDoc, updates)) {
 				return { success: true, newLCA: this._lca, noop: true };
 			}
 
-			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(this.localDoc), this);
+			Y.applyUpdate(tempDoc, Y.encodeStateAsUpdate(localDoc), this);
 			Y.applyUpdate(tempDoc, updates, this.remoteDoc);
 
 			const mergedContent = tempDoc.getText("contents").toString();
@@ -2518,11 +2635,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	private async invokeIdleDiskAutoMerge(signal: AbortSignal): Promise<unknown> {
-		if (this.pendingDiskContents == null || !this._lca || !this.localDoc) {
+		const localDoc = this.requireLocalDoc("idle disk merge");
+		const diskContent = this.requirePendingDiskContents("idle disk merge");
+		if (!localDoc || diskContent === null) {
 			return { success: false };
 		}
-		this.hydrateLCAContentsFromLocalDoc();
-		if (this._lca.contents === null) {
+		if (!this._lca) {
+			return { success: false };
+		}
+		const lcaContent = this.requireLcaContents("idle disk merge");
+		if (lcaContent === null) {
 			this.hsmWarn(
 				`idle disk merge: compacted LCA could not hydrate | ` +
 					`guid=${this._guid} state=${this._statePath}`,
@@ -2530,16 +2652,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return { success: false };
 		}
 
-		const diskContent = this.pendingDiskContents;
-
 		// If fork was pre-created by registerMachineEdit, reuse it.
 		// Otherwise create one now.
 		if (!this._fork) {
 			this._fork = {
-				base: this.localDoc.getText("contents").toString(),
-				localStateVector: Y.encodeStateVector(this.localDoc),
+				base: localDoc.getText("contents").toString(),
+				localStateVector: Y.encodeStateVector(localDoc),
 				remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
-				localSnapshot: snapshotFromDoc(this.localDoc).snapshot,
+				localSnapshot: snapshotFromDoc(localDoc).snapshot,
 				remoteSnapshot: this.remoteDoc
 					? snapshotFromDoc(this.remoteDoc).snapshot
 					: undefined,
@@ -2572,19 +2692,23 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
-		if (!this._lca || !this.localDoc) {
+		const localDoc = this.requireLocalDoc("idle three-way merge");
+		if (!localDoc) {
 			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
-		this.hydrateLCAContentsFromLocalDoc();
-		if (this._lca.contents === null) {
+		if (!this._lca) {
 			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
-
-		const lcaContent = this._lca.contents;
+		const lcaContent = this.requireLcaContents("idle three-way merge");
+		if (lcaContent === null) {
+			this.clearPendingDiskContents();
+			this.pendingIdleUpdates = null;
+			return { success: false };
+		}
 
 		// Read the remote content from remoteDoc. Applying pendingIdleUpdates
 		// to localDoc via raw Y.applyUpdate causes CRDT-level interleaving that
@@ -2594,12 +2718,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// correct remote content without the corruption path.
 		// If remoteDoc isn't available yet (e.g. waking from hibernation), bail
 		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
-		if (!this.remoteDoc) {
+		const remoteDoc = this.requireRemoteDoc("idle three-way merge");
+		if (!remoteDoc) {
 			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
-		const crdtContent = this.remoteDoc.getText("contents").toString();
+		const crdtContent = remoteDoc.getText("contents").toString();
 
 		// If the provider hasn't synced yet, remoteDoc may not reflect the
 		// server's CRDT state.  Defer the merge until PROVIDER_SYNCED
@@ -2625,12 +2750,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			if (this._lca) {
 				const fork: Fork = {
 					base: lcaContent,
-					localStateVector: Y.encodeStateVector(this.localDoc),
+					localStateVector: Y.encodeStateVector(localDoc),
 					remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
-					localSnapshot: snapshotFromDoc(this.localDoc).snapshot,
-					remoteSnapshot: this.remoteDoc
-						? snapshotFromDoc(this.remoteDoc).snapshot
-						: undefined,
+					localSnapshot: snapshotFromDoc(localDoc).snapshot,
+					remoteSnapshot: snapshotFromDoc(remoteDoc).snapshot,
 					origin: 'three-way-conflict',
 					created: this.timeProvider.now(),
 					captureMark: this.getOpCapture()?.mark() ?? 0,
@@ -2685,19 +2808,21 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return { success: false, awaitingProvider: true };
 		}
 
-		if (!this.localDoc || !this.remoteDoc) {
+		const localDoc = this.requireLocalDoc("fork reconcile");
+		const remoteDoc = this.requireRemoteDoc("fork reconcile");
+		if (!localDoc || !remoteDoc) {
 			return { success: false };
 		}
 
 		const fork = this._fork;
-		const localContent = this.localDoc.getText("contents").toString();
+		const localContent = localDoc.getText("contents").toString();
 
 		// Apply any pending remote updates before reading remoteDoc content
 		if (this.pendingIdleUpdates) {
-			Y.applyUpdate(this.remoteDoc, this.pendingIdleUpdates, this.remoteDoc);
+			Y.applyUpdate(remoteDoc, this.pendingIdleUpdates, remoteDoc);
 			this.pendingIdleUpdates = null;
 		}
-		const remoteContent = this.remoteDoc.getText("contents").toString();
+		const remoteContent = remoteDoc.getText("contents").toString();
 
 		this.hsmWarn('reconcileForkInIdle', JSON.stringify({
 			guid: this._guid, captureMark: fork.captureMark, origin: fork.origin,
@@ -2728,15 +2853,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// applyContentToLocalDoc would generate independent insert
 			// ops that duplicate text already present in the remote CRDT.
 			const remoteUpdate = Y.encodeStateAsUpdate(
-				this.remoteDoc,
-				Y.encodeStateVector(this.localDoc),
+				remoteDoc,
+				Y.encodeStateVector(localDoc),
 			);
 			this._bridge.syncToLocal(remoteUpdate);
 
 			this.applyContentToLocalDoc(mergeResult.merged);
 
-			const stateVector = Y.encodeStateVector(this.localDoc);
-			const update = Y.encodeStateAsUpdate(this.localDoc);
+			const stateVector = Y.encodeStateVector(localDoc);
+			const update = Y.encodeStateAsUpdate(localDoc);
 
 			const hash = await this.hashFn(mergeResult.merged);
 			if (signal.aborted) {
@@ -2873,6 +2998,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.localPersistence.once("synced", updateStateVector);
 			}
 		}
+		this.assertMachineResources("after ensureLocalDocForIdle");
 	}
 
 	/**
@@ -2901,12 +3027,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (event.type !== "REMOTE_UPDATE" || event.affectsText !== false) return;
 		if (!this._lca || !this.localDoc || !this.remoteDoc) return;
 		if (this._fork || this._conflict) return;
-		this.hydrateLCAContentsFromLocalDoc();
-		if (this._lca.contents === null) return;
+		const lcaContents = this.requireLcaContents("absorbTextPreservingRemoteUpdate");
+		if (lcaContents === null) return;
 
 		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
-		if (localText !== remoteText || localText !== this._lca.contents) return;
+		if (localText !== remoteText || localText !== lcaContents) return;
 		if (this._disk && this._disk.hash !== this._lca.meta.hash) return;
 
 		const localSV = Y.encodeStateVector(this.localDoc);
@@ -3375,6 +3501,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.localPersistence = null;
 		this.localTextObserver = null;
 		this._remoteFrontmatterMapUpdated = false;
+		this.assertMachineResources("after destroyLocalDoc");
 
 		// Clean up captured references
 		if (doc && observer) {
@@ -3500,7 +3627,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		contents: string,
 		options: { dispatchEditor: boolean },
 	): string {
-		if (!this.localDoc || !this.remoteDoc) {
+		const localDoc = this.requireLocalDoc("applyResolvedConflict");
+		const remoteDoc = this.requireRemoteDoc("applyResolvedConflict");
+		if (!localDoc || !remoteDoc) {
 			this._conflict = null;
 			return contents;
 		}
@@ -3517,8 +3646,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Merge remote CRDT into local so histories converge before applying
 		// the user-selected text.
 		const remoteUpdate = Y.encodeStateAsUpdate(
-			this.remoteDoc,
-			Y.encodeStateVector(this.localDoc),
+			remoteDoc,
+			Y.encodeStateVector(localDoc),
 		);
 		this._bridge.syncToLocal(remoteUpdate);
 
@@ -3526,7 +3655,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// not match what the user chose; this fixes it while preserving history.
 		this.applyContentToLocalDoc(contents);
 
-		const resolvedText = this.localDoc.getText("contents").toString();
+		const resolvedText = localDoc.getText("contents").toString();
 		if (options.dispatchEditor) {
 			// The localDoc observer skips origin=this, so active editor sessions
 			// need an explicit CM6 dispatch.
@@ -3559,7 +3688,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		this.lastKnownEditorText = resolvedText;
 
-		this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+		this._bridge.syncToRemote(Y.encodeStateAsUpdate(localDoc));
 		this._bridge.clearOutboundQueue();
 
 		this._fork = null;
@@ -3574,7 +3703,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		event: ResolveHunkEvent,
 		options: { dispatchEditor: boolean; autoFinalize: boolean },
 	): void {
-		if (!this._conflict || !this.localDoc) return;
+		const localDoc = this.requireLocalDoc("applyConflictHunkResolution");
+		if (!this._conflict || !localDoc) return;
 
 		const { hunkId, resolution } = event;
 		const conflict = this._conflict;
@@ -3603,10 +3733,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				break;
 		}
 
-		const beforeText = this.localDoc.getText("contents").toString();
+		const beforeText = localDoc.getText("contents").toString();
 
-		const ytext = this.localDoc.getText("contents");
-		this.localDoc.transact(() => {
+		const ytext = localDoc.getText("contents");
+		localDoc.transact(() => {
 			const deleteLength = positioned.localEnd - positioned.localStart;
 			if (deleteLength > 0) {
 				ytext.delete(positioned.localStart, deleteLength);
@@ -3618,7 +3748,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		conflict.markResolved(regionOffset);
 
-		const afterText = this.localDoc.getText("contents").toString();
+		const afterText = localDoc.getText("contents").toString();
 		const changes = computePositionedChanges(beforeText, afterText);
 		if (options.dispatchEditor && changes.length > 0) {
 			this.emitEffect({ type: "DISPATCH_CM6", changes });

@@ -47,6 +47,7 @@ import {
   expectLocalDocText,
 } from 'src/merge-hsm/testing';
 import { Conflict } from 'src/merge-hsm/conflict';
+import { FeatureFlagManager } from 'src/flagManager';
 
 import * as Y from 'yjs';
 
@@ -60,6 +61,23 @@ function applyPositionedChanges(
     result = result.slice(0, change.from) + change.insert + result.slice(change.to);
   }
   return result;
+}
+
+async function withHSMResourceContracts<T>(fn: () => Promise<T> | T): Promise<T> {
+  const manager = FeatureFlagManager.getInstance();
+  const previousFlags = manager.flags;
+  manager.flags = { ...previousFlags, enableHSMResourceContracts: true };
+  try {
+    return await fn();
+  } finally {
+    manager.flags = previousFlags;
+  }
+}
+
+function createDocWithText(text: string): Y.Doc {
+  const doc = new Y.Doc();
+  doc.getText('contents').insert(0, text);
+  return doc;
 }
 
 // =============================================================================
@@ -97,6 +115,168 @@ describe('MergeHSM', () => {
       await loadAndActivate(t, 'hello world');
 
       expectLocalDocText(t, 'hello world');
+    });
+  });
+
+  describe('resource contracts', () => {
+    test('idle.synced satisfies contracts while awake and hibernated', async () => {
+      await withHSMResourceContracts(async () => {
+        const t = await createTestHSM();
+        const localDoc = createDocWithText('synced');
+        const lca = await createLCA('synced', 1000, Y.encodeStateVector(localDoc));
+
+        (t.hsm as any)._statePath = 'idle.synced';
+        (t.hsm as any)._lca = lca;
+        (t.hsm as any).localDoc = localDoc;
+        (t.hsm as any).remoteDoc = null;
+        (t.hsm as any).pendingDiskContents = null;
+        (t.hsm as any)._fork = null;
+        (t.hsm as any)._conflict = null;
+
+        expect(() => (t.hsm as any).assertMachineResources('awake test')).not.toThrow();
+
+        (t.hsm as any).prepareForHibernate();
+        expect((t.hsm as any)._lca.contents).toBeNull();
+        expect((t.hsm as any)._lca.meta).toEqual(lca.meta);
+
+        await (t.hsm as any).destroyLocalDoc();
+        expect(t.hsm.getLocalDoc()).toBeNull();
+        expect(() => (t.hsm as any).assertMachineResources('hibernated test')).not.toThrow();
+      });
+    });
+
+    test('wake hydrates compacted LCA contents and satisfies the awake contract', async () => {
+      await withHSMResourceContracts(async () => {
+        const t = await createTestHSM();
+        const localDoc = createDocWithText('wake body');
+        const lca = await createLCA('wake body', 1000, Y.encodeStateVector(localDoc));
+
+        (t.hsm as any)._statePath = 'idle.synced';
+        (t.hsm as any)._lca = { ...lca, contents: null };
+        (t.hsm as any).remoteDoc = null;
+        (t.hsm as any).pendingDiskContents = null;
+        (t.hsm as any)._fork = null;
+        (t.hsm as any)._conflict = null;
+
+        (t.hsm as any).localDoc = localDoc;
+        expect((t.hsm as any).requireLcaContents('wake test')).toBe('wake body');
+        expect(() => (t.hsm as any).assertMachineResources('wake test')).not.toThrow();
+
+        await (t.hsm as any).destroyLocalDoc();
+      });
+    });
+
+    test('idle disk merge reports missing pending disk contents as controlled failure', async () => {
+      const t = await createTestHSM();
+      const localDoc = createDocWithText('base');
+      const lca = await createLCA('base', 1000, Y.encodeStateVector(localDoc));
+      const log = jest.fn();
+
+      (t.hsm as any)._statePath = 'idle.diskAhead';
+      (t.hsm as any)._lca = lca;
+      (t.hsm as any).localDoc = localDoc;
+      (t.hsm as any).remoteDoc = null;
+      (t.hsm as any).pendingDiskContents = null;
+      (t.hsm as any).hsmError = log;
+
+      const result = await (t.hsm as any).invokeIdleDiskAutoMerge(new AbortController().signal);
+
+      expect(result).toEqual({ success: false });
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('pendingDiskContents missing'));
+      localDoc.destroy();
+    });
+
+    test('idle merge reports compacted LCA contents that cannot hydrate', async () => {
+      const t = await createTestHSM();
+      const localDoc = createDocWithText('current');
+      const log = jest.fn();
+
+      (t.hsm as any)._statePath = 'idle.diverged';
+      (t.hsm as any)._lca = {
+        contents: null,
+        meta: { hash: 'base-hash', mtime: 1000 },
+        stateVector: new Uint8Array([0]),
+      };
+      (t.hsm as any).localDoc = localDoc;
+      (t.hsm as any).remoteDoc = null;
+      (t.hsm as any).pendingDiskContents = 'disk';
+      (t.hsm as any).pendingIdleUpdates = new Uint8Array([1, 2, 3]);
+      (t.hsm as any).hsmError = log;
+
+      const result = await (t.hsm as any).invokeIdleThreeWayAutoMerge(new AbortController().signal);
+
+      expect(result).toEqual({ success: false });
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('LCA contents missing'));
+      localDoc.destroy();
+    });
+
+    test('no-LCA disk change routes to idle.diverged without LCA guard errors', async () => {
+      await withHSMResourceContracts(async () => {
+        const t = await createTestHSM();
+        const localDoc = createDocWithText('remote content');
+        const remoteDoc = createDocWithText('remote content');
+        const log = jest.fn();
+
+        (t.hsm as any)._statePath = 'idle.synced';
+        (t.hsm as any)._lca = null;
+        (t.hsm as any).localDoc = localDoc;
+        (t.hsm as any).remoteDoc = remoteDoc;
+        (t.hsm as any).pendingDiskContents = null;
+        (t.hsm as any)._fork = null;
+        (t.hsm as any)._conflict = null;
+        (t.hsm as any).hsmError = log;
+
+        t.send(await diskChanged('disk content', 2000, 'disk-hash'));
+        await t.hsm.awaitIdleAutoMerge();
+
+        expectState(t, 'idle.diverged');
+        expect(t.state.lca).toBeNull();
+        expect(log).not.toHaveBeenCalledWith(expect.stringContaining('lcaMetadata expected present'));
+        expect(log).not.toHaveBeenCalledWith(expect.stringContaining('LCA metadata missing'));
+
+        localDoc.destroy();
+        remoteDoc.destroy();
+      });
+    });
+
+    test('no-LCA idle.diverged conflict inspection returns null without guard errors', async () => {
+      const t = await createTestHSM();
+      const log = jest.fn();
+
+      (t.hsm as any)._statePath = 'idle.diverged';
+      (t.hsm as any)._lca = null;
+      (t.hsm as any).localDoc = null;
+      (t.hsm as any).remoteDoc = null;
+      (t.hsm as any).pendingDiskContents = 'disk content';
+      (t.hsm as any)._fork = null;
+      (t.hsm as any)._conflict = null;
+      (t.hsm as any).hsmError = log;
+
+      expect(t.hsm.getConflictData()).toBeNull();
+      expect(log).not.toHaveBeenCalled();
+    });
+
+    test('idle.synced reports stale pending disk contents when assertions are enabled', async () => {
+      await withHSMResourceContracts(async () => {
+        const t = await createTestHSM();
+        const localDoc = createDocWithText('synced');
+        const lca = await createLCA('synced', 1000, Y.encodeStateVector(localDoc));
+        const log = jest.fn();
+
+        (t.hsm as any)._statePath = 'idle.synced';
+        (t.hsm as any)._lca = lca;
+        (t.hsm as any).localDoc = localDoc;
+        (t.hsm as any).remoteDoc = null;
+        (t.hsm as any).pendingDiskContents = 'stale';
+        (t.hsm as any)._fork = null;
+        (t.hsm as any)._conflict = null;
+        (t.hsm as any).hsmError = log;
+
+        (t.hsm as any).assertMachineResources('stale pending test');
+        expect(log).toHaveBeenCalledWith(expect.stringContaining('pendingDiskContents expected absent'));
+
+        localDoc.destroy();
+      });
     });
   });
 
@@ -482,6 +662,19 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
       expect(t.state.lca?.contents).toBe('hello');
       expect(t.state.lca?.meta.hash).toBe('stale-external-hash');
+      expect(t.state.lca?.meta.mtime).toBe(2000);
+      expect((t.hsm as any).pendingDiskContents).toBeNull();
+    });
+
+    test('DISK_CHANGED matching LCA clears pending disk body without remoteDoc', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+      (t.hsm as any).remoteDoc = null;
+
+      t.send(await diskChanged('hello', 2000));
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe('hello');
       expect(t.state.lca?.meta.mtime).toBe(2000);
       expect((t.hsm as any).pendingDiskContents).toBeNull();
     });

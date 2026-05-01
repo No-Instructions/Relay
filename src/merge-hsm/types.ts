@@ -934,6 +934,31 @@ export type AlwaysCandidate = {
 	actions?: string[];
 };
 
+export type ResourcePresence = "absent" | "optional" | "present";
+export type Residency = "awake" | "hibernated";
+
+export interface ResourceContract {
+	residency?: Residency[];
+	localDoc?: ResourcePresence;
+	remoteDoc?: ResourcePresence;
+	lcaMetadata?: ResourcePresence;
+	lcaContents?: ResourcePresence;
+	pendingDiskContents?: ResourcePresence;
+	fork?: ResourcePresence;
+	conflict?: ResourcePresence;
+}
+
+export interface CapabilityContract {
+	canHibernate?: boolean;
+	canWake?: boolean;
+	canMergeDisk?: boolean;
+	canMergeRemote?: boolean;
+	canComputeConflict?: boolean;
+	canPersistFullLca?: boolean;
+	canUseRemoteDoc?: boolean;
+	canUsePendingDiskContents?: boolean;
+}
+
 /** A single state node in the machine definition */
 export type StateNode = {
 	/** Actions on entering this state */
@@ -946,6 +971,10 @@ export type StateNode = {
 	invoke?: InvokeDef;
 	/** Eventless transitions (evaluated on entry after entry actions) */
 	always?: AlwaysCandidate[];
+	/** Diagnostic resource expectations for this state. */
+	resources?: ResourceContract;
+	/** Declarative capability metadata for tooling and diagnostics. */
+	capabilities?: CapabilityContract;
 };
 
 /** The complete machine definition: partial mapping from state path to state node */

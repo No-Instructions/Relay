@@ -949,7 +949,9 @@ export class BackgroundSync extends HasLogging {
 				// File does not exist
 			}
 		}
-		const isActive = doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid);
+		const sharedFolder = doc.sharedFolder;
+		const refreshQueueKey = S3RN.encode(doc.s3rn);
+		const isActive = doc.userLock || sharedFolder?.mergeManager?.isActive(doc.guid);
 		const startedDisconnected = doc.intent === "disconnected";
 		const hadProviderIntegration = isDocument(doc) && doc.hasProviderIntegration();
 		const createdIdleIntegration =
@@ -960,13 +962,13 @@ export class BackgroundSync extends HasLogging {
 				: false;
 		const shouldCleanupIdleSession = () =>
 			startedDisconnected &&
-			!(doc.userLock || doc.sharedFolder?.mergeManager?.isActive(doc.guid));
+			!(doc.userLock || sharedFolder?.mergeManager?.isActive(doc.guid));
 		const cleanupIdleSession = () => {
 			if (!shouldCleanupIdleSession()) return;
 			if (isDocument(doc)) {
 				if (createdIdleIntegration) {
 					doc.destroyIdleProviderIntegration();
-					doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
+					sharedFolder?.tokenStore.removeFromRefreshQueue(refreshQueueKey);
 					return;
 				}
 				if (hadProviderIntegration || doc.hasProviderIntegration()) {
@@ -974,7 +976,7 @@ export class BackgroundSync extends HasLogging {
 				}
 			}
 			doc.disconnect();
-			doc.sharedFolder.tokenStore.removeFromRefreshQueue(S3RN.encode(doc.s3rn));
+			sharedFolder?.tokenStore.removeFromRefreshQueue(refreshQueueKey);
 		};
 		if (doc.destroyed) return false;
 		const connected = await doc.connect();

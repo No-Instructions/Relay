@@ -112,6 +112,21 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.synced': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'absent',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canHibernate: true,
+			canWake: true,
+			canPersistFullLca: true,
+		},
 		entry: ['resetIdleRetryCount', 'clearSettledDiskContents'],
 		on: {
 			REMOTE_UPDATE: [
@@ -122,6 +137,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: [
 				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
 				{ target: 'idle.synced', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
+				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
@@ -131,6 +147,21 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.localAhead': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
 		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'fork-reconcile',
@@ -160,6 +191,20 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.remoteAhead': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'present',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+		},
 		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'idle-merge',
@@ -184,6 +229,21 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.diskAhead': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'present',
+			lcaContents: 'present',
+			pendingDiskContents: 'present',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeDisk: true,
+			canPersistFullLca: true,
+			canUsePendingDiskContents: true,
+		},
 		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'idle-merge',
@@ -204,6 +264,24 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'idle.diverged': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'optional',
+		},
+		capabilities: {
+			canMergeDisk: true,
+			canMergeRemote: true,
+			canComputeConflict: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+			canUsePendingDiskContents: true,
+		},
 		entry: ['ensureLocalDocForIdle'],
 		invoke: {
 			src: 'idle-merge',
@@ -287,6 +365,20 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.conflict.bannerShown': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'present',
+		},
+		capabilities: {
+			canComputeConflict: true,
+			canUseRemoteDoc: true,
+		},
 		on: {
 			OPEN_DIFF_VIEW: 'active.conflict.resolving',
 			DISMISS_CONFLICT: { target: 'active.tracking', actions: ['storeDeferredConflict'] },
@@ -300,6 +392,20 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.conflict.resolving': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'present',
+		},
+		capabilities: {
+			canComputeConflict: true,
+			canUseRemoteDoc: true,
+		},
 		on: {
 			RESOLVE: { target: 'active.tracking', actions: ['resolveConflict'] },
 			RESOLVE_HUNK: { target: 'active.conflict.resolving', actions: ['resolveHunk'] },
@@ -383,6 +489,21 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.tracking': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
 		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },

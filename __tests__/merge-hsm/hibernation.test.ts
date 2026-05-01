@@ -314,6 +314,28 @@ describe('Hibernation Lifecycle', () => {
       remoteDoc.destroy();
     });
 
+    test('hibernate compacts LCA contents while preserving metadata', () => {
+      const doc = createMockDocument('doc-1', 'test.md');
+      const localDoc = new Y.Doc();
+      localDoc.getText('contents').insert(0, 'synced body');
+      const meta = { hash: 'synced-hash', mtime: 1234 };
+
+      (doc.hsm as any)._statePath = 'idle.synced';
+      (doc.hsm as any)._lca = {
+        contents: 'synced body',
+        meta,
+        stateVector: Y.encodeStateVector(localDoc),
+      };
+      (doc.hsm as any).localDoc = localDoc;
+      (doc.hsm as any).remoteDoc = null;
+
+      manager.hibernate('doc-1');
+
+      expect((doc.hsm as any)._lca.contents).toBeNull();
+      expect((doc.hsm as any)._lca.meta).toEqual(meta);
+      expect(doc.hsm?.getLocalDoc()).toBeNull();
+    });
+
     test('hibernate is no-op for already hibernated', () => {
       createMockDocument('doc-1', 'test.md');
       manager.hibernate('doc-1');

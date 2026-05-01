@@ -8,6 +8,7 @@ export interface FeatureFlags {
 	enableDiscordLogin: boolean;
 	enableDeviceManagement: boolean;
 	enableHSMRecording: boolean;
+	enableHSMResourceContracts: boolean;
 	enableDraftMode: boolean;
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
@@ -112,6 +113,13 @@ export const FeatureFlagSchema: {
 		title: "Merge state-machine recording",
 		description:
 			"Write MergeHSM transition records to the vault-local JSONL recording file.",
+	},
+	enableHSMResourceContracts: {
+		default: false,
+		category: "debugging",
+		title: "Merge state resource contracts",
+		description:
+			"Assert MergeHSM resource expectations declared on the machine states.",
 	},
 	enableDraftMode: {
 		default: false,

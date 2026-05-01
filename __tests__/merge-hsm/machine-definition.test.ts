@@ -40,6 +40,31 @@ const ALL_STATE_PATHS: StatePath[] = [
 	"unloading",
 ];
 
+const RESOURCE_CONTRACT_KEYS = [
+	"residency",
+	"localDoc",
+	"remoteDoc",
+	"lcaMetadata",
+	"lcaContents",
+	"pendingDiskContents",
+	"fork",
+	"conflict",
+];
+
+const CAPABILITY_CONTRACT_KEYS = [
+	"canHibernate",
+	"canWake",
+	"canMergeDisk",
+	"canMergeRemote",
+	"canComputeConflict",
+	"canPersistFullLca",
+	"canUseRemoteDoc",
+	"canUsePendingDiskContents",
+];
+
+const RESOURCE_PRESENCE_VALUES = ["absent", "optional", "present"];
+const RESIDENCY_VALUES = ["awake", "hibernated"];
+
 describe("Machine Definition", () => {
 	describe("consistency validation", () => {
 		test("validateMachine returns no errors with HSM-bound config", async () => {
@@ -74,6 +99,57 @@ describe("Machine Definition", () => {
 			if (invalidTargets.length > 0) {
 				fail(`Invalid transition targets:\n${invalidTargets.join("\n")}`);
 			}
+		});
+
+		test("resource contract values are valid", () => {
+			const errors: string[] = [];
+
+			for (const [statePath, node] of Object.entries(MACHINE)) {
+				if (!node?.resources) continue;
+				for (const [key, value] of Object.entries(node.resources)) {
+					if (key === "residency") {
+						if (!Array.isArray(value) || value.some((item) => !RESIDENCY_VALUES.includes(item))) {
+							errors.push(`${statePath}.resources.residency has invalid value`);
+						}
+						continue;
+					}
+					if (!RESOURCE_PRESENCE_VALUES.includes(value as string)) {
+						errors.push(`${statePath}.resources.${key} has invalid value '${value}'`);
+					}
+				}
+			}
+
+			expect(errors).toEqual([]);
+		});
+
+		test("hibernated residency is explicitly limited to idle states that wake through MergeManager", () => {
+			const hibernatedStates = Object.entries(MACHINE)
+				.filter(([, node]) => node?.resources?.residency?.includes("hibernated"))
+				.map(([statePath]) => statePath);
+
+			expect(hibernatedStates).toEqual(["idle.synced", "idle.localAhead", "idle.diverged"]);
+		});
+
+		test("resource and capability contracts reference only known keys", () => {
+			const errors: string[] = [];
+
+			for (const [statePath, node] of Object.entries(MACHINE)) {
+				for (const key of Object.keys(node?.resources ?? {})) {
+					if (!RESOURCE_CONTRACT_KEYS.includes(key)) {
+						errors.push(`${statePath}.resources.${key}`);
+					}
+				}
+				for (const [key, value] of Object.entries(node?.capabilities ?? {})) {
+					if (!CAPABILITY_CONTRACT_KEYS.includes(key)) {
+						errors.push(`${statePath}.capabilities.${key}`);
+					}
+					if (typeof value !== "boolean") {
+						errors.push(`${statePath}.capabilities.${key} is not boolean`);
+					}
+				}
+			}
+
+			expect(errors).toEqual([]);
 		});
 	});
 
