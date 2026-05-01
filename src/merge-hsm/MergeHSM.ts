@@ -331,6 +331,40 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.pendingDiskHash = null;
 	}
 
+	private clearSettledDiskContents(): void {
+		if (this._statePath === "idle.synced" && !this._fork && !this._conflict) {
+			this.clearPendingDiskContents();
+		}
+	}
+
+	private hydrateLCAContentsFromLocalDoc(): void {
+		if (!this._lca || this._lca.contents !== null || !this.localDoc) return;
+		const localStateVector = Y.encodeStateVector(this.localDoc);
+		if (!stateVectorsEqual(localStateVector, this._lca.stateVector)) return;
+		this._lca = {
+			...this._lca,
+			contents: this.localDoc.getText("contents").toString(),
+		};
+	}
+
+	prepareForHibernate(): void {
+		this.clearSettledDiskContents();
+		if (
+			this._statePath !== "idle.synced" ||
+			this._fork ||
+			this._conflict ||
+			this.pendingIdleUpdates !== null ||
+			!this._lca
+		) {
+			return;
+		}
+		this._lca = {
+			...this._lca,
+			contents: null,
+		};
+		this.lastKnownEditorText = null;
+	}
+
 	private hasFreshPendingDiskContents(): boolean {
 		if (this.pendingDiskContents === null) return false;
 		if (this.pendingDiskSource === "view-data") return true;
@@ -547,7 +581,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// derivations can produce false conflicts that poison future transitions.
 		if (this._statePath !== "idle.diverged") return null;
 		if (!this._lca || !this.localDoc || !this.remoteDoc) return null;
+		this.hydrateLCAContentsFromLocalDoc();
 		const base = this._lca.contents;
+		if (base === null) return null;
 		const ours = this.localDoc.getText("contents").toString();
 		const theirs = this.remoteDoc.getText("contents").toString();
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
@@ -568,7 +604,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (this._conflict) return this._conflict;
 		if (this._statePath !== "idle.diverged") return null;
 		if (!this._lca || !this.localDoc || !this.remoteDoc) return null;
+		this.hydrateLCAContentsFromLocalDoc();
 		const base = this._lca.contents;
+		if (base === null) return null;
 		const ours = this.localDoc.getText("contents").toString();
 		const theirs = this.remoteDoc.getText("contents").toString();
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
@@ -869,6 +907,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (!this._statePath.startsWith("idle.") || this._fork || !this._lca) return;
 
 		const baseText = this._lca.contents;
+		if (baseText === null) return;
 
 		let expectedText: string;
 		try {
@@ -1564,6 +1603,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			resetIdleRetryCount: () => {
 				this.idleRetryCount = 0;
 			},
+			clearSettledDiskContents: () => {
+				this.clearSettledDiskContents();
+			},
 			requestHibernate: () => {
 				this.emitEffect({ type: "REQUEST_HIBERNATE", guid: this._guid });
 			},
@@ -2045,7 +2087,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 							meta: { hash: e.hash, mtime: e.mtime },
 							stateVector: Y.encodeStateVector(this.localDoc),
 						});
-						this.discardSupersededPendingDiskContents();
+						this.clearPendingDiskContents();
 						this.emitPersistState();
 					}
 				}
@@ -2056,22 +2098,22 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this._bridge.flushOutbound();
 				}
 			},
-				setOffline: () => {
-					this._isOnline = false;
-					this._providerSynced = false;
-					this._bridge.providerSynced = false;
-				},
-				markProviderSynced: () => {
-					this._providerSynced = true;
-					this._bridge.providerSynced = true;
-				},
-				maybeSignalPersistenceSyncedForRecovery: () => {
-					this.maybeSignalPersistenceReady("event");
-				},
-				clearForkAndUpdateLCA: (_hsm, event) => {
-					this._fork = null;
-					this._ingestionTexts = [];
-					this.pendingIdleUpdates = null;
+			setOffline: () => {
+				this._isOnline = false;
+				this._providerSynced = false;
+				this._bridge.providerSynced = false;
+			},
+			markProviderSynced: () => {
+				this._providerSynced = true;
+				this._bridge.providerSynced = true;
+			},
+			maybeSignalPersistenceSyncedForRecovery: () => {
+				this.maybeSignalPersistenceReady("event");
+			},
+			clearForkAndUpdateLCA: (_hsm, event) => {
+				this._fork = null;
+				this._ingestionTexts = [];
+				this.pendingIdleUpdates = null;
 				const result = (event as any).data;
 				if (result?.newLCA) {
 					this._setLCA(result.newLCA);
@@ -2348,6 +2390,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					await this.localPersistence.whenSynced;
 					if (signal.aborted) return { success: false };
 				}
+				this.hydrateLCAContentsFromLocalDoc();
 
 				// Dispatch to the right merge based on which idle state spawned the invoke.
 				// The interpreter spawns invokes on state entry, so _statePath is
@@ -2478,6 +2521,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (this.pendingDiskContents == null || !this._lca || !this.localDoc) {
 			return { success: false };
 		}
+		this.hydrateLCAContentsFromLocalDoc();
+		if (this._lca.contents === null) {
+			this.hsmWarn(
+				`idle disk merge: compacted LCA could not hydrate | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return { success: false };
+		}
 
 		const diskContent = this.pendingDiskContents;
 
@@ -2522,6 +2573,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return { success: false };
 		}
 		if (!this._lca || !this.localDoc) {
+			this.clearPendingDiskContents();
+			this.pendingIdleUpdates = null;
+			return { success: false };
+		}
+		this.hydrateLCAContentsFromLocalDoc();
+		if (this._lca.contents === null) {
 			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
 			return { success: false };
@@ -2806,6 +2863,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					if (this._localDocClientID === null) {
 						this._localDocClientID = this.localDoc.clientID;
 					}
+					this.hydrateLCAContentsFromLocalDoc();
 				}
 			};
 
@@ -2843,6 +2901,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (event.type !== "REMOTE_UPDATE" || event.affectsText !== false) return;
 		if (!this._lca || !this.localDoc || !this.remoteDoc) return;
 		if (this._fork || this._conflict) return;
+		this.hydrateLCAContentsFromLocalDoc();
+		if (this._lca.contents === null) return;
 
 		const localText = this.localDoc.getText("contents").toString();
 		const remoteText = this.remoteDoc.getText("contents").toString();
@@ -3042,6 +3102,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Update state vector to reflect what's in localDoc
 		if (this.localDoc) {
 			this._localStateVector = Y.encodeStateVector(this.localDoc);
+			this.hydrateLCAContentsFromLocalDoc();
 
 			// Record the client ID for reuse across lock cycles.
 			// This prevents content duplication when IDB comes back empty on reopen.
@@ -3364,6 +3425,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return;
 		}
 		if (lca !== null && this.localDoc) {
+			if (lca.contents === null) {
+				this.hsmWarn(
+					`setLCA: refusing compacted LCA capture | ` +
+						`guid=${this._guid} state=${this._statePath}`,
+				);
+				return;
+			}
 			const actualText = this.localDoc.getText("contents").toString();
 			if (actualText !== lca.contents) {
 				this.hsmWarn(
@@ -3728,6 +3796,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	private emitPersistState(): void {
+		if (this._lca?.contents === null) {
+			this.hydrateLCAContentsFromLocalDoc();
+		}
+		if (this._lca?.contents === null) {
+			this.hsmWarn(
+				`emitPersistState: skipped compacted LCA body | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return;
+		}
 		const localSnapshot = this.localDoc
 			? snapshotFromDoc(this.localDoc).snapshot
 			: null;

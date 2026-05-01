@@ -351,6 +351,9 @@ function _deserializeSyncStatus(status: SerializableSyncStatus): SyncStatus {
  * Serialize an LCAState to a JSON-safe object.
  */
 export function serializeLCA(lca: LCAState): SerializableLCA {
+  if (lca.contents === null) {
+    throw new Error('Cannot serialize compacted LCA contents');
+  }
   return {
     contents: lca.contents,
     hash: lca.meta.hash,

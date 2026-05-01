@@ -883,6 +883,7 @@ export class MergeManager {
         this.resetHibernateTimer(guid);
         return;
       }
+      hsm.prepareForHibernate();
       hsm.setRemoteDoc(null);
       // destroyLocalDoc() nulls out references synchronously, then does
       // async IDB cleanup on the captured refs. Fire-and-forget is safe
@@ -930,16 +931,21 @@ export class MergeManager {
    * @param lca - New LCA state, or null to clear
    */
   async setLCA(guid: string, lca: LCAState | null): Promise<void> {
+    if (lca?.contents === null) {
+      this._lcaCache.set(guid, lcaToMeta(lca));
+      return;
+    }
+    const fullLca = lca as (LCAState & { contents: string }) | null;
     const doc = this._getDocument(guid);
     const hsm = doc?.hsm;
     const localDoc = hsm?.getLocalDoc() ?? null;
-    const lcaSnapshot = lca?.snapshot ??
-      (lca && localDoc?.getText('contents').toString() === lca.contents
+    const lcaSnapshot = fullLca?.snapshot ??
+      (fullLca && localDoc?.getText('contents').toString() === fullLca.contents
         ? snapshotFromDoc(localDoc).snapshot
         : undefined);
-    const lcaForPersistence = lca && lcaSnapshot
-      ? { ...lca, snapshot: lcaSnapshot }
-      : lca;
+    const lcaForPersistence = fullLca && lcaSnapshot
+      ? { ...fullLca, snapshot: lcaSnapshot }
+      : fullLca;
 
     // Update cache with metadata only (no contents string)
     this._lcaCache.set(guid, lcaForPersistence

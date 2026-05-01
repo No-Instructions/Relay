@@ -54,8 +54,8 @@ export interface MergeMetadata {
 }
 
 export interface LCAState {
-	/** The contents at the sync point */
-	contents: string;
+	/** The contents at the sync point. Hibernated synced HSMs may compact this body. */
+	contents: string | null;
 
 	/** Metadata at sync point */
 	meta: MergeMetadata;
@@ -1006,7 +1006,7 @@ export interface SerializableSnapshot {
 		path: string;
 		statePath: StatePath;
 		lca: {
-			contents: string;
+			contents: string | null;
 			hash: string;
 			mtime: number;
 			stateVector: string; // base64

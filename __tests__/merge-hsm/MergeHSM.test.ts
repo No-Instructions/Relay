@@ -483,6 +483,74 @@ describe('MergeHSM', () => {
       expect(t.state.lca?.contents).toBe('hello');
       expect(t.state.lca?.meta.hash).toBe('stale-external-hash');
       expect(t.state.lca?.meta.mtime).toBe(2000);
+      expect((t.hsm as any).pendingDiskContents).toBeNull();
+    });
+
+    test('active DISK_CHANGED clears pending disk body once localDoc matches', async () => {
+      const t = await createTestHSM();
+      await loadAndActivate(t, 'hello', {
+        mtime: Date.now() - 1000,
+        editorViewRef: mockEditorViewRef('hello'),
+      });
+
+      t.send(await diskChanged('hello updated', Date.now()));
+      expectState(t, 'active.tracking');
+      expect((t.hsm as any).pendingDiskContents).toBe('hello updated');
+
+      t.send(cm6Change([{ from: 0, to: 5, insert: 'hello updated' }], 'hello updated'));
+      t.send(await diskChanged('hello updated', Date.now() + 1));
+
+      expectState(t, 'active.tracking');
+      expect(t.state.lca?.contents).toBe('hello updated');
+      expect((t.hsm as any).pendingDiskContents).toBeNull();
+    });
+
+    test('hibernate compacts settled content and wake restores LCA from local persistence', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+      t.send(await diskChanged('hello', 2000, 'stale-external-hash'));
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe('hello');
+      expect((t.hsm as any).pendingDiskContents).toBeNull();
+
+      (t.hsm as any).prepareForHibernate();
+      expect(t.state.lca?.contents).toBeNull();
+
+      await (t.hsm as any).destroyLocalDoc();
+      expect(t.getLocalDocText()).toBeNull();
+
+      (t.hsm as any).ensureLocalDocForIdle();
+
+      expect(t.getLocalDocText()).toBe('hello');
+      expect(t.state.lca?.contents).toBe('hello');
+    });
+
+    test('idle disk merge hydrates compacted LCA before persisting', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+
+      t.send(connected());
+      t.send(providerSynced());
+      (t.hsm as any).prepareForHibernate();
+      expect(t.state.lca?.contents).toBeNull();
+      t.clearEffects();
+
+      t.send(await diskChanged('hello updated', 2000));
+      await t.hsm.awaitIdleAutoMerge();
+
+      const persistDuringDiskMerge = t.effects.find(
+        (effect) => effect.type === 'PERSIST_STATE',
+      ) as any;
+      expect(persistDuringDiskMerge?.state.lca?.contents).toBe('hello');
+
+      t.send(connected());
+      t.send(providerSynced());
+      await t.hsm.awaitForkReconcile();
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe('hello updated');
+      expectEffect(t.effects, { type: 'SYNC_TO_REMOTE' });
     });
 
     // BUG-049: Test reopen from idle.diverged doesn't duplicate content
