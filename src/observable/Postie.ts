@@ -53,6 +53,10 @@ export class PostOffice {
 		return PostOffice.instance ?? null;
 	}
 
+	static isDestroyed(): boolean {
+		return PostOffice._destroyed;
+	}
+
 	beginTransaction(): void {
 		this.isInTransaction = true;
 		this.currentTransactionId++;
