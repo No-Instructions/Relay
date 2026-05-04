@@ -156,7 +156,7 @@ describe('PersistedMergeState round-trips', () => {
     const allPaths: StatePath[] = [
       'unloaded', 'loading',
       'idle.loading', 'idle.synced', 'idle.localAhead',
-      'idle.remoteAhead', 'idle.diskAhead', 'idle.diverged', 'idle.error',
+      'idle.remoteAhead', 'idle.diskAhead', 'idle.diverged', 'idle.recoverLCA', 'idle.error',
       'active.loading', 'active.entering', 'active.entering.awaitingPersistence',
       'active.entering.reconciling',
       'active.tracking', 'active.merging.twoWay', 'active.merging.threeWay',

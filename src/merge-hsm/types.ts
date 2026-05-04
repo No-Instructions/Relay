@@ -219,6 +219,7 @@ export type StatePath =
 	| "idle.remoteAhead"
 	| "idle.diskAhead"
 	| "idle.diverged"
+	| "idle.recoverLCA"
 	| "idle.error"
 	| "active.loading"
 	| "active.entering"
@@ -298,6 +299,15 @@ export interface CM6ChangeEvent {
 
 export interface ProviderSyncedEvent {
 	type: "PROVIDER_SYNCED";
+}
+
+export interface RecoverLCAEvent {
+	type: "RECOVER_LCA";
+	disk: {
+		content: string;
+		hash: string;
+		mtime: number;
+	};
 }
 
 export interface ConnectedEvent {
@@ -513,6 +523,7 @@ export type MergeEvent =
 	| SaveCompleteEvent
 	| CM6ChangeEvent
 	| ProviderSyncedEvent
+	| RecoverLCAEvent
 	| ConnectedEvent
 	| DisconnectedEvent
 	// Mode Determination (from MergeManager)
@@ -954,6 +965,7 @@ export interface CapabilityContract {
 	canMergeDisk?: boolean;
 	canMergeRemote?: boolean;
 	canComputeConflict?: boolean;
+	canRecoverLCA?: boolean;
 	canPersistFullLca?: boolean;
 	canUseRemoteDoc?: boolean;
 	canUsePendingDiskContents?: boolean;

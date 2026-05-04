@@ -2462,6 +2462,36 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
       expect(t.state.lca?.contents).toBe(content);
       expect(t.hsm.getSyncStatus().status).toBe('synced');
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
+    });
+
+    test('bootstrapLCAFromDisk wakes hibernated no-LCA docs before recovering LCA', async () => {
+      const content = 'same content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM();
+      t.seedIndexedDB(updates);
+      t.syncRemoteWithUpdate(updates);
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(updates, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      await t.hsm.awaitForkReconcile();
+
+      (t.hsm as any).setStatePath('idle.diverged');
+      await (t.hsm as any).destroyLocalDoc();
+      expect(t.hsm.getLocalDoc()).toBeNull();
+      expect(t.hsm.getRemoteDoc()).not.toBeNull();
+
+      await t.hsm.bootstrapLCAFromDisk({
+        content,
+        hash: 'same-hash',
+        mtime: 456,
+      });
+
+      expectState(t, 'idle.synced');
+      expect(t.hsm.getLocalDoc()).not.toBeNull();
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.hsm.getSyncStatus().status).toBe('synced');
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
     });
 
     test('bootstrapLCAFromDisk keeps no-LCA synced CRDT/disk mismatch diverged', async () => {

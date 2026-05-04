@@ -86,6 +86,37 @@ import type { FrontMatterPrimitives } from "./types";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
+type RecoverLCADisk = { content: string; hash: string; mtime: number };
+type RecoverLCAResult =
+	| {
+		kind: "synced";
+		disk: RecoverLCADisk;
+		newLCA: LCAState;
+		localStateVector: Uint8Array;
+		remoteStateVector: Uint8Array;
+	}
+	| {
+		kind: "remoteAhead";
+		disk: RecoverLCADisk;
+		newLCA: LCAState;
+		localStateVector: Uint8Array;
+		remoteStateVector: Uint8Array;
+		pendingIdleUpdates: Uint8Array;
+	}
+	| {
+		kind: "diverged";
+		disk: RecoverLCADisk;
+		localStateVector: Uint8Array;
+		remoteStateVector: Uint8Array;
+		newLCA?: LCAState;
+		pendingIdleUpdates?: Uint8Array;
+		pendingDiskContents?: string;
+	}
+	| {
+		kind: "declined";
+		reason: string;
+		detail?: Record<string, unknown>;
+	};
 
 // =============================================================================
 // Simple Observable for HSM
@@ -174,6 +205,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private pendingDiskContents: string | null = null;
 	private pendingDiskHash: string | null = null;
 	private pendingDiskSource: PendingDiskSource | null = null;
+	private pendingRecoverLCADisk: RecoverLCADisk | null = null;
 
 	// Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
 	private pendingEditorContent: string | null = null;
@@ -1180,82 +1212,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}): Promise<void> {
 		if (this._lca) return;
 
-		await this.awaitPersistenceReady();
-		if (!this.localDoc || !this.remoteDoc) return;
-
-		const localText = this.localDoc.getText("contents").toString();
-		const localStateVector = Y.encodeStateVector(this.localDoc);
-		const diskMatchesLocal = localText === disk.content;
-
-		if (yjsDocsEqual(this.localDoc, this.remoteDoc)) {
-			if (!diskMatchesLocal) {
-				this._localStateVector = localStateVector;
-				this._remoteStateVector = localStateVector;
-				this._disk = { hash: disk.hash, mtime: disk.mtime };
-				this.pendingIdleUpdates = null;
-				this.setPendingDiskContents(disk.content, "disk-event", disk.hash);
-				this.setStatePath("idle.diverged");
-				this.emitPersistState();
-				return;
-			}
-
-			this._localStateVector = localStateVector;
-			this._remoteStateVector = localStateVector;
-			this._conflict = null;
-			this.pendingIdleUpdates = null;
-			this.clearPendingDiskContents();
-			this._setLCA({
-				contents: localText,
-				meta: { hash: disk.hash, mtime: disk.mtime },
-				stateVector: localStateVector,
-			});
-			this.emitPersistState();
-			if (this._lca) {
-				this.setStatePath("idle.synced");
-				this.send({
-					type: "DISK_CHANGED",
-					contents: disk.content,
-					mtime: disk.mtime,
-					hash: disk.hash,
-				});
-			}
-			return;
-		}
-
-		if (yjsDocIsAhead(this.remoteDoc, this.localDoc)) {
-			const lcaHash = diskMatchesLocal
-				? disk.hash
-				: await this.hashFn(localText);
-			const lcaMtime = diskMatchesLocal
-				? disk.mtime
-				: this.timeProvider.now();
-			const remoteUpdate = Y.encodeStateAsUpdate(
-				this.remoteDoc,
-				localStateVector,
-			);
-			const remoteStateVector = Y.encodeStateVector(this.remoteDoc);
-			this._localStateVector = localStateVector;
-			this._remoteStateVector = remoteStateVector;
-			this._disk = { hash: disk.hash, mtime: disk.mtime };
-			this._conflict = null;
-			this.pendingIdleUpdates = remoteUpdate;
-			if (diskMatchesLocal) {
-				this.clearPendingDiskContents();
-			} else {
-				this.setPendingDiskContents(disk.content, "disk-event", disk.hash);
-			}
-			this._setLCA({
-				contents: localText,
-				meta: { hash: lcaHash, mtime: lcaMtime },
-				stateVector: localStateVector,
-			});
-			this.emitPersistState();
-			if (this._lca) {
-				this.setStatePath(diskMatchesLocal ? "idle.remoteAhead" : "idle.diverged");
-				this.send({ type: "IDLE_RETRY" });
-			}
-			return;
-		}
+		this.send({ type: "RECOVER_LCA", disk });
+		await this.awaitAsync("recover-lca");
 	}
 
 	/**
@@ -1620,7 +1578,15 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
+			canRecoverLCA: () =>
+				this._lca === null && this._fork === null && this._conflict === null,
 			isRecoveryMode: () => this._lca === null,
+			recoverLCASynced: (_hsm, event) =>
+				(event as any).data?.kind === "synced",
+			recoverLCARemoteAhead: (_hsm, event) =>
+				(event as any).data?.kind === "remoteAhead",
+			recoverLCADiverged: (_hsm, event) =>
+				(event as any).data?.kind === "diverged",
 
 			// === Active merge invoke guards ===
 			threeWayMergeSucceeded: (_hsm, event) => (event as any).data?.success === true,
@@ -1636,6 +1602,59 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			ensureLocalDocForIdle: () => this.ensureLocalDocForIdle(),
 
 			// === Remote/Disk data ===
+			storeRecoverLCADisk: (_hsm, event) => {
+				const e = event as any;
+				this.pendingRecoverLCADisk = e.disk ?? {
+					content: e.contents,
+					hash: e.hash,
+					mtime: e.mtime,
+				};
+			},
+			clearRecoverLCARequest: () => {
+				this.pendingRecoverLCADisk = null;
+			},
+			applyRecoverLCAResult: (_hsm, event) => {
+				const result = (event as any).data as RecoverLCAResult | undefined;
+				this.pendingRecoverLCADisk = null;
+				if (!result) return;
+
+				if (result.kind === "declined") {
+					this.hsmWarn(
+						`recoverLCA declined | guid=${this._guid} reason=${result.reason} ` +
+						`detail=${JSON.stringify(result.detail ?? {})}`,
+					);
+					return;
+				}
+
+				this._localStateVector = result.localStateVector;
+				this._remoteStateVector = result.remoteStateVector;
+				this._disk = { hash: result.disk.hash, mtime: result.disk.mtime };
+				this._conflict = null;
+
+				if (result.kind === "synced") {
+					this.pendingIdleUpdates = null;
+					this.clearPendingDiskContents();
+					this._setLCA(result.newLCA);
+				} else if (result.kind === "remoteAhead") {
+					this.pendingIdleUpdates = result.pendingIdleUpdates;
+					this.clearPendingDiskContents();
+					this._setLCA(result.newLCA);
+				} else {
+					this.pendingIdleUpdates = result.pendingIdleUpdates ?? null;
+					if (result.pendingDiskContents !== undefined) {
+						this.setPendingDiskContents(
+							result.pendingDiskContents,
+							"disk-event",
+							result.disk.hash,
+						);
+					}
+					if (result.newLCA) {
+						this._setLCA(result.newLCA);
+					}
+				}
+
+				this.emitPersistState();
+			},
 			applyRemoteToRemoteDoc: (_hsm, event) => {
 				const update = (event as any).update as Uint8Array;
 				if (!update || update.byteLength === 0) return;
@@ -2391,6 +2410,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			const neverResolve = () => new Promise<never>(() => {});
 			return {
 				'idle-merge': neverResolve,
+				'recover-lca': neverResolve,
 				'fork-reconcile': neverResolve,
 				'cleanup': neverResolve,
 				'three-way-merge': neverResolve,
@@ -2521,6 +2541,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						return Promise.resolve({ success: false });
 				}
 			},
+			'recover-lca': async (_hsm, signal) => {
+				this.assertMachineResources("before recover-lca");
+				if (this.localPersistence && !this.localPersistence.synced) {
+					await this.localPersistence.whenSynced;
+					if (signal.aborted) {
+						return { kind: "declined", reason: "aborted" } satisfies RecoverLCAResult;
+					}
+				}
+				this.assertMachineResources("after recover-lca persistence");
+				return this.invokeRecoverLCA(signal);
+			},
 			'fork-reconcile': async (_hsm, signal) => {
 				if (this.localPersistence && !this.localPersistence.synced) {
 					await this.localPersistence.whenSynced;
@@ -2557,6 +2588,108 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// ===========================================================================
 	// Invoke Source Implementations (async operations)
 	// ===========================================================================
+
+	private async invokeRecoverLCA(signal: AbortSignal): Promise<RecoverLCAResult> {
+		const disk = this.pendingRecoverLCADisk;
+		if (!disk) {
+			return { kind: "declined", reason: "missing-disk" };
+		}
+		if (this._lca) {
+			return { kind: "declined", reason: "already-has-lca" };
+		}
+
+		const localDoc = this.requireLocalDoc("recover LCA");
+		const remoteDoc = this.requireRemoteDoc("recover LCA");
+		if (!localDoc || !remoteDoc) {
+			return { kind: "declined", reason: "missing-docs" };
+		}
+
+		const localText = localDoc.getText("contents").toString();
+		const localStateVector = Y.encodeStateVector(localDoc);
+		const diskMatchesLocal = localText === disk.content;
+
+		if (signal.aborted) {
+			return { kind: "declined", reason: "aborted" };
+		}
+
+		if (yjsDocsEqual(localDoc, remoteDoc)) {
+			if (!diskMatchesLocal) {
+				return {
+					kind: "diverged",
+					disk,
+					localStateVector,
+					remoteStateVector: localStateVector,
+					pendingDiskContents: disk.content,
+				};
+			}
+
+			return {
+				kind: "synced",
+				disk,
+				localStateVector,
+				remoteStateVector: localStateVector,
+				newLCA: {
+					contents: localText,
+					meta: { hash: disk.hash, mtime: disk.mtime },
+					stateVector: localStateVector,
+				},
+			};
+		}
+
+		if (yjsDocIsAhead(remoteDoc, localDoc)) {
+			const lcaHash = diskMatchesLocal
+				? disk.hash
+				: await this.hashFn(localText);
+			if (signal.aborted) {
+				return { kind: "declined", reason: "aborted" };
+			}
+			const lcaMtime = diskMatchesLocal
+				? disk.mtime
+				: this.timeProvider.now();
+			const pendingIdleUpdates = Y.encodeStateAsUpdate(
+				remoteDoc,
+				localStateVector,
+			);
+			const remoteStateVector = Y.encodeStateVector(remoteDoc);
+			const newLCA = {
+				contents: localText,
+				meta: { hash: lcaHash, mtime: lcaMtime },
+				stateVector: localStateVector,
+			};
+
+			if (diskMatchesLocal) {
+				return {
+					kind: "remoteAhead",
+					disk,
+					newLCA,
+					localStateVector,
+					remoteStateVector,
+					pendingIdleUpdates,
+				};
+			}
+
+			return {
+				kind: "diverged",
+				disk,
+				newLCA,
+				localStateVector,
+				remoteStateVector,
+				pendingIdleUpdates,
+				pendingDiskContents: disk.content,
+			};
+		}
+
+		return {
+			kind: "declined",
+			reason: "remote-not-descendant",
+			detail: {
+				diskMatchesLocal,
+				localLength: localText.length,
+				diskLength: disk.content.length,
+				remoteLength: remoteDoc.getText("contents").toString().length,
+			},
+		};
+	}
 
 	private async invokeIdleRemoteAutoMerge(signal: AbortSignal): Promise<unknown> {
 		const localDoc = this.requireLocalDoc("idle remote merge");
@@ -3813,6 +3946,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			statePath === "idle.localAhead" ||
 			statePath === "idle.remoteAhead" ||
 			statePath === "idle.diskAhead" ||
+			statePath === "idle.recoverLCA" ||
 			statePath.startsWith("active.merging")
 		) {
 			return "pending";

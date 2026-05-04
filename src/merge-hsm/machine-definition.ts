@@ -40,6 +40,12 @@ const IDLE_LIFECYCLE: Record<string, EventHandler> = {
 	ERROR: { target: 'idle.error', actions: ['storeError'] },
 };
 
+const RECOVER_LCA_HANDLER: EventHandler = {
+	target: 'idle.recoverLCA',
+	guard: 'canRecoverLCA',
+	actions: ['storeRecoverLCADisk'],
+};
+
 
 // =============================================================================
 // Machine Definition
@@ -142,6 +148,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -186,6 +193,7 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -224,6 +232,7 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -259,6 +268,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
 			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
 	},
@@ -303,6 +313,44 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.recoverLCA': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'absent',
+			lcaContents: 'absent',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canRecoverLCA: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'recover-lca',
+			onDone: [
+				{ target: 'idle.synced', guard: 'recoverLCASynced', actions: ['applyRecoverLCAResult'] },
+				{ target: 'idle.remoteAhead', guard: 'recoverLCARemoteAhead', actions: ['applyRecoverLCAResult'] },
+				{ target: 'idle.diverged', guard: 'recoverLCADiverged', actions: ['applyRecoverLCAResult'] },
+				{ target: 'idle.diverged', actions: ['applyRecoverLCAResult', 'requestHibernate'] },
+			],
+			onError: { target: 'idle.diverged', actions: ['clearRecoverLCARequest', 'requestHibernate'] },
+		},
+		on: {
+			RECOVER_LCA: { target: 'idle.recoverLCA', actions: ['storeRecoverLCADisk'], reenter: true },
+			PROVIDER_SYNCED: { target: 'idle.recoverLCA', actions: ['markProviderSynced'] },
+			DISK_CHANGED: { target: 'idle.recoverLCA', actions: ['storeDiskMetadata', 'storeRecoverLCADisk'] },
+			REMOTE_UPDATE: { target: 'idle.recoverLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			CM6_CHANGE: { target: 'idle.recoverLCA', actions: ['accumulateCM6Change'] },
 			...IDLE_LIFECYCLE,
 		},
 	},
