@@ -320,9 +320,10 @@ jobs:
             git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
           fi
           cd ~/relay-harness
-          git fetch origin
-          git checkout main
-          git pull
+          git fetch origin --prune
+          git checkout -- .
+          git clean -fd
+          git checkout --detach origin/main
 
           # Clear stale repo-local test instances left by canceled or crashed runs
           echo "Clearing stale repo-local slots..."
