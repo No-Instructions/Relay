@@ -14,7 +14,7 @@
 		AlertTriangle,
 		Loader,
 		XCircle,
-		Pencil,
+		X,
 		GitMerge,
 	} from "lucide-svelte";
 
@@ -33,6 +33,7 @@
 	}
 
 	let actionableFiles: ActionableFile[] = [];
+	let dismissedErrors = new Set<string>();
 
 	function hasConflictStatus(status: SyncStatus | undefined): boolean {
 		return status?.status === "conflict";
@@ -60,7 +61,7 @@
 					category: "conflict",
 					label: "Conflict detected",
 				});
-			} else if (sp === "idle.error") {
+			} else if (sp === "idle.error" && !dismissedErrors.has(guid)) {
 				result.push({
 					guid,
 					path: file.path,
@@ -76,50 +77,6 @@
 	$: conflicts = actionableFiles.filter((f) => f.category === "conflict");
 	$: errors = actionableFiles.filter((f) => f.category === "error");
 
-	// ── Summary counts (from syncStatus map) ───────────────────────────
-
-	let syncedCount = 0;
-	let editingCount = 0;
-	let syncingCount = 0;
-	let conflictCount = 0;
-	let errorCount = 0;
-
-	function refreshCounts() {
-		let synced = 0, editing = 0, syncing = 0, conflict = 0, error = 0;
-		for (const [guid, file] of sharedFolder.files) {
-			const doc = file as any;
-			const hsm = doc.hsm;
-			if (hsm) {
-				const sp: StatePath = hsm.statePath;
-				const ss = hsm.getSyncStatus?.() as SyncStatus | undefined;
-				const hasConflict = hasConflictStatus(ss) || hsm.getConflictData();
-				const isEditing =
-					sp.startsWith("active.entering") || sp.startsWith("active.tracking");
-				const isSynced =
-					sp === "idle.synced" || sp.startsWith("active.tracking");
-
-				if (hasConflict) conflict++;
-				if (isEditing) editing++;
-				if (isSynced) synced++;
-				if (sp === "idle.error") error++;
-				if (!hasConflict && !isEditing && !isSynced && sp !== "idle.error") {
-					syncing++;
-				}
-			} else {
-				const ss = sharedFolder.mergeManager.syncStatus.get<SyncStatus>(guid);
-				if (!ss || ss.status === "synced") synced++;
-				else if (ss.status === "pending") syncing++;
-				else if (hasConflictStatus(ss)) conflict++;
-				else if (ss.status === "error") error++;
-			}
-		}
-		syncedCount = synced;
-		editingCount = editing;
-		syncingCount = syncing;
-		conflictCount = conflict;
-		errorCount = error;
-	}
-
 	// ── Activity log ───────────────────────────────────────────────────
 
 	let activityLog: SyncStatusActivityEntry[] = [];
@@ -130,7 +87,6 @@
 	// ── Lifecycle ──────────────────────────────────────────────────────
 
 	refreshActionable();
-	refreshCounts();
 
 	const unsubscribeActivity = activityStore.subscribe((entries) => {
 		activityLog = entries;
@@ -138,7 +94,6 @@
 
 	const unsubscribeSyncStatus = sharedFolder.mergeManager.syncStatus.subscribe(() => {
 		refreshActionable();
-		refreshCounts();
 	});
 
 	onDestroy(() => {
@@ -163,6 +118,12 @@
 		if (file) {
 			app.workspace.getLeaf().openFile(file);
 		}
+	}
+
+	function dismissError(guid: string, event: MouseEvent) {
+		event.stopPropagation();
+		dismissedErrors = new Set(dismissedErrors).add(guid);
+		refreshActionable();
 	}
 
 	function fileLabel(filePath: string): string {
@@ -210,34 +171,6 @@
 </script>
 
 <div class="sync-status-modal">
-	<div class="sync-status-summary">
-		{#if syncedCount > 0}
-			<span class="sync-status-badge synced">
-				<CheckCircle size={14} /> {syncedCount} synced
-			</span>
-		{/if}
-		{#if editingCount > 0}
-			<span class="sync-status-badge editing">
-				<Pencil size={14} /> {editingCount} editing
-			</span>
-		{/if}
-		{#if syncingCount > 0}
-			<span class="sync-status-badge syncing">
-				<Loader size={14} /> {syncingCount} syncing
-			</span>
-		{/if}
-		{#if conflictCount > 0}
-			<span class="sync-status-badge conflict">
-				<AlertTriangle size={14} /> {conflictCount} conflict{conflictCount !== 1 ? "s" : ""}
-			</span>
-		{/if}
-		{#if errorCount > 0}
-			<span class="sync-status-badge error">
-				<XCircle size={14} /> {errorCount} error{errorCount !== 1 ? "s" : ""}
-			</span>
-		{/if}
-	</div>
-
 	{#if conflicts.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
@@ -272,6 +205,14 @@
 						on:click={() => openFile(file.path)}
 						on:keydown={(e) => handlePathKeydown(e, file.path)}
 					>{fileLabel(file.path)}</span>
+					<button
+						class="sync-status-dismiss"
+						type="button"
+						aria-label="Dismiss error"
+						on:click={(e) => dismissError(file.guid, e)}
+					>
+						<X size={14} />
+					</button>
 				</div>
 			{/each}
 		</div>
@@ -323,31 +264,6 @@
 		padding: 8px 0;
 	}
 
-	.sync-status-summary {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 12px;
-		padding: 8px 0 16px;
-		border-bottom: 1px solid var(--background-modifier-border);
-		margin-bottom: 12px;
-	}
-
-	.sync-status-badge {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: var(--font-ui-small);
-		color: var(--text-muted);
-	}
-
-	.sync-status-badge.conflict {
-		color: var(--text-warning);
-	}
-
-	.sync-status-badge.error {
-		color: var(--text-error);
-	}
-
 	.sync-status-section {
 		margin-bottom: 12px;
 	}
@@ -365,10 +281,10 @@
 
 	.sync-status-row {
 		display: grid;
-		grid-template-columns: auto 1fr;
+		grid-template-columns: auto minmax(0, 1fr) auto;
 		grid-template-areas:
-			"icon path"
-			"icon meta";
+			"icon path action"
+			"icon meta action";
 		column-gap: 8px;
 		row-gap: 2px;
 		align-items: baseline;
@@ -436,6 +352,25 @@
 		font-size: var(--font-ui-smaller);
 		color: var(--text-faint);
 		align-items: baseline;
+	}
+
+	.sync-status-dismiss {
+		grid-area: action;
+		align-self: center;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+	}
+
+	.sync-status-dismiss:hover {
+		color: var(--text-normal);
 	}
 
 	.activity-row .sync-status-meta {

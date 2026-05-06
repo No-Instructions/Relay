@@ -219,6 +219,7 @@ export type StatePath =
 	| "idle.remoteAhead"
 	| "idle.diskAhead"
 	| "idle.diverged"
+	| "idle.conflict"
 	| "idle.recoverLCA"
 	| "idle.error"
 	| "active.loading"

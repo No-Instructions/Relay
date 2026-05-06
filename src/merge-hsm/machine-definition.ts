@@ -83,7 +83,7 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'cleanup',
 			onDone: [
-				{ target: 'idle.diverged', guard: 'cleanupWasConflict' },
+				{ target: 'idle.conflict', guard: 'cleanupWasConflict' },
 				{ target: 'idle.loading', guard: 'cleanupWasReleaseLock' },
 				{ target: 'unloaded' },
 			],
@@ -175,9 +175,10 @@ export const MACHINE: MachineDefinition = {
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
 				{ target: 'idle.localAhead', guard: 'awaitingProvider' },
-				{ target: 'idle.diverged', actions: ['clearForkKeepDiverged'] },
+				{ target: 'idle.conflict', guard: 'hasPreexistingConflict', actions: ['prepareIdleConflictFromFork'] },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
 			],
-			onError: { target: 'idle.diverged', actions: ['clearForkKeepDiverged'] },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
 		on: {
 			PROVIDER_SYNCED: { target: 'idle.localAhead', actions: ['markProviderSynced'], reenter: true },
@@ -219,9 +220,11 @@ export const MACHINE: MachineDefinition = {
 			onDone: [
 				{ target: 'idle.remoteAhead', guard: 'mergeSucceededAndRemotePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
-				{ target: 'idle.diverged' },
+				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
+				{ target: 'idle.remoteAhead', guard: 'awaitingProvider' },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
 			],
-			onError: { target: 'idle.diverged' },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
 		on: {
 			IDLE_RETRY: { target: 'idle.remoteAhead', reenter: true },
@@ -259,9 +262,10 @@ export const MACHINE: MachineDefinition = {
 			onDone: [
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
-				{ target: 'idle.diverged' },
+				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
 			],
-			onError: { target: 'idle.diverged' },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
 		on: {
 			PROVIDER_SYNCED: { target: 'idle.diskAhead', actions: ['markProviderSynced'], reenter: true },
@@ -298,11 +302,13 @@ export const MACHINE: MachineDefinition = {
 			onDone: [
 				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
-				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
+				{ target: 'idle.diverged', guard: 'awaitingProvider' },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
-				{ target: 'idle.diverged', actions: ['requestHibernate'] }, // 3-way conflict — nothing to do autonomously
+				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
+				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
 			],
-			onError: { target: 'idle.diverged', actions: ['requestHibernate'] },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
 		on: {
 			IDLE_RETRY: { target: 'idle.diverged', reenter: true },
@@ -313,6 +319,35 @@ export const MACHINE: MachineDefinition = {
 			],
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.conflict': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'present',
+		},
+		capabilities: {
+			canHibernate: true,
+			canWake: true,
+			canComputeConflict: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
+		entry: ['resetIdleRetryCount'],
+		on: {
+			DISK_CHANGED: { target: 'idle.diverged', actions: ['clearConflictForRecompute', 'storeDiskMetadata'] },
+			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['clearConflictForRecompute', 'applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			PROVIDER_SYNCED: { target: 'idle.conflict', actions: ['markProviderSynced'] },
+			CM6_CHANGE: { target: 'idle.conflict', actions: ['accumulateCM6Change'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},
@@ -341,9 +376,10 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', guard: 'recoverLCASynced', actions: ['applyRecoverLCAResult'] },
 				{ target: 'idle.remoteAhead', guard: 'recoverLCARemoteAhead', actions: ['applyRecoverLCAResult'] },
 				{ target: 'idle.diverged', guard: 'recoverLCADiverged', actions: ['applyRecoverLCAResult'] },
-				{ target: 'idle.diverged', actions: ['applyRecoverLCAResult', 'requestHibernate'] },
+				{ target: 'idle.conflict', guard: 'canMaterializeRecoverLCAConflict', actions: ['materializeRecoverLCAConflict', 'clearRecoverLCARequest'] },
+				{ target: 'idle.error', actions: ['applyRecoverLCAResult', 'storeUnresolvedIdleError'] },
 			],
-			onError: { target: 'idle.diverged', actions: ['clearRecoverLCARequest', 'requestHibernate'] },
+			onError: { target: 'idle.error', actions: ['clearRecoverLCARequest', 'storeInvokeError'] },
 		},
 		on: {
 			RECOVER_LCA: { target: 'idle.recoverLCA', actions: ['storeRecoverLCADisk'], reenter: true },

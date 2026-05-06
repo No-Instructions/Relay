@@ -226,6 +226,7 @@ export const CONFLICT_HAS_DIVERGENCE: InvariantDefinition = {
   applicableStates: [
     'active.conflict.bannerShown',
     'active.conflict.resolving',
+    'idle.conflict',
   ],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
     if (!ctx.statePath.includes('conflict')) {

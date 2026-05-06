@@ -92,7 +92,7 @@ describe('Provider sync guard: invokeIdleThreeWayAutoMerge', () => {
     expect(cd?.ours).toBe('disk changed this');
     expect(cd?.theirs).toBe('remote changed this');
 
-    expectState(t, 'idle.diverged');
+    expectState(t, 'idle.conflict');
   });
 
   test('non-conflicting merge succeeds after PROVIDER_SYNCED', async () => {

@@ -101,6 +101,34 @@ describe('Fork Model', () => {
     expect(t.matches('idle')).toBe(true);
   });
 
+  test('fork reconciliation: identical local and remote edits auto-resolve', async () => {
+    const base = 'line1\nline2\nline3';
+    const changed = 'line1\nSAME EDIT\nline3';
+
+    const t = await createTestHSM();
+    await loadToIdle(t, { content: base, mtime: 1000 });
+
+    t.send(disconnected());
+    t.send(await diskChanged(changed, 2000));
+    await t.hsm.awaitIdleAutoMerge();
+
+    expect(t.getLocalDocText()).toBe(changed);
+
+    // Simulate the provider loading the same server content while reconnecting.
+    t.setRemoteContent(changed);
+    t.send(connected());
+    t.send(providerSynced());
+
+    await t.hsm.awaitForkReconcile();
+    await t.hsm.awaitIdleAutoMerge();
+
+    expectState(t, 'idle.synced');
+    expect(t.hsm.hasFork()).toBe(false);
+    expect(t.hsm.getConflictData()).toBeNull();
+    expectLocalDocText(t, changed);
+    expectRemoteDocText(t, changed);
+  });
+
   test('fork reconciliation: overlapping changes are handled', async () => {
     const t = await createTestHSM();
     await loadToIdle(t, { content: 'original line', mtime: 1000 });
@@ -261,7 +289,7 @@ describe('SyncGate', () => {
     expect(t.matches('idle')).toBe(true);
   });
 
-  test('fork cleared even on conflict (clearForkKeepDiverged)', async () => {
+  test('fork is retained for conflict resolution when fork reconciliation conflicts', async () => {
     const t = await createTestHSM();
     await loadToIdle(t, { content: 'original line', mtime: 1000 });
 
@@ -295,16 +323,16 @@ describe('SyncGate', () => {
     // Remote change on same content (creates conflict)
     t.applyRemoteChange('remote changed this');
 
-    // Provider syncs → fork reconciliation → diff3 conflict → idle.diverged
+    // Provider syncs → fork reconciliation → diff3 conflict → idle.conflict
     t.send(connected());
     t.send(providerSynced());
     await t.hsm.awaitForkReconcile();
 
-    // idle.diverged runs idle-merge invoke — must NOT apply raw CRDT merge
+    // The conflict must not fall back to a raw CRDT merge.
     await t.hsm.awaitIdleAutoMerge();
 
-    // Must stay in idle.diverged (not idle.synced with corrupted content)
-    expectState(t, 'idle.diverged');
+    // Must stay in idle.conflict (not idle.synced with corrupted content)
+    expectState(t, 'idle.conflict');
 
     // localDoc must have the disk-ingested content only — no interleaving
     // with remote content from a raw Y.applyUpdate

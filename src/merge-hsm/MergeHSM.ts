@@ -87,6 +87,14 @@ import type { FrontMatterPrimitives } from "./types";
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
 type RecoverLCADisk = { content: string; hash: string; mtime: number };
+type ConflictInit = {
+	base: string;
+	ours: string;
+	theirs: string;
+	oursLabel?: string;
+	theirsLabel?: string;
+	regions: ConflictRegion[];
+};
 type RecoverLCAResult =
 	| {
 		kind: "synced";
@@ -699,10 +707,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * Current conflict snapshot. Returns null when the file is clean.
 	 *
 	 * Returns the active resolution session if one is in progress. For
-	 * `idle.diverged`, derives a read-only snapshot on demand from
-	 * `_lca` + `localDoc` + `remoteDoc` so callers can inspect unresolved hunks
-	 * without opening the banner. The derived snapshot is intentionally not
-	 * cached to keep read APIs side-effect free.
+	 * transient `idle.diverged`, this can still derive a read-only snapshot
+	 * from `_lca` + docs. Parked idle conflicts hold `_conflict` in
+	 * `idle.conflict`.
 	 */
 	getConflictData(_options?: { fresh?: boolean }): ConflictData | null {
 		if (this._conflict) return this._conflict.toData();
@@ -734,23 +741,150 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	private materializeIdleConflict(): Conflict | null {
 		if (this._conflict) return this._conflict;
-		if (this._statePath !== "idle.diverged") return null;
-		if (!this._lca) return null;
-		this.assertMachineResources("before materializeIdleConflict");
-		const localDoc = this.requireLocalDoc("materializeIdleConflict");
-		const remoteDoc = this.requireRemoteDoc("materializeIdleConflict");
-		const base = this.requireLcaContents("materializeIdleConflict");
-		if (!localDoc || !remoteDoc || base === null) return null;
-		const ours = localDoc.getText("contents").toString();
-		const theirs = remoteDoc.getText("contents").toString();
-		const { hasConflict, regions } = computeConflict(base, ours, theirs);
-		if (!hasConflict) return null;
-		this._conflict = new Conflict({ base, ours, theirs, regions });
+		const init = this.buildIdleConflictInit();
+		if (!init) {
+			this.hsmError(
+				`unable to materialize idle conflict | ${this.describeResourceContext("materializeIdleConflict")}`,
+			);
+			return null;
+		}
+		this._conflict = new Conflict(init);
+		this.pendingIdleUpdates = null;
+		this.emitPersistState();
 		return this._conflict;
 	}
 
+	private materializeRecoverLCAConflict(): Conflict | null {
+		if (this._conflict) return this._conflict;
+		const init = this.buildRecoverLCAConflictInit();
+		if (!init) {
+			this.hsmError(
+				`unable to materialize recover-LCA conflict | ${this.describeResourceContext("materializeRecoverLCAConflict")}`,
+			);
+			return null;
+		}
+		this._conflict = new Conflict(init);
+		this.pendingIdleUpdates = null;
+		this.clearPendingDiskContents();
+		this.emitPersistState();
+		return this._conflict;
+	}
+
+	private canMaterializeIdleConflict(): boolean {
+		return this._conflict !== null || this.buildIdleConflictInit() !== null;
+	}
+
+	private canMaterializeRecoverLCAConflict(): boolean {
+		return this._conflict !== null || this.buildRecoverLCAConflictInit() !== null;
+	}
+
+	private getLCAContentsForConflictInit(): string | null {
+		if (!this._lca) return null;
+		if (this._lca.contents === null) {
+			this.hydrateLCAContentsFromLocalDoc();
+		}
+		return this._lca.contents;
+	}
+
+	private buildIdleConflictInit(): ConflictInit | null {
+		const localDoc = this.localDoc;
+		if (!localDoc) return null;
+		const localText = localDoc.getText("contents").toString();
+		if (this.isNoLCAEmptyEnrollment(localDoc)) return null;
+
+		const remoteText = this.remoteDoc?.getText("contents").toString() ?? null;
+		const diskText = this.pendingDiskContents ?? this.pendingRecoverLCADisk?.content ?? null;
+		const base = this.getLCAContentsForConflictInit();
+
+		if (base !== null && remoteText !== null) {
+			const result = computeConflict(base, localText, remoteText);
+			if (result.hasConflict) {
+				return {
+					base,
+					ours: localText,
+					theirs: remoteText,
+					oursLabel: "Local",
+					theirsLabel: "Remote",
+					regions: result.regions,
+				};
+			}
+		}
+
+		if (diskText !== null && diskText !== localText) {
+			return this.buildTwoWayConflictInit(
+				localText,
+				diskText,
+				"Local",
+				"Local file",
+				base ?? localText,
+			);
+		}
+
+		if (remoteText !== null && remoteText !== localText) {
+			return this.buildTwoWayConflictInit(
+				localText,
+				remoteText,
+				"Local",
+				"Remote",
+				base ?? localText,
+			);
+		}
+
+		return null;
+	}
+
+	private isNoLCAEmptyEnrollment(localDoc: Y.Doc): boolean {
+		return !this._lca && isEmptyDoc(localDoc) && (!this.remoteDoc || isEmptyDoc(this.remoteDoc));
+	}
+
+	private buildRecoverLCAConflictInit(): ConflictInit | null {
+		const localText = this.localDoc?.getText("contents").toString();
+		if (localText === undefined) return null;
+		const remoteText = this.remoteDoc?.getText("contents").toString() ?? null;
+		const diskText = this.pendingRecoverLCADisk?.content ?? this.pendingDiskContents;
+
+		if (remoteText !== null && remoteText !== localText) {
+			return this.buildTwoWayConflictInit(
+				localText,
+				remoteText,
+				"Local",
+				"Remote",
+				localText,
+			);
+		}
+		if (diskText !== null && diskText !== localText) {
+			return this.buildTwoWayConflictInit(
+				localText,
+				diskText,
+				"Local",
+				"Local file",
+				localText,
+			);
+		}
+
+		return null;
+	}
+
+	private buildTwoWayConflictInit(
+		ours: string,
+		theirs: string,
+		oursLabel: string,
+		theirsLabel: string,
+		base: string,
+	): ConflictInit | null {
+		if (ours === theirs) return null;
+		return {
+			base,
+			ours,
+			theirs,
+			oursLabel,
+			theirsLabel,
+			regions: computeTwoWayConflictRegions(ours, theirs),
+		};
+	}
+
 	async resolveConflictContents(contents: string): Promise<StatePath> {
-		if (this._statePath === "idle.diverged") {
+		if (this._statePath === "idle.diverged" || this._statePath === "idle.conflict") {
 			await this.resolveConflictHeadless(contents);
 			return this._statePath;
 		}
@@ -774,7 +908,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		findConflictRegionOffset(conflictData.conflictRegions, hunkId);
 
-		if (this._statePath === "idle.diverged") {
+		if (this._statePath === "idle.diverged" || this._statePath === "idle.conflict") {
 			await this.resolveHunkHeadless(hunkId, resolution);
 			return this._statePath;
 		}
@@ -786,8 +920,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	async resolveConflictHeadless(contents: string): Promise<void> {
-		if (this._statePath !== "idle.diverged") {
-			throw new Error(`resolveConflictHeadless requires idle.diverged, got ${this._statePath}`);
+		if (this._statePath !== "idle.diverged" && this._statePath !== "idle.conflict") {
+			throw new Error(`resolveConflictHeadless requires idle.diverged or idle.conflict, got ${this._statePath}`);
 		}
 		if (!this.getConflictData()) {
 			throw new Error("resolveConflictHeadless requires an active idle conflict");
@@ -831,8 +965,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		hunkId: string,
 		resolution: ResolveHunkEvent["resolution"],
 	): Promise<void> {
-		if (this._statePath !== "idle.diverged") {
-			throw new Error(`resolveHunkHeadless requires idle.diverged, got ${this._statePath}`);
+		if (this._statePath !== "idle.diverged" && this._statePath !== "idle.conflict") {
+			throw new Error(`resolveHunkHeadless requires idle.diverged or idle.conflict, got ${this._statePath}`);
 		}
 		const localDoc = this.requireLocalDoc("resolveHunkHeadless");
 		const remoteDoc = this.requireRemoteDoc("resolveHunkHeadless");
@@ -1562,6 +1696,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 			// Fork guard: stay in localAhead when remote updates arrive during fork reconciliation
 			hasFork: () => this._fork !== null,
+			canMaterializeIdleConflict: () => this.canMaterializeIdleConflict(),
+			canMaterializeRecoverLCAConflict: () => this.canMaterializeRecoverLCAConflict(),
 
 			// === Cleanup guards ===
 			cleanupWasConflict: (_hsm, event) => {
@@ -1612,6 +1748,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			clearRecoverLCARequest: () => {
 				this.pendingRecoverLCADisk = null;
+			},
+			materializeRecoverLCAConflict: (_hsm, event) => {
+				const result = (event as any).data as RecoverLCAResult | undefined;
+				if (result?.kind === "declined") {
+					this.hsmWarn(
+						`recoverLCA declined to conflict | guid=${this._guid} reason=${result.reason} ` +
+						`detail=${JSON.stringify(result.detail ?? {})}`,
+					);
+				}
+				this.materializeRecoverLCAConflict();
 			},
 			applyRecoverLCAResult: (_hsm, event) => {
 				const result = (event as any).data as RecoverLCAResult | undefined;
@@ -1735,6 +1881,38 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			requestHibernate: () => {
 				this.emitEffect({ type: "REQUEST_HIBERNATE", guid: this._guid });
 			},
+			materializeIdleConflict: () => {
+				this.materializeIdleConflict();
+			},
+			clearConflictForRecompute: () => {
+				this._conflict = null;
+				this._error = undefined;
+			},
+			storeInvokeError: (_hsm, event) => {
+				const data = (event as any).data;
+				const error = data instanceof Error ? data : new Error(String(data ?? "invoke failed"));
+				this._error = error;
+				this.hsmError(
+					`idle invoke failed | guid=${this._guid} state=${this._statePath} error=${error.message}`,
+				);
+			},
+			storeUnresolvedIdleError: (_hsm, event) => {
+				const data = (event as any).data;
+				const detail = data === undefined
+					? "no invoke result"
+					: JSON.stringify({
+						success: data?.success,
+						kind: data?.kind,
+						reason: data?.reason,
+						awaitingProvider: data?.awaitingProvider,
+						forked: data?.forked,
+					});
+				const error = new Error(
+					`Unable to continue idle reconciliation without an actionable conflict (${detail})`,
+				);
+				this._error = error;
+				this.hsmError(`${error.message} | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
+			},
 			scheduleIdleRetry: () => {
 				this.idleRetryCount++;
 				// Backoff: immediate for first 3 retries, then exponential up to 5s.
@@ -1766,7 +1944,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				const e = event as any;
 				this._editorViewRef = e.editorViewRef ?? null;
 				if (this._statePath.startsWith("idle.")) {
-					this._enteringFromDiverged = this._statePath === "idle.diverged";
+					this._enteringFromDiverged =
+						this._statePath === "idle.diverged" ||
+						this._statePath === "idle.conflict";
 				}
 				this._providerSynced = false;
 				this._bridge.providerSynced = false;
@@ -2251,11 +2431,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._bridge.resetPendingCounters();
 				this.emitPersistState();
 			},
-			clearForkKeepDiverged: () => {
+			prepareIdleConflictFromFork: () => {
 				// Restore pendingDiskContents from localDoc (which has the disk-ingested
-				// content). Without this, invokeIdleThreeWayAutoMerge falls back to LCA
-				// for the disk side and sees no disk changes, causing it to auto-accept
-				// and escape to idle.synced instead of staying diverged.
+				// content) so the conflict resolver and diagnostics retain the user's
+				// local file side after fork reconciliation finds a conflict.
 				const diskText = this.localDoc?.getText("contents").toString();
 				if (diskText != null) {
 					this.setPendingDiskContents(diskText, "derived", this._disk?.hash ?? null);
@@ -2265,10 +2444,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// Keep the fork alive — it gates flushOutbound and holds the
 				// captureMark needed to reverse disk ops during conflict resolution.
 				// Clear pending remote updates — fork reconciliation already
-				// evaluated them via diff3 and found a conflict. Without this,
-				// idle.diverged's idle-merge invoke runs invokeIdleRemoteAutoMerge
-				// with the same updates, applying a raw CRDT merge that
-				// interleaves conflicting edits instead of surfacing a conflict.
+				// evaluated them via diff3 and found a conflict.
 				this.pendingIdleUpdates = null;
 				this.emitPersistState();
 			},
@@ -2693,9 +2869,27 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	private async invokeIdleRemoteAutoMerge(signal: AbortSignal): Promise<unknown> {
 		const localDoc = this.requireLocalDoc("idle remote merge");
-		if (!this.pendingIdleUpdates || !localDoc) {
-			this.idleMergeLog(`[idle-merge-debug] ${this._guid} early-exit: pendingIdleUpdates=${!!this.pendingIdleUpdates} localDoc=${!!localDoc}`);
-			return { success: false };
+		if (!localDoc) {
+			this.idleMergeLog(`[idle-merge-debug] ${this._guid} early-exit: localDoc=false`);
+			return { success: false, awaitingProvider: true };
+		}
+
+		let updates = this.pendingIdleUpdates;
+		const updatesWereBuffered = updates !== null;
+		if (!updates) {
+			if (!this.remoteDoc) {
+				this.idleMergeLog(`[idle-merge-debug] ${this._guid} waiting: no pending updates or remoteDoc`);
+				return { success: false, awaitingProvider: true };
+			}
+			const derivedUpdates = Y.encodeStateAsUpdate(
+				this.remoteDoc,
+				Y.encodeStateVector(localDoc),
+			);
+			if (derivedUpdates.byteLength > 0 && !this.updateHasNoChanges(derivedUpdates)) {
+				updates = derivedUpdates;
+			} else {
+				return this.buildSettledRemoteAheadResult(signal, localDoc);
+			}
 		}
 
 		// Block automatic writes when there is no LCA, UNLESS there is no file on
@@ -2709,7 +2903,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 
 		// Snapshot and clear — new REMOTE_UPDATEs accumulate into fresh buffer
-		const updates = this.pendingIdleUpdates;
 		this.pendingIdleUpdates = null;
 
 		this.idleMergeLog(`[idle-merge-debug] ${this._guid} updatesLen=${updates.byteLength}`);
@@ -2718,7 +2911,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// localDoc is NOT mutated — the onDone action applies the result.
 		const tempDoc = new Y.Doc();
 		try {
+			if (updatesWereBuffered && this.updateHasNoChanges(updates)) {
+				return { success: true, newLCA: this._lca, noop: true };
+			}
 			if (yjsUpdateIsNoop(localDoc, updates)) {
+				const settled = await this.buildSettledRemoteAheadResult(signal, localDoc);
+				if ((settled as { success?: boolean }).success === true) {
+					return settled;
+				}
 				return { success: true, newLCA: this._lca, noop: true };
 			}
 
@@ -2765,6 +2965,48 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		} finally {
 			tempDoc.destroy();
 		}
+	}
+
+	private updateHasNoChanges(update: Uint8Array): boolean {
+		const decoded = Y.decodeUpdate(update);
+		return decoded.structs.length === 0 && decoded.ds.clients.size === 0;
+	}
+
+	private async buildSettledRemoteAheadResult(
+		signal: AbortSignal,
+		localDoc: Y.Doc,
+	): Promise<unknown> {
+		if (!this.remoteDoc || !yjsDocsEqual(localDoc, this.remoteDoc)) {
+			return { success: false, awaitingProvider: true };
+		}
+
+		const mergedContent = localDoc.getText("contents").toString();
+		const hash = await this.hashFn(mergedContent);
+		if (signal.aborted) return { success: false };
+
+		const stateVector = Y.encodeStateVector(localDoc);
+		const diskMatches = this._disk?.hash === hash;
+		const newLCA = {
+			contents: mergedContent,
+			meta: {
+				hash,
+				mtime: diskMatches ? this._disk!.mtime : this.timeProvider.now(),
+			},
+			stateVector,
+		};
+
+		if (
+			diskMatches &&
+			this._lca &&
+			this._lca.meta.hash === hash &&
+			stateVectorsEqual(this._lca.stateVector, stateVector)
+		) {
+			return { success: true, newLCA: this._lca, noop: true };
+		}
+
+		return diskMatches
+			? { success: true, newLCA, noop: true }
+			: { success: true, mergedContent, newLCA };
 	}
 
 	private async invokeIdleDiskAutoMerge(signal: AbortSignal): Promise<unknown> {
@@ -2832,8 +3074,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			return { success: false };
 		}
 		if (!this._lca) {
-			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
+			if (this.isNoLCAEmptyEnrollment(localDoc)) {
+				return { success: false, awaitingProvider: true };
+			}
 			return { success: false };
 		}
 		const lcaContent = this.requireLcaContents("idle three-way merge");
@@ -2853,9 +3097,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// out — REMOTE_UPDATE will reenter idle.diverged once the provider syncs.
 		const remoteDoc = this.requireRemoteDoc("idle three-way merge");
 		if (!remoteDoc) {
-			this.clearPendingDiskContents();
-			this.pendingIdleUpdates = null;
-			return { success: false };
+			return { success: false, awaitingProvider: true };
 		}
 		const crdtContent = remoteDoc.getText("contents").toString();
 
@@ -2863,9 +3105,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// server's CRDT state.  Defer the merge until PROVIDER_SYNCED
 		// delivers the real remote content.
 		if (!this._isProviderSynced()) {
-			this.clearPendingDiskContents();
-			this.pendingIdleUpdates = null;
-			return { success: false };
+			return { success: false, awaitingProvider: true };
 		}
 
 		const diskContent = this.pendingDiskContents ?? lcaContent;
@@ -2928,7 +3168,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 *
 	 * When provider is synced, runs diff3(localDoc, fork.base, remoteDoc):
 	 * - Success: write disk, sync to remote, clear fork, update LCA → idle.synced
-	 * - Conflict: → idle.diverged
+	 * - Conflict: → idle.conflict
 	 */
 	private async invokeForkReconcile(signal: AbortSignal): Promise<unknown> {
 		if (!this._fork) {
@@ -3035,7 +3275,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Merge conflict — can't auto-resolve.
 		// Build the active conflict so the diff UI is available when the user
-		// opens the file from idle.diverged. Without this, CRDT merge during
+		// opens the file from idle.conflict. Without this, CRDT merge during
 		// provider sync would make localDoc and disk identical, causing the
 		// active.entering reconciliation to skip conflict detection
 		// (localText === diskText).
@@ -3939,7 +4179,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 
 		if (statePath === "idle.diverged") {
-			return this._lca ? "conflict" : "pending";
+			return "pending";
 		}
 
 		if (
@@ -4430,6 +4670,14 @@ function performThreeWayMerge(
 	local: string,
 	remote: string,
 ): MergeResult {
+	if (local === remote) {
+		return {
+			success: true,
+			merged: local,
+			patches: computeDiffMatchPatchChanges(local, local),
+		};
+	}
+
 	const tok = (s: string) => s.split(/(\n)/);
 	const lcaTokens = tok(lca);
 	const localTokens = tok(local);

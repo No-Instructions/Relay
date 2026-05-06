@@ -27,6 +27,7 @@ const ALL_STATE_PATHS: StatePath[] = [
 	"idle.remoteAhead",
 	"idle.diskAhead",
 	"idle.diverged",
+	"idle.conflict",
 	"idle.recoverLCA",
 	"idle.error",
 	"active.loading",
@@ -129,7 +130,7 @@ describe("Machine Definition", () => {
 				.filter(([, node]) => node?.resources?.residency?.includes("hibernated"))
 				.map(([statePath]) => statePath);
 
-			expect(hibernatedStates).toEqual(["idle.synced", "idle.localAhead", "idle.diverged"]);
+			expect(hibernatedStates).toEqual(["idle.synced", "idle.localAhead", "idle.diverged", "idle.conflict"]);
 		});
 
 		test("resource and capability contracts reference only known keys", () => {

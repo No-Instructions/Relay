@@ -260,7 +260,7 @@ describe('Hibernation Lifecycle', () => {
     test('prepares hibernated idle conflicts through the wake path', async () => {
       const doc = createMockDocument('doc-1', 'test.md');
       const ensureRemoteDoc = jest.spyOn(doc, 'ensureRemoteDoc');
-      (doc.hsm as any)._statePath = 'idle.diverged';
+      (doc.hsm as any)._statePath = 'idle.conflict';
 
       manager.hibernate('doc-1');
       expect(doc.hsm?.getLocalDoc()).toBeNull();
@@ -277,7 +277,7 @@ describe('Hibernation Lifecycle', () => {
 
     test('resolves hunks through prepared HSM helpers', async () => {
       const doc = createMockDocument('doc-1', 'test.md');
-      (doc.hsm as any)._statePath = 'idle.diverged';
+      (doc.hsm as any)._statePath = 'idle.conflict';
       manager.hibernate('doc-1');
 
       const resolveConflictHunk = jest

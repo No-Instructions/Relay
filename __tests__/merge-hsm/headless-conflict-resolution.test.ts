@@ -51,14 +51,14 @@ async function loadIdleConflict() {
   await t.hsm.awaitForkReconcile();
   await t.awaitIdleAutoMerge();
 
-  expectState(t, 'idle.diverged');
+  expectState(t, 'idle.conflict');
   expect(t.hsm.getConflictData()).not.toBeNull();
   t.clearEffects();
   return t;
 }
 
 describe('headless conflict resolution', () => {
-  it('resolves an idle.diverged conflict with final contents without editor effects', async () => {
+  it('resolves an idle.conflict conflict with final contents without editor effects', async () => {
     const t = await loadIdleConflict();
 
     await t.hsm.resolveConflictHeadless(REMOTE_EDIT);
@@ -77,7 +77,7 @@ describe('headless conflict resolution', () => {
     expectEffect(t.effects, { type: 'PERSIST_STATE' });
   });
 
-  it('resolves idle.diverged hunks without opening an editor or diff view', async () => {
+  it('resolves idle.conflict hunks without opening an editor or diff view', async () => {
     const t = await loadIdleConflict();
     const conflict = t.hsm.getConflictData();
     expect(conflict?.conflictRegions).toHaveLength(1);
@@ -91,7 +91,7 @@ describe('headless conflict resolution', () => {
     expectEffect(t.effects, { type: 'WRITE_DISK', contents: REMOTE_EDIT });
   });
 
-  it('resolves idle.diverged hunks by stable hunk id through the HSM helper', async () => {
+  it('resolves idle.conflict hunks by stable hunk id through the HSM helper', async () => {
     const t = await loadIdleConflict();
     const info = t.hsm.getConflictInfoSnapshot();
     expect(info.hunks).toHaveLength(1);
@@ -118,7 +118,7 @@ describe('headless conflict resolution', () => {
       /requires localDoc and remoteDoc/,
     );
 
-    expectState(t, 'idle.diverged');
+    expectState(t, 'idle.conflict');
     expect(t.hsm.getConflictData()).not.toBeNull();
   });
 });

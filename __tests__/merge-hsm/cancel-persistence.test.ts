@@ -65,9 +65,9 @@ describe('cancel() removes update keys from IDB', () => {
     // Wait for fork reconcile
     for (let i = 0; i < 10; i++) {
       await new Promise(r => setTimeout(r, 10));
-      if (t.statePath === 'idle.diverged') break;
+      if (t.statePath === 'idle.conflict') break;
     }
-    expect(t.statePath).toBe('idle.diverged');
+    expect(t.statePath).toBe('idle.conflict');
 
     // Enter active mode → conflict
     t.send({ type: 'ACQUIRE_LOCK', editorContent: LOCAL_EDIT });
@@ -256,13 +256,13 @@ async function driveToConflict(ctx: CrossVaultTest): Promise<void> {
     await ctx.vaultA.writeFile(LOCAL_EDIT);
     await ctx.vaultA.hsm.awaitIdleAutoMerge();
 
-    // Reconnect → diverged
+    // Reconnect → conflict
     ctx.vaultA.reconnect();
     for (let i = 0; i < 10; i++) {
       await new Promise(r => setTimeout(r, 10));
       if (ctx.vaultA.hsm.statePath !== 'idle.localAhead') break;
     }
-    expect(ctx.vaultA.hsm.statePath).toBe('idle.diverged');
+    expect(ctx.vaultA.hsm.statePath).toBe('idle.conflict');
 
     // Enter active → conflict
     ctx.vaultA.send({ type: 'ACQUIRE_LOCK', editorContent: LOCAL_EDIT });

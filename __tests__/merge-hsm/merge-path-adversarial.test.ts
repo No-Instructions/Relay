@@ -84,7 +84,7 @@ describe('Three-way merge with provider sync states', () => {
 		expectLocalDocText(t, 'REMOTE 1\nDISK 2\nline 3');
 	});
 
-	test('provider synced → conflicting edits via fork path → diverged', async () => {
+	test('provider synced → conflicting edits via fork path → idle conflict', async () => {
 		const t = await createTestHSM();
 		await loadToIdle(t, { content: 'aaa bbb ccc', mtime: 1000 });
 
@@ -102,7 +102,7 @@ describe('Three-way merge with provider sync states', () => {
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Fork reconciliation detects conflict via diff3
-		expectState(t, 'idle.diverged');
+		expectState(t, 'idle.conflict');
 	});
 
 	test('provider not synced → merge deferred → user can still edit', async () => {
@@ -306,7 +306,7 @@ describe('Idle path conflict detection', () => {
 		expect(t.matches('idle')).toBe(true);
 	});
 
-	test('conflicting remote + disk edits in idle via fork path → diverged', async () => {
+	test('conflicting remote + disk edits in idle via fork path → idle conflict', async () => {
 		const t = await createTestHSM();
 		await loadToIdle(t, { content: 'xxx yyy zzz', mtime: 1000 });
 
@@ -324,7 +324,7 @@ describe('Idle path conflict detection', () => {
 		await t.hsm.awaitIdleAutoMerge();
 
 		// Fork reconciliation detects conflict
-		expectState(t, 'idle.diverged');
+		expectState(t, 'idle.conflict');
 	});
 
 	test('non-conflicting remote + disk edits in idle → auto-merged to synced', async () => {
@@ -375,7 +375,7 @@ describe('Multi-path consistency', () => {
 		try { await t.hsm.awaitForkReconcile(); } catch { /* no-op */ }
 		await t.hsm.awaitIdleAutoMerge();
 
-		expectState(t, 'idle.diverged');
+		expectState(t, 'idle.conflict');
 
 		// Open file → should show conflict
 		t.send({ type: 'ACQUIRE_LOCK', editorContent: DISK });

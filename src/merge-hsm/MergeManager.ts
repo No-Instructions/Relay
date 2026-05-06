@@ -535,7 +535,7 @@ export class MergeManager {
       throw new Error(`Cannot prepare headless conflict for ${guid}: document not found`);
     }
 
-    if (!hsm.matches('idle.diverged')) {
+    if (!hsm.matches('idle.diverged') && !hsm.matches('idle.conflict')) {
       return hsm;
     }
 
