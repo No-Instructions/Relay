@@ -2409,14 +2409,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 							}
 						} else {
 							proxyDoc.transact(() => {
-								for (const change of e.changes) {
-									if (change.to > change.from) {
-										proxyText.delete(change.from, change.to - change.from);
-									}
-									if (change.insert) {
-										proxyText.insert(change.from, change.insert);
-									}
-								}
+								this.applyChangesToYText(proxyText, e.changes);
 							});
 						}
 
@@ -2443,14 +2436,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						// Normal user edit: apply directly to localDoc
 						const ytext = this.localDoc.getText("contents");
 						this.localDoc.transact(() => {
-							for (const change of e.changes) {
-								if (change.to > change.from) {
-									ytext.delete(change.from, change.to - change.from);
-								}
-								if (change.insert) {
-									ytext.insert(change.from, change.insert);
-								}
-							}
+							this.applyChangesToYText(ytext, e.changes);
 							this.syncFrontmatterToMap();
 						}, this);
 					}
@@ -4552,6 +4538,30 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			result = result.slice(0, change.from) + change.insert + result.slice(change.to);
 		}
 		return result;
+	}
+
+	/**
+	 * Apply CM6 positioned changes to Y.Text.
+	 *
+	 * CodeMirror reports every range against the transaction's pre-change
+	 * document. Applying them in ascending order mutates the offsets for
+	 * later ranges; composed commands such as Move line up then insert at
+	 * the wrong point. Match applyChangesToText and apply from the end.
+	 */
+	private applyChangesToYText(ytext: Y.Text, changes: PositionedChange[]): void {
+		const sorted = [...changes].sort((a, b) => {
+			const byStart = b.from - a.from;
+			if (byStart !== 0) return byStart;
+			return b.to - a.to;
+		});
+		for (const change of sorted) {
+			if (change.to > change.from) {
+				ytext.delete(change.from, change.to - change.from);
+			}
+			if (change.insert) {
+				ytext.insert(change.from, change.insert);
+			}
+		}
 	}
 
 	/**

@@ -444,6 +444,37 @@ describe('MergeHSM', () => {
       expect(t.hsm.checkAndCorrectDrift()).toBe(false);
     });
 
+    test('CM6_CHANGE applies composed move-line changes without offset drift', async () => {
+      const initial =
+        "# TP-030 Move Line Up\n\n" +
+        "- alpha\n" +
+        "- beta\n" +
+        "- gamma\n" +
+        "- delta\n";
+      const moved =
+        "# TP-030 Move Line Up\n\n" +
+        "- alpha\n" +
+        "- gamma\n" +
+        "- beta\n" +
+        "- delta\n";
+
+      const betaLine = "- beta\n";
+      const betaFrom = initial.indexOf(betaLine);
+      const betaTo = betaFrom + betaLine.length;
+      const insertAt = initial.indexOf("- delta\n");
+
+      const t = await createTestHSM();
+      await loadAndActivate(t, initial);
+
+      t.send(cm6Change([
+        { from: betaFrom, to: betaTo, insert: "" },
+        { from: insertAt, to: insertAt, insert: betaLine },
+      ], moved));
+
+      expectLocalDocText(t, moved);
+      expect(t.hsm.checkAndCorrectDrift()).toBe(false);
+    });
+
     test('CM6_CHANGE with userEvent="set" emits ops that do not corrupt a peer with divergent history', async () => {
       // Reproduces TP-008 (Properties panel frontmatter edit) against a
       // stale CM6 buffer. setViewData emits from/to indices relative to the
