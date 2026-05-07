@@ -128,9 +128,8 @@ export interface MergeManagerConfig {
   /**
    * Factory to create persistence for localDoc.
    * Production: pass IndexeddbPersistence constructor wrapper.
-   * Tests: omit for default no-op persistence.
    */
-  createPersistence?: CreatePersistence;
+  createPersistence: CreatePersistence;
 
   /**
    * Callback to get persistence metadata for a document.
@@ -438,7 +437,7 @@ export class MergeManager {
     hash: string;
   } | null>;
   private loadState?: (guid: string) => Promise<PersistedMergeState | null>;
-  private createPersistence?: CreatePersistence;
+  private createPersistence: CreatePersistence;
   private getPersistenceMetadata?: (guid: string, path: string) => PersistenceMetadata;
   private _yaml: FrontMatterPrimitives | null = null;
   private _onTransition?: MergeTransitionCallback;
@@ -1510,7 +1509,7 @@ export class MergeManager {
     this.onEffect = undefined;
     this.getDiskState = undefined;
     this.loadState = undefined;
-    this.createPersistence = undefined;
+    this.createPersistence = null as any;
     this.getPersistenceMetadata = undefined;
     this._yaml = null;
     this._onTransition = undefined;

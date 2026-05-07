@@ -9,8 +9,9 @@
  */
 
 import * as Y from 'yjs';
-import { MergeManager } from 'src/merge-hsm/MergeManager';
+import { MergeManager, type MergeManagerConfig } from 'src/merge-hsm/MergeManager';
 import { MergeHSM } from 'src/merge-hsm/MergeHSM';
+import type { CreatePersistence } from 'src/merge-hsm/types';
 import { MockTimeProvider } from '../mocks/MockTimeProvider';
 import { PostOffice } from 'src/observable/Postie';
 
@@ -20,6 +21,27 @@ interface MockDocument {
   path: string;
   hsm: MergeHSM | null;
   remoteDoc: Y.Doc;
+}
+
+const createEmptyYDocPersistence: CreatePersistence = () => ({
+  synced: true,
+  once(_event: 'synced', cb: () => void) {
+    cb();
+  },
+  destroy() {},
+  whenSynced: Promise.resolve(),
+  hasUserData() {
+    return false;
+  },
+});
+
+function createManagerWithEmptyYDocStore(
+  config: Omit<MergeManagerConfig, 'createPersistence'>
+): MergeManager {
+  return new MergeManager({
+    ...config,
+    createPersistence: createEmptyYDocPersistence,
+  });
 }
 
 /** Create a valid Yjs state vector from content text. */
@@ -88,7 +110,7 @@ describe('MergeManager', () => {
     // @ts-ignore
     PostOffice["_destroyed"] = false;
 
-    manager = new MergeManager({
+    manager = createManagerWithEmptyYDocStore({
       getVaultId: (guid) => `test-${guid}`,
       getDocument: (guid) => documents.get(guid),
       timeProvider,
@@ -149,7 +171,7 @@ describe('MergeManager', () => {
         },
       ]);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -167,7 +189,7 @@ describe('MergeManager', () => {
     test('initialize() is idempotent', async () => {
       const mockLoadAllStates = jest.fn().mockResolvedValue([]);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -183,7 +205,7 @@ describe('MergeManager', () => {
     test('initialize() does not load if destroyed', async () => {
       const mockLoadAllStates = jest.fn().mockResolvedValue([]);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -198,7 +220,7 @@ describe('MergeManager', () => {
     });
 
     test('initialize() works without loadAllStates callback', async () => {
-      const managerWithoutCallback = new MergeManager({
+      const managerWithoutCallback = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -339,7 +361,7 @@ describe('MergeManager', () => {
       server.getText('contents').insert(0, 'hello');
       const localSV = Y.encodeStateVector(server);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (docGuid) => `test-${docGuid}`,
         getDocument: (docGuid) => documents.get(docGuid),
         timeProvider,
@@ -383,7 +405,7 @@ describe('MergeManager', () => {
       server.getText('contents').insert(5, ' world');
       const aheadSV = Y.encodeStateVector(server);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (docGuid) => `test-${docGuid}`,
         getDocument: (docGuid) => documents.get(docGuid),
         timeProvider,
@@ -414,7 +436,7 @@ describe('MergeManager', () => {
 
       managerWithInit.destroy();
 
-      const localAheadManager = new MergeManager({
+      const localAheadManager = createManagerWithEmptyYDocStore({
         getVaultId: (docGuid) => `test-${docGuid}`,
         getDocument: (docGuid) => documents.get(docGuid),
         timeProvider,
@@ -451,7 +473,7 @@ describe('MergeManager', () => {
       server.getText('contents').insert(5, ' world');
       const aheadSnapshot = Y.encodeSnapshot(Y.snapshot(server));
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (docGuid) => `test-${docGuid}`,
         getDocument: (docGuid) => documents.get(docGuid),
         timeProvider,
@@ -493,7 +515,7 @@ describe('MergeManager', () => {
       text.delete(0, 5);
       const deletedSnapshot = Y.encodeSnapshot(Y.snapshot(server));
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (docGuid) => `test-${docGuid}`,
         getDocument: (docGuid) => documents.get(docGuid),
         timeProvider,
@@ -556,7 +578,7 @@ describe('MergeManager', () => {
       text.delete(0, 5);
       const snapshot = Y.encodeSnapshot(Y.snapshot(localDoc));
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (docGuid) => `test-${docGuid}`,
         getDocument: (docGuid) => documents.get(docGuid),
         timeProvider,
@@ -603,7 +625,7 @@ describe('MergeManager', () => {
 
   describe('LCA cache', () => {
     test('getLCAMeta returns null for unknown guid', async () => {
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -630,7 +652,7 @@ describe('MergeManager', () => {
         },
       ]);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -659,7 +681,7 @@ describe('MergeManager', () => {
         },
       ]);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -673,7 +695,7 @@ describe('MergeManager', () => {
 
     test('setLCA updates cache immediately', async () => {
       const effects: Array<{ guid: string; type: string }> = [];
-      const managerWithEffects = new MergeManager({
+      const managerWithEffects = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -703,7 +725,7 @@ describe('MergeManager', () => {
 
     test('setLCA emits PERSIST_STATE effect', async () => {
       const effects: Array<{ guid: string; type: string; state?: unknown }> = [];
-      const managerWithEffects = new MergeManager({
+      const managerWithEffects = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -746,7 +768,7 @@ describe('MergeManager', () => {
         },
       ]);
 
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -771,7 +793,7 @@ describe('MergeManager', () => {
     });
 
     test('setLCA without onEffect callback does not throw', async () => {
-      const managerNoEffects = new MergeManager({
+      const managerNoEffects = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -796,7 +818,7 @@ describe('MergeManager', () => {
     });
 
     test('setLCA for unknown doc still updates cache', async () => {
-      const managerWithInit = new MergeManager({
+      const managerWithInit = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -1043,7 +1065,7 @@ describe('MergeManager', () => {
       const mockLoadAllStates = jest.fn().mockResolvedValue([persistedState]);
       const mockLoadState = jest.fn().mockResolvedValue(persistedState);
 
-      const managerWithPersistence = new MergeManager({
+      const managerWithPersistence = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -1118,7 +1140,7 @@ describe('MergeManager', () => {
     });
 
     test('setActiveDocuments is a no-op when destroyed', async () => {
-      const managerToDestroy = new MergeManager({
+      const managerToDestroy = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,

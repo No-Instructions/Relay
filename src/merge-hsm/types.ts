@@ -837,10 +837,10 @@ export interface MergeHSMConfig {
 
 	/**
 	 * Factory to create persistence for localDoc.
-	 * Defaults to IndexeddbPersistence from y-indexeddb.
-	 * Override in tests with a mock.
+	 * Production passes IndexeddbPersistence from y-indexeddb.
+	 * Tests pass an explicit mock.
 	 */
-	createPersistence?: CreatePersistence;
+	createPersistence: CreatePersistence;
 
 	/**
 	 * Metadata to store on the persistence for recovery/debugging.

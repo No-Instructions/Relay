@@ -11,8 +11,9 @@
  */
 
 import * as Y from 'yjs';
-import { MergeManager, WakePriority } from 'src/merge-hsm/MergeManager';
+import { MergeManager, WakePriority, type MergeManagerConfig } from 'src/merge-hsm/MergeManager';
 import { MergeHSM } from 'src/merge-hsm/MergeHSM';
+import type { CreatePersistence } from 'src/merge-hsm/types';
 import { MockTimeProvider } from '../mocks/MockTimeProvider';
 import { PostOffice } from 'src/observable/Postie';
 
@@ -27,6 +28,27 @@ interface MockDocument {
   destroyIdleProviderIntegration(): void;
   hasProviderIntegration(): boolean;
   ensureRemoteDoc(): Y.Doc;
+}
+
+const createEmptyYDocPersistence: CreatePersistence = () => ({
+  synced: true,
+  once(_event: 'synced', cb: () => void) {
+    cb();
+  },
+  destroy() {},
+  whenSynced: Promise.resolve(),
+  hasUserData() {
+    return false;
+  },
+});
+
+function createManagerWithEmptyYDocStore(
+  config: Omit<MergeManagerConfig, 'createPersistence'>
+): MergeManager {
+  return new MergeManager({
+    ...config,
+    createPersistence: createEmptyYDocPersistence,
+  });
 }
 
 function createUpdate(content: string): Uint8Array {
@@ -97,7 +119,7 @@ describe('Hibernation Lifecycle', () => {
     // @ts-ignore
     PostOffice["_destroyed"] = false;
 
-    manager = new MergeManager({
+    manager = createManagerWithEmptyYDocStore({
       getVaultId: (guid) => `test-${guid}`,
       getDocument: (guid) => documents.get(guid),
       timeProvider,
@@ -133,7 +155,7 @@ describe('Hibernation Lifecycle', () => {
   describe('update buffering', () => {
     test('remote updates buffer when hibernated (concurrency 0)', () => {
       // Use concurrency 0 so processWakeQueue can't drain the buffer
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -157,7 +179,7 @@ describe('Hibernation Lifecycle', () => {
     });
 
     test('multiple updates are compacted via mergeUpdates', () => {
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -215,7 +237,7 @@ describe('Hibernation Lifecycle', () => {
 
     test('wake drains buffered updates into HSM', () => {
       // Use concurrency 0 to accumulate buffer, then explicit wake() drains it
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -468,7 +490,7 @@ describe('Hibernation Lifecycle', () => {
 
     test('hibernate drains wake queue when slot frees', () => {
       // Concurrency 1: only one warm doc at a time
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -505,7 +527,7 @@ describe('Hibernation Lifecycle', () => {
 
     test('enqueueWake prioritizes higher priority requests', () => {
       // Manager with concurrency 1 to test ordering
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -576,7 +598,7 @@ describe('Hibernation Lifecycle', () => {
 
     test('enqueueWake upgrades priority for queued requests', () => {
       // Manager with concurrency 0 (nothing processes) to test queue ordering
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,
@@ -611,7 +633,7 @@ describe('Hibernation Lifecycle', () => {
   describe('cleanup', () => {
     test('notifyHSMDestroyed cleans up hibernation state', () => {
       // Use concurrency 0 to accumulate buffer
-      const strictManager = new MergeManager({
+      const strictManager = createManagerWithEmptyYDocStore({
         getVaultId: (guid) => `test-${guid}`,
         getDocument: (guid) => documents.get(guid),
         timeProvider,

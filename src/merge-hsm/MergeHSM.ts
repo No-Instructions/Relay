@@ -335,8 +335,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._getPath = config.getPath;
 		this.vaultId = config.vaultId;
 		this.remoteDoc = config.remoteDoc;
-		this._createPersistence =
-			config.createPersistence ?? defaultCreatePersistence;
+		this._createPersistence = config.createPersistence;
 		this._persistenceMetadata = config.persistenceMetadata;
 		this._diskLoader = config.diskLoader;
 		this._bridge = new SyncBridge(this);
@@ -4776,33 +4775,6 @@ function computePositionedChanges(
 
 	return [{ from, to, insert }];
 }
-
-/**
- * Default persistence factory: fires 'synced' synchronously (no IndexedDB).
- * Production code should pass a real factory that creates IndexeddbPersistence.
- */
-const defaultCreatePersistence: CreatePersistence = (
-	_vaultId: string,
-	doc: Y.Doc,
-	_captureOpts?: CaptureOpts | null,
-): IYDocPersistence => {
-	const hasContent = false;
-	return {
-		synced: false,
-		once(_event: "synced", cb: () => void) {
-			// Fire synchronously — for test environments where no IndexedDB exists.
-			// Real IndexeddbPersistence fires asynchronously after loading from IDB.
-			cb();
-		},
-		destroy() {
-			// No-op
-		},
-		whenSynced: Promise.resolve(),
-		hasUserData() {
-			return hasContent;
-		},
-	};
-};
 
 async function defaultHashFn(contents: string): Promise<string> {
 	const encoder = new TextEncoder();
