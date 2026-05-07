@@ -1708,6 +1708,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				if (current?.controller === invoke.controller) {
 					this._asyncOps.delete(invoke.id);
 				}
+				if (this._activeInvoke?.controller === invoke.controller) {
+					this._activeInvoke = null;
+				}
 			});
 			this._asyncOps.set(invoke.id, { controller: invoke.controller, promise });
 		}
@@ -4289,10 +4292,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	async awaitAsync(id: string): Promise<void> {
-		let op = this._asyncOps.get(id);
-		while (op) {
+		while (true) {
+			let op = this._asyncOps.get(id);
+			if (!op) {
+				await Promise.resolve();
+				op = this._asyncOps.get(id);
+				if (!op) return;
+			}
 			await op.promise;
-			op = this._asyncOps.get(id);
 		}
 	}
 
