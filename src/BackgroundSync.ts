@@ -6,7 +6,11 @@ import { isDocument, type Document } from "./Document";
 import { isCanvas } from "./Canvas";
 import type { TimeProvider } from "./TimeProvider";
 import { HasLogging, RelayInstances, metrics } from "./debug";
-import type { Subscriber, Unsubscriber } from "./observable/Observable";
+import {
+	Observable,
+	type Subscriber,
+	type Unsubscriber,
+} from "./observable/Observable";
 import { ObservableSet } from "./observable/ObservableSet";
 import { ObservableMap } from "./observable/ObservableMap";
 import type { SharedFolder, SharedFolders } from "./SharedFolder";
@@ -25,6 +29,15 @@ export interface QueueItem {
 	status: "pending" | "running" | "completed" | "failed";
 	sharedFolder: SharedFolder;
 	userVisible: boolean;
+}
+
+export interface BackgroundSyncFailure {
+	id: string;
+	guid: string;
+	path: string;
+	kind: "sync" | "download" | "local";
+	message: string;
+	sharedFolder: SharedFolder;
 }
 
 export interface SyncGroup {
@@ -65,6 +78,10 @@ export class BackgroundSync extends HasLogging {
 	public activeSync = new ObservableSet<QueueItem>();
 	public activeDownloads = new ObservableSet<QueueItem>();
 	public syncGroups = new ObservableMap<SharedFolder, SyncGroup>();
+	private failures = new ObservableMap<string, BackgroundSyncFailure>(
+		"BackgroundSync.failures",
+	);
+	private queueStatusChanged = new Observable<BackgroundSync>("BackgroundSync.queueStatus");
 
 	private syncQueue: QueueItem[] = [];
 	private downloadQueue: QueueItem[] = [];
@@ -218,6 +235,17 @@ export class BackgroundSync extends HasLogging {
 		};
 	}
 
+	getFailures(sharedFolder: SharedFolder): BackgroundSyncFailure[] {
+		return this.failures
+			.values()
+			.filter((failure) => failure.sharedFolder === sharedFolder)
+			.sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	clearFailure(id: string): void {
+		this.failures.delete(id);
+	}
+
 	getAllGroupsProgress(): GroupProgress[] {
 		const progress: GroupProgress[] = [];
 		this.syncGroups.forEach((group, sharedFolder) => {
@@ -324,9 +352,10 @@ export class BackgroundSync extends HasLogging {
 							this.syncPromises.delete(item.guid);
 						}
 
+						this.error("[Sync Failed]", error);
+						this.recordFailure("sync", item, error);
 						const group = this.syncGroups.get(item.sharedFolder);
 						if (group) {
-							this.error("[Sync Failed]", error);
 							group.status = "failed";
 							this.syncGroups.set(item.sharedFolder, group);
 						}
@@ -356,9 +385,10 @@ export class BackgroundSync extends HasLogging {
 					this.syncPromises.delete(item.guid);
 				}
 
+				this.error("[Sync Startup Failed]", error);
+				this.recordFailure("sync", item, error);
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
-					this.error("[Sync Startup Failed]", error);
 					group.status = "failed";
 					this.syncGroups.set(item.sharedFolder, group);
 				}
@@ -475,6 +505,7 @@ export class BackgroundSync extends HasLogging {
 							group.status = "failed";
 							this.syncGroups.set(item.sharedFolder, group);
 						}
+						this.recordFailure("download", item, error);
 						this.error("[processDownloadQueue]", error);
 					})
 					.finally(() => {
@@ -502,15 +533,16 @@ export class BackgroundSync extends HasLogging {
 					this.downloadPromises.delete(item.guid);
 				}
 
+				this.error("[Download Startup Failed]", error);
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
-					this.error("[Download Startup Failed]", error);
 					if (item.userVisible) {
 						group.failedUserDownloads++;
 					}
 					group.status = "failed";
 					this.syncGroups.set(item.sharedFolder, group);
 				}
+				this.recordFailure("download", item, error);
 
 				this.activeDownloads.delete(item);
 				metrics.setBgSyncActive("download", this.activeDownloads.size);
@@ -548,6 +580,7 @@ export class BackgroundSync extends HasLogging {
 			sharedFolder,
 			userVisible: false,
 		};
+		this.clearFailure(this.failureKey("sync", item.guid));
 
 		// Get or create the sync group
 		let group = this.syncGroups.get(sharedFolder);
@@ -645,6 +678,7 @@ export class BackgroundSync extends HasLogging {
 			sharedFolder,
 			userVisible,
 		};
+		this.clearFailure(this.failureKey("download", item.guid));
 
 		// Mark as in progress
 		this.inProgressDownloads.add(item.guid);
@@ -794,6 +828,7 @@ export class BackgroundSync extends HasLogging {
 			sharedFolder,
 			userVisible: false,
 		};
+		this.clearFailure(this.failureKey("sync", item.guid));
 
 		this.inProgressSyncs.add(item.guid);
 
@@ -1305,6 +1340,8 @@ export class BackgroundSync extends HasLogging {
 		this.activeSync.destroy();
 		this.activeDownloads.destroy();
 		this.syncGroups.destroy();
+		this.failures.destroy();
+		this.queueStatusChanged.destroy();
 
 		// Clear queues and tracking
 		this.syncQueue = [];
@@ -1321,5 +1358,48 @@ export class BackgroundSync extends HasLogging {
 
 		// Unsubscribe from all subscriptions
 		this.subscriptions.forEach((off) => off());
+	}
+
+	private recordFailure(
+		kind: BackgroundSyncFailure["kind"],
+		item: QueueItem,
+		error: unknown,
+	): void {
+		const id = this.failureKey(kind, item.guid);
+		this.setFailure({
+			id,
+			guid: item.guid,
+			path: item.doc.path,
+			kind,
+			message: this.errorMessage(error),
+			sharedFolder: item.sharedFolder,
+		});
+	}
+
+	private setFailure(failure: BackgroundSyncFailure): void {
+		const existing = this.failures.get(failure.id);
+		if (
+			existing &&
+			existing.guid === failure.guid &&
+			existing.path === failure.path &&
+			existing.kind === failure.kind &&
+			existing.message === failure.message &&
+			existing.sharedFolder === failure.sharedFolder
+		) {
+			return;
+		}
+		this.failures.set(failure.id, failure);
+	}
+
+	private failureKey(kind: BackgroundSyncFailure["kind"], guid: string): string {
+		return `${kind}:${guid}`;
+	}
+
+	private errorMessage(error: unknown): string {
+		if (error instanceof Error && error.message.trim()) {
+			return error.message;
+		}
+		const message = String(error ?? "").trim();
+		return message || "Sync failed";
 	}
 }
