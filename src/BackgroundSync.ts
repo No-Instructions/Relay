@@ -13,8 +13,8 @@ import type { SharedFolder, SharedFolders } from "./SharedFolder";
 import { compareFilePaths } from "./FolderSort";
 import type { ClientToken } from "./client/types";
 import { Canvas } from "./Canvas";
-import { areObjectsEqual } from "./areObjectsEqual";
 import type { CanvasData } from "./CanvasView";
+import { areCanvasDataEqual } from "./CanvasData";
 import { SyncFile, isSyncFile } from "./SyncFile";
 import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
 
@@ -962,7 +962,7 @@ export class BackgroundSync extends HasLogging {
 					const currentFileJson = currentFileContents
 						? JSON.parse(currentFileContents)
 						: { nodes: [], edges: [] };
-					contentsMatch = areObjectsEqual(currentCanvasData, currentFileJson);
+					contentsMatch = areCanvasDataEqual(currentCanvasData, currentFileJson);
 					if (!contentsMatch && currentFileContents) {
 						this.log(
 							"file is not tracking local disk. resolve merge conflicts before syncing.",
@@ -1071,9 +1071,7 @@ export class BackgroundSync extends HasLogging {
 			}
 
 			// Only proceed with update if file matches current ydoc state
-			const contentsMatch =
-				areObjectsEqual(currentJson.edges, currentFileContents.edges) &&
-				areObjectsEqual(currentJson.nodes, currentFileContents.nodes);
+			const contentsMatch = areCanvasDataEqual(currentJson, currentFileContents);
 			const hasContents = currentFileContents.nodes.length > 0;
 
 			const response = await this.downloadItem(canvas);
