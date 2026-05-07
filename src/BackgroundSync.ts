@@ -246,6 +246,64 @@ export class BackgroundSync extends HasLogging {
 		this.failures.delete(id);
 	}
 
+	async refreshLocalFileFailures(sharedFolder: SharedFolder): Promise<void> {
+		const liveLocalFailureIds = new Set<string>();
+		for (const file of sharedFolder.files.values()) {
+			if (!isCanvas(file)) continue;
+			const id = this.failureKey("local", file.guid);
+			liveLocalFailureIds.add(id);
+			const message = await this.getCanvasLocalStateFailure(file);
+			if (message) {
+				this.setFailure({
+					id,
+					guid: file.guid,
+					path: file.path,
+					kind: "local",
+					message,
+					sharedFolder,
+				});
+			} else {
+				this.clearFailure(id);
+			}
+		}
+
+		for (const failure of this.failures.values()) {
+			if (
+				failure.sharedFolder === sharedFolder &&
+				failure.kind === "local" &&
+				!liveLocalFailureIds.has(failure.id)
+			) {
+				this.clearFailure(failure.id);
+			}
+		}
+	}
+
+	private async getCanvasLocalStateFailure(
+		canvas: Canvas,
+	): Promise<string | null> {
+		await canvas.whenSynced();
+		let currentFileContents: string;
+		try {
+			currentFileContents = await canvas.sharedFolder.read(canvas);
+		} catch (e) {
+			return null;
+		}
+		if (!currentFileContents) return null;
+
+		let currentFileJson: CanvasData;
+		try {
+			currentFileJson = JSON.parse(currentFileContents) as CanvasData;
+		} catch (e) {
+			return "Canvas file contains invalid JSON. Open the canvas and repair it before syncing.";
+		}
+
+		const currentCanvasData = Canvas.exportCanvasData(canvas.ydoc);
+		if (areCanvasDataEqual(currentCanvasData, currentFileJson)) {
+			return null;
+		}
+		return "Canvas file does not match local sync state. Open the canvas and resolve the local changes before syncing.";
+	}
+
 	getAllGroupsProgress(): GroupProgress[] {
 		const progress: GroupProgress[] = [];
 		this.syncGroups.forEach((group, sharedFolder) => {
@@ -987,6 +1045,7 @@ export class BackgroundSync extends HasLogging {
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
 			const currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
+			let canvasContentsMismatch = false;
 			try {
 				const currentFileContents = await doc.sharedFolder.read(doc);
 
@@ -999,14 +1058,16 @@ export class BackgroundSync extends HasLogging {
 						: { nodes: [], edges: [] };
 					contentsMatch = areCanvasDataEqual(currentCanvasData, currentFileJson);
 					if (!contentsMatch && currentFileContents) {
-						this.log(
-							"file is not tracking local disk. resolve merge conflicts before syncing.",
-						);
-						return false;
+						canvasContentsMismatch = true;
 					}
 				}
 			} catch (e) {
 				// File does not exist
+			}
+			if (canvasContentsMismatch) {
+				throw new Error(
+					"Canvas file does not match local sync state. Open the canvas and resolve the local changes before syncing.",
+				);
 			}
 		}
 		const sharedFolder = doc.sharedFolder;
