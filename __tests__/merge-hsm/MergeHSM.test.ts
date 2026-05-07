@@ -212,15 +212,20 @@ describe('MergeHSM', () => {
 
     test('no-LCA disk change routes to idle.conflict without LCA guard errors', async () => {
       await withHSMResourceContracts(async () => {
-        const t = await createTestHSM();
-        const localDoc = createDocWithText('remote content');
-        const remoteDoc = createDocWithText('remote content');
+        const updates = createYjsUpdate('remote content');
+        const t = await createTestHSM({
+          indexedDBUpdates: updates,
+        });
         const log = jest.fn();
 
-        (t.hsm as any)._statePath = 'idle.synced';
+        t.syncRemoteWithUpdate(updates);
+        t.setProviderSynced(true);
+        t.send(load('test-guid', 'test.md'));
+        t.send(persistenceLoaded(updates, null));
+        t.send({ type: 'SET_MODE_IDLE' });
+
+        (t.hsm as any).setStatePath('idle.synced');
         (t.hsm as any)._lca = null;
-        (t.hsm as any).localDoc = localDoc;
-        (t.hsm as any).remoteDoc = remoteDoc;
         (t.hsm as any).pendingDiskContents = null;
         (t.hsm as any)._fork = null;
         (t.hsm as any)._conflict = null;
@@ -234,9 +239,6 @@ describe('MergeHSM', () => {
         expect(t.state.lca).toBeNull();
         expect(log).not.toHaveBeenCalledWith(expect.stringContaining('lcaMetadata expected present'));
         expect(log).not.toHaveBeenCalledWith(expect.stringContaining('LCA metadata missing'));
-
-        localDoc.destroy();
-        remoteDoc.destroy();
       });
     });
 
@@ -255,6 +257,25 @@ describe('MergeHSM', () => {
 
       expect(t.hsm.getConflictData()).toBeNull();
       expect(log).not.toHaveBeenCalled();
+    });
+
+    test('hibernated idle.diverged conflict inspection returns null without guard errors', async () => {
+      const t = await createTestHSM();
+      const localDoc = createDocWithText('base content');
+      const log = jest.fn();
+
+      (t.hsm as any)._statePath = 'idle.diverged';
+      (t.hsm as any)._lca = await createLCA('base content', 1000, Y.encodeStateVector(localDoc));
+      (t.hsm as any).localDoc = null;
+      (t.hsm as any).remoteDoc = null;
+      (t.hsm as any).pendingDiskContents = null;
+      (t.hsm as any)._fork = null;
+      (t.hsm as any)._conflict = null;
+      (t.hsm as any).hsmError = log;
+
+      expect(t.hsm.getConflictData()).toBeNull();
+      expect(log).not.toHaveBeenCalled();
+      localDoc.destroy();
     });
 
     test('idle.synced reports stale pending disk contents when assertions are enabled', async () => {
@@ -2478,6 +2499,102 @@ describe('MergeHSM', () => {
       expect(t.getLocalDocText()).toBe(remoteContent);
     });
 
+    test('no-LCA pending disk at load does not settle as synced without local CRDT state', async () => {
+      const diskContent = 'disk content';
+      const t = await createTestHSM();
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(await diskChanged(diskContent, 123, 'disk-hash'));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.diverged');
+      expect(t.state.lca).toBeNull();
+      expect(t.hsm.getSyncStatus().status).toBe('pending');
+    });
+
+    test('no-LCA idle.diverged without remoteDoc awaits provider instead of failing', async () => {
+      const localContent = 'local content';
+      const updates = createYjsUpdate(localContent);
+      const t = await createTestHSM({
+        indexedDBUpdates: updates,
+      });
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(updates, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      (t.hsm as any).setStatePath('idle.diverged');
+      (t.hsm as any).remoteDoc = null;
+      (t.hsm as any).pendingDiskContents = null;
+
+      const result = await (t.hsm as any).invokeIdleThreeWayAutoMerge(new AbortController().signal);
+
+      expect(result).toEqual({ success: false, awaitingProvider: true });
+    });
+
+    test('no-LCA pending disk at load recovers LCA when synced remote doc is available', async () => {
+      const content = 'same content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM({
+        indexedDBUpdates: updates,
+      });
+      t.syncRemoteWithUpdate(updates);
+      t.setProviderSynced(true);
+
+      t.send(load('test-guid'));
+      t.send(persistenceLoaded(updates, null));
+      t.send(await diskChanged(content, 456, 'same-hash'));
+      t.send({ type: 'SET_MODE_IDLE' });
+      await (t.hsm as any).awaitAsync('recover-lca');
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.state.lca?.meta.hash).toBe('same-hash');
+      expect(t.hsm.getSyncStatus().status).toBe('synced');
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
+    });
+
+    test('no-LCA recovery captures content-equal local-ahead CRDT baseline without mutating localDoc', async () => {
+      const content = 'same content';
+      const baseDoc = createDocWithText(content);
+      const baseUpdate = Y.encodeStateAsUpdate(baseDoc);
+      const localDoc = new Y.Doc();
+      Y.applyUpdate(localDoc, baseUpdate);
+      localDoc.getMap('relay').set('v', 0);
+      const localUpdate = Y.encodeStateAsUpdate(localDoc);
+      const t = await createTestHSM({
+        indexedDBUpdates: localUpdate,
+      });
+      t.syncRemoteWithUpdate(baseUpdate);
+
+      t.send(load('test-guid'));
+      t.send(persistenceLoaded(localUpdate, null));
+      await (t.hsm as any).ensurePersistence();
+      (t.hsm as any).pendingRecoverLCADisk = {
+        content,
+        hash: 'same-hash',
+        mtime: 456,
+      };
+
+      const hsmLocalDoc = t.hsm.getLocalDoc();
+      const hsmRemoteDoc = t.hsm.getRemoteDoc();
+      expect(hsmLocalDoc).not.toBeNull();
+      expect(hsmRemoteDoc).not.toBeNull();
+      const beforeStateVector = Y.encodeStateVector(hsmLocalDoc!);
+
+      const result = await (t.hsm as any).invokeRecoverLCA(new AbortController().signal);
+
+      expect(result.kind).toBe('diverged');
+      expect(result.pendingIdleUpdates).toBeUndefined();
+      expect(Array.from(Y.encodeStateVector(hsmLocalDoc!))).toEqual(Array.from(beforeStateVector));
+      expect(result.newLCA?.contents).toBe(content);
+      expect(Array.from(result.newLCA?.stateVector ?? [])).toEqual(
+        Array.from(Y.encodeStateVector(hsmRemoteDoc!)),
+      );
+      baseDoc.destroy();
+      localDoc.destroy();
+    });
+
     test('bootstrapLCAFromDisk establishes LCA when disk local and remote agree', async () => {
       const content = 'same content';
       const updates = createYjsUpdate(content);
@@ -2498,6 +2615,55 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
       expect(t.state.lca?.contents).toBe(content);
       expect(t.hsm.getSyncStatus().status).toBe('synced');
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
+    });
+
+    test('bootstrapLCAFromDisk does not enter recoverLCA without local CRDT state', async () => {
+      const content = 'same content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM();
+      t.syncRemoteWithUpdate(updates);
+      t.setProviderSynced(true);
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(await diskChanged(content, 456, 'same-hash'));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.diverged');
+      const historyLength = t.stateHistory.length;
+
+      await t.hsm.bootstrapLCAFromDisk({
+        content,
+        hash: 'same-hash',
+        mtime: 456,
+      });
+
+      expectState(t, 'idle.diverged');
+      expect(t.state.lca).toBeNull();
+      expect(t.stateHistory.slice(historyLength).some((entry) => entry.to === 'idle.recoverLCA')).toBe(false);
+    });
+
+    test('bootstrapLCAFromDisk hydrates hibernated local CRDT before recovering LCA', async () => {
+      const content = 'same content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM();
+      t.seedIndexedDB(updates);
+      t.syncRemoteWithUpdate(updates);
+      (t.hsm as any).setStatePath('idle.diverged');
+      await (t.hsm as any).destroyLocalDoc();
+      (t.hsm as any)._localStateVector = null;
+
+      const repaired = await t.hsm.bootstrapLCAFromDisk({
+        content,
+        hash: 'same-hash',
+        mtime: 456,
+      });
+
+      expect(repaired).toBe(true);
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.getLocalDocText()).toBe(content);
       expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
     });
 
@@ -2563,17 +2729,17 @@ describe('MergeHSM', () => {
     test('bootstrapLCAFromDisk surfaces divergent no-LCA remote state as idle conflict', async () => {
       const localContent = 'local content';
       const remoteContent = 'remote content';
-      const t = await createTestHSM();
-      const localDoc = createDocWithText(localContent);
+      const localUpdate = createYjsUpdate(localContent);
       const remoteDoc = createDocWithText(remoteContent);
-      (t.hsm as any)._statePath = 'idle.synced';
-      (t.hsm as any)._lca = null;
-      (t.hsm as any).localDoc = localDoc;
-      (t.hsm as any).remoteDoc = remoteDoc;
-      (t.hsm as any)._localStateVector = Y.encodeStateVector(localDoc);
-      (t.hsm as any)._remoteStateVector = Y.encodeStateVector(remoteDoc);
-      (t.hsm as any)._fork = null;
-      (t.hsm as any)._conflict = null;
+      const remoteUpdate = Y.encodeStateAsUpdate(remoteDoc);
+      const t = await createTestHSM({
+        indexedDBUpdates: localUpdate,
+      });
+      t.syncRemoteWithUpdate(remoteUpdate);
+      t.setProviderSynced(true);
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(localUpdate, null));
+      t.send({ type: 'SET_MODE_IDLE' });
 
       await t.hsm.bootstrapLCAFromDisk({
         content: localContent,
@@ -2589,7 +2755,6 @@ describe('MergeHSM', () => {
       expect(conflict?.ours).toBe(localContent);
       expect(conflict?.theirs).toBe(remoteContent);
       expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
-      localDoc.destroy();
       remoteDoc.destroy();
     });
 

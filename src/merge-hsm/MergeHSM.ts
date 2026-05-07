@@ -109,7 +109,7 @@ type RecoverLCAResult =
 		newLCA: LCAState;
 		localStateVector: Uint8Array;
 		remoteStateVector: Uint8Array;
-		pendingIdleUpdates: Uint8Array;
+		pendingIdleUpdates?: Uint8Array;
 	}
 	| {
 		kind: "diverged";
@@ -376,6 +376,49 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (this._statePath === "idle.synced" && !this._fork && !this._conflict) {
 			this.clearPendingDiskContents();
 		}
+	}
+
+	private refreshLocalStateVectorFromDoc(): Uint8Array | null {
+		if (this.localDoc) {
+			this._localStateVector = Y.encodeStateVector(this.localDoc);
+			if (this._localDocClientID === null) {
+				this._localDocClientID = this.localDoc.clientID;
+			}
+		}
+		return this._localStateVector;
+	}
+
+	private hasEnrolledLocalCRDT(): boolean {
+		if (this.localPersistence?.synced !== true) return false;
+		if (!this.localPersistence.hasUserData()) return false;
+		const localStateVector = this.refreshLocalStateVectorFromDoc();
+		return !!localStateVector && localStateVector.length > 1;
+	}
+
+	private noLCACanSettleAsSyncedAtLoad(): boolean {
+		if (this._fork || this._conflict) return false;
+		if (this.pendingDiskContents !== null || this.pendingIdleUpdates !== null) return false;
+		if (this.remoteDoc && !isEmptyDoc(this.remoteDoc)) return false;
+		if (this.localPersistence && !this.localPersistence.synced) return false;
+		return !this.hasEnrolledLocalCRDT();
+	}
+
+	private canRecoverLCAWithPendingDisk(): boolean {
+		if (this._lca || this._fork || this._conflict) return false;
+		if (!this.localDoc || !this.remoteDoc) return false;
+		if (!this.localPersistence || this.localPersistence.synced !== true) return false;
+		if (!this._providerSynced && !this._isProviderSynced()) return false;
+		if (this.pendingDiskContents === null || this._disk === null) return false;
+		return this.hasEnrolledLocalCRDT();
+	}
+
+	private prepareRecoverLCAFromPendingDisk(): void {
+		if (this.pendingDiskContents === null || this._disk === null) return;
+		this.pendingRecoverLCADisk = {
+			content: this.pendingDiskContents,
+			hash: this.pendingDiskHash ?? this._disk.hash,
+			mtime: this._disk.mtime,
+		};
 	}
 
 	private hydrateLCAContentsFromLocalDoc(): void {
@@ -719,6 +762,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (this._statePath !== "idle.diverged") return null;
 		if (!this._lca) return null;
 		this.assertMachineResources("before getConflictData");
+		if (!this.localDoc || !this.remoteDoc) return null;
 		const localDoc = this.requireLocalDoc("getConflictData");
 		const remoteDoc = this.requireRemoteDoc("getConflictData");
 		const base = this.requireLcaContents("getConflictData");
@@ -787,6 +831,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	private buildIdleConflictInit(): ConflictInit | null {
+		if (!this._lca && !this.hasEnrolledLocalCRDT()) return null;
 		const localDoc = this.localDoc;
 		if (!localDoc) return null;
 		const localText = localDoc.getText("contents").toString();
@@ -838,6 +883,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	private buildRecoverLCAConflictInit(): ConflictInit | null {
+		if (!this._lca && !this.hasEnrolledLocalCRDT()) return null;
 		const localText = this.localDoc?.getText("contents").toString();
 		if (localText === undefined) return null;
 		const remoteText = this.remoteDoc?.getText("contents").toString() ?? null;
@@ -1343,11 +1389,25 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		content: string;
 		hash: string;
 		mtime: number;
-	}): Promise<void> {
-		if (this._lca) return;
+	}): Promise<boolean> {
+		if (this._lca) return true;
+
+		await this.ensurePersistence();
+		if (this._lca) return true;
+
+		if (!this.remoteDoc) {
+			this.crdtLog(`bootstrapLCA skipped | guid=${this._guid} reason=missing-remote-doc`);
+			return false;
+		}
+
+		if (!this.hasEnrolledLocalCRDT()) {
+			this.crdtLog(`bootstrapLCA skipped | guid=${this._guid} reason=local-crdt-not-enrolled`);
+			return false;
+		}
 
 		this.send({ type: "RECOVER_LCA", disk });
 		await this.awaitAsync("recover-lca");
+		return this._lca !== null || this.getSyncStatus().status !== "pending";
 	}
 
 	/**
@@ -1367,7 +1427,38 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._captureOpts,
 			);
 		}
-		await this.localPersistence.whenSynced;
+		const persistence = this.localPersistence;
+		await this.awaitLocalPersistenceSynced();
+		if (this.localPersistence === persistence) {
+			this.refreshLocalStateVectorFromDoc();
+		}
+	}
+
+	private async awaitLocalPersistenceSynced(): Promise<void> {
+		const persistence = this.localPersistence;
+		if (!persistence || persistence.synced) return;
+
+		await new Promise<void>((resolve, reject) => {
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				resolve();
+			};
+			const fail = (error: unknown) => {
+				if (settled) return;
+				settled = true;
+				reject(error);
+			};
+
+			try {
+				persistence.once("synced", finish);
+			} catch (error) {
+				fail(error);
+				return;
+			}
+			persistence.whenSynced.then(finish, fail);
+		});
 	}
 
 	private hasUsableLocalDoc(): boolean {
@@ -1632,8 +1723,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// Idle state determination (for always transitions in idle.loading)
 			allSyncedAtLoad: () => {
 				if (!this._lca) {
-					// No LCA: synced only if no local state
-					return !this._localStateVector || this._localStateVector.length <= 1;
+					return this.noLCACanSettleAsSyncedAtLoad();
 				}
 				return !this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
 			},
@@ -1642,17 +1732,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// back so fork-reconcile runs instead of re-creating the fork.
 				if (this._fork) return true;
 				if (!this._lca) {
-					// No LCA: local ahead if we have local state
-					return !!this._localStateVector && this._localStateVector.length > 1;
+					return this.hasEnrolledLocalCRDT();
 				}
 				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
 			},
 			noLCADiskConflictAtLoad: () => {
 				if (this._lca || this.pendingDiskContents === null) return false;
-				if (!this.localDoc || this.localPersistence?.synced !== true) return false;
-				if (!this._localStateVector || this._localStateVector.length <= 1) return false;
+				if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
 				return this.localDoc.getText("contents").toString() !== this.pendingDiskContents;
 			},
+			canRecoverLCAWithPendingDisk: () => this.canRecoverLCAWithPendingDisk(),
 			remoteAheadAtLoad: () => {
 				if (!this._lca) return false;
 				return this.hasRemoteChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
@@ -1691,6 +1780,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			mergeSucceededButMorePending: (_hsm, event) =>
 				(event as any).data?.success === true
 				&& (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null),
+			awaitingLocalEnrollment: (_hsm, event) => (event as any).data?.awaitingLocalEnrollment === true,
+			awaitingDiskForLCA: (_hsm, event) => (event as any).data?.awaitingDiskForLCA === true,
 			hasPendingIdleWork: () =>
 				this.pendingIdleUpdates !== null || this.pendingDiskContents !== null,
 
@@ -1715,7 +1806,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
 			canRecoverLCA: () =>
-				this._lca === null && this._fork === null && this._conflict === null,
+				this._lca === null &&
+				this._fork === null &&
+				this._conflict === null &&
+				this.remoteDoc !== null &&
+				this.hasEnrolledLocalCRDT(),
 			isRecoveryMode: () => this._lca === null,
 			recoverLCASynced: (_hsm, event) =>
 				(event as any).data?.kind === "synced",
@@ -1745,6 +1840,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					hash: e.hash,
 					mtime: e.mtime,
 				};
+			},
+			prepareRecoverLCAFromPendingDisk: () => {
+				this.prepareRecoverLCAFromPendingDisk();
 			},
 			clearRecoverLCARequest: () => {
 				this.pendingRecoverLCADisk = null;
@@ -1782,7 +1880,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					this.clearPendingDiskContents();
 					this._setLCA(result.newLCA);
 				} else if (result.kind === "remoteAhead") {
-					this.pendingIdleUpdates = result.pendingIdleUpdates;
+					this.pendingIdleUpdates = result.pendingIdleUpdates ?? null;
 					this.clearPendingDiskContents();
 					this._setLCA(result.newLCA);
 				} else {
@@ -1908,10 +2006,10 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						forked: data?.forked,
 					});
 				const error = new Error(
-					`Unable to continue idle reconciliation without an actionable conflict (${detail})`,
+					"Unable to continue idle reconciliation",
 				);
 				this._error = error;
-				this.hsmError(`${error.message} | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
+				this.hsmError(`${error.message} (${detail}) | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
 			},
 			scheduleIdleRetry: () => {
 				this.idleRetryCount++;
@@ -2782,7 +2880,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		const localText = localDoc.getText("contents").toString();
 		const localStateVector = Y.encodeStateVector(localDoc);
+		if (localStateVector.length <= 1) {
+			return { kind: "declined", reason: "missing-local-crdt" };
+		}
 		const diskMatchesLocal = localText === disk.content;
+		const remoteText = remoteDoc.getText("contents").toString();
+		const remoteStateVector = Y.encodeStateVector(remoteDoc);
 
 		if (signal.aborted) {
 			return { kind: "declined", reason: "aborted" };
@@ -2813,6 +2916,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 
 		if (yjsDocIsAhead(remoteDoc, localDoc)) {
+			// Recovery captures only the proven ancestor. idle.remoteAhead
+			// derives and applies any remote update after the LCA is persisted.
 			const lcaHash = diskMatchesLocal
 				? disk.hash
 				: await this.hashFn(localText);
@@ -2822,11 +2927,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			const lcaMtime = diskMatchesLocal
 				? disk.mtime
 				: this.timeProvider.now();
-			const pendingIdleUpdates = Y.encodeStateAsUpdate(
-				remoteDoc,
-				localStateVector,
-			);
-			const remoteStateVector = Y.encodeStateVector(remoteDoc);
 			const newLCA = {
 				contents: localText,
 				meta: { hash: lcaHash, mtime: lcaMtime },
@@ -2840,7 +2940,6 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					newLCA,
 					localStateVector,
 					remoteStateVector,
-					pendingIdleUpdates,
 				};
 			}
 
@@ -2850,8 +2949,34 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				newLCA,
 				localStateVector,
 				remoteStateVector,
-				pendingIdleUpdates,
 				pendingDiskContents: disk.content,
+			};
+		}
+
+		if (diskMatchesLocal && remoteText === localText && yjsDocIsAhead(localDoc, remoteDoc)) {
+			// Local has extra CRDT state but no text change. Capture the remote
+			// snapshot as the ancestor, then let idle.diverged converge normally.
+			return {
+				kind: "diverged",
+				disk,
+				localStateVector,
+				remoteStateVector,
+				newLCA: {
+					contents: localText,
+					meta: { hash: disk.hash, mtime: disk.mtime },
+					stateVector: remoteStateVector,
+				},
+			};
+		}
+
+		if (diskMatchesLocal && remoteText === localText) {
+			return {
+				kind: "declined",
+				reason: "text-equal-crdt-divergence",
+				detail: {
+					localLength: localText.length,
+					remoteLength: remoteText.length,
+				},
 			};
 		}
 
@@ -2862,7 +2987,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				diskMatchesLocal,
 				localLength: localText.length,
 				diskLength: disk.content.length,
-				remoteLength: remoteDoc.getText("contents").toString().length,
+				remoteLength: remoteText.length,
 			},
 		};
 	}
@@ -3075,7 +3200,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		if (!this._lca) {
 			this.pendingIdleUpdates = null;
-			if (this.isNoLCAEmptyEnrollment(localDoc)) {
+			if (!this.remoteDoc) {
+				return { success: false, awaitingProvider: true };
+			}
+			if (!this.hasEnrolledLocalCRDT()) {
+				return { success: false, awaitingLocalEnrollment: true };
+			}
+			if (this.pendingDiskContents === null && this.pendingRecoverLCADisk === null) {
+				return { success: false, awaitingDiskForLCA: true };
+			}
+			if (!this._isProviderSynced() && !this.canMaterializeIdleConflict()) {
 				return { success: false, awaitingProvider: true };
 			}
 			return { success: false };

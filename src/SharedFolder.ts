@@ -1090,11 +1090,20 @@ export class SharedFolder extends HasProvider {
 					// callbacks registered by the constructor's
 					// setupEventSubscriptions() call stay live.
 					this.mergeManager.clearServerAdvertisedSVs();
+					this.enqueueLCABackfill("connect");
 				}
 				return result;
 			}
 		}
 		return false;
+	}
+
+	private enqueueLCABackfill(reason: string): void {
+		if (this.destroyed || this.localOnly || !this.connected) return;
+		const queued = this.backgroundSync.enqueueLCABackfill(this);
+		if (queued > 0) {
+			this.debug(`[lca-backfill] queued ${queued} documents (${reason})`);
+		}
 	}
 
 	public get name(): string {

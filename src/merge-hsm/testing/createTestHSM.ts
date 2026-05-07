@@ -198,7 +198,7 @@ export interface TestableHSM {
   getRemoteDoc(): Y.Doc | null;
   setRemoteDoc(doc: Y.Doc | null): void;
   getSyncStatus(): SyncStatus;
-  bootstrapLCAFromDisk(disk: { content: string; hash: string; mtime: number }): Promise<void>;
+  bootstrapLCAFromDisk(disk: { content: string; hash: string; mtime: number }): Promise<boolean>;
   checkAndCorrectDrift(actualEditorText?: string): boolean;
   subscribe(listener: (effect: MergeEffect) => void): () => void;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;

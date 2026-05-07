@@ -109,6 +109,7 @@ export const MACHINE: MachineDefinition = {
 		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
 		always: [
 			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
+			{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['prepareRecoverLCAFromPendingDisk'] },
 			{ target: 'idle.diverged', guard: 'noLCADiskConflictAtLoad' },
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
@@ -303,6 +304,8 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
 				{ target: 'idle.diverged', guard: 'awaitingProvider' },
+				{ target: 'idle.diverged', guard: 'awaitingLocalEnrollment' },
+				{ target: 'idle.diverged', guard: 'awaitingDiskForLCA' },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
 				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
 				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
@@ -312,13 +315,16 @@ export const MACHINE: MachineDefinition = {
 		},
 		on: {
 			IDLE_RETRY: { target: 'idle.diverged', reenter: true },
-			PROVIDER_SYNCED: { target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
 			DISK_CHANGED: [
 				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
 				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
 			],
 			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
+			PROVIDER_SYNCED: [
+				{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['markProviderSynced', 'prepareRecoverLCAFromPendingDisk'] },
+				{ target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
+			],
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},

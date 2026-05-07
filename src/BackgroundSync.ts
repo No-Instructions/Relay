@@ -714,6 +714,22 @@ export class BackgroundSync extends HasLogging {
 		this.syncGroups.set(sharedFolder, group);
 	}
 
+	enqueueLCABackfill(sharedFolder: SharedFolder): number {
+		if (!sharedFolder.connected) return 0;
+
+		const docs = [...sharedFolder.files.values()]
+			.filter(isDocument)
+			.filter((doc) => this.shouldEnqueueForLCABackfill(doc))
+			.filter((doc) => !this.inProgressSyncs.has(doc.guid));
+
+		if (docs.length === 0) return 0;
+
+		for (const doc of docs.sort(compareFilePaths)) {
+			void this.enqueueSync(doc);
+		}
+		return docs.length;
+	}
+
 	private shouldEnqueueForSharedFolderSync(
 		item: Document | Canvas | SyncFile,
 	): boolean {
@@ -736,6 +752,15 @@ export class BackgroundSync extends HasLogging {
 		if (!mergeManager) return true;
 
 		return !mergeManager.isServerAdvertisedInSync(item.guid);
+	}
+
+	private shouldEnqueueForLCABackfill(doc: Document): boolean {
+		const hsm = doc.hsm;
+		if (!hsm) return false;
+		if (hsm.isActive()) return false;
+		if (hsm.state.lca) return false;
+		if (hsm.hasFork()) return false;
+		return hsm.getSyncStatus().status === "pending";
 	}
 
 	/**
@@ -1124,9 +1149,15 @@ export class BackgroundSync extends HasLogging {
 
 		try {
 			const diskState = await doc.readDiskContent();
-			await hsm.bootstrapLCAFromDisk(diskState);
+			const repaired = await hsm.bootstrapLCAFromDisk(diskState);
+			if (!repaired && hsm.getSyncStatus().status === "pending") {
+				this.debug(
+					`[bootstrapLCA] skipped for ${doc.path}: local CRDT is not enrolled or remote state is not ready`,
+				);
+			}
 		} catch (e) {
 			this.warn(`[bootstrapLCA] failed for ${doc.path}`, e);
+			throw e;
 		}
 	}
 
