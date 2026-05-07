@@ -4438,6 +4438,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.hydrateLCAContentsFromLocalDoc();
 		}
 		if (this._lca?.contents === null) {
+			if (this.isExpectedCompactedLCAPersistNoop()) {
+				return;
+			}
 			this.hsmWarn(
 				`emitPersistState: skipped compacted LCA body | ` +
 					`guid=${this._guid} state=${this._statePath}`,
@@ -4497,6 +4500,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			guid: this._guid,
 			state: persistedState,
 		});
+	}
+
+	private isExpectedCompactedLCAPersistNoop(): boolean {
+		return (
+			this._statePath === "idle.synced" &&
+			this.localDoc === null &&
+			this.pendingDiskContents === null &&
+			this.pendingIdleUpdates === null &&
+			this._fork === null &&
+			this._conflict === null
+		);
 	}
 
 	// ===========================================================================

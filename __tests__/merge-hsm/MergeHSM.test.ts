@@ -741,6 +741,40 @@ describe('MergeHSM', () => {
       expect(t.state.lca?.contents).toBe('hello');
     });
 
+    test('persist emission quietly skips expected hibernated synced compacted LCA', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+      t.send(await diskChanged('hello', 2000, 'stale-external-hash'));
+      (t.hsm as any).prepareForHibernate();
+      await (t.hsm as any).destroyLocalDoc();
+      t.clearEffects();
+
+      const warn = jest.fn();
+      (t.hsm as any).hsmWarn = warn;
+
+      (t.hsm as any).emitPersistState();
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(t.effects).toEqual([]);
+    });
+
+    test('persist emission still warns on unexpected compacted LCA', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+      (t.hsm as any).prepareForHibernate();
+      await (t.hsm as any).destroyLocalDoc();
+      (t.hsm as any)._statePath = 'idle.diskAhead';
+
+      const warn = jest.fn();
+      (t.hsm as any).hsmWarn = warn;
+
+      (t.hsm as any).emitPersistState();
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('skipped compacted LCA body'),
+      );
+    });
+
     test('idle disk merge hydrates compacted LCA before persisting', async () => {
       const t = await createTestHSM();
       await loadToIdle(t, { content: 'hello', mtime: 1000 });
