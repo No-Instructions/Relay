@@ -223,7 +223,7 @@ class PillDecoration {
 				this.sharedFolder,
 				() => {
 					const effective =
-						this.sharedFolder.backgroundSync.getUserVisibleProgress(
+						this.sharedFolder.backgroundSync.getFolderPillProgress(
 							this.sharedFolder,
 						);
 					if (effective) {

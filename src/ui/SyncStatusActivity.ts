@@ -326,7 +326,7 @@ function describeStatus(status: string): string {
 		case "synced":
 			return "Synced";
 		case "pending":
-			return "Syncing";
+			return "Queued";
 		case "conflict":
 			return "Conflict detected";
 		case "error":

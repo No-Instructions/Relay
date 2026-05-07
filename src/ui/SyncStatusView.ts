@@ -253,7 +253,7 @@ export class SyncStatusView extends ItemView {
 
 		this.headerUnsubscribers.push(
 			folder.backgroundSync.subscribeToGroupProgress(folder, () => {
-				const effective = folder.backgroundSync.getUserVisibleProgress(folder);
+				const effective = folder.backgroundSync.getFolderPillProgress(folder);
 				if (!effective) return;
 				this.headerPill?.$set({
 					progress: effective.percent,

@@ -21,6 +21,10 @@ import type { CanvasData } from "./CanvasView";
 import { areCanvasDataEqual } from "./CanvasData";
 import { SyncFile, isSyncFile } from "./SyncFile";
 import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
+import {
+	shouldShowCompletedFolderPillProgress,
+	shouldUseUserVisibleFolderProgress,
+} from "./BackgroundSyncProgress";
 
 export interface QueueItem {
 	guid: string;
@@ -72,6 +76,14 @@ export interface GroupProgress {
 	downloadPercent: number;
 	sharedFolder: SharedFolder;
 	status: "pending" | "running" | "completed" | "failed";
+}
+
+export interface QueueStatus {
+	syncsQueued: number;
+	syncsActive: number;
+	downloadsQueued: number;
+	downloadsActive: number;
+	isPaused: boolean;
 }
 
 export class BackgroundSync extends HasLogging {
@@ -233,6 +245,38 @@ export class BackgroundSync extends HasLogging {
 			sharedFolder,
 			status,
 		};
+	}
+
+	getFolderPillProgress(sharedFolder: SharedFolder): GroupProgress | null {
+		const group = this.syncGroups.get(sharedFolder);
+		if (!group) return null;
+
+		const hasQueuedOrActiveWork =
+			this.syncQueue.some((item) => item.sharedFolder === sharedFolder) ||
+			this.downloadQueue.some((item) => item.sharedFolder === sharedFolder) ||
+			this.activeSync.some((item) => item.sharedFolder === sharedFolder) ||
+			this.activeDownloads.some((item) => item.sharedFolder === sharedFolder);
+		const progressInput = {
+			hasQueuedOrActiveWork,
+			userDownloads: group.userDownloads,
+			completedUserDownloads: group.completedUserDownloads,
+			failedUserDownloads: group.failedUserDownloads,
+		};
+		if (shouldShowCompletedFolderPillProgress(progressInput)) {
+			return {
+				percent: 100,
+				syncPercent: 100,
+				downloadPercent: 100,
+				sharedFolder,
+				status: "completed",
+			};
+		}
+
+		if (shouldUseUserVisibleFolderProgress(progressInput)) {
+			return this.getUserVisibleProgress(sharedFolder);
+		}
+
+		return this.getGroupProgress(sharedFolder);
 	}
 
 	getFailures(sharedFolder: SharedFolder): BackgroundSyncFailure[] {
@@ -659,6 +703,7 @@ export class BackgroundSync extends HasLogging {
 		}
 		group.total++;
 		group.syncs++;
+		group.status = "running";
 		this.syncGroups.set(sharedFolder, group);
 
 		this.inProgressSyncs.add(item.guid);
@@ -673,6 +718,7 @@ export class BackgroundSync extends HasLogging {
 
 		this.syncQueue.push(queueItem);
 		this.syncQueue.sort(compareFilePaths);
+		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 
 		return syncPromise;
@@ -752,6 +798,7 @@ export class BackgroundSync extends HasLogging {
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
 		this.downloadQueue.sort(compareFilePaths);
+		this.queueStatusChanged.notifyListeners();
 		this.processDownloadQueue();
 
 		return downloadPromise;
@@ -900,6 +947,7 @@ export class BackgroundSync extends HasLogging {
 
 		this.syncQueue.push(queueItem);
 		this.syncQueue.sort(compareFilePaths);
+		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 
 		return syncPromise;
@@ -1340,6 +1388,7 @@ export class BackgroundSync extends HasLogging {
 	 */
 	pause(): void {
 		this.isPaused = true;
+		this.queueStatusChanged.notifyListeners();
 	}
 
 	/**
@@ -1351,6 +1400,7 @@ export class BackgroundSync extends HasLogging {
 	resume(): void {
 		this.debug("starting");
 		this.isPaused = false;
+		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 		this.processDownloadQueue();
 	}
@@ -1361,19 +1411,28 @@ export class BackgroundSync extends HasLogging {
 	 *
 	 * @returns An object with queue statistics
 	 */
-	getQueueStatus(): {
-		syncsQueued: number;
-		syncsActive: number;
-		downloadsQueued: number;
-		downloadsActive: number;
-		isPaused: boolean;
-	} {
+	getQueueStatus(): QueueStatus {
 		return {
 			syncsQueued: this.syncQueue.length,
 			syncsActive: this.activeSync.size,
 			downloadsQueued: this.downloadQueue.length,
 			downloadsActive: this.activeDownloads.size,
 			isPaused: this.isPaused,
+		};
+	}
+
+	subscribeToQueueStatus(callback: Subscriber<QueueStatus>): Unsubscriber {
+		const emit = () => callback(this.getQueueStatus());
+		const unsubscribers = [
+			this.activeSync.subscribe(emit),
+			this.activeDownloads.subscribe(emit),
+			this.syncGroups.subscribe(emit),
+			this.failures.subscribe(emit),
+			this.queueStatusChanged.subscribe(emit),
+		];
+
+		return () => {
+			unsubscribers.forEach((unsubscribe) => unsubscribe());
 		};
 	}
 

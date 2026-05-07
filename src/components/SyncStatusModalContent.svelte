@@ -2,20 +2,29 @@
 	import { onDestroy } from "svelte";
 	import { TFile, type App } from "obsidian";
 	import type { SharedFolder } from "../SharedFolder";
-	import type { StatePath } from "../merge-hsm/types";
-	import type { SyncStatus } from "../merge-hsm/types";
 	import type { TimeProvider } from "../TimeProvider";
 	import type {
 		SyncStatusActivityEntry,
 		SyncStatusActivityStore,
 	} from "../ui/SyncStatusActivity";
 	import {
+		buildFolderSyncStatusModel,
+		shouldShowRecentActivity,
+		type ActionableSyncFile,
+		type FolderSyncStatusModel,
+	} from "../ui/SyncStatusModel";
+	import {
 		CheckCircle,
 		AlertTriangle,
-		Loader,
+		CirclePause,
+		CirclePlay,
+		FolderCheck,
+		FolderSync,
+		ListChecks,
 		XCircle,
 		X,
 		GitMerge,
+		Pause,
 	} from "lucide-svelte";
 
 	export let sharedFolder: SharedFolder;
@@ -23,82 +32,60 @@
 	export let timeProvider: TimeProvider;
 	export let activityStore: SyncStatusActivityStore;
 
-	// ── Actionable items (from HSM state) ──────────────────────────────
+	// ── Derived sync status model ──────────────────────────────────────
 
-	interface ActionableFile {
-		guid: string;
-		path: string;
-		category: "conflict" | "error";
-		label: string;
-	}
-
-	let actionableFiles: ActionableFile[] = [];
+	let statusModel: FolderSyncStatusModel;
 	let dismissedErrors = new Set<string>();
 
-	function hasConflictStatus(status: SyncStatus | undefined): boolean {
-		return status?.status === "conflict";
+	function refreshStatusModel() {
+		statusModel = buildFolderSyncStatusModel(sharedFolder, dismissedErrors);
 	}
 
-	function refreshActionable() {
-		const result: ActionableFile[] = [];
-		for (const [guid, file] of sharedFolder.files) {
-			const doc = file as any;
-			const hsm = doc.hsm;
-			if (!hsm) continue;
-			const sp: StatePath = hsm.statePath;
-			const ss = hsm.getSyncStatus?.() as SyncStatus | undefined;
-			if (hasConflictStatus(ss)) {
-				result.push({
-					guid,
-					path: file.path,
-					category: "conflict",
-					label: sp === "active.conflict.resolving" ? "Resolving" : "Conflict detected",
-				});
-			} else if (hsm.getConflictData()) {
-				result.push({
-					guid,
-					path: file.path,
-					category: "conflict",
-					label: "Conflict detected",
-				});
-			} else if (sp === "idle.error" && !dismissedErrors.has(guid)) {
-				result.push({
-					guid,
-					path: file.path,
-					category: "error",
-					label: "Error",
-				});
-			}
-		}
-		result.sort((a, b) => a.path.localeCompare(b.path));
-		actionableFiles = result;
+	function refreshLocalFileFailures() {
+		const refreshFailures = sharedFolder.backgroundSync.refreshLocalFileFailures;
+		if (typeof refreshFailures !== "function") return;
+		refreshFailures
+			.call(sharedFolder.backgroundSync, sharedFolder)
+			.then(refreshStatusModel)
+			.catch(() => {});
 	}
 
-	$: conflicts = actionableFiles.filter((f) => f.category === "conflict");
-	$: errors = actionableFiles.filter((f) => f.category === "error");
+	refreshStatusModel();
+	refreshLocalFileFailures();
+
+	$: queue = statusModel.queue;
+	$: conflicts = statusModel.actionableFiles.filter(
+		(f: ActionableSyncFile) => f.category === "conflict",
+	);
+	$: errors = statusModel.actionableFiles.filter(
+		(f: ActionableSyncFile) => f.category === "error",
+	);
 
 	// ── Activity log ───────────────────────────────────────────────────
 
 	let activityLog: SyncStatusActivityEntry[] = [];
 	$: visibleActivity = activityLog.filter(
-		(e) => e.status !== "conflict" && e.author !== "you",
+		(e) => shouldShowRecentActivity(e.status, e.author),
 	);
 
 	// ── Lifecycle ──────────────────────────────────────────────────────
-
-	refreshActionable();
 
 	const unsubscribeActivity = activityStore.subscribe((entries) => {
 		activityLog = entries;
 	});
 
 	const unsubscribeSyncStatus = sharedFolder.mergeManager.syncStatus.subscribe(() => {
-		refreshActionable();
+		refreshStatusModel();
+	});
+
+	const unsubscribeQueueStatus = sharedFolder.backgroundSync.subscribeToQueueStatus(() => {
+		refreshStatusModel();
 	});
 
 	onDestroy(() => {
 		unsubscribeActivity();
 		unsubscribeSyncStatus();
+		unsubscribeQueueStatus();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────────
@@ -120,10 +107,36 @@
 		}
 	}
 
-	function dismissError(guid: string, event: MouseEvent) {
+	function dismissError(file: ActionableSyncFile, event: MouseEvent) {
 		event.stopPropagation();
-		dismissedErrors = new Set(dismissedErrors).add(guid);
-		refreshActionable();
+		dismissedErrors = new Set(dismissedErrors).add(file.id);
+		if (file.source === "backgroundSync") {
+			sharedFolder.backgroundSync.clearFailure(file.id);
+		}
+		refreshStatusModel();
+	}
+
+	function dismissAllErrors(event: MouseEvent) {
+		event.stopPropagation();
+		const nextDismissedErrors = new Set(dismissedErrors);
+		for (const file of errors) {
+			nextDismissedErrors.add(file.id);
+			if (file.source === "backgroundSync") {
+				sharedFolder.backgroundSync.clearFailure(file.id);
+			}
+		}
+		dismissedErrors = nextDismissedErrors;
+		refreshStatusModel();
+	}
+
+	function toggleQueue(event: MouseEvent) {
+		event.stopPropagation();
+		if (queue.isPaused) {
+			sharedFolder.backgroundSync.resume();
+		} else {
+			sharedFolder.backgroundSync.pause();
+		}
+		refreshStatusModel();
 	}
 
 	function fileLabel(filePath: string): string {
@@ -171,9 +184,39 @@
 </script>
 
 <div class="sync-status-modal">
+	<div class="sync-status-toolbar">
+		<div class="sync-status-queue-state {queue.runState}">
+			{#if queue.runState === "processing"}
+				<FolderSync size={14} />
+			{:else if queue.runState === "stopped"}
+				<Pause size={14} />
+			{:else}
+				<FolderCheck size={14} />
+			{/if}
+			<span>{queue.label}</span>
+		</div>
+		<button
+			class:hidden={queue.runState === "idle"}
+			class="sync-status-queue-action"
+			type="button"
+			aria-hidden={queue.runState === "idle"}
+			aria-label={queue.isPaused ? "Resume sync" : "Pause sync"}
+			disabled={queue.runState === "idle"}
+			tabindex={queue.runState === "idle" ? -1 : 0}
+			title={queue.runState === "idle" ? "" : queue.isPaused ? "Resume sync" : "Pause sync"}
+			on:click={toggleQueue}
+		>
+			{#if queue.isPaused}
+				<CirclePlay size={14} />
+			{:else}
+				<CirclePause size={14} />
+			{/if}
+		</button>
+	</div>
+
 	{#if conflicts.length > 0}
 		<div class="sync-status-section">
-			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
+			<div class="sync-status-section-header">Conflicts</div>
 			{#each conflicts as file}
 				<div class="sync-status-row">
 					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
@@ -181,6 +224,7 @@
 						class="sync-status-path"
 						role="link"
 						tabindex="0"
+						title={fileLabel(file.path)}
 						on:click={() => openFile(file.path)}
 						on:keydown={(e) => handlePathKeydown(e, file.path)}
 					>{fileLabel(file.path)}</span>
@@ -194,7 +238,18 @@
 
 	{#if errors.length > 0}
 		<div class="sync-status-section">
-			<div class="sync-status-section-header">Errors ({errors.length})</div>
+			<div class="sync-status-section-header">
+				<span class="sync-status-section-title">Errors</span>
+				<button
+					class="sync-status-section-action"
+					type="button"
+					aria-label="Accept all errors"
+					title="Accept all errors"
+					on:click={dismissAllErrors}
+				>
+					<ListChecks size={14} />
+				</button>
+			</div>
 			{#each errors as file}
 				<div class="sync-status-row">
 					<span class="sync-status-icon error"><XCircle size={14} /></span>
@@ -202,14 +257,18 @@
 						class="sync-status-path"
 						role="link"
 						tabindex="0"
+						title={fileLabel(file.path)}
 						on:click={() => openFile(file.path)}
 						on:keydown={(e) => handlePathKeydown(e, file.path)}
 					>{fileLabel(file.path)}</span>
+					<div class="sync-status-meta">
+						<span class="sync-status-state">{file.label}</span>
+					</div>
 					<button
 						class="sync-status-dismiss"
 						type="button"
 						aria-label="Dismiss error"
-						on:click={(e) => dismissError(file.guid, e)}
+						on:click={(e) => dismissError(file, e)}
 					>
 						<X size={14} />
 					</button>
@@ -226,8 +285,6 @@
 					<span class="sync-status-icon activity">
 						{#if entry.status === "synced"}
 							<CheckCircle size={14} />
-						{:else if entry.status === "pending"}
-							<Loader size={14} />
 						{:else if entry.status === "conflict"}
 							<AlertTriangle size={14} />
 						{:else if entry.status === "error"}
@@ -240,6 +297,7 @@
 						class="sync-status-path"
 						role="link"
 						tabindex="0"
+						title={fileLabel(entry.path)}
 						on:click={() => openFile(entry.path)}
 						on:keydown={(e) => handlePathKeydown(e, entry.path)}
 					>{fileLabel(entry.path)}</span>
@@ -255,7 +313,7 @@
 	{/if}
 
 	{#if conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
-		<div class="sync-status-empty">Activity will appear here as files sync.</div>
+		<div class="sync-status-empty">No conflicts or errors.</div>
 	{/if}
 </div>
 
@@ -264,11 +322,71 @@
 		padding: 8px 0;
 	}
 
+	.sync-status-toolbar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 0 0 8px;
+		margin-bottom: 8px;
+		border-bottom: 1px solid var(--background-modifier-border);
+	}
+
+	.sync-status-queue-state {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		color: var(--text-muted);
+		font-size: var(--font-ui-small);
+		line-height: var(--line-height-tight);
+	}
+
+	.sync-status-queue-state.processing {
+		color: var(--text-accent);
+	}
+
+	.sync-status-queue-state.stopped {
+		color: var(--text-warning);
+	}
+
+	.sync-status-queue-action {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 26px;
+		height: 26px;
+		padding: 0;
+		border: none;
+		border-radius: 4px;
+		background: transparent;
+		box-shadow: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		flex: 0 0 auto;
+		--button-shadow: none;
+		--button-shadow-hover: none;
+	}
+
+	.sync-status-queue-action:hover {
+		background: var(--background-modifier-hover);
+		color: var(--text-normal);
+	}
+
+	.sync-status-queue-action.hidden {
+		visibility: hidden;
+		pointer-events: none;
+	}
+
 	.sync-status-section {
 		margin-bottom: 12px;
 	}
 
 	.sync-status-section-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
 		font-size: var(--font-ui-small);
 		font-weight: var(--font-semibold);
 		color: var(--text-muted);
@@ -277,6 +395,28 @@
 		padding: 4px 0;
 		border-bottom: 1px solid var(--background-modifier-border);
 		margin-bottom: 4px;
+	}
+
+	.sync-status-section-title {
+		min-width: 0;
+	}
+
+	.sync-status-section-action {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--text-muted);
+		cursor: pointer;
+		flex: 0 0 auto;
+	}
+
+	.sync-status-section-action:hover {
+		color: var(--text-normal);
 	}
 
 	.sync-status-row {
@@ -325,7 +465,9 @@
 		color: var(--nav-item-color, var(--text-normal));
 		font-size: var(--nav-item-size, var(--font-ui-small));
 		font-weight: var(--nav-item-weight, var(--font-normal));
-		overflow-wrap: break-word;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 		line-height: var(--line-height-tight);
 		min-width: 0;
 	}
@@ -352,6 +494,9 @@
 		font-size: var(--font-ui-smaller);
 		color: var(--text-faint);
 		align-items: baseline;
+		min-width: 0;
+		max-width: 100%;
+		line-height: 1.25;
 	}
 
 	.sync-status-dismiss {
@@ -382,7 +527,10 @@
 	}
 
 	.sync-status-state {
-		white-space: nowrap;
+		white-space: normal;
+		overflow-wrap: anywhere;
+		min-width: 0;
+		max-width: 100%;
 	}
 
 	.sync-status-author {
