@@ -179,7 +179,8 @@ const watchAndMove = (fnames, mapping) => {
 
 const mapping = debug ? { "manifest-beta.json": "manifest.json" } : {};
 const manifest = debug ? "manifest-beta.json" : "manifest.json";
-const files = (debug && out === ".") ? ["styles.css"] : ["styles.css", manifest];
+const shouldWriteManifest = !develop;
+const files = (!shouldWriteManifest && out === ".") ? ["styles.css"] : ["styles.css", manifest];
 
 const updateManifest = (manifest) => {
 	const manifestPath = path.join(out, path.basename("manifest.json"));
@@ -204,14 +205,14 @@ const move = (fnames, mapping) => {
 if (watch) {
 	await context.watch();
 	move(files, mapping);
-	if (!develop) {
+	if (shouldWriteManifest) {
 		updateManifest();
 	}
 	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
 	move(files, mapping);
-	if (!develop && out !== ".") {
+	if (shouldWriteManifest) {
 		updateManifest();
 	}
 	process.exit(0);
