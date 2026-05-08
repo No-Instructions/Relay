@@ -68,6 +68,12 @@ import {
 	HSMStore,
 } from "./merge-hsm/persistence";
 import { trackPromise } from "./trackPromise";
+import {
+	RemoteActivityIndex,
+	REMOTE_ACTIVITY_RETENTION_MS,
+	type RemoteActivityEntry,
+	normalizeRemoteActivityTimestamp,
+} from "./RemoteActivityIndex";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
 import type { TimeProvider } from "./TimeProvider";
 import * as Y from "yjs";
@@ -79,6 +85,7 @@ export interface SharedFolderSettings {
 	connect?: boolean;
 	localOnly?: boolean;
 	sync?: SyncFlags;
+	remoteActivity?: RemoteActivityEntry[];
 }
 
 interface Operation {
@@ -187,6 +194,8 @@ export class SharedFolder extends HasProvider {
 	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
 	private _pendingRemaps: Set<string> = new Set();
 	private _pendingDownloads: Set<string> = new Set();
+	private readonly remoteActivityIndex = new RemoteActivityIndex();
+	private readonly remoteActivitySubscribers = new Set<() => void>();
 	private onFolderYDocUpdate = (_update: Uint8Array, origin: unknown): void => {
 		// Folder metadata updates can arrive before SyncStore observers are active,
 		// or with origins that bypass SyncStore-level callbacks. Reconcile directly
@@ -246,6 +255,10 @@ export class SharedFolder extends HasProvider {
 		this.relayId = relayId;
 		this._shouldConnect = this.settings.connect ?? true;
 		this._localOnly = this.settings.localOnly ?? false;
+		this.remoteActivityIndex.hydrate(this.settings.remoteActivity ?? []);
+		if (this.pruneRemoteActivity()) {
+			this.persistRemoteActivity();
+		}
 
 		this.authoritative = authoritative;
 
@@ -499,27 +512,36 @@ export class SharedFolder extends HasProvider {
 			},
 		);
 
-		// On (re)connect, the provider issues MSG_QUERY_SUBDOCS and receives
-		// the server's complete view of this folder's docs: guid → head
-		// metadata. Seed server-advertised heads from that one message and fire a full
-		// syncFileTree sweep; applyRemoteState + applyPendingUpload handle
-		// both inbound reconciliation and outbound pending-upload retry.
+		// On reconnect, query server head metadata for locally committed docs.
+		// The folder index and live events discover remote paths; subdoc index
+		// queries only refresh known subdocument heads.
 		const provider = this._provider;
 		provider.getSubdocQueryDocIds = () => {
 			if (!flags().enableSelectiveSubdocQuery || !this.relayId) return [];
-			const guids = this.syncStore.getCommittedSubdocGuids();
-			return guids.length > 0
-				? guids.map((guid) => this.serverDocIdForGuid(guid))
-				: [];
+			return this.syncStore
+				.getCommittedSubdocGuids()
+				.map((guid) => this.serverDocIdForGuid(guid));
 		};
 		provider.onSubdocIndex = (serverIndex) => {
+			const remoteActivity: RemoteActivityEntry[] = [];
+			const now = this.currentTime();
 			for (const [docId, entry] of Object.entries(serverIndex)) {
 				const guid = this.guidFromServerDocId(docId) ?? docId;
 				this.mergeManager?.seedServerAdvertisedHeadFromBytes(
 					guid,
 					entry,
 				);
+				if (entry.lastSeen !== undefined) {
+					const timestamp = normalizeRemoteActivityTimestamp(
+						entry.lastSeen,
+						now,
+					);
+					if (timestamp !== null) {
+						remoteActivity.push({ guid, timestamp });
+					}
+				}
 			}
+			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
 				.then(() => this.poll())
 				.catch((e) => this.error("subdoc index sync sweep failed", e));
@@ -554,6 +576,18 @@ export class SharedFolder extends HasProvider {
 		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
 		const guid = this.guidFromServerDocId(docId);
 		if (!guid) return;
+
+		if (!event.user || !this.isLocalUserId(event.user)) {
+			const timestamp = normalizeRemoteActivityTimestamp(
+				event.timestamp,
+				this.currentTime(),
+			);
+			if (timestamp !== null) {
+				this.recordRemoteActivities([
+					{ guid, timestamp, userId: event.user },
+				]);
+			}
+		}
 
 		if (!this.files.has(guid)) {
 			this.retryDeferredDownloadForGuid(guid);
@@ -1070,6 +1104,67 @@ export class SharedFolder extends HasProvider {
 
 	public get settings(): SharedFolderSettings {
 		return this._settings.get();
+	}
+
+	public getRecentRemoteActivity(limit = 30): RemoteActivityEntry[] {
+		return this.remoteActivityIndex.entries(limit);
+	}
+
+	public getRemoteActivity(guid: string): RemoteActivityEntry | undefined {
+		return this.remoteActivityIndex.get(guid);
+	}
+
+	public subscribeToRemoteActivity(callback: () => void): () => void {
+		if (this.destroyed) {
+			return () => {};
+		}
+		this.remoteActivitySubscribers.add(callback);
+		return () => {
+			this.remoteActivitySubscribers.delete(callback);
+		};
+	}
+
+	private recordRemoteActivities(entries: readonly RemoteActivityEntry[]): void {
+		if (this.destroyed || entries.length === 0) return;
+
+		let changed = false;
+		for (const entry of entries) {
+			changed = this.remoteActivityIndex.upsert(entry) || changed;
+		}
+		changed = this.pruneRemoteActivity() || changed;
+		if (!changed) return;
+
+		this.persistRemoteActivity();
+		this.notifyRemoteActivitySubscribers();
+	}
+
+	private pruneRemoteActivity(): boolean {
+		return this.remoteActivityIndex.pruneOlderThan(
+			this.currentTime() - REMOTE_ACTIVITY_RETENTION_MS,
+		);
+	}
+
+	private persistRemoteActivity(): void {
+		const persist = this._settings
+			.update((current) => ({
+				...current,
+				remoteActivity: this.remoteActivityIndex.serialize(),
+			}))
+			.catch((error) => {
+				this.warn("unable to persist remote activity", error);
+			});
+		awaitOnReload(persist);
+		trackPromise(`folder:remoteActivityPersist:${this.guid}`, persist);
+	}
+
+	private notifyRemoteActivitySubscribers(): void {
+		for (const subscriber of [...this.remoteActivitySubscribers]) {
+			subscriber();
+		}
+	}
+
+	private currentTime(): number {
+		return this.timeProvider?.now() ?? Date.now();
 	}
 
 	async sync() {

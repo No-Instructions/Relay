@@ -1,12 +1,9 @@
-import type { EventMessage, SubdocIndex } from "../client/provider";
 import type { SharedFolder } from "../SharedFolder";
 import type { MergeTransitionInfo } from "../merge-hsm/MergeManager";
 import type { SyncStatus } from "../merge-hsm/types";
 import type { TimeProvider } from "../TimeProvider";
 
 const MAX_ACTIVITY = 30;
-const SUBDOC_ACTIVITY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-const ACTIVITY_EVENT_TYPES = ["document.updated"];
 
 export interface SyncStatusActivityEntry {
 	id: number;
@@ -73,30 +70,16 @@ class ActivityRingBuffer<T> {
 export class SyncStatusActivityStore {
 	private readonly buffer = new ActivityRingBuffer<SyncStatusActivityEntry>(MAX_ACTIVITY);
 	private readonly subscribers = new Set<ActivitySubscriber>();
-	private readonly lastAuthorByGuid = new Map<string, string>();
-	private readonly recentCborGuids = new Map<string, string | undefined>();
 	private readonly prevSnapshot = new Map<string, string>();
-	private readonly lastCborActivityAtByGuid = new Map<string, number>();
-	private readonly lastSeededActivityAtByGuid = new Map<string, number>();
-	private readonly provider = this.sharedFolder._provider;
+	private readonly lastSeededActivityByGuid = new Map<
+		string,
+		{ timestamp: number; userId?: string }
+	>();
 	private unsubscribeSyncStatus?: () => void;
-	private unsubscribeSubdocIndex?: () => void;
+	private unsubscribeRemoteActivity?: () => void;
 	private unsubscribeHsmTransitions?: () => void;
 	private nextEntryId = 1;
 	private destroyed = false;
-
-	private readonly handleCborEvent = (event: EventMessage): void => {
-		const guid = extractGuidFromDocId(event.doc_id ?? "");
-		if (!guid || !this.sharedFolder.files.has(guid)) return;
-
-		// The server echoes our own updates back through CBOR events. Ignore
-		// those so local edits do not overwrite the visible remote author.
-		if (event.user && this.sharedFolder.isLocalUserId(event.user)) return;
-		if (event.user) {
-			this.lastAuthorByGuid.set(guid, event.user);
-		}
-		this.recentCborGuids.set(guid, event.user);
-	};
 
 	private readonly handleHsmTransition = (
 		guid: string,
@@ -125,10 +108,9 @@ export class SyncStatusActivityStore {
 		private readonly timeProvider: TimeProvider,
 	) {
 		this.initializeSnapshot();
-		this.provider?.subscribeToEvents(ACTIVITY_EVENT_TYPES, this.handleCborEvent);
-		this.seedFromSubdocIndex(this.provider?.lastSubdocIndex ?? null);
-		this.unsubscribeSubdocIndex = this.provider?.subscribeToSubdocIndex((index) => {
-			if (this.seedFromSubdocIndex(index)) {
+		this.seedFromRemoteActivity();
+		this.unsubscribeRemoteActivity = sharedFolder.subscribeToRemoteActivity(() => {
+			if (this.seedFromRemoteActivity()) {
 				this.notify();
 			}
 		});
@@ -164,11 +146,10 @@ export class SyncStatusActivityStore {
 		this.destroyed = true;
 		this.unsubscribeSyncStatus?.();
 		this.unsubscribeSyncStatus = undefined;
-		this.unsubscribeSubdocIndex?.();
-		this.unsubscribeSubdocIndex = undefined;
+		this.unsubscribeRemoteActivity?.();
+		this.unsubscribeRemoteActivity = undefined;
 		this.unsubscribeHsmTransitions?.();
 		this.unsubscribeHsmTransitions = undefined;
-		this.provider?.unsubscribeFromEvents(ACTIVITY_EVENT_TYPES, this.handleCborEvent);
 		this.subscribers.clear();
 		activityStores.delete(this.sharedFolder);
 	}
@@ -184,7 +165,7 @@ export class SyncStatusActivityStore {
 	private recordActivity(): void {
 		const timestamp = this.timeProvider.now();
 		const syncStatusMap = this.sharedFolder.mergeManager.syncStatus;
-		let changed = this.seedFromSubdocIndex(this.provider?.lastSubdocIndex ?? null);
+		let changed = this.seedFromRemoteActivity();
 
 		for (const [guid] of this.sharedFolder.files) {
 			const syncStatus = syncStatusMap.get<SyncStatus>(guid);
@@ -192,7 +173,7 @@ export class SyncStatusActivityStore {
 			const prevStatus = this.prevSnapshot.get(guid) ?? "unknown";
 
 			if (currentStatus !== prevStatus && prevStatus !== "unknown") {
-				const remoteAuthor = this.lastAuthorByGuid.get(guid);
+				const remoteAuthor = this.sharedFolder.getRemoteActivity(guid)?.userId;
 				const actionable = currentStatus === "conflict" || currentStatus === "error";
 				if (remoteAuthor || actionable) {
 					this.pushActivity({
@@ -209,47 +190,27 @@ export class SyncStatusActivityStore {
 			this.prevSnapshot.set(guid, currentStatus);
 		}
 
-		for (const [guid, userId] of this.recentCborGuids) {
-			const lastLoggedAt = this.lastCborActivityAtByGuid.get(guid) ?? 0;
-			if (timestamp - lastLoggedAt >= 5_000) {
-				const syncStatus = syncStatusMap.get<SyncStatus>(guid);
-				this.pushActivity({
-					guid,
-					timestamp,
-					status: syncStatus?.status ?? "synced",
-					description: "Synced",
-					author: this.resolveAuthorName(userId),
-				});
-				this.lastCborActivityAtByGuid.set(guid, timestamp);
-				changed = true;
-			}
-		}
-		this.recentCborGuids.clear();
-
 		if (changed) {
 			this.notify();
 		}
 	}
 
-	private seedFromSubdocIndex(serverIndex: SubdocIndex | null): boolean {
-		if (this.destroyed || !serverIndex) return false;
+	private seedFromRemoteActivity(): boolean {
+		if (this.destroyed) return false;
 
-		const now = this.timeProvider.now();
-		const seeds: Array<{ guid: string; timestamp: number }> = [];
-		for (const [docId, entry] of Object.entries(serverIndex)) {
-			if (entry.lastSeen === undefined) continue;
-			const guid = extractGuidFromDocId(docId) ?? docId;
-			if (!this.sharedFolder.files.has(guid)) continue;
-
-			const timestamp = normalizeServerTimestamp(entry.lastSeen, now);
-			if (timestamp === null) continue;
-
-			const lastSeededAt = this.lastSeededActivityAtByGuid.get(guid) ?? 0;
-			if (timestamp <= lastSeededAt) continue;
-			seeds.push({ guid, timestamp });
-		}
-
+		const seeds = this.sharedFolder
+			.getRecentRemoteActivity(MAX_ACTIVITY)
+			.filter((entry) => {
+				if (!this.sharedFolder.files.has(entry.guid)) return false;
+				const lastSeeded = this.lastSeededActivityByGuid.get(entry.guid);
+				return (
+					!lastSeeded ||
+					entry.timestamp > lastSeeded.timestamp ||
+					entry.userId !== lastSeeded.userId
+				);
+			});
 		if (seeds.length === 0) return false;
+
 		seeds.sort((a, b) => a.timestamp - b.timestamp);
 		for (const seed of seeds) {
 			this.pushActivity({
@@ -257,9 +218,12 @@ export class SyncStatusActivityStore {
 				timestamp: seed.timestamp,
 				status: "synced",
 				description: "Synced",
-				author: "",
+				author: this.resolveAuthorName(seed.userId),
 			});
-			this.lastSeededActivityAtByGuid.set(seed.guid, seed.timestamp);
+			this.lastSeededActivityByGuid.set(seed.guid, {
+				timestamp: seed.timestamp,
+				userId: seed.userId,
+			});
 		}
 		return true;
 	}
@@ -334,21 +298,6 @@ function describeStatus(status: string): string {
 		default:
 			return status;
 	}
-}
-
-function extractGuidFromDocId(docId: string): string | null {
-	const uuidPattern = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
-	const match = docId.match(new RegExp(`^${uuidPattern}-(${uuidPattern})$`, "i"));
-	return match ? match[1] : null;
-}
-
-function normalizeServerTimestamp(timestamp: number, now: number): number | null {
-	if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
-
-	const millis = timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp;
-	if (millis > now + 60_000) return null;
-	if (now - millis > SUBDOC_ACTIVITY_LOOKBACK_MS) return null;
-	return millis;
 }
 
 function relativePath(sharedFolder: SharedFolder, fullPath: string): string {

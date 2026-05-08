@@ -1171,7 +1171,7 @@ export class YSweetProvider extends Observable<string> {
 					encoding.writeVarString(encoder, docId);
 				});
 				this.ws.send(encoding.toUint8Array(encoder));
-				providerLog(`sent MSG_QUERY_SUBDOCS (${pageDocIds.length || "all"})`);
+				providerLog(`sent MSG_QUERY_SUBDOCS (${pageDocIds.length})`);
 			}
 		}
 	}
