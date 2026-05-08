@@ -3,6 +3,8 @@ name: E2E standard suite
 on:
   push:
     branches: [merge-hsm]
+    tags:
+      - '0.8.0-rc*'
   workflow_dispatch:
     inputs:
       ref:
@@ -252,7 +254,18 @@ jobs:
       - name: Run standard suite on VM
         if: steps.select-tests.outputs.should_run == 'true'
         run: |
-          REF="${{ github.event.inputs.ref || format('origin/{0}', github.ref_name) }}"
+          INPUT_REF="${{ github.event.inputs.ref || '' }}"
+          REF_TYPE="${{ github.ref_type }}"
+          REF_NAME="${{ github.ref_name }}"
+
+          if [ -n "$INPUT_REF" ]; then
+            REF="$INPUT_REF"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            REF="refs/tags/$REF_NAME"
+          else
+            REF="origin/$REF_NAME"
+          fi
+
           SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
           SHARD_SLUG_ARG="${{ matrix.shard.slug }}"
 
@@ -309,11 +322,16 @@ jobs:
             git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
           fi
           cd ~/relay-plugin
-          git fetch --all --prune
+          git fetch origin --force --prune \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
           git checkout -- .
           git clean -fd
           # Detached HEAD checkout — works for origin/branch, tags, and SHAs
           git checkout --detach "$REF"
+          echo "Relay product checkout:"
+          git show -s --format='  commit: %H%n  subject: %s'
+          echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
 
           # Clone or update relay-harness (private)
           if [ ! -d ~/relay-harness ]; then
