@@ -1536,6 +1536,32 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return this._lca !== null;
 	}
 
+	async completeInitialEnrollmentFromRemote(content: string): Promise<boolean> {
+		if (this._lca) return true;
+		await this.ensurePersistence();
+		if (this._lca) return true;
+		if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
+
+		const localText = this.localDoc.getText("contents").toString();
+		if (localText !== content) {
+			this.hsmWarn(
+				`initial remote enrollment LCA skipped: remote/local mismatch | ` +
+					`guid=${this._guid} state=${this._statePath} ` +
+					`remoteLen=${content.length} localLen=${localText.length}`,
+			);
+			return false;
+		}
+
+		const hash = await this.hashFn(content);
+		this.sendEnrollmentComplete({
+			contents: content,
+			hash,
+			mtime: this.timeProvider.now(),
+			stateVector: Y.encodeStateVector(this.localDoc),
+		});
+		return this._lca !== null;
+	}
+
 	private sendEnrollmentComplete(input: {
 		contents: string;
 		hash: string;

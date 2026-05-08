@@ -2321,6 +2321,8 @@ export class SharedFolder extends HasProvider {
 		await doc.hsm?.initializeFromRemote(updateBytes);
 		const remoteDoc = doc.ensureRemoteDoc();
 		doc.hsm?.setRemoteDoc(remoteDoc);
+		await doc.hsm?.awaitIdle();
+		await doc.hsm?.completeInitialEnrollmentFromRemote(contents);
 
 		if (!this.syncStore.has(doc.path)) {
 			throw new Error("file no longer wanted");
@@ -2328,9 +2330,6 @@ export class SharedFolder extends HasProvider {
 
 		this.files.set(guid, doc);
 		await this.flush(doc, contents);
-		const diskState = await doc.readDiskContent();
-		await doc.hsm?.awaitIdle();
-		await doc.hsm?.completeInitialEnrollmentFromDisk(diskState);
 		this.fset.add(doc, update);
 
 		return doc;
