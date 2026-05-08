@@ -400,6 +400,16 @@ jobs:
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
 
+      - name: Upload shard metadata
+        if: always() && steps.select-tests.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: standard-${{ matrix.shard.slug }}-metadata
+          path: |
+            summary.json
+            metadata.json
+          if-no-files-found: ignore
+
       - name: Request shard VM stop
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
@@ -506,3 +516,141 @@ jobs:
             }
         env:
           RUN_SHARD: ${{ steps.select-tests.outputs.should_run }}
+
+  publish-report-site:
+    name: publish report site
+    runs-on: ubuntu-latest
+    needs: standard-test
+    if: always()
+    steps:
+      - name: Clone relay-harness
+        run: |
+          mkdir -p ~/.ssh
+          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          cat > ~/.ssh/known_hosts << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config << 'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/harness-key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+
+          git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+
+      - name: Download shard metadata
+        uses: actions/download-artifact@v4
+        with:
+          pattern: standard-*-metadata
+          path: shard-metadata
+
+      - name: Resolve tested commit
+        id: resolve-commit
+        run: |
+          set -euo pipefail
+
+          COMMIT="$(node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          function walk(dir) {
+            if (!fs.existsSync(dir)) return [];
+            const out = [];
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name);
+              if (entry.isDirectory()) out.push(...walk(full));
+              else if (entry.name === 'metadata.json') out.push(full);
+            }
+            return out;
+          }
+
+          for (const file of walk('shard-metadata')) {
+            try {
+              const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
+              if (metadata.commit) {
+                console.log(metadata.commit);
+                process.exit(0);
+              }
+            } catch {
+              // Try the next shard metadata file.
+            }
+          }
+          NODE
+          )"
+
+          if [ -z "$COMMIT" ]; then
+            INPUT_REF="${{ github.event.inputs.ref || '' }}"
+            REF_TYPE="${{ github.ref_type }}"
+            REF_NAME="${{ github.ref_name }}"
+
+            if [ -n "$INPUT_REF" ]; then
+              REF="$INPUT_REF"
+            elif [ "$REF_TYPE" = "tag" ]; then
+              REF="refs/tags/$REF_NAME"
+            else
+              REF="origin/$REF_NAME"
+            fi
+
+            git init /tmp/relay-ref >/dev/null
+            git -C /tmp/relay-ref remote add origin https://github.com/No-Instructions/Relay.git
+            git -C /tmp/relay-ref fetch origin --force --prune \
+              '+refs/heads/*:refs/remotes/origin/*' \
+              '+refs/tags/*:refs/tags/*'
+            COMMIT="$(git -C /tmp/relay-ref rev-parse "$REF^{commit}")"
+          fi
+
+          COMMIT_SHORT="$(printf '%s' "$COMMIT" | cut -c1-7)"
+          echo "commit=$COMMIT_SHORT" >> "$GITHUB_OUTPUT"
+          echo "Resolved report-site commit: $COMMIT_SHORT"
+
+      - name: Install report-site dependencies
+        run: npm ci --prefix ~/relay-harness/report-site
+
+      - name: Publish report site
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID: ${{ secrets.CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID }}
+          CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET: ${{ secrets.CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET }}
+          TARGET_COMMIT: ${{ steps.resolve-commit.outputs.commit }}
+        run: |
+          set -euo pipefail
+          cd ~/relay-harness
+
+          COMMIT_SET="$(node --input-type=module <<'NODE'
+          import { readJson } from './scripts/lib/ci-artifact-store.mjs';
+
+          const target = process.env.TARGET_COMMIT || '';
+          const manifest = await readJson('runs/manifest.json');
+          const existing = (manifest?.commitGroups || manifest?.runs || [])
+            .map(entry => entry.sha || entry.id || entry.runId)
+            .filter(Boolean);
+          console.log([...new Set([target, ...existing].filter(Boolean))].join(','));
+          NODE
+          )"
+
+          if [ -z "$COMMIT_SET" ]; then
+            echo "No commit set resolved for report-site publish"
+            exit 1
+          fi
+
+          READBACK_ARGS=()
+          if [ -n "${CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            READBACK_ARGS=(--live-readback --live-readback-base-url=https://ci.system3.dev)
+          else
+            echo "Cloudflare Access readback credentials not configured; skipping live readback"
+          fi
+
+          node scripts/publish-report-site-static.mjs \
+            --commit="$COMMIT_SET" \
+            --materialize-missing-commits \
+            --rebuild-manifest-from-commits \
+            --upload \
+            "${READBACK_ARGS[@]}"
