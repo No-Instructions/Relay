@@ -4,6 +4,7 @@ import {
 	type FolderSyncSnapshot,
 } from "../BackgroundSyncProgress";
 import type { SharedFolder } from "../SharedFolder";
+import { formatUserFacingError } from "../UserFacingError";
 import type { StatePath, SyncStatus, SyncStatusType } from "../merge-hsm/types";
 
 export type FileSyncUiStatus = "synced" | "syncing" | "conflict" | "error";
@@ -203,7 +204,7 @@ export function buildFolderSyncStatusModel(
 			guid: failure.guid,
 			path: failure.path,
 			category: "error",
-			label: failure.message,
+			label: formatUserFacingError(failure.message),
 			source: "backgroundSync",
 		});
 	}
@@ -335,7 +336,7 @@ function queueActiveLabel(kind: QueueWorkKind): string {
 function getHsmErrorMessage(hsm: any): string | null {
 	const error = hsm?.state?.error;
 	if (!error) return null;
-	return error instanceof Error ? error.message : String(error);
+	return formatUserFacingError(error, "Unable to continue sync");
 }
 
 function getBackgroundSyncFailures(

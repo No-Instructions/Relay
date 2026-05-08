@@ -21,6 +21,7 @@ import { Document } from "../../Document";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
+import { formatUserFacingError } from "../../UserFacingError";
 import type { PositionedChange } from "../types";
 import { buildBufferedCM6ReplayEvents } from "./replayBufferedEdits";
 
@@ -84,7 +85,7 @@ class HSMEditorPluginValue implements PluginValue {
     } catch (error) {
       this.debug("resolveCurrentDocument failed", {
         filePath: file.path,
-        error: error instanceof Error ? error.message : String(error),
+        error: formatUserFacingError(error),
       });
       return null;
     }
