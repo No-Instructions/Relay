@@ -27,6 +27,7 @@ import {
 	type FolderSyncSnapshot,
 	type FolderSyncWorkItemInput,
 } from "./BackgroundSyncProgress";
+import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 
 export interface QueueItem {
 	guid: string;
@@ -633,14 +634,12 @@ export class BackgroundSync extends HasLogging {
 
 						const callback = this.syncCompletionCallbacks.get(item.guid);
 						if (callback) {
-							callback.reject(
-								error instanceof Error ? error : new Error(String(error)),
-							);
+							callback.reject(errorFromUnknown(error));
 							this.syncCompletionCallbacks.delete(item.guid);
 							this.syncPromises.delete(item.guid);
 						}
 
-						this.error("[Sync Failed]", error);
+						this.logError("[Sync Failed]", error);
 						this.recordFailure("sync", item, error);
 						const group = this.syncGroups.get(item.sharedFolder);
 						if (group) {
@@ -678,14 +677,12 @@ export class BackgroundSync extends HasLogging {
 
 				const callback = this.syncCompletionCallbacks.get(item.guid);
 				if (callback) {
-					callback.reject(
-						error instanceof Error ? error : new Error(String(error)),
-					);
+					callback.reject(errorFromUnknown(error));
 					this.syncCompletionCallbacks.delete(item.guid);
 					this.syncPromises.delete(item.guid);
 				}
 
-				this.error("[Sync Startup Failed]", error);
+				this.logError("[Sync Startup Failed]", error);
 				this.recordFailure("sync", item, error);
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
@@ -796,9 +793,7 @@ export class BackgroundSync extends HasLogging {
 
 						const callback = this.downloadCompletionCallbacks.get(item.guid);
 						if (callback) {
-							callback.reject(
-								error instanceof Error ? error : new Error(String(error)),
-							);
+							callback.reject(errorFromUnknown(error));
 							this.downloadCompletionCallbacks.delete(item.guid);
 							this.downloadPromises.delete(item.guid);
 						}
@@ -812,7 +807,7 @@ export class BackgroundSync extends HasLogging {
 							this.syncGroups.set(item.sharedFolder, group);
 						}
 						this.recordFailure("download", item, error);
-						this.error("[processDownloadQueue]", error);
+						this.logError("[processDownloadQueue]", error);
 					})
 					.finally(() => {
 						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
@@ -844,14 +839,12 @@ export class BackgroundSync extends HasLogging {
 
 				const callback = this.downloadCompletionCallbacks.get(item.guid);
 				if (callback) {
-					callback.reject(
-						error instanceof Error ? error : new Error(String(error)),
-					);
+					callback.reject(errorFromUnknown(error));
 					this.downloadCompletionCallbacks.delete(item.guid);
 					this.downloadPromises.delete(item.guid);
 				}
 
-				this.error("[Download Startup Failed]", error);
+				this.logError("[Download Startup Failed]", error);
 				const group = this.syncGroups.get(item.sharedFolder);
 				if (group) {
 					if (item.userVisible) {
@@ -1477,7 +1470,7 @@ export class BackgroundSync extends HasLogging {
 				this.log("[getCanvas] flushed");
 			}
 		} catch (e) {
-			this.error(e);
+			this.logError("[getCanvas] failed", e);
 			throw e;
 		}
 	}
@@ -1523,7 +1516,7 @@ export class BackgroundSync extends HasLogging {
 			await this.maybeBootstrapDocumentLCA(doc);
 			return updateBytes;
 		} catch (e) {
-			this.error(e);
+			this.logError("[getDocument] failed", e);
 			throw e;
 		}
 	}
@@ -1541,7 +1534,10 @@ export class BackgroundSync extends HasLogging {
 				);
 			}
 		} catch (e) {
-			this.warn(`[bootstrapLCA] failed for ${doc.path}`, e);
+			this.warn(
+				`[bootstrapLCA] failed for ${doc.path}: ${this.errorMessage(e)}`,
+				e,
+			);
 			throw e;
 		}
 	}
@@ -1572,7 +1568,7 @@ export class BackgroundSync extends HasLogging {
 				}
 			}
 		} catch (e) {
-			this.error(e);
+			this.logError("[syncDocument] failed", e);
 			throw e;
 		}
 	}
@@ -1838,10 +1834,10 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private errorMessage(error: unknown): string {
-		if (error instanceof Error && error.message.trim()) {
-			return error.message;
-		}
-		const message = String(error ?? "").trim();
-		return message || "Sync failed";
+		return formatUserFacingError(error);
+	}
+
+	private logError(context: string, error: unknown): void {
+		this.error(`${context}: ${this.errorMessage(error)}`, error);
 	}
 }

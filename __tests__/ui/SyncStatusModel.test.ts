@@ -149,6 +149,95 @@ describe("SyncStatusModel", () => {
 		expect(dismissed.actionableFiles).toHaveLength(0);
 	});
 
+	test("normalizes background sync object-string failure messages", () => {
+		const sharedFolder = {
+			files: new Map(),
+			backgroundSync: {
+				pendingSyncs: [],
+				pendingDownloads: [],
+				activeSync: { filter: () => [] },
+				activeDownloads: { filter: () => [] },
+				getQueueStatus: () => ({
+					syncsQueued: 0,
+					syncsActive: 0,
+					downloadsQueued: 0,
+					downloadsActive: 0,
+					isPaused: false,
+				}),
+				getFailures: () => [
+					{
+						id: "sync:object-guid",
+						guid: "object-guid",
+						path: "/object.md",
+						kind: "sync",
+						message: "[object Object]",
+						sharedFolder: null,
+					},
+				],
+			},
+			getPath: (path: string) => path,
+		} as any;
+
+		const model = buildFolderSyncStatusModel(sharedFolder);
+
+		expect(model.actionableFiles).toEqual([
+			expect.objectContaining({
+				label: "Sync failed",
+			}),
+		]);
+	});
+
+	test("normalizes HSM object error payloads", () => {
+		const sharedFolder = {
+			files: new Map([
+				[
+					"hsm-guid",
+					{
+						path: "/hsm.md",
+						hsm: {
+							statePath: "idle.error",
+							state: {
+								error: {
+									response: {
+										data: {
+											message: "Unable to read local file",
+										},
+									},
+								},
+							},
+							getSyncStatus: () => ({ status: "error" }),
+						},
+					},
+				],
+			]),
+			backgroundSync: {
+				pendingSyncs: [],
+				pendingDownloads: [],
+				activeSync: { filter: () => [] },
+				activeDownloads: { filter: () => [] },
+				getQueueStatus: () => ({
+					syncsQueued: 0,
+					syncsActive: 0,
+					downloadsQueued: 0,
+					downloadsActive: 0,
+					isPaused: false,
+				}),
+				getFailures: () => [],
+			},
+			getPath: (path: string) => path,
+		} as any;
+
+		const model = buildFolderSyncStatusModel(sharedFolder);
+
+		expect(model.actionableFiles).toEqual([
+			expect.objectContaining({
+				guid: "hsm-guid",
+				category: "error",
+				label: "Unable to read local file",
+			}),
+		]);
+	});
+
 	test("uses the background sync folder snapshot as the model source", () => {
 		const folderSnapshot = {
 			percent: 25,

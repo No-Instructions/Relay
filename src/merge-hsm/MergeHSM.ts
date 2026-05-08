@@ -84,6 +84,7 @@ import {
 import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
+import { errorFromUnknown, formatUserFacingError } from "../UserFacingError";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
@@ -2371,8 +2372,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			storeThreeWayError: (_hsm, event) => {
 				const error = (event as any).data;
-				this.hsmError(`three-way merge failed: ${error}`);
-				this._error = error instanceof Error ? error : new Error(String(error));
+				const message = formatUserFacingError(error, "Merge failed");
+				this.hsmError(`three-way merge failed: ${message}`);
+				this._error = errorFromUnknown(error, "Merge failed");
 				const localText = this.localDoc?.getText("contents").toString() ?? "";
 				const diskText = this.pendingDiskContents ?? this.lastKnownEditorText ?? "";
 				this._conflict = new Conflict({
@@ -2412,8 +2414,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			},
 			storeTwoWayError: (_hsm, event) => {
 				const error = (event as any).data;
-				this.hsmError(`two-way merge failed: ${error}`);
-				this._error = error instanceof Error ? error : new Error(String(error));
+				const message = formatUserFacingError(error, "Merge failed");
+				this.hsmError(`two-way merge failed: ${message}`);
+				this._error = errorFromUnknown(error, "Merge failed");
 				const localText = this.localDoc?.getText("contents").toString() ?? "";
 				const diskText = this.pendingDiskContents ?? this.lastKnownEditorText ?? "";
 				this._conflict = new Conflict({
