@@ -798,13 +798,20 @@ export default class Live extends Plugin {
 									});
 							});
 						}
-						if (folder.relayId && folder.connected) {
+						if (folder.relayId && folder.connected && !folder.localOnly) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Sync")
 									.setIcon("folder-sync")
 									.onClick(() => {
-										folder.netSync();
+										void openSyncStatusView(
+											this.app.workspace,
+											folder,
+											this.timeProvider,
+										);
+										void folder.resync().catch((error) => {
+											this.warn("Relay: Resync failed", error);
+										});
 									});
 							});
 						}

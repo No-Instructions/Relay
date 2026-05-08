@@ -9,6 +9,7 @@ import {
 import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte";
 import Pill from "../components/Pill.svelte";
 import { flags } from "../flagManager";
+import type { FolderSyncVisibleState } from "../BackgroundSyncProgress";
 import type { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { TimeProvider } from "../TimeProvider";
 import { getSyncStatusActivityStore } from "./SyncStatusActivity";
@@ -18,6 +19,10 @@ export const VIEW_TYPE_SYNC_STATUS = "system3-sync-status";
 interface SyncStatusViewBinding {
 	sharedFolder: SharedFolder;
 	timeProvider: TimeProvider;
+}
+
+interface SyncStatusViewBindingOptions {
+	followActiveFile?: boolean;
 }
 
 export interface SyncStatusViewContext {
@@ -30,6 +35,7 @@ export class SyncStatusView extends ItemView {
 	private headerPill?: Pill;
 	private binding: SyncStatusViewBinding | null = null;
 	private headerUnsubscribers: (() => void)[] = [];
+	private followActiveFile = true;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -50,12 +56,19 @@ export class SyncStatusView extends ItemView {
 		return "satellite";
 	}
 
-	setBinding(binding: SyncStatusViewBinding): void {
+	setBinding(
+		binding: SyncStatusViewBinding,
+		options: SyncStatusViewBindingOptions = {},
+	): void {
+		if (options.followActiveFile !== undefined) {
+			this.followActiveFile = options.followActiveFile;
+		}
 		this.binding = binding;
 		this.renderContents();
 	}
 
 	bindToActiveFile(): void {
+		this.followActiveFile = true;
 		this.rebindToFile(this.app.workspace.getActiveFile());
 		this.ensureBinding();
 	}
@@ -70,12 +83,13 @@ export class SyncStatusView extends ItemView {
 
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
+				if (!this.followActiveFile) return;
 				this.rebindToFile(file ?? null);
 			}),
 		);
 		this.registerEvent(
 			this.app.workspace.on("active-leaf-change", (leaf) => {
-				if (leaf === this.leaf) {
+				if (leaf === this.leaf && this.followActiveFile) {
 					this.bindToActiveFile();
 				}
 			}),
@@ -90,10 +104,13 @@ export class SyncStatusView extends ItemView {
 		// `getActiveFile()` returns the real focused file rather than null
 		// during the plugin-load race.
 		this.app.workspace.onLayoutReady(() => {
+			if (!this.followActiveFile) return;
 			this.bindToActiveFile();
 		});
 
-		this.bindToActiveFile();
+		if (this.followActiveFile) {
+			this.bindToActiveFile();
+		}
 		this.renderContents();
 	}
 
@@ -147,6 +164,12 @@ export class SyncStatusView extends ItemView {
 			(candidate) => candidate !== folder && candidate.name === folder.name,
 		);
 		return duplicateName ? folder.path : folder.name || folder.path;
+	}
+
+	private folderStatusIcon(folder: SharedFolder): string {
+		return iconForFolderSyncState(
+			folder.backgroundSync.getFolderSyncSnapshot(folder).visibleState,
+		);
 	}
 
 	private renderContents(): void {
@@ -235,6 +258,7 @@ export class SyncStatusView extends ItemView {
 				localOnly: folder.localOnly,
 				enableDraftMode: flags().enableDraftMode,
 				progress: 0,
+				showProgress: false,
 				syncStatus: "pending",
 			},
 		});
@@ -252,12 +276,11 @@ export class SyncStatusView extends ItemView {
 		);
 
 		this.headerUnsubscribers.push(
-			folder.backgroundSync.subscribeToGroupProgress(folder, () => {
-				const effective = folder.backgroundSync.getFolderPillProgress(folder);
-				if (!effective) return;
+			folder.backgroundSync.subscribeToFolderSyncSnapshot(folder, (snapshot) => {
 				this.headerPill?.$set({
-					progress: effective.percent,
-					syncStatus: effective.status,
+					progress: snapshot.percent,
+					showProgress: snapshot.showProgress,
+					syncStatus: snapshot.progressStatus,
 				});
 			}),
 		);
@@ -276,13 +299,15 @@ export class SyncStatusView extends ItemView {
 			menu.addItem((item) => {
 				item
 					.setTitle(this.folderOptionLabel(folder))
-					.setIcon("folder")
+					.setIcon(this.folderStatusIcon(folder))
 					.setChecked(folder === this.binding?.sharedFolder)
 					.onClick(() => {
 						if (folder === this.binding?.sharedFolder) return;
 						this.setBinding({
 							sharedFolder: folder,
 							timeProvider: this.context.timeProvider,
+						}, {
+							followActiveFile: false,
 						});
 					});
 			});
@@ -347,7 +372,7 @@ export async function openSyncStatusView(
 		const leaf = existing;
 		const view = leaf.view as SyncStatusView;
 		if (sharedFolder && timeProvider) {
-			view.setBinding({ sharedFolder, timeProvider });
+			view.setBinding({ sharedFolder, timeProvider }, { followActiveFile: false });
 		} else {
 			view.bindToActiveFile();
 		}
@@ -365,10 +390,26 @@ export async function openSyncStatusView(
 
 	const view = leaf.view as SyncStatusView;
 	if (sharedFolder && timeProvider) {
-		view.setBinding({ sharedFolder, timeProvider });
+		view.setBinding({ sharedFolder, timeProvider }, { followActiveFile: false });
 	} else {
 		view.bindToActiveFile();
 	}
 	workspace.revealLeaf(leaf);
 	return view;
+}
+
+function iconForFolderSyncState(state: FolderSyncVisibleState): string {
+	switch (state) {
+		case "syncing":
+			return "folder-sync";
+		case "queued":
+			return "folder-sync";
+		case "paused":
+			return "pause";
+		case "sync-issue":
+			return "alert-triangle";
+		case "synced":
+		default:
+			return "folder-check";
+	}
 }

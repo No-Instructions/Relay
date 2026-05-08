@@ -22,8 +22,10 @@ import { areCanvasDataEqual } from "./CanvasData";
 import { SyncFile, isSyncFile } from "./SyncFile";
 import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
 import {
-	shouldShowCompletedFolderPillProgress,
-	shouldUseUserVisibleFolderProgress,
+	buildFolderSyncSnapshot,
+	FolderSyncSnapshotSmoother,
+	type FolderSyncSnapshot,
+	type FolderSyncWorkItemInput,
 } from "./BackgroundSyncProgress";
 
 export interface QueueItem {
@@ -78,6 +80,14 @@ export interface GroupProgress {
 	status: "pending" | "running" | "completed" | "failed";
 }
 
+interface FolderSyncSnapshotSubscription {
+	smoother: FolderSyncSnapshotSmoother;
+	subscribers: Set<Subscriber<FolderSyncSnapshot>>;
+	latestSnapshot: FolderSyncSnapshot | null;
+	unsubscribers: Unsubscriber[];
+	emit: () => void;
+}
+
 export interface QueueStatus {
 	syncsQueued: number;
 	syncsActive: number;
@@ -90,6 +100,7 @@ export class BackgroundSync extends HasLogging {
 	public activeSync = new ObservableSet<QueueItem>();
 	public activeDownloads = new ObservableSet<QueueItem>();
 	public syncGroups = new ObservableMap<SharedFolder, SyncGroup>();
+	private folderResyncs = new ObservableSet<SharedFolder>();
 	private failures = new ObservableMap<string, BackgroundSyncFailure>(
 		"BackgroundSync.failures",
 	);
@@ -120,6 +131,10 @@ export class BackgroundSync extends HasLogging {
 		}
 	>();
 	private downloadPromises = new Map<string, Promise<Uint8Array | undefined>>();
+	private folderSyncSnapshotSubscriptions = new Map<
+		SharedFolder,
+		FolderSyncSnapshotSubscription
+	>();
 
 	// A map to track items we've already logged to avoid duplicates
 	private loggedItems = new Map<string, boolean>();
@@ -359,32 +374,73 @@ export class BackgroundSync extends HasLogging {
 		const group = this.syncGroups.get(sharedFolder);
 		if (!group) return null;
 
-		const hasQueuedOrActiveWork =
-			this.syncQueue.some((item) => item.sharedFolder === sharedFolder) ||
-			this.downloadQueue.some((item) => item.sharedFolder === sharedFolder) ||
-			this.activeSync.some((item) => item.sharedFolder === sharedFolder) ||
-			this.activeDownloads.some((item) => item.sharedFolder === sharedFolder);
-		const progressInput = {
-			hasQueuedOrActiveWork,
-			userDownloads: group.userDownloads,
-			completedUserDownloads: group.completedUserDownloads,
-			failedUserDownloads: group.failedUserDownloads,
+		const snapshot = this.getFolderSyncSnapshot(sharedFolder);
+		return {
+			percent: snapshot.percent,
+			syncPercent: snapshot.syncPercent,
+			downloadPercent: snapshot.downloadPercent,
+			sharedFolder,
+			status: snapshot.progressStatus,
 		};
-		if (shouldShowCompletedFolderPillProgress(progressInput)) {
-			return {
-				percent: 100,
-				syncPercent: 100,
-				downloadPercent: 100,
-				sharedFolder,
-				status: "completed",
-			};
-		}
+	}
 
-		if (shouldUseUserVisibleFolderProgress(progressInput)) {
-			return this.getUserVisibleProgress(sharedFolder);
-		}
+	getFolderSyncSnapshot(sharedFolder: SharedFolder): FolderSyncSnapshot {
+		const activeDownloads = this.activeDownloads.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const activeSync = this.activeSync.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const queuedDownloads = this.downloadQueue.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const queuedSyncs = this.syncQueue.filter(
+			(item) => item.sharedFolder === sharedFolder,
+		);
+		const folderResyncActive = this.folderResyncs.has(sharedFolder) ? 1 : 0;
+		const activeItem = this.activeItemForSnapshot(activeDownloads, activeSync);
+		const queuedReason = this.queuedReasonForSnapshot(
+			sharedFolder,
+			activeDownloads.length + activeSync.length,
+			queuedDownloads.length + queuedSyncs.length,
+		);
 
-		return this.getGroupProgress(sharedFolder);
+		return buildFolderSyncSnapshot({
+			group: this.syncGroups.get(sharedFolder) ?? null,
+			queued: queuedDownloads.length + queuedSyncs.length,
+			active: activeDownloads.length + activeSync.length + folderResyncActive,
+			isPaused: this.isPaused,
+			failureCount: this.getFailures(sharedFolder).length,
+			canResync: sharedFolder.connected && !sharedFolder.localOnly,
+			folderActivity: folderResyncActive ? "checking" : null,
+			activeItem,
+			queuedReason,
+		});
+	}
+
+	private activeItemForSnapshot(
+		activeDownloads: QueueItem[],
+		activeSync: QueueItem[],
+	): FolderSyncWorkItemInput | null {
+		const download = activeDownloads[0];
+		if (download) return { kind: "download", path: download.path };
+		const sync = activeSync[0];
+		if (sync) return { kind: "sync", path: sync.path };
+		return null;
+	}
+
+	private queuedReasonForSnapshot(
+		sharedFolder: SharedFolder,
+		active: number,
+		queued: number,
+	): "connection" | "reconnecting" | null {
+		if (active > 0 || queued === 0) return null;
+		if (!sharedFolder.connected) {
+			return sharedFolder.state.status === "connecting"
+				? "reconnecting"
+				: "connection";
+		}
+		return null;
 	}
 
 	getFailures(sharedFolder: SharedFolder): BackgroundSyncFailure[] {
@@ -396,6 +452,22 @@ export class BackgroundSync extends HasLogging {
 
 	clearFailure(id: string): void {
 		this.failures.delete(id);
+	}
+
+	clearFailuresForFolder(sharedFolder: SharedFolder): void {
+		for (const failure of this.failures.values()) {
+			if (failure.sharedFolder === sharedFolder) {
+				this.clearFailure(failure.id);
+			}
+		}
+	}
+
+	beginFolderResync(sharedFolder: SharedFolder): Unsubscriber {
+		this.clearFailuresForFolder(sharedFolder);
+		this.folderResyncs.add(sharedFolder);
+		return () => {
+			this.folderResyncs.delete(sharedFolder);
+		};
 	}
 
 	async refreshLocalFileFailures(sharedFolder: SharedFolder): Promise<void> {
@@ -1555,6 +1627,74 @@ export class BackgroundSync extends HasLogging {
 		});
 	}
 
+	subscribeToFolderSyncSnapshot(
+		sharedFolder: SharedFolder,
+		callback: Subscriber<FolderSyncSnapshot>,
+	): Unsubscriber {
+		const state = this.getFolderSyncSnapshotSubscription(sharedFolder);
+		state.subscribers.add(callback);
+		if (state.latestSnapshot) callback(state.latestSnapshot);
+
+		return () => {
+			state.subscribers.delete(callback);
+			if (state.subscribers.size === 0) {
+				this.disposeFolderSyncSnapshotSubscription(sharedFolder, state);
+			}
+		};
+	}
+
+	private getFolderSyncSnapshotSubscription(
+		sharedFolder: SharedFolder,
+	): FolderSyncSnapshotSubscription {
+		const existing = this.folderSyncSnapshotSubscriptions.get(sharedFolder);
+		if (existing) return existing;
+
+		const state: FolderSyncSnapshotSubscription = {
+			smoother: null as any,
+			subscribers: new Set(),
+			latestSnapshot: null,
+			unsubscribers: [],
+			emit: () => {},
+		};
+		state.smoother = new FolderSyncSnapshotSmoother(
+			this.timeProvider,
+			(snapshot) => {
+				state.latestSnapshot = snapshot;
+				for (const subscriber of state.subscribers) {
+					subscriber(snapshot);
+				}
+			},
+		);
+		state.emit = () => {
+			state.smoother.update(this.getFolderSyncSnapshot(sharedFolder));
+		};
+		const folderStateKey = { type: "folder-sync-snapshot", sharedFolder };
+		state.unsubscribers = [
+			this.activeSync.on(state.emit),
+			this.activeDownloads.on(state.emit),
+			this.syncGroups.on(state.emit),
+			this.failures.on(state.emit),
+			this.folderResyncs.on(state.emit),
+			this.queueStatusChanged.on(state.emit),
+			sharedFolder.subscribe(folderStateKey, state.emit),
+		];
+		this.folderSyncSnapshotSubscriptions.set(sharedFolder, state);
+		state.emit();
+		return state;
+	}
+
+	private disposeFolderSyncSnapshotSubscription(
+		sharedFolder: SharedFolder,
+		state: FolderSyncSnapshotSubscription,
+	): void {
+		if (this.folderSyncSnapshotSubscriptions.get(sharedFolder) !== state) return;
+		this.folderSyncSnapshotSubscriptions.delete(sharedFolder);
+		state.unsubscribers.forEach((unsubscribe) => unsubscribe());
+		state.smoother.destroy();
+		state.subscribers.clear();
+		state.latestSnapshot = null;
+	}
+
 	/**
 	 * Pauses all sync and download queue processing
 	 *
@@ -1631,9 +1771,16 @@ export class BackgroundSync extends HasLogging {
 			this.downloadCompletionCallbacks.delete(guid);
 		}
 
+		for (const [sharedFolder, state] of [
+			...this.folderSyncSnapshotSubscriptions.entries(),
+		]) {
+			this.disposeFolderSyncSnapshotSubscription(sharedFolder, state);
+		}
+
 		// Destroy observable collections
 		this.activeSync.destroy();
 		this.activeDownloads.destroy();
+		this.folderResyncs.destroy();
 		this.syncGroups.destroy();
 		this.failures.destroy();
 		this.queueStatusChanged.destroy();

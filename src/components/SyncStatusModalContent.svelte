@@ -3,6 +3,7 @@
 	import { TFile, type App } from "obsidian";
 	import type { SharedFolder } from "../SharedFolder";
 	import type { TimeProvider } from "../TimeProvider";
+	import type { FolderSyncSnapshot } from "../BackgroundSyncProgress";
 	import type {
 		SyncStatusActivityEntry,
 		SyncStatusActivityStore,
@@ -25,6 +26,7 @@
 		X,
 		GitMerge,
 		Pause,
+		RefreshCw,
 	} from "lucide-svelte";
 
 	export let sharedFolder: SharedFolder;
@@ -36,9 +38,15 @@
 
 	let statusModel: FolderSyncStatusModel;
 	let dismissedErrors = new Set<string>();
+	let displaySnapshot: FolderSyncSnapshot | null = null;
 
-	function refreshStatusModel() {
-		statusModel = buildFolderSyncStatusModel(sharedFolder, dismissedErrors);
+	function refreshStatusModel(snapshot?: FolderSyncSnapshot) {
+		if (snapshot) displaySnapshot = snapshot;
+		statusModel = buildFolderSyncStatusModel(
+			sharedFolder,
+			dismissedErrors,
+			displaySnapshot,
+		);
 	}
 
 	function refreshLocalFileFailures() {
@@ -46,14 +54,14 @@
 		if (typeof refreshFailures !== "function") return;
 		refreshFailures
 			.call(sharedFolder.backgroundSync, sharedFolder)
-			.then(refreshStatusModel)
+			.then(() => refreshStatusModel())
 			.catch(() => {});
 	}
 
 	refreshStatusModel();
 	refreshLocalFileFailures();
 
-	$: queue = statusModel.queue;
+	$: snapshot = statusModel.snapshot;
 	$: conflicts = statusModel.actionableFiles.filter(
 		(f: ActionableSyncFile) => f.category === "conflict",
 	);
@@ -78,14 +86,18 @@
 		refreshStatusModel();
 	});
 
-	const unsubscribeQueueStatus = sharedFolder.backgroundSync.subscribeToQueueStatus(() => {
-		refreshStatusModel();
-	});
+	const unsubscribeFolderSnapshot =
+		sharedFolder.backgroundSync.subscribeToFolderSyncSnapshot(
+			sharedFolder,
+			(snapshot) => {
+				refreshStatusModel(snapshot);
+			},
+		);
 
 	onDestroy(() => {
 		unsubscribeActivity();
 		unsubscribeSyncStatus();
-		unsubscribeQueueStatus();
+		unsubscribeFolderSnapshot();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────────
@@ -129,14 +141,32 @@
 		refreshStatusModel();
 	}
 
-	function toggleQueue(event: MouseEvent) {
+	function handleSyncAction(event: MouseEvent) {
 		event.stopPropagation();
-		if (queue.isPaused) {
+		if (snapshot.syncAction === "resume") {
 			sharedFolder.backgroundSync.resume();
-		} else {
+		} else if (snapshot.syncAction === "pause") {
 			sharedFolder.backgroundSync.pause();
+		} else if (snapshot.syncAction === "resync") {
+			dismissedErrors = new Set();
+			sharedFolder.resync().catch(() => {
+				refreshStatusModel();
+			});
+		} else {
+			return;
 		}
 		refreshStatusModel();
+	}
+
+	function syncActionLabel(): string {
+		if (snapshot.syncAction === "resume") return "Resume sync";
+		if (snapshot.syncAction === "pause") return "Pause sync";
+		if (snapshot.syncAction === "resync") return "Resync";
+		return "";
+	}
+
+	function showSyncAction(): boolean {
+		return snapshot.syncAction !== null;
 	}
 
 	function fileLabel(filePath: string): string {
@@ -185,33 +215,43 @@
 
 <div class="sync-status-modal">
 	<div class="sync-status-toolbar">
-		<div class="sync-status-queue-state {queue.runState}">
-			{#if queue.runState === "processing"}
-				<FolderSync size={14} />
-			{:else if queue.runState === "stopped"}
-				<Pause size={14} />
-			{:else}
-				<FolderCheck size={14} />
-			{/if}
-			<span>{queue.label}</span>
+		<div class="sync-status-toolbar-main">
+			<div class="sync-status-queue-state {snapshot.visibleState}">
+				{#if snapshot.visibleState === "syncing" || snapshot.visibleState === "queued"}
+					<FolderSync size={14} />
+				{:else if snapshot.visibleState === "paused"}
+					<Pause size={14} />
+				{:else if snapshot.visibleState === "sync-issue"}
+					<AlertTriangle size={14} />
+				{:else}
+					<FolderCheck size={14} />
+				{/if}
+				<span>{snapshot.label}</span>
+			</div>
+			<button
+				class:hidden={!showSyncAction()}
+				class="sync-status-queue-action"
+				type="button"
+				aria-hidden={!showSyncAction()}
+				aria-label={syncActionLabel()}
+				disabled={!showSyncAction()}
+				tabindex={showSyncAction() ? 0 : -1}
+				title={syncActionLabel()}
+				on:click={handleSyncAction}
+			>
+				{#if snapshot.syncAction === "resume"}
+					<CirclePlay size={14} />
+				{:else if snapshot.syncAction === "resync"}
+					<RefreshCw size={14} />
+				{:else}
+					<CirclePause size={14} />
+				{/if}
+			</button>
 		</div>
-		<button
-			class:hidden={queue.runState === "idle"}
-			class="sync-status-queue-action"
-			type="button"
-			aria-hidden={queue.runState === "idle"}
-			aria-label={queue.isPaused ? "Resume sync" : "Pause sync"}
-			disabled={queue.runState === "idle"}
-			tabindex={queue.runState === "idle" ? -1 : 0}
-			title={queue.runState === "idle" ? "" : queue.isPaused ? "Resume sync" : "Pause sync"}
-			on:click={toggleQueue}
-		>
-			{#if queue.isPaused}
-				<CirclePlay size={14} />
-			{:else}
-				<CirclePause size={14} />
-			{/if}
-		</button>
+		<span
+			class="sync-status-latest-activity"
+			aria-hidden={!snapshot.latestActivity}
+		>{snapshot.latestActivity ?? ""}</span>
 	</div>
 
 	{#if conflicts.length > 0}
@@ -324,12 +364,20 @@
 
 	.sync-status-toolbar {
 		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: 8px;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 4px;
 		padding: 0 0 8px;
 		margin-bottom: 8px;
 		border-bottom: 1px solid var(--background-modifier-border);
+	}
+
+	.sync-status-toolbar-main {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		min-width: 0;
 	}
 
 	.sync-status-queue-state {
@@ -342,12 +390,30 @@
 		line-height: var(--line-height-tight);
 	}
 
-	.sync-status-queue-state.processing {
+	.sync-status-queue-state.syncing,
+	.sync-status-queue-state.queued {
 		color: var(--text-accent);
 	}
 
-	.sync-status-queue-state.stopped {
+	.sync-status-queue-state.paused {
 		color: var(--text-warning);
+	}
+
+	.sync-status-queue-state.sync-issue {
+		color: var(--text-error);
+	}
+
+	.sync-status-latest-activity {
+		display: block;
+		color: var(--text-faint);
+		font-size: var(--font-ui-smaller);
+		line-height: 1.25;
+		min-height: 1.25em;
+		width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 100%;
 	}
 
 	.sync-status-queue-action {

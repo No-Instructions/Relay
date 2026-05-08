@@ -1,4 +1,8 @@
 import type { BackgroundSyncFailure, QueueItem } from "../BackgroundSync";
+import {
+	buildFolderSyncSnapshot,
+	type FolderSyncSnapshot,
+} from "../BackgroundSyncProgress";
 import type { SharedFolder } from "../SharedFolder";
 import type { StatePath, SyncStatus, SyncStatusType } from "../merge-hsm/types";
 
@@ -51,6 +55,7 @@ export interface ActionableSyncFile {
 
 export interface FolderSyncStatusModel {
 	queue: FolderQueueSnapshot;
+	snapshot: FolderSyncSnapshot;
 	actionableFiles: ActionableSyncFile[];
 }
 
@@ -150,6 +155,7 @@ export function summarizeFolderQueue(input: {
 export function buildFolderSyncStatusModel(
 	sharedFolder: SharedFolder,
 	dismissedErrors: ReadonlySet<string> = new Set(),
+	displaySnapshot?: FolderSyncSnapshot | null,
 ): FolderSyncStatusModel {
 	const queue = buildFolderQueueSnapshot(sharedFolder);
 	const actionableFiles: ActionableSyncFile[] = [];
@@ -203,7 +209,11 @@ export function buildFolderSyncStatusModel(
 	}
 
 	actionableFiles.sort((a, b) => a.path.localeCompare(b.path));
-	return { queue, actionableFiles };
+	return {
+		queue,
+		snapshot: displaySnapshot ?? getFolderSyncSnapshot(sharedFolder, queue),
+		actionableFiles,
+	};
 }
 
 export function deriveFileSyncStatus(
@@ -334,6 +344,27 @@ function getBackgroundSyncFailures(
 	const getFailures = sharedFolder.backgroundSync.getFailures;
 	if (typeof getFailures !== "function") return [];
 	return getFailures.call(sharedFolder.backgroundSync, sharedFolder);
+}
+
+function getFolderSyncSnapshot(
+	sharedFolder: SharedFolder,
+	queue: FolderQueueSnapshot,
+): FolderSyncSnapshot {
+	const getSnapshot = sharedFolder.backgroundSync.getFolderSyncSnapshot;
+	if (typeof getSnapshot === "function") {
+		return getSnapshot.call(sharedFolder.backgroundSync, sharedFolder);
+	}
+	return buildFolderSyncSnapshot({
+		group: null,
+		queued: queue.queued,
+		active: queue.active,
+		isPaused: queue.isPaused,
+		failureCount: getBackgroundSyncFailures(sharedFolder).length,
+		canResync: sharedFolder.connected && !sharedFolder.localOnly,
+		folderActivity: null,
+		activeItem: null,
+		queuedReason: null,
+	});
 }
 
 export const EMPTY_FOLDER_QUEUE_SNAPSHOT: FolderQueueSnapshot = {

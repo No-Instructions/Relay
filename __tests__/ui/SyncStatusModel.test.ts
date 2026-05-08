@@ -1,4 +1,5 @@
 import type { QueueItem } from "../../src/BackgroundSync";
+import type { FolderSyncSnapshot } from "../../src/BackgroundSyncProgress";
 import {
 	buildFolderSyncStatusModel,
 	deriveFileSyncStatus,
@@ -123,6 +124,13 @@ describe("SyncStatusModel", () => {
 
 		const model = buildFolderSyncStatusModel(sharedFolder);
 
+		expect(model.snapshot).toEqual(
+			expect.objectContaining({
+				visibleState: "sync-issue",
+				label: "Sync issue",
+				progressStatus: "failed",
+			}),
+		);
 		expect(model.actionableFiles).toEqual([
 			expect.objectContaining({
 				id: "sync:canvas-guid",
@@ -139,6 +147,108 @@ describe("SyncStatusModel", () => {
 			new Set(["sync:canvas-guid"]),
 		);
 		expect(dismissed.actionableFiles).toHaveLength(0);
+	});
+
+	test("uses the background sync folder snapshot as the model source", () => {
+		const folderSnapshot = {
+			percent: 25,
+			syncPercent: 25,
+			downloadPercent: 0,
+			showProgress: true,
+			progressStatus: "running",
+			visibleState: "queued",
+			label: "Queued",
+			latestActivity: "Waiting for connection",
+			syncAction: null,
+			queued: 1,
+			active: 0,
+			total: 4,
+			failureCount: 0,
+			isPaused: false,
+		};
+		const getFolderSyncSnapshot = jest.fn(() => folderSnapshot);
+		const sharedFolder = {
+			files: new Map(),
+			backgroundSync: {
+				pendingSyncs: [],
+				pendingDownloads: [],
+				activeSync: { filter: () => [] },
+				activeDownloads: { filter: () => [] },
+				getQueueStatus: () => ({
+					syncsQueued: 0,
+					syncsActive: 0,
+					downloadsQueued: 0,
+					downloadsActive: 0,
+					isPaused: false,
+				}),
+				getFailures: () => [],
+				getFolderSyncSnapshot,
+			},
+			getPath: (path: string) => path,
+		} as any;
+
+		const model = buildFolderSyncStatusModel(sharedFolder);
+
+		expect(model.snapshot).toBe(folderSnapshot);
+		expect(getFolderSyncSnapshot).toHaveBeenCalledWith(sharedFolder);
+	});
+
+	test("uses a provided display snapshot instead of recomputing raw folder state", () => {
+		const rawSnapshot: FolderSyncSnapshot = {
+			percent: 100,
+			syncPercent: 100,
+			downloadPercent: 100,
+			showProgress: false,
+			progressStatus: "completed",
+			visibleState: "synced",
+			label: "Synced",
+			latestActivity: null,
+			syncAction: "resync",
+			queued: 0,
+			active: 0,
+			total: 1,
+			failureCount: 0,
+			isPaused: false,
+		};
+		const displaySnapshot: FolderSyncSnapshot = {
+			...rawSnapshot,
+			percent: 85,
+			showProgress: true,
+			progressStatus: "running",
+			visibleState: "syncing",
+			label: "Syncing",
+			latestActivity: "Finalizing...",
+			syncAction: null,
+		};
+		const getFolderSyncSnapshot = jest.fn(() => rawSnapshot);
+		const sharedFolder = {
+			files: new Map(),
+			backgroundSync: {
+				pendingSyncs: [],
+				pendingDownloads: [],
+				activeSync: { filter: () => [] },
+				activeDownloads: { filter: () => [] },
+				getQueueStatus: () => ({
+					syncsQueued: 0,
+					syncsActive: 0,
+					downloadsQueued: 0,
+					downloadsActive: 0,
+					isPaused: false,
+				}),
+				getFailures: () => [],
+				getFolderSyncSnapshot,
+			},
+			getPath: (path: string) => path,
+		} as any;
+
+		const model = buildFolderSyncStatusModel(
+			sharedFolder,
+			new Set(),
+			displaySnapshot,
+		);
+
+		expect(model.snapshot).toBe(displaySnapshot);
+		expect(getFolderSyncSnapshot).not.toHaveBeenCalled();
 	});
 
 	test("recent activity hides ambiguous pending and actionable rows", () => {

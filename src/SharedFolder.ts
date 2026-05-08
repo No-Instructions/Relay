@@ -1102,6 +1102,16 @@ export class SharedFolder extends HasProvider {
 		this.backgroundSync.enqueueSharedFolderSync(this);
 	}
 
+	async resync(): Promise<void> {
+		if (!this.connected || this.localOnly) return;
+		const finishResync = this.backgroundSync.beginFolderResync(this);
+		try {
+			await this.netSync();
+		} finally {
+			finishResync();
+		}
+	}
+
 	public get settings(): SharedFolderSettings {
 		return this._settings.get();
 	}

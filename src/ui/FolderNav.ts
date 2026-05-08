@@ -201,6 +201,7 @@ class PillDecoration {
 				localOnly: this.sharedFolder.localOnly,
 				enableDraftMode: flags().enableDraftMode,
 				progress: 0,
+				showProgress: false,
 				syncStatus: "pending",
 			},
 		});
@@ -219,19 +220,14 @@ class PillDecoration {
 		);
 
 		unsubs.push(
-			this.sharedFolder.backgroundSync.subscribeToGroupProgress(
+			this.sharedFolder.backgroundSync.subscribeToFolderSyncSnapshot(
 				this.sharedFolder,
-				() => {
-					const effective =
-						this.sharedFolder.backgroundSync.getFolderPillProgress(
-							this.sharedFolder,
-						);
-					if (effective) {
-						this.pill.$set({
-							progress: effective.percent,
-							syncStatus: effective.status,
-						});
-					}
+				(snapshot) => {
+					this.pill.$set({
+						progress: snapshot.percent,
+						showProgress: snapshot.showProgress,
+						syncStatus: snapshot.progressStatus,
+					});
 				},
 			),
 		);
