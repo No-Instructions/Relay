@@ -33,7 +33,8 @@ const IDLE_LIFECYCLE: Record<string, EventHandler> = {
 	// PERSISTENCE_LOADED may arrive after an early SET_MODE_IDLE/SET_MODE_ACTIVE
 	// (e.g. startup/reload races). Re-enter idle.loading so always-transitions
 	// re-evaluate with the loaded LCA/fork data.
-	PERSISTENCE_LOADED: { target: 'idle.loading', actions: ['storePersistenceData'] },
+	PERSISTENCE_LOADED: { target: 'idle.loading', actions: ['storePersistenceData'], reenter: true },
+	ENROLLMENT_COMPLETE: { target: 'idle.loading', actions: ['storeEnrollmentComplete'], reenter: true },
 	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 	LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -75,6 +76,7 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'loading', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			ENROLLMENT_COMPLETE: { target: 'loading', actions: ['storeEnrollmentComplete'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
 	},
@@ -107,6 +109,10 @@ export const MACHINE: MachineDefinition = {
 
 	'idle.loading': {
 		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
+		on: {
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
 		always: [
 			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
 			{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['prepareRecoverLCAFromPendingDisk'] },
@@ -114,7 +120,7 @@ export const MACHINE: MachineDefinition = {
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
 			{ target: 'idle.diskAhead', guard: 'diskAheadAtLoad' },
-			{ target: 'idle.diverged' }, // Default fallback
+			{ target: 'idle.diverged', guard: 'divergedAtLoad' },
 		],
 	},
 
@@ -535,6 +541,10 @@ export const MACHINE: MachineDefinition = {
 			PERSISTENCE_LOADED: {
 				target: 'active.entering.awaitingPersistence',
 				actions: ['storePersistenceData', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			ENROLLMENT_COMPLETE: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['storeEnrollmentComplete', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			PERSISTENCE_SYNCED: [
 				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent', actions: ['applyRemoteToLocalIfNeeded'] },

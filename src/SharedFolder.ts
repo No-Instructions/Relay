@@ -1494,10 +1494,18 @@ export class SharedFolder extends HasProvider {
 
 		if (updateBytes) {
 			await newDoc.hsm?.initializeFromRemote(updateBytes);
+			const remoteDoc = newDoc.ensureRemoteDoc();
+			Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
+			newDoc.hsm?.setRemoteDoc(remoteDoc);
 		}
 		if (!isCurrentDoc()) {
 			this.log(`[${path}] remap aborted after enroll: new document is stale`);
 			return;
+		}
+		if (newDoc.hsm && !newDoc.hsm.state.lca) {
+			await newDoc.hsm.awaitIdle();
+			const diskState = await newDoc.readDiskContent();
+			await newDoc.hsm.bootstrapLCAFromDisk(diskState);
 		}
 		await this.poll([toGuid]);
 
@@ -2311,14 +2319,18 @@ export class SharedFolder extends HasProvider {
 		const contents = tempDoc.getText("contents").toString();
 		const doc = this.getOrCreateDoc(guid, vpath);
 		await doc.hsm?.initializeFromRemote(updateBytes);
+		const remoteDoc = doc.ensureRemoteDoc();
+		doc.hsm?.setRemoteDoc(remoteDoc);
 
 		if (!this.syncStore.has(doc.path)) {
 			throw new Error("file no longer wanted");
 		}
 
 		this.files.set(guid, doc);
-		await doc.hsm?.setLCA();
 		await this.flush(doc, contents);
+		const diskState = await doc.readDiskContent();
+		await doc.hsm?.awaitIdle();
+		await doc.hsm?.completeInitialEnrollmentFromDisk(diskState);
 		this.fset.add(doc, update);
 
 		return doc;

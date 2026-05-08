@@ -60,6 +60,7 @@ import type {
 	CaptureOpts,
 	EditorViewRef,
 	ResourcePresence,
+	EnrollmentCompleteEvent,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -1495,22 +1496,64 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			// Enrollment happened - set LCA to match initial content
 			const { content, hash, mtime } = cachedDiskContent;
 			const stateVector = Y.encodeStateVector(this.localDoc!);
-			this._setLCA({
+			this.sendEnrollmentComplete({
 				contents: content,
-				meta: { hash, mtime },
+				hash,
+				mtime,
 				stateVector,
 			});
-			this._localStateVector = stateVector;
-			this.emitPersistState();
-
-			// Re-fire PERSISTENCE_SYNCED now that IDB has content.
-			// handleLocalPersistenceSynced suppressed the event when IDB was empty.
-			if (this.matches("active.entering.awaitingPersistence")) {
-				this.send({ type: "PERSISTENCE_SYNCED", hasContent: true });
-			}
 		}
 
 		return didEnroll;
+	}
+
+	async completeInitialEnrollmentFromDisk(disk: {
+		content: string;
+		hash: string;
+		mtime: number;
+	}): Promise<boolean> {
+		if (this._lca) return true;
+		await this.ensurePersistence();
+		if (this._lca) return true;
+		if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
+
+		const localText = this.localDoc.getText("contents").toString();
+		if (localText !== disk.content) {
+			this.hsmWarn(
+				`initial enrollment LCA skipped: disk/local mismatch | ` +
+					`guid=${this._guid} state=${this._statePath} ` +
+					`diskLen=${disk.content.length} localLen=${localText.length}`,
+			);
+			return false;
+		}
+
+		this.sendEnrollmentComplete({
+			contents: disk.content,
+			hash: disk.hash,
+			mtime: disk.mtime,
+			stateVector: Y.encodeStateVector(this.localDoc),
+		});
+		return this._lca !== null;
+	}
+
+	private sendEnrollmentComplete(input: {
+		contents: string;
+		hash: string;
+		mtime: number;
+		stateVector: Uint8Array;
+	}): void {
+		this.send({
+			type: "ENROLLMENT_COMPLETE",
+			lca: {
+				contents: input.contents,
+				meta: { hash: input.hash, mtime: input.mtime },
+				stateVector: input.stateVector,
+			},
+			localStateVector: input.stateVector,
+			remoteStateVector: this.remoteDoc
+				? Y.encodeStateVector(this.remoteDoc)
+				: null,
+		});
 	}
 
 	/**
@@ -1752,6 +1795,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			diskAheadAtLoad: () => {
 				if (!this._lca) return false;
 				return this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
+			},
+			divergedAtLoad: () => {
+				return this._lca !== null;
 			},
 
 			// DISK_CHANGED: check if disk event matches LCA (using event hash, not stored _disk)
@@ -2087,6 +2133,20 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				if (e.fork !== undefined) {
 					this._fork = e.fork ?? null;
 				}
+			},
+			storeEnrollmentComplete: (_hsm, event) => {
+				const e = event as EnrollmentCompleteEvent;
+				this._setLCA(e.lca);
+				if (!this._lca) return;
+				this._disk = {
+					hash: e.lca.meta.hash,
+					mtime: e.lca.meta.mtime,
+				};
+				this._localStateVector = e.localStateVector;
+				if (e.remoteStateVector !== undefined) {
+					this._remoteStateVector = e.remoteStateVector;
+				}
+				this.emitPersistState();
 			},
 			initIdleMode: () => {
 				this._modeDecision = "idle";

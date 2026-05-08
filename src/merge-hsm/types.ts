@@ -376,6 +376,13 @@ export interface PersistenceSyncedEvent {
 	hasContent: boolean;
 }
 
+export interface EnrollmentCompleteEvent {
+	type: "ENROLLMENT_COMPLETE";
+	lca: LCAState;
+	localStateVector: Uint8Array;
+	remoteStateVector?: Uint8Array | null;
+}
+
 export interface MergeSuccessEvent {
 	type: "MERGE_SUCCESS";
 	newLCA: LCAState;
@@ -539,6 +546,7 @@ export type MergeEvent =
 	// Internal
 	| PersistenceLoadedEvent
 	| PersistenceSyncedEvent
+	| EnrollmentCompleteEvent
 	| MergeSuccessEvent
 	| MergeConflictEvent
 	| RemoteDocUpdatedEvent

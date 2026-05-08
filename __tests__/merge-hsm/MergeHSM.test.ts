@@ -2573,9 +2573,55 @@ describe('MergeHSM', () => {
       t.send(await diskChanged(diskContent, 123, 'disk-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
-      expectState(t, 'idle.diverged');
+      expectState(t, 'idle.loading');
       expect(t.state.lca).toBeNull();
       expect(t.hsm.getSyncStatus().status).toBe('pending');
+    });
+
+    test('no-LCA idle loading waits for enrollment before classifying synced', async () => {
+      const content = 'disk content';
+      const t = await createTestHSM();
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(await diskChanged(content, 123, 'disk-hash'));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.loading');
+
+      const localDoc = (t.hsm as any).getLocalDoc() as Y.Doc;
+      localDoc.getText('contents').insert(0, content);
+      const stateVector = Y.encodeStateVector(localDoc);
+
+      t.send({
+        type: 'ENROLLMENT_COMPLETE',
+        lca: {
+          contents: content,
+          meta: { hash: 'disk-hash', mtime: 123 },
+          stateVector,
+        },
+        localStateVector: stateVector,
+      } as any);
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.hsm.getSyncStatus().status).toBe('synced');
+    });
+
+    test('no-LCA idle.loading handles editor acquire', async () => {
+      const content = 'disk content';
+      const t = await createTestHSM();
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(await diskChanged(content, 123, 'disk-hash'));
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.loading');
+
+      t.send(acquireLock(mockEditorViewRef(content)));
+
+      expectState(t, 'active.entering.awaitingPersistence');
     });
 
     test('no-LCA idle.diverged without remoteDoc awaits provider instead of failing', async () => {
@@ -2683,6 +2729,34 @@ describe('MergeHSM', () => {
       expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
     });
 
+    test('bootstrapLCAFromDisk can recover a no-LCA doc parked in idle.loading after enrollment', async () => {
+      const content = 'same content';
+      const updates = createYjsUpdate(content);
+      const t = await createTestHSM();
+      t.seedIndexedDB(updates);
+      t.syncRemoteWithUpdate(updates);
+      t.setProviderSynced(true);
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded(updates, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      await t.awaitIdleAutoMerge();
+
+      expect(t.hsm.getLocalDoc()).not.toBeNull();
+      expect(t.state.lca).toBeNull();
+      (t.hsm as any).setStatePath('idle.loading');
+
+      await t.hsm.bootstrapLCAFromDisk({
+        content,
+        hash: 'same-hash',
+        mtime: 456,
+      });
+
+      expectState(t, 'idle.synced');
+      expect(t.state.lca?.contents).toBe(content);
+      expect(t.hsm.getSyncStatus().status).toBe('synced');
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
+    });
+
     test('bootstrapLCAFromDisk does not enter recoverLCA without local CRDT state', async () => {
       const content = 'same content';
       const updates = createYjsUpdate(content);
@@ -2695,7 +2769,7 @@ describe('MergeHSM', () => {
       t.send(await diskChanged(content, 456, 'same-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
-      expectState(t, 'idle.diverged');
+      expectState(t, 'idle.loading');
       const historyLength = t.stateHistory.length;
 
       await t.hsm.bootstrapLCAFromDisk({
@@ -2704,7 +2778,7 @@ describe('MergeHSM', () => {
         mtime: 456,
       });
 
-      expectState(t, 'idle.diverged');
+      expectState(t, 'idle.loading');
       expect(t.state.lca).toBeNull();
       expect(t.stateHistory.slice(historyLength).some((entry) => entry.to === 'idle.recoverLCA')).toBe(false);
     });
@@ -3665,6 +3739,36 @@ describe('Event ordering edge cases', () => {
 
     await t.hsm.awaitIdleAutoMerge();
     expect(t.matches('idle')).toBe(true);
+  });
+
+  test('PERSISTENCE_LOADED after early idle mode re-runs load classification', async () => {
+    const baseContent = 'baseline';
+    const baseDoc = createDocWithText('baseline');
+    const baseUpdate = Y.encodeStateAsUpdate(baseDoc);
+    const localDoc = new Y.Doc();
+    Y.applyUpdate(localDoc, baseUpdate);
+    localDoc.getText('contents').insert(baseContent.length, '\nlocal edit');
+    const localUpdate = Y.encodeStateAsUpdate(localDoc);
+    const lca = await createLCA(baseContent, 1000, Y.encodeStateVector(baseDoc));
+
+    const t = await createTestHSM();
+    t.send(load('test-guid'));
+    t.send(await diskChanged(baseContent, 1000, lca.meta.hash));
+    t.send({ type: 'SET_MODE_IDLE' });
+
+    expectState(t, 'idle.loading');
+
+    t.send(persistenceLoaded(localUpdate, lca));
+
+    expectState(t, 'idle.localAhead');
+    expect(
+      t.stateHistory.some((entry) =>
+        entry.event === 'PERSISTENCE_LOADED' && entry.from === 'idle.loading' && entry.to === 'idle.localAhead'
+      ),
+    ).toBe(true);
+
+    baseDoc.destroy();
+    localDoc.destroy();
   });
 });
 
