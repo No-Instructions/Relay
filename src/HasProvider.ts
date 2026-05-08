@@ -392,14 +392,18 @@ export class HasProvider extends HasLogging {
 
 	onceConnected(): Promise<void> {
 		this.ensureRemoteDoc();
+		if (this.state.status === "connected") {
+			return Promise.resolve();
+		}
+		const provider = this._provider!;
 		return new Promise((resolve) => {
 			const resolveOnConnect = (state: ConnectionState) => {
 				if (state.status === "connected") {
-					this._provider!.off("status", resolveOnConnect);
+					provider.off("status", resolveOnConnect);
 					resolve();
 				}
 			};
-			this._provider!.on("status", resolveOnConnect);
+			provider.on("status", resolveOnConnect);
 		});
 	}
 

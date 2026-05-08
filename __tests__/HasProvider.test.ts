@@ -37,6 +37,31 @@ describe("HasProvider", () => {
 		expect(tokenStore.removeFromRefreshQueue).toHaveBeenCalledWith("guid-1");
 	});
 
+	test("onceConnected resolves when provider is already connected", async () => {
+		const tokenStore = {
+			getTokenSync: () => ({ token: "", url: "", docId: "-", expiryTime: 0 }),
+			removeFromRefreshQueue: jest.fn(),
+		};
+		const loginManager = { user: null };
+
+		const provider = new HasProvider(
+			"guid-1",
+			{} as any,
+			tokenStore as any,
+			loginManager as any,
+		) as any;
+
+		provider._ydoc = new Y.Doc();
+		provider._provider = {
+			connectionState: { status: "connected" },
+			on: jest.fn(),
+			off: jest.fn(),
+		};
+
+		await expect(provider.onceConnected()).resolves.toBeUndefined();
+		expect(provider._provider.on).not.toHaveBeenCalled();
+	});
+
 	test("onceProviderSynced waits for a true synced event", async () => {
 		const tokenStore = {
 			getTokenSync: () => ({ token: "", url: "", docId: "-", expiryTime: 0 }),
