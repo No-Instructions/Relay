@@ -1368,6 +1368,8 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
+		this.backgroundSync.cancelDocumentWork(fromGuid);
+
 		const existingFile = this.files.get(fromGuid);
 		if (existingFile) {
 			this.files.delete(fromGuid);

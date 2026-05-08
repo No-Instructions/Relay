@@ -102,6 +102,8 @@ export class BackgroundSync extends HasLogging {
 	private isPaused = true;
 	private inProgressSyncs = new Set<string>();
 	private inProgressDownloads = new Set<string>();
+	private cancelledSyncs = new Set<string>();
+	private cancelledDownloads = new Set<string>();
 	private syncCompletionCallbacks = new Map<
 		string,
 		{
@@ -157,6 +159,112 @@ export class BackgroundSync extends HasLogging {
 	 */
 	public get pendingDownloads(): readonly QueueItem[] {
 		return this.downloadQueue;
+	}
+
+	cancelDocumentWork(guid: string): void {
+		let changed = false;
+
+		const queuedSyncs = this.syncQueue.filter((item) => item.guid === guid);
+		if (queuedSyncs.length > 0) {
+			for (const item of queuedSyncs) {
+				this.removeQueuedSyncFromGroup(item);
+			}
+			this.syncQueue = this.syncQueue.filter((item) => item.guid !== guid);
+			changed = true;
+		}
+
+		const queuedDownloads = this.downloadQueue.filter((item) => item.guid === guid);
+		if (queuedDownloads.length > 0) {
+			for (const item of queuedDownloads) {
+				this.removeQueuedDownloadFromGroup(item);
+			}
+			this.downloadQueue = this.downloadQueue.filter((item) => item.guid !== guid);
+			changed = true;
+		}
+
+		if (this.activeSync.some((item) => item.guid === guid)) {
+			this.cancelledSyncs.add(guid);
+		} else {
+			this.resolveSyncCancellation(guid);
+		}
+
+		if (this.activeDownloads.some((item) => item.guid === guid)) {
+			this.cancelledDownloads.add(guid);
+		} else {
+			this.resolveDownloadCancellation(guid);
+		}
+
+		this.clearFailure(this.failureKey("sync", guid));
+		this.clearFailure(this.failureKey("download", guid));
+
+		if (changed) {
+			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
+			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
+			this.queueStatusChanged.notifyListeners();
+		}
+	}
+
+	private removeQueuedSyncFromGroup(item: QueueItem): void {
+		const group = this.syncGroups.get(item.sharedFolder);
+		if (!group) return;
+
+		group.total = Math.max(0, group.total - 1);
+		group.syncs = Math.max(0, group.syncs - 1);
+		if (group.completed >= group.total) {
+			group.completed = group.total;
+			group.status = "completed";
+		}
+		this.syncGroups.set(item.sharedFolder, group);
+	}
+
+	private removeQueuedDownloadFromGroup(item: QueueItem): void {
+		const group = this.syncGroups.get(item.sharedFolder);
+		if (!group) return;
+
+		group.total = Math.max(0, group.total - 1);
+		group.downloads = Math.max(0, group.downloads - 1);
+		if (item.userVisible) {
+			group.userDownloads = Math.max(0, group.userDownloads - 1);
+		}
+		if (group.completed >= group.total) {
+			group.completed = group.total;
+			group.status = "completed";
+		}
+		this.syncGroups.set(item.sharedFolder, group);
+	}
+
+	private resolveSyncCancellation(guid: string): void {
+		const callback = this.syncCompletionCallbacks.get(guid);
+		if (callback) callback.resolve();
+		this.syncCompletionCallbacks.delete(guid);
+		this.syncPromises.delete(guid);
+		this.inProgressSyncs.delete(guid);
+		this.cancelledSyncs.delete(guid);
+	}
+
+	private resolveDownloadCancellation(guid: string): void {
+		const callback = this.downloadCompletionCallbacks.get(guid);
+		if (callback) callback.resolve(undefined);
+		this.downloadCompletionCallbacks.delete(guid);
+		this.downloadPromises.delete(guid);
+		this.inProgressDownloads.delete(guid);
+		this.cancelledDownloads.delete(guid);
+	}
+
+	private isSyncCancelled(item: QueueItem): boolean {
+		return item.doc.destroyed || this.cancelledSyncs.has(item.guid);
+	}
+
+	private isSyncCancelledForDoc(doc: Document | Canvas | SyncFile): boolean {
+		return doc.destroyed || this.cancelledSyncs.has(doc.guid);
+	}
+
+	private isDownloadCancelled(item: QueueItem): boolean {
+		return item.doc.destroyed || this.cancelledDownloads.has(item.guid);
+	}
+
+	private shouldSkipDocumentSync(item: Document | Canvas | SyncFile): boolean {
+		return isDocument(item) && item.hsm?.getSyncStatus().status === "conflict";
 	}
 
 	getOverallProgress(): SyncProgress {
@@ -442,6 +550,12 @@ export class BackgroundSync extends HasLogging {
 						}
 					})
 					.catch((error) => {
+						if (this.isSyncCancelled(item)) {
+							item.status = "completed";
+							this.resolveSyncCancellation(item.guid);
+							return;
+						}
+
 						item.status = "failed";
 						metrics.incBgSyncOps("sync", "failed");
 
@@ -467,6 +581,7 @@ export class BackgroundSync extends HasLogging {
 						this.activeSync.delete(item);
 						metrics.setBgSyncActive("sync", this.activeSync.size);
 						this.inProgressSyncs.delete(item.guid);
+						this.cancelledSyncs.delete(item.guid);
 
 						// Unwind the call stack before checking for more work
 						this.timeProvider.setTimeout(() => {
@@ -474,6 +589,17 @@ export class BackgroundSync extends HasLogging {
 						}, 0);
 					});
 			} catch (error) {
+				if (this.isSyncCancelled(item)) {
+					item.status = "completed";
+					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
+					this.resolveSyncCancellation(item.guid);
+					this.activeSync.delete(item);
+					metrics.setBgSyncActive("sync", this.activeSync.size);
+					this.inProgressSyncs.delete(item.guid);
+					this.cancelledSyncs.delete(item.guid);
+					continue;
+				}
+
 				item.status = "failed";
 				metrics.incBgSyncOps("sync", "failed");
 				metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
@@ -587,6 +713,12 @@ export class BackgroundSync extends HasLogging {
 						}
 					})
 					.catch((error) => {
+						if (this.isDownloadCancelled(item)) {
+							item.status = "completed";
+							this.resolveDownloadCancellation(item.guid);
+							return;
+						}
+
 						item.status = "failed";
 						metrics.incBgSyncOps("download", "failed");
 
@@ -615,6 +747,7 @@ export class BackgroundSync extends HasLogging {
 						this.activeDownloads.delete(item);
 						metrics.setBgSyncActive("download", this.activeDownloads.size);
 						this.inProgressDownloads.delete(item.guid);
+						this.cancelledDownloads.delete(item.guid);
 
 						// Unwind the call stack before checking for more work
 						this.timeProvider.setTimeout(() => {
@@ -622,6 +755,17 @@ export class BackgroundSync extends HasLogging {
 						}, 0);
 					});
 			} catch (error) {
+				if (this.isDownloadCancelled(item)) {
+					item.status = "completed";
+					metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
+					this.resolveDownloadCancellation(item.guid);
+					this.activeDownloads.delete(item);
+					metrics.setBgSyncActive("download", this.activeDownloads.size);
+					this.inProgressDownloads.delete(item.guid);
+					this.cancelledDownloads.delete(item.guid);
+					continue;
+				}
+
 				item.status = "failed";
 				metrics.incBgSyncOps("download", "failed");
 				metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
@@ -665,6 +809,11 @@ export class BackgroundSync extends HasLogging {
 	 * @returns A promise that resolves when the sync completes
 	 */
 	async enqueueSync(item: SyncFile | Document | Canvas): Promise<void> {
+		if (this.shouldSkipDocumentSync(item)) {
+			this.clearFailure(this.failureKey("sync", item.guid));
+			return Promise.resolve();
+		}
+
 		// Skip if already in progress — return the same promise all callers share
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
@@ -884,6 +1033,7 @@ export class BackgroundSync extends HasLogging {
 
 		const hsm = item.hsm;
 		if (!hsm) return true;
+		if (hsm.getSyncStatus().status === "conflict") return false;
 		if (!hsm.state.lca) return true;
 		if (hsm.getSyncStatus().status !== "synced") return true;
 
@@ -916,6 +1066,11 @@ export class BackgroundSync extends HasLogging {
 	private async enqueueForGroupSync(
 		item: Document | Canvas | SyncFile,
 	): Promise<void> {
+		if (this.shouldSkipDocumentSync(item)) {
+			this.clearFailure(this.failureKey("sync", item.guid));
+			return Promise.resolve();
+		}
+
 		// Skip if already in progress — return the same promise all callers share
 		if (this.inProgressSyncs.has(item.guid)) {
 			this.debug(
@@ -1089,6 +1244,7 @@ export class BackgroundSync extends HasLogging {
 	async syncDocumentWebsocket(doc: Document | Canvas): Promise<boolean> {
 		if (doc.destroyed) return false;
 		this.log(`[syncDocWS] start: ${doc.path} guid=${doc.guid} intent=${doc.intent} connected=${doc.connected}`);
+		if (this.isSyncCancelledForDoc(doc)) return false;
 		// if the local file is synced, then we do the two step process
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
@@ -1153,7 +1309,14 @@ export class BackgroundSync extends HasLogging {
 			if (shouldCleanupIdleSession()) {
 				cleanupIdleSession();
 			}
+			if (this.isSyncCancelledForDoc(doc)) return false;
 			this.warn(`[syncDocWS] failed to connect provider: ${doc.path} guid=${doc.guid}`);
+			return false;
+		}
+		if (this.isSyncCancelledForDoc(doc)) {
+			if (shouldCleanupIdleSession()) {
+				cleanupIdleSession();
+			}
 			return false;
 		}
 		// Always wait for provider sync — _providerSynced fast-path resolves
@@ -1161,6 +1324,7 @@ export class BackgroundSync extends HasLogging {
 		// Timeout prevents hanging the sync queue if the connection drops.
 		const SYNC_TIMEOUT_MS = 10_000;
 		let timerId: number | undefined;
+		let cancelTimerId: number | undefined;
 		const synced = await Promise.race([
 			doc.onceProviderSynced().then(() => true),
 			new Promise<false>((resolve) => {
@@ -1169,12 +1333,19 @@ export class BackgroundSync extends HasLogging {
 					SYNC_TIMEOUT_MS,
 				);
 			}),
+			new Promise<false>((resolve) => {
+				cancelTimerId = this.timeProvider.setInterval(() => {
+					if (this.isSyncCancelledForDoc(doc)) resolve(false);
+				}, 100);
+			}),
 		]);
 		if (timerId !== undefined) this.timeProvider.clearTimeout(timerId);
+		if (cancelTimerId !== undefined) this.timeProvider.clearInterval(cancelTimerId);
 		if (!synced) {
 			if (shouldCleanupIdleSession()) {
 				cleanupIdleSession();
 			}
+			if (this.isSyncCancelledForDoc(doc)) return false;
 			this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
 			return false;
 		}
@@ -1313,12 +1484,16 @@ export class BackgroundSync extends HasLogging {
 
 	private async syncDocument(doc: Document | Canvas): Promise<void> {
 		if (doc.destroyed) {
-			throw new Error(`[syncDocument] Document destroyed before sync: ${doc.guid}`);
+			return;
+		}
+		if (this.shouldSkipDocumentSync(doc)) {
+			return;
 		}
 		try {
 			if (isDocument(doc) || isCanvas(doc)) {
 				const synced = await this.syncDocumentWebsocket(doc);
 				if (!synced) {
+					if (this.isSyncCancelledForDoc(doc)) return;
 					throw new Error(
 						`[syncDocument] Document sync failed: ${doc.path} (${doc.guid})`,
 					);
