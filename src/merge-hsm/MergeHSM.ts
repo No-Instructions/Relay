@@ -301,6 +301,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	private crdtLog = curryLog("[MergeHSM:CRDT]", "debug");
 	private idleMergeLog = curryLog("[MergeHSM:IdleMerge]", "log");
+	private hsmDebug = curryLog("[MergeHSM]", "debug");
 	private hsmWarn = curryLog("[MergeHSM]", "warn");
 	private hsmError = curryLog("[MergeHSM]", "error");
 
@@ -1203,7 +1204,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				registeredAt: this.timeProvider.now(),
 			});
 
-			this.hsmWarn(
+			this.hsmDebug(
 				`registerMachineEdit | guid=${this._guid} | ` +
 				`expectedLen=${expectedText.length} | captureMark=${captureMark} | ` +
 				`pendingCount=${this._pendingMachineEdits.length}`
@@ -1265,7 +1266,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this._fork.localStateVector = Y.encodeStateVector(this.localDoc);
 		this._fork.localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
 
-		this.hsmWarn(
+		this.hsmDebug(
 			`registerMachineEdit (idle fork) | guid=${this._guid} | ` +
 			`state=${this._statePath} | captureMark=${this._fork.captureMark}`
 		);
@@ -3319,7 +3320,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 		const remoteContent = remoteDoc.getText("contents").toString();
 
-		this.hsmWarn('reconcileForkInIdle', JSON.stringify({
+		this.hsmDebug('reconcileForkInIdle', JSON.stringify({
 			guid: this._guid, captureMark: fork.captureMark, origin: fork.origin,
 			baseLen: fork.base.length, localLen: localContent.length, remoteLen: remoteContent.length,
 			...(flags().enableDeltaLogging ? { base: fork.base, local: localContent, remote: remoteContent } : {}),
@@ -3333,7 +3334,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			const diskOps = (opCapture && fork.captureMark != null)
 				? opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN)
 				: [];
-			this.hsmWarn('fork-reconcile cancel', JSON.stringify({
+			this.hsmDebug('fork-reconcile cancel', JSON.stringify({
 				guid: this._guid, hasOpCapture: !!opCapture, captureMark: fork.captureMark,
 				diskOpsCount: diskOps.length, mergedLen: mergeResult.merged.length,
 				...(flags().enableDeltaLogging ? { merged: mergeResult.merged } : {}),
