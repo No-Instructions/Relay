@@ -301,6 +301,7 @@ jobs:
 
           # Clean stale test reports from previous runs
           rm -rf /tmp/test-reports
+          rm -f ~/test-summary.json ~/test-metadata.json
 
           # Activate GCP service account for gcloud/GCS uploads
           gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
@@ -393,6 +394,7 @@ jobs:
       - name: Fetch results
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
+          rm -f summary.json metadata.json
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
@@ -650,6 +652,7 @@ jobs:
 
           node scripts/publish-report-site-static.mjs \
             --commit="$COMMIT_SET" \
+            --refresh-commit="$TARGET_COMMIT" \
             --materialize-missing-commits \
             --rebuild-manifest-from-commits \
             --upload \
