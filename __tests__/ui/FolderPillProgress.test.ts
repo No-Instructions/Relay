@@ -108,6 +108,16 @@ describe("BackgroundSync folder pill progress", () => {
 				failedUserDownloads: 1,
 			}),
 		).toBe(false);
+
+		expect(
+			shouldUseUserVisibleFolderProgress({
+				hasQueuedOrActiveWork: true,
+				userDownloads: 2,
+				completedUserDownloads: 1,
+				failedUserDownloads: 0,
+				skippedUserDownloads: 1,
+			}),
+		).toBe(false);
 	});
 
 	test("builds a single syncing snapshot with filename activity", () => {
@@ -158,12 +168,51 @@ describe("BackgroundSync folder pill progress", () => {
 
 		expect(snapshot).toEqual(
 			expect.objectContaining({
-				percent: 0,
-				progressStatus: "running",
+				percent: 100,
+				showProgress: false,
+				progressStatus: "completed",
 				visibleState: "queued",
 				label: "Queued",
 				latestActivity: "Waiting for connection",
 				syncAction: null,
+			}),
+		);
+	});
+
+	test("counts failed and skipped items as terminal progress outcomes", () => {
+		const snapshot = buildFolderSyncSnapshot({
+			group: {
+				total: 4,
+				completed: 1,
+				status: "failed",
+				downloads: 2,
+				syncs: 2,
+				completedDownloads: 0,
+				completedSyncs: 1,
+				failedDownloads: 0,
+				failedSyncs: 1,
+				skippedDownloads: 1,
+				skippedSyncs: 0,
+				userDownloads: 0,
+				completedUserDownloads: 0,
+				failedUserDownloads: 0,
+			},
+			queued: 0,
+			active: 1,
+			isPaused: false,
+			failureCount: 1,
+			activeItem: { kind: "download", path: "Vault/Folder/other.md" },
+			queuedReason: null,
+		});
+
+		expect(snapshot).toEqual(
+			expect.objectContaining({
+				percent: 75,
+				syncPercent: 100,
+				downloadPercent: 50,
+				progressStatus: "failed",
+				visibleState: "sync-issue",
+				label: "Sync issue",
 			}),
 		);
 	});

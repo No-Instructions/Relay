@@ -5,6 +5,7 @@ export interface FolderPillProgressDecisionInput {
 	userDownloads: number;
 	completedUserDownloads: number;
 	failedUserDownloads: number;
+	skippedUserDownloads?: number;
 }
 
 export type FolderSyncVisibleState =
@@ -30,9 +31,14 @@ export interface FolderSyncGroupInput {
 	syncs: number;
 	completedDownloads: number;
 	completedSyncs: number;
+	failedDownloads?: number;
+	failedSyncs?: number;
+	skippedDownloads?: number;
+	skippedSyncs?: number;
 	userDownloads: number;
 	completedUserDownloads: number;
 	failedUserDownloads: number;
+	skippedUserDownloads?: number;
 }
 
 export interface FolderSyncWorkItemInput {
@@ -82,7 +88,9 @@ export function shouldUseUserVisibleFolderProgress(
 	input: FolderPillProgressDecisionInput,
 ): boolean {
 	const visibleDownloadsFinished =
-		input.completedUserDownloads + input.failedUserDownloads;
+		input.completedUserDownloads +
+		input.failedUserDownloads +
+		(input.skippedUserDownloads ?? 0);
 	return (
 		input.userDownloads > 0 &&
 		visibleDownloadsFinished < input.userDownloads
@@ -92,10 +100,11 @@ export function shouldUseUserVisibleFolderProgress(
 export function buildFolderSyncSnapshot(
 	input: FolderSyncSnapshotInput,
 ): FolderSyncSnapshot {
-	const hasQueuedOrActiveWork = input.queued + input.active > 0;
 	const progress = computeFolderProgress({
 		group: input.group,
-		hasQueuedOrActiveWork,
+		queued: input.queued,
+		active: input.active,
+		isPaused: input.isPaused,
 		failureCount: input.failureCount,
 	});
 	const visibleState = deriveVisibleState({
@@ -281,33 +290,50 @@ function shouldShowProgress(
 
 function computeFolderProgress(input: {
 	group?: FolderSyncGroupInput | null;
-	hasQueuedOrActiveWork: boolean;
+	queued: number;
+	active: number;
+	isPaused: boolean;
 	failureCount: number;
 }): Pick<
 	FolderSyncSnapshot,
 	"percent" | "syncPercent" | "downloadPercent" | "progressStatus" | "total"
 > {
+	const hasQueuedOrActiveWork = input.queued + input.active > 0;
+	const queuedWithoutActiveWork =
+		!input.isPaused && input.active === 0 && input.queued > 0;
 	const group = input.group;
 	if (!group) {
 		return {
-			percent: input.hasQueuedOrActiveWork ? 0 : 100,
-			syncPercent: input.hasQueuedOrActiveWork ? 0 : 100,
-			downloadPercent: input.hasQueuedOrActiveWork ? 0 : 100,
+			percent: hasQueuedOrActiveWork && !queuedWithoutActiveWork ? 0 : 100,
+			syncPercent: hasQueuedOrActiveWork && !queuedWithoutActiveWork ? 0 : 100,
+			downloadPercent:
+				hasQueuedOrActiveWork && !queuedWithoutActiveWork ? 0 : 100,
 			progressStatus:
 				input.failureCount > 0
 					? "failed"
-					: input.hasQueuedOrActiveWork
+					: hasQueuedOrActiveWork && !queuedWithoutActiveWork
 						? "running"
 						: "completed",
 			total: 0,
 		};
 	}
 
+	if (queuedWithoutActiveWork) {
+		return {
+			percent: 100,
+			syncPercent: 100,
+			downloadPercent: 100,
+			progressStatus: input.failureCount > 0 ? "failed" : "completed",
+			total: group.total,
+		};
+	}
+
 	const progressInput: FolderPillProgressDecisionInput = {
-		hasQueuedOrActiveWork: input.hasQueuedOrActiveWork,
+		hasQueuedOrActiveWork,
 		userDownloads: group.userDownloads,
 		completedUserDownloads: group.completedUserDownloads,
 		failedUserDownloads: group.failedUserDownloads,
+		skippedUserDownloads: group.skippedUserDownloads,
 	};
 
 	if (shouldShowCompletedFolderPillProgress(progressInput)) {
@@ -322,7 +348,10 @@ function computeFolderProgress(input: {
 
 	if (shouldUseUserVisibleFolderProgress(progressInput)) {
 		const total = group.userDownloads;
-		const finished = group.completedUserDownloads + group.failedUserDownloads;
+		const finished =
+			group.completedUserDownloads +
+			group.failedUserDownloads +
+			(group.skippedUserDownloads ?? 0);
 		const percent = total > 0 ? (finished / total) * 100 : 0;
 		const progressStatus =
 			finished === total
@@ -341,19 +370,52 @@ function computeFolderProgress(input: {
 		};
 	}
 
-	const percent = group.total > 0 ? (group.completed / group.total) * 100 : 0;
+	const terminal = terminalCounts(group);
+	const percent = group.total > 0 ? (terminal.total / group.total) * 100 : 0;
 	const syncPercent =
-		group.syncs > 0 ? (group.completedSyncs / group.syncs) * 100 : 0;
+		group.syncs > 0 ? (terminal.syncs / group.syncs) * 100 : 0;
 	const downloadPercent =
 		group.downloads > 0
-			? (group.completedDownloads / group.downloads) * 100
+			? (terminal.downloads / group.downloads) * 100
 			: 0;
+	const progressStatus =
+		terminal.total >= group.total
+			? terminal.failed > 0
+				? "failed"
+				: "completed"
+			: group.status;
 	return {
 		percent: Math.round(percent),
 		syncPercent: Math.round(syncPercent),
 		downloadPercent: Math.round(downloadPercent),
-		progressStatus: group.status,
+		progressStatus,
 		total: group.total,
+	};
+}
+
+function terminalCounts(group: FolderSyncGroupInput): {
+	total: number;
+	syncs: number;
+	downloads: number;
+	failed: number;
+} {
+	const failedSyncs = group.failedSyncs ?? 0;
+	const failedDownloads = group.failedDownloads ?? 0;
+	const skippedSyncs = group.skippedSyncs ?? 0;
+	const skippedDownloads = group.skippedDownloads ?? 0;
+	const syncs = Math.min(
+		group.syncs,
+		group.completedSyncs + failedSyncs + skippedSyncs,
+	);
+	const downloads = Math.min(
+		group.downloads,
+		group.completedDownloads + failedDownloads + skippedDownloads,
+	);
+	return {
+		total: Math.min(group.total, syncs + downloads),
+		syncs,
+		downloads,
+		failed: failedSyncs + failedDownloads,
 	};
 }
 

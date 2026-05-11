@@ -50,15 +50,20 @@ export interface BackgroundSyncFailure {
 export interface SyncGroup {
 	sharedFolder: SharedFolder;
 	total: number; // Total operations (syncs + downloads)
-	completed: number; // Total completed operations
+	completed: number; // Successful operations
 	status: "pending" | "running" | "completed" | "failed";
 	downloads: number;
 	syncs: number;
 	completedDownloads: number;
 	completedSyncs: number;
+	failedDownloads: number;
+	failedSyncs: number;
+	skippedDownloads: number;
+	skippedSyncs: number;
 	userDownloads: number;
 	completedUserDownloads: number;
 	failedUserDownloads: number;
+	skippedUserDownloads: number;
 }
 
 export interface SyncProgress {
@@ -226,10 +231,7 @@ export class BackgroundSync extends HasLogging {
 
 		group.total = Math.max(0, group.total - 1);
 		group.syncs = Math.max(0, group.syncs - 1);
-		if (group.completed >= group.total) {
-			group.completed = group.total;
-			group.status = "completed";
-		}
+		this.updateGroupTerminalStatus(group);
 		this.syncGroups.set(item.sharedFolder, group);
 	}
 
@@ -242,10 +244,7 @@ export class BackgroundSync extends HasLogging {
 		if (item.userVisible) {
 			group.userDownloads = Math.max(0, group.userDownloads - 1);
 		}
-		if (group.completed >= group.total) {
-			group.completed = group.total;
-			group.status = "completed";
-		}
+		this.updateGroupTerminalStatus(group);
 		this.syncGroups.set(item.sharedFolder, group);
 	}
 
@@ -293,11 +292,11 @@ export class BackgroundSync extends HasLogging {
 
 		this.syncGroups.forEach((group) => {
 			totalItems += group.total;
-			completedItems += group.completed;
+			completedItems += this.groupFinishedTotal(group);
 			syncItems += group.syncs;
-			completedSyncs += group.completedSyncs;
+			completedSyncs += this.groupFinishedSyncs(group);
 			downloadItems += group.downloads;
-			completedDownloads += group.completedDownloads;
+			completedDownloads += this.groupFinishedDownloads(group);
 		});
 
 		const totalPercent =
@@ -323,12 +322,15 @@ export class BackgroundSync extends HasLogging {
 		const group = this.syncGroups.get(sharedFolder);
 		if (!group) return null;
 
-		const percent = group.total > 0 ? (group.completed / group.total) * 100 : 0;
+		const percent =
+			group.total > 0 ? (this.groupFinishedTotal(group) / group.total) * 100 : 0;
 		const syncPercent =
-			group.syncs > 0 ? (group.completedSyncs / group.syncs) * 100 : 0;
+			group.syncs > 0
+				? (this.groupFinishedSyncs(group) / group.syncs) * 100
+				: 0;
 		const downloadPercent =
 			group.downloads > 0
-				? (group.completedDownloads / group.downloads) * 100
+				? (this.groupFinishedDownloads(group) / group.downloads) * 100
 				: 0;
 
 		return {
@@ -349,7 +351,10 @@ export class BackgroundSync extends HasLogging {
 		if (!group) return null;
 
 		const total = group.userDownloads;
-		const finished = group.completedUserDownloads + group.failedUserDownloads;
+		const finished =
+			group.completedUserDownloads +
+			group.failedUserDownloads +
+			group.skippedUserDownloads;
 		const percent = total > 0 ? (finished / total) * 100 : 0;
 		const status =
 			total === 0
@@ -369,6 +374,88 @@ export class BackgroundSync extends HasLogging {
 			sharedFolder,
 			status,
 		};
+	}
+
+	private groupFinishedSyncs(group: SyncGroup): number {
+		return Math.min(
+			group.syncs,
+			group.completedSyncs + group.failedSyncs + group.skippedSyncs,
+		);
+	}
+
+	private groupFinishedDownloads(group: SyncGroup): number {
+		return Math.min(
+			group.downloads,
+			group.completedDownloads + group.failedDownloads + group.skippedDownloads,
+		);
+	}
+
+	private groupFinishedTotal(group: SyncGroup): number {
+		return Math.min(
+			group.total,
+			this.groupFinishedSyncs(group) + this.groupFinishedDownloads(group),
+		);
+	}
+
+	private groupFailureCount(group: SyncGroup): number {
+		return group.failedSyncs + group.failedDownloads;
+	}
+
+	private updateGroupTerminalStatus(group: SyncGroup): void {
+		if (this.groupFinishedTotal(group) >= group.total) {
+			group.status = this.groupFailureCount(group) > 0 ? "failed" : "completed";
+		} else if (this.groupFailureCount(group) > 0) {
+			group.status = "failed";
+		} else if (group.total > 0) {
+			group.status = "running";
+		} else {
+			group.status = "completed";
+		}
+	}
+
+	private markSyncTerminal(
+		sharedFolder: SharedFolder,
+		outcome: "completed" | "failed" | "skipped",
+	): void {
+		const group = this.syncGroups.get(sharedFolder);
+		if (!group) return;
+		if (outcome === "completed") {
+			group.completedSyncs++;
+			group.completed++;
+		} else if (outcome === "failed") {
+			group.failedSyncs++;
+		} else {
+			group.skippedSyncs++;
+		}
+		this.updateGroupTerminalStatus(group);
+		this.syncGroups.set(sharedFolder, group);
+	}
+
+	private markDownloadTerminal(
+		item: QueueItem,
+		outcome: "completed" | "failed" | "skipped",
+	): void {
+		const group = this.syncGroups.get(item.sharedFolder);
+		if (!group) return;
+		if (outcome === "completed") {
+			group.completedDownloads++;
+			group.completed++;
+			if (item.userVisible) {
+				group.completedUserDownloads++;
+			}
+		} else if (outcome === "failed") {
+			group.failedDownloads++;
+			if (item.userVisible) {
+				group.failedUserDownloads++;
+			}
+		} else {
+			group.skippedDownloads++;
+			if (item.userVisible) {
+				group.skippedUserDownloads++;
+			}
+		}
+		this.updateGroupTerminalStatus(group);
+		this.syncGroups.set(item.sharedFolder, group);
 	}
 
 	getFolderPillProgress(sharedFolder: SharedFolder): GroupProgress | null {
@@ -547,6 +634,7 @@ export class BackgroundSync extends HasLogging {
 		// Evict destroyed documents from the queue and clean up their inProgress entries
 		const destroyed = this.syncQueue.filter((item) => item.doc.destroyed);
 		for (const item of destroyed) {
+			this.markSyncTerminal(item.sharedFolder, "skipped");
 			this.inProgressSyncs.delete(item.guid);
 			const callback = this.syncCompletionCallbacks.get(item.guid);
 			if (callback) callback.reject(new Error("Document destroyed"));
@@ -599,32 +687,12 @@ export class BackgroundSync extends HasLogging {
 							this.syncPromises.delete(item.guid);
 						}
 
-						const group = this.syncGroups.get(item.sharedFolder);
-						if (group) {
-							this.debug(
-								`[Sync Progress] Before: completed=${group.completed}, total=${group.total}, ` +
-									`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
-							);
-
-							group.completedSyncs++;
-							group.completed++;
-
-							this.debug(
-								`[Sync Progress] After: completed=${group.completed}, total=${group.total}, ` +
-									`syncs=${group.syncs}, completedSyncs=${group.completedSyncs}`,
-							);
-
-							if (group.completed === group.total) {
-								group.status = "completed";
-								this.debug("[Sync Progress] Group completed!");
-							}
-
-							this.syncGroups.set(item.sharedFolder, group);
-						}
+						this.markSyncTerminal(item.sharedFolder, "completed");
 					})
 					.catch((error) => {
 						if (this.isSyncCancelled(item)) {
 							item.status = "completed";
+							this.markSyncTerminal(item.sharedFolder, "skipped");
 							this.resolveSyncCancellation(item.guid);
 							return;
 						}
@@ -641,11 +709,7 @@ export class BackgroundSync extends HasLogging {
 
 						this.logError("[Sync Failed]", error);
 						this.recordFailure("sync", item, error);
-						const group = this.syncGroups.get(item.sharedFolder);
-						if (group) {
-							group.status = "failed";
-							this.syncGroups.set(item.sharedFolder, group);
-						}
+						this.markSyncTerminal(item.sharedFolder, "failed");
 					})
 					.finally(() => {
 						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
@@ -663,6 +727,7 @@ export class BackgroundSync extends HasLogging {
 				if (this.isSyncCancelled(item)) {
 					item.status = "completed";
 					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
+					this.markSyncTerminal(item.sharedFolder, "skipped");
 					this.resolveSyncCancellation(item.guid);
 					this.activeSync.delete(item);
 					metrics.setBgSyncActive("sync", this.activeSync.size);
@@ -684,11 +749,7 @@ export class BackgroundSync extends HasLogging {
 
 				this.logError("[Sync Startup Failed]", error);
 				this.recordFailure("sync", item, error);
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					group.status = "failed";
-					this.syncGroups.set(item.sharedFolder, group);
-				}
+				this.markSyncTerminal(item.sharedFolder, "failed");
 
 				this.activeSync.delete(item);
 				metrics.setBgSyncActive("sync", this.activeSync.size);
@@ -706,11 +767,7 @@ export class BackgroundSync extends HasLogging {
 		// Evict destroyed documents from the queue and clean up their inProgress entries
 		const destroyedDownloads = this.downloadQueue.filter((item) => item.doc.destroyed);
 		for (const item of destroyedDownloads) {
-			const group = this.syncGroups.get(item.sharedFolder);
-			if (group && item.userVisible) {
-				group.failedUserDownloads++;
-				this.syncGroups.set(item.sharedFolder, group);
-			}
+			this.markDownloadTerminal(item, "skipped");
 			this.inProgressDownloads.delete(item.guid);
 			const callback = this.downloadCompletionCallbacks.get(item.guid);
 			if (callback) callback.reject(new Error("Document destroyed"));
@@ -768,22 +825,12 @@ export class BackgroundSync extends HasLogging {
 							this.downloadPromises.delete(item.guid);
 						}
 
-						const group = this.syncGroups.get(item.sharedFolder);
-						if (group) {
-							group.completedDownloads++;
-							group.completed++;
-							if (item.userVisible) {
-								group.completedUserDownloads++;
-							}
-							if (group.completed === group.total) {
-								group.status = "completed";
-							}
-							this.syncGroups.set(item.sharedFolder, group);
-						}
+						this.markDownloadTerminal(item, "completed");
 					})
 					.catch((error) => {
 						if (this.isDownloadCancelled(item)) {
 							item.status = "completed";
+							this.markDownloadTerminal(item, "skipped");
 							this.resolveDownloadCancellation(item.guid);
 							return;
 						}
@@ -798,16 +845,9 @@ export class BackgroundSync extends HasLogging {
 							this.downloadPromises.delete(item.guid);
 						}
 
-						const group = this.syncGroups.get(item.sharedFolder);
-						if (group) {
-							if (item.userVisible) {
-								group.failedUserDownloads++;
-							}
-							group.status = "failed";
-							this.syncGroups.set(item.sharedFolder, group);
-						}
 						this.recordFailure("download", item, error);
 						this.logError("[processDownloadQueue]", error);
+						this.markDownloadTerminal(item, "failed");
 					})
 					.finally(() => {
 						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
@@ -825,6 +865,7 @@ export class BackgroundSync extends HasLogging {
 				if (this.isDownloadCancelled(item)) {
 					item.status = "completed";
 					metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
+					this.markDownloadTerminal(item, "skipped");
 					this.resolveDownloadCancellation(item.guid);
 					this.activeDownloads.delete(item);
 					metrics.setBgSyncActive("download", this.activeDownloads.size);
@@ -845,15 +886,8 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				this.logError("[Download Startup Failed]", error);
-				const group = this.syncGroups.get(item.sharedFolder);
-				if (group) {
-					if (item.userVisible) {
-						group.failedUserDownloads++;
-					}
-					group.status = "failed";
-					this.syncGroups.set(item.sharedFolder, group);
-				}
 				this.recordFailure("download", item, error);
+				this.markDownloadTerminal(item, "failed");
 
 				this.activeDownloads.delete(item);
 				metrics.setBgSyncActive("download", this.activeDownloads.size);
@@ -910,9 +944,14 @@ export class BackgroundSync extends HasLogging {
 				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
+				failedDownloads: 0,
+				failedSyncs: 0,
+				skippedDownloads: 0,
+				skippedSyncs: 0,
 				userDownloads: 0,
 				completedUserDownloads: 0,
 				failedUserDownloads: 0,
+				skippedUserDownloads: 0,
 			};
 		}
 		group.total++;
@@ -973,9 +1012,14 @@ export class BackgroundSync extends HasLogging {
 				syncs: 0,
 				completedDownloads: 0,
 				completedSyncs: 0,
+				failedDownloads: 0,
+				failedSyncs: 0,
+				skippedDownloads: 0,
+				skippedSyncs: 0,
 				userDownloads: 0,
 				completedUserDownloads: 0,
 				failedUserDownloads: 0,
+				skippedUserDownloads: 0,
 			};
 		}
 
@@ -985,6 +1029,7 @@ export class BackgroundSync extends HasLogging {
 		if (userVisible) {
 			group.userDownloads++;
 		}
+		group.status = "running";
 		this.syncGroups.set(sharedFolder, group);
 
 		// Create the queue item
@@ -1046,9 +1091,14 @@ export class BackgroundSync extends HasLogging {
 			syncs: allItems.length,
 			completedDownloads: 0,
 			completedSyncs: 0,
+			failedDownloads: 0,
+			failedSyncs: 0,
+			skippedDownloads: 0,
+			skippedSyncs: 0,
 			userDownloads: 0,
 			completedUserDownloads: 0,
 			failedUserDownloads: 0,
+			skippedUserDownloads: 0,
 		};
 
 		// Register the group before enqueueing items
@@ -1062,8 +1112,7 @@ export class BackgroundSync extends HasLogging {
 			this.enqueueForGroupSync(doc);
 		}
 
-		// Update group status to running
-		group.status = "running";
+		this.updateGroupTerminalStatus(group);
 		this.syncGroups.set(sharedFolder, group);
 	}
 
