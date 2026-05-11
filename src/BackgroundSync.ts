@@ -1611,9 +1611,7 @@ export class BackgroundSync extends HasLogging {
 				const synced = await this.syncDocumentWebsocket(doc);
 				if (!synced) {
 					if (this.isSyncCancelledForDoc(doc)) return;
-					throw new Error(
-						`[syncDocument] Document sync failed: ${doc.path} (${doc.guid})`,
-					);
+					throw new Error(`Unable to sync ${this.fileName(doc.path)}`);
 				}
 			}
 		} catch (e) {
@@ -1888,5 +1886,11 @@ export class BackgroundSync extends HasLogging {
 
 	private logError(context: string, error: unknown): void {
 		this.error(`${context}: ${this.errorMessage(error)}`, error);
+	}
+
+	private fileName(path: string): string {
+		const normalized = path.replace(/\\/g, "/");
+		const parts = normalized.split("/").filter(Boolean);
+		return parts[parts.length - 1] || "file";
 	}
 }

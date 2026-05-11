@@ -1,4 +1,7 @@
-import { formatUserFacingError } from "../../src/UserFacingError";
+import {
+	errorFromUnknown,
+	formatUserFacingError,
+} from "../../src/UserFacingError";
 
 describe("formatUserFacingError", () => {
 	test("uses error messages directly", () => {
@@ -59,5 +62,14 @@ describe("formatUserFacingError", () => {
 	test("falls back instead of showing object string output", () => {
 		expect(formatUserFacingError({})).toBe("Sync failed");
 		expect(formatUserFacingError("[object Object]")).toBe("Sync failed");
+	});
+
+	test("removes internal sync prefixes and guids from document sync failures", () => {
+		const error = new Error(
+			"[syncDocument] Document sync failed: /Folder/note.md (document-guid)",
+		);
+
+		expect(formatUserFacingError(error)).toBe("Unable to sync note.md");
+		expect(errorFromUnknown(error).message).toBe("Unable to sync note.md");
 	});
 });

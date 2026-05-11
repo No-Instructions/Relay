@@ -13,8 +13,9 @@ export function errorFromUnknown(
 	error: unknown,
 	fallback = "Sync failed",
 ): Error {
-	if (error instanceof Error && normalizeMessage(error.message)) return error;
-	return new Error(formatUserFacingError(error, fallback));
+	const message = formatUserFacingError(error, fallback);
+	if (error instanceof Error && message === error.message) return error;
+	return new Error(message);
 }
 
 function extractErrorMessage(
@@ -118,9 +119,10 @@ function normalizeMessage(message: unknown): string | null {
 	if (!normalized || normalized === OBJECT_STRING || normalized === "Object") {
 		return null;
 	}
-	return normalized.length > MAX_ERROR_MESSAGE_LENGTH
-		? `${normalized.slice(0, MAX_ERROR_MESSAGE_LENGTH - 3)}...`
-		: normalized;
+	const humanReadable = humanizeInternalSyncMessage(normalized);
+	return humanReadable.length > MAX_ERROR_MESSAGE_LENGTH
+		? `${humanReadable.slice(0, MAX_ERROR_MESSAGE_LENGTH - 3)}...`
+		: humanReadable;
 }
 
 function primitiveToString(value: unknown): string | null {
@@ -133,4 +135,21 @@ function primitiveToString(value: unknown): string | null {
 		return normalizeMessage(String(value));
 	}
 	return null;
+}
+
+function humanizeInternalSyncMessage(message: string): string {
+	const withoutPrefix = message.replace(/^(?:\[[^\]]+\]\s*)+/, "");
+	const documentSyncFailure = withoutPrefix.match(
+		/^Document sync failed:\s+(.+?)(?:\s+\([^)]+\))?$/,
+	);
+	if (documentSyncFailure) {
+		return `Unable to sync ${filenameFromPath(documentSyncFailure[1])}`;
+	}
+	return withoutPrefix;
+}
+
+function filenameFromPath(path: string): string {
+	const normalized = path.replace(/\\/g, "/").trim();
+	const parts = normalized.split("/").filter(Boolean);
+	return parts[parts.length - 1] || "file";
 }
