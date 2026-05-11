@@ -441,40 +441,44 @@ export class SharedFolder extends HasProvider {
 		// Wire folder-level event subscriptions for idle mode remote updates
 		this.setupEventSubscriptions();
 
-		trackPromise(`folder:whenReady:${this.guid}`, this.whenReady()).then(async () => {
-			if (!this.destroyed) {
-				// Bulk-load LCA cache before registering HSMs
-				await this.mergeManager.initialize();
-				this.syncFileTree();
-			}
-		});
+		trackPromise(`folder:whenReady:${this.guid}`, this.whenReady())
+			.then(async () => {
+				if (!this.destroyed) {
+					// Bulk-load LCA cache before registering HSMs
+					await this.mergeManager.initialize();
+					this.syncFileTree();
+				}
+			})
+			.catch((e) => this.error("folder ready failed", e));
 
-		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced()).then(async () => {
-			this.syncStore.start();
-			// Wait until syncStore is observing the committed file metadata before
-			// creating docs from local disk. On reload, addLocalDocs() can otherwise
-			// reserve placeholder GUIDs for already-shared files and build HSMs that
-			// miss their persisted fork/LCA state.
-			//
-			// Remote folder metadata can also land before SyncStore observers are
-			// installed, so replay both local doc discovery and file-tree sync after
-			// start() to avoid missing the first batch of remote entries.
-			if (!this.destroyed) {
-				this.enabledSyncTypes = new Set(
-					this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
-				);
-				this.addLocalDocs();
-				await this.syncFileTree();
-			}
-			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.relayId || "");
-				this._persistence.set("appId", this.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			} catch (e) {
-				// pass
-			}
-		});
+		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced())
+			.then(async () => {
+				this.syncStore.start();
+				// Wait until syncStore is observing the committed file metadata before
+				// creating docs from local disk. On reload, addLocalDocs() can otherwise
+				// reserve placeholder GUIDs for already-shared files and build HSMs that
+				// miss their persisted fork/LCA state.
+				//
+				// Remote folder metadata can also land before SyncStore observers are
+				// installed, so replay both local doc discovery and file-tree sync after
+				// start() to avoid missing the first batch of remote entries.
+				if (!this.destroyed) {
+					this.enabledSyncTypes = new Set(
+						this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+					);
+					this.addLocalDocs();
+					await this.syncFileTree();
+				}
+				try {
+					this._persistence.set("path", this.path);
+					this._persistence.set("relay", this.relayId || "");
+					this._persistence.set("appId", this.appId);
+					this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				} catch (e) {
+					// pass
+				}
+			})
+			.catch((e) => this.error("folder persistence sync failed", e));
 
 		const isAuthoritative = this.authoritative;
 		const canAwaitProviderSync =
@@ -1327,26 +1331,13 @@ export class SharedFolder extends HasProvider {
 
 	whenSynced(): Promise<void> {
 		const promiseFn = async (): Promise<void> => {
-			// Check if already synced first
-			if (this._persistence.synced) {
-				this.persistenceSynced = true;
-				return;
-			}
-
-			return new Promise<void>((resolve) => {
-				this._persistence.once("synced", () => {
-					this.persistenceSynced = true;
-					resolve();
-				});
-			});
+			await this._persistence.whenSynced;
+			this.persistenceSynced = true;
 		};
 
 		this.whenSyncedPromise =
 			this.whenSyncedPromise ||
 			new Dependency<void>(promiseFn, (): [boolean, void] => {
-				if (this._persistence.synced) {
-					this.persistenceSynced = true;
-				}
 				return [this.persistenceSynced, undefined];
 			});
 		return trackPromise(`folder:whenSynced:${this.guid}`, this.whenSyncedPromise.getPromise());

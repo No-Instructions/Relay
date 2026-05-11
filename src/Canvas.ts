@@ -87,25 +87,27 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			throw e;
 		}
 
-		this.whenSynced().then(() => {
-			this.updateStats();
-			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.sharedFolder.relayId || "");
-				this._persistence.set("appId", this.sharedFolder.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			} catch (e) {
-				// pass
-			}
-
-			(async () => {
-				const serverSynced = await this.getServerSynced();
-				if (!serverSynced) {
-					await trackPromise(`canvasSync:${this.guid}`, this.onceProviderSynced());
-					await this.markSynced();
+		this.whenSynced()
+			.then(() => {
+				this.updateStats();
+				try {
+					this._persistence.set("path", this.path);
+					this._persistence.set("relay", this.sharedFolder.relayId || "");
+					this._persistence.set("appId", this.sharedFolder.appId);
+					this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				} catch (e) {
+					// pass
 				}
-			})();
-		});
+
+				(async () => {
+					const serverSynced = await this.getServerSynced();
+					if (!serverSynced) {
+						await trackPromise(`canvasSync:${this.guid}`, this.onceProviderSynced());
+						await this.markSynced();
+					}
+				})();
+			})
+			.catch((e) => this.warn("canvas persistence sync failed", e));
 
 		this._tfile = null;
 	}
@@ -219,21 +221,8 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	whenSynced(): Promise<void> {
 		const promiseFn = async (): Promise<void> => {
 			await this.sharedFolder.whenSynced();
-			// Check if already synced first
-			if (this._persistence.synced && !this.persistenceSynced) {
-				this.persistenceSynced = true;
-				return Promise.resolve();
-			}
-
-			return new Promise<void>((resolve) => {
-				if (this.persistenceSynced) {
-					resolve();
-				}
-				this._persistence.once("synced", () => {
-					this.persistenceSynced = true;
-					resolve();
-				});
-			});
+			await this._persistence.whenSynced;
+			this.persistenceSynced = true;
 		};
 
 		this.whenSyncedPromise =
