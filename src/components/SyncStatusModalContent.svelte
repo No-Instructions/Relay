@@ -14,6 +14,7 @@
 		type ActionableSyncFile,
 		type FolderSyncStatusModel,
 	} from "../ui/SyncStatusModel";
+	import { formatTimeAgo } from "../ui/timeAgo";
 	import {
 		CheckCircle,
 		AlertTriangle,
@@ -200,17 +201,7 @@
 	const tickInterval = timeProvider.setInterval(() => { now = timeProvider.now(); }, 1_000);
 	onDestroy(() => timeProvider.clearInterval(tickInterval));
 
-	function timeAgo(timestamp: number, _now: number): string {
-		const seconds = Math.floor((_now - timestamp) / 1000);
-		if (seconds < 10) return "just now";
-		if (seconds < 60) return "a few seconds ago";
-		const minutes = Math.floor(seconds / 60);
-		if (minutes === 1) return "1 minute ago";
-		if (minutes < 60) return `${minutes} minutes ago`;
-		const hours = Math.floor(minutes / 60);
-		if (hours === 1) return "1 hour ago";
-		return `${hours} hours ago`;
-	}
+	const timeAgo = formatTimeAgo;
 </script>
 
 <div class="sync-status-modal">
