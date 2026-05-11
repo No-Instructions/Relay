@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onDestroy } from "svelte";
-	import { TFile, type App } from "obsidian";
+	import { normalizePath, TFile, type App } from "obsidian";
 	import type { SharedFolder } from "../SharedFolder";
 	import type { TimeProvider } from "../TimeProvider";
 	import type { FolderSyncSnapshot } from "../BackgroundSyncProgress";
@@ -103,20 +103,25 @@
 
 	// ── Helpers ─────────────────────────────────────────────────────────
 
+	function vaultPath(filePath: string): string {
+		const path = filePath.replace(/^\/+/, "");
+		if (path === sharedFolder.path || path.startsWith(sharedFolder.path + "/")) {
+			return path;
+		}
+		return normalizePath(`${sharedFolder.path}/${path}`);
+	}
+
 	function getVaultFile(filePath: string): TFile | null {
-		// `filePath` may be either a `/foo/bar.md` virtual path (conflicts/errors
-		// entries) or a pre-relativized path (activity entries). Normalise to
-		// absolute vault path.
-		const normalized = filePath.startsWith("/") ? filePath : "/" + filePath;
-		const vaultPath = (sharedFolder.path + normalized).replace(/^\/+/, "");
-		const abstractFile = app.vault.getAbstractFileByPath(vaultPath);
+		const abstractFile = app.vault.getAbstractFileByPath(vaultPath(filePath));
 		return abstractFile instanceof TFile ? abstractFile : null;
 	}
 
-	function openFile(filePath: string) {
+	async function openFile(filePath: string) {
 		const file = getVaultFile(filePath);
 		if (file) {
-			app.workspace.getLeaf().openFile(file);
+			const leaf = app.workspace.getLeaf("tab");
+			await leaf.openFile(file);
+			app.workspace.setActiveLeaf(leaf, { focus: true });
 		}
 	}
 
@@ -188,13 +193,11 @@
 	}
 
 	function relativePath(fullPath: string): string {
-		if (fullPath.startsWith("/")) {
-			return fullPath.slice(1);
+		const path = vaultPath(fullPath);
+		if (path.startsWith(sharedFolder.path + "/")) {
+			return path.slice(sharedFolder.path.length + 1);
 		}
-		if (fullPath.startsWith(sharedFolder.path + "/")) {
-			return fullPath.slice(sharedFolder.path.length + 1);
-		}
-		return fullPath;
+		return path;
 	}
 
 	let now = timeProvider.now();
