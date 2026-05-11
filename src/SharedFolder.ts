@@ -50,6 +50,7 @@ import {
 	type SyncFileType,
 } from "./SyncTypes";
 import type { IFile } from "./IFile";
+import { formatDuplicateGuidLog } from "./FileLogDetails";
 import { createPathProxy } from "./pathProxy";
 import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
@@ -146,7 +147,7 @@ class Files extends ObservableSet<IFile> {
 	add(item: IFile, update = true): ObservableSet<IFile> {
 		const existing = this.find((file) => file.guid === item.guid);
 		if (existing && existing !== item) {
-			this.error("duplicate guid", existing, item);
+			this.error(formatDuplicateGuidLog(existing, item));
 			this._set.delete(existing);
 		}
 		this._set.add(item);
