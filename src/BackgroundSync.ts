@@ -1578,6 +1578,10 @@ export class BackgroundSync extends HasLogging {
 			const diskState = await doc.readDiskContent();
 			const repaired = await hsm.bootstrapLCAFromDisk(diskState);
 			if (!repaired && hsm.getSyncStatus().status === "pending") {
+				if (!hsm.hasPersistenceUserData()) {
+					await doc.sharedFolder.rebuildDocumentFromRemote(doc.guid, doc.path);
+					return;
+				}
 				this.debug(
 					`[bootstrapLCA] skipped for ${doc.path}: local CRDT is not enrolled or remote state is not ready`,
 				);

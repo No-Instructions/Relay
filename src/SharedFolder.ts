@@ -1188,7 +1188,8 @@ export class SharedFolder extends HasProvider {
 
 	async connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
-			if (this.connected || this.shouldConnect) {
+			if (this.connected) return true;
+			if (this.shouldConnect) {
 				const result = await super.connect();
 				if (result && this.mergeManager) {
 					// Clear server-advertised reconnect metadata so the next
@@ -1424,14 +1425,11 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Swap a document's local CRDT identity from fromGuid to toGuid. Called
-	 * when the folder's meta CRDT resolves a path to a GUID that differs from
-	 * the one we enrolled locally (concurrent-create race, delete+recreate,
-	 * etc.). Tears down the losing Y.Doc + IDB + HSM state, downloads the
-	 * winning CRDT from the server, and creates a fresh Document under the
-	 * canonical GUID. HSMEditorPlugin picks up the Document swap on its next
-	 * CM6 update tick; the HSM's active.entering flow handles any content
-	 * divergence via its standard fork reconciliation path.
+	 * Swap or rebuild a document's local CRDT identity. Called when the folder's
+	 * meta CRDT resolves a path to a GUID that differs from the one we enrolled
+	 * locally, and when the same GUID has unusable local CRDT state. Tears down
+	 * the local Y.Doc + IDB + HSM state, downloads the winning CRDT from the
+	 * server, and creates a fresh Document under the canonical GUID.
 	 *
 	 * Folder-level: does not require a living Document instance at fromGuid.
 	 * On failure, leaves pendingUpload intact so the next observer event or
@@ -1442,8 +1440,10 @@ export class SharedFolder extends HasProvider {
 		fromGuid: string;
 		toGuid: string;
 	}): Promise<void> {
+		const sameGuid = fromGuid === toGuid;
+		const operation = sameGuid ? "rebuild" : "remap";
 		if (!this.connected) {
-			this.log(`[${path}] remap deferred: folder offline`);
+			this.log(`[${path}] ${operation} deferred: folder offline`);
 			return;
 		}
 
@@ -1451,23 +1451,31 @@ export class SharedFolder extends HasProvider {
 		try {
 			updateBytes = await this.backgroundSync.downloadByGuid(this, toGuid, path);
 		} catch (e) {
-			this.warn(`[${path}] remap download failed, deferring`, e);
+			this.warn(`[${path}] ${operation} download failed, deferring`, e);
 			return;
 		}
 
 		if (!updateBytes) {
-			this.log(`[${path}] remap deferred: server has guid but no content yet`);
+			this.log(`[${path}] ${operation} deferred: server has guid but no content yet`);
 			return;
 		}
 
 		if (this.destroyed) {
-			this.log(`[${path}] remap aborted: folder destroyed during download`);
+			this.log(`[${path}] ${operation} aborted: folder destroyed during download`);
 			return;
 		}
 
 		this.backgroundSync.cancelDocumentWork(fromGuid);
 
 		const existingFile = this.files.get(fromGuid);
+		const existingHsm = existingFile && isDocument(existingFile)
+			? existingFile.hsm
+			: null;
+		if (sameGuid) {
+			await existingHsm?.destroyLocalDoc().catch((e) => {
+				this.warn(`[${path}] rebuild local cleanup failed`, e);
+			});
+		}
 		if (existingFile) {
 			this.files.delete(fromGuid);
 			this.fset.delete(existingFile);
@@ -1475,11 +1483,16 @@ export class SharedFolder extends HasProvider {
 			existingFile.destroy();
 		}
 
-		try {
-			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
-		} catch {}
-		const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
-		awaitOnReload(p);
+		if (sameGuid) {
+			await this.deleteDocumentDatabase(fromGuid);
+			await this._hsmStore.deleteState(fromGuid);
+		} else {
+			try {
+				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
+			} catch {}
+			const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
+			awaitOnReload(p);
+		}
 
 		this.syncStore.pendingUpload.delete(path);
 
@@ -1490,7 +1503,7 @@ export class SharedFolder extends HasProvider {
 			!this.destroyed && !newDoc.destroyed && this.files.get(toGuid) === newDoc;
 
 		if (!isCurrentDoc()) {
-			this.log(`[${path}] remap aborted: new document is stale`);
+			this.log(`[${path}] ${operation} aborted: new document is stale`);
 			return;
 		}
 
@@ -1501,7 +1514,7 @@ export class SharedFolder extends HasProvider {
 			newDoc.hsm?.setRemoteDoc(remoteDoc);
 		}
 		if (!isCurrentDoc()) {
-			this.log(`[${path}] remap aborted after enroll: new document is stale`);
+			this.log(`[${path}] ${operation} aborted after enroll: new document is stale`);
 			return;
 		}
 		if (newDoc.hsm && !newDoc.hsm.state.lca) {
@@ -1511,7 +1524,24 @@ export class SharedFolder extends HasProvider {
 		}
 		await this.poll([toGuid]);
 
-		this.log(`Remapped Document ${path}: ${fromGuid} → ${toGuid}`);
+		this.log(
+			sameGuid
+				? `Rebuilt Document ${path}: ${toGuid}`
+				: `Remapped Document ${path}: ${fromGuid} → ${toGuid}`,
+		);
+	}
+
+	async rebuildDocumentFromRemote(guid: string, path: string): Promise<void> {
+		await this.executeRemap({ path, fromGuid: guid, toGuid: guid });
+	}
+
+	private async deleteDocumentDatabase(guid: string): Promise<void> {
+		const name = `${this.appId}-relay-doc-${guid}`;
+		await new Promise<void>((resolve, reject) => {
+			const request = indexedDB.deleteDatabase(name);
+			request.onsuccess = () => resolve();
+			request.onerror = () => reject(request.error);
+		});
 	}
 
 	private applyRemoteState(
