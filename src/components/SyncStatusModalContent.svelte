@@ -250,7 +250,7 @@
 
 	{#if conflicts.length > 0}
 		<div class="sync-status-section">
-			<div class="sync-status-section-header">Conflicts</div>
+			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
 			{#each conflicts as file}
 				<div class="sync-status-row">
 					<span class="sync-status-icon conflict"><AlertTriangle size={14} /></span>
@@ -273,7 +273,7 @@
 	{#if errors.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">
-				<span class="sync-status-section-title">Errors</span>
+				<span class="sync-status-section-title">Errors ({errors.length})</span>
 				<button
 					class="sync-status-section-action"
 					type="button"
