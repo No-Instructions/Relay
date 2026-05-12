@@ -141,6 +141,7 @@ export class FolderSyncSnapshotSmoother {
 	private progressTimer: number | null = null;
 	private transitionStartedAt: number | null = null;
 	private transitionEndsAt: number | null = null;
+	private lastEmittedSnapshot: FolderSyncSnapshot | null = null;
 	private hasBaseline = false;
 	private hasProgressActivity = false;
 
@@ -240,7 +241,7 @@ export class FolderSyncSnapshotSmoother {
 		const visibleState = isFinalizing
 			? "syncing"
 			: this.latestSnapshot.visibleState;
-		this.emit({
+		const next = {
 			...this.latestSnapshot,
 			percent: this.displayedPercent,
 			progressStatus,
@@ -254,7 +255,10 @@ export class FolderSyncSnapshotSmoother {
 				!forceHide &&
 				this.hasProgressActivity &&
 				shouldShowProgress(this.displayedPercent, progressStatus),
-		});
+		};
+		if (shallowFolderSyncSnapshotEqual(this.lastEmittedSnapshot, next)) return;
+		this.lastEmittedSnapshot = { ...next };
+		this.emit(next);
 	}
 
 	private isFinalizingProgress(): boolean {
@@ -274,6 +278,21 @@ export class FolderSyncSnapshotSmoother {
 function normalizeProgress(value: number): number {
 	if (!Number.isFinite(value)) return 0;
 	return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function shallowFolderSyncSnapshotEqual(
+	a: FolderSyncSnapshot | null,
+	b: FolderSyncSnapshot,
+): boolean {
+	if (a === null) return false;
+	const aKeys = Object.keys(a) as Array<keyof FolderSyncSnapshot>;
+	const bKeys = Object.keys(b) as Array<keyof FolderSyncSnapshot>;
+	if (aKeys.length !== bKeys.length) return false;
+	for (const key of aKeys) {
+		if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+		if (!Object.is(a[key], b[key])) return false;
+	}
+	return true;
 }
 
 function shouldShowProgress(

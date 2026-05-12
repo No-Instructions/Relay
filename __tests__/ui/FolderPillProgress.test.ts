@@ -285,6 +285,47 @@ describe("BackgroundSync folder pill progress", () => {
 		);
 	});
 
+	test("does not emit unchanged smoothed folder snapshots", () => {
+		const timeProvider = new ManualTimeProvider();
+		const emitted: FolderSyncSnapshot[] = [];
+		const smoother = new FolderSyncSnapshotSmoother(timeProvider, (snapshot) => {
+			emitted.push(snapshot);
+		});
+		const buildSnapshot = (path: string) =>
+			buildFolderSyncSnapshot({
+				group: {
+					total: 1,
+					completed: 0,
+					status: "running",
+					downloads: 0,
+					syncs: 1,
+					completedDownloads: 0,
+					completedSyncs: 0,
+					userDownloads: 0,
+					completedUserDownloads: 0,
+					failedUserDownloads: 0,
+				},
+				queued: 0,
+				active: 1,
+				isPaused: false,
+				failureCount: 0,
+				activeItem: { kind: "sync", path },
+				queuedReason: null,
+			});
+
+		const initialSnapshot = buildSnapshot("Folder/note.md");
+		smoother.update(initialSnapshot);
+		smoother.update({ ...initialSnapshot });
+		smoother.update(buildSnapshot("Folder/note.md"));
+
+		expect(emitted).toHaveLength(1);
+
+		smoother.update(buildSnapshot("Folder/other.md"));
+
+		expect(emitted).toHaveLength(2);
+		expect(emitted[1].latestActivity).toBe("Syncing other.md");
+	});
+
 	test("keeps the visible folder state syncing while completed progress finishes animating", () => {
 		const timeProvider = new ManualTimeProvider();
 		const emitted: FolderSyncSnapshot[] = [];
