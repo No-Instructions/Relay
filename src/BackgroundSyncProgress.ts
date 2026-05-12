@@ -445,9 +445,9 @@ function deriveVisibleState(input: {
 	failureCount: number;
 }): FolderSyncVisibleState {
 	if (input.isPaused) return "paused";
-	if (input.failureCount > 0) return "sync-issue";
 	if (input.active > 0) return "syncing";
 	if (input.queued > 0) return "queued";
+	if (input.failureCount > 0) return "sync-issue";
 	return "synced";
 }
 

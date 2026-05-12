@@ -210,9 +210,13 @@ export function buildFolderSyncStatusModel(
 	}
 
 	actionableFiles.sort((a, b) => a.path.localeCompare(b.path));
+	const snapshot = withActionableErrorCount(
+		displaySnapshot ?? getFolderSyncSnapshot(sharedFolder, queue),
+		actionableFiles.filter((file) => file.category === "error").length,
+	);
 	return {
 		queue,
-		snapshot: displaySnapshot ?? getFolderSyncSnapshot(sharedFolder, queue),
+		snapshot,
 		actionableFiles,
 	};
 }
@@ -366,6 +370,33 @@ function getFolderSyncSnapshot(
 		activeItem: null,
 		queuedReason: null,
 	});
+}
+
+function withActionableErrorCount(
+	snapshot: FolderSyncSnapshot,
+	errorCount: number,
+): FolderSyncSnapshot {
+	if (snapshot.failureCount === errorCount) return snapshot;
+	const hasWork = snapshot.active > 0 || snapshot.queued > 0 || snapshot.isPaused;
+	if (hasWork) {
+		return { ...snapshot, failureCount: errorCount };
+	}
+	if (errorCount === 0) {
+		return {
+			...snapshot,
+			failureCount: 0,
+			visibleState: "synced",
+			label: "Synced",
+			latestActivity: null,
+		};
+	}
+	return {
+		...snapshot,
+		failureCount: errorCount,
+		visibleState: "sync-issue",
+		label: "Sync issue",
+		latestActivity: errorCount === 1 ? "1 sync issue" : `${errorCount} sync issues`,
+	};
 }
 
 export const EMPTY_FOLDER_QUEUE_SNAPSHOT: FolderQueueSnapshot = {

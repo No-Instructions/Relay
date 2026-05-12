@@ -211,8 +211,10 @@ describe("BackgroundSync folder pill progress", () => {
 				syncPercent: 100,
 				downloadPercent: 50,
 				progressStatus: "failed",
-				visibleState: "sync-issue",
-				label: "Sync issue",
+				visibleState: "syncing",
+				label: "Syncing",
+				latestActivity: "Downloading other.md",
+				syncAction: "pause",
 			}),
 		);
 	});

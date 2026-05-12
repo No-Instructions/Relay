@@ -229,6 +229,14 @@ describe("SyncStatusModel", () => {
 
 		const model = buildFolderSyncStatusModel(sharedFolder);
 
+		expect(model.snapshot).toEqual(
+			expect.objectContaining({
+				visibleState: "sync-issue",
+				label: "Sync issue",
+				failureCount: 1,
+				latestActivity: "1 sync issue",
+			}),
+		);
 		expect(model.actionableFiles).toEqual([
 			expect.objectContaining({
 				guid: "hsm-guid",
@@ -236,6 +244,83 @@ describe("SyncStatusModel", () => {
 				label: "Unable to read local file",
 			}),
 		]);
+	});
+
+	test("keeps active sync activity visible while errors are listed", () => {
+		const activeItem = queueItem("active-guid", "/Folder/current.md");
+		const sharedFolder = {
+			files: new Map([
+				[
+					"hsm-guid",
+					{
+						path: "/hsm.md",
+						hsm: {
+							statePath: "idle.error",
+							state: { error: new Error("Local document failed") },
+							getSyncStatus: () => ({ status: "error" }),
+						},
+					},
+				],
+			]),
+			backgroundSync: {
+				pendingSyncs: [],
+				pendingDownloads: [],
+				activeSync: {
+					filter: (predicate: (item: QueueItem) => boolean) =>
+						[activeItem].filter(predicate),
+				},
+				activeDownloads: { filter: () => [] },
+				getQueueStatus: () => ({
+					syncsQueued: 0,
+					syncsActive: 1,
+					downloadsQueued: 0,
+					downloadsActive: 0,
+					isPaused: false,
+				}),
+				getFailures: () => [
+					{
+						id: "sync:canvas-guid",
+						guid: "canvas-guid",
+						path: "/canvas.canvas",
+						kind: "sync",
+						message: "Canvas file does not match local sync state.",
+						sharedFolder: null,
+					},
+				],
+				getFolderSyncSnapshot: () => ({
+					percent: 0,
+					syncPercent: 0,
+					downloadPercent: 0,
+					showProgress: false,
+					progressStatus: "failed",
+					visibleState: "syncing",
+					label: "Syncing",
+					latestActivity: "Syncing current.md",
+					syncAction: "pause",
+					queued: 0,
+					active: 1,
+					total: 0,
+					failureCount: 1,
+					isPaused: false,
+				}),
+			},
+			getPath: (path: string) => path,
+		} as any;
+		activeItem.sharedFolder = sharedFolder;
+
+		const model = buildFolderSyncStatusModel(sharedFolder);
+
+		expect(model.snapshot).toEqual(
+			expect.objectContaining({
+				visibleState: "syncing",
+				label: "Syncing",
+				latestActivity: "Syncing current.md",
+				syncAction: "pause",
+				failureCount: 2,
+			}),
+		);
+		expect(model.actionableFiles.filter((file) => file.category === "error"))
+			.toHaveLength(2);
 	});
 
 	test("uses the background sync folder snapshot as the model source", () => {
