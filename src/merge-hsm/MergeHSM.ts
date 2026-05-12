@@ -75,6 +75,7 @@ import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
 	snapshotFromDoc,
+	snapshotIsAhead,
 	stateVectorIsAhead,
 	stateVectorsEqual,
 	yjsDocIsAhead,
@@ -1842,6 +1843,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				if (!yjsDocsEqual(this.localDoc, this.remoteDoc)) return false;
 				return this.localDoc.getText("contents").toString() === e.contents;
 			},
+			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
 			remoteOrLocalAhead: () =>
 				this.hasRemoteChangedSinceLCA() || this._statePath === "idle.localAhead",
 
@@ -3661,6 +3663,28 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 		// Check if remote has operations not in LCA
 		return stateVectorIsAhead(remoteSV, lcaSV);
+	}
+
+	private providerSyncedRemoteAhead(): boolean {
+		if (!this._lca || !this.remoteDoc) return false;
+		if (this.hasDiskChangedSinceLCA() || this.hasLocalChangedSinceLCA()) {
+			return false;
+		}
+		if (this._lca.snapshot) {
+			try {
+				return snapshotIsAhead(
+					snapshotFromDoc(this.remoteDoc),
+					{ snapshot: this._lca.snapshot },
+				);
+			} catch {
+				// Fall back to state vectors if persisted snapshot data is unreadable.
+			}
+		}
+
+		return stateVectorIsAhead(
+			Y.encodeStateVector(this.remoteDoc),
+			this._lca.stateVector,
+		);
 	}
 
 

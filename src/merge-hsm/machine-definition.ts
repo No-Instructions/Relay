@@ -154,6 +154,10 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
+			PROVIDER_SYNCED: [
+				{ target: 'idle.remoteAhead', guard: 'providerSyncedRemoteAhead', actions: ['markProviderSynced'], reenter: true },
+				{ target: 'idle.synced', actions: ['markProviderSynced'] },
+			],
 			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,

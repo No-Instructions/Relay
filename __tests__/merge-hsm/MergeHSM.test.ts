@@ -2059,6 +2059,37 @@ describe('MergeHSM', () => {
       expectState(t, 'idle.synced');
     });
 
+    test('PROVIDER_SYNCED in idle.synced ingests content-preserving remote CRDT changes', async () => {
+      const t = await createTestHSM();
+      await loadToIdle(t, { content: 'hello', mtime: 1000 });
+
+      const localDoc = t.hsm.getLocalDoc()!;
+      const remoteDoc = t.hsm.getRemoteDoc()!;
+      (t.hsm as any)._lca = {
+        ...(t.hsm as any)._lca,
+        snapshot: Y.encodeSnapshot(Y.snapshot(localDoc)),
+      };
+
+      const remoteText = remoteDoc.getText('contents');
+      remoteText.delete(0, remoteText.length);
+      remoteText.insert(0, 'hello');
+
+      expect(remoteText.toString()).toBe('hello');
+      expect(Y.equalSnapshots(Y.snapshot(localDoc), Y.snapshot(remoteDoc))).toBe(false);
+
+      t.clearEffects();
+      t.send(providerSynced());
+      await t.hsm.awaitIdleAutoMerge();
+
+      expectState(t, 'idle.synced');
+      expectLocalDocText(t, 'hello');
+      expect(Y.equalSnapshots(Y.snapshot(t.hsm.getLocalDoc()!), Y.snapshot(remoteDoc))).toBe(true);
+      expect(Y.equalSnapshots(
+        Y.decodeSnapshot((t.hsm as any)._lca.snapshot),
+        Y.snapshot(remoteDoc),
+      )).toBe(true);
+    });
+
     test('idle.remoteAhead settles when pending update was already absorbed', async () => {
       const t = await createTestHSM();
       const lcaDoc = createDocWithText('base');
