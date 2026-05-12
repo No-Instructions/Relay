@@ -1126,9 +1126,16 @@ export class BackgroundSync extends HasLogging {
 
 		// Sort items by path for consistent sync order
 		const sortedDocs = allItems.sort(compareFilePaths);
+		const queueLengthBefore = this.syncQueue.length;
 
 		for (const doc of sortedDocs) {
 			this.enqueueForGroupSync(doc);
+		}
+
+		if (this.syncQueue.length > queueLengthBefore) {
+			this.syncQueue.sort(compareFilePaths);
+			this.queueStatusChanged.notifyListeners();
+			this.processSyncQueue();
 		}
 
 		this.updateGroupTerminalStatus(group);
@@ -1234,9 +1241,6 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
-		this.queueStatusChanged.notifyListeners();
-		this.processSyncQueue();
 
 		return syncPromise;
 	}
