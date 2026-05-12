@@ -23,6 +23,43 @@ export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
 }
 
+function replaceYTextContent(ytext: Y.Text, nextText: string): void {
+	const currentText = ytext.toString();
+	if (currentText === nextText) return;
+
+	let prefixLength = 0;
+	const maxPrefixLength = Math.min(currentText.length, nextText.length);
+	while (
+		prefixLength < maxPrefixLength &&
+		currentText[prefixLength] === nextText[prefixLength]
+	) {
+		prefixLength++;
+	}
+
+	let suffixLength = 0;
+	const maxSuffixLength = maxPrefixLength - prefixLength;
+	while (
+		suffixLength < maxSuffixLength &&
+		currentText[currentText.length - 1 - suffixLength] ===
+			nextText[nextText.length - 1 - suffixLength]
+	) {
+		suffixLength++;
+	}
+
+	const deleteLength = currentText.length - prefixLength - suffixLength;
+	if (deleteLength > 0) {
+		ytext.delete(prefixLength, deleteLength);
+	}
+
+	const insertedText = nextText.slice(
+		prefixLength,
+		nextText.length - suffixLength,
+	);
+	if (insertedText.length > 0) {
+		ytext.insert(prefixLength, insertedText);
+	}
+}
+
 export class Canvas extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
@@ -142,6 +179,20 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				...ynode,
 				...{ text: ytext.toString() || ynode.text },
 			});
+		}
+		return { edges: edges, nodes: nodes };
+	}
+
+	static exportCanvasMapData(ydoc: Y.Doc): CanvasData {
+		const yedges = ydoc.getMap<CanvasEdgeData>("edges");
+		const ynodes = ydoc.getMap<CanvasNodeData>("nodes");
+		const edges = [];
+		const nodes = [];
+		for (const [, yedge] of yedges.entries()) {
+			edges.push({ ...yedge });
+		}
+		for (const [, ynode] of ynodes.entries()) {
+			nodes.push({ ...ynode });
 		}
 		return { edges: edges, nodes: nodes };
 	}
@@ -290,15 +341,19 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		const deleted_nodes = new Set<string>();
 		const changed_edges = new Map<string, CanvasEdgeData>();
 		const deleted_edges = new Set<string>();
+		const changed_text = new Map<string, string>();
 
 		data.nodes.forEach((node: CanvasNodeData) => {
 			seen.add(node.id);
+			if (node.type === "text" && typeof node.text === "string") {
+				const ytext = this.ydoc.getText(node.id);
+				if (ytext.toString() !== node.text) {
+					changed_text.set(node.id, node.text);
+				}
+			}
 			const ynode = ynodes.get(node.id);
 			if (!ynode) {
 				changed_nodes.set(node.id, node);
-				if (node.type === "text") {
-					this.textNode(node);
-				}
 			} else if (!areObjectsEqual(ynode, node)) {
 				changed_nodes.set(node.id, node);
 			}
@@ -327,13 +382,17 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			changed_nodes.size > 0 ||
 			deleted_nodes.size > 0 ||
 			changed_edges.size > 0 ||
-			deleted_edges.size > 0
+			deleted_edges.size > 0 ||
+			changed_text.size > 0
 		) {
 			Y.transact(
 				this.ydoc,
 				() => {
 					for (const node of changed_nodes.values()) {
 						this.ynodes.set(node.id, node);
+					}
+					for (const [node_id, text] of changed_text) {
+						replaceYTextContent(this.ydoc.getText(node_id), text);
 					}
 					for (const node_id of deleted_nodes) {
 						this.ynodes.delete(node_id);

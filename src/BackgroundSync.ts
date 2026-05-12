@@ -613,7 +613,26 @@ export class BackgroundSync extends HasLogging {
 		if (areCanvasDataEqual(currentCanvasData, currentFileJson)) {
 			return null;
 		}
+		if (await this.repairStaleCanvasText(canvas, currentFileJson)) {
+			return null;
+		}
 		return "Canvas file does not match local sync state. Open the canvas and resolve the local changes before syncing.";
+	}
+
+	private async repairStaleCanvasText(
+		canvas: Canvas,
+		currentFileJson: CanvasData,
+	): Promise<boolean> {
+		const currentCanvasMapData = Canvas.exportCanvasMapData(canvas.ydoc);
+		if (!areCanvasDataEqual(currentCanvasMapData, currentFileJson)) {
+			return false;
+		}
+
+		await canvas.applyData(currentFileJson);
+		return areCanvasDataEqual(
+			Canvas.exportCanvasData(canvas.ydoc),
+			currentFileJson,
+		);
 	}
 
 	getAllGroupsProgress(): GroupProgress[] {
@@ -1375,6 +1394,12 @@ export class BackgroundSync extends HasLogging {
 						? JSON.parse(currentFileContents)
 						: { nodes: [], edges: [] };
 					contentsMatch = areCanvasDataEqual(currentCanvasData, currentFileJson);
+					if (
+						!contentsMatch &&
+						await this.repairStaleCanvasText(doc, currentFileJson)
+					) {
+						contentsMatch = true;
+					}
 					if (!contentsMatch && currentFileContents) {
 						canvasContentsMismatch = true;
 					}
