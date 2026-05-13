@@ -2673,6 +2673,87 @@ describe('MergeHSM', () => {
       const result = await (t.hsm as any).invokeIdleThreeWayAutoMerge(new AbortController().signal);
 
       expect(result).toEqual({ success: false, awaitingProvider: true });
+      expectEffect(t.effects, { type: 'REQUEST_PROVIDER_SYNC', guid: 'test-guid' });
+    });
+
+    test('no-LCA idle.diverged waits for provider before materializing local-disk conflict', async () => {
+      const localContent = 'local content';
+      const diskContent = 'disk content';
+      const updates = createYjsUpdate(localContent);
+      const t = await createTestHSM({
+        indexedDBUpdates: updates,
+      });
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoadedFromUpdate(updates, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      (t.hsm as any).setStatePath('idle.diverged');
+      (t.hsm as any).pendingDiskContents = diskContent;
+      t.clearEffects();
+
+      const result = await (t.hsm as any).invokeIdleThreeWayAutoMerge(new AbortController().signal);
+
+      expect(result).toEqual({ success: false, awaitingProvider: true });
+      expectEffect(t.effects, { type: 'REQUEST_PROVIDER_SYNC', guid: 'test-guid' });
+      expect(t.hsm.getConflictData()).toBeNull();
+      expect(t.hsm.getSyncStatus().status).toBe('pending');
+    });
+
+    test('PROVIDER_SYNCED recovers LCA before no-LCA local-disk conflict materializes', async () => {
+      const base = [
+        '# Upgrade Test',
+        '',
+        'Line 1: Original content',
+        'Line 2: This line will be edited',
+        'Line 3: More original content',
+        '',
+      ].join('\n');
+      const localDisk = base.replace('Line 2: This line will be edited', 'Line 2: LOCAL DISK EDIT from live1');
+      const remoteContent = base.replace('Line 2: This line will be edited', 'Line 2: REMOTE EDIT from live2');
+      const baseDoc = createDocWithText(base);
+      const baseUpdate = Y.encodeStateAsUpdate(baseDoc);
+      const remoteDoc = new Y.Doc();
+      Y.applyUpdate(remoteDoc, baseUpdate);
+      const oldLine = 'Line 2: This line will be edited';
+      const remoteLine = 'Line 2: REMOTE EDIT from live2';
+      const start = base.indexOf(oldLine);
+      const ytext = remoteDoc.getText('contents');
+      ytext.delete(start, oldLine.length);
+      ytext.insert(start, remoteLine);
+      const remoteUpdate = Y.encodeStateAsUpdate(remoteDoc);
+      const t = await createTestHSM({
+        indexedDBUpdates: baseUpdate,
+      });
+      t.syncRemoteWithUpdate(remoteUpdate);
+
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoadedFromUpdate(baseUpdate, null));
+      t.send({ type: 'SET_MODE_IDLE' });
+      t.send(await diskChanged(localDisk, 123, 'disk-hash'));
+      await t.awaitIdleAutoMerge();
+
+      expectState(t, 'idle.diverged');
+      expect(t.hsm.getConflictData()).toBeNull();
+
+      t.send(providerSynced());
+      await (t.hsm as any).awaitAsync('recover-lca');
+      await t.awaitIdleAutoMerge();
+      if (t.matches('idle.localAhead')) {
+        t.send(providerSynced());
+        await t.hsm.awaitForkReconcile();
+      }
+
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.recoverLCA')).toBe(true);
+      expectState(t, 'idle.conflict');
+      const conflict = t.hsm.getConflictData();
+      expect(conflict).not.toBeNull();
+      expect(new Set([conflict?.oursLabel, conflict?.theirsLabel])).toEqual(new Set(['Local', 'Remote']));
+      expect(conflict?.ours).toBe(localDisk);
+      expect(conflict?.theirs).toBe(remoteContent);
+      expect(conflict?.base).toBe(base);
+
+      baseDoc.destroy();
+      remoteDoc.destroy();
     });
 
     test('no-LCA pending disk at load recovers LCA when synced remote doc is available', async () => {
@@ -2744,6 +2825,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       t.seedIndexedDB(updates);
       t.syncRemoteWithUpdate(updates);
+      t.setProviderSynced(true);
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
@@ -2844,6 +2926,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       t.seedIndexedDB(updates);
       t.syncRemoteWithUpdate(updates);
+      t.setProviderSynced(true);
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
@@ -2873,6 +2956,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
       t.seedIndexedDB(updates);
       t.syncRemoteWithUpdate(updates);
+      t.setProviderSynced(true);
       t.send(load('test-guid', 'test.md'));
       t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });

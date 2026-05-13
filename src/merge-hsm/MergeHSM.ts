@@ -480,11 +480,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return !this.hasEnrolledLocalCRDT();
 	}
 
-	private canRecoverLCAWithPendingDisk(): boolean {
+	private canRecoverLCAWithPendingDisk(providerSyncedEvent = false): boolean {
 		if (this._lca || this._fork || this._conflict) return false;
 		if (!this.localDoc || !this.remoteDoc) return false;
 		if (!this.localPersistence || this.localPersistence.synced !== true) return false;
-		if (!this._providerSynced && !this._isProviderSynced()) return false;
+		if (!providerSyncedEvent && !this._providerSynced && !this._isProviderSynced()) return false;
 		if (this.pendingDiskContents === null || this._disk === null) return false;
 		return this.hasEnrolledLocalCRDT();
 	}
@@ -1895,7 +1895,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
 				return this.localDoc.getText("contents").toString() !== this.pendingDiskContents;
 			},
-			canRecoverLCAWithPendingDisk: () => this.canRecoverLCAWithPendingDisk(),
+			canRecoverLCAWithPendingDisk: (_hsm, event) => this.canRecoverLCAWithPendingDisk(event.type === "PROVIDER_SYNCED"),
 			remoteAheadAtLoad: () => {
 				if (!this._lca) return false;
 				return this.hasRemoteChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasLocalChangedSinceLCA();
@@ -3372,6 +3372,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		if (!this._lca) {
 			this.pendingIdleUpdates = null;
 			if (!this.remoteDoc) {
+				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 				return { success: false, awaitingProvider: true };
 			}
 			if (!this.hasEnrolledLocalCRDT()) {
@@ -3380,7 +3381,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			if (this.pendingDiskContents === null && this.pendingRecoverLCADisk === null) {
 				return { success: false, awaitingDiskForLCA: true };
 			}
-			if (!this._isProviderSynced() && !this.canMaterializeIdleConflict()) {
+			if (!this._isProviderSynced()) {
+				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 				return { success: false, awaitingProvider: true };
 			}
 			return { success: false };
