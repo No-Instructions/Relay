@@ -1291,7 +1291,7 @@ describe('Multi-HSM independence', () => {
 
     // HSM 3: loading (not yet mode-determined)
     hsms[3].send(load('guid-3'));
-    hsms[3].send(persistenceLoaded(new Uint8Array(), null));
+    hsms[3].send(persistenceLoaded(null));
     expectState(hsms[3], 'loading');
 
     // HSM 4: unloaded

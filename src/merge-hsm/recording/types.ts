@@ -156,7 +156,12 @@ export type SerializableEvent =
   | { type: 'DISMISS_CONFLICT' }
   | { type: 'OPEN_DIFF_VIEW' }
   | { type: 'CANCEL' }
-  | { type: 'PERSISTENCE_LOADED'; updates: string; lca: SerializableLCA | null } // updates is base64
+  | {
+      type: 'PERSISTENCE_LOADED';
+      lca: SerializableLCA | null;
+      localSnapshot?: string | null;
+      localStateVector?: string | null;
+    }
   | { type: 'PERSISTENCE_SYNCED'; hasContent: boolean }
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }
   | { type: 'MERGE_CONFLICT'; base: string; ours: string; theirs: string }

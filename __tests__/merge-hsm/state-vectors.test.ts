@@ -436,10 +436,10 @@ describe("yjs snapshot helpers", () => {
 // =============================================================================
 
 describe('State vector edge cases', () => {
-	test('PERSISTENCE_LOADED with empty updates', async () => {
+	test('PERSISTENCE_LOADED without a local head', async () => {
 		const t = await createTestHSM();
 		t.send(load('test-guid'));
-		t.send(persistenceLoaded(new Uint8Array(), null));
+		t.send(persistenceLoaded(null));
 
 		expect(t.statePath).toBe('loading');
 	});

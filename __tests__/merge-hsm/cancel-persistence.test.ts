@@ -15,6 +15,7 @@ import {
   createCrossVaultTest,
   loadAndActivate,
   createLCA,
+  persistenceLoadedFromUpdate,
   sha256,
 } from 'src/merge-hsm/testing';
 import { openDiffView, resolve } from 'src/merge-hsm/testing/events';
@@ -223,7 +224,7 @@ async function bootCrossVault(): Promise<CrossVaultTest> {
     const lca = await createLCA(BASE, mtime, stateVector);
 
     ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
-    ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates: canonicalUpdate, lca });
+    ctx.vaultB.send(persistenceLoadedFromUpdate(canonicalUpdate, lca));
     ctx.vaultB.send({ type: 'SET_MODE_ACTIVE' });
     ctx.vaultB.send({ type: 'ACQUIRE_LOCK', editorContent: BASE });
     await ctx.vaultB.hsm.hsm.awaitState?.((s: string) => s === 'active.tracking');

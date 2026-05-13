@@ -75,7 +75,9 @@ import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
 	snapshotFromDoc,
+	snapshotsEqual,
 	snapshotIsAhead,
+	stateVectorFromSnapshot,
 	stateVectorIsAhead,
 	stateVectorsEqual,
 	yjsDocIsAhead,
@@ -235,8 +237,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	// Consecutive idle retry count — used for backoff when drain rate < queue rate
 	private idleRetryCount = 0;
 
-	// Initial updates from PERSISTENCE_LOADED (applied when YDocs are created)
-	private initialPersistenceUpdates: Uint8Array | null = null;
+	// Persisted/enrolled local head. A resident localDoc may only refresh this
+	// after its persistence load has completed and matched this head.
+	private _enrolledLocalSnapshot: Uint8Array | null = null;
+	private _legacyEnrolledLocalStateVector: Uint8Array | null = null;
+	private _localDocSnapshotSafe = false;
 
 	// Persistence for localDoc (alive in idle + active mode; null when unloaded/hibernated)
 	private localPersistence: IYDocPersistence | null = null;
@@ -391,6 +396,75 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return this._localStateVector;
 	}
 
+	private rememberEnrolledLocalHead(
+		snapshot: Uint8Array | null | undefined,
+		stateVector: Uint8Array | null | undefined,
+	): void {
+		this._enrolledLocalSnapshot = snapshot ?? null;
+		this._legacyEnrolledLocalStateVector = this._enrolledLocalSnapshot
+			? null
+			: stateVector ?? null;
+	}
+
+	private clearEnrolledLocalHead(): void {
+		this.rememberEnrolledLocalHead(null, null);
+		this._localDocSnapshotSafe = false;
+	}
+
+	private markLocalDocSnapshotSafeIfLoadedHeadMatches(): boolean {
+		if (!this.localDoc || this.localPersistence?.synced !== true) {
+			this._localDocSnapshotSafe = false;
+			return false;
+		}
+
+		if (this._enrolledLocalSnapshot) {
+			try {
+				if (
+					snapshotsEqual(
+						snapshotFromDoc(this.localDoc),
+						{ snapshot: this._enrolledLocalSnapshot },
+					)
+				) {
+					this._localDocSnapshotSafe = true;
+					return true;
+				}
+			} catch {
+				this._localDocSnapshotSafe = false;
+				return false;
+			}
+		} else if (this._legacyEnrolledLocalStateVector) {
+			const localStateVector = Y.encodeStateVector(this.localDoc);
+			if (stateVectorsEqual(localStateVector, this._legacyEnrolledLocalStateVector)) {
+				this._localDocSnapshotSafe = true;
+				return true;
+			}
+		}
+
+		this._localDocSnapshotSafe = false;
+		return false;
+	}
+
+	captureLocalHeadForPersistence(): void {
+		if (!this.localDoc || !this._localDocSnapshotSafe) return;
+
+		const snapshot = snapshotFromDoc(this.localDoc).snapshot;
+		this._enrolledLocalSnapshot = snapshot;
+		this._legacyEnrolledLocalStateVector = null;
+	}
+
+	getLocalHeadForPersistence(): {
+		localSnapshot: Uint8Array | null;
+		localStateVector: Uint8Array | null;
+	} {
+		const localSnapshot = this._enrolledLocalSnapshot;
+		return {
+			localSnapshot,
+			localStateVector: localSnapshot
+				? null
+				: this._legacyEnrolledLocalStateVector,
+		};
+	}
+
 	private hasEnrolledLocalCRDT(): boolean {
 		if (this.localPersistence?.synced !== true) return false;
 		if (!this.localPersistence.hasUserData()) return false;
@@ -529,6 +603,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	prepareForHibernate(): void {
+		this.captureLocalHeadForPersistence();
 		this.clearSettledDiskContents();
 		if (
 			this._statePath !== "idle.synced" ||
@@ -1347,7 +1422,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			if (!this.hasUsableLocalDoc()) {
 				return false;
 			}
-			this._localStateVector = Y.encodeStateVector(this.localDoc!);
+			const localSnapshot = snapshotFromDoc(this.localDoc!).snapshot;
+			const localStateVector = Y.encodeStateVector(this.localDoc!);
+			this._localStateVector = localStateVector;
+			this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
+			this._localDocSnapshotSafe = true;
 			this.emitPersistState();
 		}
 
@@ -1419,6 +1498,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	private async ensurePersistence(): Promise<void> {
 		if (!this.localDoc) {
 			this.localDoc = new Y.Doc();
+			this._localDocSnapshotSafe = false;
 			if (this._localDocClientID !== null) {
 				this.localDoc.clientID = this._localDocClientID;
 			}
@@ -2139,12 +2219,18 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._accumulatedEvents = [];
 				this._disk = null;
 				this._remoteStateVector = null;
+				this.clearEnrolledLocalHead();
 			},
 			storeError: (_hsm, event) => {
 				this._error = (event as any).error;
 			},
 			storePersistenceData: (_hsm, event) => {
 				const e = event as any;
+				const localSnapshot = e.localSnapshot ?? null;
+				const localStateVector = localSnapshot
+					? stateVectorFromSnapshot({ snapshot: localSnapshot })
+					: e.localStateVector ?? null;
+				this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
 				if (!this._lca && e.lca) {
 					// Trusted restoration path: localDoc hasn't been created yet,
 					// so the _setLCA content-equality check has nothing to verify
@@ -2152,11 +2238,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					// under the same invariant, so we load it directly.
 					this._lca = e.lca;
 				}
-				if (e.localStateVector) {
-					this._localStateVector = e.localStateVector;
-				} else if (e.updates && e.updates.length > 0) {
-					this._localStateVector = Y.encodeStateVectorFromUpdate(e.updates);
-					this.initialPersistenceUpdates = e.updates;
+				if (localStateVector) {
+					this._localStateVector = localStateVector;
 				}
 				// Restore fork from persisted state
 				if (e.fork !== undefined) {
@@ -2167,6 +2250,14 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				const e = event as EnrollmentCompleteEvent;
 				this._setLCA(e.lca);
 				if (!this._lca) return;
+				if (this.localDoc && this.localPersistence?.synced === true) {
+					const localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
+					this.rememberEnrolledLocalHead(localSnapshot, e.localStateVector);
+					this._localDocSnapshotSafe = true;
+				} else {
+					this.rememberEnrolledLocalHead(null, e.localStateVector);
+					this._localDocSnapshotSafe = false;
+				}
 				this._disk = {
 					hash: e.lca.meta.hash,
 					mtime: e.lca.meta.mtime,
@@ -3549,6 +3640,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	ensureLocalDocForIdle(): void {
 		if (!this.localDoc) {
 			this.localDoc = new Y.Doc();
+			this._localDocSnapshotSafe = false;
 			if (this._localDocClientID !== null) {
 				this.localDoc.clientID = this._localDocClientID;
 			}
@@ -3561,14 +3653,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._captureOpts,
 			);
 
-			// Do NOT apply initialPersistenceUpdates here. The persistence
-			// loads from IDB during sync and provides the correct content.
-			// Applying initialPersistenceUpdates separately can cause content
-			// duplication when IDB and persistence updates have different
-			// CRDT histories (e.g., conflict scenarios).
-			this.initialPersistenceUpdates = null;
-
-			// Update state vector once persistence finishes loading
+			// Update state vector once persistence finishes loading.
 			const updateStateVector = () => {
 				if (this.localDoc) {
 					this._localStateVector = Y.encodeStateVector(this.localDoc);
@@ -3576,6 +3661,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 						this._localDocClientID = this.localDoc.clientID;
 					}
 					this.hydrateLCAContentsFromLocalDoc();
+					this.markLocalDocSnapshotSafeIfLoadedHeadMatches();
 				}
 			};
 
@@ -3696,6 +3782,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// Reuse localDoc if it already exists (e.g., from initializeFromRemote() enrollment)
 		if (!this.localDoc) {
 			this.localDoc = new Y.Doc();
+			this._localDocSnapshotSafe = false;
 
 			// Reuse the client ID from a previous session if available.
 			// This prevents content duplication when IDB is empty on reopen:
@@ -3831,13 +3918,11 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			this.pendingIdleUpdates = null;
 		}
 
-		// Clear initialPersistenceUpdates - no longer needed (state vector already computed)
-		this.initialPersistenceUpdates = null;
-
-		// Update state vector to reflect what's in localDoc
+		// Update state vector to reflect what's in localDoc.
 		if (this.localDoc) {
 			this._localStateVector = Y.encodeStateVector(this.localDoc);
 			this.hydrateLCAContentsFromLocalDoc();
+			this.markLocalDocSnapshotSafeIfLoadedHeadMatches();
 
 			// Record the client ID for reuse across lock cycles.
 			// This prevents content duplication when IDB comes back empty on reopen.
@@ -4095,6 +4180,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	 * Caller handles remoteDoc separately.
 	 */
 	async destroyLocalDoc(): Promise<void> {
+		this.captureLocalHeadForPersistence();
 		// Capture current references before nulling — async cleanup
 		// operates on these, not on this.localDoc / this.localPersistence
 		// which may be replaced by ensureLocalDocForIdle() during the await.
@@ -4109,6 +4195,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		this.localDoc = null;
 		this.localPersistence = null;
 		this.localTextObserver = null;
+		this._localDocSnapshotSafe = false;
 		this._remoteFrontmatterMapUpdated = false;
 		this.assertMachineResources("after destroyLocalDoc");
 
@@ -4140,6 +4227,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			await persistence.clearDocumentData();
 		}
 		await this.destroyLocalDoc();
+		this.clearEnrolledLocalHead();
 	}
 
 	/**
@@ -4563,13 +4651,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 			);
 			return;
 		}
-		const localSnapshot = this.localDoc
-			? snapshotFromDoc(this.localDoc).snapshot
-			: null;
+		this.captureLocalHeadForPersistence();
+		const { localSnapshot, localStateVector } = this.getLocalHeadForPersistence();
 		const lcaSnapshot =
 			this._lca?.snapshot ??
 			(this._lca &&
-			this.localDoc?.getText("contents").toString() === this._lca.contents
+			this.localDoc?.getText("contents").toString() === this._lca.contents &&
+			this._localDocSnapshotSafe
 				? localSnapshot ?? undefined
 				: undefined);
 		const forkLocalSnapshot = this._fork?.localSnapshot;
@@ -4589,8 +4677,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				: null,
 			disk: this._disk,
 			localSnapshot,
-			...(!localSnapshot && this._localStateVector
-				? { localStateVector: this._localStateVector }
+			...(!localSnapshot && localStateVector
+				? { localStateVector }
 				: {}),
 			lastStatePath: this._statePath,
 			deferredConflict: this._deferredConflict,

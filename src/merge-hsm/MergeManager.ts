@@ -694,14 +694,13 @@ export class MergeManager {
       const lca = restorePersistedLCA(state?.lca ?? null);
       hsm.send({
         type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
         lca,
-        localStateVector: state
-          ? stateVectorFromSnapshotOrLegacy(
-              state.localSnapshot,
-              state.localStateVector,
-            )
-          : localStateVector,
+        localSnapshot: state?.localSnapshot ?? null,
+        localStateVector: state?.localSnapshot
+          ? null
+          : state
+            ? state.localStateVector ?? null
+            : localStateVector,
         fork: restorePersistedFork(state?.fork ?? null),
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
@@ -712,7 +711,6 @@ export class MergeManager {
       const lca: LCAState | null = null;
       hsm.send({
         type: 'PERSISTENCE_LOADED',
-        updates: new Uint8Array(),
         lca,
         localStateVector,
       });
@@ -938,9 +936,14 @@ export class MergeManager {
     const doc = this._getDocument(guid);
     const hsm = doc?.hsm;
     const localDoc = hsm?.getLocalDoc() ?? null;
+    hsm?.captureLocalHeadForPersistence();
+    const localHead = hsm?.getLocalHeadForPersistence() ?? {
+      localSnapshot: null,
+      localStateVector: null,
+    };
     const lcaSnapshot = fullLca?.snapshot ??
       (fullLca && localDoc?.getText('contents').toString() === fullLca.contents
-        ? snapshotFromDoc(localDoc).snapshot
+        ? localHead.localSnapshot ?? undefined
         : undefined);
     const lcaForPersistence = fullLca && lcaSnapshot
       ? { ...fullLca, snapshot: lcaSnapshot }
@@ -955,7 +958,7 @@ export class MergeManager {
     // Persist to storage via the onEffect callback
     // The integration layer handles actual IndexedDB writes
     if (hsm && this.onEffect) {
-      const localSnapshot = localDoc ? snapshotFromDoc(localDoc).snapshot : null;
+      const { localSnapshot, localStateVector } = localHead;
       const fork = hsm.state.fork;
       const forkLocalSnapshot = fork?.localSnapshot;
       const forkRemoteSnapshot = fork?.remoteSnapshot;
@@ -974,8 +977,8 @@ export class MergeManager {
           : null,
         disk: hsm.state.disk,
         localSnapshot,
-        ...(!localSnapshot && hsm.state.localStateVector
-          ? { localStateVector: hsm.state.localStateVector }
+        ...(!localSnapshot && localStateVector
+          ? { localStateVector }
           : {}),
         lastStatePath: hsm.state.statePath,
         deferredConflict: hsm.state.deferredConflict,

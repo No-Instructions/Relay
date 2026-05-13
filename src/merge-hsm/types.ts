@@ -363,9 +363,10 @@ export interface CancelEvent {
 // Internal Events
 export interface PersistenceLoadedEvent {
 	type: "PERSISTENCE_LOADED";
-	updates: Uint8Array;
 	lca: LCAState | null;
-	/** Pre-computed state vector from cache (avoids per-document IDB opens) */
+	/** Persisted local head snapshot. State vectors are fallback metadata only. */
+	localSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors. */
 	localStateVector?: Uint8Array | null;
 	/** Persisted fork data (loaded async from per-document state) */
 	fork?: Fork | null;

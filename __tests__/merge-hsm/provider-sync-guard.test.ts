@@ -26,7 +26,7 @@ describe('Provider sync guard: invokeIdleThreeWayAutoMerge', () => {
     const t = await createTestHSM();
 
     t.send(load('new-local-file'));
-    t.send(persistenceLoaded(new Uint8Array(), null));
+    t.send(persistenceLoaded(null));
     t.send({ type: 'SET_MODE_IDLE' });
 
     t.send(await diskChanged(diskText, 1000));

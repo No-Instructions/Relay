@@ -34,7 +34,7 @@ describe('E2E Recorded: clean-disk-file-test', () => {
     const t = await createTestHSM();
 
     t.send(load(guid));
-    t.send(persistenceLoaded(new Uint8Array(), null));
+    t.send(persistenceLoaded(null));
 
     // Loading is flat - waits for mode determination
     expectState(t, 'loading');

@@ -25,6 +25,7 @@ import {
 	expectNoEffect,
 	expectLocalDocText,
 	createLCA,
+	persistenceLoadedFromUpdate,
 } from "src/merge-hsm/testing";
 import type { TestHSM } from "src/merge-hsm/testing";
 import { createCrossVaultTest } from "src/merge-hsm/testing/createCrossVaultTest";
@@ -536,7 +537,7 @@ async function setupVariant2(content: string) {
   const lca = await createLCA(content, mtime, stateVector);
 
   ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
-  ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates: canonicalUpdate, lca });
+  ctx.vaultB.send(persistenceLoadedFromUpdate(canonicalUpdate, lca));
   ctx.vaultB.send({ type: 'SET_MODE_IDLE' });
   ctx.vaultB.hsm.setProviderSynced?.(true);
 
@@ -673,10 +674,9 @@ async function bootBothVaultsActive(content: string) {
   const mtime = Date.now();
   const stateVector = content ? Y.encodeStateVectorFromUpdate(canonicalUpdate) : new Uint8Array([0]);
   const lca = await createLCA(content, mtime, stateVector);
-  const updates = content ? canonicalUpdate : new Uint8Array();
 
   ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
-  ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates, lca });
+  ctx.vaultB.send(persistenceLoadedFromUpdate(content ? canonicalUpdate : new Uint8Array(), lca));
   ctx.vaultB.send({ type: 'SET_MODE_ACTIVE' });
   ctx.vaultB.send({ type: 'ACQUIRE_LOCK', editorContent: content });
 
@@ -734,7 +734,7 @@ describe('Machine edit: both vaults active', () => {
     const lca = await createLCA(content, mtime, stateVector);
 
     ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
-    ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates: canonicalUpdate, lca });
+    ctx.vaultB.send(persistenceLoadedFromUpdate(canonicalUpdate, lca));
     ctx.vaultB.send({ type: 'SET_MODE_ACTIVE' });
     ctx.vaultB.send({ type: 'ACQUIRE_LOCK', editorContent: content });
 

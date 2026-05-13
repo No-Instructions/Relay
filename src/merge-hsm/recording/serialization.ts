@@ -80,8 +80,13 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'PERSISTENCE_LOADED':
       return {
         type: 'PERSISTENCE_LOADED',
-        updates: uint8ArrayToBase64(event.updates),
         lca: event.lca ? serializeLCA(event.lca) : null,
+        ...(event.localSnapshot
+          ? { localSnapshot: uint8ArrayToBase64(event.localSnapshot) }
+          : {}),
+        ...(event.localStateVector
+          ? { localStateVector: uint8ArrayToBase64(event.localStateVector) }
+          : {}),
       };
 
     case 'MERGE_SUCCESS':
@@ -158,8 +163,13 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
     case 'PERSISTENCE_LOADED':
       return {
         type: 'PERSISTENCE_LOADED',
-        updates: base64ToUint8Array(event.updates),
         lca: event.lca ? deserializeLCA(event.lca) : null,
+        localSnapshot: event.localSnapshot
+          ? base64ToUint8Array(event.localSnapshot)
+          : null,
+        localStateVector: event.localStateVector
+          ? base64ToUint8Array(event.localStateVector)
+          : null,
       };
 
     case 'MERGE_SUCCESS':

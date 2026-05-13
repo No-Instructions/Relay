@@ -44,6 +44,7 @@ export {
   cancel,
   // Internal events
   persistenceLoaded,
+  persistenceLoadedFromUpdate,
   persistenceSynced,
   mergeSuccess,
   mergeConflict,

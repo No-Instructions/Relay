@@ -7,6 +7,7 @@
  */
 
 import * as Y from 'yjs';
+import { snapshotFromUpdate } from '../state-vectors';
 import type {
   LoadEvent,
   UnloadEvent,
@@ -203,10 +204,30 @@ export function cancel(): CancelEvent {
 // =============================================================================
 
 export function persistenceLoaded(
-  updates: Uint8Array,
+  lca: LCAState | null,
+  localHead?: {
+    localSnapshot?: Uint8Array | null;
+    localStateVector?: Uint8Array | null;
+  }
+): PersistenceLoadedEvent {
+  return {
+    type: 'PERSISTENCE_LOADED',
+    lca,
+    localSnapshot: localHead?.localSnapshot ?? null,
+    localStateVector: localHead?.localStateVector ?? null,
+  };
+}
+
+export function persistenceLoadedFromUpdate(
+  update: Uint8Array,
   lca: LCAState | null
 ): PersistenceLoadedEvent {
-  return { type: 'PERSISTENCE_LOADED', updates, lca };
+  return persistenceLoaded(
+    lca,
+    update.byteLength > 0
+      ? { localSnapshot: snapshotFromUpdate(update).snapshot }
+      : undefined,
+  );
 }
 
 export function persistenceSynced(hasContent: boolean): PersistenceSyncedEvent {
@@ -397,8 +418,8 @@ export async function loadAndActivate(
   // 1. LOAD → loading (flat state)
   hsm.send(load(guid));
 
-  // 2. PERSISTENCE_LOADED → stays in loading, stores LCA and updates
-  hsm.send(persistenceLoaded(updates, lca));
+  // 2. PERSISTENCE_LOADED → stays in loading, stores persisted metadata
+  hsm.send(persistenceLoadedFromUpdate(updates, lca));
 
   // 3. SET_MODE_ACTIVE → active.loading (mode determination)
   hsm.send({ type: 'SET_MODE_ACTIVE' });
@@ -505,7 +526,7 @@ export async function loadToIdle(
   // 1. LOAD → loading
   hsm.send(load(guid));
   // 2. PERSISTENCE_LOADED → stays in loading, stores LCA
-  hsm.send(persistenceLoaded(updates, lca));
+  hsm.send(persistenceLoadedFromUpdate(updates, lca));
   // 3. SET_MODE_IDLE → idle.loading → idle.synced (or other idle substate)
   hsm.send({ type: 'SET_MODE_IDLE' });
   // 4. Mark provider as synced so idle auto-merges can proceed.
@@ -573,7 +594,7 @@ export async function loadToLoading(
   // Drive through transitions
   // LOAD → loading, PERSISTENCE_LOADED → stays in loading
   hsm.send(load(guid));
-  hsm.send(persistenceLoaded(updates, lca));
+  hsm.send(persistenceLoadedFromUpdate(updates, lca));
 
   // Verify we reached the expected state
   if (!hsm.matches('loading')) {
@@ -658,7 +679,7 @@ export async function loadToConflict(
   // - SET_MODE_IDLE transitions to idle
   hsm.send(load(guid));
   // Pass base updates for local state vector to match LCA
-  hsm.send(persistenceLoaded(baseUpdates, baseLca));
+  hsm.send(persistenceLoadedFromUpdate(baseUpdates, baseLca));
   // Send REMOTE_UPDATE to set _remoteStateVector (different from LCA)
   // This simulates remote edits that happened while we were offline
   hsm.send({ type: 'REMOTE_UPDATE', update: remoteUpdates });

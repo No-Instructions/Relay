@@ -31,6 +31,7 @@ import {
   disconnected,
   error,
   persistenceLoaded,
+  persistenceLoadedFromUpdate,
   load,
   createLCA,
   createYjsUpdate,
@@ -221,7 +222,7 @@ describe('MergeHSM', () => {
         t.syncRemoteWithUpdate(updates);
         t.setProviderSynced(true);
         t.send(load('test-guid', 'test.md'));
-        t.send(persistenceLoaded(updates, null));
+        t.send(persistenceLoadedFromUpdate(updates, null));
         t.send({ type: 'SET_MODE_IDLE' });
 
         (t.hsm as any).setStatePath('idle.synced');
@@ -2526,7 +2527,7 @@ describe('MergeHSM', () => {
       // Load without LCA so auto-merge can't complete and state stays remoteAhead
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send({ type: 'SET_MODE_IDLE' });
       expectState(t, 'idle.synced');
 
@@ -2542,7 +2543,7 @@ describe('MergeHSM', () => {
     test('no-LCA diverged state reports pending during bootstrap', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send({ type: 'SET_MODE_IDLE' });
 
       t.applyRemoteChange('remote content');
@@ -2563,7 +2564,7 @@ describe('MergeHSM', () => {
       });
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send({ type: 'SET_MODE_IDLE' });
 
       expectState(t, 'idle.localAhead');
@@ -2586,7 +2587,7 @@ describe('MergeHSM', () => {
       });
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send(await diskChanged(diskContent, 123, 'disk-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
@@ -2600,7 +2601,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send(await diskChanged(diskContent, 123, 'disk-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
@@ -2614,7 +2615,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send(await diskChanged(content, 123, 'disk-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
@@ -2644,7 +2645,7 @@ describe('MergeHSM', () => {
       const t = await createTestHSM();
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send(await diskChanged(content, 123, 'disk-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
@@ -2663,7 +2664,7 @@ describe('MergeHSM', () => {
       });
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, null));
+      t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
       (t.hsm as any).setStatePath('idle.diverged');
       (t.hsm as any).remoteDoc = null;
@@ -2684,7 +2685,7 @@ describe('MergeHSM', () => {
       t.setProviderSynced(true);
 
       t.send(load('test-guid'));
-      t.send(persistenceLoaded(updates, null));
+      t.send(persistenceLoadedFromUpdate(updates, null));
       t.send(await diskChanged(content, 456, 'same-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
       await (t.hsm as any).awaitAsync('recover-lca');
@@ -2710,7 +2711,7 @@ describe('MergeHSM', () => {
       t.syncRemoteWithUpdate(baseUpdate);
 
       t.send(load('test-guid'));
-      t.send(persistenceLoaded(localUpdate, null));
+      t.send(persistenceLoadedFromUpdate(localUpdate, null));
       await (t.hsm as any).ensurePersistence();
       (t.hsm as any).pendingRecoverLCADisk = {
         content,
@@ -2744,7 +2745,7 @@ describe('MergeHSM', () => {
       t.seedIndexedDB(updates);
       t.syncRemoteWithUpdate(updates);
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, null));
+      t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
       await t.awaitIdleAutoMerge();
 
@@ -2768,7 +2769,7 @@ describe('MergeHSM', () => {
       t.syncRemoteWithUpdate(updates);
       t.setProviderSynced(true);
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, null));
+      t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
       await t.awaitIdleAutoMerge();
 
@@ -2796,7 +2797,7 @@ describe('MergeHSM', () => {
       t.setProviderSynced(true);
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send(await diskChanged(content, 456, 'same-hash'));
       t.send({ type: 'SET_MODE_IDLE' });
 
@@ -2844,7 +2845,7 @@ describe('MergeHSM', () => {
       t.seedIndexedDB(updates);
       t.syncRemoteWithUpdate(updates);
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, null));
+      t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
       await t.hsm.awaitForkReconcile();
 
@@ -2873,7 +2874,7 @@ describe('MergeHSM', () => {
       t.seedIndexedDB(updates);
       t.syncRemoteWithUpdate(updates);
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, null));
+      t.send(persistenceLoadedFromUpdate(updates, null));
       t.send({ type: 'SET_MODE_IDLE' });
       await t.awaitIdleAutoMerge();
 
@@ -2908,7 +2909,7 @@ describe('MergeHSM', () => {
       t.syncRemoteWithUpdate(remoteUpdate);
       t.setProviderSynced(true);
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(localUpdate, null));
+      t.send(persistenceLoadedFromUpdate(localUpdate, null));
       t.send({ type: 'SET_MODE_IDLE' });
 
       await t.hsm.bootstrapLCAFromDisk({
@@ -3028,14 +3029,14 @@ describe('MergeHSM', () => {
       const lca = await createLCA('hello', 1000);
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, lca));
+      t.send(persistenceLoadedFromUpdate(updates, lca));
       t.send({ type: 'SET_MODE_ACTIVE' });
 
       // Don't seed IndexedDB — unenrolled document.
       // When IDB is empty, HSM stays in awaitingPersistence until enrollment.
       const t2 = await createTestHSM();
       t2.send(load('test-guid', 'test.md'));
-      t2.send(persistenceLoaded(new Uint8Array(), null));
+      t2.send(persistenceLoaded(null));
       t2.send({ type: 'SET_MODE_ACTIVE' });
       t2.send(acquireLock());
 
@@ -3056,7 +3057,7 @@ describe('MergeHSM', () => {
     test('unenrolled doc with LCA → stays in awaitingPersistence', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), {
+      t.send(persistenceLoaded({
         contents: 'user content',
         meta: { hash: 'h', mtime: 1 },
         stateVector: new Uint8Array([0]),
@@ -3071,7 +3072,7 @@ describe('MergeHSM', () => {
     test('unenrolled doc without LCA → stays in awaitingPersistence', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send({ type: 'SET_MODE_ACTIVE' });
       t.send(acquireLock());
 
@@ -3082,7 +3083,7 @@ describe('MergeHSM', () => {
     test('unenrolled doc waits in awaitingPersistence, enrollment re-fires PERSISTENCE_SYNCED', async () => {
       const t = await createTestHSM();
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(new Uint8Array(), null));
+      t.send(persistenceLoaded(null));
       t.send({ type: 'SET_MODE_ACTIVE' });
       t.send({
         type: 'OBSIDIAN_SET_VIEW_DATA',
@@ -3110,7 +3111,7 @@ describe('MergeHSM', () => {
       const lca = await createLCA(content, 1000);
 
       t.send(load('test-guid', 'test.md'));
-      t.send(persistenceLoaded(updates, lca));
+      t.send(persistenceLoadedFromUpdate(updates, lca));
       t.send({ type: 'SET_MODE_ACTIVE' });
 
       // In production, ProviderIntegration may send PROVIDER_SYNCED before
@@ -3133,7 +3134,7 @@ describe('MergeHSM', () => {
       t.syncRemoteWithUpdate(updates);
       t.seedIndexedDB(updates);
       t.send(load('test-guid'));
-      t.send(persistenceLoaded(updates, lca));
+      t.send(persistenceLoadedFromUpdate(updates, lca));
       t.send({ type: 'SET_MODE_ACTIVE' });
       t.send({
         type: 'OBSIDIAN_SET_VIEW_DATA',
@@ -3184,7 +3185,7 @@ describe('MergeHSM', () => {
       t.syncRemoteWithUpdate(updates);
       t.seedIndexedDB(updates);
       t.send(load('test-guid'));
-      t.send(persistenceLoaded(updates, lca));
+      t.send(persistenceLoadedFromUpdate(updates, lca));
       t.send({ type: 'SET_MODE_ACTIVE' });
       t.send({
         type: 'OBSIDIAN_SET_VIEW_DATA',
@@ -3405,7 +3406,7 @@ describe('Invalid state transitions', () => {
     const lca = await createLCA('content', 1000, Y.encodeStateVectorFromUpdate(updates));
 
     t.send(load('test-guid'));
-    t.send(persistenceLoaded(updates, lca));
+    t.send(persistenceLoadedFromUpdate(updates, lca));
     t.send({ type: 'SET_MODE_ACTIVE' });
 
     // Now in active.loading, send UNLOAD
@@ -3647,7 +3648,7 @@ describe('Events in wrong lifecycle phase', () => {
     // Send persistence loaded again (should be ignored in active mode)
     const updates = createYjsUpdate('different');
     const lca = await createLCA('different', 9999);
-    t.send(persistenceLoaded(updates, lca));
+    t.send(persistenceLoadedFromUpdate(updates, lca));
 
     expect(t.statePath).toBe('active.tracking');
     // Content should not have changed
@@ -3765,7 +3766,7 @@ describe('Event ordering edge cases', () => {
     // Now send persistence loaded and mode
     const updates = createYjsUpdate('original');
     const lca = await createLCA('original', 1000, Y.encodeStateVectorFromUpdate(updates));
-    t.send(persistenceLoaded(updates, lca));
+    t.send(persistenceLoadedFromUpdate(updates, lca));
     t.send({ type: 'SET_MODE_IDLE' });
 
     await t.hsm.awaitIdleAutoMerge();
@@ -3789,7 +3790,7 @@ describe('Event ordering edge cases', () => {
 
     expectState(t, 'idle.loading');
 
-    t.send(persistenceLoaded(localUpdate, lca));
+    t.send(persistenceLoadedFromUpdate(localUpdate, lca));
 
     expectState(t, 'idle.localAhead');
     expect(
@@ -3933,7 +3934,7 @@ describe('Document integration surface edge cases', () => {
 
     const updates = createYjsUpdate('base content');
     const lca = await createLCA('base content', 1000);
-    t.send(persistenceLoaded(updates, lca));
+    t.send(persistenceLoadedFromUpdate(updates, lca));
 
     // Send REMOTE_UPDATE before mode determination
     t.applyRemoteChange('base content + remote');
@@ -3952,7 +3953,7 @@ describe('Document integration surface edge cases', () => {
     t.send(load('test-guid'));
     const updates = createYjsUpdate('content');
     const lca = await createLCA('content', 1000);
-    t.send(persistenceLoaded(updates, lca));
+    t.send(persistenceLoadedFromUpdate(updates, lca));
 
     // Send DISK_CHANGED before mode determination
     t.send(await diskChanged('content on disk', 2000));

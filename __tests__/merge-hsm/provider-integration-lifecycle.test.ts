@@ -8,7 +8,7 @@
 
 import * as Y from 'yjs';
 import { createCrossVaultTest } from 'src/merge-hsm/testing/createCrossVaultTest';
-import { loadAndActivate, createLCA } from 'src/merge-hsm/testing';
+import { loadAndActivate, createLCA, persistenceLoadedFromUpdate } from 'src/merge-hsm/testing';
 import { ProviderIntegration } from 'src/merge-hsm/integration/ProviderIntegration';
 
 // =============================================================================
@@ -44,10 +44,9 @@ async function bootWithProvider(content: string) {
   const mtime = Date.now();
   const stateVector = content ? Y.encodeStateVectorFromUpdate(canonicalUpdate) : new Uint8Array([0]);
   const lca = await createLCA(content, mtime, stateVector);
-  const updates = content ? canonicalUpdate : new Uint8Array();
 
   ctx.vaultB.send({ type: 'LOAD', guid: 'cross-vault-doc' });
-  ctx.vaultB.send({ type: 'PERSISTENCE_LOADED', updates, lca });
+  ctx.vaultB.send(persistenceLoadedFromUpdate(content ? canonicalUpdate : new Uint8Array(), lca));
   ctx.vaultB.send({ type: 'SET_MODE_ACTIVE' });
   ctx.vaultB.send({ type: 'ACQUIRE_LOCK', editorContent: content });
 
