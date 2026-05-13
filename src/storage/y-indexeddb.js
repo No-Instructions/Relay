@@ -10,7 +10,6 @@ const customStoreName = 'custom'
 const updatesStoreName = 'updates'
 const historyStoreName = 'history'
 const DB_VERSION = 2
-const IDB_OPEN_TIMEOUT_MS = 10000
 
 /**
  * Compare two Uint8Arrays for equality
@@ -577,7 +576,6 @@ export class IndexeddbPersistence extends Observable {
         const done = () => {
           if (finished) return
           finished = true
-          clearTimeout(timeoutId)
           resolve()
         }
         const markMigrated = () => {
@@ -588,10 +586,6 @@ export class IndexeddbPersistence extends Observable {
           return idb.put(writeStore, oldName, 'migratedFrom').catch(() => {})
         }
         const req = indexedDB.open(oldName)
-        const timeoutId = setTimeout(() => {
-          idbWarn(`migration open timed out for ${oldName}`)
-          done()
-        }, IDB_OPEN_TIMEOUT_MS)
         req.onblocked = () => {
           idbWarn(`migration open blocked for ${oldName}`)
         }
