@@ -20,6 +20,7 @@ import type {
   SerializableSnapshot,
   SyncStatus,
   IYDocPersistence,
+  CreatePersistence,
   DiskLoader,
   CaptureOpts,
 } from '../types';
@@ -70,6 +71,9 @@ export interface TestHSMOptions {
    * Use for replay-based testing where recorded events drive transitions.
    */
   replayMode?: boolean;
+
+  /** Override persistence creation for targeted lifecycle tests. */
+  createPersistence?: CreatePersistence;
 }
 
 export interface TestHSM {
@@ -251,7 +255,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
   const captureEntries = new Map<number, any>();
   let captureKeyCounter = 0;
 
-  const createPersistence = (_vaultId: string, doc: Y.Doc, captureOpts?: CaptureOpts | null): IYDocPersistence => {
+  const createPersistence: CreatePersistence = options.createPersistence ?? ((_vaultId: string, doc: Y.Doc, captureOpts?: CaptureOpts | null): IYDocPersistence => {
     // Subscribe to doc updates to track changes as individual rows
     const updateHandler = (update: Uint8Array, origin: any) => {
       updateRows.push({ key: ++updateRowKeyCounter, update, origin });
@@ -335,7 +339,7 @@ export async function createTestHSM(options: TestHSMOptions = {}): Promise<TestH
     };
 
     return persistence;
-  };
+  });
 
   // Create the HSM using the normal constructor (no forTesting bypass)
   const guid = options.guid ?? 'test-guid';

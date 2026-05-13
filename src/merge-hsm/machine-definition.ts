@@ -77,6 +77,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			ENROLLMENT_COMPLETE: { target: 'loading', actions: ['storeEnrollmentComplete'] },
+			ERROR: { target: 'idle.error', actions: ['storeError'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
 	},

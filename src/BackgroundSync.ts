@@ -279,7 +279,9 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private shouldSkipDocumentSync(item: Document | Canvas | SyncFile): boolean {
-		return isDocument(item) && item.hsm?.getSyncStatus().status === "conflict";
+		if (!isDocument(item)) return false;
+		const status = item.hsm?.getSyncStatus().status;
+		return status === "conflict" || status === "error";
 	}
 
 	getOverallProgress(): SyncProgress {
@@ -1173,9 +1175,10 @@ export class BackgroundSync extends HasLogging {
 
 		const hsm = item.hsm;
 		if (!hsm) return true;
-		if (hsm.getSyncStatus().status === "conflict") return false;
+		const status = hsm.getSyncStatus().status;
+		if (status === "conflict" || status === "error") return false;
 		if (!hsm.state.lca) return true;
-		if (hsm.getSyncStatus().status !== "synced") return true;
+		if (status !== "synced") return true;
 
 		const mergeManager = item.sharedFolder.mergeManager;
 		if (!mergeManager) return true;

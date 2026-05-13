@@ -90,6 +90,7 @@ import type { FrontMatterPrimitives } from "./types";
 import { errorFromUnknown, formatUserFacingError } from "../UserFacingError";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
+const LOCAL_PERSISTENCE_READY_TIMEOUT_MS = 30_000;
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
 type RecoverLCADisk = { content: string; hash: string; mtime: number };
 type ConflictInit = {
@@ -245,6 +246,8 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 
 	// Persistence for localDoc (alive in idle + active mode; null when unloaded/hibernated)
 	private localPersistence: IYDocPersistence | null = null;
+	private localPersistenceWatchdogTimer: number | null = null;
+	private localPersistenceWatchdogTarget: IYDocPersistence | null = null;
 
 	// Last known editor text (for drift detection)
 	private lastKnownEditorText: string | null = null;
@@ -1509,6 +1512,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.localDoc,
 				this._captureOpts,
 			);
+			this.watchLocalPersistence(this.localPersistence);
 		}
 		const persistence = this.localPersistence;
 		await this.awaitLocalPersistenceSynced();
@@ -3654,9 +3658,13 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this.localDoc,
 				this._captureOpts,
 			);
+			const persistence = this.localPersistence;
+			this.watchLocalPersistence(persistence);
 
 			// Update state vector once persistence finishes loading.
 			const updateStateVector = () => {
+				if (this.localPersistence !== persistence) return;
+				this.clearLocalPersistenceWatchdog(persistence);
 				if (this.localDoc) {
 					this._localStateVector = Y.encodeStateVector(this.localDoc);
 					if (this._localDocClientID === null) {
@@ -3667,13 +3675,61 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				}
 			};
 
-			if (this.localPersistence.synced) {
+			if (persistence.synced) {
 				updateStateVector();
 			} else {
-				this.localPersistence.once("synced", updateStateVector);
+				persistence.once("synced", updateStateVector);
 			}
 		}
 		this.assertMachineResources("after ensureLocalDocForIdle");
+	}
+
+	private watchLocalPersistence(persistence: IYDocPersistence): void {
+		if (persistence.synced) {
+			this.clearLocalPersistenceWatchdog(persistence);
+			return;
+		}
+		if (this.localPersistenceWatchdogTarget === persistence) return;
+
+		this.clearLocalPersistenceWatchdog();
+		this.localPersistenceWatchdogTarget = persistence;
+
+		persistence.whenSynced.then(
+			() => this.clearLocalPersistenceWatchdog(persistence),
+			(error) => this.failLocalPersistence(persistence, error),
+		);
+
+		this.localPersistenceWatchdogTimer = this.timeProvider.setTimeout(() => {
+			if (this.localPersistence !== persistence || persistence.synced) {
+				this.clearLocalPersistenceWatchdog(persistence);
+				return;
+			}
+			this.failLocalPersistence(
+				persistence,
+				new Error("Local sync database did not open"),
+			);
+		}, LOCAL_PERSISTENCE_READY_TIMEOUT_MS);
+	}
+
+	private clearLocalPersistenceWatchdog(persistence?: IYDocPersistence): void {
+		if (persistence && this.localPersistenceWatchdogTarget !== persistence) return;
+		if (this.localPersistenceWatchdogTimer !== null) {
+			this.timeProvider.clearTimeout(this.localPersistenceWatchdogTimer);
+		}
+		this.localPersistenceWatchdogTimer = null;
+		this.localPersistenceWatchdogTarget = null;
+	}
+
+	private failLocalPersistence(persistence: IYDocPersistence, error: unknown): void {
+		if (this.localPersistence !== persistence || persistence.synced) return;
+
+		this.clearLocalPersistenceWatchdog(persistence);
+		const hsmError = errorFromUnknown(error, "Local sync database failed to open");
+		this.hsmError(
+			`local persistence failed | guid=${this._guid} path=${this.path} error=${formatUserFacingError(hsmError)}`,
+			hsmError,
+		);
+		this.send({ type: "ERROR", error: hsmError });
 	}
 
 	/**
@@ -3811,14 +3867,17 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				this._captureOpts,
 			);
 		}
+		const persistence = this.localPersistence;
+		this.watchLocalPersistence(persistence);
 
 		// Check if persistence already synced (race condition fix).
 		// If synced is already true, the 'synced' event won't fire again,
 		// so we must call the handler immediately.
-		if (this.localPersistence.synced) {
+		if (persistence.synced) {
 			this.handleLocalPersistenceSynced();
 		} else {
-			this.localPersistence.once("synced", () => {
+			persistence.once("synced", () => {
+				if (this.localPersistence !== persistence) return;
 				this.handleLocalPersistenceSynced();
 			});
 		}
@@ -3863,6 +3922,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		// or unload happened during async persistence load), ignore this callback.
 		if (!this.matches("active.entering.awaitingPersistence")) {
 			return;
+		}
+		if (this.localPersistence) {
+			this.clearLocalPersistenceWatchdog(this.localPersistence);
 		}
 
 		// Set persistence metadata for recovery/debugging
@@ -4191,6 +4253,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		const observer = this.localTextObserver;
 		// Capture and null handler references from the bridge
 		const { localUpdateHandler, remoteUpdateHandler } = this._bridge.detachHandlers();
+		this.clearLocalPersistenceWatchdog(persistence ?? undefined);
 
 		// Null out immediately (synchronous) so the HSM is in a clean
 		// state for any subsequent ensureLocalDocForIdle() call.

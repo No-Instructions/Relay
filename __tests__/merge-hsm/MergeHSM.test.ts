@@ -1697,6 +1697,27 @@ describe('MergeHSM', () => {
       const status = t.hsm.getSyncStatus();
       expect(status.status).toBe('error');
     });
+
+    test('local persistence that never becomes ready transitions to idle.error', async () => {
+      const t = await createTestHSM({
+        createPersistence: () => ({
+          synced: false,
+          once() {},
+          destroy() {},
+          whenSynced: new Promise(() => {}),
+          hasUserData: () => false,
+          opCapture: null,
+        }),
+      });
+
+      await loadToIdle(t, { content: null });
+
+      t.time.setTime(t.time.now() + 30_000);
+
+      expectState(t, 'idle.error');
+      expect(t.state.error?.message).toBe('Local sync database did not open');
+      expect(t.hsm.getSyncStatus().status).toBe('error');
+    });
   });
 
   // ===========================================================================
