@@ -1465,26 +1465,17 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
-		this.backgroundSync.cancelDocumentWork(fromGuid);
-
 		const existingFile = this.files.get(fromGuid);
 		const existingHsm = existingFile && isDocument(existingFile)
 			? existingFile.hsm
 			: null;
 		if (sameGuid) {
-			await existingHsm?.destroyLocalDoc().catch((e) => {
+			try {
+				await existingHsm?.resetLocalPersistenceForRebuild();
+			} catch (e) {
 				this.warn(`[${path}] rebuild local cleanup failed`, e);
-			});
-		}
-		if (existingFile) {
-			this.files.delete(fromGuid);
-			this.fset.delete(existingFile);
-			existingFile.cleanup();
-			existingFile.destroy();
-		}
-
-		if (sameGuid) {
-			await this.deleteDocumentDatabase(fromGuid);
+				throw e;
+			}
 			await this._hsmStore.deleteState(fromGuid);
 		} else {
 			try {
@@ -1492,6 +1483,15 @@ export class SharedFolder extends HasProvider {
 			} catch {}
 			const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
 			awaitOnReload(p);
+		}
+
+		this.backgroundSync.cancelDocumentWork(fromGuid);
+
+		if (existingFile) {
+			this.files.delete(fromGuid);
+			this.fset.delete(existingFile);
+			existingFile.cleanup();
+			existingFile.destroy();
 		}
 
 		this.syncStore.pendingUpload.delete(path);
@@ -1533,15 +1533,6 @@ export class SharedFolder extends HasProvider {
 
 	async rebuildDocumentFromRemote(guid: string, path: string): Promise<void> {
 		await this.executeRemap({ path, fromGuid: guid, toGuid: guid });
-	}
-
-	private async deleteDocumentDatabase(guid: string): Promise<void> {
-		const name = `${this.appId}-relay-doc-${guid}`;
-		await new Promise<void>((resolve, reject) => {
-			const request = indexedDB.deleteDatabase(name);
-			request.onsuccess = () => resolve();
-			request.onerror = () => reject(request.error);
-		});
 	}
 
 	private applyRemoteState(

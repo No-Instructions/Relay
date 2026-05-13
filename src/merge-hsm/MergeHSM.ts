@@ -4132,6 +4132,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		}
 	}
 
+	async resetLocalPersistenceForRebuild(): Promise<void> {
+		const persistence = this.localPersistence as typeof this.localPersistence & {
+			clearDocumentData?: () => Promise<void>;
+		};
+		if (persistence?.clearDocumentData) {
+			await persistence.clearDocumentData();
+		}
+		await this.destroyLocalDoc();
+	}
+
 	/**
 	 * Central chokepoint for LCA *capture* (when we believe we've reached a
 	 * new common-ancestor state with the CRDT).

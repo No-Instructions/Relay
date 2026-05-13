@@ -463,6 +463,38 @@ export class IndexeddbPersistence extends Observable {
     super.destroy()
   }
 
+  async clearDocumentData () {
+    await this.whenSynced
+
+    if (this._pendingWrites.size > 0) {
+      await Promise.all(this._pendingWrites)
+    }
+    if (this._pendingCompaction) {
+      await this._pendingCompaction
+    }
+    if (!this.db) return
+
+    const storeNames = [updatesStoreName, customStoreName, historyStoreName]
+      .filter(storeName => this.db.objectStoreNames.contains(storeName))
+
+    if (storeNames.length > 0) {
+      await new Promise((resolve, reject) => {
+        const tx = this.db.transaction(storeNames, 'readwrite')
+        for (const storeName of storeNames) {
+          tx.objectStore(storeName).clear()
+        }
+        tx.oncomplete = () => resolve()
+        tx.onerror = () => reject(tx.error || new Error(`Failed to clear ${this.name}`))
+        tx.onabort = () => reject(tx.error || new Error(`Aborted clearing ${this.name}`))
+      })
+    }
+
+    this._dbref = 0
+    this._dbsize = 0
+    this._serverSynced = undefined
+    this._origin = undefined
+  }
+
   /**
    * Destroys this instance and removes all data from indexeddb.
    *
