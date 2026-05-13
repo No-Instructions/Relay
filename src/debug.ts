@@ -427,6 +427,7 @@ class RelayMetrics {
 	private bgSyncActive: MetricInstance | null = null;
 	private bgSyncQueueLength: MetricInstance | null = null;
 	private bgSyncOpsTotal: MetricInstance | null = null;
+	private documentRebuildsTotal: MetricInstance | null = null;
 
 	// Wake queue
 	private wakeQueueSlots: MetricInstance | null = null;
@@ -513,6 +514,11 @@ class RelayMetrics {
 			help: "Total background sync operations by result",
 			labelNames: ["operation", "result"],
 		});
+		this.documentRebuildsTotal = api.createCounter({
+			name: "relay_document_rebuilds_total",
+			help: "Total document rebuild and GUID remap operations by result",
+			labelNames: ["operation", "result"],
+		});
 
 		// Wake queue
 		this.wakeQueueSlots = api.createGauge({
@@ -591,6 +597,13 @@ class RelayMetrics {
 
 	incBgSyncOps(operation: "sync" | "download", result: "completed" | "failed"): void {
 		this.bgSyncOpsTotal?.labels({ operation, result }).inc();
+	}
+
+	incDocumentRebuild(
+		operation: "rebuild" | "remap",
+		result: "started" | "completed" | "deferred" | "failed",
+	): void {
+		this.documentRebuildsTotal?.labels({ operation, result }).inc();
 	}
 
 	// -- Protocol IO --

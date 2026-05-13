@@ -31,7 +31,7 @@ import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
 import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
-import { RelayInstances } from "./debug";
+import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
@@ -1442,7 +1442,17 @@ export class SharedFolder extends HasProvider {
 	}): Promise<void> {
 		const sameGuid = fromGuid === toGuid;
 		const operation = sameGuid ? "rebuild" : "remap";
+		metrics.incDocumentRebuild(operation, "started");
+		let operationTerminalRecorded = false;
+		const recordOperationTerminal = (
+			result: "completed" | "deferred" | "failed",
+		) => {
+			if (operationTerminalRecorded) return;
+			metrics.incDocumentRebuild(operation, result);
+			operationTerminalRecorded = true;
+		};
 		if (!this.connected) {
+			recordOperationTerminal("deferred");
 			this.log(`[${path}] ${operation} deferred: folder offline`);
 			return;
 		}
@@ -1451,84 +1461,96 @@ export class SharedFolder extends HasProvider {
 		try {
 			updateBytes = await this.backgroundSync.downloadByGuid(this, toGuid, path);
 		} catch (e) {
+			recordOperationTerminal("deferred");
 			this.warn(`[${path}] ${operation} download failed, deferring`, e);
 			return;
 		}
 
 		if (!updateBytes) {
+			recordOperationTerminal("deferred");
 			this.log(`[${path}] ${operation} deferred: server has guid but no content yet`);
 			return;
 		}
 
 		if (this.destroyed) {
+			recordOperationTerminal("deferred");
 			this.log(`[${path}] ${operation} aborted: folder destroyed during download`);
 			return;
 		}
 
-		const existingFile = this.files.get(fromGuid);
-		const existingHsm = existingFile && isDocument(existingFile)
-			? existingFile.hsm
-			: null;
-		if (sameGuid) {
-			try {
-				await existingHsm?.resetLocalPersistenceForRebuild();
-			} catch (e) {
-				this.warn(`[${path}] rebuild local cleanup failed`, e);
-				throw e;
+		try {
+			const existingFile = this.files.get(fromGuid);
+			const existingHsm = existingFile && isDocument(existingFile)
+				? existingFile.hsm
+				: null;
+			if (sameGuid) {
+				try {
+					await existingHsm?.resetLocalPersistenceForRebuild();
+				} catch (e) {
+					this.warn(`[${path}] rebuild local cleanup failed`, e);
+					throw e;
+				}
+				await this._hsmStore.deleteState(fromGuid);
+			} else {
+				try {
+					indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
+				} catch {}
+				const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
+				awaitOnReload(p);
 			}
-			await this._hsmStore.deleteState(fromGuid);
-		} else {
-			try {
-				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
-			} catch {}
-			const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
-			awaitOnReload(p);
+
+			this.backgroundSync.cancelDocumentWork(fromGuid);
+
+			if (existingFile) {
+				this.files.delete(fromGuid);
+				this.fset.delete(existingFile);
+				existingFile.cleanup();
+				existingFile.destroy();
+			}
+
+			this.syncStore.pendingUpload.delete(path);
+
+			const newDoc = this.getOrCreateDoc(toGuid, path);
+			this.files.set(toGuid, newDoc);
+			this.fset.add(newDoc, true);
+			const isCurrentDoc = () =>
+				!this.destroyed && !newDoc.destroyed && this.files.get(toGuid) === newDoc;
+
+			if (!isCurrentDoc()) {
+				recordOperationTerminal("deferred");
+				this.log(`[${path}] ${operation} aborted: new document is stale`);
+				return;
+			}
+
+			if (updateBytes) {
+				await newDoc.hsm?.initializeFromRemote(updateBytes);
+				const remoteDoc = newDoc.ensureRemoteDoc();
+				Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
+				newDoc.hsm?.setRemoteDoc(remoteDoc);
+			}
+			if (!isCurrentDoc()) {
+				recordOperationTerminal("deferred");
+				this.log(`[${path}] ${operation} aborted after enroll: new document is stale`);
+				return;
+			}
+			if (newDoc.hsm && !newDoc.hsm.state.lca) {
+				await newDoc.hsm.awaitIdle();
+				const diskState = await newDoc.readDiskContent();
+				await newDoc.hsm.bootstrapLCAFromDisk(diskState);
+			}
+			await this.poll([toGuid]);
+
+			recordOperationTerminal("completed");
+
+			this.log(
+				sameGuid
+					? `Rebuilt Document ${path}: ${toGuid}`
+					: `Remapped Document ${path}: ${fromGuid} → ${toGuid}`,
+			);
+		} catch (e) {
+			recordOperationTerminal("failed");
+			throw e;
 		}
-
-		this.backgroundSync.cancelDocumentWork(fromGuid);
-
-		if (existingFile) {
-			this.files.delete(fromGuid);
-			this.fset.delete(existingFile);
-			existingFile.cleanup();
-			existingFile.destroy();
-		}
-
-		this.syncStore.pendingUpload.delete(path);
-
-		const newDoc = this.getOrCreateDoc(toGuid, path);
-		this.files.set(toGuid, newDoc);
-		this.fset.add(newDoc, true);
-		const isCurrentDoc = () =>
-			!this.destroyed && !newDoc.destroyed && this.files.get(toGuid) === newDoc;
-
-		if (!isCurrentDoc()) {
-			this.log(`[${path}] ${operation} aborted: new document is stale`);
-			return;
-		}
-
-		if (updateBytes) {
-			await newDoc.hsm?.initializeFromRemote(updateBytes);
-			const remoteDoc = newDoc.ensureRemoteDoc();
-			Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
-			newDoc.hsm?.setRemoteDoc(remoteDoc);
-		}
-		if (!isCurrentDoc()) {
-			this.log(`[${path}] ${operation} aborted after enroll: new document is stale`);
-			return;
-		}
-		if (newDoc.hsm && !newDoc.hsm.state.lca) {
-			await newDoc.hsm.awaitIdle();
-			const diskState = await newDoc.readDiskContent();
-			await newDoc.hsm.bootstrapLCAFromDisk(diskState);
-		}
-		await this.poll([toGuid]);
-
-		this.log(
-			sameGuid
-				? `Rebuilt Document ${path}: ${toGuid}`
-				: `Remapped Document ${path}: ${fromGuid} → ${toGuid}`,
-		);
 	}
 
 	async rebuildDocumentFromRemote(guid: string, path: string): Promise<void> {
