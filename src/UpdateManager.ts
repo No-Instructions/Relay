@@ -10,6 +10,7 @@ declare const REPOSITORY: string;
 
 // Private Obsidian API
 export type WithPlugins = {
+	_reloadAwait?: Promise<unknown>[] | null;
 	plugins: {
 		disablePlugin(id: string): Promise<void>;
 		enablePlugin(id: string): Promise<void>;
@@ -422,8 +423,11 @@ export class UpdateManager extends Observable<UpdateManager> {
 			this.debug("Update complete. Reloading plugin...");
 
 			const pluginId = "system3-relay";
-			const plugins = this.plugin.app.plugins;
+			const { plugins } = this.plugin.app;
+			this.plugin.app._reloadAwait = [];
 			await plugins.disablePlugin(pluginId);
+			await Promise.allSettled(this.plugin.app._reloadAwait || []);
+			this.plugin.app._reloadAwait = null;
 			await plugins.enablePlugin(pluginId);
 
 			return true;
