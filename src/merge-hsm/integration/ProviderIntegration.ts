@@ -10,6 +10,7 @@
 import * as Y from 'yjs';
 import type { MergeHSM } from '../MergeHSM';
 import { curryLog } from '../../debug';
+import { snapshotFromDoc } from '../state-vectors';
 
 const providerError = curryLog("[ProviderIntegration]", "error");
 
@@ -35,6 +36,10 @@ export interface YjsProvider {
   connectionState?: { status: string };
 }
 
+export interface ProviderIntegrationOptions {
+  onSyncedRemoteHead?: (snapshot: Uint8Array) => void;
+}
+
 // =============================================================================
 // ProviderIntegration Class
 // =============================================================================
@@ -54,7 +59,8 @@ export class ProviderIntegration {
   constructor(
     hsm: MergeHSM,
     remoteDoc: Y.Doc,
-    provider: YjsProvider
+    provider: YjsProvider,
+    private readonly options: ProviderIntegrationOptions = {},
   ) {
     this.hsm = hsm;
     this.remoteDoc = remoteDoc;
@@ -80,7 +86,8 @@ export class ProviderIntegration {
     if (provider.connectionState?.status === 'connected') {
       hsm.send({ type: 'CONNECTED' });
     }
-    if (provider.synced) {
+    if (provider.synced && this.isProviderConnected()) {
+      this.options.onSyncedRemoteHead?.(snapshotFromDoc(this.remoteDoc).snapshot);
       hsm.send({ type: 'PROVIDER_SYNCED' });
     }
   }
@@ -94,6 +101,7 @@ export class ProviderIntegration {
    */
   private handleSync(synced?: boolean): void {
     if (synced === false) return;
+    if (!this.isProviderConnected()) return;
 
     const sv = Y.encodeStateVector(this.remoteDoc);
     if (sv.length <= 1) {
@@ -104,8 +112,14 @@ export class ProviderIntegration {
         'The provider reported sync before delivering document data.'
       );
     }
+    this.options.onSyncedRemoteHead?.(snapshotFromDoc(this.remoteDoc).snapshot);
     this.hsm.send({ type: 'PROVIDER_SYNCED' });
     this.hsm.send({ type: 'CONNECTED' });
+  }
+
+  private isProviderConnected(): boolean {
+    const status = this.provider.connectionState?.status;
+    return !status || status === 'connected';
   }
 
   /**

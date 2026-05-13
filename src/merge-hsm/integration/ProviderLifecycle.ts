@@ -8,7 +8,11 @@
 
 import * as Y from 'yjs';
 import type { MergeHSM } from '../MergeHSM';
-import { ProviderIntegration, type YjsProvider } from './ProviderIntegration';
+import {
+  ProviderIntegration,
+  type ProviderIntegrationOptions,
+  type YjsProvider,
+} from './ProviderIntegration';
 
 // =============================================================================
 // Host Interface
@@ -20,6 +24,7 @@ export interface ProviderLifecycleHost {
   createFreshRemoteDoc(): Y.Doc;
   destroyCurrentRemoteDoc(): void;
   createAndConnectProvider(remoteDoc: Y.Doc): YjsProvider;
+  providerIntegrationOptions?: ProviderIntegrationOptions;
 }
 
 // =============================================================================
@@ -57,7 +62,12 @@ export function reconnectProvider(host: ProviderLifecycleHost): {
   const provider = host.createAndConnectProvider(remoteDoc);
 
   // 5. Create new ProviderIntegration
-  const integration = new ProviderIntegration(host.hsm, remoteDoc, provider);
+  const integration = new ProviderIntegration(
+    host.hsm,
+    remoteDoc,
+    provider,
+    host.providerIntegrationOptions,
+  );
 
   // 6. If the provider already synced data into remoteDoc during connect
   // (before ProviderIntegration was listening), send the full state as a

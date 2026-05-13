@@ -106,6 +106,78 @@ describe('Provider Integration Lifecycle', () => {
     remoteDoc.destroy();
   });
 
+  test('provider sync reports the synced remoteDoc snapshot', () => {
+    const remoteDoc = new Y.Doc();
+    remoteDoc.getText('contents').insert(0, 'server text');
+    const listeners = new Map<string, Set<(...args: any[]) => void>>();
+    const provider = {
+      synced: false,
+      connectionState: { status: 'connected' },
+      on: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        if (!listeners.has(event)) listeners.set(event, new Set());
+        listeners.get(event)!.add(cb);
+      }),
+      off: jest.fn((event: string, cb: (...args: any[]) => void) => {
+        listeners.get(event)?.delete(cb);
+      }),
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      destroy: jest.fn(),
+    };
+    const hsm = { send: jest.fn() };
+    const onSyncedRemoteHead = jest.fn();
+
+    const integration = new ProviderIntegration(
+      hsm as any,
+      remoteDoc,
+      provider as any,
+      { onSyncedRemoteHead },
+    );
+    hsm.send.mockClear();
+
+    listeners.get('sync')?.forEach((cb) => cb(true));
+
+    expect(onSyncedRemoteHead).toHaveBeenCalledTimes(1);
+    const snapshot = onSyncedRemoteHead.mock.calls[0][0] as Uint8Array;
+    expect(Y.equalSnapshots(Y.decodeSnapshot(snapshot), Y.snapshot(remoteDoc))).toBe(true);
+    expect(hsm.send).toHaveBeenCalledWith({ type: 'PROVIDER_SYNCED' });
+    expect(hsm.send).toHaveBeenCalledWith({ type: 'CONNECTED' });
+
+    integration.destroy();
+    remoteDoc.destroy();
+  });
+
+  test('already-synced provider reports the current remoteDoc snapshot on construction', () => {
+    const remoteDoc = new Y.Doc();
+    remoteDoc.getText('contents').insert(0, 'already synced');
+    const provider = {
+      synced: true,
+      connectionState: { status: 'connected' },
+      on: jest.fn(),
+      off: jest.fn(),
+      connect: jest.fn(),
+      disconnect: jest.fn(),
+      destroy: jest.fn(),
+    };
+    const hsm = { send: jest.fn() };
+    const onSyncedRemoteHead = jest.fn();
+
+    const integration = new ProviderIntegration(
+      hsm as any,
+      remoteDoc,
+      provider as any,
+      { onSyncedRemoteHead },
+    );
+
+    expect(onSyncedRemoteHead).toHaveBeenCalledTimes(1);
+    const snapshot = onSyncedRemoteHead.mock.calls[0][0] as Uint8Array;
+    expect(Y.equalSnapshots(Y.decodeSnapshot(snapshot), Y.snapshot(remoteDoc))).toBe(true);
+    expect(hsm.send).toHaveBeenCalledWith({ type: 'PROVIDER_SYNCED' });
+
+    integration.destroy();
+    remoteDoc.destroy();
+  });
+
   test('remote update events report whether note text changed', () => {
     const remoteDoc = new Y.Doc();
     remoteDoc.getText('contents').insert(0, 'stable');

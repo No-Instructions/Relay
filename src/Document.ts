@@ -63,6 +63,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	private _providerIntegration: ProviderIntegration | null = null;
 
+	private recordProviderSyncedRemoteHead = (snapshot: Uint8Array): void => {
+		this.sharedFolder.mergeManager?.seedServerAdvertisedSnapshotFromBytes(
+			this.guid,
+			snapshot,
+		);
+	};
+
 	/**
 	 * Flag to track when we're in the middle of our own save operation.
 	 * Used to distinguish our writes from external modifications.
@@ -299,6 +306,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				hsm,
 				remoteDoc,
 				this._provider! as YjsProvider,
+				{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
 			);
 		}
 
@@ -833,6 +841,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					void this.connect();
 					return this._provider as YjsProvider;
 				},
+				providerIntegrationOptions: {
+					onSyncedRemoteHead: this.recordProviderSyncedRemoteHead,
+				},
 			});
 			this._providerIntegration = result.integration;
 			return true;
@@ -852,6 +863,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			hsm,
 			remoteDoc,
 			this._provider as YjsProvider,
+			{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
 		);
 		return true;
 	}
