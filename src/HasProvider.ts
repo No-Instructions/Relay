@@ -70,6 +70,7 @@ export class HasProvider extends HasLogging {
 	private _deferredDisconnectStatusListener:
 		| ((state: ConnectionState) => void)
 		| null = null;
+	private _providerSyncAbortHandlers = new Set<(reason: Error) => void>();
 	// Track whether the current provider connection has completed sync.
 	// This must reset on disconnect so reconnect flows do not treat a
 	// stale connection as ready.
@@ -167,6 +168,9 @@ export class HasProvider extends HasLogging {
 	 * The document can be re-created later via ensureRemoteDoc().
 	 */
 	destroyRemoteDoc(): void {
+		this.abortProviderSyncWaiters(
+			new Error("Provider was destroyed before sync completed"),
+		);
 		if (this._offConnectionError) {
 			this._offConnectionError();
 			this._offConnectionError = null;
@@ -283,6 +287,9 @@ export class HasProvider extends HasLogging {
 				return true;
 			})
 			.catch((e) => {
+				this.abortProviderSyncWaiters(
+					new Error("Provider connection failed before sync completed"),
+				);
 				return false;
 			});
 	}
@@ -371,6 +378,9 @@ export class HasProvider extends HasLogging {
 
 	disconnect() {
 		this.clearDeferredDisconnect();
+		this.abortProviderSyncWaiters(
+			new Error("Provider disconnected before sync completed"),
+		);
 		this._providerSynced = false;
 		if (this._provider) {
 			this._provider.disconnect();
@@ -417,15 +427,72 @@ export class HasProvider extends HasLogging {
 			this._providerSynced = true;
 			return Promise.resolve();
 		}
-		return new Promise((resolve) => {
-			const handleSynced = (synced: boolean) => {
-				if (!synced) return;
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
 				provider.off("synced", handleSynced);
+				provider.off("status", handleStatus);
+				provider.off("connection-error", handleConnectionError);
+				this._providerSyncAbortHandlers.delete(abort);
+			};
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
 				this._providerSynced = true;
 				resolve();
 			};
+			const fail = (reason: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(reason);
+			};
+			const abort = (reason: Error) => {
+				fail(reason);
+			};
+			const checkTerminalState = () => {
+				if (this._provider !== provider) {
+					fail(new Error("Provider was replaced before sync completed"));
+					return;
+				}
+				if (this._providerSynced || provider.synced) {
+					finish();
+					return;
+				}
+				const state = provider.connectionState;
+				if (
+					state.status === "disconnected" &&
+					state.intent === "connected" &&
+					!provider.canReconnect()
+				) {
+					fail(new Error("Provider retries were exhausted before sync completed"));
+					return;
+				}
+			};
+			const handleSynced = (synced: boolean) => {
+				if (!synced) return;
+				finish();
+			};
+			const handleStatus = () => {
+				checkTerminalState();
+			};
+			const handleConnectionError = () => {
+				checkTerminalState();
+			};
 			provider.on("synced", handleSynced);
+			provider.on("status", handleStatus);
+			provider.on("connection-error", handleConnectionError);
+			this._providerSyncAbortHandlers.add(abort);
+			checkTerminalState();
 		});
+	}
+
+	private abortProviderSyncWaiters(reason: Error): void {
+		for (const abort of Array.from(this._providerSyncAbortHandlers)) {
+			abort(reason);
+		}
+		this._providerSyncAbortHandlers.clear();
 	}
 
 	reset() {

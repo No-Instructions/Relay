@@ -139,10 +139,12 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				(async () => {
 					const serverSynced = await this.getServerSynced();
 					if (!serverSynced) {
+						const connected = await this.connect();
+						if (!connected) return;
 						await trackPromise(`canvasSync:${this.guid}`, this.onceProviderSynced());
 						await this.markSynced();
 					}
-				})();
+				})().catch((e) => this.warn("canvas provider sync failed", e));
 			})
 			.catch((e) => this.warn("canvas persistence sync failed", e));
 

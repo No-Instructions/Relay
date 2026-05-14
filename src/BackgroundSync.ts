@@ -36,6 +36,8 @@ export interface QueueItem {
 	status: "pending" | "running" | "completed" | "failed";
 	sharedFolder: SharedFolder;
 	userVisible: boolean;
+	retryAttempts?: number;
+	nextAttemptAt?: number;
 }
 
 export interface BackgroundSyncFailure {
@@ -92,6 +94,21 @@ interface FolderSyncSnapshotSubscription {
 	latestSnapshot: FolderSyncSnapshot | null;
 	unsubscribers: Unsubscriber[];
 	emit: () => void;
+}
+
+class RetryableProviderSyncError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "RetryableProviderSyncError";
+	}
+}
+
+const MAX_PROVIDER_SYNC_RETRIES = 5;
+
+function isRetryableProviderSyncError(
+	error: unknown,
+): error is RetryableProviderSyncError {
+	return error instanceof RetryableProviderSyncError;
 }
 
 export interface QueueStatus {
@@ -458,6 +475,37 @@ export class BackgroundSync extends HasLogging {
 		this.syncGroups.set(item.sharedFolder, group);
 	}
 
+	private requeueRetryableSync(
+		item: QueueItem,
+		error: RetryableProviderSyncError,
+	): boolean {
+		const retries = (item.retryAttempts ?? 0) + 1;
+		item.retryAttempts = retries;
+		if (retries > MAX_PROVIDER_SYNC_RETRIES) {
+			item.nextAttemptAt = undefined;
+			this.warn(
+				`[syncDocWS] provider sync failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
+			);
+			return false;
+		}
+
+		const delayMs = Math.min(30_000, 1000 * 2 ** Math.min(retries - 1, 5));
+		item.status = "pending";
+		item.nextAttemptAt = this.timeProvider.now() + delayMs;
+
+		this.clearFailure(this.failureKey("sync", item.guid));
+		if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
+			this.syncQueue.push(item);
+			this.syncQueue.sort(compareFilePaths);
+		}
+		this.debug(
+			`[syncDocWS] retryable provider sync failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
+		);
+		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
+		this.queueStatusChanged.notifyListeners();
+		return true;
+	}
+
 	getFolderPillProgress(sharedFolder: SharedFolder): GroupProgress | null {
 		const group = this.syncGroups.get(sharedFolder);
 		if (!group) return null;
@@ -665,8 +713,11 @@ export class BackgroundSync extends HasLogging {
 		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
 		// Filter for items with connected folders
+		const now = this.timeProvider.now();
 		const connectableItems = this.syncQueue.filter(
-			(item) => item.sharedFolder.connected,
+			(item) =>
+				item.sharedFolder.connected &&
+				(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
 		);
 
 		while (
@@ -716,6 +767,13 @@ export class BackgroundSync extends HasLogging {
 							return;
 						}
 
+						if (
+							isRetryableProviderSyncError(error) &&
+							this.requeueRetryableSync(item, error)
+						) {
+							return;
+						}
+
 						item.status = "failed";
 						metrics.incBgSyncOps("sync", "failed");
 
@@ -734,8 +792,10 @@ export class BackgroundSync extends HasLogging {
 						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 						this.activeSync.delete(item);
 						metrics.setBgSyncActive("sync", this.activeSync.size);
-						this.inProgressSyncs.delete(item.guid);
-						this.cancelledSyncs.delete(item.guid);
+						if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
+							this.inProgressSyncs.delete(item.guid);
+							this.cancelledSyncs.delete(item.guid);
+						}
 
 						// Unwind the call stack before checking for more work
 						this.timeProvider.setTimeout(() => {
@@ -752,6 +812,16 @@ export class BackgroundSync extends HasLogging {
 					metrics.setBgSyncActive("sync", this.activeSync.size);
 					this.inProgressSyncs.delete(item.guid);
 					this.cancelledSyncs.delete(item.guid);
+					continue;
+				}
+
+				if (
+					isRetryableProviderSyncError(error) &&
+					this.requeueRetryableSync(item, error)
+				) {
+					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
+					this.activeSync.delete(item);
+					metrics.setBgSyncActive("sync", this.activeSync.size);
 					continue;
 				}
 
@@ -1453,8 +1523,9 @@ export class BackgroundSync extends HasLogging {
 				cleanupIdleSession();
 			}
 			if (this.isSyncCancelledForDoc(doc)) return false;
-			this.warn(`[syncDocWS] failed to connect provider: ${doc.path} guid=${doc.guid}`);
-			return false;
+			throw new RetryableProviderSyncError(
+				`Provider connection is not ready for ${this.fileName(doc.path)}`,
+			);
 		}
 		if (this.isSyncCancelledForDoc(doc)) {
 			if (shouldCleanupIdleSession()) {
@@ -1468,8 +1539,15 @@ export class BackgroundSync extends HasLogging {
 		const SYNC_TIMEOUT_MS = 10_000;
 		let timerId: number | undefined;
 		let cancelTimerId: number | undefined;
+		let providerSyncFailure: unknown;
 		const synced = await Promise.race([
-			doc.onceProviderSynced().then(() => true),
+			doc.onceProviderSynced().then(
+				() => true,
+				(e) => {
+					providerSyncFailure = e;
+					return false;
+				},
+			),
 			new Promise<false>((resolve) => {
 				timerId = this.timeProvider.setTimeout(
 					() => resolve(false),
@@ -1489,8 +1567,19 @@ export class BackgroundSync extends HasLogging {
 				cleanupIdleSession();
 			}
 			if (this.isSyncCancelledForDoc(doc)) return false;
-			this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
-			return false;
+			if (providerSyncFailure) {
+				this.warn(
+					`[syncDocWS] provider sync failed: ${doc.path} guid=${doc.guid}: ${this.errorMessage(providerSyncFailure)}`,
+				);
+				throw new RetryableProviderSyncError(
+					`Provider sync is not ready for ${this.fileName(doc.path)}: ${this.errorMessage(providerSyncFailure)}`,
+				);
+			} else {
+				this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
+				throw new RetryableProviderSyncError(
+					`Provider sync timed out for ${this.fileName(doc.path)}`,
+				);
+			}
 		}
 
 		if (isDocument(doc)) {
@@ -1648,7 +1737,9 @@ export class BackgroundSync extends HasLogging {
 				}
 			}
 		} catch (e) {
-			this.logError("[syncDocument] failed", e);
+			if (!isRetryableProviderSyncError(e)) {
+				this.logError("[syncDocument] failed", e);
+			}
 			throw e;
 		}
 	}

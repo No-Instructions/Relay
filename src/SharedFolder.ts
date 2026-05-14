@@ -502,7 +502,7 @@ export class SharedFolder extends HasProvider {
 				// flows (syncFileTree downloads) can fail.
 				await trackPromise(`folderProviderSync:${this.guid}`, this.onceProviderSynced());
 			}
-		})();
+		})().catch((e) => this.warn("folder provider sync failed", e));
 
 		RelayInstances.set(this, this.path);
 	}

@@ -80,8 +80,12 @@ describe("HasProvider", () => {
 		provider._ydoc = new Y.Doc();
 		provider._provider = {
 			synced: false,
+			connectionState: { status: "connecting", intent: "connected" },
+			canReconnect: () => true,
 			on: jest.fn((_event: string, cb: (synced: boolean) => void) => {
-				syncedHandler = cb;
+				if (_event === "synced") {
+					syncedHandler = cb;
+				}
 			}),
 			off: jest.fn(),
 		};
@@ -102,6 +106,92 @@ describe("HasProvider", () => {
 		expect(resolved).toBe(true);
 		expect(provider.synced).toBe(true);
 		expect(provider._provider.off).toHaveBeenCalledWith("synced", syncedHandler);
+	});
+
+	test("onceProviderSynced resolves immediately when provider already synced", async () => {
+		const tokenStore = {
+			getTokenSync: () => ({ token: "", url: "", docId: "-", expiryTime: 0 }),
+			removeFromRefreshQueue: jest.fn(),
+		};
+		const loginManager = { user: null };
+
+		const provider = new HasProvider(
+			"guid-1",
+			{} as any,
+			tokenStore as any,
+			loginManager as any,
+		) as any;
+
+		provider._ydoc = new Y.Doc();
+		provider._provider = {
+			synced: true,
+			on: jest.fn(),
+			off: jest.fn(),
+		};
+
+		await expect(provider.onceProviderSynced()).resolves.toBeUndefined();
+		expect(provider.synced).toBe(true);
+		expect(provider._provider.on).not.toHaveBeenCalled();
+	});
+
+	test("onceProviderSynced rejects when provider cannot keep trying", async () => {
+		const tokenStore = {
+			getTokenSync: () => ({ token: "", url: "", docId: "-", expiryTime: 0 }),
+			removeFromRefreshQueue: jest.fn(),
+		};
+		const loginManager = { user: null };
+
+		const provider = new HasProvider(
+			"guid-1",
+			{} as any,
+			tokenStore as any,
+			loginManager as any,
+		) as any;
+
+		provider._ydoc = new Y.Doc();
+		provider._provider = {
+			synced: false,
+			connectionState: { status: "disconnected", intent: "connected" },
+			canReconnect: () => false,
+			on: jest.fn(),
+			off: jest.fn(),
+		};
+
+		await expect(provider.onceProviderSynced()).rejects.toThrow(
+			"Provider retries were exhausted before sync completed",
+		);
+	});
+
+	test("disconnect rejects pending provider sync waiters", async () => {
+		const tokenStore = {
+			getTokenSync: () => ({ token: "", url: "", docId: "-", expiryTime: 0 }),
+			removeFromRefreshQueue: jest.fn(),
+		};
+		const loginManager = { user: null };
+
+		const provider = new HasProvider(
+			"guid-1",
+			{} as any,
+			tokenStore as any,
+			loginManager as any,
+		) as any;
+
+		provider._ydoc = new Y.Doc();
+		provider._provider = {
+			synced: false,
+			connectionState: { status: "connecting", intent: "connected" },
+			canReconnect: () => true,
+			disconnect: jest.fn(),
+			on: jest.fn(),
+			off: jest.fn(),
+		};
+
+		const wait = provider.onceProviderSynced();
+		provider.disconnect();
+
+		await expect(wait).rejects.toThrow(
+			"Provider disconnected before sync completed",
+		);
 	});
 
 	test("connection errors leave provider retry/backoff in charge", async () => {
