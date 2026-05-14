@@ -529,9 +529,11 @@ export class SharedFolder extends HasProvider {
 		};
 		provider.onSubdocIndex = (serverIndex) => {
 			const remoteActivity: RemoteActivityEntry[] = [];
+			const advertisedGuids: string[] = [];
 			const now = this.currentTime();
 			for (const [docId, entry] of Object.entries(serverIndex)) {
 				const guid = this.guidFromServerDocId(docId) ?? docId;
+				advertisedGuids.push(guid);
 				this.mergeManager?.seedServerAdvertisedHeadFromBytes(
 					guid,
 					entry,
@@ -548,7 +550,15 @@ export class SharedFolder extends HasProvider {
 			}
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
-				.then(() => this.poll())
+				.then(() => {
+					const queued = this.backgroundSync.enqueueRemoteHeadSyncs(
+						this,
+						advertisedGuids,
+					);
+					if (queued > 0) {
+						this.debug(`[subdoc-index] queued ${queued} remote-head syncs`);
+					}
+				})
 				.catch((e) => this.error("subdoc index sync sweep failed", e));
 		};
 		this.unsubscribes.push(() => {
@@ -883,17 +893,6 @@ export class SharedFolder extends HasProvider {
 				file.connectForForkReconcile().catch(() => {});
 			}
 
-			if (
-				this.shouldConnect &&
-				this.mergeManager?.isServerAdvertisedRemoteAhead(guid)
-			) {
-				this.backgroundSync.enqueueSync(file).catch((e) => {
-					this.warn(
-						`[poll] failed to enqueue server-advertised remote sync for ${file.path}`,
-						e,
-					);
-				});
-			}
 		}
 	}
 

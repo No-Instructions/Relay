@@ -1228,6 +1228,27 @@ export class BackgroundSync extends HasLogging {
 		return docs.length;
 	}
 
+	enqueueRemoteHeadSyncs(
+		sharedFolder: SharedFolder,
+		guids: Iterable<string>,
+	): number {
+		if (!sharedFolder.connected) return 0;
+
+		const advertisedGuids = new Set(guids);
+		if (advertisedGuids.size === 0) return 0;
+
+		const docs = [...sharedFolder.files.values()]
+			.filter(isDocument)
+			.filter((doc) => advertisedGuids.has(doc.guid))
+			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
+			.filter((doc) => this.shouldEnqueueForRemoteHeadSync(doc));
+
+		for (const doc of docs.sort(compareFilePaths)) {
+			void this.enqueueSync(doc);
+		}
+		return docs.length;
+	}
+
 	private shouldEnqueueForSharedFolderSync(
 		item: Document | Canvas | SyncFile,
 	): boolean {
@@ -1251,6 +1272,12 @@ export class BackgroundSync extends HasLogging {
 		if (!mergeManager) return true;
 
 		return !mergeManager.isServerAdvertisedInSync(item.guid);
+	}
+
+	private shouldEnqueueForRemoteHeadSync(doc: Document): boolean {
+		if (this.shouldSkipDocumentSync(doc)) return false;
+		return doc.sharedFolder.mergeManager?.isServerAdvertisedRemoteAhead(doc.guid)
+			?? false;
 	}
 
 	private shouldEnqueueForLCABackfill(doc: Document): boolean {
