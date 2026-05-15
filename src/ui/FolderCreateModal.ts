@@ -22,7 +22,7 @@ export class FolderCreateModal extends Modal {
 		const { contentEl } = this;
 		contentEl.empty();
 
-		contentEl.createEl("h2", { text: "Create Shared Folder" });
+		contentEl.createEl("h2", { text: "Create shared folder" });
 
 		// Folder path input
 		new Setting(contentEl)
@@ -30,7 +30,7 @@ export class FolderCreateModal extends Modal {
 			.setDesc("The path where the shared folder will be created")
 			.addText((text) => {
 				text
-					.setPlaceholder("e.g., Notes/Shared")
+					.setPlaceholder("E.g., notes/shared")
 					.setValue(this.folderPath)
 					.onChange((value) => {
 						this.folderPath = value.trim();

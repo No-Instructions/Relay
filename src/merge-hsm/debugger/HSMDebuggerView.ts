@@ -110,7 +110,7 @@ export class HSMDebuggerView extends ItemView {
   }
 
   getDisplayText(): string {
-    return 'HSM Debugger';
+    return 'Hsm debugger';
   }
 
   getIcon(): string {
@@ -243,7 +243,7 @@ export class HSMDebuggerView extends ItemView {
       this.renderTabs(container);
     } else {
       container.createEl('p', {
-        text: 'Select a document to view HSM state',
+        text: 'Select a document to view hsm state',
         cls: 'hsm-debugger-placeholder',
       });
     }
@@ -251,7 +251,7 @@ export class HSMDebuggerView extends ItemView {
 
   private renderHeader(container: Element): void {
     const header = container.createEl('div', { cls: 'hsm-debugger-header' });
-    header.createEl('h3', { text: 'MergeHSM Debugger' });
+    header.createEl('h3', { text: 'Mergehsm debugger' });
 
     const refreshBtn = header.createEl('button', { cls: 'hsm-debugger-refresh' });
     setIcon(refreshBtn, 'refresh-cw');
@@ -263,7 +263,7 @@ export class HSMDebuggerView extends ItemView {
 
     const select = selector.createEl('select', { cls: 'hsm-debugger-select' });
 
-    select.createEl('option', { text: '-- Select Document --', value: '' });
+    select.createEl('option', { text: '-- select document --', value: '' });
 
     for (const doc of this.data.availableDocuments) {
       const option = select.createEl('option', {

@@ -130,10 +130,10 @@ export class DifferencesView extends ItemView {
 	override getDisplayText(): string {
 		if (this.state?.file1 && this.state?.file2) {
 			return (
-				`File Diff: ${this.state.file1.name} ` + `and ${this.state.file2.name}`
+				`File diff: ${this.state.file1.name} ` + `and ${this.state.file2.name}`
 			);
 		}
-		return `File Diff`;
+		return `File diff`;
 	}
 
 	override async setState(

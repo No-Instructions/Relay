@@ -232,7 +232,7 @@ export default class Live extends Plugin {
 					_lastValidationError: undefined,
 					_lastValidationAttempt: undefined,
 				}));
-				new Notice("✓ Endpoints validated and applied successfully!", 5000);
+				new Notice("✓ endpoints validated and applied successfully!", 5000);
 				if (result.licenseInfo) {
 					this.log("License validation successful:", result.licenseInfo);
 				}
@@ -536,7 +536,7 @@ export default class Live extends Plugin {
 
 		this.addCommand({
 			id: "reload",
-			name: "Reload Relay",
+			name: "Reload",
 			callback: (this.app as any).reloadRelay(),
 		});
 
@@ -577,7 +577,7 @@ export default class Live extends Plugin {
 
 		this.addCommand({
 			id: "register-host",
-			name: "Register self-hosted Relay Server",
+			name: "Register self-hosted server",
 			callback: () => {
 				const modal = new SelfHostModal(
 					this.app,

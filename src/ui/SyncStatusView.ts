@@ -49,7 +49,7 @@ export class SyncStatusView extends ItemView {
 	}
 
 	getDisplayText(): string {
-		return "Sync Status";
+		return "Sync status";
 	}
 
 	getIcon(): string {

@@ -11,7 +11,7 @@ export class EndpointConfigModal extends Modal {
 		private reload: () => void,
 	) {
 		super(app);
-		this.setTitle("Enterprise Tenant Configuration");
+		this.setTitle("Enterprise tenant configuration");
 	}
 
 	onOpen() {
