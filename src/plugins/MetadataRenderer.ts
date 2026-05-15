@@ -49,7 +49,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 
 			// Re-render each property, but defer rows where the user is
 			// actively typing so we don't destroy their input context.
-			const focused = globalThis.document?.activeElement;
+			const focused = this.getActiveElement(metadataEditor.contentEl);
 			const skipped: any[] = [];
 			for (const prop of metadataEditor.rendered) {
 				if (this.shouldDeferPropertyRender(focused, prop)) {
@@ -89,6 +89,10 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		return el?.isContentEditable === true || el?.contentEditable === "true";
 	}
 
+	private getActiveElement(contentEl: any): Element | null {
+		return contentEl?.ownerDocument?.activeElement ?? null;
+	}
+
 	private setPendingFocusedProps(props: any[], contentEl: any): void {
 		this.pendingFocusedProps = props;
 		if (props.length > 0) {
@@ -105,7 +109,7 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 	private flushPendingFocusedProps(): void {
 		if (this.destroyed || this.pendingFocusedProps.length === 0) return;
 
-		const focused = globalThis.document?.activeElement;
+		const focused = this.getActiveElement(this.focusoutEl);
 		const stillPending: any[] = [];
 		for (const prop of this.pendingFocusedProps) {
 			if (this.shouldDeferPropertyRender(focused, prop)) {

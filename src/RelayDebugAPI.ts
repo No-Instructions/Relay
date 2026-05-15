@@ -319,6 +319,14 @@ export class RelayDebugAPI {
     this.installGlobal();
   }
 
+  private debugWindow(): Window {
+    return window;
+  }
+
+  private debugGlobal(): any {
+    return (this.debugWindow() as any).__relayDebug;
+  }
+
   /**
    * Register a per-folder recording bridge.
    * Returns a cleanup function to call when the folder is destroyed.
@@ -353,10 +361,9 @@ export class RelayDebugAPI {
    * Install the `window.__relayDebug` global.
    */
   private installGlobal(): void {
-    const g = typeof window !== 'undefined' ? window : globalThis;
     if (this.destroyed) {
-      if ((g as any).__relayDebug?.__owner === this) {
-        delete (g as any).__relayDebug;
+      if (this.debugGlobal()?.__owner === this) {
+        delete (this.debugWindow() as any).__relayDebug;
       }
       return;
     }
@@ -528,7 +535,7 @@ export class RelayDebugAPI {
 
     };
 
-    (g as any).__relayDebug = {
+    (this.debugWindow() as any).__relayDebug = {
       __owner: this,
       ...api,
       registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
@@ -782,8 +789,7 @@ export class RelayDebugAPI {
    * Get a snapshot of all content views (local, remote, IDB, disk, server) for a document.
    */
   private async getDocumentContent(path: string): Promise<DocumentContentSnapshot> {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`Document not found: ${path}`);
     const { doc, folder, guid, filePath } = lookup;
 
@@ -866,8 +872,7 @@ export class RelayDebugAPI {
    * single `__relayDebug.getHsmStateSnapshot(path)` call.
    */
   private async getHsmStateSnapshot(path: string): Promise<HsmStateSnapshot> {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) {
       throw new Error(`HSM not found: ${path}`);
     }
@@ -1007,8 +1012,7 @@ export class RelayDebugAPI {
     statePrefix: string,
     timeoutMs: number,
   ): Promise<string> {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const hsm = lookup.hsm as any;
 
@@ -1042,8 +1046,7 @@ export class RelayDebugAPI {
    * hunk lookup, waking, and mutation behavior live below this boundary.
    */
   private resolveConflictTarget(path: string): { manager: any; guid: string; folder: any; filePath: string } {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const manager = lookup.folder?.mergeManager;
     if (!manager) throw new Error(`Merge manager not found: ${path}`);
@@ -1148,8 +1151,7 @@ export class RelayDebugAPI {
   }
 
   private async clearLca(path: string): Promise<void> {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     (lookup.hsm as any)._lca = null;
   }
@@ -1160,8 +1162,7 @@ export class RelayDebugAPI {
    * the lookup + send boilerplate for single-event primitives.
    */
   private sendConflictEvent(path: string, event: { type: string }): string {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const hsm = lookup.hsm as any;
     hsm.send(event);
@@ -1188,8 +1189,7 @@ export class RelayDebugAPI {
   private resolveIdbTarget(path: string): {
     hsm: any; guid: string; folder: any; filePath: string; dbName: string; hsmDbName: string;
   } {
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    const lookup = (g as any).__relayDebug?.lookupDocument?.(path);
+    const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`HSM not found: ${path}`);
     const { hsm, guid, folder, filePath } = lookup;
     const appId = (hsm as any)._persistenceMetadata?.appId;
@@ -1430,9 +1430,8 @@ export class RelayDebugAPI {
     this.activeRecordingName = null;
     this.plugin = null;
 
-    const g = typeof window !== 'undefined' ? window : globalThis;
-    if ((g as any).__relayDebug?.__owner === this) {
-      delete (g as any).__relayDebug;
+    if (this.debugGlobal()?.__owner === this) {
+      delete (this.debugWindow() as any).__relayDebug;
     }
   }
 }

@@ -362,6 +362,16 @@ type WebSocketPolyfillType = {
 	readonly OPEN: number;
 };
 
+const getDefaultWebSocketPolyfill = (): WebSocketPolyfillType => {
+	if (typeof window !== "undefined" && window.WebSocket) {
+		return window.WebSocket as WebSocketPolyfillType;
+	}
+	if (typeof WebSocket !== "undefined") {
+		return WebSocket as WebSocketPolyfillType;
+	}
+	return undefined as unknown as WebSocketPolyfillType;
+};
+
 export type YSweetProviderParams = {
 	connect?: boolean;
 	awareness?: awarenessProtocol.Awareness;
@@ -643,7 +653,7 @@ export class YSweetProvider extends Observable<string> {
 			connect = true,
 			awareness = new awarenessProtocol.Awareness(doc),
 			params = {},
-			WebSocketPolyfill = globalThis.WebSocket as WebSocketPolyfillType,
+			WebSocketPolyfill = getDefaultWebSocketPolyfill(),
 			resyncInterval = -1,
 			maxBackoffTime = 2500,
 			disableBc = false,

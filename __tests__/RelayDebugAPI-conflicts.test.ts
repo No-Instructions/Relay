@@ -1,8 +1,15 @@
 import { RelayDebugAPI } from 'src/RelayDebugAPI';
 
 describe('RelayDebugAPI conflict resolution', () => {
+  let testWindow: any;
+
+  beforeEach(() => {
+    testWindow = {};
+    (globalThis as any).window = testWindow;
+  });
+
   afterEach(() => {
-    delete (globalThis as any).__relayDebug;
+    delete (globalThis as any).window;
   });
 
   it('resolves hunks by hunk id', async () => {
@@ -33,7 +40,7 @@ describe('RelayDebugAPI conflict resolution', () => {
     const debug = new RelayDebugAPI(plugin);
     try {
       const hunkId = '53';
-      const statePath = await (globalThis as any).__relayDebug.resolveHunk(
+      const statePath = await testWindow.__relayDebug.resolveHunk(
         '/shared/note.md',
         hunkId,
         'theirs',

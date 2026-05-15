@@ -429,7 +429,7 @@ export class SharedFolder extends HasProvider {
 				return join(this.path, file.path);
 			},
 		});
-		const debugAPI = (globalThis as any).__relayDebug;
+		const debugAPI = (window as any).__relayDebug;
 		if (debugAPI?.registerBridge) {
 			const unregister = debugAPI.registerBridge(this.path, this.recordingBridge);
 			this.unsubscribes.push(unregister);

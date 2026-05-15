@@ -18,6 +18,7 @@ type FakeElement = {
 	type?: string;
 	contentEditable?: string;
 	checked?: boolean;
+	ownerDocument: FakeDocument;
 	children: FakeElement[];
 	tabIndex?: number;
 	listeners: Record<string, Array<(event: any) => void>>;
@@ -30,9 +31,16 @@ type FakeElement = {
 	dispatchEvent: (event: any) => void;
 };
 
+type FakeDocument = {
+	activeElement: FakeElement | null;
+};
+
+let fakeDocument: FakeDocument;
+
 function createFakeElement(tagName: string, attrs: Partial<FakeElement> = {}): FakeElement {
 	const el: FakeElement = {
 		tagName,
+		ownerDocument: fakeDocument,
 		children: [],
 		listeners: {},
 		appendChild(child: FakeElement) {
@@ -58,7 +66,7 @@ function createFakeElement(tagName: string, attrs: Partial<FakeElement> = {}): F
 			return this.children.some((child) => child.contains(target));
 		},
 		focus() {
-			(globalThis as any).document.activeElement = this;
+			this.ownerDocument.activeElement = this;
 		},
 		addEventListener(type, listener) {
 			this.listeners[type] ??= [];
@@ -81,11 +89,7 @@ describe("MetadataRenderer", () => {
 	beforeEach(() => {
 		getFrontMatterInfo.mockReset();
 		parseYaml.mockReset();
-		(globalThis as any).document = { activeElement: null };
-	});
-
-	afterEach(() => {
-		delete (globalThis as any).document;
+		fakeDocument = { activeElement: null };
 	});
 
 	it("re-renders rows when focus is on a checkbox control", () => {
@@ -198,7 +202,7 @@ describe("MetadataRenderer", () => {
 		renderer.render({ localText: "---\ntitle: Toast\n---\n" } as any, "source");
 		expect(prop.renderProperty).not.toHaveBeenCalled();
 
-		(globalThis as any).document.activeElement = null;
+		fakeDocument.activeElement = null;
 		metadataEditor.contentEl.dispatchEvent({ type: "focusout", target: input });
 		await Promise.resolve();
 

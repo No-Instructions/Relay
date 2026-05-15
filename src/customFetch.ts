@@ -7,6 +7,8 @@ import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
 
+const browserWindow = typeof window !== "undefined" ? window : undefined;
+
 // Device management configuration
 let deviceManagementConfig: {
 	vaultId: string;
@@ -38,18 +40,21 @@ export function getDeviceManagementHeaders(): Record<string, string> {
 	return {};
 }
 
-if (globalThis.Response === undefined || globalThis.Headers === undefined) {
+if (
+	browserWindow &&
+	(browserWindow.Response === undefined || browserWindow.Headers === undefined)
+) {
 	// Fetch API is broken for some versions of Electron
 	// https://github.com/electron/electron/pull/42419
 	try {
 		console.warn(
 			"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
 		);
-		if ((globalThis as any).blinkfetch) {
-			globalThis.fetch = (globalThis as any).blinkfetch;
+		if ((browserWindow as any).blinkfetch) {
+			browserWindow.fetch = (browserWindow as any).blinkfetch;
 			const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
 			for (const key of keys) {
-				(globalThis as any)[key] = (globalThis as any)[`blink${key}`];
+				(browserWindow as any)[key] = (browserWindow as any)[`blink${key}`];
 			}
 		}
 	} catch (e) {
@@ -57,7 +62,7 @@ if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 	}
 }
 
-if (globalThis.EventSource === undefined) {
+if (browserWindow && browserWindow.EventSource === undefined) {
 	if (Platform.isMobile) {
 		console.warn(
 			"[Relay] Polyfilling EventSource API required, but unable to polyfill on Mobile",
@@ -65,7 +70,7 @@ if (globalThis.EventSource === undefined) {
 	} else {
 		console.warn("[Relay] Polyfilling EventSource API");
 		// @ts-ignore
-		globalThis.EventSource = require("eventsource");
+		browserWindow.EventSource = require("eventsource");
 	}
 }
 
