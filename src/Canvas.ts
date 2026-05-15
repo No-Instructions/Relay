@@ -117,7 +117,13 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this.setLoggers(`[Canvas](${this.path})`);
 		try {
 			const key = `${this.sharedFolder.appId}-relay-canvas-${this.guid}`;
-			this._persistence = new IndexeddbPersistence(key, this.ydoc);
+			this._persistence = new IndexeddbPersistence(
+				key,
+				this.ydoc,
+				null,
+				null,
+				this.timeProvider,
+			);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);

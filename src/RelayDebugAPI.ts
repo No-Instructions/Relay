@@ -10,6 +10,7 @@
 import * as Y from 'yjs';
 import { diff_match_patch } from 'diff-match-patch';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
+import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
@@ -828,7 +829,7 @@ export class RelayDebugAPI {
 
     // IDB
     try {
-      const idbResult = await readIdbContent(guid, folder.appId);
+      const idbResult = await readIdbContent(guid, folder.appId, this.plugin?.timeProvider);
       if (idbResult) {
         result.idb = {
           content: idbResult.content,
@@ -903,6 +904,7 @@ export class RelayDebugAPI {
         const result = await readIdbContent(
           guid,
           (hsm as any)._persistenceMetadata?.appId,
+          this.plugin?.timeProvider,
         );
         if (result) {
           idbContent = result.content;
@@ -1261,7 +1263,7 @@ export class RelayDebugAPI {
         idbContent = (hsm as any).localDoc.getText('contents').toString();
       } else {
         try {
-          const result = await readIdbContent(guid, (hsm as any)._persistenceMetadata?.appId);
+          const result = await readIdbContent(guid, (hsm as any)._persistenceMetadata?.appId, this.plugin?.timeProvider);
           if (result) idbContent = result.content;
         } catch { /* noop */ }
       }
@@ -1443,11 +1445,13 @@ export class RelayDebugAPI {
 async function readIdbContent(
   guid: string,
   appId: string,
+  timeProvider?: TimeProvider,
 ): Promise<{ content: string; stateVector: Uint8Array } | null> {
+  if (!timeProvider) return null;
   const dbName = `${appId}-relay-doc-${guid}`;
   const tempDoc = new Y.Doc();
   try {
-    const persistence = new IndexeddbPersistence(dbName, tempDoc);
+    const persistence = new IndexeddbPersistence(dbName, tempDoc, null, null, timeProvider);
     await persistence.whenSynced;
     const content = tempDoc.getText('contents').toString();
     const stateVector = Y.encodeStateVector(tempDoc);

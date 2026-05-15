@@ -330,6 +330,7 @@ export class SharedFolder extends HasProvider {
 				this.ydoc,
 				null,
 				migrateFrom,
+				this.timeProvider,
 			);
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
@@ -359,7 +360,7 @@ export class SharedFolder extends HasProvider {
 			},
 			timeProvider: this.timeProvider,
 			createPersistence: (vaultId, doc, captureOpts) =>
-				new IndexeddbPersistence(vaultId, doc, captureOpts),
+				new IndexeddbPersistence(vaultId, doc, captureOpts, null, this.timeProvider),
 			getDiskState: async (docPath: string) => {
 				// docPath is SharedFolder-relative (e.g., "/note.md")
 				const vaultPath = this.getPath(docPath);

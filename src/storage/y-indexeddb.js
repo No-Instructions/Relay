@@ -127,11 +127,16 @@ export class IndexeddbPersistence extends Observable {
    * @param {Y.Doc} doc
    * @param {{ scope: string, trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture)
    * @param {string|null} [migrateFrom] - Old DB name to migrate data from (one-time, then deleted)
+   * @param {import('../TimeProvider').TimeProvider} timeProvider
    */
-  constructor (name, doc, captureOpts = null, migrateFrom = null) {
+  constructor (name, doc, captureOpts = null, migrateFrom = null, timeProvider) {
     super()
+    if (!timeProvider) {
+      throw new Error('IndexeddbPersistence requires a TimeProvider')
+    }
     this.doc = doc
     this.name = name
+    this.timeProvider = timeProvider
     this._dbref = 0
     this._dbsize = 0
     this._destroyed = false
@@ -253,11 +258,11 @@ export class IndexeddbPersistence extends Observable {
       }) // migrationDone
     })
     /**
-     * Timeout in ms untill data is merged and persisted in idb.
+     * Timeout in ms until data is merged and persisted in idb.
      */
     this._storeTimeout = 1000
     /**
-     * @type {any}
+     * @type {number|null}
      */
     this._storeTimeoutId = null
     /**
@@ -265,6 +270,7 @@ export class IndexeddbPersistence extends Observable {
      * @type {Set<Promise<any>>}
      */
     this._pendingWrites = new Set()
+    this._compactionRequested = false
     /**
      * Track pending compaction operation for proper teardown.
      * @type {Promise<void>|null}
@@ -291,17 +297,7 @@ export class IndexeddbPersistence extends Observable {
         metrics.setDbSize(this.name, this._dbsize)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
         if (this._dbsize >= trimSize) {
-          // debounce store call
-          if (this._storeTimeoutId !== null) {
-            clearTimeout(this._storeTimeoutId)
-          }
-          this._storeTimeoutId = setTimeout(() => {
-            // Track the compaction promise so destroy() can await it
-            this._pendingCompaction = storeState(this, false).finally(() => {
-              this._pendingCompaction = null
-            })
-            this._storeTimeoutId = null
-          }, this._storeTimeout)
+          this._scheduleCompaction()
         }
       }
     }
@@ -318,11 +314,11 @@ export class IndexeddbPersistence extends Observable {
   once (name, f) {
     if (name === 'synced' && this.synced) {
       // If already synced, call immediately in next tick
-      setTimeout(() => f(this), 0)
+      this.timeProvider.setTimeout(() => f(this), 0)
       return this
     }
     if (name === 'failed' && this._syncFailed) {
-      setTimeout(() => f(this._syncError), 0)
+      this.timeProvider.setTimeout(() => f(this._syncError), 0)
       return this
     }
     return super.once(name, f)
@@ -408,9 +404,46 @@ export class IndexeddbPersistence extends Observable {
     }
   }
 
+  _scheduleCompaction () {
+    this._compactionRequested = true
+    if (this._destroyed) return
+    if (this._storeTimeoutId !== null) {
+      this.timeProvider.clearTimeout(this._storeTimeoutId)
+    }
+    this._storeTimeoutId = this.timeProvider.setTimeout(() => {
+      this._storeTimeoutId = null
+      this._requestCompaction().catch(err => {
+        idbWarn(`compaction failed for ${this.name}:`, err)
+      })
+    }, this._storeTimeout)
+  }
+
+  _requestCompaction () {
+    if (this._pendingCompaction) return this._pendingCompaction
+    this._pendingCompaction = Promise.resolve()
+      .then(async () => {
+        if (!this._compactionRequested || this._destroyed || !this.db) return
+        this._compactionRequested = false
+        while (this._pendingWrites.size > 0) {
+          await Promise.all(Array.from(this._pendingWrites))
+        }
+        if (!this._destroyed && this.db && this._dbsize >= RUNTIME_TRIM_SIZE) {
+          await storeState(this, false)
+        }
+      })
+      .finally(() => {
+        this._pendingCompaction = null
+        if (this._compactionRequested && !this._destroyed) {
+          this._scheduleCompaction()
+        }
+      })
+    return this._pendingCompaction
+  }
+
   async destroy () {
-    if (this._storeTimeoutId) {
-      clearTimeout(this._storeTimeoutId)
+    if (this._storeTimeoutId !== null) {
+      this.timeProvider.clearTimeout(this._storeTimeoutId)
+      this._storeTimeoutId = null
     }
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)
@@ -434,7 +467,7 @@ export class IndexeddbPersistence extends Observable {
       return
     }
     // Wait for all pending writes to complete before closing
-    if (this._pendingWrites.size > 0) {
+    while (this._pendingWrites.size > 0) {
       await Promise.all(this._pendingWrites)
     }
     // Wait for any pending compaction to complete before closing
@@ -465,7 +498,12 @@ export class IndexeddbPersistence extends Observable {
   async clearDocumentData () {
     await this.whenSynced
 
-    if (this._pendingWrites.size > 0) {
+    if (this._storeTimeoutId !== null) {
+      this.timeProvider.clearTimeout(this._storeTimeoutId)
+      this._storeTimeoutId = null
+    }
+    this._compactionRequested = false
+    while (this._pendingWrites.size > 0) {
       await Promise.all(this._pendingWrites)
     }
     if (this._pendingCompaction) {
