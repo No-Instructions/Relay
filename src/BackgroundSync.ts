@@ -1720,11 +1720,19 @@ export class BackgroundSync extends HasLogging {
 		if (!hsm || hsm.state.lca || hsm.isActive()) return;
 
 		try {
+			const mergeManager = doc.sharedFolder.mergeManager;
+			if (mergeManager?.getHibernationState(doc.guid) === "hibernated") {
+				mergeManager.wake(doc.guid, doc.ensureRemoteDoc());
+				await hsm.awaitPersistenceReady();
+			}
+
 			const diskState = await doc.readDiskContent();
 			const repaired = await hsm.bootstrapLCAFromDisk(diskState);
 			if (!repaired && hsm.getSyncStatus().status === "pending") {
 				if (!hsm.hasPersistenceUserData()) {
-					await doc.sharedFolder.rebuildDocumentFromRemote(doc.guid, doc.path);
+					this.debug(
+						`[bootstrapLCA] deferred for ${doc.path}: awaiting local CRDT enrollment`,
+					);
 					return;
 				}
 				this.debug(

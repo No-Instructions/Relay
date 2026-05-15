@@ -2897,6 +2897,89 @@ describe('MergeHSM', () => {
       expect(t.stateHistory.slice(historyLength).some((entry) => entry.to === 'idle.recoverLCA')).toBe(false);
     });
 
+    test('BackgroundSync LCA backfill wakes hibernated docs without enrollment or rebuild', async () => {
+      let BackgroundSyncForTest: any;
+      jest.isolateModules(() => {
+        jest.doMock('yjs', () => Y);
+        jest.doMock('obsidian', () => ({ requestUrl: jest.fn() }), { virtual: true });
+        jest.doMock('src/Document', () => ({
+          Document: class Document {},
+          isDocument: (file: any) => file?.__kind === 'document',
+        }));
+        jest.doMock('src/Canvas', () => ({
+          Canvas: class Canvas {
+            static exportCanvasData = jest.fn();
+          },
+          isCanvas: jest.fn(() => false),
+        }));
+        jest.doMock('src/SyncFile', () => ({
+          SyncFile: class SyncFile {},
+          isSyncFile: jest.fn(() => false),
+        }));
+        BackgroundSyncForTest = require('src/BackgroundSync').BackgroundSync;
+      });
+      jest.dontMock('yjs');
+      jest.dontMock('obsidian');
+      jest.dontMock('src/Document');
+      jest.dontMock('src/Canvas');
+      jest.dontMock('src/SyncFile');
+
+      const remoteDoc = {};
+      const hsm = {
+        state: { lca: null },
+        isActive: jest.fn(() => false),
+        awaitPersistenceReady: jest.fn().mockResolvedValue(undefined),
+        bootstrapLCAFromDisk: jest.fn().mockResolvedValue(false),
+        getSyncStatus: jest.fn(() => ({ status: 'pending' })),
+        hasPersistenceUserData: jest.fn(() => false),
+        initializeFromRemote: jest.fn(),
+      };
+      const mergeManager = {
+        getHibernationState: jest.fn(() => 'hibernated'),
+        wake: jest.fn(),
+      };
+      const doc = {
+        __kind: 'document',
+        guid: 'guid-1',
+        path: 'folder/note.md',
+        hsm,
+        ensureRemoteDoc: jest.fn(() => remoteDoc),
+        readDiskContent: jest.fn().mockResolvedValue({
+          content: 'disk',
+          hash: 'hash',
+          mtime: 123,
+        }),
+        sharedFolder: {
+          mergeManager,
+          rebuildDocumentFromRemote: jest.fn(),
+        },
+      };
+      const context = {
+        debug: jest.fn(),
+        warn: jest.fn(),
+        errorMessage: (error: unknown) => String(error),
+      };
+
+      await (BackgroundSyncForTest.prototype as any).maybeBootstrapDocumentLCA.call(
+        context,
+        doc,
+      );
+
+      expect(doc.ensureRemoteDoc).toHaveBeenCalledTimes(1);
+      expect(mergeManager.wake).toHaveBeenCalledWith('guid-1', remoteDoc);
+      expect(hsm.awaitPersistenceReady).toHaveBeenCalledTimes(1);
+      expect(hsm.bootstrapLCAFromDisk).toHaveBeenCalledWith({
+        content: 'disk',
+        hash: 'hash',
+        mtime: 123,
+      });
+      expect(hsm.initializeFromRemote).not.toHaveBeenCalled();
+      expect(doc.sharedFolder.rebuildDocumentFromRemote).not.toHaveBeenCalled();
+      expect(context.debug).toHaveBeenCalledWith(
+        '[bootstrapLCA] deferred for folder/note.md: awaiting local CRDT enrollment',
+      );
+    });
+
     test('bootstrapLCAFromDisk hydrates hibernated local CRDT before recovering LCA', async () => {
       const content = 'same content';
       const updates = createYjsUpdate(content);
