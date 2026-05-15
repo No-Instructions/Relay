@@ -31,6 +31,18 @@ export class Banner {
 		return typeof this.text === "string" ? this.text : this.text.long;
 	}
 
+	private handleClick(): void {
+		void this.onClick()
+			.then((destroy) => {
+				if (destroy) {
+					this.destroy();
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("Banner click failed", error);
+			});
+	}
+
 	display() {
 		if (!this.view) return true;
 		const leafContentEl = this.view.containerEl;
@@ -61,13 +73,7 @@ export class Banner {
 			span.setText(this.longText);
 			banner.appendChild(span);
 			bannerBox.appendChild(banner);
-			const onClick = async () => {
-				const destroy = await this.onClick();
-				if (destroy) {
-					this.destroy();
-				}
-			};
-			banner.addEventListener("click", onClick);
+			banner.addEventListener("click", () => this.handleClick());
 		}
 		return true;
 	}
@@ -90,12 +96,7 @@ export class Banner {
 		button.setAttribute("aria-label", this.longText);
 		button.setAttribute("tabindex", "0");
 
-		button.addEventListener("click", async () => {
-			const destroy = await this.onClick();
-			if (destroy) {
-				this.destroy();
-			}
-		});
+		button.addEventListener("click", () => this.handleClick());
 
 		viewHeaderLeftElement.insertAdjacentElement("afterend", button);
 		return true;

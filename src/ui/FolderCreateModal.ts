@@ -38,7 +38,7 @@ export class FolderCreateModal extends Modal {
 					});
 				text.inputEl.addEventListener("keypress", (e) => {
 					if (e.key === "Enter") {
-						this.handleCreate();
+						void this.handleCreate();
 					}
 				});
 				// Focus the input
@@ -74,7 +74,9 @@ export class FolderCreateModal extends Modal {
 			text: "Create",
 			cls: "mod-cta"
 		});
-		this.createButton.onclick = () => this.handleCreate();
+		this.createButton.onclick = () => {
+			void this.handleCreate();
+		};
 		
 		this.updateCreateButton();
 	}
@@ -120,7 +122,7 @@ export class FolderCreateModal extends Modal {
 					this.isPrivate
 				);
 				folder.remote = remote;
-				folder.connect();
+				await folder.connect();
 				this.sharedFolders.notifyListeners();
 			} else {
 				// Ensure folder exists in vault

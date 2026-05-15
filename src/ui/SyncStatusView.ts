@@ -337,7 +337,7 @@ export function cleanupSyncStatusViews(workspace: Workspace): WorkspaceLeaf | nu
 			keeper = leaf;
 			continue;
 		}
-		leaf.detach();
+		void leaf.detach();
 	}
 
 	return keeper;
@@ -368,7 +368,7 @@ export async function openSyncStatusView(
 		} else {
 			view.bindToActiveFile();
 		}
-		workspace.revealLeaf(leaf);
+		await workspace.revealLeaf(leaf);
 		return view;
 	}
 
@@ -386,7 +386,7 @@ export async function openSyncStatusView(
 	} else {
 		view.bindToActiveFile();
 	}
-	workspace.revealLeaf(leaf);
+	await workspace.revealLeaf(leaf);
 	return view;
 }
 
