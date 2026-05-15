@@ -1517,7 +1517,7 @@ describe('MergeHSM', () => {
       (t.hsm as any).pendingEditorContent = null;
       (t.hsm as any).pendingDiskContents = null;
 
-      let reopenedEditorText = local;
+      const reopenedEditorText = local;
       t.attachEditorView(
         mockEditorViewRef(() => reopenedEditorText),
         reopenedEditorText,

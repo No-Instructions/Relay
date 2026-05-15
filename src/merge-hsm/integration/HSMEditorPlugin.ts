@@ -30,7 +30,7 @@ import { buildBufferedCM6ReplayEvents } from "./replayBufferedEdits";
  */
 class HSMEditorPluginValue implements PluginValue {
   private editor: EditorView;
-  // eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
+  // eslint-disable-next-line -- Relay document model, not DOM global.
   private document: Document | null = null;
   private cm6Integration: CM6Integration | null = null;
   private destroyed = false;

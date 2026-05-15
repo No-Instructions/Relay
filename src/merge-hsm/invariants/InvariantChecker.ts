@@ -403,7 +403,6 @@ export class InvariantChecker {
 
     // Log to console if enabled
     if (this.config.logToConsole) {
-      const prefix = `[Invariant] [${violation.severity.toUpperCase()}]`;
       invariantWarn(`[${violation.severity.toUpperCase()}] ${violation.invariantId}: ${violation.message}`);
     }
 

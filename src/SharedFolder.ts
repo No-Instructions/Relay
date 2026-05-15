@@ -1498,7 +1498,7 @@ export class SharedFolder extends HasProvider {
 			} else {
 				try {
 					indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
-				} catch {}
+				} catch { /* best effort stale database cleanup */ }
 				const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
 				awaitOnReload(p);
 			}

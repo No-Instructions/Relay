@@ -633,7 +633,6 @@ export class MergeManager {
     } = config;
 
     // Get lightweight metadata from cache (bulk-loaded during initialize())
-    const lcaMeta = this.getLCAMeta(guid);
     const localStateVector = this.getLocalStateVector(guid);
 
     const hsm = new MergeHSM({

@@ -4492,7 +4492,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 	}
 
 	async awaitAsync(id: string): Promise<void> {
-		while (true) {
+		for (;;) {
 			let op = this._asyncOps.get(id);
 			if (!op) {
 				await Promise.resolve();

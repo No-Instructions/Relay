@@ -1244,7 +1244,6 @@ import {
   cm6Insert,
   providerSynced,
   connected,
-  disconnected,
   unload,
   load,
   persistenceLoaded,

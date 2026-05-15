@@ -4,7 +4,6 @@ import {
 	loadToIdle,
 	load,
 	persistenceLoaded,
-	createYjsUpdate,
 } from 'src/merge-hsm/testing';
 import {
 	svEqual,

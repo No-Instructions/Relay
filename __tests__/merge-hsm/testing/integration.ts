@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as Y from 'yjs';
 import type { HSMLogEntry, SerializableEvent } from 'src/merge-hsm/recording/types';
 import type { TestHSM } from 'src/merge-hsm/testing/createTestHSM';
-import type { CrossVaultTest, VaultHandle } from 'src/merge-hsm/testing/createCrossVaultTest';
+import type { CrossVaultTest } from 'src/merge-hsm/testing/createCrossVaultTest';
 import { deserializeEvent } from 'src/merge-hsm/recording/serialization';
 
 // =============================================================================
@@ -297,7 +297,7 @@ export async function replayInputsAgainstTwin(
     if (actualFrom !== expectedFrom && !preStateFastPath) {
       if (expectedFrom === 'unloaded' && actualFrom !== 'unloaded') {
         vaultHandle.send({ type: 'UNLOAD' });
-        try { await vaultHandle.hsm.hsm.awaitCleanup(); } catch {}
+        try { await vaultHandle.hsm.hsm.awaitCleanup(); } catch { /* best effort cleanup */ }
         await new Promise(r => window.setTimeout(r, 10));
       }
       const newActual = vaultHandle.hsm.statePath;
@@ -321,11 +321,11 @@ export async function replayInputsAgainstTwin(
 
     // Wait for async operations
     if (eventType === 'RELEASE_LOCK') {
-      try { await vaultHandle.hsm.hsm.awaitCleanup(); } catch {}
+      try { await vaultHandle.hsm.hsm.awaitCleanup(); } catch { /* best effort cleanup */ }
     }
     if (eventType === 'DISK_CHANGED') {
       await new Promise(r => window.setTimeout(r, 20));
-      try { await vaultHandle.hsm.awaitIdleAutoMerge(); } catch {}
+      try { await vaultHandle.hsm.awaitIdleAutoMerge(); } catch { /* best effort async drain */ }
     }
 
     if (autoSync) ctx.sync();

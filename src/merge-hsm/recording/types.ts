@@ -93,7 +93,7 @@ export interface HSMRecording {
   endedAt: string;
 
   /** Document info */
-  // eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
+  // eslint-disable-next-line -- Relay document model, not DOM global.
   document: {
     guid: string;
     path: string;

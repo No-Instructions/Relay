@@ -165,7 +165,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
-	// eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
+	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document?: Document;
 	private destroyed = false;
 

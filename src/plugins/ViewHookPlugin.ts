@@ -16,7 +16,7 @@ import { MetadataRenderer } from "./MetadataRenderer";
  */
 export class ViewHookPlugin extends HasLogging {
 	private view: MarkdownView;
-	// eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
+	// eslint-disable-next-line -- Relay document model, not DOM global.
 	private document: Document;
 	private renderers: ViewRenderer[];
 	private unsubscribes: Array<() => void> = [];
