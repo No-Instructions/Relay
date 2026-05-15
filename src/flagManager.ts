@@ -114,7 +114,7 @@ export class FeatureFlagManager extends Observable<FeatureFlagManager> {
 	public setFlag(flagName: keyof FeatureFlags, value: boolean): void {
 		if (!this.settings) return;
 
-		this.settings.update((current) => ({
+		void this.settings.update((current) => ({
 			...current,
 			[flagName]: value,
 		}));

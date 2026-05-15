@@ -40,11 +40,16 @@ export class EmbedBanner {
 			span.setText(this.text);
 			banner.appendChild(span);
 			bannerBox.appendChild(banner);
-			const onClick = async () => {
-				const destroy = await this.onClick();
-				if (destroy) {
-					this.destroy();
-				}
+			const onClick = () => {
+				void this.onClick()
+					.then((destroy) => {
+						if (destroy) {
+							this.destroy();
+						}
+					})
+					.catch((error: unknown) => {
+						console.error("Embed banner click failed", error);
+					});
 			};
 			banner.addEventListener("click", onClick);
 		}
