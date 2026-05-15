@@ -54,7 +54,7 @@ export function nextDelay(minMs: number, maxMs: number): Promise<void> {
   if (!DELAYS_ENABLED) return Promise.resolve();
   const ms = fountain.int(minMs, maxMs);
   if (ms === 0) return Promise.resolve();
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 /** Reset fountain (for test isolation if needed) */

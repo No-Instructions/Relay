@@ -38,7 +38,7 @@ export class CM6Integration {
 	private log: (...args: unknown[]) => void;
 	private warn: (...args: unknown[]) => void;
 	private isEditorStillValid: EditorValidityCheck;
-	private driftCheckTimer: ReturnType<typeof setTimeout> | null = null;
+	private driftCheckTimer: number | null = null;
 	readonly viewId: string;
 
 	/** Delay after last data-flow event before checking for drift (ms) */
@@ -191,7 +191,7 @@ export class CM6Integration {
 				this.warn(
 					`dispatchToEditor: DEFERRED due to re-entrant update. ${changes.length} changes queued for rAF`,
 				);
-				requestAnimationFrame(() => {
+				window.requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
 						try {
 							const editorBefore = this.view.state.doc.length;
@@ -270,7 +270,7 @@ export class CM6Integration {
 		} catch (e) {
 			if (e instanceof Error && e.message.includes("update is in progress")) {
 				this.warn("setEditorText: DEFERRED due to re-entrant update");
-				requestAnimationFrame(() => {
+				window.requestAnimationFrame(() => {
 					if (!this.destroyed && this.isEditorStillValid()) {
 						const replacementChanges = [{ from: 0, to: currentText.length, insert: text }];
 							const dispatchSpec: TransactionSpec = {
@@ -359,9 +359,9 @@ export class CM6Integration {
 	private scheduleDriftCheck(): void {
 		if (this.destroyed) return;
 		if (this.driftCheckTimer !== null) {
-			clearTimeout(this.driftCheckTimer);
+			window.clearTimeout(this.driftCheckTimer);
 		}
-		this.driftCheckTimer = setTimeout(() => {
+		this.driftCheckTimer = window.setTimeout(() => {
 			this.driftCheckTimer = null;
 			if (this.destroyed) return;
 			if (!this.isEditorStillValid()) return;
@@ -384,7 +384,7 @@ export class CM6Integration {
 	destroy(): void {
 		this.destroyed = true;
 		if (this.driftCheckTimer !== null) {
-			clearTimeout(this.driftCheckTimer);
+			window.clearTimeout(this.driftCheckTimer);
 			this.driftCheckTimer = null;
 		}
 		if (this.unsubscribe) {

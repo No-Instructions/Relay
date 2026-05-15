@@ -34,7 +34,7 @@ export class EndpointConfigModal extends Modal {
 		this.component.$on("apply", () => {
 			this.close();
 			// Reload the plugin to apply changes
-			setTimeout(() => {
+			window.setTimeout(() => {
 				this.reload();
 			}, 100);
 		});

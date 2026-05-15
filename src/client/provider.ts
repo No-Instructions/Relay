@@ -585,14 +585,17 @@ export class YSweetProvider extends Observable<string> {
 					callback,
 					ms,
 				) as unknown as ReturnType<typeof setInterval>)
-			: setInterval(callback, ms);
+			: (window.setInterval(
+					callback,
+					ms,
+				) as unknown as ReturnType<typeof setInterval>);
 	}
 
 	_clearInterval(timerId: ReturnType<typeof setInterval> | number): void {
 		if (this._timeProvider) {
 			this._timeProvider.clearInterval(timerId as number);
 		} else {
-			clearInterval(timerId as ReturnType<typeof setInterval>);
+			window.clearInterval(timerId as number);
 		}
 	}
 
@@ -605,14 +608,17 @@ export class YSweetProvider extends Observable<string> {
 					callback,
 					ms,
 				) as unknown as ReturnType<typeof setTimeout>)
-			: setTimeout(callback, ms);
+			: (window.setTimeout(
+					callback,
+					ms,
+				) as unknown as ReturnType<typeof setTimeout>);
 	}
 
 	_clearTimeout(timerId: ReturnType<typeof setTimeout> | number): void {
 		if (this._timeProvider) {
 			this._timeProvider.clearTimeout(timerId as number);
 		} else {
-			clearTimeout(timerId as ReturnType<typeof setTimeout>);
+			window.clearTimeout(timerId as number);
 		}
 	}
 

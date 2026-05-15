@@ -320,7 +320,7 @@ export class SyncStatusView extends ItemView {
 			width: rect.width,
 			left: true,
 		}, anchorEl.ownerDocument);
-		requestAnimationFrame(() => {
+		window.requestAnimationFrame(() => {
 			const menus = anchorEl.ownerDocument.querySelectorAll<HTMLElement>(".menu");
 			const menuEl = menus[menus.length - 1];
 			if (!menuEl) return;

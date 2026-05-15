@@ -42,7 +42,7 @@ export class FolderCreateModal extends Modal {
 					}
 				});
 				// Focus the input
-				setTimeout(() => text.inputEl.focus(), 10);
+				window.setTimeout(() => text.inputEl.focus(), 10);
 			});
 
 		// Private folder toggle (only for relay version > 0)

@@ -7,7 +7,9 @@ import {
 	messageQuerySubdocs,
 	normalizeSubdocIndex,
 	YSweetProvider,
+	type YSweetProviderParams,
 } from "../../src/client/provider";
+import type { TimeProvider } from "../../src/TimeProvider";
 
 const RELAY_GUID = "8d6b60a2-3ed9-456d-9722-64ffaa17ac12";
 const DOC_GUID_A = "d19f118d-1791-4c33-b933-9fce18677619";
@@ -41,6 +43,42 @@ function readFrameMessageType(
 ): number {
 	const decoder = decoding.createDecoder(frame as Uint8Array);
 	return decoding.readVarUint(decoder);
+}
+
+function createTestTimeProvider(): TimeProvider {
+	return {
+		now: () => Date.now(),
+		setInterval: (callback, ms) =>
+			setInterval(callback, ms) as unknown as number,
+		clearInterval: (timerId) =>
+			clearInterval(timerId as unknown as ReturnType<typeof setInterval>),
+		setTimeout: (callback, ms) =>
+			setTimeout(callback, ms) as unknown as number,
+		clearTimeout: (timerId) =>
+			clearTimeout(timerId as unknown as ReturnType<typeof setTimeout>),
+		destroy: () => {},
+		debounce: (func, delay) => {
+			let timerId: number | undefined;
+			return (...args) => {
+				if (timerId !== undefined) {
+					clearTimeout(timerId as unknown as ReturnType<typeof setTimeout>);
+				}
+				timerId = setTimeout(() => {
+					timerId = undefined;
+					func(...args);
+				}, delay) as unknown as number;
+			};
+		},
+	};
+}
+
+function withTimeProvider(
+	options: YSweetProviderParams = {},
+): YSweetProviderParams {
+	return {
+		timeProvider: createTestTimeProvider(),
+		...options,
+	};
 }
 
 class FakeWebSocket {
@@ -106,10 +144,10 @@ describe("YSweetProvider", () => {
 	});
 
 	test("disconnect clears synced and prevents stale synced fast-path", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
-		});
+		}));
 
 		provider.synced = true;
 		provider.disconnect();
@@ -125,12 +163,12 @@ describe("YSweetProvider", () => {
 	});
 
 	test("connect does not bypass an already scheduled reconnect backoff", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
 			WebSocketPolyfill: FakeWebSocket as any,
 			maxConnectionErrors: 3,
-		});
+		}));
 
 		provider.connect();
 		expect(FakeWebSocket.instances).toHaveLength(1);
@@ -151,12 +189,12 @@ describe("YSweetProvider", () => {
 	});
 
 	test("read-only provider connects with sync step 1 but drops queued outbound updates", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
 			WebSocketPolyfill: FakeWebSocket as any,
 			readOnly: true,
-		});
+		}));
 		provider._pendingMessages.push(new Uint8Array([messageSync, 2, 1]).buffer);
 
 		provider.connect();
@@ -176,12 +214,12 @@ describe("YSweetProvider", () => {
 		const localDoc = new Y.Doc();
 		const remoteDoc = new Y.Doc();
 		remoteDoc.getText("contents").insert(0, "remote");
-		const provider = new YSweetProvider("ws://example.com", "room", localDoc, {
+		const provider = new YSweetProvider("ws://example.com", "room", localDoc, withTimeProvider({
 			connect: false,
 			disableBc: true,
 			WebSocketPolyfill: FakeWebSocket as any,
 			readOnly: true,
-		});
+		}));
 
 		provider.connect();
 		const ws = FakeWebSocket.instances[0];
@@ -213,11 +251,11 @@ describe("YSweetProvider", () => {
 		const localDoc = new Y.Doc();
 		const remoteDoc = new Y.Doc();
 		remoteDoc.getText("contents").insert(0, "remote");
-		const provider = new YSweetProvider("ws://example.com", "room", localDoc, {
+		const provider = new YSweetProvider("ws://example.com", "room", localDoc, withTimeProvider({
 			connect: false,
 			disableBc: true,
 			WebSocketPolyfill: FakeWebSocket as any,
-		});
+		}));
 		provider.onSubdocIndex = jest.fn();
 		provider.getSubdocQueryDocIds = () => [DOC_ID_A, DOC_ID_B];
 
@@ -244,10 +282,10 @@ describe("YSweetProvider", () => {
 	});
 
 	test("sendQuerySubdocs skips empty doc ID queries", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
-		});
+		}));
 		const ws = new FakeWebSocket("ws://example.com/room");
 		ws.readyState = FakeWebSocket.OPEN;
 		provider.ws = ws as any;
@@ -260,10 +298,10 @@ describe("YSweetProvider", () => {
 	});
 
 	test("sendQuerySubdocs encodes selected server doc IDs", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
-		});
+		}));
 		const ws = new FakeWebSocket("ws://example.com/room");
 		ws.readyState = FakeWebSocket.OPEN;
 		provider.ws = ws as any;
@@ -285,10 +323,10 @@ describe("YSweetProvider", () => {
 	});
 
 	test("sendQuerySubdocs paginates selected server doc IDs", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
-		});
+		}));
 		const ws = new FakeWebSocket("ws://example.com/room");
 		ws.readyState = FakeWebSocket.OPEN;
 		provider.ws = ws as any;
@@ -309,10 +347,10 @@ describe("YSweetProvider", () => {
 	});
 
 	test("handleSubdocIndex batches paginated query responses", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
-		});
+		}));
 		const ws = new FakeWebSocket("ws://example.com/room");
 		ws.readyState = FakeWebSocket.OPEN;
 		provider.ws = ws as any;
@@ -430,10 +468,10 @@ describe("YSweetProvider", () => {
 	});
 
 	test("handleSubdocIndex stores and notifies subdoc index listeners", () => {
-		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), {
+		const provider = new YSweetProvider("ws://example.com", "room", new Y.Doc(), withTimeProvider({
 			connect: false,
 			disableBc: true,
-		});
+		}));
 		const observed: unknown[] = [];
 		const index = {
 			[DOC_ID_A]: {

@@ -298,7 +298,7 @@ export async function replayInputsAgainstTwin(
       if (expectedFrom === 'unloaded' && actualFrom !== 'unloaded') {
         vaultHandle.send({ type: 'UNLOAD' });
         try { await vaultHandle.hsm.hsm.awaitCleanup(); } catch {}
-        await new Promise(r => setTimeout(r, 10));
+        await new Promise(r => window.setTimeout(r, 10));
       }
       const newActual = vaultHandle.hsm.statePath;
       if (newActual !== expectedFrom) {
@@ -324,14 +324,14 @@ export async function replayInputsAgainstTwin(
       try { await vaultHandle.hsm.hsm.awaitCleanup(); } catch {}
     }
     if (eventType === 'DISK_CHANGED') {
-      await new Promise(r => setTimeout(r, 20));
+      await new Promise(r => window.setTimeout(r, 20));
       try { await vaultHandle.hsm.awaitIdleAutoMerge(); } catch {}
     }
 
     if (autoSync) ctx.sync();
 
     // Let deferred provider sync fire
-    await new Promise(r => setTimeout(r, 5));
+    await new Promise(r => window.setTimeout(r, 5));
 
     // Run checkpoint
     if (checkpoints[seq]) {

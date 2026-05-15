@@ -636,7 +636,7 @@ export class RelayDebugAPI {
     }
 
     // Let Obsidian finish any async view replacement caused by mode switches.
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     const activeLeaf = this.plugin.app.workspace.activeLeaf;
     const candidates = this.findLeavesByPath(path);
@@ -1015,12 +1015,12 @@ export class RelayDebugAPI {
     const matcher = (s: string) => s.startsWith(statePrefix);
     if (matcher(hsm._statePath)) return hsm._statePath;
 
-    let timer: ReturnType<typeof setTimeout> | null = null;
+    let timer: number | null = null;
     try {
       await Promise.race([
         hsm.awaitState(matcher),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
+          timer = window.setTimeout(() => {
             reject(
               new Error(
                 `awaitHsmState timeout after ${timeoutMs}ms waiting for ` +
@@ -1032,7 +1032,7 @@ export class RelayDebugAPI {
         }),
       ]);
     } finally {
-      if (timer !== null) clearTimeout(timer);
+      if (timer !== null) window.clearTimeout(timer);
     }
     return hsm._statePath;
   }

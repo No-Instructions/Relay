@@ -16,7 +16,7 @@ export class ResourceMeterMount {
 	private workspace: Workspace;
 	private sharedFolders: SharedFolders;
 	private offLayoutChange: (() => void) | null = null;
-	private refreshInterval: ReturnType<typeof setInterval> | null = null;
+	private refreshInterval: number | null = null;
 	private layoutReady = false;
 
 	constructor(workspace: Workspace, sharedFolders: SharedFolders) {
@@ -36,7 +36,7 @@ export class ResourceMeterMount {
 		})();
 
 		// Periodic refresh so the meter updates when hibernation frees slots
-		this.refreshInterval = setInterval(() => this.sync(), 10_000);
+		this.refreshInterval = window.setInterval(() => this.sync(), 10_000);
 	}
 
 	private sync(): void {
@@ -116,7 +116,7 @@ export class ResourceMeterMount {
 
 	destroy(): void {
 		if (this.refreshInterval) {
-			clearInterval(this.refreshInterval);
+			window.clearInterval(this.refreshInterval);
 			this.refreshInterval = null;
 		}
 		this.offLayoutChange?.();
