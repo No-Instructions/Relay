@@ -52,7 +52,7 @@ class NetworkStatus {
 
 	public stop() {
 		if (this.timer) {
-			clearInterval(this.timer);
+			this.timeProvider.clearInterval(this.timer);
 		}
 	}
 

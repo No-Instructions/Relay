@@ -2174,7 +2174,7 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				// Backoff: immediate for first 3 retries, then exponential up to 5s.
 				// This prevents hot-looping when updates arrive faster than we can drain.
 				const delay = this.idleRetryCount <= 3 ? 0 : Math.min(2 ** (this.idleRetryCount - 3) * 250, 5000);
-				setTimeout(() => {
+				this.timeProvider.setTimeout(() => {
 					if (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null) {
 						this.send({ type: 'IDLE_RETRY' });
 					}

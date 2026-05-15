@@ -23,8 +23,8 @@ export interface Subscription {
 function makeProvider(
 	clientToken: ClientToken,
 	ydoc: Y.Doc,
-	user?: User,
-	timeProvider?: TimeProvider,
+	user: User | undefined,
+	timeProvider: TimeProvider,
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
@@ -66,7 +66,7 @@ export class HasProvider extends HasLogging {
 	path?: string;
 	private _ydoc: Y.Doc | null = null;
 	clientToken: ClientToken;
-	private _deferredDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private _deferredDisconnectTimer: number | null = null;
 	private _deferredDisconnectStatusListener:
 		| ((state: ConnectionState) => void)
 		| null = null;
@@ -78,7 +78,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionError: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	listeners: Map<unknown, Listener>;
-	timeProvider: TimeProvider | undefined;
+	timeProvider!: TimeProvider;
 
 	constructor(
 		public guid: string,
@@ -314,7 +314,7 @@ export class HasProvider extends HasLogging {
 
 	private clearDeferredDisconnect(): void {
 		if (this._deferredDisconnectTimer !== null) {
-			clearTimeout(this._deferredDisconnectTimer);
+			this.timeProvider.clearTimeout(this._deferredDisconnectTimer);
 			this._deferredDisconnectTimer = null;
 		}
 		if (this._provider && this._deferredDisconnectStatusListener) {
@@ -343,7 +343,7 @@ export class HasProvider extends HasLogging {
 			// YSweetProvider emits "status: connected" before its onopen
 			// handler flushes buffered sync frames. Defer one task so the
 			// pending messages are actually sent before we close the socket.
-			setTimeout(finishDisconnect, 0);
+			this.timeProvider.setTimeout(finishDisconnect, 0);
 		};
 
 		this._deferredDisconnectStatusListener = (state: ConnectionState) => {
@@ -358,7 +358,7 @@ export class HasProvider extends HasLogging {
 		};
 		provider.on("status", this._deferredDisconnectStatusListener);
 
-		this._deferredDisconnectTimer = setTimeout(() => {
+		this._deferredDisconnectTimer = this.timeProvider.setTimeout(() => {
 			if (this._provider !== provider) {
 				this.clearDeferredDisconnect();
 				return;

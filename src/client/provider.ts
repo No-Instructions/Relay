@@ -816,7 +816,7 @@ export class YSweetProvider extends Observable<string> {
 	 */
 	once(name: string, f: (...args: any[]) => void) {
 		if (name === "synced" && this._synced) {
-			setTimeout(() => f(this._synced), 0);
+			this._setTimeout(() => f(this._synced), 0);
 			return this;
 		}
 		return super.once(name, f);

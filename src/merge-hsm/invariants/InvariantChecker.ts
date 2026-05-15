@@ -66,7 +66,7 @@ export class InvariantChecker {
   private lastDiskContents: string | null = null;
 
   // Periodic check interval
-  private periodicInterval: ReturnType<typeof setInterval> | null = null;
+  private periodicInterval: number | null = null;
 
   // State change unsubscribe
   private unsubscribeStateChange: (() => void) | null = null;
@@ -201,7 +201,7 @@ export class InvariantChecker {
     }
 
     const interval = this.config.periodicInterval ?? 5000;
-    this.periodicInterval = setInterval(() => {
+    this.periodicInterval = this.timeProvider.setInterval(() => {
       this.checkPeriodic();
     }, interval);
   }
@@ -211,7 +211,7 @@ export class InvariantChecker {
    */
   stopPeriodicChecks(): void {
     if (this.periodicInterval) {
-      clearInterval(this.periodicInterval);
+      this.timeProvider.clearInterval(this.periodicInterval);
       this.periodicInterval = null;
     }
   }

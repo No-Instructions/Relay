@@ -360,8 +360,9 @@ export class TokenStore<TokenType extends HasToken> {
 
 	async waitForQueue(): Promise<void> {
 		return new Promise((resolve) => {
-			setInterval(() => {
+			const interval = this.timeProvider.setInterval(() => {
 				if (this.refreshQueue.size == 0) {
+					this.timeProvider.clearInterval(interval);
 					return resolve();
 				}
 			}, 100);

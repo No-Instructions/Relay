@@ -50,12 +50,13 @@ export class DefaultTimeProvider implements TimeProvider {
 		func: T,
 		delay: number = 500,
 	): (...args: Parameters<T>) => void {
-		let timer: ReturnType<typeof setTimeout>;
+		let timer: number | undefined;
 		return (...args: Parameters<T>) => {
-			if (timer) {
-				clearTimeout(timer);
+			if (timer !== undefined) {
+				this.clearTimeout(timer);
 			}
-			timer = setTimeout(() => {
+			timer = this.setTimeout(() => {
+				timer = undefined;
 				func(...args);
 			}, delay);
 		};

@@ -223,7 +223,7 @@ export class SharedFolder extends HasProvider {
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		private _hsmStore: HSMStore,
-		timeProvider: TimeProvider | undefined,
+		timeProvider: TimeProvider,
 		relayId?: string,
 		authoritative: boolean = false,
 	) {
@@ -1325,7 +1325,7 @@ export class SharedFolder extends HasProvider {
 			this.readyPromise ||
 			new Dependency<SharedFolder>(promiseFn, (): [boolean, SharedFolder] => {
 				return [this.ready, this];
-			});
+			}, this.timeProvider);
 		return trackPromise(`folder:whenReady:${this.guid}`, this.readyPromise.getPromise());
 	}
 
@@ -1339,7 +1339,7 @@ export class SharedFolder extends HasProvider {
 			this.whenSyncedPromise ||
 			new Dependency<void>(promiseFn, (): [boolean, void] => {
 				return [this.persistenceSynced, undefined];
-			});
+			}, this.timeProvider);
 		return trackPromise(`folder:whenSynced:${this.guid}`, this.whenSyncedPromise.getPromise());
 	}
 
@@ -1865,7 +1865,11 @@ export class SharedFolder extends HasProvider {
 				// Ensure these complete before checking for deletions
 				await Promise.all(
 					[...creates, ...renames].map((op) =>
-						withTimeoutWarning<IFile | void>(op.promise, op),
+						withTimeoutWarning<IFile | void>(
+							op.promise,
+							this.timeProvider,
+							op,
+						),
 					),
 				);
 
@@ -1889,7 +1893,10 @@ export class SharedFolder extends HasProvider {
 			}
 		};
 
-		this.syncFileTreePromise = new SharedPromise<void>(promiseFn);
+		this.syncFileTreePromise = new SharedPromise<void>(
+			promiseFn,
+			this.timeProvider,
+		);
 
 		return trackPromise(`folder:syncFileTree:${this.guid}`, this.syncFileTreePromise.getPromise());
 	}

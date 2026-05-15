@@ -267,7 +267,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			this.readyPromise ||
 			new Dependency<Canvas>(promiseFn, (): [boolean, Canvas] => {
 				return [this.ready, this];
-			});
+			}, this.timeProvider);
 		return trackPromise(`canvas:whenReady:${this.guid}`, this.readyPromise.getPromise());
 	}
 
@@ -282,7 +282,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			this.whenSyncedPromise ||
 			new Dependency<void>(promiseFn, (): [boolean, void] => {
 				return [this.persistenceSynced, undefined];
-			});
+			}, this.timeProvider);
 		return trackPromise(`canvas:whenSynced:${this.guid}`, this.whenSyncedPromise.getPromise());
 	}
 
