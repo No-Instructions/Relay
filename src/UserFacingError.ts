@@ -102,11 +102,11 @@ function extractStatusMessage(record: Record<string, unknown>): string | null {
 	return null;
 }
 
-function parseJsonObject(value: string): unknown | null {
+function parseJsonObject(value: string): object | null {
 	const trimmed = value.trim();
 	if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return null;
 	try {
-		const parsed = JSON.parse(trimmed);
+		const parsed: unknown = JSON.parse(trimmed);
 		return typeof parsed === "object" && parsed !== null ? parsed : null;
 	} catch {
 		return null;

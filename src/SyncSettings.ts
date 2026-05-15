@@ -104,7 +104,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 	) as Record<keyof SyncFlags, boolean>;
 
 	constructor(
-		settings: Settings<any>,
+		settings: Settings<Record<keyof SyncFlags, boolean>>,
 		path: string,
 		public enabled = true,
 	) {
