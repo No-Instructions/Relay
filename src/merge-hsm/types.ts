@@ -684,7 +684,7 @@ export interface PersistedMergeState {
 	persistedAt: number;
 }
 
-/** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork). */
+/** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
 export interface PersistedStateMeta {
 	guid: string;
 	path: string;
@@ -698,6 +698,7 @@ export interface PersistedStateMeta {
 		diskHash: string;
 		localHash: string;
 	};
+	hasFork: boolean;
 	persistedAt: number;
 }
 

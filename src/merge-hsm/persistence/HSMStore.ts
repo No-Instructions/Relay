@@ -223,6 +223,7 @@ export class HSMStore {
             : {}),
           lastStatePath: s.lastStatePath,
           deferredConflict: s.deferredConflict,
+          hasFork: !!s.fork,
           persistedAt: s.persistedAt,
         });
         cursor.continue();
