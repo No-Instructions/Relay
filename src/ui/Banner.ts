@@ -48,14 +48,14 @@ export class Banner {
 		// container to enable easy removal of the banner
 		let bannerBox = leafContentEl.querySelector(".system3-banner-box");
 		if (!bannerBox) {
-			bannerBox = document.createElement("div");
+			bannerBox = leafContentEl.ownerDocument.createElement("div");
 			bannerBox.classList.add("system3-banner-box");
 			leafContentEl.insertBefore(bannerBox, contentEl);
 		}
 
 		let banner = leafContentEl.querySelector(".system3-banner");
 		if (!banner) {
-			banner = document.createElement("div");
+			banner = leafContentEl.ownerDocument.createElement("div");
 			banner.classList.add("system3-banner");
 			const span = banner.createSpan();
 			span.setText(this.longText);
@@ -84,7 +84,7 @@ export class Banner {
 		// Remove existing button if any
 		leafContentEl.querySelector(".system3-header-button")?.remove();
 
-		const button = document.createElement("button");
+		const button = leafContentEl.ownerDocument.createElement("button");
 		button.className = "view-header-left system3-header-button";
 		button.textContent = this.shortText;
 		button.setAttribute("aria-label", this.longText);

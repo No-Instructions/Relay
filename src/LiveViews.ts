@@ -121,6 +121,7 @@ export interface S3View {
 	view: TextFileView | CanvasView;
 	release: () => void;
 	attach: () => Promise<S3View>;
+	// eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
 	document: Document | Canvas | null;
 	destroy: () => void;
 	canConnect: boolean;
@@ -131,6 +132,7 @@ export class LoggedOutView implements S3View {
 	view: TextFileView | CanvasView;
 	login: () => Promise<boolean>;
 	banner?: Banner;
+	// eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
 	document = null;
 	canConnect = false;
 
@@ -195,6 +197,7 @@ export class RelayCanvasView implements S3View {
 	shouldConnect: boolean;
 	canConnect: boolean;
 	plugin?: CanvasPlugin;
+	// eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
 	document: Canvas;
 
 	private _viewActions?: ViewActions;
@@ -357,7 +360,7 @@ export class RelayCanvasView implements S3View {
 							: gap;
 						el.style.top = `${top}px`;
 						const isMobile =
-							document.body.classList.contains("is-mobile");
+							viewEl.ownerDocument.body.classList.contains("is-mobile");
 						el.style.right = isMobile ? "12px" : "6px";
 					},
 				},
@@ -432,6 +435,7 @@ export class LiveView<ViewType extends TextFileView>
 	implements S3View
 {
 	view: ViewType;
+	// eslint-disable-next-line obsidianmd/prefer-active-doc -- Relay document model, not DOM global.
 	document: Document;
 	shouldConnect: boolean;
 	canConnect: boolean;

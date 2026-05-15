@@ -75,11 +75,11 @@ export class ResourceMeterMount {
 		// Guard against duplicates: remove any stray meter elements that may
 		// have been left behind by a previous mount (e.g. plugin reload or
 		// sidebar re-render) before inserting a new one.
-		document
+		target.ownerDocument
 			.querySelectorAll(".system3-resource-meter")
 			.forEach((el) => el.remove());
 
-		this.containerEl = document.createElement("span");
+		this.containerEl = target.ownerDocument.createElement("span");
 		this.containerEl.classList.add("clickable-icon", "system3-resource-meter");
 		target.insertBefore(this.containerEl, target.firstChild);
 

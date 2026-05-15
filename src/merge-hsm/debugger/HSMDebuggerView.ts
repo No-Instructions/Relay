@@ -366,7 +366,7 @@ export class HSMDebuggerView extends ItemView {
   }
 
   private renderEventList(): Element {
-    const list = document.createElement('div');
+    const list = this.containerEl.ownerDocument.createElement('div');
     list.addClass('hsm-debugger-list');
 
     if (this.data.recentEvents.length === 0) {
@@ -394,7 +394,7 @@ export class HSMDebuggerView extends ItemView {
   }
 
   private renderEffectList(): Element {
-    const list = document.createElement('div');
+    const list = this.containerEl.ownerDocument.createElement('div');
     list.addClass('hsm-debugger-list');
 
     if (this.data.recentEffects.length === 0) {
@@ -418,7 +418,7 @@ export class HSMDebuggerView extends ItemView {
   }
 
   private renderViolationList(): Element {
-    const list = document.createElement('div');
+    const list = this.containerEl.ownerDocument.createElement('div');
     list.addClass('hsm-debugger-list');
 
     if (this.data.recentViolations.length === 0) {

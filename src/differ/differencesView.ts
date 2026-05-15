@@ -527,7 +527,7 @@ export class DifferencesView extends ItemView {
 	}
 
 	private buildDecoratedLine(runs: DiffTextRun[]): HTMLDivElement {
-		const fragment = document.createElement("div");
+		const fragment = this.contentEl.ownerDocument.createElement("div");
 		const text = runs.map((run) => run.text).join("");
 		if (text.length === 0) {
 			fragment.textContent = preventEmptyString(text);
@@ -559,7 +559,7 @@ export class DifferencesView extends ItemView {
 			const link = linkRanges.find(
 				(range) => from >= range.from && to <= range.to,
 			);
-			const span = document.createElement("span");
+			const span = this.contentEl.ownerDocument.createElement("span");
 			span.textContent = segment;
 			if (run?.className) {
 				span.classList.add(run.className);
@@ -603,7 +603,7 @@ export class DifferencesView extends ItemView {
 	}
 
 	private createBrokenLinkIcon(link: DiffLinkRange): HTMLSpanElement {
-		const span = document.createElement("span");
+		const span = this.contentEl.ownerDocument.createElement("span");
 		span.classList.add("invalid-link", "file-diff__link-warning");
 		span.title = `Link target not found: ${link.target}`;
 		span.innerHTML =
