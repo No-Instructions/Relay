@@ -1,7 +1,16 @@
 .invalid-link {
+	display: inline-flex;
 	color: var(--link-external-color);
 	width: 0.8em;
 	margin-left: 1px;
+}
+
+.relay-hidden-modal-wrapper {
+	display: none;
+}
+
+.user-awareness-positioning-parent {
+	position: relative;
 }
 
 .remote-caret {
@@ -56,6 +65,8 @@
 .system3-sync-status-folder {
 	position: relative;
 	cursor: pointer;
+	margin-inline-start: 0px !important;
+	padding-inline-start: 24px !important;
 }
 
 .system3-sync-status-folder .nav-folder-title-content {
@@ -64,6 +75,20 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.system3-sync-status-folder-menu {
+	left: var(--system3-sync-status-menu-left) !important;
+	right: auto !important;
+	width: var(--system3-sync-status-menu-width) !important;
+	min-width: var(--system3-sync-status-menu-width) !important;
+}
+
+.relay-folder-create-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 20px;
 }
 
 .inline-icon {

@@ -60,11 +60,9 @@ export class FolderCreateModal extends Modal {
 		}
 
 		// Buttons
-		const buttonContainer = contentEl.createDiv("modal-button-container");
-		buttonContainer.style.display = "flex";
-		buttonContainer.style.justifyContent = "flex-end";
-		buttonContainer.style.gap = "8px";
-		buttonContainer.style.marginTop = "20px";
+		const buttonContainer = contentEl.createDiv(
+			"modal-button-container relay-folder-create-actions",
+		);
 
 		const cancelButton = buttonContainer.createEl("button", {
 			text: "Cancel",

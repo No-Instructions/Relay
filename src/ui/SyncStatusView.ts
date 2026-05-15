@@ -221,10 +221,6 @@ export class SyncStatusView extends ItemView {
 		headerEl.setAttr("role", "button");
 		headerEl.setAttr("tabindex", "0");
 		headerEl.setAttr("aria-label", `Select sync status folder, currently ${folder.path}`);
-		headerEl.style.setProperty("position", "relative");
-		headerEl.style.setProperty("cursor", "pointer");
-		headerEl.style.setProperty("margin-inline-start", "0px", "important");
-		headerEl.style.setProperty("padding-inline-start", "24px", "important");
 		headerEl.addEventListener("click", () => {
 			this.showFolderMenu(headerEl);
 		});
@@ -239,15 +235,10 @@ export class SyncStatusView extends ItemView {
 		});
 		setIcon(collapseIcon, "right-triangle");
 
-		const titleEl = headerEl.createDiv({
+		headerEl.createDiv({
 			cls: "tree-item-inner nav-folder-title-content",
 			text: this.folderOptionLabel(folder),
 		});
-		titleEl.style.setProperty("flex", "1 1 auto");
-		titleEl.style.setProperty("min-width", "0");
-		titleEl.style.setProperty("overflow", "hidden");
-		titleEl.style.setProperty("text-overflow", "ellipsis");
-		titleEl.style.setProperty("white-space", "nowrap");
 
 		this.headerPill = new Pill({
 			target: headerEl,
@@ -324,10 +315,11 @@ export class SyncStatusView extends ItemView {
 			const menus = anchorEl.ownerDocument.querySelectorAll<HTMLElement>(".menu");
 			const menuEl = menus[menus.length - 1];
 			if (!menuEl) return;
-			menuEl.style.setProperty("left", `${rect.left}px`, "important");
-			menuEl.style.setProperty("right", "auto", "important");
-			menuEl.style.setProperty("width", `${rect.width}px`, "important");
-			menuEl.style.setProperty("min-width", `${rect.width}px`, "important");
+			menuEl.addClass("system3-sync-status-folder-menu");
+			menuEl.setCssProps({
+				"--system3-sync-status-menu-left": `${rect.left}px`,
+				"--system3-sync-status-menu-width": `${rect.width}px`,
+			});
 		});
 	}
 }
