@@ -260,12 +260,9 @@ export function error(err: Error): ErrorEvent {
 
 // Get crypto.subtle - works in both browser and Node.js
 const getCryptoSubtle = (): SubtleCrypto => {
-  if (globalThis.crypto?.subtle) {
-    return globalThis.crypto.subtle;
-  }
-  // Node.js fallback
-  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
-  return require('crypto').webcrypto.subtle;
+	const subtle = typeof crypto !== 'undefined' ? crypto.subtle : undefined;
+	if (subtle) return subtle;
+	throw new Error('crypto.subtle is not available');
 };
 
 /**

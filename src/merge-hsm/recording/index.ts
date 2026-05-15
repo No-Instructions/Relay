@@ -45,8 +45,6 @@ export {
   filterLogEntries,
   sliceLogEntries,
   findLogTransition,
-  loadLogFixture,
-  loadLogFixtures,
 } from './replay';
 export type { LogReplayOptions } from './replay';
 

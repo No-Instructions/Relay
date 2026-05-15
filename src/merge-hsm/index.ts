@@ -93,8 +93,6 @@ export {
   filterLogEntries,
   sliceLogEntries,
   findLogTransition,
-  loadLogFixture,
-  loadLogFixtures,
   serializeEvent,
   deserializeEvent,
   serializeEffect,

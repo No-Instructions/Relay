@@ -6,12 +6,12 @@
  */
 
 import { expect } from '@jest/globals';
-import * as Y from 'yjs';
 import * as fs from 'fs';
-import type { HSMLogEntry, SerializableEvent } from '../recording/types';
-import type { TestHSM } from './createTestHSM';
-import type { CrossVaultTest, VaultHandle } from './createCrossVaultTest';
-import { deserializeEvent } from '../recording/serialization';
+import * as Y from 'yjs';
+import type { HSMLogEntry, SerializableEvent } from 'src/merge-hsm/recording/types';
+import type { TestHSM } from 'src/merge-hsm/testing/createTestHSM';
+import type { CrossVaultTest, VaultHandle } from 'src/merge-hsm/testing/createCrossVaultTest';
+import { deserializeEvent } from 'src/merge-hsm/recording/serialization';
 
 // =============================================================================
 // Event Classification

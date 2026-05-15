@@ -7,7 +7,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import type { HSMLogEntry } from '../recording/types';
+import type { HSMLogEntry } from 'src/merge-hsm/recording/types';
 import type { DocContentSnapshot } from './integration';
 
 /**
