@@ -1,5 +1,5 @@
 "use strict";
-import { SharedFolder } from "./SharedFolder";
+import type { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
 import { type Vault, TFolder } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
@@ -134,7 +134,7 @@ export class SyncFolder extends HasLogging implements IFile {
 	}
 
 	public async delete(): Promise<void> {
-		return this.vault.delete(this.tfolder);
+		return this.sharedFolder.trashFile(this.tfolder);
 	}
 
 	public cleanup() {}

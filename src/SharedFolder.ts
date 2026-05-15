@@ -1371,6 +1371,10 @@ export class SharedFolder extends HasProvider {
 			});
 	}
 
+	trashFile(file: TAbstractFile): Promise<void> {
+		return this.fileManager.trashFile(file);
+	}
+
 	async _handleServerCreate(
 		vpath: string,
 		meta: Meta,

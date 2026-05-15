@@ -2,20 +2,23 @@ jest.mock(
 	"obsidian",
 	() => ({
 		TFile: class TFile {},
+		TFolder: class TFolder {},
 	}),
 	{ virtual: true },
 );
 
+import { TFile, TFolder } from "obsidian";
 import { SyncFile } from "../src/SyncFile";
+import { SyncFolder } from "../src/SyncFolder";
 import { SyncType } from "../src/SyncTypes";
 
-function makeSyncFile() {
+function makeSharedFolder(abstractFile: TFile | TFolder | null = null) {
 	const sharedFolder = {
 		relayId: "relay-guid",
 		guid: "folder-guid",
 		connected: true,
 		vault: {
-			getAbstractFileByPath: jest.fn(() => null),
+			getAbstractFileByPath: jest.fn(() => abstractFile),
 		},
 		getPath: jest.fn((path: string) => `Shared${path}`),
 		syncStore: {
@@ -32,8 +35,16 @@ function makeSyncFile() {
 			writeFile: jest.fn(),
 		},
 		markUploaded: jest.fn(),
+		subscribe: jest.fn(() => jest.fn()),
+		trashFile: jest.fn(() => Promise.resolve()),
+		isPendingDelete: jest.fn(() => false),
 	} as any;
 
+	return sharedFolder;
+}
+
+function makeSyncFile(abstractFile: TFile | null = null) {
+	const sharedFolder = makeSharedFolder(abstractFile);
 	const file = new SyncFile(
 		"/image.png",
 		"file-guid",
@@ -68,5 +79,31 @@ describe("SyncFile", () => {
 
 		expect(file.uploadError).toBeUndefined();
 		expect(sharedFolder.markUploaded).not.toHaveBeenCalled();
+	});
+
+	test("delete uses FileManager trash preferences", async () => {
+		const tfile = new TFile();
+		const { file, sharedFolder } = makeSyncFile(tfile);
+		file.caf = {
+			clear: jest.fn(() => Promise.resolve()),
+			destroy: jest.fn(),
+		} as any;
+
+		await file.delete();
+
+		expect(file.caf.clear).toHaveBeenCalled();
+		expect(sharedFolder.trashFile).toHaveBeenCalledWith(tfile);
+	});
+});
+
+describe("SyncFolder", () => {
+	test("delete uses FileManager trash preferences", async () => {
+		const tfolder = new TFolder();
+		const sharedFolder = makeSharedFolder(tfolder);
+		const folder = new SyncFolder("/assets", "folder-guid", sharedFolder);
+
+		await folder.delete();
+
+		expect(sharedFolder.trashFile).toHaveBeenCalledWith(tfolder);
 	});
 });

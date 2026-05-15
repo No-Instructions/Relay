@@ -544,7 +544,7 @@ export class SyncFile
 
 	public async delete(): Promise<void> {
 		await this.caf.clear();
-		return this.vault.delete(this.tfile);
+		return this.sharedFolder.trashFile(this.tfile);
 	}
 
 	public async write(content: string): Promise<void> {
