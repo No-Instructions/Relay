@@ -17,7 +17,7 @@ export class GenericSuggestModal<T> extends Modal {
 
 		// Find the modal container and hide the modal wrapper
 		const modalContainer = modalEl.closest(".modal-container");
-		modalEl.style.display = "none";
+		modalEl.addClass("relay-hidden-modal-wrapper");
 		const contentEl = modalContainer || modalEl;
 
 		this.component = new this.ComponentClass({
