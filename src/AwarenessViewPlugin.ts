@@ -99,7 +99,7 @@ export class AwarenessViewPlugin extends HasLogging {
 				? resolved.anchor
 				: resolved.anchor.parentElement;
 		if (positioningParent) {
-			positioningParent.style.position = "relative";
+			positioningParent.addClass("user-awareness-positioning-parent");
 		}
 	}
 
