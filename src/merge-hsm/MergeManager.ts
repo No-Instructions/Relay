@@ -94,6 +94,9 @@ export interface MergeManagerConfig {
   /** Time provider (for testing) */
   timeProvider?: TimeProvider;
 
+  /** Shared folder GUID for metrics labels. */
+  folderGuid?: string;
+
   /** Hash function */
   hashFn?: (contents: string) => Promise<string>;
 
@@ -460,6 +463,7 @@ export class MergeManager {
   private _getVaultId: (guid: string) => string;
   private _getDocument: (guid: string) => MergeManagerDocument | undefined;
   private timeProvider: TimeProvider;
+  private _folderGuid: string;
   private hashFn?: (contents: string) => Promise<string>;
   private loadAllStates?: () => Promise<PersistedStateMeta[]>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
@@ -479,6 +483,7 @@ export class MergeManager {
     this._getVaultId = config.getVaultId;
     this._getDocument = config.getDocument;
     this.timeProvider = config.timeProvider ?? new DefaultTimeProvider();
+    this._folderGuid = config.folderGuid ?? "unknown";
     this.hashFn = config.hashFn;
     this.loadAllStates = config.loadAllStates;
     this.onEffect = config.onEffect;
@@ -1881,7 +1886,8 @@ export class MergeManager {
 
   private _updateWakeQueueMetrics(): void {
     const stats = this.getWakeQueueStats();
-    metrics.setWakeQueueSlots(stats.used, stats.pending, stats.total);
+    metrics.setWakeQueueSlots(this._folderGuid, stats.used, stats.pending, stats.total);
+    metrics.setHSMDocumentsByState(this._folderGuid, this.getHibernationStateCounts());
   }
 
   // ===========================================================================

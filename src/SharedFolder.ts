@@ -352,6 +352,7 @@ export class SharedFolder extends HasProvider {
 
 		// Create MergeManager for this SharedFolder (per-folder instance)
 		this.mergeManager = new MergeManager({
+			folderGuid: this.guid,
 			getVaultId: (guid: string) => `${this.appId}-relay-doc-${guid}`,
 			getDocument: (guid: string) => {
 				const file = this.files.get(guid);

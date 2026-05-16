@@ -431,6 +431,7 @@ class RelayMetrics {
 
 	// Wake queue
 	private wakeQueueSlots: MetricInstance | null = null;
+	private hsmDocuments: MetricInstance | null = null;
 
 	// Protocol IO
 	private protocolMessageCount: MetricInstance | null = null;
@@ -521,10 +522,17 @@ class RelayMetrics {
 		});
 
 		// Wake queue
+		api.clearMetric("relay_wake_queue_slots");
+		api.clearMetric("relay_hsm_documents");
 		this.wakeQueueSlots = api.createGauge({
 			name: "relay_wake_queue_slots",
 			help: "Wake queue slot utilization",
-			labelNames: ["state"],
+			labelNames: ["state", "folder"],
+		});
+		this.hsmDocuments = api.createGauge({
+			name: "relay_hsm_documents",
+			help: "Number of MergeHSM documents by residency state",
+			labelNames: ["state", "folder"],
 		});
 
 		// Protocol IO
@@ -615,10 +623,22 @@ class RelayMetrics {
 
 	// -- Wake queue --
 
-	setWakeQueueSlots(used: number, pending: number, total: number): void {
-		this.wakeQueueSlots?.labels({ state: "used" }).set(used);
-		this.wakeQueueSlots?.labels({ state: "pending" }).set(pending);
-		this.wakeQueueSlots?.labels({ state: "total" }).set(total);
+	setWakeQueueSlots(folderGuid: string, used: number, pending: number, total: number): void {
+		this.wakeQueueSlots?.labels({ state: "used", folder: folderGuid }).set(used);
+		this.wakeQueueSlots?.labels({ state: "pending", folder: folderGuid }).set(pending);
+		this.wakeQueueSlots?.labels({ state: "total", folder: folderGuid }).set(total);
+	}
+
+	setHSMDocumentsByState(folderGuid: string, counts: {
+		hibernated: number;
+		cached: number;
+		working: number;
+		active: number;
+	}): void {
+		this.hsmDocuments?.labels({ state: "hibernated", folder: folderGuid }).set(counts.hibernated);
+		this.hsmDocuments?.labels({ state: "cached", folder: folderGuid }).set(counts.cached);
+		this.hsmDocuments?.labels({ state: "working", folder: folderGuid }).set(counts.working);
+		this.hsmDocuments?.labels({ state: "active", folder: folderGuid }).set(counts.active);
 	}
 }
 
