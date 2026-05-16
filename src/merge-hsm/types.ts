@@ -214,6 +214,7 @@ export type StatePath =
 	| "unloaded"
 	| "loading"
 	| "idle.loading"
+	| "idle.loadingDiskContents"
 	| "idle.synced"
 	| "idle.localAhead"
 	| "idle.remoteAhead"
@@ -272,6 +273,12 @@ export interface DiskChangedEvent {
 	contents: string;
 	mtime: number;
 	hash: string;
+}
+
+export interface DiskMetadataChangedEvent {
+	type: "DISK_METADATA_CHANGED";
+	mtime: number;
+	hash?: string;
 }
 
 export interface RemoteUpdateEvent {
@@ -334,6 +341,16 @@ export interface SetModeActiveEvent {
  */
 export interface SetModeIdleEvent {
 	type: "SET_MODE_IDLE";
+}
+
+/**
+ * MergeManager signals this HSM can remain cold in idle.synced.
+ * Used when lightweight persisted metadata proves the local/disk/LCA heads
+ * were already converged, so opening the per-document Yjs IndexedDB is
+ * unnecessary until new disk or remote activity arrives.
+ */
+export interface SetModeIdleColdEvent {
+	type: "SET_MODE_IDLE_COLD";
 }
 
 // User Events
@@ -534,6 +551,7 @@ export type MergeEvent =
 	| AcquireLockEvent
 	| ReleaseLockEvent
 	| DiskChangedEvent
+	| DiskMetadataChangedEvent
 	| RemoteUpdateEvent
 	| SaveCompleteEvent
 	| CM6ChangeEvent
@@ -544,6 +562,7 @@ export type MergeEvent =
 	// Mode Determination (from MergeManager)
 	| SetModeActiveEvent
 	| SetModeIdleEvent
+	| SetModeIdleColdEvent
 	// User
 	| ResolveEvent
 	| ResolveHunkEvent

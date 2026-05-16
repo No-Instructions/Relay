@@ -224,6 +224,21 @@ function restorePersistedLCA(lca: PersistedMergeState['lca']): LCAState | null {
   };
 }
 
+function restorePersistedLCAMeta(lca: LCAMeta | null): LCAState | null {
+  if (!lca) return null;
+  const stateVector = stateVectorFromSnapshotOrLegacy(
+    lca.snapshot,
+    lca.stateVector,
+  );
+  if (!stateVector) return null;
+  return {
+    contents: null,
+    meta: lca.meta,
+    stateVector,
+    ...(lca.snapshot ? { snapshot: lca.snapshot } : {}),
+  };
+}
+
 function restorePersistedFork(fork: PersistedMergeState['fork']): Fork | null {
   if (!fork) return null;
   const localStateVector = stateVectorFromSnapshotOrLegacy(
@@ -287,6 +302,15 @@ function syncStatusesEqual(a: SyncStatus | undefined, b: SyncStatus): boolean {
 
 /** Memory state for a document */
 export type HibernationState = 'hibernated' | 'working' | 'cached' | 'active';
+
+function emptyHibernationStateCounts(): Record<HibernationState, number> {
+  return {
+    hibernated: 0,
+    working: 0,
+    cached: 0,
+    active: 0,
+  };
+}
 
 /** Wake priority levels (lower number = higher priority) */
 export enum WakePriority {
@@ -355,12 +379,17 @@ export class MergeManager {
 
   // Track initialized state - initialize() must be called before registering HSMs
   private _initialized = false;
+  private _initializePromise: Promise<void> | null = null;
 
   private _warn = curryLog("[MergeManager]", "warn");
   private _error = curryLog("[MergeManager]", "error");
 
   // LCA cache - bulk-loaded during initialize(), owned by MergeManager
   private _lcaCache = new Map<string, LCAMeta | null>();
+
+  // Lightweight persisted state cache - used to cold-start clean documents
+  // without opening each per-document Yjs IndexedDB.
+  private _stateMetaCache = new Map<string, PersistedStateMeta>();
 
   // Legacy local state vector cache - populated only for old records without snapshots.
   private _legacyLocalStateVectorCache = new Map<string, Uint8Array | null>();
@@ -484,11 +513,72 @@ export class MergeManager {
     };
   }
 
+  getHibernationStateCounts(): Record<HibernationState, number> {
+    const counts = emptyHibernationStateCounts();
+    for (const state of this._hibernationState.values()) {
+      counts[state]++;
+    }
+    return counts;
+  }
+
+  shouldMaterializeOnStartup(
+    guid: string,
+    path: string,
+    currentDisk?: { mtime: number; hash?: string } | null,
+  ): boolean {
+    return !this.canColdStartSynced(guid, path, currentDisk);
+  }
+
   /**
    * Get sync status for all registered documents (ObservableMap per spec).
    */
   get syncStatus(): ObservableMap<string, SyncStatus> {
     return this._syncStatus;
+  }
+
+  private canColdStartSynced(
+    guid: string,
+    path: string,
+    currentDisk?: { mtime: number; hash?: string } | null,
+  ): boolean {
+    const meta = this._stateMetaCache.get(guid);
+    if (!meta) return false;
+    if (meta.path !== path) return false;
+    if (meta.lastStatePath !== 'idle.synced') return false;
+    if (meta.hasFork || meta.deferredConflict) return false;
+    if (!meta.lcaMeta || !meta.disk) return false;
+    if (currentDisk) {
+      if (currentDisk.mtime !== meta.disk.mtime) return false;
+      if (currentDisk.hash !== undefined && currentDisk.hash !== meta.disk.hash) return false;
+    }
+    if (meta.disk.hash !== meta.lcaMeta.meta.hash) return false;
+    return this.persistedLocalHeadMatchesLCA(meta);
+  }
+
+  private persistedLocalHeadMatchesLCA(meta: PersistedStateMeta): boolean {
+    const lca = restorePersistedLCAMeta(meta.lcaMeta);
+    if (!lca) return false;
+
+    if (meta.localSnapshot) {
+      if (!lca.snapshot) return false;
+      try {
+        return snapshotsEqual(
+          { snapshot: meta.localSnapshot },
+          { snapshot: lca.snapshot },
+        );
+      } catch {
+        return false;
+      }
+    }
+
+    if (meta.localStateVector) {
+      return stateVectorsEqual(meta.localStateVector, lca.stateVector);
+    }
+
+    // A clean hibernated document may have compacted away its local head.
+    // canColdStartSynced() already verified idle.synced, no fork/conflict,
+    // and disk hash == LCA hash, so there is no local work to reconstruct.
+    return true;
   }
 
   /**
@@ -623,6 +713,7 @@ export class MergeManager {
     getPath: () => string;
     remoteDoc: Y.Doc | null;
     getDiskContent: () => Promise<{ content: string; hash: string; mtime: number }>;
+    getCurrentDiskMetadata?: () => { mtime: number; hash?: string } | null;
     getPersistenceMetadata?: () => PersistenceMetadata;
     isFolderConnected?: () => boolean;
   }): MergeHSM {
@@ -631,6 +722,7 @@ export class MergeManager {
       getPath,
       remoteDoc,
       getDiskContent,
+      getCurrentDiskMetadata,
       getPersistenceMetadata,
       isFolderConnected,
     } = config;
@@ -688,6 +780,26 @@ export class MergeManager {
     // Enter loading state — HSM accumulates events until async load completes
     hsm.send({ type: 'LOAD', guid });
 
+    const currentDiskMetadata = getCurrentDiskMetadata?.() ?? null;
+    const persistedMeta = this._stateMetaCache.get(guid);
+    if (persistedMeta && this.canColdStartSynced(guid, getPath(), currentDiskMetadata)) {
+      hsm.send({
+        type: 'PERSISTENCE_LOADED',
+        lca: restorePersistedLCAMeta(persistedMeta.lcaMeta),
+        disk: persistedMeta.disk,
+        localSnapshot: persistedMeta.localSnapshot ?? null,
+        localStateVector: persistedMeta.localSnapshot
+          ? null
+          : persistedMeta.localStateVector ?? null,
+        deferredConflict: persistedMeta.deferredConflict,
+        fork: null,
+      });
+      hsm.send({ type: 'SET_MODE_IDLE_COLD' });
+      this._hibernationState.set(guid, 'hibernated');
+      this._updateWakeQueueMetrics();
+      return hsm;
+    }
+
     // Async-load full per-document state from IDB (includes lca.contents and fork)
     const loadStateFn = this.loadState ?? (() => Promise.resolve(null));
     loadStateFn(guid).then((state) => {
@@ -697,15 +809,19 @@ export class MergeManager {
       hsm.send({
         type: 'PERSISTENCE_LOADED',
         lca,
+        disk: state?.disk ?? null,
         localSnapshot: state?.localSnapshot ?? null,
         localStateVector: state?.localSnapshot
           ? null
           : state
             ? state.localStateVector ?? null
             : localStateVector,
+        deferredConflict: state?.deferredConflict,
         fork: restorePersistedFork(state?.fork ?? null),
       });
+      this.sendDiskMetadataChangedIfNeeded(hsm, state?.disk ?? null, currentDiskMetadata);
       hsm.send({ type: 'SET_MODE_IDLE' });
+      this._updateWakeQueueMetrics();
     }).catch((err) => {
       this._error(`Failed to load state for ${guid}: ${err}`);
       // On IDB failure, pass null LCA — metadata without contents would
@@ -714,12 +830,33 @@ export class MergeManager {
       hsm.send({
         type: 'PERSISTENCE_LOADED',
         lca,
+        disk: null,
         localStateVector,
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
+      this._updateWakeQueueMetrics();
     });
 
     return hsm;
+  }
+
+  private sendDiskMetadataChangedIfNeeded(
+    hsm: MergeHSM,
+    persistedDisk: { hash: string; mtime: number } | null,
+    currentDisk: { mtime: number; hash?: string } | null,
+  ): void {
+    if (!currentDisk || !persistedDisk) return;
+    if (
+      currentDisk.mtime === persistedDisk.mtime &&
+      (currentDisk.hash === undefined || currentDisk.hash === persistedDisk.hash)
+    ) {
+      return;
+    }
+    hsm.send({
+      type: 'DISK_METADATA_CHANGED',
+      mtime: currentDisk.mtime,
+      ...(currentDisk.hash !== undefined ? { hash: currentDisk.hash } : {}),
+    });
   }
 
   /**
@@ -728,8 +865,13 @@ export class MergeManager {
    */
   notifyHSMCreated(guid: string): void {
     if (this.destroyed) return;
+    if (this._hibernationState.get(guid) === 'hibernated') {
+      this._updateWakeQueueMetrics();
+      return;
+    }
     this._hibernationState.set(guid, 'cached');
     this.resetHibernateTimer(guid);
+    this._updateWakeQueueMetrics();
   }
 
   /**
@@ -749,9 +891,11 @@ export class MergeManager {
     this.removeFromWarmLRU(guid);
     this._syncStatus.delete(guid);
     this.activeDocs.delete(guid);
+    this._stateMetaCache.delete(guid);
     this._lcaCache.delete(guid);
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
+    this._updateWakeQueueMetrics();
   }
 
   // ===========================================================================
@@ -1029,10 +1173,30 @@ export class MergeManager {
       return; // Don't initialize if destroyed
     }
 
+    if (this._initializePromise) {
+      return this._initializePromise;
+    }
+
+    this._initializePromise = this.initializeCaches().catch((err) => {
+      this._initializePromise = null;
+      throw err;
+    });
+    return this._initializePromise;
+  }
+
+  private async initializeCaches(): Promise<void> {
+    if (this.destroyed) {
+      return;
+    }
+
     // Bulk-load lightweight metadata into caches (no lca.contents or fork)
     if (this.loadAllStates) {
       const allMeta = await this.loadAllStates();
+      if (this.destroyed) {
+        return;
+      }
       for (const state of allMeta) {
+        this._stateMetaCache.set(state.guid, state);
         this._lcaCache.set(state.guid, state.lcaMeta);
 
         // Cache snapshots as the canonical local head. State vectors are only
@@ -1045,7 +1209,9 @@ export class MergeManager {
       }
     }
 
-    this._initialized = true;
+    if (!this.destroyed) {
+      this._initialized = true;
+    }
   }
 
   /**
@@ -1524,6 +1690,7 @@ export class MergeManager {
     this._syncStatus.clear();
     this._hibernationState.clear();
     this._hibernationBuffer.clear();
+    this._stateMetaCache.clear();
     this._lcaCache.clear();
     this._legacyLocalStateVectorCache.clear();
     this._localSnapshotCache.clear();
@@ -1741,11 +1908,26 @@ export class MergeManager {
         this.updateSyncStatus(guid, effect.status);
         break;
 
-      case 'PERSIST_STATE':
+      case 'PERSIST_STATE': {
+        const restoredLCA = restorePersistedLCA(effect.state.lca);
+        this._stateMetaCache.set(guid, {
+          guid,
+          path: effect.state.path,
+          lcaMeta: restoredLCA ? lcaToMeta(restoredLCA) : null,
+          disk: effect.state.disk,
+          localSnapshot: effect.state.localSnapshot ?? null,
+          ...(!effect.state.localSnapshot
+            ? { localStateVector: effect.state.localStateVector ?? null }
+            : {}),
+          lastStatePath: effect.state.lastStatePath,
+          deferredConflict: effect.state.deferredConflict,
+          hasFork: !!effect.state.fork,
+          persistedAt: effect.state.persistedAt,
+        });
+
         // Update LCA metadata cache (no contents — kept lightweight)
-        if (effect.state.lca) {
-          const lca = restorePersistedLCA(effect.state.lca);
-          this._lcaCache.set(guid, lca ? lcaToMeta(lca) : null);
+        if (restoredLCA) {
+          this._lcaCache.set(guid, lcaToMeta(restoredLCA));
         } else {
           this._lcaCache.set(guid, null);
         }
@@ -1760,6 +1942,7 @@ export class MergeManager {
 
         // Integration layer handles actual IDB persistence via onEffect above
         break;
+      }
 
     }
   }

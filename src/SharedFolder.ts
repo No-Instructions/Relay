@@ -444,16 +444,22 @@ export class SharedFolder extends HasProvider {
 
 		trackPromise(`folder:whenReady:${this.guid}`, this.whenReady())
 			.then(async () => {
-				if (!this.destroyed) {
-					// Bulk-load LCA cache before registering HSMs
-					await this.mergeManager.initialize();
-					this.syncFileTree();
-				}
+				if (this.destroyed) return;
+				await this.mergeManager.initialize();
+				if (this.destroyed) return;
+				this.syncFileTree();
 			})
 			.catch((e) => this.error("folder ready failed", e));
 
 		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced())
 			.then(async () => {
+				// Load persisted HSM metadata before sync startup can create
+				// Documents. Document construction immediately creates HSMs,
+				// and cold-start needs this cache to decide whether a doc can
+				// remain hibernated without opening y-indexeddb.
+				await this.mergeManager.initialize();
+				if (this.destroyed) return;
+
 				this.syncStore.start();
 				// Wait until syncStore is observing the committed file metadata before
 				// creating docs from local disk. On reload, addLocalDocs() can otherwise
@@ -463,13 +469,11 @@ export class SharedFolder extends HasProvider {
 				// Remote folder metadata can also land before SyncStore observers are
 				// installed, so replay both local doc discovery and file-tree sync after
 				// start() to avoid missing the first batch of remote entries.
-				if (!this.destroyed) {
-					this.enabledSyncTypes = new Set(
-						this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
-					);
-					this.addLocalDocs();
-					await this.syncFileTree();
-				}
+				this.enabledSyncTypes = new Set(
+					this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+				);
+				this.addLocalDocs();
+				await this.syncFileTree();
 				try {
 					this._persistence.set("path", this.path);
 					this._persistence.set("relay", this.relayId || "");
@@ -919,7 +923,10 @@ export class SharedFolder extends HasProvider {
 	): { hash: string; mtime: number } | null {
 		const tfile = this.getTFile(file);
 		if (!tfile) return null;
+		return this.getCachedDiskStateForTFile(tfile);
+	}
 
+	private getCachedDiskStateForTFile(tfile: TFile): { hash: string; mtime: number } | null {
 		const fileCache = (this.metadataCache as any)?.fileCache;
 		const cached =
 			typeof fileCache?.get === "function"
@@ -936,6 +943,10 @@ export class SharedFolder extends HasProvider {
 		if (cached.mtime !== tfile.stat.mtime) return null;
 
 		return { hash: cached.hash, mtime: cached.mtime };
+	}
+
+	private getStartupDiskMetadata(tfile: TFile): { mtime: number; hash?: string } {
+		return this.getCachedDiskStateForTFile(tfile) ?? { mtime: tfile.stat.mtime };
 	}
 
 	/**
@@ -971,8 +982,29 @@ export class SharedFolder extends HasProvider {
 		}
 		const files: IFile[] = [];
 		// Reserve GUIDs for new files before processing
-		this.placeHold(syncTFiles);
+		const newPaths = new Set(this.placeHold(syncTFiles));
 		syncTFiles.forEach((tfile) => {
+			const vpath = this.getVirtualPath(tfile.path);
+			const guid = this.syncStore.get(vpath);
+			const existing = guid ? this.files.get(guid) : undefined;
+			if (existing) {
+				files.push(existing);
+				return;
+			}
+			if (
+				tfile instanceof TFile &&
+				Document.checkExtension(vpath) &&
+				!newPaths.has(vpath) &&
+				!this.pendingUpload.has(vpath) &&
+				guid &&
+				!this.mergeManager.shouldMaterializeOnStartup(
+					guid,
+					vpath,
+					this.getStartupDiskMetadata(tfile),
+				)
+			) {
+				return;
+			}
 			const file = this.getFile(tfile, false);
 			if (file) {
 				files.push(file);
@@ -1102,6 +1134,8 @@ export class SharedFolder extends HasProvider {
 
 	async netSync() {
 		await this.whenReady();
+		await this.mergeManager.initialize();
+		if (this.destroyed) return;
 		this.addLocalDocs();
 		await this.syncFileTree();
 		this.backgroundSync.enqueueSharedFolderSync(this);
@@ -1605,7 +1639,7 @@ export class SharedFolder extends HasProvider {
 					return { op: "update", path, promise };
 				}
 
-				if (localGuid && isDocumentMeta(meta)) {
+				if (localGuid && localGuid !== guid && isDocumentMeta(meta)) {
 					return {
 						op: "update",
 						path,
@@ -1830,6 +1864,10 @@ export class SharedFolder extends HasProvider {
 
 		const promiseFn = async (): Promise<void> => {
 			try {
+				if (!this.mergeManager || this.destroyed) return;
+				await this.mergeManager.initialize();
+				if (this.destroyed) return;
+
 				// When file types are newly enabled, enqueue their local
 				// files for syncing before the rest of the tree sync runs.
 				const currentTypes = this.syncStore.typeRegistry.getEnabledFileSyncTypes();

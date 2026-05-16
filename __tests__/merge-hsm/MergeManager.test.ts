@@ -11,7 +11,8 @@
 import * as Y from 'yjs';
 import { MergeManager, type MergeManagerConfig } from 'src/merge-hsm/MergeManager';
 import { MergeHSM } from 'src/merge-hsm/MergeHSM';
-import type { CreatePersistence } from 'src/merge-hsm/types';
+import { acquireLock, mockEditorViewRef } from 'src/merge-hsm/testing';
+import type { CreatePersistence, PersistedStateMeta } from 'src/merge-hsm/types';
 import { MockTimeProvider } from '../mocks/MockTimeProvider';
 import { PostOffice } from 'src/observable/Postie';
 
@@ -202,6 +203,30 @@ describe('MergeManager', () => {
       expect(mockLoadAllStates).toHaveBeenCalledTimes(1);
     });
 
+    test('initialize() coalesces concurrent loads', async () => {
+      let resolveLoad: (states: PersistedStateMeta[]) => void = () => {};
+      const mockLoadAllStates = jest.fn(() => new Promise<PersistedStateMeta[]>((resolve) => {
+        resolveLoad = resolve;
+      }));
+
+      const managerWithInit = createManagerWithEmptyYDocStore({
+        getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
+        timeProvider,
+        loadAllStates: mockLoadAllStates,
+      });
+
+      const first = managerWithInit.initialize();
+      const second = managerWithInit.initialize();
+
+      expect(mockLoadAllStates).toHaveBeenCalledTimes(1);
+      resolveLoad([]);
+      await Promise.all([first, second]);
+
+      expect(managerWithInit.initialized).toBe(true);
+      expect(mockLoadAllStates).toHaveBeenCalledTimes(1);
+    });
+
     test('initialize() does not load if destroyed', async () => {
       const mockLoadAllStates = jest.fn().mockResolvedValue([]);
 
@@ -229,6 +254,268 @@ describe('MergeManager', () => {
       await managerWithoutCallback.initialize();
 
       expect(managerWithoutCallback.initialized).toBe(true);
+    });
+
+    test('clean synced metadata cold-starts without opening y-indexeddb', async () => {
+      const localSnapshot = snapshotFor('synced body');
+      const createPersistence = jest.fn(createEmptyYDocPersistence);
+      const loadState = jest.fn().mockResolvedValue(null);
+      const managerWithColdStart = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
+        timeProvider,
+        createPersistence,
+        loadState,
+        loadAllStates: async () => [
+          {
+            guid: 'doc-1',
+            path: 'test.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              snapshot: localSnapshot,
+            },
+            disk: { hash: 'hash-1', mtime: 1000 },
+            localSnapshot,
+            lastStatePath: 'idle.synced',
+            hasFork: false,
+            persistedAt: Date.now(),
+          },
+        ],
+      });
+
+      await managerWithColdStart.initialize();
+
+      const remoteDoc = new Y.Doc();
+      const doc: MockDocument = {
+        guid: 'doc-1',
+        path: 'test.md',
+        hsm: null,
+        remoteDoc,
+      };
+      documents.set('doc-1', doc);
+
+      doc.hsm = managerWithColdStart.createHSM({
+        guid: 'doc-1',
+        getPath: () => 'test.md',
+        remoteDoc: null,
+        getDiskContent: async () => ({ content: '', hash: 'hash-1', mtime: 1000 }),
+      });
+      managerWithColdStart.notifyHSMCreated('doc-1');
+
+      expect(loadState).not.toHaveBeenCalled();
+      expect(createPersistence).not.toHaveBeenCalled();
+      expect(doc.hsm.statePath).toBe('idle.synced');
+      expect(doc.hsm.getLocalDoc()).toBeNull();
+      expect(doc.hsm.state.disk).toEqual({ hash: 'hash-1', mtime: 1000 });
+      expect(managerWithColdStart.getHibernationState('doc-1')).toBe('hibernated');
+
+      managerWithColdStart.destroy();
+      remoteDoc.destroy();
+    });
+
+    test('active entry from compacted cold start loads full LCA contents', async () => {
+      const localSnapshot = snapshotFor('synced body');
+      const createPersistence = jest.fn(createEmptyYDocPersistence);
+      const loadState = jest.fn().mockResolvedValue({
+        guid: 'doc-1',
+        path: 'test.md',
+        lca: {
+          contents: 'synced body',
+          hash: 'hash-1',
+          mtime: 1000,
+          snapshot: localSnapshot,
+        },
+        disk: { hash: 'hash-1', mtime: 1000 },
+        localSnapshot,
+        lastStatePath: 'idle.synced',
+        persistedAt: Date.now(),
+      });
+      const managerWithColdStart = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
+        timeProvider,
+        createPersistence,
+        loadState,
+        loadAllStates: async () => [
+          {
+            guid: 'doc-1',
+            path: 'test.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              snapshot: localSnapshot,
+            },
+            disk: { hash: 'hash-1', mtime: 1000 },
+            localSnapshot,
+            lastStatePath: 'idle.synced',
+            hasFork: false,
+            persistedAt: Date.now(),
+          },
+        ],
+      });
+
+      await managerWithColdStart.initialize();
+
+      const remoteDoc = new Y.Doc();
+      const doc: MockDocument = {
+        guid: 'doc-1',
+        path: 'test.md',
+        hsm: null,
+        remoteDoc,
+      };
+      documents.set('doc-1', doc);
+
+      doc.hsm = managerWithColdStart.createHSM({
+        guid: 'doc-1',
+        getPath: () => 'test.md',
+        remoteDoc: null,
+        getDiskContent: async () => ({ content: 'synced body', hash: 'hash-1', mtime: 1000 }),
+      });
+      managerWithColdStart.notifyHSMCreated('doc-1');
+
+      expect(loadState).not.toHaveBeenCalled();
+      expect(doc.hsm.state.lca?.contents).toBeNull();
+
+      doc.hsm.setRemoteDoc(remoteDoc);
+      doc.hsm.send(acquireLock(mockEditorViewRef('synced body')));
+      managerWithColdStart.markActive('doc-1');
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(loadState).toHaveBeenCalledWith('doc-1');
+      expect(doc.hsm.state.lca?.contents).toBe('synced body');
+
+      managerWithColdStart.destroy();
+      remoteDoc.destroy();
+    });
+
+    test('current disk metadata mismatch bypasses cold-start and loads disk contents', async () => {
+      const localSnapshot = snapshotFor('synced body');
+      const createPersistence = jest.fn(createEmptyYDocPersistence);
+      const loadState = jest.fn().mockResolvedValue({
+        guid: 'doc-1',
+        path: 'test.md',
+        lca: {
+          contents: 'synced body',
+          hash: 'hash-1',
+          mtime: 1000,
+          snapshot: localSnapshot,
+        },
+        disk: { hash: 'hash-1', mtime: 1000 },
+        localSnapshot,
+        lastStatePath: 'idle.synced',
+        persistedAt: Date.now(),
+      });
+      const diskLoader = jest.fn(
+        () => new Promise<{ content: string; hash: string; mtime: number }>(() => {}),
+      );
+      const managerWithColdStart = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
+        timeProvider,
+        createPersistence,
+        loadState,
+        loadAllStates: async () => [
+          {
+            guid: 'doc-1',
+            path: 'test.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              snapshot: localSnapshot,
+            },
+            disk: { hash: 'hash-1', mtime: 1000 },
+            localSnapshot,
+            lastStatePath: 'idle.synced',
+            hasFork: false,
+            persistedAt: Date.now(),
+          },
+        ],
+      });
+
+      await managerWithColdStart.initialize();
+
+      const remoteDoc = new Y.Doc();
+      const doc: MockDocument = {
+        guid: 'doc-1',
+        path: 'test.md',
+        hsm: null,
+        remoteDoc,
+      };
+      documents.set('doc-1', doc);
+
+      doc.hsm = managerWithColdStart.createHSM({
+        guid: 'doc-1',
+        getPath: () => 'test.md',
+        remoteDoc: null,
+        getDiskContent: diskLoader,
+        getCurrentDiskMetadata: () => ({ mtime: 2000 }),
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(loadState).toHaveBeenCalledWith('doc-1');
+      expect(createPersistence).toHaveBeenCalled();
+      expect(diskLoader).toHaveBeenCalled();
+      expect(doc.hsm.statePath).toBe('idle.loadingDiskContents');
+
+      managerWithColdStart.destroy();
+      remoteDoc.destroy();
+    });
+
+    test('compacted clean metadata cold-starts without local head', async () => {
+      const lcaSnapshot = snapshotFor('synced body');
+      const createPersistence = jest.fn(createEmptyYDocPersistence);
+      const loadState = jest.fn().mockResolvedValue(null);
+      const managerWithCompactedHead = new MergeManager({
+        getVaultId: (guid) => `test-${guid}`,
+        getDocument: (guid) => documents.get(guid),
+        timeProvider,
+        createPersistence,
+        loadState,
+        loadAllStates: async () => [
+          {
+            guid: 'doc-compact',
+            path: 'test.md',
+            lcaMeta: {
+              meta: { hash: 'hash-1', mtime: 1000 },
+              snapshot: lcaSnapshot,
+            },
+            disk: { hash: 'hash-1', mtime: 1000 },
+            localSnapshot: null,
+            localStateVector: null,
+            lastStatePath: 'idle.synced',
+            hasFork: false,
+            persistedAt: Date.now(),
+          },
+        ],
+      });
+
+      await managerWithCompactedHead.initialize();
+
+      const remoteDoc = new Y.Doc();
+      const doc: MockDocument = {
+        guid: 'doc-compact',
+        path: 'test.md',
+        hsm: null,
+        remoteDoc,
+      };
+      documents.set('doc-compact', doc);
+
+      doc.hsm = managerWithCompactedHead.createHSM({
+        guid: 'doc-compact',
+        getPath: () => 'test.md',
+        remoteDoc: null,
+        getDiskContent: async () => ({ content: '', hash: 'hash-1', mtime: 1000 }),
+      });
+      managerWithCompactedHead.notifyHSMCreated('doc-compact');
+
+      expect(loadState).not.toHaveBeenCalled();
+      expect(createPersistence).not.toHaveBeenCalled();
+      expect(doc.hsm.statePath).toBe('idle.synced');
+      expect(doc.hsm.getLocalDoc()).toBeNull();
+      expect(managerWithCompactedHead.getHibernationState('doc-compact')).toBe('hibernated');
+
+      managerWithCompactedHead.destroy();
+      remoteDoc.destroy();
     });
   });
 

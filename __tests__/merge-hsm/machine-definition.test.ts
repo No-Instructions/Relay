@@ -22,6 +22,7 @@ const ALL_STATE_PATHS: StatePath[] = [
 	"unloaded",
 	"loading",
 	"idle.loading",
+	"idle.loadingDiskContents",
 	"idle.synced",
 	"idle.localAhead",
 	"idle.remoteAhead",

@@ -73,9 +73,11 @@ export const MACHINE: MachineDefinition = {
 			PERSISTENCE_LOADED: { target: 'loading', actions: ['storePersistenceData'] },
 			SET_MODE_ACTIVE: 'active.loading',
 			SET_MODE_IDLE: { target: 'idle.loading', actions: ['initIdleMode'] },
+			SET_MODE_IDLE_COLD: { target: 'idle.synced', actions: ['initIdleMode'] },
 			CM6_CHANGE: { target: 'loading', actions: ['accumulateCM6Change'] },
 			REMOTE_UPDATE: { target: 'loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			DISK_METADATA_CHANGED: { target: 'loading', actions: ['storeDiskMetadataForLoad'] },
 			ENROLLMENT_COMPLETE: { target: 'loading', actions: ['storeEnrollmentComplete'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
@@ -120,8 +122,39 @@ export const MACHINE: MachineDefinition = {
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
 			{ target: 'idle.diskAhead', guard: 'diskAheadAtLoad' },
+			{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededAtLoad' },
 			{ target: 'idle.diverged', guard: 'divergedAtLoad' },
 		],
+	},
+
+	'idle.loadingDiskContents': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'present',
+			lcaContents: 'present',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeDisk: true,
+			canPersistFullLca: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'load-disk-contents',
+			onDone: { target: 'idle.loading', actions: ['storeLoadedDiskContents'] },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			DISK_METADATA_CHANGED: { target: 'idle.loadingDiskContents', actions: ['storeDiskMetadataForLoad'] },
+			REMOTE_UPDATE: { target: 'idle.loadingDiskContents', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			CM6_CHANGE: { target: 'idle.loadingDiskContents', actions: ['accumulateCM6Change'] },
+			...IDLE_LIFECYCLE,
+		},
 	},
 
 	'idle.synced': {

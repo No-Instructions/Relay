@@ -146,6 +146,7 @@ export type SerializableEvent =
   | { type: 'ACQUIRE_LOCK' }
   | { type: 'RELEASE_LOCK' }
   | { type: 'DISK_CHANGED'; contents: string; mtime: number; hash: string }
+  | { type: 'DISK_METADATA_CHANGED'; mtime: number; hash?: string }
   | { type: 'REMOTE_UPDATE'; update: string; affectsText?: boolean } // update is base64
   | { type: 'SAVE_COMPLETE'; mtime: number; hash: string }
   | { type: 'CM6_CHANGE'; changes: Array<{ from: number; to: number; insert: string }>; docText: string }
@@ -160,8 +161,13 @@ export type SerializableEvent =
   | {
       type: 'PERSISTENCE_LOADED';
       lca: SerializableLCA | null;
+      disk?: { hash: string; mtime: number } | null;
       localSnapshot?: string | null;
       localStateVector?: string | null;
+      deferredConflict?: {
+        diskHash: string;
+        localHash: string;
+      };
     }
   | { type: 'PERSISTENCE_SYNCED'; hasContent: boolean }
   | { type: 'MERGE_SUCCESS'; newLCA: SerializableLCA }

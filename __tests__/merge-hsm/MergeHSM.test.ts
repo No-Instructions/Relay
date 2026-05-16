@@ -188,6 +188,80 @@ describe('MergeHSM', () => {
       localDoc.destroy();
     });
 
+    test('load-time disk metadata mismatch reads disk before entering diskAhead', async () => {
+      await withHSMResourceContracts(async () => {
+        const base = 'base';
+        const diskText = 'base\nclosed edit';
+        const diskEvent = await diskChanged(diskText, 2000);
+        let diskReads = 0;
+        let resolveDisk!: (disk: { content: string; hash: string; mtime: number }) => void;
+        const diskPromise = new Promise<{ content: string; hash: string; mtime: number }>((resolve) => {
+          resolveDisk = resolve;
+        });
+        const t = await createTestHSM({
+          diskLoader: () => {
+            diskReads++;
+            return diskPromise;
+          },
+        });
+        const updates = createYjsUpdate(base);
+        const lca = await createLCA(base, 1000, Y.encodeStateVectorFromUpdate(updates));
+
+        t.seedIndexedDB(updates);
+        t.syncRemoteWithUpdate(updates);
+        t.send(load('test-guid'));
+        t.send(persistenceLoadedFromUpdate(updates, lca));
+        t.send({ type: 'DISK_METADATA_CHANGED', mtime: 2000 });
+        t.send({ type: 'SET_MODE_IDLE' });
+
+        expectState(t, 'idle.loadingDiskContents');
+        await Promise.resolve();
+        expect(diskReads).toBe(1);
+
+        resolveDisk({ content: diskText, hash: diskEvent.hash, mtime: 2000 });
+        await t.hsm.awaitState((state) => state === 'idle.diskAhead' || state === 'idle.localAhead');
+        await t.hsm.awaitIdleAutoMerge();
+
+        expect(t.stateHistory.some((entry) => entry.to === 'idle.diskAhead')).toBe(true);
+        expect(t.hsm.hasFork()).toBe(true);
+        expect((t.hsm as any).pendingDiskContents).toBeNull();
+      });
+    });
+
+    test('load-time metadata-only disk read settles when contents still match LCA', async () => {
+      const base = 'base';
+      let diskReads = 0;
+      let resolveDisk!: (disk: { content: string; hash: string; mtime: number }) => void;
+      const diskPromise = new Promise<{ content: string; hash: string; mtime: number }>((resolve) => {
+        resolveDisk = resolve;
+      });
+      const t = await createTestHSM({
+        diskLoader: () => {
+          diskReads++;
+          return diskPromise;
+        },
+      });
+      const updates = createYjsUpdate(base);
+      const lca = await createLCA(base, 1000, Y.encodeStateVectorFromUpdate(updates));
+
+      t.seedIndexedDB(updates);
+      t.syncRemoteWithUpdate(updates);
+      t.send(load('test-guid'));
+      t.send(persistenceLoadedFromUpdate(updates, lca));
+      t.send({ type: 'DISK_METADATA_CHANGED', mtime: 2000 });
+      t.send({ type: 'SET_MODE_IDLE' });
+
+      expectState(t, 'idle.loadingDiskContents');
+      await Promise.resolve();
+      resolveDisk({ content: base, hash: lca.meta.hash, mtime: 2000 });
+      await t.hsm.awaitState((state) => state === 'idle.synced');
+
+      expect(diskReads).toBe(1);
+      expect(t.state.lca?.meta.mtime).toBe(2000);
+      expect(t.stateHistory.some((entry) => entry.to === 'idle.diskAhead')).toBe(false);
+      expect((t.hsm as any).pendingDiskContents).toBeNull();
+    });
+
     test('idle merge reports compacted LCA contents that cannot hydrate', async () => {
       const t = await createTestHSM();
       const localDoc = createDocWithText('current');

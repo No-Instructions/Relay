@@ -81,11 +81,15 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
       return {
         type: 'PERSISTENCE_LOADED',
         lca: event.lca ? serializeLCA(event.lca) : null,
+        ...(event.disk !== undefined ? { disk: event.disk } : {}),
         ...(event.localSnapshot
           ? { localSnapshot: uint8ArrayToBase64(event.localSnapshot) }
           : {}),
         ...(event.localStateVector
           ? { localStateVector: uint8ArrayToBase64(event.localStateVector) }
+          : {}),
+        ...(event.deferredConflict !== undefined
+          ? { deferredConflict: event.deferredConflict }
           : {}),
       };
 
@@ -127,6 +131,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'UNLOAD':
     case 'RELEASE_LOCK':
     case 'DISK_CHANGED':
+    case 'DISK_METADATA_CHANGED':
     case 'SAVE_COMPLETE':
     case 'CM6_CHANGE':
     case 'PROVIDER_SYNCED':
@@ -164,12 +169,14 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
       return {
         type: 'PERSISTENCE_LOADED',
         lca: event.lca ? deserializeLCA(event.lca) : null,
+        disk: event.disk ?? undefined,
         localSnapshot: event.localSnapshot
           ? base64ToUint8Array(event.localSnapshot)
           : null,
         localStateVector: event.localStateVector
           ? base64ToUint8Array(event.localStateVector)
           : null,
+        deferredConflict: event.deferredConflict,
       };
 
     case 'MERGE_SUCCESS':
