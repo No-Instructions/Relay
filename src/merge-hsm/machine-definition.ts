@@ -551,9 +551,9 @@ export const MACHINE: MachineDefinition = {
 				actions: ['storeEnrollmentComplete', 'maybeSignalPersistenceSyncedForRecovery'],
 			},
 			PERSISTENCE_SYNCED: [
-				{ target: 'active.entering.reconciling', guard: 'persistenceHasContent', actions: ['applyRemoteToLocalIfNeeded'] },
+				{ target: 'active.entering.reconciling', guard: 'persistenceHasContentAndActiveBaseReady', actions: ['applyRemoteToLocalIfNeeded'] },
 				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
-				{ target: 'active.entering.reconciling', actions: ['applyRemoteToLocalIfNeeded'] },
+				{ target: 'active.entering.reconciling', guard: 'activeReconcileBaseReady', actions: ['applyRemoteToLocalIfNeeded'] },
 				{ target: 'active.entering.awaitingPersistence' },
 			],
 			PROVIDER_SYNCED: {

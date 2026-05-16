@@ -786,6 +786,12 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 		return this.localDoc;
 	}
 
+	needsFullStateForActiveEntry(): boolean {
+		if (!this._lca || this._lca.contents !== null) return false;
+		this.hydrateLCAContentsFromLocalDoc();
+		return this._lca.contents === null;
+	}
+
 	async awaitPersistenceReady(): Promise<void> {
 		if (!this.localPersistence) {
 			await this.awaitState((statePath) => statePath !== "loading");
@@ -1963,6 +1969,9 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
+			activeReconcileBaseReady: () => !this.needsFullStateForActiveEntry(),
+			persistenceHasContentAndActiveBaseReady: (_hsm, event) =>
+				(event as any).hasContent === true && !this.needsFullStateForActiveEntry(),
 			canRecoverLCA: () =>
 				this._lca === null &&
 				this._fork === null &&
@@ -2231,11 +2240,16 @@ export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
 					? stateVectorFromSnapshot({ snapshot: localSnapshot })
 					: e.localStateVector ?? null;
 				this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
-				if (!this._lca && e.lca) {
-					// Trusted restoration path: localDoc hasn't been created yet,
-					// so the _setLCA content-equality check has nothing to verify
-					// against. The persisted LCA was captured by a prior session
-					// under the same invariant, so we load it directly.
+				if (e.disk !== undefined) {
+					this._disk = e.disk ?? null;
+				}
+				if (e.deferredConflict !== undefined) {
+					this._deferredConflict = e.deferredConflict ?? undefined;
+				}
+				if (e.lca && (!this._lca || (this._lca.contents === null && e.lca.contents !== null))) {
+					// Trusted restoration path: persisted LCA was captured by a
+					// prior session under the same invariant, so compacted metadata
+					// can be rehydrated from the full persisted record directly.
 					this._lca = e.lca;
 				}
 				if (localStateVector) {

@@ -35,6 +35,7 @@ import {
   load,
   createLCA,
   createYjsUpdate,
+  sha256,
   mockEditorViewRef,
   // State transition helpers
   loadAndActivate,
@@ -3269,6 +3270,40 @@ describe('MergeHSM', () => {
       // Empty editor + empty localDoc → no divergence → tracking
       await t.hsm.awaitState((s: string) => s === 'active.tracking' || s.includes('conflict'));
       expectState(t, 'active.tracking');
+    });
+
+    test('compacted LCA waits for full contents before active three-way merge', async () => {
+      const content = 'servar';
+      const hash = await sha256(content);
+      const updates = createYjsUpdate(content);
+      const lcaDoc = new Y.Doc();
+      lcaDoc.clientID = 123456;
+      lcaDoc.getText('contents').insert(0, content);
+      const lca = await createLCA(content, 1000, Y.encodeStateVector(lcaDoc));
+      lcaDoc.destroy();
+      const t = await createTestHSM({
+        diskLoader: async () => ({ content, hash, mtime: 1000 }),
+      });
+
+      t.seedIndexedDB(updates);
+      t.send(load('test-guid', 'test.md'));
+      t.send(persistenceLoaded({ ...lca, contents: null }));
+      t.send({ type: 'SET_MODE_ACTIVE' });
+      t.send({
+        type: 'OBSIDIAN_SET_VIEW_DATA',
+        data: content,
+        clear: true,
+      });
+      t.send(acquireLock(mockEditorViewRef(content)));
+
+      expectState(t, 'active.entering.awaitingPersistence');
+      expect(t.hsm.getConflictData()).toBeNull();
+
+      t.send(persistenceLoaded(lca));
+      await t.hsm.awaitState((s: string) => s === 'active.tracking' || s.includes('conflict'));
+
+      expectState(t, 'active.tracking');
+      expect(t.hsm.getConflictData()).toBeNull();
     });
 
     test('PROVIDER_SYNCED before PERSISTENCE_SYNCED is captured by flag', async () => {

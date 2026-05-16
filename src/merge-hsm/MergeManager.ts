@@ -389,6 +389,9 @@ export class MergeManager {
   /** Currently waking documents (bounded concurrency). */
   private _wakingDocs = new Set<string>();
 
+  /** Full persisted-state loads requested by active entry. */
+  private _activeStateLoads = new Set<string>();
+
   /**
    * LRU cache of warm document GUIDs. Insertion order = access order
    * (least recently used first). Capacity bounded by _maxConcurrentWarm.
@@ -1061,6 +1064,36 @@ export class MergeManager {
     this._hibernationState.set(guid, 'active');
     this.clearHibernateTimer(guid);
     this.removeFromWarmLRU(guid);
+    this.loadFullStateForActiveEntry(guid);
+    this._updateWakeQueueMetrics();
+  }
+
+  private loadFullStateForActiveEntry(guid: string): void {
+    const hsm = this._getDocument(guid)?.hsm;
+    if (!hsm?.needsFullStateForActiveEntry()) return;
+    const loadStateFn = this.loadState;
+    if (!loadStateFn || this._activeStateLoads.has(guid)) return;
+
+    this._activeStateLoads.add(guid);
+    loadStateFn(guid).then((state) => {
+      this._activeStateLoads.delete(guid);
+      if (this.destroyed || !this.activeDocs.has(guid) || this._getDocument(guid)?.hsm !== hsm) return;
+
+      hsm.send({
+        type: 'PERSISTENCE_LOADED',
+        lca: restorePersistedLCA(state?.lca ?? null),
+        disk: state?.disk ?? null,
+        localSnapshot: state?.localSnapshot ?? null,
+        localStateVector: state?.localSnapshot
+          ? null
+          : state?.localStateVector ?? null,
+        deferredConflict: state?.deferredConflict,
+        fork: restorePersistedFork(state?.fork ?? null),
+      });
+    }).catch((err) => {
+      this._activeStateLoads.delete(guid);
+      this._error(`Failed to load full active state for ${guid}: ${err}`);
+    });
   }
 
   /**
@@ -1499,7 +1532,9 @@ export class MergeManager {
     this._serverAdvertisedHeads.clear();
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
+    this._activeStateLoads.clear();
     this._warmLRU.clear();
+    this._updateWakeQueueMetrics();
 
     // These callbacks close over SharedFolder and related plugin services.
     // Clear them so a retained MergeManager shell does not pin the folder graph.

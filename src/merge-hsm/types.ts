@@ -364,10 +364,16 @@ export interface CancelEvent {
 export interface PersistenceLoadedEvent {
 	type: "PERSISTENCE_LOADED";
 	lca: LCAState | null;
+	/** Last known disk metadata from persisted HSM state. */
+	disk?: MergeMetadata | null;
 	/** Persisted local head snapshot. State vectors are fallback metadata only. */
 	localSnapshot?: Uint8Array | null;
 	/** Existing records may have only state vectors. */
 	localStateVector?: Uint8Array | null;
+	deferredConflict?: {
+		diskHash: string;
+		localHash: string;
+	};
 	/** Persisted fork data (loaded async from per-document state) */
 	fork?: Fork | null;
 }
