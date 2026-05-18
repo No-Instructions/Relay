@@ -74,8 +74,7 @@ import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
-import type { PluginWithApp } from "./UpdateManager";
-import { ReleaseManager } from "./ui/ReleaseManager";
+import type { PluginWithVersion, Release } from "./UpdateManager";
 import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
@@ -441,7 +440,7 @@ export default class Live extends Plugin {
 
 		// Initialize update manager
 		this.updateManager = new UpdateManager(
-			this as unknown as PluginWithApp,
+			this as unknown as PluginWithVersion,
 			this.timeProvider,
 			this.releaseSettings,
 		);
@@ -461,9 +460,7 @@ export default class Live extends Plugin {
 			id: "show-release-manager",
 			name: "Show releases",
 			callback: () => {
-				const modal = new ReleaseManager(this.app, this);
-				this.openModals.push(modal);
-				modal.open();
+				this.openGithubRelease();
 			},
 		});
 		this.addCommand({
@@ -576,19 +573,21 @@ export default class Live extends Plugin {
 		this.register(this.updateManager.subscribe(() => {
 			const newRelease = this.updateManager.getNewRelease();
 			if (newRelease) {
-				// Add update command when an update is available
+				// Add release notes command when an update is available.
 				this.removeCommand("update-plugin");
+				this.removeCommand("show-update-release");
 				this.addCommand({
-					id: "update-plugin",
-					name: `Update Plugin (${this.version} → ${newRelease.tag_name})`,
-					callback: async () => {
-						await this.updateManager.installUpdate(newRelease);
+					id: "show-update-release",
+					name: `Show update release (${this.version} → ${newRelease.tag_name})`,
+					callback: () => {
+						this.openGithubRelease(newRelease);
 					},
 				});
 				this.log(`Update available: v${this.version} → ${newRelease.tag_name}`);
 			} else {
-				// Remove update command when no update is available
+				// Remove update commands when no update is available
 				this.removeCommand("update-plugin");
+				this.removeCommand("show-update-release");
 			}
 		}));
 
@@ -921,6 +920,16 @@ export default class Live extends Plugin {
 		await setting.open();
 		await setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);
+	}
+
+	openGithubRelease(release?: Release | string): void {
+		let target: Release | string | undefined = release;
+		if (typeof release === "string" && release.trim()) {
+			target =
+				this.updateManager.findReleaseByVersion(release.trim()) ??
+				release.trim();
+		}
+		window.open(this.updateManager.getReleaseUrl(target), "_blank");
 	}
 
 	patchWebviewer(): void {
@@ -1447,22 +1456,11 @@ export default class Live extends Plugin {
 		this.registerObsidianProtocolHandler("relay/upgrade", async (e) => {
 			const parameters = e as unknown as Parameters;
 			const version = parameters.version?.trim();
-			this.installVersion(version);
+			this.openGithubRelease(version);
 		});
 
 		this.backgroundSync.start();
 		this.updateManager.start();
-	}
-
-	installVersion(version?: string) {
-		const modal = new ReleaseManager(this.app, this, version);
-
-		const app = this.app as any;
-		const setting = app.setting;
-		setting.close();
-
-		this.openModals.push(modal);
-		modal.open();
 	}
 
 	removeCommand(command: string): void {

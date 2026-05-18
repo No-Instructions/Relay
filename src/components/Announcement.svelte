@@ -3,12 +3,12 @@
 	import type Live from "src/main";
 	export let plugin: Live;
 
-	function install() {
+	function showRelease() {
 		if (plugin.networkStatus.status?.versions) {
 			if (plugin.releaseSettings.get().channel === "stable") {
-				plugin.installVersion(plugin.networkStatus.status.versions.stable);
+				plugin.openGithubRelease(plugin.networkStatus.status.versions.stable);
 			} else if (plugin.releaseSettings.get().channel === "beta") {
-				plugin.installVersion(plugin.networkStatus.status.versions.beta);
+				plugin.openGithubRelease(plugin.networkStatus.status.versions.beta);
 			}
 		}
 	}
@@ -19,7 +19,7 @@
 		class="modal-setting-nav-bar system3-announcement-banner"
 		on:click={() => {
 			if (plugin.networkStatus.status?.versions) {
-				install();
+				showRelease();
 			} else if (plugin.networkStatus.status?.link) {
 				window.open(plugin.networkStatus.status.link);
 			}
@@ -28,7 +28,7 @@
 		tabindex="0"
 		on:keypress={() => {
 			if (plugin.networkStatus.status?.versions) {
-				install();
+				showRelease();
 			} else if (plugin.networkStatus.status?.link) {
 				window.open(plugin.networkStatus.status.link);
 			}

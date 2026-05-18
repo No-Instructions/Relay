@@ -8,33 +8,14 @@ import { flags } from "./flagManager";
 
 declare const REPOSITORY: string;
 
-// Private Obsidian API
-export type WithPlugins = {
-	_reloadAwait?: Promise<unknown>[] | null;
-	plugins: {
-		disablePlugin(id: string): Promise<void>;
-		enablePlugin(id: string): Promise<void>;
-		installPlugin(
-			repository: string,
-			version: string,
-			manifest: any,
-		): Promise<void>;
-	};
-};
-export type PluginWithApp = Plugin & { app: WithPlugins; version: string };
-
-interface Asset {
-	name: string;
-	browser_download_url: string;
-}
+export type PluginWithVersion = Plugin & { version: string };
 
 export interface Release {
 	tag_name: string;
-	assets: Asset[];
 	prerelease: boolean;
 	draft: boolean;
-	body: string;
 	created_at: string;
+	html_url?: string;
 	latest?: boolean;
 }
 
@@ -88,7 +69,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 	observableName = "UpdateManager";
 
 	constructor(
-		private plugin: PluginWithApp,
+		private plugin: PluginWithVersion,
 		private timeProvider: TimeProvider,
 		private releaseSettings: NamespacedSettings<ReleaseSettings>,
 	) {
@@ -353,45 +334,6 @@ export class UpdateManager extends Observable<UpdateManager> {
 		}
 	}
 
-	public async fetchReleaseManifest(release: Release): Promise<any | null> {
-		try {
-			// Find the manifest asset in the release
-			const manifestAsset = release.assets.find(
-				(asset: any) => asset.name === "manifest.json",
-			);
-
-			if (!manifestAsset) {
-				this.debug("No manifest found in release assets");
-				return null;
-			}
-
-			this.debug(
-				`Fetching manifest from release asset:`,
-				manifestAsset.browser_download_url,
-			);
-
-			const response = await customFetch(manifestAsset.browser_download_url, {
-				headers: {
-					Accept: "application/octet-stream",
-					"User-Agent": "Relay-Obsidian-Plugin",
-				},
-			});
-
-			if (!response.ok) {
-				throw new Error(`Failed to fetch manifest asset: ${response.status}`);
-			}
-
-			const manifest = await response.json();
-			if (flags().enableNetworkLogging) {
-				this.debug("manifest fetched:", manifest);
-			}
-			return manifest;
-		} catch (error) {
-			this.error("Failed to fetch manifest for release:", release, error);
-			return null;
-		}
-	}
-
 	public getNewRelease(): Release | undefined {
 		const release = this.releaseChannels.get(
 			this.releaseSettings.get().channel,
@@ -404,37 +346,26 @@ export class UpdateManager extends Observable<UpdateManager> {
 		}
 	}
 
-	public async installUpdate(release: Release): Promise<boolean> {
-		const manifest = await this.fetchReleaseManifest(release);
-		try {
-			this.debug(
-				`Installing update from v${this.plugin.version} to v${manifest.version}...`,
-				manifest,
-			);
-
-			await this.plugin.app.plugins.installPlugin(
-				REPOSITORY,
-				manifest.version,
-				manifest,
-			);
-
-			this.notifyListeners();
-
-			this.debug("Update complete. Reloading plugin...");
-
-			const pluginId = "system3-relay";
-			const { plugins } = this.plugin.app;
-			this.plugin.app._reloadAwait = [];
-			await plugins.disablePlugin(pluginId);
-			await Promise.allSettled(this.plugin.app._reloadAwait || []);
-			this.plugin.app._reloadAwait = null;
-			await plugins.enablePlugin(pluginId);
-
-			return true;
-		} catch (error) {
-			this.error("Failed to install update:", error);
-			return false;
+	public findReleaseByVersion(versionOrTag: string): Release | undefined {
+		if (this.destroyed) {
+			return undefined;
 		}
+		const version = normalizeVersion(versionOrTag);
+		return [...this.githubReleases.values()].find((release) => {
+			return normalizeVersion(release.tag_name) === version;
+		});
+	}
+
+	public getReleaseUrl(release?: Release | string): string {
+		const releasesUrl = `https://github.com/${REPOSITORY}/releases`;
+		if (!release) {
+			return releasesUrl;
+		}
+		if (typeof release !== "string" && release.html_url) {
+			return release.html_url;
+		}
+		const tagName = typeof release === "string" ? release : release.tag_name;
+		return `${releasesUrl}/tag/${encodeURIComponent(tagName)}`;
 	}
 
 	override destroy(): void {
