@@ -109,6 +109,12 @@ async function setupActive(content: string): Promise<TestHSM> {
 	return t;
 }
 
+async function drainImmediateIdleWork(t: TestHSM): Promise<void> {
+	await t.awaitIdleAutoMerge();
+	t.time.setTime(t.time.now());
+	await t.awaitIdleAutoMerge();
+}
+
 /**
  * Compute CM6-style changes from old→new text.
  * CM6 represents a replace as a single {from, to, insert} — not separate
@@ -604,8 +610,9 @@ describe('Machine edit: source active on A, idle on B', () => {
     // Sync A's CRDT to server and deliver to B as REMOTE_UPDATE
     ctx.sync();
 
-    // Wait for idle-merge on B
-    await new Promise(r => setTimeout(r, 200));
+    // Wait for idle-merge on B. The setup can deliver an already-known
+    // bootstrap update before the real edit, so drain the immediate retry too.
+    await drainImmediateIdleWork(ctx.vaultB.hsm);
 
     const bText = ctx.vaultB.getLocalText();
     const bDisk = ctx.vaultB.disk.content;

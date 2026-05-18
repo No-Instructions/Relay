@@ -1958,12 +1958,11 @@ describe('MergeHSM', () => {
       // re-entering the invoke after partial localDoc mutation.
       t.applyRemoteChange('base hello world');
 
-      // First invoke completes → scheduleIdleRetry queues IDLE_RETRY via
-      // setTimeout. Await the first invoke, flush the timer to let IDLE_RETRY
-      // fire (which re-enters idle.remoteAhead and starts a second invoke),
-      // then await the second invoke.
+      // First invoke completes → scheduleIdleRetry queues IDLE_RETRY through
+      // the test time provider. Await the first invoke, flush due timers to
+      // let IDLE_RETRY fire, then await the second invoke.
       await t.awaitIdleAutoMerge();
-      await new Promise(r => setTimeout(r, 0));
+      t.time.setTime(t.time.now());
       await t.awaitIdleAutoMerge();
 
       // localDoc should have the final merged content

@@ -8,6 +8,7 @@ jest.mock("../src/LiveTokenStore", () => ({
 
 import * as Y from "yjs";
 import { HasProvider } from "../src/HasProvider";
+import { MockTimeProvider } from "./mocks/MockTimeProvider";
 
 describe("HasProvider", () => {
 	test("disconnect clears stale synced state", () => {
@@ -214,6 +215,7 @@ describe("HasProvider", () => {
 			tokenStore as any,
 			loginManager as any,
 		) as any;
+		provider.timeProvider = new MockTimeProvider();
 		provider.ensureRemoteDoc();
 		provider._provider.shouldConnect = true;
 

@@ -538,7 +538,7 @@ export async function loadToIdle(
     while (Date.now() - startTime < maxWaitMs) {
       const localDocText = hsm.hsm?.getLocalDoc?.()?.getText('contents').toString();
       if (localDocText === content) break;
-      await new Promise(resolve => window.setTimeout(resolve, 1));
+      await new Promise(resolve => globalThis.setTimeout(resolve, 1));
     }
   }
 
