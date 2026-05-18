@@ -3,7 +3,7 @@
 import { decodeJwt } from "jose";
 import type { TimeProvider } from "./TimeProvider";
 import { RelayInstances } from "./debug";
-import { awaitOnReload } from "./reloadUtils";
+import { trackAsyncCleanup } from "./reloadUtils";
 
 interface TokenStoreConfig<StorageToken, NetToken> {
 	log: (message: string) => void;
@@ -397,7 +397,9 @@ export class TokenStore<TokenType extends HasToken> {
 	destroy() {
 		// Track active token refresh promises before clearing
 		if (this._activePromises.size > 0) {
-			awaitOnReload(Promise.all(this._activePromises.values()).then(() => {}));
+			trackAsyncCleanup(
+				Promise.all(this._activePromises.values()).then(() => {}),
+			);
 		}
 
 		this.clear();

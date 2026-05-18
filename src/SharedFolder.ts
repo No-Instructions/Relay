@@ -63,7 +63,7 @@ import {
 	type HSMLogEntry,
 } from "./merge-hsm/recording";
 import { recordHSMEntry } from "./debug";
-import { awaitOnReload } from "./reloadUtils";
+import { trackAsyncCleanup } from "./reloadUtils";
 import { generateHash } from "./hashing";
 import {
 	HSMStore,
@@ -389,8 +389,8 @@ export class SharedFolder extends HasProvider {
 			onEffect: async (guid, effect) => {
 				this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
 				if (effect.type === "PERSIST_STATE") {
-					// Keep reload gating aware of pending HSM state writes so
-					// plugin re-enable doesn't race persisted fork/LCA state.
+					// Persisted fork/LCA state writes run in the background; track
+					// failures so persistence errors are visible.
 					const p = this._hsmStore
 						.saveState(guid, effect.state)
 						.catch((err) => {
@@ -399,7 +399,7 @@ export class SharedFolder extends HasProvider {
 								err,
 							);
 						});
-					awaitOnReload(p);
+					trackAsyncCleanup(p);
 				} else if (effect.type === "SYNC_TO_REMOTE") {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
@@ -1203,7 +1203,7 @@ export class SharedFolder extends HasProvider {
 			.catch((error) => {
 				this.warn("unable to persist remote activity", error);
 			});
-		awaitOnReload(persist);
+		trackAsyncCleanup(persist);
 		trackPromise(`folder:remoteActivityPersist:${this.guid}`, persist);
 	}
 
@@ -1535,7 +1535,7 @@ export class SharedFolder extends HasProvider {
 					indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
 				} catch { /* best effort stale database cleanup */ }
 				const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
-				awaitOnReload(p);
+				trackAsyncCleanup(p);
 			}
 
 			this.backgroundSync.cancelDocumentWork(fromGuid);
@@ -2711,7 +2711,7 @@ export class SharedFolder extends HasProvider {
 			}, this);
 			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
 			const p = this._hsmStore.deleteState(guid).catch(() => {});
-			awaitOnReload(p);
+			trackAsyncCleanup(p);
 		} else {
 			// syncStore entry already gone (remote delete) - find by path
 			const doc = this.fset.find((f) => f.path === vpath);
@@ -2723,7 +2723,7 @@ export class SharedFolder extends HasProvider {
 				doc.destroy();
 				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${docGuid}`);
 				const p = this._hsmStore.deleteState(docGuid).catch(() => {});
-				awaitOnReload(p);
+				trackAsyncCleanup(p);
 			}
 		}
 	}
@@ -2839,12 +2839,12 @@ export class SharedFolder extends HasProvider {
 		// IndexeddbPersistence self-destructs on the ydoc's 'destroy' event,
 		// but its async teardown promise (awaiting pending writes and
 		// compaction before closing the DB) is dropped inside that event
-		// handler. Capture it here so awaitOnReload holds plugin re-enable
-		// until IDB has flushed. Calling destroy() removes the 'destroy'
+		// handler. Capture it here so failures are logged. Calling destroy()
+		// removes the 'destroy'
 		// listener synchronously, so super.destroy() below won't double-fire.
 		if (this._persistence) {
 			const p = this._persistence.destroy().catch(() => {});
-			awaitOnReload(p);
+			trackAsyncCleanup(p);
 		}
 		super.destroy();
 		this.fset.clear();

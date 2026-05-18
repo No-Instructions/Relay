@@ -3,21 +3,15 @@
 import { trackPromise } from "./trackPromise";
 import { curryLog } from "./debug";
 
-const error = curryLog("[reloadAwait]", "error");
+const error = curryLog("[asyncCleanup]", "error");
 
 /**
- * Register a promise to be awaited before plugin re-enable during reload.
- * No-op during normal Obsidian unload (app._reloadAwait will be undefined).
- *
- * Optional `label` tracks the promise in the active PromiseTracker so stuck
- * teardown work can be correlated with the instance that registered it.
+ * Track background cleanup work so failures are logged instead of becoming
+ * unhandled promise rejections.
  */
-export function awaitOnReload(p: Promise<void>, label?: string): void {
+export function trackAsyncCleanup(p: Promise<void>, label?: string): void {
 	const tracked = label ? trackPromise(label, p) : p;
-	const awaited = tracked.catch((err) => {
+	void tracked.catch((err) => {
 		error(`rejected${label ? ` (${label})` : ""}`, err);
 	});
-	if (typeof window !== 'undefined') {
-		(window as any).app?._reloadAwait?.push(awaited);
-	}
 }

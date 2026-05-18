@@ -82,7 +82,7 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		// Use peekInstance: getInstance() throws after PostOffice.destroy()
 		// and auto-creates a fresh singleton if instance is null, which
 		// would leak the entire mail graph through unbounded mailbox
-		// accumulation when off() runs from an awaitOnReload promise.
+		// accumulation when off() runs from async cleanup.
 		PostOffice.peekInstance()?.cancel(listener);
 	}
 

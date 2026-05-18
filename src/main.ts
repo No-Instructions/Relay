@@ -59,7 +59,7 @@ import { FeatureFlagManager, flags, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { HSMStore } from "./merge-hsm/persistence";
-import { awaitOnReload } from "./reloadUtils";
+import { trackAsyncCleanup } from "./reloadUtils";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
 import {
@@ -202,9 +202,7 @@ export default class Live extends Plugin {
 	 * Open endpoint configuration modal
 	 */
 	openEndpointConfigurationModal() {
-		const modal = new EndpointConfigModal(this.app, this, () => {
-			this.reload();
-		});
+		const modal = new EndpointConfigModal(this.app, this);
 		modal.open();
 	}
 
@@ -454,9 +452,7 @@ export default class Live extends Plugin {
 			id: "toggle-feature-flags",
 			name: "Show feature flags",
 			callback: () => {
-				const modal = new FeatureFlagToggleModal(this.app, () => {
-					this.reload();
-				});
+				const modal = new FeatureFlagToggleModal(this.app);
 				this.openModals.push(modal);
 				modal.open();
 			},
@@ -523,22 +519,6 @@ export default class Live extends Plugin {
 				}
 			}),
 		);
-
-			const code = `async function() {
-				const app = window.app;
-				app._reloadAwait = [];
-				await app.plugins.disablePlugin("system3-relay");
-				await Promise.allSettled(app._reloadAwait || []);
-				app._reloadAwait = null;
-				await app.plugins.enablePlugin("system3-relay");
-			}`;
-		(this.app as any).reloadRelay = new Function("return " + code);
-
-		this.addCommand({
-			id: "reload",
-			name: "Reload",
-			callback: (this.app as any).reloadRelay(),
-		});
 
 		this.addCommand({
 			id: "open-settings",
@@ -862,10 +842,6 @@ export default class Live extends Plugin {
 			this.loadTime = moment.now() - start;
 			onloadComplete();
 		});
-	}
-
-	async reload() {
-		(this.app as any).reloadRelay()();
 	}
 
 	private _createSharedFolder(
@@ -1520,12 +1496,9 @@ export default class Live extends Plugin {
 					`[Relay] onunload failed at step: ${name}: ${e?.message ?? error}\n${e?.stack ?? ""}`,
 				);
 				// Do NOT rethrow. A single step's failure must not abort the
-				// rest of onunload — every later step represents a distinct
+				// rest of onunload; every later step represents a distinct
 				// resource (timers, IDB connections, the PostOffice singleton,
-				// log buffer, leak-detection set). Skipping any of them strands
-				// the resource across plugin reload, where it pins the entire
-				// previous module's V8 context (every class definition,
-				// listener, and CRDT structure) until the page is reloaded.
+				// log buffer, leak-detection set).
 			}
 		};
 		setActiveTracker(null);
@@ -1616,25 +1589,18 @@ export default class Live extends Plugin {
 		});
 		this.sharedFolders = null as any;
 
-			// Flush pending HSM writes and close the database after SharedFolders
-			// are destroyed (no more writes will be queued). Capture the store
-			// reference locally before clearing the field; otherwise the arrow
-			// runs after `this._hsmStore` has been nulled below and the
-			// optional-chain `?.destroy()` silently skips, leaving the IDB
-			// connection open across reload (it pins the V8 module context).
-			const hsmStoreRef = this._hsmStore;
-			teardownStep("hsmStore.destroy", () => {
-				const reloadAwait = (window as any).app?._reloadAwait;
-				const priorTeardown = Array.isArray(reloadAwait)
-					? Promise.allSettled([...reloadAwait]).then(() => {})
-					: Promise.resolve();
-				const p = priorTeardown.then(() => hsmStoreRef?.destroy());
-				awaitOnReload(
-					p,
-					`plugin:teardown:hsmStore.destroy:${this._instanceId}`,
-				);
-			});
-			this._hsmStore = null as any;
+		// Flush pending HSM writes and close the database after SharedFolders
+		// are destroyed. Capture the store reference locally before clearing
+		// the field so async cleanup cannot be skipped.
+		const hsmStoreRef = this._hsmStore;
+		teardownStep("hsmStore.destroy", () => {
+			const p = hsmStoreRef?.destroy() ?? Promise.resolve();
+			trackAsyncCleanup(
+				p,
+				`plugin:teardown:hsmStore.destroy:${this._instanceId}`,
+			);
+		});
+		this._hsmStore = null as any;
 
 		teardownStep("settingsTab.destroy", () => {
 			this.settingsTab?.destroy();
@@ -1659,7 +1625,6 @@ export default class Live extends Plugin {
 		teardownStep("workspace.updateOptions", () => {
 			this.app?.workspace.updateOptions();
 		});
-		(this.app as any).reloadRelay = undefined;
 		this.app = null as any;
 		this.fileManager = null as any;
 		this.manifest = null as any;

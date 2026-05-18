@@ -44,7 +44,7 @@ export class PostOffice {
 	 * Returns the singleton if it exists, or null if PostOffice has been
 	 * destroyed or was never created. Use this from cleanup/destroy paths
 	 * that may run after `PostOffice.destroy()` (e.g. async work registered
-	 * with `awaitOnReload`) — calling `getInstance()` post-destroy throws
+	 * with `trackAsyncCleanup`) — calling `getInstance()` post-destroy throws
 	 * and creating a fresh singleton mid-teardown leaks the entire mail
 	 * graph (each entry's `recipient` closure pins module-level classes).
 	 */

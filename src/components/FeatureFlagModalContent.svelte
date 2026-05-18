@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { setIcon, type IconName } from "obsidian";
+	import { Notice, setIcon, type IconName } from "obsidian";
 	import { isDebugging } from "../debug";
 	import { FeatureFlagManager } from "../flagManager";
 	import {
@@ -9,7 +9,7 @@
 	} from "../flags";
 	import SettingGroup from "./SettingGroup.svelte";
 
-	export let reload: () => void;
+	export let close: () => void;
 
 	type Tab = {
 		id: FeatureFlagCategory;
@@ -30,6 +30,7 @@
 	const flagManager = FeatureFlagManager.getInstance();
 	const debugging = isDebugging();
 	let activeTab: FeatureFlagCategory = "labs";
+	let hasChanges = false;
 
 	$: settings = { ...$flagManager.flags };
 	$: tabs = (Object.keys(tabInfo) as FeatureFlagCategory[])
@@ -53,6 +54,14 @@
 	function toggleFlag(flagName: keyof FeatureFlags) {
 		const next = !(settings[flagName] ?? FeatureFlagSchema[flagName].default);
 		flagManager.setFlag(flagName, next);
+		hasChanges = true;
+	}
+
+	function finish() {
+		if (hasChanges) {
+			new Notice("Reload the Relay plugin to apply feature flag changes.", 8000);
+		}
+		close();
 	}
 
 	function handleToggleKey(event: KeyboardEvent, flagName: keyof FeatureFlags) {
@@ -142,7 +151,12 @@
 	</div>
 
 	<div class="modal-button-container relay-feature-flag-footer">
-		<button class="mod-cta" on:click={reload}>Apply</button>
+		{#if hasChanges}
+			<span class="relay-feature-flag-reload-note">
+				Reload the Relay plugin to apply changes.
+			</span>
+		{/if}
+		<button class="mod-cta" on:click={finish}>Done</button>
 	</div>
 </div>
 
@@ -240,8 +254,15 @@
 		display: flex;
 		flex: 0 0 auto;
 		justify-content: flex-end;
+		align-items: center;
+		gap: var(--size-4-2);
 		padding-top: var(--size-4-3);
 		margin-top: var(--size-4-3);
+	}
+
+	.relay-feature-flag-reload-note {
+		color: var(--text-muted);
+		font-size: var(--font-ui-smaller);
 	}
 
 	.checkbox-container {

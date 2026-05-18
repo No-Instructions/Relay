@@ -21,7 +21,7 @@ import {
 } from "./merge-hsm/integration/ProviderIntegration";
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
-import { awaitOnReload } from "./reloadUtils";
+import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 
 export function isDocument(file?: IFile): file is Document {
@@ -339,9 +339,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
 		const mergeManager = this.sharedFolder?.mergeManager;
 		if (mergeManager) {
-			// MergeManager.unload() sends RELEASE_LOCK and awaits IDB cleanup
+			// MergeManager.unload() sends RELEASE_LOCK and runs async IDB cleanup.
 			const p = mergeManager.unload(this.guid);
-			awaitOnReload(p);
+			trackAsyncCleanup(p);
 		}
 	}
 
@@ -644,11 +644,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.releaseLock();
 
 		// The HSM's cleanup invoke closes per-document IDB asynchronously.
-		// Capture it so the reload pipeline waits for all DB connections to
-		// close before the new plugin instance opens them.
+		// Track it so close failures are logged.
 		if (this._hsm) {
 			const p = this._hsm.awaitAsync('cleanup').catch(() => {});
-			awaitOnReload(p, `doc:cleanup:${this.guid}`);
+			trackAsyncCleanup(p, `doc:cleanup:${this.guid}`);
 		}
 
 		super.destroy();

@@ -14,7 +14,7 @@
  */
 
 import * as Y from 'yjs';
-import { awaitOnReload } from '../reloadUtils';
+import { trackAsyncCleanup } from '../reloadUtils';
 import { MergeHSM } from './MergeHSM';
 import type {
   SyncStatus,
@@ -373,7 +373,7 @@ export class MergeManager {
     for (const guid of this._hsmUnsubs.keys()) {
       const hsm = this._getDocument?.(guid)?.hsm;
       if (!hsm) continue;
-      awaitOnReload(
+      trackAsyncCleanup(
         hsm.destroyLocalDoc().catch(() => {}),
         `mergeManager:beginShutdown:destroyLocalDoc:${guid}`,
       );
@@ -1035,9 +1035,8 @@ export class MergeManager {
       hsm.setRemoteDoc(null);
       // destroyLocalDoc() nulls out references synchronously, then does
       // async IDB cleanup on the captured refs. Fire-and-forget is safe
-      // because wake → ensureLocalDocForIdle() creates fresh instances,
-      // but the IDB cleanup must complete before plugin reload.
-      awaitOnReload(hsm.destroyLocalDoc());
+      // because wake → ensureLocalDocForIdle() creates fresh instances.
+      trackAsyncCleanup(hsm.destroyLocalDoc());
     }
 
     this.clearHibernateTimer(guid);
