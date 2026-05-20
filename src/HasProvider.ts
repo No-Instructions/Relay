@@ -78,11 +78,6 @@ export class HasProvider extends HasLogging {
 			this.ydoc.gc = false;
 		}
 
-		if (user) {
-			const permanentUserData = new Y.PermanentUserData(this.ydoc);
-			permanentUserData.setUserMapping(this.ydoc, this.ydoc.clientID, user.id);
-		}
-
 		this.tokenStore = tokenStore;
 		this.clientToken =
 			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
