@@ -169,9 +169,7 @@ export default class Live extends Plugin {
 	 * Open endpoint configuration modal
 	 */
 	openEndpointConfigurationModal() {
-		const modal = new EndpointConfigModal(this.app, this, () => {
-			this.reload();
-		});
+		const modal = new EndpointConfigModal(this.app, this);
 		modal.open();
 	}
 
@@ -375,9 +373,7 @@ export default class Live extends Plugin {
 						id: "toggle-feature-flags",
 						name: "Show feature flags",
 						callback: () => {
-							const modal = new FeatureFlagToggleModal(this.app, () => {
-								this.reload();
-							});
+							const modal = new FeatureFlagToggleModal(this.app);
 							this.openModals.push(modal);
 							modal.open();
 						},
@@ -441,19 +437,6 @@ export default class Live extends Plugin {
 				}
 			}),
 		);
-
-		const code = `async function() {
-			const app = window.app;
-			await app.plugins.disablePlugin("system3-relay");
-			await app.plugins.enablePlugin("system3-relay");
-		}`;
-		(this.app as any).reloadRelay = new Function("return " + code);
-
-		this.addCommand({
-			id: "reload",
-			name: "Reload Relay",
-			callback: (this.app as any).reloadRelay(),
-		});
 
 		this.addCommand({
 			id: "open-settings",
@@ -710,10 +693,6 @@ export default class Live extends Plugin {
 			this._liveViews.refresh("init");
 			this.loadTime = moment.now() - start;
 		});
-	}
-
-	async reload() {
-		(this.app as any).reloadRelay()();
 	}
 
 	private _createSharedFolder(
@@ -1201,7 +1180,6 @@ export default class Live extends Plugin {
 		this.hashStore = null as any;
 
 		this.app?.workspace.updateOptions();
-		(this.app as any).reloadRelay = undefined;
 		this.app = null as any;
 		this.fileManager = null as any;
 		this.manifest = null as any;

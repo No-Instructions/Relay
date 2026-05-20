@@ -1,4 +1,4 @@
-import { App, Modal } from "obsidian";
+import { App, Modal, Notice } from "obsidian";
 import EndpointConfigModalContent from "../components/EndpointConfigModalContent.svelte";
 import type Live from "../main";
 
@@ -8,10 +8,9 @@ export class EndpointConfigModal extends Modal {
 	constructor(
 		app: App,
 		private plugin: Live,
-		private reload: () => void,
 	) {
 		super(app);
-		this.setTitle("Enterprise Tenant Configuration");
+		this.setTitle("Enterprise tenant configuration");
 	}
 
 	onOpen() {
@@ -21,7 +20,6 @@ export class EndpointConfigModal extends Modal {
 			target: contentEl,
 			props: {
 				plugin: this.plugin,
-				reload: this.reload,
 			},
 		});
 
@@ -33,10 +31,7 @@ export class EndpointConfigModal extends Modal {
 		// Listen for apply event from component
 		this.component.$on("apply", () => {
 			this.close();
-			// Reload the plugin to apply changes
-			setTimeout(() => {
-				this.reload();
-			}, 100);
+			new Notice("Reload the Relay plugin to apply endpoint changes.", 8000);
 		});
 	}
 

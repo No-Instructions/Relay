@@ -1,28 +1,27 @@
 <script lang="ts">
-	import { FeatureFlagManager, flags } from "../flagManager";
+	import { Notice } from "obsidian";
+	import { FeatureFlagManager } from "../flagManager";
 	import { isKeyOfFeatureFlags, type FeatureFlags } from "../flags";
-	import { setIcon } from "obsidian";
-	import { onMount } from "svelte";
 
-	export let reload: () => void;
+	export let close: () => void;
 
-	let flagManager = FeatureFlagManager.getInstance();
+	const flagManager = FeatureFlagManager.getInstance();
+	let hasChanges = false;
 	$: settings = { ...$flagManager.flags };
 
 	function toggleFlag(flagName: keyof FeatureFlags) {
 		const flagValue = !settings[flagName];
 		settings[flagName] = flagValue;
-		flagManager.setFlag(flagName as keyof FeatureFlags, settings[flagName]);
+		flagManager.setFlag(flagName, settings[flagName]);
+		hasChanges = true;
 	}
 
-	onMount(() => {
-		Object.keys(settings).forEach((flagName) => {
-			const toggleEl = document.getElementById(`toggle-${flagName}`);
-			if (toggleEl) {
-				setIcon(toggleEl, "check");
-			}
-		});
-	});
+	function finish() {
+		if (hasChanges) {
+			new Notice("Reload the Relay plugin to apply feature flag changes.", 8000);
+		}
+		close();
+	}
 </script>
 
 <div class="feature-flag-toggle-modal">
@@ -60,17 +59,13 @@
 		</div>
 	{/each}
 
-	<div class="setting-item">
-		<div class="setting-item-control">
-			<button
-				aria-label="apply flag settings"
-				on:click={reload}
-				on:keypress={reload}
-				tabindex="0"
-			>
-				Apply
-			</button>
-		</div>
+	<div class="modal-button-container relay-feature-flag-footer">
+		{#if hasChanges}
+			<span class="relay-feature-flag-reload-note">
+				Reload the Relay plugin to apply changes.
+			</span>
+		{/if}
+		<button class="mod-cta" on:click={finish}>Done</button>
 	</div>
 </div>
 
@@ -78,6 +73,7 @@
 	.feature-flag-toggle-modal {
 		padding: 1rem;
 	}
+
 	.feature-flag-item {
 		display: flex;
 		justify-content: space-between;
@@ -85,6 +81,21 @@
 		padding: 0.5rem 0;
 		border-top: 1px solid var(--background-modifier-border);
 	}
+
+	.relay-feature-flag-footer {
+		display: flex;
+		justify-content: flex-end;
+		align-items: center;
+		gap: var(--size-4-2);
+		padding-top: var(--size-4-3);
+		margin-top: var(--size-4-3);
+	}
+
+	.relay-feature-flag-reload-note {
+		color: var(--text-muted);
+		font-size: var(--font-ui-smaller);
+	}
+
 	.checkbox-container {
 		cursor: pointer;
 	}
