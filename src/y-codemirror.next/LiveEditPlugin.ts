@@ -310,31 +310,52 @@ export class LiveCMPluginValue implements PluginValue {
 		dmp.diff_cleanupSemantic(diffs);
 
 		const changes: ChangeSpec[] = [];
-		let currentPos = 0;
+		let pos = 0;
 
 		for (const [type, text] of diffs) {
 			switch (type) {
 				case 0: // EQUAL
-					currentPos += text.length;
+					pos += text.length;
 					break;
 				case 1: // INSERT
 					changes.push({
-						from: currentPos,
-						to: currentPos,
+						from: pos,
+						to: pos,
 						insert: text,
 					});
-					currentPos += text.length;
 					break;
 				case -1: // DELETE
 					changes.push({
-						from: currentPos,
-						to: currentPos + text.length,
+						from: pos,
+						to: pos + text.length,
 						insert: "",
 					});
+					pos += text.length;
 					break;
 			}
 		}
-		return changes;
+
+		const merged: ChangeSpec[] = [];
+		let i = 0;
+		while (i < changes.length) {
+			const current = changes[i] as { from: number; to: number; insert: string };
+			const next = changes[i + 1] as
+				| { from: number; to: number; insert: string }
+				| undefined;
+			if (
+				next &&
+				current.insert === "" &&
+				next.from === current.to &&
+				next.to === next.from
+			) {
+				merged.push({ from: current.from, to: current.to, insert: next.insert });
+				i += 2;
+			} else {
+				merged.push(current);
+				i++;
+			}
+		}
+		return merged;
 	}
 
 	public getBufferChange(newBuffer: string, incremental = false): ChangeSpec[] {
