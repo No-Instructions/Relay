@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import type { Plugin } from "obsidian";
 import type { TimeProvider } from "./TimeProvider";
 import { Observable } from "./observable/Observable";
 import { customFetch } from "./customFetch";
@@ -8,19 +8,7 @@ import { flags } from "./flagManager";
 
 declare const REPOSITORY: string;
 
-// Private Obsidian API
-export type WithPlugins = {
-	plugins: {
-		disablePlugin(id: string): Promise<void>;
-		enablePlugin(id: string): Promise<void>;
-		installPlugin(
-			repository: string,
-			version: string,
-			manifest: any,
-		): Promise<void>;
-	};
-};
-export type PluginWithApp = Plugin & { app: WithPlugins; version: string };
+export type PluginWithVersion = Plugin & { version: string };
 
 interface Asset {
 	name: string;
@@ -34,6 +22,7 @@ export interface Release {
 	draft: boolean;
 	body: string;
 	created_at: string;
+	html_url?: string;
 	latest?: boolean;
 }
 
@@ -86,7 +75,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 	observableName = "UpdateManager";
 
 	constructor(
-		private plugin: PluginWithApp,
+		private plugin: PluginWithVersion,
 		private timeProvider: TimeProvider,
 		private releaseSettings: NamespacedSettings<ReleaseSettings>,
 	) {
@@ -302,11 +291,10 @@ export class UpdateManager extends Observable<UpdateManager> {
 		}
 	}
 
-	public async fetchReleaseManifest(release: Release): Promise<any | null> {
+	public async fetchReleaseManifest(release: Release): Promise<Manifest | null> {
 		try {
-			// Find the manifest asset in the release
 			const manifestAsset = release.assets.find(
-				(asset: any) => asset.name === "manifest.json",
+				(asset) => asset.name === "manifest.json",
 			);
 
 			if (!manifestAsset) {
@@ -353,34 +341,26 @@ export class UpdateManager extends Observable<UpdateManager> {
 		}
 	}
 
-	public async installUpdate(release: Release): Promise<boolean> {
-		const manifest = await this.fetchReleaseManifest(release);
-		try {
-			this.debug(
-				`Installing update from v${this.plugin.version} to v${manifest.version}...`,
-				manifest,
-			);
-
-			await this.plugin.app.plugins.installPlugin(
-				REPOSITORY,
-				manifest.version,
-				manifest,
-			);
-
-			this.notifyListeners();
-
-			this.debug("Update complete. Reloading plugin...");
-
-			const pluginId = "system3-relay";
-			const plugins = this.plugin.app.plugins;
-			await plugins.disablePlugin(pluginId);
-			await plugins.enablePlugin(pluginId);
-
-			return true;
-		} catch (error) {
-			this.error("Failed to install update:", error);
-			return false;
+	public findReleaseByVersion(versionOrTag: string): Release | undefined {
+		if (this.destroyed) {
+			return undefined;
 		}
+		const version = normalizeVersion(versionOrTag);
+		return [...this.githubReleases.values()].find((release) => {
+			return normalizeVersion(release.tag_name) === version;
+		});
+	}
+
+	public getReleaseUrl(release?: Release | string): string {
+		const releasesUrl = `https://github.com/${REPOSITORY}/releases`;
+		if (!release) {
+			return releasesUrl;
+		}
+		if (typeof release !== "string" && release.html_url) {
+			return release.html_url;
+		}
+		const tagName = typeof release === "string" ? release : release.tag_name;
+		return `${releasesUrl}/tag/${encodeURIComponent(tagName)}`;
 	}
 
 	override destroy(): void {

@@ -55,9 +55,12 @@ import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
-import type { PluginWithApp } from "./UpdateManager";
+import type {
+	PluginWithVersion,
+	Release,
+	ReleaseSettings,
+} from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
-import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
@@ -359,7 +362,7 @@ export default class Live extends Plugin {
 
 		// Initialize update manager
 		this.updateManager = new UpdateManager(
-			this as unknown as PluginWithApp,
+			this as unknown as PluginWithVersion,
 			this.timeProvider,
 			this.releaseSettings,
 		);
@@ -371,6 +374,14 @@ export default class Live extends Plugin {
 				const modal = new BugReportModal(this.app, this);
 				this.openModals.push(modal);
 				modal.open();
+			},
+		});
+
+		this.addCommand({
+			id: "show-release-manager",
+			name: "Show releases",
+			callback: () => {
+				this.openReleaseManager();
 			},
 		});
 
@@ -398,15 +409,6 @@ export default class Live extends Plugin {
 						},
 					});
 					this.addCommand({
-						id: "show-release-manager",
-						name: "Show releases",
-						callback: () => {
-							const modal = new ReleaseManager(this.app, this);
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
-					this.addCommand({
 						id: "analyze-indexeddb",
 						name: "Analyze database",
 						callback: () => {
@@ -425,7 +427,6 @@ export default class Live extends Plugin {
 				} else {
 					this.removeCommand("toggle-feature-flags");
 					this.removeCommand("show-debug-info");
-					this.removeCommand("show-release-manager");
 					this.removeCommand("disable-debugging");
 					this.addCommand({
 						id: "enable-debugging",
@@ -477,19 +478,21 @@ export default class Live extends Plugin {
 		this.register(this.updateManager.subscribe(() => {
 			const newRelease = this.updateManager.getNewRelease();
 			if (newRelease) {
-				// Add update command when an update is available
+				// Add release notes command when an update is available.
 				this.removeCommand("update-plugin");
+				this.removeCommand("show-update-release");
 				this.addCommand({
-					id: "update-plugin",
-					name: `Update Plugin (${this.version} → ${newRelease.tag_name})`,
-					callback: async () => {
-						await this.updateManager.installUpdate(newRelease);
+					id: "show-update-release",
+					name: `Show update release (${this.version} → ${newRelease.tag_name})`,
+					callback: () => {
+						this.openReleaseManager(newRelease.tag_name);
 					},
 				});
 				this.log(`Update available: v${this.version} → ${newRelease.tag_name}`);
 			} else {
-				// Remove update command when no update is available
+				// Remove update commands when no update is available.
 				this.removeCommand("update-plugin");
+				this.removeCommand("show-update-release");
 			}
 		}));
 
@@ -1091,14 +1094,14 @@ export default class Live extends Plugin {
 		this.registerObsidianProtocolHandler("relay/upgrade", async (e) => {
 			const parameters = e as unknown as Parameters;
 			const version = parameters.version?.trim();
-			this.installVersion(version);
+			this.openReleaseManager(version);
 		});
 
 		this.backgroundSync.start();
 		this.updateManager.start();
 	}
 
-	installVersion(version?: string) {
+	openReleaseManager(version?: string) {
 		const modal = new ReleaseManager(this.app, this, version);
 
 		const app = this.app as any;
@@ -1107,6 +1110,16 @@ export default class Live extends Plugin {
 
 		this.openModals.push(modal);
 		modal.open();
+	}
+
+	openGithubRelease(release?: Release | string): void {
+		let target: Release | string | undefined = release;
+		if (typeof release === "string" && release.trim()) {
+			target =
+				this.updateManager.findReleaseByVersion(release.trim()) ??
+				release.trim();
+		}
+		window.open(this.updateManager.getReleaseUrl(target), "_blank");
 	}
 
 	removeCommand(command: string): void {

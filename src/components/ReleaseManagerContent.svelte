@@ -5,7 +5,7 @@
 	import type Live from "../main";
 	import { flags } from "../flagManager";
 	import { onMount } from "svelte";
-	import type { Release, WithPlugins } from "src/UpdateManager";
+	import type { Release } from "src/UpdateManager";
 
 	export let plugin: Live;
 	export let version: string | undefined;
@@ -32,15 +32,6 @@
 	const stableVersion = writable<string | null>(null);
 	const betaVersion = writable<string | null>(null);
 	const loadingMainBranchManifests = writable<boolean>(false);
-
-	// Installation status
-	let installingUpdate = false;
-	const installingVersion = writable<string | null>(null);
-
-	// Keep a reference to the app for plugin installation
-	// This is important as the plugin instance may be unloaded during update
-	const app = plugin.app as unknown as WithPlugins;
-	const pluginId = "system3-relay";
 
 	// No need for unsubscriber with reactive bindings
 
@@ -179,7 +170,7 @@
 			return $githubReleases;
 		} else if (version) {
 			return $githubReleases.filter((release) => {
-				return version === normalizeVersion(release.tag_name);
+				return normalizeVersion(version) === normalizeVersion(release.tag_name);
 			});
 		} else {
 			return $githubReleases.filter((release) => {
@@ -299,49 +290,12 @@
 		return [...$githubReleases.values()].find((r) => r.tag_name === tagName);
 	}
 
-	// Function to install a specific version from GitHub release
-	async function installSpecificVersion(tagName: string) {
-		try {
-			// Set installing state for this specific version
-			installingVersion.set(tagName);
-
-			// Find the release
-			const release = findReleaseByTag(tagName);
-			if (!release) {
-				throw new Error(`Could not find release for ${tagName}`);
-			}
-
-			// Fetch manifest from release assets
-			const manifest = await plugin.updateManager.fetchReleaseManifest(release);
-			if (!manifest) {
-				throw new Error(`Could not find manifest for ${tagName}`);
-			}
-
-			// Show installing status
-			installingUpdate = true;
-
-			// Use the cached app reference instead of plugin.app which might become null
-			await app.plugins.installPlugin(plugin.repo, tagName, manifest);
-
-			// Reload the plugin after installation
-			await app.plugins.disablePlugin(pluginId);
-			await app.plugins.enablePlugin(pluginId);
-		} catch (error) {
-			// Use console.error as a fallback since plugin.error might not be available
-			console.error(`Error installing version ${tagName}:`, error);
-			if (plugin) {
-				plugin.error(`Error installing version ${tagName}:`, error);
-			}
-		} finally {
-			if (plugin) {
-				installingUpdate = false;
-				installingVersion.set(null);
-			}
-		}
+	function openSelectedRelease(tagName: string) {
+		plugin.openGithubRelease(findReleaseByTag(tagName) ?? tagName);
 	}
 </script>
 
-<div class="modal-title">{version ? "Relay installer" : "Relay releases"}</div>
+<div class="modal-title">{version ? "Relay download" : "Relay releases"}</div>
 <div class="modal-content">
 	<div class="settings-spacer"></div>
 
@@ -539,20 +493,14 @@
 						{/if}
 					</h3>
 					<div class="manifest-header-actions">
-						{#if (findReleaseByTag($selectedManifestTag) || $manifestVersions[$selectedManifestTag] === "stable-alias" || $manifestVersions[$selectedManifestTag] === "beta-alias") && !isCurrentVersion($selectedManifestTag)}
+						{#if (findReleaseByTag($selectedManifestTag) || $releaseChannels[$selectedManifestTag] === "stable-alias" || $releaseChannels[$selectedManifestTag] === "beta-alias") && !isCurrentVersion($selectedManifestTag)}
 							<button
-								class="install-version-btn mod-cta"
-								on:click={async () => {
-									installSpecificVersion($selectedManifestTag);
+								class="download-version-btn mod-cta"
+								on:click={() => {
+									openSelectedRelease($selectedManifestTag);
 								}}
-								disabled={$installingVersion === $selectedManifestTag ||
-									installingUpdate}
 							>
-								{#if $installingVersion === $selectedManifestTag}
-									Installing...
-								{:else}
-									Install
-								{/if}
+								Download
 							</button>
 						{:else if isCurrentVersion($selectedManifestTag)}
 							<span class="currently-installed">Installed</span>
@@ -862,7 +810,7 @@
 		border-radius: 4px;
 	}
 
-	.install-version-btn {
+	.download-version-btn {
 		font-size: 0.9em;
 		padding: 4px 12px;
 		cursor: pointer;
