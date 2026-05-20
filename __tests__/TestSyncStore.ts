@@ -743,5 +743,81 @@ describe("SyncStore", () => {
 
 			expect(store.has(oldPath)).toBeFalsy();
 		});
+
+		describe("move to root path handling", () => {
+			test("moving folder to root produces valid paths", () => {
+				store.set("/Locations", makeFolderMeta("loc-folder-guid"));
+				store.set(
+					"/Locations/Feywild.md",
+					makeDocumentMeta("feywild-guid"),
+				);
+				store.set(
+					"/Locations/Barovia.md",
+					makeDocumentMeta("barovia-guid"),
+				);
+
+				store.move("/Locations", "/");
+				store.resolveAll();
+
+				expect(store.getMeta("/Feywild.md")?.id).toBe("feywild-guid");
+				expect(store.getMeta("/Barovia.md")?.id).toBe("barovia-guid");
+				expect(store.has("//Feywild.md")).toBeFalsy();
+				expect(store.has("//Barovia.md")).toBeFalsy();
+				expect(store.has("/Locations/Feywild.md")).toBeFalsy();
+				expect(store.has("/Locations/Barovia.md")).toBeFalsy();
+				expect(store.has("/Locations")).toBeFalsy();
+			});
+
+			test("legacy client move from subfolder to root does not corrupt sibling paths", () => {
+				store.set("/Locations", makeFolderMeta("loc-folder-guid"));
+				store.set(
+					"/Locations/Feywild.md",
+					makeDocumentMeta("feywild-guid"),
+				);
+				store.set(
+					"/Locations/map.png",
+					makeFileMeta(
+						SyncType.Image,
+						"map-guid",
+						"image/png",
+						"hash1",
+					),
+				);
+
+				internal(store).legacyIds.delete("/Locations/Feywild.md");
+				internal(store).legacyIds.set("/Feywild.md", "feywild-guid");
+
+				store.migrateUp();
+				store.commit();
+				store.resolveAll();
+
+				expect(store.getMeta("/map.png")?.id).toBe("map-guid");
+				expect(store.has("//Feywild.md")).toBeFalsy();
+				expect(store.has("//map.png")).toBeFalsy();
+			});
+
+			test("deep nested folder move to root does not create repeated slashes", () => {
+				store.set("/A", makeFolderMeta("a-guid"));
+				store.set("/A/B", makeFolderMeta("b-guid"));
+				store.set("/A/B/doc.md", makeDocumentMeta("doc-guid"));
+				store.set(
+					"/A/B/image.png",
+					makeFileMeta(
+						SyncType.Image,
+						"img-guid",
+						"image/png",
+						"hash1",
+					),
+				);
+
+				store.move("/A/B", "/");
+				store.resolveAll();
+
+				expect(store.getMeta("/doc.md")?.id).toBe("doc-guid");
+				expect(store.getMeta("/image.png")?.id).toBe("img-guid");
+				expect(store.has("//doc.md")).toBeFalsy();
+				expect(store.has("//image.png")).toBeFalsy();
+			});
+		});
 	});
 });
