@@ -47,6 +47,13 @@ const NotifyPlugin = {
 const YjsInternalsPlugin = {
 	name: "yjs-internals",
 	setup(build) {
+		// Keep public Yjs imports and internal helper imports on the same
+		// module graph so Item/GC instanceof checks agree in the bundle.
+		build.onResolve({ filter: /^yjs$/ }, args => {
+			return {
+				path: path.resolve("node_modules/yjs/src/index.js"),
+			};
+		});
 		build.onResolve({ filter: /^yjs\/dist\/src\/internals$/ }, args => {
 			return {
 				path: path.resolve("node_modules/yjs/src/internals.js"),
