@@ -20,7 +20,7 @@ interface HasPermissionParents {
 	permissionParents: [string, string][];
 }
 interface Serializable {
-	toDict: () => any;
+	toDict: () => Record<string, unknown>;
 }
 
 export function hasPermissionParents(item: HasPermissionParents) {
