@@ -14,9 +14,12 @@ if you want to view the source, please visit the github repository of this plugi
 */
 `;
 
-const gitTag = execSync("git describe --tags --always", {
+const runBuildMetadataCommand = (command) => execSync(command, {
 	encoding: "utf8",
-}).trim();
+	stdio: ["ignore", "pipe", "pipe"],
+});
+
+const gitTag = runBuildMetadataCommand("git describe --tags --always").trim();
 
 const develop = process.argv[2] === "develop";
 const staging = process.argv[2] === "staging";
