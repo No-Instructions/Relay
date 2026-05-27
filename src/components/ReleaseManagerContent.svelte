@@ -511,10 +511,10 @@
 				<!-- Show changelog first -->
 				<div class="release-changelog">
 					<div class="release-changelog-content">
-						{#if $manifestVersions[$selectedManifestTag] === "stable-alias" || $manifestVersions[$selectedManifestTag] === "beta-alias" || $activeChannel === "development"}
-							{#if $manifestVersions[$selectedManifestTag] === "stable-alias"}
+						{#if $releaseChannels[$selectedManifestTag] === "stable-alias" || $releaseChannels[$selectedManifestTag] === "beta-alias" || $activeChannel === "development"}
+							{#if $releaseChannels[$selectedManifestTag] === "stable-alias"}
 								<p>Current stable release from main branch manifest.json</p>
-							{:else if $manifestVersions[$selectedManifestTag] === "beta-alias"}
+							{:else if $releaseChannels[$selectedManifestTag] === "beta-alias"}
 								<p>Current beta release from main branch manifest-beta.json</p>
 							{:else if $selectedManifestTag === plugin.version}
 								<p>Current development version</p>
