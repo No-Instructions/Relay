@@ -301,14 +301,14 @@
 		</button>
 	</SlimSettingItem>
 </SettingGroup>
-{#if subscriptions.values().length > 0}
+{#if $subscriptions.values().filter((s) => $relays.has(s.relayId)).length > 0}
 	<div class="spacer"></div>
 	<SettingItemHeading
 		name="Subscriptions"
 		helpText="Subscriptions are tied to each Relay Server, not to your user account. Modify and cancel your subscription via our payment processor Stripe."
 	></SettingItemHeading>
 	<SettingGroup>
-		{#each $subscriptions.values() as subscription}
+		{#each $subscriptions.values().filter((s) => $relays.has(s.relayId)) as subscription}
 			<SlimSettingItem
 				name=""
 				description={subscription.cancelAt
