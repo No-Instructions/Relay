@@ -7,6 +7,20 @@ import { metrics } from '../debug'
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
 
+/**
+ * Compare two Uint8Arrays for equality
+ * @param {Uint8Array} a
+ * @param {Uint8Array} b
+ * @returns {boolean}
+ */
+const uint8ArrayEquals = (a, b) => {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
 // Use a higher threshold on startup to avoid slow initial compaction
 // After sync, use the lower threshold to keep the database lean
 export const STARTUP_TRIM_SIZE = 500
@@ -48,8 +62,9 @@ export const storeState = (idbPersistence, forceStore = true) =>
   fetchUpdates(idbPersistence)
     .then(updatesStore => {
       if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
+        const compactedState = Y.encodeStateAsUpdate(idbPersistence.doc)
         const startTime = performance.now()
-        idb.addAutoKey(updatesStore, Y.encodeStateAsUpdate(idbPersistence.doc))
+        idb.addAutoKey(updatesStore, compactedState)
           .then(() => idb.del(updatesStore, idb.createIDBKeyRangeUpperBound(idbPersistence._dbref, true)))
           .then(() => idb.count(updatesStore).then(cnt => {
             idbPersistence._dbsize = cnt
@@ -102,12 +117,29 @@ export class IndexeddbPersistence extends Observable {
 
     this._db.then(db => {
       this.db = db
+      // Capture pending state before loading from IDB
+      /** @type {Uint8Array|null} */
+      let pendingState = null
       /**
        * @param {IDBObjectStore} updatesStore
        */
-      const beforeApplyUpdatesCallback = (updatesStore) => idb.addAutoKey(updatesStore, Y.encodeStateAsUpdate(doc))
-      const afterApplyUpdatesCallback = () => {
+      const beforeApplyUpdatesCallback = (updatesStore) => {
+        // Capture any in-memory state before loading from IDB
+        pendingState = Y.encodeStateAsUpdate(doc)
+      }
+      const afterApplyUpdatesCallback = (updatesStore) => {
         if (this._destroyed) return this
+        // After loading from IDB, check if pending state had anything new
+        if (pendingState && pendingState.length > 2) {
+          const vectorBeforePending = Y.encodeStateVector(doc)
+          Y.applyUpdate(doc, pendingState, this)
+          const vectorAfterPending = Y.encodeStateVector(doc)
+          const changed = !uint8ArrayEquals(vectorBeforePending, vectorAfterPending)
+          // Only write if applying pending state actually changed something
+          if (changed) {
+            idb.addAutoKey(updatesStore, pendingState)
+          }
+        }
         this.synced = true
         this.emit('synced', [this])
       }
