@@ -43,5 +43,14 @@
            ]
          }
        ]
-    } 
+    },
+    "overrides": [
+      {
+        "files": ["__tests__/**/*.ts", "unit/**/*.ts"],
+        "rules": {
+          "no-restricted-imports": "off",
+          "@typescript-eslint/no-var-requires": "off"
+        }
+      }
+    ]
   }
