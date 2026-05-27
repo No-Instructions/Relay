@@ -6,6 +6,7 @@ export class FeatureFlagToggleModal extends Modal {
 
 	constructor(app: App) {
 		super(app);
+		this.setTitle("Feature flags");
 	}
 
 	onOpen() {
