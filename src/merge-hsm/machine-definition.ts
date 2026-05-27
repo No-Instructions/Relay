@@ -1,0 +1,854 @@
+/**
+ * Machine Definition
+ *
+ * Declarative state machine definition for MergeHSM.
+ * Contains the MACHINE constant (the single source of truth for all state
+ * transitions) and a factory for the InterpreterConfig.
+ *
+ * Guards, actions, and invoke sources are bound per-instance by MergeHSM
+ * (via buildGuards/buildActions/buildInvokeSources) because they need
+ * closure access to private HSM state.
+ */
+
+import type {
+	StatePath,
+	MachineDefinition,
+	InterpreterConfig,
+	GuardFn,
+	ActionFn,
+	InvokeSourceFn,
+	EventHandler,
+} from "./types";
+import { normalizeToCandidates } from "./machine-interpreter";
+
+// =============================================================================
+// Shared Event Handlers
+// =============================================================================
+
+/**
+ * Events handled identically across all idle substates.
+ * Spread into each idle state's `on` map to avoid repetition.
+ */
+const IDLE_LIFECYCLE: Record<string, EventHandler> = {
+	// PERSISTENCE_LOADED may arrive after an early SET_MODE_IDLE/SET_MODE_ACTIVE
+	// (e.g. startup/reload races). Re-enter idle.loading so always-transitions
+	// re-evaluate with the loaded LCA/fork data.
+	PERSISTENCE_LOADED: { target: 'idle.loading', actions: ['storePersistenceData'], reenter: true },
+	ENROLLMENT_COMPLETE: { target: 'idle.loading', actions: ['storeEnrollmentComplete'], reenter: true },
+	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
+	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+	LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
+	ERROR: { target: 'idle.error', actions: ['storeError'] },
+};
+
+const RECOVER_LCA_HANDLER: EventHandler = {
+	target: 'idle.recoverLCA',
+	guard: 'canRecoverLCA',
+	actions: ['storeRecoverLCADisk'],
+};
+
+
+// =============================================================================
+// Machine Definition
+// =============================================================================
+
+/**
+ * The declarative state machine definition.
+ * Maps state paths to state nodes with event handlers, invokes, and always-transitions.
+ * This is the single source of truth for all MergeHSM state transitions.
+ */
+export const MACHINE: MachineDefinition = {
+	// =========================================================================
+	// Loading/unloading states
+	// =========================================================================
+
+	'unloaded': {
+		on: {
+			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
+		},
+	},
+
+	'loading': {
+		on: {
+			PERSISTENCE_LOADED: { target: 'loading', actions: ['storePersistenceData'] },
+			SET_MODE_ACTIVE: 'active.loading',
+			SET_MODE_IDLE: { target: 'idle.loading', actions: ['initIdleMode'] },
+			SET_MODE_IDLE_COLD: { target: 'idle.synced', actions: ['initIdleMode'] },
+			CM6_CHANGE: { target: 'loading', actions: ['accumulateCM6Change'] },
+			REMOTE_UPDATE: { target: 'loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			DISK_CHANGED: { target: 'loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			DISK_METADATA_CHANGED: { target: 'loading', actions: ['storeDiskMetadataForLoad'] },
+			ENROLLMENT_COMPLETE: { target: 'loading', actions: ['storeEnrollmentComplete'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+		},
+	},
+
+	'unloading': {
+		invoke: {
+			src: 'cleanup',
+			onDone: [
+				{ target: 'idle.conflict', guard: 'cleanupWasConflict' },
+				{ target: 'idle.loading', guard: 'cleanupWasReleaseLock' },
+				{ target: 'unloaded' },
+			],
+			onError: [
+				{ target: 'idle.loading', guard: 'cleanupWasReleaseLock' },
+				{ target: 'unloaded' },
+			],
+		},
+	},
+
+	// =========================================================================
+	// Idle states
+	//
+	// CONNECTED and DISCONNECTED events are intentionally unhandled in idle
+	// states. The isOnline flag is only meaningful during active mode where
+	// the HSM manages a live provider connection and needs to flush/buffer
+	// updates. In idle mode, the SharedFolder's provider handles connectivity
+	// independently, and online status is re-evaluated on transition to active
+	// mode (via ACQUIRE_LOCK -> active.entering).
+	// =========================================================================
+
+	'idle.loading': {
+		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
+		on: {
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+		always: [
+			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
+			{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['prepareRecoverLCAFromPendingDisk'] },
+			{ target: 'idle.diverged', guard: 'noLCADiskConflictAtLoad' },
+			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
+			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
+			{ target: 'idle.diskAhead', guard: 'diskAheadAtLoad' },
+			{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededAtLoad' },
+			{ target: 'idle.diverged', guard: 'divergedAtLoad' },
+		],
+	},
+
+	'idle.loadingDiskContents': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'present',
+			lcaContents: 'present',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeDisk: true,
+			canPersistFullLca: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'load-disk-contents',
+			onDone: { target: 'idle.loading', actions: ['storeLoadedDiskContents'] },
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			DISK_METADATA_CHANGED: { target: 'idle.loadingDiskContents', actions: ['storeDiskMetadataForLoad'] },
+			REMOTE_UPDATE: { target: 'idle.loadingDiskContents', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			CM6_CHANGE: { target: 'idle.loadingDiskContents', actions: ['accumulateCM6Change'] },
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.synced': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'absent',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canHibernate: true,
+			canWake: true,
+			canPersistFullLca: true,
+		},
+		entry: ['resetIdleRetryCount', 'clearSettledDiskContents', 'persistSettledState'],
+		on: {
+			REMOTE_UPDATE: [
+				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.diverged', guard: 'diskChangedSinceLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			],
+			DISK_CHANGED: [
+				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
+				{ target: 'idle.synced', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
+				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
+			],
+			PROVIDER_SYNCED: [
+				{ target: 'idle.remoteAhead', guard: 'providerSyncedRemoteAhead', actions: ['markProviderSynced'], reenter: true },
+				{ target: 'idle.synced', actions: ['markProviderSynced'] },
+			],
+			CM6_CHANGE: { target: 'idle.synced', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.localAhead': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'fork-reconcile',
+			onDone: [
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
+				{ target: 'idle.localAhead', guard: 'awaitingProvider' },
+				{ target: 'idle.conflict', guard: 'hasPreexistingConflict', actions: ['prepareIdleConflictFromFork'] },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
+			],
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			PROVIDER_SYNCED: { target: 'idle.localAhead', actions: ['markProviderSynced'], reenter: true },
+			REMOTE_UPDATE: [
+				// If fork exists, stay in localAhead and accumulate - fork-reconcile will handle it
+				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.diverged', guard: 'diskChangedSinceLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.localAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			],
+			DISK_CHANGED: [
+				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
+				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
+			],
+			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.remoteAhead': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'present',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'idle-merge',
+			onDone: [
+				{ target: 'idle.remoteAhead', guard: 'mergeSucceededAndRemotePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
+				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
+				{ target: 'idle.remoteAhead', guard: 'awaitingProvider' },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
+			],
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			IDLE_RETRY: { target: 'idle.remoteAhead', reenter: true },
+			PROVIDER_SYNCED: { target: 'idle.remoteAhead', actions: ['markProviderSynced'], reenter: true },
+			DISK_CHANGED: [
+				{ target: 'idle.remoteAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			],
+			REMOTE_UPDATE: { target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			CM6_CHANGE: { target: 'idle.remoteAhead', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.diskAhead': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'optional',
+			lcaMetadata: 'present',
+			lcaContents: 'present',
+			pendingDiskContents: 'present',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeDisk: true,
+			canPersistFullLca: true,
+			canUsePendingDiskContents: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'idle-merge',
+			onDone: [
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
+				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
+			],
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			PROVIDER_SYNCED: { target: 'idle.diskAhead', actions: ['markProviderSynced'], reenter: true },
+			REMOTE_UPDATE: [
+				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			],
+			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
+			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.diverged': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'optional',
+		},
+		capabilities: {
+			canMergeDisk: true,
+			canMergeRemote: true,
+			canComputeConflict: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+			canUsePendingDiskContents: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'idle-merge',
+			onDone: [
+				{ target: 'idle.diverged', guard: 'mergeSucceededButMorePending', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult', 'scheduleIdleRetry'] },
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
+				{ target: 'idle.diverged', guard: 'awaitingProvider' },
+				{ target: 'idle.diverged', guard: 'awaitingLocalEnrollment' },
+				{ target: 'idle.diverged', guard: 'awaitingDiskForLCA' },
+				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
+				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
+				{ target: 'idle.diverged', guard: 'hasPendingIdleWork', actions: ['scheduleIdleRetry'] },
+				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
+			],
+			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
+		},
+		on: {
+			IDLE_RETRY: { target: 'idle.diverged', reenter: true },
+			DISK_CHANGED: [
+				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
+				{ target: 'idle.diverged', actions: ['storeDiskMetadata'] },
+			],
+			REMOTE_UPDATE: { target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			CM6_CHANGE: { target: 'idle.diverged', actions: ['accumulateCM6Change'] },
+			PROVIDER_SYNCED: [
+				{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['markProviderSynced', 'prepareRecoverLCAFromPendingDisk'] },
+				{ target: 'idle.diverged', actions: ['markProviderSynced'], reenter: true },
+			],
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.conflict': {
+		resources: {
+			residency: ['awake', 'hibernated'],
+			localDoc: 'optional',
+			remoteDoc: 'optional',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'present',
+		},
+		capabilities: {
+			canHibernate: true,
+			canWake: true,
+			canComputeConflict: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
+		entry: ['resetIdleRetryCount'],
+		on: {
+			DISK_CHANGED: { target: 'idle.diverged', actions: ['clearConflictForRecompute', 'storeDiskMetadata'] },
+			REMOTE_UPDATE: { target: 'idle.conflict', actions: ['applyRemoteToRemoteDoc'] },
+			PROVIDER_SYNCED: { target: 'idle.conflict', actions: ['markProviderSynced'] },
+			CM6_CHANGE: { target: 'idle.conflict', actions: ['accumulateCM6Change'] },
+			RECOVER_LCA: RECOVER_LCA_HANDLER,
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.recoverLCA': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'absent',
+			lcaContents: 'absent',
+			pendingDiskContents: 'optional',
+			fork: 'absent',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canRecoverLCA: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
+		entry: ['ensureLocalDocForIdle'],
+		invoke: {
+			src: 'recover-lca',
+			onDone: [
+				{ target: 'idle.synced', guard: 'recoverLCASynced', actions: ['applyRecoverLCAResult'] },
+				{ target: 'idle.remoteAhead', guard: 'recoverLCARemoteAhead', actions: ['applyRecoverLCAResult'] },
+				{ target: 'idle.conflict', guard: 'canMaterializeRecoverLCAConflict', actions: ['applyRecoverLCAResult', 'materializeRecoverLCAConflict', 'clearRecoverLCARequest'] },
+				{ target: 'idle.diverged', guard: 'recoverLCADiverged', actions: ['applyRecoverLCAResult'] },
+				{ target: 'idle.error', actions: ['applyRecoverLCAResult', 'storeUnresolvedIdleError'] },
+			],
+			onError: { target: 'idle.error', actions: ['clearRecoverLCARequest', 'storeInvokeError'] },
+		},
+		on: {
+			RECOVER_LCA: { target: 'idle.recoverLCA', actions: ['storeRecoverLCADisk'], reenter: true },
+			PROVIDER_SYNCED: { target: 'idle.recoverLCA', actions: ['markProviderSynced'] },
+			DISK_CHANGED: { target: 'idle.recoverLCA', actions: ['storeDiskMetadata', 'storeRecoverLCADisk'] },
+			REMOTE_UPDATE: { target: 'idle.recoverLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			CM6_CHANGE: { target: 'idle.recoverLCA', actions: ['accumulateCM6Change'] },
+			...IDLE_LIFECYCLE,
+		},
+	},
+
+	'idle.error': {
+		on: {
+			REMOTE_UPDATE: { target: 'idle.error', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			DISK_CHANGED: { target: 'idle.error', actions: ['storeDiskMetadata'] },
+			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
+			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
+			UNLOAD: IDLE_LIFECYCLE.UNLOAD,
+			LOAD: IDLE_LIFECYCLE.LOAD,
+		},
+	},
+
+	// =========================================================================
+	// Active conflict/merging states
+	// =========================================================================
+
+	'active.merging.twoWay': {
+		entry: ['replayAccumulatedEvents'],
+		invoke: {
+			src: 'two-way-merge',
+			onDone: [
+				{ target: 'active.tracking', guard: 'twoWayMergeClean', actions: ['applyTwoWayCleanMerge'] },
+				{ target: 'active.conflict.bannerShown', guard: 'twoWayMergeConflict', actions: ['storeTwoWayConflict'] },
+			],
+			onError: { target: 'active.conflict.bannerShown', actions: ['storeTwoWayError'] },
+		},
+		on: {
+			CONNECTED: { target: 'active.merging.twoWay', actions: ['flushPendingToRemote'] },
+			DISCONNECTED: { target: 'active.merging.twoWay', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.merging.twoWay', actions: ['markProviderSynced'] },
+			CM6_CHANGE: { target: 'active.merging.twoWay', actions: ['trackEditorText'] },
+			REMOTE_UPDATE: { target: 'active.merging.twoWay', actions: ['applyRemoteToRemoteDoc'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+		},
+	},
+
+	'active.merging.threeWay': {
+		entry: ['replayAccumulatedEvents'],
+		invoke: {
+			src: 'three-way-merge',
+			onDone: [
+				{ target: 'active.tracking', guard: 'threeWayMergeSucceeded', actions: ['applyThreeWayMergeResult'] },
+				{ target: 'active.conflict.bannerShown', guard: 'threeWayMergeConflict', actions: ['storeThreeWayConflict'] },
+			],
+			onError: { target: 'active.conflict.bannerShown', actions: ['storeThreeWayError'] },
+		},
+		on: {
+			CONNECTED: { target: 'active.merging.threeWay', actions: ['flushPendingToRemote'] },
+			DISCONNECTED: { target: 'active.merging.threeWay', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.merging.threeWay', actions: ['markProviderSynced'] },
+			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
+			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+		},
+	},
+
+	'active.conflict.bannerShown': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'present',
+		},
+		capabilities: {
+			canComputeConflict: true,
+			canUseRemoteDoc: true,
+		},
+		on: {
+			OPEN_DIFF_VIEW: 'active.conflict.resolving',
+			DISMISS_CONFLICT: { target: 'active.tracking', actions: ['storeDeferredConflict'] },
+			CM6_CHANGE: { target: 'active.conflict.bannerShown', actions: ['trackEditorText'] },
+			REMOTE_UPDATE: { target: 'active.conflict.bannerShown', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			DISK_CHANGED: { target: 'active.conflict.bannerShown', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			RESOLVE_HUNK: { target: 'active.conflict.bannerShown', actions: ['resolveHunk'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
+		},
+	},
+
+	'active.conflict.resolving': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'present',
+		},
+		capabilities: {
+			canComputeConflict: true,
+			canUseRemoteDoc: true,
+		},
+		on: {
+			RESOLVE: { target: 'active.tracking', actions: ['resolveConflict'] },
+			RESOLVE_HUNK: { target: 'active.conflict.resolving', actions: ['resolveHunk'] },
+			CANCEL: 'active.conflict.bannerShown',
+			CM6_CHANGE: { target: 'active.conflict.resolving', actions: ['trackEditorText'] },
+			REMOTE_UPDATE: { target: 'active.conflict.resolving', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			DISK_CHANGED: { target: 'active.conflict.resolving', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
+		},
+	},
+
+	// =========================================================================
+	// Active tracking + entering states
+	// =========================================================================
+
+	'active.loading': {
+		on: {
+			// Late persistence payload (after an early SET_MODE_ACTIVE) should
+			// still hydrate LCA/fork data for entering reconciliation.
+			PERSISTENCE_LOADED: { target: 'active.loading', actions: ['storePersistenceData'] },
+			ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
+			CM6_CHANGE: { target: 'active.loading', actions: ['accumulateCM6Change'] },
+			REMOTE_UPDATE: { target: 'active.loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
+			DISK_CHANGED: { target: 'active.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			ERROR: { target: 'active.loading', actions: ['storeError'] },
+		},
+	},
+
+	'active.entering.awaitingPersistence': {
+		entry: ['createYDocs'],
+		on: {
+			// If persistence arrives after we already entered active.entering,
+			// hydrate state in-place and let existing guards continue.
+			PERSISTENCE_LOADED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['storePersistenceData', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			ENROLLMENT_COMPLETE: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['storeEnrollmentComplete', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			PERSISTENCE_SYNCED: [
+				{ target: 'active.entering.reconciling', guard: 'persistenceHasContentAndActiveBaseReady', actions: ['applyRemoteToLocalIfNeeded'] },
+				{ target: 'active.tracking', guard: 'persistenceEmptyAndProviderNotSynced', actions: ['clearEnteringState'] },
+				{ target: 'active.entering.reconciling', guard: 'activeReconcileBaseReady', actions: ['applyRemoteToLocalIfNeeded'] },
+				{ target: 'active.entering.awaitingPersistence' },
+			],
+			PROVIDER_SYNCED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['markProviderSynced', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			CONNECTED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['flushPendingToRemote', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			DISCONNECTED: {
+				target: 'active.entering.awaitingPersistence',
+				actions: ['setOffline', 'maybeSignalPersistenceSyncedForRecovery'],
+			},
+			CM6_CHANGE: { target: 'active.entering.awaitingPersistence', actions: ['accumulateCM6Change'] },
+			REMOTE_UPDATE: {
+				target: 'active.entering.awaitingPersistence',
+				actions: [
+					'applyRemoteToRemoteDoc',
+					'accumulateRemoteUpdate',
+					'maybeSignalPersistenceSyncedForRecovery',
+				],
+			},
+			DISK_CHANGED: { target: 'active.entering.awaitingPersistence', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			ERROR: { target: 'active.entering.awaitingPersistence', actions: ['storeError'] },
+		},
+	},
+
+	'active.entering.reconciling': {
+		always: [
+			{ target: 'active.conflict.bannerShown', guard: 'hasPreexistingConflict', actions: ['clearEnteringState'] },
+			{ target: 'active.merging.twoWay', guard: 'isRecoveryMode', actions: ['clearEnteringState'] },
+			{ target: 'active.merging.threeWay', actions: ['clearEnteringState'] },
+		],
+	},
+
+	'active.tracking': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+		},
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
+		on: {
+			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
+			REMOTE_DOC_UPDATED: { target: 'active.tracking', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
+			REMOTE_UPDATE: {
+				target: 'active.tracking',
+				actions: [
+					'applyRemoteToRemoteDoc',
+					'mergeRemoteToLocal',
+					'repairFrontmatter',
+					'absorbTextPreservingRemoteUpdate',
+				],
+			},
+			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },
+			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
+			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
+			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'reconcileForkInActive'] },
+			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			ERROR: { target: 'active.tracking', actions: ['storeError'] },
+		},
+	},
+};
+
+// =============================================================================
+// Default Lookup Tables (empty — overridden per-instance by MergeHSM)
+// =============================================================================
+
+// Guards, actions, and invoke sources are bound per-instance because they
+// need closure access to private MergeHSM state. These empty defaults exist
+// for createInterpreterConfig() and for test convenience.
+
+export const guards: Record<string, GuardFn> = {};
+
+export const actions: Record<string, ActionFn> = {};
+
+export const invokeSources: Record<string, InvokeSourceFn> = {};
+
+// =============================================================================
+// Interpreter Config Factory
+// =============================================================================
+
+/**
+ * Create the InterpreterConfig for the MergeHSM.
+ * Uses the module-level lookup tables by default.
+ * Overrideable for testing.
+ */
+export function createInterpreterConfig(
+	overrides?: Partial<InterpreterConfig>,
+): InterpreterConfig {
+	return {
+		guards: overrides?.guards ?? guards,
+		actions: overrides?.actions ?? actions,
+		invokeSources: overrides?.invokeSources ?? invokeSources,
+	};
+}
+
+// =============================================================================
+// Transition Derivation (for consistency testing)
+// =============================================================================
+
+/**
+ * Derive a transitions table from the MACHINE definition.
+ * For each state, collects all unique target states reachable via:
+ * - `on` event handlers (direct targets + candidate targets)
+ * - `invoke.onDone` / `invoke.onError` handlers
+ * - `always` transitions
+ *
+ * Useful for visualization and consistency testing.
+ */
+export function deriveTransitions(
+	machine: MachineDefinition,
+): Partial<Record<StatePath, StatePath[]>> {
+	const result: Partial<Record<StatePath, StatePath[]>> = {};
+
+	for (const [statePathStr, node] of Object.entries(machine)) {
+		if (!node) continue;
+		const statePath = statePathStr as StatePath;
+		const targets = new Set<StatePath>();
+
+		// Collect targets from `on` handlers
+		if (node.on) {
+			for (const handler of Object.values(node.on)) {
+				collectTargets(handler, targets);
+			}
+		}
+
+		// Collect targets from `invoke`
+		if (node.invoke) {
+			collectTargets(node.invoke.onDone, targets);
+			if (node.invoke.onError) {
+				collectTargets(node.invoke.onError, targets);
+			}
+		}
+
+		// Collect targets from `always`
+		if (node.always) {
+			for (const candidate of node.always) {
+				targets.add(candidate.target);
+			}
+		}
+
+		if (targets.size > 0) {
+			result[statePath] = [...targets].sort();
+		}
+	}
+
+	return result;
+}
+
+/**
+ * Collect all target states from an EventHandler.
+ */
+function collectTargets(handler: EventHandler, targets: Set<StatePath>): void {
+	const candidates = normalizeToCandidates(handler);
+	for (const c of candidates) {
+		targets.add(c.target);
+	}
+}
+
+// =============================================================================
+// Consistency Validation
+// =============================================================================
+
+/**
+ * Validate that all named references in the MACHINE definition exist in the
+ * lookup tables. Returns an array of error messages (empty = valid).
+ */
+export function validateMachine(
+	machine: MachineDefinition,
+	config: InterpreterConfig,
+): string[] {
+	const errors: string[] = [];
+
+	for (const [statePathStr, node] of Object.entries(machine)) {
+		if (!node) continue;
+		const statePath = statePathStr as StatePath;
+		const ctx = `state '${statePath}'`;
+
+		// Validate entry/exit actions
+		validateActionNames(node.entry, `${ctx} entry`, config, errors);
+		validateActionNames(node.exit, `${ctx} exit`, config, errors);
+
+		// Validate `on` handlers
+		if (node.on) {
+			for (const [eventType, handler] of Object.entries(node.on)) {
+				validateHandler(handler, `${ctx} on.${eventType}`, config, errors);
+			}
+		}
+
+		// Validate `invoke`
+		if (node.invoke) {
+			const src = node.invoke.src;
+			if (!config.invokeSources[src]) {
+				errors.push(`${ctx}: unknown invoke source '${src}'`);
+			}
+			validateHandler(node.invoke.onDone, `${ctx} invoke.onDone`, config, errors);
+			if (node.invoke.onError) {
+				validateHandler(node.invoke.onError, `${ctx} invoke.onError`, config, errors);
+			}
+		}
+
+		// Validate `always`
+		if (node.always) {
+			for (let i = 0; i < node.always.length; i++) {
+				const candidate = node.always[i];
+				if (candidate.guard && !config.guards[candidate.guard]) {
+					errors.push(`${ctx} always[${i}]: unknown guard '${candidate.guard}'`);
+				}
+				validateActionNames(candidate.actions, `${ctx} always[${i}]`, config, errors);
+			}
+		}
+	}
+
+	return errors;
+}
+
+function validateHandler(
+	handler: EventHandler,
+	context: string,
+	config: InterpreterConfig,
+	errors: string[],
+): void {
+	const candidates = normalizeToCandidates(handler);
+	for (let i = 0; i < candidates.length; i++) {
+		const c = candidates[i];
+		if (c.guard && !config.guards[c.guard]) {
+			errors.push(`${context}[${i}]: unknown guard '${c.guard}'`);
+		}
+		validateActionNames(c.actions, `${context}[${i}]`, config, errors);
+	}
+}
+
+function validateActionNames(
+	names: string[] | undefined,
+	context: string,
+	config: InterpreterConfig,
+	errors: string[],
+): void {
+	if (!names) return;
+	for (const name of names) {
+		if (!config.actions[name]) {
+			errors.push(`${context}: unknown action '${name}'`);
+		}
+	}
+}

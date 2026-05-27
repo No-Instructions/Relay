@@ -10,6 +10,7 @@ export interface FeatureFlags {
 	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
 	enableDeviceManagement: boolean;
+	enableHSMResourceContracts: boolean;
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
 	enablePresenceAvatars: boolean;
@@ -31,6 +32,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableAutomaticDiffResolution: true,
 	enableDiscordLogin: false,
 	enableDeviceManagement: true,
+	enableHSMResourceContracts: false,
 	enableSelfManageHosts: true,
 	enableToasts: true,
 	enablePresenceAvatars: true,
