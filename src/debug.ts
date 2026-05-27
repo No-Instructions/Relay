@@ -422,6 +422,9 @@ class RelayMetrics {
 	private liveviewsRefresh: MetricInstance | null = null;
 	private liveviewsQueueDepth: MetricInstance | null = null;
 
+	// FolderNav
+	private foldernavRefresh: MetricInstance | null = null;
+
 	// Postie
 	private postieDelivery: MetricInstance | null = null;
 	private postieMailboxDepth: MetricInstance | null = null;
@@ -494,6 +497,14 @@ class RelayMetrics {
 		this.liveviewsQueueDepth = api.createGauge({
 			name: "relay_liveviews_refresh_queue_depth",
 			help: "Number of pending refreshes in the LiveViews queue",
+		});
+
+		// FolderNav
+		this.foldernavRefresh = api.createHistogram({
+			name: "relay_foldernav_refresh_seconds",
+			help: "FolderNav refresh duration in seconds",
+			labelNames: ["scope"],
+			buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
 		});
 
 		// Postie
@@ -585,6 +596,10 @@ class RelayMetrics {
 
 	setLiveviewsQueueDepth(depth: number): void {
 		this.liveviewsQueueDepth?.set(depth);
+	}
+
+	observeFoldernavRefresh(scope: "full" | "quick", durationSeconds: number): void {
+		this.foldernavRefresh?.labels({ scope }).observe(durationSeconds);
 	}
 
 	observePostieDelivery(durationSeconds: number): void {
