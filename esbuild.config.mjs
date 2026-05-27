@@ -136,7 +136,7 @@ const copyFile = (src, dest) => {
 const watchAndMove = (fnames, mapping) => {
 	// only usable on top level directory
 	const watcher = chokidar.watch(fnames, {
-		ignored: /(^|[\/\\])\../, // ignore dotfiles
+		ignored: /(^|[\/\\])\./, // ignore dotfiles
 		persistent: true,
 	});
 
