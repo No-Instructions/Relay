@@ -8,7 +8,7 @@ export class DefaultTimeProvider implements TimeProvider {
 		this.intervals = [];
 	}
 
-	getTime(): number {
+	now(): number {
 		return Date.now();
 	}
 
@@ -46,16 +46,17 @@ export class DefaultTimeProvider implements TimeProvider {
 		this.intervals = [];
 	}
 
-	debounce<T extends (...args: any[]) => void>(
-		func: T,
+	debounce<Args extends unknown[]>(
+		func: (...args: Args) => void,
 		delay: number = 500,
-	): (...args: Parameters<T>) => void {
-		let timer: ReturnType<typeof setTimeout>;
-		return (...args: Parameters<T>) => {
-			if (timer) {
-				clearTimeout(timer);
+	): (...args: Args) => void {
+		let timer: number | undefined;
+		return (...args: Args) => {
+			if (timer !== undefined) {
+				this.clearTimeout(timer);
 			}
-			timer = setTimeout(() => {
+			timer = this.setTimeout(() => {
+				timer = undefined;
 				func(...args);
 			}, delay);
 		};
@@ -63,14 +64,14 @@ export class DefaultTimeProvider implements TimeProvider {
 }
 
 export interface TimeProvider {
-	getTime: () => number;
+	now: () => number;
 	setInterval: (callback: () => void, ms: number) => number;
 	clearInterval: (timerId: number) => void;
 	setTimeout: (callback: () => void, ms: number) => number;
 	clearTimeout: (timerId: number) => void;
 	destroy: () => void;
-	debounce: <T extends (...args: any[]) => void>(
-		func: T,
+	debounce: <Args extends unknown[]>(
+		func: (...args: Args) => void,
 		delay: number,
-	) => (...args: Parameters<T>) => void;
+	) => (...args: Args) => void;
 }

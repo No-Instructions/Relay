@@ -306,12 +306,12 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	isTokenValid(token: TokenInfo<TokenType>): boolean {
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		return currentTime < token.expiryTime;
 	}
 
 	shouldRefresh(token: TokenInfo<TokenType>, documentId?: string): boolean {
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		return (
 			currentTime + this.getRefreshLeadTime(token, documentId) >
 			token.expiryTime
@@ -384,7 +384,7 @@ export class TokenStore<TokenType extends HasToken> {
 
 	_reportWithFilter(filter: (documentId: string) => boolean) {
 		const reportLines: string[] = [];
-		const currentTime = this.timeProvider.getTime();
+		const currentTime = this.timeProvider.now();
 		const tokens = Array.from(this.tokenMap.entries()).sort((a, b) => {
 			return a[1].expiryTime - b[1].expiryTime;
 		});

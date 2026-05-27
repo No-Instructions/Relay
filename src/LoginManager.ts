@@ -172,7 +172,7 @@ export class LoginManager extends Observable<LoginManager> {
 	constructor(
 		vaultName: string,
 		openSettings: () => Promise<void>,
-		timeProvider: TimeProvider,
+		private timeProvider: TimeProvider,
 		private beforeLogin: () => void,
 		public loginSettings: NamespacedSettings<LoginSettings>,
 		endpointManager: EndpointManager,
@@ -529,10 +529,10 @@ export class LoginManager extends Observable<LoginManager> {
 		let counter = 0;
 		const interval = 1000;
 		return new Promise((resolve, reject) => {
-			const timer = setInterval(() => {
+			const timer = this.timeProvider.setInterval(() => {
 				counter += 1;
 				if (counter >= 30) {
-					clearInterval(timer);
+					this.timeProvider.clearInterval(timer);
 					return reject(
 						new Error(
 							`Auth timeout: Timed out after ${
@@ -546,7 +546,7 @@ export class LoginManager extends Observable<LoginManager> {
 					.getOne(provider.info.state.slice(0, 15))
 					.then((response) => {
 						if (response) {
-							clearInterval(timer);
+							this.timeProvider.clearInterval(timer);
 							return resolve(provider.login(response.code));
 						}
 					})
