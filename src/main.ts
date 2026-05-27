@@ -88,6 +88,7 @@ import {
 	setDeviceManagementConfig,
 	setPluginRequestConfig,
 } from "./customFetch";
+import { RelayDebugAPI } from "./RelayDebugAPI";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -138,6 +139,7 @@ export default class Live extends Plugin {
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
+	private relayDebugAPI!: RelayDebugAPI;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -636,7 +638,11 @@ export default class Live extends Plugin {
 			endpointManager,
 		);
 		this.relayManager = new RelayManager(this.loginManager);
-		this.deviceManager = new DeviceManager(this.appId, this.loginManager);
+		this.relayDebugAPI = new RelayDebugAPI(this);
+		this.deviceManager = new DeviceManager(
+			this.appId,
+			this.loginManager,
+		);
 		setDeviceManagementConfig({
 			vaultId: this.appId,
 			deviceId: this.deviceManager.getDeviceId(),
@@ -1536,6 +1542,12 @@ export default class Live extends Plugin {
 		setActiveTracker(null);
 		this.promises.destroy();
 		this.promises = null as any;
+		// Clean up debug API globals
+		teardownStep("relayDebugAPI.destroy", () => {
+			this.relayDebugAPI?.destroy();
+		});
+		this.relayDebugAPI = null as any;
+
 		// Cleanup all monkeypatches and destroy the singleton
 		teardownStep("Patcher.destroy", () => {
 			Patcher.destroy();
