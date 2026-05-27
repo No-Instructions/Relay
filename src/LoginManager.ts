@@ -11,14 +11,12 @@ import PocketBase, {
 import { RelayInstances, curryLog } from "./debug";
 import { Observable } from "./observable/Observable";
 
-declare const GIT_TAG: string;
-
-import { customFetch } from "./customFetch";
+import { customFetch, getRelayRequestHeaders } from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
-import { type EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { type EndpointManager } from "./EndpointManager";
 
 interface GoogleUser {
 	email: string;
@@ -190,9 +188,11 @@ export class LoginManager extends Observable<LoginManager> {
 				this.logout();
 			}
 			options.fetch = customFetch;
-			options.headers = Object.assign({}, options.headers, {
-				"Relay-Version": GIT_TAG,
-			});
+			options.headers = Object.assign(
+				{},
+				options.headers,
+				getRelayRequestHeaders(),
+			);
 			return { url, options };
 		};
 		this.refreshToken();
@@ -282,7 +282,7 @@ export class LoginManager extends Observable<LoginManager> {
 	async checkRelayHost(relay_guid: string): Promise<RequestUrlResponsePromise> {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
-			"Relay-Version": GIT_TAG,
+			...getRelayRequestHeaders(),
 		};
 		return requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/relay/${relay_guid}/check-host`,
@@ -294,7 +294,7 @@ export class LoginManager extends Observable<LoginManager> {
 	getFlags() {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
-			"Relay-Version": GIT_TAG,
+			...getRelayRequestHeaders(),
 		};
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/flags`,
@@ -315,6 +315,7 @@ export class LoginManager extends Observable<LoginManager> {
 	whoami() {
 		const headers = {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
+			...getRelayRequestHeaders(),
 		};
 		requestUrl({
 			url: `${this.endpointManager.getApiUrl()}/whoami`,
@@ -357,19 +358,18 @@ export class LoginManager extends Observable<LoginManager> {
 
 			// Recreate PocketBase instance with new auth URL
 			const pbLog = curryLog("[Pocketbase]", "debug");
-			this.pb = new PocketBase(
-				this.endpointManager.getAuthUrl(),
-				this.authStore,
-			);
+			this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
 			this.pb.beforeSend = (url, options) => {
 				pbLog(url, options);
 				if (!this.pb.authStore.isValid && this.user) {
 					this.logout();
 				}
 				options.fetch = customFetch;
-				options.headers = Object.assign({}, options.headers, {
-					"Relay-Version": GIT_TAG,
-				});
+				options.headers = Object.assign(
+					{},
+					options.headers,
+					getRelayRequestHeaders(),
+				);
 				return { url, options };
 			};
 			this.log("Updated PocketBase instance with validated endpoints");

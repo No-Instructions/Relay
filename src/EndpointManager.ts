@@ -235,11 +235,8 @@ export class EndpointManager {
 		try {
 			// Wrap validation in a timeout promise
 			const validationPromise = this.performTenantValidation(activeTenant.tenantUrl);
-			const timeoutPromise = new Promise<never>((_, reject) =>
-				window.setTimeout(
-					() => reject(new Error(`Validation timed out after ${timeoutMs}ms`)),
-					timeoutMs,
-				),
+			const timeoutPromise = new Promise<never>((_, reject) => 
+				window.setTimeout(() => reject(new Error(`Validation timed out after ${timeoutMs}ms`)), timeoutMs)
 			);
 
 			const result = await Promise.race([validationPromise, timeoutPromise]);
@@ -828,11 +825,8 @@ export class EndpointManager {
 		try {
 			// Wrap validation in a timeout promise
 			const validationPromise = this.performTestValidation(tenantUrl);
-			const timeoutPromise = new Promise<never>((_, reject) =>
-				window.setTimeout(
-					() => reject(new Error(`Validation timed out after ${timeoutMs}ms`)),
-					timeoutMs,
-				),
+			const timeoutPromise = new Promise<never>((_, reject) => 
+				window.setTimeout(() => reject(new Error(`Validation timed out after ${timeoutMs}ms`)), timeoutMs)
 			);
 
 			const result = await Promise.race([validationPromise, timeoutPromise]);

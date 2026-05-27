@@ -1,8 +1,7 @@
 import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
-
-declare const GIT_TAG: string;
+import { getRelayRequestHeaders } from "./customFetch";
 
 interface ServiceStatus {
 	status: string;
@@ -51,7 +50,7 @@ class NetworkStatus {
 
 	public stop() {
 		if (this.timer) {
-			clearInterval(this.timer);
+			this.timeProvider.clearInterval(this.timer);
 		}
 	}
 
@@ -77,7 +76,7 @@ class NetworkStatus {
 		return requestUrl({
 			url: this.url,
 			method: "GET",
-			headers: { "Relay-Version": GIT_TAG },
+			headers: getRelayRequestHeaders(),
 		})
 			.then((response) => {
 				if (response.status === 200) {
