@@ -146,6 +146,11 @@ export class IndexeddbPersistence extends Observable {
      */
     this._storeUpdate = (update, origin) => {
       if (this.db && origin !== this) {
+        // Skip updates with empty state vectors (no actual content)
+        const stateVector = Y.encodeStateVectorFromUpdate(update)
+        if (stateVector.length === 0) {
+          return
+        }
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
         idb.addAutoKey(updatesStore, update)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
