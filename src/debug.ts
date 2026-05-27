@@ -418,6 +418,25 @@ class RelayMetrics {
 	private wakeQueueSlots: MetricInstance | null = null;
 	private hsmDocuments: MetricInstance | null = null;
 
+	// LiveViews
+	private liveviewsRefresh: MetricInstance | null = null;
+	private liveviewsQueueDepth: MetricInstance | null = null;
+
+	// Postie
+	private postieDelivery: MetricInstance | null = null;
+	private postieMailboxDepth: MetricInstance | null = null;
+	private postieDeliveries: MetricInstance | null = null;
+
+	// BackgroundSync
+	private bgSyncOpSeconds: MetricInstance | null = null;
+	private bgSyncActive: MetricInstance | null = null;
+	private bgSyncQueueLength: MetricInstance | null = null;
+	private bgSyncOpsTotal: MetricInstance | null = null;
+	private documentRebuildsTotal: MetricInstance | null = null;
+
+	// Document sync
+	private documentUpdateEvents: MetricInstance | null = null;
+
 	/**
 	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
 	 * Safe to call multiple times - metric creation is idempotent.
@@ -465,6 +484,67 @@ class RelayMetrics {
 			help: "Number of MergeHSM documents by residency state",
 			labelNames: ["state", "folder"],
 		});
+
+		// LiveViews
+		this.liveviewsRefresh = api.createHistogram({
+			name: "relay_liveviews_refresh_seconds",
+			help: "LiveViews refresh duration in seconds",
+			buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+		});
+		this.liveviewsQueueDepth = api.createGauge({
+			name: "relay_liveviews_refresh_queue_depth",
+			help: "Number of pending refreshes in the LiveViews queue",
+		});
+
+		// Postie
+		this.postieDelivery = api.createHistogram({
+			name: "relay_postie_delivery_seconds",
+			help: "PostOffice delivery batch duration in seconds",
+			buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1],
+		});
+		this.postieMailboxDepth = api.createGauge({
+			name: "relay_postie_mailbox_depth",
+			help: "Number of recipients with pending mail when delivery fires",
+		});
+		this.postieDeliveries = api.createCounter({
+			name: "relay_postie_deliveries_total",
+			help: "Total individual recipient deliveries",
+		});
+
+		// BackgroundSync
+		this.bgSyncOpSeconds = api.createHistogram({
+			name: "relay_background_sync_op_seconds",
+			help: "BackgroundSync operation duration in seconds",
+			labelNames: ["operation"],
+			buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60],
+		});
+		this.bgSyncActive = api.createGauge({
+			name: "relay_background_sync_active",
+			help: "Number of currently active background sync operations",
+			labelNames: ["operation"],
+		});
+		this.bgSyncQueueLength = api.createGauge({
+			name: "relay_background_sync_queue_length",
+			help: "Number of items waiting in background sync queues",
+			labelNames: ["operation"],
+		});
+		this.bgSyncOpsTotal = api.createCounter({
+			name: "relay_background_sync_ops_total",
+			help: "Total background sync operations by result",
+			labelNames: ["operation", "result"],
+		});
+		this.documentRebuildsTotal = api.createCounter({
+			name: "relay_document_rebuilds_total",
+			help: "Total document rebuild and GUID remap operations by result",
+			labelNames: ["operation", "result"],
+		});
+
+		// Document sync
+		this.documentUpdateEvents = api.createCounter({
+			name: "relay_document_update_events_total",
+			help: "Folder-level document.updated events by processing stage",
+			labelNames: ["stage", "folder"],
+		});
 	}
 
 	setDbSize(document: string, count: number): void {
@@ -497,6 +577,53 @@ class RelayMetrics {
 		this.hsmDocuments?.labels({ state: "cached", folder: folderGuid }).set(counts.cached);
 		this.hsmDocuments?.labels({ state: "working", folder: folderGuid }).set(counts.working);
 		this.hsmDocuments?.labels({ state: "active", folder: folderGuid }).set(counts.active);
+	}
+
+	observeLiveviewsRefresh(durationSeconds: number): void {
+		this.liveviewsRefresh?.observe(durationSeconds);
+	}
+
+	setLiveviewsQueueDepth(depth: number): void {
+		this.liveviewsQueueDepth?.set(depth);
+	}
+
+	observePostieDelivery(durationSeconds: number): void {
+		this.postieDelivery?.observe(durationSeconds);
+	}
+
+	setPostieMailboxDepth(depth: number): void {
+		this.postieMailboxDepth?.set(depth);
+	}
+
+	incPostieDeliveries(): void {
+		this.postieDeliveries?.inc();
+	}
+
+	observeBgSyncOp(operation: "sync" | "download", durationSeconds: number): void {
+		this.bgSyncOpSeconds?.labels({ operation }).observe(durationSeconds);
+	}
+
+	setBgSyncActive(operation: "sync" | "download", count: number): void {
+		this.bgSyncActive?.labels({ operation }).set(count);
+	}
+
+	setBgSyncQueueLength(operation: "sync" | "download", length: number): void {
+		this.bgSyncQueueLength?.labels({ operation }).set(length);
+	}
+
+	incBgSyncOps(operation: "sync" | "download", result: "completed" | "failed"): void {
+		this.bgSyncOpsTotal?.labels({ operation, result }).inc();
+	}
+
+	incDocumentRebuild(
+		operation: "rebuild" | "remap",
+		result: "started" | "completed" | "deferred" | "failed",
+	): void {
+		this.documentRebuildsTotal?.labels({ operation, result }).inc();
+	}
+
+	recordDocumentUpdateEvent(stage: "received" | "applied" | "catchup", folderGuid: string): void {
+		this.documentUpdateEvents?.labels({ stage, folder: folderGuid }).inc();
 	}
 }
 

@@ -8,6 +8,7 @@ import { flag } from "./flags";
 import {
 	SyncType,
 	TypeRegistry,
+	isCanvasMeta,
 	isDocumentMeta,
 	isSyncFolderMeta,
 	makeDocumentMeta,
@@ -125,6 +126,47 @@ export class SyncStore extends Observable<SyncStore> {
 		});
 	}
 
+	getCommittedSubdocGuids(): string[] {
+		const guids = new Set<string>();
+		this.meta.forEach((meta, path) => {
+			if (this.deleteSet.has(path)) return;
+			if (isDocumentMeta(meta) || isCanvasMeta(meta)) {
+				guids.add(meta.id);
+			}
+		});
+		this.legacyIds.forEach((guid, path) => {
+			if (this.deleteSet.has(path)) return;
+			guids.add(guid);
+		});
+		return Array.from(guids).sort();
+	}
+
+	/**
+	 * Like forEach, but also yields pending-upload-only paths (where no meta
+	 * has been written yet). The callback receives `null` for those entries.
+	 * Used by reconciliation sweeps that need to retry uploads which never
+	 * completed (and thus never wrote meta locally).
+	 */
+	forEachWithPending(
+		callbackFn: (meta: Meta | null, path: string) => void,
+	) {
+		const seen = new Set<string>();
+		this.meta.forEach((meta, path) => {
+			if (this.deleteSet.has(path)) return;
+			seen.add(path);
+			callbackFn(meta, path);
+		});
+		this.overlay.forEach((meta, path) => {
+			if (seen.has(path) || this.deleteSet.has(path)) return;
+			seen.add(path);
+			callbackFn(meta, path);
+		});
+		this.pendingUpload.forEach((_guid, path) => {
+			if (seen.has(path) || this.deleteSet.has(path)) return;
+			callbackFn(null, path);
+		});
+	}
+
 	has(path: string) {
 		if (this.renames.has(path)) {
 			path = this.renames.get(path)!;
@@ -181,7 +223,8 @@ export class SyncStore extends Observable<SyncStore> {
 		}
 		this.log("metadata write (path, existing, meta)", vpath, existing, meta);
 		this.meta.set(vpath, meta);
-		if (this.pendingUpload.has(vpath)) {
+		const pendingGuid = this.pendingUpload.get(vpath);
+		if (pendingGuid && pendingGuid === meta.id) {
 			this.pendingUpload.delete(vpath);
 		}
 	}
@@ -252,10 +295,10 @@ export class SyncStore extends Observable<SyncStore> {
 			this.legacyIds.observe(logObserver);
 			this.meta.observe(logObserver);
 			this.unsubscribes.push(() => {
-				this.legacyIds.unobserve(logObserver);
+				this.legacyIds?.unobserve(logObserver);
 			});
 			this.unsubscribes.push(() => {
-				this.meta.unobserve(logObserver);
+				this.meta?.unobserve(logObserver);
 			});
 		});
 
@@ -278,10 +321,10 @@ export class SyncStore extends Observable<SyncStore> {
 		this.legacyIds.observe(legacyListener);
 		this.meta.observe(syncFileObserver);
 		this.unsubscribes.push(() => {
-			this.legacyIds.unobserve(legacyListener);
+			this.legacyIds?.unobserve(legacyListener);
 		});
 		this.unsubscribes.push(() => {
-			this.meta.unobserve(syncFileObserver);
+			this.meta?.unobserve(syncFileObserver);
 		});
 		this.unsubscribes.push(
 			this.typeRegistry.subscribe(() => {
@@ -338,6 +381,21 @@ export class SyncStore extends Observable<SyncStore> {
 			return undefined;
 		}
 		return meta;
+	}
+
+	/**
+	 * Get committed file metadata from the shared Y.Map only.
+	 * Does not include pending uploads, overlay migration entries, or legacy ids.
+	 */
+	getCommittedMeta(vpath: string): Meta | undefined {
+		this.assertVPath(vpath);
+		if (this.renames.has(vpath)) {
+			vpath = this.renames.get(vpath)!;
+		}
+		if (this.deleteSet.has(vpath)) {
+			return undefined;
+		}
+		return this.meta.get(vpath);
 	}
 
 	delete(vpath: string) {

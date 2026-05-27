@@ -1,5 +1,4 @@
 import { type SyncFlags, type SyncSettingsManager } from "./SyncSettings";
-import { flags } from "./flagManager";
 import { getMimeType } from "./mimetypes";
 import { Observable } from "./observable/Observable";
 
@@ -11,6 +10,7 @@ export enum SyncType {
 	PDF = "pdf",
 	Audio = "audio",
 	Video = "video",
+	Base = "base",
 	File = "file",
 }
 
@@ -19,6 +19,7 @@ export type SyncFileType =
 	| SyncType.PDF
 	| SyncType.Audio
 	| SyncType.Video
+	| SyncType.Base
 	| SyncType.File;
 
 interface MetaBase {
@@ -69,11 +70,21 @@ export interface VideoMeta extends BaseFileMeta {
 	type: SyncType.Video;
 }
 
+export interface BaseMeta extends BaseFileMeta {
+	type: SyncType.Base;
+}
+
 export interface FileMeta extends BaseFileMeta {
 	type: SyncType.File;
 }
 
-export type FileMetas = ImageMeta | PDFMeta | AudioMeta | VideoMeta | FileMeta;
+export type FileMetas =
+	| ImageMeta
+	| PDFMeta
+	| AudioMeta
+	| VideoMeta
+	| BaseMeta
+	| FileMeta;
 
 export type Meta = FolderMeta | DocumentMeta | FileMetas | CanvasMeta;
 
@@ -85,6 +96,7 @@ type SyncTypeToMeta = {
 	[SyncType.Image]: ImageMeta;
 	[SyncType.Audio]: AudioMeta;
 	[SyncType.Video]: VideoMeta;
+	[SyncType.Base]: BaseMeta;
 	[SyncType.File]: FileMeta;
 };
 
@@ -93,17 +105,20 @@ export const SyncFlagToTypeMap: Record<keyof SyncFlags, SyncType> = {
 	audio: SyncType.Audio,
 	videos: SyncType.Video,
 	pdfs: SyncType.PDF,
+	canvas: SyncType.Canvas,
+	bases: SyncType.Base,
 	otherTypes: SyncType.File,
 };
 
 export const SyncTypeToFlagMap: Record<SyncType, keyof SyncFlags | null> = {
 	[SyncType.Document]: null, // Always enabled
-	[SyncType.Canvas]: null, // Always enabled
+	[SyncType.Canvas]: "canvas",
 	[SyncType.Folder]: null, // Always enabled
 	[SyncType.Image]: "images",
 	[SyncType.Audio]: "audio",
 	[SyncType.Video]: "videos",
 	[SyncType.PDF]: "pdfs",
+	[SyncType.Base]: "bases",
 	[SyncType.File]: "otherTypes",
 };
 
@@ -137,6 +152,10 @@ export function isAudioMeta(meta?: Meta): meta is AudioMeta {
 
 export function isVideoMeta(meta?: Meta): meta is VideoMeta {
 	return meta?.type === SyncType.Video;
+}
+
+export function isBaseMeta(meta?: Meta): meta is BaseMeta {
+	return meta?.type === SyncType.Base;
 }
 
 export function makeDocumentMeta(guid: string): DocumentMeta {
@@ -199,9 +218,10 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 		super();
 		configs = configs || TypeRegistry.defaults;
 		configs.forEach(([type, config]) => this.protocols.set(type, config));
+		this.updateFromSettings();
 		this.unsubscribes.push(
-			syncSettings.subscribe((settings) => {
-				this.updateFromSettings(settings);
+			syncSettings.subscribe(() => {
+				this.updateFromSettings();
 			}),
 		);
 	}
@@ -286,6 +306,14 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 			},
 		],
 		[
+			SyncType.Base,
+			{
+				maxVersion: 0,
+				mimetypes: ["application/vnd.obsidian.base+yaml"],
+				enabled: true,
+			},
+		],
+		[
 			SyncType.File,
 			{
 				maxVersion: 0,
@@ -304,9 +332,6 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 
 	canSync(vpath: string, meta?: Meta): boolean {
 		if (vpath.endsWith(".md")) return true;
-		if (flags().enableCanvasSync) {
-			if (vpath.endsWith(".canvas")) return true;
-		}
 
 		// For new folders
 		const hasExtension = vpath.split("/").pop()?.includes(".");
@@ -326,9 +351,11 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 		return !!this.protocols.get(type)?.enabled;
 	}
 
-	private updateFromSettings(settings: Record<keyof SyncFlags, boolean>): void {
+	private updateFromSettings(): void {
+		const categories = this.syncSettings.getCategories();
 		Object.entries(SyncFlagToTypeMap).forEach(([flagKey, syncType]) => {
-			this.setEnabled(syncType, settings[flagKey as keyof SyncFlags]);
+			const enabled = categories[flagKey as keyof SyncFlags].enabled;
+			this.setEnabled(syncType, enabled);
 		});
 	}
 
@@ -350,9 +377,6 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 
 		for (const [type, config] of this.protocols) {
 			if (config.mimetypes.includes(mimetype)) {
-				if (!flags().enableCanvasSync && type === SyncType.Canvas) {
-					return SyncType.File;
-				}
 				return type;
 			}
 		}

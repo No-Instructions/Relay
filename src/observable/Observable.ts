@@ -44,12 +44,8 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 	}
 
 	notifyListeners(): void {
-		// Use peekInstance: late notifications from async work that finishes
-		// post-disable would otherwise auto-create a fresh PostOffice
-		// singleton (leaking the entire mail graph including recipient
-		// closures that capture SharedFolder/Document).
-		const postie = PostOffice.peekInstance();
-		if (!postie) return;
+		if (PostOffice.isDestroyed()) return;
+		const postie = PostOffice.getInstance();
 		for (const recipient of this._listeners) {
 			postie.send(this as unknown as T & IObservable<T>, recipient);
 		}
@@ -64,11 +60,13 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 
 	subscribe(run: Subscriber<T>): Unsubscriber {
 		this._listeners.add(run);
-		PostOffice.peekInstance()?.send(
-			this as unknown as T & IObservable<T>,
-			run,
-			true,
-		);
+		if (!PostOffice.isDestroyed()) {
+			PostOffice.getInstance().send(
+				this as unknown as T & IObservable<T>,
+				run,
+				true,
+			);
+		}
 		return () => {
 			this.unsubscribe(run);
 		};
@@ -84,7 +82,7 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		// Use peekInstance: getInstance() throws after PostOffice.destroy()
 		// and auto-creates a fresh singleton if instance is null, which
 		// would leak the entire mail graph through unbounded mailbox
-		// accumulation when off() runs from an awaitOnReload promise.
+		// accumulation when off() runs from async cleanup.
 		PostOffice.peekInstance()?.cancel(listener);
 	}
 

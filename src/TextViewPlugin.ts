@@ -6,7 +6,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
-import { diffMatchPatch } from "./y-diffMatchPatch";
+import { trackPromise } from "./trackPromise";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;
@@ -33,14 +33,21 @@ export class TextFileViewPlugin extends HasLogging {
 				file.path,
 			);
 			if (folder) {
-				const newDoc = folder.proxy.getDoc(file.path);
-				this.warn("[TextViewPlugin] getDocument() found:", {
-					newDocPath: newDoc.path,
-					newDocGuid: newDoc.guid,
-					newDocTFile: newDoc._tfile?.path,
-				});
-				this.doc = newDoc;
-				return this.doc;
+				try {
+					const newDoc = folder.proxy.getDoc(file.path);
+					this.warn("[TextViewPlugin] getDocument() found:", {
+						newDocPath: newDoc.path,
+						newDocGuid: newDoc.guid,
+						newDocTFile: newDoc._tfile?.path,
+					});
+					this.doc = newDoc;
+					return this.doc;
+				} catch (error) {
+					this.warn("[TextViewPlugin] getDocument() failed:", {
+						filePath: file.path,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
 			}
 		}
 		// Fallback to the LiveView's document
@@ -90,6 +97,15 @@ export class TextFileViewPlugin extends HasLogging {
 		this.install();
 	}
 
+	private requestNativeViewSave(): void {
+		this.saving = true;
+		try {
+			this.view.view.requestSave();
+		} finally {
+			this.saving = false;
+		}
+	}
+
 	async resync() {
 		if (
 			isLive(this.view) &&
@@ -104,8 +120,14 @@ export class TextFileViewPlugin extends HasLogging {
 				return;
 			}
 
-			await this.doc.whenSynced();
-			if (this.doc.text === this.view.view.getViewData()) {
+			const hsm = this.doc.hsm;
+			if (hsm?.awaitState) {
+				await trackPromise(`textView:awaitActive:${this.doc?.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
+			} else {
+				return;
+			}
+			const docText = this.doc.localText;
+			if (docText === this.view.view.getViewData()) {
 				// Document and view content already match - set tracking immediately
 				this.view.tracking = true;
 				this.warn("resync() - content matches, setting tracking=true");
@@ -115,27 +137,23 @@ export class TextFileViewPlugin extends HasLogging {
 					documentPath: this.doc.path,
 					documentTFilePath: this.doc._tfile?.path,
 					viewFilePath: this.view.view.file?.path,
-					documentText: this.doc.text,
+					documentText: docText,
 					viewData: this.view.view.getViewData(),
 					documentGuid: this.doc.guid,
 					tFilesMatching: this.doc._tfile === this.view.view.file,
-					documentTextLength: this.doc.text?.length || 0,
+					documentTextLength: docText?.length || 0,
 					viewDataLength: this.view.view.getViewData()?.length || 0,
 				});
 			}
-			if (!this.doc.hasLocalDB() && this.doc.text === "") {
+			if (!this.doc.hasLocalDB() && docText === "") {
 				this.warn("local db missing, not setting buffer");
 				return;
 			}
-			// Check if document is stale before overwriting view content
-			const stale = await this.doc.checkStale();
-			if (stale && this.view) {
-				this.warn("Document is stale - showing merge banner");
-				this.view.checkStale().then(async (stale) => {
-					if (!stale) {
-						await this.syncViewToCRDT();
-					}
-				}); // This will show the merge banner
+			// Check if document has HSM conflict before overwriting view content
+			const hasConflict = this.doc.hasHSMConflict();
+			if (hasConflict && this.view) {
+				this.warn("Document has HSM conflict - showing merge banner");
+				this.view.checkStale(); // This will show the merge banner via HSM
 			} else {
 				// Document is authoritative, force view to match CRDT state (like getKeyFrame in LiveEditPlugin)
 				this.warn("Document is authoritative - syncing view to CRDT state");
@@ -154,9 +172,12 @@ export class TextFileViewPlugin extends HasLogging {
 		) {
 			this.warn("Syncing view to CRDT - setViewData");
 			this.saving = true;
-			this.view.view.setViewData(this.doc.text, false);
-			this.doc.save();
-			this.saving = false;
+			try {
+				this.view.view.setViewData(this.doc.localText, false);
+			} finally {
+				this.saving = false;
+			}
+			this.requestNativeViewSave();
 			this.view.tracking = true;
 		}
 	}
@@ -168,7 +189,7 @@ export class TextFileViewPlugin extends HasLogging {
 		if (!this.view.view.file) {
 			this.warn("view file not ready, deferring install");
 			// Retry installation after a short delay
-			setTimeout(() => {
+			window.setTimeout(() => {
 				if (!this.destroyed && this.view?.view?.file) {
 					this.install();
 				}
@@ -205,7 +226,7 @@ export class TextFileViewPlugin extends HasLogging {
 								that.doc &&
 								that.view.view.file === that.doc.tfile
 							) {
-								if (that.view.document.text === data) {
+								if (that.doc.localText === data) {
 									that.view.tracking = true;
 								}
 							}
@@ -227,13 +248,18 @@ export class TextFileViewPlugin extends HasLogging {
 						if (isLive(that.view) && !that.saving && that.doc) {
 							if (that.view.tracking && !that.saving) {
 								that.warn("tracking - applying diff");
-								diffMatchPatch(
-									that.doc.ydoc,
-									that.view.view.getViewData(),
-									that.doc,
-								);
-								that.doc.save();
-								return;
+								const hsm = that.doc.hsm;
+								const docText = that.view.view.getViewData();
+								if (!hsm) {
+									throw new Error("TextFileViewPlugin requestSave: no HSM");
+								}
+								hsm.send({
+									type: "CM6_CHANGE",
+									changes: hsm.computeDiffChanges(that.doc.localText, docText),
+									docText,
+									userEvent: "set",
+								});
+								return old.call(this);
 							} else {
 								that.warn("not tracking - resync");
 								that.resync();
@@ -264,26 +290,35 @@ export class TextFileViewPlugin extends HasLogging {
 
 			// Called when a yjs event is received. Results in view update
 			if (tr.origin !== this.doc) {
+				if (tr.origin === this.doc.hsm) {
+					return;
+				}
 				if (!this.view.tracking) {
 					this.warn("resync from update, not tracking");
 					this.resync();
 				}
 				this.warn("setting view data");
 				this.saving = true;
-				this.view.view.setViewData(this.doc.text, false);
-				this.view.view.requestSave();
-				this.saving = false;
+				try {
+					this.view.view.setViewData(this.doc.localText, false);
+				} finally {
+					this.saving = false;
+				}
+				this.requestNativeViewSave();
 				this.view.tracking = true;
 			}
-		};
+			};
 
 		this.resync();
 
 		// Use the dynamically retrieved document for ytext
 		this.doc = this.getDocument();
 		if (this.doc) {
-			this._ytext = this.doc.ytext;
-			this._ytext.observe(this.observer);
+			const localDoc = this.doc.localDoc;
+			if (localDoc) {
+				this._ytext = localDoc.getText("contents");
+				this._ytext.observe(this.observer);
+			}
 		}
 
 		// Initialize ViewHookPlugin after sync state is established

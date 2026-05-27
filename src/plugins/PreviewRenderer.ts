@@ -1,7 +1,6 @@
 import { MarkdownView } from "obsidian";
-import { Document } from "../Document";
+import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
-import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 
 /**
@@ -25,30 +24,32 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 			return;
 		}
 
-		if (!flags().enablePreviewViewHooks) {
-			this.debug("Preview view hooks disabled via flags");
-			return;
-		}
-
 		if (viewMode !== "preview") {
-			this.debug("Skipping render - not in preview mode");
 			return;
 		}
 
 		try {
 			this.debug("Rendering preview from document");
-			
+
+			// Use localText to get editor state from localDoc
+			const text = document.localText;
+
 			// Update the view's internal text state
 			// @ts-ignore - accessing internal Obsidian API
-			this.view.text = document.text;
-			
+			this.view.text = text;
+
 			// Update the preview renderer
 			// @ts-ignore - accessing internal Obsidian API
-			this.view.previewMode.renderer.set(document.text);
+			this.view.previewMode.renderer.set(text);
 
-			// Trigger internal data change handler if available
+			// Live preview already applies Relay updates through CM6. Re-entering
+			// Obsidian's internal quick-preview pipeline from here can bounce back
+			// into setViewData while the view is mid-update.
 			// @ts-ignore - accessing internal Obsidian API
-			this.view.onInternalDataChange?.();
+			if (!this.view.editor?.cm) {
+				// @ts-ignore - accessing internal Obsidian API
+				this.view.onInternalDataChange?.();
+			}
 
 			this.debug("Preview render completed");
 		} catch (error) {

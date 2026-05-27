@@ -9,29 +9,28 @@ export function updateFrontMatter(
 	newEntry: Frontmatter,
 ): string {
 	const parsed = matter(markdownString);
+	const data = parsed.data as Frontmatter;
 
 	for (const key in newEntry) {
-		parsed.data[key] = newEntry[key];
+		data[key] = newEntry[key];
 	}
 
-	const result = matter.stringify(parsed.content, parsed.data);
+	const result = matter.stringify(parsed.content, data);
 	return result.slice(0, -1); // remove trailing \n
 }
 
 export function hasKey(markdownString: string, keyMatch: string) {
 	const parsed = matter(markdownString);
-	return parsed.data.hasOwnProperty(keyMatch);
+	const data = parsed.data as Frontmatter;
+	return Object.prototype.hasOwnProperty.call(data, keyMatch);
 }
 
 export function removeKey(markdownString: string, keyMatch: string) {
 	const parsed = matter(markdownString);
+	const data = parsed.data as Frontmatter;
 
-	for (const key in parsed.data) {
-		if (key === keyMatch) {
-			parsed.data.remove(key);
-		}
-	}
+	delete data[keyMatch];
 
-	const result = matter.stringify(parsed.content, parsed.data);
+	const result = matter.stringify(parsed.content, data);
 	return result.slice(0, -1); // remove trailing \n
 }

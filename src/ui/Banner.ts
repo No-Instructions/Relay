@@ -31,6 +31,18 @@ export class Banner {
 		return typeof this.text === "string" ? this.text : this.text.long;
 	}
 
+	private handleClick(): void {
+		void this.onClick()
+			.then((destroy) => {
+				if (destroy) {
+					this.destroy();
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("Banner click failed", error);
+			});
+	}
+
 	display() {
 		if (!this.view) return true;
 		const leafContentEl = this.view.containerEl;
@@ -48,26 +60,20 @@ export class Banner {
 		// container to enable easy removal of the banner
 		let bannerBox = leafContentEl.querySelector(".system3-banner-box");
 		if (!bannerBox) {
-			bannerBox = document.createElement("div");
+			bannerBox = leafContentEl.ownerDocument.createElement("div");
 			bannerBox.classList.add("system3-banner-box");
 			leafContentEl.insertBefore(bannerBox, contentEl);
 		}
 
 		let banner = leafContentEl.querySelector(".system3-banner");
 		if (!banner) {
-			banner = document.createElement("div");
+			banner = leafContentEl.ownerDocument.createElement("div");
 			banner.classList.add("system3-banner");
 			const span = banner.createSpan();
 			span.setText(this.longText);
 			banner.appendChild(span);
 			bannerBox.appendChild(banner);
-			const onClick = async () => {
-				const destroy = await this.onClick();
-				if (destroy) {
-					this.destroy();
-				}
-			};
-			banner.addEventListener("click", onClick);
+			banner.addEventListener("click", () => this.handleClick());
 		}
 		return true;
 	}
@@ -84,18 +90,13 @@ export class Banner {
 		// Remove existing button if any
 		leafContentEl.querySelector(".system3-header-button")?.remove();
 
-		const button = document.createElement("button");
+		const button = leafContentEl.ownerDocument.createElement("button");
 		button.className = "view-header-left system3-header-button";
 		button.textContent = this.shortText;
 		button.setAttribute("aria-label", this.longText);
 		button.setAttribute("tabindex", "0");
 
-		button.addEventListener("click", async () => {
-			const destroy = await this.onClick();
-			if (destroy) {
-				this.destroy();
-			}
-		});
+		button.addEventListener("click", () => this.handleClick());
 
 		viewHeaderLeftElement.insertAdjacentElement("afterend", button);
 		return true;

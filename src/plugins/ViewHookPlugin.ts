@@ -1,13 +1,12 @@
 import { MarkdownView } from "obsidian";
 import { getPatcher } from "../Patcher";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
-import { Document } from "../Document";
+import type { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { PreviewRenderer } from "./PreviewRenderer";
-import { diffMatchPatch } from "../y-diffMatchPatch";
-import { flags } from "../flagManager";
 import { HasLogging } from "../debug";
 import type { ChangeSpec } from "@codemirror/state";
+import { trackPromise } from "../trackPromise";
 import diff_match_patch from "diff-match-patch";
 import { MetadataRenderer } from "./MetadataRenderer";
 
@@ -17,11 +16,12 @@ import { MetadataRenderer } from "./MetadataRenderer";
  */
 export class ViewHookPlugin extends HasLogging {
 	private view: MarkdownView;
+	// eslint-disable-next-line -- Relay document model, not DOM global.
 	private document: Document;
 	private renderers: ViewRenderer[];
 	private unsubscribes: Array<() => void> = [];
 	private observer?: (event: YTextEvent, tr: Transaction) => void;
-	private _ytext: YText;
+	private _ytext: YText | null = null;
 	private destroyed = false;
 	private saving = false;
 
@@ -37,10 +37,72 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers.push(new PreviewRenderer(view));
 		this.renderers.push(new MetadataRenderer(view));
 
-		this._ytext = this.document.ytext;
 		this.installMarkdownHooks(this.view);
+	}
+
+	private runWithRelaySaving<T>(fn: () => T): T {
+		const view = this.view as any;
+		const hadOwnFlag = Object.prototype.hasOwnProperty.call(view, "__relaySaving");
+		const previous = view.__relaySaving;
+		view.__relaySaving = true;
+		try {
+			return fn();
+		} finally {
+			if (hadOwnFlag) {
+				view.__relaySaving = previous;
+			} else {
+				delete view.__relaySaving;
+			}
+		}
+	}
+
+	private syncViewTextToHsm(text: string, reason: string): void {
+		const hsm = this.document.hsm;
+		if (!hsm) {
+			this.debug(`Skipping ${reason}: no HSM`);
+			return;
+		}
+
+		if (this.document.localText === text) {
+			return;
+		}
+
+		hsm.send({
+			type: "CM6_CHANGE",
+			changes: hsm.computeDiffChanges(this.document.localText, text),
+			docText: text,
+			userEvent: "set",
+		});
+	}
+
+	/**
+	 * Attach the document observer once localDoc is available.
+	 * Waits for the HSM to enter active mode if needed.
+	 */
+	async initialize(): Promise<void> {
+		// Wait for localDoc to become available (HSM entering active mode)
+		let localDoc = this.document.localDoc;
+		if (!localDoc) {
+			const hsm = this.document.hsm;
+			if (hsm?.awaitState) {
+				await trackPromise(`viewHook:awaitActive:${this.document.guid}`, hsm.awaitState((s) => s.startsWith("active.")));
+			}
+			localDoc = this.document.localDoc;
+		}
+		if (this.destroyed || !localDoc) return;
+
+		this._ytext = localDoc.getText("contents");
 		this.setupDocumentObserver();
+
+		// Perform initial render using localDoc content
+		this.runWithRelaySaving(() => {
+			// @ts-ignore
+			this.view.previewMode.renderer.set(this.document.localText);
+		});
 		this.renderAll();
+
+		this.document.connect();
+		this.debug("initialized");
 	}
 
 	/**
@@ -50,43 +112,47 @@ export class ViewHookPlugin extends HasLogging {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const that = this;
 
-		// Hook 1: Track metadata saves (if enableMetadataViewHooks)
-		if (flags().enableMetadataViewHooks) {
-			this.unsubscribes.push(
-				getPatcher().patch(view, {
-					// @ts-ignore
-					saveFrontmatter(old: any) {
-						return function (data: any) {
-							that.debug("saveFrontmatter hook triggered");
-							that.saving = true;
-							// @ts-ignore
-							const result = old.call(this, data);
-							that.saving = false;
-							return result;
-						};
-					},
-				}),
-			);
-		}
+		// Hook 1: Track metadata saves.
+		this.unsubscribes.push(
+			getPatcher().patch(view, {
+				// @ts-ignore
+				saveFrontmatter(old: any) {
+					return function (data: any) {
+						that.debug("saveFrontmatter hook triggered");
+						that.document.hsm?.send({
+							type: 'OBSIDIAN_SAVE_FRONTMATTER',
+							path: that.document.path,
+						});
+						that.saving = true;
+						// @ts-ignore
+						const result = old.call(this, data);
+						that.saving = false;
+						return result;
+					};
+				},
+			}),
+		);
 
 		// Hook 2: Coordinate saves between pathways
 		this.unsubscribes.push(
 			getPatcher().patch(view, {
 				// @ts-ignore
 				save(old: any) {
-					return function (data: any) {
+					return function (this: any, ...args: any[]) {
 						// @ts-ignore
-						const result = old.call(this, data);
+						const result = old.apply(this, args);
 						try {
 							// @ts-ignore
-							if (that.view.getMode?.() === "preview" && that.saving) {
-								that.debug("Syncing metadata changes to CRDT during save");
-								diffMatchPatch(
-									that.document.ydoc,
-									// @ts-ignore
-									that.view.text,
-									that.document,
-								);
+							const viewMode = that.view.getMode?.() ?? "unknown";
+							if (viewMode === "preview" && that.saving) {
+								that.debug("Syncing metadata changes through HSM during save");
+								that.document.hsm?.send({
+									type: "OBSIDIAN_METADATA_SYNC",
+									path: that.document.path,
+									mode: viewMode,
+								});
+								// @ts-ignore
+								that.syncViewTextToHsm(that.view.text, "preview.save");
 							}
 						} catch (e) {
 							that.error("Error syncing during save:", e);
@@ -97,45 +163,45 @@ export class ViewHookPlugin extends HasLogging {
 			}),
 		);
 
-		// Hook 3: Preview mode direct edits (if enablePreviewViewHooks)
-		if (flags().enablePreviewViewHooks) {
-			this.unsubscribes.push(
-				getPatcher().patch(view.previewMode as any, {
-					edit(old: any) {
-						return function (data: string) {
-							that.debug("Preview edit hook triggered");
+		// Hook 3: Preview mode direct edits.
+		this.unsubscribes.push(
+			getPatcher().patch(view.previewMode as any, {
+				edit(old: any) {
+					return function (data: string) {
+						that.debug("Preview edit hook triggered");
+						//@ts-ignore
+						if (that.view.getMode?.() === "preview") {
 							//@ts-ignore
-							if (that.view.getMode?.() === "preview") {
-								//@ts-ignore
-								if (that.view.editor) {
-									// If CodeMirror editor is available, dispatch changes there
-									const changes = that.incrementalBufferChange(data);
-									// @ts-ignore
-									that.view.editor.cm.dispatch({
-										changes,
-									});
-									that.debug("Dispatched preview edit to CodeMirror");
-								} else {
-									// Otherwise sync directly to CRDT
-									diffMatchPatch(that.document.ydoc, data, that.document);
-									that.debug("Synced preview edit directly to CRDT");
-								}
-								return;
+							if (that.view.editor) {
+								// If CodeMirror editor is available, dispatch changes there
+								const changes = that.incrementalBufferChange(data);
+								// @ts-ignore
+								that.view.editor.cm.dispatch({
+									changes,
+								});
+								that.debug("Dispatched preview edit to CodeMirror");
+							} else {
+								// Otherwise route the preview edit through HSM.
+								that.syncViewTextToHsm(data, "preview.edit");
+								that.debug("Synced preview edit through HSM");
 							}
+							return;
+						}
 
-							// @ts-ignore
-							return old.call(this, data);
-						};
-					},
-				}),
-			);
-		}
+						// @ts-ignore
+						return old.call(this, data);
+					};
+				},
+			}),
+		);
 	}
 
 	/**
 	 * Setup document observer to trigger UI updates
 	 */
 	private setupDocumentObserver(): void {
+		if (!this._ytext) return;
+
 		this.observer = async (event: YTextEvent, tr: Transaction) => {
 			if (!this.active()) {
 				this.debug("Received yjs event against a non-active view");
@@ -146,7 +212,6 @@ export class ViewHookPlugin extends HasLogging {
 				return;
 			}
 
-			this.debug("Document changed, updating all renderers");
 			this.renderAll();
 		};
 
@@ -167,14 +232,14 @@ export class ViewHookPlugin extends HasLogging {
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
-		this.debug(`Rendering all components for mode: ${viewMode}`);
-
-		this.renderers.forEach((renderer) => {
-			try {
-				renderer.render(this.document, viewMode);
-			} catch (error) {
-				this.error("Error in renderer:", error);
-			}
+		this.runWithRelaySaving(() => {
+			this.renderers.forEach((renderer) => {
+				try {
+					renderer.render(this.document, viewMode);
+				} catch (error) {
+					this.error("Error in renderer:", error);
+				}
+			});
 		});
 	}
 	/**
@@ -213,13 +278,13 @@ export class ViewHookPlugin extends HasLogging {
 			}
 		}
 
+		// Merge adjacent delete+insert pairs into single replacements.
+		// CM6 silently drops split delete/insert at the same boundary.
 		const merged: ChangeSpec[] = [];
 		let i = 0;
 		while (i < changes.length) {
 			const current = changes[i] as { from: number; to: number; insert: string };
-			const next = changes[i + 1] as
-				| { from: number; to: number; insert: string }
-				| undefined;
+			const next = changes[i + 1] as { from: number; to: number; insert: string } | undefined;
 			if (
 				next &&
 				current.insert === "" &&
@@ -234,20 +299,6 @@ export class ViewHookPlugin extends HasLogging {
 			}
 		}
 		return merged;
-	}
-	/**
-	 * Initialize the plugin after document is ready
-	 */
-	async initialize(): Promise<void> {
-		await this.document.whenReady();
-
-		// Perform initial render
-		// @ts-ignore
-		this.view.previewMode.renderer.set(this.document.text);
-		this.renderAll();
-
-		this.document.connect();
-		this.debug("ViewHookPlugin initialized");
 	}
 
 	/**
