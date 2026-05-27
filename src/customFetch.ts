@@ -1,11 +1,68 @@
 "use strict";
-import { requestUrl } from "obsidian";
+import { apiVersion, requestUrl } from "obsidian";
 import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog } from "./debug";
 import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
+
+// Device management configuration
+let deviceManagementConfig: {
+	vaultId: string;
+	deviceId: string;
+} | null = null;
+
+let pluginRequestConfig: {
+	pluginId: string;
+} | null = null;
+
+export function setPluginRequestConfig(config: { pluginId: string }): void {
+	pluginRequestConfig = config;
+}
+
+/**
+ * Set device management configuration for headers.
+ * Called from main.ts after DeviceManager is initialized.
+ */
+export function setDeviceManagementConfig(config: {
+	vaultId: string;
+	deviceId: string;
+}): void {
+	deviceManagementConfig = config;
+}
+
+export function getPluginRequestHeaders(): Record<string, string> {
+	if (!pluginRequestConfig?.pluginId) {
+		return {};
+	}
+	return {
+		"Obsidian-Plugin-Id": pluginRequestConfig.pluginId,
+	};
+}
+
+/**
+ * Get device management headers if enabled.
+ * Returns empty object if not enabled or not configured.
+ */
+export function getDeviceManagementHeaders(): Record<string, string> {
+	if (flags().enableDeviceManagement && deviceManagementConfig) {
+		return {
+			"Device-Id": deviceManagementConfig.deviceId,
+			"Vault-Id": deviceManagementConfig.vaultId,
+		};
+	}
+	return {};
+}
+
+export function getRelayRequestHeaders(): Record<string, string> {
+	return {
+		"Relay-Version": GIT_TAG,
+		"Obsidian-Version": apiVersion,
+		...getPluginRequestHeaders(),
+		...getDeviceManagementHeaders(),
+	};
+}
 
 if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 	// Fetch API is broken for some versions of Electron
@@ -47,9 +104,11 @@ export const customFetch = async (
 
 	const method = config?.method || "GET";
 
-	const headers = Object.assign({}, config?.headers, {
-		"Relay-Version": GIT_TAG,
-	}) as Record<string, string>;
+	const headers = Object.assign(
+		{},
+		config?.headers,
+		getRelayRequestHeaders(),
+	) as Record<string, string>;
 
 	// Prepare the request parameters
 	const requestParams: RequestUrlParam = {

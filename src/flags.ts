@@ -9,6 +9,7 @@ export interface FeatureFlags {
 	enableVerifyUploads: boolean;
 	enableAutomaticDiffResolution: boolean;
 	enableDiscordLogin: boolean;
+	enableDeviceManagement: boolean;
 	enableSelfManageHosts: boolean;
 	enableToasts: boolean;
 	enablePresenceAvatars: boolean;
@@ -29,6 +30,7 @@ export const FeatureFlagDefaults: FeatureFlags = {
 	enableVerifyUploads: false,
 	enableAutomaticDiffResolution: true,
 	enableDiscordLogin: false,
+	enableDeviceManagement: true,
 	enableSelfManageHosts: true,
 	enableToasts: true,
 	enablePresenceAvatars: true,
