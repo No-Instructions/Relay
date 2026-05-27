@@ -303,6 +303,10 @@ class RelayMetrics {
 	private protocolMessageCount: MetricInstance | null = null;
 	private protocolBytes: MetricInstance | null = null;
 
+	// Wake queue
+	private wakeQueueSlots: MetricInstance | null = null;
+	private hsmDocuments: MetricInstance | null = null;
+
 	/**
 	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
 	 * Safe to call multiple times - metric creation is idempotent.
@@ -336,6 +340,20 @@ class RelayMetrics {
 			help: "Sync protocol bytes by type and direction",
 			labelNames: ["type", "direction"],
 		});
+
+		// Wake queue
+		api.clearMetric("relay_wake_queue_slots");
+		api.clearMetric("relay_hsm_documents");
+		this.wakeQueueSlots = api.createGauge({
+			name: "relay_wake_queue_slots",
+			help: "Wake queue slot utilization",
+			labelNames: ["state", "folder"],
+		});
+		this.hsmDocuments = api.createGauge({
+			name: "relay_hsm_documents",
+			help: "Number of MergeHSM documents by residency state",
+			labelNames: ["state", "folder"],
+		});
 	}
 
 	setDbSize(document: string, count: number): void {
@@ -350,6 +368,24 @@ class RelayMetrics {
 	recordProtocolMessage(type: "sync" | "event" | "subdoc_index", direction: "in" | "out", bytes: number): void {
 		this.protocolMessageCount?.labels({ type, direction }).inc();
 		this.protocolBytes?.labels({ type, direction }).inc(bytes);
+	}
+
+	setWakeQueueSlots(folderGuid: string, used: number, pending: number, total: number): void {
+		this.wakeQueueSlots?.labels({ state: "used", folder: folderGuid }).set(used);
+		this.wakeQueueSlots?.labels({ state: "pending", folder: folderGuid }).set(pending);
+		this.wakeQueueSlots?.labels({ state: "total", folder: folderGuid }).set(total);
+	}
+
+	setHSMDocumentsByState(folderGuid: string, counts: {
+		hibernated: number;
+		cached: number;
+		working: number;
+		active: number;
+	}): void {
+		this.hsmDocuments?.labels({ state: "hibernated", folder: folderGuid }).set(counts.hibernated);
+		this.hsmDocuments?.labels({ state: "cached", folder: folderGuid }).set(counts.cached);
+		this.hsmDocuments?.labels({ state: "working", folder: folderGuid }).set(counts.working);
+		this.hsmDocuments?.labels({ state: "active", folder: folderGuid }).set(counts.active);
 	}
 }
 
