@@ -13,7 +13,7 @@ import { LiveTokenStore } from "./LiveTokenStore";
 import type { ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
-import { flags } from "./flagManager";
+import type { TimeProvider } from "./TimeProvider";
 
 export interface Subscription {
 	on: () => void;
@@ -23,7 +23,8 @@ export interface Subscription {
 function makeProvider(
 	clientToken: ClientToken,
 	ydoc: Y.Doc,
-	user?: User,
+	user: User | undefined,
+	timeProvider: TimeProvider,
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
@@ -37,6 +38,7 @@ function makeProvider(
 			params: params,
 			disableBc: true,
 			maxConnectionErrors: 3,
+			timeProvider,
 		},
 	);
 
@@ -51,16 +53,31 @@ function makeProvider(
 	return provider;
 }
 
+/** Disconnected state returned when no provider exists */
+const DISCONNECTED_STATE: ConnectionState = {
+	status: "disconnected",
+} as ConnectionState;
+
 type Listener = (state: ConnectionState) => void;
 
 export class HasProvider extends HasLogging {
-	_provider: YSweetProvider;
+	_provider: YSweetProvider | null = null;
 	path?: string;
-	ydoc: Y.Doc;
+	private _ydoc: Y.Doc | null = null;
 	clientToken: ClientToken;
-	private _offConnectionError: () => void;
-	private _offState: () => void;
+	private _deferredDisconnectTimer: number | null = null;
+	private _deferredDisconnectStatusListener:
+		| ((state: ConnectionState) => void)
+		| null = null;
+	private _providerSyncAbortHandlers = new Set<(reason: Error) => void>();
+	// Track whether the current provider connection has completed sync.
+	// This must reset on disconnect so reconnect flows do not treat a
+	// stale connection as ready.
+	_providerSynced: boolean = false;
+	private _offConnectionError: (() => void) | null = null;
+	private _offState: (() => void) | null = null;
 	listeners: Map<unknown, Listener>;
+	timeProvider!: TimeProvider;
 
 	constructor(
 		public guid: string,
@@ -71,28 +88,61 @@ export class HasProvider extends HasLogging {
 		super();
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
-		const user = this.loginManager?.user;
-		this.ydoc = new Y.Doc();
-
-		if (flags().enableDocumentHistory) {
-			this.ydoc.gc = false;
-		}
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
 			this.tokenStore.getTokenSync(S3RN.encode(this.s3rn)) ||
 			({ token: "", url: "", docId: "-", expiryTime: 0 } as ClientToken);
+	}
 
-		this._provider = makeProvider(this.clientToken, this.ydoc, user);
+	/**
+	 * Get the remote YDoc. Lazily creates it on first access.
+	 * Most callers should use this property for backward compatibility.
+	 */
+	public get ydoc(): Y.Doc {
+		if (!this._ydoc) {
+			this.ensureRemoteDoc();
+		}
+		return this._ydoc!;
+	}
+
+	/**
+	 * Get the remote YDoc without creating it.
+	 * Returns null if the remoteDoc has not been created yet.
+	 */
+	public get remoteDocOrNull(): Y.Doc | null {
+		return this._ydoc;
+	}
+
+	/**
+	 * Check if the remote YDoc and provider are currently loaded.
+	 */
+	public get isRemoteDocLoaded(): boolean {
+		return this._ydoc !== null;
+	}
+
+	/**
+	 * Create the remote YDoc and provider if they don't exist.
+	 * Returns the YDoc for convenience.
+	 */
+	ensureRemoteDoc(): Y.Doc {
+		if (this._ydoc) {
+			return this._ydoc;
+		}
+
+		const user = this.loginManager?.user;
+		this._ydoc = new Y.Doc();
+
+		this._provider = makeProvider(
+			this.clientToken,
+			this._ydoc,
+			user,
+			this.timeProvider,
+		);
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {
-				this.log(`[${this.path}] disconnection event`, event);
-				const shouldConnect = this._provider.canReconnect();
-				this.disconnect();
-				if (shouldConnect) {
-					this.connect();
-				}
+				this.log(`[${this.path}] connection error`, event);
 			},
 		);
 		connectionErrorSub.on();
@@ -100,11 +150,43 @@ export class HasProvider extends HasLogging {
 
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
+				if (state.status !== "connected") {
+					this._providerSynced = false;
+				}
 				this.notifyListeners();
 			},
 		);
 		stateSub.on();
 		this._offState = stateSub.off;
+
+		return this._ydoc;
+	}
+
+	/**
+	 * Destroy the remote YDoc and provider, freeing memory.
+	 * The document can be re-created later via ensureRemoteDoc().
+	 */
+	destroyRemoteDoc(): void {
+		this.abortProviderSyncWaiters(
+			new Error("Provider was destroyed before sync completed"),
+		);
+		if (this._offConnectionError) {
+			this._offConnectionError();
+			this._offConnectionError = null;
+		}
+		if (this._offState) {
+			this._offState();
+			this._offState = null;
+		}
+		if (this._provider) {
+			this._provider.destroy();
+			this._provider = null;
+		}
+		if (this._ydoc) {
+			this._ydoc.destroy();
+			this._ydoc = null;
+		}
+		this._providerSynced = false;
 	}
 
 	public get s3rn(): S3RNType {
@@ -113,7 +195,9 @@ export class HasProvider extends HasLogging {
 
 	public set s3rn(value: S3RNType) {
 		this._s3rn = value;
-		this.refreshProvider(this.clientToken);
+		if (this._provider) {
+			this.refreshProvider(this.clientToken);
+		}
 	}
 
 	public get debuggerUrl(): string {
@@ -151,7 +235,7 @@ export class HasProvider extends HasLogging {
 	}
 
 	providerActive() {
-		if (this.clientToken) {
+		if (this.clientToken && this._provider) {
 			const tokenIsSet = this._provider.hasUrl(this.clientToken.url);
 			const expired = Date.now() > (this.clientToken?.expiryTime || 0);
 			return tokenIsSet && !expired;
@@ -164,7 +248,8 @@ export class HasProvider extends HasLogging {
 		this.clientToken = clientToken;
 
 		if (!this._provider) {
-			throw new Error("missing provider!");
+			// No provider yet - token will be used when ensureRemoteDoc() is called
+			return;
 		}
 
 		const result = this._provider.refreshToken(
@@ -190,32 +275,114 @@ export class HasProvider extends HasLogging {
 		if (this.connected) {
 			return Promise.resolve(true);
 		}
+		// Ensure remoteDoc exists before connecting
+		this.ensureRemoteDoc();
 		return this.getProviderToken()
 			.then((clientToken) => {
 				this.refreshProvider(clientToken); // XXX is this still needed?
-				this._provider.connect();
+				this._provider!.connect();
 				this.notifyListeners();
 				return true;
 			})
 			.catch((e) => {
+				this.abortProviderSyncWaiters(
+					new Error("Provider connection failed before sync completed"),
+				);
 				return false;
 			});
 	}
 
 	public get state(): ConnectionState {
+		if (!this._provider) {
+			return DISCONNECTED_STATE;
+		}
 		return this._provider.connectionState;
 	}
 
 	get intent(): ConnectionIntent {
+		if (!this._provider) {
+			return "disconnected" as ConnectionIntent;
+		}
 		return this._provider.intent;
 	}
 
 	public get synced(): boolean {
-		return this._provider.synced;
+		return this._providerSynced;
+	}
+
+	private clearDeferredDisconnect(): void {
+		if (this._deferredDisconnectTimer !== null) {
+			this.timeProvider.clearTimeout(this._deferredDisconnectTimer);
+			this._deferredDisconnectTimer = null;
+		}
+		if (this._provider && this._deferredDisconnectStatusListener) {
+			this._provider.off("status", this._deferredDisconnectStatusListener);
+		}
+		this._deferredDisconnectStatusListener = null;
+	}
+
+	deferDisconnectForPendingMessages(timeoutMs: number = 2000): boolean {
+		const provider = this._provider;
+		if (!provider || provider._pendingMessages.length === 0) {
+			return false;
+		}
+
+		this.clearDeferredDisconnect();
+
+		const finishDisconnect = () => {
+			if (this._provider !== provider) {
+				this.clearDeferredDisconnect();
+				return;
+			}
+			this.disconnect();
+		};
+
+		const queueDisconnect = () => {
+			// YSweetProvider emits "status: connected" before its onopen
+			// handler flushes buffered sync frames. Defer one task so the
+			// pending messages are actually sent before we close the socket.
+			this.timeProvider.setTimeout(finishDisconnect, 0);
+		};
+
+		this._deferredDisconnectStatusListener = (state: ConnectionState) => {
+			if (this._provider !== provider) {
+				this.clearDeferredDisconnect();
+				return;
+			}
+			if (state.status === "connected") {
+				this.clearDeferredDisconnect();
+				queueDisconnect();
+			}
+		};
+		provider.on("status", this._deferredDisconnectStatusListener);
+
+		this._deferredDisconnectTimer = this.timeProvider.setTimeout(() => {
+			if (this._provider !== provider) {
+				this.clearDeferredDisconnect();
+				return;
+			}
+			this.disconnect();
+		}, timeoutMs);
+
+		// Keep the in-flight connection attempt alive. If the socket was
+		// dropped during a brief disconnect window, reconnect so the buffered
+		// sync frames can flush on open.
+		if (provider.connectionState.status !== "connected") {
+			void this.connect();
+		}
+
+		return true;
 	}
 
 	disconnect() {
-		this._provider.disconnect();
+		this.clearDeferredDisconnect();
+		this.abortProviderSyncWaiters(
+			new Error("Provider disconnected before sync completed"),
+		);
+		this._providerSynced = false;
+		if (this._provider) {
+			this._provider.disconnect();
+		}
 		this.tokenStore.removeFromRefreshQueue(this.guid);
 		this.notifyListeners();
 	}
@@ -232,26 +399,98 @@ export class HasProvider extends HasLogging {
 	}
 
 	onceConnected(): Promise<void> {
+		this.ensureRemoteDoc();
+		if (this.state.status === "connected") {
+			return Promise.resolve();
+		}
+		const provider = this._provider!;
 		return new Promise((resolve) => {
 			const resolveOnConnect = (state: ConnectionState) => {
 				if (state.status === "connected") {
+					provider.off("status", resolveOnConnect);
 					resolve();
 				}
 			};
-			// provider observers are manually cleared in destroy()
-			this._provider.on("status", resolveOnConnect);
+			provider.on("status", resolveOnConnect);
 		});
 	}
 
 	onceProviderSynced(): Promise<void> {
-		if (this._provider.synced) {
+		if (this._providerSynced) {
 			return Promise.resolve();
 		}
-		return new Promise((resolve) => {
-			this._provider.once("synced", () => {
+		this.ensureRemoteDoc();
+		const provider = this._provider!;
+		if (provider.synced) {
+			this._providerSynced = true;
+			return Promise.resolve();
+		}
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				provider.off("synced", handleSynced);
+				provider.off("status", handleStatus);
+				provider.off("connection-error", handleConnectionError);
+				this._providerSyncAbortHandlers.delete(abort);
+			};
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				this._providerSynced = true;
 				resolve();
-			});
+			};
+			const fail = (reason: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(reason);
+			};
+			const abort = (reason: Error) => {
+				fail(reason);
+			};
+			const checkTerminalState = () => {
+				if (this._provider !== provider) {
+					fail(new Error("Provider was replaced before sync completed"));
+					return;
+				}
+				if (this._providerSynced || provider.synced) {
+					finish();
+					return;
+				}
+				const state = provider.connectionState;
+				if (
+					state.status === "disconnected" &&
+					state.intent === "connected" &&
+					!provider.canReconnect()
+				) {
+					fail(new Error("Provider retries were exhausted before sync completed"));
+					return;
+				}
+			};
+			const handleSynced = (synced: boolean) => {
+				if (!synced) return;
+				finish();
+			};
+			const handleStatus = () => {
+				checkTerminalState();
+			};
+			const handleConnectionError = () => {
+				checkTerminalState();
+			};
+			provider.on("synced", handleSynced);
+			provider.on("status", handleStatus);
+			provider.on("connection-error", handleConnectionError);
+			this._providerSyncAbortHandlers.add(abort);
+			checkTerminalState();
 		});
+	}
+
+	private abortProviderSyncWaiters(reason: Error): void {
+		for (const abort of Array.from(this._providerSyncAbortHandlers)) {
+			abort(reason);
+		}
+		this._providerSyncAbortHandlers.clear();
 	}
 
 	reset() {
@@ -269,10 +508,10 @@ export class HasProvider extends HasLogging {
 		f: (event: Event) => void,
 	): Subscription {
 		const on = () => {
-			this._provider.on("connection-error", f);
+			this._provider?.on("connection-error", f);
 		};
 		const off = () => {
-			this._provider.off("connection-error", f);
+			this._provider?.off("connection-error", f);
 		};
 		return { on, off } as Subscription;
 	}
@@ -281,24 +520,16 @@ export class HasProvider extends HasLogging {
 		f: (state: ConnectionState) => void,
 	): Subscription {
 		const on = () => {
-			this._provider.on("status", f);
+			this._provider?.on("status", f);
 		};
 		const off = () => {
-			this._provider.off("status", f);
+			this._provider?.off("status", f);
 		};
 		return { on, off } as Subscription;
 	}
 
 	destroy() {
-		if (this._offConnectionError) {
-			this._offConnectionError();
-		}
-		if (this._offState) {
-			this._offState();
-		}
-		if (this._provider) {
-			this._provider.destroy();
-		}
+		this.destroyRemoteDoc();
 		this.loginManager = null as any;
 	}
 }

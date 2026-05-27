@@ -50,6 +50,7 @@ import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
 import { expandDesiredRemotePaths } from "./syncPathUtils";
+import type { TimeProvider } from "./TimeProvider";
 
 export interface SharedFolderSettings {
 	guid: string;
@@ -171,6 +172,7 @@ export class SharedFolder extends HasProvider {
 		private hashStore: ContentAddressedFileStore,
 		public backgroundSync: BackgroundSync,
 		private _settings: NamespacedSettings<SharedFolderSettings>,
+		timeProvider: TimeProvider,
 		relayId?: string,
 		awaitingUpdates: boolean = true,
 	) {
@@ -179,6 +181,7 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
+		this.timeProvider = timeProvider;
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
