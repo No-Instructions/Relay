@@ -1,7 +1,7 @@
 "use strict";
 
 import { DefaultTimeProvider, type TimeProvider } from "../TimeProvider";
-import { RelayInstances, curryLog } from "../debug";
+import { RelayInstances, curryLog, metrics } from "../debug";
 import type { IObservable } from "./Observable";
 
 export interface Mail<T> {
@@ -44,13 +44,17 @@ export class PostOffice {
 	 * Returns the singleton if it exists, or null if PostOffice has been
 	 * destroyed or was never created. Use this from cleanup/destroy paths
 	 * that may run after `PostOffice.destroy()` (e.g. async work registered
-	 * with `awaitOnReload`) — calling `getInstance()` post-destroy throws
+	 * with `trackAsyncCleanup`) — calling `getInstance()` post-destroy throws
 	 * and creating a fresh singleton mid-teardown leaks the entire mail
 	 * graph (each entry's `recipient` closure pins module-level classes).
 	 */
 	static peekInstance(): PostOffice | null {
 		if (this._destroyed) return null;
 		return PostOffice.instance ?? null;
+	}
+
+	static isDestroyed(): boolean {
+		return PostOffice._destroyed;
 	}
 
 	beginTransaction(): void {
@@ -127,10 +131,13 @@ export class PostOffice {
 	}
 
 	private deliver(): void {
+		const t0 = performance.now();
+		metrics.setPostieMailboxDepth(this.mailboxes.size);
 		const log = curryLog("[postie]", "debug");
 		for (const [recipient, senders] of this.mailboxes) {
 			for (const sender of senders) {
 				recipient(sender);
+				metrics.incPostieDeliveries();
 				log("send", sender.constructor.name, recipient);
 				this.deliveredMailLog.push({
 					sender,
@@ -142,6 +149,7 @@ export class PostOffice {
 			}
 			senders.clear();
 		}
+		metrics.observePostieDelivery((performance.now() - t0) / 1000);
 	}
 
 	getAllMailLog(): Mail<any>[] {

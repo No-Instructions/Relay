@@ -11,7 +11,6 @@
 	import type { RemoteSharedFolder } from "src/Relay";
 	import ToastManager from "./ToastManager.svelte";
 	import { handleServerError } from "../utils/toastStore";
-	import { flags } from "../flagManager";
 	import { Platform } from "obsidian";
 	import Announcement from "./Announcement.svelte";
 
@@ -321,9 +320,7 @@
 	{/if}
 </div>
 
-{#if flags().enableToasts}
-	<ToastManager />
-{/if}
+<ToastManager />
 
 {#if plugin.manifest.version !== plugin.version}
 	<span class="relay-version">
@@ -349,10 +346,10 @@
 		max-height: var(--modal-max-height);
 		position: relative;
 	}
-	.system3-announcement-banner {
+	:global(.system3-announcement-banner) {
 		padding-left: 48px !important;
 	}
-	.system3-announcement {
+	:global(.system3-announcement) {
 		color: var(--text-on-accent);
 	}
 </style>

@@ -17,10 +17,17 @@ import { Platform } from "obsidian";
 import { relative } from "path-browserify";
 import { SharedFolder } from "./SharedFolder";
 import type { SharedFolderSettings } from "./SharedFolder";
+import type { MetadataBridge } from "./editorContext";
+import { S3RN } from "./S3RN";
 import { LiveViewManager } from "./LiveViews";
+import {
+	isUserAttributionOn,
+	toggleUserAttribution,
+} from "./y-codemirror.next/UserAttributionPlugin";
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
+import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
 import { EndpointConfigModal } from "./ui/EndpointConfigModal";
@@ -31,6 +38,8 @@ import {
 	initializeLogger,
 	flushLogs,
 	initializeMetrics,
+	initializeHSMRecording,
+	stopHSMRecording,
 } from "./debug";
 import { getPatcher, Patcher } from "./Patcher";
 import { LiveTokenStore } from "./LiveTokenStore";
@@ -38,6 +47,7 @@ import NetworkStatus from "./NetworkStatus";
 import { RelayManager } from "./RelayManager";
 import { DefaultTimeProvider, type TimeProvider } from "./TimeProvider";
 import { auditTeardown } from "./observable/Observable";
+import { PromiseTracker, setActiveTracker, trackPromise } from "./trackPromise";
 import { Plugin } from "obsidian";
 
 import {
@@ -48,26 +58,31 @@ import { FeatureFlagDefaults, flag, type FeatureFlags } from "./flags";
 import { FeatureFlagManager, flags, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
+import { HSMStore } from "./merge-hsm/persistence";
+import { trackAsyncCleanup } from "./reloadUtils";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
+import {
+	SyncStatusView,
+	VIEW_TYPE_SYNC_STATUS,
+	detachSyncStatusViews,
+	openSyncStatusView,
+} from "./ui/SyncStatusView";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
-import type {
-	PluginWithVersion,
-	Release,
-	ReleaseSettings,
-} from "./UpdateManager";
+import type { PluginWithVersion, Release } from "./UpdateManager";
 import { ReleaseManager } from "./ui/ReleaseManager";
+import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
-import { SelfHostModal } from "./ui/SelfHostModal";
 import { generateHash } from "./hashing";
+import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
 import {
 	setDeviceManagementConfig,
@@ -104,9 +119,11 @@ declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
 	appId!: string;
+	private _instanceId!: string;
 	webviewerPatched = false;
 	openModals: Modal[] = [];
 	loadTime?: number;
+	private _unloading = false;
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
 	notifier!: ObsidianNotifier;
@@ -118,6 +135,7 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
+	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
 	settingsTab!: LiveSettingsTab;
@@ -134,10 +152,15 @@ export default class Live extends Plugin {
 	warn!: (...args: unknown[]) => void;
 	error!: (...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
+	get metadataBridge(): MetadataBridge | undefined {
+		return this._liveViews;
+	}
 	fileDiffMergeWarningKey = "file-diff-merge-warning";
 	version = GIT_TAG;
 	repo = REPOSITORY;
 	hashStore!: ContentAddressedFileStore;
+	private _hsmStore!: HSMStore;
+	promises = new PromiseTracker();
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -208,7 +231,7 @@ export default class Live extends Plugin {
 					_lastValidationError: undefined,
 					_lastValidationAttempt: undefined,
 				}));
-				new Notice("✓ Endpoints validated and applied successfully!", 5000);
+				new Notice("✓ endpoints validated and applied successfully!", 5000);
 				if (result.licenseInfo) {
 					this.log("License validation successful:", result.licenseInfo);
 				}
@@ -339,6 +362,29 @@ export default class Live extends Plugin {
 	}
 
 	async onload() {
+		// Detect leaked plugin instances from a previous onunload() that
+		// crashed or was skipped. We track active instance IDs on a
+		// window-level Set: each load adds an ID, each clean unload
+		// removes it. A non-empty set at load time means a previous
+		// lifecycle did not finish teardown, which surfaces as stale
+		// WebSocket subscribers, duplicate event listeners, orphaned
+		// PostOffice deliveries, and other ghost-plugin symptoms. Loud
+		// error is the point — silent leaks used to manifest as
+		// flaky test runs days later.
+		const w = window as any;
+		if (!w.__relayInstances) w.__relayInstances = new Set<string>();
+		const leaked: string[] = Array.from(w.__relayInstances);
+		if (leaked.length > 0) {
+			console.error(
+				`[Relay] leaked plugin instance(s) from a previous lifecycle: ${leaked.join(", ")}. ` +
+				`Previous onunload() did not complete — expect stale listeners, ` +
+				`duplicate WebSocket subscribers, and ghost state. ` +
+				`Reload Obsidian to recover.`,
+			);
+		}
+		this._instanceId = Math.random().toString(36).slice(2, 10);
+		w.__relayInstances.add(this._instanceId);
+
 		this.appId = (this.app as any).appId;
 		setPluginRequestConfig({ pluginId: this.manifest.id });
 		const start = moment.now();
@@ -347,6 +393,17 @@ export default class Live extends Plugin {
 		this.register(() => {
 			this.timeProvider.destroy();
 		});
+
+		setActiveTracker(this.promises);
+		this.promises.setDefaultOwner(`plugin:${this._instanceId}`);
+
+		let onloadComplete!: () => void;
+		trackPromise(
+			`plugin:onload:${this._instanceId}`,
+			new Promise<void>((resolve) => {
+				onloadComplete = resolve;
+			}),
+		);
 
 		const logFilePath = normalizePath(
 			`${this.app.vault.configDir}/plugins/${this.manifest.id}/relay.log`,
@@ -388,6 +445,20 @@ export default class Live extends Plugin {
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
 
+		// Initialize HSM disk recording if enabled
+		if (flags().enableHSMRecording) {
+			const hsmRecordingPath = normalizePath(
+				`${this.app.vault.configDir}/plugins/${this.manifest.id}/hsm-recording.jsonl`,
+			);
+			initializeHSMRecording(
+				new ObsidianFileAdapter(this.app.vault),
+				this.timeProvider,
+				hsmRecordingPath,
+			);
+			this.register(() => stopHSMRecording());
+			this.log("HSM recording enabled", { path: hsmRecordingPath });
+		}
+
 		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addRibbonIcon("satellite", "Relay", () => {
 			this.openSettings();
@@ -400,6 +471,24 @@ export default class Live extends Plugin {
 			this.releaseSettings,
 		);
 
+		// Feature flags are user-facing — always available. The modal hides
+		// dangerous flags unless debugging is on.
+		this.addCommand({
+			id: "toggle-feature-flags",
+			name: "Show feature flags",
+			callback: () => {
+				const modal = new FeatureFlagToggleModal(this.app);
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
+		this.addCommand({
+			id: "show-release-manager",
+			name: "Show releases",
+			callback: () => {
+				this.openReleaseManager();
+			},
+		});
 		this.addCommand({
 			id: "send-bug-report",
 			name: "Send bug report",
@@ -410,28 +499,11 @@ export default class Live extends Plugin {
 			},
 		});
 
-		this.addCommand({
-			id: "show-release-manager",
-			name: "Show releases",
-			callback: () => {
-				this.openReleaseManager();
-			},
-		});
-
 		this.register(
 			this.debugSettings.subscribe((settings) => {
 				if (settings.debugging) {
 					this.enableDebugging();
 					this.removeCommand("enable-debugging");
-					this.addCommand({
-						id: "toggle-feature-flags",
-						name: "Show feature flags",
-						callback: () => {
-							const modal = new FeatureFlagToggleModal(this.app);
-							this.openModals.push(modal);
-							modal.open();
-						},
-					});
 					this.addCommand({
 						id: "show-debug-info",
 						name: "Show debug info",
@@ -458,7 +530,6 @@ export default class Live extends Plugin {
 						},
 					});
 				} else {
-					this.removeCommand("toggle-feature-flags");
 					this.removeCommand("show-debug-info");
 					this.removeCommand("disable-debugging");
 					this.addCommand({
@@ -488,24 +559,41 @@ export default class Live extends Plugin {
 			},
 		});
 
-		if (flags().enableSelfManageHosts) {
-			this.addCommand({
-				id: "register-host",
-				name: "Register self-hosted Relay Server",
-				callback: () => {
-					const modal = new SelfHostModal(
-						this.app,
-						this.relayManager,
-						(relay) => {
-							// Open relay settings after successful creation
-							this.openSettings(`/relays?id=${relay.id}`);
-						},
-					);
-					this.openModals.push(modal);
-					modal.open();
-				},
-			});
-		}
+		this.addCommand({
+			id: "enable-user-attribution",
+			name: "Enable user attribution highlighting",
+			editorCheckCallback: (checking, editor) => {
+				if (isUserAttributionOn(editor)) return false;
+				if (!checking) toggleUserAttribution(editor);
+				return true;
+			},
+		});
+		this.addCommand({
+			id: "disable-user-attribution",
+			name: "Disable user attribution highlighting",
+			editorCheckCallback: (checking, editor) => {
+				if (!isUserAttributionOn(editor)) return false;
+				if (!checking) toggleUserAttribution(editor);
+				return true;
+			},
+		});
+
+		this.addCommand({
+			id: "register-host",
+			name: "Register self-hosted server",
+			callback: () => {
+				const modal = new SelfHostModal(
+					this.app,
+					this.relayManager,
+					(relay) => {
+						// Open relay settings after successful creation
+						this.openSettings(`/relays?id=${relay.id}`);
+					},
+				);
+				this.openModals.push(modal);
+				modal.open();
+			},
+		});
 
 		// Register handler for update availability changes
 		this.register(this.updateManager.subscribe(() => {
@@ -523,7 +611,7 @@ export default class Live extends Plugin {
 				});
 				this.log(`Update available: v${this.version} → ${newRelease.tag_name}`);
 			} else {
-				// Remove update commands when no update is available.
+				// Remove update commands when no update is available
 				this.removeCommand("update-plugin");
 				this.removeCommand("show-update-release");
 			}
@@ -553,11 +641,26 @@ export default class Live extends Plugin {
 			vaultId: this.appId,
 			deviceId: this.deviceManager.getDeviceId(),
 		});
+		this._hsmStore = new HSMStore(this.appId);
 		this.sharedFolders = new SharedFolders(
 			this.relayManager,
 			this.vault,
 			this._createSharedFolder.bind(this),
 			this.folderSettings,
+			this._hsmStore,
+		);
+
+		// Register the sync-status view factory before the workspace layout
+		// is restored. Obsidian restores leaves during boot; leaves of an
+		// unregistered type fall back to a placeholder and the pane wouldn't
+		// come back after a restart.
+		this.registerView(
+			VIEW_TYPE_SYNC_STATUS,
+			(leaf) =>
+				new SyncStatusView(leaf, {
+					sharedFolders: this.sharedFolders,
+					timeProvider: this.timeProvider,
+				}),
 		);
 
 		const tokenRefreshJitterSeed = await this.getPluginMainJsHash();
@@ -576,6 +679,7 @@ export default class Live extends Plugin {
 			this.loginManager,
 			this.timeProvider,
 			this.sharedFolders,
+			3, // concurrency
 		);
 
 		if (!this.loginManager.setup()) {
@@ -583,6 +687,21 @@ export default class Live extends Plugin {
 		}
 
 		this.app.workspace.onLayoutReady(() => {
+			if (this._unloading) return;
+
+			detachSyncStatusViews(this.app.workspace);
+
+			// Ensure the sync-status pane has a leaf so its icon shows in the
+			// right-sidebar tab strip like Search/Bookmarks/etc. Not focused,
+			// so it doesn't steal attention on startup.
+			const leaf = this.app.workspace.getRightLeaf(false);
+			if (leaf) {
+				void leaf.setViewState({
+					type: VIEW_TYPE_SYNC_STATUS,
+					active: false,
+				});
+			}
+
 			this.sharedFolders.load();
 			this._liveViews = new LiveViewManager(
 				this.app,
@@ -611,13 +730,13 @@ export default class Live extends Plugin {
 				// We can't run network status on iOS or it will always be offline.
 				this.networkStatus.addEventListener("offline", () => {
 					this.tokenStore.stop();
+					this.relayManager.offline();
 					this.sharedFolders.forEach((folder) => folder.disconnect());
 					this._liveViews.goOffline();
 				});
 				this.networkStatus.addEventListener("online", () => {
 					this.tokenStore.start();
-					this.relayManager.subscribe();
-					this.relayManager.update();
+					this.relayManager.online();
 					this._liveViews.goOnline();
 				});
 				this.networkStatus.start();
@@ -681,13 +800,20 @@ export default class Live extends Plugin {
 									});
 							});
 						}
-						if (folder.relayId && folder.connected) {
+						if (folder.relayId && folder.connected && !folder.localOnly) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Sync")
 									.setIcon("folder-sync")
 									.onClick(() => {
-										folder.netSync();
+										void openSyncStatusView(
+											this.app.workspace,
+											folder,
+											this.timeProvider,
+										);
+										void folder.resync().catch((error) => {
+											this.warn("Relay: Resync failed", error);
+										});
 									});
 							});
 						}
@@ -736,6 +862,7 @@ export default class Live extends Plugin {
 			this.setup();
 			this._liveViews.refresh("init");
 			this.loadTime = moment.now() - start;
+			onloadComplete();
 		});
 	}
 
@@ -743,8 +870,16 @@ export default class Live extends Plugin {
 		path: string,
 		guid: string,
 		relayId?: string,
-		awaitingUpdates?: boolean,
+		authoritative?: boolean,
 	): SharedFolder {
+		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
+		if (!guid || !S3RN.validateUUID(guid)) {
+			throw new Error(`Cannot create shared folder: invalid guid "${guid}"`);
+		}
+		if (relayId && !S3RN.validateUUID(relayId)) {
+			throw new Error(`Cannot create shared folder: invalid relayId "${relayId}"`);
+		}
+
 		// Initialize settings with pattern matching syntax
 		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
 			this.settings,
@@ -772,15 +907,17 @@ export default class Live extends Plugin {
 			path,
 			this.loginManager,
 			this.vault,
+			this.app.metadataCache,
 			this.fileManager,
 			this.tokenStore,
 			this.relayManager,
 			this.hashStore,
 			this.backgroundSync,
 			folderSettings,
+			this._hsmStore,
 			this.timeProvider,
 			relayId,
-			awaitingUpdates,
+			authoritative,
 		);
 		return folder;
 	}
@@ -796,7 +933,7 @@ export default class Live extends Plugin {
 		this.relayManager?.login();
 		this._liveViews.refresh("login");
 		withFlag(flag.enableDeviceManagement, () => {
-			void this.deviceManager.register();
+			this.deviceManager.register();
 		});
 	}
 
@@ -806,6 +943,27 @@ export default class Live extends Plugin {
 		await setting.open();
 		await setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);
+	}
+
+	openReleaseManager(version?: string) {
+		const modal = new ReleaseManager(this.app, this, version);
+
+		const app = this.app as any;
+		const setting = app.setting;
+		setting.close();
+
+		this.openModals.push(modal);
+		modal.open();
+	}
+
+	openGithubRelease(release?: Release | string): void {
+		let target: Release | string | undefined = release;
+		if (typeof release === "string" && release.trim()) {
+			target =
+				this.updateManager.findReleaseByVersion(release.trim()) ??
+				release.trim();
+		}
+		window.open(this.updateManager.getReleaseUrl(target), "_blank");
 	}
 
 	patchWebviewer(): void {
@@ -890,6 +1048,8 @@ export default class Live extends Plugin {
 		);
 		this.folderNavDecorations.refresh();
 
+		this.resourceMeter = new ResourceMeterMount(this.app.workspace, this.sharedFolders);
+
 		this.addSettingTab(this.settingsTab);
 
 		const workspaceLog = curryLog("[Live][Workspace]", "log");
@@ -898,6 +1058,9 @@ export default class Live extends Plugin {
 			this.app.workspace.on("file-open", (file) => {
 				workspaceLog("file-open");
 				plugin._liveViews.refresh("file-open");
+				if (file instanceof TFile) {
+					sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_OPENED', path: file.path });
+				}
 			}),
 		);
 
@@ -999,7 +1162,7 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("modify", (tfile) => {
+			this.app.vault.on("modify", async (tfile) => {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					vaultLog("Modify", tfile.path);
@@ -1007,6 +1170,31 @@ export default class Live extends Plugin {
 					if (file && isSyncFile(file)) {
 						file.sync();
 					}
+
+					// Send DISK_CHANGED to HSM for documents with active lock
+					// (but not when we're the ones doing the save)
+					if (
+						file &&
+						isDocument(file) &&
+						file.hsm &&
+						!file.isSaving &&
+						tfile instanceof TFile
+					) {
+						try {
+							const contents = await this.app.vault.read(tfile);
+							const encoder = new TextEncoder();
+							const hash = await generateHash(encoder.encode(contents).buffer);
+							file.hsm.send({
+								type: 'DISK_CHANGED',
+								contents,
+								mtime: tfile.stat.mtime,
+								hash,
+							});
+						} catch (e) {
+							vaultLog("Failed to send DISK_CHANGED to HSM", e);
+						}
+					}
+
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
 						this.app.metadataCache.trigger("resolve", file);
@@ -1018,20 +1206,159 @@ export default class Live extends Plugin {
 		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const plugin = this;
 
+		/** Route a diagnostic event to the HSM for the given file (if it's a Relay document). */
+		const sendDiagnosticToHSM = (file: TFile, event: any) => {
+			try {
+				const folder = plugin.sharedFolders.lookup(file.path);
+				if (folder) {
+					const doc = folder.proxy.getFile(file);
+					if (doc && isDocument(doc) && doc.hsm) {
+						doc.hsm.send(event);
+					}
+				}
+			} catch (e) {
+				plugin.debug('Error sending diagnostic event:', e);
+			}
+		};
+
+		const captureEditorContentForHSM = (file: TFile, contents: string) => {
+			try {
+				const folder = plugin.sharedFolders.lookup(file.path);
+				if (folder) {
+					const doc = folder.proxy.getFile(file);
+					if (doc && isDocument(doc) && doc.hsm) {
+						doc.hsm.captureEditorText(contents);
+					}
+				}
+			} catch (e) {
+				plugin.debug('Error capturing editor content:', e);
+			}
+		};
+
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
 			onUnloadFile(old: any) {
-				return function (file: any) {
-					plugin._liveViews.wipe();
+				return function (this: MarkdownView, file: TFile) {
+					if (file instanceof TFile) {
+						try {
+							if (typeof this.getViewData === 'function') {
+								captureEditorContentForHSM(file, this.getViewData());
+							}
+						} catch {
+							// If Obsidian cannot provide view data here, keep
+							// the last CM6 snapshot already held by the HSM.
+						}
+						sendDiagnosticToHSM(file, { type: 'OBSIDIAN_FILE_UNLOADED', path: file.path });
+					}
 					// @ts-ignore
 					return old.call(this, file);
 				};
 			},
 		});
 
+		const TextFileViewPrototype = Object.getPrototypeOf(MarkdownView.prototype);
+		getPatcher().patch(TextFileViewPrototype, {
+			setViewData(old: any) {
+				return function (this: any, data: string, clear: boolean) {
+					// Universal disk→CRDT ingest point for every TextFileView
+					// subclass (markdown, canvas, kanban, …). Obsidian calls
+					// setViewData synchronously inside loadFileInternal before
+					// the editor is populated and before Relay emits
+					// ACQUIRE_LOCK, so sending the data to the HSM here lets
+					// the three-way merge consult the authoritative disk text
+					// even when the open race orders ACQUIRE_LOCK before
+					// OBSIDIAN_LOAD_FILE_INTERNAL's post-await dispatch.
+					//
+					// `__relaySaving` is set by integrations that push CRDT
+					// content back into the view; skipping the event in that
+					// case prevents a reflection loop where our own write is
+					// treated as fresh disk content.
+					if (!this.__relaySaving) {
+						try {
+							const file = this.file;
+							if (file instanceof TFile) {
+								const folder = plugin.sharedFolders.lookup(file.path);
+								if (folder) {
+									const doc = folder.proxy.getFile(file);
+									if (doc && isDocument(doc) && doc.hsm) {
+										doc.hsm.send({
+											type: 'OBSIDIAN_SET_VIEW_DATA',
+											data,
+											clear,
+										});
+									}
+								}
+							}
+						} catch (e) {
+							plugin.debug('Error in setViewData patch:', e);
+						}
+					}
+					return old.call(this, data, clear);
+				};
+			},
+			loadFileInternal(old: any) {
+				return async function (this: any, file: TFile, isInitialLoad: boolean) {
+					// Mark the critical section: view.file has already been
+					// reassigned by the caller; view.data is still stale until
+					// setData runs inside the original call. The getViewData
+					// patch above throws while this flag is set.
+					this.__relayLoading = true;
+
+					// Capture state before calling original
+					const dirty = this.dirty;
+					const lastSavedData = this.lastSavedData;
+					const isPlaintext = this.isPlaintext;
+
+					// Call original (may trigger three-way merge internally)
+					let result;
+					try {
+						result = await old.call(this, file, isInitialLoad);
+					} finally {
+						// Clear the guard before any post-load reads (below and
+						// elsewhere). Cleared in finally so a thrown original
+						// doesn't leave the view permanently unreadable.
+						this.__relayLoading = false;
+					}
+
+						// After original completes, send a diagnostic-only event if this is a Relay file
+						try {
+							const folder = plugin.sharedFolders.lookup(file.path);
+							if (folder) {
+								const doc = folder.proxy.getFile(file);
+								if (doc && isDocument(doc) && doc.hsm) {
+									// Read disk content only to compute diagnostic flags.
+									const diskContent = await plugin.app.vault.read(file);
+									const contentChanged = lastSavedData !== diskContent;
+									const willMerge = dirty && contentChanged && isPlaintext;
+
+									doc.hsm.send({
+									type: 'OBSIDIAN_LOAD_FILE_INTERNAL',
+										isInitialLoad,
+										dirty,
+										contentChanged,
+										willMerge,
+									});
+
+								// OBSIDIAN_THREE_WAY_MERGE remains a supported diagnostic
+								// event in the HSM, but open-time reconciliation should
+								// use disk/CRDT state rather than reading the editor
+								// buffer directly during load.
+							}
+						}
+					} catch (e) {
+						// Don't let diagnostic failures break normal operation
+						plugin.debug('Error sending diagnostic event:', e);
+					}
+
+					return result;
+				};
+			},
+		});
+
 		getPatcher().patch(this.app.vault, {
 			process(old: any) {
-				return function (
+				return async function (
+					this: any,
 					tfile: any,
 					fn: (data: string) => string,
 					options: any,
@@ -1041,20 +1368,44 @@ export default class Live extends Plugin {
 						if (folder) {
 							const file = folder.proxy.getFile(tfile);
 							if (tfile instanceof TFile && file && isDocument(file)) {
-								file.process(fn);
+								const hsm = file.hsm;
+								if (hsm) {
+									await hsm.registerMachineEdit(fn);
+								}
 							}
 						}
 					} catch (e: any) {
 						plugin.log(e);
 					}
 
-					// @ts-ignore
 					return old.call(this, tfile, fn, options);
 				};
 			},
 		});
 
 		this.patchWebviewer();
+
+		{
+			const registeredFolderGuids = new Set<string>();
+			const registerSyncStatusCommands = () => {
+				this.sharedFolders.forEach((folder) => {
+					if (registeredFolderGuids.has(folder.guid)) return;
+					registeredFolderGuids.add(folder.guid);
+					this.addCommand({
+						id: `show-sync-status-${folder.guid}`,
+						name: `Show sync status: ${folder.name}`,
+						callback: () => {
+							void openSyncStatusView(
+								this.app.workspace,
+								folder,
+								this.timeProvider,
+							);
+						},
+					});
+				});
+			};
+			this.register(this.sharedFolders.subscribe(registerSyncStatusCommands));
+		}
 
 		withFlag(flag.enableNewLinkFormat, () => {
 			getPatcher().patch(MetadataCache.prototype, {
@@ -1146,27 +1497,6 @@ export default class Live extends Plugin {
 		this.updateManager.start();
 	}
 
-	openReleaseManager(version?: string) {
-		const modal = new ReleaseManager(this.app, this, version);
-
-		const app = this.app as any;
-		const setting = app.setting;
-		setting.close();
-
-		this.openModals.push(modal);
-		modal.open();
-	}
-
-	openGithubRelease(release?: Release | string): void {
-		let target: Release | string | undefined = release;
-		if (typeof release === "string" && release.trim()) {
-			target =
-				this.updateManager.findReleaseByVersion(release.trim()) ??
-				release.trim();
-		}
-		window.open(this.updateManager.getReleaseUrl(target), "_blank");
-	}
-
 	removeCommand(command: string): void {
 		// [Polyfill] removeCommand was added in 1.7.2
 		if (requireApiVersion("1.7.2")) {
@@ -1187,89 +1517,200 @@ export default class Live extends Plugin {
 	}
 
 	onunload() {
+		this._unloading = true;
+		const teardownStep = (name: string, fn: () => void) => {
+			this.debug(`[onunload] ${name}`);
+			try {
+				fn();
+			} catch (error) {
+				const e = error as { message?: string; stack?: string };
+				console.error(
+					`[Relay] onunload failed at step: ${name}: ${e?.message ?? error}\n${e?.stack ?? ""}`,
+				);
+				// Do NOT rethrow. A single step's failure must not abort the
+				// rest of onunload; every later step represents a distinct
+				// resource (timers, IDB connections, the PostOffice singleton,
+				// log buffer, leak-detection set).
+			}
+		};
+		setActiveTracker(null);
+		this.promises.destroy();
+		this.promises = null as any;
 		// Cleanup all monkeypatches and destroy the singleton
-		Patcher.destroy();
+		teardownStep("Patcher.destroy", () => {
+			Patcher.destroy();
+		});
 
-		this.timeProvider?.destroy();
+		teardownStep("timeProvider.destroy", () => {
+			this.timeProvider?.destroy();
+		});
+		this.timeProvider = null as any;
 
-		this.folderNavDecorations?.destroy();
+		teardownStep("folderNavDecorations.destroy", () => {
+			this.folderNavDecorations?.destroy();
+		});
+		this.folderNavDecorations = null as any;
 
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+		teardownStep("resourceMeter.destroy", () => {
+			this.resourceMeter?.destroy();
+		});
+		this.resourceMeter = null;
+
+		teardownStep("detachLeavesOfType", () => {
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
+			this.app.workspace.detachLeavesOfType(VIEW_TYPE_SYNC_STATUS);
+		});
 
 		// Explicitly destroy the update manager
 		if (this.updateManager) {
-			this.updateManager.destroy();
+			teardownStep("updateManager.destroy", () => {
+				this.updateManager.destroy();
+			});
 			this.updateManager = null as any;
 		}
 
-		this._liveViews?.destroy();
+		teardownStep("liveViews.destroy", () => {
+			this._liveViews?.destroy();
+		});
 		this._liveViews = null as any;
 
-		this.relayManager?.destroy();
+		teardownStep("relayManager.destroy", () => {
+			this.relayManager?.destroy();
+		});
 		this.relayManager = null as any;
 
-		this.deviceManager?.destroy();
+		teardownStep("deviceManager.destroy", () => {
+			this.deviceManager?.destroy();
+		});
 		this.deviceManager = null as any;
 
-		this.tokenStore?.stop();
-		this.tokenStore?.clearState();
-		this.tokenStore?.destroy();
+		teardownStep("tokenStore.stop", () => {
+			this.tokenStore?.stop();
+		});
+		teardownStep("tokenStore.clearState", () => {
+			this.tokenStore?.clearState();
+		});
+		teardownStep("tokenStore.destroy", () => {
+			this.tokenStore?.destroy();
+		});
 		this.tokenStore = null as any;
 
-		this.networkStatus?.stop();
-		this.networkStatus?.destroy();
+		teardownStep("networkStatus.stop", () => {
+			this.networkStatus?.stop();
+		});
+		teardownStep("networkStatus.destroy", () => {
+			this.networkStatus?.destroy();
+		});
 		this.networkStatus = null as any;
 
-		this.openModals.forEach((modal) => {
-			modal.close();
+		teardownStep("openModals.close", () => {
+			this.openModals.forEach((modal) => {
+				modal.close();
+			});
 		});
 		this.openModals.length = 0;
 
-		this.sharedFolders?.destroy();
+		teardownStep("sharedFolders.destroy", () => {
+			this.sharedFolders?.destroy();
+		});
 		this.sharedFolders = null as any;
 
-		this.settingsTab?.destroy();
+		// Flush pending HSM writes and close the database after SharedFolders
+		// are destroyed. Capture the store reference locally before clearing
+		// the field so async cleanup cannot be skipped.
+		const hsmStoreRef = this._hsmStore;
+		teardownStep("hsmStore.destroy", () => {
+			const p = hsmStoreRef?.destroy() ?? Promise.resolve();
+			trackAsyncCleanup(
+				p,
+				`plugin:teardown:hsmStore.destroy:${this._instanceId}`,
+			);
+		});
+		this._hsmStore = null as any;
+
+		teardownStep("settingsTab.destroy", () => {
+			this.settingsTab?.destroy();
+		});
 		this.settingsTab = null as any;
 
-		this.loginManager?.destroy();
+		teardownStep("loginManager.destroy", () => {
+			this.loginManager?.destroy();
+		});
 		this.loginManager = null as any;
 
-		this.backgroundSync?.destroy();
+		teardownStep("backgroundSync.destroy", () => {
+			this.backgroundSync?.destroy();
+		});
 		this.backgroundSync = null as any;
 
-		this.hashStore.destroy();
+		teardownStep("hashStore.destroy", () => {
+			this.hashStore.destroy();
+		});
 		this.hashStore = null as any;
 
-		this.app?.workspace.updateOptions();
+		teardownStep("workspace.updateOptions", () => {
+			this.app?.workspace.updateOptions();
+		});
 		this.app = null as any;
 		this.fileManager = null as any;
 		this.manifest = null as any;
 		this.vault = null as any;
 
-		this.debugSettings.destroy();
+		teardownStep("debugSettings.destroy", () => {
+			this.debugSettings.destroy();
+		});
 		this.debugSettings = null as any;
-		this.folderSettings.destroy();
+		teardownStep("folderSettings.destroy", () => {
+			this.folderSettings.destroy();
+		});
 		this.folderSettings = null as any;
 
 		// Destroy FeatureFlagManager before destroying featureSettings
-		FeatureFlagManager.destroy();
+		teardownStep("FeatureFlagManager.destroy", () => {
+			FeatureFlagManager.destroy();
+		});
 
-		this.featureSettings.destroy();
+		teardownStep("featureSettings.destroy", () => {
+			this.featureSettings.destroy();
+		});
 		this.featureSettings = null as any;
-		this.releaseSettings.destroy();
+		teardownStep("releaseSettings.destroy", () => {
+			this.releaseSettings.destroy();
+		});
 		this.releaseSettings = null as any;
-		this.loginSettings.destroy();
+		teardownStep("loginSettings.destroy", () => {
+			this.loginSettings.destroy();
+		});
 		this.loginSettings = null as any;
-		this.endpointSettings.destroy();
+		teardownStep("endpointSettings.destroy", () => {
+			this.endpointSettings.destroy();
+		});
 		this.endpointSettings = null as any;
+		teardownStep("settings.destroy", () => {
+			this.settings.destroy();
+		});
+		this.settings = null as any;
 
 		this.interceptedUrls.length = 0;
-		PostOffice.destroy();
+		teardownStep("PostOffice.destroy", () => {
+			PostOffice.destroy();
+		});
 
 		this.notifier = null as any;
 
-		auditTeardown();
-		flushLogs();
+		teardownStep("auditTeardown", () => {
+			auditTeardown();
+		});
+		teardownStep("flushLogs", () => {
+			flushLogs();
+		});
+		this.promises = null as any;
+
+		// Clear our instance ID from the leak-detection set LAST — if
+		// anything above throws, we leave the ID in place so the next
+		// load surfaces it as a leak. The pre-clear warning at the top
+		// of onload() turns this into an actionable signal.
+		(window as any).__relayInstances?.delete(this._instanceId);
 	}
 
 	async loadSettings() {

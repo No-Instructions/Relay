@@ -8,12 +8,18 @@ import type {
 	CanvasView,
 	ObsidianCanvas,
 } from "src/CanvasView";
-import type { RelayCanvasView, LiveViewManager } from "src/LiveViews";
+import type {
+	RelayCanvasView,
+	DocumentViewer,
+	LiveViewManager,
+} from "src/LiveViews";
 import { HasLogging } from "src/debug";
 
 import * as Y from "yjs";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
-import { flags } from "./flagManager";
+import type { EditorViewRef } from "./merge-hsm/types";
+import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
+import type { Document } from "./Document";
 
 export class CanvasPlugin extends HasLogging {
 	view: CanvasView;
@@ -38,14 +44,11 @@ export class CanvasPlugin extends HasLogging {
 		this.trackedEmbedViews = new Set();
 		this.install();
 
-		// Enable embedded view synchronization if enableLiveEmbeds is true
-		if (flags().enableLiveEmbeds) {
-			for (const node of this.getEmbedViews()) {
-				if (!node.file) {
-					continue;
-				}
-				this.connectEmbedView(node);
+		for (const node of this.getEmbedViews()) {
+			if (!node.file) {
+				continue;
 			}
+			this.connectEmbedView(node);
 		}
 	}
 
@@ -101,27 +104,279 @@ export class CanvasPlugin extends HasLogging {
 		return this.trackedEmbedViews.has(embedView);
 	}
 
+	private createEmbedEditorViewRef(embedView: any): EditorViewRef {
+		return {
+			getViewData() {
+				if (typeof embedView?.getViewData === "function") {
+					return embedView.getViewData();
+				}
+
+				const cmDoc = embedView?.editor?.cm?.state?.doc;
+				if (typeof cmDoc?.toString === "function") {
+					return cmDoc.toString();
+				}
+
+				if (typeof embedView?.text === "string") {
+					return embedView.text;
+				}
+
+				if (typeof embedView?.data === "string") {
+					return embedView.data;
+				}
+
+				if (typeof embedView?.lastSavedData === "string") {
+					return embedView.lastSavedData;
+				}
+
+				return "";
+			},
+		};
+	}
+
+	private syncEmbedViewToDocument(
+		document: Document,
+		viewRef: EditorViewRef,
+		reason: string,
+	): boolean {
+		try {
+			if (!document.isWritable) {
+				return false;
+			}
+
+			const contents = viewRef.getViewData();
+			if (document.localText === contents) {
+				return false;
+			}
+
+			const hsm = document.hsm;
+			if (!hsm) {
+				return false;
+			}
+
+			const changes = hsm.computeDiffChanges(document.localText, contents);
+			this.debug(
+				"syncing canvas embed view to HSM",
+				document.path,
+				reason,
+			);
+			hsm.send({
+				type: "CM6_CHANGE",
+				changes,
+				docText: contents,
+				userEvent: "set",
+			});
+			return true;
+		} catch (error: unknown) {
+			this.error(
+				`Error syncing canvas embed during ${reason}:`,
+				error,
+			);
+			return false;
+		}
+	}
+
+	private requestNativeEmbedSave(
+		embedView: any,
+		state: { saving: boolean },
+	): void {
+		state.saving = true;
+		try {
+			embedView.requestSave();
+		} finally {
+			state.saving = false;
+		}
+	}
+
+	private syncDocumentToEmbedView(
+		document: Document,
+		embedView: any,
+		viewRef: EditorViewRef,
+		state: { saving: boolean; tracking: boolean },
+		reason: string,
+	): boolean {
+		if (typeof embedView?.setViewData !== "function") {
+			return false;
+		}
+
+		const contents = document.localText;
+		if (viewRef.getViewData() === contents) {
+			state.tracking = true;
+			return false;
+		}
+
+		this.debug("syncing canvas embed HSM to view", document.path, reason);
+		state.saving = true;
+		try {
+			embedView.setViewData(contents, false);
+		} finally {
+			state.saving = false;
+		}
+		this.requestNativeEmbedSave(embedView, state);
+		state.tracking = true;
+		return true;
+	}
+
 	private connectEmbedView(embedView: any): void {
 		if (!embedView.file) {
+			return;
+		}
+
+		// Only markdown embeds have CM6 editors that need ViewHookPlugin + HSM.
+		// Canvas embeds render as canvas views, and media (images, SVG, PDF)
+		// are SyncFiles — neither uses a text editor.
+		const path: string = embedView.file.path;
+		if (!path.endsWith(".md")) {
 			return;
 		}
 
 		this.trackedEmbedViews.add(embedView);
 		this.unsubscribes.push(
 			(() => {
+				const document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
+				const viewRef = this.createEmbedEditorViewRef(embedView);
+				const syncEmbedViewToDocument = this.syncEmbedViewToDocument.bind(this);
+				const syncDocumentToEmbedView = this.syncDocumentToEmbedView.bind(this);
+				const logError = this.error.bind(this);
 				const plugin = new ViewHookPlugin(
 					embedView,
-					this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path),
+					document,
 				);
-				plugin.initialize().catch((error) => {
-					this.error(
-						"Error initializing ViewHookPlugin for canvas embed:",
-						error,
-					);
+				const state = { saving: false, tracking: false };
+				let observedYText: Y.Text | null = null;
+				let ytextObserver:
+					| ((event: Y.YTextEvent, tr: Y.Transaction) => void)
+					| null = null;
+				const requestSaveUnsubscribe = getPatcher().patch(embedView, {
+					requestSave: (old: any) => {
+						return function (this: any) {
+							if (!state.saving && !this?.__relaySaving) {
+								try {
+									syncEmbedViewToDocument(
+										document,
+										viewRef,
+										"requestSave",
+									);
+									state.tracking = true;
+								} catch (error: unknown) {
+									logError(
+										"Error syncing canvas embed during requestSave:",
+										error,
+									);
+								}
+							}
+							this?.app?.metadataCache?.trigger?.("resolve", this.file);
+							return old.call(this);
+						};
+					},
 				});
+				const viewer: DocumentViewer =
+					embedView.leaf ?? Symbol(`canvas-embed:${embedView.file.path}`);
+				let cancelled = false;
+				let lockAcquired = false;
+
+				document
+					.whenReady()
+					.then(async () => {
+						if (cancelled) {
+							return;
+						}
+
+						try {
+							const initialContents = viewRef.getViewData();
+							if (!document.hsm?.isActive() && initialContents.length > 0) {
+								// Canvas embeds do not reliably pass through the normal
+								// TextFileView load hooks before ACQUIRE_LOCK. Seed the
+								// HSM with the current embed buffer so active entry does
+								// not reconcile against an empty localDoc.
+								document.hsm?.send({
+									type: "OBSIDIAN_SET_VIEW_DATA",
+									data: initialContents,
+									clear: true,
+								});
+							}
+							this.connectionManager.acquireDocumentLock(
+								document,
+								viewRef,
+								viewer,
+							);
+							lockAcquired = true;
+						} catch (error: unknown) {
+							this.error(
+								"Error acquiring lock for canvas embed:",
+								error,
+							);
+							return;
+						}
+
+						const hsm = document.hsm;
+						if (hsm?.awaitState) {
+							await hsm.awaitState((state) => state.startsWith("active."));
+							if (cancelled) {
+								return;
+							}
+						}
+
+						const localDoc = document.localDoc;
+						if (localDoc) {
+							observedYText = localDoc.getText("contents");
+							ytextObserver = (_event: Y.YTextEvent, tr: Y.Transaction) => {
+								if (cancelled || document.destroyed) {
+									return;
+								}
+								if (tr.origin === document || tr.origin === document.hsm) {
+									return;
+								}
+								syncDocumentToEmbedView(
+									document,
+									embedView,
+									viewRef,
+									state,
+									"localDoc.observe",
+								);
+							};
+							observedYText.observe(ytextObserver);
+						}
+
+						syncDocumentToEmbedView(
+							document,
+							embedView,
+							viewRef,
+							state,
+							"initial-sync",
+						);
+
+						const cm = (embedView.editor as any)?.cm;
+						const hsmEditorPlugin = cm?.plugin?.(HSMEditorPlugin);
+						hsmEditorPlugin?.initializeIfReady();
+
+						plugin.initialize().catch((error) => {
+							this.error(
+								"Error initializing ViewHookPlugin for canvas embed:",
+								error,
+							);
+						});
+					})
+					.catch((error: unknown) => {
+						this.error(
+							"Error waiting for canvas embed readiness:",
+							error,
+						);
+					});
+
 				return () => {
+					cancelled = true;
 					this.trackedEmbedViews.delete(embedView);
+					requestSaveUnsubscribe();
+					if (observedYText && ytextObserver) {
+						observedYText.unobserve(ytextObserver);
+					}
 					plugin.destroy();
+					if (lockAcquired) {
+						this.connectionManager.releaseDocumentLock(
+							document,
+							viewer,
+						);
+					}
 				};
 			})(),
 		);
@@ -218,12 +473,10 @@ export class CanvasPlugin extends HasLogging {
 						this.observeNode((node as CanvasNode).getData());
 						
 						// Check if this is a newly created embed node that needs ViewHookPlugin
-						if (flags().enableLiveEmbeds) {
-							//@ts-ignore
-							const embedView = node.child;
-							if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
-								this.connectEmbedView(embedView);
-							}
+						//@ts-ignore
+						const embedView = node.child;
+						if (embedView?.file && !this.isEmbedAlreadyTracked(embedView)) {
+							this.connectEmbedView(embedView);
 						}
 					}
 					this.canvas.markMoved(node);

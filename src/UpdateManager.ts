@@ -341,9 +341,7 @@ export class UpdateManager extends Observable<UpdateManager> {
 		}
 	}
 
-	public async fetchReleaseManifest(
-		release: Release,
-	): Promise<Manifest | null> {
+	public async fetchReleaseManifest(release: Release): Promise<Manifest | null> {
 		try {
 			const manifestAsset = release.assets.find(
 				(asset) => asset.name === "manifest.json",

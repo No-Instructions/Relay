@@ -20,7 +20,10 @@
 	import { curryLog } from "src/debug";
 	import { normalizePath } from "obsidian";
 	import { join } from "path-browserify";
-	import type { SyncFlags, SyncSettingsManager } from "src/SyncSettings";
+	import type {
+		SyncCategoryKey,
+		SyncSettingsManager,
+	} from "src/SyncSettings";
 
 	import Lock from "./Lock.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
@@ -138,18 +141,25 @@
 
 	// Type the entries
 	type CategoryEntry = [
-		keyof SyncFlags,
-		{ name: string; description: string; enabled: boolean },
+		SyncCategoryKey,
+		{
+			name: string;
+			description: string;
+			enabled: boolean;
+			requiresStorage: boolean;
+			canToggle: boolean;
+		},
 	];
 	$: settingEntries = syncSettings
 		? (Object.entries(syncSettings.getCategories()) as CategoryEntry[])
 		: [];
 
 	let isUpdating = false;
-	async function handleToggle(name: keyof SyncFlags, value: boolean) {
+	async function handleToggle(name: SyncCategoryKey, value: boolean) {
 		if (isUpdating) return;
-		if ($noStorage) return;
 		if (!syncSettings) return;
+		if (name === "markdown") return;
+		if ($noStorage && syncSettings.getCategory(name).requiresStorage) return;
 		isUpdating = true;
 		try {
 			await syncSettings.toggleCategory(name, value);
@@ -314,11 +324,10 @@
 			if (plugin.vault.getFolderByPath(vaultRelativePath) === null) {
 				await plugin.vault.createFolder(vaultRelativePath);
 			}
-			const folder = plugin.sharedFolders.new(
+			const folder = plugin.sharedFolders.clone(
 				vaultRelativePath,
 				remoteFolder.guid,
 				remoteFolder.relay.guid,
-				true,
 			);
 			folder.remote = remoteFolder;
 			plugin.sharedFolders.notifyListeners();
@@ -547,24 +556,28 @@
 			</SettingItem>
 		{/if}
 		{#each settingEntries as [name, category]}
+			{@const locked = $noStorage && category.requiresStorage}
+			{@const on = category.enabled && !locked}
+			{@const disabled = isUpdating || !category.canToggle}
 			<SlimSettingItem name={category.name} description={category.description}>
 				<div class="setting-item-control">
-					{#if $noStorage}
+					{#if locked}
 						<Lock />
 					{/if}
 					<div
 						role="checkbox"
-						aria-checked={$syncSettings[name] && !$noStorage}
-						tabindex="0"
-						on:keypress={() => handleToggle(name, !$syncSettings[name])}
+						aria-checked={on}
+						aria-disabled={disabled}
+						tabindex={disabled ? -1 : 0}
+						on:keypress={() => handleToggle(name, !category.enabled)}
 						class="checkbox-container"
-						class:is-enabled={$syncSettings[name] && !$noStorage}
-						on:click={() => handleToggle(name, !$syncSettings[name])}
+						class:is-enabled={on}
+						on:click={() => handleToggle(name, !category.enabled)}
 					>
 						<input
 							type="checkbox"
-							checked={$syncSettings[name] && !$noStorage}
-							disabled={isUpdating}
+							checked={on}
+							disabled={disabled}
 							on:change={(e) => handleToggle(name, e.currentTarget.checked)}
 						/>
 						<div class="checkbox-toggle"></div>

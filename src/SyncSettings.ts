@@ -1,11 +1,12 @@
 import { NamespacedSettings, Settings } from "./SettingsStorage";
-import { flags } from "./flagManager";
 
 export interface SyncCategory {
 	enabled: boolean;
 	extensions: string[];
 	description: string;
 	name: string;
+	requiresStorage: boolean;
+	canToggle: boolean;
 }
 
 export interface SyncFlags {
@@ -13,26 +14,56 @@ export interface SyncFlags {
 	audio?: boolean;
 	videos?: boolean;
 	pdfs?: boolean;
+	canvas?: boolean;
+	bases?: boolean;
 	otherTypes?: boolean;
 }
+
+export type SyncCategoryKey = keyof SyncFlags | "markdown";
 
 interface TypeSettings {
 	name: string;
 	description: string;
 	extensions: string[];
 	defaultEnabled: boolean;
+	requiresStorage: boolean;
 }
 
 export class SyncSettingsManager extends NamespacedSettings<
 	Record<keyof SyncFlags, boolean>
 > {
+	private static readonly alwaysEnabledSchema: Record<"markdown", TypeSettings> = {
+		markdown: {
+			name: "Markdown",
+			description: "Sync Markdown files (.md)",
+			extensions: ["md"],
+			defaultEnabled: true,
+			requiresStorage: false,
+		},
+	};
+
 	private static readonly schema: Record<keyof SyncFlags, TypeSettings> = {
+		canvas: {
+			name: "Canvas",
+			description: "Sync Canvas files (.canvas)",
+			extensions: ["canvas"],
+			defaultEnabled: true,
+			requiresStorage: false,
+		},
+		bases: {
+			name: "Bases",
+			description: "Sync Bases files (.base)",
+			extensions: ["base"],
+			defaultEnabled: true,
+			requiresStorage: true,
+		},
 		images: {
 			name: "Images",
 			description:
 				"Sync image files (.bmp, .png, .jpg, .jpeg, .gif, .svg, .webp, .avif)",
 			extensions: ["bmp", "png", "jpg", "jpeg", "gif", "svg", "webp", "avif"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		audio: {
 			name: "Audio",
@@ -40,24 +71,28 @@ export class SyncSettingsManager extends NamespacedSettings<
 				"Sync audio files (.mp3, .wav, .m4a, .3gp, .flac, .ogg, .oga, .opus)",
 			extensions: ["mp3", "wav", "m4a", "3gp", "flac", "ogg", "oga", "opus"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		videos: {
 			name: "Videos",
 			description: "Sync video files (.mp4, .webm, .ogv, .mov, .mkv)",
 			extensions: ["mp4", "webm", "ogv", "mov", "mkv"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		pdfs: {
 			name: "PDFs",
 			description: "Sync PDF files (.pdf)",
 			extensions: ["pdf"],
 			defaultEnabled: true,
+			requiresStorage: true,
 		},
 		otherTypes: {
 			name: "Other files",
 			description: "Sync unsupported file types",
 			extensions: [],
 			defaultEnabled: false,
+			requiresStorage: true,
 		},
 	};
 
@@ -69,7 +104,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 	) as Record<keyof SyncFlags, boolean>;
 
 	constructor(
-		settings: Settings<any>,
+		settings: Settings<Record<keyof SyncFlags, boolean>>,
 		path: string,
 		public enabled = true,
 	) {
@@ -81,8 +116,6 @@ export class SyncSettingsManager extends NamespacedSettings<
 		const normalizedExt = extension.toLowerCase();
 
 		if (normalizedExt === "md") return true;
-
-		if (flags().enableCanvasSync && normalizedExt === "canvas") return true;
 
 		if (!this.enabled) {
 			return false;
@@ -102,7 +135,34 @@ export class SyncSettingsManager extends NamespacedSettings<
 		);
 	}
 
-	getCategory(key: keyof SyncFlags): SyncCategory {
+	public requiresStorage(path: string): boolean {
+		const extension = path.split(".").pop() || "";
+		const normalizedExt = extension.toLowerCase();
+
+		if (normalizedExt === "md") return false;
+
+		for (const schema of Object.values(SyncSettingsManager.schema)) {
+			if (schema.extensions.includes(normalizedExt)) {
+				return schema.requiresStorage;
+			}
+		}
+
+		return SyncSettingsManager.schema.otherTypes.requiresStorage;
+	}
+
+	getCategory(key: SyncCategoryKey): SyncCategory {
+		if (key === "markdown") {
+			const schema = SyncSettingsManager.alwaysEnabledSchema[key];
+			return {
+				enabled: true,
+				name: schema.name,
+				description: schema.description,
+				extensions: schema.extensions,
+				requiresStorage: schema.requiresStorage,
+				canToggle: false,
+			};
+		}
+
 		const schema = SyncSettingsManager.schema[key];
 		const enabled = this.get()[key] ?? schema.defaultEnabled;
 		return {
@@ -110,17 +170,23 @@ export class SyncSettingsManager extends NamespacedSettings<
 			name: schema.name,
 			description: schema.description,
 			extensions: schema.extensions,
+			requiresStorage: schema.requiresStorage,
+			canToggle: true,
 		};
 	}
 
-	getCategories(): Record<keyof SyncFlags, SyncCategory> {
-		return Object.keys(SyncSettingsManager.schema).reduce(
-			(acc, key) => {
-				acc[key as keyof SyncFlags] = this.getCategory(key as keyof SyncFlags);
-				return acc;
-			},
-			{} as Record<keyof SyncFlags, SyncCategory>,
-		);
+	getCategories(): Record<SyncCategoryKey, SyncCategory> {
+		const categories = {
+			markdown: this.getCategory("markdown"),
+		} as Record<SyncCategoryKey, SyncCategory>;
+
+		for (const key of Object.keys(SyncSettingsManager.schema)) {
+			categories[key as keyof SyncFlags] = this.getCategory(
+				key as keyof SyncFlags,
+			);
+		}
+
+		return categories;
 	}
 
 	public async toggleCategory(

@@ -1,6 +1,7 @@
 "use strict";
 
 import { curryLog } from "./debug";
+import type { TimeProvider } from "./TimeProvider";
 
 export type PromiseFunction<T> = () => Promise<T>;
 export type CheckFunction<T> = () => [boolean, T];
@@ -15,9 +16,18 @@ export class Dependency<T> {
 	constructor(
 		promiseFunction: PromiseFunction<T>,
 		checkFunction: CheckFunction<T>,
+		private timeProvider: TimeProvider,
 	) {
 		this.promiseFunction = promiseFunction;
 		this.checkFunction = checkFunction;
+	}
+
+	private setTimeout(callback: () => void, ms: number): number {
+		return this.timeProvider.setTimeout(callback, ms);
+	}
+
+	private clearTimeout(timerId: number): void {
+		this.timeProvider.clearTimeout(timerId);
 	}
 
 	public getPromise(): Promise<T> {
@@ -27,7 +37,7 @@ export class Dependency<T> {
 				const resolve = this.resolver;
 				resolve(result);
 				if (this.timeoutId) {
-					clearTimeout(this.timeoutId);
+					this.clearTimeout(this.timeoutId);
 				}
 				this.resolver = undefined;
 			}
@@ -41,7 +51,7 @@ export class Dependency<T> {
 		if (!this.currentPromise) {
 			this.currentPromise = new Promise((resolve, reject) => {
 				this.resolver = resolve;
-				this.timeoutId = window.setTimeout(() => {
+				this.timeoutId = this.setTimeout(() => {
 					curryLog("[Promise]", "debug")(
 						"Dependency stuck after 3s. Checking.",
 						this.promiseFunction.toString(),
@@ -54,13 +64,13 @@ export class Dependency<T> {
 				this.promiseFunction().then(
 					(result) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							this.clearTimeout(this.timeoutId);
 						}
 						resolve(result);
 					},
 					(error) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							this.clearTimeout(this.timeoutId);
 						}
 						this.currentPromise = null; // Reset on failure
 						reject(error);
@@ -73,7 +83,7 @@ export class Dependency<T> {
 
 	public destroy(): void {
 		if (this.timeoutId) {
-			clearTimeout(this.timeoutId);
+			this.clearTimeout(this.timeoutId);
 			this.timeoutId = undefined;
 		}
 		this.currentPromise = null;
@@ -86,14 +96,25 @@ export class SharedPromise<T> {
 	private promiseFunction: PromiseFunction<T>;
 	private timeoutId?: number;
 
-	constructor(promiseFunction: PromiseFunction<T>) {
+	constructor(
+		promiseFunction: PromiseFunction<T>,
+		private timeProvider: TimeProvider,
+	) {
 		this.promiseFunction = promiseFunction;
+	}
+
+	private setTimeout(callback: () => void, ms: number): number {
+		return this.timeProvider.setTimeout(callback, ms);
+	}
+
+	private clearTimeout(timerId: number): void {
+		this.timeProvider.clearTimeout(timerId);
 	}
 
 	public getPromise(): Promise<T> {
 		if (!this.currentPromise) {
 			this.currentPromise = new Promise((resolve, reject) => {
-				this.timeoutId = window.setTimeout(() => {
+				this.timeoutId = this.setTimeout(() => {
 					curryLog("[Promise]", "error")(
 						"SharedPromise stuck after 3s:",
 						this.promiseFunction.toString(),
@@ -102,14 +123,14 @@ export class SharedPromise<T> {
 				this.promiseFunction().then(
 					(result) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							this.clearTimeout(this.timeoutId);
 						}
 						this.currentPromise = null;
 						resolve(result);
 					},
 					(error) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							this.clearTimeout(this.timeoutId);
 						}
 						this.currentPromise = null;
 						reject(error);
@@ -122,7 +143,7 @@ export class SharedPromise<T> {
 
 	public destroy(): void {
 		if (this.timeoutId) {
-			clearTimeout(this.timeoutId);
+			this.clearTimeout(this.timeoutId);
 			this.timeoutId = undefined;
 		}
 		this.currentPromise = null;
@@ -131,20 +152,25 @@ export class SharedPromise<T> {
 
 export function withTimeoutWarning<T>(
 	promise: Promise<T>,
+	timeProvider: TimeProvider,
 	...logArgs: any[]
 ): Promise<T> {
 	return new Promise((resolve, reject) => {
-		const timeoutId = window.setTimeout(() => {
+		const onTimeout = () => {
 			curryLog("[Promise]", "debug")("Promise stuck after 3s:", ...logArgs);
-		}, 3000);
+		};
+		const timeoutId = timeProvider.setTimeout(onTimeout, 3000);
+		const clearWarningTimeout = () => {
+			timeProvider.clearTimeout(timeoutId);
+		};
 
 		promise.then(
 			(result) => {
-				clearTimeout(timeoutId);
+				clearWarningTimeout();
 				resolve(result);
 			},
 			(error) => {
-				clearTimeout(timeoutId);
+				clearWarningTimeout();
 				reject(error);
 			},
 		);
