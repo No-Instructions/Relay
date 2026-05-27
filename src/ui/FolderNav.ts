@@ -12,14 +12,15 @@ import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
 import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
-import { withAnyOf, withFlag } from "src/flagManager";
+import { flags, withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
 import type { ObservableSet } from "src/observable/ObservableSet";
+import type { SyncStatus } from "src/merge-hsm/types";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
-import { curryLog } from "src/debug";
+import { curryLog, metrics } from "src/debug";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -151,6 +152,26 @@ class FolderBarVisitor extends BaseVisitor<FolderBar> {
 
 type Unsubscribe = () => void;
 
+function syncStatusHasConflict(status: SyncStatus | undefined): boolean {
+	return status?.status === "conflict";
+}
+
+function fileHasConflict(sharedFolder: SharedFolder, guid: string): boolean {
+	const mergeManager = sharedFolder.mergeManager;
+	if (!mergeManager) return false;
+
+	const file = sharedFolder.files.get(guid) as any;
+	const hsm = file?.hsm;
+	if (hsm) {
+		const status = hsm.getSyncStatus?.() as SyncStatus | undefined;
+		if (syncStatusHasConflict(status)) return true;
+		if (typeof hsm.getConflictData === "function" && hsm.getConflictData()) return true;
+		return false;
+	}
+	const status = mergeManager.syncStatus.get<SyncStatus>(guid);
+	return syncStatusHasConflict(status);
+}
+
 class PillDecoration {
 	el: HTMLElement;
 	sharedFolder: SharedFolder;
@@ -162,7 +183,7 @@ class PillDecoration {
 
 		// clean up failed destroys
 		const stalePills = el.querySelectorAll(".system3-folder-icons");
-		if (stalePills.length > 1) {
+		if (stalePills.length > 0) {
 			stalePills?.forEach((pill) => {
 				pill.remove();
 			});
@@ -177,7 +198,10 @@ class PillDecoration {
 				status: this.sharedFolder.state.status,
 				relayId: this.sharedFolder.relayId,
 				remote: this.sharedFolder.remote,
+				localOnly: this.sharedFolder.localOnly,
+				enableDraftMode: flags().enableDraftMode,
 				progress: 0,
+				showProgress: false,
 				syncStatus: "pending",
 			},
 		});
@@ -189,20 +213,21 @@ class PillDecoration {
 					status: state.status,
 					relayId: this.sharedFolder.relayId,
 					remote: this.sharedFolder.remote,
+					localOnly: this.sharedFolder.localOnly,
+					enableDraftMode: flags().enableDraftMode,
 				});
 			}),
 		);
 
 		unsubs.push(
-			this.sharedFolder.backgroundSync.subscribeToGroupProgress(
+			this.sharedFolder.backgroundSync.subscribeToFolderSyncSnapshot(
 				this.sharedFolder,
-				(progress) => {
-					if (progress) {
-						this.pill.$set({
-							progress: progress.percent,
-							syncStatus: progress.status,
-						});
-					}
+				(snapshot) => {
+					this.pill.$set({
+						progress: snapshot.percent,
+						showProgress: snapshot.showProgress,
+						syncStatus: snapshot.progressStatus,
+					});
 				},
 			),
 		);
@@ -338,7 +363,8 @@ class FilePillDecoration {
 		if (!this.file) {
 			return;
 		}
-		if (this.file.inMeta) {
+		const tag = this.file.tag;
+		if (!tag) {
 			this.pill?.$destroy();
 			return;
 		}
@@ -346,12 +372,12 @@ class FilePillDecoration {
 			this.pill = new UploadPill({
 				target: this.el,
 				props: {
-					text: this.file.tag,
+					text: tag,
 				},
 			});
 		} else {
 			this.pill.$set({
-				text: this.file.tag,
+				text: tag,
 			});
 		}
 	}
@@ -405,7 +431,10 @@ class NotSyncedPillDecoration {
 	pill: TextPill;
 	unsubscribe?: () => void;
 
-	constructor(private el: HTMLElement) {
+	constructor(
+		private el: HTMLElement,
+		label: string,
+	) {
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
 		});
@@ -414,9 +443,13 @@ class NotSyncedPillDecoration {
 			target: this.el,
 			props: {
 				text: "NOT SYNCED",
-				label: "Syncing this file type is disabled",
+				label,
 			},
 		});
+	}
+
+	setLabel(label: string) {
+		this.pill.$set({ label });
 	}
 
 	destroy() {
@@ -437,9 +470,17 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		if (
 			sharedFolder &&
 			sharedFolder.checkPath(file.path) &&
-			!sharedFolder.isSyncableTFile(file)
+			(sharedFolder.isStorageBlockedTFile(file) ||
+				!sharedFolder.isSyncableTFile(file))
 		) {
-			return storage || new NotSyncedPillDecoration(item.selfEl);
+			const label = sharedFolder.isStorageBlockedTFile(file)
+				? "Attachment storage is required to sync this file"
+				: "Syncing this file type is disabled";
+			if (storage) {
+				storage.setLabel(label);
+				return storage;
+			}
+			return new NotSyncedPillDecoration(item.selfEl, label);
 		}
 		if (storage) {
 			storage.destroy();
@@ -450,6 +491,7 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 
 class DocumentStatus implements Destroyable {
 	el: HTMLElement;
+	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document?: Document;
 
 	constructor(el: HTMLElement, document: Document, doc: TFile) {
@@ -511,6 +553,75 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 		if (storage) {
 			storage.destroy();
 		}
+		return null;
+	}
+}
+
+class FileConflictDecoration implements Destroyable {
+	private applied = false;
+	private destroyed = false;
+
+	constructor(
+		private el: HTMLElement,
+		private sharedFolder: SharedFolder,
+		private guid: string,
+	) {
+		this.sharedFolder.onDestroy(() => this.destroy());
+		this.update();
+	}
+
+	update() {
+		if (this.destroyed) return;
+		const conflict = fileHasConflict(this.sharedFolder, this.guid);
+		if (conflict && !this.applied) {
+			this.el.classList.add("system3-conflict");
+			this.applied = true;
+		} else if (!conflict && this.applied) {
+			this.el.classList.remove("system3-conflict");
+			this.applied = false;
+		}
+	}
+
+	destroy() {
+		if (this.destroyed) return;
+		this.destroyed = true;
+		if (this.applied) {
+			this.el.classList.remove("system3-conflict");
+			this.applied = false;
+		}
+	}
+}
+
+class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
+	visitFile(
+		file: TFile,
+		item: FileItem,
+		storage?: FileConflictDecoration,
+		sharedFolder?: SharedFolder,
+	): FileConflictDecoration | null {
+		if (
+			sharedFolder &&
+			sharedFolder.ready &&
+			Document.checkExtension(file.path)
+		) {
+			try {
+				const vpath = sharedFolder.getVirtualPath(file.path);
+				const guid = sharedFolder.syncStore.get(vpath);
+				if (!guid) {
+					if (storage) storage.destroy();
+					return null;
+				}
+				if (storage) {
+					storage.update();
+					return storage;
+				}
+				return new FileConflictDecoration(item.selfEl, sharedFolder, guid);
+			} catch (e) {
+				if (storage) storage.destroy();
+				return null;
+			}
+		}
+		if (storage) storage.destroy();
 		return null;
 	}
 }
@@ -639,12 +750,43 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	backgroundSync: BackgroundSync;
-	offFolderListener: () => void;
-	offDocumentListeners: Map<SharedFolder, () => void>;
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 	layoutReady: boolean = false;
-	unsubscribes: Unsubscribe[];
+
+	/**
+	 * Subscriptions to plugin-global observables (background sync
+	 * stores, workspace layout). Attached once in the constructor and
+	 * released once in destroy(). Never changes over the lifetime.
+	 */
+	private globalSubs: Unsubscribe[] = [];
+
+	/**
+	 * Root subscription on the SharedFolders ObservableSet itself —
+	 * fires when a folder is added or removed from the plugin.
+	 */
+	private rootSub: Unsubscribe | null = null;
+
+	/**
+	 * Folders we've already attached the main subscription bundle to
+	 * (syncSettings, folder, syncStore). Per-folder cleanup is
+	 * registered via `folder.onDestroy(...)` so it fires automatically
+	 * when the folder is destroyed — no per-subscriber teardown map
+	 * here. The WeakSet is just dedup: the sharedFolders observer
+	 * re-fires on every add/remove, and we only want to subscribe to
+	 * each folder once over its lifetime.
+	 */
+	private subscribedFolders = new WeakSet<SharedFolder>();
+
+	/**
+	 * Separate dedup for the `fset.on` subscription, which is gated by
+	 * `flag.enableDocumentStatus`. Tracked separately from
+	 * `subscribedFolders` so that if the flag is flipped on mid-session
+	 * the fset subscription is still attached on the next sharedFolders
+	 * notification — matching the behavior of the original
+	 * `offDocumentListeners` map.
+	 */
+	private subscribedFolderFsets = new WeakSet<SharedFolder>();
 
 	constructor(
 		vault: Vault,
@@ -661,51 +803,68 @@ export class FolderNavigationDecorations {
 			this.layoutReady = true;
 			this.refresh();
 		});
-		this.unsubscribes = [];
 
-		this.unsubscribes.push(
+		this.globalSubs.push(
 			backgroundSync.activeSync.subscribe(() => this.quickRefresh()),
 			backgroundSync.activeDownloads.subscribe(() => this.quickRefresh()),
 			backgroundSync.syncGroups.subscribe(() => this.quickRefresh()),
 		);
 
-		this.offDocumentListeners = new Map();
-		this.offFolderListener = this.sharedFolders.subscribe(() => {
+		// Subscribe to the SharedFolders set. On every notification,
+		// attach refresh-trigger subscriptions to any folders we
+		// haven't seen yet. Cleanup is registered with each folder
+		// via `folder.onDestroy(...)` — SharedFolder runs its own
+		// unsubscribe queue at the top of destroy(), so external
+		// subscriptions are released before any internal observable
+		// is torn down. No per-folder diff loop needed here.
+		//
+		// Behavior contract (matches the pre-refactor structure):
+		//   - whenReady().then(refresh) fires on every notification
+		//   - fset.on has its own dedup gated by the feature flag so
+		//     a mid-session flag flip can attach it late
+		//   - the other folder-level refresh subs are dedup'd per folder
+		//     (the pre-refactor code leaked
+		//     them on every notification — that was the teardown bug)
+		this.rootSub = this.sharedFolders.subscribe(() => {
 			this.sharedFolders.forEach((folder) => {
 				withAnyOf([flag.enableDocumentStatus], () => {
-					const docsetListener = this.offDocumentListeners.get(folder);
-					if (!docsetListener) {
-						this.offDocumentListeners.set(
-							folder,
+					if (!this.subscribedFolderFsets.has(folder)) {
+						this.subscribedFolderFsets.add(folder);
+						folder.onDestroy(
 							folder.fset.on(() => {
-								// XXX a full refresh is only needed when a document is moved
-								// outside of a shared folder.
+								// XXX a full refresh is only needed when a document
+								// is moved outside of a shared folder.
 								this.refresh();
 							}),
 						);
 					}
 				});
-				folder.whenReady().then(() => {
-					this.refresh();
-				});
-				this.unsubscribes.push(
-					folder.syncSettingsManager.subscribe((settings) => {
-						this.quickRefresh();
-					}),
+
+				// Refresh once the folder finishes its own load so we
+				// paint decorations as soon as data is available. This
+				// intentionally runs on every notification — matches
+				// the pre-refactor behavior (the .then handler is
+				// attached to the same cached promise each time, so
+				// after resolution every repeat handler fires once).
+				folder.whenReady().then(() => this.refresh());
+
+				if (this.subscribedFolders.has(folder)) return;
+				this.subscribedFolders.add(folder);
+
+				folder.onDestroy(
+					folder.syncSettingsManager.subscribe(() => this.quickRefresh()),
 				);
-				this.unsubscribes.push(
-					folder.subscribe(this, () => {
-						this.quickRefresh();
-					}),
+				folder.onDestroy(folder.subscribe(this, () => this.quickRefresh()));
+				folder.onDestroy(
+					folder.syncStore.subscribe(() => this.quickRefresh()),
 				);
-				this.unsubscribes.push(
-					folder.syncStore.subscribe((syncStore) => {
-						this.quickRefresh();
-					}),
+				folder.onDestroy(
+					folder.mergeManager.syncStatus.subscribe(() => this.quickRefresh()),
 				);
 			});
 			this.refresh();
 		});
+
 		this.offLayoutChange = (() => {
 			const ref = this.workspace.on("layout-change", () => this.quickRefresh());
 			return () => {
@@ -713,6 +872,7 @@ export class FolderNavigationDecorations {
 			};
 		})();
 	}
+
 
 	makeVisitors(): FileSystemVisitor<Destroyable>[] {
 		const visitors = [];
@@ -729,6 +889,7 @@ export class FolderNavigationDecorations {
 		});
 		visitors.push(new FilePillVisitor());
 		visitors.push(new NotSyncedPillVisitor());
+		visitors.push(new FileConflictVisitor());
 		return visitors;
 	}
 
@@ -749,6 +910,7 @@ export class FolderNavigationDecorations {
 
 	quickRefresh() {
 		if (!this.layoutReady) return;
+		const t0 = performance.now();
 		const fileExplorers = this.getFileExplorers();
 		const sharedFolders = this.sharedFolders.map((folder) => folder.path);
 		for (const fileExplorer of fileExplorers) {
@@ -767,10 +929,12 @@ export class FolderNavigationDecorations {
 				}
 			}
 		}
+		metrics.observeFoldernavRefresh("quick", (performance.now() - t0) / 1000);
 	}
 
 	refresh() {
 		if (!this.layoutReady) return;
+		const t0 = performance.now();
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
@@ -786,24 +950,37 @@ export class FolderNavigationDecorations {
 				walker.walk(root);
 			}
 		}
+		metrics.observeFoldernavRefresh("full", (performance.now() - t0) / 1000);
 	}
 
 	destroy() {
-		this.offFolderListener?.();
-		this.offDocumentListeners.forEach((off) => off());
-		this.offDocumentListeners.clear();
-		this.unsubscribes.forEach((unsub) => unsub());
-		this.unsubscribes.length = 0;
-		this.treeState.forEach((walker) => {
-			walker.destroy();
-		});
+		// Release the root SharedFolders subscription first so no further
+		// folder-add notifications can arrive while we're tearing down.
+		this.rootSub?.();
+		this.rootSub = null;
+
+		// Release the plugin-global subscriptions. Per-folder subs are
+		// not touched here — they are registered with each SharedFolder
+		// via folder.onDestroy(), so they fire automatically when the
+		// folder is destroyed (either at runtime delete or as part of
+		// sharedFolders.destroy() during plugin unload).
+		for (const unsub of this.globalSubs) {
+			try { unsub(); } catch { /* observable torn down first */ }
+		}
+		this.globalSubs.length = 0;
+
+		this.treeState.forEach((walker) => walker.destroy());
 		this.treeState.clear();
 		this.offLayoutChange();
+		this.offLayoutChange = null as any;
 
 		this.vault = null as any;
 		this.workspace = null as any;
 		this.sharedFolders = null as any;
 		this.backgroundSync = null as any;
-		this.offFolderListener = null as any;
+		this.treeState = null as any;
+		this.globalSubs = null as any;
+		this.subscribedFolders = null as any;
+		this.subscribedFolderFsets = null as any;
 	}
 }
