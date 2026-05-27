@@ -115,6 +115,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		vaultName: string,
 		deviceId: string,
 		maxConnections = 5,
+		refreshJitterSeed?: string,
 	) {
 		super(
 			{
@@ -129,6 +130,9 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 				getTimeProvider: () => {
 					return timeProvider;
 				},
+				refreshJitterSeed: refreshJitterSeed
+					? `${refreshJitterSeed}:${deviceId}`
+					: undefined,
 			},
 			maxConnections,
 		);

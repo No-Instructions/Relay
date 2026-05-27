@@ -67,6 +67,7 @@ import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { SelfHostModal } from "./ui/SelfHostModal";
+import { generateHash } from "./hashing";
 import { DeviceManager } from "./DeviceManager";
 import {
 	setDeviceManagementConfig,
@@ -314,6 +315,29 @@ export default class Live extends Plugin {
 			new Notice(`❌ Endpoint validation error: ${errorMessage}`, 8000);
 		}
 	}
+
+	private getPluginMainJsPath(): string {
+		const pluginDir =
+			this.manifest.dir ??
+			`${this.app.vault.configDir}/plugins/${this.manifest.id}`;
+		return normalizePath(`${pluginDir}/main.js`);
+	}
+
+	private async getPluginMainJsHash(): Promise<string> {
+		const mainJsPath = this.getPluginMainJsPath();
+		try {
+			const mainJs = await this.app.vault.adapter.readBinary(mainJsPath);
+			return generateHash(mainJs);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			this.warn("Unable to hash plugin main.js for token refresh jitter", {
+				path: mainJsPath,
+				error: message,
+			});
+			return `${this.manifest.id}:${this.manifest.version}`;
+		}
+	}
+
 	async onload() {
 		this.appId = (this.app as any).appId;
 		setPluginRequestConfig({ pluginId: this.manifest.id });
@@ -536,12 +560,14 @@ export default class Live extends Plugin {
 			this.folderSettings,
 		);
 
+		const tokenRefreshJitterSeed = await this.getPluginMainJsHash();
 		this.tokenStore = new LiveTokenStore(
 			this.loginManager,
 			this.timeProvider,
 			vaultName,
 			this.deviceManager.getDeviceId(),
 			3,
+			tokenRefreshJitterSeed,
 		);
 
 		this.networkStatus = new NetworkStatus(this.timeProvider, HEALTH_URL);

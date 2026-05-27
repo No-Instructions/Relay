@@ -15,6 +15,8 @@ interface TokenStoreConfig<StorageToken, NetToken> {
 	getTimeProvider: () => TimeProvider;
 	getJwtExpiry?: (token: NetToken) => number;
 	getStorage?: () => Map<string, StorageToken>;
+	refreshJitterSeed?: string;
+	refreshJitterOffsetsMs?: readonly number[];
 }
 
 function formatTime(milliseconds: number): string {
@@ -27,6 +29,41 @@ function formatTime(milliseconds: number): string {
 	} else {
 		return `${Math.round(milliseconds / 3600000)}h`;
 	}
+}
+
+export const TOKEN_REFRESH_JITTER_OFFSETS_MS = Object.freeze([
+	0,
+	5 * 1000,
+	20 * 1000,
+	45 * 1000,
+	55 * 1000,
+]);
+
+function hashStringToUint32(text: string): number {
+	let hash = 2166136261;
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 16777619);
+	}
+	return hash >>> 0;
+}
+
+const REFRESH_JITTER_DAY_MS = 24 * 60 * 60 * 1000;
+
+export function getTokenRefreshJitterMs(
+	seed: string | undefined,
+	documentId: string,
+	expiryTime: number,
+	offsets: readonly number[] = TOKEN_REFRESH_JITTER_OFFSETS_MS,
+): number {
+	if (!seed || offsets.length === 0) {
+		return 0;
+	}
+	const expiryDay = Math.floor(expiryTime / REFRESH_JITTER_DAY_MS);
+	const index =
+		hashStringToUint32(`${seed}:${documentId}:${expiryDay}`) %
+		offsets.length;
+	return offsets[index];
 }
 
 interface HasToken {
@@ -62,6 +99,8 @@ export class TokenStore<TokenType extends HasToken> {
 	private timeProvider: TimeProvider;
 	private refreshInterval: number | null;
 	private readonly expiryMargin: number = 5 * 60 * 1000; // 5 minutes in milliseconds
+	private readonly refreshJitterSeed?: string;
+	private readonly refreshJitterOffsetsMs: readonly number[];
 	private activeConnections = 0;
 	private maxConnections: number;
 	protected getJwtExpiry: (token: TokenType) => number;
@@ -88,6 +127,9 @@ export class TokenStore<TokenType extends HasToken> {
 		this._log = config.log;
 		this.refresh = config.refresh;
 		this.timeProvider = config.getTimeProvider();
+		this.refreshJitterSeed = config.refreshJitterSeed;
+		this.refreshJitterOffsetsMs =
+			config.refreshJitterOffsetsMs ?? TOKEN_REFRESH_JITTER_OFFSETS_MS;
 		if (config.getJwtExpiry) {
 			this.getJwtExpiry = config.getJwtExpiry;
 		} else {
@@ -148,7 +190,10 @@ export class TokenStore<TokenType extends HasToken> {
 		this.log("check and refresh tokens");
 		this._cleanupInvalidTokens();
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
-			if (this.callbacks.has(documentId) && this.shouldRefresh(tokenInfo)) {
+			if (
+				this.callbacks.has(documentId) &&
+				this.shouldRefresh(tokenInfo, documentId)
+			) {
 				this.log("adding to refresh queue");
 				this.addToRefreshQueue(documentId);
 			}
@@ -238,14 +283,39 @@ export class TokenStore<TokenType extends HasToken> {
 		}
 	}
 
+	private getRefreshJitterMs(
+		token: TokenInfo<TokenType>,
+		documentId?: string,
+	): number {
+		if (!documentId) {
+			return 0;
+		}
+		return getTokenRefreshJitterMs(
+			this.refreshJitterSeed,
+			documentId,
+			token.expiryTime,
+			this.refreshJitterOffsetsMs,
+		);
+	}
+
+	private getRefreshLeadTime(
+		token: TokenInfo<TokenType>,
+		documentId?: string,
+	): number {
+		return this.expiryMargin + this.getRefreshJitterMs(token, documentId);
+	}
+
 	isTokenValid(token: TokenInfo<TokenType>): boolean {
 		const currentTime = this.timeProvider.getTime();
 		return currentTime < token.expiryTime;
 	}
 
-	shouldRefresh(token: TokenInfo<TokenType>): boolean {
+	shouldRefresh(token: TokenInfo<TokenType>, documentId?: string): boolean {
 		const currentTime = this.timeProvider.getTime();
-		return currentTime + this.expiryMargin > token.expiryTime;
+		return (
+			currentTime + this.getRefreshLeadTime(token, documentId) >
+			token.expiryTime
+		);
 	}
 
 	getTokenSync(documentId: string) {
@@ -318,16 +388,19 @@ export class TokenStore<TokenType extends HasToken> {
 		const tokens = Array.from(this.tokenMap.entries()).sort((a, b) => {
 			return a[1].expiryTime - b[1].expiryTime;
 		});
-		for (const [documentId, { friendlyName, expiryTime, attempts }] of tokens) {
+		for (const [documentId, tokenInfo] of tokens) {
+			const { friendlyName, expiryTime, attempts } = tokenInfo;
 			if (!filter(documentId)) {
 				continue;
 			}
 			const timeUntilExpiry = expiryTime - currentTime;
+			const refreshLeadTime = this.getRefreshLeadTime(tokenInfo, documentId);
+			const timeUntilRefresh = timeUntilExpiry - refreshLeadTime;
 			let timeReport = "";
-			if (timeUntilExpiry > 0) {
-				timeReport = `expires in ${formatTime(
-					timeUntilExpiry - this.expiryMargin,
-				)}`;
+			if (timeUntilRefresh > 0) {
+				timeReport = `refreshes in ${formatTime(timeUntilRefresh)}`;
+			} else if (timeUntilExpiry > 0) {
+				timeReport = "refresh due";
 			} else {
 				timeReport = "expired";
 			}
@@ -342,6 +415,13 @@ export class TokenStore<TokenType extends HasToken> {
 		const reportLines: string[] = [];
 		reportLines.push("Token Store Report:");
 		reportLines.push(`Expiry Margin: ${formatTime(this.expiryMargin)}`);
+		if (this.refreshJitterSeed && this.refreshJitterOffsetsMs.length > 0) {
+			reportLines.push(
+				`Refresh Jitter: per document/day, up to ${formatTime(
+					Math.max(...this.refreshJitterOffsetsMs),
+				)}`,
+			);
+		}
 		reportLines.push("Active Tokens:");
 		reportLines.push(
 			...this._reportWithFilter((documentId) => {
@@ -360,8 +440,9 @@ export class TokenStore<TokenType extends HasToken> {
 
 	async waitForQueue(): Promise<void> {
 		return new Promise((resolve) => {
-			setInterval(() => {
+			const interval = this.timeProvider.setInterval(() => {
 				if (this.refreshQueue.size == 0) {
+					this.timeProvider.clearInterval(interval);
 					return resolve();
 				}
 			}, 100);
