@@ -4,6 +4,10 @@
 	margin-left: 1px;
 }
 
+.relay-hidden-modal-wrapper {
+	display: none;
+}
+
 .remote-caret {
 	position: absolute;
 	border-left: black;
@@ -53,6 +57,13 @@
 .nav-folder-title-content {
 	margin-inline-end: auto;
 }
+.relay-folder-create-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	margin-top: 20px;
+}
+
 .inline-icon {
 	display: inline-block;
 	margin-right: auto;
