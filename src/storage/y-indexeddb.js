@@ -2,6 +2,7 @@ import * as Y from 'yjs'
 import * as idb from 'lib0/indexeddb'
 import * as promise from 'lib0/promise'
 import { Observable } from 'lib0/observable'
+import { metrics } from '../debug'
 
 const customStoreName = 'custom'
 const updatesStoreName = 'updates'
@@ -27,7 +28,10 @@ export const fetchUpdates = (idbPersistence, beforeApplyUpdatesCallback = () => 
     }
   })
     .then(() => idb.getLastKey(updatesStore).then(lastKey => { idbPersistence._dbref = lastKey + 1 }))
-    .then(() => idb.count(updatesStore).then(cnt => { idbPersistence._dbsize = cnt }))
+    .then(() => idb.count(updatesStore).then(cnt => {
+      idbPersistence._dbsize = cnt
+      metrics.setDbSize(idbPersistence.name, cnt)
+    }))
     .then(() => {
       if (!idbPersistence._destroyed) {
         afterApplyUpdatesCallback(updatesStore)
@@ -44,9 +48,17 @@ export const storeState = (idbPersistence, forceStore = true) =>
   fetchUpdates(idbPersistence)
     .then(updatesStore => {
       if (forceStore || idbPersistence._dbsize >= RUNTIME_TRIM_SIZE) {
+        const startTime = performance.now()
         idb.addAutoKey(updatesStore, Y.encodeStateAsUpdate(idbPersistence.doc))
           .then(() => idb.del(updatesStore, idb.createIDBKeyRangeUpperBound(idbPersistence._dbref, true)))
-          .then(() => idb.count(updatesStore).then(cnt => { idbPersistence._dbsize = cnt }))
+          .then(() => idb.count(updatesStore).then(cnt => {
+            idbPersistence._dbsize = cnt
+            metrics.setDbSize(idbPersistence.name, cnt)
+          }))
+          .then(() => {
+            const durationSeconds = (performance.now() - startTime) / 1000
+            metrics.recordCompaction(idbPersistence.name, durationSeconds)
+          })
       }
     })
 
@@ -117,8 +129,10 @@ export class IndexeddbPersistence extends Observable {
       if (this.db && origin !== this) {
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
         idb.addAutoKey(updatesStore, update)
+        ++this._dbsize
+        metrics.setDbSize(this.name, this._dbsize)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
-        if (++this._dbsize >= trimSize) {
+        if (this._dbsize >= trimSize) {
           // debounce store call
           if (this._storeTimeoutId !== null) {
             clearTimeout(this._storeTimeoutId)
