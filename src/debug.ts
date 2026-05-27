@@ -353,6 +353,11 @@ class RelayMetrics {
 	}
 }
 
+export function recordHSMEntry(_entry: object): void {
+	// HSM recording is wired in the diagnostics chapter; the core engine records
+	// through this stable hook before disk-backed recording exists.
+}
+
 /**
  * Initialize metrics integration with Obsidian app.
  * Sets up event listener for obsidian-metrics:ready and checks if already available.

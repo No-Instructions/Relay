@@ -1,0 +1,1110 @@
+/**
+ * Merge HSM Types
+ *
+ * Core type definitions for the hierarchical state machine that manages
+ * document synchronization between disk, local CRDT, and remote CRDT.
+ */
+
+// =============================================================================
+// Obsidian Frontmatter Primitives
+// =============================================================================
+
+/**
+ * The subset of Obsidian's frontmatter API the HSM consumes. In production
+ * `parse` is Obsidian's `parseYaml`, `stringify` is `stringifyYaml`, and
+ * `getFrontMatterInfo` is Obsidian's own function. Routing every parse,
+ * serialize, and region-detection call through Obsidian's code keeps our
+ * reconstructed bytes identical to what Obsidian writes, so our edits
+ * never race its saves.
+ */
+export interface FrontMatterPrimitives {
+	parse: (yaml: string) => any;
+	stringify: (obj: any) => string;
+	getFrontMatterInfo: (content: string) => {
+		exists: boolean;
+		frontmatter: string;
+		from: number;
+		to: number;
+		contentStart: number;
+	};
+}
+
+// =============================================================================
+// View Reference Types
+// =============================================================================
+
+/**
+ * Narrow interface for reading editor view state.
+ * Used to capture the definitive editor content on release.
+ */
+export interface EditorViewRef {
+	getViewData(): string;
+}
+
+// =============================================================================
+// Metadata Types
+// =============================================================================
+
+export interface MergeMetadata {
+	/** File contents hash (SHA-256) */
+	hash: string;
+
+	/** Modification time (ms since epoch) */
+	mtime: number;
+}
+
+export interface LCAState {
+	/** The contents at the sync point. Hibernated synced HSMs may compact this body. */
+	contents: string | null;
+
+	/** Metadata at sync point */
+	meta: MergeMetadata;
+
+	/** Yjs state vector at this point, derived from snapshot when restored. */
+	stateVector: Uint8Array;
+
+	/** Yjs snapshot at this point, including insert clocks and delete set. */
+	snapshot?: Uint8Array;
+}
+
+/** Lightweight LCA metadata for in-memory caching (no contents string). */
+export interface LCAMeta {
+	meta: MergeMetadata;
+	snapshot?: Uint8Array;
+	/** Existing records may have only state vectors; new metadata uses snapshots. */
+	stateVector?: Uint8Array;
+}
+
+// =============================================================================
+// Fork and SyncGate Types
+// =============================================================================
+
+/**
+ * Snapshot of localDoc state taken before a disk edit is ingested in idle mode.
+ * Enables three-way reconciliation when the provider reconnects and syncs.
+ */
+export interface Fork {
+	/** localDoc content before changes were ingested */
+	base: string;
+	/** Y.js state vector of localDoc at fork point */
+	localStateVector: Uint8Array;
+	/** Y.js state vector of remoteDoc at fork point */
+	remoteStateVector: Uint8Array;
+	/** Yjs snapshot of localDoc at fork point */
+	localSnapshot?: Uint8Array;
+	/** Yjs snapshot of remoteDoc at fork point */
+	remoteSnapshot?: Uint8Array;
+	/** What created this fork */
+	origin: string;
+	/** When the fork was created (ms since epoch) */
+	created: number;
+	/** OpCapture position at fork creation — boundary for sinceByOrigin() */
+	captureMark: number;
+	/** Transform function from vault.process (machine-edit forks only) */
+	machineEditFn?: (data: string) => string;
+}
+
+export interface PersistedFork {
+	/** localDoc content before changes were ingested */
+	base: string;
+	localSnapshot?: Uint8Array | null;
+	remoteSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors; new writes use snapshots. */
+	localStateVector?: Uint8Array;
+	/** Existing records may have only state vectors; new writes use snapshots. */
+	remoteStateVector?: Uint8Array;
+	origin: string;
+	created: number;
+	captureMark: number;
+	machineEditFn?: (data: string) => string;
+}
+
+
+/**
+ * Controls whether CRDT ops flow between localDoc and remoteDoc.
+ * Gates on: provider connection status, fork existence, and user local-only preference.
+ */
+export interface SyncGate {
+	providerSynced: boolean;
+	localOnly: boolean;
+	pendingInbound: number;
+	pendingOutbound: number;
+}
+
+// =============================================================================
+// State Types
+// =============================================================================
+
+export type SyncStatusType = "synced" | "pending" | "conflict" | "error";
+
+export interface SyncStatus {
+	guid: string;
+	status: SyncStatusType;
+	diskMtime: number;
+	localStateVector: Uint8Array;
+	remoteStateVector: Uint8Array;
+}
+
+export interface MergeState {
+	/** Document GUID */
+	guid: string;
+
+	/** Virtual path within shared folder */
+	path: string;
+
+	/** Last Common Ancestor state */
+	lca: LCAState | null;
+
+	/** Current disk metadata */
+	disk: MergeMetadata | null;
+
+	/** Current local CRDT state vector */
+	localStateVector: Uint8Array | null;
+
+	/** Current remote CRDT state vector */
+	remoteStateVector: Uint8Array | null;
+
+	/** Current HSM state path (e.g., "idle.synced", "active.tracking") */
+	statePath: StatePath;
+
+	/** Error information if in error state */
+	error?: Error;
+
+	/**
+	 * Deferred conflict tracking.
+	 * When user dismisses a conflict, we store the hashes to avoid re-showing.
+	 */
+	deferredConflict?: {
+		diskHash: string;
+		localHash: string;
+	};
+
+	/**
+	 * Fork state for idle mode reconciliation.
+	 * Present when a disk edit was ingested and awaits provider sync for reconciliation.
+	 */
+	fork?: Fork | null;
+
+	/**
+	 * Network connectivity status.
+	 * Does not block state transitions; affects sync behavior only.
+	 */
+	isOnline: boolean;
+
+	/**
+	 * Editor content received from ACQUIRE_LOCK.
+	 * Available during active.entering while YDocs are loading.
+	 * Cleared after successful entry to active.tracking.
+	 */
+	pendingEditorContent?: string;
+
+	/**
+	 * Last known editor text from CM6_CHANGE events.
+	 * Updated whenever the editor content changes.
+	 * Used for drift detection and merge operations.
+	 */
+	lastKnownEditorText?: string;
+}
+
+// =============================================================================
+// State Path Types (Discriminated Union)
+// =============================================================================
+
+export type StatePath =
+	| "unloaded"
+	| "loading"
+	| "idle.loading"
+	| "idle.loadingDiskContents"
+	| "idle.synced"
+	| "idle.localAhead"
+	| "idle.remoteAhead"
+	| "idle.diskAhead"
+	| "idle.diverged"
+	| "idle.conflict"
+	| "idle.recoverLCA"
+	| "idle.error"
+	| "active.loading"
+	| "active.entering"
+	| "active.entering.awaitingPersistence"
+	| "active.entering.reconciling"
+	| "active.tracking"
+	| "active.merging.twoWay"
+	| "active.merging.threeWay"
+	| "active.conflict.bannerShown"
+	| "active.conflict.resolving"
+	| "unloading";
+
+// =============================================================================
+// Event Types
+// =============================================================================
+
+export interface PositionedChange {
+	from: number;
+	to: number;
+	insert: string;
+}
+
+// External Events
+export interface LoadEvent {
+	type: "LOAD";
+	guid: string;
+}
+
+export interface UnloadEvent {
+	type: "UNLOAD";
+}
+
+export interface AcquireLockEvent {
+	type: "ACQUIRE_LOCK";
+	/**
+	 * Live reference to the editor view's dirty flag.
+	 * When present, enables LCA advancement during active.tracking
+	 * when DISK_CHANGED fires and dirty === false (auto-save has flushed).
+	 */
+	editorViewRef?: EditorViewRef;
+}
+
+export interface ReleaseLockEvent {
+	type: "RELEASE_LOCK";
+}
+
+export interface DiskChangedEvent {
+	type: "DISK_CHANGED";
+	contents: string;
+	mtime: number;
+	hash: string;
+}
+
+export interface DiskMetadataChangedEvent {
+	type: "DISK_METADATA_CHANGED";
+	mtime: number;
+	hash?: string;
+}
+
+export interface RemoteUpdateEvent {
+	type: "REMOTE_UPDATE";
+	update: Uint8Array;
+	/**
+	 * Whether applying this update changed Y.Text("contents").
+	 * Undefined means the producer did not classify the update.
+	 */
+	affectsText?: boolean;
+}
+
+export interface SaveCompleteEvent {
+	type: "SAVE_COMPLETE";
+	mtime: number;
+	hash: string;
+}
+
+export interface CM6ChangeEvent {
+	type: "CM6_CHANGE";
+	changes: PositionedChange[];
+	docText: string;
+	viewId?: string;
+	userEvent?: string;
+}
+
+export interface ProviderSyncedEvent {
+	type: "PROVIDER_SYNCED";
+}
+
+export interface RecoverLCAEvent {
+	type: "RECOVER_LCA";
+	disk: {
+		content: string;
+		hash: string;
+		mtime: number;
+	};
+}
+
+export interface ConnectedEvent {
+	type: "CONNECTED";
+}
+
+export interface DisconnectedEvent {
+	type: "DISCONNECTED";
+}
+
+// Mode Determination Events (sent by MergeManager)
+/**
+ * MergeManager signals this HSM should be in active mode.
+ * Transitions from `loading` → `active.loading`.
+ */
+export interface SetModeActiveEvent {
+	type: "SET_MODE_ACTIVE";
+}
+
+/**
+ * MergeManager signals this HSM should be in idle mode.
+ * Transitions from `loading` → `idle.loading`.
+ */
+export interface SetModeIdleEvent {
+	type: "SET_MODE_IDLE";
+}
+
+/**
+ * MergeManager signals this HSM can remain cold in idle.synced.
+ * Used when lightweight persisted metadata proves the local/disk/LCA heads
+ * were already converged, so opening the per-document Yjs IndexedDB is
+ * unnecessary until new disk or remote activity arrives.
+ */
+export interface SetModeIdleColdEvent {
+	type: "SET_MODE_IDLE_COLD";
+}
+
+// User Events
+export interface ResolveEvent {
+	type: "RESOLVE";
+	contents: string;
+}
+
+export interface ResolveHunkEvent {
+	type: "RESOLVE_HUNK";
+	hunkId: string;
+	resolution: "ours" | "theirs" | "both" | "neither";
+}
+
+export interface DismissConflictEvent {
+	type: "DISMISS_CONFLICT";
+}
+
+export interface OpenDiffViewEvent {
+	type: "OPEN_DIFF_VIEW";
+}
+
+export interface CancelEvent {
+	type: "CANCEL";
+}
+
+// Internal Events
+export interface PersistenceLoadedEvent {
+	type: "PERSISTENCE_LOADED";
+	lca: LCAState | null;
+	/** Last known disk metadata from persisted HSM state. */
+	disk?: MergeMetadata | null;
+	/** Persisted local head snapshot. State vectors are fallback metadata only. */
+	localSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors. */
+	localStateVector?: Uint8Array | null;
+	deferredConflict?: {
+		diskHash: string;
+		localHash: string;
+	};
+	/** Persisted fork data (loaded async from per-document state) */
+	fork?: Fork | null;
+}
+
+export interface PersistenceSyncedEvent {
+	type: "PERSISTENCE_SYNCED";
+	hasContent: boolean;
+}
+
+export interface EnrollmentCompleteEvent {
+	type: "ENROLLMENT_COMPLETE";
+	lca: LCAState;
+	localStateVector: Uint8Array;
+	remoteStateVector?: Uint8Array | null;
+}
+
+export interface MergeSuccessEvent {
+	type: "MERGE_SUCCESS";
+	newLCA: LCAState;
+}
+
+export interface MergeConflictEvent {
+	type: "MERGE_CONFLICT";
+	origin?: string;
+	base: string;
+	ours: string;
+	theirs: string;
+	oursLabel?: string;
+	theirsLabel?: string;
+	conflictRegions?: ConflictRegion[];
+}
+
+export interface DriftCheckEvent {
+	type: "DRIFT_CHECK";
+	editorLen: number;
+	yjsLen: number;
+	delta: number;
+}
+
+export interface RemoteDocUpdatedEvent {
+	type: "REMOTE_DOC_UPDATED";
+}
+
+export interface ErrorEvent {
+	type: "ERROR";
+	error: Error;
+}
+
+/** Completion event for idle merge operations */
+export type IdleMergeCompleteEvent =
+	| { type: "IDLE_MERGE_COMPLETE"; success: true; newLCA: LCAState; source: "remote" | "disk" | "threeWay" }
+	| { type: "IDLE_MERGE_COMPLETE"; success: false; error?: Error; source: "remote" | "disk" | "threeWay" };
+
+// Diagnostic Events (from Obsidian monkeypatches)
+// These events are informational only - they don't trigger state transitions.
+// They provide visibility into Obsidian's internal file handling for debugging.
+
+/**
+ * Fired when Obsidian's loadFileInternal is called.
+ * This is a diagnostic event describing Obsidian's internal load path.
+ */
+export interface ObsidianLoadFileInternalEvent {
+	type: "OBSIDIAN_LOAD_FILE_INTERNAL";
+	/** True if this is the initial file load (not a reload) */
+	isInitialLoad: boolean;
+	/** True if the editor has unsaved changes */
+	dirty: boolean;
+	/** True if disk content differs from lastSavedData */
+	contentChanged: boolean;
+	/** True if three-way merge will be triggered (dirty && contentChanged && isPlaintext) */
+	willMerge: boolean;
+}
+
+/**
+ * Fired when Obsidian calls `setViewData` on a TextFileView (markdown,
+ * canvas, kanban, …). The patch intercepts synchronously, so this event
+ * arrives before the view finishes loading and before any downstream
+ * ACQUIRE_LOCK or three-way merge runs.
+ *
+ * When `clear=true` Obsidian is doing a fresh load (initial open, external
+ * edit, file switch). That's the authoritative disk→CRDT ingest point.
+ * When `clear=false` the call is an internal state update (metadata
+ * renderer, properties panel). Treat it as informational.
+ */
+export interface ObsidianSetViewDataEvent {
+	type: "OBSIDIAN_SET_VIEW_DATA";
+	/** The data Obsidian is about to set on the view. */
+	data: string;
+	/** `true` when Obsidian is replacing the whole view, `false` for updates. */
+	clear: boolean;
+}
+
+/**
+ * Fired when Obsidian's three-way merge is triggered.
+ * This happens when: dirty && contentChanged && isPlaintext.
+ * The merge rebases editor changes onto the new disk content.
+ */
+export interface ObsidianThreeWayMergeEvent {
+	type: "OBSIDIAN_THREE_WAY_MERGE";
+	/** Length of the LCA (lastSavedData) */
+	lcaLength: number;
+	/** Length of the current editor content */
+	editorLength: number;
+	/** Length of the new disk content */
+	diskLength: number;
+}
+
+/**
+ * Fired when Obsidian's workspace 'file-open' event fires for a Relay file.
+ */
+export interface ObsidianFileOpenedEvent {
+	type: "OBSIDIAN_FILE_OPENED";
+	path: string;
+}
+
+/**
+ * Fired when a MarkdownView unloads a Relay file (onUnloadFile monkeypatch).
+ */
+export interface ObsidianFileUnloadedEvent {
+	type: "OBSIDIAN_FILE_UNLOADED";
+	path: string;
+}
+
+/**
+ * Fired when a CM6 ViewPlugin detects the editor switched to a different file.
+ * Sent to the OLD document's HSM before teardown.
+ */
+export interface ObsidianViewReusedEvent {
+	type: "OBSIDIAN_VIEW_REUSED";
+	oldPath: string;
+	newPath: string;
+}
+
+/**
+ * Fired when Obsidian's saveFrontmatter hook triggers on a Relay file.
+ * The metadata editor writes frontmatter into the CM6 buffer outside
+ * the normal CM6_CHANGE path, which can cause editor↔localDoc drift.
+ */
+export interface ObsidianSaveFrontmatterEvent {
+	type: "OBSIDIAN_SAVE_FRONTMATTER";
+	path: string;
+}
+
+/**
+ * Fired when the ViewHookPlugin save hook syncs metadata changes to the CRDT
+ * via diffMatchPatch (preview mode only).
+ */
+export interface ObsidianMetadataSyncEvent {
+	type: "OBSIDIAN_METADATA_SYNC";
+	path: string;
+	mode: string;
+}
+
+export type MergeEvent =
+	// External
+	| LoadEvent
+	| UnloadEvent
+	| AcquireLockEvent
+	| ReleaseLockEvent
+	| DiskChangedEvent
+	| DiskMetadataChangedEvent
+	| RemoteUpdateEvent
+	| SaveCompleteEvent
+	| CM6ChangeEvent
+	| ProviderSyncedEvent
+	| RecoverLCAEvent
+	| ConnectedEvent
+	| DisconnectedEvent
+	// Mode Determination (from MergeManager)
+	| SetModeActiveEvent
+	| SetModeIdleEvent
+	| SetModeIdleColdEvent
+	// User
+	| ResolveEvent
+	| ResolveHunkEvent
+	| DismissConflictEvent
+	| OpenDiffViewEvent
+	| CancelEvent
+	// Internal
+	| PersistenceLoadedEvent
+	| PersistenceSyncedEvent
+	| EnrollmentCompleteEvent
+	| MergeSuccessEvent
+	| MergeConflictEvent
+	| RemoteDocUpdatedEvent
+	| ErrorEvent
+	| IdleMergeCompleteEvent
+	| { type: 'IDLE_RETRY' }
+	// Diagnostic (from Obsidian monkeypatches)
+	| ObsidianLoadFileInternalEvent
+	| ObsidianSetViewDataEvent
+	| ObsidianThreeWayMergeEvent
+	| ObsidianFileOpenedEvent
+	| ObsidianFileUnloadedEvent
+	| ObsidianViewReusedEvent
+	| ObsidianSaveFrontmatterEvent
+	| ObsidianMetadataSyncEvent
+	| DriftCheckEvent;
+
+// =============================================================================
+// Effect Types
+// =============================================================================
+
+export interface DispatchCM6Effect {
+	type: "DISPATCH_CM6";
+	changes: PositionedChange[];
+	originView?: string;
+}
+
+/**
+ * Full-buffer editor bootstrap for a specific CM6 view.
+ * Used when a new editor attaches to an already-tracking HSM and must be
+ * brought to the current localDoc text before incremental patches begin.
+ */
+export interface SetCM6Effect {
+	type: "SET_CM6";
+	targetView: string;
+	text: string;
+}
+
+export interface WriteDiskEffect {
+	type: "WRITE_DISK";
+	guid: string;
+	contents: string;
+	mtime?: number;
+}
+
+export interface PersistStateEffect {
+	type: "PERSIST_STATE";
+	guid: string;
+	state: PersistedMergeState;
+}
+
+export interface SyncToRemoteEffect {
+	type: "SYNC_TO_REMOTE";
+	update: Uint8Array;
+}
+
+export interface StatusChangedEffect {
+	type: "STATUS_CHANGED";
+	guid: string;
+	status: SyncStatus;
+}
+
+/**
+ * Positioned conflict region with character offsets for CM6 decorations.
+ */
+export interface PositionedConflict {
+	/** Character position where conflict starts in editor */
+	localStart: number;
+	/** Character position where conflict ends in editor */
+	localEnd: number;
+	/** Content from ours (editor/CRDT) version */
+	oursContent: string;
+	/** Content from theirs (disk/remote) version */
+	theirsContent: string;
+}
+
+/**
+ * Request provider sync for fork reconciliation.
+ * Emitted when a fork is created and needs remote state to reconcile.
+ */
+export interface RequestProviderSyncEffect {
+	type: "REQUEST_PROVIDER_SYNC";
+	guid: string;
+}
+
+export interface RequestHibernateEffect {
+	type: "REQUEST_HIBERNATE";
+	guid: string;
+}
+
+export interface DiagnosticEffect {
+	type: "DIAGNOSTIC";
+	code: string;
+	message: string;
+	detail?: Record<string, unknown>;
+}
+
+export type MergeEffect =
+	| DispatchCM6Effect
+	| SetCM6Effect
+	| WriteDiskEffect
+	| PersistStateEffect
+	| SyncToRemoteEffect
+	| StatusChangedEffect
+	| RequestProviderSyncEffect
+	| RequestHibernateEffect
+	| DiagnosticEffect;
+
+// =============================================================================
+// Persistence Types
+// =============================================================================
+
+export interface PersistedMergeState {
+	guid: string;
+	path: string;
+	lca: {
+		contents: string;
+		hash: string;
+		mtime: number;
+		snapshot?: Uint8Array;
+		/** Existing records may have only state vectors; new writes use snapshots. */
+		stateVector?: Uint8Array;
+	} | null;
+	disk: MergeMetadata | null;
+	localSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors; new writes use snapshots. */
+	localStateVector?: Uint8Array | null;
+	lastStatePath: StatePath;
+	deferredConflict?: {
+		diskHash: string;
+		localHash: string;
+	};
+	fork?: PersistedFork | null;
+	persistedAt: number;
+}
+
+/** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
+export interface PersistedStateMeta {
+	guid: string;
+	path: string;
+	lcaMeta: LCAMeta | null;
+	disk: MergeMetadata | null;
+	localSnapshot?: Uint8Array | null;
+	/** Existing records may have only state vectors; new metadata uses snapshots. */
+	localStateVector?: Uint8Array | null;
+	lastStatePath: StatePath;
+	deferredConflict?: {
+		diskHash: string;
+		localHash: string;
+	};
+	hasFork: boolean;
+	persistedAt: number;
+}
+
+// =============================================================================
+// Configuration Types
+// =============================================================================
+
+// Re-export TimeProvider from existing module for consistency
+import type { TimeProvider } from "../TimeProvider";
+export type { TimeProvider };
+
+// Import Y.Doc type for remoteDoc
+import type * as Y from "yjs";
+import type { OpCapture } from "./undo";
+
+/**
+ * Minimal interface for IndexedDB-backed YDoc persistence.
+ * Allows injection for testing (mock) vs production (IndexeddbPersistence).
+ */
+export interface IYDocPersistence {
+	/** Whether persistence has finished loading stored updates */
+	synced: boolean;
+	once(event: "synced", cb: () => void): void;
+	destroy(): void | Promise<void>;
+	/** Promise that resolves when persistence is synced */
+	whenSynced: Promise<unknown>;
+	/** Set metadata key-value pair on the persistence store */
+	set?(key: string, value: string): void;
+	/** Check if database contains meaningful user data (stored updates) */
+	hasUserData(): boolean;
+	/**
+	 * Get the origin of this document (local = created here, remote = downloaded).
+	 * Used to determine if a document needs initial upload vs is already enrolled.
+	 */
+	getOrigin?(): Promise<"local" | "remote" | undefined>;
+	/**
+	 * Set the origin of this document.
+	 */
+	setOrigin?(origin: "local" | "remote"): Promise<void>;
+	/**
+	 * Initialize document with content if not already initialized.
+	 * Checks origin in one IDB session, calls contentLoader only if needed.
+	 * @returns true if initialization happened, false if already initialized
+	 */
+	initializeWithContent?(
+		contentLoader: () => Promise<{
+			content: string;
+			hash: string;
+			mtime: number;
+		}>,
+		fieldName?: string,
+	): Promise<boolean>;
+	/**
+	 * Initialize document from remote CRDT state if not already initialized.
+	 * Used for downloaded documents where remoteDoc already has server content.
+	 * @returns true if initialization happened, false if already initialized
+	 */
+	initializeFromRemote?(update: Uint8Array, origin?: unknown): Promise<boolean>;
+	/**
+	 * OpCapture instance managed by this persistence layer.
+	 * Initialized during the persistence sync lifecycle when captureOpts
+	 * is passed to the constructor.
+	 */
+	opCapture?: OpCapture | null;
+}
+
+/**
+ * Metadata to store on the persistence for recovery/debugging.
+ */
+export interface PersistenceMetadata {
+	path: string;
+	relay: string;
+	appId: string;
+	s3rn: string;
+}
+
+/**
+ * OpCapture configuration passed to persistence constructor.
+ * When provided, persistence initializes OpCapture during its sync
+ * lifecycle (after fetchUpdates, before 'synced' fires).
+ */
+export interface CaptureOpts {
+	scope: string;
+	trackedOrigins: Set<any>;
+	captureTimeout?: number;
+}
+
+/**
+ * Factory that creates a persistence instance for a YDoc.
+ * Production: creates IndexeddbPersistence(vaultId, doc, captureOpts).
+ * Testing: can return a mock that fires 'synced' synchronously.
+ */
+export type CreatePersistence = (
+	vaultId: string,
+	doc: Y.Doc,
+	captureOpts?: CaptureOpts | null,
+) => IYDocPersistence;
+
+/**
+ * Content loaded from disk for lazy enrollment.
+ * Returned by diskLoader when HSM needs to initialize a document.
+ */
+export interface DiskContent {
+	/** File text contents */
+	content: string;
+	/** Content hash (SHA-256) */
+	hash: string;
+	/** Modification time (ms since epoch) */
+	mtime: number;
+}
+
+/**
+ * Function to lazily load disk content for enrollment.
+ * Called only when HSM determines initialization is needed (not already enrolled).
+ */
+export type DiskLoader = () => Promise<DiskContent>;
+
+export interface MergeHSMConfig {
+	/** Document GUID */
+	guid: string;
+
+	/** Callback to look up the current path by guid. */
+	getPath: () => string;
+
+	/**
+	 * Vault ID for y-indexeddb persistence.
+	 * Convention: `${appId}-relay-doc-${guid}`
+	 */
+	vaultId: string;
+
+	/**
+	 * Remote YDoc - passed in, managed externally.
+	 * Provider is attached by integration layer.
+	 * HSM observes for remote updates.
+	 * Can be null for hibernated documents (no YDoc in memory).
+	 * When null, idle mode operations use doc-less Yjs APIs.
+	 * Must be provided (via setRemoteDoc) before entering active mode.
+	 */
+	remoteDoc: Y.Doc | null;
+
+	/** Time provider (for testing) */
+	timeProvider?: TimeProvider;
+
+	/** Hash function (default: SHA-256 via SubtleCrypto) */
+	hashFn?: (contents: string) => Promise<string>;
+
+	/**
+	 * Factory to create persistence for localDoc.
+	 * Production passes IndexeddbPersistence from y-indexeddb.
+	 * Tests pass an explicit mock.
+	 */
+	createPersistence: CreatePersistence;
+
+	/**
+	 * Metadata to store on the persistence for recovery/debugging.
+	 * Set after persistence syncs.
+	 */
+	persistenceMetadata?: PersistenceMetadata;
+
+	/**
+	 * Function to lazily load disk content for local enrollment.
+	 * Called by initializeWithContent() only when the document isn't already enrolled.
+	 * This avoids disk reads when re-opening already-enrolled files.
+	 */
+	diskLoader: DiskLoader;
+
+	/**
+	 * Query whether the provider is connected and synced.
+	 * Used by fork-reconcile to determine if it can proceed with reconciliation.
+	 * If not provided, defaults to checking internal _syncGate state.
+	 */
+	isProviderSynced?: () => boolean;
+
+	/**
+	 * Query whether the owning shared folder is currently connected.
+	 * Used during active entry to distinguish true offline mode from a
+	 * newly-created HSM that has not yet received its own CONNECTED event.
+	 */
+	isFolderConnected?: () => boolean;
+
+	/**
+	 * When true, invoke sources return never-resolving promises instead of
+	 * running real async operations. Use for replay-based testing where
+	 * recorded done.invoke.* events drive transitions explicitly.
+	 */
+	replayMode?: boolean;
+
+	/**
+	 * Obsidian's frontmatter logic primitives.
+	 * In production, pass Obsidian's `parseYaml`, `stringifyYaml`, and
+	 * `getFrontMatterInfo`. Omit to disable frontmatter Y.Map mirroring.
+	 */
+	yaml?: FrontMatterPrimitives;
+}
+
+// =============================================================================
+// Merge Result Types
+// =============================================================================
+
+export interface MergeSuccess {
+	success: true;
+	merged: string;
+	patches: PositionedChange[];
+}
+
+export interface MergeFailure {
+	success: false;
+	base: string;
+	ours: string;
+	theirs: string;
+	conflictRegions: ConflictRegion[];
+}
+
+export interface ConflictRegion {
+	baseStart: number;
+	baseEnd: number;
+	oursContent: string;
+	theirsContent: string;
+}
+
+export type MergeResult = MergeSuccess | MergeFailure;
+
+// =============================================================================
+// Declarative State Machine Types
+// =============================================================================
+
+/** A single transition candidate: guard → actions → target */
+export type TransitionCandidate = {
+	target: StatePath;
+	/** Name in the guards table */
+	guard?: string;
+	/** Names in the actions table */
+	actions?: string[];
+	/** True = fire exit/entry on self-transition (default: false = internal) */
+	reenter?: boolean;
+};
+
+/** Event handler: simple target, single candidate, or ordered array (first passing guard wins) */
+export type EventHandler = StatePath | TransitionCandidate | TransitionCandidate[];
+
+/** Async service declaration — spawned on state entry, cancelled on state exit */
+export type InvokeDef = {
+	/** Name in the invokeSources table */
+	src: string;
+	/** Transition on successful completion */
+	onDone: EventHandler;
+	/** Transition on error (default: stay in state) */
+	onError?: EventHandler;
+};
+
+/** Eventless transition — evaluated immediately on state entry after entry actions */
+export type AlwaysCandidate = {
+	target: StatePath;
+	guard?: string;
+	actions?: string[];
+};
+
+export type ResourcePresence = "absent" | "optional" | "present";
+export type Residency = "awake" | "hibernated";
+
+export interface ResourceContract {
+	residency?: Residency[];
+	localDoc?: ResourcePresence;
+	remoteDoc?: ResourcePresence;
+	lcaMetadata?: ResourcePresence;
+	lcaContents?: ResourcePresence;
+	pendingDiskContents?: ResourcePresence;
+	fork?: ResourcePresence;
+	conflict?: ResourcePresence;
+}
+
+export interface CapabilityContract {
+	canHibernate?: boolean;
+	canWake?: boolean;
+	canMergeDisk?: boolean;
+	canMergeRemote?: boolean;
+	canComputeConflict?: boolean;
+	canRecoverLCA?: boolean;
+	canPersistFullLca?: boolean;
+	canUseRemoteDoc?: boolean;
+	canUsePendingDiskContents?: boolean;
+}
+
+/** A single state node in the machine definition */
+export type StateNode = {
+	/** Actions on entering this state */
+	entry?: string[];
+	/** Actions on exiting this state */
+	exit?: string[];
+	/** Event → transition mapping */
+	on?: Record<string, EventHandler>;
+	/** Async service (spawned on entry, cancelled on exit) */
+	invoke?: InvokeDef;
+	/** Eventless transitions (evaluated on entry after entry actions) */
+	always?: AlwaysCandidate[];
+	/** Diagnostic resource expectations for this state. */
+	resources?: ResourceContract;
+	/** Declarative capability metadata for tooling and diagnostics. */
+	capabilities?: CapabilityContract;
+};
+
+/** The complete machine definition: partial mapping from state path to state node */
+export type MachineDefinition = Partial<Record<StatePath, StateNode>>;
+
+// Forward-reference MergeHSM to avoid circular imports — the interpreter
+// receives the HSM instance opaquely and passes it to guard/action/invoke functions.
+// eslint-disable-next-line @typescript-eslint/no-empty-interface
+export interface MachineHSM {
+	/** Current state path */
+	readonly statePath: StatePath;
+	/** Transition to a new state (updates _statePath, emits STATUS_CHANGED) */
+	setStatePath(target: StatePath): void;
+	/** Send an event to the HSM (re-enters handleEvent loop) */
+	send(event: MergeEvent): void;
+	/** Get the currently active invoke (for cancellation) */
+	getActiveInvoke(): ActiveInvoke | null;
+	/** Set the active invoke (for the interpreter to track) */
+	setActiveInvoke(invoke: ActiveInvoke | null): void;
+}
+
+/** Tracking structure for a running invoke */
+export interface ActiveInvoke {
+	id: string;
+	controller: AbortController;
+	/** Promise that resolves when the invoke completes (for awaitAsync compatibility) */
+	promise?: Promise<void>;
+}
+
+/** Guard function: returns true if the transition should proceed */
+export type GuardFn = (hsm: MachineHSM, event: MergeEvent) => boolean;
+
+/** Action function: performs a side effect on the HSM */
+export type ActionFn = (hsm: MachineHSM, event: MergeEvent) => void;
+
+/** Invoke source function: async work spawned on state entry */
+export type InvokeSourceFn = (hsm: MachineHSM, signal: AbortSignal) => Promise<unknown>;
+
+/** Configuration for the interpreter — lookup tables for named references */
+export interface InterpreterConfig {
+	guards: Record<string, GuardFn>;
+	actions: Record<string, ActionFn>;
+	invokeSources: Record<string, InvokeSourceFn>;
+}
+
+// =============================================================================
+// Serialization Helpers (for future recording support)
+// =============================================================================
+
+/**
+ * Serializable snapshot of HSM state.
+ * All Uint8Array fields are base64 encoded.
+ */
+export interface SerializableSnapshot {
+	timestamp: number;
+	state: {
+		guid: string;
+		path: string;
+		statePath: StatePath;
+		lca: {
+			contents: string | null;
+			hash: string;
+			mtime: number;
+			stateVector: string; // base64
+		} | null;
+		disk: MergeMetadata | null;
+		localStateVector: string | null; // base64
+		remoteStateVector: string | null; // base64
+		error?: string;
+		deferredConflict?: {
+			diskHash: string;
+			localHash: string;
+		};
+	};
+	localDocText: string | null;
+	remoteDocText: string | null;
+}
+
+/**
+ * Serializable event (Uint8Array as base64).
+ */
+export interface SerializableEvent {
+	type: MergeEvent["type"];
+	[key: string]: unknown;
+}
