@@ -406,6 +406,8 @@ export class SharedFolder extends HasProvider {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
 					await this.handleIdleSyncToRemote(guid, effect.update);
+				} else if (effect.type === "WRITE_DISK") {
+					await this.handleIdleWriteDisk(guid, effect.contents);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
