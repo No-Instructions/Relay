@@ -1,15 +1,567 @@
 name: Unit Tests
+
 on:
   push:
+    branches: [main, merge-hsm]
+    tags:
+      - '0.8.0-rc*'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to test (e.g. origin/main, origin/feature-x, a tag, or a SHA)'
+        required: true
+        default: 'origin/main'
+
+concurrency:
+  group: unit-tests-private
+  cancel-in-progress: false
+
+env:
+  VM_ZONE: ${{ secrets.GCP_VM_ZONE }}
+  GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
+  GCP_USE_IAP: "true"
 
 jobs:
-  test:
+  unit-test:
+    name: private unit tests
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      VM_NAME: ${{ format('{0}-unit', secrets.GCP_VM_NAME) }}
+      GCP_VM_DISK_SIZE: 20GB
+      GCP_VM_DISK_TYPE: pd-standard
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Use Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20.x'
-    - run: npm ci
-    - run: npm test
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Clone relay-harness
+        run: |
+          mkdir -p ~/.ssh
+          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          cat > ~/.ssh/known_hosts << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+          cat > ~/.ssh/config << 'EOF'
+          Host github.com
+            IdentityFile ~/.ssh/harness-key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+
+          git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+
+      - name: Ensure VM is running
+        run: |
+          STATUS=$(gcloud compute instances describe "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "NOT_FOUND" ]; then
+            echo "VM does not exist. Creating via harness infra scripts..."
+            cd ~/relay-harness
+            GCP_PROJECT="$GCP_PROJECT" GCP_ZONE="$VM_ZONE" GCP_VM_NAME="$VM_NAME" \
+              GCP_VM_DISK_SIZE="$GCP_VM_DISK_SIZE" GCP_VM_DISK_TYPE="$GCP_VM_DISK_TYPE" \
+              ./infra/gcp-linux-vm.sh create
+          elif [ "$STATUS" = "TERMINATED" ] || [ "$STATUS" = "STOPPED" ]; then
+            echo "Starting stopped VM..."
+            gcloud compute instances start "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT"
+          elif [ "$STATUS" = "RUNNING" ]; then
+            echo "VM already running"
+          else
+            echo "Unexpected VM status: $STATUS"
+            exit 1
+          fi
+
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
+          echo -e "\nHost *\n  ConnectTimeout 10" >> ~/.ssh/config
+
+          echo "Waiting for SSH readiness..."
+          for i in $(seq 1 30); do
+            if gcloud compute ssh "$VM_NAME" --quiet \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --tunnel-through-iap \
+              --command="echo ready" 2>/dev/null; then
+              echo "VM is ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Timed out waiting for VM SSH"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Provision VM credentials
+        run: |
+          scp_retry() {
+            local src="$1"
+            local dest="$2"
+            local label="$3"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute scp --quiet "$src" "$VM_NAME":"$dest" \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap; then
+                return 0
+              fi
+              echo "Retrying $label scp ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed to copy $label to VM after 5 attempts"
+            return 1
+          }
+
+          ssh_retry() {
+            local label="$1"
+            local command="$2"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute ssh "$VM_NAME" --quiet \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap \
+                --command="$command"; then
+                return 0
+              fi
+              echo "Retrying $label ssh command ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed $label ssh command after 5 attempts"
+            return 1
+          }
+
+          ssh_retry "relay-e2e config dir creation" "mkdir -p ~/.config/relay-e2e"
+
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
+          scp_retry /tmp/sa-key.json ~/ci-sa-key.json "service-account key"
+          rm -f /tmp/sa-key.json
+
+          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
+          chmod 600 /tmp/deploy-key
+          scp_retry /tmp/deploy-key ~/ci-deploy-key "deploy key"
+          rm -f /tmp/deploy-key
+
+          cat > /tmp/relay-git-crypt-key.b64 << 'KEY'
+          ${{ secrets.RELAY_GIT_CRYPT_KEY_B64 }}
+          KEY
+          if [ ! -s /tmp/relay-git-crypt-key.b64 ]; then
+            echo "Missing RELAY_GIT_CRYPT_KEY_B64 secret"
+            exit 1
+          fi
+          base64 -d /tmp/relay-git-crypt-key.b64 > /tmp/relay-git-crypt-key
+          chmod 600 /tmp/relay-git-crypt-key
+          scp_retry /tmp/relay-git-crypt-key ~/.config/relay-e2e/relay-git-crypt-key "git-crypt key"
+          rm -f /tmp/relay-git-crypt-key /tmp/relay-git-crypt-key.b64
+
+          ssh_retry "R2 env write" "cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
+          export CI_R2_ENDPOINT='${{ secrets.CI_R2_ENDPOINT }}'
+          export CI_R2_ACCESS_KEY_ID='${{ secrets.CI_R2_ACCESS_KEY_ID }}'
+          export CI_R2_SECRET_ACCESS_KEY='${{ secrets.CI_R2_SECRET_ACCESS_KEY }}'
+          CREDS
+          chmod 600 ~/.config/relay-e2e/r2-env.sh"
+
+      - name: Run unit tests on VM
+        run: |
+          INPUT_REF="${{ github.event.inputs.ref || '' }}"
+          REF_TYPE="${{ github.ref_type }}"
+          REF_NAME="${{ github.ref_name }}"
+
+          if [ -n "$INPUT_REF" ]; then
+            REF="$INPUT_REF"
+          elif [ "$REF_TYPE" = "tag" ]; then
+            REF="refs/tags/$REF_NAME"
+          else
+            REF="origin/$REF_NAME"
+          fi
+
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="bash -s -- '$REF'" 2>/dev/null << 'REMOTE_SCRIPT'
+          set -eo pipefail
+          REF="$1"
+
+          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
+          rm -rf /tmp/test-reports
+          rm -f ~/test-summary.json ~/test-metadata.json
+
+          if ! command -v git-crypt >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq git-crypt
+          fi
+
+          gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
+
+          mkdir -p ~/.ssh
+          cp ~/ci-deploy-key ~/.ssh/ci-deploy-key
+          chmod 600 ~/.ssh/ci-deploy-key
+          cat > ~/.ssh/known_hosts << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ci-deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+
+          if [ ! -d ~/relay-plugin ]; then
+            git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
+          fi
+          cd ~/relay-plugin
+          git fetch origin --force --prune \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/0.8.0*:refs/tags/0.8.0*'
+          git checkout -- .
+          git clean -fd
+          git checkout --detach "$REF"
+          git crypt unlock ~/.config/relay-e2e/relay-git-crypt-key
+          if ! grep -q "describe\\|test\\|it(" __tests__/TestMinimark.ts; then
+            echo "git-crypt unlock did not expose the private unit tests"
+            exit 1
+          fi
+
+          COMMIT=$(git rev-parse --short HEAD)
+          EXEC_ID="unit-$(date -u +%Y%m%dT%H%M%SZ)"
+          REPORT_DIR="/tmp/test-reports/runs/$COMMIT/$EXEC_ID"
+          mkdir -p "$REPORT_DIR"
+          JEST_JSON="$REPORT_DIR/jest-results.json"
+          JEST_LOG="$REPORT_DIR/jest-output.txt"
+
+          echo "Relay product checkout:"
+          git show -s --format='  commit: %H%n  subject: %s'
+          echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
+
+          if [ ! -d ~/relay-harness ]; then
+            git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+          fi
+          cd ~/relay-harness
+          git fetch origin --prune
+          git checkout -- .
+          git clean -fd
+          git checkout --detach origin/main
+
+          cd ~/relay-plugin
+          npm ci
+
+          TEST_EXIT=0
+          npm test -- --silent --json --outputFile="$JEST_JSON" >"$JEST_LOG" 2>&1 || TEST_EXIT=$?
+
+          node - "$JEST_JSON" "$JEST_LOG" "$REPORT_DIR" "$COMMIT" "$EXEC_ID" <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const [jestJsonPath, jestLogPath, reportDir, commit, execId] = process.argv.slice(2);
+          const raw = JSON.parse(fs.readFileSync(jestJsonPath, 'utf8'));
+
+          const escapeHtml = value => String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+          const safeSegment = value => String(value ?? '')
+            .replace(/[^a-zA-Z0-9._-]+/g, '-')
+            .replace(/^-+|-+$/g, '')
+            .slice(0, 40);
+          const statusFor = status => {
+            if (status === 'passed') return 'pass';
+            if (status === 'pending' || status === 'todo' || status === 'skipped') return 'expected_fail';
+            return 'fail';
+          };
+
+          const started = Number(raw.startTime || Date.now());
+          const ended = Number(raw.endTime || Date.now());
+          const tests = [];
+          let index = 0;
+
+          for (const suite of raw.testResults || []) {
+            const suiteName = path.relative(process.cwd(), suite.name || '');
+            for (const assertion of suite.assertionResults || []) {
+              index += 1;
+              const name = [...(assertion.ancestorTitles || []), assertion.title]
+                .filter(Boolean)
+                .join(' > ');
+              const status = statusFor(assertion.status);
+              const dir = `unit-${String(index).padStart(4, '0')}-${safeSegment(path.basename(suiteName, path.extname(suiteName))) || 'test'}`;
+              const failureMessages = assertion.failureMessages || [];
+              const duration = Number(assertion.duration || 0);
+              const test = {
+                name: name || suiteName || `unit ${index}`,
+                status,
+                assertions: 1,
+                passedAssertions: status === 'pass' ? 1 : 0,
+                duration,
+                dir,
+                suite: suiteName,
+                firstError: failureMessages[0] || '',
+              };
+              tests.push(test);
+
+              fs.mkdirSync(path.join(reportDir, dir), { recursive: true });
+              fs.writeFileSync(path.join(reportDir, dir, 'index.html'), `<!doctype html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>${escapeHtml(test.name)}</title>
+            <style>
+              body { color: #e6e6e6; background: #181818; font: 14px/1.5 system-ui, sans-serif; margin: 32px; }
+              a { color: #8ab4ff; }
+              pre { background: #111; border: 1px solid #333; border-radius: 6px; padding: 16px; overflow: auto; }
+              .status { font-weight: 700; text-transform: uppercase; }
+              .pass { color: #7ee787; }
+              .fail { color: #ff7b72; }
+              .expected_fail { color: #d29922; }
+            </style>
+          </head>
+          <body>
+            <p><a href="../index.html">Back to unit report</a></p>
+            <h1>${escapeHtml(test.name)}</h1>
+            <p class="status ${escapeHtml(status)}">${escapeHtml(status)}</p>
+            <p><strong>Suite:</strong> ${escapeHtml(suiteName)}</p>
+            <p><strong>Duration:</strong> ${escapeHtml(duration)}ms</p>
+            ${failureMessages.length ? `<h2>Failure</h2><pre>${escapeHtml(failureMessages.join('\n\n'))}</pre>` : ''}
+          </body>
+          </html>
+          `);
+            }
+          }
+
+          const counts = tests.reduce((acc, test) => {
+            acc[test.status] = (acc[test.status] || 0) + 1;
+            return acc;
+          }, {});
+          const summary = {
+            summary: {
+              total: tests.length,
+              pass: counts.pass || 0,
+              fail: counts.fail || 0,
+              expectedFail: counts.expected_fail || 0,
+              unexpectedPass: 0,
+              duration: Math.max(0, ended - started),
+            },
+            tests,
+            state: (counts.fail || 0) > 0 ? 'failure' : 'success',
+          };
+
+          fs.writeFileSync(path.join(reportDir, 'summary.json'), JSON.stringify(summary, null, 2));
+
+          const rows = tests.map(test => `
+            <tr class="${escapeHtml(test.status)}">
+              <td><a href="${escapeHtml(test.dir)}/index.html">${escapeHtml(test.name)}</a></td>
+              <td>${escapeHtml(test.status)}</td>
+              <td>${escapeHtml(test.suite)}</td>
+              <td>${escapeHtml(test.duration)}ms</td>
+            </tr>
+          `).join('');
+          fs.writeFileSync(path.join(reportDir, 'index.html'), `<!doctype html>
+          <html>
+          <head>
+            <meta charset="utf-8">
+            <title>Relay Unit Tests ${escapeHtml(commit)}</title>
+            <style>
+              body { color: #e6e6e6; background: #181818; font: 14px/1.5 system-ui, sans-serif; margin: 32px; }
+              a { color: #8ab4ff; }
+              table { width: 100%; border-collapse: collapse; }
+              th, td { border-bottom: 1px solid #333; padding: 8px; text-align: left; vertical-align: top; }
+              tr.pass td:nth-child(2) { color: #7ee787; }
+              tr.fail td:nth-child(2) { color: #ff7b72; }
+              tr.expected_fail td:nth-child(2) { color: #d29922; }
+              .summary { display: flex; gap: 16px; margin: 16px 0 24px; }
+              .summary span { background: #222; border: 1px solid #333; border-radius: 6px; padding: 8px 10px; }
+            </style>
+          </head>
+          <body>
+            <h1>Relay Unit Tests</h1>
+            <p>Commit ${escapeHtml(commit)} / ${escapeHtml(execId)}</p>
+            <div class="summary">
+              <span>${summary.summary.pass} pass</span>
+              <span>${summary.summary.fail} fail</span>
+              <span>${summary.summary.expectedFail} expected fail</span>
+              <span>${summary.summary.total} total</span>
+            </div>
+            <p><a href="jest-results.json">Jest JSON</a> | <a href="jest-output.txt">Jest output</a> | <a href="summary.json">Summary JSON</a></p>
+            <table>
+              <thead><tr><th>Test</th><th>Status</th><th>Suite</th><th>Duration</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </body>
+          </html>
+          `);
+
+          if (!fs.existsSync(jestLogPath)) {
+            fs.writeFileSync(jestLogPath, '');
+          }
+          NODE
+
+          if ! node ~/relay-harness/scripts/upload-report.mjs "$REPORT_DIR" "$COMMIT" "$EXEC_ID" >"$REPORT_DIR/upload-output.txt" 2>&1; then
+            echo "Report upload failed"
+            exit 1
+          fi
+
+          cp "$REPORT_DIR/summary.json" ~/test-summary.json
+          REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
+          echo "{\"reportUrl\":\"$REPORT_URL\",\"commit\":\"$COMMIT\",\"execId\":\"$EXEC_ID\"}" > ~/test-metadata.json
+
+          exit $TEST_EXIT
+          REMOTE_SCRIPT
+
+      - name: Clean up VM credentials
+        if: always()
+        run: |
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/relay-git-crypt-key ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
+
+      - name: Fetch results
+        if: always()
+        run: |
+          rm -f summary.json metadata.json
+          gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null || true
+          gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null || true
+
+      - name: Install report-site dependencies
+        if: always()
+        run: npm ci --prefix ~/relay-harness/report-site
+
+      - name: Publish report site
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID: ${{ secrets.CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID }}
+          CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET: ${{ secrets.CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          cd ~/relay-harness
+
+          TARGET_COMMIT="$(node <<'NODE'
+          const fs = require('fs');
+          try {
+            const metadata = JSON.parse(fs.readFileSync(process.env.GITHUB_WORKSPACE + '/metadata.json', 'utf8'));
+            console.log(metadata.commit || '');
+          } catch {
+            console.log('');
+          }
+          NODE
+          )"
+
+          if [ -z "$TARGET_COMMIT" ]; then
+            echo "No unit-test metadata available; skipping report-site publish"
+            exit 0
+          fi
+
+          COMMIT_SET="$(TARGET_COMMIT="$TARGET_COMMIT" node --input-type=module <<'NODE'
+          import { readJson } from './scripts/lib/ci-artifact-store.mjs';
+
+          const target = process.env.TARGET_COMMIT || '';
+          const manifest = await readJson('runs/manifest.json');
+          const existing = (manifest?.commitGroups || manifest?.runs || [])
+            .map(entry => entry.sha || entry.id || entry.runId)
+            .filter(Boolean);
+          console.log([...new Set([target, ...existing].filter(Boolean))].join(','));
+          NODE
+          )"
+
+          if [ -z "$COMMIT_SET" ]; then
+            echo "No commit set resolved for report-site publish"
+            exit 1
+          fi
+
+          READBACK_ARGS=()
+          if [ -n "${CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            READBACK_ARGS=(--live-readback --live-readback-base-url=https://ci.system3.dev)
+          else
+            echo "Cloudflare Access readback credentials not configured; skipping live readback"
+          fi
+
+          node scripts/publish-report-site-static.mjs \
+            --commit="$COMMIT_SET" \
+            --refresh-commit="$TARGET_COMMIT" \
+            --materialize-missing-commits \
+            --rebuild-manifest-from-commits \
+            --upload \
+            "${READBACK_ARGS[@]}"
+
+      - name: Request VM stop
+        if: always()
+        run: |
+          STATUS=$(gcloud compute instances describe "$VM_NAME" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+
+          if [ "$STATUS" = "RUNNING" ]; then
+            echo "Requesting asynchronous stop for unit-test VM..."
+            gcloud compute instances stop "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --quiet --async 2>/dev/null || true
+          else
+            echo "Skipping stop request (status: $STATUS)"
+          fi
+
+      - name: Generate job summary
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            let summary, metadata;
+            try {
+              summary = JSON.parse(fs.readFileSync('summary.json', 'utf-8'));
+            } catch {
+              core.summary.addRaw('## Unit test results\n\n:x: **Failed to retrieve unit test results from VM**\n');
+              await core.summary.write();
+              core.setFailed('No unit test results available');
+              return;
+            }
+            try {
+              metadata = JSON.parse(fs.readFileSync('metadata.json', 'utf-8'));
+            } catch {
+              metadata = { reportUrl: '', commit: '', execId: '' };
+            }
+
+            const s = summary.summary || {};
+            const totalDur = Math.round((s.duration || 0) / 1000);
+            const fail = s.fail || 0;
+            const verdictEmoji = fail > 0 ? ':x:' : ':white_check_mark:';
+            const verdictText = fail > 0 ? 'FAIL' : 'PASS';
+            const parts = [];
+            parts.push(`${s.pass || 0} pass`);
+            if (fail) parts.push(`${fail} fail`);
+            if (s.expectedFail) parts.push(`${s.expectedFail} expected-fail`);
+
+            let md = '## Unit test results\n\n';
+            md += `${verdictEmoji} **${verdictText}** | ${parts.join(', ')} | ${s.total || 0} total | ${totalDur}s`;
+            if (metadata.reportUrl) {
+              md += ` | [Private Report](${metadata.reportUrl})`;
+            }
+            md += '\n';
+
+            core.summary.addRaw(md);
+            await core.summary.write();
+
+            if ((s.total || 0) === 0 || summary.state === 'error') {
+              core.setFailed('No unit tests were executed');
+            } else if (fail > 0) {
+              core.setFailed(`${fail} unit test(s) failed`);
+            }
