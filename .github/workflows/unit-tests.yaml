@@ -296,7 +296,7 @@ jobs:
                 .filter(Boolean)
                 .join(' > ');
               const status = statusFor(assertion.status);
-              const dir = `unit-${String(index).padStart(4, '0')}-${safeSegment(path.basename(suiteName, path.extname(suiteName))) || 'test'}`;
+              const dir = `unit-${String(index).padStart(4, '0')}`;
               const failureMessages = assertion.failureMessages || [];
               const duration = Number(assertion.duration || 0);
               const test = {
@@ -312,6 +312,39 @@ jobs:
               tests.push(test);
 
               fs.mkdirSync(path.join(reportDir, dir), { recursive: true });
+              const passed = status === 'pass';
+              fs.writeFileSync(path.join(reportDir, dir, 'results.json'), JSON.stringify({
+                testName: test.name,
+                passed,
+                status,
+                startTime: started,
+                endTime: started + duration,
+                duration,
+                steps: [
+                  {
+                    name: 'Jest assertion',
+                    passed,
+                    error: failureMessages.join('\n\n'),
+                    assertions: [
+                      {
+                        description: test.name,
+                        expected: 'pass',
+                        actual: status,
+                        passed,
+                      },
+                    ],
+                    actions: [],
+                    trace: [],
+                  },
+                ],
+                summary: {
+                  totalSteps: 1,
+                  passedSteps: passed ? 1 : 0,
+                  totalAssertions: 1,
+                  passedAssertions: passed ? 1 : 0,
+                  totalActions: 0,
+                },
+              }, null, 2));
               fs.writeFileSync(path.join(reportDir, dir, 'index.html'), `<!doctype html>
           <html>
           <head>
