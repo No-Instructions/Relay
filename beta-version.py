@@ -2,33 +2,41 @@ import os
 import json
 import click
 import git
+import re
 import time
 from github import Github
 
 REMOTE = os.environ.get("ORIGIN", "origin")
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
-def bump_version(file_path, version_type):
+def bump_version(file_path, version_spec):
     with open(file_path, 'r') as file:
         data = json.load(file)
 
     current_version = data['version']
     major, minor, patch = map(int, current_version.split('.'))
 
-    if version_type == 'major':
+    if SEMVER_RE.match(version_spec):
+        new_version = version_spec
+    elif version_spec == 'major':
         major += 1
         minor = 0
         patch = 0
-    elif version_type == 'minor':
+        new_version = f"{major}.{minor}.{patch}"
+    elif version_spec == 'minor':
         minor += 1
         patch = 0
-    elif version_type == 'patch':
+        new_version = f"{major}.{minor}.{patch}"
+    elif version_spec == 'patch':
         patch += 1
-    elif version_type == 'force':
-        pass
+        new_version = f"{major}.{minor}.{patch}"
+    elif version_spec == 'force':
+        new_version = current_version
     else:
-        raise ValueError("Invalid version type. Use 'major', 'minor', 'patch', or 'force'.")
+        raise click.BadParameter(
+            "Use 'major', 'minor', 'patch', 'force', or an explicit version like '0.8.1'."
+        )
 
-    new_version = f"{major}.{minor}.{patch}"
     data['version'] = new_version
 
     with open(file_path, 'w') as file:
@@ -46,15 +54,32 @@ def delete_tag(repo, tag_name):
     except git.exc.GitCommandError:
         pass
 
+def wait_for_release(github_client, repo_name, tag_name, timeout_seconds=600, interval_seconds=30):
+    deadline = time.time() + timeout_seconds
+    while True:
+        repo = github_client.get_repo(repo_name)
+        releases = repo.get_releases()
+        release_names = [release.tag_name for release in releases]
+
+        if tag_name in release_names:
+            return True
+
+        if time.time() >= deadline:
+            return False
+
+        print(f"Release {tag_name} not found yet. Waiting {interval_seconds} seconds...")
+        time.sleep(interval_seconds)
+
 @click.command()
-@click.argument('version_type')
-def main(version_type):
+@click.argument('version_spec')
+def main(version_spec):
+    """Create a beta release from a bump type or explicit X.Y.Z version."""
     manifest_file = "manifest-beta.json"
     repo = git.Repo('.')
     g = Github()
     repo_name = "no-instructions/relay"
 
-    new_version = bump_version(manifest_file, version_type)
+    new_version = bump_version(manifest_file, version_spec)
 
     # Delete tags
     delete_tag(repo, new_version)
@@ -66,30 +91,24 @@ def main(version_type):
     except git.exc.GitCommandError:
         pass
 
-    # Push the commit
-    force = (version_type == 'force')
-    repo.git.push(force=force)
-
     # Create a new tag
     repo.create_tag(new_version)
 
-    # Push the new tag
+    # Push the tag first so GitHub can build the release before the branch
+    # advertises the beta manifest version.
     remote = repo.remote(name=REMOTE)
     remote.push(new_version)
 
     # Wait for GitHub to create the release
     print("Waiting for GitHub to create the release...")
-    time.sleep(30)
+    if not wait_for_release(g, repo_name, new_version):
+        raise click.ClickException(f"Release {new_version} not found.")
 
-    # Check if release is created
-    repo = g.get_repo(repo_name)
-    releases = repo.get_releases()
-    release_names = [release.tag_name for release in releases]
+    print(f"Release {new_version} created successfully.")
 
-    if new_version in release_names:
-        print(f"Release {new_version} created successfully.")
-    else:
-        print(f"Release {new_version} not found.")
+    # Push the branch only after the release exists.
+    force = (version_spec == 'force')
+    repo.git.push(force=force)
 
 if __name__ == "__main__":
     main()
