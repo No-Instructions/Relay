@@ -67,7 +67,6 @@ import { DefaultTimeProvider } from "../TimeProvider";
 import { curryLog, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
 import { generateHash } from "../hashing";
-import type { TestableHSM } from "./testing/createTestHSM";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
@@ -174,7 +173,7 @@ class SimpleObservable<T> implements IObservable<T> {
 // MergeHSM Class
 // =============================================================================
 
-export class MergeHSM implements TestableHSM, MachineHSM, SyncBridgeHost {
+export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
 

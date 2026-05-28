@@ -24,7 +24,9 @@
     "**/*.ts"
   ],
   "exclude": [
+    "__tests__",
     "**/*.test.ts",
+    "src/merge-hsm/testing",
     "node_modules",
     "vaults",
     "archive"
