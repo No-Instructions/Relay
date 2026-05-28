@@ -1235,7 +1235,6 @@ export class SharedFolder extends HasProvider {
 	async connect(): Promise<boolean> {
 		if (this.s3rn instanceof S3RemoteFolder) {
 			if (this.connected) {
-				if (this.shouldConnect) this.enqueueLCABackfill("already-connected");
 				return true;
 			}
 			if (this.shouldConnect) {

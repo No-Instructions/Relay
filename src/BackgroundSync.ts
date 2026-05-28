@@ -2014,8 +2014,14 @@ export class BackgroundSync extends HasLogging {
 		const diskState = await doc.readDiskContent();
 		const settled = await hsm.bootstrapLCAFromDisk(diskState);
 		if (!settled && hsm.getSyncStatus().status === "pending") {
-			throw new RetryableProviderSyncError(
-				`LCA backfill deferred for ${this.fileName(doc.path)}`,
+			if (!hsm.hasPersistenceUserData()) {
+				this.debug(
+					`[lca-backfill] deferred for ${doc.path}: awaiting local enrollment`,
+				);
+				return;
+			}
+			this.debug(
+				`[lca-backfill] deferred for ${doc.path}: local or remote state is not ready`,
 			);
 		}
 	}
