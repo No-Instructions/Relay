@@ -16,6 +16,14 @@ import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
+import {
+  buildFolderSyncStatusModel,
+  type ActionableSyncFile,
+  type FolderQueueSnapshot,
+  type FolderSyncStatusModel,
+  type QueueWorkItem,
+} from './ui/SyncStatusModel';
+import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
 
 export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
 
@@ -109,6 +117,29 @@ export interface IdbForkSnapshot {
     persistedAtTime: string | null;
     hasForkInPersistedState: boolean;
   } | null;
+}
+
+export interface SyncPanelQueueSnapshot {
+  isPaused: boolean;
+  syncsQueued: number;
+  syncsActive: number;
+  downloadsQueued: number;
+  downloadsActive: number;
+  queued: number;
+  active: number;
+  total: number;
+  runState: string;
+  label: string;
+  showSyncingCount: boolean;
+  items: QueueWorkItem[];
+}
+
+export interface SyncPanelStatus {
+  folderGuid: string;
+  folderPath: string;
+  snapshot: FolderSyncSnapshot;
+  queue: SyncPanelQueueSnapshot;
+  actionableFiles: ActionableSyncFile[];
 }
 
 /**
@@ -223,6 +254,8 @@ export interface RelayDebugGlobal {
   getFolderConflicts: (folderGuid: string) => { guid: string; path: string }[];
   /** All files currently in conflict state across every shared folder. */
   listAllConflicts: () => { folderGuid: string; folderPath: string; guid: string; path: string }[];
+  getSyncPanelStatus: (folderGuid: string) => SyncPanelStatus;
+  listSyncPanelStatus: () => SyncPanelStatus[];
   /** Get a rich HSM state snapshot for the test harness — state path, LCA, disk, IDB, SV, frontmatter, recent transitions. */
   getHsmStateSnapshot: (path: string) => Promise<HsmStateSnapshot>;
   /** Snapshot the per-doc IndexedDB: updates count, custom metadata, IDB content, disk content, match flag. */
@@ -502,6 +535,8 @@ export class RelayDebugAPI {
       getFolderSyncErrors: (folderGuid: string) => this.getFolderSyncErrors(folderGuid),
       getFolderConflicts: (folderGuid: string) => this.getFolderConflicts(folderGuid),
       listAllConflicts: () => this.listAllConflicts(),
+      getSyncPanelStatus: (folderGuid: string) => this.getSyncPanelStatus(folderGuid),
+      listSyncPanelStatus: () => this.listSyncPanelStatus(),
 
       lookupDocument: (path: string) => {
         const sharedFolders = this.plugin?.sharedFolders;
@@ -1155,6 +1190,77 @@ export class RelayDebugAPI {
       }
     }
     return out;
+  }
+
+  private getSyncPanelStatus(folderGuid: string): SyncPanelStatus {
+    const folder = this.getFolderByGuid(folderGuid);
+    if (!folder) {
+      throw new Error(`Folder not found: ${folderGuid}`);
+    }
+    return this.serializeSyncPanelStatus(folder, buildFolderSyncStatusModel(folder));
+  }
+
+  private listSyncPanelStatus(): SyncPanelStatus[] {
+    if (!this.plugin?.sharedFolders?._set) return [];
+    const panels: SyncPanelStatus[] = [];
+    for (const folder of this.plugin.sharedFolders._set.values() as Iterable<any>) {
+      panels.push(this.serializeSyncPanelStatus(folder, buildFolderSyncStatusModel(folder)));
+    }
+    panels.sort((a, b) => a.folderPath.localeCompare(b.folderPath));
+    return panels;
+  }
+
+  private serializeSyncPanelStatus(folder: any, model: FolderSyncStatusModel): SyncPanelStatus {
+    const queue = this.serializeSyncPanelQueue(folder, model.queue);
+    return {
+      folderGuid: folder.guid,
+      folderPath: folder.path ?? '',
+      snapshot: { ...model.snapshot },
+      queue,
+      actionableFiles: model.actionableFiles.map((file) => ({
+        ...file,
+        path: this.toPanelVaultPath(folder, file.path),
+      })),
+    };
+  }
+
+  private serializeSyncPanelQueue(folder: any, queue: FolderQueueSnapshot): SyncPanelQueueSnapshot {
+    const byId = new Map<string, QueueWorkItem>();
+    for (const item of queue.itemsByGuid.values()) {
+      byId.set(`${item.guid}:${item.kind}:${item.phase}`, {
+        ...item,
+        path: this.toPanelVaultPath(folder, item.path),
+      });
+    }
+    const items = Array.from(byId.values()).sort((a, b) => {
+      const pathOrder = a.path.localeCompare(b.path);
+      if (pathOrder !== 0) return pathOrder;
+      return `${a.kind}:${a.phase}`.localeCompare(`${b.kind}:${b.phase}`);
+    });
+    return {
+      isPaused: queue.isPaused,
+      syncsQueued: queue.syncsQueued,
+      syncsActive: queue.syncsActive,
+      downloadsQueued: queue.downloadsQueued,
+      downloadsActive: queue.downloadsActive,
+      queued: queue.queued,
+      active: queue.active,
+      total: queue.total,
+      runState: queue.runState,
+      label: queue.label,
+      showSyncingCount: queue.showSyncingCount,
+      items,
+    };
+  }
+
+  private toPanelVaultPath(folder: any, path: string): string {
+    if (!path) return path;
+    const withoutSlash = path.replace(/^\/+/, '');
+    const folderPath = String(folder.path ?? '').replace(/^\/+/, '');
+    if (folderPath && (withoutSlash === folderPath || withoutSlash.startsWith(`${folderPath}/`))) {
+      return `/${withoutSlash}`;
+    }
+    return this.toVaultPath(folder, withoutSlash);
   }
 
   private async clearLca(path: string): Promise<void> {
