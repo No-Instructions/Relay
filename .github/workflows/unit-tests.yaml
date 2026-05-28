@@ -63,9 +63,22 @@ jobs:
 
       - name: Ensure VM is running
         run: |
-          STATUS=$(gcloud compute instances describe "$VM_NAME" \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
-            --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+          STATUS=""
+          for i in $(seq 1 60); do
+            STATUS=$(gcloud compute instances describe "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --format='get(status)' 2>/dev/null || echo "NOT_FOUND")
+
+            case "$STATUS" in
+              PROVISIONING|STAGING|STOPPING|SUSPENDING|REPAIRING)
+                echo "VM is $STATUS; waiting for a stable state ($i/60) ..."
+                sleep 10
+                ;;
+              *)
+                break
+                ;;
+            esac
+          done
 
           if [ "$STATUS" = "NOT_FOUND" ]; then
             echo "VM does not exist. Creating via harness infra scripts..."
