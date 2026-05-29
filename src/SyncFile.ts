@@ -2,7 +2,6 @@
 import {
 	S3File,
 	S3RemoteFile,
-	S3Document,
 	S3Folder,
 	type S3RNType,
 } from "./S3RN";
@@ -260,7 +259,6 @@ export class SyncFile
 	extends Observable<SyncFile>
 	implements TFile, IFile, HasMimeType
 {
-	s3rn: S3RNType;
 	private _parent: SharedFolder;
 	meta: FileMetas | undefined;
 	name: string;
@@ -282,9 +280,6 @@ export class SyncFile
 		parent: SharedFolder,
 	) {
 		super();
-		this.s3rn = parent.relayId
-			? new S3RemoteFile(parent.relayId, parent.guid, _guid)
-			: new S3File(parent.guid, _guid);
 		this._parent = parent;
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.name = this.path.split("/").pop() || "";
@@ -314,13 +309,17 @@ export class SyncFile
 
 	public set guid(guid: string) {
 		this._guid = guid;
-		this.s3rn = this._parent.relayId
-			? new S3RemoteFile(this._parent.relayId, this._parent.guid, guid)
-			: new S3File(this._parent.guid, guid);
 	}
 
 	public get mimetype(): string {
 		return getMimeType(this.path);
+	}
+
+	public get s3rn(): S3RNType {
+		const relayId = this.sharedFolder.relayId;
+		return relayId
+			? new S3RemoteFile(relayId, this.sharedFolder.guid, this.guid)
+			: new S3File(this.sharedFolder.guid, this.guid);
 	}
 
 	disconnect() {
@@ -517,22 +516,11 @@ export class SyncFile
 		if (this.sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
 			return false;
-		} else if (this.s3rn instanceof S3Document) {
-			// convert to remote document
-			if (this.sharedFolder.relayId) {
-				this.s3rn = new S3RemoteFile(
-					this.sharedFolder.relayId,
-					this.sharedFolder.guid,
-					this.guid,
-				);
-			} else {
-				this.s3rn = new S3File(this.sharedFolder.guid, this.guid);
-			}
 		}
 		return (
 			this.sharedFolder.shouldConnect &&
 			this.sharedFolder.connect().then((connected) => {
-				this.connected = true;
+				this.connected = connected;
 				return this.connected;
 			})
 		);
