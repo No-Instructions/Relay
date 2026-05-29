@@ -787,6 +787,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		let unsubscribeState: (() => void) | null = null;
 		const cleanupIfDone = () => {
 			if (hsm.matches("idle.localAhead")) return;
+			if (!hsm.state.lca && hsm.matches("idle.diverged")) return;
 			unsubscribeState?.();
 			unsubscribeState = null;
 			if (!hsm.isActive()) {
