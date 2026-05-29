@@ -35,6 +35,7 @@ const IDLE_LIFECYCLE: Record<string, EventHandler> = {
 	// re-evaluate with the loaded LCA/fork data.
 	PERSISTENCE_LOADED: { target: 'idle.loading', actions: ['storePersistenceData'], reenter: true },
 	ENROLLMENT_COMPLETE: { target: 'idle.loading', actions: ['storeEnrollmentComplete'], reenter: true },
+	PERSISTENCE_SYNCED: { target: 'idle.loading', guard: 'shouldWakeLCARecoveryAfterPersistenceSynced', reenter: true },
 	ACQUIRE_LOCK: { target: 'active.entering.awaitingPersistence', actions: ['storeEditorContent'] },
 	UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 	LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
@@ -112,6 +113,9 @@ export const MACHINE: MachineDefinition = {
 	'idle.loading': {
 		entry: ['ensureLocalDocForIdle', 'processAccumulatedForIdle'],
 		on: {
+			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata'], reenter: true },
+			REMOTE_UPDATE: { target: 'idle.loading', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'], reenter: true },
+			PROVIDER_SYNCED: { target: 'idle.loading', actions: ['markProviderSynced'], reenter: true },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
 			...IDLE_LIFECYCLE,
 		},

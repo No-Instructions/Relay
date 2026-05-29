@@ -473,6 +473,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return !!localStateVector && localStateVector.length > 1;
 	}
 
+	private shouldWakeLCARecoveryAfterPersistenceSynced(hasContent = this.localPersistence?.hasUserData() ?? false): boolean {
+		if (!this._statePath.startsWith("idle.")) return false;
+		if (this._statePath === "idle.conflict" || this._statePath === "idle.recoverLCA") return false;
+		if (this._lca || this._fork || this._conflict) return false;
+		if (!this.localDoc || this.localPersistence?.synced !== true) return false;
+		if (!hasContent || !this.hasEnrolledLocalCRDT()) return false;
+		return this.hasLCARecoveryPendingWork();
+	}
+
+	private hasLCARecoveryPendingWork(): boolean {
+		if (this._lca || this._fork || this._conflict) return false;
+		return (
+			this.pendingDiskContents !== null ||
+			this.pendingIdleUpdates !== null ||
+			this.pendingRecoverLCADisk !== null
+		);
+	}
+
 	private noLCACanSettleAsSyncedAtLoad(): boolean {
 		if (this._fork || this._conflict) return false;
 		if (this.pendingDiskContents !== null || this.pendingIdleUpdates !== null) return false;
@@ -1975,10 +1993,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (this._fork) return true;
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) {
+					if (this.pendingIdleUpdates !== null || (this.remoteDoc && !isEmptyDoc(this.remoteDoc))) return false;
 					return this.hasEnrolledLocalCRDT();
 				}
 				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
 			},
+			shouldWakeLCARecoveryAfterPersistenceSynced: (_hsm, event) =>
+				this.shouldWakeLCARecoveryAfterPersistenceSynced((event as any).hasContent === true),
 			noLCADiskConflictAtLoad: () => {
 				if (this._lca || this.pendingDiskContents === null) return false;
 				if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
@@ -3839,22 +3860,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._captureOpts,
 			);
 
-			// Update state vector once persistence finishes loading.
-			const updateStateVector = () => {
-				if (this.localDoc) {
-					this._localStateVector = Y.encodeStateVector(this.localDoc);
-					if (this._localDocClientID === null) {
-						this._localDocClientID = this.localDoc.clientID;
-					}
-					this.hydrateLCAContentsFromLocalDoc();
-					this.markLocalDocSnapshotSafeIfLoadedHeadMatches();
-				}
-			};
-
 			if (this.localPersistence.synced) {
-				updateStateVector();
+				this.handleIdleLocalPersistenceSynced();
 			} else {
-				this.localPersistence.once("synced", updateStateVector);
+				this.localPersistence.once("synced", () => {
+					this.handleIdleLocalPersistenceSynced();
+				});
 			}
 		}
 		this.assertMachineResources("after ensureLocalDocForIdle");
@@ -4042,13 +4053,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.send({ type: "PERSISTENCE_SYNCED", hasContent });
 	}
 
-	private handleLocalPersistenceSynced(): void {
-		// Guard: If we're no longer in awaitingPersistence (e.g., lock was released
-		// or unload happened during async persistence load), ignore this callback.
-		if (!this.matches("active.entering.awaitingPersistence")) {
-			return;
-		}
-
+	private refreshAfterLocalPersistenceSynced(options: { applyPendingIdleUpdates: boolean }): boolean {
 		// Set persistence metadata for recovery/debugging
 		if (this._persistenceMetadata && this.localPersistence?.set) {
 			this.localPersistence.set("path", this._persistenceMetadata.path);
@@ -4092,6 +4097,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Instead, let flushInbound() in handleYDocsReady() handle the merge properly.
 		// It compares content and returns early if they match, without risking duplication.
 		if (
+			options.applyPendingIdleUpdates &&
 			this.pendingIdleUpdates &&
 			this.pendingIdleUpdates.length > 0 &&
 			this.localDoc
@@ -4116,6 +4122,33 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._localDocClientID = this.localDoc.clientID;
 			}
 		}
+
+		return hasContent;
+	}
+
+	private handleIdleLocalPersistenceSynced(): void {
+		const hasContent = this.refreshAfterLocalPersistenceSynced({
+			applyPendingIdleUpdates: false,
+		});
+		if (this.shouldWakeLCARecoveryAfterPersistenceSynced(hasContent)) {
+			this.crdtLog(
+				`idle persistence ready | waking LCA recovery | ` +
+					`hasDisk=${this.pendingDiskContents !== null} | hasRemote=${this.pendingIdleUpdates !== null}`,
+			);
+			this.send({ type: "PERSISTENCE_SYNCED", hasContent });
+		}
+	}
+
+	private handleLocalPersistenceSynced(): void {
+		// Guard: If we're no longer in awaitingPersistence (e.g., lock was released
+		// or unload happened during async persistence load), ignore this callback.
+		if (!this.matches("active.entering.awaitingPersistence")) {
+			return;
+		}
+
+		this.refreshAfterLocalPersistenceSynced({
+			applyPendingIdleUpdates: true,
+		});
 
 		// Set up observer for remote updates (converts deltas to positioned changes)
 		this.setupLocalDocObserver();
@@ -4712,6 +4745,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		if (statePath === "idle.diverged") {
 			return "pending";
+		}
+
+		if (statePath === "idle.loading" && !this._lca && !this.hasLCARecoveryPendingWork()) {
+			return "synced";
 		}
 
 		if (
