@@ -140,6 +140,10 @@ export class HasProvider extends HasLogging {
 			user,
 			this.timeProvider,
 		);
+		this._provider.beforeReconnect = async () => {
+			const clientToken = await this.getProviderToken();
+			this.refreshProvider(clientToken);
+		};
 
 		const connectionErrorSub = this.providerConnectionErrorSubscription(
 			(event) => {

@@ -42,6 +42,8 @@ export type HandlerFunction = (
 	messageType: number,
 ) => void;
 
+export type BeforeReconnect = () => Promise<void> | void;
+
 const messageHandlers: Array<HandlerFunction> = [];
 
 messageHandlers[messageSync] = (
@@ -175,6 +177,53 @@ const messageReconnectTimeout = 30000;
 const permissionDeniedHandler = (provider: YSweetProvider, reason: string) =>
 	console.warn(`Permission denied to access ${provider.url}.\n${reason}`);
 
+function reconnectDelay(provider: YSweetProvider): number {
+	return math.min(
+		math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
+		provider.maxBackoffTime,
+	);
+}
+
+function scheduleReconnect(provider: YSweetProvider): void {
+	if (!provider.canReconnect() || provider._reconnectTimeout !== null) {
+		return;
+	}
+	provider._reconnectTimeout = provider._setTimeout(() => {
+		provider._reconnectTimeout = null;
+		reconnectAfterRefresh(provider);
+	}, reconnectDelay(provider));
+}
+
+function setupReconnect(provider: YSweetProvider): void {
+	if (!provider.shouldConnect || provider.ws !== null) {
+		return;
+	}
+	setupWS(provider);
+}
+
+function reconnectAfterRefresh(provider: YSweetProvider): void {
+	if (!provider.beforeReconnect) {
+		setupReconnect(provider);
+		return;
+	}
+	let beforeReconnect: Promise<void> | void;
+	try {
+		beforeReconnect = provider.beforeReconnect();
+	} catch (error) {
+		provider.emit("connection-error", [error, provider]);
+		provider.wsUnsuccessfulReconnects++;
+		scheduleReconnect(provider);
+		return;
+	}
+	Promise.resolve(beforeReconnect)
+		.then(() => setupReconnect(provider))
+		.catch((error) => {
+			provider.emit("connection-error", [error, provider]);
+			provider.wsUnsuccessfulReconnects++;
+			scheduleReconnect(provider);
+		});
+}
+
 const readMessage = (
 	provider: YSweetProvider,
 	buf: Uint8Array,
@@ -257,14 +306,7 @@ const setupWS = (provider: YSweetProvider) => {
 			// Start with no reconnect timeout and increase timeout by
 			// using exponential backoff starting with 100ms
 			if (provider.canReconnect()) {
-				const delay = math.min(
-					math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
-					provider.maxBackoffTime,
-				);
-				provider._reconnectTimeout = provider._setTimeout(() => {
-					provider._reconnectTimeout = null;
-					setupWS(provider);
-				}, delay);
+				scheduleReconnect(provider);
 			} else if (!wasConnected) {
 				provider.wsUnsuccessfulReconnects = provider.maxConnectionErrors;
 			}
@@ -556,6 +598,7 @@ export class YSweetProvider extends Observable<string> {
 	private _pendingSubdocIndexResponses: number;
 	private _pendingSubdocIndex: SubdocIndex | null;
 	private _timeProvider: TimeProvider | null;
+	beforeReconnect: BeforeReconnect | null;
 
 	_setInterval(
 		callback: () => void,
@@ -673,6 +716,7 @@ export class YSweetProvider extends Observable<string> {
 		this.getSubdocQueryDocIds = null;
 		this._pendingSubdocIndexResponses = 0;
 		this._pendingSubdocIndex = null;
+		this.beforeReconnect = null;
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
