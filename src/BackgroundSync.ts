@@ -1421,6 +1421,27 @@ export class BackgroundSync extends HasLogging {
 		return docs.length;
 	}
 
+	enqueueAdvertisedLCABackfills(
+		sharedFolder: SharedFolder,
+		guids: Iterable<string>,
+	): number {
+		if (!sharedFolder.connected) return 0;
+
+		const advertisedGuids = new Set(guids);
+		if (advertisedGuids.size === 0) return 0;
+
+		const docs = [...sharedFolder.files.values()]
+			.filter(isDocument)
+			.filter((doc) => advertisedGuids.has(doc.guid))
+			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
+			.filter((doc) => this.shouldEnqueueForLCABackfill(doc));
+
+		for (const doc of docs.sort(compareFilePaths)) {
+			void this.enqueueLCABackfillDoc(doc);
+		}
+		return docs.length;
+	}
+
 	private shouldEnqueueForSharedFolderSync(
 		item: Document | Canvas | SyncFile,
 	): boolean {
@@ -1459,7 +1480,9 @@ export class BackgroundSync extends HasLogging {
 		if (hsm.isActive()) return false;
 		if (hsm.state.lca) return false;
 		if (hsm.hasFork()) return false;
-		return hsm.getSyncStatus().status === "pending";
+		if (hsm.getSyncStatus().status === "pending") return true;
+		return doc.sharedFolder.mergeManager?.isServerAdvertisedOutOfSync(doc.guid)
+			?? false;
 	}
 
 	/**

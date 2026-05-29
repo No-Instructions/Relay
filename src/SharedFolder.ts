@@ -568,12 +568,19 @@ export class SharedFolder extends HasProvider {
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
 				.then(() => {
-					const queued = this.backgroundSync.enqueueRemoteHeadSyncs(
+					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
 						this,
 						advertisedGuids,
 					);
-					if (queued > 0) {
-						this.debug(`[subdoc-index] queued ${queued} remote-head syncs`);
+					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
+						this,
+						advertisedGuids,
+					);
+					if (queuedRemoteHead > 0) {
+						this.debug(`[subdoc-index] queued ${queuedRemoteHead} remote-head syncs`);
+					}
+					if (queuedLCABackfill > 0) {
+						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
 					}
 				})
 				.catch((e) => this.error("subdoc index sync sweep failed", e));

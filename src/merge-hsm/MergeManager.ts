@@ -1604,6 +1604,11 @@ export class MergeManager {
     }
   }
 
+  isServerAdvertisedOutOfSync(guid: string, localSnapshotBytes?: Uint8Array): boolean {
+    if (!this._serverAdvertisedHeads.has(guid)) return false;
+    return !this.isServerAdvertisedInSync(guid, localSnapshotBytes);
+  }
+
   getRemoteDocSeedUpdateFromLocalDoc(guid: string, localDoc: Y.Doc): Uint8Array | null {
     const advertised = this._serverAdvertisedHeads.get(guid);
     if (advertised?.kind !== 'snapshot') return null;
