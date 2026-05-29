@@ -11,7 +11,7 @@ jobs:
       should_release: ${{ steps.check.outputs.should_release }}
     steps:
     - uses: actions/checkout@v4
-    - name: Check if tag matches manifest version
+    - name: Check if tag does not match manifest version
       id: check
       run: |
         TAG=${GITHUB_REF#refs/tags/}
@@ -38,6 +38,13 @@ jobs:
         node-version: '20.x'
     - run: npm ci
     - run: npm run beta
+    - name: Set release artifact manifest version
+      run: |
+        TAG=${GITHUB_REF#refs/tags/}
+        tmp="$(mktemp)"
+        jq --arg version "$TAG" '.version = $version' manifest.json > "$tmp"
+        mv "$tmp" manifest.json
+        jq -e --arg version "$TAG" '.version == $version' manifest.json
     - name: Generate artifact attestations
       uses: actions/attest@v4
       with:
@@ -45,9 +52,8 @@ jobs:
           main.js
           styles.css
           manifest.json
-          manifest-beta.json
     - uses: ncipollo/release-action@v1
       with:
-        artifacts: "main.js,styles.css,manifest.json,manifest-beta.json"
+        artifacts: "main.js,styles.css,manifest.json"
         immutableCreate: true
         prerelease: true

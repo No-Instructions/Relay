@@ -7,19 +7,6 @@ from github import Github
 
 REMOTE = os.environ.get("ORIGIN", "origin")
 
-def set_version(file_path, new_version):
-
-    with open(file_path, 'r') as file:
-        data = json.load(file)
-    
-    data['version'] = new_version
-
-    with open(file_path, 'w') as file:
-        json.dump(data, file, indent=2)
-
-    return new_version
-
-
 def bump_version(file_path, version_type):
     with open(file_path, 'r') as file:
         data = json.load(file)
@@ -59,32 +46,44 @@ def delete_tag(repo, tag_name):
     except git.exc.GitCommandError:
         pass
 
+def github_client():
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    return Github(token) if token else Github()
+
+def wait_for_release(github_client, repo_name, tag_name, timeout_seconds=600, interval_seconds=30):
+    deadline = time.time() + timeout_seconds
+    while True:
+        repo = github_client.get_repo(repo_name)
+        releases = repo.get_releases()
+        for release in releases:
+            if release.tag_name == tag_name:
+                return release
+
+        if time.time() >= deadline:
+            return None
+
+        print(f"Release {tag_name} not found yet. Waiting {interval_seconds} seconds...")
+        time.sleep(interval_seconds)
+
 @click.command()
 @click.argument('version_type')
 def main(version_type):
     manifest_file = "manifest.json"
-    beta_manifest_file = "manifest-beta.json"
     repo = git.Repo('.')
-    g = Github()
+    g = github_client()
     repo_name = "no-instructions/relay"
 
-    new_beta_version = bump_version(beta_manifest_file, version_type)
-    new_version = set_version(manifest_file, new_beta_version)
+    new_version = bump_version(manifest_file, version_type)
 
     # Delete tags
     delete_tag(repo, new_version)
 
     # Create a commit for the version bump
     repo.git.add(manifest_file)
-    repo.git.add(beta_manifest_file)
     try:
         repo.git.commit(m=f"version: bump the version to {new_version}")
     except git.exc.GitCommandError:
         pass
-
-    # Push the commit
-    force = (version_type == 'force')
-    repo.git.push(force=force)
 
     # Create a new tag
     repo.create_tag(new_version)
@@ -95,17 +94,13 @@ def main(version_type):
 
     # Wait for GitHub to create the release
     print("Waiting for GitHub to create the release...")
-    time.sleep(30)
+    release = wait_for_release(g, repo_name, new_version)
+    if not release:
+        raise click.ClickException(f"Release {new_version} not found.")
 
-    # Check if release is created
-    repo = g.get_repo(repo_name)
-    releases = repo.get_releases()
-    release_names = [release.tag_name for release in releases]
-
-    if new_version in release_names:
-        print(f"Release {new_version} created successfully.")
-    else:
-        print(f"Release {new_version} not found.")
+    print(f"Release {new_version} created successfully.")
+    if getattr(release, "html_url", None):
+        print(release.html_url)
 
 if __name__ == "__main__":
     main()

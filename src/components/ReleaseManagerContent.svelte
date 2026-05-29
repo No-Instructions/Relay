@@ -26,7 +26,7 @@
 	const manifestError = writable<string | null>(null);
 	const showManifest = writable<boolean>(false);
 
-	// Main branch manifests
+	// Channel manifests
 	const stableManifest = writable<any | null>(null);
 	const betaManifest = writable<any | null>(null);
 	const stableVersion = writable<string | null>(null);
@@ -65,7 +65,7 @@
 		// Initial setup - check GitHub releases immediately
 		refreshGithubReleases();
 
-		// Fetch main branch manifests (stable and beta)
+		// Fetch channel manifests
 		fetchMainBranchManifests();
 
 		// Immediately select the development version (current version)
@@ -91,7 +91,7 @@
 		selectedManifestTag.set(version || plugin.version);
 	});
 
-	// Function to fetch main branch manifests (stable and beta)
+	// Function to fetch channel manifests
 	async function fetchMainBranchManifests() {
 		loadingMainBranchManifests.set(true);
 		try {
@@ -101,11 +101,16 @@
 				stableManifest.set(manifest);
 				stableVersion.set(manifest.version);
 			}
-			const manifestBeta =
-				await plugin.updateManager.fetchRepoManifest("manifest-beta.json");
-			if (manifestBeta) {
+			const releases = await plugin.updateManager.getReleases();
+			const betaRelease = releases.find((release) => {
+				return release.prerelease && !release.draft;
+			});
+			const manifestBeta = betaRelease
+				? await plugin.updateManager.fetchReleaseManifest(betaRelease)
+				: null;
+			if (manifestBeta && betaRelease) {
 				betaManifest.set(manifestBeta);
-				betaVersion.set(manifestBeta.version);
+				betaVersion.set(betaRelease.tag_name);
 			}
 		} catch (error) {
 			plugin.error("Error fetching main branch manifests:", error);
@@ -515,7 +520,7 @@
 							{#if $releaseChannels[$selectedManifestTag] === "stable-alias"}
 								<p>Current stable release from main branch manifest.json</p>
 							{:else if $releaseChannels[$selectedManifestTag] === "beta-alias"}
-								<p>Current beta release from main branch manifest-beta.json</p>
+								<p>Current beta release manifest from GitHub release assets</p>
 							{:else if $selectedManifestTag === plugin.version}
 								<p>Current development version</p>
 							{/if}

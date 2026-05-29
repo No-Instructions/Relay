@@ -168,14 +168,14 @@ export class UpdateManager extends Observable<UpdateManager> {
 			return null;
 		}
 		try {
-			const manifestPath = {
-				beta: "manifest-beta.json",
-				stable: "manifest.json",
-			}[channel];
+			if (channel === "beta") {
+				const release = this.releases.find((release) => {
+					return release.prerelease && !release.draft;
+				});
+				return release?.tag_name ?? null;
+			}
 
-			const manifest = manifestPath
-				? await this.fetchRepoManifest(manifestPath)
-				: null;
+			const manifest = await this.fetchRepoManifest("manifest.json");
 			if (!manifest) {
 				return null;
 			}
