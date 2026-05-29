@@ -988,6 +988,8 @@ export class MergeManager {
     const doc = this._getDocument(guid);
     const hsm = doc?.hsm;
     if (!hsm) return;
+    const currentState = this.getHibernationState(guid);
+    if (currentState === 'active') return;
 
     // Recreate localDoc destroyed during hibernation
     hsm.ensureLocalDocForIdle();
@@ -1005,7 +1007,9 @@ export class MergeManager {
     // Remove from wake queue if present
     this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
 
-    this._hibernationState.set(guid, 'cached');
+    if (currentState === 'hibernated') {
+      this._hibernationState.set(guid, 'cached');
+    }
     this.resetHibernateTimer(guid);
     this._updateWakeQueueMetrics();
   }

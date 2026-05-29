@@ -1907,8 +1907,8 @@ export class BackgroundSync extends HasLogging {
 			this.log("[getDocument] applying content from server");
 			Y.applyUpdate(doc.ydoc, updateBytes);
 			doc.hsm?.setRemoteDoc(doc.ydoc);
-			this.notifyDownloadedRemoteHead(doc);
 			await this.maybeBootstrapDocumentLCA(doc);
+			this.notifyDownloadedRemoteHead(doc);
 			return updateBytes;
 		} catch (e) {
 			this.logError("[getDocument] failed", e);
@@ -2025,15 +2025,26 @@ export class BackgroundSync extends HasLogging {
 			);
 		}
 
-		const remoteDoc = new Y.Doc();
-		Y.applyUpdate(remoteDoc, updateBytes);
-		if (isEmptyDoc(remoteDoc)) {
-			throw new RetryableProviderSyncError(
-				`Remote document is empty while backfilling LCA: ${this.fileName(doc.path)}`,
-			);
+		const validationDoc = new Y.Doc();
+		try {
+			Y.applyUpdate(validationDoc, updateBytes);
+			if (isEmptyDoc(validationDoc)) {
+				throw new RetryableProviderSyncError(
+					`Remote document is empty while backfilling LCA: ${this.fileName(doc.path)}`,
+				);
+			}
+		} finally {
+			validationDoc.destroy();
 		}
 
-		hsm.setRemoteDoc(remoteDoc);
+		const remoteDoc = doc.ensureRemoteDoc();
+		Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
+		const mergeManager = doc.sharedFolder.mergeManager;
+		if (mergeManager) {
+			mergeManager.wake(doc.guid, remoteDoc);
+		} else {
+			hsm.setRemoteDoc(remoteDoc);
+		}
 		const diskState = await doc.readDiskContent();
 		const settled = await hsm.bootstrapLCAFromDisk(diskState);
 		if (!settled && hsm.getSyncStatus().status === "pending") {
