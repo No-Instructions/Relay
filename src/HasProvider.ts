@@ -59,6 +59,20 @@ const DISCONNECTED_STATE: ConnectionState = {
 	status: "disconnected",
 } as ConnectionState;
 
+type ConnectionCloseDetails = {
+	code: number | null;
+	reason: string;
+	wasClean: boolean | null;
+};
+
+function connectionCloseDetails(event: CloseEvent): ConnectionCloseDetails {
+	return {
+		code: typeof event.code === "number" ? event.code : null,
+		reason: typeof event.reason === "string" ? event.reason : "",
+		wasClean: typeof event.wasClean === "boolean" ? event.wasClean : null,
+	};
+}
+
 type Listener = (state: ConnectionState) => void;
 
 export class HasProvider extends HasLogging {
@@ -76,6 +90,7 @@ export class HasProvider extends HasLogging {
 	// stale connection as ready.
 	_providerSynced: boolean = false;
 	private _offConnectionError: (() => void) | null = null;
+	private _offConnectionClose: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	listeners: Map<unknown, Listener>;
 	timeProvider!: TimeProvider;
@@ -153,6 +168,17 @@ export class HasProvider extends HasLogging {
 		connectionErrorSub.on();
 		this._offConnectionError = connectionErrorSub.off;
 
+		const connectionCloseSub = this.providerConnectionCloseSubscription(
+			(event) => {
+				this.log(
+					`[${this.path}] connection close`,
+					connectionCloseDetails(event),
+				);
+			},
+		);
+		connectionCloseSub.on();
+		this._offConnectionClose = connectionCloseSub.off;
+
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
 				if (state.status !== "connected") {
@@ -178,6 +204,10 @@ export class HasProvider extends HasLogging {
 		if (this._offConnectionError) {
 			this._offConnectionError();
 			this._offConnectionError = null;
+		}
+		if (this._offConnectionClose) {
+			this._offConnectionClose();
+			this._offConnectionClose = null;
 		}
 		if (this._offState) {
 			this._offState();
@@ -518,6 +548,18 @@ export class HasProvider extends HasLogging {
 		};
 		const off = () => {
 			this._provider?.off("connection-error", f);
+		};
+		return { on, off } as Subscription;
+	}
+
+	private providerConnectionCloseSubscription(
+		f: (event: CloseEvent) => void,
+	): Subscription {
+		const on = () => {
+			this._provider?.on("connection-close", f);
+		};
+		const off = () => {
+			this._provider?.off("connection-close", f);
 		};
 		return { on, off } as Subscription;
 	}
