@@ -2741,36 +2741,78 @@ export class SharedFolder extends HasProvider {
 		return this.pendingUpload.has(vpath);
 	}
 
+	expandDeletePaths(
+		vpaths: Iterable<string>,
+		folderRoots: Iterable<string> = [],
+	): string[] {
+		const paths = new Set(vpaths);
+		const roots = Array.from(new Set(folderRoots));
+		for (const root of roots) {
+			paths.add(root);
+		}
+		if (roots.length === 0) {
+			return Array.from(paths).sort();
+		}
+
+		const isUnderDeletedFolder = (path: string): boolean => {
+			return roots.some((root) => path === root || path.startsWith(root + sep));
+		};
+		this.syncStore.forEach((_meta, path) => {
+			if (isUnderDeletedFolder(path)) {
+				paths.add(path);
+			}
+		});
+		this.fset.forEach((file) => {
+			if (isUnderDeletedFolder(file.path)) {
+				paths.add(file.path);
+			}
+		});
+		return Array.from(paths).sort();
+	}
+
 	deleteFile(vpath: string) {
-		this.pendingUpload.delete(vpath);
-		const guid = this.syncStore?.get(vpath);
-		if (guid) {
-			this.ydoc.transact(() => {
-				this.syncStore.delete(vpath);
-				const doc = this.files.get(guid);
-				if (doc) {
-					this.fset.delete(doc);
-					this.files.delete(guid);
-					doc.cleanup();
-					doc.destroy();
+		this.deleteFiles([vpath]);
+	}
+
+	deleteFiles(vpaths: Iterable<string>) {
+		const paths = Array.from(new Set(vpaths));
+		if (paths.length === 0) {
+			return;
+		}
+		const cleanupGuids = new Set<string>();
+		this.ydoc.transact(() => {
+			for (const vpath of paths) {
+				this.pendingUpload.delete(vpath);
+				const guid = this.syncStore?.get(vpath);
+				if (guid) {
+					this.syncStore.delete(vpath);
+					const doc = this.files.get(guid);
+					if (doc) {
+						this.fset.delete(doc);
+						this.files.delete(guid);
+						doc.cleanup();
+						doc.destroy();
+					}
+					cleanupGuids.add(guid);
+				} else {
+					// syncStore entry already gone (remote delete) - find by path
+					const doc = this.fset.find((f) => f.path === vpath);
+					if (doc) {
+						const docGuid = doc.guid;
+						this.fset.delete(doc);
+						this.files.delete(docGuid);
+						doc.cleanup();
+						doc.destroy();
+						cleanupGuids.add(docGuid);
+					}
 				}
-			}, this);
+			}
+		}, this);
+
+		for (const guid of cleanupGuids) {
 			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
 			const p = this._hsmStore.deleteState(guid).catch(() => {});
 			trackAsyncCleanup(p);
-		} else {
-			// syncStore entry already gone (remote delete) - find by path
-			const doc = this.fset.find((f) => f.path === vpath);
-			if (doc) {
-				const docGuid = doc.guid;
-				this.fset.delete(doc);
-				this.files.delete(docGuid);
-				doc.cleanup();
-				doc.destroy();
-				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${docGuid}`);
-				const p = this._hsmStore.deleteState(docGuid).catch(() => {});
-				trackAsyncCleanup(p);
-			}
 		}
 	}
 

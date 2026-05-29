@@ -12,6 +12,7 @@ import {
 	requireApiVersion,
 	Modal,
 	moment,
+	type TAbstractFile,
 } from "obsidian";
 import { Platform } from "obsidian";
 import { relative } from "path-browserify";
@@ -115,6 +116,11 @@ const DEFAULT_SETTINGS: RelaySettings = {
 	...DEFAULT_DEBUG_SETTINGS,
 };
 
+type VaultDeleteEvent = {
+	path: string;
+	isFolder: boolean;
+};
+
 declare const HEALTH_URL: string;
 declare const GIT_TAG: string;
 declare const REPOSITORY: string;
@@ -155,6 +161,8 @@ export default class Live extends Plugin {
 	warn!: (...args: unknown[]) => void;
 	error!: (...args: unknown[]) => void;
 	private _liveViews!: LiveViewManager;
+	private pendingVaultDeletes: VaultDeleteEvent[] = [];
+	private pendingVaultDeleteFlush: number | null = null;
 	get metadataBridge(): MetadataBridge | undefined {
 		return this._liveViews;
 	}
@@ -196,6 +204,108 @@ export default class Live extends Plugin {
 			}));
 		}
 		return setTo;
+	}
+
+	private queueVaultDelete(
+		file: TAbstractFile,
+		vaultLog: (...args: unknown[]) => void,
+	) {
+		this.pendingVaultDeletes.push({
+			path: file.path,
+			isFolder: file instanceof TFolder,
+		});
+		if (this.pendingVaultDeleteFlush !== null) {
+			return;
+		}
+		this.pendingVaultDeleteFlush = window.setTimeout(() => {
+			this.pendingVaultDeleteFlush = null;
+			this.flushVaultDeletes(vaultLog);
+		}, 0);
+	}
+
+	private flushVaultDeletes(vaultLog: (...args: unknown[]) => void) {
+		const events = this.pendingVaultDeletes;
+		this.pendingVaultDeletes = [];
+		if (events.length === 0 || this._unloading) {
+			return;
+		}
+
+		const removedSharedRoots: { folder: SharedFolder; path: string }[] = [];
+		for (const event of events) {
+			if (!event.isFolder) {
+				continue;
+			}
+			const folder = this.sharedFolders.find(
+				(folder) => folder.path === event.path,
+			);
+			if (
+				folder &&
+				!removedSharedRoots.some((entry) => entry.folder === folder)
+			) {
+				removedSharedRoots.push({ folder, path: folder.path });
+			}
+		}
+		for (const { folder } of removedSharedRoots) {
+			this.sharedFolders.delete(folder);
+		}
+
+		const isUnderRemovedSharedRoot = (path: string): boolean => {
+			return removedSharedRoots.some(
+				(root) => path === root.path || path.startsWith(root.path + "/"),
+			);
+		};
+		const batches = new Map<
+			SharedFolder,
+			{ files: Set<string>; folders: Set<string> }
+		>();
+		for (const event of events) {
+			if (isUnderRemovedSharedRoot(event.path)) {
+				continue;
+			}
+			const folder = this.sharedFolders.lookup(event.path);
+			if (!folder) {
+				continue;
+			}
+			const vpath = folder.getVirtualPath(event.path);
+			if (folder.isPendingDelete(vpath)) {
+				continue;
+			}
+			vaultLog("Delete", event.path);
+			let batch = batches.get(folder);
+			if (!batch) {
+				batch = { files: new Set<string>(), folders: new Set<string>() };
+				batches.set(folder, batch);
+			}
+			if (event.isFolder) {
+				batch.folders.add(vpath);
+			} else {
+				batch.files.add(vpath);
+			}
+		}
+
+		for (const [folder, batch] of batches) {
+			const deletePaths = folder
+				.expandDeletePaths(batch.files, batch.folders)
+				.filter((vpath) => !folder.isPendingDelete(vpath));
+			if (deletePaths.length === 0) {
+				continue;
+			}
+			deletePaths.forEach((vpath) => folder.markPendingDelete(vpath));
+			folder
+				.whenReady()
+				.then((readyFolder) => {
+					if (readyFolder.destroyed) {
+						return;
+					}
+					readyFolder.deleteFiles(deletePaths);
+				})
+				.catch((error) => {
+					this.error("vault delete failed", error);
+				})
+				.finally(() => {
+					deletePaths.forEach((vpath) => folder.clearPendingDelete(vpath));
+				});
+		}
 	}
 
 	buildApiUrl(path: string) {
@@ -1111,30 +1221,7 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
-				if (file instanceof TFolder) {
-					const folder = this.sharedFolders.find(
-						(folder) => folder.path === file.path,
-					);
-					if (folder) {
-						this.sharedFolders.delete(folder);
-						return;
-					}
-				}
-				const folder = this.sharedFolders.lookup(file.path);
-				if (folder) {
-					vaultLog("Delete", file.path);
-					const vpath = folder.getVirtualPath(file.path);
-					const internalCleanupDelete = folder.isPendingDelete(vpath);
-					if (internalCleanupDelete) {
-						return;
-					}
-					folder.markPendingDelete(vpath);
-					folder.whenReady().then((folder) => {
-						folder.proxy.deleteFile(file.path);
-					}).finally(() => {
-						folder.clearPendingDelete(vpath);
-					});
-				}
+				this.queueVaultDelete(file, vaultLog);
 			}),
 		);
 
@@ -1545,6 +1632,13 @@ export default class Live extends Plugin {
 		setActiveTracker(null);
 		this.promises.destroy();
 		this.promises = null as any;
+		teardownStep("pendingVaultDeleteFlush", () => {
+			if (this.pendingVaultDeleteFlush !== null) {
+				window.clearTimeout(this.pendingVaultDeleteFlush);
+				this.pendingVaultDeleteFlush = null;
+			}
+			this.pendingVaultDeletes = [];
+		});
 		// Clean up debug API globals
 		teardownStep("relayDebugAPI.destroy", () => {
 			this.relayDebugAPI?.destroy();
