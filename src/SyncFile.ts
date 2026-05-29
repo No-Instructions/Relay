@@ -383,6 +383,7 @@ export class SyncFile
 		if (!this.meta || (hash && this.meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
+				await this.sharedFolder.markUploaded(this);
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} catch (error) {
