@@ -49,4 +49,5 @@ jobs:
     - uses: ncipollo/release-action@v1
       with:
         artifacts: "main.js,styles.css,manifest.json,manifest-beta.json"
+        immutableCreate: true
         prerelease: true
