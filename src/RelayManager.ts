@@ -26,7 +26,6 @@ import PocketBase, {
 import { ObservableMap } from "./observable/ObservableMap";
 import { RelayInstances, HasLogging } from "./debug";
 import { customFetch } from "./customFetch";
-import type { SharedFolder } from "./SharedFolder";
 import type { LoginManager } from "./LoginManager";
 import type { Unsubscriber } from "svelte/motion";
 import { Observable } from "./observable/Observable";
@@ -2090,18 +2089,18 @@ export class RelayManager extends HasLogging {
 	}
 
 	async createRemoteFolder(
-		sharedFolder: SharedFolder,
+		guid: string,
+		name: string,
 		relay: Relay,
 		isPrivate: boolean = false,
-		name: string | undefined = undefined,
 	): Promise<RemoteFolder> {
 		if (!this.pb) throw new Error("Failed to create folder");
 		const record = await this.pb
 			.collection("shared_folders")
 			.create<RemoteFolderDAO>(
 				{
-					name: name || sharedFolder.name,
-					guid: sharedFolder.guid,
+					name,
+					guid,
 					relay: relay.id,
 					creator: this.user?.id,
 					private: isPrivate,

@@ -32,6 +32,7 @@
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SettingGroup from "./SettingGroup.svelte";
 	import RelayConfigBlock from "./RelayConfigBlock.svelte";
+	import { uuidv4 } from "lib0/random";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
@@ -437,20 +438,28 @@
 			await plugin.vault.createFolder(normalizedPath);
 		}
 
+		const remoteName =
+			folderName || normalizedPath.split("/").pop() || normalizedPath;
+		let remote: RemoteSharedFolder;
+
 		// If folder doesn't exist as shared folder yet, create it
 		if (!folder) {
-			folder = sharedFolders.init(normalizedPath, relay.guid);
+			remote = await plugin.relayManager.createRemoteFolder(
+				uuidv4(),
+				remoteName,
+				relay,
+				isPrivate ?? false,
+			);
+			folder = sharedFolders.init(normalizedPath, remote);
 		} else {
-			folder.relayId = relay.guid;
+			remote = await plugin.relayManager.createRemoteFolder(
+				folder.guid,
+				remoteName,
+				relay,
+				isPrivate ?? false,
+			);
+			folder.remote = remote;
 		}
-
-		// Create remote folder with privacy settings
-		const remote = await plugin.relayManager.createRemoteFolder(
-			folder,
-			relay,
-			isPrivate ?? false,
-			folderName,
-		);
 
 		// Add users to the private folder if it's private
 		if (isPrivate && userIds && userIds.length > 0) {
@@ -459,7 +468,6 @@
 			}
 		}
 
-		folder.remote = remote;
 		folder.connect();
 		plugin.sharedFolders.notifyListeners();
 

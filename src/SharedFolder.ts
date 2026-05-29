@@ -228,9 +228,11 @@ export class SharedFolder extends HasProvider {
 		timeProvider: TimeProvider,
 		relayId?: string,
 		authoritative: boolean = false,
+		remote?: RemoteSharedFolder,
 	) {
-		const s3rn = relayId
-			? new S3RemoteFolder(relayId, guid)
+		const folderRelayId = remote?.relay.guid ?? relayId;
+		const s3rn = folderRelayId
+			? new S3RemoteFolder(folderRelayId, guid)
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
@@ -255,9 +257,14 @@ export class SharedFolder extends HasProvider {
 			}
 		});
 		this.relayManager = relayManager;
-		this.relayId = relayId;
+		this.relayId = folderRelayId;
+		this._remote = remote;
+		this._server = remote?.relay.providerId;
 		this._shouldConnect = this.settings.connect ?? true;
 		this._localOnly = this.settings.localOnly ?? false;
+		if (remote) {
+			this.subscribeToRemoteRelay(remote);
+		}
 		this.remoteActivityIndex.hydrate(this.settings.remoteActivity ?? []);
 		if (this.pruneRemoteActivity()) {
 			this.persistRemoteActivity();
@@ -1298,6 +1305,16 @@ export class SharedFolder extends HasProvider {
 		return this._remote;
 	}
 
+	private subscribeToRemoteRelay(remote: RemoteSharedFolder): void {
+		this.unsubscribes.push(
+			remote.relay.subscribe((relay) => {
+				if (relay.guid === this.relayId) {
+					this.server = relay.providerId;
+				}
+			}),
+		);
+	}
+
 	public set remote(value: RemoteSharedFolder | undefined) {
 		if (this._remote === value) {
 			return;
@@ -1313,13 +1330,7 @@ export class SharedFolder extends HasProvider {
 		}));
 
 		if (value) {
-			this.unsubscribes.push(
-				value.relay.subscribe((relay) => {
-					if (relay.guid === this.relayId) {
-						this.server = relay.providerId;
-					}
-				}),
-			);
+			this.subscribeToRemoteRelay(value);
 		}
 
 		this.server = value?.relay.providerId;
@@ -2906,6 +2917,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		guid: string,
 		relayId?: string,
 		authoritative?: boolean,
+		remote?: RemoteSharedFolder,
 	) => SharedFolder;
 	private _offRemoteUpdates?: () => void;
 
@@ -2917,6 +2929,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			guid: string,
 			relayId?: string,
 			authoritative?: boolean,
+			remote?: RemoteSharedFolder,
 		) => SharedFolder,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
 		private _hsmStore: HSMStore,
@@ -3037,6 +3050,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		guid: string,
 		relayId?: string,
 		authoritative?: boolean,
+		remote?: RemoteSharedFolder,
 	): SharedFolder {
 		// Validate inputs
 		if (!path) {
@@ -3065,15 +3079,15 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		if (samePath) {
 			throw new Error("Conflict: Tracked folder exists at this location.");
 		}
-		const folder = this.folderBuilder(path, guid, relayId, authoritative);
+		const folder = this.folderBuilder(path, guid, relayId, authoritative, remote);
 		this._set.add(folder);
 		return folder;
 	}
 
 	/** Share a local folder — user is authoritative (source of truth). */
-	init(path: string, relayId?: string): SharedFolder {
-		const guid = uuidv4();
-		const folder = this._new(path, guid, relayId, true);
+	init(path: string, remote?: RemoteSharedFolder): SharedFolder {
+		const guid = remote?.guid ?? uuidv4();
+		const folder = this._new(path, guid, remote?.relay.guid, true, remote);
 		this.notifyListeners();
 		return folder;
 	}

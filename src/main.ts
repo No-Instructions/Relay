@@ -84,6 +84,7 @@ import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { generateHash } from "./hashing";
 import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
+import type { RemoteSharedFolder } from "./Relay";
 import {
 	setDeviceManagementConfig,
 	setPluginRequestConfig,
@@ -877,6 +878,7 @@ export default class Live extends Plugin {
 		guid: string,
 		relayId?: string,
 		authoritative?: boolean,
+		remote?: RemoteSharedFolder,
 	): SharedFolder {
 		// Validate guid before creating settings (prevents invalid UUIDs from being persisted)
 		if (!guid || !S3RN.validateUUID(guid)) {
@@ -924,6 +926,7 @@ export default class Live extends Plugin {
 			this.timeProvider,
 			relayId,
 			authoritative,
+			remote,
 		);
 		return folder;
 	}
