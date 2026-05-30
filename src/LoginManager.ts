@@ -241,6 +241,9 @@ export class LoginManager extends Observable<LoginManager> {
 						userId: decodedPayload.id,
 						email: decodedPayload.email,
 					});
+				})
+				.catch((reason) => {
+					this.log("Token refresh failed", reason);
 				});
 		}
 	}
