@@ -321,6 +321,7 @@ class QueueWatcherVisitor extends BaseVisitor<QueueWatcher> {
 			sharedFolder &&
 			sharedFolder.ready &&
 			sharedFolder.checkPath(file.path) &&
+			!sharedFolder.isIgnoredVaultPath(file.path) &&
 			Document.checkExtension(file.path)
 		) {
 			return (
@@ -470,6 +471,7 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 		if (
 			sharedFolder &&
 			sharedFolder.checkPath(file.path) &&
+			!sharedFolder.isIgnoredVaultPath(file.path) &&
 			(sharedFolder.isStorageBlockedTFile(file) ||
 				!sharedFolder.isSyncableTFile(file))
 		) {
@@ -538,7 +540,7 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 	): DocumentStatus | null {
 		if (sharedFolder) {
 			try {
-				const vpath = sharedFolder.getVirtualPath(file.path);
+				const vpath = sharedFolder.getSyncVirtualPath(file.path);
 				const guid = sharedFolder.syncStore.get(vpath);
 				if (!guid) return null;
 				const document = sharedFolder.files.get(guid);
@@ -605,7 +607,7 @@ class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
 			Document.checkExtension(file.path)
 		) {
 			try {
-				const vpath = sharedFolder.getVirtualPath(file.path);
+				const vpath = sharedFolder.getSyncVirtualPath(file.path);
 				const guid = sharedFolder.syncStore.get(vpath);
 				if (!guid) {
 					if (storage) storage.destroy();

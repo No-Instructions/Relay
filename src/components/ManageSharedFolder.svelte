@@ -7,11 +7,13 @@
 	import { debounce } from "obsidian";
 	import { createEventDispatcher, onDestroy, onMount } from "svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
+	import { IgnoredRemoteEntriesModal } from "src/ui/IgnoredRemoteEntriesModal";
 
 	export let plugin: Live;
 	export let sharedFolder: SharedFolder;
 
 	const dispatch = createEventDispatcher();
+	$: ignoredRemoteEntries = sharedFolder?.getIgnoredRemoteEntries() || [];
 
 	async function handleDeleteMetadata() {
 		if (sharedFolder) {
@@ -28,6 +30,10 @@
 			}
 		}
 		dispatch("goBack", {});
+	}
+
+	function handleReviewIgnoredRemoteEntries() {
+		new IgnoredRemoteEntriesModal(plugin.app, sharedFolder).open();
 	}
 </script>
 
@@ -54,6 +60,17 @@
 {#if sharedFolder}
 	<SettingItemHeading name="Danger zone"></SettingItemHeading>
 	<SettingGroup>
+		{#if ignoredRemoteEntries.length > 0}
+			<SettingItem
+				name="Review ignored remote entries"
+				description="Remove Relay metadata for already-synced paths under the ignored folder name. Local files are preserved."
+			>
+				<button class="mod-destructive" on:click={handleReviewIgnoredRemoteEntries}>
+					Review {ignoredRemoteEntries.length}
+				</button>
+			</SettingItem>
+		{/if}
+
 		<SettingItem
 			name="Delete metadata"
 			description="Deletes edit history and disables change tracking."

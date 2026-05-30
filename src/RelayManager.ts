@@ -1484,6 +1484,7 @@ export class RelayManager extends HasLogging {
 	policyManager?: IPolicyManager;
 	_offLoginManager: Unsubscriber;
 	private _isSubscribed = false;
+	private remoteAccessRefreshTimer: number | null = null;
 	private pb: PocketBase | null;
 	destroyed = false;
 
@@ -1661,6 +1662,7 @@ export class RelayManager extends HasLogging {
 	}
 
 	logout() {
+		this.clearRemoteAccessRefreshTimer();
 		this.store?.clear();
 		this.user = undefined;
 		this.store = undefined;
@@ -1761,7 +1763,37 @@ export class RelayManager extends HasLogging {
 		} else {
 			this.store?.ingest(e.record);
 		}
+		this.queueRemoteAccessRefresh(collectionName);
 	};
+
+	private queueRemoteAccessRefresh(collectionName: string): void {
+		if (
+			collectionName !== "relay_roles" &&
+			collectionName !== "shared_folder_roles" &&
+			collectionName !== "shared_folders" &&
+			collectionName !== "relays"
+		) {
+			return;
+		}
+		if (this.remoteAccessRefreshTimer !== null) {
+			return;
+		}
+		this.remoteAccessRefreshTimer = window.setTimeout(() => {
+			this.remoteAccessRefreshTimer = null;
+			if (this.destroyed) return;
+			this.update().catch((error) => {
+				this.warn("failed to refresh remote access state", error);
+			});
+		}, 250);
+	}
+
+	private clearRemoteAccessRefreshTimer(): void {
+		if (this.remoteAccessRefreshTimer === null) {
+			return;
+		}
+		window.clearTimeout(this.remoteAccessRefreshTimer);
+		this.remoteAccessRefreshTimer = null;
+	}
 
 	async subscribe() {
 		if (
@@ -1787,9 +1819,12 @@ export class RelayManager extends HasLogging {
 			},
 			{ name: "relay_invitations", expand: ["relay"] },
 			{ name: "providers", expand: [] },
-			{ name: "relay_roles", expand: ["user", "relay"] },
+			{ name: "relay_roles", expand: ["user", "relay", "role"] },
 			{ name: "shared_folders", expand: ["relay", "creator"] },
-			{ name: "shared_folder_roles", expand: ["user", "shared_folder"] },
+			{
+				name: "shared_folder_roles",
+				expand: ["user", "shared_folder", "role"],
+			},
 			{ name: "subscriptions", expand: ["user", "relay"] },
 		];
 
@@ -1823,6 +1858,7 @@ export class RelayManager extends HasLogging {
 	 */
 	offline(): void {
 		if (!this.pb) return;
+		this.clearRemoteAccessRefreshTimer();
 		this.pb.realtime.unsubscribe();
 		this._isSubscribed = false;
 	}
@@ -2289,6 +2325,7 @@ export class RelayManager extends HasLogging {
 
 	destroy(): void {
 		this.destroyed = true;
+		this.clearRemoteAccessRefreshTimer();
 		this._offLoginManager?.();
 		this._offLoginManager = null as any;
 		this.pb?.cancelAllRequests();

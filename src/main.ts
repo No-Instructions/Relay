@@ -91,6 +91,10 @@ import {
 	setPluginRequestConfig,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
+import {
+	DEFAULT_IGNORED_FOLDER_NAME,
+	normalizeIgnoredFolderName,
+} from "./privateFolderIgnore";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -102,6 +106,7 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 
 interface RelaySettings extends FeatureFlags, DebugSettings {
 	sharedFolders: SharedFolderSettings[];
+	ignoredFolderName: string;
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
 }
@@ -111,6 +116,7 @@ const DEFAULT_SETTINGS: RelaySettings = {
 		channel: "stable",
 	},
 	sharedFolders: [],
+	ignoredFolderName: DEFAULT_IGNORED_FOLDER_NAME,
 	endpoints: {},
 	...FeatureFlagDefaults,
 	...DEFAULT_DEBUG_SETTINGS,
@@ -172,6 +178,24 @@ export default class Live extends Plugin {
 	hashStore!: ContentAddressedFileStore;
 	private _hsmStore!: HSMStore;
 	promises = new PromiseTracker();
+
+	getIgnoredFolderName(): string {
+		return normalizeIgnoredFolderName(this.settings?.get()?.ignoredFolderName);
+	}
+
+	async setIgnoredFolderName(name: string): Promise<void> {
+		const ignoredFolderName = normalizeIgnoredFolderName(name);
+		await this.settings.update((settings) => ({
+			...settings,
+			ignoredFolderName,
+		}));
+		this.sharedFolders?.forEach((folder) => {
+			void folder.syncFileTree().catch((error) => {
+				this.warn("Failed to resync after ignored folder setting changed", error);
+			});
+		});
+		this.folderNavDecorations?.refresh();
+	}
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -264,6 +288,9 @@ export default class Live extends Plugin {
 			}
 			const folder = this.sharedFolders.lookup(event.path);
 			if (!folder) {
+				continue;
+			}
+			if (folder.isIgnoredVaultPath(event.path)) {
 				continue;
 			}
 			const vpath = folder.getVirtualPath(event.path);
@@ -936,7 +963,10 @@ export default class Live extends Plugin {
 						}
 					} else if (file instanceof TFile) {
 						const folder = this.sharedFolders.lookup(file.path);
-						const ifile = folder?.getFile(file);
+						const ifile =
+							folder && !folder.isIgnoredVaultPath(file.path)
+								? folder.getFile(file)
+								: null;
 						if (ifile && isSyncFile(ifile)) {
 							menu.addItem((item) => {
 								item
@@ -1034,6 +1064,7 @@ export default class Live extends Plugin {
 			folderSettings,
 			this._hsmStore,
 			this.timeProvider,
+			() => this.getIgnoredFolderName(),
 			relayId,
 			authoritative,
 			remote,
@@ -1207,6 +1238,7 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (folder.isIgnoredVaultPath(tfile.path)) return;
 					const newDocs = folder.placeHold([tfile]);
 					if (newDocs.length > 0) {
 						folder.uploadFile(tfile);
@@ -1261,6 +1293,7 @@ export default class Live extends Plugin {
 			this.app.vault.on("modify", async (tfile) => {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (folder.isIgnoredVaultPath(tfile.path)) return;
 					vaultLog("Modify", tfile.path);
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
