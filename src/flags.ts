@@ -12,7 +12,6 @@ export interface FeatureFlags {
 	enableDraftMode: boolean;
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
-	enableSelectiveSubdocQuery: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -134,13 +133,6 @@ export const FeatureFlagSchema: {
 		title: "Migrate folder IndexedDB",
 		description:
 			"Copy folder-level IndexedDB stores into the app-scoped folder database on next open.",
-	},
-	enableSelectiveSubdocQuery: {
-		default: true,
-		category: "danger",
-		title: "Selective subdoc index query",
-		description:
-			"On reconnect, query the server only for locally committed document IDs. Requires server support.",
 	},
 };
 

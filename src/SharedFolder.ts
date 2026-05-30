@@ -539,7 +539,7 @@ export class SharedFolder extends HasProvider {
 		// queries only refresh known subdocument heads.
 		const provider = this._provider;
 		provider.getSubdocQueryDocIds = () => {
-			if (!flags().enableSelectiveSubdocQuery || !this.relayId) return [];
+			if (!this.relayId) return [];
 			return this.syncStore
 				.getCommittedSubdocGuids()
 				.map((guid) => this.serverDocIdForGuid(guid));
