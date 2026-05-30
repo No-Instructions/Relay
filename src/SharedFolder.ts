@@ -68,6 +68,12 @@ import { generateHash } from "./hashing";
 import {
 	HSMStore,
 } from "./merge-hsm/persistence";
+import {
+	snapshotContains,
+	snapshotFromDoc,
+	snapshotFromUpdate,
+	snapshotsEqual,
+} from "./merge-hsm/state-vectors";
 import { trackPromise } from "./trackPromise";
 import {
 	RemoteActivityIndex,
@@ -134,6 +140,7 @@ interface Noop extends Operation {
 }
 
 type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
+type RemapLocalPromotionResult = "not-applicable" | "completed" | "deferred";
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
@@ -194,6 +201,11 @@ export class SharedFolder extends HasProvider {
 	private recordingBridge: E2ERecordingBridge;
 	private _pendingKeyframeUpdates: Map<string, Uint8Array[]> = new Map();
 	private _pendingRemaps: Set<string> = new Set();
+	private _emptyRemoteRemapBackoff: Map<string, {
+		guid: string;
+		attempts: number;
+		nextAttemptAt: number;
+	}> = new Map();
 	private _pendingDownloads: Set<string> = new Set();
 	private _pendingDownloadPromises: Map<string, Promise<Document | undefined>> =
 		new Map();
@@ -685,16 +697,26 @@ export class SharedFolder extends HasProvider {
 		return match;
 	}
 
+	private findLoadedDocumentAtPath(path: string): Document | null {
+		const file = this.fset.find((file) => file.path === path);
+		return file && isDocument(file) ? file : null;
+	}
+
 	private retryDeferredRemapForGuid(guid: string): void {
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingRemaps.has(path)) return;
 
 		const localGuid = this.syncStore.get(path);
-		if (!localGuid || localGuid === guid) return;
+		const localFile = localGuid ? this.files.get(localGuid) : null;
+		const localDocument =
+			localFile && isDocument(localFile)
+				? localFile
+				: this.findLoadedDocumentAtPath(path);
+		const fromGuid = localDocument?.guid ?? localGuid;
+		if (!fromGuid || fromGuid === guid) return;
 
-		const localFile = this.files.get(localGuid);
 		const committedMeta = this.syncStore.getCommittedMeta(path);
-		if (!localFile || !isDocument(localFile) || !isDocumentMeta(committedMeta)) {
+		if (!localDocument || !isDocumentMeta(committedMeta)) {
 			return;
 		}
 		if (committedMeta.id !== guid) return;
@@ -702,7 +724,7 @@ export class SharedFolder extends HasProvider {
 		this._pendingRemaps.add(path);
 		this.executeRemap({
 			path,
-			fromGuid: localGuid,
+			fromGuid,
 			toGuid: guid,
 		}).catch((e) => {
 			this.warn(`[${path}] remap retry from update event failed`, e);
@@ -1494,6 +1516,271 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	private shouldBackOffEmptyRemoteRemap(path: string, guid: string): boolean {
+		const backoff = this._emptyRemoteRemapBackoff.get(path);
+		return !!backoff && backoff.guid === guid && backoff.nextAttemptAt > this.currentTime();
+	}
+
+	private recordEmptyRemoteRemapDeferred(path: string, guid: string): void {
+		const current = this._emptyRemoteRemapBackoff.get(path);
+		const attempts = current?.guid === guid ? current.attempts + 1 : 1;
+		const delayMs = Math.min(60000, 1000 * Math.pow(2, Math.min(attempts - 1, 6)));
+		this._emptyRemoteRemapBackoff.set(path, {
+			guid,
+			attempts,
+			nextAttemptAt: this.currentTime() + delayMs,
+		});
+	}
+
+	private clearEmptyRemoteRemapBackoff(path: string, guid?: string): void {
+		const current = this._emptyRemoteRemapBackoff.get(path);
+		if (!current) return;
+		if (guid && current.guid !== guid) return;
+		this._emptyRemoteRemapBackoff.delete(path);
+	}
+
+	private async removeLocalDocumentIdentity(
+		path: string,
+		guid: string,
+		sameGuid: boolean,
+	): Promise<void> {
+		const existingFile = this.files.get(guid);
+		const existingHsm = existingFile && isDocument(existingFile)
+			? existingFile.hsm
+			: null;
+		if (sameGuid) {
+			try {
+				await existingHsm?.resetLocalPersistenceForRebuild();
+			} catch (e) {
+				this.warn(`[${path}] rebuild local cleanup failed`, e);
+				throw e;
+			}
+			await this._hsmStore.deleteState(guid);
+		} else {
+			try {
+				indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
+			} catch { /* best effort stale database cleanup */ }
+			const p = this._hsmStore.deleteState(guid).catch(() => {});
+			trackAsyncCleanup(p);
+		}
+
+		this.backgroundSync.cancelDocumentWork(guid);
+
+		if (existingFile) {
+			this.files.delete(guid);
+			this.fset.delete(existingFile);
+			existingFile.cleanup();
+			existingFile.destroy();
+		}
+	}
+
+	private replaceDocumentMetaIfCurrent(
+		path: string,
+		expectedGuid: string,
+		replacementGuid: string,
+	): boolean {
+		let replaced = false;
+		this.ydoc.transact(() => {
+			const current = this.syncStore.getCommittedMeta(path);
+			if (!isDocumentMeta(current) || current.id !== expectedGuid) {
+				return;
+			}
+			this.syncStore.pendingUpload.delete(path);
+			this.syncStore.set(path, makeDocumentMeta(replacementGuid));
+			replaced = true;
+		}, this);
+		return replaced;
+	}
+
+	private cleanupReplacementDocument(guid: string, doc: Document): void {
+		if (this.files.get(guid) === doc) {
+			this.files.delete(guid);
+		}
+		this.fset.delete(doc);
+		doc.cleanup();
+		doc.destroy();
+		this.backgroundSync.cancelDocumentWork(guid);
+		try {
+			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
+		} catch { /* best effort stale database cleanup */ }
+		const p = this._hsmStore.deleteState(guid).catch(() => {});
+		trackAsyncCleanup(p);
+	}
+
+	private async recoverEmptyRemoteRemap({
+		path,
+		fromGuid,
+		emptyGuid,
+	}: {
+		path: string;
+		fromGuid: string;
+		emptyGuid: string;
+	}): Promise<boolean> {
+		if (fromGuid === emptyGuid) return false;
+
+		const fileForGuid = this.files.get(fromGuid);
+		const sourceFile = fileForGuid && isDocument(fileForGuid)
+			? fileForGuid
+			: this.findLoadedDocumentAtPath(path);
+		if (!sourceFile || sourceFile.destroyed) {
+			this.warn(`[${path}] remap recovery skipped: local document is not loaded`);
+			return false;
+		}
+		const sourceGuid = sourceFile.guid;
+		if (sourceGuid === emptyGuid) return false;
+
+		const committedMeta = this.syncStore.getCommittedMeta(path);
+		if (!isDocumentMeta(committedMeta) || committedMeta.id !== emptyGuid) {
+			this.log(`[${path}] remap recovery skipped: metadata changed`);
+			return false;
+		}
+
+		const replacementGuid = uuidv4();
+		const replacementDoc = this.getOrCreateDoc(replacementGuid, path);
+		this.files.set(replacementGuid, replacementDoc);
+		let metadataReplaced = false;
+
+		try {
+			await replacementDoc.hsm?.initializeWithContent();
+			await this.backgroundSync.enqueueUpload(replacementDoc);
+
+			if (this.destroyed || replacementDoc.destroyed) {
+				this.log(`[${path}] remap recovery aborted: replacement document is stale`);
+				this.cleanupReplacementDocument(replacementGuid, replacementDoc);
+				return false;
+			}
+
+			const replaced = this.replaceDocumentMetaIfCurrent(
+				path,
+				emptyGuid,
+				replacementGuid,
+			);
+			if (!replaced) {
+				this.log(
+					`[${path}] remap recovery skipped: metadata no longer points at empty guid`,
+				);
+				this.cleanupReplacementDocument(replacementGuid, replacementDoc);
+				return false;
+			}
+			metadataReplaced = true;
+
+			await this.removeLocalDocumentIdentity(path, sourceGuid, false);
+			this.files.set(replacementGuid, replacementDoc);
+			this.fset.add(replacementDoc, true);
+			replacementDoc.hsm?.setRemoteDoc(replacementDoc.ensureRemoteDoc());
+			this.clearEmptyRemoteRemapBackoff(path, emptyGuid);
+			await this.poll([replacementGuid]);
+			this.log(
+				`[${path}] remap recovery uploaded local content to replacement guid ${replacementGuid}`,
+			);
+			return true;
+		} catch (e) {
+			this.warn(`[${path}] remap recovery failed`, e);
+			if (!metadataReplaced) {
+				this.cleanupReplacementDocument(replacementGuid, replacementDoc);
+				return false;
+			}
+			this.clearEmptyRemoteRemapBackoff(path, emptyGuid);
+			return true;
+		}
+	}
+
+	private async promoteLocalDocForContainedRemoteRemap({
+		path,
+		fromGuid,
+		toGuid,
+		updateBytes,
+	}: {
+		path: string;
+		fromGuid: string;
+		toGuid: string;
+		updateBytes: Uint8Array;
+	}): Promise<RemapLocalPromotionResult> {
+		if (fromGuid === toGuid) return "not-applicable";
+
+		const sourceFile = this.files.get(fromGuid);
+		if (!sourceFile || !isDocument(sourceFile)) return "not-applicable";
+
+		const sourceHsm = sourceFile.hsm;
+		if (!sourceHsm || sourceHsm.hasFork()) return "not-applicable";
+
+		try {
+			sourceHsm.ensureLocalDocForIdle();
+			await sourceHsm.awaitPersistenceReady();
+		} catch (e) {
+			this.warn(`[${path}] remap local promotion skipped: local persistence unavailable`, e);
+			return "not-applicable";
+		}
+
+		const localDoc = sourceHsm.getLocalDoc();
+		if (!localDoc) return "not-applicable";
+
+		try {
+			const localSnapshot = snapshotFromDoc(localDoc);
+			const remoteSnapshot = snapshotFromUpdate(updateBytes);
+			if (
+				snapshotsEqual(localSnapshot, remoteSnapshot) ||
+				snapshotContains(remoteSnapshot, localSnapshot)
+			) {
+				return "not-applicable";
+			}
+			if (!snapshotContains(localSnapshot, remoteSnapshot)) {
+				return "not-applicable";
+			}
+		} catch (e) {
+			this.warn(`[${path}] remap local promotion skipped: ancestry check failed`, e);
+			return "not-applicable";
+		}
+
+		const localUpdate = Y.encodeStateAsUpdate(localDoc);
+		const promotedDoc = this.getOrCreateDoc(toGuid, path);
+		this.files.set(toGuid, promotedDoc);
+		const isCurrentDoc = () =>
+			!this.destroyed && !promotedDoc.destroyed && this.files.get(toGuid) === promotedDoc;
+
+		try {
+			await promotedDoc.hsm?.initializeFromRemote(localUpdate);
+			const remoteDoc = promotedDoc.ensureRemoteDoc();
+			Y.applyUpdate(remoteDoc, localUpdate, remoteDoc);
+			promotedDoc.hsm?.setRemoteDoc(remoteDoc);
+
+			if (!isCurrentDoc()) {
+				this.log(`[${path}] remap local promotion deferred: promoted document is stale`);
+				return "deferred";
+			}
+
+			await this.backgroundSync.enqueueUpload(promotedDoc);
+
+			const current = this.syncStore.getCommittedMeta(path);
+			if (!isDocumentMeta(current) || current.id !== toGuid) {
+				this.log(`[${path}] remap local promotion deferred: metadata changed`);
+				this.cleanupReplacementDocument(toGuid, promotedDoc);
+				return "deferred";
+			}
+
+			await this.removeLocalDocumentIdentity(path, fromGuid, false);
+			this.syncStore.pendingUpload.delete(path);
+			this.files.set(toGuid, promotedDoc);
+			this.fset.add(promotedDoc, true);
+
+			if (promotedDoc.hsm && !promotedDoc.hsm.state.lca) {
+				await promotedDoc.hsm.awaitIdle();
+				const diskState = await promotedDoc.readDiskContent();
+				await promotedDoc.hsm.bootstrapLCAFromDisk(diskState);
+			}
+			await this.poll([toGuid]);
+
+			this.log(
+				`[${path}] remap promoted local CRDT into canonical guid ${toGuid}`,
+			);
+			return "completed";
+		} catch (e) {
+			this.warn(`[${path}] remap local promotion failed`, e);
+			this.cleanupReplacementDocument(toGuid, promotedDoc);
+			return "deferred";
+		}
+	}
+
 	/**
 	 * Swap or rebuild a document's local CRDT identity. Called when the folder's
 	 * meta CRDT resolves a path to a GUID that differs from the one we enrolled
@@ -1526,6 +1813,10 @@ export class SharedFolder extends HasProvider {
 			this.log(`[${path}] ${operation} deferred: folder offline`);
 			return;
 		}
+		if (!sameGuid && this.shouldBackOffEmptyRemoteRemap(path, toGuid)) {
+			recordOperationTerminal("deferred");
+			return;
+		}
 
 		let updateBytes: Uint8Array | undefined;
 		try {
@@ -1537,9 +1828,39 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (!updateBytes) {
+			if (!sameGuid) {
+				const recovered = await this.recoverEmptyRemoteRemap({
+					path,
+					fromGuid,
+					emptyGuid: toGuid,
+				});
+				if (recovered) {
+					recordOperationTerminal("completed");
+					return;
+				}
+			}
+			this.recordEmptyRemoteRemapDeferred(path, toGuid);
 			recordOperationTerminal("deferred");
 			this.log(`[${path}] ${operation} deferred: server has guid but no content yet`);
 			return;
+		}
+		this.clearEmptyRemoteRemapBackoff(path, toGuid);
+
+		if (!sameGuid) {
+			const promoted = await this.promoteLocalDocForContainedRemoteRemap({
+				path,
+				fromGuid,
+				toGuid,
+				updateBytes,
+			});
+			if (promoted === "completed") {
+				recordOperationTerminal("completed");
+				return;
+			}
+			if (promoted === "deferred") {
+				recordOperationTerminal("deferred");
+				return;
+			}
 		}
 
 		if (this.destroyed) {
@@ -1549,35 +1870,7 @@ export class SharedFolder extends HasProvider {
 		}
 
 		try {
-			const existingFile = this.files.get(fromGuid);
-			const existingHsm = existingFile && isDocument(existingFile)
-				? existingFile.hsm
-				: null;
-			if (sameGuid) {
-				try {
-					await existingHsm?.resetLocalPersistenceForRebuild();
-				} catch (e) {
-					this.warn(`[${path}] rebuild local cleanup failed`, e);
-					throw e;
-				}
-				await this._hsmStore.deleteState(fromGuid);
-			} else {
-				try {
-					indexedDB.deleteDatabase(`${this.appId}-relay-doc-${fromGuid}`);
-				} catch { /* best effort stale database cleanup */ }
-				const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
-				trackAsyncCleanup(p);
-			}
-
-			this.backgroundSync.cancelDocumentWork(fromGuid);
-
-			if (existingFile) {
-				this.files.delete(fromGuid);
-				this.fset.delete(existingFile);
-				existingFile.cleanup();
-				existingFile.destroy();
-			}
-
+			await this.removeLocalDocumentIdentity(path, fromGuid, sameGuid);
 			this.syncStore.pendingUpload.delete(path);
 
 			const newDoc = this.getOrCreateDoc(toGuid, path);
@@ -1659,6 +1952,10 @@ export class SharedFolder extends HasProvider {
 			if (!file) {
 				const localGuid = this.syncStore.get(path);
 				const localFile = localGuid ? this.files.get(localGuid) : null;
+				const localDocument =
+					localFile && isDocument(localFile)
+						? localFile
+						: this.findLoadedDocumentAtPath(path);
 
 				if (localGuid && localFile && isSyncFile(localFile) && isSyncFileMeta(meta)) {
 					const promise = this.remapIfHashMatches(
@@ -1671,13 +1968,13 @@ export class SharedFolder extends HasProvider {
 					return { op: "update", path, promise };
 				}
 
-				if (localGuid && localGuid !== guid && isDocumentMeta(meta)) {
+				if (localDocument && localDocument.guid !== guid && isDocumentMeta(meta)) {
 					return {
 						op: "update",
 						path,
 						promise: this.executeRemap({
 							path,
-							fromGuid: localGuid,
+							fromGuid: localDocument.guid,
 							toGuid: guid,
 						}),
 					};
