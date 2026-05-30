@@ -27,19 +27,11 @@ Please talk to us in Discord before working on:
 
 We probably will not accept large pull requests that arrive without prior discussion, even if the code is good. Relay has product constraints and private infrastructure that may not be obvious from this repository.
 
-## Testing
+## Development & Testing
 
-This repository includes public tests, but Relay also has a large proprietary test suite that is not public. Maintainers run that suite before shipping changes. A pull request passing the public tests is necessary, but it may not be sufficient for a merge or release.
-
-Before opening a pull request, run the relevant checks:
-
-```bash
-npm test
-npm run lint
-npm run build
-```
-
-If a check fails for a reason unrelated to your change, mention that in the pull request.
+Relay has a proprietary development harness and test suite that is not publicly available.
+The unit tests included in this repository are encrypted.
+If you are interested in licensing our technology, please contact us.
 
 ## Support and Security
 
