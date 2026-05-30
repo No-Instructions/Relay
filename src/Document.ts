@@ -64,6 +64,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private _providerIntegration: ProviderIntegration | null = null;
 	private _idleProviderIntegrationRefs = 0;
 	private _activeProviderIntegration = false;
+	private _forkReconcileConnectPromise: Promise<void> | null = null;
 
 	private recordProviderSyncedRemoteHead = (snapshot: Uint8Array): void => {
 		this.sharedFolder.mergeManager?.seedServerAdvertisedSnapshotFromBytes(
@@ -658,6 +659,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy();
 		this.readyPromise = null as any;
+		this._forkReconcileConnectPromise = null;
 		this._hsm = null;
 		this._parent = null as any;
 	}
@@ -776,13 +778,29 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Cleanup: call destroyIdleProviderIntegration() or releaseLock()
 	 * when the provider is no longer needed (e.g. on hibernate).
 	 */
-	async connectForForkReconcile(): Promise<void> {
+	connectForForkReconcile(): Promise<void> {
+		if (this._forkReconcileConnectPromise) {
+			return this._forkReconcileConnectPromise;
+		}
+
+		const promise = this.connectForForkReconcileOnce();
+		const tracked = promise.finally(() => {
+			if (this._forkReconcileConnectPromise === tracked) {
+				this._forkReconcileConnectPromise = null;
+			}
+		});
+		this._forkReconcileConnectPromise = tracked;
+		return tracked;
+	}
+
+	private async connectForForkReconcileOnce(): Promise<void> {
 		const hsm = this._hsm;
 		if (!hsm) return;
+		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
 		const acquiredIntegration = this.ensureIdleProviderIntegration({
-			freshRemoteDoc: hsm.hasFork(),
+			freshRemoteDoc: hsm.hasFork() && !this.hasProviderIntegration(),
 		});
 		let unsubscribeState: (() => void) | null = null;
 		const cleanupIfDone = () => {

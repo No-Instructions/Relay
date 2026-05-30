@@ -1469,6 +1469,7 @@ export class BackgroundSync extends HasLogging {
 
 	private shouldEnqueueForRemoteHeadSync(doc: Document): boolean {
 		if (this.shouldSkipDocumentSync(doc)) return false;
+		if (doc.hsm?.hasFork()) return false;
 		return doc.sharedFolder.mergeManager?.isServerAdvertisedRemoteAhead(doc.guid)
 			?? false;
 	}

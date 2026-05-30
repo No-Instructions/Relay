@@ -229,7 +229,10 @@ export const MACHINE: MachineDefinition = {
 			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
 		on: {
-			PROVIDER_SYNCED: { target: 'idle.localAhead', actions: ['markProviderSynced'], reenter: true },
+			PROVIDER_SYNCED: [
+				{ target: 'idle.localAhead', guard: 'providerSyncNeedsForkReconcileRestart', actions: ['markProviderSynced'], reenter: true },
+				{ target: 'idle.localAhead', actions: ['markProviderSynced'] },
+			],
 			REMOTE_UPDATE: [
 				// If fork exists, stay in localAhead and accumulate - fork-reconcile will handle it
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },

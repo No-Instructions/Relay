@@ -2038,6 +2038,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return this.localDoc.getText("contents").toString() === e.contents;
 			},
 			providerSyncedRemoteAhead: () => this.providerSyncedRemoteAhead(),
+			providerSyncNeedsForkReconcileRestart: () =>
+				!this._providerSynced || this._activeInvoke?.id !== "fork-reconcile",
 			remoteOrLocalAhead: () =>
 				this.hasRemoteChangedSinceLCA() || this._statePath === "idle.localAhead",
 
