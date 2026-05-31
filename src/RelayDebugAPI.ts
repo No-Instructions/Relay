@@ -160,6 +160,10 @@ export interface HsmStateSnapshot {
   lcaHash: string | null;
   lcaContentLength: number | null;
   lcaContent: string | null;
+  persistedLcaHash: string | null;
+  persistedLcaContentLength: number | null;
+  persistedLcaContent: string | null;
+  persistedAt: number | null;
   hasConflict: boolean;
   conflictData: any | null;
   localDocLength: number;
@@ -169,6 +173,7 @@ export interface HsmStateSnapshot {
   stateVectorsEqual: boolean | null;
   diskMatchesIdb: boolean;
   idbMatchesLca: boolean;
+  idbMatchesPersistedLca: boolean;
   frontmatterMap: Record<string, any> | null;
   recentTransitions: HsmStateTransition[];
 }
@@ -986,6 +991,27 @@ export class RelayDebugAPI {
       } catch { /* noop */ }
     }
 
+    // Durable HSM state. Clean hibernated HSMs keep LCA metadata resident but
+    // may compact the contents body after persisting it to HSMStore.
+    let persistedLcaHash: string | null = null;
+    let persistedLcaContent: string | null = null;
+    let persistedAt: number | null = null;
+    try {
+      const persistedState = await (folder as any)._hsmStore?.loadState?.(guid);
+      const persistedLca = persistedState?.lca ?? null;
+      if (persistedLca) {
+        persistedLcaHash = persistedLca.hash ?? null;
+        persistedLcaContent =
+          typeof persistedLca.contents === 'string'
+            ? persistedLca.contents
+            : null;
+      }
+      persistedAt =
+        typeof persistedState?.persistedAt === 'number'
+          ? persistedState.persistedAt
+          : null;
+    } catch { /* persisted HSM state unavailable */ }
+
     // Capture volatile in-memory HSM fields together after the async reads
     // above. Initial enrollment can complete while disk/IDB/log probes await.
     const lca = hsmAny._lca;
@@ -1006,6 +1032,10 @@ export class RelayDebugAPI {
       diskContent !== null && idbContent !== null && diskContent === idbContent;
     const idbMatchesLca =
       idbContent !== null && lcaContent !== null && idbContent === lcaContent;
+    const idbMatchesPersistedLca =
+      idbContent !== null &&
+      persistedLcaContent !== null &&
+      idbContent === persistedLcaContent;
 
     void doc; // referenced for future expansion; silences lint
 
@@ -1019,6 +1049,10 @@ export class RelayDebugAPI {
       lcaHash: lca?.meta?.hash || null,
       lcaContentLength: lca?.contents?.length ?? null,
       lcaContent,
+      persistedLcaHash,
+      persistedLcaContentLength: persistedLcaContent?.length ?? null,
+      persistedLcaContent,
+      persistedAt,
       hasConflict: !!hsmAny.getConflictData?.(),
       conflictData: hsmAny.getConflictData?.() || null,
       localDocLength: localDoc
@@ -1030,6 +1064,7 @@ export class RelayDebugAPI {
       stateVectorsEqual,
       diskMatchesIdb,
       idbMatchesLca,
+      idbMatchesPersistedLca,
       frontmatterMap,
       recentTransitions,
     };
