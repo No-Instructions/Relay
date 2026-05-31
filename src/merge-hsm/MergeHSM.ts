@@ -68,7 +68,7 @@ import { curryLog, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
 import { generateHash } from "../hashing";
 import { processEvent } from "./machine-interpreter";
-import { MACHINE, createInterpreterConfig } from "./machine-definition";
+import { MACHINE, createInterpreterConfig, validateMachine } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
@@ -363,6 +363,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			actions: this.buildActions(),
 			invokeSources: this.buildInvokeSources(),
 		});
+
+		// Resource-contract debugging implies strict machine validation: verify
+		// every guard, action, and invoke source referenced by the machine
+		// definition is actually bound before any event is processed.
+		if (flags().enableHSMResourceContracts) {
+			const errors = validateMachine(MACHINE, this._interpreterConfig);
+			if (errors.length > 0) {
+				this.hsmError("Machine validation failed", errors);
+				throw new Error(
+					`MergeHSM machine validation failed:\n${errors.join("\n")}`,
+				);
+			}
+		}
 	}
 
 	private setPendingDiskContents(
