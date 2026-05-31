@@ -267,7 +267,7 @@ export class SharedFolder extends HasProvider {
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
 		this.vault = vault;
-		this.refreshIgnoredMarkers();
+		void this.refreshIgnoredMarkers().then(() => this.fset.update());
 		this.files = new Map();
 		this.fset = new Files();
 		this.pendingUpload = new LocalStorage<string>(
@@ -2358,17 +2358,22 @@ export class SharedFolder extends HasProvider {
 		return normalizeVirtualPath(path.slice(this.path.length + sep.length));
 	}
 
-	refreshIgnoredMarkers(): void {
+	async refreshIgnoredMarkers(): Promise<void> {
 		const roots = new Set<string>();
-		const folder = this.vault?.getAbstractFileByPath(this.path);
-		if (folder instanceof TFolder) {
-			Vault.recurseChildren(folder, (file: TAbstractFile) => {
-				if (!(file instanceof TFile) || file.name !== RELAY_IGNORE_FILE_NAME) {
-					return;
-				}
-				const ownerPath = markerOwnerPath(this.getPolicyVirtualPath(file.path));
-				roots.add(ownerPath);
-			});
+		const scan = async (folderPath: string): Promise<void> => {
+			const markerPath = this.getRelayIgnoreMarkerPath(folderPath);
+			if (await this.vault.adapter.exists(markerPath)) {
+				roots.add(markerOwnerPath(this.getPolicyVirtualPath(markerPath)));
+			}
+			const listed = await this.vault.adapter.list(folderPath);
+			await Promise.all(
+				listed.folders.map((childPath) => scan(normalizePath(childPath))),
+			);
+		};
+		try {
+			await scan(this.path);
+		} catch (error) {
+			this.warn("Failed to refresh .relayignore markers", error);
 		}
 		this.ignoredFolderRoots = roots;
 	}
@@ -2402,24 +2407,23 @@ export class SharedFolder extends HasProvider {
 
 	async addRelayIgnoreMarker(folderPath: string): Promise<void> {
 		const markerPath = this.getRelayIgnoreMarkerPath(folderPath);
-		if (!this.vault.getAbstractFileByPath(markerPath)) {
-			await this.vault.create(
+		if (!(await this.vault.adapter.exists(markerPath))) {
+			await this.vault.adapter.write(
 				markerPath,
 				"# Relay ignore\n\nFiles in this folder are not synced by Relay.\n",
 			);
 		}
-		this.refreshIgnoredMarkers();
+		await this.refreshIgnoredMarkers();
 		await this.syncFileTree();
 		this.fset.update();
 	}
 
 	async removeRelayIgnoreMarker(folderPath: string): Promise<void> {
 		const markerPath = this.getRelayIgnoreMarkerPath(folderPath);
-		const marker = this.vault.getAbstractFileByPath(markerPath);
-		if (marker instanceof TFile) {
-			await this.vault.delete(marker);
+		if (await this.vault.adapter.exists(markerPath)) {
+			await this.vault.adapter.remove(markerPath);
 		}
-		this.refreshIgnoredMarkers();
+		await this.refreshIgnoredMarkers();
 		this.addLocalDocs();
 		await this.syncFileTree();
 		this.fset.update();
@@ -3242,12 +3246,12 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	renameFile(tfile: TAbstractFile, oldPath: string) {
+	async renameFile(tfile: TAbstractFile, oldPath: string): Promise<void> {
 		const newPath = tfile.path;
 		const oldInSharedFolder = this.checkPath(oldPath);
 		const newInSharedFolder = this.checkPath(newPath);
 		const oldIgnored = oldInSharedFolder && this.isIgnoredVaultPath(oldPath);
-		this.refreshIgnoredMarkers();
+		await this.refreshIgnoredMarkers();
 		const newIgnored = newInSharedFolder && this.isIgnoredVaultPath(newPath);
 		const action = classifyRenameSyncAction({
 			oldInSharedFolder,

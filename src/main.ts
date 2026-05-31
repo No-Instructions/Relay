@@ -1274,8 +1274,9 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					if (tfile instanceof TFile && isRelayIgnoreMarkerPath(tfile.path)) {
-						folder.refreshIgnoredMarkers();
-						void folder.syncFileTree().catch((error) => {
+						void folder.refreshIgnoredMarkers().then(() => {
+							return folder.syncFileTree();
+						}).catch((error) => {
 							this.warn("Failed to resync after .relayignore was created", error);
 						});
 						this.folderNavDecorations.refresh();
@@ -1299,9 +1300,10 @@ export default class Live extends Plugin {
 				if (file instanceof TFile && isRelayIgnoreMarkerPath(file.path)) {
 					const folder = this.sharedFolders.lookup(file.path);
 					if (folder) {
-						folder.refreshIgnoredMarkers();
-						folder.addLocalDocs();
-						void folder.syncFileTree().catch((error) => {
+						void folder.refreshIgnoredMarkers().then(() => {
+							folder.addLocalDocs();
+							return folder.syncFileTree();
+						}).catch((error) => {
 							this.warn("Failed to resync after .relayignore was deleted", error);
 						});
 						this.folderNavDecorations.refresh();
@@ -1313,7 +1315,7 @@ export default class Live extends Plugin {
 		);
 
 		this.registerEvent(
-			this.app.vault.on("rename", (file, oldPath) => {
+			this.app.vault.on("rename", async (file, oldPath) => {
 				if (
 					(file instanceof TFile && isRelayIgnoreMarkerPath(file.path)) ||
 					isRelayIgnoreMarkerPath(oldPath)
@@ -1323,13 +1325,13 @@ export default class Live extends Plugin {
 					const toFolder = this.sharedFolders.lookup(file.path);
 					if (fromFolder) affectedFolders.add(fromFolder);
 					if (toFolder) affectedFolders.add(toFolder);
-					affectedFolders.forEach((folder) => {
-						folder.refreshIgnoredMarkers();
+					await Promise.all(Array.from(affectedFolders).map(async (folder) => {
+						await folder.refreshIgnoredMarkers();
 						folder.addLocalDocs();
-						void folder.syncFileTree().catch((error) => {
+						await folder.syncFileTree().catch((error) => {
 							this.warn("Failed to resync after .relayignore was renamed", error);
 						});
-					});
+					}));
 					this.folderNavDecorations.refresh();
 					return;
 				}
@@ -1350,13 +1352,13 @@ export default class Live extends Plugin {
 				if (fromFolder && toFolder) {
 					// between two shared folders
 					vaultLog("Rename", file.path, oldPath);
-					fromFolder.renameFile(file, oldPath);
-					toFolder.renameFile(file, oldPath);
+					await fromFolder.renameFile(file, oldPath);
+					await toFolder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
 					vaultLog("Rename", file.path, oldPath);
-					folder.renameFile(file, oldPath);
+					await folder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.refresh();
 				}
