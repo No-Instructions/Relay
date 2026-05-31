@@ -486,12 +486,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return !!localStateVector && localStateVector.length > 1;
 	}
 
+	private canRecoverMissingLocalCRDTFromRemote(): boolean {
+		if (this._lca || this._fork || this._conflict) return false;
+		if (!this.localDoc || !this.remoteDoc) return false;
+		if (!this.localPersistence || this.localPersistence.synced !== true) return false;
+		if (this.localPersistence.hasUserData()) return false;
+		if (!isEmptyDoc(this.localDoc)) return false;
+		return !isEmptyDoc(this.remoteDoc);
+	}
+
 	private shouldWakeLCARecoveryAfterPersistenceSynced(hasContent = this.localPersistence?.hasUserData() ?? false): boolean {
 		if (!this._statePath.startsWith("idle.")) return false;
 		if (this._statePath === "idle.conflict" || this._statePath === "idle.recoverLCA") return false;
 		if (this._lca || this._fork || this._conflict) return false;
 		if (!this.localDoc || this.localPersistence?.synced !== true) return false;
-		if (!hasContent || !this.hasEnrolledLocalCRDT()) return false;
+		if (!hasContent && !this.canRecoverMissingLocalCRDTFromRemote()) return false;
+		if (hasContent && !this.hasEnrolledLocalCRDT()) return false;
 		return this.hasLCARecoveryPendingWork();
 	}
 
@@ -518,7 +528,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (!this.localPersistence || this.localPersistence.synced !== true) return false;
 		if (!providerSyncedEvent && !this._providerSynced && !this._isProviderSynced()) return false;
 		if (this.pendingDiskContents === null || this._disk === null) return false;
-		return this.hasEnrolledLocalCRDT();
+		return this.hasEnrolledLocalCRDT() || this.canRecoverMissingLocalCRDTFromRemote();
 	}
 
 	private prepareRecoverLCAFromPendingDisk(): void {
@@ -935,7 +945,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	private materializeRecoverLCAConflict(): Conflict | null {
-		if (this._conflict) return this._conflict;
+		if (this._conflict) {
+			this.emitPersistState();
+			return this._conflict;
+		}
 		const init = this.buildRecoverLCAConflictInit();
 		if (!init) {
 			this.hsmError(
@@ -1482,7 +1495,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
-	/**
 	 * Enroll remote CRDT bytes into localDoc. Does not set LCA.
 	 */
 	async initializeFromRemote(
@@ -1490,11 +1502,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	): Promise<boolean> {
 		await this.ensurePersistence();
 		const persistence = this.localPersistence;
-		if (!persistence || !this.hasUsableLocalDoc()) {
+		if (!persistence?.initializeFromRemote || !this.hasUsableLocalDoc()) {
 			return false;
 		}
 
-		const didInitialize = await persistence.initializeFromRemote!(
+		const didInitialize = await persistence.initializeFromRemote(
 			updateBytes,
 			this.remoteDoc,
 		);
@@ -1563,7 +1575,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return false;
 		}
 
-		if (!this.hasEnrolledLocalCRDT()) {
+		if (!this.hasEnrolledLocalCRDT() && !this.canRecoverMissingLocalCRDTFromRemote()) {
 			this.crdtLog(`bootstrapLCA skipped | guid=${this._guid} reason=local-crdt-not-enrolled`);
 			return false;
 		}
@@ -2100,7 +2112,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._fork === null &&
 				this._conflict === null &&
 				this.remoteDoc !== null &&
-				this.hasEnrolledLocalCRDT(),
+				(this.hasEnrolledLocalCRDT() || this.canRecoverMissingLocalCRDTFromRemote()),
 			isRecoveryMode: () => this._lca === null,
 			recoverLCASynced: (_hsm, event) =>
 				(event as any).data?.kind === "synced",
@@ -3259,17 +3271,25 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		const localText = localDoc.getText("contents").toString();
 		const localStateVector = Y.encodeStateVector(localDoc);
-		if (localStateVector.length <= 1) {
-			return { kind: "declined", reason: "missing-local-crdt" };
-		}
-		const diskMatchesLocal = localText === disk.content;
 		const remoteText = remoteDoc.getText("contents").toString();
-		const diskMatchesRemote = remoteText === disk.content;
 		const remoteStateVector = Y.encodeStateVector(remoteDoc);
 
 		if (signal.aborted) {
 			return { kind: "declined", reason: "aborted" };
 		}
+
+		if (localStateVector.length <= 1) {
+			return this.recoverMissingLocalCRDTFromRemote({
+				disk,
+				remoteDoc,
+				remoteText,
+				remoteStateVector,
+				signal,
+			});
+		}
+
+		const diskMatchesLocal = localText === disk.content;
+		const diskMatchesRemote = remoteText === disk.content;
 
 		if (yjsDocsEqual(localDoc, remoteDoc)) {
 			if (!diskMatchesLocal) {
@@ -3366,6 +3386,119 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			detail: {
 				diskMatchesLocal,
 				localLength: localText.length,
+				diskLength: disk.content.length,
+				remoteLength: remoteText.length,
+			},
+		};
+	}
+
+	private async recoverMissingLocalCRDTFromRemote(args: {
+		disk: RecoverLCADisk;
+		remoteDoc: Y.Doc;
+		remoteText: string;
+		remoteStateVector: Uint8Array;
+		signal: AbortSignal;
+	}): Promise<RecoverLCAResult> {
+		const { disk, remoteDoc, remoteText, remoteStateVector, signal } = args;
+		if (!this.canRecoverMissingLocalCRDTFromRemote()) {
+			return { kind: "declined", reason: "missing-local-crdt" };
+		}
+		if (signal.aborted) {
+			return { kind: "declined", reason: "aborted" };
+		}
+
+		const remoteUpdate = Y.encodeStateAsUpdate(remoteDoc);
+		const didInitialize = await this.initializeFromRemote(remoteUpdate);
+		if (signal.aborted) {
+			return { kind: "declined", reason: "aborted" };
+		}
+		if (!didInitialize && !this.hasEnrolledLocalCRDT()) {
+			return {
+				kind: "declined",
+				reason: "remote-local-initialization-failed",
+				detail: {
+					remoteLength: remoteText.length,
+					updateBytes: remoteUpdate.byteLength,
+				},
+			};
+		}
+
+		const localDoc = this.requireLocalDoc("recover missing local CRDT");
+		if (!localDoc) {
+			return { kind: "declined", reason: "missing-local-doc-after-remote-init" };
+		}
+
+		const localText = localDoc.getText("contents").toString();
+		const localStateVector = Y.encodeStateVector(localDoc);
+		if (localStateVector.length <= 1) {
+			return {
+				kind: "declined",
+				reason: "remote-local-initialization-empty",
+				detail: {
+					remoteLength: remoteText.length,
+					updateBytes: remoteUpdate.byteLength,
+				},
+			};
+		}
+		if (localText !== remoteText || !yjsDocsEqual(localDoc, remoteDoc)) {
+			return {
+				kind: "declined",
+				reason: "remote-local-mismatch-after-restore",
+				detail: {
+					localLength: localText.length,
+					remoteLength: remoteText.length,
+				},
+			};
+		}
+
+		const localSnapshot = snapshotFromDoc(localDoc).snapshot;
+		this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
+		this._localDocSnapshotSafe = true;
+		this._localStateVector = localStateVector;
+		this._remoteStateVector = remoteStateVector;
+
+		if (disk.content === remoteText) {
+			return {
+				kind: "synced",
+				disk,
+				localStateVector,
+				remoteStateVector,
+				newLCA: {
+					contents: remoteText,
+					meta: { hash: disk.hash, mtime: disk.mtime },
+					stateVector: localStateVector,
+					snapshot: localSnapshot,
+				},
+			};
+		}
+
+		const conflictInit = this.buildTwoWayConflictInit(
+			remoteText,
+			disk.content,
+			"Remote",
+			"Local file",
+			remoteText,
+		);
+		if (!conflictInit) {
+			return {
+				kind: "declined",
+				reason: "disk-remote-mismatch-without-conflict",
+				detail: {
+					diskLength: disk.content.length,
+					remoteLength: remoteText.length,
+				},
+			};
+		}
+
+		this._conflict = new Conflict(conflictInit);
+		this._disk = { hash: disk.hash, mtime: disk.mtime };
+		this.pendingIdleUpdates = null;
+		this.clearPendingDiskContents();
+
+		return {
+			kind: "declined",
+			reason: "disk-remote-mismatch-with-missing-local-crdt",
+			detail: {
 				diskLength: disk.content.length,
 				remoteLength: remoteText.length,
 			},

@@ -292,6 +292,7 @@ export async function createTestHSM(
 
 		// Track if IDB had content at sync time (before any new updates)
 		const hadContentAtSync = updateRows.length > 0;
+		let initializedAfterSync = false;
 
 		// Random delay for IndexedDB sync simulation (only when TEST_ASYNC_DELAYS=1)
 		const syncDelay = delaysEnabled() ? nextDelay(0, 10) : null;
@@ -370,8 +371,16 @@ export async function createTestHSM(
 			},
 			whenSynced: syncDelay ?? Promise.resolve(),
 			hasUserData() {
-				// Return whether IDB had content when persistence synced
-				return hadContentAtSync;
+				// Return whether IDB had content when persistence synced, or was
+				// explicitly initialized through the persistence API afterwards.
+				return hadContentAtSync || initializedAfterSync;
+			},
+			async initializeFromRemote(update: Uint8Array, origin?: unknown) {
+				if (hadContentAtSync || initializedAfterSync) return false;
+				if (update.byteLength === 0) return false;
+				Y.applyUpdate(doc, update, origin);
+				initializedAfterSync = true;
+				return true;
 			},
 			opCapture: null as OpCapture | null,
 		};
