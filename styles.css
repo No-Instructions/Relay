@@ -62,6 +62,29 @@
 .nav-folder-title-content {
 	margin-inline-end: auto;
 }
+
+.system3-ignored-folder-icon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1em;
+	height: 1em;
+	margin-inline-start: 0.35em;
+	color: var(--text-warning, var(--color-orange));
+	flex: 0 0 auto;
+	opacity: 0.95;
+}
+
+.system3-ignored-folder-icon svg {
+	width: 0.9em;
+	height: 0.9em;
+	stroke-width: 2.25;
+}
+
+.system3-ignored-folder-icon-inherited {
+	opacity: 0.45;
+}
+
 .system3-sync-status-folder {
 	position: relative;
 	cursor: pointer;

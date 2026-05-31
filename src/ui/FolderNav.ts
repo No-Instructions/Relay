@@ -5,6 +5,7 @@ import {
 	Vault,
 	Workspace,
 	WorkspaceLeaf,
+	setIcon,
 } from "obsidian";
 import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
@@ -250,6 +251,64 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 	): PillDecoration | null {
 		if (sharedFolder && sharedFolder.path === folder.path) {
 			return storage || new PillDecoration(item.selfEl, sharedFolder);
+		}
+		if (storage) {
+			storage.destroy();
+		}
+		return null;
+	}
+}
+
+class IgnoredFolderDecoration implements Destroyable {
+	private iconEl: HTMLElement;
+
+	constructor(
+		private el: HTMLElement,
+		private label: string,
+		private direct: boolean,
+	) {
+		this.iconEl = document.createElement("span");
+		this.iconEl.addClass("system3-ignored-folder-icon");
+		this.iconEl.setAttribute("aria-label", label);
+		this.iconEl.setAttribute("title", label);
+		setIcon(this.iconEl, "cloud-off");
+		this.el.appendChild(this.iconEl);
+		this.update(label, direct);
+	}
+
+	update(label: string, direct: boolean) {
+		this.label = label;
+		this.direct = direct;
+		this.iconEl.setAttribute("aria-label", label);
+		this.iconEl.setAttribute("title", label);
+		this.iconEl.toggleClass("system3-ignored-folder-icon-inherited", !direct);
+	}
+
+	destroy() {
+		this.iconEl.remove();
+	}
+}
+
+class IgnoredFolderVisitor extends BaseVisitor<IgnoredFolderDecoration> {
+	visitFolder(
+		folder: TFolder,
+		item: FolderItem,
+		storage?: IgnoredFolderDecoration,
+		sharedFolder?: SharedFolder,
+	): IgnoredFolderDecoration | null {
+		if (sharedFolder && sharedFolder.checkPath(folder.path)) {
+			const ignoredRoot = sharedFolder.getIgnoredRootForVaultPath(folder.path);
+			if (ignoredRoot) {
+				const direct = ignoredRoot === folder.path;
+				const label = direct
+					? "Relay is not syncing this folder (.relayignore)"
+					: "Relay is not syncing this folder because a parent has .relayignore";
+				if (storage) {
+					storage.update(label, direct);
+					return storage;
+				}
+				return new IgnoredFolderDecoration(item.selfEl, label, direct);
+			}
 		}
 		if (storage) {
 			storage.destroy();
@@ -880,6 +939,7 @@ export class FolderNavigationDecorations {
 		const visitors = [];
 		visitors.push(new FolderBarVisitor());
 		visitors.push(new FolderPillVisitor());
+		visitors.push(new IgnoredFolderVisitor());
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
 			visitors.push(
