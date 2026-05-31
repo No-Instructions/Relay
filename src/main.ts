@@ -91,6 +91,8 @@ import {
 	setPluginRequestConfig,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
+import { isRelayIgnoreMarkerPath } from "./privateFolderIgnore";
+import { IgnoredRemoteEntriesModal } from "./ui/IgnoredRemoteEntriesModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -264,6 +266,9 @@ export default class Live extends Plugin {
 			}
 			const folder = this.sharedFolders.lookup(event.path);
 			if (!folder) {
+				continue;
+			}
+			if (folder.isIgnoredVaultPath(event.path)) {
 				continue;
 			}
 			const vpath = folder.getVirtualPath(event.path);
@@ -867,13 +872,14 @@ export default class Live extends Plugin {
 			this.registerEvent(
 				this.app.workspace.on("file-menu", (menu, file) => {
 					if (file instanceof TFolder) {
-						const folder = this.sharedFolders.find(
+						const exactSharedFolder = this.sharedFolders.find(
 							(sharedFolder) => sharedFolder.path === file.path,
 						);
+						const folder = exactSharedFolder ?? this.sharedFolders.lookup(file.path);
 						if (!folder) {
 							return;
 						}
-						if (folder.relayId) {
+						if (exactSharedFolder && folder.relayId) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Relay settings")
@@ -907,7 +913,7 @@ export default class Live extends Plugin {
 										this._liveViews.refresh("folder connection toggle");
 									});
 							});
-						} else {
+						} else if (exactSharedFolder) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Local folder settings")
@@ -917,7 +923,7 @@ export default class Live extends Plugin {
 									});
 							});
 						}
-						if (folder.relayId && folder.connected && !folder.localOnly) {
+						if (exactSharedFolder && folder.relayId && folder.connected && !folder.localOnly) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Sync")
@@ -934,9 +940,40 @@ export default class Live extends Plugin {
 									});
 							});
 						}
+						if (!exactSharedFolder) {
+							const ignoredRoot = folder.getIgnoredRootForVaultPath(file.path);
+							if (ignoredRoot === file.path) {
+								menu.addItem((item) => {
+									item
+										.setTitle("Relay: Sync this folder")
+										.setIcon("folder-sync")
+										.onClick(() => {
+											void this.removeRelayIgnoreMarker(folder, file);
+										});
+								});
+							} else if (ignoredRoot) {
+								menu.addItem((item) => {
+									item
+										.setTitle("Relay: Not synced by parent .relayignore")
+										.setIcon("ban");
+								});
+							} else {
+								menu.addItem((item) => {
+									item
+										.setTitle("Relay: Do not sync this folder")
+										.setIcon("folder-x")
+										.onClick(() => {
+											void this.addRelayIgnoreMarker(folder, file);
+										});
+								});
+							}
+						}
 					} else if (file instanceof TFile) {
 						const folder = this.sharedFolders.lookup(file.path);
-						const ifile = folder?.getFile(file);
+						const ifile =
+							folder && !folder.isIgnoredVaultPath(file.path)
+								? folder.getFile(file)
+								: null;
 						if (ifile && isSyncFile(ifile)) {
 							menu.addItem((item) => {
 								item
@@ -981,6 +1018,35 @@ export default class Live extends Plugin {
 			this.loadTime = moment.now() - start;
 			onloadComplete();
 		});
+	}
+
+	private async addRelayIgnoreMarker(folder: SharedFolder, target: TFolder): Promise<void> {
+		try {
+			await folder.addRelayIgnoreMarker(target.path);
+			this.folderNavDecorations.refresh();
+			this._liveViews.refresh("relayignore added");
+			const entries = folder.getIgnoredRemoteEntries(target.path);
+			if (entries.length > 0) {
+				new IgnoredRemoteEntriesModal(this.app, folder, entries).open();
+			} else {
+				new Notice(`Relay will no longer sync ${target.path}.`);
+			}
+		} catch (error) {
+			this.warn("Failed to add .relayignore", error);
+			new Notice(`Failed to add .relayignore to ${target.path}`);
+		}
+	}
+
+	private async removeRelayIgnoreMarker(folder: SharedFolder, target: TFolder): Promise<void> {
+		try {
+			await folder.removeRelayIgnoreMarker(target.path);
+			this.folderNavDecorations.refresh();
+			this._liveViews.refresh("relayignore removed");
+			new Notice(`Relay will sync ${target.path}.`);
+		} catch (error) {
+			this.warn("Failed to remove .relayignore", error);
+			new Notice(`Failed to remove .relayignore from ${target.path}`);
+		}
 	}
 
 	private _createSharedFolder(
@@ -1207,6 +1273,16 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (tfile instanceof TFile && isRelayIgnoreMarkerPath(tfile.path)) {
+						void folder.refreshIgnoredMarkers().then(() => {
+							return folder.syncFileTree();
+						}).catch((error) => {
+							this.warn("Failed to resync after .relayignore was created", error);
+						});
+						this.folderNavDecorations.refresh();
+						return;
+					}
+					if (folder.isIgnoredVaultPath(tfile.path)) return;
 					const newDocs = folder.placeHold([tfile]);
 					if (newDocs.length > 0) {
 						folder.uploadFile(tfile);
@@ -1221,12 +1297,44 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
+				if (file instanceof TFile && isRelayIgnoreMarkerPath(file.path)) {
+					const folder = this.sharedFolders.lookup(file.path);
+					if (folder) {
+						void folder.refreshIgnoredMarkers().then(() => {
+							folder.addLocalDocs();
+							return folder.syncFileTree();
+						}).catch((error) => {
+							this.warn("Failed to resync after .relayignore was deleted", error);
+						});
+						this.folderNavDecorations.refresh();
+					}
+					return;
+				}
 				this.queueVaultDelete(file, vaultLog);
 			}),
 		);
 
 		this.registerEvent(
-			this.app.vault.on("rename", (file, oldPath) => {
+			this.app.vault.on("rename", async (file, oldPath) => {
+				if (
+					(file instanceof TFile && isRelayIgnoreMarkerPath(file.path)) ||
+					isRelayIgnoreMarkerPath(oldPath)
+				) {
+					const affectedFolders = new Set<SharedFolder>();
+					const fromFolder = this.sharedFolders.lookup(oldPath);
+					const toFolder = this.sharedFolders.lookup(file.path);
+					if (fromFolder) affectedFolders.add(fromFolder);
+					if (toFolder) affectedFolders.add(toFolder);
+					await Promise.all(Array.from(affectedFolders).map(async (folder) => {
+						await folder.refreshIgnoredMarkers();
+						folder.addLocalDocs();
+						await folder.syncFileTree().catch((error) => {
+							this.warn("Failed to resync after .relayignore was renamed", error);
+						});
+					}));
+					this.folderNavDecorations.refresh();
+					return;
+				}
 				// TODO this doesn't work for empty folders.
 				if (file instanceof TFolder) {
 					const sharedFolder = this.sharedFolders.find((folder) => {
@@ -1244,13 +1352,13 @@ export default class Live extends Plugin {
 				if (fromFolder && toFolder) {
 					// between two shared folders
 					vaultLog("Rename", file.path, oldPath);
-					fromFolder.renameFile(file, oldPath);
-					toFolder.renameFile(file, oldPath);
+					await fromFolder.renameFile(file, oldPath);
+					await toFolder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
 					vaultLog("Rename", file.path, oldPath);
-					folder.renameFile(file, oldPath);
+					await folder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.refresh();
 				}
@@ -1261,6 +1369,7 @@ export default class Live extends Plugin {
 			this.app.vault.on("modify", async (tfile) => {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (folder.isIgnoredVaultPath(tfile.path)) return;
 					vaultLog("Modify", tfile.path);
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {

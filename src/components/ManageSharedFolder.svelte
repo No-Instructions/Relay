@@ -5,7 +5,7 @@
 	import type Live from "src/main";
 	import { type SharedFolder } from "src/SharedFolder";
 	import { debounce } from "obsidian";
-	import { createEventDispatcher, onDestroy, onMount } from "svelte";
+	import { createEventDispatcher } from "svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 
 	export let plugin: Live;
@@ -29,6 +29,7 @@
 		}
 		dispatch("goBack", {});
 	}
+
 </script>
 
 <Breadcrumbs
