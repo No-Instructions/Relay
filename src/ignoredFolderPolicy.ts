@@ -1,8 +1,8 @@
 import { sep } from "path-browserify";
 import type { Meta } from "./SyncTypes";
 import {
-	DEFAULT_IGNORED_FOLDER_NAME,
-	pathContainsIgnoredFolderSegment,
+	isRelayIgnoreMarkerPath,
+	normalizeVirtualPath,
 } from "./privateFolderIgnore";
 
 export type RenameSyncAction = "ignore" | "remove-sync-metadata" | "upload" | "move-sync-metadata";
@@ -15,20 +15,21 @@ export interface IgnoredRemoteEntry {
 
 export function isIgnoredVirtualPath(
 	vpath: string,
-	ignoredFolderName = DEFAULT_IGNORED_FOLDER_NAME,
+	ignoredRoots: Iterable<string>,
 ): boolean {
-	return pathContainsIgnoredFolderSegment(vpath, ignoredFolderName);
+	if (isRelayIgnoreMarkerPath(vpath)) return true;
+	return findIgnoredRootForVirtualPath(vpath, ignoredRoots) !== null;
 }
 
 export function isIgnoredVaultPath(
 	vaultPath: string,
 	sharedFolderPath: string,
-	ignoredFolderName = DEFAULT_IGNORED_FOLDER_NAME,
+	ignoredRoots: Iterable<string>,
 ): boolean {
 	if (!isContainedVaultPath(vaultPath, sharedFolderPath)) return false;
 	return isIgnoredVirtualPath(
 		vaultPath.slice(sharedFolderPath.length + sep.length),
-		ignoredFolderName,
+		ignoredRoots,
 	);
 }
 
@@ -56,10 +57,10 @@ export function classifyRenameSyncAction(input: {
 
 export function collectIgnoredRemoteEntries(
 	entries: Iterable<[string, Meta]>,
-	ignoredFolderName = DEFAULT_IGNORED_FOLDER_NAME,
+	ignoredRoots: Iterable<string>,
 ): IgnoredRemoteEntry[] {
 	return Array.from(entries)
-		.filter(([path]) => isIgnoredVirtualPath(path, ignoredFolderName))
+		.filter(([path]) => isIgnoredVirtualPath(path, ignoredRoots))
 		.map(([path, meta]) => ({
 			path,
 			guid: meta.id,
@@ -76,4 +77,24 @@ export function compareDeepestPathFirst(
 	const bDepth = b.path.split(/[\\/]+/).filter(Boolean).length;
 	if (aDepth !== bDepth) return bDepth - aDepth;
 	return a.path.localeCompare(b.path);
+}
+
+export function findIgnoredRootForVirtualPath(
+	vpath: string,
+	ignoredRoots: Iterable<string>,
+): string | null {
+	const normalizedPath = normalizeVirtualPath(vpath);
+	const roots = Array.from(ignoredRoots)
+		.map((root) => normalizeVirtualPath(root))
+		.sort((a, b) => b.length - a.length);
+
+	for (const root of roots) {
+		if (!root) {
+			return root;
+		}
+		if (normalizedPath === root || normalizedPath.startsWith(root + "/")) {
+			return root;
+		}
+	}
+	return null;
 }

@@ -13,14 +13,6 @@
 	import { handleServerError } from "../utils/toastStore";
 	import { Platform } from "obsidian";
 	import Announcement from "./Announcement.svelte";
-	import SettingGroup from "./SettingGroup.svelte";
-	import SettingItem from "./SettingItem.svelte";
-	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import {
-		DEFAULT_IGNORED_FOLDER_NAME,
-		isValidIgnoredFolderName,
-		normalizeIgnoredFolderName,
-	} from "src/privateFolderIgnore";
 
 	interface RelayEventDetail {
 		relay: Relay;
@@ -60,14 +52,7 @@
 	const subscriptions = relayManager.subscriptions;
 	const providers = relayManager.providers;
 	const sharedFolders = plugin.sharedFolders;
-	const settings = plugin.settings;
 	let sharedFolder: SharedFolder | undefined;
-	let ignoredFolderNameInput = plugin.getIgnoredFolderName();
-	$: savedIgnoredFolderName =
-		$settings.ignoredFolderName || DEFAULT_IGNORED_FOLDER_NAME;
-	$: ignoredFolderNameValid = isValidIgnoredFolderName(ignoredFolderNameInput);
-	$: ignoredFolderNameDirty =
-		normalizeIgnoredFolderName(ignoredFolderNameInput) !== savedIgnoredFolderName;
 
 	let currentComponent:
 		| typeof Relays
@@ -257,16 +242,6 @@
 		currentComponent = ManageRelay;
 	}
 
-	function handleIgnoredFolderNameInput(event: Event) {
-		ignoredFolderNameInput = (event.target as HTMLInputElement).value;
-	}
-
-	async function handleIgnoredFolderNameSave() {
-		if (!ignoredFolderNameValid) return;
-		await plugin.setIgnoredFolderName(ignoredFolderNameInput);
-		ignoredFolderNameInput = plugin.getIgnoredFolderName();
-	}
-
 	$: {
 		if (currentRelay && !$relays.has(currentRelay.id)) {
 			currentRelay = undefined;
@@ -341,31 +316,6 @@
 				on:createRelay={handleCreateRelayEvent}
 				on:joinRelay={handleJoinRelay}
 			></Relays>
-			<SettingItemHeading name="Local ignore rules" />
-			<SettingGroup>
-				<SettingItem
-					name="Ignored folder name"
-					description={`Folders with this exact name do not sync. Default: ${DEFAULT_IGNORED_FOLDER_NAME}.`}
-				>
-					<input
-						type="text"
-						value={ignoredFolderNameInput}
-						placeholder={DEFAULT_IGNORED_FOLDER_NAME}
-						on:input={handleIgnoredFolderNameInput}
-					/>
-					<button
-						disabled={!ignoredFolderNameValid || !ignoredFolderNameDirty}
-						on:click={handleIgnoredFolderNameSave}
-					>
-						Save
-					</button>
-					{#if !ignoredFolderNameValid}
-						<div class="setting-item-description mod-warning">
-							Use one folder name only, without slashes.
-						</div>
-					{/if}
-				</SettingItem>
-			</SettingGroup>
 		</LoggedIn>
 	{/if}
 </div>

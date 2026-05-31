@@ -31,7 +31,6 @@
 	import { Check, Edit } from "lucide-svelte";
 	import { UserSelectModal } from "src/ui/UserSelectModal";
 	import { handleServerError } from "src/utils/toastStore";
-	import { IgnoredRemoteEntriesModal } from "src/ui/IgnoredRemoteEntriesModal";
 	export let plugin: Live;
 	export let remoteFolder: RemoteSharedFolder;
 	export let sharedFolders: SharedFolders;
@@ -54,7 +53,6 @@
 			.items()
 			.find((folder) => folder.guid === remoteFolder.guid);
 	});
-	$: ignoredRemoteEntries = $folderStore?.getIgnoredRemoteEntries() || [];
 
 	// Dynamic role loading for forwards compatibility
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
@@ -219,12 +217,6 @@
 			if (folder) {
 				plugin.app.vault.trash(folder, false);
 			}
-		}
-	}
-
-	function handleReviewIgnoredRemoteEntries() {
-		if ($folderStore) {
-			new IgnoredRemoteEntriesModal(plugin.app, $folderStore).open();
 		}
 	}
 
@@ -640,17 +632,6 @@
 		{/if}
 
 		{#if $folderStore}
-			{#if ignoredRemoteEntries.length > 0}
-				<SettingItem
-					name="Review ignored remote entries"
-					description="Remove Relay metadata for already-synced paths under the ignored folder name. Local files are preserved."
-				>
-					<button class="mod-destructive" on:click={handleReviewIgnoredRemoteEntries}>
-						Review {ignoredRemoteEntries.length}
-					</button>
-				</SettingItem>
-			{/if}
-
 			<SettingItem
 				name="Delete from vault"
 				description="Delete the local Shared Folder and all of its contents."

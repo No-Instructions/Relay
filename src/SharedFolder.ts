@@ -36,10 +36,16 @@ import { LocalStorage } from "./LocalStorage";
 import {
 	classifyRenameSyncAction,
 	collectIgnoredRemoteEntries,
+	findIgnoredRootForVirtualPath,
 	isContainedVaultPath,
 	isIgnoredVirtualPath,
 	type IgnoredRemoteEntry,
 } from "./ignoredFolderPolicy";
+import {
+	RELAY_IGNORE_FILE_NAME,
+	markerOwnerPath,
+	normalizeVirtualPath,
+} from "./privateFolderIgnore";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore } from "./SyncStore";
@@ -197,6 +203,7 @@ export class SharedFolder extends HasProvider {
 	private storageQuota?: number;
 	private pendingDeletes: Set<string> = new Set();
 	private enabledSyncTypes: Set<SyncType> = new Set();
+	private ignoredFolderRoots: Set<string> = new Set();
 
 
 	private _persistence: IndexeddbPersistence;
@@ -245,7 +252,6 @@ export class SharedFolder extends HasProvider {
 		private _settings: NamespacedSettings<SharedFolderSettings>,
 		private _hsmStore: HSMStore,
 		timeProvider: TimeProvider,
-		private getIgnoredFolderNameSetting: () => string,
 		relayId?: string,
 		authoritative: boolean = false,
 		remote?: RemoteSharedFolder,
@@ -261,6 +267,7 @@ export class SharedFolder extends HasProvider {
 		this.setLoggers(`[SharedFile](${this.path})`);
 		this.fileManager = fileManager;
 		this.vault = vault;
+		this.refreshIgnoredMarkers();
 		this.files = new Map();
 		this.fset = new Files();
 		this.pendingUpload = new LocalStorage<string>(
@@ -1037,7 +1044,7 @@ export class SharedFolder extends HasProvider {
 		return false;
 	}
 
-	private addLocalDocs = (types?: SyncType[]) => {
+	addLocalDocs = (types?: SyncType[]) => {
 		let syncTFiles = this.getSyncFiles();
 		if (types) {
 			syncTFiles = syncTFiles.filter((tfile) => {
@@ -2345,17 +2352,77 @@ export class SharedFolder extends HasProvider {
 		return vPath;
 	}
 
-	isIgnoredVirtualPath(vpath: string): boolean {
-		return isIgnoredVirtualPath(vpath, this.getIgnoredFolderName());
+	private getPolicyVirtualPath(path: string): string {
+		if (path === this.path) return "";
+		if (!this.checkPath(path)) return normalizeVirtualPath(path);
+		return normalizeVirtualPath(path.slice(this.path.length + sep.length));
 	}
 
-	getIgnoredFolderName(): string {
-		return this.getIgnoredFolderNameSetting();
+	refreshIgnoredMarkers(): void {
+		const roots = new Set<string>();
+		const folder = this.vault?.getAbstractFileByPath(this.path);
+		if (folder instanceof TFolder) {
+			Vault.recurseChildren(folder, (file: TAbstractFile) => {
+				if (!(file instanceof TFile) || file.name !== RELAY_IGNORE_FILE_NAME) {
+					return;
+				}
+				const ownerPath = markerOwnerPath(this.getPolicyVirtualPath(file.path));
+				roots.add(ownerPath);
+			});
+		}
+		this.ignoredFolderRoots = roots;
+	}
+
+	isIgnoredVirtualPath(vpath: string): boolean {
+		return isIgnoredVirtualPath(vpath, this.ignoredFolderRoots);
 	}
 
 	isIgnoredVaultPath(path: string): boolean {
 		if (!this.checkPath(path)) return false;
 		return this.isIgnoredVirtualPath(path.slice(this.path.length + sep.length));
+	}
+
+	getIgnoredRootForVaultPath(path: string): string | null {
+		if (path !== this.path && !this.checkPath(path)) return null;
+		const root = findIgnoredRootForVirtualPath(
+			this.getPolicyVirtualPath(path),
+			this.ignoredFolderRoots,
+		);
+		if (root === null) return null;
+		return root ? normalizePath(join(this.path, root)) : this.path;
+	}
+
+	isDirectlyIgnoredVaultFolder(path: string): boolean {
+		return this.getIgnoredRootForVaultPath(path) === path;
+	}
+
+	getRelayIgnoreMarkerPath(folderPath: string): string {
+		return normalizePath(join(folderPath, RELAY_IGNORE_FILE_NAME));
+	}
+
+	async addRelayIgnoreMarker(folderPath: string): Promise<void> {
+		const markerPath = this.getRelayIgnoreMarkerPath(folderPath);
+		if (!this.vault.getAbstractFileByPath(markerPath)) {
+			await this.vault.create(
+				markerPath,
+				"# Relay ignore\n\nFiles in this folder are not synced by Relay.\n",
+			);
+		}
+		this.refreshIgnoredMarkers();
+		await this.syncFileTree();
+		this.fset.update();
+	}
+
+	async removeRelayIgnoreMarker(folderPath: string): Promise<void> {
+		const markerPath = this.getRelayIgnoreMarkerPath(folderPath);
+		const marker = this.vault.getAbstractFileByPath(markerPath);
+		if (marker instanceof TFile) {
+			await this.vault.delete(marker);
+		}
+		this.refreshIgnoredMarkers();
+		this.addLocalDocs();
+		await this.syncFileTree();
+		this.fset.update();
 	}
 
 	getSyncVirtualPath(path: string): string {
@@ -2366,12 +2433,15 @@ export class SharedFolder extends HasProvider {
 		return vpath;
 	}
 
-	getIgnoredRemoteEntries(): IgnoredRemoteEntry[] {
+	getIgnoredRemoteEntries(vaultRootPath?: string): IgnoredRemoteEntry[] {
 		const entries: [string, Meta][] = [];
 		this.syncStore.forEach((meta, path) => {
 			entries.push([path, meta]);
 		});
-		return collectIgnoredRemoteEntries(entries, this.getIgnoredFolderName());
+		const ignoredRoots = vaultRootPath
+			? new Set([this.getPolicyVirtualPath(vaultRootPath)])
+			: this.ignoredFolderRoots;
+		return collectIgnoredRemoteEntries(entries, ignoredRoots);
 	}
 
 	cleanupIgnoredRemoteEntries(entries = this.getIgnoredRemoteEntries()): number {
@@ -3177,6 +3247,7 @@ export class SharedFolder extends HasProvider {
 		const oldInSharedFolder = this.checkPath(oldPath);
 		const newInSharedFolder = this.checkPath(newPath);
 		const oldIgnored = oldInSharedFolder && this.isIgnoredVaultPath(oldPath);
+		this.refreshIgnoredMarkers();
 		const newIgnored = newInSharedFolder && this.isIgnoredVaultPath(newPath);
 		const action = classifyRenameSyncAction({
 			oldInSharedFolder,
@@ -3207,15 +3278,11 @@ export class SharedFolder extends HasProvider {
 			const file = this.files.get(guid);
 			if (action === "remove-sync-metadata") {
 				// moving out of shared folder.. destroy the live doc.
-				this.ydoc.transact(() => {
-					this.syncStore.delete(oldVPath);
-				}, this);
-				if (file) {
-					file.cleanup();
-					file.destroy();
-					this.fset.delete(file);
-				}
-				this.files.delete(guid);
+				const deletePaths = this.expandDeletePaths(
+					[oldVPath],
+					tfile instanceof TFolder ? [oldVPath] : [],
+				);
+				this.deleteFiles(deletePaths);
 			} else {
 				// moving within shared folder.. move the live doc.
 				const guid = this.syncStore.get(oldVPath);

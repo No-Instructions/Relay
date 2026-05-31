@@ -1,49 +1,34 @@
 import {
-	DEFAULT_IGNORED_FOLDER_NAME,
-	isValidIgnoredFolderName,
-	normalizeIgnoredFolderName,
-	pathContainsIgnoredFolderSegment,
+	isRelayIgnoreMarkerPath,
+	markerOwnerPath,
+	normalizeVirtualPath,
+	relayIgnoreMarkerPath,
 } from "./privateFolderIgnore";
 
-describe("pathContainsIgnoredFolderSegment", () => {
+describe(".relayignore path helpers", () => {
 	test.each([
-		"_private",
-		"folder/_private",
-		"folder/_private/note.md",
-		"/_private/note.md",
-		"folder\\_private\\note.md",
-	])("matches ignored folder segment in %s", (path) => {
-		expect(pathContainsIgnoredFolderSegment(path)).toBe(true);
+		".relayignore",
+		"folder/.relayignore",
+		"/folder/.relayignore",
+		"folder\\.relayignore",
+	])("detects marker path %s", (path) => {
+		expect(isRelayIgnoreMarkerPath(path)).toBe(true);
 	});
 
-	test.each(["_private.md", "not_private", "_Private", "folder/my_private/note.md"])(
-		"does not match non-private folder segment in %s",
+	test.each(["relayignore", ".relayignore.md", "folder/.relayignore/note.md"])(
+		"does not treat non-marker path %s as marker",
 		(path) => {
-			expect(pathContainsIgnoredFolderSegment(path)).toBe(false);
+			expect(isRelayIgnoreMarkerPath(path)).toBe(false);
 		},
 	);
 
-	test("uses custom ignored folder name", () => {
-		expect(pathContainsIgnoredFolderSegment("folder/_secret/note.md", "_secret")).toBe(
-			true,
-		);
-		expect(pathContainsIgnoredFolderSegment("folder/_private/note.md", "_secret")).toBe(
-			false,
-		);
+	test("normalizes virtual paths", () => {
+		expect(normalizeVirtualPath("/folder\\child//note.md")).toBe("folder/child/note.md");
 	});
 
-	test.each(["", "   ", "nested/folder", "nested\\folder"])(
-		"normalizes invalid setting %s to default",
-		(name) => {
-			expect(normalizeIgnoredFolderName(name)).toBe(DEFAULT_IGNORED_FOLDER_NAME);
-		},
-	);
-
-	test("validates user-provided ignored folder names", () => {
-		expect(isValidIgnoredFolderName("_private")).toBe(true);
-		expect(isValidIgnoredFolderName(" _secret ")).toBe(true);
-		expect(isValidIgnoredFolderName("nested/folder")).toBe(false);
-		expect(isValidIgnoredFolderName("nested\\folder")).toBe(false);
-		expect(isValidIgnoredFolderName("   ")).toBe(false);
+	test("builds marker paths and owners", () => {
+		expect(relayIgnoreMarkerPath("folder/child")).toBe("folder/child/.relayignore");
+		expect(markerOwnerPath("folder/child/.relayignore")).toBe("folder/child");
+		expect(markerOwnerPath(".relayignore")).toBe("");
 	});
 });

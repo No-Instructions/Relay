@@ -8,10 +8,11 @@ export class IgnoredRemoteEntriesModal extends Modal {
 	constructor(
 		app: App,
 		private sharedFolder: SharedFolder,
+		entries?: IgnoredRemoteEntry[],
 	) {
 		super(app);
-		this.entries = sharedFolder.getIgnoredRemoteEntries();
-		this.setTitle("Ignored remote entries");
+		this.entries = entries ?? sharedFolder.getIgnoredRemoteEntries();
+		this.setTitle("Remove ignored Relay entries");
 	}
 
 	onOpen() {
@@ -19,7 +20,7 @@ export class IgnoredRemoteEntriesModal extends Modal {
 		contentEl.empty();
 
 		contentEl.createEl("p", {
-			text: `${this.entries.length} remote entr${this.entries.length === 1 ? "y" : "ies"} match the ignored folder name "${this.sharedFolder.getIgnoredFolderName()}". Cleanup removes Relay metadata only. Local files are not deleted, trashed, moved, or rewritten.`,
+			text: `${this.entries.length} remote Relay entr${this.entries.length === 1 ? "y" : "ies"} are already synced under this .relayignore folder. Removing them deletes the subtree from the Relay server, preserves local files on this device, and may appear as remote deletions on other devices.`,
 		});
 
 		const list = contentEl.createEl("ul");

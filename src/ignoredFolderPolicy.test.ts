@@ -1,6 +1,7 @@
 import {
 	classifyRenameSyncAction,
 	collectIgnoredRemoteEntries,
+	findIgnoredRootForVirtualPath,
 	isContainedVaultPath,
 	isIgnoredVaultPath,
 	isIgnoredVirtualPath,
@@ -14,31 +15,32 @@ import {
 } from "./SyncTypes";
 
 describe("ignored folder policy", () => {
-	test("matches exact ignored virtual path segments", () => {
-		expect(isIgnoredVirtualPath("_private")).toBe(true);
-		expect(isIgnoredVirtualPath("folder/_private/note.md")).toBe(true);
-		expect(isIgnoredVirtualPath("/_private/note.md")).toBe(true);
-		expect(isIgnoredVirtualPath("folder\\_private\\note.md")).toBe(true);
-		expect(isIgnoredVirtualPath("_private.md")).toBe(false);
-		expect(isIgnoredVirtualPath("_Private")).toBe(false);
-		expect(isIgnoredVirtualPath("my_private")).toBe(false);
-	});
-
-	test("supports custom ignored folder names", () => {
-		expect(isIgnoredVirtualPath("folder/_secret/note.md", "_secret")).toBe(true);
-		expect(isIgnoredVirtualPath("folder/_private/note.md", "_secret")).toBe(false);
+	test("matches paths under marker roots", () => {
+		const roots = new Set(["secret", "nested/private"]);
+		expect(isIgnoredVirtualPath("secret", roots)).toBe(true);
+		expect(isIgnoredVirtualPath("secret/note.md", roots)).toBe(true);
+		expect(isIgnoredVirtualPath("/nested/private/note.md", roots)).toBe(true);
+		expect(isIgnoredVirtualPath("nested\\private\\note.md", roots)).toBe(true);
+		expect(isIgnoredVirtualPath("secretary/note.md", roots)).toBe(false);
+		expect(isIgnoredVirtualPath("nested/public/note.md", roots)).toBe(false);
 	});
 
 	test("keeps shared folder containment separate from ignored-path checks", () => {
-		expect(isContainedVaultPath("03-impression/_private/note.md", "03-impression")).toBe(
+		const roots = new Set(["secret"]);
+		expect(isContainedVaultPath("03-impression/secret/note.md", "03-impression")).toBe(
 			true,
 		);
-		expect(isIgnoredVaultPath("03-impression/_private/note.md", "03-impression")).toBe(
+		expect(isIgnoredVaultPath("03-impression/secret/note.md", "03-impression", roots)).toBe(
 			true,
 		);
-		expect(isIgnoredVaultPath("03-impression/public/note.md", "03-impression")).toBe(
+		expect(isIgnoredVaultPath("03-impression/public/note.md", "03-impression", roots)).toBe(
 			false,
 		);
+	});
+
+	test("always ignores the marker file itself", () => {
+		expect(isIgnoredVirtualPath(".relayignore", new Set())).toBe(true);
+		expect(isIgnoredVirtualPath("secret/.relayignore", new Set())).toBe(true);
 	});
 
 	test.each([
@@ -84,23 +86,21 @@ describe("ignored folder policy", () => {
 
 	test("collects ignored remote metadata and sorts children before parents", () => {
 		const entries = collectIgnoredRemoteEntries([
-			["_private", makeFolderMeta("folder-guid")],
-			["_private/note.md", makeDocumentMeta("doc-guid")],
-			["_private/board.canvas", makeCanvasMeta("canvas-guid")],
+			["secret", makeFolderMeta("folder-guid")],
+			["secret/note.md", makeDocumentMeta("doc-guid")],
+			["secret/board.canvas", makeCanvasMeta("canvas-guid")],
 			[
-				"_private/assets/image.png",
+				"secret/assets/image.png",
 				makeFileMeta(SyncType.Image, "image-guid", "image/png", "hash", 1),
 			],
-			["_private.md", makeDocumentMeta("public-guid")],
-			["_Private/note.md", makeDocumentMeta("case-guid")],
-			["my_private/note.md", makeDocumentMeta("prefix-guid")],
-		]);
+			["secretary/note.md", makeDocumentMeta("public-guid")],
+		], new Set(["secret"]));
 
 		expect(entries.map((entry) => entry.path)).toEqual([
-			"_private/assets/image.png",
-			"_private/board.canvas",
-			"_private/note.md",
-			"_private",
+			"secret/assets/image.png",
+			"secret/board.canvas",
+			"secret/note.md",
+			"secret",
 		]);
 		expect(entries.map((entry) => entry.guid)).toEqual([
 			"image-guid",
@@ -108,5 +108,14 @@ describe("ignored folder policy", () => {
 			"doc-guid",
 			"folder-guid",
 		]);
+	});
+
+	test("finds the deepest marker root for a path", () => {
+		const roots = new Set(["secret", "secret/deeper"]);
+		expect(findIgnoredRootForVirtualPath("secret/deeper/note.md", roots)).toBe(
+			"secret/deeper",
+		);
+		expect(findIgnoredRootForVirtualPath("secret/other.md", roots)).toBe("secret");
+		expect(findIgnoredRootForVirtualPath("public/other.md", roots)).toBe(null);
 	});
 });

@@ -1,27 +1,29 @@
 "use strict";
 
-export const DEFAULT_IGNORED_FOLDER_NAME = "_private";
+export const RELAY_IGNORE_FILE_NAME = ".relayignore";
 
-export function isValidIgnoredFolderName(name: string): boolean {
-	const trimmed = name.trim();
-	return !!trimmed && !/[\\/]/.test(trimmed);
+export function splitVaultPath(path: string): string[] {
+	return path.split(/[\\/]+/).filter(Boolean);
 }
 
-export function normalizeIgnoredFolderName(name?: string): string {
-	const trimmed = name?.trim();
-	if (!trimmed || !isValidIgnoredFolderName(trimmed)) {
-		return DEFAULT_IGNORED_FOLDER_NAME;
+export function normalizeVirtualPath(path: string): string {
+	return splitVaultPath(path).join("/");
+}
+
+export function isRelayIgnoreMarkerPath(path: string): boolean {
+	const parts = splitVaultPath(path);
+	return parts[parts.length - 1] === RELAY_IGNORE_FILE_NAME;
+}
+
+export function relayIgnoreMarkerPath(folderPath: string): string {
+	const normalized = normalizeVirtualPath(folderPath);
+	return normalized ? `${normalized}/${RELAY_IGNORE_FILE_NAME}` : RELAY_IGNORE_FILE_NAME;
+}
+
+export function markerOwnerPath(markerPath: string): string {
+	const parts = splitVaultPath(markerPath);
+	if (parts[parts.length - 1] === RELAY_IGNORE_FILE_NAME) {
+		parts.pop();
 	}
-	return trimmed;
-}
-
-export function pathContainsIgnoredFolderSegment(
-	path: string,
-	ignoredFolderName = DEFAULT_IGNORED_FOLDER_NAME,
-): boolean {
-	const ignoredSegment = normalizeIgnoredFolderName(ignoredFolderName);
-	return path
-		.split(/[\\/]+/)
-		.filter(Boolean)
-		.includes(ignoredSegment);
+	return parts.join("/");
 }

@@ -91,10 +91,8 @@ import {
 	setPluginRequestConfig,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
-import {
-	DEFAULT_IGNORED_FOLDER_NAME,
-	normalizeIgnoredFolderName,
-} from "./privateFolderIgnore";
+import { isRelayIgnoreMarkerPath } from "./privateFolderIgnore";
+import { IgnoredRemoteEntriesModal } from "./ui/IgnoredRemoteEntriesModal";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -106,7 +104,6 @@ const DEFAULT_DEBUG_SETTINGS: DebugSettings = {
 
 interface RelaySettings extends FeatureFlags, DebugSettings {
 	sharedFolders: SharedFolderSettings[];
-	ignoredFolderName: string;
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
 }
@@ -116,7 +113,6 @@ const DEFAULT_SETTINGS: RelaySettings = {
 		channel: "stable",
 	},
 	sharedFolders: [],
-	ignoredFolderName: DEFAULT_IGNORED_FOLDER_NAME,
 	endpoints: {},
 	...FeatureFlagDefaults,
 	...DEFAULT_DEBUG_SETTINGS,
@@ -178,24 +174,6 @@ export default class Live extends Plugin {
 	hashStore!: ContentAddressedFileStore;
 	private _hsmStore!: HSMStore;
 	promises = new PromiseTracker();
-
-	getIgnoredFolderName(): string {
-		return normalizeIgnoredFolderName(this.settings?.get()?.ignoredFolderName);
-	}
-
-	async setIgnoredFolderName(name: string): Promise<void> {
-		const ignoredFolderName = normalizeIgnoredFolderName(name);
-		await this.settings.update((settings) => ({
-			...settings,
-			ignoredFolderName,
-		}));
-		this.sharedFolders?.forEach((folder) => {
-			void folder.syncFileTree().catch((error) => {
-				this.warn("Failed to resync after ignored folder setting changed", error);
-			});
-		});
-		this.folderNavDecorations?.refresh();
-	}
 
 	enableDebugging(save?: boolean) {
 		setDebugging(true);
@@ -894,13 +872,14 @@ export default class Live extends Plugin {
 			this.registerEvent(
 				this.app.workspace.on("file-menu", (menu, file) => {
 					if (file instanceof TFolder) {
-						const folder = this.sharedFolders.find(
+						const exactSharedFolder = this.sharedFolders.find(
 							(sharedFolder) => sharedFolder.path === file.path,
 						);
+						const folder = exactSharedFolder ?? this.sharedFolders.lookup(file.path);
 						if (!folder) {
 							return;
 						}
-						if (folder.relayId) {
+						if (exactSharedFolder && folder.relayId) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Relay settings")
@@ -934,7 +913,7 @@ export default class Live extends Plugin {
 										this._liveViews.refresh("folder connection toggle");
 									});
 							});
-						} else {
+						} else if (exactSharedFolder) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Local folder settings")
@@ -944,7 +923,7 @@ export default class Live extends Plugin {
 									});
 							});
 						}
-						if (folder.relayId && folder.connected && !folder.localOnly) {
+						if (exactSharedFolder && folder.relayId && folder.connected && !folder.localOnly) {
 							menu.addItem((item) => {
 								item
 									.setTitle("Relay: Sync")
@@ -960,6 +939,34 @@ export default class Live extends Plugin {
 										});
 									});
 							});
+						}
+						if (!exactSharedFolder) {
+							const ignoredRoot = folder.getIgnoredRootForVaultPath(file.path);
+							if (ignoredRoot === file.path) {
+								menu.addItem((item) => {
+									item
+										.setTitle("Relay: Sync this folder")
+										.setIcon("folder-sync")
+										.onClick(() => {
+											void this.removeRelayIgnoreMarker(folder, file);
+										});
+								});
+							} else if (ignoredRoot) {
+								menu.addItem((item) => {
+									item
+										.setTitle("Relay: Not synced by parent .relayignore")
+										.setIcon("ban");
+								});
+							} else {
+								menu.addItem((item) => {
+									item
+										.setTitle("Relay: Do not sync this folder")
+										.setIcon("folder-x")
+										.onClick(() => {
+											void this.addRelayIgnoreMarker(folder, file);
+										});
+								});
+							}
 						}
 					} else if (file instanceof TFile) {
 						const folder = this.sharedFolders.lookup(file.path);
@@ -1013,6 +1020,35 @@ export default class Live extends Plugin {
 		});
 	}
 
+	private async addRelayIgnoreMarker(folder: SharedFolder, target: TFolder): Promise<void> {
+		try {
+			await folder.addRelayIgnoreMarker(target.path);
+			this.folderNavDecorations.refresh();
+			this._liveViews.refresh("relayignore added");
+			const entries = folder.getIgnoredRemoteEntries(target.path);
+			if (entries.length > 0) {
+				new IgnoredRemoteEntriesModal(this.app, folder, entries).open();
+			} else {
+				new Notice(`Relay will no longer sync ${target.path}.`);
+			}
+		} catch (error) {
+			this.warn("Failed to add .relayignore", error);
+			new Notice(`Failed to add .relayignore to ${target.path}`);
+		}
+	}
+
+	private async removeRelayIgnoreMarker(folder: SharedFolder, target: TFolder): Promise<void> {
+		try {
+			await folder.removeRelayIgnoreMarker(target.path);
+			this.folderNavDecorations.refresh();
+			this._liveViews.refresh("relayignore removed");
+			new Notice(`Relay will sync ${target.path}.`);
+		} catch (error) {
+			this.warn("Failed to remove .relayignore", error);
+			new Notice(`Failed to remove .relayignore from ${target.path}`);
+		}
+	}
+
 	private _createSharedFolder(
 		path: string,
 		guid: string,
@@ -1064,7 +1100,6 @@ export default class Live extends Plugin {
 			folderSettings,
 			this._hsmStore,
 			this.timeProvider,
-			() => this.getIgnoredFolderName(),
 			relayId,
 			authoritative,
 			remote,
@@ -1238,6 +1273,14 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (tfile instanceof TFile && isRelayIgnoreMarkerPath(tfile.path)) {
+						folder.refreshIgnoredMarkers();
+						void folder.syncFileTree().catch((error) => {
+							this.warn("Failed to resync after .relayignore was created", error);
+						});
+						this.folderNavDecorations.refresh();
+						return;
+					}
 					if (folder.isIgnoredVaultPath(tfile.path)) return;
 					const newDocs = folder.placeHold([tfile]);
 					if (newDocs.length > 0) {
@@ -1253,12 +1296,43 @@ export default class Live extends Plugin {
 
 		this.registerEvent(
 			this.app.vault.on("delete", (file) => {
+				if (file instanceof TFile && isRelayIgnoreMarkerPath(file.path)) {
+					const folder = this.sharedFolders.lookup(file.path);
+					if (folder) {
+						folder.refreshIgnoredMarkers();
+						folder.addLocalDocs();
+						void folder.syncFileTree().catch((error) => {
+							this.warn("Failed to resync after .relayignore was deleted", error);
+						});
+						this.folderNavDecorations.refresh();
+					}
+					return;
+				}
 				this.queueVaultDelete(file, vaultLog);
 			}),
 		);
 
 		this.registerEvent(
 			this.app.vault.on("rename", (file, oldPath) => {
+				if (
+					(file instanceof TFile && isRelayIgnoreMarkerPath(file.path)) ||
+					isRelayIgnoreMarkerPath(oldPath)
+				) {
+					const affectedFolders = new Set<SharedFolder>();
+					const fromFolder = this.sharedFolders.lookup(oldPath);
+					const toFolder = this.sharedFolders.lookup(file.path);
+					if (fromFolder) affectedFolders.add(fromFolder);
+					if (toFolder) affectedFolders.add(toFolder);
+					affectedFolders.forEach((folder) => {
+						folder.refreshIgnoredMarkers();
+						folder.addLocalDocs();
+						void folder.syncFileTree().catch((error) => {
+							this.warn("Failed to resync after .relayignore was renamed", error);
+						});
+					});
+					this.folderNavDecorations.refresh();
+					return;
+				}
 				// TODO this doesn't work for empty folders.
 				if (file instanceof TFolder) {
 					const sharedFolder = this.sharedFolders.find((folder) => {
