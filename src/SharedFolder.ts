@@ -2336,8 +2336,8 @@ export class SharedFolder extends HasProvider {
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 
-		(async () => {
-			trackPromise(`folder:canvasReady:${canvas.guid}`, this.whenReady()).then(async () => {
+		void trackPromise(`folder:canvasReady:${canvas.guid}`, this.whenReady())
+			.then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueCanvasDownload(canvas);
@@ -2345,8 +2345,11 @@ export class SharedFolder extends HasProvider {
 					await this.backgroundSync.enqueueUpload(canvas);
 					await this.markUploaded(canvas);
 				}
+			})
+			.catch((error) => {
+				if (this.destroyed || canvas.destroyed) return;
+				this.error("canvas ready failed", error);
 			});
-		})();
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas, update);
@@ -2509,8 +2512,8 @@ export class SharedFolder extends HasProvider {
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
 
-		(async () => {
-			trackPromise(`folder:docReady:${doc.guid}`, this.whenReady()).then(async () => {
+		void trackPromise(`folder:docReady:${doc.guid}`, this.whenReady())
+			.then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueDownload(doc, false);
@@ -2518,8 +2521,11 @@ export class SharedFolder extends HasProvider {
 					await this.backgroundSync.enqueueUpload(doc);
 					await this.markUploaded(doc);
 				}
+			})
+			.catch((error) => {
+				if (this.destroyed || doc.destroyed) return;
+				this.error("document ready failed", error);
 			});
-		})();
 
 		this.files.set(guid, doc);
 		this.fset.add(doc, update);

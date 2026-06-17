@@ -5,6 +5,92 @@ import type { TimeProvider } from "./TimeProvider";
 
 export type PromiseFunction<T> = () => Promise<T>;
 export type CheckFunction<T> = () => [boolean, T];
+export type LifetimeOperation<T> =
+	| Promise<T>
+	| ((signal: AbortSignal) => Promise<T>);
+
+export class Lifetime {
+	private ended = false;
+	private endReason: unknown;
+	private controller = new AbortController();
+	private endListeners = new Set<(reason: unknown) => void>();
+
+	public get signal(): AbortSignal {
+		return this.controller.signal;
+	}
+
+	public get active(): boolean {
+		return !this.ended;
+	}
+
+	public get reason(): unknown {
+		return this.endReason;
+	}
+
+	public onEnded(listener: (reason: unknown) => void): () => void {
+		if (this.ended) {
+			listener(this.endReason);
+			return () => {};
+		}
+		this.endListeners.add(listener);
+		return () => {
+			this.endListeners.delete(listener);
+		};
+	}
+
+	public guard<T>(operation: LifetimeOperation<T>): Promise<T> {
+		if (this.ended) {
+			return Promise.reject(this.endReason);
+		}
+
+		let promise: Promise<T>;
+		try {
+			promise =
+				typeof operation === "function"
+					? operation(this.signal)
+					: operation;
+		} catch (error) {
+			return Promise.reject(error);
+		}
+
+		if (this.ended) {
+			return Promise.reject(this.endReason);
+		}
+
+		return new Promise<T>((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				this.signal.removeEventListener("abort", onEnd);
+			};
+			const finish = (fn: () => void) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				fn();
+			};
+			const onEnd = () => {
+				finish(() => reject(this.endReason));
+			};
+
+			this.signal.addEventListener("abort", onEnd, { once: true });
+			promise.then(
+				(value) => finish(() => resolve(value)),
+				(error) => finish(() => reject(error)),
+			);
+		});
+	}
+
+	public end(reason: unknown): void {
+		if (this.ended) return;
+		this.ended = true;
+		this.endReason = reason;
+		this.controller.abort();
+		for (const listener of Array.from(this.endListeners)) {
+			listener(reason);
+		}
+		this.endListeners.clear();
+	}
+}
 
 export class Dependency<T> {
 	private currentPromise: Promise<T> | null = null;

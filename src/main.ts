@@ -1211,9 +1211,13 @@ export default class Live extends Plugin {
 					if (newDocs.length > 0) {
 						folder.uploadFile(tfile);
 					} else {
-						folder.whenReady().then((folder) => {
-							folder.getFile(tfile);
-						});
+						folder.whenReady()
+							.then((folder) => {
+								folder.getFile(tfile);
+							})
+							.catch((error) => {
+								this.warn("folder ready failed after file create", error);
+							});
 					}
 				}
 			}),

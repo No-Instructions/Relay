@@ -85,6 +85,7 @@ export class HasProvider extends HasLogging {
 		| ((state: ConnectionState) => void)
 		| null = null;
 	private _providerSyncAbortHandlers = new Set<(reason: Error) => void>();
+	private _providerConnectedAbortHandlers = new Set<(reason: Error) => void>();
 	// Track whether the current provider connection has completed sync.
 	// This must reset on disconnect so reconnect flows do not treat a
 	// stale connection as ready.
@@ -200,6 +201,9 @@ export class HasProvider extends HasLogging {
 	destroyRemoteDoc(): void {
 		this.abortProviderSyncWaiters(
 			new Error("Provider was destroyed before sync completed"),
+		);
+		this.abortProviderConnectedWaiters(
+			new Error("Provider was destroyed before connection completed"),
 		);
 		if (this._offConnectionError) {
 			this._offConnectionError();
@@ -324,6 +328,11 @@ export class HasProvider extends HasLogging {
 				this.abortProviderSyncWaiters(
 					new Error("Provider connection failed before sync completed"),
 				);
+				this.abortProviderConnectedWaiters(
+					new Error(
+						"Provider connection failed before connection completed",
+					),
+				);
 				return false;
 			});
 	}
@@ -440,14 +449,61 @@ export class HasProvider extends HasLogging {
 			return Promise.resolve();
 		}
 		const provider = this._provider!;
-		return new Promise((resolve) => {
-			const resolveOnConnect = (state: ConnectionState) => {
+		return new Promise((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				provider.off("status", handleStatus);
+				provider.off("connection-error", handleConnectionError);
+				this._providerConnectedAbortHandlers.delete(abort);
+			};
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve();
+			};
+			const fail = (reason: Error) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				reject(reason);
+			};
+			const abort = (reason: Error) => {
+				fail(reason);
+			};
+			const checkTerminalState = () => {
+				if (this._provider !== provider) {
+					fail(new Error("Provider was replaced before connection completed"));
+					return;
+				}
+				const state = provider.connectionState;
 				if (state.status === "connected") {
-					provider.off("status", resolveOnConnect);
-					resolve();
+					finish();
+					return;
+				}
+				if (
+					state.status === "disconnected" &&
+					state.intent === "connected" &&
+					typeof provider.canReconnect === "function" &&
+					!provider.canReconnect()
+				) {
+					fail(
+						new Error(
+							"Provider retries were exhausted before connection completed",
+						),
+					);
 				}
 			};
-			provider.on("status", resolveOnConnect);
+			const handleStatus = () => {
+				checkTerminalState();
+			};
+			const handleConnectionError = () => {
+				checkTerminalState();
+			};
+			provider.on("status", handleStatus);
+			provider.on("connection-error", handleConnectionError);
+			this._providerConnectedAbortHandlers.add(abort);
+			checkTerminalState();
 		});
 	}
 
@@ -527,6 +583,13 @@ export class HasProvider extends HasLogging {
 			abort(reason);
 		}
 		this._providerSyncAbortHandlers.clear();
+	}
+
+	private abortProviderConnectedWaiters(reason: Error): void {
+		for (const abort of Array.from(this._providerConnectedAbortHandlers)) {
+			abort(reason);
+		}
+		this._providerConnectedAbortHandlers.clear();
 	}
 
 	reset() {

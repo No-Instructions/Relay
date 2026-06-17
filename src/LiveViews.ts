@@ -43,6 +43,7 @@ import { TextFileViewPlugin } from "./TextViewPlugin";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
 import { trackPromise } from "./trackPromise";
+import { isDocumentDestroyedError } from "./DocumentDestroyedError";
 
 /**
  * Access the LiveViewManager singleton via the Obsidian plugin registry.
@@ -368,7 +369,7 @@ export class RelayCanvasView implements S3View {
 			);
 		}
 
-		return new Promise((resolve) => {
+		return new Promise((resolve, reject) => {
 			return trackPromise(
 				`canvasView:whenReady:${this.canvas.guid}`,
 				this.canvas.whenReady(),
@@ -386,8 +387,14 @@ export class RelayCanvasView implements S3View {
 					}
 					resolve(this);
 				})
-				.catch(() => {
+				.catch((error) => {
+					if (isDocumentDestroyedError(error)) {
+						this.release();
+						reject(error);
+						return;
+					}
 					this.offlineBanner();
+					resolve(this);
 				});
 		});
 	}
@@ -495,7 +502,9 @@ export class LiveView<ViewType extends TextFileView>
 			if (wasLocalOnly && !this.document.connected) {
 				this.document.connect();
 			}
-			this.attach();
+			void this.attach().catch((error) => {
+				this.warn("toggleLocalOnly attach failed", error);
+			});
 		}
 	}
 
@@ -511,7 +520,9 @@ export class LiveView<ViewType extends TextFileView>
 		this._tracking = value;
 		// Only call attach for non-HSM mode (fallback for views without HSM)
 		if (this._tracking !== old && !this.document?.hsm) {
-			this.attach();
+			void this.attach().catch((error) => {
+				this.warn("tracking attach failed", error);
+			});
 		}
 	}
 
@@ -853,7 +864,7 @@ export class LiveView<ViewType extends TextFileView>
 			);
 		}
 
-		return new Promise((resolve) => {
+		return new Promise((resolve, reject) => {
 			return trackPromise(
 				`liveView:whenReady:${this.document.guid}`,
 				this.document.whenReady(),
@@ -872,8 +883,14 @@ export class LiveView<ViewType extends TextFileView>
 					}
 					resolve(this);
 				})
-				.catch(() => {
+				.catch((error) => {
+					if (isDocumentDestroyedError(error)) {
+						this.release();
+						reject(error);
+						return;
+					}
 					this.offlineBanner();
+					resolve(this);
 				});
 		});
 	}
@@ -994,7 +1011,7 @@ export class LiveViewManager {
 
 		this.offListeners.push(
 			this.loginManager.on(() => {
-				this.refresh("[LoginManager]");
+				void this.refresh("[LoginManager]");
 			}),
 		);
 
@@ -1006,7 +1023,7 @@ export class LiveViewManager {
 						folder.whenReady(),
 					)
 						.then(() => {
-							this.refresh("[Shared Folder Ready]");
+							void this.refresh("[Shared Folder Ready]");
 						})
 						.catch((_) => {
 							this.views.forEach((view) => {
@@ -1019,13 +1036,13 @@ export class LiveViewManager {
 			}
 
 			return folder.fset.on(() => {
-				this.refresh("[Docset]");
+				void this.refresh("[Docset]");
 			});
 		};
 
 		this.offListeners.push(
 			this.sharedFolders.subscribe(() => {
-				this.refresh("[Shared Folders]");
+				void this.refresh("[Shared Folders]");
 				this.folderListeners.forEach((off, folder) => {
 					if (!this.sharedFolders.has(folder)) {
 						off();
@@ -1057,16 +1074,18 @@ export class LiveViewManager {
 	goOffline() {
 		this.log("[System 3][Relay][Live Views] going offline");
 		this.views.forEach((view) => view.document?.disconnect());
-		this.refresh("[NetworkStatus]");
+		void this.refresh("[NetworkStatus]");
 	}
 
 	goOnline() {
 		this.log("[System 3][Relay][Live Views] going online");
-		this.refresh("[NetworkStatus]");
+		void this.refresh("[NetworkStatus]");
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
 			folder.connect();
 		});
-		this.viewsAttachedWithConnectionPool(this.views);
+		void this.viewsAttachedWithConnectionPool(this.views).catch((error) => {
+			this.warn("[LiveViews] online attach failed", error);
+		});
 	}
 
 	docIsOpen(doc: Document): boolean {
@@ -1283,10 +1302,17 @@ export class LiveViewManager {
 		if (folders.size === 0) {
 			return [];
 		}
-		const readyFolders = [...folders].map((folder) =>
-			trackPromise(`liveViews:findFolders:${folder.guid}`, folder.whenReady()),
+		const readyFolders = [...folders].map(async (folder) =>
+			trackPromise(
+				`liveViews:findFolders:${folder.guid}`,
+				folder.whenReady(),
+			).catch((error) => {
+				this.warn("[LiveViews] folder not ready", error);
+				return null;
+			}),
 		);
-		return Promise.all(readyFolders);
+		const results = await Promise.all(readyFolders);
+		return results.filter((folder): folder is SharedFolder => !!folder);
 	}
 
 	private async getViews(): Promise<S3View[]> {
@@ -1366,11 +1392,24 @@ export class LiveViewManager {
 	}
 
 	private async viewsReady(views: S3View[]): Promise<LiveView<TextFileView>[]> {
-		return await Promise.all(
-			views
-				.filter(isLive)
-				.map(async (view) => view.document.whenReady().then((_) => view)),
+		const results = await Promise.all(
+			views.filter(isLive).map(async (view) => {
+				try {
+					await view.document.whenReady();
+					return view;
+				} catch (error) {
+					if (isDocumentDestroyedError(error)) {
+						this.releaseViews([view]);
+						void this.refresh("[Document Destroyed]");
+						return null;
+					}
+					this.warn("[LiveViews] document not ready", error);
+					view.offlineBanner?.();
+					return view;
+				}
+			}),
 		);
+		return results.filter((view): view is LiveView<TextFileView> => !!view);
 	}
 
 	private async viewsAttachedWithConnectionPool(
@@ -1382,7 +1421,7 @@ export class LiveViewManager {
 
 		let attemptedConnections = 0;
 
-		const viewHistory = views.sort(
+		const viewHistory = [...views].sort(
 			(a, b) =>
 				(b.view.leaf as any).activeTime - (a.view.leaf as any).activeTime,
 		);
@@ -1414,11 +1453,23 @@ export class LiveViewManager {
 	}
 
 	private async viewsAttached(views: S3View[]): Promise<S3View[]> {
-		return await Promise.all(
+		const results = await Promise.all(
 			views.map(async (view) => {
-				return view.attach();
+				try {
+					return await view.attach();
+				} catch (error) {
+					if (isDocumentDestroyedError(error)) {
+						this.releaseViews([view]);
+						void this.refresh("[Document Destroyed]");
+						return null;
+					}
+					this.warn("[LiveViews] view attach failed", error);
+					view.offlineBanner?.();
+					return view;
+				}
 			}),
 		);
+		return results.filter((view): view is S3View => !!view);
 	}
 
 	private getExpectedViewPath(document: S3View["document"]): string | null {
@@ -1436,6 +1487,10 @@ export class LiveViewManager {
 		const stale: S3View[] = [];
 		const matching: S3View[] = [];
 		this.views.forEach((oldView) => {
+			if (oldView.document?.destroyed) {
+				stale.push(oldView);
+				return;
+			}
 			const viewPath = oldView.view?.file?.path;
 			const expectedViewPath = this.getExpectedViewPath(oldView.document);
 			if (
@@ -1535,13 +1590,18 @@ export class LiveViewManager {
 				this.views,
 			);
 			logViews("Attached Views", attachedViews);
+			this.views = attachedViews;
 		} else {
+			const nonLiveViews = matching.filter((view) => !isLive(view));
 			const readyViews = await this.viewsReady(matching);
 			logViews("Ready Views", readyViews);
 			const attachedViews =
-				await this.viewsAttachedWithConnectionPool(readyViews);
+				await this.viewsAttachedWithConnectionPool([
+					...nonLiveViews,
+					...readyViews,
+				]);
 			logViews("Attached Views", attachedViews);
-			this.views = matching;
+			this.views = attachedViews;
 		}
 		log("loading plugins");
 		this.load();
@@ -1573,7 +1633,12 @@ export class LiveViewManager {
 			this._activePromise = job().finally(() => {
 				this._activePromise = null;
 			});
-			await this._activePromise;
+			try {
+				await this._activePromise;
+			} catch (error) {
+				this.warn("[LiveViews] refresh failed", error);
+				return false;
+			}
 		}
 		return true;
 	}

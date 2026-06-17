@@ -750,6 +750,7 @@ export class FolderNavigationDecorations {
 	workspace: Workspace;
 	sharedFolders: SharedFolders;
 	backgroundSync: BackgroundSync;
+	private warn = curryLog("[FolderNav]", "warn");
 	offLayoutChange: () => void;
 	treeState: Map<WorkspaceLeaf, FileExplorerWalker>;
 	layoutReady: boolean = false;
@@ -846,7 +847,12 @@ export class FolderNavigationDecorations {
 				// the pre-refactor behavior (the .then handler is
 				// attached to the same cached promise each time, so
 				// after resolution every repeat handler fires once).
-				folder.whenReady().then(() => this.refresh());
+				folder.whenReady()
+					.then(() => this.refresh())
+					.catch((error) => {
+						this.warn("folder ready failed", error);
+						this.refresh();
+					});
 
 				if (this.subscribedFolders.has(folder)) return;
 				this.subscribedFolders.add(folder);

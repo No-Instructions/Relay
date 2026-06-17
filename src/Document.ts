@@ -8,7 +8,7 @@ import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
-import { Dependency } from "./promiseUtils";
+import { Dependency, Lifetime } from "./promiseUtils";
 import { withFlag } from "./flagManager";
 import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
@@ -23,6 +23,7 @@ import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
+import { DocumentDestroyedError } from "./DocumentDestroyedError";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -48,6 +49,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		size: number;
 	};
 	destroyed = false;
+	private lifetime = new Lifetime();
+	private _destroyedError: DocumentDestroyedError | null = null;
 	unsubscribes: Unsubscriber[] = [];
 	pendingOps: ((data: string) => string)[] = [];
 
@@ -208,6 +211,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this._tfile = null;
 	}
 
+	private destroyedError(): DocumentDestroyedError {
+		if (!this._destroyedError) {
+			this._destroyedError = new DocumentDestroyedError(this.guid, this.path);
+		}
+		return this._destroyedError;
+	}
+
+	private isDocumentAlive(): boolean {
+		return !this.destroyed && this.lifetime.active;
+	}
+
+	private commitDocumentState<T>(commit: () => T): T {
+		if (!this.isDocumentAlive()) {
+			throw this.destroyedError();
+		}
+		return commit();
+	}
+
 	move(newPath: string, sharedFolder: SharedFolder) {
 		this.path = newPath;
 		this._parent = sharedFolder;
@@ -279,12 +300,18 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * content at this moment (Obsidian's view-reuse window produces stale reads).
 	 */
 	acquireLock(editorViewRef: EditorViewRef): MergeHSM {
+		if (!this.isDocumentAlive()) {
+			throw this.destroyedError();
+		}
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (!mergeManager) {
 			throw new Error("no merge manager");
 		}
 		const hsm = this._hsm;
 		if (!hsm) {
+			if (!this.isDocumentAlive()) {
+				throw this.destroyedError();
+			}
 			throw new Error("no hsm");
 		}
 
@@ -502,6 +529,14 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return super.connect();
 	}
 
+	onceConnected(): Promise<void> {
+		return this.lifetime.guard(() => super.onceConnected());
+	}
+
+	onceProviderSynced(): Promise<void> {
+		return this.lifetime.guard(() => super.onceProviderSynced());
+	}
+
 	public get ready(): boolean {
 		return this.persistenceSynced && this._awaitingUpdates === false;
 	}
@@ -511,19 +546,23 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	async awaitingUpdates(): Promise<boolean> {
-		await this.whenSynced();
-		await this.getServerSynced();
-		if (this._awaitingUpdates !== undefined) {
-			return this._awaitingUpdates;
-		}
-		// If folder has synced with server (or is authoritative, which sets serverSynced), we don't need to wait
-		const folderServerSynced = await this.sharedFolder.getServerSynced();
-		if (folderServerSynced) {
-			this._awaitingUpdates = false;
-			return false;
-		}
-		this._awaitingUpdates = !this.hasLocalDB();
-		return this._awaitingUpdates;
+		return this.lifetime.guard(async () => {
+			await this.whenSynced();
+			await this.getServerSynced();
+			if (this._awaitingUpdates !== undefined) {
+				return this._awaitingUpdates;
+			}
+			// If folder has synced with server (or is authoritative, which sets serverSynced), we don't need to wait
+			const folderServerSynced = await this.sharedFolder.getServerSynced();
+			return this.commitDocumentState(() => {
+				if (folderServerSynced) {
+					this._awaitingUpdates = false;
+					return false;
+				}
+				this._awaitingUpdates = !this.hasLocalDB();
+				return this._awaitingUpdates;
+			});
+		});
 	}
 
 	async whenReady(): Promise<Document> {
@@ -540,19 +579,23 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					`providerSync:${this.guid}`,
 					this.onceProviderSynced(),
 				);
-				this.log("synced");
-				this._awaitingUpdates = false;
+				this.commitDocumentState(() => {
+					this.log("synced");
+					this._awaitingUpdates = false;
+				});
 			}
 			return this;
 		};
-		this.readyPromise =
-			this.readyPromise ||
-			new Dependency<Document>(promiseFn, (): [boolean, Document] => {
-				return [this.ready, this];
-			}, this.timeProvider);
 		return trackPromise(
 			`doc:whenReady:${this.guid}`,
-			this.readyPromise.getPromise(),
+			this.lifetime.guard(() => {
+				this.readyPromise =
+					this.readyPromise ||
+					new Dependency<Document>(promiseFn, (): [boolean, Document] => {
+						return [this.isDocumentAlive() && this.ready, this];
+					}, this.timeProvider);
+				return this.readyPromise.getPromise();
+			}),
 		);
 	}
 
@@ -560,17 +603,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const promiseFn = async (): Promise<void> => {
 			await this.sharedFolder.whenSynced();
 			await this._hsm?.awaitPersistenceReady();
-			this.persistenceSynced = true;
+			this.commitDocumentState(() => {
+				this.persistenceSynced = true;
+			});
 		};
 
-		this.whenSyncedPromise =
-			this.whenSyncedPromise ||
-			new Dependency<void>(promiseFn, (): [boolean, void] => {
-				return [this.persistenceSynced, undefined];
-			}, this.timeProvider);
 		return trackPromise(
 			`doc:whenSynced:${this.guid}`,
-			this.whenSyncedPromise.getPromise(),
+			this.lifetime.guard(() => {
+				this.whenSyncedPromise =
+					this.whenSyncedPromise ||
+					new Dependency<void>(promiseFn, (): [boolean, void] => {
+						return [
+							this.isDocumentAlive() && this.persistenceSynced,
+							undefined,
+						];
+					}, this.timeProvider);
+				return this.whenSyncedPromise.getPromise();
+			}),
 		);
 	}
 
@@ -624,11 +674,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	requestSave = debounce(this.save, 2000);
 
 	async markSynced(): Promise<void> {
-		await this._hsm?.markPersistenceServerSynced();
+		return this.lifetime.guard(async () => {
+			await this._hsm?.markPersistenceServerSynced();
+		});
 	}
 
 	async getServerSynced(): Promise<boolean> {
-		return (await this._hsm?.getPersistenceServerSynced()) ?? false;
+		return this.lifetime.guard(async () => {
+			return (await this._hsm?.getPersistenceServerSynced()) ?? false;
+		});
 	}
 
 	static checkExtension(vpath: string): boolean {
@@ -636,7 +690,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	destroy() {
+		if (this.destroyed) {
+			return;
+		}
+		const destroyedError = this.destroyedError();
 		this.destroyed = true;
+		const hsm = this._hsm;
+		this.lifetime.end(destroyedError);
 		(this.requestSave as unknown as { cancel?: () => void }).cancel?.();
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
@@ -647,8 +707,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 		// The HSM's cleanup invoke closes per-document IDB asynchronously.
 		// Track it so close failures are logged.
-		if (this._hsm) {
-			const p = this._hsm.awaitAsync('cleanup').catch(() => {});
+		if (hsm) {
+			const p = hsm.awaitAsync('cleanup').catch(() => {});
 			trackAsyncCleanup(p, `doc:cleanup:${this.guid}`);
 		}
 
@@ -783,7 +843,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			return this._forkReconcileConnectPromise;
 		}
 
-		const promise = this.connectForForkReconcileOnce();
+		const promise = this.lifetime.guard(() =>
+			this.connectForForkReconcileOnce(),
+		);
 		const tracked = promise.finally(() => {
 			if (this._forkReconcileConnectPromise === tracked) {
 				this._forkReconcileConnectPromise = null;
@@ -815,19 +877,21 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		unsubscribeState = hsm.onStateChange(cleanupIfDone);
 		this.unsubscribes.push(() => unsubscribeState?.());
 		const connected = await this.connect();
-		if (!connected) {
-			unsubscribeState?.();
-			unsubscribeState = null;
-			if (acquiredIntegration && !hsm.isActive()) {
-				this.destroyIdleProviderIntegration();
+		this.commitDocumentState(() => {
+			if (!connected) {
+				unsubscribeState?.();
+				unsubscribeState = null;
+				if (acquiredIntegration && !hsm.isActive()) {
+					this.destroyIdleProviderIntegration();
+				}
+				return;
 			}
-			return;
-		}
 
-		// Tear down when transitioning to another idle state (fork resolved
-		// or diverged). The transition may already have happened while connect()
-		// was awaiting the provider, so check once after connect resolves too.
-		cleanupIfDone();
+			// Tear down when transitioning to another idle state (fork resolved
+			// or diverged). The transition may already have happened while connect()
+			// was awaiting the provider, so check once after connect resolves too.
+			cleanupIfDone();
+		});
 	}
 
 	/**

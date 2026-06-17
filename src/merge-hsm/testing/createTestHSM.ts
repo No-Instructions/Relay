@@ -119,6 +119,12 @@ export interface TestHSM {
 	/** Wait for any pending idle auto-merge to complete */
 	awaitIdleAutoMerge(): Promise<void>;
 
+	/** Wait for any pending fork reconciliation to complete */
+	awaitForkReconcile(): Promise<void>;
+
+	/** Current conflict data, if the HSM has materialized or can derive it */
+	getConflictData(): ReturnType<MergeHSM["getConflictData"]>;
+
 	/** Bootstrap a named editor view against the current HSM state. */
 	bootstrapEditorView(viewId: string, currentText?: string): void;
 
@@ -593,6 +599,8 @@ export async function createTestHSM(
 		snapshot: () => createSnapshot(hsm, effects, time),
 		stateHistory,
 		awaitIdleAutoMerge: () => hsm.awaitIdleAutoMerge(),
+		awaitForkReconcile: () => hsm.awaitForkReconcile(),
+		getConflictData: () => hsm.getConflictData(),
 		attachEditorView: (editorViewRef: EditorViewRef, currentText?: string) =>
 			hsm.attachEditorView(editorViewRef, currentText),
 		bootstrapEditorView: (viewId: string, currentText?: string) =>

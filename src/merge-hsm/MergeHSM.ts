@@ -3440,7 +3440,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				},
 			};
 		}
-		if (localText !== remoteText || !yjsDocsEqual(localDoc, remoteDoc)) {
+		if (
+			localText !== remoteText ||
+			!stateVectorsEqual(localStateVector, remoteStateVector)
+		) {
 			return {
 				kind: "declined",
 				reason: "remote-local-mismatch-after-restore",
@@ -3455,14 +3458,56 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.rememberEnrolledLocalHead(localSnapshot, localStateVector);
 		this._localDocSnapshotSafe = true;
 		this._localStateVector = localStateVector;
-		this._remoteStateVector = remoteStateVector;
+		const currentRemoteStateVector = Y.encodeStateVector(remoteDoc);
+		this._remoteStateVector = currentRemoteStateVector;
+
+		if (!stateVectorsEqual(currentRemoteStateVector, remoteStateVector)) {
+			const lcaHash =
+				disk.content === remoteText
+					? disk.hash
+					: await this.hashFn(remoteText);
+			if (signal.aborted) {
+				return { kind: "declined", reason: "aborted" };
+			}
+			const newLCA = {
+				contents: remoteText,
+				meta: {
+					hash: lcaHash,
+					mtime:
+						disk.content === remoteText
+							? disk.mtime
+							: this.timeProvider.now(),
+				},
+				stateVector: localStateVector,
+				snapshot: localSnapshot,
+			};
+
+			if (disk.content === remoteText) {
+				return {
+					kind: "remoteAhead",
+					disk,
+					newLCA,
+					localStateVector,
+					remoteStateVector: currentRemoteStateVector,
+				};
+			}
+
+			return {
+				kind: "diverged",
+				disk,
+				newLCA,
+				localStateVector,
+				remoteStateVector: currentRemoteStateVector,
+				pendingDiskContents: disk.content,
+			};
+		}
 
 		if (disk.content === remoteText) {
 			return {
 				kind: "synced",
 				disk,
 				localStateVector,
-				remoteStateVector,
+				remoteStateVector: currentRemoteStateVector,
 				newLCA: {
 					contents: remoteText,
 					meta: { hash: disk.hash, mtime: disk.mtime },
