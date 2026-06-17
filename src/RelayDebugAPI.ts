@@ -339,6 +339,8 @@ export interface RelayDebugGlobal {
 
   // -- Relay server CRUD --
   createRelay: (name: string) => Promise<{ guid: string; name: string }>;
+  getRelayShareKey: (guid: string) => Promise<{ guid: string; name: string; key: string }>;
+  acceptRelayShareKey: (key: string) => Promise<{ guid: string; name: string }>;
   renameRelay: (guid: string, newName: string) => Promise<{ guid: string; name: string }>;
   deleteRelay: (guid: string) => Promise<boolean>;
 }
@@ -506,6 +508,19 @@ export class RelayDebugAPI {
       createRelay: async (name) => {
         if (!this.plugin.relayManager) throw new Error('RelayManager not available');
         const relay = await this.plugin.relayManager.createRelay(name);
+        return { guid: relay.guid, name: relay.name };
+      },
+      getRelayShareKey: async (guid) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = this.findRelayByGuid(guid);
+        if (!relay) throw new Error(`Relay not found: ${guid}`);
+        const invitation = await this.plugin.relayManager.getRelayInvitation(relay);
+        if (!invitation?.key) throw new Error(`Relay invitation not found: ${guid}`);
+        return { guid: relay.guid, name: relay.name, key: invitation.key };
+      },
+      acceptRelayShareKey: async (key) => {
+        if (!this.plugin.relayManager) throw new Error('RelayManager not available');
+        const relay = await this.plugin.relayManager.acceptInvitation(key);
         return { guid: relay.guid, name: relay.name };
       },
       renameRelay: async (guid, newName) => {
