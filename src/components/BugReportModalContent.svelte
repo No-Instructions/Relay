@@ -137,7 +137,7 @@
 							2,
 						);
 						bugReport += "\n\n";
-						if (includeLogs) {
+						if ($includeLogs) {
 							const logs = await getAllLogs();
 							bugReport += logs;
 						}
