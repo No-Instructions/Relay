@@ -54,6 +54,10 @@ export class Lifetime {
 		}
 
 		if (this.ended) {
+			// The operation already started before the lifetime ended. Observe its
+			// eventual settlement so a later rejection does not surface as an
+			// unhandled rejection; the result itself is discarded.
+			void promise.catch(() => {});
 			return Promise.reject(this.endReason);
 		}
 
