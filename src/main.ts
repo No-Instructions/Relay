@@ -91,6 +91,7 @@ import {
 	setPluginRequestConfig,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
+import { isRetryableS3Error } from "./S3Error";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -1268,7 +1269,17 @@ export default class Live extends Plugin {
 					vaultLog("Modify", tfile.path);
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
-						file.sync();
+						void file.sync().catch((error) => {
+							if (isRetryableS3Error(error)) {
+								void folder.backgroundSync
+									.enqueueRetryableSync(file, error)
+									.catch((retryError) => {
+										vaultLog("Binary file retry failed", retryError);
+									});
+								return;
+							}
+							vaultLog("Binary file sync failed", error);
+						});
 					}
 
 					// Send DISK_CHANGED to HSM for documents with active lock

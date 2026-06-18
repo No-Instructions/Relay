@@ -29,6 +29,7 @@ import {
 } from "./BackgroundSyncProgress";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 import { getRelayRequestHeaders } from "./customFetch";
+import { isRetryableS3Error } from "./S3Error";
 
 export interface QueueItem {
 	guid: string;
@@ -111,6 +112,10 @@ function isRetryableProviderSyncError(
 	error: unknown,
 ): error is RetryableProviderSyncError {
 	return error instanceof RetryableProviderSyncError;
+}
+
+function isRetryableSyncError(error: unknown): error is Error {
+	return isRetryableProviderSyncError(error) || isRetryableS3Error(error);
 }
 
 export interface QueueStatus {
@@ -479,14 +484,14 @@ export class BackgroundSync extends HasLogging {
 
 	private requeueRetryableSync(
 		item: QueueItem,
-		error: RetryableProviderSyncError,
+		error: Error,
 	): boolean {
 		const retries = (item.retryAttempts ?? 0) + 1;
 		item.retryAttempts = retries;
 		if (retries > MAX_PROVIDER_SYNC_RETRIES) {
 			item.nextAttemptAt = undefined;
 			this.warn(
-				`[syncDocWS] provider sync failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
+				`[sync] retryable sync failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
 			);
 			return false;
 		}
@@ -501,7 +506,7 @@ export class BackgroundSync extends HasLogging {
 			this.syncQueue.sort(compareFilePaths);
 		}
 		this.debug(
-			`[syncDocWS] retryable provider sync failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
+			`[sync] retryable sync failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
 		);
 		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 		this.queueStatusChanged.notifyListeners();
@@ -774,7 +779,7 @@ export class BackgroundSync extends HasLogging {
 						}
 
 						if (
-							isRetryableProviderSyncError(error) &&
+							isRetryableSyncError(error) &&
 							this.requeueRetryableSync(item, error)
 						) {
 							return;
@@ -822,7 +827,7 @@ export class BackgroundSync extends HasLogging {
 				}
 
 				if (
-					isRetryableProviderSyncError(error) &&
+					isRetryableSyncError(error) &&
 					this.requeueRetryableSync(item, error)
 				) {
 					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
@@ -1068,6 +1073,74 @@ export class BackgroundSync extends HasLogging {
 		this.syncQueue.sort(compareFilePaths);
 		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
+
+		return syncPromise;
+	}
+
+	async enqueueRetryableSync(
+		item: SyncFile | Document | Canvas,
+		error: Error,
+	): Promise<void> {
+		if (this.shouldSkipDocumentSync(item)) {
+			this.clearFailure(this.failureKey("sync", item.guid));
+			return Promise.resolve();
+		}
+
+		if (this.inProgressSyncs.has(item.guid)) {
+			return this.syncPromises.get(item.guid) ?? Promise.resolve();
+		}
+
+		const sharedFolder = item.sharedFolder;
+		const queueItem: QueueItem = {
+			guid: item.guid,
+			path: sharedFolder.getPath(item.path),
+			doc: item,
+			status: "pending",
+			sharedFolder,
+			userVisible: false,
+		};
+
+		let group = this.syncGroups.get(sharedFolder);
+		if (!group) {
+			group = {
+				sharedFolder,
+				total: 0,
+				completed: 0,
+				status: "pending",
+				downloads: 0,
+				syncs: 0,
+				completedDownloads: 0,
+				completedSyncs: 0,
+				failedDownloads: 0,
+				failedSyncs: 0,
+				skippedDownloads: 0,
+				skippedSyncs: 0,
+				userDownloads: 0,
+				completedUserDownloads: 0,
+				failedUserDownloads: 0,
+				skippedUserDownloads: 0,
+			};
+		}
+		group.total++;
+		group.syncs++;
+		group.status = "running";
+		this.syncGroups.set(sharedFolder, group);
+
+		this.inProgressSyncs.add(item.guid);
+		const syncPromise = new Promise<void>((resolve, reject) => {
+			this.syncCompletionCallbacks.set(item.guid, {
+				resolve,
+				reject,
+			});
+		});
+		this.syncPromises.set(item.guid, syncPromise);
+
+		if (!this.requeueRetryableSync(queueItem, error)) {
+			this.inProgressSyncs.delete(item.guid);
+			this.syncCompletionCallbacks.delete(item.guid);
+			this.syncPromises.delete(item.guid);
+			return Promise.reject(error);
+		}
 
 		return syncPromise;
 	}
@@ -1981,7 +2054,7 @@ export class BackgroundSync extends HasLogging {
 				}
 			}
 		} catch (e) {
-			if (!isRetryableProviderSyncError(e)) {
+			if (!isRetryableSyncError(e)) {
 				this.logError("[syncDocument] failed", e);
 			}
 			throw e;
