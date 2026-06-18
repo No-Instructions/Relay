@@ -273,6 +273,8 @@ export class SyncFile
 	destroyed: boolean = false;
 	offFileInfo: Unsubscriber = () => {};
 	uploadError?: string = undefined;
+	private syncPromise: Promise<void> | null = null;
+	private syncRequestedDuringSync = false;
 
 	constructor(
 		public path: string,
@@ -397,6 +399,28 @@ export class SyncFile
 	}
 
 	public async sync() {
+		if (this.syncPromise) {
+			this.syncRequestedDuringSync = true;
+			return this.syncPromise;
+		}
+
+		const syncPromise = this.syncUntilSettled().finally(() => {
+			if (this.syncPromise === syncPromise) {
+				this.syncPromise = null;
+			}
+		});
+		this.syncPromise = syncPromise;
+		return syncPromise;
+	}
+
+	private async syncUntilSettled() {
+		do {
+			this.syncRequestedDuringSync = false;
+			await this.syncOnce();
+		} while (this.syncRequestedDuringSync);
+	}
+
+	private async syncOnce() {
 		this.log("sync");
 		this._refreshMeta();
 
