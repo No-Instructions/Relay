@@ -5,6 +5,7 @@ import type { SyncFile } from "./SyncFile";
 import { customFetch } from "./customFetch";
 import PocketBase from "pocketbase";
 import { HasLogging } from "./debug";
+import { s3ApiErrorFromResponse, s3ApiErrorFromUnknown } from "./S3Error";
 
 
 export class ContentAddressedStore extends HasLogging {
@@ -29,10 +30,14 @@ export class ContentAddressedStore extends HasLogging {
 			syncFile.mimetype,
 			0,
 		);
-		const response = await customFetch(token.baseUrl!, {
-			method: "HEAD",
-			headers: { Authorization: `Bearer ${token.token}` },
-		});
+		const response = await this.s3Request(
+			() =>
+				customFetch(token.baseUrl!, {
+					method: "HEAD",
+					headers: { Authorization: `Bearer ${token.token}` },
+				}),
+			"verify attachment",
+		);
 		return response.status === 200;
 	}
 
@@ -58,11 +63,12 @@ export class ContentAddressedStore extends HasLogging {
 		}
 		const responseJson = await response.json();
 		const presignedUrl = responseJson.downloadUrl;
-		const downloadResponse = await customFetch(presignedUrl);
+		const downloadResponse = await this.s3Request(
+			() => customFetch(presignedUrl),
+			"download attachment",
+		);
 		if (!downloadResponse.ok) {
-			throw new Error(
-				`[${this.sharedFolder.path}] File download failed: ${downloadResponse.status} for ${syncFile.guid}`,
-			);
+			throw await this.s3ResponseError(downloadResponse, "download attachment");
 		}
 		return downloadResponse.arrayBuffer();
 	}
@@ -89,12 +95,43 @@ export class ContentAddressedStore extends HasLogging {
 			throw new Error(responseJson.error);
 		}
 		const presignedUrl = responseJson.uploadUrl;
-		await customFetch(presignedUrl, {
-			method: "PUT",
-			headers: { "Content-Type": syncFile.mimetype },
-			body: content,
-		});
+		const uploadResponse = await this.s3Request(
+			() =>
+				customFetch(presignedUrl, {
+					method: "PUT",
+					headers: { "Content-Type": syncFile.mimetype },
+					body: content,
+				}),
+			"upload attachment",
+		);
+		if (!uploadResponse.ok) {
+			throw await this.s3ResponseError(uploadResponse, "upload attachment");
+		}
 		return;
+	}
+
+	private async s3Request(
+		request: () => Promise<Response>,
+		operation: string,
+	): Promise<Response> {
+		try {
+			return await request();
+		} catch (error) {
+			throw s3ApiErrorFromUnknown(error, operation) ?? error;
+		}
+	}
+
+	private async s3ResponseError(
+		response: Response,
+		operation: string,
+	): Promise<Error> {
+		let body = "";
+		try {
+			body = await response.text();
+		} catch {
+			// Ignore body parsing errors; the status still carries useful context.
+		}
+		return s3ApiErrorFromResponse(response.status, body, operation);
 	}
 
 	public destroy() {

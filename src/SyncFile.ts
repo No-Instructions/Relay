@@ -14,6 +14,7 @@ import { generateHash } from "./hashing";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { flags } from "./flagManager";
+import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
 
 export function isSyncFile(file: IFile | undefined): file is SyncFile {
 	return !!file && file instanceof SyncFile;
@@ -387,15 +388,9 @@ export class SyncFile
 				this.uploadError = undefined;
 				this.notifyListeners();
 			} catch (error) {
-				let errorMessage = "Failed to push file";
-				try {
-					errorMessage = (error as string).toString();
-				} catch (e) {
-					//pass
-				}
-				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
+				this.uploadError = formatUserFacingError(error, "Failed to push file");
 				this.notifyListeners();
-				throw new Error(this.uploadError);
+				throw error instanceof Error ? error : errorFromUnknown(error);
 			}
 		}
 		return;
@@ -429,7 +424,12 @@ export class SyncFile
 					// pass
 				}
 			}
-			if (hash !== this.meta.hash) {
+			if (hash === this.meta.hash) {
+				if (this.uploadError) {
+					this.uploadError = undefined;
+					this.notifyListeners();
+				}
+			} else {
 				// local is newer
 				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
 					await this.push();
