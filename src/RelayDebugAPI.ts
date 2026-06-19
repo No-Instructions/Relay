@@ -1035,7 +1035,10 @@ export class RelayDebugAPI {
     const localDoc = hsmAny.localDoc;
     const statePath = hsmAny._statePath || 'unknown';
     const disk = hsmAny._disk;
-    const syncGateRaw = hsmAny._syncGate;
+    const syncGateRaw =
+      hsmAny._syncGate ||
+      hsmAny._bridge?.syncGate ||
+      hsmAny._bridge?._syncGate;
     const syncGate: HsmSyncGate | null = syncGateRaw ? {
       providerConnected: !!syncGateRaw.providerConnected,
       providerSynced: !!syncGateRaw.providerSynced,
