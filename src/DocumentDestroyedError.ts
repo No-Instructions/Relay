@@ -1,15 +1,13 @@
 "use strict";
 
-export class DocumentDestroyedError extends Error {
+import { DestroyedError } from "./DestroyedError";
+
+export class DocumentDestroyedError extends DestroyedError {
 	constructor(
 		public readonly guid: string,
 		public readonly path?: string,
 	) {
-		super(
-			path
-				? `Document was destroyed: ${path} (${guid})`
-				: `Document was destroyed: ${guid}`,
-		);
+		super("Document", path ? `${path} (${guid})` : guid);
 		this.name = "DocumentDestroyedError";
 	}
 }

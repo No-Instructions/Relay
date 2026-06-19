@@ -61,6 +61,7 @@ import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { HSMStore } from "./merge-hsm/persistence";
 import { trackAsyncCleanup } from "./reloadUtils";
+import { isDestroyedError } from "./DestroyedError";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
 import {
@@ -301,6 +302,9 @@ export default class Live extends Plugin {
 					readyFolder.deleteFiles(deletePaths);
 				})
 				.catch((error) => {
+					if (isDestroyedError(error)) {
+						return;
+					}
 					this.error("vault delete failed", error);
 				})
 				.finally(() => {
@@ -930,6 +934,9 @@ export default class Live extends Plugin {
 											this.timeProvider,
 										);
 										void folder.resync().catch((error) => {
+											if (isDestroyedError(error)) {
+												return;
+											}
 											this.warn("Relay: Resync failed", error);
 										});
 									});
@@ -1217,6 +1224,9 @@ export default class Live extends Plugin {
 								folder.getFile(tfile);
 							})
 							.catch((error) => {
+								if (isDestroyedError(error)) {
+									return;
+								}
 								this.warn("folder ready failed after file create", error);
 							});
 					}

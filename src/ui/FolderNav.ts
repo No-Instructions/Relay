@@ -21,6 +21,7 @@ import type { SyncStatus } from "src/merge-hsm/types";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog, metrics } from "src/debug";
+import { isDestroyedError } from "src/DestroyedError";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -850,7 +851,9 @@ export class FolderNavigationDecorations {
 				folder.whenReady()
 					.then(() => this.refresh())
 					.catch((error) => {
-						this.warn("folder ready failed", error);
+						if (!isDestroyedError(error)) {
+							this.warn("folder ready failed", error);
+						}
 						this.refresh();
 					});
 

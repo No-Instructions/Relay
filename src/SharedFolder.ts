@@ -64,6 +64,7 @@ import {
 } from "./merge-hsm/recording";
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
+import { DestroyedError, isDestroyedError } from "./DestroyedError";
 import { generateHash } from "./hashing";
 import {
 	HSMStore,
@@ -1143,12 +1144,17 @@ export class SharedFolder extends HasProvider {
 	}
 
 	async netSync() {
-		await this.whenReady();
-		await this.mergeManager.initialize();
-		if (this.destroyed) return;
-		this.addLocalDocs();
-		await this.syncFileTree();
-		this.backgroundSync.enqueueSharedFolderSync(this);
+		try {
+			await this.whenReady();
+			await this.mergeManager.initialize();
+			if (this.destroyed) return;
+			this.addLocalDocs();
+			await this.syncFileTree();
+			this.backgroundSync.enqueueSharedFolderSync(this);
+		} catch (error) {
+			if (isDestroyedError(error)) return;
+			throw error;
+		}
 	}
 
 	async resync(): Promise<void> {
@@ -1869,12 +1875,19 @@ export class SharedFolder extends HasProvider {
 		if (this.syncFileTreePromise) {
 			this.syncRequestedDuringSync = true;
 			const promise = this.syncFileTreePromise.getPromise();
-			promise.then(() => {
-				if (this.syncRequestedDuringSync) {
-					this.syncRequestedDuringSync = false;
-					return this.syncFileTree();
-				}
-			});
+			void promise.then(
+				() => {
+					if (this.syncRequestedDuringSync) {
+						this.syncRequestedDuringSync = false;
+						void this.syncFileTree().catch((error) => {
+							if (!isDestroyedError(error)) {
+								this.warn("syncFileTree follow-up failed", error);
+							}
+						});
+					}
+				},
+				() => {},
+			);
 			return promise;
 		}
 
@@ -2894,11 +2907,21 @@ export class SharedFolder extends HasProvider {
 	}
 
 	destroy() {
+		const destroyedError = new DestroyedError(
+			"SharedFolder",
+			`${this.path} (${this.guid})`,
+		);
 		this.destroyed = true;
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
 		this.unsubscribes = [];
+		this.whenSyncedPromise?.destroy(destroyedError);
+		this.whenSyncedPromise = null as any;
+		this.readyPromise?.destroy(destroyedError);
+		this.readyPromise = null as any;
+		this.syncFileTreePromise?.destroy(destroyedError);
+		this.syncFileTreePromise = null as any;
 
 		// Mark the merge manager as shutting down before destroying docs so
 		// per-doc unloads don't schedule hibernate timers we'd just orphan.
@@ -2940,12 +2963,6 @@ export class SharedFolder extends HasProvider {
 		this.syncStore = null as any;
 		this.syncSettingsManager = null as any;
 		this.mergeManager = null as any;
-		this.whenSyncedPromise?.destroy();
-		this.whenSyncedPromise = null as any;
-		this.readyPromise?.destroy();
-		this.readyPromise = null as any;
-		this.syncFileTreePromise?.destroy();
-		this.syncFileTreePromise = null as any;
 
 	}
 }

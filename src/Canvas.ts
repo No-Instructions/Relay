@@ -10,6 +10,7 @@ import { IndexeddbPersistence } from "./storage/y-indexeddb";
 import { Dependency } from "./promiseUtils";
 import { trackAsyncCleanup } from "./reloadUtils";
 import type { Unsubscriber } from "./observable/Observable";
+import { DocumentDestroyedError } from "./DocumentDestroyedError";
 import type {
 	CanvasData,
 	CanvasEdgeData,
@@ -445,18 +446,19 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	destroy() {
+		const destroyedError = new DocumentDestroyedError(this.guid, this.path);
 		this.destroyed = true;
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
+		this.whenSyncedPromise?.destroy(destroyedError);
+		this.whenSyncedPromise = null as any;
+		this.readyPromise?.destroy(destroyedError);
+		this.readyPromise = null as any;
 		if (this._persistence) {
 			const p = this._persistence.destroy().catch(() => {});
 			trackAsyncCleanup(p);
 		}
 		super.destroy();
-		this.whenSyncedPromise?.destroy();
-		this.whenSyncedPromise = null as any;
-		this.readyPromise?.destroy();
-		this.readyPromise = null as any;
 	}
 }

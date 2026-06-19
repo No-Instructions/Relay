@@ -1,6 +1,7 @@
 "use strict";
 
 import { curryLog } from "./debug";
+import { DestroyedError } from "./DestroyedError";
 import type { TimeProvider } from "./TimeProvider";
 
 export type PromiseFunction<T> = () => Promise<T>;
@@ -101,6 +102,7 @@ export class Dependency<T> {
 	private promiseFunction: PromiseFunction<T>;
 	private checkFunction: CheckFunction<T>;
 	private resolver?: (value: T) => void;
+	private rejecter?: (reason?: unknown) => void;
 	private timeoutId?: number;
 
 	constructor(
@@ -120,15 +122,20 @@ export class Dependency<T> {
 		this.timeProvider.clearTimeout(timerId);
 	}
 
+	private clearStuckTimeout(): void {
+		if (this.timeoutId !== undefined) {
+			this.clearTimeout(this.timeoutId);
+			this.timeoutId = undefined;
+		}
+	}
+
 	public getPromise(): Promise<T> {
 		const [success, result] = this.checkFunction();
 		const onSuccess = (result: T) => {
 			if (this.currentPromise && this.resolver) {
 				const resolve = this.resolver;
 				resolve(result);
-				if (this.timeoutId) {
-					this.clearTimeout(this.timeoutId);
-				}
+				this.clearStuckTimeout();
 				this.resolver = undefined;
 			}
 			return this.currentPromise;
@@ -153,37 +160,36 @@ export class Dependency<T> {
 				}, 3000);
 				this.promiseFunction().then(
 					(result) => {
-						if (this.timeoutId) {
-							this.clearTimeout(this.timeoutId);
-						}
+						this.clearStuckTimeout();
+						this.rejecter = undefined;
 						resolve(result);
 					},
 					(error) => {
-						if (this.timeoutId) {
-							this.clearTimeout(this.timeoutId);
-						}
+						this.clearStuckTimeout();
 						this.currentPromise = null; // Reset on failure
+						this.rejecter = undefined;
 						reject(error);
 					},
 				);
+				this.rejecter = reject;
 			});
 		}
 		return this.currentPromise;
 	}
 
-	public destroy(): void {
-		if (this.timeoutId) {
-			this.clearTimeout(this.timeoutId);
-			this.timeoutId = undefined;
-		}
+	public destroy(reason: unknown = new DestroyedError("Dependency")): void {
+		this.clearStuckTimeout();
+		this.rejecter?.(reason);
 		this.currentPromise = null;
 		this.resolver = undefined;
+		this.rejecter = undefined;
 	}
 }
 
 export class SharedPromise<T> {
 	private currentPromise: Promise<T> | null = null;
 	private promiseFunction: PromiseFunction<T>;
+	private rejecter?: (reason?: unknown) => void;
 	private timeoutId?: number;
 
 	constructor(
@@ -201,6 +207,13 @@ export class SharedPromise<T> {
 		this.timeProvider.clearTimeout(timerId);
 	}
 
+	private clearStuckTimeout(): void {
+		if (this.timeoutId !== undefined) {
+			this.clearTimeout(this.timeoutId);
+			this.timeoutId = undefined;
+		}
+	}
+
 	public getPromise(): Promise<T> {
 		if (!this.currentPromise) {
 			this.currentPromise = new Promise((resolve, reject) => {
@@ -212,31 +225,29 @@ export class SharedPromise<T> {
 				}, 3000);
 				this.promiseFunction().then(
 					(result) => {
-						if (this.timeoutId) {
-							this.clearTimeout(this.timeoutId);
-						}
+						this.clearStuckTimeout();
 						this.currentPromise = null;
+						this.rejecter = undefined;
 						resolve(result);
 					},
 					(error) => {
-						if (this.timeoutId) {
-							this.clearTimeout(this.timeoutId);
-						}
+						this.clearStuckTimeout();
 						this.currentPromise = null;
+						this.rejecter = undefined;
 						reject(error);
 					},
 				);
+				this.rejecter = reject;
 			});
 		}
 		return this.currentPromise;
 	}
 
-	public destroy(): void {
-		if (this.timeoutId) {
-			this.clearTimeout(this.timeoutId);
-			this.timeoutId = undefined;
-		}
+	public destroy(reason: unknown = new DestroyedError("SharedPromise")): void {
+		this.clearStuckTimeout();
+		this.rejecter?.(reason);
 		this.currentPromise = null;
+		this.rejecter = undefined;
 	}
 }
 
