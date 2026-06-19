@@ -101,6 +101,8 @@ export class TokenStore<TokenType extends HasToken> {
 	private readonly expiryMargin: number = 5 * 60 * 1000; // 5 minutes in milliseconds
 	private readonly refreshJitterSeed?: string;
 	private readonly refreshJitterOffsetsMs: readonly number[];
+	private destroyed = false;
+	private queueWaiters = new Set<() => void>();
 	private activeConnections = 0;
 	private maxConnections: number;
 	protected getJwtExpiry: (token: TokenType) => number;
@@ -142,12 +144,31 @@ export class TokenStore<TokenType extends HasToken> {
 		RelayInstances.set(this, "TokenStore");
 	}
 
+	protected isDestroyed(): boolean {
+		return this.destroyed;
+	}
+
+	protected getDestroyedError(): Error {
+		return new Error("attempted to use TokenStore after it was destroyed.");
+	}
+
 	onRefresh(documentId: string): Promise<TokenType> {
+		if (this.destroyed) {
+			return Promise.reject(this.getDestroyedError());
+		}
 		const promise = new Promise((resolve, reject) => {
 			const onSuccess = (token: TokenType) => {
+				if (this.destroyed) {
+					reject(this.getDestroyedError());
+					return;
+				}
 				resolve(token);
 			};
 			const onError = (error: Error) => {
+				if (this.destroyed) {
+					reject(this.getDestroyedError());
+					return;
+				}
 				this.removeFromRefreshQueue(documentId);
 				reject(error);
 			};
@@ -157,6 +178,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	start() {
+		if (this.destroyed) {
+			throw this.getDestroyedError();
+		}
 		this.log("starting");
 		this.report();
 		this.refreshInterval = this.timeProvider.setInterval(
@@ -167,6 +191,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	stop() {
+		if (this.destroyed) {
+			return;
+		}
 		this.log("stopping");
 		if (this.refreshInterval) {
 			this.timeProvider.clearInterval(this.refreshInterval);
@@ -175,6 +202,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	private _cleanupInvalidTokens() {
+		if (this.destroyed) {
+			return;
+		}
 		const toDelete: string[] = [];
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
 			if (!this.isTokenValid(tokenInfo)) {
@@ -187,6 +217,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	private checkAndRefreshTokens() {
+		if (this.destroyed) {
+			return;
+		}
 		this.log("check and refresh tokens");
 		this._cleanupInvalidTokens();
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
@@ -202,6 +235,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	dequeue(): string | null {
+		if (this.destroyed) {
+			return null;
+		}
 		this.log("getting next item in queue");
 		if (this.refreshQueue.size > 0) {
 			const nextDocumentId = this.refreshQueue.values().next().value;
@@ -212,10 +248,16 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	private addToRefreshQueue(documentId: string) {
+		if (this.destroyed) {
+			return;
+		}
 		if (this.activeConnections < this.maxConnections) {
 			this.log(`immediate refresh of ${documentId}`);
 			this.activeConnections++;
 			const onSuccess = (newToken: TokenType) => {
+				if (this.destroyed) {
+					return;
+				}
 				this.onTokenRefreshed(documentId, newToken);
 				this.activeConnections--;
 				const next = this.dequeue();
@@ -224,6 +266,9 @@ export class TokenStore<TokenType extends HasToken> {
 				}
 			};
 			const onError = () => {
+				if (this.destroyed) {
+					return;
+				}
 				this.onRefreshFailure(documentId);
 				this.activeConnections--;
 				const next = this.dequeue();
@@ -239,6 +284,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	removeFromRefreshQueue(documentId: string) {
+		if (this.destroyed) {
+			return false;
+		}
 		this.log(`removing ${documentId} from refresh queue`);
 		if (this.refreshQueue.has(documentId)) {
 			this.refreshQueue.delete(documentId);
@@ -252,6 +300,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	private onTokenRefreshed(documentId: string, token: TokenType) {
+		if (this.destroyed) {
+			return;
+		}
 		const expiryTime = this.getJwtExpiry(token);
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -270,6 +321,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	private onRefreshFailure(documentId: string) {
+		if (this.destroyed) {
+			return;
+		}
 		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 		const existing = this.tokenMap.get(documentId)!;
 		const attempts = (existing?.attempts ?? 0) + 1;
@@ -306,11 +360,17 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	isTokenValid(token: TokenInfo<TokenType>): boolean {
+		if (this.destroyed) {
+			return false;
+		}
 		const currentTime = this.timeProvider.now();
 		return currentTime < token.expiryTime;
 	}
 
 	shouldRefresh(token: TokenInfo<TokenType>, documentId?: string): boolean {
+		if (this.destroyed) {
+			return false;
+		}
 		const currentTime = this.timeProvider.now();
 		return (
 			currentTime + this.getRefreshLeadTime(token, documentId) >
@@ -319,6 +379,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	getTokenSync(documentId: string) {
+		if (this.destroyed) {
+			return undefined;
+		}
 		return this.tokenMap?.get(documentId)?.token;
 	}
 
@@ -327,6 +390,9 @@ export class TokenStore<TokenType extends HasToken> {
 		friendlyName: string,
 		callback: (token: TokenType) => void,
 	) {
+		if (this.destroyed) {
+			return Promise.reject(this.getDestroyedError());
+		}
 		const activePromise = this._activePromises.get(documentId);
 		if (activePromise) {
 			return activePromise;
@@ -341,14 +407,21 @@ export class TokenStore<TokenType extends HasToken> {
 		this.callbacks.set(documentId, callback);
 		const sharedPromise = this.onRefresh(documentId)
 			.then((newToken: TokenType) => {
+				if (this.destroyed) {
+					throw this.getDestroyedError();
+				}
 				this.onTokenRefreshed(documentId, newToken);
-				this._activePromises.delete(documentId);
 				return newToken;
 			})
 			.catch((err) => {
+				if (this.destroyed) {
+					throw this.getDestroyedError();
+				}
 				this.onRefreshFailure(documentId);
-				this._activePromises.delete(documentId);
 				throw err;
+			})
+			.finally(() => {
+				this._activePromises?.delete(documentId);
 			});
 		this._activePromises.set(documentId, sharedPromise);
 		return sharedPromise;
@@ -360,12 +433,8 @@ export class TokenStore<TokenType extends HasToken> {
 		callback: (token: TokenType) => void,
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
-		if (!this.tokenMap) {
-			Promise.reject(
-				new Error(
-					"attempted to get token after TokenStore was destroyed.",
-				),
-			);
+		if (this.destroyed || !this.tokenMap) {
+			return Promise.reject(this.getDestroyedError());
 		}
 		if (this.tokenMap.has(documentId)) {
 			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -383,6 +452,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	_reportWithFilter(filter: (documentId: string) => boolean) {
+		if (this.destroyed) {
+			return [];
+		}
 		const reportLines: string[] = [];
 		const currentTime = this.timeProvider.now();
 		const tokens = Array.from(this.tokenMap.entries()).sort((a, b) => {
@@ -412,6 +484,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	report(): string {
+		if (this.destroyed) {
+			return "Token Store Report:\nDestroyed";
+		}
 		const reportLines: string[] = [];
 		reportLines.push("Token Store Report:");
 		reportLines.push(`Expiry Margin: ${formatTime(this.expiryMargin)}`);
@@ -439,17 +514,33 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	async waitForQueue(): Promise<void> {
+		if (this.destroyed) {
+			return;
+		}
 		return new Promise((resolve) => {
-			const interval = this.timeProvider.setInterval(() => {
-				if (this.refreshQueue.size == 0) {
-					this.timeProvider.clearInterval(interval);
-					return resolve();
+			const timeProvider = this.timeProvider;
+			let interval: number | null = null;
+			const complete = () => {
+				if (interval !== null) {
+					timeProvider.clearInterval(interval);
+				}
+				this.queueWaiters.delete(complete);
+				resolve();
+			};
+
+			this.queueWaiters.add(complete);
+			interval = timeProvider.setInterval(() => {
+				if (this.destroyed || this.refreshQueue.size == 0) {
+					complete();
 				}
 			}, 100);
 		});
 	}
 
 	clearState() {
+		if (this.destroyed) {
+			return;
+		}
 		this.refreshQueue.clear();
 		for (const [documentId, tokenInfo] of this.tokenMap.entries()) {
 			if (this.isTokenValid(tokenInfo)) {
@@ -461,6 +552,9 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	clear(filter?: (token: TokenInfo<TokenType>) => boolean) {
+		if (this.destroyed) {
+			return;
+		}
 		if (filter) {
 			this.tokenMap.forEach((value, key) => {
 				if (filter(value)) {
@@ -475,14 +569,25 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	destroy() {
+		if (this.destroyed) {
+			return;
+		}
+		this.destroyed = true;
+		for (const resolve of this.queueWaiters) {
+			resolve();
+		}
+		this.queueWaiters.clear();
 		// Track active token refresh promises before clearing
 		if (this._activePromises.size > 0) {
+			const activePromises = Array.from(this._activePromises.values());
 			trackAsyncCleanup(
-				Promise.all(this._activePromises.values()).then(() => {}),
+				Promise.allSettled(activePromises).then(() => {}),
+				"tokenStore:activeRefreshes",
 			);
 		}
 
-		this.clear();
+		this.tokenMap.clear();
+		this.refreshQueue.clear();
 		this.timeProvider.destroy();
 		this.timeProvider = null as any;
 		this.refresh = null as any;

@@ -145,6 +145,9 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		contentType: string,
 		contentLength: number,
 	): Promise<FileToken> {
+		if (this.isDestroyed()) {
+			return Promise.reject(this.getDestroyedError());
+		}
 		const key = `${documentId}${fileHash}`;
 		const activePromise = this._activePromises.get(key);
 		if (activePromise) {
@@ -162,6 +165,9 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			contentLength,
 		)
 			.then((newToken: FileToken) => {
+				if (this.isDestroyed()) {
+					throw this.getDestroyedError();
+				}
 				const expiryTime = this.getJwtExpiry(newToken);
 				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 				const existing = this.tokenMap.get(key)!;
@@ -170,12 +176,16 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 					token: newToken,
 					expiryTime,
 				} as TokenInfo<FileToken>);
-				this._activePromises.delete(key);
 				return newToken;
 			})
 			.catch((err: Error) => {
-				this._activePromises.delete(key);
+				if (this.isDestroyed()) {
+					throw this.getDestroyedError();
+				}
 				throw err;
+			})
+			.finally(() => {
+				this._activePromises?.delete(key);
 			});
 		this._activePromises.set(key, sharedPromise);
 		return sharedPromise;
@@ -187,6 +197,9 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		contentType: string,
 		contentLength: number,
 	): Promise<FileToken> {
+		if (this.isDestroyed()) {
+			throw this.getDestroyedError();
+		}
 		const debug = curryLog("[TokenStore][Fetch]", "debug");
 		debug(`${documentId}`);
 		const entity: S3RNType = S3RN.decode(documentId);
@@ -238,6 +251,9 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		contentType: string,
 		contentLength: number,
 	): Promise<FileToken> {
+		if (this.isDestroyed()) {
+			return Promise.reject(this.getDestroyedError());
+		}
 		const key = `${documentId}${fileHash}`;
 		const tokenInfo = this.tokenMap.get(key);
 		if (tokenInfo && tokenInfo.token && this.isTokenValid(tokenInfo)) {
@@ -251,5 +267,11 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			contentType,
 			contentLength,
 		);
+	}
+
+	override destroy(): void {
+		super.destroy();
+		this.loginManager = null as any;
+		this.deviceId = null as any;
 	}
 }
