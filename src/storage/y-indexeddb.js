@@ -10,6 +10,7 @@ const customStoreName = 'custom'
 const updatesStoreName = 'updates'
 const historyStoreName = 'history'
 const DB_VERSION = 2
+const DESTROY_DRAIN_TIMEOUT_MS = 2000
 
 /**
  * Compare two Uint8Arrays for equality
@@ -149,6 +150,10 @@ export class IndexeddbPersistence extends Observable {
     this.synced = false
     this._syncFailed = false
     this._syncError = null
+    this._destroyError = null
+    this._rejectDbForDestroy = null
+    this._rejectWhenSynced = null
+    this._destroyPromise = null
     this._serverSynced = undefined
     this._origin = undefined
     /**
@@ -159,7 +164,7 @@ export class IndexeddbPersistence extends Observable {
     this.opCapture = null
     // Open IDB with explicit version to support schema migrations.
     // The 'history' store holds serialized OpCapture entries.
-    this._db = new Promise((resolve, reject) => {
+    this._openDb = new Promise((resolve, reject) => {
       const request = indexedDB.open(name, DB_VERSION)
       request.onupgradeneeded = (event) => {
         const db = /** @type {IDBDatabase} */ (event.target.result)
@@ -179,6 +184,10 @@ export class IndexeddbPersistence extends Observable {
       request.onerror = () => reject(request.error || new Error(`indexedDB.open failed for ${name}`))
       request.onsuccess = () => resolve(request.result)
     })
+    this._db = new Promise((resolve, reject) => {
+      this._rejectDbForDestroy = reject
+      this._openDb.then(resolve, reject)
+    })
     /**
      * @type {Promise<IndexeddbPersistence>}
      */
@@ -193,15 +202,23 @@ export class IndexeddbPersistence extends Observable {
       }
       const onSynced = () => {
         this.off('failed', onFailed)
+        this._rejectWhenSynced = null
         resolve(this)
       }
       const onFailed = (err) => {
         this.off('synced', onSynced)
+        this._rejectWhenSynced = null
         reject(err || this._syncError || new Error(`IndexedDB sync failed for ${this.name}`))
+      }
+      this._rejectWhenSynced = (err) => {
+        this.off('synced', onSynced)
+        this.off('failed', onFailed)
+        reject(err || new Error(`IndexedDB persistence destroyed before sync completed for ${this.name}`))
       }
       this.on('synced', onSynced)
       this.on('failed', onFailed)
     })
+    this.whenSynced.catch(() => {})
 
     this._db.catch((err) => {
       this._failSync(err)
@@ -256,6 +273,8 @@ export class IndexeddbPersistence extends Observable {
           this._failSync(err)
         })
       }) // migrationDone
+    }).catch((err) => {
+      this._failSync(err)
     })
     /**
      * Timeout in ms until data is merged and persisted in idb.
@@ -289,10 +308,7 @@ export class IndexeddbPersistence extends Observable {
         }
         const [updatesStore] = idb.transact(/** @type {IDBDatabase} */ (this.db), [updatesStoreName])
         const writePromise = idb.addAutoKey(updatesStore, update)
-        this._pendingWrites.add(writePromise)
-        writePromise.finally(() => {
-          this._pendingWrites.delete(writePromise)
-        })
+        this._trackWrite(writePromise)
         ++this._dbsize
         metrics.setDbSize(this.name, this._dbsize)
         const trimSize = this.synced ? RUNTIME_TRIM_SIZE : STARTUP_TRIM_SIZE
@@ -332,6 +348,63 @@ export class IndexeddbPersistence extends Observable {
     this.emit('failed', [this._syncError])
   }
 
+  _trackWrite (p) {
+    this._pendingWrites.add(p)
+    p.then(
+      () => this._pendingWrites.delete(p),
+      () => this._pendingWrites.delete(p)
+    )
+  }
+
+  _settleOrTimeout (promise) {
+    return new Promise(resolve => {
+      let finished = false
+      const finish = (settled) => {
+        if (finished) return
+        finished = true
+        clearTimeout(timer)
+        resolve(settled)
+      }
+      const timer = setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS)
+      promise.then(
+        () => finish(true),
+        () => finish(true)
+      )
+    })
+  }
+
+  async _drainPendingWritesForDestroy () {
+    while (this._pendingWrites.size > 0) {
+      const pendingWrites = Promise.allSettled(Array.from(this._pendingWrites)).then(() => {})
+      const drained = await this._settleOrTimeout(pendingWrites)
+      if (!drained) return
+    }
+  }
+
+  async _drainCompactionForDestroy () {
+    if (!this._pendingCompaction) return
+    await this._settleOrTimeout(
+      this._pendingCompaction.catch(err => {
+        idbWarn(`compaction failed during destroy for ${this.name}:`, err)
+      })
+    )
+  }
+
+  _closeDb (db) {
+    // lib0/indexeddb.openDB sets `db.onversionchange = () => db.close()`. The
+    // arrow function captures the surrounding module's lexical scope. Even
+    // after db.close(), Chrome's "Pending activities" tracker keeps the
+    // listener registered and pins the V8 context (and every class defined in
+    // the plugin module with it) until the listener is cleared. Clearing
+    // onversionchange and the other handlers explicitly lets the IDBDatabase
+    // graph go away on the next GC cycle.
+    db.onversionchange = null
+    db.onerror = null
+    db.onabort = null
+    db.onclose = null
+    db.close()
+  }
+
   /**
    * Load capture entries from the history object store.
    * @return {Promise<Array<{k: number, v: any}>>}
@@ -369,8 +442,7 @@ export class IndexeddbPersistence extends Observable {
           const [store] = idb.transact(db, [historyStoreName])
           return idb.addAutoKey(store, serialized)
         })
-        this._pendingWrites.add(p)
-        p.finally(() => this._pendingWrites.delete(p))
+        this._trackWrite(p)
         return p
       },
       update: (key, serialized) => {
@@ -378,8 +450,7 @@ export class IndexeddbPersistence extends Observable {
           const [store] = idb.transact(db, [historyStoreName])
           return idb.put(store, serialized, key)
         })
-        this._pendingWrites.add(p)
-        p.finally(() => this._pendingWrites.delete(p))
+        this._trackWrite(p)
         return p
       },
       remove: (keys) => {
@@ -388,8 +459,7 @@ export class IndexeddbPersistence extends Observable {
           const [store] = idb.transact(db, [historyStoreName])
           return Promise.all(keys.map(k => idb.del(store, k)))
         })
-        this._pendingWrites.add(p)
-        p.finally(() => this._pendingWrites.delete(p))
+        this._trackWrite(p)
         return p
       },
       clear: () => {
@@ -397,8 +467,7 @@ export class IndexeddbPersistence extends Observable {
           const [store] = idb.transact(db, [historyStoreName])
           return idb.rtop(store.clear())
         })
-        this._pendingWrites.add(p)
-        p.finally(() => this._pendingWrites.delete(p))
+        this._trackWrite(p)
         return p
       }
     }
@@ -440,59 +509,61 @@ export class IndexeddbPersistence extends Observable {
     return this._pendingCompaction
   }
 
-  async destroy () {
-    if (this._storeTimeoutId !== null) {
-      this.timeProvider.clearTimeout(this._storeTimeoutId)
-      this._storeTimeoutId = null
-    }
-    this.doc.off('update', this._storeUpdate)
-    this.doc.off('destroy', this.destroy)
-    this._destroyed = true
-    // Destroy OpCapture (releases keepItem holds, no persistence needed)
-    if (this.opCapture) {
-      this.opCapture.destroy()
-      this.opCapture = null
-    }
-    // If indexedDB.open never resolved, `this.db` is null and queued
-    // writes/compaction are chained on `_db` — awaiting them would
-    // hang destroy forever. Close the db if it eventually resolves.
-    if (!this.db) {
-      this._db.then(db => {
-        db.onversionchange = null
-        db.onerror = null
-        db.onabort = null
-        db.onclose = null
-        db.close()
-      }).catch(() => {})
-      return
-    }
-    // Wait for all pending writes to complete before closing
-    while (this._pendingWrites.size > 0) {
-      await Promise.all(this._pendingWrites)
-    }
-    // Wait for any pending compaction to complete before closing
-    if (this._pendingCompaction) {
-      await this._pendingCompaction
-    }
-    // lib0/indexeddb.openDB sets `db.onversionchange = () => db.close()`. The
-    // arrow function captures the surrounding module's lexical scope. Even
-    // after db.close(), Chrome's "Pending activities" tracker keeps the
-    // listener registered and pins the V8 context (and every class defined in
-    // the plugin module with it) until the listener is cleared. Clearing
-    // onversionchange and the other handlers explicitly lets the IDBDatabase
-    // graph go away on the next GC cycle.
-    this.db.onversionchange = null
-    this.db.onerror = null
-    this.db.onabort = null
-    this.db.onclose = null
-    this.db.close()
-    // Clear the lib0/observable _observers map. The whenSynced promise
-    // registers an `on('synced', ...)` handler that only removes its sibling
-    // `failed` handler when it fires — leaving the synced listener attached
-    // for the lifetime of this instance. Each listener is an arrow whose
-    // closure captures Document/SharedFolder lexical scope, so a forgotten
-    // observer pins the entire plugin module across reload.
-    super.destroy()
+  destroy () {
+    if (this._destroyPromise) return this._destroyPromise
+    this._destroyPromise = (async () => {
+      if (this._storeTimeoutId !== null) {
+        this.timeProvider.clearTimeout(this._storeTimeoutId)
+        this._storeTimeoutId = null
+      }
+      this.doc.off('update', this._storeUpdate)
+      this.doc.off('destroy', this.destroy)
+      this._destroyError = new Error(`IndexedDB persistence destroyed before sync completed for ${this.name}`)
+      this._destroyed = true
+      if (!this.synced && this._rejectWhenSynced) {
+        this._rejectWhenSynced(this._destroyError)
+        this._rejectWhenSynced = null
+      }
+      if (this._rejectDbForDestroy) {
+        this._rejectDbForDestroy(this._destroyError)
+        this._rejectDbForDestroy = null
+      }
+      // Destroy OpCapture (releases keepItem holds, no persistence needed)
+      if (this.opCapture) {
+        this.opCapture.destroy()
+        this.opCapture = null
+      }
+      // If indexedDB.open never resolved, `this.db` is null and queued
+      // writes/compaction are chained on `_db`. Reject those chains so their
+      // callers can unwind, and close the db if the browser eventually opens it.
+      if (!this.db) {
+        this._openDb.then(db => {
+          this._closeDb(db)
+        }).catch(() => {})
+        this._pendingWrites.clear()
+        this._pendingCompaction = null
+        super.destroy()
+        return
+      }
+
+      try {
+        await this._drainPendingWritesForDestroy()
+        await this._drainCompactionForDestroy()
+      } finally {
+        this._closeDb(this.db)
+        this.db = null
+        this._pendingWrites.clear()
+        this._pendingCompaction = null
+        // Clear the lib0/observable _observers map. The whenSynced promise
+        // registers an `on('synced', ...)` handler that only removes its sibling
+        // `failed` handler when it fires — leaving the synced listener attached
+        // for the lifetime of this instance. Each listener is an arrow whose
+        // closure captures Document/SharedFolder lexical scope, so a forgotten
+        // observer pins the entire plugin module across reload.
+        super.destroy()
+      }
+    })()
+    return this._destroyPromise
   }
 
   async clearDocumentData () {
@@ -564,10 +635,7 @@ export class IndexeddbPersistence extends Observable {
       const [custom] = idb.transact(db, [customStoreName])
       return idb.put(custom, value, key)
     })
-    this._pendingWrites.add(writePromise)
-    writePromise.finally(() => {
-      this._pendingWrites.delete(writePromise)
-    })
+    this._trackWrite(writePromise)
     return writePromise
   }
 
@@ -576,10 +644,12 @@ export class IndexeddbPersistence extends Observable {
    * @return {Promise<undefined>}
    */
   del (key) {
-    return this._db.then(db => {
+    const writePromise = this._db.then(db => {
       const [custom] = idb.transact(db, [customStoreName])
       return idb.del(custom, key)
     })
+    this._trackWrite(writePromise)
+    return writePromise
   }
 
   /**
