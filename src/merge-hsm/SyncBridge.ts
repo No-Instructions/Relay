@@ -445,6 +445,39 @@ export class SyncBridge {
 	}
 
 	/**
+	 * Publish deferred machine-edit ops without clearing their rewind guards.
+	 * Release cleanup uses this so peers can echo matching CRDT ops while the
+	 * local OpCapture context is still available to cancel duplicates.
+	 */
+	flushPendingMachineEditOutbound(): void {
+		const localDoc = this.host.getLocalDoc();
+		const remoteDoc = this.host.getRemoteDoc();
+		if (!localDoc || !remoteDoc) return;
+		if (this.host.hasFork() || this._syncGate.localOnly) return;
+		if (!this._localDocUpdateHandler) return;
+
+		const pendingMarks = new Set(
+			this.host.getPendingMachineEdits().map(e => e.captureMark),
+		);
+		if (pendingMarks.size === 0) return;
+
+		const toSend: Uint8Array[] = [];
+		const remaining: OutboundEntry[] = [];
+		for (const entry of this._outboundQueue) {
+			if (entry.machineEditMark !== null && pendingMarks.has(entry.machineEditMark)) {
+				toSend.push(entry.update);
+			} else {
+				remaining.push(entry);
+			}
+		}
+		this._outboundQueue = remaining;
+
+		if (toSend.length > 0) {
+			this.syncToRemote(Y.mergeUpdates(toSend));
+		}
+	}
+
+	/**
 	 * Flush inbound queue: apply buffered remote updates to localDoc.
 	 *
 	 * Handles machine-edit matching first: if the remote already has a pending

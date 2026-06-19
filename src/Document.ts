@@ -361,17 +361,23 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Transitions HSM from active back to idle mode.
 	 * Call this when editor closes.
 	 */
-	releaseLock(): void {
+	releaseLock(): Promise<void> {
 		this._activeProviderIntegration = false;
-		this.destroyProviderIntegrationIfUnused(false);
 
 		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)
 		const mergeManager = this.sharedFolder?.mergeManager;
 		if (mergeManager) {
 			// MergeManager.unload() sends RELEASE_LOCK and runs async IDB cleanup.
 			const p = mergeManager.unload(this.guid);
-			trackAsyncCleanup(p);
+			const cleanup = p.finally(() => {
+				this.destroyProviderIntegrationIfUnused(false);
+			});
+			trackAsyncCleanup(cleanup);
+			return cleanup;
 		}
+
+		this.destroyProviderIntegrationIfUnused(false);
+		return Promise.resolve();
 	}
 
 	/**
@@ -708,7 +714,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// The HSM's cleanup invoke closes per-document IDB asynchronously.
 		// Track it so close failures are logged.
 		if (hsm) {
-			const p = hsm.awaitAsync('cleanup').catch(() => {});
+			hsm.destroy();
+			const p = hsm.awaitCleanupSettled();
 			trackAsyncCleanup(p, `doc:cleanup:${this.guid}`);
 		}
 
@@ -728,9 +735,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return this.text;
 	}
 
-	public async cleanup(): Promise<void> {
-		this.sharedFolder?.mergeManager?.notifyHSMDestroyed(this.guid);
-	}
+	public async cleanup(): Promise<void> {}
 
 	// Helper method to update file stats
 	private updateStats(): void {

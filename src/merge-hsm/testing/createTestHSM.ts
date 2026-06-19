@@ -199,7 +199,11 @@ export interface TestableHSM {
 	readonly path: string;
 	readonly guid: string;
 	readonly state: MergeState;
+	readonly stateChanges: unknown;
 	send(event: MergeEvent): void;
+	destroy(): void;
+	isDestroyed(): boolean;
+	onDestroyed(listener: () => void): () => void;
 	matches(statePath: string): boolean;
 	isActive(): boolean;
 	isIdle(): boolean;
@@ -219,6 +223,7 @@ export interface TestableHSM {
 		listener: (from: StatePath, to: StatePath, event: MergeEvent) => void,
 	): () => void;
 	awaitCleanup(): Promise<void>;
+	awaitCleanupSettled(): Promise<void>;
 	awaitIdleAutoMerge(): Promise<void>;
 	awaitForkReconcile(): Promise<void>;
 	hasFork(): boolean;

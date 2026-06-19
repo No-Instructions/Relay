@@ -453,7 +453,7 @@ export class MergeManager {
    */
   private _serverAdvertisedHeads = new Map<string, ServerAdvertisedHead>();
 
-  /** Per-HSM effect subscription unsubscribers, keyed by guid. */
+  /** Per-HSM manager subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
 
   // Hibernation configuration
@@ -757,7 +757,7 @@ export class MergeManager {
     });
 
     // Wire effect handler before any events — effects can fire during send().
-    const unsub = hsm.subscribe((effect) => {
+    const unsubscribeEffects = hsm.subscribe((effect) => {
       if (effect.type === 'REQUEST_HIBERNATE') {
         // Hibernate on next microtask so the current transition completes first
         Promise.resolve().then(() => this.hibernate(guid));
@@ -783,7 +783,18 @@ export class MergeManager {
       // Forward all effects to onEffect handler for IDB persistence etc.
       this.handleHSMEffect(guid, effect);
     });
-    this._hsmUnsubs.set(guid, unsub);
+    const unsubscribeDestroyed = hsm.onDestroyed(() => {
+      // Intent edge: stop wake/hibernate now so a destroying HSM is never
+      // re-woken or treated as active. Keep the effect subscription and caches
+      // until the machine-driven teardown emits its final PERSIST_STATE, then
+      // drop them at the terminal edge.
+      this.stopTracking(guid);
+      void hsm.awaitCleanupSettled().finally(() => this.unregisterHSM(guid));
+    });
+    this._hsmUnsubs.set(guid, () => {
+      unsubscribeEffects();
+      unsubscribeDestroyed();
+    });
 
     // Enter loading state — HSM accumulates events until async load completes
     hsm.send({ type: 'LOAD', guid });
@@ -883,10 +894,37 @@ export class MergeManager {
   }
 
   /**
-   * Notify MergeManager that an HSM was destroyed for a document.
-   * Cleans up hibernation tracking.
+   * Intent edge of HSM destruction: drop all in-memory tracking synchronously
+   * when destroy() begins, so wake/hibernate races and status reads resolve
+   * immediately. The effect subscription is intentionally left in place — only
+   * unregisterHSM (terminal edge) removes it, so the cleanup invoke's final
+   * PERSIST_STATE is still forwarded.
    */
-  notifyHSMDestroyed(guid: string): void {
+  private stopTracking(guid: string): void {
+    if (this.destroyed) return;
+    this._hibernationState.delete(guid);
+    this._hibernationBuffer.delete(guid);
+    this._appliedRemoteSV.delete(guid);
+    this._appliedRemoteUpdate.delete(guid);
+    this._serverAdvertisedHeads.delete(guid);
+    this.clearHibernateTimer(guid);
+    this.removeFromWarmLRU(guid);
+    this._syncStatus.delete(guid);
+    this.activeDocs.delete(guid);
+    this._stateMetaCache.delete(guid);
+    this._lcaCache.delete(guid);
+    this._legacyLocalStateVectorCache.delete(guid);
+    this._localSnapshotCache.delete(guid);
+    this._updateWakeQueueMetrics();
+  }
+
+  /**
+   * Terminal edge of HSM destruction: drop the effect subscription. Runs after
+   * awaitCleanupSettled so the cleanup invoke's final PERSIST_STATE is still
+   * forwarded to handleHSMEffect. Re-clears the caches the final persist may
+   * have repopulated; the deletes are idempotent with stopTracking.
+   */
+  private unregisterHSM(guid: string): void {
     if (this.destroyed) return;
     this._hsmUnsubs.get(guid)?.();
     this._hsmUnsubs.delete(guid);
@@ -1336,12 +1374,18 @@ export class MergeManager {
     // Only send RELEASE_LOCK if currently active
     if (this.activeDocs.has(guid)) {
       hsm.send({ type: 'RELEASE_LOCK' });
-      this.activeDocs.delete(guid);
       // Wait for cleanup to complete (IndexedDB writes)
-      await trackPromise(`awaitCleanup:${guid}`, hsm.awaitCleanup());
+      try {
+        await trackPromise(`awaitCleanup:${guid}`, hsm.awaitCleanup());
+      } catch (error) {
+        if (hsm.isDestroyed()) return;
+        throw error;
+      } finally {
+        this.activeDocs.delete(guid);
+      }
     }
 
-    if (this.destroyed) return;
+    if (this.destroyed || hsm.isDestroyed() || doc?.hsm !== hsm) return;
 
     // HSM stays alive in idle.* state
     // Sync status preserved

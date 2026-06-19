@@ -212,6 +212,7 @@ export interface MergeState {
 
 export type StatePath =
 	| "unloaded"
+	| "destroyed"
 	| "loading"
 	| "idle.loading"
 	| "idle.loadingDiskContents"

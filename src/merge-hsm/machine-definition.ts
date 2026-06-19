@@ -66,6 +66,9 @@ export const MACHINE: MachineDefinition = {
 	'unloaded': {
 		on: {
 			LOAD: { target: 'loading', actions: ['initializeFromLoad'] },
+			// Allows destroy() to drive an already-unloaded HSM to the terminal
+			// "destroyed" state via the cleanup invoke.
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
 	},
 
@@ -85,9 +88,35 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'unloading': {
+		on: {
+			REMOTE_DOC_UPDATED: [
+				{ target: 'unloading', guard: 'hasPendingMachineEdits', actions: ['mergeRemoteToLocal', 'repairFrontmatter'] },
+				{ target: 'unloading' },
+			],
+			REMOTE_UPDATE: [
+				{
+					target: 'unloading',
+					guard: 'hasPendingMachineEdits',
+					actions: [
+						'applyRemoteToRemoteDoc',
+						'mergeRemoteToLocal',
+						'repairFrontmatter',
+						'absorbTextPreservingRemoteUpdate',
+					],
+				},
+				{ target: 'unloading' },
+			],
+			PROVIDER_SYNCED: { target: 'unloading', actions: ['markProviderSynced'] },
+			CONNECTED: [
+				{ target: 'unloading', guard: 'hasPendingMachineEdits', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
+				{ target: 'unloading' },
+			],
+			DISCONNECTED: { target: 'unloading', actions: ['setOffline'] },
+		},
 		invoke: {
 			src: 'cleanup',
 			onDone: [
+				{ target: 'destroyed', guard: 'cleanupWasDestroy' },
 				{ target: 'idle.conflict', guard: 'cleanupWasConflict' },
 				{ target: 'idle.loading', guard: 'cleanupWasReleaseLock' },
 				{ target: 'unloaded' },
@@ -98,6 +127,11 @@ export const MACHINE: MachineDefinition = {
 			],
 		},
 	},
+
+	// Terminal state for an explicitly destroyed HSM. Unlike "unloaded" (which
+	// can be reloaded after hibernation), "destroyed" has no transitions: the
+	// HSM is permanently dead and the machine ignores all further events.
+	'destroyed': {},
 
 	// =========================================================================
 	// Idle states

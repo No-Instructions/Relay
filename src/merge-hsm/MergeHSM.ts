@@ -67,6 +67,7 @@ import { DefaultTimeProvider } from "../TimeProvider";
 import { curryLog, recordHSMEntry } from "../debug";
 import { flags } from "../flagManager";
 import { generateHash } from "../hashing";
+import { Lifetime } from "../promiseUtils";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig, validateMachine } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
@@ -167,6 +168,10 @@ class SimpleObservable<T> implements IObservable<T> {
 	get listenerCount(): number {
 		return this.listeners.size;
 	}
+
+	clear(): void {
+		this.listeners.clear();
+	}
 }
 
 // =============================================================================
@@ -176,6 +181,17 @@ class SimpleObservable<T> implements IObservable<T> {
 export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
+
+	// Teardown plumbing. Resource cleanup is driven by the state machine itself
+	// (destroy() routes through UNLOAD -> the cleanup invoke -> the terminal
+	// "destroyed" state). The lifetime captures the intent edge: ending it aborts
+	// in-flight persistence I/O and externally granted waiters (awaitState/
+	// awaitAsync handed to view plugins, BackgroundSync, etc.) that the machine
+	// cannot reach. The terminal edge (statePath === "destroyed") is owned by the
+	// machine and awaited via _destroyPromise.
+	private _lifetime = new Lifetime();
+	private _destroyedReason: Error | null = null;
+	private _destroyPromise: Promise<void> | null = null;
 
 	private _guid: string;
 	private _getPath: () => string;
@@ -334,6 +350,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		captureMark: number;
 		registeredAt: number;
 	}> = [];
+	private _machineEditDrainWaiters: Set<() => void> = new Set();
 	private _suppressLocalObserver = false;
 	private _localDocDispatchOriginView: string | undefined;
 
@@ -735,6 +752,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	send(event: MergeEvent): void {
+		if (this._statePath === "destroyed") return;
+		// During teardown only the machine's own lifecycle events (UNLOAD and
+		// invoke completions) are allowed through; external events are dropped.
+		if (!this._lifetime.active && !this.isTeardownProgressEvent(event)) return;
 		const fromState = this._statePath;
 		const captureEffects = !!this._onTransition;
 		const savedEffects = this._pendingEffects;
@@ -859,7 +880,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			await this.awaitState((statePath) => statePath !== "loading");
 		}
 		if (this.localPersistence && !this.localPersistence.synced) {
-			await this.localPersistence.whenSynced;
+			await this.awaitLocalPersistenceWhenSynced();
 		}
 	}
 
@@ -1289,7 +1310,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const idx = this._pendingMachineEdits.findIndex(
 			e => e.captureMark === entry.captureMark,
 		);
-		if (idx >= 0) this._pendingMachineEdits.splice(idx, 1);
+		if (idx >= 0) {
+			this._pendingMachineEdits.splice(idx, 1);
+			this.notifyMachineEditDrainWaiters();
+		}
 	}
 
 	/** @internal Used by SyncBridge */
@@ -1391,7 +1415,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (this._lca.contents === null && !this.localDoc) {
 			this.ensureLocalDocForIdle();
 			if (this.localPersistence && !this.localPersistence.synced) {
-				await this.localPersistence.whenSynced;
+				await this.awaitLocalPersistenceWhenSynced();
 			}
 			if (!this._statePath.startsWith("idle.") || this._fork || !this._lca) return;
 		}
@@ -1428,7 +1452,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Phase 2: async. Wait for IDB to load so OpCapture is wired to a
 		// populated doc. Then set the real captureMark and localStateVector.
 		if (this.localPersistence && !this.localPersistence.synced) {
-			await this.localPersistence.whenSynced;
+			await this.awaitLocalPersistenceWhenSynced();
 		}
 
 		// Guard: state may have changed during the await
@@ -1454,12 +1478,38 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (predicate(this._statePath)) {
 			return;
 		}
+		// Destroy drives the machine to the terminal "destroyed" state and cancels
+		// these waiters; a predicate not yet satisfied never will be. Reject so
+		// external waiters (view plugins, BackgroundSync) do not hang.
+		if (this.isDestroyed()) {
+			throw this.destroyedReason();
+		}
 
-		return new Promise<void>((resolve) => {
-			const unsubscribe = this.stateChanges.subscribe((state) => {
+		const signal = this._lifetime.signal;
+		return new Promise<void>((resolve, reject) => {
+			let unsubscribe: (() => void) | null = null;
+			let settled = false;
+			const cleanup = () => {
+				unsubscribe?.();
+				unsubscribe = null;
+				signal.removeEventListener("abort", onAbort);
+			};
+			const finish = (fn: () => void) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				fn();
+			};
+			const onAbort = () => {
+				finish(() => reject(this.destroyedReason()));
+			};
+
+			signal.addEventListener("abort", onAbort, { once: true });
+			unsubscribe = this.stateChanges.subscribe((state) => {
 				if (predicate(state.statePath)) {
-					unsubscribe();
-					resolve();
+					finish(resolve);
+				} else if (state.statePath === "destroyed") {
+					finish(() => reject(this.destroyedReason()));
 				}
 			});
 		});
@@ -1610,22 +1660,39 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 	}
 
-	private async awaitLocalPersistenceSynced(): Promise<void> {
+	private async awaitLocalPersistenceSynced(
+		signal?: AbortSignal,
+	): Promise<void> {
 		const persistence = this.localPersistence;
 		if (!persistence || persistence.synced) return;
 
 		await new Promise<void>((resolve, reject) => {
 			let settled = false;
+			const abortSignal = signal ?? this._lifetime.signal;
+			const cleanup = () => {
+				abortSignal.removeEventListener("abort", abort);
+			};
 			const finish = () => {
 				if (settled) return;
 				settled = true;
+				cleanup();
 				resolve();
 			};
 			const fail = (error: unknown) => {
 				if (settled) return;
 				settled = true;
+				cleanup();
 				reject(error);
 			};
+			const abort = () => {
+				fail(this._destroyedReason ?? new Error("operation aborted"));
+			};
+
+			if (abortSignal.aborted) {
+				abort();
+				return;
+			}
+			abortSignal.addEventListener("abort", abort, { once: true });
 
 			try {
 				persistence.once("synced", finish);
@@ -1634,6 +1701,45 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return;
 			}
 			persistence.whenSynced.then(finish, fail);
+		});
+	}
+
+	private async awaitLocalPersistenceWhenSynced(
+		signal?: AbortSignal,
+	): Promise<void> {
+		const persistence = this.localPersistence;
+		if (!persistence || persistence.synced) return;
+		await this.awaitAbortable(persistence.whenSynced, signal ?? this._lifetime.signal);
+	}
+
+	private async awaitAbortable<T>(
+		promise: Promise<T>,
+		signal: AbortSignal,
+	): Promise<T> {
+		if (signal.aborted) {
+			throw this._destroyedReason ?? new Error("operation aborted");
+		}
+
+		return new Promise<T>((resolve, reject) => {
+			let settled = false;
+			const cleanup = () => {
+				signal.removeEventListener("abort", abort);
+			};
+			const finish = (fn: () => void) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				fn();
+			};
+			const abort = () => {
+				finish(() => reject(this._destroyedReason ?? new Error("operation aborted")));
+			};
+
+			signal.addEventListener("abort", abort, { once: true });
+			promise.then(
+				(value) => finish(() => resolve(value)),
+				(error) => finish(() => reject(error)),
+			);
 		});
 	}
 
@@ -1998,6 +2104,107 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 	}
 
+	isDestroyed(): boolean {
+		return !this._lifetime.active;
+	}
+
+	onDestroyed(listener: () => void): () => void {
+		return this._lifetime.onEnded(() => listener());
+	}
+
+	private destroyedReason(): Error {
+		if (!this._destroyedReason) {
+			this._destroyedReason = new Error(`MergeHSM destroyed: ${this._guid}`);
+		}
+		return this._destroyedReason;
+	}
+
+	private isTeardownProgressEvent(event: MergeEvent): boolean {
+		const type = event.type;
+		return (
+			type === "UNLOAD" ||
+			type.startsWith("done.invoke.") ||
+			type.startsWith("error.invoke.")
+		);
+	}
+
+	destroy(): void {
+		if (this.isDestroyed()) return;
+		const reason = this.destroyedReason();
+
+		// Persist best-effort while localDoc is still alive.
+		if (this.localDoc) {
+			try {
+				this.emitPersistState();
+			} catch (error) {
+				this.hsmError(`Error persisting state during destroy: ${error}`);
+			}
+		}
+
+		// Stop any non-cleanup invoke so stale merges stop touching localDoc. A
+		// running cleanup invoke is left alone so the machine can route it onward.
+		for (const [id, op] of Array.from(this._asyncOps.entries())) {
+			if (id === "cleanup") continue;
+			op.controller.abort();
+			this._asyncOps.delete(id);
+		}
+		if (this._activeInvoke && this._activeInvoke.id !== "cleanup") {
+			this._activeInvoke.controller.abort();
+			this._activeInvoke = null;
+		}
+
+		// Resource teardown is owned by the state machine: drive it to the
+		// terminal "destroyed" state, whose cleanup invoke runs destroyLocalDoc.
+		// Assign the promise before ending the lifetime so terminal-edge listeners
+		// (onEnded waiters that await awaitCleanupSettled) observe a real promise.
+		this._destroyPromise = this.driveToDestroyed()
+			.catch((error) => {
+				this.hsmError(`Error during destroy teardown: ${error}`);
+			})
+			.then(() => {
+				this._effects.clear();
+				this._stateChanges.clear();
+				this.stateChangeListeners = [];
+				this._onTransition = undefined;
+				this._pendingEffects = null;
+			});
+
+		// Intent edge: abort in-flight waiters/persistence I/O and notify
+		// onEnded listeners. Done last so driveToDestroyed's synchronous UNLOAD
+		// (a teardown-progress event) is not dropped by the send() gate.
+		this._lifetime.end(reason);
+	}
+
+	private async driveToDestroyed(): Promise<void> {
+		if (this._statePath === "destroyed") return;
+		// A cleanup invoke may already be running (e.g. a release from a prior
+		// RELEASE_LOCK). The machine ignores events while "unloading", so let it
+		// settle first, then issue UNLOAD — the ended lifetime routes the unload
+		// cleanup to the terminal "destroyed" state.
+		if (this._statePath === "unloading") {
+			await this.awaitStatePath((s) => s !== "unloading");
+		}
+		this.send({ type: "UNLOAD" });
+		await this.awaitStatePath((s) => s === "destroyed");
+	}
+
+	// Raw state wait for teardown. Unlike awaitState() it never rejects on
+	// teardown — it resolves only when the predicate holds — because it drives
+	// the machine toward the terminal state instead of awaiting from outside.
+	private awaitStatePath(
+		predicate: (statePath: string) => boolean,
+	): Promise<void> {
+		if (predicate(this._statePath)) return Promise.resolve();
+		return new Promise<void>((resolve) => {
+			const unsubscribe = this.stateChanges.subscribe((state) => {
+				if (predicate(state.statePath)) {
+					unsubscribe();
+					resolve();
+				}
+			});
+		});
+	}
+
 	// ===========================================================================
 	// Declarative Machine: Guards, Actions, Invoke Sources
 	// ===========================================================================
@@ -2083,6 +2290,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			awaitingDiskForLCA: (_hsm, event) => (event as any).data?.awaitingDiskForLCA === true,
 			hasPendingIdleWork: () =>
 				this.pendingIdleUpdates !== null || this.pendingDiskContents !== null,
+			hasPendingMachineEdits: () => this._pendingMachineEdits.length > 0,
 
 			// Fork guard: stay in localAhead when remote updates arrive during fork reconciliation
 			hasFork: () => this._fork !== null,
@@ -2096,6 +2304,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			cleanupWasReleaseLock: (_hsm, event) => {
 				return (event as any).data?.type === 'release';
+			},
+			cleanupWasDestroy: (_hsm, event) => {
+				return (event as any).data?.type === 'destroy';
 			},
 
 			// === Active entering/tracking guards ===
@@ -3072,7 +3283,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			'three-way-merge': async (_hsm, signal) => {
 				this.assertMachineResources("before three-way-merge");
 				if (this.localPersistence && !this.localPersistence.synced) {
-					await this.localPersistence.whenSynced;
+					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) return { success: false };
 				}
 				const localDoc = this.requireLocalDoc("three-way-merge");
@@ -3123,7 +3334,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			'two-way-merge': async (_hsm, signal) => {
 				this.assertMachineResources("before two-way-merge");
 				if (this.localPersistence && !this.localPersistence.synced) {
-					await this.localPersistence.whenSynced;
+					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) return { success: false };
 				}
 				const localDoc = this.requireLocalDoc("two-way-merge");
@@ -3186,7 +3397,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// persistence. Await persistence sync before merging
 				// (e.g. after waking from hibernation).
 				if (this.localPersistence && !this.localPersistence.synced) {
-					await this.localPersistence.whenSynced;
+					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) return { success: false };
 				}
 				this.hydrateLCAContentsFromLocalDoc();
@@ -3209,7 +3420,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			'recover-lca': async (_hsm, signal) => {
 				this.assertMachineResources("before recover-lca");
 				if (this.localPersistence && !this.localPersistence.synced) {
-					await this.localPersistence.whenSynced;
+					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) {
 						return { kind: "declined", reason: "aborted" } satisfies RecoverLCAResult;
 					}
@@ -3219,13 +3430,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			'fork-reconcile': async (_hsm, signal) => {
 				if (this.localPersistence && !this.localPersistence.synced) {
-					await this.localPersistence.whenSynced;
+					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) return { success: false };
 				}
 				this.assertMachineResources("before fork-reconcile");
 				return this.invokeForkReconcile(signal);
 			},
-			'cleanup': async (_hsm, _signal) => {
+			'cleanup': async (_hsm, signal) => {
 				const cleanupType = this._cleanupType;
 				this._cleanupType = null;
 
@@ -3233,6 +3444,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					const wasConflict = this._cleanupWasConflict;
 					this._cleanupWasConflict = false;
 					try {
+						await this.drainPendingMachineEditsForRelease(signal);
 						await this.deactivateEditor();
 					} catch (err) {
 						this.hsmError(`Error during release lock cleanup: ${err}`);
@@ -3245,7 +3457,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				} catch (err) {
 					this.hsmError(`Error during unload cleanup: ${err}`);
 				}
-				return { type: 'unload' };
+				// An ended lifetime routes the unloading state to the terminal
+				// "destroyed" state (cleanupWasDestroy guard) instead of "unloaded".
+				return this._lifetime.active
+					? { type: 'unload' }
+					: { type: 'destroy' };
 			},
 		};
 	}
@@ -3620,20 +3836,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// expectedText matches the current LCA, the remote CRDT is
 			// delivering the same edit we already have — skip to prevent
 			// CRDT duplication.
-			if (this._lca) {
-				const now = this.timeProvider.now();
-				const machineIdx = this._pendingMachineEdits.findIndex(entry =>
-					now - entry.registeredAt <= MergeHSM.MACHINE_EDIT_TTL &&
-					entry.expectedText === this._lca!.contents
-				);
-				if (machineIdx >= 0) {
-					this._pendingMachineEdits.splice(machineIdx, 1);
-					this.hsmWarn(
-						`idle-merge: skipped duplicate machine edit | guid=${this._guid}`
+				if (this._lca) {
+					const machineIdx = this._pendingMachineEdits.findIndex(entry =>
+						entry.expectedText === this._lca!.contents
 					);
-					return { success: true, newLCA: this._lca, noop: true };
+					if (machineIdx >= 0) {
+						this._pendingMachineEdits.splice(machineIdx, 1);
+						this.hsmWarn(
+							`idle-merge: skipped duplicate machine edit | guid=${this._guid}`
+						);
+						return { success: true, newLCA: this._lca, noop: true };
+					}
 				}
-			}
 
 			const hash = await this.hashFn(mergedContent);
 			if (signal.aborted) return { success: false };
@@ -4910,6 +5124,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	async awaitAsync(id: string): Promise<void> {
+		// Externally awaited (awaitIdleAutoMerge/awaitForkReconcile/awaitCleanup):
+		// reject on teardown so callers do not hang if an invoke ignores its
+		// abort signal and never settles.
+		await this._lifetime.guard(() => this.awaitAsyncOperation(id));
+	}
+
+	async awaitCleanupSettled(): Promise<void> {
+		// Wait for any in-flight cleanup invoke, then for the machine-driven
+		// destroy teardown to reach the terminal "destroyed" state.
+		await this.awaitAsyncOperation("cleanup");
+		if (this._destroyPromise) await this._destroyPromise;
+	}
+
+	private async awaitAsyncOperation(id: string): Promise<void> {
 		for (;;) {
 			let op = this._asyncOps.get(id);
 			if (!op) {
@@ -4963,6 +5191,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			statePath === "unloading" ||
 			statePath === "loading" ||
 			statePath === "unloaded" ||
+			statePath === "destroyed" ||
 			statePath.startsWith("active.entering") ||
 			statePath === "active.loading" ||
 			statePath === "idle.loading"
@@ -4984,9 +5213,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * fn(remoteText) === remoteText means the remote already has this transform.
 	 */
 	private _matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
-		const now = this.timeProvider.now();
 		for (const entry of this._pendingMachineEdits) {
-			if (now - entry.registeredAt > MergeHSM.MACHINE_EDIT_TTL) continue;
 			if (remoteText === entry.expectedText) {
 				return entry;
 			}
@@ -4999,6 +5226,61 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			}
 		}
 		return null;
+	}
+
+	private notifyMachineEditDrainWaiters(): void {
+		const waiters = Array.from(this._machineEditDrainWaiters);
+		this._machineEditDrainWaiters.clear();
+		for (const resolve of waiters) {
+			resolve();
+		}
+	}
+
+	private async waitForMachineEditDrainOrTimeout(ms: number, signal: AbortSignal): Promise<void> {
+		if (signal.aborted) return;
+		await new Promise<void>((resolve) => {
+			let timer: number | null = null;
+			let settled = false;
+			const finish = () => {
+				if (settled) return;
+				settled = true;
+				if (timer !== null) {
+					this.timeProvider.clearTimeout(timer);
+				}
+				signal.removeEventListener("abort", finish);
+				this._machineEditDrainWaiters.delete(finish);
+				resolve();
+			};
+
+			this._machineEditDrainWaiters.add(finish);
+			signal.addEventListener("abort", finish, { once: true });
+			timer = this.timeProvider.setTimeout(finish, Math.max(0, ms));
+			if (signal.aborted) finish();
+		});
+	}
+
+	private nextMachineEditExpiryDelay(): number {
+		const now = this.timeProvider.now();
+		let nextExpiry = Infinity;
+		for (const entry of this._pendingMachineEdits) {
+			nextExpiry = Math.min(
+				nextExpiry,
+				entry.registeredAt + MergeHSM.MACHINE_EDIT_TTL + 100,
+			);
+		}
+		return Number.isFinite(nextExpiry) ? Math.max(0, nextExpiry - now) : 0;
+	}
+
+	private async drainPendingMachineEditsForRelease(signal: AbortSignal): Promise<void> {
+		while (!signal.aborted && this._pendingMachineEdits.length > 0) {
+			this.expireMachineEdits();
+			if (this._pendingMachineEdits.length === 0) return;
+			this._bridge.flushPendingMachineEditOutbound();
+			await this.waitForMachineEditDrainOrTimeout(
+				this.nextMachineEditExpiryDelay(),
+				signal,
+			);
+		}
 	}
 
 	/**
@@ -5026,6 +5308,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		if (anyExpired) {
 			this._bridge.flushOutbound();
+			this.notifyMachineEditDrainWaiters();
 		}
 	}
 
@@ -5047,6 +5330,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 		this._pendingMachineEdits.length = 0;
 		this._bridge.flushOutbound();
+		this.notifyMachineEditDrainWaiters();
 	}
 
 	// ===========================================================================
