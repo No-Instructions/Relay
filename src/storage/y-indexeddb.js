@@ -728,6 +728,7 @@ export class IndexeddbPersistence extends Observable {
         const req = indexedDB.open(oldName)
         req.onblocked = () => {
           idbWarn(`migration open blocked for ${oldName}`)
+          done()
         }
         req.onerror = () => done()
         req.onupgradeneeded = () => {
@@ -742,11 +743,17 @@ export class IndexeddbPersistence extends Observable {
             // independently; the deleteDatabase attempt races harmlessly.
             oldDb.close()
             const delReq = indexedDB.deleteDatabase(oldName)
-            const finish = () => { markMigrated().finally(done) }
+            let deleteFinished = false
+            const finish = () => {
+              if (deleteFinished) return
+              deleteFinished = true
+              markMigrated().finally(done)
+            }
             delReq.onsuccess = finish
             delReq.onerror = finish
             delReq.onblocked = () => {
               idbWarn(`deleteDatabase blocked for ${oldName}`)
+              finish()
             }
             return
           }
