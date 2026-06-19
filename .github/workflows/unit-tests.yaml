@@ -2,9 +2,9 @@ name: Unit Tests
 
 on:
   push:
-    branches: [main, merge-hsm]
+    branches: [main]
     tags:
-      - '0.8.0-rc*'
+      - '*.*.*'
   workflow_dispatch:
     inputs:
       ref:

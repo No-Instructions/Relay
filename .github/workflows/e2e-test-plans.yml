@@ -1,6 +1,10 @@
-name: E2E standard suite
+name: E2E scripted test plans
 
 on:
+  push:
+    branches: [main]
+    tags:
+      - '*.*.*'
   workflow_dispatch:
     inputs:
       ref:
@@ -8,12 +12,12 @@ on:
         required: true
         default: 'origin/main'
       tests:
-        description: 'Optional comma-separated Level 2 strands to run (e.g. test-basic-open-close,test-share-folder)'
+        description: 'Optional comma-separated scripted test ids (e.g. tp000,tp006,tp031)'
         required: false
         default: ''
 
 concurrency:
-  group: e2e-standard-linux
+  group: e2e-test-plans-linux
   cancel-in-progress: false
 
 env:
@@ -22,38 +26,20 @@ env:
   GCP_USE_IAP: "true"
 
 jobs:
-  standard-test:
-    name: ${{ format('standard-test ({0})', matrix.shard.name) }}
+  scripted-test:
+    name: ${{ format('scripted-test ({0})', matrix.shard.name) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 7
+      max-parallel: 1
       matrix:
         shard:
-          - name: foundation-core
-            slug: foundation-core
-            tests: test-basic-open-close,test-folder-lifecycle,test-view-reuse-file-switching
-          - name: foundation-share
-            slug: foundation-share
-            tests: test-share-folder,test-in-note-status
-          - name: sync-state
-            slug: sync-state
-            tests: test-idle-registration,test-active-editor-sync,test-offline-banner,test-binary-free-user
-          - name: conflicts-differ
-            slug: conflicts-differ
-            tests: test-differ-resolve,test-trigger-differ,test-differ-dismissal
-          - name: conflicts-resolution
-            slug: conflicts-resolution
-            tests: test-conflict-dismiss,test-conflict-cancel,test-upgrade-no-lca-conflict
-          - name: bulk-upload
-            slug: bulk
-            tests: test-bulk-upload
-          - name: restart-heavy
-            slug: restart
-            tests: test-bases-checkbox-sync,test-obsidian-restart,test-cold-reopen-external-edit
+          - name: scripted-all
+            slug: all
+            tests: tp000,tp001,tp002,tp003,tp004,tp006,tp007,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp030,tp031,tp032,tp033,tp034
     env:
-      VM_NAME: ${{ format('{0}-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
+      VM_NAME: ${{ format('{0}-tp-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
       SHARD_NAME: ${{ matrix.shard.name }}
       SHARD_SLUG: ${{ matrix.shard.slug }}
       SHARD_TESTS: ${{ matrix.shard.tests }}
@@ -172,9 +158,7 @@ jobs:
             exit 1
           fi
 
-          # Pre-generate SSH key quietly (gcloud's ssh-keygen leaks to stdout)
           ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
-          # Set connect timeout so SSH attempts fail fast instead of hanging
           echo -e "\nHost *\n  ConnectTimeout 10" >> ~/.ssh/config
 
           echo "Waiting for SSH readiness..."
@@ -245,22 +229,20 @@ jobs:
           scp_retry /tmp/deploy-key ~/ci-deploy-key "deploy key"
           rm -f /tmp/deploy-key
 
-          # GitHub App private key for posting Check Runs
-          echo '${{ secrets.E2E_APP_KEY }}' > /tmp/github-app-key.pem
-          chmod 600 /tmp/github-app-key.pem
           ssh_retry "relay-e2e config dir creation" "mkdir -p ~/.config/relay-e2e"
-          scp_retry /tmp/github-app-key.pem ~/.config/relay-e2e/github-app-key.pem "GitHub App key"
-          rm -f /tmp/github-app-key.pem
 
-          # R2 credentials for ci.system3.dev uploads
+          echo '${{ secrets.CI_R2_ENDPOINT }}' > /tmp/r2-endpoint
+          echo '${{ secrets.CI_R2_ACCESS_KEY_ID }}' > /tmp/r2-access-key
+          echo '${{ secrets.CI_R2_SECRET_ACCESS_KEY }}' > /tmp/r2-secret-key
           ssh_retry "R2 env write" "cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
-          export CI_R2_ENDPOINT='${{ secrets.CI_R2_ENDPOINT }}'
-          export CI_R2_ACCESS_KEY_ID='${{ secrets.CI_R2_ACCESS_KEY_ID }}'
-          export CI_R2_SECRET_ACCESS_KEY='${{ secrets.CI_R2_SECRET_ACCESS_KEY }}'
+          export CI_R2_ENDPOINT='$(cat /tmp/r2-endpoint)'
+          export CI_R2_ACCESS_KEY_ID='$(cat /tmp/r2-access-key)'
+          export CI_R2_SECRET_ACCESS_KEY='$(cat /tmp/r2-secret-key)'
           CREDS
           chmod 600 ~/.config/relay-e2e/r2-env.sh"
+          rm -f /tmp/r2-endpoint /tmp/r2-access-key /tmp/r2-secret-key
 
-      - name: Run standard suite on VM
+      - name: Run scripted test plans on VM
         if: steps.select-tests.outputs.should_run == 'true'
         run: |
           INPUT_REF="${{ github.event.inputs.ref || '' }}"
@@ -287,10 +269,8 @@ jobs:
           SELECTED_TESTS="$2"
           SHARD_SLUG="$3"
 
-          # Load R2 credentials
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
-          # Ensure Obsidian AppImage is installed
           export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
           if [ ! -f "$OBSIDIAN_PATH" ]; then
             echo "Installing Obsidian AppImage..."
@@ -302,20 +282,16 @@ jobs:
             echo "Installed Obsidian $OBSIDIAN_VERSION"
           fi
 
-          # Start virtual display for headless Obsidian
           export DISPLAY=:99
           Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
           XVFB_PID=$!
           sleep 1
 
-          # Clean stale test reports from previous runs
           rm -rf /tmp/test-reports
           rm -f ~/test-summary.json ~/test-metadata.json
 
-          # Activate GCP service account for gcloud/GCS uploads
           gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
 
-          # Set up SSH for private repo access
           mkdir -p ~/.ssh
           cp ~/ci-deploy-key ~/.ssh/ci-deploy-key
           chmod 600 ~/.ssh/ci-deploy-key
@@ -327,7 +303,6 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ci-deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
 
-          # Clone or update relay-plugin (public)
           if [ ! -d ~/relay-plugin ]; then
             git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
           fi
@@ -337,13 +312,11 @@ jobs:
             '+refs/tags/*:refs/tags/*'
           git checkout -- .
           git clean -fd
-          # Detached HEAD checkout — works for origin/branch, tags, and SHAs
           git checkout --detach "$REF"
           echo "Relay product checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
           echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
 
-          # Clone or update relay-harness (private)
           if [ ! -d ~/relay-harness ]; then
             git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
           fi
@@ -353,40 +326,106 @@ jobs:
           git clean -fd
           git checkout --detach origin/main
 
-          # Clear stale repo-local test instances left by canceled or crashed runs
-          echo "Clearing stale repo-local slots..."
-          ./scripts/stop-obsidian.sh >/dev/null 2>&1 || true
+          # Pull the prebuilt obsidian-metrics plugin from its GitHub release
+          # (pinned tag) instead of cloning and building it from source.
+          echo ">>> obsidian-metrics: reached download step (relay-harness ok)"
+          mkdir -p ~/system3/obsidian-metrics/dist/obsidian-metrics
+          OBSIDIAN_METRICS_TAG=v1.0.0
+          for f in main.js manifest.json styles.css; do
+            url="https://github.com/No-Instructions/obsidian-metrics/releases/download/${OBSIDIAN_METRICS_TAG}/$f"
+            echo ">>> fetching obsidian-metrics $f"
+            wget -q -O ~/system3/obsidian-metrics/dist/obsidian-metrics/"$f" "$url" \
+              || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
+          done
+          echo ">>> obsidian-metrics download done"
 
-          # Install playwright test dependencies
-          cd ~/relay-harness/playwright && npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+          # Install uv (no apt/sudo) and the test-harness Python deps into a
+          # venv, then export the interpreter so run-test-plan-suite.sh runs
+          # against that Python.
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v uv >/dev/null 2>&1; then
+            echo ">>> installing uv"
+            wget -qO- https://astral.sh/uv/install.sh | sh \
+              || { echo ">>> UV INSTALL FAILED (exit $?)"; exit 1; }
+          fi
+          echo ">>> uv: $(uv --version 2>&1)"
+          uv venv --clear ~/.harness-venv \
+            || { echo ">>> UV VENV FAILED (exit $?)"; exit 1; }
+          export RELAY_TEST_PLAN_PYTHON="$HOME/.harness-venv/bin/python"
+          uv pip install --python "$RELAY_TEST_PLAN_PYTHON" \
+            click websockets tree-sitter tree-sitter-javascript matplotlib \
+            || { echo ">>> UV DEPS INSTALL FAILED (exit $?)"; exit 1; }
+          "$RELAY_TEST_PLAN_PYTHON" -c "import click, websockets, tree_sitter, tree_sitter_javascript, matplotlib" \
+            || { echo ">>> PYTHON IMPORT FAILED (exit $?)"; exit 1; }
+          echo ">>> python deps ok; playwright npm install"
+          cd ~/relay-harness/playwright && npm install --ignore-scripts --no-audit --no-fund --loglevel=error \
+            || { echo ">>> PLAYWRIGHT NPM FAILED (exit $?)"; exit 1; }
+          echo ">>> playwright ok"
 
-          # Run tests using the harness standard-suite orchestrator
           export RELAY_PLUGIN_DIR=~/relay-plugin
+          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
           cd ~/relay-harness
 
           TEST_EXIT=0
-          TEST_CMD=(./scripts/run-e2e-suite.sh "$REF" --upload)
-          TEST_CMD+=("--tests=$SELECTED_TESTS")
-          RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" "${TEST_CMD[@]}" || TEST_EXIT=$?
+          TEST_LOG="$HOME/test-plan-suite-output.txt"
+          RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" \
+            bash ./scripts/run-test-plan-suite.sh "$REF" --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
+          echo "Scripted test-plan runner exited with status $TEST_EXIT"
 
-          # Extract results for the GitHub Actions runner
           LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
             | xargs -0 ls -t 2>/dev/null \
             | head -1)
           if [ -n "$LATEST_SUMMARY" ]; then
             LATEST="$(dirname "$LATEST_SUMMARY")"
-            cp "$LATEST_SUMMARY" ~/test-summary.json
 
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
             REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
             echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
+
+            node - "$LATEST_SUMMARY" > ~/test-summary.json <<'NODE'
+          const fs = require('fs');
+          const [summaryPath] = process.argv.slice(2);
+          const raw = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+
+          const planIdFor = test => {
+            const source = `${test?.dir || ''} ${test?.name || ''}`.toLowerCase();
+            const match = source.match(/\btp[-_ ]?(\d{3})\b/);
+            return match ? `tp${match[1]}` : 'tp???';
+          };
+
+          const tests = (raw.tests || []).map(test => ({
+            name: planIdFor(test),
+            dir: planIdFor(test),
+            status: test.status || (test.passed ? 'pass' : 'fail'),
+            passed: test.passed === true || test.status === 'pass',
+          }));
+
+          const counts = tests.reduce((acc, test) => {
+            acc[test.status] = (acc[test.status] || 0) + 1;
+            return acc;
+          }, {});
+          const rawSummary = raw.summary || {};
+          const summary = {
+            total: rawSummary.total ?? tests.length,
+            pass: rawSummary.pass ?? counts.pass ?? 0,
+            fail: rawSummary.fail ?? counts.fail ?? 0,
+            expectedFail: rawSummary.expectedFail ?? counts.expected_fail ?? 0,
+            unexpectedPass: rawSummary.unexpectedPass ?? counts.unexpected_pass ?? 0,
+            duration: rawSummary.duration ?? 0,
+          };
+
+          process.stdout.write(JSON.stringify({
+            state: raw.state || (summary.fail > 0 ? 'failure' : 'success'),
+            summary,
+            tests,
+          }, null, 2));
+          NODE
           else
             echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
             echo '{"reportUrl":"","commit":"","execId":""}' > ~/test-metadata.json
           fi
 
-          # Clean up virtual display
           kill $XVFB_PID 2>/dev/null || true
 
           exit $TEST_EXIT
@@ -398,7 +437,7 @@ jobs:
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/github-app-key.pem ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
+            --command="rm -f ~/ci-sa-key.json ~/ci-deploy-key ~/.ssh/ci-deploy-key ~/.config/relay-e2e/r2-env.sh" 2>/dev/null || true
 
       - name: Fetch results
         if: always() && steps.select-tests.outputs.should_run == 'true'
@@ -415,7 +454,7 @@ jobs:
         if: always() && steps.select-tests.outputs.should_run == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: standard-${{ matrix.shard.slug }}-metadata
+          name: testplans-${{ matrix.shard.slug }}-metadata
           path: |
             summary.json
             metadata.json
@@ -447,7 +486,7 @@ jobs:
             const shouldRun = process.env.RUN_SHARD === 'true';
 
             if (!shouldRun) {
-              core.summary.addRaw(`## E2E standard suite results (${shardName})\n\n:warning: **SKIPPED** | no matching tests for this shard\n`);
+              core.summary.addRaw(`## E2E scripted test plans (${shardName})\n\n:warning: **SKIPPED** | no matching tests for this shard\n`);
               await core.summary.write();
               return;
             }
@@ -456,7 +495,7 @@ jobs:
             try {
               summary = JSON.parse(fs.readFileSync('summary.json', 'utf-8'));
             } catch {
-              core.summary.addRaw(`## E2E standard suite results (${shardName})\n\n:x: **Failed to retrieve test results from VM**\n`);
+              core.summary.addRaw(`## E2E scripted test plans (${shardName})\n\n:x: **Failed to retrieve test results from VM**\n`);
               await core.summary.write();
               core.setFailed('No test results available');
               return;
@@ -469,9 +508,6 @@ jobs:
 
             const s = summary.summary || {};
             const tests = summary.tests || [];
-            const reportBase = (metadata.reportUrl || '').replace(/\/index\.html$/, '');
-
-            // Status emoji map
             const statusEmoji = {
               pass: ':white_check_mark:',
               fail: ':x:',
@@ -479,7 +515,6 @@ jobs:
               unexpected_pass: ':sparkles:',
             };
 
-            // Verdict
             const totalDur = Math.round((s.duration || 0) / 1000);
             const verdictEmoji = (s.fail || 0) > 0 ? ':x:' : ':white_check_mark:';
             const verdictText = (s.fail || 0) > 0 ? 'FAIL' : 'PASS';
@@ -489,37 +524,29 @@ jobs:
             if (s.expectedFail) parts.push(`${s.expectedFail} expected-fail`);
             if (s.unexpectedPass) parts.push(`${s.unexpectedPass} unexpected-pass`);
 
-            let md = `## E2E standard suite results (${shardName})\n\n`;
+            let md = `## E2E scripted test plans (${shardName})\n\n`;
             md += `${verdictEmoji} **${verdictText}** | ${parts.join(', ')} | ${totalDur}s`;
             if (metadata.reportUrl) {
-              md += ` | [Full Report](${metadata.reportUrl})`;
+              md += ` | [Private Report](${metadata.reportUrl})`;
             }
             md += `\n\n`;
 
-            // Test table
-            md += `| Test | Status | Assertions | Duration |\n`;
-            md += `|------|--------|------------|----------|\n`;
+            const planIdFor = test => {
+              const source = `${test?.dir || ''} ${test?.name || ''}`.toLowerCase();
+              const match = source.match(/\btp[-_ ]?(\d{3})\b/);
+              return match ? `tp${match[1]}` : 'tp???';
+            };
+
+            md += `| Test | Status |\n`;
+            md += `|------|--------|\n`;
             for (const t of tests) {
               const emoji = statusEmoji[t.status] || ':grey_question:';
-              const dur = `${(t.duration / 1000).toFixed(1)}s`;
-              const assertions = `${t.passedAssertions ?? '?'}/${t.assertions ?? '?'}`;
-              const testUrl = reportBase ? `${reportBase}/${t.dir}/index.html` : '';
-              const name = testUrl ? `[${t.name}](${testUrl})` : t.name;
-
-              let row = `| ${name} | ${emoji} ${t.status} | ${assertions} | ${dur} |`;
-              md += row + '\n';
-
-              // Add error detail for failures
-              if (t.status === 'fail' && t.firstError) {
-                const errText = t.firstError.split('\n')[0].substring(0, 120);
-                md += `| | | \`${errText}\` | |\n`;
-              }
+              md += `| ${planIdFor(t)} | ${emoji} ${t.status} |\n`;
             }
 
             core.summary.addRaw(md);
             await core.summary.write();
 
-            // Set job status
             if ((s.total || 0) === 0 || summary.state === 'error') {
               core.setFailed('No tests were executed');
             } else if ((s.fail || 0) > 0) {
@@ -527,130 +554,3 @@ jobs:
             }
         env:
           RUN_SHARD: ${{ steps.select-tests.outputs.should_run }}
-
-  publish-report-site:
-    name: publish report site
-    runs-on: ubuntu-latest
-    needs: standard-test
-    if: always()
-    steps:
-      - name: Clone relay-harness
-        run: |
-          mkdir -p ~/.ssh
-          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > ~/.ssh/harness-key
-          chmod 600 ~/.ssh/harness-key
-          cat > ~/.ssh/known_hosts << 'EOF'
-          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
-          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
-          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
-          EOF
-          chmod 600 ~/.ssh/known_hosts
-          cat > ~/.ssh/config << 'EOF'
-          Host github.com
-            IdentityFile ~/.ssh/harness-key
-            IdentitiesOnly yes
-            StrictHostKeyChecking yes
-            UserKnownHostsFile ~/.ssh/known_hosts
-          EOF
-
-          git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
-
-      - name: Download shard metadata
-        uses: actions/download-artifact@v4
-        with:
-          pattern: standard-*-metadata
-          path: shard-metadata
-
-      - name: Resolve tested commit
-        id: resolve-commit
-        run: |
-          set -euo pipefail
-
-          COMMIT="$(node <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-
-          function walk(dir) {
-            if (!fs.existsSync(dir)) return [];
-            const out = [];
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-              const full = path.join(dir, entry.name);
-              if (entry.isDirectory()) out.push(...walk(full));
-              else if (entry.name === 'metadata.json') out.push(full);
-            }
-            return out;
-          }
-
-          for (const file of walk('shard-metadata')) {
-            try {
-              const metadata = JSON.parse(fs.readFileSync(file, 'utf8'));
-              if (metadata.commit) {
-                console.log(metadata.commit);
-                process.exit(0);
-              }
-            } catch {
-              // Try the next shard metadata file.
-            }
-          }
-          NODE
-          )"
-
-          if [ -z "$COMMIT" ]; then
-            INPUT_REF="${{ github.event.inputs.ref || '' }}"
-            REF_TYPE="${{ github.ref_type }}"
-            REF_NAME="${{ github.ref_name }}"
-
-            if [ -n "$INPUT_REF" ]; then
-              REF="$INPUT_REF"
-            elif [ "$REF_TYPE" = "tag" ]; then
-              REF="refs/tags/$REF_NAME"
-            else
-              REF="origin/$REF_NAME"
-            fi
-
-            git init /tmp/relay-ref >/dev/null
-            git -C /tmp/relay-ref remote add origin https://github.com/No-Instructions/Relay.git
-            git -C /tmp/relay-ref fetch origin --force --prune \
-              '+refs/heads/*:refs/remotes/origin/*' \
-              '+refs/tags/*:refs/tags/*'
-            COMMIT="$(git -C /tmp/relay-ref rev-parse "$REF^{commit}")"
-          fi
-
-          COMMIT_SHORT="$(printf '%s' "$COMMIT" | cut -c1-7)"
-          echo "commit=$COMMIT_SHORT" >> "$GITHUB_OUTPUT"
-          echo "Resolved report-site commit: $COMMIT_SHORT"
-
-      - name: Install report-site dependencies
-        run: npm ci --prefix ~/relay-harness/report-site --no-audit --no-fund --loglevel=error
-
-      - name: Publish report site
-        env:
-          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
-          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
-          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
-          CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID: ${{ secrets.CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID }}
-          CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET: ${{ secrets.CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET }}
-          TARGET_COMMIT: ${{ steps.resolve-commit.outputs.commit }}
-        run: |
-          set -euo pipefail
-          cd ~/relay-harness
-
-          if [ -z "$TARGET_COMMIT" ]; then
-            echo "No target commit resolved for report-site publish"
-            exit 1
-          fi
-
-          READBACK_ARGS=()
-          if [ -n "${CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CI_SYSTEM3_DEV_CF_ACCESS_CLIENT_SECRET:-}" ]; then
-            READBACK_ARGS=(--live-readback --live-readback-base-url=https://ci.system3.dev)
-          else
-            echo "Cloudflare Access readback credentials not configured; skipping live readback"
-          fi
-
-          node scripts/publish-report-site-static.mjs \
-            --commit="$TARGET_COMMIT" \
-            --refresh-commit="$TARGET_COMMIT" \
-            --materialize-missing-commits \
-            --rebuild-manifest-from-commits \
-            --upload \
-            "${READBACK_ARGS[@]}"
