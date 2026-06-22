@@ -1752,11 +1752,6 @@ export default class Live extends Plugin {
 			this.destroyMetadataHealthFeature();
 		});
 
-		teardownStep("timeProvider.destroy", () => {
-			this.timeProvider?.destroy();
-		});
-		this.timeProvider = null as any;
-
 		teardownStep("folderNavDecorations.destroy", () => {
 			this.folderNavDecorations?.destroy();
 		});
@@ -1915,6 +1910,10 @@ export default class Live extends Plugin {
 		teardownStep("flushLogs", () => {
 			flushLogs();
 		});
+		teardownStep("timeProvider.destroy", () => {
+			this.timeProvider?.destroy();
+		});
+		this.timeProvider = null as any;
 		this.promises = null as any;
 
 		// Clear our instance ID from the leak-detection set LAST — if

@@ -20,11 +20,12 @@ export class DefaultTimeProvider implements TimeProvider {
 
 	clearInterval(timerId: number): void {
 		window.clearInterval(timerId);
+		this.intervals = this.intervals.filter((interval) => interval !== timerId);
 	}
 
 	setTimeout(callback: () => void, ms: number): number {
 		const timer = window.setTimeout(() => {
-			this.timeouts.remove(timer);
+			this.timeouts = this.timeouts.filter((timeout) => timeout !== timer);
 			callback();
 		}, ms);
 		this.timeouts.push(timer);
@@ -33,14 +34,15 @@ export class DefaultTimeProvider implements TimeProvider {
 
 	clearTimeout(timerId: number): void {
 		window.clearTimeout(timerId);
+		this.timeouts = this.timeouts.filter((timeout) => timeout !== timerId);
 	}
 
 	destroy(): void {
-		for (const timer of this.timeouts) {
+		for (const timer of [...this.timeouts]) {
 			this.clearTimeout(timer);
 		}
 		this.timeouts = [];
-		for (const interval of this.intervals) {
+		for (const interval of [...this.intervals]) {
 			this.clearInterval(interval);
 		}
 		this.intervals = [];

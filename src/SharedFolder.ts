@@ -8,6 +8,7 @@ import {
 	TFolder,
 	Vault,
 	debounce,
+	type Debouncer,
 	getFrontMatterInfo,
 	normalizePath,
 	parseYaml,
@@ -138,11 +139,17 @@ type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
-	notifyListeners = debounce(super.notifyListeners, 100);
+	notifyListeners = debounce(() => super.notifyListeners(), 100);
 
 	update() {
 		this.notifyListeners();
 		return;
+	}
+
+	destroy(): void {
+		this.notifyListeners.cancel();
+		this._set.clear();
+		super.destroy();
 	}
 
 	add(item: IFile, update = true): ObservableSet<IFile> {
@@ -2973,7 +2980,7 @@ export class SharedFolder extends HasProvider {
 			trackAsyncCleanup(p);
 		}
 		super.destroy();
-		this.fset.clear();
+		this.fset.destroy();
 		this._settings.destroy();
 		this._settings = null as any;
 		this.revokeProxy?.();
@@ -2988,6 +2995,7 @@ export class SharedFolder extends HasProvider {
 		this.syncStore = null as any;
 		this.syncSettingsManager = null as any;
 		this.mergeManager = null as any;
+		this.fset = null as any;
 
 	}
 }
@@ -3058,7 +3066,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		return deleted;
 	}
 
-	update = debounce(this.notifyListeners, 100);
+	update: Debouncer<[], void> = debounce(() => this.notifyListeners(), 100);
 
 	public get manager(): RelayManager {
 		return this.relayManager;
@@ -3076,16 +3084,20 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	}
 
 	destroy() {
+		this.update.cancel();
 		this.items().forEach((folder) => {
 			folder.destroy();
 		});
-		this.clear();
+		this._set.clear();
 		if (this._offRemoteUpdates) {
 			this._offRemoteUpdates();
+			this._offRemoteUpdates = undefined;
 		}
 		super.destroy();
 		this.relayManager = null as any;
 		this.folderBuilder = null as any;
+		this.settings = null as any;
+		this._hsmStore = null as any;
 	}
 
 	load() {
