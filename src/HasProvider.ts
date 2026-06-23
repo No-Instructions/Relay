@@ -199,6 +199,7 @@ export class HasProvider extends HasLogging {
 	 * The document can be re-created later via ensureRemoteDoc().
 	 */
 	destroyRemoteDoc(): void {
+		this.clearDeferredDisconnect();
 		this.abortProviderSyncWaiters(
 			new Error("Provider was destroyed before sync completed"),
 		);
