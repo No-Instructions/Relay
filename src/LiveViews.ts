@@ -1097,9 +1097,9 @@ export class LiveViewManager {
 		if (!sharedFolder) return false;
 		const fullPath = sharedFolder.getPath(document.path);
 		let open = false;
-		this.workspace.iterateAllLeaves((leaf) => {
+		iterateTextFileViews(this.workspace, (view) => {
 			if (open) return;
-			if ((leaf.view as any)?.file?.path === fullPath) {
+			if (view.file?.path === fullPath) {
 				open = true;
 			}
 		});
