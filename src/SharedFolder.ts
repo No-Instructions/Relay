@@ -3056,8 +3056,12 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		}
 		item?.destroy();
 		const deleted = super.delete(item);
-		this.settings.update((current) => {
+		void this.settings.update((current) => {
 			return current.filter((settings) => settings.guid !== item.guid);
+		}).catch((error) => {
+			if (this.destroyed) return;
+			const message = error instanceof Error ? error.message : String(error);
+			this.warn(`Failed to persist shared folder removal for ${item.path}: ${message}`);
 		});
 		// Delete IDB databases after in-memory objects are destroyed
 		for (const name of dbNames) {

@@ -1072,7 +1072,7 @@ export default class Live extends Plugin {
 		if (relayId) {
 			settings["relay"] = relayId;
 		}
-		folderSettings.update((current) => {
+		void folderSettings.update((current) => {
 			return {
 				...current,
 				path,
@@ -1082,7 +1082,11 @@ export default class Live extends Plugin {
 					sync: current.sync ? current.sync : SyncSettingsManager.defaultFlags,
 				},
 			};
-		}, true);
+		}, true).catch((error) => {
+			if (this._unloading) return;
+			const message = error instanceof Error ? error.message : String(error);
+			this.warn(`Failed to persist shared folder settings for ${path}: ${message}`);
+		});
 
 		const folder = new SharedFolder(
 			this.appId,
