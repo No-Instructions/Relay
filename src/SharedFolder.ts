@@ -1502,13 +1502,13 @@ export class SharedFolder extends HasProvider {
 	}): Promise<void> {
 		const sameGuid = fromGuid === toGuid;
 		const operation = sameGuid ? "rebuild" : "remap";
-		metrics.incDocumentRebuild(operation, "started");
+		metrics.incDocumentRebuild(this.guid, operation, "started");
 		let operationTerminalRecorded = false;
 		const recordOperationTerminal = (
 			result: "completed" | "deferred" | "failed",
 		) => {
 			if (operationTerminalRecorded) return;
-			metrics.incDocumentRebuild(operation, result);
+			metrics.incDocumentRebuild(this.guid, operation, result);
 			operationTerminalRecorded = true;
 		};
 		if (!this.connected) {

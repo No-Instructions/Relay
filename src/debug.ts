@@ -544,10 +544,11 @@ class RelayMetrics {
 			help: "Total background sync operations by result",
 			labelNames: ["operation", "result"],
 		});
+		api.clearMetric("relay_document_rebuilds_total");
 		this.documentRebuildsTotal = api.createCounter({
 			name: "relay_document_rebuilds_total",
 			help: "Total document rebuild and GUID remap operations by result",
-			labelNames: ["operation", "result"],
+			labelNames: ["folder", "operation", "result"],
 		});
 
 		// Document sync
@@ -631,10 +632,11 @@ class RelayMetrics {
 	}
 
 	incDocumentRebuild(
+		folderGuid: string,
 		operation: "rebuild" | "remap",
 		result: "started" | "completed" | "deferred" | "failed",
 	): void {
-		this.documentRebuildsTotal?.labels({ operation, result }).inc();
+		this.documentRebuildsTotal?.labels({ folder: folderGuid, operation, result }).inc();
 	}
 
 	recordDocumentUpdateEvent(stage: "received" | "applied" | "catchup", folderGuid: string): void {
