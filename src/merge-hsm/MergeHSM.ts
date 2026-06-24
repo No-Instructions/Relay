@@ -1331,6 +1331,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._suppressLocalObserver = value;
 	}
 
+	private withLocalObserverSuppressed<T>(fn: () => T): T {
+		const wasSuppressed = this._suppressLocalObserver;
+		this._suppressLocalObserver = true;
+		try {
+			return fn();
+		} finally {
+			this._suppressLocalObserver = wasSuppressed;
+		}
+	}
+
 	/**
 	 * Wait for any in-progress cleanup to complete.
 	 * Returns immediately if no cleanup is in progress.
@@ -3160,7 +3170,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					const opCapture = this.getOpCapture();
 					if (opCapture && fork.captureMark != null) {
 						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
-						opCapture.drop(diskOps);
+						this.withLocalObserverSuppressed(() => {
+							opCapture.drop(diskOps);
+						});
 					}
 
 					const stateVector = Y.encodeStateVector(this.localDoc);
@@ -3202,7 +3214,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					const opCapture = this.getOpCapture();
 					if (opCapture && fork.captureMark != null) {
 						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
-						opCapture.drop(diskOps);
+						this.withLocalObserverSuppressed(() => {
+							opCapture.drop(diskOps);
+						});
 					}
 
 					this.send({
@@ -3217,24 +3231,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 				// Cancel all disk ops — fork gates outbound sync so no peer
 				// has seen them. The merged result will be applied fresh via DMP.
-				{
+				this.withLocalObserverSuppressed(() => {
 					const opCapture = this.getOpCapture();
 					if (opCapture && fork.captureMark != null) {
 						const diskOps = opCapture.sinceByOrigin(fork.captureMark, DISK_ORIGIN);
 						opCapture.cancel(diskOps);
 					}
-				}
 
-				// Apply merged result to localDoc
-				this.applyContentToLocalDoc(mergeResult.merged);
+					// Apply merged result to localDoc
+					this.applyContentToLocalDoc(mergeResult.merged);
+				});
 
 				// Dispatch granular changes to editor if content changed
-				if (mergeResult.merged !== localContent) {
-					const changes = this.computeDiffChanges(localContent, mergeResult.merged);
+				const editorContent = this.readCurrentEditorText() ?? localContent;
+				if (mergeResult.merged !== editorContent) {
+					const changes = this.computeDiffChanges(editorContent, mergeResult.merged);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
 					}
 				}
+				this.lastKnownEditorText = mergeResult.merged;
 
 				// Clear fork and update LCA
 				const stateVector = Y.encodeStateVector(this.localDoc);
