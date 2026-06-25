@@ -16,9 +16,9 @@
 	}
 </script>
 
-<div class="modal-setting-nav-bar">
+<div class="modal-setting-nav-bar relay-settings-nav-bar">
 	<div
-		class="clickable-icon"
+		class="clickable-icon relay-settings-back-button"
 		aria-label="Back"
 		tabindex="0"
 		on:click={handleGoBack}
@@ -28,3 +28,14 @@
 		<ChevronLeft />
 	</div>
 </div>
+
+<style>
+	.relay-settings-nav-bar {
+		display: flex;
+		align-items: center;
+	}
+
+	.relay-settings-back-button {
+		flex: 0 0 auto;
+	}
+</style>
