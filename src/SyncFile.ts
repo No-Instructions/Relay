@@ -407,10 +407,6 @@ export class SyncFile
 
 	public async push(force = false) {
 		this.log("push");
-		if (!this.sharedFolder.connected) {
-			this.log("skipping push -- folder is disconnected");
-			return;
-		}
 		if (this.sharedFolder.skipStorageBlockedUpload(this.path)) {
 			return;
 		}
