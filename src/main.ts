@@ -1280,6 +1280,13 @@ export default class Live extends Plugin {
 					vaultLog("Modify", tfile.path);
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
+						vaultLog("Modify SyncFile", {
+							path: tfile.path,
+							virtualPath: file.path,
+							guid: file.guid,
+							mtime: file.stat.mtime,
+							size: file.stat.size,
+						});
 						void file.sync().catch((error) => {
 							if (isRetryableS3Error(error)) {
 								void folder.backgroundSync

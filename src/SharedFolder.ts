@@ -2712,6 +2712,12 @@ export class SharedFolder extends HasProvider {
 				await this.markUploaded(file);
 			})();
 		} else {
+			this.log("get syncfile initial pull", {
+				path: vpath,
+				guid,
+				metaHash: meta.hash,
+				metaSynctime: meta.synctime,
+			});
 			file.pull();
 		}
 

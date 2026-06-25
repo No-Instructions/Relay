@@ -20,6 +20,10 @@ export function isSyncFile(file: IFile | undefined): file is SyncFile {
 	return !!file && file instanceof SyncFile;
 }
 
+function shortHash(hash: string | undefined | null): string | undefined | null {
+	return hash ? hash.slice(0, 12) : hash;
+}
+
 export class ContentAddressedFileStore extends HasLogging {
 	private db: IDBDatabase | null = null;
 	private dbName: string;
@@ -179,7 +183,25 @@ export class ContentAddressedFile extends HasLogging {
 	private async loadHashFromStore(): Promise<string | undefined> {
 		try {
 			const storedData = await this.store.getHash(this.path);
-			if (storedData && storedData.modifiedAt === this.tfile.stat.mtime) {
+			const fileMtime = this.tfile.stat.mtime;
+			if (!storedData) {
+				this.debug("hash cache miss", {
+					path: this.path,
+					reason: "empty",
+					fileMtime,
+				});
+				return;
+			}
+
+			const hit = storedData.modifiedAt === fileMtime;
+			this.debug("hash cache lookup", {
+				path: this.path,
+				hit,
+				storedHash: shortHash(storedData.hash),
+				storedModifiedAt: storedData.modifiedAt,
+				fileMtime,
+			});
+			if (hit) {
 				// If the stored hash is for the same modification time, use it
 				return storedData.hash;
 			}
@@ -200,6 +222,12 @@ export class ContentAddressedFile extends HasLogging {
 		const mtime = this.tfile.stat.mtime;
 		const content = await this.vault.readBinary(this.tfile);
 		const hash = await generateHash(content);
+		this.debug("computed hash from disk read", {
+			path: this.path,
+			hash: shortHash(hash),
+			mtime,
+			size: content.byteLength,
+		});
 		try {
 			await this.store.saveHash(this.path, hash, mtime);
 		} catch (error) {
@@ -212,6 +240,12 @@ export class ContentAddressedFile extends HasLogging {
 		const mtime = this.tfile.stat.mtime;
 		const content = await this.vault.readBinary(this.tfile);
 		const hash = await generateHash(content);
+		this.debug("computed hash from disk", {
+			path: this.path,
+			hash: shortHash(hash),
+			mtime,
+			size: content.byteLength,
+		});
 		try {
 			await this.store.saveHash(this.path, hash, mtime);
 		} catch (error) {
@@ -386,17 +420,38 @@ export class SyncFile
 		}
 		const hash = await this.caf.hash();
 		this._refreshMeta();
+		this.debug("push state", {
+			path: this.path,
+			guid: this.guid,
+			force,
+			localHash: shortHash(hash),
+			metaHash: shortHash(this.meta?.hash),
+			metaSynctime: this.meta?.synctime,
+			statMtime: this.stat.mtime,
+		});
 		if (!this.meta || (hash && this.meta.hash !== hash) || force) {
 			try {
 				await this.sharedFolder.cas.writeFile(this);
 				await this.sharedFolder.markUploaded(this);
 				this.uploadError = undefined;
 				this.notifyListeners();
+				this.debug("push complete", {
+					path: this.path,
+					guid: this.guid,
+					hash: shortHash(hash),
+					force,
+				});
 			} catch (error) {
 				this.uploadError = formatUserFacingError(error, "Failed to push file");
 				this.notifyListeners();
 				throw error instanceof Error ? error : errorFromUnknown(error);
 			}
+		} else {
+			this.debug("push skipped -- hash already uploaded", {
+				path: this.path,
+				guid: this.guid,
+				hash: shortHash(hash),
+			});
 		}
 		return;
 	}
@@ -426,20 +481,59 @@ export class SyncFile
 	private async syncOnce() {
 		this.log("sync");
 		this._refreshMeta();
+		const localExists = this.caf.exists();
+		const localStat = localExists ? this.stat : undefined;
+		this.debug("sync state", {
+			path: this.path,
+			guid: this.guid,
+			localExists,
+			localStat: localStat
+				? { mtime: localStat.mtime, size: localStat.size }
+				: null,
+			meta: this.meta
+				? {
+						hash: shortHash(this.meta.hash),
+						synctime: this.meta.synctime,
+						type: this.meta.type,
+					}
+				: null,
+			pending: this.pending,
+		});
 
-		if (!this.caf.exists()) {
+		if (!localExists) {
 			if (!this.meta) {
 				throw new Error("unexpected case");
 			}
+			this.debug("sync decision", {
+				path: this.path,
+				guid: this.guid,
+				decision: "pull-missing-local",
+				metaHash: shortHash(this.meta.hash),
+				metaSynctime: this.meta.synctime,
+			});
 			await this.pull();
 			return;
 		} else if (!this.meta) {
+			this.debug("sync decision", {
+				path: this.path,
+				guid: this.guid,
+				decision: "push-missing-meta",
+				statMtime: this.stat.mtime,
+			});
 			await this.push();
 			return;
 		}
 
 		try {
 			const hash = await this.caf.hash();
+			this.debug("sync hash comparison", {
+				path: this.path,
+				guid: this.guid,
+				localHash: shortHash(hash),
+				metaHash: shortHash(this.meta.hash),
+				statMtime: this.stat.mtime,
+				metaSynctime: this.meta.synctime,
+			});
 			if (flags().enableVerifyUploads) {
 				// Not remote
 				try {
@@ -452,6 +546,12 @@ export class SyncFile
 				}
 			}
 			if (hash === this.meta.hash) {
+				this.debug("sync decision", {
+					path: this.path,
+					guid: this.guid,
+					decision: "noop-hash-match",
+					hash: shortHash(hash),
+				});
 				if (this.uploadError) {
 					this.uploadError = undefined;
 					this.notifyListeners();
@@ -459,10 +559,28 @@ export class SyncFile
 			} else {
 				// local is newer
 				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
+					this.debug("sync decision", {
+						path: this.path,
+						guid: this.guid,
+						decision: "push-local-newer",
+						localHash: shortHash(hash),
+						metaHash: shortHash(this.meta.hash),
+						statMtime: this.stat.mtime,
+						metaSynctime: this.meta.synctime,
+					});
 					await this.push();
 					return;
 				}
 				// remote is newer
+				this.debug("sync decision", {
+					path: this.path,
+					guid: this.guid,
+					decision: "pull-remote-newer",
+					localHash: shortHash(hash),
+					metaHash: shortHash(this.meta.hash),
+					statMtime: this.stat.mtime,
+					metaSynctime: this.meta.synctime,
+				});
 				this.warn(
 					"synctime",
 					this.meta.synctime,
@@ -501,7 +619,20 @@ export class SyncFile
 		}
 		if (this.caf.exists()) {
 			const hash = await this.caf.hash();
+			this.debug("pull state", {
+				path: this.path,
+				guid: this.guid,
+				localHash: shortHash(hash),
+				metaHash: shortHash(this.meta.hash),
+				metaSynctime: this.meta.synctime,
+				statMtime: this.stat.mtime,
+			});
 			if (hash === this.meta.hash) {
+				this.debug("pull skipped -- hash already local", {
+					path: this.path,
+					guid: this.guid,
+					hash: shortHash(hash),
+				});
 				return;
 			}
 		}
@@ -512,6 +643,12 @@ export class SyncFile
 				content,
 			);
 			await this.caf.hash();
+			this.debug("pull wrote local file", {
+				path: this.path,
+				guid: this.guid,
+				metaHash: shortHash(this.meta.hash),
+				size: content.byteLength,
+			});
 		} catch (e) {
 			this.log(e);
 			return;
