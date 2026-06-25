@@ -87,6 +87,7 @@ export interface TokenInfo<Token> {
 	friendlyName: string;
 	token: Token | null;
 	expiryTime: number;
+	refreshTime?: number;
 	attempts: number;
 }
 
@@ -98,6 +99,7 @@ export class TokenStore<TokenType extends HasToken> {
 	private refreshQueue: Set<string>;
 	private timeProvider: TimeProvider;
 	private refreshInterval: number | null;
+	private readonly refreshCheckIntervalMs: number = 60 * 1000;
 	private readonly expiryMargin: number = 5 * 60 * 1000; // 5 minutes in milliseconds
 	private readonly refreshJitterSeed?: string;
 	private readonly refreshJitterOffsetsMs: readonly number[];
@@ -185,7 +187,7 @@ export class TokenStore<TokenType extends HasToken> {
 		this.report();
 		this.refreshInterval = this.timeProvider.setInterval(
 			() => this.checkAndRefreshTokens(),
-			60 * 1000,
+			this.refreshCheckIntervalMs,
 		); // Check every minute
 		this.checkAndRefreshTokens();
 	}
@@ -314,6 +316,7 @@ export class TokenStore<TokenType extends HasToken> {
 				...existing,
 				token,
 				expiryTime,
+				refreshTime: this.timeProvider.now(),
 			} as TokenInfo<TokenType>);
 			callback(token);
 			this.log(`Token refreshed for ${existing.friendlyName} (${documentId})`);
@@ -356,7 +359,22 @@ export class TokenStore<TokenType extends HasToken> {
 		token: TokenInfo<TokenType>,
 		documentId?: string,
 	): number {
-		return this.expiryMargin + this.getRefreshJitterMs(token, documentId);
+		const refreshJitterMs = this.getRefreshJitterMs(token, documentId);
+		const configuredLeadTime =
+			this.expiryMargin - Math.min(refreshJitterMs, this.expiryMargin);
+		if (token.refreshTime === undefined) {
+			return configuredLeadTime;
+		}
+
+		const tokenLifetime = token.expiryTime - token.refreshTime;
+		if (tokenLifetime <= 0) {
+			return configuredLeadTime;
+		}
+
+		return Math.min(
+			configuredLeadTime,
+			Math.max(this.refreshCheckIntervalMs, tokenLifetime / 2),
+		);
 	}
 
 	isTokenValid(token: TokenInfo<TokenType>): boolean {
