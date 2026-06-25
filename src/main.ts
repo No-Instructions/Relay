@@ -1216,7 +1216,8 @@ export default class Live extends Plugin {
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
 					const newDocs = folder.placeHold([tfile]);
-					if (newDocs.length > 0) {
+					const vpath = folder.getVirtualPath(tfile.path);
+					if (newDocs.includes(vpath)) {
 						folder.uploadFile(tfile);
 					} else {
 						folder.whenReady()

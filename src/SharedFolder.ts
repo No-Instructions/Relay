@@ -1091,11 +1091,19 @@ export class SharedFolder extends HasProvider {
 	public isStorageBlockedTFile(tfile: TAbstractFile): boolean {
 		if (!(tfile instanceof TFile)) return false;
 		if (!this.checkPath(tfile.path)) return false;
+		return this.isStorageBlockedVPath(this.getVirtualPath(tfile.path));
+	}
+
+	public isStorageBlockedVPath(vpath: string): boolean {
 		const quota = this.remote?.relay.storageQuota?.quota ?? this.storageQuota;
 		if (quota !== 0) return false;
-		return this.syncSettingsManager.requiresStorage(
-			this.getVirtualPath(tfile.path),
-		);
+		return this.syncSettingsManager.requiresStorage(vpath);
+	}
+
+	public skipStorageBlockedUpload(vpath: string): boolean {
+		if (!this.isStorageBlockedVPath(vpath)) return false;
+		this.log("skipping storage-blocked upload", vpath);
+		return true;
 	}
 
 	private getSyncFiles(): TAbstractFile[] {
@@ -1856,6 +1864,10 @@ export class SharedFolder extends HasProvider {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
+		if (this.skipStorageBlockedUpload(path)) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+
 		const file = this.files.get(pendingGuid);
 		if (!file || !(isDocument(file) || isCanvas(file) || isSyncFile(file))) {
 			return { op: "noop", path, promise: Promise.resolve() };
@@ -2168,6 +2180,9 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 		if (isSyncFile(file)) {
+			if (this.skipStorageBlockedUpload(file.path)) {
+				return;
+			}
 			const type = this.syncStore.typeRegistry.getTypeForPath(file.path);
 			if (!type) {
 				throw new Error("unexpected sync type");
@@ -2231,7 +2246,7 @@ export class SharedFolder extends HasProvider {
 			) {
 				return this.getCanvas(vpath);
 			}
-			if (this.syncStore.canSync(vpath)) {
+			if (this.isSyncableTFile(tfile)) {
 				return this.getSyncFile(vpath, update);
 			}
 		}
@@ -2705,8 +2720,12 @@ export class SharedFolder extends HasProvider {
 		return file;
 	}
 
-	uploadFile(tfile: TAbstractFile, update = true): IFile {
+	uploadFile(tfile: TAbstractFile, update = true): IFile | null {
 		const vpath = this.getVirtualPath(tfile.path);
+		if (!this.isSyncableTFile(tfile)) {
+			this.log("skipping upload for unsyncable file", vpath);
+			return null;
+		}
 		if (tfile instanceof TFolder) {
 			return this.getSyncFolder(vpath, update);
 		} else if (tfile instanceof TFile) {
@@ -2840,7 +2859,7 @@ export class SharedFolder extends HasProvider {
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
-			if (!this.syncStore.canSync(newVPath)) return;
+			if (!this.isSyncableTFile(tfile)) return;
 			this.placeHold([tfile]);
 			this.uploadFile(tfile);
 		} else {

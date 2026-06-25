@@ -377,6 +377,9 @@ export class SyncFile
 			this.log("skipping push -- folder is disconnected");
 			return;
 		}
+		if (this.sharedFolder.skipStorageBlockedUpload(this.path)) {
+			return;
+		}
 		if (!this.sharedFolder.syncStore.canSync(this.path)) {
 			this.log("skipping push -- filetype is disabled");
 			return;
