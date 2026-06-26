@@ -847,7 +847,9 @@ export class YSweetProvider extends Observable<string> {
 	 */
 	once(name: string, f: (...args: any[]) => void) {
 		if (name === "synced" && this._synced) {
-			this._setTimeout(() => f(this._synced), 0);
+			queueMicrotask(() => {
+				if (this._synced) f(this._synced);
+			});
 			return this;
 		}
 		return super.once(name, f);

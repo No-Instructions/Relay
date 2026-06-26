@@ -808,10 +808,11 @@ export class BackgroundSync extends HasLogging {
 							this.cancelledSyncs.delete(item.guid);
 						}
 
-						// Unwind the call stack before checking for more work
-						this.timeProvider.setTimeout(() => {
+						// Continue queue draining without relying on throttled timers.
+						queueMicrotask(() => {
+							if (!this.timeProvider) return;
 							this.processSyncQueue();
-						}, 0);
+						});
 					});
 			} catch (error) {
 				if (this.isSyncCancelled(item)) {
@@ -956,10 +957,11 @@ export class BackgroundSync extends HasLogging {
 						this.inProgressDownloads.delete(item.guid);
 						this.cancelledDownloads.delete(item.guid);
 
-						// Unwind the call stack before checking for more work
-						this.timeProvider.setTimeout(() => {
+						// Continue queue draining without relying on throttled timers.
+						queueMicrotask(() => {
+							if (!this.timeProvider) return;
 							this.processDownloadQueue();
-						}, 0);
+						});
 					});
 			} catch (error) {
 				if (this.isDownloadCancelled(item)) {
@@ -1236,9 +1238,8 @@ export class BackgroundSync extends HasLogging {
 			// The upload request is the stronger follow-up operation. Let it run
 			// even if the weaker sync attempt failed.
 		}
-		await new Promise<void>((resolve) => {
-			this.timeProvider.setTimeout(resolve, 0);
-		});
+		await new Promise<void>((resolve) => queueMicrotask(resolve));
+		if (!this.timeProvider) return;
 		return this.enqueueUpload(item);
 	}
 

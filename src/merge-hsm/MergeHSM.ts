@@ -2573,11 +2573,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// Backoff: immediate for first 3 retries, then exponential up to 5s.
 				// This prevents hot-looping when updates arrive faster than we can drain.
 				const delay = this.idleRetryCount <= 3 ? 0 : Math.min(2 ** (this.idleRetryCount - 3) * 250, 5000);
-				this.timeProvider.setTimeout(() => {
+				const sendRetry = () => {
 					if (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null) {
 						this.send({ type: 'IDLE_RETRY' });
 					}
-				}, delay);
+				};
+				if (delay === 0) {
+					queueMicrotask(sendRetry);
+				} else {
+					this.timeProvider.setTimeout(sendRetry, delay);
+				}
 			},
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = (event as any).data;

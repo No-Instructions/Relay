@@ -387,7 +387,7 @@ export class HasProvider extends HasLogging {
 			// YSweetProvider emits "status: connected" before its onopen
 			// handler flushes buffered sync frames. Defer one task so the
 			// pending messages are actually sent before we close the socket.
-			this.timeProvider.setTimeout(finishDisconnect, 0);
+			window.setTimeout(finishDisconnect, 0);
 		};
 
 		this._deferredDisconnectStatusListener = (state: ConnectionState) => {
