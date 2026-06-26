@@ -64,7 +64,7 @@ export class PostOffice {
 
 	commitTransaction(): void {
 		this.isInTransaction = false;
-		if (!this.isDelivering) {
+		if (!this.isDelivering && this.hasPendingMail()) {
 			this.scheduleDelivery();
 		}
 	}
@@ -99,6 +99,7 @@ export class PostOffice {
 		if (immediate) {
 			this.deliverImmediate(sender, recipient);
 			this.mailboxes.get(recipient)?.delete(sender);
+			this.deleteMailboxIfEmpty(recipient);
 		} else if (!this.isInTransaction && !this.isDelivering) {
 			this.scheduleDelivery();
 		}
@@ -119,12 +120,13 @@ export class PostOffice {
 	}
 
 	private scheduleDelivery(): void {
+		if (!this.hasPendingMail()) return;
 		this.isDelivering = true;
 		this.deliveryInterval = this.timeProvider.setTimeout(() => {
 			this.deliver();
 			this.deliveryInterval = null;
 			this.isDelivering = false;
-			if (this.mailboxes.size > 0 && !this.isInTransaction) {
+			if (this.hasPendingMail() && !this.isInTransaction) {
 				this.scheduleDelivery();
 			}
 		}, this.deliveryWindow);
@@ -132,9 +134,11 @@ export class PostOffice {
 
 	private deliver(): void {
 		const t0 = performance.now();
-		metrics.setPostieMailboxDepth(this.mailboxes.size);
+		const mailboxes = this.mailboxes;
+		this.mailboxes = new Map();
+		metrics.setPostieMailboxDepth(this.countPendingRecipients(mailboxes));
 		const log = curryLog("[postie]", "debug");
-		for (const [recipient, senders] of this.mailboxes) {
+		for (const [recipient, senders] of mailboxes) {
 			for (const sender of senders) {
 				recipient(sender);
 				metrics.incPostieDeliveries();
@@ -147,9 +151,32 @@ export class PostOffice {
 					recipientOrigin: this.getFunctionOrigin(recipient),
 				});
 			}
-			senders.clear();
 		}
 		metrics.observePostieDelivery((performance.now() - t0) / 1000);
+	}
+
+	private hasPendingMail(): boolean {
+		for (const senders of this.mailboxes.values()) {
+			if (senders.size > 0) return true;
+		}
+		return false;
+	}
+
+	private deleteMailboxIfEmpty(recipient: (value: any) => void): void {
+		const senders = this.mailboxes.get(recipient);
+		if (senders && senders.size === 0) {
+			this.mailboxes.delete(recipient);
+		}
+	}
+
+	private countPendingRecipients(
+		mailboxes: Map<(value: any) => void, Set<IObservable<any>>>,
+	): number {
+		let count = 0;
+		for (const senders of mailboxes.values()) {
+			if (senders.size > 0) count++;
+		}
+		return count;
 	}
 
 	getAllMailLog(): Mail<any>[] {
