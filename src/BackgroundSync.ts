@@ -38,9 +38,11 @@ export interface QueueItem {
 	status: "pending" | "running" | "completed" | "failed";
 	sharedFolder: SharedFolder;
 	userVisible: boolean;
+	enqueuedAt: number;
 	syncIntent?: "sync" | "upload" | "lca-backfill";
 	retryAttempts?: number;
 	nextAttemptAt?: number;
+	retryReason?: "provider" | "s3";
 }
 
 export interface BackgroundSyncFailure {
@@ -107,6 +109,11 @@ class RetryableProviderSyncError extends Error {
 }
 
 const MAX_PROVIDER_SYNC_RETRIES = 5;
+const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
+const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
+const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
+type BackgroundSyncOperation = "sync" | "download";
+type BackgroundSyncSortReason = "enqueue" | "retry" | "batch" | "group";
 
 function isRetryableProviderSyncError(
 	error: unknown,
@@ -180,17 +187,35 @@ export class BackgroundSync extends HasLogging {
 	) {
 		super();
 		RelayInstances.set(this, "BackgroundSync");
+		let lastQueuePumpAt = this.timeProvider.now();
 		this.timeProvider.setInterval(() => {
+			const now = this.timeProvider.now();
+			this.recordTickDelay(
+				"queue",
+				lastQueuePumpAt,
+				now,
+				BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS,
+			);
+			lastQueuePumpAt = now;
 			this.processSyncQueue();
 			this.processDownloadQueue();
-		}, 1000);
+		}, BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS);
 
 		// Add polling timer for disk changes (poll all folders)
+		let lastFolderPollAt = this.timeProvider.now();
 		this.timeProvider.setInterval(() => {
+			const now = this.timeProvider.now();
+			this.recordTickDelay(
+				"folder_poll",
+				lastFolderPollAt,
+				now,
+				BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS,
+			);
+			lastFolderPollAt = now;
 			this.sharedFolders.forEach((folder) => {
 				folder.poll();
 			});
-		}, 5000); // Poll every 5 seconds
+		}, BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS);
 
 		this.subscriptions.push(
 			this.sharedFolders.subscribe(() => {
@@ -498,6 +523,7 @@ export class BackgroundSync extends HasLogging {
 		item.retryAttempts = retries;
 		if (retries > MAX_PROVIDER_SYNC_RETRIES) {
 			item.nextAttemptAt = undefined;
+			item.retryReason = undefined;
 			this.warn(
 				`[sync] retryable sync failed after ${MAX_PROVIDER_SYNC_RETRIES} retries for ${item.path}: ${error.message}`,
 			);
@@ -505,13 +531,16 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		const delayMs = Math.min(30_000, 1000 * 2 ** Math.min(retries - 1, 5));
+		const reason = this.retryReason(error);
 		item.status = "pending";
 		item.nextAttemptAt = this.timeProvider.now() + delayMs;
+		item.retryReason = reason;
+		metrics.recordBgSyncRetry("sync", reason, retries, delayMs / 1000);
 
 		this.clearFailure(this.failureKey("sync", item.guid));
 		if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
 			this.syncQueue.push(item);
-			this.syncQueue.sort(compareFilePaths);
+			this.sortByPath(this.syncQueue, "sync", "retry");
 		}
 		this.debug(
 			`[sync] retryable sync failure for ${item.path}: ${error.message}; retrying in ${delayMs}ms`,
@@ -519,6 +548,72 @@ export class BackgroundSync extends HasLogging {
 		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 		this.queueStatusChanged.notifyListeners();
 		return true;
+	}
+
+	private retryReason(error: Error): "provider" | "s3" {
+		return isRetryableProviderSyncError(error) ? "provider" : "s3";
+	}
+
+	private recordTickDelay(
+		tick: "queue" | "folder_poll",
+		lastTickAt: number,
+		now: number,
+		intervalMs: number,
+	): void {
+		const delayMs = Math.max(0, now - lastTickAt - intervalMs);
+		metrics.observeBgSyncTickDelay(tick, delayMs / 1000);
+	}
+
+	private sortByPath<T extends { path: string }>(
+		items: T[],
+		operation: BackgroundSyncOperation,
+		reason: BackgroundSyncSortReason,
+	): T[] {
+		if (items.length < 2) return items;
+		const sortStart = performance.now();
+		items.sort(compareFilePaths);
+		metrics.observeBgSyncSort(
+			operation,
+			reason,
+			items.length,
+			(performance.now() - sortStart) / 1000,
+		);
+		return items;
+	}
+
+	private recordDrain(
+		operation: BackgroundSyncOperation,
+		startedAt: number,
+		itemsStarted: number,
+	): void {
+		metrics.observeBgSyncDrain(
+			operation,
+			(performance.now() - startedAt) / 1000,
+			itemsStarted,
+			BACKGROUND_SYNC_DRAIN_BUDGET_MS,
+		);
+	}
+
+	private observeItemStart(
+		operation: BackgroundSyncOperation,
+		item: QueueItem,
+		now: number,
+	): void {
+		const intent = operation === "download"
+			? "download"
+			: item.syncIntent ?? "sync";
+		metrics.observeBgSyncItemAge(
+			operation,
+			intent,
+			Math.max(0, now - item.enqueuedAt) / 1000,
+		);
+		if (item.nextAttemptAt !== undefined && item.retryReason) {
+			metrics.observeBgSyncRetryLateness(
+				operation,
+				item.retryReason,
+				Math.max(0, now - item.nextAttemptAt) / 1000,
+			);
+		}
 	}
 
 	getFolderPillProgress(sharedFolder: SharedFolder): GroupProgress | null {
@@ -743,301 +838,317 @@ export class BackgroundSync extends HasLogging {
 
 	private async processSyncQueue() {
 		if (this.isPaused || this.isProcessingSync) return;
+		const drainStart = performance.now();
+		let itemsStarted = 0;
 		this.isProcessingSync = true;
+		try {
+			// Evict destroyed documents from the queue and clean up their inProgress entries
+			const destroyed = this.syncQueue.filter((item) => item.doc.destroyed);
+			for (const item of destroyed) {
+				this.markSyncTerminal(item.sharedFolder, "skipped");
+				this.inProgressSyncs.delete(item.guid);
+				const callback = this.syncCompletionCallbacks.get(item.guid);
+				if (callback) callback.reject(new Error("Document destroyed"));
+				this.syncCompletionCallbacks.delete(item.guid);
+				this.syncPromises.delete(item.guid);
+			}
+			this.syncQueue = this.syncQueue.filter((item) => !item.doc.destroyed);
 
-		// Evict destroyed documents from the queue and clean up their inProgress entries
-		const destroyed = this.syncQueue.filter((item) => item.doc.destroyed);
-		for (const item of destroyed) {
-			this.markSyncTerminal(item.sharedFolder, "skipped");
-			this.inProgressSyncs.delete(item.guid);
-			const callback = this.syncCompletionCallbacks.get(item.guid);
-			if (callback) callback.reject(new Error("Document destroyed"));
-			this.syncCompletionCallbacks.delete(item.guid);
-			this.syncPromises.delete(item.guid);
-		}
-		this.syncQueue = this.syncQueue.filter((item) => !item.doc.destroyed);
-
-		metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
-
-		// Filter for items with connected folders
-		const now = this.timeProvider.now();
-		const connectableItems = this.syncQueue.filter(
-			(item) =>
-				item.sharedFolder.connected &&
-				(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
-		);
-
-		while (
-			connectableItems.length > 0 &&
-			this.activeSync.size < this.concurrency
-		) {
-			const item = connectableItems.shift();
-			if (!item) break;
-
-			// Remove this item from the main queue
-			this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
-
-			item.status = "running";
-			const opStart = performance.now();
-			this.activeSync.add(item);
-			metrics.setBgSyncActive("sync", this.activeSync.size);
 			metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
 
-			try {
-				const doc = item.doc;
-				let syncPromise: Promise<any>;
+			// Filter for items with connected folders
+			const now = this.timeProvider.now();
+			const connectableItems = this.syncQueue.filter(
+				(item) =>
+					item.sharedFolder.connected &&
+					(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
+			);
 
-				if (doc instanceof SyncFile) {
-					syncPromise = this.syncFile(doc);
-				} else if (item.syncIntent === "upload") {
-					syncPromise = this.syncDocumentUpload(doc);
-				} else if (item.syncIntent === "lca-backfill" && isDocument(doc)) {
-					syncPromise = this.syncDocumentLCABackfill(doc);
-				} else {
-					syncPromise = this.syncDocument(doc);
-				}
+			while (
+				connectableItems.length > 0 &&
+				this.activeSync.size < this.concurrency
+			) {
+				const item = connectableItems.shift();
+				if (!item) break;
 
-				syncPromise
-					.then(() => {
-						item.status = "completed";
-						metrics.incBgSyncOps("sync", "completed");
-						const callback = this.syncCompletionCallbacks.get(item.guid);
-						if (callback) {
-							callback.resolve();
-							this.syncCompletionCallbacks.delete(item.guid);
-							this.syncPromises.delete(item.guid);
-						}
+				// Remove this item from the main queue
+				this.syncQueue = this.syncQueue.filter((i) => i.guid !== item.guid);
 
-						this.markSyncTerminal(item.sharedFolder, "completed");
-					})
-					.catch((error) => {
-						if (this.isSyncCancelled(item)) {
+				this.observeItemStart("sync", item, this.timeProvider.now());
+				item.nextAttemptAt = undefined;
+				item.retryReason = undefined;
+				itemsStarted++;
+				item.status = "running";
+				const opStart = performance.now();
+				this.activeSync.add(item);
+				metrics.setBgSyncActive("sync", this.activeSync.size);
+				metrics.setBgSyncQueueLength("sync", this.syncQueue.length);
+
+				try {
+					const doc = item.doc;
+					let syncPromise: Promise<any>;
+
+					if (doc instanceof SyncFile) {
+						syncPromise = this.syncFile(doc);
+					} else if (item.syncIntent === "upload") {
+						syncPromise = this.syncDocumentUpload(doc);
+					} else if (item.syncIntent === "lca-backfill" && isDocument(doc)) {
+						syncPromise = this.syncDocumentLCABackfill(doc);
+					} else {
+						syncPromise = this.syncDocument(doc);
+					}
+
+					syncPromise
+						.then(() => {
 							item.status = "completed";
-							this.markSyncTerminal(item.sharedFolder, "skipped");
-							this.resolveSyncCancellation(item.guid);
-							return;
-						}
+							metrics.incBgSyncOps("sync", "completed");
+							const callback = this.syncCompletionCallbacks.get(item.guid);
+							if (callback) {
+								callback.resolve();
+								this.syncCompletionCallbacks.delete(item.guid);
+								this.syncPromises.delete(item.guid);
+							}
 
-						if (
-							isRetryableSyncError(error) &&
-							this.requeueRetryableSync(item, error)
-						) {
-							return;
-						}
+							this.markSyncTerminal(item.sharedFolder, "completed");
+						})
+						.catch((error) => {
+							if (this.isSyncCancelled(item)) {
+								item.status = "completed";
+								this.markSyncTerminal(item.sharedFolder, "skipped");
+								this.resolveSyncCancellation(item.guid);
+								return;
+							}
 
-						item.status = "failed";
-						metrics.incBgSyncOps("sync", "failed");
+							if (
+								isRetryableSyncError(error) &&
+								this.requeueRetryableSync(item, error)
+							) {
+								return;
+							}
 
-						const callback = this.syncCompletionCallbacks.get(item.guid);
-						if (callback) {
-							callback.reject(errorFromUnknown(error));
-							this.syncCompletionCallbacks.delete(item.guid);
-							this.syncPromises.delete(item.guid);
-						}
+							item.status = "failed";
+							metrics.incBgSyncOps("sync", "failed");
 
-						this.logError("[Sync Failed]", error);
-						this.recordFailure("sync", item, error);
-						this.markSyncTerminal(item.sharedFolder, "failed");
-					})
-					.finally(() => {
+							const callback = this.syncCompletionCallbacks.get(item.guid);
+							if (callback) {
+								callback.reject(errorFromUnknown(error));
+								this.syncCompletionCallbacks.delete(item.guid);
+								this.syncPromises.delete(item.guid);
+							}
+
+							this.logError("[Sync Failed]", error);
+							this.recordFailure("sync", item, error);
+							this.markSyncTerminal(item.sharedFolder, "failed");
+						})
+						.finally(() => {
+							metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
+							this.activeSync.delete(item);
+							metrics.setBgSyncActive("sync", this.activeSync.size);
+							if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
+								this.inProgressSyncs.delete(item.guid);
+								this.cancelledSyncs.delete(item.guid);
+							}
+
+							// Continue queue draining without relying on throttled timers.
+							queueMicrotask(() => {
+								if (!this.timeProvider) return;
+								this.processSyncQueue();
+							});
+						});
+				} catch (error) {
+					if (this.isSyncCancelled(item)) {
+						item.status = "completed";
+						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
+						this.markSyncTerminal(item.sharedFolder, "skipped");
+						this.resolveSyncCancellation(item.guid);
+						this.activeSync.delete(item);
+						metrics.setBgSyncActive("sync", this.activeSync.size);
+						this.inProgressSyncs.delete(item.guid);
+						this.cancelledSyncs.delete(item.guid);
+						continue;
+					}
+
+					if (
+						isRetryableSyncError(error) &&
+						this.requeueRetryableSync(item, error)
+					) {
 						metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
 						this.activeSync.delete(item);
 						metrics.setBgSyncActive("sync", this.activeSync.size);
-						if (!this.syncQueue.some((queued) => queued.guid === item.guid)) {
-							this.inProgressSyncs.delete(item.guid);
-							this.cancelledSyncs.delete(item.guid);
-						}
+						continue;
+					}
 
-						// Continue queue draining without relying on throttled timers.
-						queueMicrotask(() => {
-							if (!this.timeProvider) return;
-							this.processSyncQueue();
-						});
-					});
-			} catch (error) {
-				if (this.isSyncCancelled(item)) {
-					item.status = "completed";
+					item.status = "failed";
+					metrics.incBgSyncOps("sync", "failed");
 					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-					this.markSyncTerminal(item.sharedFolder, "skipped");
-					this.resolveSyncCancellation(item.guid);
+
+					const callback = this.syncCompletionCallbacks.get(item.guid);
+					if (callback) {
+						callback.reject(errorFromUnknown(error));
+						this.syncCompletionCallbacks.delete(item.guid);
+						this.syncPromises.delete(item.guid);
+					}
+
+					this.logError("[Sync Startup Failed]", error);
+					this.recordFailure("sync", item, error);
+					this.markSyncTerminal(item.sharedFolder, "failed");
+
 					this.activeSync.delete(item);
 					metrics.setBgSyncActive("sync", this.activeSync.size);
 					this.inProgressSyncs.delete(item.guid);
-					this.cancelledSyncs.delete(item.guid);
-					continue;
 				}
-
-				if (
-					isRetryableSyncError(error) &&
-					this.requeueRetryableSync(item, error)
-				) {
-					metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-					this.activeSync.delete(item);
-					metrics.setBgSyncActive("sync", this.activeSync.size);
-					continue;
-				}
-
-				item.status = "failed";
-				metrics.incBgSyncOps("sync", "failed");
-				metrics.observeBgSyncOp("sync", (performance.now() - opStart) / 1000);
-
-				const callback = this.syncCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.reject(errorFromUnknown(error));
-					this.syncCompletionCallbacks.delete(item.guid);
-					this.syncPromises.delete(item.guid);
-				}
-
-				this.logError("[Sync Startup Failed]", error);
-				this.recordFailure("sync", item, error);
-				this.markSyncTerminal(item.sharedFolder, "failed");
-
-				this.activeSync.delete(item);
-				metrics.setBgSyncActive("sync", this.activeSync.size);
-				this.inProgressSyncs.delete(item.guid);
 			}
-		}
 
-		this.isProcessingSync = false;
+		} finally {
+			this.isProcessingSync = false;
+			this.recordDrain("sync", drainStart, itemsStarted);
+		}
 	}
 
 	private async processDownloadQueue() {
 		if (this.isPaused || this.isProcessingDownloads) return;
+		const drainStart = performance.now();
+		let itemsStarted = 0;
 		this.isProcessingDownloads = true;
+		try {
+			// Evict destroyed documents from the queue and clean up their inProgress entries
+			const destroyedDownloads = this.downloadQueue.filter((item) => item.doc.destroyed);
+			for (const item of destroyedDownloads) {
+				this.markDownloadTerminal(item, "skipped");
+				this.inProgressDownloads.delete(item.guid);
+				const callback = this.downloadCompletionCallbacks.get(item.guid);
+				if (callback) callback.reject(new Error("Document destroyed"));
+				this.downloadCompletionCallbacks.delete(item.guid);
+				this.downloadPromises.delete(item.guid);
+			}
+			this.downloadQueue = this.downloadQueue.filter((item) => !item.doc.destroyed);
 
-		// Evict destroyed documents from the queue and clean up their inProgress entries
-		const destroyedDownloads = this.downloadQueue.filter((item) => item.doc.destroyed);
-		for (const item of destroyedDownloads) {
-			this.markDownloadTerminal(item, "skipped");
-			this.inProgressDownloads.delete(item.guid);
-			const callback = this.downloadCompletionCallbacks.get(item.guid);
-			if (callback) callback.reject(new Error("Document destroyed"));
-			this.downloadCompletionCallbacks.delete(item.guid);
-			this.downloadPromises.delete(item.guid);
-		}
-		this.downloadQueue = this.downloadQueue.filter((item) => !item.doc.destroyed);
-
-		metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
-
-		// Filter for items with connected folders
-		const connectableItems = this.downloadQueue.filter(
-			(item) => item.sharedFolder.connected,
-		);
-
-		while (
-			connectableItems.length > 0 &&
-			this.activeDownloads.size < this.concurrency
-		) {
-			const item = connectableItems.shift();
-			if (!item) break;
-
-			// Remove this item from the main queue
-			this.downloadQueue = this.downloadQueue.filter(
-				(i) => i.guid !== item.guid,
-			);
-
-			item.status = "running";
-			const opStart = performance.now();
-			this.activeDownloads.add(item);
-			metrics.setBgSyncActive("download", this.activeDownloads.size);
 			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
-			try {
-				let downloadPromise: Promise<any>;
+			// Filter for items with connected folders
+			const connectableItems = this.downloadQueue.filter(
+				(item) => item.sharedFolder.connected,
+			);
 
-				// Choose the appropriate download method based on the document type
-				if (item.doc instanceof Canvas) {
-					downloadPromise = this.getCanvas(item.doc);
-				} else if (item.doc instanceof SyncFile) {
-					downloadPromise = this.getSyncFile(item.doc);
-				} else {
-					downloadPromise = this.getDocument(item.doc);
-				}
+			while (
+				connectableItems.length > 0 &&
+				this.activeDownloads.size < this.concurrency
+			) {
+				const item = connectableItems.shift();
+				if (!item) break;
 
-				downloadPromise
-					.then((result) => {
-						item.status = "completed";
-						metrics.incBgSyncOps("download", "completed");
+				// Remove this item from the main queue
+				this.downloadQueue = this.downloadQueue.filter(
+					(i) => i.guid !== item.guid,
+				);
 
-						const callback = this.downloadCompletionCallbacks.get(item.guid);
-						if (callback) {
-							callback.resolve(result as Uint8Array | undefined);
-							this.downloadCompletionCallbacks.delete(item.guid);
-							this.downloadPromises.delete(item.guid);
-						}
+				this.observeItemStart("download", item, this.timeProvider.now());
+				itemsStarted++;
+				item.status = "running";
+				const opStart = performance.now();
+				this.activeDownloads.add(item);
+				metrics.setBgSyncActive("download", this.activeDownloads.size);
+				metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
-						this.markDownloadTerminal(item, "completed");
-					})
-					.catch((error) => {
-						if (this.isDownloadCancelled(item)) {
+				try {
+					let downloadPromise: Promise<any>;
+
+					// Choose the appropriate download method based on the document type
+					if (item.doc instanceof Canvas) {
+						downloadPromise = this.getCanvas(item.doc);
+					} else if (item.doc instanceof SyncFile) {
+						downloadPromise = this.getSyncFile(item.doc);
+					} else {
+						downloadPromise = this.getDocument(item.doc);
+					}
+
+					downloadPromise
+						.then((result) => {
 							item.status = "completed";
-							this.markDownloadTerminal(item, "skipped");
-							this.resolveDownloadCancellation(item.guid);
-							return;
-						}
+							metrics.incBgSyncOps("download", "completed");
 
-						item.status = "failed";
-						metrics.incBgSyncOps("download", "failed");
+							const callback = this.downloadCompletionCallbacks.get(item.guid);
+							if (callback) {
+								callback.resolve(result as Uint8Array | undefined);
+								this.downloadCompletionCallbacks.delete(item.guid);
+								this.downloadPromises.delete(item.guid);
+							}
 
-						const callback = this.downloadCompletionCallbacks.get(item.guid);
-						if (callback) {
-							callback.reject(errorFromUnknown(error));
-							this.downloadCompletionCallbacks.delete(item.guid);
-							this.downloadPromises.delete(item.guid);
-						}
+							this.markDownloadTerminal(item, "completed");
+						})
+						.catch((error) => {
+							if (this.isDownloadCancelled(item)) {
+								item.status = "completed";
+								this.markDownloadTerminal(item, "skipped");
+								this.resolveDownloadCancellation(item.guid);
+								return;
+							}
 
-						this.recordFailure("download", item, error);
-						this.logError("[processDownloadQueue]", error);
-						this.markDownloadTerminal(item, "failed");
-					})
-					.finally(() => {
+							item.status = "failed";
+							metrics.incBgSyncOps("download", "failed");
+
+							const callback = this.downloadCompletionCallbacks.get(item.guid);
+							if (callback) {
+								callback.reject(errorFromUnknown(error));
+								this.downloadCompletionCallbacks.delete(item.guid);
+								this.downloadPromises.delete(item.guid);
+							}
+
+							this.recordFailure("download", item, error);
+							this.logError("[processDownloadQueue]", error);
+							this.markDownloadTerminal(item, "failed");
+						})
+						.finally(() => {
+							metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
+							this.activeDownloads.delete(item);
+							metrics.setBgSyncActive("download", this.activeDownloads.size);
+							this.inProgressDownloads.delete(item.guid);
+							this.cancelledDownloads.delete(item.guid);
+
+							// Continue queue draining without relying on throttled timers.
+							queueMicrotask(() => {
+								if (!this.timeProvider) return;
+								this.processDownloadQueue();
+							});
+						});
+				} catch (error) {
+					if (this.isDownloadCancelled(item)) {
+						item.status = "completed";
 						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
+						this.markDownloadTerminal(item, "skipped");
+						this.resolveDownloadCancellation(item.guid);
 						this.activeDownloads.delete(item);
 						metrics.setBgSyncActive("download", this.activeDownloads.size);
 						this.inProgressDownloads.delete(item.guid);
 						this.cancelledDownloads.delete(item.guid);
+						continue;
+					}
 
-						// Continue queue draining without relying on throttled timers.
-						queueMicrotask(() => {
-							if (!this.timeProvider) return;
-							this.processDownloadQueue();
-						});
-					});
-			} catch (error) {
-				if (this.isDownloadCancelled(item)) {
-					item.status = "completed";
+					item.status = "failed";
+					metrics.incBgSyncOps("download", "failed");
 					metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
-					this.markDownloadTerminal(item, "skipped");
-					this.resolveDownloadCancellation(item.guid);
+
+					const callback = this.downloadCompletionCallbacks.get(item.guid);
+					if (callback) {
+						callback.reject(errorFromUnknown(error));
+						this.downloadCompletionCallbacks.delete(item.guid);
+						this.downloadPromises.delete(item.guid);
+					}
+
+					this.logError("[Download Startup Failed]", error);
+					this.recordFailure("download", item, error);
+					this.markDownloadTerminal(item, "failed");
+
 					this.activeDownloads.delete(item);
 					metrics.setBgSyncActive("download", this.activeDownloads.size);
 					this.inProgressDownloads.delete(item.guid);
-					this.cancelledDownloads.delete(item.guid);
-					continue;
 				}
-
-				item.status = "failed";
-				metrics.incBgSyncOps("download", "failed");
-				metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
-
-				const callback = this.downloadCompletionCallbacks.get(item.guid);
-				if (callback) {
-					callback.reject(errorFromUnknown(error));
-					this.downloadCompletionCallbacks.delete(item.guid);
-					this.downloadPromises.delete(item.guid);
-				}
-
-				this.logError("[Download Startup Failed]", error);
-				this.recordFailure("download", item, error);
-				this.markDownloadTerminal(item, "failed");
-
-				this.activeDownloads.delete(item);
-				metrics.setBgSyncActive("download", this.activeDownloads.size);
-				this.inProgressDownloads.delete(item.guid);
 			}
-		}
 
-		this.isProcessingDownloads = false;
+		} finally {
+			this.isProcessingDownloads = false;
+			this.recordDrain("download", drainStart, itemsStarted);
+		}
 	}
 
 	/**
@@ -1071,6 +1182,7 @@ export class BackgroundSync extends HasLogging {
 			status: "pending",
 			sharedFolder,
 			userVisible: false,
+			enqueuedAt: this.timeProvider.now(),
 		};
 		this.clearFailure(this.failureKey("sync", item.guid));
 
@@ -1112,7 +1224,7 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
+		this.sortByPath(this.syncQueue, "sync", "enqueue");
 		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 
@@ -1140,6 +1252,7 @@ export class BackgroundSync extends HasLogging {
 			status: "pending",
 			sharedFolder,
 			userVisible: false,
+			enqueuedAt: this.timeProvider.now(),
 		};
 
 		let group = this.syncGroups.get(sharedFolder);
@@ -1221,6 +1334,7 @@ export class BackgroundSync extends HasLogging {
 			status: "pending",
 			sharedFolder,
 			userVisible: false,
+			enqueuedAt: this.timeProvider.now(),
 			syncIntent: "upload",
 		};
 		this.clearFailure(this.failureKey("sync", item.guid));
@@ -1262,7 +1376,7 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
+		this.sortByPath(this.syncQueue, "sync", "enqueue");
 		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 
@@ -1346,6 +1460,7 @@ export class BackgroundSync extends HasLogging {
 			status: "pending",
 			sharedFolder,
 			userVisible,
+			enqueuedAt: this.timeProvider.now(),
 		};
 		this.clearFailure(this.failureKey("download", item.guid));
 
@@ -1362,7 +1477,7 @@ export class BackgroundSync extends HasLogging {
 
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
-		this.downloadQueue.sort(compareFilePaths);
+		this.sortByPath(this.downloadQueue, "download", "enqueue");
 		this.queueStatusChanged.notifyListeners();
 		this.processDownloadQueue();
 
@@ -1412,7 +1527,7 @@ export class BackgroundSync extends HasLogging {
 		if (allItems.length === 0) return;
 
 		// Sort items by path for consistent sync order
-		const sortedDocs = allItems.sort(compareFilePaths);
+		const sortedDocs = this.sortByPath(allItems, "sync", "group");
 		const queueLengthBefore = this.syncQueue.length;
 
 		for (const doc of sortedDocs) {
@@ -1420,7 +1535,7 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		if (this.syncQueue.length > queueLengthBefore) {
-			this.syncQueue.sort(compareFilePaths);
+			this.sortByPath(this.syncQueue, "sync", "group");
 			this.queueStatusChanged.notifyListeners();
 			this.processSyncQueue();
 		}
@@ -1439,7 +1554,7 @@ export class BackgroundSync extends HasLogging {
 
 		if (docs.length === 0) return 0;
 
-		for (const doc of docs.sort(compareFilePaths)) {
+		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueLCABackfillDoc(doc);
 		}
 		return docs.length;
@@ -1466,6 +1581,7 @@ export class BackgroundSync extends HasLogging {
 			status: "pending",
 			sharedFolder,
 			userVisible: false,
+			enqueuedAt: this.timeProvider.now(),
 			syncIntent: "lca-backfill",
 		};
 		this.clearFailure(this.failureKey("sync", doc.guid));
@@ -1507,7 +1623,7 @@ export class BackgroundSync extends HasLogging {
 		this.syncPromises.set(doc.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
-		this.syncQueue.sort(compareFilePaths);
+		this.sortByPath(this.syncQueue, "sync", "enqueue");
 		this.queueStatusChanged.notifyListeners();
 		this.processSyncQueue();
 
@@ -1529,7 +1645,7 @@ export class BackgroundSync extends HasLogging {
 			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
 			.filter((doc) => this.shouldEnqueueForRemoteHeadSync(doc));
 
-		for (const doc of docs.sort(compareFilePaths)) {
+		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueSync(doc);
 		}
 		return docs.length;
@@ -1550,7 +1666,7 @@ export class BackgroundSync extends HasLogging {
 			.filter((doc) => !this.inProgressSyncs.has(doc.guid))
 			.filter((doc) => this.shouldEnqueueForLCABackfill(doc));
 
-		for (const doc of docs.sort(compareFilePaths)) {
+		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueLCABackfillDoc(doc);
 		}
 		return docs.length;
@@ -1635,6 +1751,7 @@ export class BackgroundSync extends HasLogging {
 			status: "pending",
 			sharedFolder,
 			userVisible: false,
+			enqueuedAt: this.timeProvider.now(),
 		};
 		this.clearFailure(this.failureKey("sync", item.guid));
 
