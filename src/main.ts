@@ -537,7 +537,11 @@ export default class Live extends Plugin {
 				disableConsole: false, // Disable console logging
 			},
 		);
-		initializeMetrics(this.app, (ref) => this.registerEvent(ref));
+		initializeMetrics(
+			this.app,
+			(ref) => this.registerEvent(ref),
+			(el, type, callback) => this.registerDomEvent(el, type, callback),
+		);
 		this.notifier = new ObsidianNotifier();
 
 		this.debug = curryLog("[System 3][Relay]", "debug");
