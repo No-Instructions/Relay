@@ -399,6 +399,8 @@ import type {
 	ObsidianMetricsPlugin,
 } from "./types/obsidian-metrics";
 
+const PAGE_VISIBILITY_STATES = ["visible", "hidden", "prerender", "unloaded", "unknown"];
+
 /**
  * Metrics for Relay - uses obsidian-metrics plugin if available, no-ops otherwise.
  *
@@ -446,6 +448,10 @@ class RelayMetrics {
 	private bgSyncRetryDelaySeconds: MetricInstance | null = null;
 	private bgSyncRetryLatenessSeconds: MetricInstance | null = null;
 	private documentRebuildsTotal: MetricInstance | null = null;
+
+	// Page visibility
+	private pageHidden: MetricInstance | null = null;
+	private pageVisibilityState: MetricInstance | null = null;
 
 	// Document sync
 	private documentUpdateEvents: MetricInstance | null = null;
@@ -619,6 +625,18 @@ class RelayMetrics {
 			labelNames: ["folder", "operation", "result"],
 		});
 
+		// Page visibility
+		this.pageHidden = api.createGauge({
+			name: "relay_page_hidden",
+			help: "Whether document.hidden reports the page as hidden",
+		});
+		this.pageVisibilityState = api.createGauge({
+			name: "relay_page_visibility_state",
+			help: "Current document.visibilityState as a one-hot gauge",
+			labelNames: ["state"],
+		});
+		this.recordPageVisibility();
+
 		// Document sync
 		this.documentUpdateEvents = api.createCounter({
 			name: "relay_document_update_events_total",
@@ -770,6 +788,15 @@ class RelayMetrics {
 	recordDocumentUpdateEvent(stage: "received" | "applied" | "catchup", folderGuid: string): void {
 		this.documentUpdateEvents?.labels({ stage, folder: folderGuid }).inc();
 	}
+
+	recordPageVisibility(): void {
+		if (typeof document === "undefined") return;
+		const visibilityState = document.visibilityState || "unknown";
+		this.pageHidden?.set(document.hidden ? 1 : 0);
+		for (const state of new Set([...PAGE_VISIBILITY_STATES, visibilityState])) {
+			this.pageVisibilityState?.labels({ state }).set(state === visibilityState ? 1 : 0);
+		}
+	}
 }
 
 /**
@@ -777,13 +804,27 @@ class RelayMetrics {
  * Sets up event listener for obsidian-metrics:ready and checks if already available.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function initializeMetrics(app: any, registerEvent: (eventRef: any) => void): void {
+export function initializeMetrics(
+	app: any,
+	registerEvent: (eventRef: any) => void,
+	registerDomEvent?: (
+		el: Document,
+		type: "visibilitychange",
+		callback: () => void,
+	) => void,
+): void {
 	// Listen for metrics API becoming available (or re-initializing after reload)
 	registerEvent(
 		app.workspace.on("obsidian-metrics:ready", (api: IObsidianMetricsAPI) => {
 			metrics.initializeFromAPI(api);
 		})
 	);
+	if (registerDomEvent && typeof document !== "undefined") {
+		registerDomEvent(document, "visibilitychange", () => {
+			metrics.recordPageVisibility();
+		});
+		metrics.recordPageVisibility();
+	}
 
 	// Also try to get it immediately in case metrics plugin loaded first
 	const metricsPlugin = app.plugins?.plugins?.["obsidian-metrics"] as
