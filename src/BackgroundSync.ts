@@ -165,6 +165,7 @@ export class BackgroundSync extends HasLogging {
 		SharedFolder,
 		FolderSyncSnapshotSubscription
 	>();
+	private folderQueueWakeups = new Map<SharedFolder, Unsubscriber>();
 
 	// A map to track items we've already logged to avoid duplicates
 	private loggedItems = new Map<string, boolean>();
@@ -190,6 +191,13 @@ export class BackgroundSync extends HasLogging {
 				folder.poll();
 			});
 		}, 5000); // Poll every 5 seconds
+
+		this.subscriptions.push(
+			this.sharedFolders.subscribe(() => {
+				this.updateFolderQueueWakeups();
+			}),
+		);
+		this.updateFolderQueueWakeups();
 	}
 
 	/**
@@ -699,6 +707,38 @@ export class BackgroundSync extends HasLogging {
 			}
 		});
 		return progress;
+	}
+
+	private updateFolderQueueWakeups(): void {
+		const currentFolders = new Set(this.sharedFolders.items());
+
+		for (const [folder, unsubscribe] of this.folderQueueWakeups) {
+			if (!currentFolders.has(folder)) {
+				unsubscribe();
+				this.folderQueueWakeups.delete(folder);
+			}
+		}
+
+		for (const folder of currentFolders) {
+			if (this.folderQueueWakeups.has(folder)) continue;
+
+			const subscriptionKey = {
+				type: "background-sync-queue-wakeup",
+				folder,
+			};
+			const unsubscribe = folder.subscribe(subscriptionKey, () => {
+				this.wakeQueues();
+			});
+			this.folderQueueWakeups.set(folder, unsubscribe);
+		}
+
+		this.wakeQueues();
+	}
+
+	private wakeQueues(): void {
+		if (!this.timeProvider) return;
+		this.processSyncQueue();
+		this.processDownloadQueue();
 	}
 
 	private async processSyncQueue() {
@@ -2374,6 +2414,11 @@ export class BackgroundSync extends HasLogging {
 		]) {
 			this.disposeFolderSyncSnapshotSubscription(sharedFolder, state);
 		}
+
+		for (const unsubscribe of this.folderQueueWakeups.values()) {
+			unsubscribe();
+		}
+		this.folderQueueWakeups.clear();
 
 		// Destroy observable collections
 		this.activeSync.destroy();
