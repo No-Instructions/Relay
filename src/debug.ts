@@ -435,6 +435,16 @@ class RelayMetrics {
 	private bgSyncActive: MetricInstance | null = null;
 	private bgSyncQueueLength: MetricInstance | null = null;
 	private bgSyncOpsTotal: MetricInstance | null = null;
+	private bgSyncTickDelaySeconds: MetricInstance | null = null;
+	private bgSyncDrainSeconds: MetricInstance | null = null;
+	private bgSyncDrainItems: MetricInstance | null = null;
+	private bgSyncDrainOverBudget: MetricInstance | null = null;
+	private bgSyncSortSeconds: MetricInstance | null = null;
+	private bgSyncSortItems: MetricInstance | null = null;
+	private bgSyncItemAgeSeconds: MetricInstance | null = null;
+	private bgSyncRetriesTotal: MetricInstance | null = null;
+	private bgSyncRetryDelaySeconds: MetricInstance | null = null;
+	private bgSyncRetryLatenessSeconds: MetricInstance | null = null;
 	private documentRebuildsTotal: MetricInstance | null = null;
 
 	// Document sync
@@ -544,6 +554,64 @@ class RelayMetrics {
 			help: "Total background sync operations by result",
 			labelNames: ["operation", "result"],
 		});
+		this.bgSyncTickDelaySeconds = api.createHistogram({
+			name: "relay_background_sync_tick_delay_seconds",
+			help: "BackgroundSync interval callback delay beyond its expected period",
+			labelNames: ["tick"],
+			buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60],
+		});
+		this.bgSyncDrainSeconds = api.createHistogram({
+			name: "relay_background_sync_drain_seconds",
+			help: "Synchronous BackgroundSync queue drain duration",
+			labelNames: ["operation"],
+			buckets: [0.001, 0.005, 0.01, 0.016, 0.033, 0.05, 0.1, 0.25, 0.5, 1],
+		});
+		this.bgSyncDrainItems = api.createHistogram({
+			name: "relay_background_sync_drain_items",
+			help: "Number of items started during one BackgroundSync queue drain",
+			labelNames: ["operation"],
+			buckets: [0, 1, 2, 3, 5, 10, 25, 50, 100],
+		});
+		this.bgSyncDrainOverBudget = api.createCounter({
+			name: "relay_background_sync_drain_over_budget_total",
+			help: "BackgroundSync drain passes that exceeded the foreground time budget",
+			labelNames: ["operation", "budget_ms"],
+		});
+		this.bgSyncSortSeconds = api.createHistogram({
+			name: "relay_background_sync_sort_seconds",
+			help: "BackgroundSync path sort duration",
+			labelNames: ["operation", "reason"],
+			buckets: [0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25],
+		});
+		this.bgSyncSortItems = api.createHistogram({
+			name: "relay_background_sync_sort_items",
+			help: "Number of items included in a BackgroundSync path sort",
+			labelNames: ["operation", "reason"],
+			buckets: [1, 2, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000],
+		});
+		this.bgSyncItemAgeSeconds = api.createHistogram({
+			name: "relay_background_sync_item_age_seconds",
+			help: "Time a BackgroundSync item spent queued before starting",
+			labelNames: ["operation", "intent"],
+			buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 300],
+		});
+		this.bgSyncRetriesTotal = api.createCounter({
+			name: "relay_background_sync_retries_total",
+			help: "BackgroundSync retry attempts scheduled",
+			labelNames: ["operation", "reason", "attempt"],
+		});
+		this.bgSyncRetryDelaySeconds = api.createHistogram({
+			name: "relay_background_sync_retry_delay_seconds",
+			help: "Requested BackgroundSync retry backoff delay",
+			labelNames: ["operation", "reason"],
+			buckets: [0.1, 0.5, 1, 2, 5, 10, 30, 60],
+		});
+		this.bgSyncRetryLatenessSeconds = api.createHistogram({
+			name: "relay_background_sync_retry_lateness_seconds",
+			help: "Time between scheduled retry deadline and actual retry start",
+			labelNames: ["operation", "reason"],
+			buckets: [0.001, 0.01, 0.1, 0.5, 1, 2, 5, 10, 30, 60, 300],
+		});
 		api.clearMetric("relay_document_rebuilds_total");
 		this.documentRebuildsTotal = api.createCounter({
 			name: "relay_document_rebuilds_total",
@@ -629,6 +697,66 @@ class RelayMetrics {
 
 	incBgSyncOps(operation: "sync" | "download", result: "completed" | "failed"): void {
 		this.bgSyncOpsTotal?.labels({ operation, result }).inc();
+	}
+
+	observeBgSyncTickDelay(tick: "queue" | "folder_poll", delaySeconds: number): void {
+		this.bgSyncTickDelaySeconds?.labels({ tick }).observe(delaySeconds);
+	}
+
+	observeBgSyncDrain(
+		operation: "sync" | "download",
+		durationSeconds: number,
+		itemsStarted: number,
+		budgetMs: number,
+	): void {
+		this.bgSyncDrainSeconds?.labels({ operation }).observe(durationSeconds);
+		this.bgSyncDrainItems?.labels({ operation }).observe(itemsStarted);
+		if (durationSeconds * 1000 > budgetMs) {
+			this.bgSyncDrainOverBudget?.labels({
+				operation,
+				budget_ms: String(budgetMs),
+			}).inc();
+		}
+	}
+
+	observeBgSyncSort(
+		operation: "sync" | "download",
+		reason: "enqueue" | "retry" | "batch" | "group",
+		items: number,
+		durationSeconds: number,
+	): void {
+		this.bgSyncSortSeconds?.labels({ operation, reason }).observe(durationSeconds);
+		this.bgSyncSortItems?.labels({ operation, reason }).observe(items);
+	}
+
+	observeBgSyncItemAge(
+		operation: "sync" | "download",
+		intent: "sync" | "upload" | "lca-backfill" | "download",
+		ageSeconds: number,
+	): void {
+		this.bgSyncItemAgeSeconds?.labels({ operation, intent }).observe(ageSeconds);
+	}
+
+	recordBgSyncRetry(
+		operation: "sync" | "download",
+		reason: "provider" | "s3",
+		attempt: number,
+		delaySeconds: number,
+	): void {
+		this.bgSyncRetriesTotal?.labels({
+			operation,
+			reason,
+			attempt: String(attempt),
+		}).inc();
+		this.bgSyncRetryDelaySeconds?.labels({ operation, reason }).observe(delaySeconds);
+	}
+
+	observeBgSyncRetryLateness(
+		operation: "sync" | "download",
+		reason: "provider" | "s3",
+		latenessSeconds: number,
+	): void {
+		this.bgSyncRetryLatenessSeconds?.labels({ operation, reason }).observe(latenessSeconds);
 	}
 
 	incDocumentRebuild(
