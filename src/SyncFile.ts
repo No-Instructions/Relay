@@ -7,7 +7,7 @@ import {
 } from "./S3RN";
 import type { SharedFolder } from "./SharedFolder";
 import { HasLogging } from "./debug";
-import { type FileMeta, type FileMetas, type SyncFileType } from "./SyncTypes";
+import { type FileMetas, type SyncFileType } from "./SyncTypes";
 import { TFile, type Vault, type TFolder, type FileStats } from "obsidian";
 import { Observable, type Unsubscriber } from "./observable/Observable";
 import { generateHash } from "./hashing";
@@ -23,6 +23,17 @@ export function isSyncFile(file: IFile | undefined): file is SyncFile {
 function shortHash(hash: string | undefined | null): string | undefined | null {
 	return hash ? hash.slice(0, 12) : hash;
 }
+
+type ServerEditMarker = {
+	mtime: number;
+	size: number;
+	hash: string;
+};
+
+type UserEditMarker = {
+	mtime: number;
+	size: number;
+};
 
 export class ContentAddressedFileStore extends HasLogging {
 	private db: IDBDatabase | null = null;
@@ -309,6 +320,8 @@ export class SyncFile
 	uploadError?: string = undefined;
 	private syncPromise: Promise<void> | null = null;
 	private syncRequestedDuringSync = false;
+	private lastServerEdit: ServerEditMarker | null = null;
+	private lastUserEdit: UserEditMarker | null = null;
 
 	constructor(
 		public path: string,
@@ -405,6 +418,20 @@ export class SyncFile
 		return meta;
 	}
 
+	public noteLocalModify(stat: FileStats) {
+		if (
+			this.lastServerEdit &&
+			this.matchesEditStat(this.lastServerEdit, stat) &&
+			!this.hasUserEditAfter(this.lastServerEdit)
+		) {
+			return;
+		}
+		this.lastUserEdit = {
+			mtime: stat.mtime,
+			size: stat.size,
+		};
+	}
+
 	public async push(force = false) {
 		this.log("push");
 		if (this.sharedFolder.skipStorageBlockedUpload(this.path)) {
@@ -416,6 +443,11 @@ export class SyncFile
 		}
 		const hash = await this.caf.hash();
 		this._refreshMeta();
+		if (this.meta?.hash === hash) {
+			this.clearCurrentUserEdit();
+		} else {
+			this.noteCurrentUserEdit();
+		}
 		this.debug("push state", {
 			path: this.path,
 			guid: this.guid,
@@ -520,6 +552,20 @@ export class SyncFile
 			return;
 		}
 
+		if (this.isCleanLastServerEdit(this.meta as FileMetas, this.stat)) {
+			this.debug("sync decision", {
+				path: this.path,
+				guid: this.guid,
+				decision: "noop-server-edit",
+				hash: shortHash(this.meta.hash),
+			});
+			if (this.uploadError) {
+				this.uploadError = undefined;
+				this.notifyListeners();
+			}
+			return;
+		}
+
 		try {
 			const hash = await this.caf.hash();
 			this.debug("sync hash comparison", {
@@ -533,7 +579,7 @@ export class SyncFile
 			if (flags().enableVerifyUploads) {
 				// Not remote
 				try {
-					if (!this.verifyUpload()) {
+					if (!(await this.verifyUpload())) {
 						this.warn("file in metadata, but not on the server!");
 						await this.push();
 					}
@@ -542,6 +588,7 @@ export class SyncFile
 				}
 			}
 			if (hash === this.meta.hash) {
+				this.clearCurrentUserEdit();
 				this.debug("sync decision", {
 					path: this.path,
 					guid: this.guid,
@@ -553,6 +600,7 @@ export class SyncFile
 					this.notifyListeners();
 				}
 			} else {
+				this.noteCurrentUserEdit();
 				// local is newer
 				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
 					this.debug("sync decision", {
@@ -594,8 +642,52 @@ export class SyncFile
 		}
 	}
 
-	shouldPull(meta: FileMeta) {
-		return !this.tfile || meta.synctime > this.stat.mtime;
+	shouldPull(meta: FileMetas) {
+		const tfile = this.tfile;
+		if (this.isLastServerEditSuccessor(meta)) {
+			return true;
+		}
+		return meta.synctime > tfile.stat.mtime;
+	}
+
+	private isCleanLastServerEdit(meta: FileMetas, stat: FileStats): boolean {
+		const edit = this.lastServerEdit;
+		if (!edit || meta.hash !== edit.hash) {
+			return false;
+		}
+		return this.matchesEditStat(edit, stat) && !this.hasUserEditAfter(edit);
+	}
+
+	private isLastServerEditSuccessor(meta: FileMetas): boolean {
+		const edit = this.lastServerEdit;
+		if (!edit || meta.hash === edit.hash) {
+			return false;
+		}
+		return !this.hasUserEditAfter(edit);
+	}
+
+	private hasUserEditAfter(edit: ServerEditMarker): boolean {
+		return !!this.lastUserEdit && this.lastUserEdit.mtime >= edit.mtime;
+	}
+
+	private matchesEditStat(
+		edit: { mtime: number; size: number } | null,
+		stat: FileStats,
+	): boolean {
+		return !!edit && stat.mtime === edit.mtime && stat.size === edit.size;
+	}
+
+	private clearCurrentUserEdit() {
+		if (this.matchesEditStat(this.lastUserEdit, this.stat)) {
+			this.lastUserEdit = null;
+		}
+	}
+
+	private noteCurrentUserEdit() {
+		this.lastUserEdit = {
+			mtime: this.stat.mtime,
+			size: this.stat.size,
+		};
 	}
 
 	public async verifyUpload() {
@@ -634,11 +726,23 @@ export class SyncFile
 		}
 		try {
 			const content = await this.sharedFolder.cas.readFile(this);
-			await this.vault.adapter.writeBinary(
-				this.sharedFolder.getPath(this.path),
-				content,
-			);
-			await this.caf.hash();
+			const vaultPath = this.sharedFolder.getPath(this.path);
+			const edit: ServerEditMarker = {
+				mtime: Date.now(),
+				size: content.byteLength,
+				hash: this.meta.hash,
+			};
+			// Record the marker before writing so the modify event raised by
+			// writeBinary is recognized as our own server-write echo
+			// (noteLocalModify) rather than a user edit.
+			this.lastServerEdit = edit;
+			await this.vault.adapter.writeBinary(vaultPath, content, {
+				mtime: edit.mtime,
+			});
+			if (this.uploadError) {
+				this.uploadError = undefined;
+				this.notifyListeners();
+			}
 			this.debug("pull wrote local file", {
 				path: this.path,
 				guid: this.guid,
