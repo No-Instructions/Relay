@@ -1284,24 +1284,32 @@ export default class Live extends Plugin {
 					vaultLog("Modify", tfile.path);
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
-						vaultLog("Modify SyncFile", {
-							path: tfile.path,
-							virtualPath: file.path,
-							guid: file.guid,
-							mtime: file.stat.mtime,
-							size: file.stat.size,
-						});
-						void file.sync().catch((error) => {
-							if (isRetryableS3Error(error)) {
-								void folder.backgroundSync
-									.enqueueRetryableSync(file, error)
-									.catch((retryError) => {
-										vaultLog("Binary file retry failed", retryError);
-									});
-								return;
-							}
-							vaultLog("Binary file sync failed", error);
-						});
+						if (!(tfile instanceof TFile)) {
+							vaultLog(
+								"Skipping SyncFile modify -- event did not receive a TFile",
+								tfile.path,
+							);
+						} else {
+							vaultLog("Modify SyncFile", {
+								path: tfile.path,
+								virtualPath: file.path,
+								guid: file.guid,
+								mtime: tfile.stat.mtime,
+								size: tfile.stat.size,
+							});
+							file.noteLocalModify(tfile.stat);
+							void file.sync().catch((error) => {
+								if (isRetryableS3Error(error)) {
+									void folder.backgroundSync
+										.enqueueRetryableSync(file, error)
+										.catch((retryError) => {
+											vaultLog("Binary file retry failed", retryError);
+										});
+									return;
+								}
+								vaultLog("Binary file sync failed", error);
+							});
+						}
 					}
 
 					// Send DISK_CHANGED to HSM for documents with active lock
