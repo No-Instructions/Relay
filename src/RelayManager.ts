@@ -652,17 +652,20 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 	collectionName: string = "relay_roles";
 	relayRoles: ObservableMap<string, RelayRole>;
 	relays: ObservableMap<string, Relay>;
+	remoteFolders: ObservableMap<string, RemoteFolder>;
 	users: ObservableMap<string, RelayUser>;
 	roles: ObservableMap<string, RoleDAO>;
 
 	constructor(
 		relayRoles: ObservableMap<string, RelayRole>,
 		relays: ObservableMap<string, Relay>,
+		remoteFolders: ObservableMap<string, RemoteFolder>,
 		users: ObservableMap<string, RelayUser>,
 		roles: ObservableMap<string, RoleDAO>,
 	) {
 		this.relayRoles = relayRoles;
 		this.relays = relays;
+		this.remoteFolders = remoteFolders;
 		this.users = users;
 		this.roles = roles;
 	}
@@ -684,10 +687,12 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 		if (existingRole) {
 			existingRole.update(update);
 			this.relayRoles.notifyListeners();
+			this.remoteFolders.notifyListeners();
 			return existingRole;
 		}
 		const role = new RelayRoleAuto(update, this.relays, this.users, this.roles);
 		this.relayRoles.set(role.id, role);
+		this.remoteFolders.notifyListeners();
 		return role;
 	}
 
@@ -697,6 +702,7 @@ class RelayRolesCollection implements Collection<RelayRoleDAO, RelayRole> {
 			return;
 		}
 		this.relayRoles.delete(id);
+		this.remoteFolders.notifyListeners();
 	}
 }
 
@@ -727,6 +733,7 @@ class FolderRolesCollection implements Collection<FolderRoleDAO, FolderRole> {
 		if (existingRole) {
 			existingRole.update(update);
 			this.folderRoles.notifyListeners();
+			this.remoteFolders.notifyListeners();
 			return existingRole;
 		}
 		const role = new FolderRoleAuto(
@@ -736,11 +743,13 @@ class FolderRolesCollection implements Collection<FolderRoleDAO, FolderRole> {
 			this.roles,
 		);
 		this.folderRoles.set(role.id, role);
+		this.remoteFolders.notifyListeners();
 		return role;
 	}
 
 	delete(id: string) {
 		this.folderRoles.delete(id);
+		this.remoteFolders.notifyListeners();
 	}
 }
 
@@ -1570,6 +1579,7 @@ export class RelayManager extends HasLogging {
 		const relayRolesCollection = new RelayRolesCollection(
 			this.relayRoles,
 			this.relays,
+			this.remoteFolders,
 			this.users,
 			this.roles,
 		);
