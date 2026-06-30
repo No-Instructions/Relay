@@ -284,11 +284,6 @@ jobs:
             echo "Installed Obsidian $OBSIDIAN_VERSION"
           fi
 
-          export DISPLAY=:99
-          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
-          XVFB_PID=$!
-          sleep 1
-
           rm -rf /tmp/test-reports
           rm -f ~/test-summary.json ~/test-metadata.json
 
@@ -371,7 +366,7 @@ jobs:
           TEST_EXIT=0
           TEST_LOG="$HOME/test-plan-suite-output.txt"
           RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" \
-            bash ./scripts/run-test-plan-suite.sh "$REF" --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
+            bash ./scripts/run-test-plan-suite.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
           echo "Scripted test-plan runner exited with status $TEST_EXIT"
 
           LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
@@ -427,8 +422,6 @@ jobs:
             echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
             echo '{"reportUrl":"","commit":"","execId":""}' > ~/test-metadata.json
           fi
-
-          kill $XVFB_PID 2>/dev/null || true
 
           exit $TEST_EXIT
           REMOTE_SCRIPT
