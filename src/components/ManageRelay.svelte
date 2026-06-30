@@ -196,7 +196,7 @@
 			// Use customFetch directly since PocketBase's .send() tries to parse as JSON
 			const fullUrl =
 				plugin.relayManager.pb.baseUrl +
-				`/api/collections/relays/records/${relay.id}/relay.toml`;
+				`/api/self-host-relay-toml/${relay.id}`;
 			const response = await customFetch(fullUrl, {
 				method: "GET",
 				headers: {

@@ -37,8 +37,8 @@ const positionalArgs = process.argv.slice(3).filter((a) => !a.startsWith("--"));
 const out = positionalArgs[0] || ".";
 const tld = staging ? "dev" : "md";
 
-const apiUrl = `https://api.system3.${tld}`;
-const authUrl = `https://auth.system3.${tld}`;
+const apiUrl = process.env.RELAY_API_URL || `https://api.system3.${tld}`;
+const authUrl = process.env.RELAY_AUTH_URL || `https://auth.system3.${tld}`;
 const healthUrl = `${apiUrl}/health?version=${gitTag}`;
 console.log("git tag:", gitTag);
 console.log("health URL", healthUrl);

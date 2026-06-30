@@ -1675,7 +1675,7 @@ export class RelayManager extends HasLogging {
 			throw new Error("missing pocketbase");
 		}
 		return this.pb
-			.send("/api/rotate-key", {
+			.send("/api/self-host-rotate-key", {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
