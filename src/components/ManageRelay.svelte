@@ -524,6 +524,8 @@
 	});
 </script>
 
+<!-- E2E: data-view for test selectors -->
+<div data-view="manage-relay">
 <Breadcrumbs
 	items={[
 		{
@@ -998,6 +1000,7 @@
 				Transfer
 			</button>
 		</SettingItem-->
+</div>
 
 <style>
 	div.spacer {
