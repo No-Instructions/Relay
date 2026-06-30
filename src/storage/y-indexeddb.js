@@ -11,6 +11,59 @@ const updatesStoreName = 'updates'
 const historyStoreName = 'history'
 const DB_VERSION = 2
 const DESTROY_DRAIN_TIMEOUT_MS = 2000
+const requiredStores = [
+  [updatesStoreName, { autoIncrement: true }],
+  [customStoreName],
+  [historyStoreName, { autoIncrement: true }]
+]
+
+const createMissingStores = db => {
+  for (const [storeName, options] of requiredStores) {
+    if (!db.objectStoreNames.contains(storeName)) {
+      if (options) {
+        db.createObjectStore(storeName, options)
+      } else {
+        db.createObjectStore(storeName)
+      }
+    }
+  }
+}
+
+const isVersionError = err => err && err.name === 'VersionError'
+
+/**
+ * @param {string} name
+ * @param {number|undefined} version
+ * @return {Promise<IDBDatabase>}
+ */
+const openDbRequest = (name, version) => new Promise((resolve, reject) => {
+  const request = version === undefined
+    ? indexedDB.open(name)
+    : indexedDB.open(name, version)
+  request.onupgradeneeded = event => {
+    createMissingStores(/** @type {IDBDatabase} */ (event.target.result))
+  }
+  request.onblocked = () => {
+    idbWarn(`indexedDB.open blocked for ${name}`)
+  }
+  request.onerror = () => reject(request.error || new Error(`indexedDB.open failed for ${name}`))
+  request.onsuccess = () => resolve(request.result)
+})
+
+/**
+ * Opens the persistence DB at this release's target version. If the browser
+ * reports that the DB is newer than this build, reopen the current version and
+ * rely on additive store compatibility.
+ *
+ * @param {string} name
+ * @return {Promise<IDBDatabase>}
+ */
+export const openIndexeddbPersistenceDb = name =>
+  openDbRequest(name, DB_VERSION).catch(err => {
+    if (!isVersionError(err)) throw err
+    idbWarn(`indexedDB.open(${name}, ${DB_VERSION}) hit VersionError; reopening current version`)
+    return openDbRequest(name, undefined)
+  })
 
 /**
  * Compare two Uint8Arrays for equality
@@ -162,28 +215,7 @@ export class IndexeddbPersistence extends Observable {
      * @type {OpCapture|null}
      */
     this.opCapture = null
-    // Open IDB with explicit version to support schema migrations.
-    // The 'history' store holds serialized OpCapture entries.
-    this._openDb = new Promise((resolve, reject) => {
-      const request = indexedDB.open(name, DB_VERSION)
-      request.onupgradeneeded = (event) => {
-        const db = /** @type {IDBDatabase} */ (event.target.result)
-        if (!db.objectStoreNames.contains(updatesStoreName)) {
-          db.createObjectStore(updatesStoreName, { autoIncrement: true })
-        }
-        if (!db.objectStoreNames.contains(customStoreName)) {
-          db.createObjectStore(customStoreName)
-        }
-        if (!db.objectStoreNames.contains(historyStoreName)) {
-          db.createObjectStore(historyStoreName, { autoIncrement: true })
-        }
-      }
-      request.onblocked = () => {
-        idbWarn(`indexedDB.open blocked for ${name}`)
-      }
-      request.onerror = () => reject(request.error || new Error(`indexedDB.open failed for ${name}`))
-      request.onsuccess = () => resolve(request.result)
-    })
+    this._openDb = openIndexeddbPersistenceDb(name)
     this._db = new Promise((resolve, reject) => {
       this._rejectDbForDestroy = reject
       this._openDb.then(resolve, reject)
