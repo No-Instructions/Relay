@@ -1,4 +1,5 @@
 import { type SyncFlags, type SyncSettingsManager } from "./SyncSettings";
+import { isExcalidrawPath } from "./excalidrawPaths";
 import { getMimeType } from "./mimetypes";
 import { Observable } from "./observable/Observable";
 
@@ -331,6 +332,7 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 	}
 
 	canSync(vpath: string, meta?: Meta): boolean {
+		if (isExcalidrawPath(vpath)) return true;
 		if (vpath.endsWith(".md")) return true;
 
 		// For new folders
@@ -373,6 +375,10 @@ export class TypeRegistry extends Observable<TypeRegistry> {
 	}
 
 	getTypeForPath(vpath: string): SyncType {
+		if (isExcalidrawPath(vpath)) {
+			return SyncType.File;
+		}
+
 		const mimetype = getMimeType(vpath);
 
 		for (const [type, config] of this.protocols) {

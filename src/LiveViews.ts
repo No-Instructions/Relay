@@ -44,6 +44,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
 import { trackPromise } from "./trackPromise";
 import { isDocumentDestroyedError } from "./DocumentDestroyedError";
+import { isExcalidrawPath } from "./excalidrawPaths";
 
 /**
  * Access the LiveViewManager singleton via the Obsidian plugin registry.
@@ -1205,7 +1206,7 @@ export class LiveViewManager {
 				if (!child?.file) continue;
 
 				const filePath: string = child.file.path;
-				if (!filePath.endsWith(".md")) continue;
+				if (!filePath.endsWith(".md") || isExcalidrawPath(filePath)) continue;
 
 				const folder = this.sharedFolders.lookup(filePath);
 				if (!folder?.mergeManager || !folder.ready) continue;

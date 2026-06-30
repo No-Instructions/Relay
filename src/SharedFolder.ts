@@ -56,6 +56,7 @@ import { ContentAddressedStore } from "./CAS";
 import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
+import { isExcalidrawPath } from "./excalidrawPaths";
 import { flags } from "./flagManager";
 import { MergeManager } from "./merge-hsm/MergeManager";
 import {
@@ -1452,6 +1453,12 @@ export class SharedFolder extends HasProvider {
 			diffLog?.push(`creating directory ${dir}`);
 		}
 		if (meta.type === "markdown") {
+			if (isExcalidrawPath(vpath)) {
+				diffLog?.push(
+					`creating local excalidraw attachment for remotely added file ${vpath}`,
+				);
+				return this.getExcalidrawAsSyncFile(vpath, false);
+			}
 			diffLog?.push(`creating local .md file for remotely added doc ${vpath}`);
 			const doc = await this.downloadDoc(vpath, false);
 			if (!doc) {
@@ -2218,6 +2225,9 @@ export class SharedFolder extends HasProvider {
 			const meta = this.syncStore.getMeta(vpath);
 			if (meta) {
 				if (meta.type === "markdown") {
+					if (isExcalidrawPath(vpath)) {
+						return this.getExcalidrawAsSyncFile(vpath, update);
+					}
 					return this.getDoc(vpath);
 				}
 				if (meta.type === "canvas") {
@@ -2251,6 +2261,36 @@ export class SharedFolder extends HasProvider {
 			}
 		}
 		return null;
+	}
+
+	/**
+	 * Excalidraw files use a `.md` extension but must sync as attachments
+	 * (hash-based SyncFile) rather than CRDT documents to avoid merge corruption.
+	 */
+	private getExcalidrawAsSyncFile(vpath: string, update = true): SyncFile {
+		const guid = this.syncStore.get(vpath);
+		if (!guid) {
+			throw new Error(`missing guid for excalidraw file ${vpath}`);
+		}
+
+		const existing = this.files.get(guid);
+		if (existing) {
+			if (isSyncFile(existing)) {
+				return existing;
+			}
+			if (isDocument(existing)) {
+				this.log("migrating excalidraw from Document to SyncFile", vpath);
+				existing.destroy();
+				this.fset.delete(existing);
+				this.files.delete(guid);
+			}
+		}
+
+		const meta = this.syncStore.getMeta(vpath);
+		if (!meta || isDocumentMeta(meta)) {
+			return this.uploadSyncFile(vpath, update);
+		}
+		return this.getSyncFile(vpath, update);
 	}
 
 	placeHold(newFiles: TAbstractFile[]): string[] {
