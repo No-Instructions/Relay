@@ -1,3 +1,4 @@
+import { isExcalidrawPath } from "./excalidrawPaths";
 import { NamespacedSettings, Settings } from "./SettingsStorage";
 
 export interface SyncCategory {
@@ -112,6 +113,8 @@ export class SyncSettingsManager extends NamespacedSettings<
 	}
 
 	public isExtensionEnabled(path: string): boolean {
+		if (isExcalidrawPath(path)) return true;
+
 		const extension = path.split(".").pop() || "";
 		const normalizedExt = extension.toLowerCase();
 
@@ -136,6 +139,10 @@ export class SyncSettingsManager extends NamespacedSettings<
 	}
 
 	public requiresStorage(path: string): boolean {
+		if (isExcalidrawPath(path)) {
+			return SyncSettingsManager.schema.otherTypes.requiresStorage;
+		}
+
 		const extension = path.split(".").pop() || "";
 		const normalizedExt = extension.toLowerCase();
 

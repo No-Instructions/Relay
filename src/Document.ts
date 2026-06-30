@@ -24,6 +24,7 @@ import { generateHash } from "./hashing";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
+import { isExcalidrawPath } from "./excalidrawPaths";
 
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
@@ -692,7 +693,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	static checkExtension(vpath: string): boolean {
-		return vpath.endsWith(".md");
+		return vpath.endsWith(".md") && !isExcalidrawPath(vpath);
 	}
 
 	destroy() {

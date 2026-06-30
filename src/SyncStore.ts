@@ -15,6 +15,7 @@ import {
 	makeFolderMeta,
 	type Meta,
 } from "./SyncTypes";
+import { isExcalidrawPath } from "./excalidrawPaths";
 import type { SyncSettingsManager } from "./SyncSettings";
 
 export class SyncStore extends Observable<SyncStore> {
@@ -532,7 +533,7 @@ export class SyncStore extends Observable<SyncStore> {
 		}
 
 		if (!(this.meta.has(vpath) || this.overlay.has(vpath))) {
-			if (vpath.endsWith(".md")) {
+			if (vpath.endsWith(".md") && !isExcalidrawPath(vpath)) {
 				this.warn(`migrated legacy key on ${vpath}`);
 				this.overlay.set(vpath, makeDocumentMeta(guid));
 			}
