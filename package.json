@@ -50,14 +50,10 @@
 		"lucide-svelte": "^0.377.0",
 		"monkey-around": "^3.0.0",
 		"node-diff3": "^3.2.0",
-		"obsidian-daily-notes-interface": "^0.9.4",
 		"path-browserify": "^1.0.1",
 		"pocketbase": "^0.20.3",
-		"svelte-step-wizard": "^0.0.2",
 		"tslib": "2.4.0",
 		"uuid": "^9.0.1",
-		"y-leveldb": "^0.1.2",
-		"y-protocols": "^1.0.5",
-		"y-websocket": "^1.5.3"
+		"y-protocols": "^1.0.5"
 	}
 }
