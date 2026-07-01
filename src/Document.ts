@@ -154,6 +154,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this._parent.subscribe(this.path, (state) => {
 				if (state.intent === "disconnected") {
 					this.disconnect();
+					return;
+				}
+				if (
+					state.status === "connected" &&
+					this.shouldReconnectWithFolder()
+				) {
+					void this.connect();
 				}
 			}),
 		);
@@ -384,6 +391,20 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (this.destroyed) return true;
 		if (this.userLock) return false;
 		return !this.sharedFolder?.mergeManager?.isActive(this.guid);
+	}
+
+	/**
+	 * Documents with an open editor must rejoin the folder connection
+	 * themselves: SharedFolder.connect() only revives forked idle
+	 * documents, and LiveViews only reconnects when the view set changes.
+	 */
+	private shouldReconnectWithFolder(): boolean {
+		if (this.destroyed) return false;
+		if (this.connected || this.intent === "connected") return false;
+		return (
+			this.userLock ||
+			(this.sharedFolder?.mergeManager?.isActive(this.guid) ?? false)
+		);
 	}
 
 	/**
