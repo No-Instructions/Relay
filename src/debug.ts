@@ -431,6 +431,7 @@ class RelayMetrics {
 	private postieDelivery: MetricInstance | null = null;
 	private postieMailboxDepth: MetricInstance | null = null;
 	private postieDeliveries: MetricInstance | null = null;
+	private postieRecipientErrors: MetricInstance | null = null;
 
 	// BackgroundSync
 	private bgSyncOpSeconds: MetricInstance | null = null;
@@ -536,6 +537,10 @@ class RelayMetrics {
 		this.postieDeliveries = api.createCounter({
 			name: "relay_postie_deliveries_total",
 			help: "Total individual recipient deliveries",
+		});
+		this.postieRecipientErrors = api.createCounter({
+			name: "relay_postie_recipient_errors_total",
+			help: "Total recipient deliveries that threw",
 		});
 
 		// BackgroundSync
@@ -699,6 +704,10 @@ class RelayMetrics {
 
 	incPostieDeliveries(): void {
 		this.postieDeliveries?.inc();
+	}
+
+	incPostieRecipientErrors(): void {
+		this.postieRecipientErrors?.inc();
 	}
 
 	observeBgSyncOp(operation: "sync" | "download", durationSeconds: number): void {

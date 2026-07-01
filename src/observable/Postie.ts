@@ -1,8 +1,38 @@
 "use strict";
 
+/**
+ * PostOffice delivery contracts:
+ *
+ * - Timers are only best-effort pokes. Chrome can heavily throttle or suspend
+ *   timers in hidden tabs, so correctness must not depend on a timeout firing.
+ *   Every state-changing input (`send`, `commitTransaction`, the deadline
+ *   timer, and external pokes such as `visibilitychange`) feeds `tick()`, which
+ *   decides what to do from current state.
+ * - The delivery window is a coalescing hint, not a hard clock dependency. A
+ *   pending batch may be flushed by the next non-timer input when the deadline
+ *   timer is late or absent.
+ * - Mail is coalesced by recipient and sender. Multiple notifications from the
+ *   same sender to the same recipient within the active window, including
+ *   same-sender re-entrant notifications during delivery, intentionally collapse
+ *   to one delivery.
+ * - Re-entrant notifications for new sender/recipient pairs are drained by
+ *   iterating the live mailbox map, so ordinary cascades complete in the same
+ *   delivery pass before teardown can cancel their pending mail.
+ * - Recipient callbacks must not run synchronously up a caller's `send` stack.
+ *   Overdue flushes are scheduled on a microtask; deadline callbacks already run
+ *   on a clean stack.
+ */
+
 import { DefaultTimeProvider, type TimeProvider } from "../TimeProvider";
 import { RelayInstances, curryLog, metrics } from "../debug";
 import type { IObservable } from "./Observable";
+
+// Hoisted so `deliver()` doesn't allocate a logger each pass. curryLog
+// stringifies its args and only ever hands a string to console — deliberately
+// avoiding raw console.* calls, which would let devtools retain the logged
+// objects (senders, errors) and pin plugin state past unload.
+const postieDebug = curryLog("[postie]", "debug");
+const postieError = curryLog("[postie]", "error");
 
 export interface Mail<T> {
 	sender: T & IObservable<T>;
@@ -20,9 +50,16 @@ export class PostOffice {
 	private allMailLog: Mail<any>[] = [];
 	private deliveredMailLog: Mail<any>[] = [];
 	private isDelivering: boolean = false;
-	private deliveryInterval: number | null = null;
+	private deadlineTimer: number | null = null;
+	private windowStartedAt: number | null = null;
+	private flushScheduled: boolean = false;
 	private currentTransactionId: number = 0;
 	private isInTransaction: boolean = false;
+
+	private static readonly MAX_DELIVERIES_PER_FLUSH = 10_000;
+	// Diagnostic ring buffers: bounded so a long, busy session can't grow them
+	// without limit (each entry pins its sender observable and recipient closure).
+	private static readonly MAX_MAIL_LOG = 1_000;
 
 	private constructor(
 		private timeProvider: TimeProvider,
@@ -64,9 +101,7 @@ export class PostOffice {
 
 	commitTransaction(): void {
 		this.isInTransaction = false;
-		if (!this.isDelivering) {
-			this.scheduleDelivery();
-		}
+		this.tick();
 	}
 
 	/**
@@ -75,6 +110,16 @@ export class PostOffice {
 	 */
 	cancel(recipient: (value: any) => void): void {
 		this.mailboxes.delete(recipient);
+		// If that was the last pending mail, retire the coalescing window and any
+		// armed deadline so the next batch starts a fresh, full window rather than
+		// inheriting this one's leftover time.
+		if (!this.hasPendingMail()) {
+			this.windowStartedAt = null;
+			if (this.deadlineTimer !== null) {
+				this.timeProvider.clearTimeout(this.deadlineTimer);
+				this.deadlineTimer = null;
+			}
+		}
 	}
 
 	send<T>(
@@ -89,7 +134,7 @@ export class PostOffice {
 			timestamp: Date.now(),
 			recipientOrigin: this.getFunctionOrigin(recipient),
 		};
-		this.allMailLog.push(mail);
+		this.recordMail(this.allMailLog, mail);
 
 		if (!this.mailboxes.has(recipient)) {
 			this.mailboxes.set(recipient, new Set());
@@ -99,8 +144,12 @@ export class PostOffice {
 		if (immediate) {
 			this.deliverImmediate(sender, recipient);
 			this.mailboxes.get(recipient)?.delete(sender);
-		} else if (!this.isInTransaction && !this.isDelivering) {
-			this.scheduleDelivery();
+			this.deleteMailboxIfEmpty(recipient);
+		} else {
+			if (this.windowStartedAt === null) {
+				this.windowStartedAt = this.timeProvider.now();
+			}
+			this.tick();
 		}
 	}
 
@@ -109,7 +158,7 @@ export class PostOffice {
 		recipient: (value: T) => void,
 	): void {
 		recipient(sender);
-		this.deliveredMailLog.push({
+		this.recordMail(this.deliveredMailLog, {
 			sender,
 			recipient,
 			transactionId: this.currentTransactionId,
@@ -118,38 +167,176 @@ export class PostOffice {
 		});
 	}
 
-	private scheduleDelivery(): void {
+	/**
+	 * Re-evaluate whether a delivery should happen now. Every input — a new
+	 * `send`, a `commitTransaction`, the deadline timer firing, or an external
+	 * poke such as a visibility change — calls this. The decision is a function
+	 * of state (pending mail, whether we're mid-delivery or mid-transaction, and
+	 * how long the batch has waited), not of which input fired, so a throttled or
+	 * missed timer is just a skipped poke: the next input re-evaluates and
+	 * catches up.
+	 */
+	tick(): void {
+		// `tick()` is reachable from external pokes (e.g. a visibilitychange
+		// handler), which may fire during teardown after `mailboxes` is nulled.
+		if (!this.mailboxes) return;
+		if (this.isDelivering || this.flushScheduled || this.isInTransaction) {
+			return;
+		}
+		// A deadline is already pending and the window has not elapsed: nothing
+		// to do. This keeps a storm of `send`s O(1) each instead of rescanning.
+		if (this.deadlineTimer !== null && !this.isWindowElapsed()) {
+			return;
+		}
+		if (!this.hasPendingMail()) {
+			this.windowStartedAt = null;
+			return;
+		}
+		if (this.isWindowElapsed()) {
+			// The coalescing window has passed (or the timer was throttled past
+			// it). Deliver on a microtask rather than inline, so a delivery
+			// triggered from inside a `send` never fires recipients synchronously
+			// up the caller's stack.
+			this.scheduleFlush();
+		} else {
+			this.armDeadline();
+		}
+	}
+
+	private isWindowElapsed(): boolean {
+		if (this.windowStartedAt === null) return true;
+		const elapsed = this.timeProvider.now() - this.windowStartedAt;
+		// A backward wall-clock step (NTP correction, manual change) makes the
+		// delta negative; treat that as elapsed so a clock correction can't strand
+		// pending mail behind a far-future deadline.
+		return elapsed < 0 || elapsed >= this.deliveryWindow;
+	}
+
+	private armDeadline(): void {
+		if (this.deadlineTimer !== null) return;
+		const remaining =
+			this.windowStartedAt === null
+				? this.deliveryWindow
+				: this.windowStartedAt + this.deliveryWindow - this.timeProvider.now();
+		// Clamp to [0, deliveryWindow]: a backward clock step can make `remaining`
+		// larger than a window, which must never delay delivery beyond it.
+		const delay = Math.min(this.deliveryWindow, Math.max(0, remaining));
+		this.deadlineTimer = this.timeProvider.setTimeout(() => {
+			this.deadlineTimer = null;
+			// The timer fires on a clean stack, so deliver directly.
+			this.runDelivery();
+		}, delay);
+	}
+
+	private scheduleFlush(): void {
+		if (this.flushScheduled) return;
+		this.flushScheduled = true;
+		queueMicrotask(() => {
+			this.flushScheduled = false;
+			this.runDelivery();
+		});
+	}
+
+	private runDelivery(): void {
+		// Guard against firing on a torn-down singleton (a queued microtask or
+		// timer can outlive `destroy()`).
+		if (!this.mailboxes || this.isDelivering || this.isInTransaction) return;
+		if (!this.hasPendingMail()) {
+			this.windowStartedAt = null;
+			return;
+		}
+		if (this.deadlineTimer !== null) {
+			this.timeProvider.clearTimeout(this.deadlineTimer);
+			this.deadlineTimer = null;
+		}
 		this.isDelivering = true;
-		this.deliveryInterval = this.timeProvider.setTimeout(() => {
+		try {
 			this.deliver();
-			this.deliveryInterval = null;
+		} finally {
 			this.isDelivering = false;
-			if (this.mailboxes.size > 0 && !this.isInTransaction) {
-				this.scheduleDelivery();
+			if (this.hasPendingMail()) {
+				// The per-flush bound was hit (a large or cyclic cascade — an
+				// ordinary re-entrant emit drains in the loop above). Re-poke on a
+				// microtask, never a timer: delivery must stay independent of timer
+				// throttling. The bound keeps each synchronous chunk finite.
+				this.windowStartedAt = this.timeProvider.now();
+				this.scheduleFlush();
+			} else {
+				this.windowStartedAt = null;
 			}
-		}, this.deliveryWindow);
+		}
 	}
 
 	private deliver(): void {
 		const t0 = performance.now();
 		metrics.setPostieMailboxDepth(this.mailboxes.size);
-		const log = curryLog("[postie]", "debug");
+		// Counts items processed (delivered or failed), not successes — it bounds
+		// total work per pass so a recipient that re-emits on every delivery can't
+		// spin the in-place drain forever.
+		let processed = 0;
+		// Iterate the live map (no snapshot). A notification a recipient emits
+		// during its own delivery is appended and drained in this same pass —
+		// `Map`/`Set` iteration visits entries added mid-iteration — so it is
+		// delivered before control returns to the caller, where a teardown might
+		// otherwise unsubscribe the recipient and strip its in-flight mail.
 		for (const [recipient, senders] of this.mailboxes) {
 			for (const sender of senders) {
-				recipient(sender);
-				metrics.incPostieDeliveries();
-				log("send", sender.constructor.name, recipient);
-				this.deliveredMailLog.push({
-					sender,
-					recipient,
-					transactionId: this.currentTransactionId,
-					timestamp: Date.now(),
-					recipientOrigin: this.getFunctionOrigin(recipient),
-				});
+				if (processed >= PostOffice.MAX_DELIVERIES_PER_FLUSH) {
+					metrics.observePostieDelivery((performance.now() - t0) / 1000);
+					return;
+				}
+				try {
+					recipient(sender);
+					metrics.incPostieDeliveries();
+					postieDebug("send", sender.constructor.name, recipient);
+					this.recordMail(this.deliveredMailLog, {
+						sender,
+						recipient,
+						transactionId: this.currentTransactionId,
+						timestamp: Date.now(),
+						recipientOrigin: this.getFunctionOrigin(recipient),
+					});
+				} catch (cause) {
+					// Always count failures: the metric is scraped and survives with
+					// the debug flag off. Detail goes through curryLog, which
+					// stringifies its args and honors the debug flag — never a raw
+					// console.* call, which would let devtools retain the sender and
+					// error and pin plugin state past unload.
+					metrics.incPostieRecipientErrors();
+					postieError("recipient delivery failed", sender.constructor.name, cause);
+				}
+				senders.delete(sender);
+				processed++;
 			}
-			senders.clear();
+			// Delete only if the set drained empty. A recipient that unsubscribed
+			// and was re-notified during this pass has a freshly re-created,
+			// non-empty entry that the live iteration must still visit.
+			this.deleteMailboxIfEmpty(recipient);
 		}
 		metrics.observePostieDelivery((performance.now() - t0) / 1000);
+	}
+
+	private hasPendingMail(): boolean {
+		for (const senders of this.mailboxes.values()) {
+			if (senders.size > 0) return true;
+		}
+		return false;
+	}
+
+	private deleteMailboxIfEmpty(recipient: (value: any) => void): void {
+		const senders = this.mailboxes.get(recipient);
+		if (senders && senders.size === 0) {
+			this.mailboxes.delete(recipient);
+		}
+	}
+
+	private recordMail(logArray: Mail<any>[], mail: Mail<any>): void {
+		logArray.push(mail);
+		// Trim in batches (drop to the cap only after growing to 2x) so the hot
+		// path stays amortized O(1) rather than O(n) on every push.
+		if (logArray.length > PostOffice.MAX_MAIL_LOG * 2) {
+			logArray.splice(0, logArray.length - PostOffice.MAX_MAIL_LOG);
+		}
 	}
 
 	getAllMailLog(): Mail<any>[] {
@@ -242,6 +429,9 @@ export class PostOffice {
 			// Reset flags
 			PostOffice.instance.isDelivering = false;
 			PostOffice.instance.isInTransaction = false;
+			PostOffice.instance.deadlineTimer = null;
+			PostOffice.instance.windowStartedAt = null;
+			PostOffice.instance.flushScheduled = false;
 
 			// Reset transaction ID
 			PostOffice.instance.currentTransactionId = 0;

@@ -542,6 +542,17 @@ export default class Live extends Plugin {
 			(ref) => this.registerEvent(ref),
 			(el, type, callback) => this.registerDomEvent(el, type, callback),
 		);
+		// While the page is hidden, the PostOffice delivery timer can be throttled
+		// or suspended, so a pending batch may sit undelivered. On returning to the
+		// foreground, poke the PostOffice to re-evaluate and flush anything that
+		// was waiting out a throttled timer, rather than waiting for it to wake.
+		if (typeof document !== "undefined") {
+			this.registerDomEvent(document, "visibilitychange", () => {
+				if (document.visibilityState === "visible") {
+					PostOffice.peekInstance()?.tick();
+				}
+			});
+		}
 		this.notifier = new ObsidianNotifier();
 
 		this.debug = curryLog("[System 3][Relay]", "debug");
