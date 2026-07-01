@@ -380,6 +380,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return Promise.resolve();
 	}
 
+	protected shouldCompleteDeferredDisconnect(): boolean {
+		if (this.destroyed) return true;
+		if (this.userLock) return false;
+		return !this.sharedFolder?.mergeManager?.isActive(this.guid);
+	}
+
 	/**
 	 * Get the HSM sync status for this document.
 	 * Returns the status if HSM is available, or null otherwise.

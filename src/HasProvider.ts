@@ -367,6 +367,10 @@ export class HasProvider extends HasLogging {
 		this._deferredDisconnectStatusListener = null;
 	}
 
+	protected shouldCompleteDeferredDisconnect(): boolean {
+		return true;
+	}
+
 	deferDisconnectForPendingMessages(timeoutMs: number = 2000): boolean {
 		const provider = this._provider;
 		if (!provider || provider._pendingMessages.length === 0) {
@@ -380,6 +384,10 @@ export class HasProvider extends HasLogging {
 				this.clearDeferredDisconnect();
 				return;
 			}
+			if (!this.shouldCompleteDeferredDisconnect()) {
+				this.clearDeferredDisconnect();
+				return;
+			}
 			this.disconnect();
 		};
 
@@ -387,7 +395,10 @@ export class HasProvider extends HasLogging {
 			// YSweetProvider emits "status: connected" before its onopen
 			// handler flushes buffered sync frames. Defer one task so the
 			// pending messages are actually sent before we close the socket.
-			window.setTimeout(finishDisconnect, 0);
+			this._deferredDisconnectTimer = this.timeProvider.setTimeout(
+				finishDisconnect,
+				0,
+			);
 		};
 
 		this._deferredDisconnectStatusListener = (state: ConnectionState) => {
@@ -404,6 +415,10 @@ export class HasProvider extends HasLogging {
 
 		this._deferredDisconnectTimer = this.timeProvider.setTimeout(() => {
 			if (this._provider !== provider) {
+				this.clearDeferredDisconnect();
+				return;
+			}
+			if (!this.shouldCompleteDeferredDisconnect()) {
 				this.clearDeferredDisconnect();
 				return;
 			}
