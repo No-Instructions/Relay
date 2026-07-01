@@ -46,7 +46,6 @@
 		"diff": "^5.2.0",
 		"diff-match-patch": "^1.0.5",
 		"eventsource": "^2.0.2",
-		"gray-matter": "^4.0.3",
 		"jose": "^5.3.0",
 		"lucide-svelte": "^0.377.0",
 		"monkey-around": "^3.0.0",
