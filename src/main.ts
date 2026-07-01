@@ -28,6 +28,7 @@ import {
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
+import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -93,6 +94,7 @@ import {
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
+import { MetadataHealth } from "./MetadataHealth";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -145,10 +147,12 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
+	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
 	private relayDebugAPI!: RelayDebugAPI;
+	private metadataHealth: MetadataHealth | null = null;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -577,6 +581,13 @@ export default class Live extends Plugin {
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
+		this.register(
+			flagManager.subscribe((manager) => {
+				this.setMetadataHealthFeatureEnabled(
+					manager.getFlag(flag.enableMetadataHealthNotice),
+				);
+			}),
+		);
 
 		// Initialize HSM disk recording if enabled
 		if (flags().enableHSMRecording) {
@@ -1004,6 +1015,37 @@ export default class Live extends Plugin {
 			this.loadTime = moment.now() - start;
 			onloadComplete();
 		});
+	}
+
+	private setMetadataHealthFeatureEnabled(enabled: boolean): void {
+		if (this._unloading) return;
+
+		if (!enabled) {
+			this.destroyMetadataHealthFeature();
+			return;
+		}
+
+		if (!this.metadataHealth) {
+			this.metadataHealth = new MetadataHealth(
+				this.app.metadataCache,
+				this.timeProvider,
+			);
+			this.metadataHealth.start();
+		}
+
+		if (!this.metadataHealthSidebarNotice) {
+			this.metadataHealthSidebarNotice = new MetadataHealthSidebarNoticeMount(
+				this.app.workspace,
+				this.metadataHealth,
+			);
+		}
+	}
+
+	private destroyMetadataHealthFeature(): void {
+		this.metadataHealthSidebarNotice?.destroy();
+		this.metadataHealthSidebarNotice = null;
+		this.metadataHealth?.destroy();
+		this.metadataHealth = null;
 	}
 
 	private _createSharedFolder(
@@ -1704,6 +1746,10 @@ export default class Live extends Plugin {
 		// Cleanup all monkeypatches and destroy the singleton
 		teardownStep("Patcher.destroy", () => {
 			Patcher.destroy();
+		});
+
+		teardownStep("metadataHealthFeature.destroy", () => {
+			this.destroyMetadataHealthFeature();
 		});
 
 		teardownStep("timeProvider.destroy", () => {

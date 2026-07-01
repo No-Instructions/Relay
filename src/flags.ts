@@ -12,6 +12,7 @@ export interface FeatureFlags {
 	enableDraftMode: boolean;
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
+	enableMetadataHealthNotice: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -133,6 +134,13 @@ export const FeatureFlagSchema: {
 		title: "Migrate folder IndexedDB",
 		description:
 			"Copy folder-level IndexedDB stores into the app-scoped folder database on next open.",
+	},
+	enableMetadataHealthNotice: {
+		default: true,
+		category: "debugging",
+		title: "Metadata database health notice",
+		description:
+			"Show a sidebar notice when Obsidian's metadata database cannot be queried.",
 	},
 };
 
