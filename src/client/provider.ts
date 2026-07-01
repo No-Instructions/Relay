@@ -1002,6 +1002,7 @@ export class YSweetProvider extends Observable<string> {
 	}
 
 	disconnect() {
+		const hadSocket = this.ws !== null;
 		this.shouldConnect = false;
 		this.wsconnected = false;
 		this.wsconnecting = false;
@@ -1015,6 +1016,14 @@ export class YSweetProvider extends Observable<string> {
 		if (this.ws !== null) {
 			this.ws.close();
 			this.ws = null;
+		}
+		if (hadSocket) {
+			// websocket.onclose ignores sockets the provider no longer owns,
+			// so an intentional disconnect announces the closure itself.
+			this.emit("connection-close", [
+				{ code: 1000, reason: "client disconnect", wasClean: true },
+				this,
+			]);
 		}
 	}
 
