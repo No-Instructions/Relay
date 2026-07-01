@@ -21,8 +21,27 @@ interface Token {
 	value?: string;
 }
 
-function tokenize(input: string) {
-	const tokens = [];
+function escapeHtml(text: string): string {
+	return text.replace(/[&<>"']/g, (char) => {
+		switch (char) {
+			case "&":
+				return "&amp;";
+			case "<":
+				return "&lt;";
+			case ">":
+				return "&gt;";
+			case '"':
+				return "&quot;";
+			case "'":
+				return "&#39;";
+			default:
+				return char;
+		}
+	});
+}
+
+function tokenize(input: string): Token[] {
+	const tokens: Token[] = [];
 	let currentText = "";
 
 	let i = 0;
@@ -73,7 +92,7 @@ function parse(tokens: Token[]): string {
 		switch (state) {
 			case State.NORMAL:
 				if (token.type === TokenType.TEXT) {
-					html += token.value;
+					html += escapeHtml(token.value ?? "");
 				} else if (token.type === TokenType.STAR) {
 					state = State.EMPHASIS;
 					html += "<u>";
@@ -85,7 +104,7 @@ function parse(tokens: Token[]): string {
 
 			case State.EMPHASIS:
 				if (token.type === TokenType.TEXT) {
-					html += token.value;
+					html += escapeHtml(token.value ?? "");
 				} else if (token.type === TokenType.STAR) {
 					state = State.NORMAL;
 					html += "</u>";
@@ -99,11 +118,11 @@ function parse(tokens: Token[]): string {
 
 			case State.BOLD:
 				if (token.type === TokenType.TEXT) {
-					html += token.value;
+					html += escapeHtml(token.value ?? "");
 				} else if (token.type === TokenType.STAR) {
 					// Handle edge case: we're in bold and found a single star
 					// This is likely an error, but we'll handle it by treating it as text
-					html += "*";
+					html += escapeHtml("*");
 				} else if (token.type === TokenType.DOUBLE_STAR) {
 					state = State.NORMAL;
 					html += "</strong>";
