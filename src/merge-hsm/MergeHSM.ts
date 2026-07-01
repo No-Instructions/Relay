@@ -2321,8 +2321,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 			// === Active entering/tracking guards ===
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
-			persistenceEmptyAndProviderNotSynced: (_hsm, event) =>
-				(event as any).hasContent !== true && !this._providerSynced && this._lca !== null,
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
 			activeReconcileBaseReady: () => !this.needsFullStateForActiveEntry(),
