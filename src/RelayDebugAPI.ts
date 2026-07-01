@@ -13,6 +13,8 @@ import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
+import { base64ToUint8Array, uint8ArrayToBase64 } from './merge-hsm/recording/serialization';
+import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
 import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
@@ -208,6 +210,17 @@ export interface EditorInfo {
   active: boolean;
 }
 
+export interface EditorSnapshot {
+  content: string;
+  /** Base64-encoded Yjs snapshot of the active localDoc. Treat as opaque. */
+  snapshot: string;
+}
+
+export interface SetEditorContentOptions {
+  /** Base64 snapshot returned by captureEditorSnapshot. */
+  base?: string;
+}
+
 export type SetEditorContentResult =
   | { success: true; changeCount: number }
   | { success: false; error: string };
@@ -219,6 +232,8 @@ export interface RelayDebugGlobal {
   closeEditor: (handle: EditorHandle) => Promise<void>;
   /** Read the editor text from the exact leaf. Throws if the leaf drifted. */
   getEditorContent: (handle: EditorHandle) => Promise<string>;
+  /** Capture the editor text and an opaque localDoc snapshot for a later base-aware write. */
+  captureEditorSnapshot: (handle: EditorHandle) => Promise<EditorSnapshot>;
   /** Inspect a handle without mutating focus or throwing on drift. */
   getEditorInfo: (handle: EditorHandle) => EditorInfo;
   /** Enumerate every open markdown editor leaf with its handle and state. */
@@ -246,7 +261,7 @@ export interface RelayDebugGlobal {
   /** Get a snapshot of all content views for a document */
   getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
   /** Set the editor text via minimal CM6 transactions. Throws if the leaf drifted. */
-  setEditorContent: (handle: EditorHandle, content: string) => Promise<SetEditorContentResult>;
+  setEditorContent: (handle: EditorHandle, content: string, options?: SetEditorContentOptions) => Promise<SetEditorContentResult>;
   /** Look up a document by vault-level path including the shared-folder prefix (e.g. "/private/foo.md"). Returns document, HSM, folder, and GUID. */
   lookupDocument: (path: string) => { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null;
   /** Look up a shared folder by path (e.g. "private"). Returns the SharedFolder or null. */
@@ -538,7 +553,8 @@ export class RelayDebugAPI {
         return await this.plugin.relayManager.destroyRelay(relay);
       },
 
-      setEditorContent: (handle, content) => this.setEditorContent(handle, content),
+      captureEditorSnapshot: (handle) => this.captureEditorSnapshot(handle),
+      setEditorContent: (handle, content, options) => this.setEditorContent(handle, content, options),
 
       lookupFolder: (path: string) => {
         if (!this.plugin?.sharedFolders?._set) return null;
@@ -770,20 +786,117 @@ export class RelayDebugAPI {
     return editor.getValue();
   }
 
+  private lookupLocalDocForEditorPath(path: string): Y.Doc {
+    const lookupPath = path.startsWith('/') ? path : `/${path}`;
+    const lookup = this.debugGlobal()?.lookupDocument?.(lookupPath);
+    if (!lookup) {
+      throw new Error(`Document not found for editor path: ${path}`);
+    }
+    const localDoc = lookup.hsm?.getLocalDoc?.() ?? lookup.doc?.localDoc;
+    if (!localDoc) {
+      throw new Error(`localDoc not available for editor path: ${path}`);
+    }
+    return localDoc;
+  }
+
+  private errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  private async captureEditorSnapshot(handle: EditorHandle): Promise<EditorSnapshot> {
+    const leaf = this.resolveAndVerify(handle);
+    const editor = leaf.view?.editor;
+    const cm = editor?.cm;
+    if (!cm) {
+      throw new Error(`leaf has no CM6 EditorView: ${handle.path}`);
+    }
+
+    const localDoc = this.lookupLocalDocForEditorPath(handle.path);
+    const content = cm.state.doc.toString();
+    const localText = localDoc.getText('contents').toString();
+    if (content !== localText) {
+      throw new Error(`editor text does not match localDoc for ${handle.path}`);
+    }
+
+    return {
+      content,
+      snapshot: uint8ArrayToBase64(snapshotFromDoc(localDoc).snapshot),
+    };
+  }
+
+  private restoreLocalDocTextAtSnapshot(localDoc: Y.Doc, baseSnapshot: YjsSnapshot): string {
+    const originDoc = new Y.Doc({ gc: false });
+    let restoredDoc: Y.Doc | null = null;
+    try {
+      Y.applyUpdate(originDoc, Y.encodeStateAsUpdate(localDoc));
+      restoredDoc = Y.createDocFromSnapshot(
+        originDoc,
+        Y.decodeSnapshot(baseSnapshot.snapshot),
+      );
+      if (!snapshotsEqual(snapshotFromDoc(restoredDoc), baseSnapshot)) {
+        throw new Error('restored snapshot does not match requested snapshot');
+      }
+      return restoredDoc.getText('contents').toString();
+    } finally {
+      restoredDoc?.destroy();
+      originDoc.destroy();
+    }
+  }
+
   private async setEditorContent(
     handle: EditorHandle,
     content: string,
+    options?: SetEditorContentOptions,
   ): Promise<SetEditorContentResult> {
     const leaf = this.resolveAndVerify(handle);
     const editor = leaf.view?.editor;
     const cm = editor?.cm;
     if (!cm) return { success: false, error: 'leaf has no CM6 EditorView' };
+    if (options?.base !== undefined && typeof options.base !== 'string') {
+      return { success: false, error: 'base must be a snapshot string' };
+    }
 
     const before = cm.state.doc.toString();
-    if (before === content) return { success: true, changeCount: 0 };
-
     const dmp = new diff_match_patch();
-    const diffs = dmp.diff_main(before, content);
+    let target = content;
+
+    if (options?.base !== undefined) {
+      let baseSnapshot: YjsSnapshot;
+      let localDoc: Y.Doc;
+      let baseText: string;
+
+      try {
+        baseSnapshot = { snapshot: base64ToUint8Array(options.base) };
+        localDoc = this.lookupLocalDocForEditorPath(handle.path);
+
+        const localText = localDoc.getText('contents').toString();
+        if (before !== localText) {
+          return { success: false, error: 'editor text does not match localDoc' };
+        }
+
+        const currentSnapshot = snapshotFromDoc(localDoc);
+        if (!snapshotContains(currentSnapshot, baseSnapshot)) {
+          return { success: false, error: 'base snapshot is not contained by current localDoc' };
+        }
+
+        baseText = this.restoreLocalDocTextAtSnapshot(localDoc, baseSnapshot);
+      } catch (error) {
+        return { success: false, error: `base snapshot could not be restored: ${this.errorMessage(error)}` };
+      }
+
+      if (baseText !== before) {
+        const patches = dmp.patch_make(baseText, content);
+        const [rebased, applied] = dmp.patch_apply(patches, before) as [string, boolean[]];
+        if (!applied.every(Boolean)) {
+          return { success: false, error: 'base snapshot patch no longer applies to editor' };
+        }
+        target = rebased;
+      }
+    }
+
+    if (before === target) return { success: true, changeCount: 0 };
+
+    const diffs = dmp.diff_main(before, target);
     dmp.diff_cleanupSemantic(diffs);
 
     const changes: { from: number; to: number; insert: string }[] = [];
