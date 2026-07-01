@@ -1700,8 +1700,17 @@ export class BackgroundSync extends HasLogging {
 	private shouldEnqueueForRemoteHeadSync(doc: Document): boolean {
 		if (this.shouldSkipDocumentSync(doc)) return false;
 		if (doc.hsm?.hasFork()) return false;
-		return doc.sharedFolder.mergeManager?.isServerAdvertisedRemoteAhead(doc.guid)
-			?? false;
+		const mergeManager = doc.sharedFolder.mergeManager;
+		if (!mergeManager) return false;
+		if (mergeManager.isServerAdvertisedRemoteAhead(doc.guid)) return true;
+		// A document edited in the editor while offline and closed before
+		// reconnect holds local ops the server lacks. It has no fork and no
+		// open editor, so no other path pushes those ops — run a sync
+		// session to flush them. Skip docs with an open editor or a live
+		// provider: their own connection already carries local ops.
+		if (doc.userLock || mergeManager.isActive(doc.guid)) return false;
+		if (doc.intent === "connected") return false;
+		return mergeManager.isServerAdvertisedOutOfSync(doc.guid);
 	}
 
 	private shouldEnqueueForLCABackfill(doc: Document): boolean {
