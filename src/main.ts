@@ -93,6 +93,7 @@ import {
 	setPluginRequestConfig,
 } from "./customFetch";
 import { RelayDebugAPI } from "./RelayDebugAPI";
+import { RelayPublicApi, type RelayPublicApiV1 } from "./RelayPublicApi";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
 
@@ -152,6 +153,7 @@ export default class Live extends Plugin {
 	relayManager!: RelayManager;
 	deviceManager!: DeviceManager;
 	private relayDebugAPI!: RelayDebugAPI;
+	public api!: RelayPublicApiV1;
 	private metadataHealth: MetadataHealth | null = null;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
@@ -797,6 +799,8 @@ export default class Live extends Plugin {
 			this.folderSettings,
 			this._hsmStore,
 		);
+		this.api = new RelayPublicApi(this);
+		(this.app.workspace as any).trigger("system3-relay:api-ready", this.api);
 
 		// Register the sync-status view factory before the workspace layout
 		// is restored. Obsidian restores leaves during boot; leaves of an
@@ -1740,6 +1744,9 @@ export default class Live extends Plugin {
 				this.pendingVaultDeleteFlush = null;
 			}
 			this.pendingVaultDeletes = [];
+		});
+		teardownStep("publicApi.clear", () => {
+			this.api = null as any;
 		});
 		// Clean up debug API globals
 		teardownStep("relayDebugAPI.destroy", () => {
