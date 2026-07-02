@@ -2124,11 +2124,13 @@ export class BackgroundSync extends HasLogging {
 		}
 	}
 
-	private async getDocument(
-		doc: Document,
-		retry = 3,
-		wait = 3000,
-	): Promise<Uint8Array | undefined> {
+	private async getDocument(doc: Document): Promise<Uint8Array | undefined> {
+		if (doc.sharedFolder.serverEmptyTerminal(doc.guid)) {
+			this.debug(
+				`[getDocument] skipped ${doc.path}: server has no content for guid; awaiting server evidence`,
+			);
+			return undefined;
+		}
 		try {
 			const response = await this.downloadItem(doc);
 			const rawUpdate = response.arrayBuffer;
@@ -2146,16 +2148,13 @@ export class BackgroundSync extends HasLogging {
 					this.enqueueSync(doc);
 					return undefined;
 				}
+				// The server pushes a document.updated event once a peer
+				// uploads content, which re-enables downloads for the guid —
+				// no timer-based retry needed.
+				doc.sharedFolder.recordServerEmpty(doc.guid);
 				this.log(
 					"[getDocument] Server contains uninitialized document. Waiting for peer to upload.",
-					retry,
-					wait,
 				);
-				if (retry > 0) {
-					this.timeProvider.setTimeout(() => {
-						this.getDocument(doc, retry - 1, wait * 2);
-					}, wait);
-				}
 				return undefined;
 			}
 
