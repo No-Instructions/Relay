@@ -29,6 +29,7 @@ import {
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
+import { MetadataRepairModal } from "./ui/MetadataRepairModal";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -1038,9 +1039,13 @@ export default class Live extends Plugin {
 		}
 
 		if (!this.metadataHealthSidebarNotice) {
+			const metadataHealth = this.metadataHealth;
 			this.metadataHealthSidebarNotice = new MetadataHealthSidebarNoticeMount(
 				this.app.workspace,
-				this.metadataHealth,
+				metadataHealth,
+				() => {
+					new MetadataRepairModal(this.app, metadataHealth).open();
+				},
 			);
 		}
 	}

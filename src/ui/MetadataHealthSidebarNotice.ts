@@ -12,6 +12,7 @@ export class MetadataHealthSidebarNoticeMount {
 	constructor(
 		private workspace: Workspace,
 		private metadataHealth: MetadataHealth,
+		private onRepairClick: (() => void) | null = null,
 	) {
 		this.workspace.onLayoutReady(() => {
 			this.layoutReady = true;
@@ -59,6 +60,7 @@ export class MetadataHealthSidebarNoticeMount {
 			target: this.containerEl,
 			props: {
 				metadataHealth: this.metadataHealth,
+				onRepairClick: this.onRepairClick,
 			},
 		});
 	}
@@ -86,5 +88,6 @@ export class MetadataHealthSidebarNoticeMount {
 		this.unmount();
 		this.workspace = null as any;
 		this.metadataHealth = null as any;
+		this.onRepairClick = null;
 	}
 }
