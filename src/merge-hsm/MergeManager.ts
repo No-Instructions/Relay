@@ -2005,6 +2005,13 @@ export class MergeManager {
     // Skip effects during/after destruction to avoid PostOffice teardown errors
     if (this.destroyed) return;
 
+    // Shutdown drives every HSM through its terminal states, emitting a
+    // status change per document. Nothing consumes sync status while the
+    // plugin is unloading, and forwarding thousands of these to logging and
+    // observers stalls unload for seconds in large folders. Cleanup effects
+    // (PERSIST_STATE, SYNC_TO_REMOTE, WRITE_DISK) still flow.
+    if (this.shuttingDown && effect.type === 'STATUS_CHANGED') return;
+
     // Forward to external handler
     if (this.onEffect) {
       Promise.resolve(this.onEffect(guid, effect)).catch((err) => {
@@ -2063,8 +2070,10 @@ export class MergeManager {
    * Public so Document can update sync status when its HSM state changes.
    */
   updateSyncStatus(guid: string, status: SyncStatus): void {
-    // Skip updates during/after destruction to avoid PostOffice teardown errors
-    if (this.destroyed) return;
+    // Skip updates during/after destruction to avoid PostOffice teardown
+    // errors, and during shutdown where per-document teardown transitions
+    // would churn the observable map with updates nothing consumes.
+    if (this.destroyed || this.shuttingDown) return;
     if (syncStatusesEqual(this._syncStatus.get(guid), status)) return;
     this._syncStatus.set(guid, status);
   }
