@@ -137,6 +137,11 @@ interface Noop extends Operation {
 
 type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 
+// Empty downloads for a guid become terminal after this many attempts; the
+// server pushes a document.updated event (and advertises the guid in the
+// subdoc index) once content exists, so polling past this is wasted work.
+const MAX_EMPTY_SERVER_ATTEMPTS = 3;
+
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(() => super.notifyListeners(), 100);
@@ -205,6 +210,14 @@ export class SharedFolder extends HasProvider {
 	private _pendingDownloads: Set<string> = new Set();
 	private _pendingDownloadPromises: Map<string, Promise<Document | undefined>> =
 		new Map();
+	/**
+	 * Empty-download attempts per GUID the server has registered but returned
+	 * no content for. After MAX_EMPTY_SERVER_ATTEMPTS the guid is terminal:
+	 * downloads and remaps stop until fresh server evidence arrives (a
+	 * document.updated event or a subdoc-index entry for the guid), so
+	 * recurring sweeps do not re-request known-empty documents.
+	 */
+	private _emptyOnServer: Map<string, number> = new Map();
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
@@ -542,6 +555,9 @@ export class SharedFolder extends HasProvider {
 			for (const [docId, entry] of Object.entries(serverIndex)) {
 				const guid = this.guidFromServerDocId(docId) ?? docId;
 				advertisedGuids.push(guid);
+				// An advertised index entry is server evidence of content;
+				// re-allow downloads for guids parked as empty.
+				this.clearServerEmpty(guid);
 				this.mergeManager?.seedServerAdvertisedHeadFromBytes(
 					guid,
 					entry,
@@ -677,6 +693,8 @@ export class SharedFolder extends HasProvider {
 	}
 
 	private retryDeferredRemapForGuid(guid: string): void {
+		// A live update event is fresh evidence the server has content now.
+		this.clearServerEmpty(guid);
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingRemaps.has(path)) return;
 
@@ -702,7 +720,24 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
+	/** True when empty downloads for the guid have exhausted their attempts. */
+	serverEmptyTerminal(guid: string): boolean {
+		return (this._emptyOnServer.get(guid) ?? 0) >= MAX_EMPTY_SERVER_ATTEMPTS;
+	}
+
+	/** Record an empty download for the guid. */
+	recordServerEmpty(guid: string): void {
+		this._emptyOnServer.set(guid, (this._emptyOnServer.get(guid) ?? 0) + 1);
+	}
+
+	/** Fresh server evidence for the guid — allow downloads again. */
+	clearServerEmpty(guid: string): void {
+		this._emptyOnServer.delete(guid);
+	}
+
 	private retryDeferredDownloadForGuid(guid: string): void {
+		// A live update event is fresh evidence the server has content now.
+		this.clearServerEmpty(guid);
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingDownloads.has(path)) return;
 
@@ -1531,6 +1566,14 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
+		if (this.serverEmptyTerminal(toGuid)) {
+			recordOperationTerminal("deferred");
+			this.debug(
+				`[${path}] ${operation} skipped: server has no content for guid; awaiting server evidence`,
+			);
+			return;
+		}
+
 		let updateBytes: Uint8Array | undefined;
 		try {
 			updateBytes = await this.backgroundSync.downloadByGuid(this, toGuid, path);
@@ -1541,6 +1584,7 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (!updateBytes) {
+			this.recordServerEmpty(toGuid);
 			recordOperationTerminal("deferred");
 			this.log(`[${path}] ${operation} deferred: server has guid but no content yet`);
 			return;
@@ -2472,9 +2516,16 @@ export class SharedFolder extends HasProvider {
 		if (!guid) {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
+		if (this.serverEmptyTerminal(guid)) {
+			this.debug(
+				`[${vpath}] download skipped: server has no content for guid; awaiting server evidence`,
+			);
+			return undefined;
+		}
 		const updateBytes = await this.backgroundSync.downloadByGuid(this, guid, vpath);
 
 		if (!updateBytes) {
+			this.recordServerEmpty(guid);
 			this.log(`[${vpath}] download deferred: server has guid but no content yet`);
 			return undefined;
 		}
