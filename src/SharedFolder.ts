@@ -854,6 +854,14 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
+		// Read-only access publishes nothing.
+		if (!file.canWriteContent) {
+			this.debug?.(
+				`[handleIdleSyncToRemote] Document ${guid} has read-only access, skipping`,
+			);
+			return;
+		}
+
 		try {
 			// Apply update to the document's remoteDoc (which is file.ydoc).
 			// This intentionally triggers lazy creation (wake from hibernation).
