@@ -339,6 +339,20 @@ export class BackgroundSync extends HasLogging {
 		return isDocument(item) && item.hsm?.getSyncStatus().status === "conflict";
 	}
 
+	/**
+	 * A queued item is drainable only when its folder is connected and the
+	 * user hasn't asked it to pause. Items for disconnected folders stay in
+	 * the queue — enqueues made while offline (pending uploads, remaps) must
+	 * survive until reconnect, when the folder-state subscription wakes the
+	 * queues — rather than being dropped at enqueue time.
+	 */
+	private isDrainable(item: QueueItem): boolean {
+		return (
+			item.sharedFolder.connected &&
+			item.sharedFolder.intent !== "disconnected"
+		);
+	}
+
 	getOverallProgress(): SyncProgress {
 		let totalItems = 0;
 		let completedItems = 0;
@@ -860,7 +874,7 @@ export class BackgroundSync extends HasLogging {
 			const now = this.timeProvider.now();
 			const connectableItems = this.syncQueue.filter(
 				(item) =>
-					item.sharedFolder.connected &&
+					this.isDrainable(item) &&
 					(item.nextAttemptAt === undefined || item.nextAttemptAt <= now),
 			);
 
@@ -1026,8 +1040,8 @@ export class BackgroundSync extends HasLogging {
 			metrics.setBgSyncQueueLength("download", this.downloadQueue.length);
 
 			// Filter for items with connected folders
-			const connectableItems = this.downloadQueue.filter(
-				(item) => item.sharedFolder.connected,
+			const connectableItems = this.downloadQueue.filter((item) =>
+				this.isDrainable(item),
 			);
 
 			while (
