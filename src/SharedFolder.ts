@@ -388,7 +388,6 @@ export class SharedFolder extends HasProvider {
 				}
 			},
 			onEffect: async (guid, effect) => {
-				this.debug?.(`[MergeManager] Effect for ${guid}:`, effect.type);
 				if (effect.type === "PERSIST_STATE") {
 					// Persisted fork/LCA state writes run in the background; track
 					// failures so persistence errors are visible.
