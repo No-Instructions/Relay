@@ -14,7 +14,7 @@ import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
-import type { EditorViewRef } from "./merge-hsm/types";
+import type { ActiveAccessMode, EditorViewRef } from "./merge-hsm/types";
 import {
 	ProviderIntegration,
 	type YjsProvider,
@@ -122,6 +122,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,
+			getAccessMode: () => this.activeAccessMode,
 			getPersistenceMetadata: () => ({
 				path: this.path,
 				relay: this.sharedFolder.relayId || "",
@@ -338,6 +339,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		hsm.send({
 			type: "ACQUIRE_LOCK",
 			editorViewRef,
+			accessMode: this.activeAccessMode,
 		});
 		mergeManager.markActive(this.guid);
 
@@ -517,6 +519,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	public get isWritable(): boolean {
 		return this.localDoc !== null;
+	}
+
+	/**
+	 * Content-write permission for this document. The provider token is
+	 * authoritative when present; without one, the folder-level policy check
+	 * applies. Unknown states default to write — the server enforces real
+	 * authorization, and failing open avoids stranding writes on stale
+	 * client state.
+	 */
+	public get canWriteContent(): boolean {
+		if (this.clientToken?.authorization) {
+			return this.clientToken.authorization !== "read-only";
+		}
+		return this.sharedFolder?.canWriteContent ?? true;
+	}
+
+	public get activeAccessMode(): ActiveAccessMode {
+		return this.canWriteContent ? "write" : "read";
 	}
 
 	async connect(): Promise<boolean> {
@@ -924,6 +944,44 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			// was awaiting the provider, so check once after connect resolves too.
 			cleanupIfDone();
 		});
+	}
+
+	/**
+	 * Drive live permission transitions for an active HSM when a token
+	 * refresh flips content-write permission. Idle documents need no event:
+	 * the HSM's getAccessMode callback reads the fresh token directly.
+	 */
+	protected onAccessModeChanged(readOnly: boolean): void {
+		const hsm = this._hsm;
+		if (!hsm || !hsm.isActive()) {
+			return;
+		}
+		if (readOnly) {
+			hsm.send({ type: "DEMOTE_TO_READ" });
+			// Demotion may have preserved a fork because local ops were not
+			// provably on the server. The in-session remoteDoc applied those
+			// ops as they happened and a read-only provider will never send
+			// them, so swap in a fresh provider doc: the fork audit then
+			// judges containment and re-baselines against server truth.
+			if (hsm.hasFork() && this._providerIntegration) {
+				const result = reconnectProvider({
+					hsm,
+					integration: this._providerIntegration,
+					createFreshRemoteDoc: () => this.ensureRemoteDoc(),
+					destroyCurrentRemoteDoc: () => this.destroyRemoteDoc(),
+					createAndConnectProvider: (_remoteDoc) => {
+						void this.connect();
+						return this._provider as YjsProvider;
+					},
+					providerIntegrationOptions: {
+						onSyncedRemoteHead: this.recordProviderSyncedRemoteHead,
+					},
+				});
+				this._providerIntegration = result.integration;
+			}
+		} else {
+			hsm.send({ type: "PROMOTE_TO_WRITE" });
+		}
 	}
 
 	/**

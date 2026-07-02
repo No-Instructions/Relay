@@ -297,6 +297,24 @@ export class TokenStore<TokenType extends HasToken> {
 		return false;
 	}
 
+	/**
+	 * Refresh a document's token ahead of its expiry window and deliver the
+	 * fresh token to the registered callback (unlike onRefresh, which only
+	 * resolves the caller). Used when server-side authorization may have
+	 * changed, e.g. after a role update. No-op for documents without a
+	 * registered callback.
+	 */
+	forceRefresh(documentId: string): void {
+		if (this.destroyed) {
+			return;
+		}
+		if (!this.callbacks.has(documentId)) {
+			return;
+		}
+		this.log(`force refresh of ${documentId}`);
+		this.addToRefreshQueue(documentId);
+	}
+
 	log(text: string) {
 		this._log(text);
 	}

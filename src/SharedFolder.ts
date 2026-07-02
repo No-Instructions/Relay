@@ -177,6 +177,9 @@ export class SharedFolder extends HasProvider {
 	fset: Files;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
+	// Last observed content-write permission; null until the role
+	// subscription delivers its first snapshot.
+	private _lastCanWriteContent: boolean | null = null;
 	_shouldConnect: boolean;
 	private _localOnly: boolean;
 	destroyed: boolean = false;
@@ -301,6 +304,31 @@ export class SharedFolder extends HasProvider {
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
 			}),
+		);
+
+		// Role changes arrive live over the PocketBase subscription. A change
+		// to the current user's write permission forces a token refresh for
+		// this folder's documents; the refreshed token's authorization is the
+		// source of truth that flips providers and drives the HSM permission
+		// transitions.
+		this._lastCanWriteContent = null;
+		const onRoleChange = () => {
+			const canWrite = this.canWriteContent;
+			if (this._lastCanWriteContent === null) {
+				this._lastCanWriteContent = canWrite;
+				return;
+			}
+			if (this._lastCanWriteContent === canWrite) {
+				return;
+			}
+			this._lastCanWriteContent = canWrite;
+			this.refreshDocumentTokensForPermissionChange();
+		};
+		this.unsubscribes.push(
+			this.relayManager.folderRoles.subscribe(onRoleChange),
+		);
+		this.unsubscribes.push(
+			this.relayManager.relayRoles.subscribe(onRoleChange),
 		);
 
 		this.unsubscribes.push(
@@ -1349,6 +1377,48 @@ export class SharedFolder extends HasProvider {
 			return undefined;
 		}
 		return this._remote;
+	}
+
+	/**
+	 * Content-write permission for documents in this folder, from the
+	 * client-side role policy. Document-level token authorization takes
+	 * precedence when a token exists; this covers tokenless contexts
+	 * (closed files, background sync). Unknown states default to write —
+	 * the server enforces real authorization, and failing open avoids
+	 * stranding writes on stale client state.
+	 */
+	public get canWriteContent(): boolean {
+		const remote = this.remote;
+		if (!remote) {
+			return true;
+		}
+		const userId = this.relayManager?.user?.id;
+		const policyManager = this.relayManager?.policyManager;
+		if (!userId || !policyManager) {
+			return true;
+		}
+		const result = policyManager.isAllowed({
+			principal: userId,
+			action: "edit_content",
+			resource: ["folder", remote.id],
+		});
+		return result.allowed;
+	}
+
+	/**
+	 * Force a token refresh for every document in this folder that holds a
+	 * registered token. The refreshed token's authorization flips the
+	 * provider and drives the HSM permission transition for open documents.
+	 */
+	private refreshDocumentTokensForPermissionChange(): void {
+		this.debug(
+			`content-write permission changed; refreshing document tokens`,
+		);
+		this.files.forEach((file) => {
+			const s3rn = (file as unknown as { s3rn?: HasProvider["s3rn"] }).s3rn;
+			if (!s3rn) return;
+			this.tokenStore.forceRefresh(S3RN.encode(s3rn));
+		});
 	}
 
 	private subscribeToRemoteRelay(remote: RemoteSharedFolder): void {
