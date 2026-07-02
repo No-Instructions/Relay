@@ -61,6 +61,7 @@ import type {
 	EditorViewRef,
 	ResourcePresence,
 	EnrollmentCompleteEvent,
+	ActiveAccessMode,
 } from "./types";
 import type { TimeProvider } from "../TimeProvider";
 import { DefaultTimeProvider } from "../TimeProvider";
@@ -302,6 +303,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Whether PROVIDER_SYNCED has been received during the current lock cycle
 	private _providerSynced = false;
 
+	// Content-write permission for the current lock cycle. Set from
+	// ACQUIRE_LOCK (event field or getAccessMode callback) and flipped by
+	// DEMOTE_TO_READ / PROMOTE_TO_WRITE. Null outside a lock cycle, where
+	// the live getAccessMode callback is authoritative (idle guards).
+	private _activeAccessMode: ActiveAccessMode | null = null;
+	private _getAccessMode: () => ActiveAccessMode;
+
+	// Whether remoteDoc state came exclusively from the provider. Demotion
+	// clears this (the in-session remoteDoc may carry never-sent local ops);
+	// setRemoteDoc with a fresh provider doc restores it. Read-mode fork
+	// auditing only trusts remoteDoc as server truth when this is set.
+	private _readRemoteDocFresh = true;
+
 	// Async operation tracking with cancellation support
 	private _asyncOps = new Map<string, { controller: AbortController; promise: Promise<void> }>();
 
@@ -368,6 +382,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._bridge = new SyncBridge(this);
 		this._isProviderSynced = config.isProviderSynced ?? (() => this._bridge.providerSynced);
 		this._isFolderConnected = config.isFolderConnected ?? (() => this._isOnline);
+		this._getAccessMode = config.getAccessMode ?? (() => "write");
 		this._replayMode = config.replayMode ?? false;
 		this._yaml = config.yaml ?? null;
 		this._captureOpts = {
@@ -819,6 +834,22 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
+	 * Content-write permission for this document. During a lock cycle the
+	 * mode fixed at ACQUIRE_LOCK (and flipped by demote/promote events) is
+	 * authoritative; outside one, the live callback is.
+	 */
+	resolveAccessMode(): ActiveAccessMode {
+		return this._activeAccessMode ?? this._getAccessMode();
+	}
+
+	/**
+	 * SyncBridgeHost: gates every outbound path in the bridge.
+	 */
+	isReadMode(): boolean {
+		return this.resolveAccessMode() === "read";
+	}
+
+	/**
 	 * Check if the HSM is in idle mode (no editor, lightweight state).
 	 */
 	isIdle(): boolean {
@@ -1266,6 +1297,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (!doc) {
 			this._bridge.providerSynced = false;
 			this._providerSynced = false;
+		} else if (doc !== oldDoc) {
+			// A newly provided remoteDoc carries provider-sourced state only,
+			// so read-mode fork auditing may trust it as server truth once the
+			// provider syncs.
+			this._readRemoteDocFresh = true;
 		}
 		// Re-wire the SyncBridge inbound handler when remoteDoc changes.
 		// Without this, the handler stays on the old doc and inbound updates
@@ -1376,6 +1412,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * @param fn - The text transform function from vault.process()
 	 */
 	async registerMachineEdit(fn: (data: string) => string): Promise<void> {
+		// Read mode accepts no local content: the transform is not evaluated
+		// and nothing registers. The follow-up setViewData lands as a
+		// CM6_CHANGE that the read state rejects and restores.
+		if (this._statePath.startsWith("active.reading")) return;
+		if (this.isIdle() && this.isReadMode()) return;
+
 		// Active mode: existing behavior (machine-edit deferral via SyncBridge)
 		if (this._statePath === "active.tracking") {
 			if (!this.localDoc) return;
@@ -2027,22 +2069,27 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * authoritative for all open editors.
 	 */
 	bootstrapEditorView(viewId: string, currentText?: string): void {
-		if (this._statePath !== "active.tracking") {
+		let text: string | null;
+		if (this._statePath.startsWith("active.reading")) {
+			text = this.readModeSharedText();
+		} else if (this._statePath === "active.tracking") {
+			text = this.localDoc
+				? this.localDoc.getText("contents").toString()
+				: null;
+		} else {
 			return;
 		}
-		if (!this.localDoc) {
+		if (text === null) {
 			return;
 		}
-
-		const localText = this.localDoc.getText("contents").toString();
-		if (currentText !== undefined && currentText === localText) {
+		if (currentText !== undefined && currentText === text) {
 			return;
 		}
 
 		this.emitEffect({
 			type: "SET_CM6",
 			targetView: viewId,
-			text: localText,
+			text,
 		});
 	}
 
@@ -2345,6 +2392,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			threeWayMergeConflict: (_hsm, event) => (event as any).data?.success === false,
 			twoWayMergeClean: (_hsm, event) => (event as any).data?.clean === true,
 			twoWayMergeConflict: (_hsm, event) => (event as any).data?.clean === false,
+
+			// === Access mode guards ===
+			isReadMode: () => this.resolveAccessMode() === "read",
+			isWriteMode: () => this.resolveAccessMode() === "write",
+			readModeDiskAheadAtLoad: () => {
+				if (this.resolveAccessMode() !== "read") return false;
+				if (!this._lca) return false;
+				return (
+					this.hasDiskChangedSinceLCA() &&
+					!this.hasRemoteChangedSinceLCA() &&
+					!this.hasLocalChangedSinceLCA() &&
+					this.hasFreshPendingDiskContents()
+				);
+			},
+
+			// === Read repair invoke guards ===
+			readRepairSucceededWantsWrite: (_hsm, event) =>
+				(event as any).data?.success === true &&
+				this.resolveAccessMode() === "write",
+			readRepairSucceeded: (_hsm, event) => (event as any).data?.success === true,
 		};
 	}
 
@@ -2601,6 +2668,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			storeEditorContent: (_hsm, event) => {
 				const e = event as any;
 				this._editorViewRef = e.editorViewRef ?? null;
+				this._activeAccessMode = e.accessMode ?? this._getAccessMode();
 				if (this._statePath.startsWith("idle.")) {
 					this._enteringFromDiverged =
 						this._statePath === "idle.diverged" ||
@@ -3275,6 +3343,72 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._bridge.clearOutboundQueue();
 			},
 
+			// === Read mode (active.reading) ===
+			setReadAccessMode: () => {
+				this._activeAccessMode = "read";
+			},
+			setWriteAccessMode: () => {
+				this._activeAccessMode = "write";
+			},
+			setOnlineWithoutFlush: () => {
+				this._isOnline = true;
+			},
+			prepareDemotion: () => {
+				this.prepareDemotion();
+			},
+			prepareDemotionFromConflict: () => {
+				this._conflict = null;
+				this._deferredConflict = undefined;
+				this.prepareDemotion();
+			},
+			clearConflictForRead: () => {
+				this._conflict = null;
+				this._deferredConflict = undefined;
+			},
+			discardBufferedLocalEditsForRead: () => {
+				// Local editor intent buffered before the read state settled is
+				// rejected wholesale; remote and disk events replay normally.
+				this._accumulatedEvents = this._accumulatedEvents.filter(
+					(e) => e.type !== "CM6_CHANGE",
+				);
+				this.replayAccumulatedEvents();
+			},
+			auditReadModeFork: () => this.auditReadModeFork(),
+			renderSharedVersionToEditors: () => {
+				const shared = this.readModeSharedText();
+				if (shared === null) return;
+				const editorText =
+					this.lastKnownEditorText ?? this.readCurrentEditorText();
+				if (editorText === null || editorText === shared) {
+					this.lastKnownEditorText = shared;
+					return;
+				}
+				const changes = this.computeDiffChanges(editorText, shared);
+				if (changes.length > 0) {
+					this.emitEffect({ type: "DISPATCH_CM6", changes });
+				}
+				this.lastKnownEditorText = shared;
+			},
+			rejectAndRestoreCM6: (_hsm, event) => {
+				const e = event as any;
+				const shared = this.readModeSharedText();
+				if (shared === null) return;
+				if (typeof e.viewId === "string") {
+					if (e.docText !== shared) {
+						this.emitEffect({
+							type: "SET_CM6",
+							targetView: e.viewId,
+							text: shared,
+						});
+					}
+				} else if (typeof e.docText === "string" && e.docText !== shared) {
+					const changes = this.computeDiffChanges(e.docText, shared);
+					if (changes.length > 0) {
+						this.emitEffect({ type: "DISPATCH_CM6", changes });
+					}
+				}
+				this.lastKnownEditorText = shared;
+			},
 		};
 	}
 
@@ -3290,6 +3424,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				'cleanup': neverResolve,
 				'three-way-merge': neverResolve,
 				'two-way-merge': neverResolve,
+				'read-repair': neverResolve,
 			};
 		}
 		return {
@@ -3422,6 +3557,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.hydrateLCAContentsFromLocalDoc();
 				this.assertMachineResources("before idle-merge");
 
+				// Read access is remote-authoritative regardless of which idle
+				// state spawned the invoke: disk drift never ingests into
+				// localDoc and never forks — remote merges in and disk is
+				// repaired from the merged content.
+				if (this.isReadMode()) {
+					return this.invokeIdleRemoteAutoMerge(signal);
+				}
+
 				// Dispatch to the right merge based on which idle state spawned the invoke.
 				// The interpreter spawns invokes on state entry, so _statePath is
 				// the state that declared the invoke.
@@ -3448,12 +3591,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return this.invokeRecoverLCA(signal);
 			},
 			'fork-reconcile': async (_hsm, signal) => {
+				// Read mode never reconciles: reconciliation uploads. A write-era
+				// fork parks intact until promotion or an explicit discard.
+				if (this.isReadMode()) {
+					return { success: false, awaitingProvider: true };
+				}
 				if (this.localPersistence && !this.localPersistence.synced) {
 					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) return { success: false };
 				}
 				this.assertMachineResources("before fork-reconcile");
 				return this.invokeForkReconcile(signal);
+			},
+			'read-repair': async (_hsm, signal) => {
+				return this.invokeReadRepair(signal);
 			},
 			'cleanup': async (_hsm, signal) => {
 				const cleanupType = this._cleanupType;
@@ -3468,6 +3619,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					} catch (err) {
 						this.hsmError(`Error during release lock cleanup: ${err}`);
 					}
+					// Lock cycle over: idle guards consult the live callback.
+					this._activeAccessMode = null;
 					return { type: 'release', wasConflict };
 				}
 
@@ -3476,6 +3629,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				} catch (err) {
 					this.hsmError(`Error during unload cleanup: ${err}`);
 				}
+				this._activeAccessMode = null;
 				// An ended lifetime routes the unloading state to the terminal
 				// "destroyed" state (cleanupWasDestroy guard) instead of "unloaded".
 				return this._lifetime.active
@@ -3816,6 +3970,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// silently overwrite what the user has on disk.
 		if (!this._lca && this._disk !== null) {
 			this.idleMergeLog(`[idle-merge-debug] ${this._guid} blocked: no LCA but disk exists`);
+			// Read access cannot resolve this through a conflict, so park
+			// (awaiting provider) instead of surfacing an idle error, and
+			// leave the on-disk content untouched.
+			if (this.isReadMode()) {
+				return { success: false, awaitingProvider: true };
+			}
 			this.pendingIdleUpdates = null;
 			return { success: false };
 		}
@@ -4630,8 +4790,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// must not be forwarded as raw deltas.
 			if (tr.origin === FRONTMATTER_MIRROR_ORIGIN) return;
 
-			// Only dispatch in tracking state
-			if (this._statePath !== "active.tracking") return;
+			// Only dispatch when the editor renders from localDoc: tracking,
+			// and reading without a preserved fork (a fork freezes localDoc at
+			// write-era content while the editor shows remoteDoc).
+			if (this._statePath === "active.reading") {
+				if (this._fork) return;
+			} else if (this._statePath !== "active.tracking") {
+				return;
+			}
 
 			// When the same transaction also updated Y.Map("frontmatter"),
 			// dispatch the Y.Map-derived frontmatter instead of raw Y.Text delta.
@@ -4881,6 +5047,222 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 		await this.destroyLocalDoc();
 		this.clearEnrolledLocalHead();
+	}
+
+	// =========================================================================
+	// Read mode (active.reading)
+	// =========================================================================
+
+	/**
+	 * The text the editor must show in read mode: localDoc when it mirrors
+	 * remote, remoteDoc when a preserved fork freezes localDoc at write-era
+	 * content.
+	 */
+	private readModeSharedText(): string | null {
+		if (this._fork) {
+			return this.remoteDoc?.getText("contents").toString() ?? null;
+		}
+		return (
+			this.localDoc?.getText("contents").toString() ??
+			this.remoteDoc?.getText("contents").toString() ??
+			null
+		);
+	}
+
+	/**
+	 * Demotion bookkeeping, shared by the tracking/merging/conflict handlers.
+	 * Drops write intent (nothing drains — emitting a write the user is no
+	 * longer authorized to make is the failure mode) and preserves anything
+	 * not provably on the server as a fork.
+	 */
+	private prepareDemotion(): void {
+		this._activeAccessMode = "read";
+		this._pendingMachineEdits = [];
+		this._bridge.currentMachineEditMark = null;
+		this._bridge.clearOutboundQueue();
+		// In write mode local ops were applied to the in-memory remoteDoc as
+		// they happened; whatever was never broadcast is unrecoverable from
+		// the doc itself, so the doc is untrusted until the provider swaps in
+		// a fresh one.
+		this._readRemoteDocFresh = false;
+		if (!this._fork && this.localDoc && this.demotionNeedsFork()) {
+			this.preserveDemotionFork(false);
+		}
+		this.emitPersistState();
+	}
+
+	/**
+	 * Whether demotion must preserve local state as a fork. Online and
+	 * provider-synced with equal texts means every local op was broadcast
+	 * while still authorized. Anything less is not provably shared —
+	 * preserve, and let the contained-fork audit clear false positives.
+	 */
+	private demotionNeedsFork(): boolean {
+		if (!this.localDoc) return false;
+		const serverConfirmed = this._isProviderSynced() && this._isOnline;
+		if (serverConfirmed) {
+			const remoteText = this.remoteDoc?.getText("contents").toString();
+			if (remoteText === undefined) return true;
+			return this.localDoc.getText("contents").toString() !== remoteText;
+		}
+		return true;
+	}
+
+	/**
+	 * Preserve the current localDoc state as a demotion fork. The fork gates
+	 * both bridge directions, freezing localDoc at the preserved content.
+	 * `baselined` marks whether base/remoteStateVector come from a
+	 * server-truth remoteDoc; un-baselined forks are re-baselined by
+	 * auditReadModeFork after the provider doc is rebuilt.
+	 */
+	private preserveDemotionFork(baselined: boolean): void {
+		if (!this.localDoc) return;
+		const remoteDoc = this.remoteDoc;
+		const base =
+			baselined && remoteDoc
+				? remoteDoc.getText("contents").toString()
+				: this._lca?.contents ??
+					remoteDoc?.getText("contents").toString() ??
+					"";
+		this._fork = {
+			base,
+			localStateVector: Y.encodeStateVector(this.localDoc),
+			remoteStateVector: remoteDoc
+				? Y.encodeStateVector(remoteDoc)
+				: new Uint8Array([0]),
+			localSnapshot: snapshotFromDoc(this.localDoc).snapshot,
+			remoteSnapshot: remoteDoc
+				? snapshotFromDoc(remoteDoc).snapshot
+				: undefined,
+			origin: "demotion",
+			created: this.timeProvider.now(),
+			captureMark: this.getOpCapture()?.mark() ?? 0,
+			baselined,
+		};
+		this.hsmDebug(
+			`preserveDemotionFork | guid=${this._guid} | baselined=${baselined} | ` +
+			`baseLen=${base.length}`,
+		);
+	}
+
+	/**
+	 * Enforce the read-mode fork invariant against a server-truth remoteDoc:
+	 * a fork fully contained in remote has nothing left to preserve and is
+	 * cleared; a surviving un-baselined demotion fork gets its three-way
+	 * baseline fixed; local-only ops with no fork to explain them are
+	 * preserved rather than silently repaired.
+	 *
+	 * Requires a provider-synced remoteDoc whose state came exclusively from
+	 * the provider — a doc that may carry never-sent write-era ops would make
+	 * every one of these judgments wrong.
+	 */
+	private auditReadModeFork(): void {
+		if (!this.localDoc || !this.remoteDoc) return;
+		if (!this._isProviderSynced() || !this._readRemoteDocFresh) return;
+		const localSV = Y.encodeStateVector(this.localDoc);
+		const remoteSV = Y.encodeStateVector(this.remoteDoc);
+		const localAhead = stateVectorIsAhead(localSV, remoteSV);
+
+		if (this._fork) {
+			if (!localAhead) {
+				this.hsmDebug(
+					`auditReadModeFork | guid=${this._guid} | fork contained in remote, clearing`,
+				);
+				this._fork = null;
+				this._ingestionTexts = [];
+				this._bridge.resetPendingCounters();
+				this.emitPersistState();
+			} else if (this._fork.origin === "demotion" && !this._fork.baselined) {
+				this._fork.base = this.remoteDoc.getText("contents").toString();
+				this._fork.remoteStateVector = remoteSV;
+				this._fork.remoteSnapshot = snapshotFromDoc(this.remoteDoc).snapshot;
+				this._fork.baselined = true;
+				this.emitPersistState();
+			}
+			return;
+		}
+
+		if (localAhead) {
+			this.preserveDemotionFork(true);
+			this.emitPersistState();
+			this.emitEffect({
+				type: "DIAGNOSTIC",
+				code: "READ_MODE_LOCAL_AHEAD",
+				message:
+					"read mode found local ops not on the server; preserved as fork",
+				detail: {},
+			});
+		}
+	}
+
+	/**
+	 * Rebuild localDoc from a server-truth remoteDoc, durably discarding the
+	 * preserved fork's ops (they live in localDoc history and in y-indexeddb;
+	 * Yjs cannot remove ops, so discard means IDB reset plus re-enrollment).
+	 * Enrolled content arrives under remote client IDs — no local insertion,
+	 * so no duplication hazard.
+	 */
+	private async invokeReadRepair(
+		signal: AbortSignal,
+	): Promise<{ success: boolean; reason?: string }> {
+		const remoteDoc = this.remoteDoc;
+		if (!remoteDoc || !this._isProviderSynced() || !this._readRemoteDocFresh) {
+			return { success: false, reason: "awaiting-provider" };
+		}
+		const remoteState = Y.encodeStateAsUpdate(remoteDoc);
+		const remoteText = remoteDoc.getText("contents").toString();
+
+		const persistence = this.localPersistence as
+			| (IYDocPersistence & { clearDocumentData?: () => Promise<void> })
+			| null;
+		if (persistence && !persistence.clearDocumentData) {
+			this.emitEffect({
+				type: "DIAGNOSTIC",
+				code: "READ_REPAIR_NO_CLEARDATA",
+				message: "persistence does not support clearDocumentData; discard aborted",
+				detail: {},
+			});
+			return { success: false, reason: "no-cleardata" };
+		}
+
+		await this.resetLocalPersistenceForRebuild();
+		if (signal.aborted) return { success: false, reason: "aborted" };
+
+		const freshDoc = new Y.Doc();
+		this.localDoc = freshDoc;
+		this._localDocClientID = freshDoc.clientID;
+		this._localDocSnapshotSafe = false;
+		this.localPersistence = this._createPersistence(
+			this.vaultId,
+			freshDoc,
+			this._captureOpts,
+		);
+		await this.localPersistence.whenSynced;
+		if (signal.aborted) return { success: false, reason: "aborted" };
+
+		Y.applyUpdate(freshDoc, remoteState, remoteDoc);
+		await this.localPersistence.setOrigin?.("remote");
+
+		this.setupLocalDocObserver();
+
+		this._fork = null;
+		this._ingestionTexts = [];
+		this.pendingIdleUpdates = null;
+		this._bridge.resetPendingCounters();
+		const stateVector = Y.encodeStateVector(freshDoc);
+		this._localStateVector = stateVector;
+		this._remoteStateVector = Y.encodeStateVector(remoteDoc);
+		this._setLCA({
+			contents: remoteText,
+			meta: { hash: "", mtime: this.timeProvider.now() },
+			stateVector,
+		});
+		this.emitPersistState();
+		this.patchLCAHash(remoteText);
+		this.hsmDebug(
+			`read-repair complete | guid=${this._guid} | clientID=${freshDoc.clientID}`,
+		);
+		return { success: true };
 	}
 
 	/**
@@ -5202,7 +5584,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return "pending";
 		}
 
-		if (statePath === "idle.synced" || statePath === "active.tracking") {
+		if (
+			statePath === "idle.synced" ||
+			statePath === "active.tracking" ||
+			statePath === "active.reading"
+		) {
 			return "synced";
 		}
 
@@ -5213,6 +5599,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			statePath === "destroyed" ||
 			statePath.startsWith("active.entering") ||
 			statePath === "active.loading" ||
+			statePath === "active.reading.repairing" ||
 			statePath === "idle.loading"
 		) {
 			return "pending";
@@ -5425,6 +5812,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						origin: this._fork.origin,
 						created: this._fork.created,
 						captureMark: this._fork.captureMark,
+						...(this._fork.baselined !== undefined
+							? { baselined: this._fork.baselined }
+							: {}),
 					}
 				: null,
 			persistedAt: this.timeProvider.now(),

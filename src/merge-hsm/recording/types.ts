@@ -143,7 +143,7 @@ export interface RecordingMetadata {
 export type SerializableEvent =
   | { type: 'LOAD'; guid: string }
   | { type: 'UNLOAD' }
-  | { type: 'ACQUIRE_LOCK' }
+  | { type: 'ACQUIRE_LOCK'; accessMode?: 'write' | 'read' }
   | { type: 'RELEASE_LOCK' }
   | { type: 'DISK_CHANGED'; contents: string; mtime: number; hash: string }
   | { type: 'DISK_METADATA_CHANGED'; mtime: number; hash?: string }
@@ -158,6 +158,9 @@ export type SerializableEvent =
   | { type: 'DISMISS_CONFLICT' }
   | { type: 'OPEN_DIFF_VIEW' }
   | { type: 'CANCEL' }
+  | { type: 'DEMOTE_TO_READ' }
+  | { type: 'PROMOTE_TO_WRITE' }
+  | { type: 'DISCARD_LOCAL_FORK' }
   | {
       type: 'PERSISTENCE_LOADED';
       lca: SerializableLCA | null;

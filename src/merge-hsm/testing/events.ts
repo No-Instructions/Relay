@@ -65,8 +65,37 @@ export function mockEditorViewRef(
 /**
  * Create an ACQUIRE_LOCK event.
  */
-export function acquireLock(editorViewRef?: EditorViewRef): AcquireLockEvent {
-	return { type: "ACQUIRE_LOCK", editorViewRef };
+export function acquireLock(
+	editorViewRef?: EditorViewRef,
+	accessMode?: "write" | "read",
+): AcquireLockEvent {
+	return {
+		type: "ACQUIRE_LOCK",
+		editorViewRef,
+		...(accessMode ? { accessMode } : {}),
+	};
+}
+
+/**
+ * Send ACQUIRE_LOCK with read access and wait for active.reading.
+ */
+export async function sendAcquireLockToReading(
+	hsm: HSMHandle,
+	editorContent?: string,
+): Promise<void> {
+	if (editorContent !== undefined) {
+		hsm.send({
+			type: "OBSIDIAN_SET_VIEW_DATA",
+			data: editorContent,
+			clear: true,
+		});
+	}
+	const ref =
+		editorContent !== undefined
+			? liveMockEditorViewRef(hsm, editorContent)
+			: undefined;
+	hsm.send(acquireLock(ref, "read"));
+	await hsm.hsm?.awaitState?.((s) => s === "active.reading");
 }
 
 /**

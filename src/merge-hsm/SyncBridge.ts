@@ -68,6 +68,11 @@ export interface SyncBridgeHost {
 	isSuppressLocalObserver(): boolean;
 	/** Set suppress local observer flag */
 	setSuppressLocalObserver(value: boolean): void;
+	/**
+	 * Whether the document's content-write permission is read-only.
+	 * Gates every outbound path: read mode must never publish local ops.
+	 */
+	isReadMode(): boolean;
 }
 
 // =============================================================================
@@ -299,8 +304,25 @@ export class SyncBridge {
 	/**
 	 * Apply an outbound update (from localDoc) to remoteDoc.
 	 * This is the ONLY method that should apply local ops to remoteDoc.
+	 *
+	 * Fails closed in read mode: a Reader must never publish local ops,
+	 * so a call reaching this chokepoint under read access is dropped and
+	 * diagnosed rather than applied.
 	 */
 	syncToRemote(update: Uint8Array): void {
+		if (this.host.isReadMode()) {
+			bridgeError(
+				`syncToRemote blocked in read mode (guid=${this.host.guid}, ` +
+				`path=${this.host.path}, updateBytes=${update.length})`,
+			);
+			this.host.emitEffect({
+				type: "DIAGNOSTIC",
+				code: "READ_MODE_OUTBOUND_BLOCKED",
+				message: "syncToRemote called while document access is read-only",
+				detail: { updateBytes: update.length },
+			});
+			return;
+		}
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!remoteDoc) {
 			bridgeError("syncToRemote called but remoteDoc is null");
@@ -353,6 +375,10 @@ export class SyncBridge {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc || !remoteDoc) return;
+
+		// Read mode publishes nothing. The queue is not drained and no
+		// text-drift catch-up runs; inbound remains the only direction.
+		if (this.host.isReadMode()) return;
 
 		if (this.host.hasFork()) {
 			this._syncGate.pendingOutbound++;
@@ -453,6 +479,7 @@ export class SyncBridge {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc || !remoteDoc) return;
+		if (this.host.isReadMode()) return;
 		if (this.host.hasFork() || this._syncGate.localOnly) return;
 		if (!this._localDocUpdateHandler) return;
 
@@ -651,6 +678,18 @@ export class SyncBridge {
 		bridgeError(msg);
 		if (process.env.NODE_ENV === 'test') {
 			throw new Error(msg);
+		}
+
+		// Read mode repairs one-directionally: remote is authoritative and
+		// local ops must not publish. Divergence here means local-origin ops
+		// leaked into localDoc; syncToRemote would drop them anyway, so only
+		// the inbound direction is applied.
+		if (this.host.isReadMode()) {
+			const inbound = Y.encodeStateAsUpdate(remoteDoc, localSV);
+			if (inbound.length > 0) {
+				this.syncToLocal(inbound);
+			}
+			return;
 		}
 
 		// Bidirectional sync: apply each direction's missing ops

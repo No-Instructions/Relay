@@ -124,6 +124,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'ACQUIRE_LOCK':
       return {
         type: 'ACQUIRE_LOCK',
+        ...(event.accessMode ? { accessMode: event.accessMode } : {}),
       } as unknown as SerializableEvent;
 
     // Events without binary data pass through
@@ -142,6 +143,9 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'DISMISS_CONFLICT':
     case 'OPEN_DIFF_VIEW':
     case 'CANCEL':
+    case 'DEMOTE_TO_READ':
+    case 'PROMOTE_TO_WRITE':
+    case 'DISCARD_LOCAL_FORK':
     case 'PERSISTENCE_SYNCED':
     case 'MERGE_CONFLICT':
     case 'REMOTE_DOC_UPDATED':
