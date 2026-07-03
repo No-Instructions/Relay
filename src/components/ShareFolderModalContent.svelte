@@ -1,11 +1,12 @@
 <script lang="ts">
 	import type { App } from "obsidian";
-	import type { Relay, RelayUser, Role } from "../Relay";
+	import type { Relay, RelayUser, Role, UserRoleGrant } from "../Relay";
 	import type { RelayManager } from "../RelayManager";
 	import type { SharedFolder, SharedFolders } from "../SharedFolder";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SelectedFolder from "./SelectedFolder.svelte";
+	import RoleSelect from "./RoleSelect.svelte";
 	import { onMount, onDestroy } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import { FolderSuggestModal } from "../ui/FolderSuggestModal";
@@ -19,7 +20,7 @@
 		folderPath: string,
 		folderName: string,
 		isPrivate: boolean,
-		userIds: string[],
+		grants: UserRoleGrant[],
 	) => Promise<SharedFolder>;
 	export let setTitle: (title: string) => void = () => {};
 
@@ -27,8 +28,13 @@
 	let isPrivate = false;
 	let inputValue = "";
 	let acceptedFolder = "";
-	
-	const selectedUsers = writable(new Set<string>(relayManager.user?.id ? [relayManager.user.id] : []));
+
+	// Selected users with the role each will be granted.
+	const selectedUsers = writable(
+		new Map<string, Role>(
+			relayManager.user?.id ? [[relayManager.user.id, "Member"]] : [],
+		),
+	);
 	const searchQuery = writable("");
 
 	let modalEl: HTMLElement;
@@ -44,6 +50,7 @@
 	interface UserSelection {
 		user: RelayUser;
 		selected: boolean;
+		role: Role;
 		isCurrentUser: boolean;
 	}
 
@@ -68,6 +75,7 @@
 				return {
 					user,
 					selected,
+					role: $selectedUsers.get(user.id) ?? "Member",
 					isCurrentUser,
 				};
 			});
@@ -119,13 +127,23 @@
 		if (userSelection.isCurrentUser) return;
 
 		selectedUsers.update(current => {
-			const newSet = new Set(current);
-			if (newSet.has(userSelection.user.id)) {
-				newSet.delete(userSelection.user.id);
+			const newMap = new Map(current);
+			if (newMap.has(userSelection.user.id)) {
+				newMap.delete(userSelection.user.id);
 			} else {
-				newSet.add(userSelection.user.id);
+				newMap.set(userSelection.user.id, "Member");
 			}
-			return newSet;
+			return newMap;
+		});
+	}
+
+	function setUserRole(userId: string, role: Role) {
+		selectedUsers.update(current => {
+			const newMap = new Map(current);
+			if (newMap.has(userId)) {
+				newMap.set(userId, role);
+			}
+			return newMap;
 		});
 	}
 
@@ -138,15 +156,16 @@
 		try {
 			// Filter out current user since their role is created automatically
 			const currentUserId = relayManager.user?.id;
-			const currentSelectedUsers = $selectedUsers;
-			const userIds = Array.from(currentSelectedUsers).filter(
-				(id) => id !== currentUserId,
-			);
+			const grants: UserRoleGrant[] = Array.from(
+				$selectedUsers.entries(),
+			)
+				.filter(([userId]) => userId !== currentUserId)
+				.map(([userId, role]) => ({ userId, role }));
 			await onConfirm(
 				acceptedFolder,
 				acceptedFolder.split("/").pop() || "",
 				isPrivate,
-				userIds,
+				grants,
 			);
 		} catch (error) {
 			handleServerError(error, "Failed to share folder.");
@@ -343,6 +362,13 @@
 							</div>
 							{#if userSelection.isCurrentUser}
 								<div class="user-status">Required (You)</div>
+							{:else if userSelection.selected}
+								<RoleSelect
+									{relayManager}
+									value={userSelection.role}
+									onChange={(role) =>
+										setUserRole(userSelection.user.id, role)}
+								/>
 							{/if}
 						</div>
 					{/each}

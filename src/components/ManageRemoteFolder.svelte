@@ -275,11 +275,15 @@
 			plugin.app,
 			plugin.relayManager,
 			remoteFolder,
-			async (userIds: string[], role) => {
+			async (grants) => {
 				try {
-					// Add all selected users
-					for (const userId of userIds) {
-						await plugin.relayManager.addFolderRole(remoteFolder, userId, role);
+					// Add each selected user with their chosen role
+					for (const grant of grants) {
+						await plugin.relayManager.addFolderRole(
+							remoteFolder,
+							grant.userId,
+							grant.role,
+						);
 					}
 				} catch (error) {
 					handleServerError(error, "Failed to add users to folder.");

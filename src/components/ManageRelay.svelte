@@ -10,6 +10,7 @@
 		type RelaySubscription,
 		type RemoteSharedFolder,
 		type Role,
+		type UserRoleGrant,
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
@@ -422,14 +423,14 @@
 		folderPath: string,
 		folderName: string,
 		isPrivate: boolean,
-		userIds: string[],
+		grants: UserRoleGrant[],
 	): Promise<SharedFolder>;
 	// Implementation
 	async function onChoose(
 		folderPath: string,
 		folderName?: string,
 		isPrivate?: boolean,
-		userIds?: string[],
+		grants?: UserRoleGrant[],
 	): Promise<SharedFolder> {
 		const normalizedPath = normalizePath(folderPath);
 		let folder = sharedFolders.find((folder) => folder.path == normalizedPath);
@@ -462,16 +463,20 @@
 		}
 
 		// Add users to the private folder if it's private
-		if (isPrivate && userIds && userIds.length > 0) {
-			for (const userId of userIds) {
-				await plugin.relayManager.addFolderRole(remote, userId, "Member");
+		if (isPrivate && grants && grants.length > 0) {
+			for (const grant of grants) {
+				await plugin.relayManager.addFolderRole(
+					remote,
+					grant.userId,
+					grant.role,
+				);
 			}
 		}
 
 		folder.connect();
 		plugin.sharedFolders.notifyListeners();
 
-		if (userIds && userIds.length > 0) {
+		if (grants && grants.length > 0) {
 			// Navigate to the remote folder after successful creation
 			setTimeout(() => {
 				dispatch("manageRemoteFolder", {

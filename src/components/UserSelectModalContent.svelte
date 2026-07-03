@@ -1,23 +1,33 @@
 <script lang="ts">
-	import type { RelayUser, RemoteSharedFolder, Role } from "src/Relay";
+	import type {
+		RelayUser,
+		RemoteSharedFolder,
+		Role,
+		UserRoleGrant,
+	} from "src/Relay";
 	import type { RelayManager } from "src/RelayManager";
 	import { derived, writable } from "svelte/store";
 	import { handleServerError } from "src/utils/toastStore";
+	import RoleSelect from "./RoleSelect.svelte";
 
 	export let relayManager: RelayManager;
 	export let folder: RemoteSharedFolder;
-	export let onAdd: (userIds: string[], role: Role) => Promise<void>;
+	export let onAdd: (grants: UserRoleGrant[]) => Promise<void>;
 	export let preSelectedUserIds: string[] = [];
 
 	interface UserSelection {
 		user: RelayUser;
 		hasAccess: boolean;
 		selected: boolean;
+		role: Role;
 		isOwner: boolean;
 		isCurrentUser: boolean;
 	}
 
-	const selectedUsers = writable(new Set([...preSelectedUserIds]));
+	// Selected users with the role each will be granted.
+	const selectedUsers = writable(
+		new Map<string, Role>(preSelectedUserIds.map((id) => [id, "Member"])),
+	);
 	const searchQuery = writable("");
 
 	// Create derived store for users in this relay
@@ -59,6 +69,7 @@
 					user,
 					hasAccess: usersWithAccess.has(user.id),
 					selected,
+					role: $selectedUsers.get(user.id) ?? "Member",
 					isOwner: isFolderOwner,
 					isCurrentUser,
 				};
@@ -98,13 +109,23 @@
 		if (userSelection.hasAccess) return;
 
 		selectedUsers.update(current => {
-			const newSet = new Set(current);
-			if (newSet.has(userSelection.user.id)) {
-				newSet.delete(userSelection.user.id);
+			const newMap = new Map(current);
+			if (newMap.has(userSelection.user.id)) {
+				newMap.delete(userSelection.user.id);
 			} else {
-				newSet.add(userSelection.user.id);
+				newMap.set(userSelection.user.id, "Member");
 			}
-			return newSet;
+			return newMap;
+		});
+	}
+
+	function setUserRole(userId: string, role: Role) {
+		selectedUsers.update(current => {
+			const newMap = new Map(current);
+			if (newMap.has(userId)) {
+				newMap.set(userId, role);
+			}
+			return newMap;
 		});
 	}
 
@@ -112,8 +133,11 @@
 		const currentSelectedUsers = $selectedUsers;
 		if (currentSelectedUsers.size === 0) return;
 
+		const grants: UserRoleGrant[] = Array.from(
+			currentSelectedUsers.entries(),
+		).map(([userId, role]) => ({ userId, role }));
 		try {
-		    await onAdd(Array.from(currentSelectedUsers), "Member");
+			await onAdd(grants);
 		} catch (error) {
 			handleServerError(error);
 		}
@@ -191,6 +215,13 @@
 
 					{#if userSelection.hasAccess}
 						<div class="user-status">Already has access</div>
+					{:else if userSelection.selected}
+						<RoleSelect
+							{relayManager}
+							value={userSelection.role}
+							onChange={(role) =>
+								setUserRole(userSelection.user.id, role)}
+						/>
 					{:else if userSelection.isCurrentUser}
 						<div class="user-status">(You)</div>
 					{/if}
