@@ -462,6 +462,7 @@ export class LiveView<ViewType extends TextFileView>
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
 	private _forkNotice?: Banner;
+	private _forcedPreviewForReadOnly = false;
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
@@ -888,23 +889,47 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	/**
-	 * Reconfigure the CM6 access-mode compartment for this view. UX only —
-	 * the HSM rejects write intent regardless (preview-mode interactions and
-	 * vault.process bypass CM6 entirely). Deferred a microtask because state
-	 * changes can fire synchronously inside a CM6 update cycle, where
-	 * dispatch is illegal.
+	 * Align the view presentation with the document's access mode. Reading
+	 * sessions land in Obsidian's reading view (no caret, no editor
+	 * affordances); a manual switch to the source view stays read-only with
+	 * the caret hidden via the CM6 compartment. UX only — the HSM rejects
+	 * write intent regardless (preview-mode interactions and vault.process
+	 * bypass CM6 entirely). Deferred a microtask because state changes can
+	 * fire synchronously inside a CM6 update cycle, where dispatch is
+	 * illegal.
 	 */
 	private applyEditableState(): void {
 		if (!(this.view instanceof MarkdownView)) {
 			return;
 		}
-		const cm = (this.view.editor as any)?.cm as EditorView | undefined;
-		if (!cm) {
-			return;
-		}
+		const view = this.view;
 		queueMicrotask(() => {
 			if (this._released) return;
 			const readOnly = this.reading;
+			view.containerEl.toggleClass("relay-read-only", readOnly);
+
+			// Reading belongs in Obsidian's reading view. Restore the source
+			// view on promotion only when this view forced the switch.
+			if (readOnly && view.getMode() === "source") {
+				this._forcedPreviewForReadOnly = true;
+				const leafState = view.leaf.getViewState();
+				void view.leaf.setViewState({
+					...leafState,
+					state: { ...leafState.state, mode: "preview" },
+				});
+			} else if (!readOnly && this._forcedPreviewForReadOnly) {
+				this._forcedPreviewForReadOnly = false;
+				if (view.getMode() === "preview") {
+					const leafState = view.leaf.getViewState();
+					void view.leaf.setViewState({
+						...leafState,
+						state: { ...leafState.state, mode: "source" },
+					});
+				}
+			}
+
+			const cm = (view.editor as any)?.cm as EditorView | undefined;
+			if (!cm) return;
 			const current = accessModeCompartment.get(cm.state);
 			const configuredReadOnly =
 				Array.isArray(current) && current.length > 0;
@@ -915,6 +940,10 @@ export class LiveView<ViewType extends TextFileView>
 						? [
 								EditorView.editable.of(false),
 								EditorState.readOnly.of(true),
+								EditorView.theme({
+									".cm-cursorLayer": { display: "none" },
+									".cm-content": { caretColor: "transparent" },
+								}),
 							]
 						: [],
 				),
@@ -1027,9 +1056,10 @@ export class LiveView<ViewType extends TextFileView>
 		}
 		this._released = true;
 
-		// Remove the live editor class
+		// Remove the live editor classes
 		if (this.view instanceof MarkdownView) {
 			this.view.containerEl.removeClass("relay-live-editor");
+			this.view.containerEl.removeClass("relay-read-only");
 		}
 
 		this._viewActions?.$destroy();

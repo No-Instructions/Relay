@@ -522,17 +522,22 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
-	 * Content-write permission for this document. The provider token is
-	 * authoritative when present; without one, the folder-level policy check
-	 * applies. Unknown states default to write — the server enforces real
-	 * authorization, and failing open avoids stranding writes on stale
-	 * client state.
+	 * Content-write permission for this document. The role-derived policy
+	 * answer is primary — tokens are minted from roles but served through
+	 * an API cache, so during a live transition the token lags the role.
+	 * The token fills in when role data has not synced, and unknown states
+	 * default to write — the server enforces real authorization, and
+	 * failing open avoids stranding writes on missing client state.
 	 */
 	public get canWriteContent(): boolean {
+		const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
+		if (policy !== null) {
+			return policy;
+		}
 		if (this.clientToken?.authorization) {
 			return this.clientToken.authorization !== "read-only";
 		}
-		return this.sharedFolder?.canWriteContent ?? true;
+		return true;
 	}
 
 	public get activeAccessMode(): ActiveAccessMode {
@@ -948,30 +953,19 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 
 	/**
 	 * Re-derive access mode and drive the HSM transition for an open
-	 * document. SharedFolder calls this when a role change flips folder
-	 * write permission: documents syncing through the folder provider hold
-	 * no per-document token, so a token refresh never fires for them and
-	 * the role change itself is the signal. The HSM treats a repeated mode
-	 * as a no-op, so this composes with the token-refresh path.
+	 * document. Fired by SharedFolder on role changes and by token
+	 * refreshes; both converge on the derived access mode (role-first,
+	 * token fallback), so a stale cached token can never override a fresh
+	 * role in either direction. The HSM treats a repeated mode as a no-op,
+	 * so the two signal paths compose. Idle documents need no event: the
+	 * HSM's getAccessMode callback re-derives on demand.
 	 */
 	public notifyAccessModeChanged(): void {
 		const hsm = this._hsm;
 		if (!hsm || !hsm.isActive()) {
 			return;
 		}
-		this.onAccessModeChanged(this.activeAccessMode === "read");
-	}
-
-	/**
-	 * Drive live permission transitions for an active HSM when a token
-	 * refresh flips content-write permission. Idle documents need no event:
-	 * the HSM's getAccessMode callback reads the fresh token directly.
-	 */
-	protected onAccessModeChanged(readOnly: boolean): void {
-		const hsm = this._hsm;
-		if (!hsm || !hsm.isActive()) {
-			return;
-		}
+		const readOnly = this.activeAccessMode === "read";
 		if (readOnly) {
 			hsm.send({ type: "DEMOTE_TO_READ" });
 			// Demotion may have preserved a fork because local ops were not
@@ -998,6 +992,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		} else {
 			hsm.send({ type: "PROMOTE_TO_WRITE" });
 		}
+	}
+
+	/**
+	 * Token refreshes flip provider gating; the HSM transition re-derives
+	 * from the role-first access mode, so a stale cached token cannot
+	 * override a fresh role.
+	 */
+	protected onAccessModeChanged(_readOnly: boolean): void {
+		this.notifyAccessModeChanged();
 	}
 
 	/**

@@ -1388,22 +1388,34 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Content-write permission for documents in this folder, from the
-	 * client-side role policy. Document-level token authorization takes
-	 * precedence when a token exists; this covers tokenless contexts
-	 * (closed files, background sync). Unknown states default to write —
-	 * the server enforces real authorization, and failing open avoids
-	 * stranding writes on stale client state.
+	 * Tri-state content-write answer from the client-side role policy.
+	 * Null means the role data needed to answer has not synced (every real
+	 * folder carries at least its owner's role record), so callers should
+	 * fall back to token- or default-derived modes rather than trusting a
+	 * fail-closed policy evaluation over missing data.
+	 *
+	 * The role is the primary access-mode source: tokens are minted from
+	 * roles but served through an API cache, so a freshly flipped role with
+	 * a stale cached token is the normal case during a live transition.
 	 */
-	public get canWriteContent(): boolean {
+	public get canWriteContentAnswer(): boolean | null {
 		const remote = this.remote;
 		if (!remote) {
-			return true;
+			return null;
 		}
 		const userId = this.relayManager?.user?.id;
 		const policyManager = this.relayManager?.policyManager;
 		if (!userId || !policyManager) {
-			return true;
+			return null;
+		}
+		const folderRolesSynced = this.relayManager.folderRoles
+			.values()
+			.some((r) => r.sharedFolderId === remote.id);
+		const relayRolesSynced = this.relayManager.relayRoles
+			.values()
+			.some((r) => r.relayId === remote.relayId);
+		if (!folderRolesSynced && !relayRolesSynced) {
+			return null;
 		}
 		const result = policyManager.isAllowed({
 			principal: userId,
@@ -1411,6 +1423,15 @@ export class SharedFolder extends HasProvider {
 			resource: ["folder", remote.id],
 		});
 		return result.allowed;
+	}
+
+	/**
+	 * Content-write permission for documents in this folder. Unknown states
+	 * default to write — the server enforces real authorization, and failing
+	 * open avoids stranding writes on missing client state.
+	 */
+	public get canWriteContent(): boolean {
+		return this.canWriteContentAnswer ?? true;
 	}
 
 	/**
