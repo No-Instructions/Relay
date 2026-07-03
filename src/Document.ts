@@ -584,7 +584,28 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			return false;
 		}
 
+		this.reconcileHeldTokenIfStale();
 		return super.connect();
+	}
+
+	/**
+	 * Mismatch-on-use: a held token whose authorization disagrees with the
+	 * role-derived policy view is reconciled before it gets relied on. This
+	 * covers role changes the client missed as events (offline during the
+	 * flip, plugin restart) — the disagreement is a state comparison, not
+	 * an event edge.
+	 */
+	private reconcileHeldTokenIfStale(): void {
+		const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
+		const held = this.clientToken?.authorization;
+		if (policy === null || !held) {
+			return;
+		}
+		const heldReadOnly = held === "read-only";
+		const policyReadOnly = !policy;
+		if (heldReadOnly !== policyReadOnly) {
+			this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
+		}
 	}
 
 	onceConnected(): Promise<void> {
