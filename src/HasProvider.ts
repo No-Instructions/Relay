@@ -87,12 +87,16 @@ export class HasProvider extends HasLogging {
 	private _providerSyncAbortHandlers = new Set<(reason: Error) => void>();
 	private _providerConnectedAbortHandlers = new Set<(reason: Error) => void>();
 	// Track whether the current provider connection has completed sync.
-	// This must reset on disconnect so reconnect flows do not treat a
-	// stale connection as ready.
+	// Mirrors the provider's "synced" event through a persistent
+	// subscription (attached in ensureRemoteDoc), so it stays correct
+	// even when no onceProviderSynced() waiter is active at the moment
+	// the handshake completes. Resets on disconnect so reconnect flows
+	// do not treat a stale connection as ready.
 	_providerSynced: boolean = false;
 	private _offConnectionError: (() => void) | null = null;
 	private _offConnectionClose: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
+	private _offSynced: (() => void) | null = null;
 	listeners: Map<unknown, Listener>;
 	timeProvider!: TimeProvider;
 
@@ -191,8 +195,28 @@ export class HasProvider extends HasLogging {
 		stateSub.on();
 		this._offState = stateSub.off;
 
+		const syncedSub = this.providerSyncedSubscription((synced: boolean) => {
+			if (this._providerSynced === synced) {
+				return;
+			}
+			this._providerSynced = synced;
+			if (synced) {
+				this.handleProviderSynced();
+			}
+			this.notifyListeners();
+		});
+		syncedSub.on();
+		this._offSynced = syncedSub.off;
+
 		return this._ydoc;
 	}
+
+	/**
+	 * Called on every false→true transition of the sync handshake.
+	 * Subclasses latch durable state here — SharedFolder persists the
+	 * server-sync marker so `ready` becomes a one-way gate.
+	 */
+	protected handleProviderSynced(): void {}
 
 	/**
 	 * Destroy the remote YDoc and provider, freeing memory.
@@ -217,6 +241,10 @@ export class HasProvider extends HasLogging {
 		if (this._offState) {
 			this._offState();
 			this._offState = null;
+		}
+		if (this._offSynced) {
+			this._offSynced();
+			this._offSynced = null;
 		}
 		if (this._provider) {
 			this._provider.destroy();
@@ -651,6 +679,18 @@ export class HasProvider extends HasLogging {
 		};
 		const off = () => {
 			this._provider?.off("status", f);
+		};
+		return { on, off } as Subscription;
+	}
+
+	private providerSyncedSubscription(
+		f: (synced: boolean) => void,
+	): Subscription {
+		const on = () => {
+			this._provider?.on("synced", f);
+		};
+		const off = () => {
+			this._provider?.off("synced", f);
 		};
 		return { on, off } as Subscription;
 	}

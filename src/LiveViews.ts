@@ -1033,6 +1033,24 @@ export class LiveViewManager {
 							});
 						});
 				})();
+
+				// whenReady() resolves for established folders even while
+				// they are still waiting on a provider handshake, so the
+				// refresh above can run before the folder is ready. Watch
+				// connection-state notifications and refresh once ready
+				// actually flips, then stop watching.
+				const watcherKey = {};
+				const offReady = folder.subscribe(watcherKey, () => {
+					if (this.destroyed) {
+						offReady();
+						return;
+					}
+					if (folder.ready) {
+						offReady();
+						void this.refresh("[Shared Folder Ready]");
+					}
+				});
+				folder.onDestroy(offReady);
 			}
 
 			return folder.fset.on(() => {

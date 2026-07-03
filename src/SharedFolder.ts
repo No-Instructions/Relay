@@ -1394,6 +1394,27 @@ export class SharedFolder extends HasProvider {
 		await this._persistence.markServerSynced();
 	}
 
+	/**
+	 * Latch `ready` on the first completed handshake. `ready` is a
+	 * one-way gate — "safe to enroll and edit files in this folder" —
+	 * so the first provider sync must durably record hasServerSync.
+	 * The transient `synced` term in the `ready` getter only bridges
+	 * the moment between the handshake and this marker landing.
+	 * Event-driven so the latch cannot miss the handshake when the
+	 * remote record or login resolves after construction.
+	 */
+	protected handleProviderSynced(): void {
+		if (this.authoritative || this._persistence.hasServerSync) {
+			return;
+		}
+		trackPromise(
+			`folderMarkSynced:${this.guid}`,
+			this.markSynced(),
+		).catch((e) => {
+			this.warn("failed to persist server sync marker", e);
+		});
+	}
+
 	async getServerSynced(): Promise<boolean> {
 		return this._persistence.getServerSynced();
 	}
