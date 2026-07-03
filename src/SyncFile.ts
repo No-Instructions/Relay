@@ -740,6 +740,14 @@ export class SyncFile
 			await this.vault.adapter.writeBinary(vaultPath, content, {
 				mtime: edit.mtime,
 			});
+			// Save the hash eagerly: the pulled content's hash is known from
+			// meta, and a durable entry is the local evidence that this file
+			// synced — cleanup relies on it after a restart.
+			this.hashStore
+				.saveHash(vaultPath, this.meta.hash, edit.mtime)
+				.catch((error) => {
+					this.warn("Failed to save pulled hash:", error);
+				});
 			if (this.uploadError) {
 				this.uploadError = undefined;
 				this.notifyListeners();
