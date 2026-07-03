@@ -844,6 +844,12 @@ export interface IYDocPersistence {
 	 */
 	initializeFromRemote?(update: Uint8Array, origin?: unknown): Promise<boolean>;
 	/**
+	 * Delete every stored row for this document so a rebuild re-enrolls
+	 * from scratch. Used by localDoc rebuilds (fork discard) where ops must
+	 * be durably gone, not just absent from the in-memory doc.
+	 */
+	clearDocumentData?(): Promise<void>;
+	/**
 	 * OpCapture instance managed by this persistence layer.
 	 * Initialized during the persistence sync lifecycle when captureOpts
 	 * is passed to the constructor.

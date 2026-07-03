@@ -1403,6 +1403,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
+	 * Wait for any pending read-repair (localDoc rebuild) to complete.
+	 * Returns immediately if no repair is in progress.
+	 */
+	async awaitReadRepair(): Promise<void> {
+		await this.awaitAsync('read-repair');
+	}
+
+	/**
 	 * Register a machine edit (vault.process) for deferred sync with rewind.
 	 *
 	 * Pre-computes the expected result text and bookmarks OpCapture so that
@@ -3247,8 +3255,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					}
 
 					const stateVector = Y.encodeStateVector(this.localDoc);
-					const diffUpdate = Y.encodeStateAsUpdate(this.localDoc, fork.localStateVector);
-					if (diffUpdate.length > 0) {
+					// Push exactly what remote lacks. Diffing against the fork's
+					// local state vector would miss demotion forks, whose local
+					// vector was captured after the preserved divergence.
+					const diffUpdate = Y.encodeStateAsUpdate(
+						this.localDoc,
+						Y.encodeStateVector(this.remoteDoc),
+					);
+					if (diffUpdate.length > 0 && !yjsUpdateIsNoop(this.remoteDoc, diffUpdate)) {
 						this._bridge.syncToRemote(diffUpdate);
 					}
 					this._bridge.clearOutboundQueue();
@@ -5212,10 +5226,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const remoteState = Y.encodeStateAsUpdate(remoteDoc);
 		const remoteText = remoteDoc.getText("contents").toString();
 
-		const persistence = this.localPersistence as
-			| (IYDocPersistence & { clearDocumentData?: () => Promise<void> })
-			| null;
-		if (persistence && !persistence.clearDocumentData) {
+		if (this.localPersistence && !this.localPersistence.clearDocumentData) {
 			this.emitEffect({
 				type: "DIAGNOSTIC",
 				code: "READ_REPAIR_NO_CLEARDATA",
@@ -5237,7 +5248,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			freshDoc,
 			this._captureOpts,
 		);
-		await this.localPersistence.whenSynced;
+		if (!this.localPersistence.synced) {
+			await this.awaitLocalPersistenceWhenSynced(signal);
+		}
 		if (signal.aborted) return { success: false, reason: "aborted" };
 
 		Y.applyUpdate(freshDoc, remoteState, remoteDoc);

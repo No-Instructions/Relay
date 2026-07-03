@@ -405,6 +405,11 @@ export interface LoadAndActivateOptions {
 	 * Pass null to simulate the no-editorViewRef case.
 	 */
 	editorViewRef?: EditorViewRef | null;
+	/**
+	 * Content-write permission for the session (default: "write").
+	 * "read" activates into active.reading instead of active.tracking.
+	 */
+	accessMode?: "write" | "read";
 }
 
 /**
@@ -480,16 +485,19 @@ export async function loadAndActivate(
 		data: content,
 		clear: true,
 	});
+	const accessMode = opts?.accessMode ?? "write";
+	const targetState =
+		accessMode === "read" ? "active.reading" : "active.tracking";
 	if (opts?.editorViewRef === null) {
-		hsm.send(acquireLock());
+		hsm.send(acquireLock(undefined, accessMode));
 	} else {
 		const editorViewRef =
 			opts?.editorViewRef ?? liveMockEditorViewRef(hsm, content);
-		hsm.send(acquireLock(editorViewRef));
+		hsm.send(acquireLock(editorViewRef, accessMode));
 	}
 
-	// Wait for state to reach tracking
-	await hsm.hsm?.awaitState?.((s) => s === "active.tracking");
+	// Wait for state to reach the active target
+	await hsm.hsm?.awaitState?.((s) => s === targetState);
 
 	// Sync localDoc content to remoteDoc (simulating initial provider sync)
 	// In production, remoteDoc would be synced via WebSocket/WebRTC provider.
@@ -503,10 +511,10 @@ export async function loadAndActivate(
 	}
 
 	// Verify we reached the expected state
-	if (!hsm.matches("active.tracking")) {
+	if (!hsm.matches(targetState)) {
 		const state = hsm.statePath ?? "unknown";
 		throw new Error(
-			`loadAndActivate: expected active.tracking but got ${state}. ` +
+			`loadAndActivate: expected ${targetState} but got ${state}. ` +
 				`This may indicate a bug in the state machine or test setup.`,
 		);
 	}
