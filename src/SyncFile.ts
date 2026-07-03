@@ -266,14 +266,15 @@ export class ContentAddressedFile extends HasLogging {
 	}
 
 	exists() {
-		if (this._tfile) {
-			return true;
-		}
+		// Re-verify against the vault on every call: a cached handle can go
+		// stale when the file is deleted or moved between checks, and a stale
+		// true here makes downstream TFile getters throw mid-flow.
 		const tfile = this.vault.getAbstractFileByPath(this.path);
 		if (tfile && tfile instanceof TFile) {
 			this._tfile = tfile;
 			return true;
 		}
+		this._tfile = null;
 		return false;
 	}
 
