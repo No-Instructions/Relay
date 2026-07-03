@@ -947,6 +947,22 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
+	 * Re-derive access mode and drive the HSM transition for an open
+	 * document. SharedFolder calls this when a role change flips folder
+	 * write permission: documents syncing through the folder provider hold
+	 * no per-document token, so a token refresh never fires for them and
+	 * the role change itself is the signal. The HSM treats a repeated mode
+	 * as a no-op, so this composes with the token-refresh path.
+	 */
+	public notifyAccessModeChanged(): void {
+		const hsm = this._hsm;
+		if (!hsm || !hsm.isActive()) {
+			return;
+		}
+		this.onAccessModeChanged(this.activeAccessMode === "read");
+	}
+
+	/**
 	 * Drive live permission transitions for an active HSM when a token
 	 * refresh flips content-write permission. Idle documents need no event:
 	 * the HSM's getAccessMode callback reads the fresh token directly.

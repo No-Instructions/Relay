@@ -1414,9 +1414,11 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Force a token refresh for every document in this folder that holds a
-	 * registered token. The refreshed token's authorization flips the
-	 * provider and drives the HSM permission transition for open documents.
+	 * Propagate a content-write permission flip to this folder's documents.
+	 * Open documents transition immediately from the role change itself;
+	 * documents holding a registered token also get a forced refresh so the
+	 * provider's authorization catches up (the token stays the source of
+	 * truth wherever one exists).
 	 */
 	private refreshDocumentTokensForPermissionChange(): void {
 		this.debug(
@@ -1424,8 +1426,12 @@ export class SharedFolder extends HasProvider {
 		);
 		this.files.forEach((file) => {
 			const s3rn = (file as unknown as { s3rn?: HasProvider["s3rn"] }).s3rn;
-			if (!s3rn) return;
-			this.tokenStore.forceRefresh(S3RN.encode(s3rn));
+			if (s3rn) {
+				this.tokenStore.forceRefresh(S3RN.encode(s3rn));
+			}
+			if (isDocument(file)) {
+				file.notifyAccessModeChanged();
+			}
 		});
 	}
 
