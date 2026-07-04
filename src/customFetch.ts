@@ -1,11 +1,13 @@
 "use strict";
-import { apiVersion, requestUrl } from "obsidian";
+import { apiVersion, requestUrl as obsidianRequestUrl } from "obsidian";
 import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
-import { curryLog } from "./debug";
+import { curryLog, metrics, type NetworkDomain, type NetworkResult } from "./debug";
 import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
+declare const API_URL: string;
+declare const AUTH_URL: string;
 
 // Device management configuration
 let deviceManagementConfig: {
@@ -16,6 +18,23 @@ let deviceManagementConfig: {
 let pluginRequestConfig: {
 	pluginId: string;
 } | null = null;
+
+const networkDomainOrigins: Record<"api" | "auth", Set<string>> = {
+	api: new Set(),
+	auth: new Set(),
+};
+
+type RelayRequestDomain = NetworkDomain;
+
+export interface RelayRequestInit extends RequestInit {
+	relayNetworkDomain?: RelayRequestDomain;
+}
+
+export interface RelayRequestUrlParam extends RequestUrlParam {
+	relayNetworkDomain?: RelayRequestDomain;
+}
+
+initializeNetworkDomainOrigins();
 
 export function setPluginRequestConfig(config: { pluginId: string }): void {
 	pluginRequestConfig = config;
@@ -64,6 +83,110 @@ export function getRelayRequestHeaders(): Record<string, string> {
 	};
 }
 
+export function setNetworkDomainUrls(config: {
+	apiUrl?: string;
+	authUrl?: string;
+}): void {
+	addNetworkDomainOrigin("api", config.apiUrl);
+	addNetworkDomainOrigin("auth", config.authUrl);
+}
+
+function initializeNetworkDomainOrigins(): void {
+	addNetworkDomainOrigin("api", safeBuildConstant(() => API_URL));
+	addNetworkDomainOrigin("auth", safeBuildConstant(() => AUTH_URL));
+}
+
+function safeBuildConstant(read: () => string): string | undefined {
+	try {
+		return read();
+	} catch {
+		return undefined;
+	}
+}
+
+function addNetworkDomainOrigin(domain: "api" | "auth", url: string | undefined): void {
+	if (!url) return;
+	try {
+		networkDomainOrigins[domain].add(new URL(url).origin);
+	} catch {
+		// Ignore malformed runtime configuration; the request will be labeled external.
+	}
+}
+
+function classifyNetworkDomain(
+	urlString: string,
+	override?: RelayRequestDomain,
+): RelayRequestDomain {
+	if (override) return override;
+	try {
+		const origin = new URL(urlString).origin;
+		if (networkDomainOrigins.auth.has(origin)) return "auth";
+		if (networkDomainOrigins.api.has(origin)) return "api";
+	} catch {
+		return "external";
+	}
+	return "external";
+}
+
+function getNowMs(): number {
+	return typeof performance !== "undefined" && performance.now
+		? performance.now()
+		: Date.now();
+}
+
+function getStatusResult(status: number | undefined): NetworkResult {
+	return status !== undefined && status < 400 ? "success" : "error";
+}
+
+function recordRequestMetrics(args: {
+	domain: NetworkDomain;
+	method: string;
+	status?: number;
+	durationMs: number;
+	responseBytes: number;
+	result?: NetworkResult;
+}): void {
+	metrics.recordNetworkRequest(
+		args.domain,
+		"http",
+		args.method,
+		args.status,
+		args.durationMs / 1000,
+		args.responseBytes,
+		args.result ?? getStatusResult(args.status),
+	);
+}
+
+export async function requestUrlWithMetrics(
+	params: RelayRequestUrlParam,
+): Promise<RequestUrlResponse> {
+	const domain = classifyNetworkDomain(params.url, params.relayNetworkDomain);
+	const method = params.method ?? "GET";
+	const requestParams: RequestUrlParam = { ...params };
+	delete (requestParams as RelayRequestUrlParam).relayNetworkDomain;
+	const startMs = getNowMs();
+	try {
+		const response = await obsidianRequestUrl(requestParams);
+		recordRequestMetrics({
+			domain,
+			method,
+			status: response.status,
+			durationMs: getNowMs() - startMs,
+			responseBytes: response.arrayBuffer?.byteLength ?? 0,
+		});
+		return response;
+	} catch (error) {
+		recordRequestMetrics({
+			domain,
+			method,
+			durationMs: getNowMs() - startMs,
+			responseBytes: 0,
+			result: "error",
+		});
+		throw error;
+	}
+}
+
 if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 	// Fetch API is broken for some versions of Electron
 	// https://github.com/electron/electron/pull/42419
@@ -97,12 +220,13 @@ if (globalThis.EventSource === undefined) {
 
 export const customFetch = async (
 	url: RequestInfo | URL,
-	config?: RequestInit,
+	config?: RelayRequestInit,
 ): Promise<Response> => {
 	// Convert URL object to string if necessary
 	const urlString = url instanceof URL ? url.toString() : (url as string);
 
 	const method = config?.method || "GET";
+	const domain = classifyNetworkDomain(urlString, config?.relayNetworkDomain);
 
 	const headers = Object.assign(
 		{},
@@ -120,9 +244,17 @@ export const customFetch = async (
 	};
 
 	let response: RequestUrlResponse | undefined = undefined;
+	const startMs = getNowMs();
 	try {
-		response = await requestUrl(requestParams);
+		response = await obsidianRequestUrl(requestParams);
 	} catch (error: any) {
+		recordRequestMetrics({
+			domain,
+			method,
+			durationMs: getNowMs() - startMs,
+			responseBytes: 0,
+			result: "error",
+		});
 		// Handle Electron networking errors gracefully to prevent complete networking failure
 		if (error?.message?.includes("net::ERR_FAILED")) {
 			// Return a proper error response instead of throwing
@@ -135,6 +267,13 @@ export const customFetch = async (
 		// Re-throw other errors
 		throw error;
 	}
+	recordRequestMetrics({
+		domain,
+		method,
+		status: response.status,
+		durationMs: getNowMs() - startMs,
+		responseBytes: response.arrayBuffer.byteLength,
+	});
 
 	if (!response.arrayBuffer.byteLength) {
 		return new Response(null, {

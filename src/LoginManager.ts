@@ -1,6 +1,6 @@
 "use strict";
 
-import { requestUrl, type RequestUrlResponsePromise } from "obsidian";
+import type { RequestUrlResponsePromise } from "obsidian";
 import { User } from "./User";
 import PocketBase, {
 	BaseAuthStore,
@@ -11,7 +11,12 @@ import PocketBase, {
 import { RelayInstances, curryLog } from "./debug";
 import { Observable } from "./observable/Observable";
 
-import { customFetch, getRelayRequestHeaders } from "./customFetch";
+import {
+	customFetch,
+	getRelayRequestHeaders,
+	requestUrlWithMetrics,
+	setNetworkDomainUrls,
+} from "./customFetch";
 import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
@@ -181,6 +186,7 @@ export class LoginManager extends Observable<LoginManager> {
 		const pbLog = curryLog("[Pocketbase]", "debug");
 		this.authStore = new LocalAuthStore(`pocketbase_auth_${vaultName}`);
 		this.endpointManager = endpointManager;
+		this.updateNetworkMetricDomains();
 		this.pb = new PocketBase(this.endpointManager.getAuthUrl(), this.authStore);
 		this.pb.beforeSend = (url, options) => {
 			pbLog(url, options);
@@ -215,6 +221,13 @@ export class LoginManager extends Observable<LoginManager> {
 				});
 		}
 		RelayInstances.set(this, "loginManager");
+	}
+
+	private updateNetworkMetricDomains(): void {
+		setNetworkDomainUrls({
+			apiUrl: this.endpointManager.getApiUrl(),
+			authUrl: this.endpointManager.getAuthUrl(),
+		});
 	}
 
 	refreshToken() {
@@ -287,10 +300,11 @@ export class LoginManager extends Observable<LoginManager> {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			...getRelayRequestHeaders(),
 		};
-		return requestUrl({
+		return requestUrlWithMetrics({
 			url: `${this.endpointManager.getApiUrl()}/relay/${relay_guid}/check-host`,
 			method: "GET",
 			headers: headers,
+			relayNetworkDomain: "api",
 		});
 	}
 
@@ -299,10 +313,11 @@ export class LoginManager extends Observable<LoginManager> {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			...getRelayRequestHeaders(),
 		};
-		requestUrl({
+		requestUrlWithMetrics({
 			url: `${this.endpointManager.getApiUrl()}/flags`,
 			method: "GET",
 			headers: headers,
+			relayNetworkDomain: "api",
 		})
 			.then((response) => {
 				if (response.status === 200) {
@@ -320,10 +335,11 @@ export class LoginManager extends Observable<LoginManager> {
 			Authorization: `Bearer ${this.pb.authStore.token}`,
 			...getRelayRequestHeaders(),
 		};
-		requestUrl({
+		requestUrlWithMetrics({
 			url: `${this.endpointManager.getApiUrl()}/whoami`,
 			method: "GET",
 			headers: headers,
+			relayNetworkDomain: "api",
 		})
 			.then((response) => {
 				this.log(response.json);
@@ -353,6 +369,9 @@ export class LoginManager extends Observable<LoginManager> {
 		licenseInfo?: any;
 	}> {
 		const result = await this.endpointManager.validateAndSetEndpoints(timeoutMs);
+		if (result.success) {
+			this.updateNetworkMetricDomains();
+		}
 		
 		if (result.success && this.endpointManager.hasValidatedEndpoints()) {
 			// Clean up old PocketBase instance before creating new one

@@ -2,9 +2,10 @@
 	import { writable } from "svelte/store";
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
-	import { debounce, requestUrl } from "obsidian";
+	import { debounce } from "obsidian";
 	import type Live from "../main";
 	import { getAllLogFiles, getAllLogs } from "../debug";
+	import { requestUrlWithMetrics } from "../customFetch";
 
 	export let plugin: Live;
 
@@ -141,13 +142,14 @@
 							const logs = await getAllLogs();
 							bugReport += logs;
 						}
-						requestUrl({
+						requestUrlWithMetrics({
 							url: "https://bug-reports.system3.dev",
 							method: "PUT",
 							body: bugReport,
 							headers: {
 								"Content-Type": "text/plain",
 							},
+							relayNetworkDomain: "external",
 						}).then(() => {
 							sent.set(true);
 						});
