@@ -265,6 +265,15 @@ export class ContentAddressedFile extends HasLogging {
 		return hash;
 	}
 
+	move(newPath: string) {
+		if (newPath === this.path) {
+			return;
+		}
+		this.path = newPath;
+		const tfile = this.vault.getAbstractFileByPath(newPath);
+		this._tfile = tfile instanceof TFile ? tfile : null;
+	}
+
 	exists() {
 		// Re-verify against the vault on every call: a cached handle can go
 		// stale when the file is deleted or moved between checks, and a stale
@@ -402,6 +411,7 @@ export class SyncFile
 		this._parent = sharedFolder;
 		this.debug("setting new path", newPath);
 		this.path = newPath;
+		this.caf.move(sharedFolder.getPath(newPath));
 		this.name = newPath.split("/").pop() || "";
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
