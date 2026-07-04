@@ -112,6 +112,7 @@ const MAX_PROVIDER_SYNC_RETRIES = 5;
 const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
+const LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
 type BackgroundSyncOperation = "sync" | "download";
 type BackgroundSyncSortReason = "enqueue" | "retry" | "batch" | "group";
 
@@ -145,6 +146,10 @@ export class BackgroundSync extends HasLogging {
 
 	private syncQueue: QueueItem[] = [];
 	private downloadQueue: QueueItem[] = [];
+	// Local-ahead docs whose sync session did not converge (e.g. the server
+	// refuses the ops) stay advertised-out-of-sync forever; without a marker
+	// every subdoc index sync would re-enqueue a full session for them.
+	private localAheadAttempts = new Map<string, number>();
 	private isProcessingSync = false;
 	private isProcessingDownloads = false;
 	private isPaused = true;
@@ -1724,7 +1729,20 @@ export class BackgroundSync extends HasLogging {
 		// provider: their own connection already carries local ops.
 		if (doc.userLock || mergeManager.isActive(doc.guid)) return false;
 		if (doc.intent === "connected") return false;
-		return mergeManager.isServerAdvertisedOutOfSync(doc.guid);
+		if (!mergeManager.isServerAdvertisedOutOfSync(doc.guid)) {
+			this.localAheadAttempts.delete(doc.guid);
+			return false;
+		}
+		const lastAttempt = this.localAheadAttempts.get(doc.guid);
+		const now = this.timeProvider.now();
+		if (
+			lastAttempt !== undefined &&
+			now - lastAttempt < LOCAL_AHEAD_RETRY_INTERVAL_MS
+		) {
+			return false;
+		}
+		this.localAheadAttempts.set(doc.guid, now);
+		return true;
 	}
 
 	private shouldEnqueueForLCABackfill(doc: Document): boolean {
