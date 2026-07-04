@@ -257,6 +257,11 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	async whenReady(): Promise<Canvas> {
+		if (this.destroyed) {
+			return Promise.reject(
+				new DocumentDestroyedError(this.guid, this.path),
+			);
+		}
 		const promiseFn = async (): Promise<Canvas> => {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
@@ -274,7 +279,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this.readyPromise =
 			this.readyPromise ||
 			new Dependency<Canvas>(promiseFn, (): [boolean, Canvas] => {
-				return [this.ready, this];
+				return [!this.destroyed && this.ready, this];
 			}, this.timeProvider);
 		return trackPromise(`canvas:whenReady:${this.guid}`, this.readyPromise.getPromise());
 	}
