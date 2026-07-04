@@ -452,6 +452,10 @@ export class SyncFile
 			this.log("skipping push -- filetype is disabled");
 			return;
 		}
+		if (this.sharedFolder.intent !== "connected") {
+			this.log("skipping push -- folder is set to disconnected");
+			return;
+		}
 		const hash = await this.caf.hash();
 		this._refreshMeta();
 		if (this.meta?.hash === hash) {
