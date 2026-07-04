@@ -57,66 +57,125 @@ type LogEntry = {
 	level: LogLevel;
 	message: string;
 	callerInfo: string;
+	/** Sink id resolved at log time; null/unknown drains to the default sink. */
+	sink?: string | null;
 };
+
+/**
+ * A registered log destination. In Obsidian exactly one sink exists and
+ * behavior is unchanged. Headless daemons (relay-cli) may host several
+ * runtimes in one process; each registers its own sink so one runtime's
+ * logging can never rebind another's lines.
+ */
+type LogSink = {
+	adapter: IFileAdapter;
+	logFilePath: string;
+};
+
+const logSinks = new Map<string, LogSink>();
+let defaultSinkId: string | null = null;
+let sinkResolver: (() => string | null) | null = null;
+
+/**
+ * Install a per-log-call sink resolver (e.g. AsyncLocalStorage-backed in the
+ * headless daemon). Returning null routes the line to the default
+ * (last-initialized) sink. No resolver = single-sink behavior.
+ */
+export function setLogSinkResolver(
+	resolver: (() => string | null) | null,
+): void {
+	sinkResolver = resolver;
+}
 
 export function initializeLogger(
 	adapter: IFileAdapter,
 	timeProvider: TimeProvider,
 	logFilePath: string,
 	config?: Partial<LogConfig>,
-) {
+): string {
+	// Sink ids are the log file path, disambiguated when two runtimes use
+	// the same relative path against different adapters.
+	let sinkId = logFilePath;
+	for (
+		let counter = 2;
+		logSinks.has(sinkId) && logSinks.get(sinkId)!.adapter !== adapter;
+		counter += 1
+	) {
+		sinkId = `${logFilePath}#${counter}`;
+	}
+	const existing = logSinks.get(sinkId);
+	logSinks.set(sinkId, { adapter, logFilePath });
+	// The most recently initialized sink is the default destination for
+	// lines that no resolver attributes to a specific sink.
+	defaultSinkId = sinkId;
 	fileAdapter = adapter;
 	currentLogFile = logFilePath;
 	if (config) {
 		logConfig = { ...logConfig, ...config };
 	}
-	timeProvider.setInterval(flushLogs, logConfig.batchInterval);
+	if (!existing) {
+		timeProvider.setInterval(flushLogs, logConfig.batchInterval);
+	}
+	return sinkId;
 }
 
 export async function flushLogs() {
 	if (logBuffer.length === 0) return;
 
-	const entries = [...logBuffer];
-	logBuffer.length = 0;
+	const entries = logBuffer.splice(0, logBuffer.length);
+	const groups = new Map<string, LogEntry[]>();
+	for (const entry of entries) {
+		const sinkId =
+			entry.sink && logSinks.has(entry.sink) ? entry.sink : defaultSinkId;
+		if (sinkId === null) continue; // no sink registered yet — drop (unchanged)
+		const group = groups.get(sinkId);
+		if (group) group.push(entry);
+		else groups.set(sinkId, [entry]);
+	}
 
-	for (let retry = 0; retry < logConfig.maxRetries; retry++) {
-		try {
-			await rotateLogIfNeeded();
-			const logContent = entries.map(formatLogEntry).join("\n") + "\n";
-			await fileAdapter.append(currentLogFile, logContent);
-			return;
-		} catch (error) {
-			console.error(`Failed to write logs (attempt ${retry + 1}):`, error);
-			if (retry === logConfig.maxRetries - 1) {
-				console.error("Max retries reached. Discarding log entries.");
+	for (const [sinkId, group] of groups) {
+		const sink = logSinks.get(sinkId)!;
+		for (let retry = 0; retry < logConfig.maxRetries; retry++) {
+			try {
+				await rotateLogIfNeeded(sink);
+				const logContent = group.map(formatLogEntry).join("\n") + "\n";
+				await sink.adapter.append(sink.logFilePath, logContent);
+				break;
+			} catch (error) {
+				console.error(`Failed to write logs (attempt ${retry + 1}):`, error);
+				if (retry === logConfig.maxRetries - 1) {
+					console.error("Max retries reached. Discarding log entries.");
+				}
 			}
 		}
 	}
 }
 
-async function rotateLogIfNeeded(): Promise<void> {
-	const stat = await fileAdapter.stat(currentLogFile);
+async function rotateLogIfNeeded(sink: LogSink): Promise<void> {
+	const logFile = sink.logFilePath;
+	const adapter = sink.adapter;
+	const stat = await adapter.stat(logFile);
 	if (stat && stat.size > logConfig.maxFileSize) {
 		for (let i = logConfig.maxBackups; i > 0; i--) {
-			const oldFile = `${currentLogFile}.${i}`;
-			const newFile = `${currentLogFile}.${i + 1}`;
-			if (await fileAdapter.exists(oldFile)) {
+			const oldFile = `${logFile}.${i}`;
+			const newFile = `${logFile}.${i + 1}`;
+			if (await adapter.exists(oldFile)) {
 				if (i === logConfig.maxBackups) {
 					// Remove oldest backup - ignore if already deleted (race condition)
 					try {
-						await fileAdapter.remove(oldFile);
+						await adapter.remove(oldFile);
 					} catch {
 						// File may have been deleted by concurrent rotation
 					}
 				} else {
 					// Remove destination first if it exists (Obsidian rename doesn't overwrite)
 					try {
-						await fileAdapter.remove(newFile);
+						await adapter.remove(newFile);
 					} catch {
 						// Destination didn't exist, which is fine
 					}
 					try {
-						await fileAdapter.rename(oldFile, newFile);
+						await adapter.rename(oldFile, newFile);
 					} catch {
 						// Source may have been moved by concurrent rotation
 					}
@@ -124,21 +183,21 @@ async function rotateLogIfNeeded(): Promise<void> {
 			}
 		}
 
-		if (await fileAdapter.exists(currentLogFile)) {
+		if (await adapter.exists(logFile)) {
 			// Remove destination first if it exists
 			try {
-				await fileAdapter.remove(`${currentLogFile}.1`);
+				await adapter.remove(`${logFile}.1`);
 			} catch {
 				// Destination didn't exist, which is fine
 			}
 			try {
-				await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
+				await adapter.rename(logFile, `${logFile}.1`);
 			} catch {
 				// Source may have been moved by concurrent rotation
 			}
 		}
 
-		await fileAdapter.write(currentLogFile, "");
+		await adapter.write(logFile, "");
 	}
 }
 
@@ -225,6 +284,9 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 				level,
 				message: `${initialText}: ${serializedArgs}`,
 				callerInfo,
+				// Attribution happens at log time, not flush time: the batch
+				// flush runs outside any runtime's execution context.
+				sink: sinkResolver ? sinkResolver() : null,
 			};
 
 			if (!logConfig.disableConsole) {
