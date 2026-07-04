@@ -3,7 +3,7 @@
 	import SettingItem from "./SettingItem.svelte";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SettingGroup from "./SettingGroup.svelte";
-	import { debounce, requestUrl } from "obsidian";
+	import { debounce } from "obsidian";
 	import type Live from "../main";
 	import { getAllLogFiles, getAllLogs } from "src/debug";
 	import { Bug } from "lucide-svelte";

@@ -90,6 +90,7 @@ async function refresh(
 			method: "POST",
 			headers: headers,
 			body: payload,
+			relayNetworkDomain: "api",
 		});
 
 		if (!response.ok) {
@@ -233,6 +234,7 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 			method: "POST",
 			headers: headers,
 			body: payload,
+			relayNetworkDomain: "api",
 		});
 
 		if (!response.ok) {
