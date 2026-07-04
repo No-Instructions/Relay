@@ -1,7 +1,6 @@
-import { requestUrl } from "obsidian";
 import { curryLog } from "./debug";
 import type { TimeProvider } from "./TimeProvider";
-import { getRelayRequestHeaders } from "./customFetch";
+import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 
 interface ServiceStatus {
 	status: string;
@@ -73,10 +72,11 @@ class NetworkStatus {
 	}
 
 	private async _checkStatus(): Promise<void> {
-		return requestUrl({
+		return requestUrlWithMetrics({
 			url: this.url,
 			method: "GET",
 			headers: getRelayRequestHeaders(),
+			relayNetworkDomain: "api",
 		})
 			.then((response) => {
 				if (response.status === 200) {

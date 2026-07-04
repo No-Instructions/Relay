@@ -401,6 +401,9 @@ import type {
 
 const PAGE_VISIBILITY_STATES = ["visible", "hidden", "prerender", "unloaded", "unknown"];
 
+export type NetworkDomain = "auth" | "api" | "relay" | "external";
+export type NetworkResult = "success" | "error";
+
 /**
  * Metrics for Relay - uses obsidian-metrics plugin if available, no-ops otherwise.
  *
@@ -415,6 +418,12 @@ class RelayMetrics {
 	// Protocol IO
 	private protocolMessageCount: MetricInstance | null = null;
 	private protocolBytes: MetricInstance | null = null;
+
+	// Network requests
+	private networkRequests: MetricInstance | null = null;
+	private networkRequestDuration: MetricInstance | null = null;
+	private networkRequestBytes: MetricInstance | null = null;
+	private networkWebSocketConnections: MetricInstance | null = null;
 
 	// Wake queue
 	private wakeQueueSlots: MetricInstance | null = null;
@@ -489,6 +498,29 @@ class RelayMetrics {
 			name: "relay_protocol_bytes",
 			help: "Sync protocol bytes by type and direction",
 			labelNames: ["type", "direction"],
+		});
+
+		// Network requests
+		this.networkRequests = api.createCounter({
+			name: "relay_network_requests_total",
+			help: "Total Relay network requests by destination domain, transport, method, and result",
+			labelNames: ["domain", "transport", "method", "status_class", "result"],
+		});
+		this.networkRequestDuration = api.createHistogram({
+			name: "relay_network_request_duration_seconds",
+			help: "Relay network request duration by destination domain, transport, method, and result",
+			labelNames: ["domain", "transport", "method", "status_class", "result"],
+			buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
+		});
+		this.networkRequestBytes = api.createCounter({
+			name: "relay_network_request_bytes",
+			help: "Relay network response bytes by destination domain, transport, method, and result",
+			labelNames: ["domain", "transport", "method", "status_class", "result"],
+		});
+		this.networkWebSocketConnections = api.createCounter({
+			name: "relay_network_websocket_connections_total",
+			help: "Relay WebSocket connection attempts by destination domain and result",
+			labelNames: ["domain", "result"],
 		});
 
 		// Wake queue
@@ -662,6 +694,40 @@ class RelayMetrics {
 	recordProtocolMessage(type: "sync" | "event" | "subdoc_index", direction: "in" | "out", bytes: number): void {
 		this.protocolMessageCount?.labels({ type, direction }).inc();
 		this.protocolBytes?.labels({ type, direction }).inc(bytes);
+	}
+
+	recordNetworkRequest(
+		domain: NetworkDomain,
+		transport: "http",
+		method: string,
+		status: number | undefined,
+		durationSeconds: number,
+		responseBytes: number,
+		result: NetworkResult,
+	): void {
+		const normalizedMethod = method.toUpperCase();
+		const statusClass = status === undefined
+			? "exception"
+			: `${Math.floor(status / 100)}xx`;
+		const labels = {
+			domain,
+			transport,
+			method: normalizedMethod,
+			status_class: statusClass,
+			result,
+		};
+		this.networkRequests?.labels(labels).inc();
+		this.networkRequestDuration?.labels(labels).observe(durationSeconds);
+		if (responseBytes > 0) {
+			this.networkRequestBytes?.labels(labels).inc(responseBytes);
+		}
+	}
+
+	recordNetworkWebSocketConnection(
+		domain: NetworkDomain,
+		result: "attempt" | "connected" | "closed" | "error",
+	): void {
+		this.networkWebSocketConnections?.labels({ domain, result }).inc();
 	}
 
 	setWakeQueueSlots(folderGuid: string, used: number, pending: number, total: number): void {

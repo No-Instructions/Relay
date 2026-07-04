@@ -1,4 +1,4 @@
-import { requestUrl, type RequestUrlResponse } from "obsidian";
+import type { RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
 import { S3RN, S3RemoteCanvas, S3RemoteDocument } from "./S3RN";
@@ -28,7 +28,7 @@ import {
 	type FolderSyncWorkItemInput,
 } from "./BackgroundSyncProgress";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
-import { getRelayRequestHeaders } from "./customFetch";
+import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import { isRetryableS3Error } from "./S3Error";
 
 export interface QueueItem {
@@ -1855,11 +1855,12 @@ export class BackgroundSync extends HasLogging {
 		const baseUrl = this.getBaseUrl(clientToken, entity);
 		const url = `${baseUrl}/as-update`;
 
-		const response = await requestUrl({
+		const response = await requestUrlWithMetrics({
 			url: url,
 			method: "GET",
 			headers: headers,
 			throw: false,
+			relayNetworkDomain: "relay",
 		});
 
 		if (response.status === 200) {
@@ -1910,11 +1911,12 @@ export class BackgroundSync extends HasLogging {
 		const baseUrl = this.getBaseUrl(clientToken, entity);
 		const url = `${baseUrl}/as-update`;
 
-		const response = await requestUrl({
+		const response = await requestUrlWithMetrics({
 			url,
 			method: "GET",
 			headers,
 			throw: false,
+			relayNetworkDomain: "relay",
 		});
 
 		if (response.status !== 200) {

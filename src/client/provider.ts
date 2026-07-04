@@ -251,6 +251,7 @@ const readMessage = (
 const setupWS = (provider: YSweetProvider) => {
 	if (provider.shouldConnect && provider.ws === null) {
 		const websocket = new provider._WS(provider.url);
+		metrics.recordNetworkWebSocketConnection("relay", "attempt");
 		websocket.binaryType = "arraybuffer";
 		provider.ws = websocket;
 		provider.wsconnecting = true;
@@ -272,12 +273,14 @@ const setupWS = (provider: YSweetProvider) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
+			metrics.recordNetworkWebSocketConnection("relay", "error");
 			provider.emit("connection-error", [event, provider]);
 		};
 		websocket.onclose = (event) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
+			metrics.recordNetworkWebSocketConnection("relay", "closed");
 			provider.emit("connection-close", [event, provider]);
 			provider.ws = null;
 			provider.wsconnecting = false;
@@ -315,6 +318,7 @@ const setupWS = (provider: YSweetProvider) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
+			metrics.recordNetworkWebSocketConnection("relay", "connected");
 			provider.wsLastMessageReceived = time.getUnixTime();
 			provider.wsconnecting = false;
 			provider.wsconnected = true;
