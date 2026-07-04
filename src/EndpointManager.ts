@@ -344,7 +344,8 @@ export class EndpointManager {
 				method: "GET",
 				headers: {
 					"Content-Type": "application/json"
-				}
+				},
+				relayNetworkDomain: "auth",
 			});
 
 			if (!response.ok) {
@@ -917,7 +918,8 @@ export class EndpointManager {
 				method: "GET",
 				headers: {
 					"Content-Type": "application/json"
-				}
+				},
+				relayNetworkDomain: "auth",
 			});
 
 			if (!response.ok) {
