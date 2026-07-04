@@ -1374,14 +1374,16 @@ export class MergeManager {
     // Only send RELEASE_LOCK if currently active
     if (this.activeDocs.has(guid)) {
       hsm.send({ type: 'RELEASE_LOCK' });
+      // The editor session ends at RELEASE_LOCK: drop the guid from activeDocs
+      // immediately so deferred disconnects and folder-reconnect checks do not
+      // observe a live session for the entire cleanup drain.
+      this.activeDocs.delete(guid);
       // Wait for cleanup to complete (IndexedDB writes)
       try {
         await trackPromise(`awaitCleanup:${guid}`, hsm.awaitCleanup());
       } catch (error) {
         if (hsm.isDestroyed()) return;
         throw error;
-      } finally {
-        this.activeDocs.delete(guid);
       }
     }
 
