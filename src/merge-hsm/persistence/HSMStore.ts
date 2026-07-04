@@ -359,14 +359,13 @@ export class HSMStore {
   private _settleOrTimeout(promise: Promise<void>): Promise<boolean> {
     return new Promise(resolve => {
       let finished = false;
-      let timer: ReturnType<typeof globalThis.setTimeout>;
       const finish = (settled: boolean) => {
         if (finished) return;
         finished = true;
         globalThis.clearTimeout(timer);
         resolve(settled);
       };
-      timer = globalThis.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS);
+      const timer = globalThis.setTimeout(() => finish(false), DESTROY_DRAIN_TIMEOUT_MS);
       promise.then(
         () => finish(true),
         () => finish(true),
