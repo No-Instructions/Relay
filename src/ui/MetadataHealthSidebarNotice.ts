@@ -8,13 +8,17 @@ export class MetadataHealthSidebarNoticeMount {
 	private offLayoutChange: (() => void) | null = null;
 	private refreshInterval: number | null = null;
 	private layoutReady = false;
+	private destroyed = false;
 
 	constructor(
 		private workspace: Workspace,
 		private metadataHealth: MetadataHealth,
 		private onRepairClick: (() => void) | null = null,
 	) {
+		// onLayoutReady callbacks cannot be unregistered; Obsidian may invoke
+		// this after destroy() when the plugin unloads before layout settles.
 		this.workspace.onLayoutReady(() => {
+			if (this.destroyed) return;
 			this.layoutReady = true;
 			this.sync();
 		});
@@ -28,7 +32,7 @@ export class MetadataHealthSidebarNoticeMount {
 	}
 
 	private sync(): void {
-		if (!this.layoutReady) return;
+		if (this.destroyed || !this.layoutReady) return;
 
 		if (this.component && !this.containerEl?.isConnected) {
 			this.unmount();
@@ -79,6 +83,7 @@ export class MetadataHealthSidebarNoticeMount {
 	}
 
 	destroy(): void {
+		this.destroyed = true;
 		if (this.refreshInterval !== null) {
 			window.clearInterval(this.refreshInterval);
 			this.refreshInterval = null;
