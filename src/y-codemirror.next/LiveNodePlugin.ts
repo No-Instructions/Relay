@@ -5,11 +5,7 @@
 import type { ChangeSpec } from "@codemirror/state";
 import { EditorView, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
-import {
-	LiveViewManager,
-	RelayCanvasView,
-	getConnectionManager,
-} from "../LiveViews";
+import { getLiveViews } from "../editorContext";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { curryLog } from "src/debug";
 import type { CanvasNodeData } from "src/CanvasView";
@@ -17,10 +13,25 @@ import type { CanvasNodeData } from "src/CanvasView";
 // Import from shared location
 import { ySyncAnnotation } from "../merge-hsm/integration/annotations";
 
+type RelayCanvasViewBridge = {
+	canvas: {
+		path: string;
+		textNode(node: CanvasNodeData): YText | undefined;
+	};
+};
+
+type LiveViewManagerBridge = {
+	findCanvas(editor: EditorView): RelayCanvasViewBridge | undefined;
+};
+
+function getConnectionManager(editor: EditorView): LiveViewManagerBridge | null {
+	return getLiveViews(editor) as LiveViewManagerBridge | null;
+}
+
 export class LiveNodePluginValue implements PluginValue {
 	editor: EditorView;
-	view?: RelayCanvasView;
-	connectionManager?: LiveViewManager;
+	view?: RelayCanvasViewBridge;
+	connectionManager?: LiveViewManagerBridge;
 	initialSet = false;
 	private destroyed = false;
 	_observer?: (event: YTextEvent, tr: Transaction) => void;
@@ -174,9 +185,12 @@ export class LiveNodePluginValue implements PluginValue {
 		if (this.observer) {
 			this._ytext?.unobserve(this.observer);
 		}
+		this.observer = undefined;
+		this._observer = undefined;
 		this.connectionManager = null as any;
 		this.view = undefined;
 		this._ytext = undefined;
+		this.node = undefined;
 		this.editor = null as any;
 	}
 }

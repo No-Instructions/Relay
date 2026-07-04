@@ -16,17 +16,30 @@ import {
 
 import type { PluginValue, DecorationSet } from "@codemirror/view";
 
-import {
-	LiveViewManager,
-	LiveView,
-	getConnectionManager,
-} from "../LiveViews";
+import { getLiveViews } from "../editorContext";
 
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
-import { TextFileView, editorInfoField } from "obsidian";
-import { Document } from "../Document";
+import { editorInfoField } from "obsidian";
+import type { Document } from "../Document";
+
+type LiveViewBridge = {
+	document: Document;
+};
+
+type LiveViewManagerBridge = {
+	findView(editor: EditorView): LiveViewBridge | undefined;
+	sharedFolders: {
+		lookup(path: string):
+			| { proxy: { getDoc(path: string): Document } }
+			| undefined;
+	};
+};
+
+function getConnectionManager(editor: EditorView): LiveViewManagerBridge | null {
+	return getLiveViews(editor) as LiveViewManagerBridge | null;
+}
 
 export const yRemoteSelectionsTheme = EditorView.baseTheme({
 	".cm-ySelection": {},
@@ -160,8 +173,8 @@ type AwarenessChangeHandler = (
 
 export class YRemoteSelectionsPluginValue implements PluginValue {
 	editor: EditorView;
-	connectionManager?: LiveViewManager;
-	view?: LiveView<TextFileView>;
+	connectionManager?: LiveViewManagerBridge;
+	view?: LiveViewBridge;
 	decorations: DecorationSet;
 	_awareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
@@ -189,7 +202,7 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		}
 
 		this.view = this.connectionManager?.findView(editor);
-		if (this.view && this.view instanceof LiveView) {
+		if (this.view) {
 			const provider = this.view.document?._provider;
 			this._listener = ({ added, updated, removed }, s, t) => {
 				const clients = added.concat(updated).concat(removed);
@@ -234,6 +247,9 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			this._awareness?.off("change", this._listener);
 			this._listener = undefined;
 		}
+		this._awareness = undefined;
+		this.document = undefined;
+		this.decorations = Decoration.none;
 		this.connectionManager = null as any;
 		this.view = null as any;
 		this.editor = null as any;

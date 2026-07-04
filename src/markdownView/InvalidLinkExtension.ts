@@ -9,7 +9,7 @@ import {
 import { WidgetType } from "@codemirror/view";
 import { curryLog } from "src/debug";
 import type { App, CachedMetadata, TFile } from "obsidian";
-import { Document, isDocument } from "../Document";
+import type { Document } from "../Document";
 import {
 	getApp,
 	getSharedFolders,
@@ -92,9 +92,7 @@ export class InvalidLinkPluginValue {
 		const folder = sharedFolders.lookup(file.path);
 		if (!folder) return undefined;
 		try {
-			const doc = folder.proxy.getDoc(file.path);
-			if (!isDocument(doc)) return undefined;
-			return doc;
+			return folder.proxy.getDoc(file.path);
 		} catch {
 			return undefined;
 		}
@@ -353,8 +351,12 @@ export class InvalidLinkPluginValue {
 		this.unsubscribeMetadata();
 		this.metadataBridge = undefined;
 		this.document = undefined;
+		this.app = undefined;
+		this.decorations = Decoration.none;
+		this.decorationAnchors = [];
 		this.metadata.clear();
 		this.metadata = null as any;
+		this.cb = null as any;
 		this.editor = null as any;
 	}
 }
