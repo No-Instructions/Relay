@@ -15,6 +15,13 @@ import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import { flags } from "./flagManager";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
+import { customFetch } from "./customFetch";
+import {
+	HashMismatchError,
+	downloadToPart,
+	finalizePart,
+	supportsStreamingDownloads,
+} from "./StreamingDownload";
 
 export function isSyncFile(file: IFile | undefined): file is SyncFile {
 	return !!file && file instanceof SyncFile;
@@ -739,6 +746,22 @@ export class SyncFile
 				return;
 			}
 		}
+		if (
+			flags().enableStreamingDownloads &&
+			supportsStreamingDownloads(this.vault.adapter)
+		) {
+			try {
+				await this.pullStreaming();
+				return;
+			} catch (error) {
+				if (error instanceof HashMismatchError) {
+					// The buffered path writes without verifying; do not fall back
+					// to persisting content that failed its address check.
+					throw error;
+				}
+				this.warn("streaming pull failed; using buffered path", error);
+			}
+		}
 		try {
 			const content = await this.sharedFolder.cas.readFile(this);
 			const vaultPath = this.sharedFolder.getPath(this.path);
@@ -776,6 +799,58 @@ export class SyncFile
 			this.log(e);
 			return;
 		}
+	}
+
+	private async pullStreaming(): Promise<void> {
+		if (!this.meta) {
+			throw new Error("cannot pull without meta");
+		}
+		if (!supportsStreamingDownloads(this.vault.adapter)) {
+			throw new Error("adapter cannot stream");
+		}
+		const adapter = this.vault.adapter;
+		const vaultPath = this.sharedFolder.getPath(this.path);
+		const { partPath, size } = await downloadToPart({
+			adapter,
+			guid: this.guid,
+			expectedHash: this.meta.hash,
+			getUrl: () => this.sharedFolder.cas.getDownloadUrl(this),
+			fetchFn: (url, init) =>
+				customFetch(url, { ...init, relayNetworkDomain: "external" }),
+		});
+		const edit: ServerEditMarker = {
+			mtime: Date.now(),
+			size,
+			hash: this.meta.hash,
+		};
+		// Record the marker before the replacement so the vault event it
+		// raises is recognized as our own server-write echo (noteLocalModify)
+		// rather than a user edit.
+		this.lastServerEdit = edit;
+		await finalizePart(adapter, partPath, vaultPath);
+		const stat = await adapter.stat(vaultPath);
+		if (stat) {
+			// The rename preserves the part file's own timestamps; align the
+			// marker with the real stat before the replacement's vault event
+			// dispatches so the echo comparison stays exact.
+			edit.mtime = stat.mtime;
+			edit.size = stat.size;
+		}
+		this.hashStore
+			.saveHash(vaultPath, this.meta.hash, edit.mtime)
+			.catch((error) => {
+				this.warn("Failed to save pulled hash:", error);
+			});
+		if (this.uploadError) {
+			this.uploadError = undefined;
+			this.notifyListeners();
+		}
+		this.debug("pull streamed local file", {
+			path: this.path,
+			guid: this.guid,
+			metaHash: shortHash(this.meta.hash),
+			size,
+		});
 	}
 
 	public get tfile(): TFile {

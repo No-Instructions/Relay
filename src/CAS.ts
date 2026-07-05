@@ -42,7 +42,7 @@ export class ContentAddressedStore extends HasLogging {
 		return response.status === 200;
 	}
 
-	async readFile(syncFile: SyncFile): Promise<ArrayBuffer> {
+	async getDownloadUrl(syncFile: SyncFile): Promise<string> {
 		if (!syncFile.meta) {
 			throw new Error("cannot pull file with missing hash");
 		}
@@ -64,7 +64,11 @@ export class ContentAddressedStore extends HasLogging {
 			);
 		}
 		const responseJson = await response.json();
-		const presignedUrl = responseJson.downloadUrl;
+		return responseJson.downloadUrl;
+	}
+
+	async readFile(syncFile: SyncFile): Promise<ArrayBuffer> {
+		const presignedUrl = await this.getDownloadUrl(syncFile);
 		const downloadResponse = await this.s3Request(
 			() => customFetch(presignedUrl, { relayNetworkDomain: "external" }),
 			"download attachment",

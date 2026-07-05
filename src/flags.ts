@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
+	enableStreamingDownloads: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -141,6 +142,13 @@ export const FeatureFlagSchema: {
 		title: "Metadata database health notice",
 		description:
 			"Show a sidebar notice when Obsidian's metadata database cannot be queried.",
+	},
+	enableStreamingDownloads: {
+		default: false,
+		category: "labs",
+		title: "Streaming attachment downloads",
+		description:
+			"Download large attachments in chunks staged to a part file instead of buffering the whole file in memory.",
 	},
 };
 
