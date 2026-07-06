@@ -1,5 +1,6 @@
 import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
+import { mergeCanvasViewData } from "./CanvasData";
 import type {
 	CanvasEdge,
 	CanvasEdgeData,
@@ -382,6 +383,33 @@ export class CanvasPlugin extends HasLogging {
 		);
 	}
 
+	/**
+	 * Bring the view in line with the canvas ydoc. Content that reached the
+	 * ydoc before this view opened produces no observer events, so a view
+	 * loaded from a stale disk file would otherwise render stale forever —
+	 * and its first save would push that stale state back into the ydoc,
+	 * deleting newer peer content via applyData's diff. View-only nodes and
+	 * edges are kept: they are local edits that have not been pushed yet.
+	 */
+	private reconcileViewWithCanvas() {
+		if (!this.canvas || !this.relayCanvas) return;
+		// Obsidian reuses canvas views across file switches; a stale patch
+		// firing for another file must not merge two canvases together.
+		if (!this.view.file?.path.endsWith(this.relayCanvas.path)) return;
+		const merged = mergeCanvasViewData(
+			Canvas.exportCanvasData(this.relayCanvas.ydoc),
+			this.canvas.getData(),
+		);
+		if (!merged) return;
+		this.debug(
+			"reconciling view with canvas ydoc",
+			this.view.file?.path,
+			merged,
+		);
+		this.canvas.importData(merged, true);
+		this.canvas.requestSave();
+	}
+
 	private install() {
 		if (!this.canvas) return;
 
@@ -393,14 +421,26 @@ export class CanvasPlugin extends HasLogging {
 
 		// eslint-disable-next-line
 		const that = this;
-		const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
-		const hasCanvasData =
-			exported.nodes.length > 0 || exported.edges.length > 0;
-		const hasLocalDB = this.relayCanvas.hasLocalDB();
 
-		if (hasLocalDB && hasCanvasData) {
-			this.canvas.importData(exported, true);
-		}
+		this.unsubscribes.push(
+			getPatcher().patch(this.view, {
+				setViewData(old: any) {
+					return function (data: string, clear: boolean) {
+						// @ts-ignore
+						const res = old.call(this, data, clear);
+						// The file load lands after install, so a stale disk
+						// file would overwrite anything imported at install
+						// time; re-apply the ydoc after every load.
+						try {
+							that.reconcileViewWithCanvas();
+						} catch (e) {
+							that.log(e);
+						}
+						return res;
+					};
+				},
+			}),
+		);
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.canvas, {
@@ -504,6 +544,8 @@ export class CanvasPlugin extends HasLogging {
 		this.unsubscribes.push(() => {
 			this.relayCanvas.yedges.unobserve(_edgeObserver);
 		});
+
+		this.reconcileViewWithCanvas();
 
 		this.relayCanvasView.tracking = true;
 	}
