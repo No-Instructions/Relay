@@ -17,6 +17,104 @@ import {
 } from "./SyncTypes";
 import type { SyncSettingsManager } from "./SyncSettings";
 
+export interface MapDeltaEntry {
+	path: string;
+	guid: string;
+	type?: string;
+}
+
+export interface MapDeltaRemoval {
+	path: string;
+	oldValue: { id: string; type?: string } | undefined;
+}
+
+export interface MapDeltaPairedMove {
+	guid: string;
+	from: string;
+	to: string;
+}
+
+export interface FolderMapDelta {
+	adds: MapDeltaEntry[];
+	updates: MapDeltaEntry[];
+	deletes: MapDeltaRemoval[];
+	moves: MapDeltaPairedMove[];
+}
+
+/**
+ * Convert a Y.Map observer event into a membership delta with move pairing:
+ * within one transaction, a delete paired with an add carrying the same guid
+ * is a move. This extends the
+ * folder-move pairing that processFolderOperation has always done to files —
+ * a paired move is structurally incapable of being misread as
+ * delete-then-create. A delete+re-add of one guid at one path collapses
+ * into an update.
+ *
+ * `oldValue` is captured live from the observer event, before GC erases the
+ * deleted Meta.
+ */
+export function extractMapDelta(
+	event: Y.YMapEvent<Meta>,
+	meta: Y.Map<Meta>,
+): FolderMapDelta {
+	const adds: MapDeltaEntry[] = [];
+	const updates: MapDeltaEntry[] = [];
+	const deletes: MapDeltaRemoval[] = [];
+	const moves: MapDeltaPairedMove[] = [];
+	const deletedByGuid = new Map<string, MapDeltaRemoval>();
+	const addedByGuid = new Map<string, MapDeltaEntry>();
+
+	event.changes.keys.forEach((change, path) => {
+		if (change.action === "delete") {
+			const oldValue = change.oldValue as Meta | undefined;
+			if (oldValue?.id) {
+				deletedByGuid.set(oldValue.id, {
+					path,
+					oldValue: { id: oldValue.id, type: oldValue.type },
+				});
+			} else {
+				deletes.push({ path, oldValue: undefined });
+			}
+			return;
+		}
+		const newMeta = meta.get(path);
+		if (!newMeta) return;
+		const summary: MapDeltaEntry = {
+			path,
+			guid: newMeta.id,
+			type: newMeta.type,
+		};
+		// Updates participate in move pairing too: a move onto an occupied
+		// path arrives as delete(old)+update(new) since the destination key
+		// already existed.
+		addedByGuid.set(newMeta.id, summary);
+		if (change.action !== "add") {
+			updates.push(summary);
+		}
+	});
+
+	deletedByGuid.forEach((removal, guid) => {
+		const added = addedByGuid.get(guid);
+		if (added) {
+			addedByGuid.delete(guid);
+			const updateIndex = updates.indexOf(added);
+			if (added.path !== removal.path) {
+				if (updateIndex >= 0) updates.splice(updateIndex, 1);
+				moves.push({ guid, from: removal.path, to: added.path });
+			} else if (updateIndex < 0) {
+				updates.push(added); // delete+re-add of one guid at one path
+			}
+			return;
+		}
+		deletes.push(removal);
+	});
+	addedByGuid.forEach((summary) => {
+		if (!updates.includes(summary)) adds.push(summary);
+	});
+
+	return { adds, updates, deletes, moves };
+}
+
 export class SyncStore extends Observable<SyncStore> {
 	private legacyIds: Y.Map<string>; // Maps file paths to Document guids
 	private meta: Y.Map<Meta>;
@@ -126,6 +224,18 @@ export class SyncStore extends Observable<SyncStore> {
 		});
 	}
 
+	/**
+	 * Effective membership entries (committed map plus migration overlay,
+	 * minus locally deleted paths) — the FolderHSM's view of "the map".
+	 */
+	listEffectiveEntries(): MapDeltaEntry[] {
+		const entries: MapDeltaEntry[] = [];
+		this.forEach((meta, path) => {
+			entries.push({ path, guid: meta.id, type: meta.type });
+		});
+		return entries;
+	}
+
 	getCommittedSubdocGuids(): string[] {
 		const guids = new Set<string>();
 		this.meta.forEach((meta, path) => {
@@ -229,6 +339,14 @@ export class SyncStore extends Observable<SyncStore> {
 		}
 	}
 
+	/**
+	 * Observer for remote membership deltas, fed to FolderHSM as MAP_DELTA.
+	 * Receives the paired delta plus the transaction origin so the host can
+	 * skip its own transactions.
+	 */
+	onMapDelta: ((delta: FolderMapDelta, origin: unknown) => void) | null =
+		null;
+
 	processFolderOperation(event: Y.YMapEvent<Meta>) {
 		const deletedFolders = new Map<string, string>();
 		const addedFolders = new Map<string, string>();
@@ -312,6 +430,12 @@ export class SyncStore extends Observable<SyncStore> {
 			if (origin == this) return;
 
 			this.processFolderOperation(event);
+			// Membership engine feed: computed only when a consumer is wired
+			// (enableFolderHSM); flag-off, no delta is ever extracted and the
+			// legacy path above is the only logic that runs.
+			if (this.onMapDelta) {
+				this.onMapDelta(extractMapDelta(event, this.meta), origin);
+			}
 			this.notifyListeners();
 		};
 		const legacyListener = async (event: Y.YMapEvent<string>) => {
