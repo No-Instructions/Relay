@@ -106,6 +106,43 @@ export class TextFileViewPlugin extends HasLogging {
 		}
 	}
 
+	/**
+	 * Push document content into the view. Conforming TextFileViews accept
+	 * setViewData, but the kanban view only rerenders from its own state
+	 * store — its setViewData leaves the rendered board (and getViewData)
+	 * stale, which also poisons the next save's diff. When the view does
+	 * not accept the data, set the raw view data and refresh the board
+	 * through the kanban state manager for the file.
+	 */
+	private applyDataToView(data: string): void {
+		const view = this.view.view;
+		this.saving = true;
+		try {
+			view.setViewData(data, false);
+			if (view.getViewData() !== data) {
+				(view as any).data = data;
+				const file = view.file;
+				const kanban = (view.app as any)?.plugins?.plugins?.[
+					"obsidian-kanban"
+				];
+				const stateManagers = kanban?.stateManagers;
+				if (stateManagers && file) {
+					for (const [smFile, sm] of stateManagers) {
+						if (smFile === file || smFile?.path === file.path) {
+							try {
+								sm.forceRefresh();
+							} catch (e) {
+								this.warn("kanban state refresh failed", e);
+							}
+						}
+					}
+				}
+			}
+		} finally {
+			this.saving = false;
+		}
+	}
+
 	async resync() {
 		if (
 			isLive(this.view) &&
@@ -171,12 +208,7 @@ export class TextFileViewPlugin extends HasLogging {
 			this.view.view.file
 		) {
 			this.warn("Syncing view to CRDT - setViewData");
-			this.saving = true;
-			try {
-				this.view.view.setViewData(this.doc.localText, false);
-			} finally {
-				this.saving = false;
-			}
+			this.applyDataToView(this.doc.localText);
 			this.requestNativeViewSave();
 			this.view.tracking = true;
 		}
@@ -298,12 +330,7 @@ export class TextFileViewPlugin extends HasLogging {
 					this.resync();
 				}
 				this.warn("setting view data");
-				this.saving = true;
-				try {
-					this.view.view.setViewData(this.doc.localText, false);
-				} finally {
-					this.saving = false;
-				}
+				this.applyDataToView(this.doc.localText);
 				this.requestNativeViewSave();
 				this.view.tracking = true;
 			}
