@@ -1667,7 +1667,29 @@ export class BackgroundSync extends HasLogging {
 		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueSync(doc);
 		}
-		return docs.length;
+
+		// Canvases have no HSM sync session; an advertised head that is
+		// ahead of the local ydoc downloads through getCanvas, which applies
+		// the update and flushes to disk when the local copy is untouched.
+		// An open view carries its own connection and save path.
+		const canvases = [...sharedFolder.files.values()]
+			.filter(isCanvas)
+			.filter((canvas) => advertisedGuids.has(canvas.guid))
+			.filter((canvas) => !canvas.userLock)
+			.filter((canvas) => !this.downloadPromises.has(canvas.guid))
+			.filter((canvas) => {
+				const mergeManager = sharedFolder.mergeManager;
+				if (!mergeManager) return true;
+				return !mergeManager.isServerAdvertisedInSync(
+					canvas.guid,
+					snapshotFromDoc(canvas.ydoc).snapshot,
+				);
+			});
+		for (const canvas of canvases) {
+			void this.enqueueCanvasDownload(canvas, false);
+		}
+
+		return docs.length + canvases.length;
 	}
 
 	enqueueAdvertisedLCABackfills(
