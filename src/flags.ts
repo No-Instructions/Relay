@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
+	enableFolderHSM: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -141,6 +142,13 @@ export const FeatureFlagSchema: {
 		title: "Metadata database health notice",
 		description:
 			"Show a sidebar notice when Obsidian's metadata database cannot be queried.",
+	},
+	enableFolderHSM: {
+		default: false,
+		category: "danger",
+		title: "Folder membership state machine (experimental)",
+		description:
+			"Drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated state is unchanged either way.",
 	},
 };
 
