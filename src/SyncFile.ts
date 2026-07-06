@@ -77,6 +77,7 @@ export class ContentAddressedFileStore extends HasLogging {
 		path: string,
 		hash: string,
 		modifiedAt: number,
+		guid?: string,
 	): Promise<void> {
 		await this.ready;
 		if (!this.db) return;
@@ -86,7 +87,12 @@ export class ContentAddressedFileStore extends HasLogging {
 			const transaction = this.db.transaction(["files"], "readwrite");
 			const store = transaction.objectStore("files");
 
-			const request = store.put({ path, hash, modifiedAt });
+			// `guid` is a backward-compatible field: it turns a hash entry
+			// into a durable local record of which identity this path synced
+			// under.
+			const request = store.put(
+				guid ? { path, hash, modifiedAt, guid } : { path, hash, modifiedAt },
+			);
 
 			request.onsuccess = () => resolve();
 			request.onerror = () => {
@@ -96,9 +102,37 @@ export class ContentAddressedFileStore extends HasLogging {
 		});
 	}
 
+	/**
+	 * All stored entries, for assembling the local-record cache at startup.
+	 * Entries written before guid recording existed simply lack the field.
+	 */
+	async getAllEntries(): Promise<
+		Array<{ path: string; hash: string; modifiedAt: number; guid?: string }>
+	> {
+		await this.ready;
+		if (!this.db) return [];
+
+		return new Promise((resolve, reject) => {
+			if (!this.db) {
+				resolve([]);
+				return;
+			}
+			const transaction = this.db.transaction(["files"], "readonly");
+			const store = transaction.objectStore("files");
+
+			const request = store.getAll();
+
+			request.onsuccess = () => resolve(request.result ?? []);
+			request.onerror = () => {
+				this.error("Error listing hash entries:", request.error);
+				reject(request.error);
+			};
+		});
+	}
+
 	async getHash(
 		path: string,
-	): Promise<{ hash: string; modifiedAt: number } | null> {
+	): Promise<{ hash: string; modifiedAt: number; guid?: string } | null> {
 		await this.ready;
 		if (!this.db) return null;
 
@@ -171,6 +205,8 @@ export class ContentAddressedFile extends HasLogging {
 		private vault: Vault,
 		public path: string,
 		private store: ContentAddressedFileStore,
+		/** Supplies the owning file's guid so saved hashes double as local records. */
+		private guidProvider?: () => string | undefined,
 	) {
 		super();
 		const tfile = this.vault.getAbstractFileByPath(path);
@@ -240,7 +276,12 @@ export class ContentAddressedFile extends HasLogging {
 			size: content.byteLength,
 		});
 		try {
-			await this.store.saveHash(this.path, hash, mtime);
+			await this.store.saveHash(
+				this.path,
+				hash,
+				mtime,
+				this.guidProvider?.(),
+			);
 		} catch (error) {
 			this.warn("Failed to save hash to store:", error);
 		}
@@ -258,7 +299,12 @@ export class ContentAddressedFile extends HasLogging {
 			size: content.byteLength,
 		});
 		try {
-			await this.store.saveHash(this.path, hash, mtime);
+			await this.store.saveHash(
+				this.path,
+				hash,
+				mtime,
+				this.guidProvider?.(),
+			);
 		} catch (error) {
 			this.warn("Failed to save hash to store:", error);
 		}
@@ -358,6 +404,9 @@ export class SyncFile
 			this.vault,
 			this.sharedFolder.getPath(path),
 			this.hashStore,
+			// Guid evidence records only accumulate when the membership
+			// engine that consumes them is enabled (enableFolderHSM).
+			this.sharedFolder.folderHSM ? () => this.guid : undefined,
 		);
 
 		this.log("created");
@@ -758,7 +807,7 @@ export class SyncFile
 			// meta, and a durable entry is the local evidence that this file
 			// synced — cleanup relies on it after a restart.
 			this.hashStore
-				.saveHash(vaultPath, this.meta.hash, edit.mtime)
+				.saveHash(vaultPath, this.meta.hash, edit.mtime, this.guid)
 				.catch((error) => {
 					this.warn("Failed to save pulled hash:", error);
 				});

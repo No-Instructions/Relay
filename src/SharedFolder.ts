@@ -36,7 +36,15 @@ import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
-import { SyncStore } from "./SyncStore";
+import { SyncStore, type FolderMapDelta } from "./SyncStore";
+import {
+	FolderHSM,
+	deriveRecoveryDelta,
+	isEmptyRecoveryDelta,
+	pathWasDeleted,
+	type FolderEffect,
+	type FolderSyncSnapshot,
+} from "./folder-hsm";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -218,6 +226,23 @@ export class SharedFolder extends HasProvider {
 	 * recurring sweeps do not re-request known-empty documents.
 	 */
 	private _emptyOnServer: Map<string, number> = new Map();
+	/**
+	 * Per-folder membership machine. Null when
+	 * enableFolderHSM is off; the flag is read once at construction.
+	 */
+	folderHSM: FolderHSM | null = null;
+	/**
+	 * Synchronous local-record lookups for the FolderHSM guards: vpath →
+	 * guid, assembled from persisted HSM state metadata and guid-bearing
+	 * hash-store entries before hydration completes.
+	 */
+	private _localRecordCache: Map<string, string> = new Map();
+	/**
+	 * True once the bootstrap discovery pass over the local tree has run —
+	 * the boundary the origin discriminator uses to tell interactive vault
+	 * creates from startup replays.
+	 */
+	private _hsmBootstrapScanned = false;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
@@ -296,6 +321,20 @@ export class SharedFolder extends HasProvider {
 		this.syncStore.on(async () => {
 			await this.syncFileTree();
 		});
+
+		this.folderHSM = this.maybeConstructFolderHSM();
+		if (this.folderHSM) {
+			// Remote map deltas (provider-applied transactions) drive
+			// membership; our own transactions are direct expressions of
+			// effects the machine already accounted for.
+			this.syncStore.onMapDelta = (
+				delta: FolderMapDelta,
+				origin: unknown,
+			) => {
+				if (origin === this || origin === this._persistence) return;
+				this.folderHSM?.send({ type: "MAP_DELTA", ...delta });
+			};
+		}
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
@@ -488,7 +527,25 @@ export class SharedFolder extends HasProvider {
 				this.enabledSyncTypes = new Set(
 					this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 				);
+				if (this.folderHSM) {
+					// Assemble the local-record evidence before declaring the
+					// folder persistence loaded, so the provenance ladder never
+					// runs against an empty record cache.
+					await this.assembleLocalRecordCache();
+				}
 				this.addLocalDocs();
+				if (this.folderHSM) {
+					this._hsmBootstrapScanned = true;
+					this.folderHSM.send({ type: "PERSISTENCE_LOADED" });
+					// Hydration builds on the folder readiness latch: a folder
+					// that completed the sync handshake before (hasServerSync)
+					// or that is authoritative is hydrated as soon as
+					// persistence loads; fresh folders wait for the first
+					// provider handshake (handleProviderSynced).
+					if (this.ready) {
+						this.folderHSM.send({ type: "PROVIDER_SYNCED" });
+					}
+				}
 				await this.syncFileTree();
 				try {
 					this._persistence.set("path", this.path);
@@ -1033,7 +1090,7 @@ export class SharedFolder extends HasProvider {
 		return false;
 	}
 
-	private addLocalDocs = (types?: SyncType[]) => {
+	private addLocalDocs(types?: SyncType[]): void {
 		let syncTFiles = this.getSyncFiles();
 		if (types) {
 			syncTFiles = syncTFiles.filter((tfile) => {
@@ -1045,11 +1102,31 @@ export class SharedFolder extends HasProvider {
 			});
 		}
 		const files: IFile[] = [];
-		// Reserve GUIDs for new files before processing
-		this.placeHold(syncTFiles);
+		if (!this.folderHSM) {
+			// Legacy membership path: reserve GUIDs for new files up front.
+			this.placeHold(syncTFiles);
+		}
 		syncTFiles.forEach((tfile) => {
 			const vpath = this.getVirtualPath(tfile.path);
+			if (this.folderHSM) {
+				// Every syncable local file is evidence for the machine;
+				// files unknown to the map are classified by the provenance
+				// ladder after hydration instead of being
+				// speculatively place-held, which minted guids and enqueued
+				// uploads from a possibly partially hydrated map.
+				this.folderHSM.send({
+					type: "FILE_DISCOVERED",
+					path: vpath,
+					origin: "bootstrap",
+					kind: tfile instanceof TFolder ? "folder" : "file",
+				});
+				// Pending-upload-only paths are ladder rung 1: the machine
+				// re-enqueues them after hydration. Materializing them here
+				// would route through uploadDoc before the hydration gate.
+				if (this.pendingUpload.has(vpath)) return;
+			}
 			const guid = this.syncStore.get(vpath);
+			if (this.folderHSM && !guid) return;
 			const existing = guid ? this.files.get(guid) : undefined;
 			if (existing) {
 				files.push(existing);
@@ -1063,7 +1140,7 @@ export class SharedFolder extends HasProvider {
 		if (files.length > 0) {
 			this.fset.update();
 		}
-	};
+	}
 
 	public get server(): string | undefined {
 		return this._server;
@@ -1404,6 +1481,11 @@ export class SharedFolder extends HasProvider {
 	 * remote record or login resolves after construction.
 	 */
 	protected handleProviderSynced(): void {
+		// The FolderHSM hydration gate rides the same handshake as the
+		// readiness latch; the machine itself dedups repeat syncs (the
+		// ladder reruns only after a disconnect).
+		this.folderHSM?.send({ type: "CONNECTED" });
+		this.folderHSM?.send({ type: "PROVIDER_SYNCED" });
 		if (this.authoritative || this._persistence.hasServerSync) {
 			return;
 		}
@@ -1413,6 +1495,10 @@ export class SharedFolder extends HasProvider {
 		).catch((e) => {
 			this.warn("failed to persist server sync marker", e);
 		});
+	}
+
+	protected handleProviderDesynced(): void {
+		this.folderHSM?.send({ type: "DISCONNECTED" });
 	}
 
 	async getServerSynced(): Promise<boolean> {
@@ -1874,6 +1960,330 @@ export class SharedFolder extends HasProvider {
 		return expandDesiredRemotePaths(paths);
 	}
 
+	/**
+	 * Construct the membership machine when enableFolderHSM is on. The flag
+	 * is read here, at folder construction, and never again — toggling it
+	 * applies on the next folder (re)load. One FolderHSM per shared folder,
+	 * as there is one MergeHSM per document.
+	 */
+	private maybeConstructFolderHSM(): FolderHSM | null {
+		if (!flags().enableFolderHSM) {
+			return null;
+		}
+		return new FolderHSM({
+			folderGuid: this.guid,
+			listMapEntries: () => this.syncStore.listEffectiveEntries(),
+			getMapEntry: (vpath: string) => {
+				const meta = this.syncStore.getCommittedMeta(vpath);
+				return meta
+					? { path: vpath, guid: meta.id, type: meta.type }
+					: undefined;
+			},
+			getPendingUploadGuid: (vpath: string) =>
+				this.pendingUpload.get(vpath) ?? undefined,
+			getLocalRecordGuid: (vpath: string) =>
+				this._localRecordCache.get(vpath),
+			pathTombstoned: (vpath: string) =>
+				pathWasDeleted(this.ydoc.getMap<Meta>("filemeta_v0"), vpath),
+			onEffect: (effect) => this.handleFolderHSMEffect(effect),
+			onTransition: (from, to, eventType) => {
+				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
+			},
+		});
+	}
+
+	/** Live membership snapshot for status surfaces; null when the engine is off. */
+	public getFolderSyncSnapshot(): FolderSyncSnapshot | null {
+		return this.folderHSM?.getSnapshot() ?? null;
+	}
+
+	/**
+	 * Route a vault create event into the machine with its origin decided
+	 * by the discriminator: interactive iff the bootstrap scan completed and the
+	 * path was not already known as a local file. Obsidian replays create
+	 * events for every existing file at vault load; those must never
+	 * launder into user intent.
+	 */
+	public notifyVaultCreate(tfile: TAbstractFile): boolean {
+		const machine = this.folderHSM;
+		if (!machine) return false;
+		const vpath = this.getVirtualPath(tfile.path);
+		if (this.isPendingDelete(vpath)) return false;
+		// Capture shared-ness before the machine runs: its upload effect
+		// place-holds the path, which must not be mistaken for an
+		// already-shared file afterwards. Callers materialize the live file
+		// object for already-shared paths (e.g. a download landing on disk).
+		const alreadyShared = Boolean(this.syncStore.getCommittedMeta(vpath));
+		const kind = tfile instanceof TFolder ? "folder" : "file";
+		if (!this._hsmBootstrapScanned || machine.hasLocalFile(vpath)) {
+			machine.send({
+				type: "FILE_DISCOVERED",
+				path: vpath,
+				origin: "bootstrap",
+				kind,
+			});
+			return alreadyShared;
+		}
+		machine.send({ type: "FILE_CREATED", path: vpath, kind });
+		return alreadyShared;
+	}
+
+	/** Route a vault delete into the machine (skipping internal-trash echoes). */
+	public notifyVaultDelete(vpath: string): void {
+		const machine = this.folderHSM;
+		if (!machine) return;
+		if (this.isPendingDelete(vpath)) return;
+		machine.send({ type: "FILE_DELETED", path: vpath });
+	}
+
+	/** Route an in-folder vault rename event into the machine. */
+	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
+		const machine = this.folderHSM;
+		if (!machine) return;
+		machine.send({
+			type: "FILE_RENAMED",
+			from: this.getVirtualPath(oldPath),
+			to: this.getVirtualPath(file.path),
+		});
+	}
+
+	/**
+	 * Missed-event recovery. The sweep is an event source for the machine, not an imperative
+	 * differ: it replays the local file tree as discoveries and the
+	 * difference between the machine's membership table and the committed
+	 * map as a synthesized MAP_DELTA. Absence alone never deletes:
+	 * every delete op in the derived delta carries the guid of a previously
+	 * synced entry the map no longer holds anywhere — a real decision.
+	 */
+	private replayMembershipRecovery(diffLog: string[]): void {
+		const machine = this.folderHSM;
+		if (!machine) return;
+		for (const tfile of this.getSyncFiles()) {
+			const vpath = this.getVirtualPath(tfile.path);
+			if (this.isPendingDelete(vpath)) continue;
+			machine.send({
+				type: "FILE_DISCOVERED",
+				path: vpath,
+				origin: "bootstrap",
+				kind: tfile instanceof TFolder ? "folder" : "file",
+			});
+		}
+
+		const snapshot = machine.getSnapshot();
+		if (snapshot.statePath !== "tracking") return;
+		const delta = deriveRecoveryDelta(
+			snapshot.entries,
+			this.syncStore.listEffectiveEntries(),
+		);
+		if (isEmptyRecoveryDelta(delta)) return;
+		diffLog.push(
+			`membership recovery delta: adds=${delta.adds.length} deletes=${delta.deletes.length} moves=${delta.moves.length}`,
+		);
+		machine.send({ type: "MAP_DELTA", ...delta });
+	}
+
+	/**
+	 * Assemble the synchronous local-record cache the FolderHSM guards
+	 * consult: HSM persisted state metadata (documents) plus guid-bearing
+	 * hash-store entries (attachments). Runs before the folder is declared
+	 * hydrated so the provenance ladder never sees an empty cache.
+	 */
+	private async assembleLocalRecordCache(): Promise<void> {
+		try {
+			const stateMetas = await this._hsmStore.getAllStateMeta();
+			for (const stateMeta of stateMetas) {
+				if (stateMeta?.path && stateMeta?.guid) {
+					this._localRecordCache.set(stateMeta.path, stateMeta.guid);
+				}
+			}
+		} catch (e) {
+			this.warn("local record cache: HSM state metadata unavailable", e);
+		}
+		try {
+			const entries = await this.hashStore.getAllEntries();
+			for (const entry of entries) {
+				if (!entry.guid) continue;
+				// Hash store keys are vault-absolute paths.
+				if (!this.checkPath(entry.path)) continue;
+				this._localRecordCache.set(
+					this.getVirtualPath(entry.path),
+					entry.guid,
+				);
+			}
+		} catch (e) {
+			this.warn("local record cache: hash store unavailable", e);
+		}
+	}
+
+	/**
+	 * Execute FolderHSM effects through the existing sync machinery:
+	 * uploads/downloads ride BackgroundSync via placeHold/uploadFile and
+	 * _handleServerCreate, trash goes through Obsidian's trash
+	 * (FileManager.trashFile — honors the user's trash preference), map
+	 * mutations reuse deleteFile/renameFile.
+	 */
+	private handleFolderHSMEffect(effect: FolderEffect): void {
+		switch (effect.type) {
+			case "ENQUEUE_UPLOAD":
+				this.executeEnqueueUpload(effect.path);
+				return;
+			case "ENQUEUE_DOWNLOAD":
+				this.executeEnqueueDownload(effect.path, effect.guid);
+				return;
+			case "TRASH_LOCAL":
+				this.executeTrashLocal(effect.path, effect.guid);
+				return;
+			case "RENAME_LOCAL":
+				this.executeRenameLocal(effect.from, effect.to, effect.guid);
+				return;
+			case "MAP_SET":
+				this.executeMapRename(effect.oldPath, effect.path);
+				return;
+			case "MAP_DELETE":
+				this.executeMapDelete(effect.path);
+				return;
+			case "PARK":
+				this.log(`[FolderHSM] parked ${effect.path}: ${effect.reason}`);
+				return;
+			case "SURFACE_STATUS":
+				this.notifyListeners();
+				return;
+			case "PERSIST_STATE":
+				try {
+					this._persistence.set(
+						"folderSync",
+						JSON.stringify(effect.snapshot),
+					);
+				} catch (e) {
+					// Projection persistence is best-effort.
+				}
+				return;
+		}
+	}
+
+	private executeEnqueueUpload(vpath: string): void {
+		try {
+			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			if (!tfile || !this.isSyncableTFile(tfile)) return;
+			if (this.skipStorageBlockedUpload(vpath)) return;
+			// The guid is minted here (placeHold) — pendingUpload is the
+			// durable record that this file is ours, awaiting first upload.
+			this.placeHold([tfile]);
+			this.uploadFile(tfile);
+		} catch (e) {
+			this.warn("[FolderHSM] upload effect failed", vpath, e);
+		}
+	}
+
+	private executeEnqueueDownload(vpath: string, guid: string): void {
+		if (this.existsSync(vpath)) return;
+		if (this._pendingDownloads.has(vpath)) return;
+		const meta = this.syncStore.getMeta(vpath);
+		if (!meta || meta.id !== guid) return; // the map moved on — stale decision
+		const promise = this._handleServerCreate(vpath, meta)
+			.then((file) => {
+				if (file) {
+					this._localRecordCache.set(vpath, guid);
+					this.folderHSM?.send({
+						type: "DOWNLOAD_COMPLETE",
+						path: vpath,
+						guid,
+					});
+				}
+				return file;
+			})
+			.catch((e) => {
+				this.warn("[FolderHSM] download effect failed", vpath, e);
+				this.folderHSM?.send({
+					type: "DOWNLOAD_FAILED",
+					path: vpath,
+					guid,
+				});
+			});
+		trackPromise(`folderHSMDownload:${this.guid}:${vpath}`, promise);
+	}
+
+	private executeTrashLocal(vpath: string, guid: string | null): void {
+		const fullPath = this.getPath(vpath);
+		const tfile = this.vault.getAbstractFileByPath(fullPath);
+		if (!tfile) {
+			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
+			return;
+		}
+		this.markPendingDelete(vpath);
+		const promise = (async () => {
+			try {
+				await this.trashFile(tfile);
+			} catch (e) {
+				this.warn("[FolderHSM] trash effect failed", vpath, e);
+				// TRASH_COMPLETE is a report of work done, never of work
+				// attempted: if the path is still in the vault, the entry
+				// stays pendingTrash so a later matched delta or the
+				// reconnect ladder retries. Reporting completion for work
+				// that did not happen strands local files.
+				if (this.vault.getAbstractFileByPath(fullPath)) return;
+			}
+			this.deleteFiles([vpath]);
+			this._localRecordCache.delete(vpath);
+			this.fset.update();
+			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
+		})().finally(() => {
+			this.clearPendingDelete(vpath);
+		});
+		trackPromise(`folderHSMTrash:${this.guid}:${vpath}`, promise);
+	}
+
+	private executeRenameLocal(from: string, to: string, guid: string): void {
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(from));
+		if (!tfile) return;
+		const file = this.files.get(guid);
+		const promise = (async () => {
+			if (file) {
+				await this._handleServerRename(file, to, tfile);
+			} else {
+				const dir = dirname(to);
+				if (!this.existsSync(dir)) {
+					await this.mkdir(dir);
+				}
+				await this.fileManager.renameFile(
+					tfile,
+					normalizePath(this.getPath(to)),
+				);
+			}
+			const record = this._localRecordCache.get(from);
+			if (record) {
+				this._localRecordCache.delete(from);
+				this._localRecordCache.set(to, record);
+			}
+		})().catch((e) => {
+			this.warn("[FolderHSM] rename effect failed", from, to, e);
+		});
+		trackPromise(`folderHSMRename:${this.guid}:${from}`, promise);
+	}
+
+	private executeMapRename(oldPath: string | undefined, newPath: string): void {
+		try {
+			const tfile = this.vault.getAbstractFileByPath(this.getPath(newPath));
+			if (!tfile) return;
+			if (oldPath) {
+				this.renameFile(tfile, this.getPath(oldPath));
+			} else if (this.isSyncableTFile(tfile)) {
+				this.placeHold([tfile]);
+				this.uploadFile(tfile);
+			}
+		} catch (e) {
+			this.warn("[FolderHSM] map rename effect failed", newPath, e);
+		}
+	}
+
+	private executeMapDelete(vpath: string): void {
+		try {
+			this.deleteFile(vpath);
+		} catch (e) {
+			this.warn("[FolderHSM] map delete effect failed", vpath, e);
+		}
+	}
+
 	syncByType(
 		syncStore: SyncStore,
 		diffLog: string[],
@@ -2024,12 +2434,22 @@ export class SharedFolder extends HasProvider {
 					),
 				);
 
-				const remotePaths = this.getDesiredRemotePaths();
-				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
+				let deletes: Delete[] = [];
+				if (this.folderHSM) {
+					// Local deletions are event-driven (map observer deltas
+					// plus the machine's decide-first recovery replay) — never
+					// inferred from absence in the map.
+					this.replayMembershipRecovery(diffLog);
+				} else {
+					const remotePaths = this.getDesiredRemotePaths();
+					deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
+					if (![...ops, ...deletes].every((op) => op.op === "noop")) {
+						this.log("remote paths", Array.from(remotePaths));
+					}
+				}
 				if ([...ops, ...deletes].every((op) => op.op === "noop")) {
 					this.debug("sync: noop");
 				} else {
-					this.log("remote paths", Array.from(remotePaths));
 					this.log("operations", [...ops, ...deletes]);
 				}
 				if (renames.length > 0 || creates.length > 0 || deletes.length > 0) {
@@ -2233,6 +2653,16 @@ export class SharedFolder extends HasProvider {
 				this.ydoc.transact(() => {
 					this.syncStore.markUploaded(file.path, meta);
 				}, this);
+			}
+			if (this.folderHSM) {
+				// A committed upload is a durable local record of this path's
+				// identity, and it settles the machine's membership entry.
+				this._localRecordCache.set(file.path, meta.id);
+				this.folderHSM.send({
+					type: "UPLOAD_COMPLETE",
+					path: file.path,
+					guid: meta.id,
+				});
 			}
 		};
 		if (isDocument(file)) {
@@ -2967,6 +3397,13 @@ export class SharedFolder extends HasProvider {
 				const guid = this.syncStore.get(oldVPath);
 				if (!guid) {
 					return;
+				}
+				if (this.folderHSM) {
+					const record = this._localRecordCache.get(oldVPath);
+					if (record) {
+						this._localRecordCache.delete(oldVPath);
+						this._localRecordCache.set(newVPath, record);
+					}
 				}
 				const toMove: [string, string, string][] = [];
 				if (file instanceof SyncFolder) {

@@ -278,6 +278,12 @@ export default class Live extends Plugin {
 				continue;
 			}
 			vaultLog("Delete", event.path);
+			if (folder.folderHSM) {
+				// Local delete intent flows through the machine; its
+				// MAP_DELETE effect executes the map mutation.
+				folder.notifyVaultDelete(vpath);
+				continue;
+			}
 			let batch = batches.get(folder);
 			if (!batch) {
 				batch = { files: new Set<string>(), folders: new Set<string>() };
@@ -1281,6 +1287,29 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (folder.folderHSM) {
+						// Membership classification is the machine's job; the
+						// origin discriminator inside notifyVaultCreate keeps
+						// Obsidian's startup create replay from laundering
+						// into user intent.
+						const alreadyShared = folder.notifyVaultCreate(tfile);
+						if (alreadyShared) {
+							folder.whenReady()
+								.then((folder) => {
+									folder.getFile(tfile);
+								})
+								.catch((error) => {
+									if (isDestroyedError(error)) {
+										return;
+									}
+									this.warn(
+										"folder ready failed after file create",
+										error,
+									);
+								});
+						}
+						return;
+					}
 					const newDocs = folder.placeHold([tfile]);
 					const vpath = folder.getVirtualPath(tfile.path);
 					if (newDocs.includes(vpath)) {
@@ -1332,7 +1361,15 @@ export default class Live extends Plugin {
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
 					vaultLog("Rename", file.path, oldPath);
-					folder.renameFile(file, oldPath);
+					if (folder.folderHSM && fromFolder === toFolder) {
+						// In-folder moves flow through the machine; its
+						// MAP_SET effect executes the map rename. Moves
+						// across the folder boundary keep the imperative
+						// pipeline (each side resolves its own half).
+						folder.notifyVaultRename(file, oldPath);
+					} else {
+						folder.renameFile(file, oldPath);
+					}
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.refresh();
 				}
