@@ -32,6 +32,41 @@ function areCanvasItemsEqual<T extends CanvasItem>(
 	return true;
 }
 
+/**
+ * Merge canvas data exported from the CRDT with the data a view currently
+ * renders. CRDT items are authoritative for shared ids; view-only items are
+ * kept because they are local edits that have not been pushed yet. Deletes
+ * are not inferred here — a view that has never synchronized with the CRDT
+ * legitimately lacks items, and treating absence as deletion is what
+ * destroys peer content.
+ *
+ * Returns null when the view already renders the merged result.
+ */
+export function mergeCanvasViewData(
+	crdt: CanvasData,
+	view: CanvasData,
+): CanvasData | null {
+	const merged: CanvasData = {
+		nodes: [...crdt.nodes],
+		edges: [...crdt.edges],
+	};
+	const knownNodes = new Set(crdt.nodes.map((node) => node.id));
+	const knownEdges = new Set(crdt.edges.map((edge) => edge.id));
+	for (const node of view.nodes) {
+		if (!knownNodes.has(node.id)) {
+			merged.nodes.push(node);
+		}
+	}
+	for (const edge of view.edges) {
+		if (!knownEdges.has(edge.id)) {
+			merged.edges.push(edge);
+		}
+	}
+	if (merged.nodes.length === 0 && merged.edges.length === 0) return null;
+	if (areCanvasDataEqual(merged, view)) return null;
+	return merged;
+}
+
 export function formatCanvasData(data: CanvasData): string {
 	return formatObsidianJson(data) ?? "";
 }
