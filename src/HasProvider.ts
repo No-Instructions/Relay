@@ -187,7 +187,10 @@ export class HasProvider extends HasLogging {
 		const stateSub = this.providerStateSubscription(
 			(state: ConnectionState) => {
 				if (state.status !== "connected") {
-					this._providerSynced = false;
+					if (this._providerSynced) {
+						this._providerSynced = false;
+						this.handleProviderDesynced();
+					}
 				}
 				this.notifyListeners();
 			},
@@ -202,6 +205,8 @@ export class HasProvider extends HasLogging {
 			this._providerSynced = synced;
 			if (synced) {
 				this.handleProviderSynced();
+			} else {
+				this.handleProviderDesynced();
 			}
 			this.notifyListeners();
 		});
@@ -217,6 +222,13 @@ export class HasProvider extends HasLogging {
 	 * server-sync marker so `ready` becomes a one-way gate.
 	 */
 	protected handleProviderSynced(): void {}
+
+	/**
+	 * Called on every true→false transition of the sync handshake
+	 * (disconnect or provider-reported desync). Subclasses use this to
+	 * track connect/disconnect cycles.
+	 */
+	protected handleProviderDesynced(): void {}
 
 	/**
 	 * Destroy the remote YDoc and provider, freeing memory.
