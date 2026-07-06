@@ -2936,12 +2936,14 @@ export class SharedFolder extends HasProvider {
 	}
 
 	getOrCreateDoc(guid: string, vpath: string): Document {
+		const existing = this.files.get(guid) || this.fset.find((file) => file.guid === guid);
 		const doc =
-			this.files.get(guid) ||
+			existing ||
 			new Document(vpath, guid, this.loginManager, this);
 		if (!isDocument(doc)) {
 			throw new Error("unexpected ifile type");
 		}
+		this.files.set(guid, doc);
 		doc.move(vpath, this);
 
 		if (this._localOnly && doc.hsm) {
