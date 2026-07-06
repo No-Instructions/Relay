@@ -2109,19 +2109,10 @@ export class BackgroundSync extends HasLogging {
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
 		try {
-			// Get the current contents before applying the update
-			const currentJson = Canvas.exportCanvasData(canvas.ydoc);
-			let currentFileContents: CanvasData = { edges: [], nodes: [] };
-			try {
-				const stringContents = await canvas.sharedFolder.read(canvas);
-				currentFileContents = JSON.parse(stringContents) as CanvasData;
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = areCanvasDataEqual(currentJson, currentFileContents);
-			const hasContents = currentFileContents.nodes.length > 0;
+			// The pre-download export identifies a disk file that simply
+			// trails the server: matching it counts as untouched when
+			// deciding whether the flush is safe.
+			const preUpdate = Canvas.exportCanvasData(canvas.ydoc);
 
 			const response = await this.downloadItem(canvas);
 			const rawUpdate = response.arrayBuffer;
@@ -2130,12 +2121,10 @@ export class BackgroundSync extends HasLogging {
 			this.log("[getCanvas] applying content from server");
 			Y.applyUpdate(canvas.ydoc, updateBytes);
 
-			if (hasContents && !contentsMatch) {
+			const outcome = await canvas.flushIfClean(preUpdate);
+			if (outcome === "diverged") {
 				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
-				canvas.sharedFolder.flush(canvas, canvas.json);
+			} else if (outcome === "flushed") {
 				this.log("[getCanvas] flushed");
 			}
 		} catch (e) {
