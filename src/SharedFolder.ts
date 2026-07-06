@@ -700,7 +700,23 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const file = this.files.get(guid);
-		if (!file || !isDocument(file)) return;
+		if (!file) return;
+
+		if (isCanvas(file)) {
+			if (!event.update) return;
+			const update =
+				event.update instanceof Uint8Array
+					? event.update
+					: new Uint8Array(event.update);
+			// Canvas views and the guarded disk flush react through ydoc
+			// observers; update classification and keyframe catch-up are
+			// HSM machinery that canvases do not have. Reconnect sweeps and
+			// remote-head downloads cover any gapped updates.
+			Y.applyUpdate(file.ydoc, update, this);
+			return;
+		}
+
+		if (!isDocument(file)) return;
 
 		// Active documents: ProviderIntegration handles sync via y-protocols
 		if (this.mergeManager.isActive(guid)) {
