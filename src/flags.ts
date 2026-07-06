@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
 	enableStreamingDownloads: boolean;
+	enableFolderHSM: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -149,6 +150,13 @@ export const FeatureFlagSchema: {
 		title: "Streaming attachment downloads",
 		description:
 			"Download large attachments in chunks staged to a part file instead of buffering the whole file in memory.",
+	},
+	enableFolderHSM: {
+		default: false,
+		category: "debugging",
+		title: "Folder membership state machine (experimental)",
+		description:
+			"EXPERIMENTAL/DANGEROUS: drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated state is unchanged either way.",
 	},
 };
 
