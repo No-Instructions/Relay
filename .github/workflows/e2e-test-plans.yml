@@ -256,7 +256,10 @@ jobs:
           elif [ "$REF_TYPE" = "tag" ]; then
             REF="refs/tags/$REF_NAME"
           else
-            REF="origin/$REF_NAME"
+            # Branch pushes test the exact commit that triggered the run so
+            # that re-run attempts reproduce the original checkout instead of
+            # whatever the branch tip has moved to since.
+            REF="${{ github.sha }}"
           fi
 
           SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
@@ -309,7 +312,12 @@ jobs:
             '+refs/tags/*:refs/tags/*'
           git checkout -- .
           git clean -fd
-          git checkout --detach "$REF"
+          # A commit orphaned by a force-push is not reachable from any
+          # fetched head, so fall back to fetching the ref directly.
+          if ! git checkout --detach "$REF"; then
+            git fetch origin "$REF"
+            git checkout --detach "$REF"
+          fi
           echo "Relay product checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
           echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"

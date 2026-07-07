@@ -199,7 +199,10 @@ jobs:
           elif [ "$REF_TYPE" = "tag" ]; then
             REF="refs/tags/$REF_NAME"
           else
-            REF="origin/$REF_NAME"
+            # Branch pushes test the exact commit that triggered the run so
+            # that re-run attempts reproduce the original checkout instead of
+            # whatever the branch tip has moved to since.
+            REF="${{ github.sha }}"
           fi
 
           gcloud compute ssh "$VM_NAME" --quiet \
@@ -240,7 +243,12 @@ jobs:
             '+refs/tags/0.8.0*:refs/tags/0.8.0*'
           git checkout -- .
           git clean -fd
-          git checkout --detach "$REF"
+          # A commit orphaned by a force-push is not reachable from any
+          # fetched head, so fall back to fetching the ref directly.
+          if ! git checkout --detach "$REF"; then
+            git fetch origin "$REF"
+            git checkout --detach "$REF"
+          fi
           git crypt unlock ~/.config/relay-e2e/relay-git-crypt-key
           if ! grep -q "describe\\|test\\|it(" __tests__/TestMinimark.ts; then
             echo "git-crypt unlock did not expose the private unit tests"
