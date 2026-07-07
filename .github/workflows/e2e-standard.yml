@@ -274,7 +274,10 @@ jobs:
           elif [ "$REF_TYPE" = "tag" ]; then
             REF="refs/tags/$REF_NAME"
           else
-            REF="origin/$REF_NAME"
+            # Branch pushes test the exact commit that triggered the run so
+            # that re-run attempts reproduce the original checkout instead of
+            # whatever the branch tip has moved to since.
+            REF="${{ github.sha }}"
           fi
 
           SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
@@ -339,8 +342,13 @@ jobs:
             '+refs/tags/*:refs/tags/*'
           git checkout -- .
           git clean -fd
-          # Detached HEAD checkout — works for origin/branch, tags, and SHAs
-          git checkout --detach "$REF"
+          # Detached HEAD checkout — works for origin/branch, tags, and SHAs.
+          # A commit orphaned by a force-push is not reachable from any
+          # fetched head, so fall back to fetching the ref directly.
+          if ! git checkout --detach "$REF"; then
+            git fetch origin "$REF"
+            git checkout --detach "$REF"
+          fi
           echo "Relay product checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
           echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
@@ -634,7 +642,9 @@ jobs:
             elif [ "$REF_TYPE" = "tag" ]; then
               REF="refs/tags/$REF_NAME"
             else
-              REF="origin/$REF_NAME"
+              # Pin branch pushes to the triggering commit so re-run attempts
+              # resolve the same commit as the original attempt.
+              REF="${{ github.sha }}"
             fi
 
             git init /tmp/relay-ref >/dev/null
@@ -642,7 +652,10 @@ jobs:
             git -C /tmp/relay-ref fetch origin --force --prune \
               '+refs/heads/*:refs/remotes/origin/*' \
               '+refs/tags/*:refs/tags/*'
-            COMMIT="$(git -C /tmp/relay-ref rev-parse "$REF^{commit}")"
+            if ! COMMIT="$(git -C /tmp/relay-ref rev-parse "$REF^{commit}" 2>/dev/null)"; then
+              git -C /tmp/relay-ref fetch origin "$REF"
+              COMMIT="$(git -C /tmp/relay-ref rev-parse "$REF^{commit}")"
+            fi
           fi
 
           COMMIT_SHORT="$(printf '%s' "$COMMIT" | cut -c1-7)"
