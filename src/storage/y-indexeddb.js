@@ -179,7 +179,7 @@ export class IndexeddbPersistence extends Observable {
   /**
    * @param {string} name
    * @param {Y.Doc} doc
-   * @param {{ scope: string, trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture)
+   * @param {{ scope: string|string[], scopeType?: 'map'|'text', trackedOrigins: Set<any>, captureTimeout?: number }|null} [captureOpts] - OpCapture config (null = no capture); scopeType 'map' resolves Y.Map roots (folder membership capture)
    * @param {string|null} [migrateFrom] - Old DB name to migrate data from (one-time, then deleted)
    * @param {import('../TimeProvider').TimeProvider} timeProvider
    */
@@ -457,7 +457,18 @@ export class IndexeddbPersistence extends Observable {
    */
   async _initCapture () {
     const saved = await this._loadCaptureEntries()
-    const scope = this.doc.getText(this._captureOpts.scope)
+    // scope: string | string[]; scopeType 'map' resolves Y.Map roots
+    // (folder membership capture), default resolves a Y.Text root
+    // (document content capture).
+    const scopeNames = Array.isArray(this._captureOpts.scope)
+      ? this._captureOpts.scope
+      : [this._captureOpts.scope]
+    const resolved = scopeNames.map(name =>
+      this._captureOpts.scopeType === 'map'
+        ? this.doc.getMap(name)
+        : this.doc.getText(name)
+    )
+    const scope = resolved.length === 1 ? resolved[0] : resolved
 
     if (saved.length > 0) {
       this.opCapture = OpCapture.restore(
