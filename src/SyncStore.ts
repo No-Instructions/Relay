@@ -236,6 +236,14 @@ export class SyncStore extends Observable<SyncStore> {
 		return entries;
 	}
 
+	/**
+	 * Committed membership size — the delete collector's threshold
+	 * denominator.
+	 */
+	committedEntryCount(): number {
+		return this.meta.size;
+	}
+
 	getCommittedSubdocGuids(): string[] {
 		const guids = new Set<string>();
 		this.meta.forEach((meta, path) => {
