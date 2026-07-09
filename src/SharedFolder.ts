@@ -427,7 +427,19 @@ export class SharedFolder extends HasProvider {
 			},
 			loadAllStates: async () => {
 				try {
-					return await this._hsmStore.getAllStateMeta();
+					const all = await this._hsmStore.getAllStateMeta();
+					// The HSM store is app-wide. Scope cold-start to this
+					// folder: records stamped with our folder guid, plus
+					// records predating folder scoping whose doc guid the
+					// folder's committed membership actually holds.
+					const committed = new Set(
+						this.syncStore.getCommittedSubdocGuids(),
+					);
+					return all.filter(
+						(meta) =>
+							meta.folder === this.guid ||
+							(meta.folder === undefined && committed.has(meta.guid)),
+					);
 				} catch {
 					return [];
 				}
@@ -2092,6 +2104,13 @@ export class SharedFolder extends HasProvider {
 		try {
 			const stateMetas = await this._hsmStore.getAllStateMeta();
 			for (const stateMeta of stateMetas) {
+				// The HSM store is app-wide; a record is evidence for THIS
+				// folder only with a positive folder association. Records
+				// predating folder scoping carry no association and are
+				// ignored: absent evidence means upload, never trash (P4) —
+				// a colliding vpath from another folder's record must not
+				// classify a fresh local file as a stale materialization.
+				if (stateMeta?.folder !== this.guid) continue;
 				if (stateMeta?.path && stateMeta?.guid) {
 					this._localRecordCache.set(stateMeta.path, stateMeta.guid);
 				}
@@ -3548,9 +3567,11 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	public delete(item: SharedFolder): boolean {
 		// Collect IDB database names before destroy nulls references
 		const dbNames: string[] = [];
+		const docGuids: string[] = [];
 		if (item) {
 			item.files.forEach((doc: IFile) => {
 				dbNames.push(`${item.appId}-relay-doc-${doc.guid}`);
+				docGuids.push(doc.guid);
 			});
 			dbNames.push(item.guid);
 		}
@@ -3566,6 +3587,11 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		// Delete IDB databases after in-memory objects are destroyed
 		for (const name of dbNames) {
 			indexedDB.deleteDatabase(name);
+		}
+		// Purge merge-HSM states so orphaned records cannot masquerade as
+		// local-record evidence for a future folder sharing these vpaths.
+		for (const guid of docGuids) {
+			void this._hsmStore.deleteState(guid).catch(() => {});
 		}
 		return deleted;
 	}
