@@ -1,5 +1,5 @@
 /**
- * Type declarations for the Obsidian Metrics API
+ * Type declarations for the TSDB API
  *
  * Copy this file into your plugin to get type-safe access to the metrics API.
  *
@@ -7,14 +7,14 @@
  *
  * Access via the plugin instance:
  * ```typescript
- * const metricsPlugin = this.app.plugins.plugins['obsidian-metrics'] as ObsidianMetricsPlugin | undefined;
+ * const metricsPlugin = this.app.plugins.plugins['tsdb'] as ObsidianMetricsPlugin | undefined;
  * const api = metricsPlugin?.api;
  * ```
  *
  * ## Handling Plugin Load Order
  *
- * The metrics plugin emits 'obsidian-metrics:ready' when loaded. Listen for this
- * event to handle cases where your plugin loads before obsidian-metrics:
+ * The TSDB plugin emits 'tsdb:ready' when loaded. Listen for this
+ * event to handle cases where your plugin loads before TSDB:
  *
  * ```typescript
  * class MyPlugin extends Plugin {
@@ -24,19 +24,20 @@
  *   async onload() {
  *     // Listen for metrics API becoming available (or re-initializing after reload)
  *     this.registerEvent(
- *       this.app.workspace.on('obsidian-metrics:ready', (api: IObsidianMetricsAPI) => {
+ *       this.app.workspace.on('tsdb:ready', (api: IObsidianMetricsRootAPI) => {
  *         this.initializeMetrics(api);
  *       })
  *     );
  *
  *     // Also try to get it immediately in case metrics plugin loaded first
- *     const metricsPlugin = this.app.plugins.plugins['obsidian-metrics'] as ObsidianMetricsPlugin | undefined;
+ *     const metricsPlugin = this.app.plugins.plugins['tsdb'] as ObsidianMetricsPlugin | undefined;
  *     if (metricsPlugin?.api) {
  *       this.initializeMetrics(metricsPlugin.api);
  *     }
  *   }
  *
- *   private initializeMetrics(api: IObsidianMetricsAPI) {
+ *   private initializeMetrics(rootApi: IObsidianMetricsRootAPI) {
+ *     const api = rootApi.getStore('my-plugin');
  *     this.metricsApi = api;
  *     // Metric creation is idempotent - safe to call multiple times
  *     this.documentGauge = api.createGauge({
@@ -54,11 +55,11 @@
  *
  * ## Key Points
  *
- * - **Do NOT cache the API or metrics long-term** - they become stale if obsidian-metrics reloads
- * - Listen for 'obsidian-metrics:ready' and re-initialize your metrics each time it fires
+ * - **Do NOT cache the API or metrics long-term** - they become stale if TSDB reloads
+ * - Listen for 'tsdb:ready' and re-initialize your metrics each time it fires
  * - Metric creation is idempotent: calling createGauge() with the same name returns the existing metric
  * - It's safe to store metric references within an initialization cycle, but always re-create them
- *   when 'obsidian-metrics:ready' fires
+ *   when 'tsdb:ready' fires
  */
 
 export interface MetricLabels {
@@ -110,6 +111,31 @@ export interface MetricInstance {
 	labels(labels: MetricLabels): LabeledMetricInstance;
 }
 
+/**
+ * The root API exposed as plugin.api and via 'tsdb:ready'.
+ * All metrics live inside a named store, recorded into the local TSDB at
+ * the store's own frequency (job label = store name).
+ *
+ * @example
+ * const store = api.getStore('my-plugin', { intervalSeconds: 1 });
+ * const counter = store.createCounter({ name: 'my_ops_total', help: '...' });
+ */
+export interface IObsidianMetricsRootAPI {
+	/**
+	 * Get or create a named metric store (idempotent per name).
+	 * `displayName` and `description` are shown in the plugin's settings
+	 * under your store's section — say briefly what you record.
+	 */
+	getStore(
+		name: string,
+		options?: {
+			intervalSeconds?: number;
+			displayName?: string;
+			description?: string;
+		},
+	): IObsidianMetricsAPI;
+}
+
 export interface IObsidianMetricsAPI {
 	// Metric retrieval
 	getMetric(name: string): MetricInstance | undefined;
@@ -135,18 +161,18 @@ export interface IObsidianMetricsAPI {
 	measureSync<T>(metricName: string, fn: () => T): T;
 }
 
-/** Type for the obsidian-metrics plugin instance */
+/** Type for the TSDB plugin instance */
 export interface ObsidianMetricsPlugin {
-	api: IObsidianMetricsAPI;
+	api: IObsidianMetricsRootAPI;
 }
 
 /** Augment Obsidian's workspace events to include our custom event */
 declare module "obsidian" {
 	interface Workspace {
 		on(
-			name: "obsidian-metrics:ready",
-			callback: (api: IObsidianMetricsAPI) => void,
+			name: "tsdb:ready",
+			callback: (api: IObsidianMetricsRootAPI) => void,
 		): EventRef;
-		trigger(name: "obsidian-metrics:ready", api: IObsidianMetricsAPI): void;
+		trigger(name: "tsdb:ready", api: IObsidianMetricsRootAPI): void;
 	}
 }
