@@ -34,16 +34,23 @@ import { BackgroundSync } from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
+import type { CapturedOp } from "./merge-hsm/undo";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
 import {
 	FolderHSM,
+	FolderDocBridge,
+	DeleteCollector,
+	BRIDGE_IN_ORIGIN,
+	FOLDER_LOCAL_DELETE_ORIGIN,
 	deriveRecoveryDelta,
 	isEmptyRecoveryDelta,
 	pathWasDeleted,
 	type FolderEffect,
 	type FolderSyncSnapshot,
+	type HeldDelete,
+	type SerializedCollectorState,
 } from "./folder-hsm";
 import {
 	SyncType,
@@ -97,6 +104,13 @@ export interface SharedFolderSettings {
 	localOnly?: boolean;
 	sync?: SyncFlags;
 	remoteActivity?: RemoteActivityEntry[];
+	/**
+	 * The folder's local copy left the vault (root deletion classified as
+	 * detach). The registration is kept — relinkable if the folder returns —
+	 * and expires after the deletion retention window.
+	 */
+	suspended?: boolean;
+	suspendedAt?: number;
 }
 
 interface Operation {
@@ -150,6 +164,15 @@ type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 // subdoc index) once content exists, so polling past this is wasted work.
 const MAX_EMPTY_SERVER_ATTEMPTS = 3;
 
+// Captured deletion bursts (history/undo) and the deferred teardown of
+// deleted docs' local state expire together after this window.
+export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Vault-delete echo suppression tokens outlive the slowest observed
+// reconcile dispatch (seconds) by a wide margin, and expire so a stale
+// token cannot swallow a genuine user deletion later.
+export const PENDING_DELETE_TTL_MS = 60 * 1000;
+
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(() => super.notifyListeners(), 100);
@@ -202,11 +225,34 @@ export class SharedFolder extends HasProvider {
 	private pendingUpload: LocalStorage<string>;
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
-	private pendingDeletes: Set<string> = new Set();
+	/**
+	 * One-shot suppression tokens for vault-delete echoes of our own trash
+	 * effects, vpath → marked-at. Obsidian dispatches reconcile events
+	 * seconds after the underlying rename resolves, so tokens are consumed
+	 * by the event they suppress (consumePendingDelete) or expire by TTL —
+	 * never cleared on completion of the filesystem operation.
+	 */
+	private pendingDeletes: Map<string, number> = new Map();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
 
 	private _persistence: IndexeddbPersistence;
+	/**
+	 * Vault-facing folder doc under the folder doc split (flag-on). Inherits
+	 * the folder's persistence key, so local history and native tombstones
+	 * ride it. Null flag-off: the provider doc is the only folder doc.
+	 */
+	private _localDoc: Y.Doc | null = null;
+	/** Persistence for the provider-facing doc under the split. */
+	private _remotePersistence: IndexeddbPersistence | null = null;
+	/** Sole conduit between localDoc and the provider doc (flag-on). */
+	folderBridge: FolderDocBridge | null = null;
+	/** Outbound deletion policy at the bridge (flag-on). */
+	deleteCollector: DeleteCollector | null = null;
+	/** Deleted docs awaiting expired teardown (split only). */
+	private _deferredTeardown: Array<{ guid: string; deletedAt: number }> = [];
+	/** Host hook: the collector classified a burst as root detach. */
+	onRootDetach: (() => void) | null = null;
 	proxy: SharedFolder;
 	private revokeProxy: (() => void) | null = null;
 	cas: ContentAddressedStore;
@@ -312,8 +358,16 @@ export class SharedFolder extends HasProvider {
 			SyncSettingsManager
 		>("sync", (settings, path) => new SyncSettingsManager(settings, path));
 
+		// The folder doc split (flag-on): the vault-facing localDoc carries
+		// the map the machine observes and mutates; the provider doc
+		// (HasProvider's ydoc) is the replica the server knows. Read once at
+		// construction, like the machine itself.
+		if (flags().enableFolderHSM) {
+			this._localDoc = new Y.Doc({ gc: true });
+		}
+
 		this.syncStore = new SyncStore(
-			this.ydoc,
+			this.folderDoc,
 			this.path,
 			this.pendingUpload,
 			this.syncSettingsManager,
@@ -331,7 +385,12 @@ export class SharedFolder extends HasProvider {
 				delta: FolderMapDelta,
 				origin: unknown,
 			) => {
-				if (origin === this || origin === this._persistence) return;
+				if (
+					origin === this ||
+					origin === this._persistence ||
+					origin === FOLDER_LOCAL_DELETE_ORIGIN
+				)
+					return;
 				this.folderHSM?.send({ type: "MAP_DELTA", ...delta });
 			};
 		}
@@ -378,17 +437,127 @@ export class SharedFolder extends HasProvider {
 		try {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
 			const migrateFrom = flags().enableFolderIdbMigration ? this.guid : null;
+			// Under the split the existing folder DB stays with the localDoc,
+			// preserving local history and native tombstones; the provider doc
+			// persists separately and (re)fills from the server.
 			this._persistence = new IndexeddbPersistence(
 				folderDbName,
-				this.ydoc,
-				null,
+				this.folderDoc,
+				// Deletion capture rides the localDoc persistence (split only):
+				// bridge-applied remote deletions and host-executed local
+				// deletions are captured, coalesced per origin, and persisted
+				// for history/undo.
+				this._localDoc
+					? {
+							scope: ["filemeta_v0", "docs"],
+							scopeType: "map",
+							trackedOrigins: new Set<unknown>([
+								BRIDGE_IN_ORIGIN,
+								FOLDER_LOCAL_DELETE_ORIGIN,
+							]),
+							captureTimeout: 2000,
+						}
+					: null,
 				migrateFrom,
 				this.timeProvider,
 			);
+			if (this._localDoc) {
+				this._remotePersistence = new IndexeddbPersistence(
+					`${folderDbName}-remote`,
+					this.ydoc,
+					null,
+					null,
+					this.timeProvider,
+				);
+			}
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
 			throw e;
+		}
+
+		if (this._localDoc) {
+			this.folderBridge = new FolderDocBridge(this._localDoc, this.ydoc, {
+				onOutboundDeletes: (deletes) => this.deleteCollector?.collect(deletes),
+				onOutboundSets: (sets) => this.deleteCollector?.dropReasserted(sets),
+				isHeld: (mapName, key) =>
+					this.deleteCollector?.isHeld(mapName, key) ?? false,
+				// A path awaiting first upload is local intent; everything else
+				// converges toward server truth. Disk safety is the machine's:
+				// remote-wins deletions reach it as evidence-checked map deltas.
+				classifyDivergence: (_mapName, key) =>
+					this.pendingUpload.has(key) ? "local-wins" : "remote-wins",
+				// Persistence replay is not local intent; the remote doc
+				// converges through its own persistence and reconcile().
+				skipOutboundOrigin: (origin) =>
+					origin != null && origin === this._persistence,
+				// The remote doc's persisted snapshot can be stale — the
+				// localDoc's database also advances while the split is
+				// inactive — so its replay must not overwrite the localDoc.
+				// reconcile() at provider sync converges the docs.
+				skipInboundOrigin: (origin) =>
+					origin != null && origin === this._remotePersistence,
+			});
+			this.deleteCollector = new DeleteCollector(
+				this.folderBridge,
+				this.timeProvider,
+				{
+					membershipSize: () => this.syncStore.committedEntryCount(),
+					onDetach: (deletes) => this.handleCollectorDetach(deletes),
+					onReplicated: () => this.notifyListeners(),
+					onGated: (deletes) => {
+						this.log(
+							`[DeleteCollector] gated ${deletes.length} deletions pending send/restore`,
+						);
+						this.notifyListeners();
+					},
+					onRestored: (deletes) => this.handleCollectorRestore(deletes),
+					persist: (state) => this.persistCollectorState(state),
+				},
+			);
+			// Retention: captured deletion bursts and deferred doc teardown
+			// expire together.
+			void this.whenSynced()
+				.then(() => {
+					if (this.destroyed) return;
+					this._persistence.opCapture?.dropBefore(
+						this.timeProvider.now() - FOLDER_DELETION_RETENTION_MS,
+					);
+					this.sweepDeferredTeardown();
+				})
+				.catch(() => {});
+			void this._persistence
+				.get("deferredDocTeardown")
+				.then((raw: unknown) => {
+					if (this.destroyed || typeof raw !== "string" || !raw) return;
+					try {
+						const entries = JSON.parse(raw);
+						if (Array.isArray(entries)) {
+							this._deferredTeardown.push(...entries);
+						}
+					} catch (e) {
+						this.warn("failed to parse deferred-teardown ledger", e);
+					}
+				})
+				.catch(() => {});
+			void this._persistence
+				.get("deleteCollector")
+				.then((raw: unknown) => {
+					if (this.destroyed || typeof raw !== "string" || !raw) return;
+					try {
+						const state = JSON.parse(raw) as SerializedCollectorState;
+						this.deleteCollector?.loadPersisted(state);
+						if (this.deleteCollector?.currentPhase === "gated") {
+							this.log(
+								`[DeleteCollector] rehydrated gated burst of ${state.deletes.length} deletions`,
+							);
+							this.notifyListeners();
+						}
+					} catch (e) {
+						this.warn("failed to parse persisted delete-collector state", e);
+					}
+				})
+				.catch(() => {});
 		}
 
 		// If folder is authoritative (local-only, not awaiting server updates),
@@ -1493,6 +1662,12 @@ export class SharedFolder extends HasProvider {
 	 * remote record or login resolves after construction.
 	 */
 	protected handleProviderSynced(): void {
+		// Bridge reconciliation runs only against genuine server truth (a
+		// completed handshake), never a cold remote persistence — an empty
+		// provider doc must not read as "everything was deleted". It runs
+		// before the machine's hydration gate so the ladder sees a
+		// converged map.
+		this.folderBridge?.reconcile();
 		// The FolderHSM hydration gate rides the same handshake as the
 		// readiness latch; the machine itself dedups repeat syncs (the
 		// ladder reruns only after a disconnect).
@@ -1511,6 +1686,119 @@ export class SharedFolder extends HasProvider {
 
 	protected handleProviderDesynced(): void {
 		this.folderHSM?.send({ type: "DISCONNECTED" });
+	}
+
+	/**
+	 * The vault-facing folder doc: the localDoc under the folder doc split
+	 * (flag-on), the provider doc otherwise.
+	 */
+	get folderDoc(): Y.Doc {
+		return this._localDoc ?? this.ydoc;
+	}
+
+	private persistCollectorState(state: SerializedCollectorState | null): void {
+		try {
+			if (state === null) {
+				void this._persistence.del("deleteCollector");
+			} else {
+				void this._persistence.set("deleteCollector", JSON.stringify(state));
+			}
+		} catch (e) {
+			// Gate persistence is best-effort; the localDoc/remoteDoc
+			// divergence still carries the held deletions.
+		}
+	}
+
+	/**
+	 * A deletion burst containing the folder root: nothing replicates; the
+	 * host detaches the folder locally (suspension is wired through
+	 * flushVaultDeletes' flag-on path).
+	 */
+	private handleCollectorDetach(deletes: HeldDelete[]): void {
+		this.log(
+			`[DeleteCollector] detach: ${deletes.length} deletions withheld from replication`,
+		);
+		this.notifyListeners();
+		this.onRootDetach?.();
+	}
+
+	/**
+	 * A gated burst discarded by restore(): re-assert the keys on the
+	 * localDoc from server truth. The resulting bridge-origin map deltas
+	 * drive the machine to re-materialize the local files.
+	 */
+	private handleCollectorRestore(deletes: HeldDelete[]): void {
+		this.folderBridge?.refreshFromRemote(deletes);
+		this.notifyListeners();
+	}
+
+	/** Deletions currently held by the outbound gate. */
+	heldDeletions(): HeldDelete[] {
+		return this.deleteCollector?.heldDeletes() ?? [];
+	}
+
+	/** Whether the outbound delete gate is awaiting a send/restore decision. */
+	get deletionsGated(): boolean {
+		return this.deleteCollector?.currentPhase === "gated";
+	}
+
+	/** Explicitly replicate a gated deletion burst. */
+	sendHeldDeletions(): void {
+		this.deleteCollector?.send();
+	}
+
+	/** Explicitly discard a gated deletion burst and restore membership. */
+	restoreHeldDeletions(): void {
+		this.deleteCollector?.restore();
+	}
+
+	/**
+	 * Host signal from the vault feed: the folder's root was deleted. The
+	 * root is never a map key, so the collector needs this out-of-band to
+	 * classify the active burst as detach.
+	 */
+	notifyVaultRootDeleted(): void {
+		this.deleteCollector?.notifyFolderRootDeleted();
+	}
+
+	/**
+	 * Captured deletion history for this folder (split only): one entry per
+	 * coalesced burst, newest last. Undo reverses the captured op — a
+	 * compensating operation that re-asserts the removed entries on every
+	 * replica (P10).
+	 */
+	deletionHistory(): Array<{
+		id: number;
+		origin: "local" | "remote";
+		timestamp: number;
+		paths: string[];
+	}> {
+		const capture = this._persistence?.opCapture;
+		if (!capture) return [];
+		return capture.entries.map((entry: CapturedOp, id: number) => ({
+			id,
+			origin:
+				entry.origin === FOLDER_LOCAL_DELETE_ORIGIN
+					? ("local" as const)
+					: ("remote" as const),
+			timestamp: entry.timestamp,
+			paths: capture.deletedKeys(entry),
+		}));
+	}
+
+	/**
+	 * Reverse one captured deletion burst. The re-asserted entries flow
+	 * outbound through the bridge (replicating the undo to peers) and their
+	 * map deltas drive the machine to re-materialize local files. Always a
+	 * user action, never automatic.
+	 */
+	undoDeletion(id: number): boolean {
+		const capture = this._persistence?.opCapture;
+		const entry = capture?.entries[id];
+		if (!capture || !entry) return false;
+		capture.reverse([entry]);
+		this.notifyListeners();
+		return true;
 	}
 
 	async getServerSynced(): Promise<boolean> {
@@ -1996,7 +2284,7 @@ export class SharedFolder extends HasProvider {
 			getLocalRecordGuid: (vpath: string) =>
 				this._localRecordCache.get(vpath),
 			pathTombstoned: (vpath: string) =>
-				pathWasDeleted(this.ydoc.getMap<Meta>("filemeta_v0"), vpath),
+				pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath),
 			onEffect: (effect) => this.handleFolderHSMEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
@@ -2219,26 +2507,67 @@ export class SharedFolder extends HasProvider {
 			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
 			return;
 		}
-		this.markPendingDelete(vpath);
+		// A folder trash cascades vault-delete events for every descendant.
+		// Unmarked, those echoes launder into recorded local delete intent
+		// and the machine then lawfully fights any later re-add (a deletion
+		// undo re-deletes forever). Mark the whole subtree before trashing
+		// so the cascade reads as our own effect, not user intent.
+		const marked: string[] = [vpath];
+		if (tfile instanceof TFolder) {
+			Vault.recurseChildren(tfile, (child) => {
+				if (child === tfile) return;
+				try {
+					marked.push(this.getVirtualPath(child.path));
+				} catch {
+					// Child resolves outside the folder namespace; no mark.
+				}
+			});
+		}
+		marked.forEach((p) => this.markPendingDelete(p));
 		const promise = (async () => {
 			try {
 				await this.trashFile(tfile);
 			} catch (e) {
-				this.warn("[FolderHSM] trash effect failed", vpath, e);
-				// TRASH_COMPLETE is a report of work done, never of work
-				// attempted: if the path is still in the vault, the entry
-				// stays pendingTrash so a later matched delta or the
-				// reconnect ladder retries. Reporting completion for work
-				// that did not happen strands local files.
-				if (this.vault.getAbstractFileByPath(fullPath)) return;
+				// A vanished file (already moved by an ancestor folder's
+				// trash) IS completed work; anything else leaves the entry
+				// pendingTrash for retry. TRASH_COMPLETE is a report of work
+				// done, never of work attempted — reporting completion for
+				// work that did not happen strands local files.
+				if (this.vault.getAbstractFileByPath(fullPath)) {
+					this.warn("[FolderHSM] trash effect failed", vpath, e);
+					return;
+				}
 			}
-			this.deleteFiles([vpath]);
+			// The trash executor never mutates the map: membership deletion
+			// belongs to the machine, and the entry was already removed by
+			// the delta that emitted this effect. A map write here (the old
+			// deleteFiles call) re-deleted undo-restored entries under a
+			// local origin whenever a cascade-trashed child's own effect
+			// resolved late — the deletion-echo defect. Only the live doc
+			// object and local records are cleaned up.
+			const doc =
+				(guid ? this.files.get(guid) : undefined) ??
+				this.fset.find((f) => f.path === vpath);
+			if (doc) {
+				this.fset.delete(doc);
+				this.files.delete(doc.guid);
+				doc.cleanup();
+				doc.destroy();
+				if (this._localDoc) {
+					this.deferDocTeardown([doc.guid]);
+				} else {
+					this.teardownDocState(doc.guid);
+				}
+			}
+			this.pendingUpload.delete(vpath);
 			this._localRecordCache.delete(vpath);
 			this.fset.update();
 			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
-		})().finally(() => {
-			this.clearPendingDelete(vpath);
-		});
+		})();
+		// Suppression tokens are NOT cleared here: the cascade's vault
+		// delete events arrive seconds after the rename resolves, so each
+		// token is consumed by its event (consumePendingDelete) or expires
+		// by TTL. Clearing on completion re-opens the echo window.
 		trackPromise(`folderHSMTrash:${this.guid}:${vpath}`, promise);
 	}
 
@@ -2413,13 +2742,13 @@ export class SharedFolder extends HasProvider {
 				const ops: Operation[] = [];
 				const diffLog: string[] = [];
 
-				this.ydoc.transact(async () => {
+				this.folderDoc.transact(async () => {
 					// Sync folder operations first because renames/moves also affect files
 					this.syncStore.migrateUp();
 					this.syncByType(this.syncStore, diffLog, ops, [SyncType.Folder]);
 				}, this);
 				await Promise.all(ops.map((op) => op.promise));
-				this.ydoc.transact(async () => {
+				this.folderDoc.transact(async () => {
 					this.syncByType(
 						this.syncStore,
 						diffLog,
@@ -2659,7 +2988,7 @@ export class SharedFolder extends HasProvider {
 
 			if (this.syncStore.willSet(file.path, meta)) {
 				this.log("new meta", file.path, meta);
-				this.ydoc.transact(() => {
+				this.folderDoc.transact(() => {
 					this.syncStore.markUploaded(file.path, meta);
 				}, this);
 			}
@@ -2765,7 +3094,7 @@ export class SharedFolder extends HasProvider {
 
 	placeHold(newFiles: TAbstractFile[]): string[] {
 		const newDocs: string[] = [];
-		this.ydoc.transact(() => {
+		this.folderDoc.transact(() => {
 			newFiles.forEach((file) => {
 				const vpath = this.getVirtualPath(file.path);
 				if (this.isPendingDelete(vpath)) {
@@ -2841,7 +3170,7 @@ export class SharedFolder extends HasProvider {
 			]);
 			if (!awaitingUpdates && origin === undefined) {
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
-				this.ydoc.transact(() => {
+				this.folderDoc.transact(() => {
 					try {
 						canvas.applyJSON(contents);
 					} catch (e) {
@@ -3271,7 +3600,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	markPendingDelete(vpath: string) {
-		this.pendingDeletes.add(vpath);
+		this.pendingDeletes.set(vpath, this.timeProvider.now());
 		this.log("marked pending delete", vpath);
 	}
 
@@ -3281,7 +3610,23 @@ export class SharedFolder extends HasProvider {
 	}
 
 	isPendingDelete(vpath: string): boolean {
-		return this.pendingDeletes.has(vpath);
+		const markedAt = this.pendingDeletes.get(vpath);
+		if (markedAt === undefined) return false;
+		if (this.timeProvider.now() - markedAt > PENDING_DELETE_TTL_MS) {
+			this.pendingDeletes.delete(vpath);
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Check-and-consume a suppression token: the vault-delete echo it
+	 * suppresses has arrived, so the token's work is done.
+	 */
+	consumePendingDelete(vpath: string): boolean {
+		if (!this.isPendingDelete(vpath)) return false;
+		this.pendingDeletes.delete(vpath);
+		return true;
 	}
 
 	isPendingUpload(vpath: string): boolean {
@@ -3327,7 +3672,7 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 		const cleanupGuids = new Set<string>();
-		this.ydoc.transact(() => {
+		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
 				this.pendingUpload.delete(vpath);
 				const guid = this.syncStore?.get(vpath);
@@ -3354,13 +3699,69 @@ export class SharedFolder extends HasProvider {
 					}
 				}
 			}
-		}, this);
+			// The tagged origin exists for deletion capture, which only
+			// rides the split; flag-off keeps the folder instance origin.
+		}, this._localDoc ? FOLDER_LOCAL_DELETE_ORIGIN : this);
 
-		for (const guid of cleanupGuids) {
-			indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
-			const p = this._hsmStore.deleteState(guid).catch(() => {});
-			trackAsyncCleanup(p);
+		if (this._localDoc) {
+			// Under the split, teardown of a deleted doc's local CRDT
+			// persistence and HSM state defers for the capture retention
+			// window, so a deletion undo reattaches instead of re-downloading.
+			this.deferDocTeardown(cleanupGuids);
+		} else {
+			for (const guid of cleanupGuids) {
+				this.teardownDocState(guid);
+			}
 		}
+	}
+
+	private teardownDocState(guid: string): void {
+		indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
+		const p = this._hsmStore.deleteState(guid).catch(() => {});
+		trackAsyncCleanup(p);
+	}
+
+	private deferDocTeardown(guids: Iterable<string>): void {
+		const now = this.timeProvider.now();
+		let changed = false;
+		for (const guid of guids) {
+			this._deferredTeardown.push({ guid, deletedAt: now });
+			changed = true;
+		}
+		if (changed) this.persistDeferredTeardown();
+	}
+
+	private persistDeferredTeardown(): void {
+		try {
+			void this._persistence.set(
+				"deferredDocTeardown",
+				JSON.stringify(this._deferredTeardown),
+			);
+		} catch (e) {
+			// Ledger persistence is best-effort; an unswept entry only delays
+			// cleanup, never loses data.
+		}
+	}
+
+	/**
+	 * Execute expired deferred teardowns. Guids re-added to membership by an
+	 * undo leave the ledger without teardown — their state is live again.
+	 */
+	private sweepDeferredTeardown(): void {
+		if (this._deferredTeardown.length === 0) return;
+		const cutoff = this.timeProvider.now() - FOLDER_DELETION_RETENTION_MS;
+		const live = new Set(this.syncStore.getCommittedSubdocGuids());
+		const keep: Array<{ guid: string; deletedAt: number }> = [];
+		for (const entry of this._deferredTeardown) {
+			if (live.has(entry.guid)) continue;
+			if (entry.deletedAt <= cutoff) {
+				this.teardownDocState(entry.guid);
+			} else {
+				keep.push(entry);
+			}
+		}
+		this._deferredTeardown = keep;
+		this.persistDeferredTeardown();
 	}
 
 	renameFile(tfile: TAbstractFile, oldPath: string) {
@@ -3394,7 +3795,7 @@ export class SharedFolder extends HasProvider {
 			const file = this.files.get(guid);
 			if (!newVPath) {
 				// moving out of shared folder.. destroy the live doc.
-				this.ydoc.transact(() => {
+				this.folderDoc.transact(() => {
 					this.syncStore.delete(oldVPath);
 				}, this);
 				if (file) {
@@ -3425,7 +3826,7 @@ export class SharedFolder extends HasProvider {
 						}
 					});
 				}
-				this.ydoc.transact(() => {
+				this.folderDoc.transact(() => {
 					this.syncStore.move(oldVPath, newVPath);
 					if (file) {
 						file.move(newVPath, this);
@@ -3485,6 +3886,10 @@ export class SharedFolder extends HasProvider {
 
 		this.recordingBridge?.dispose();
 		this.cas.destroy();
+		this.deleteCollector?.destroy();
+		this.deleteCollector = null;
+		this.folderBridge?.destroy();
+		this.folderBridge = null;
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
@@ -3498,6 +3903,13 @@ export class SharedFolder extends HasProvider {
 			const p = this._persistence.destroy().catch(() => {});
 			trackAsyncCleanup(p);
 		}
+		if (this._remotePersistence) {
+			const p = this._remotePersistence.destroy().catch(() => {});
+			trackAsyncCleanup(p);
+			this._remotePersistence = null;
+		}
+		this._localDoc?.destroy();
+		this._localDoc = null;
 		super.destroy();
 		this.fset.destroy();
 		this._settings.destroy();
@@ -3541,6 +3953,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		) => SharedFolder,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
 		private _hsmStore: HSMStore,
+		private appId: string = "app",
 	) {
 		super();
 		this.folderBuilder = folderBuilder;
@@ -3596,6 +4009,35 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		return deleted;
 	}
 
+	/**
+	 * Suspend a folder whose local copy left the vault (root deletion
+	 * classified as detach): tear down the in-memory instance but keep the
+	 * settings registration and every local database, so the folder relinks
+	 * if it returns. Suspended registrations expire on load after the
+	 * deletion retention window.
+	 */
+	public suspend(item: SharedFolder): boolean {
+		item.destroy();
+		const deleted = super.delete(item);
+		void this.settings
+			.update((current) =>
+				current.map((settings) =>
+					settings.guid === item.guid
+						? { ...settings, suspended: true, suspendedAt: Date.now() }
+						: settings,
+				),
+			)
+			.catch((error) => {
+				if (this.destroyed) return;
+				const message =
+					error instanceof Error ? error.message : String(error);
+				this.warn(
+					`Failed to persist shared folder suspension for ${item.path}: ${message}`,
+				);
+			});
+		return deleted;
+	}
+
 	update: Debouncer<[], void> = debounce(() => this.notifyListeners(), 100);
 
 	public get manager(): RelayManager {
@@ -3636,6 +4078,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 
 	private _load(folders: SharedFolderSettings[]) {
 		let updated = false;
+		const expiredSuspensions: string[] = [];
+		const relinked: string[] = [];
 		folders.forEach((folder: SharedFolderSettings) => {
 			// Validate required fields
 			if (!folder.path) {
@@ -3649,6 +4093,24 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				return;
 			}
 			const tFolder = this.vault.getFolderByPath(folder.path);
+			if (folder.suspended) {
+				if (tFolder) {
+					// The folder returned to the vault: relink.
+					this.log(`Relinking suspended folder ${folder.path}`);
+					relinked.push(folder.guid);
+				} else if (
+					(folder.suspendedAt ?? 0) <
+					Date.now() - FOLDER_DELETION_RETENTION_MS
+				) {
+					// The suspension expired without the folder returning.
+					this.log(`Expiring suspended folder ${folder.path}`);
+					expiredSuspensions.push(folder.guid);
+					return;
+				} else {
+					// Suspended and absent: stay inert, keep the registration.
+					return;
+				}
+			}
 			if (!tFolder) {
 				this.warn(`Invalid settings, ${folder.path} does not exist`);
 				return;
@@ -3662,6 +4124,29 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				);
 			}
 		});
+
+		if (expiredSuspensions.length > 0 || relinked.length > 0) {
+			void this.settings
+				.update((current) =>
+					current
+						.filter((s) => !expiredSuspensions.includes(s.guid))
+						.map((s) =>
+							relinked.includes(s.guid)
+								? { ...s, suspended: undefined, suspendedAt: undefined }
+								: s,
+						),
+				)
+				.catch(() => {});
+			// Expired suspensions release their folder-level databases. Doc
+			// databases are enumerated in the folder doc, which is being
+			// dropped here; they are reclaimed by the deferred-teardown sweep
+			// if the folder is ever re-created, and are bounded in size.
+			for (const guid of expiredSuspensions) {
+				indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}`);
+				indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}-remote`);
+				indexedDB.deleteDatabase(guid);
+			}
+		}
 
 		if (updated) {
 			this.notifyListeners();
