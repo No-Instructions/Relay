@@ -272,6 +272,16 @@ export interface RelayDebugGlobal {
   getFolderSyncStatus: (folderGuid: string) => { guid: string; path: string; status: string }[];
   /** FolderHSM membership projection for the folder owning `path`: statePath, entry dispositions, parked files. Null when the folder has no membership engine (enableFolderHSM off). */
   getFolderSyncSnapshot: (path: string) => any | null;
+  /** Outbound delete gate for the folder at `path`: gated flag + held keys. Null without the split (enableFolderHSM off). */
+  getFolderDeletionGate: (path: string) => { gated: boolean; held: { mapName: string; key: string }[] } | null;
+  /** Explicitly replicate the folder's gated deletion burst. Returns the post-send gated flag, or null without a folder. */
+  sendFolderHeldDeletions: (path: string) => boolean | null;
+  /** Explicitly discard the folder's gated deletion burst and restore membership from server truth. */
+  restoreFolderHeldDeletions: (path: string) => boolean | null;
+  /** Captured deletion bursts for the folder at `path`: {id, origin: local|remote, timestamp, paths}. */
+  getFolderDeletionHistory: (path: string) => { id: number; origin: string; timestamp: number; paths: string[] }[];
+  /** Reverse one captured deletion burst (the compensating op replicates to every peer). */
+  undoFolderDeletion: (path: string, id: number) => boolean;
   /** Folder-scoped subset of sync rows where status === "error". */
   getFolderSyncErrors: (folderGuid: string) => { guid: string; path: string; status: string }[];
   /** Folder-scoped subset of sync rows where status === "conflict". */
@@ -588,6 +598,34 @@ export class RelayDebugAPI {
           }
         }
         return null;
+      },
+      // Deletion-intent surfaces (folder doc split, enableFolderHSM only).
+      // Null/empty when the folder has no bridge/collector.
+      getFolderDeletionGate: (path: string) => {
+        const folder = this.resolveFolder(path);
+        if (!folder) return null;
+        return {
+          gated: folder.deletionsGated ?? false,
+          held: folder.heldDeletions?.() ?? [],
+        };
+      },
+      sendFolderHeldDeletions: (path: string) => {
+        const folder = this.resolveFolder(path);
+        folder?.sendHeldDeletions?.();
+        return folder?.deletionsGated ?? null;
+      },
+      restoreFolderHeldDeletions: (path: string) => {
+        const folder = this.resolveFolder(path);
+        folder?.restoreHeldDeletions?.();
+        return folder?.deletionsGated ?? null;
+      },
+      getFolderDeletionHistory: (path: string) => {
+        const folder = this.resolveFolder(path);
+        return folder?.deletionHistory?.() ?? [];
+      },
+      undoFolderDeletion: (path: string, id: number) => {
+        const folder = this.resolveFolder(path);
+        return folder?.undoDeletion?.(id) ?? false;
       },
       getFolderSyncErrors: (folderGuid: string) => this.getFolderSyncErrors(folderGuid),
       getFolderConflicts: (folderGuid: string) => this.getFolderConflicts(folderGuid),
@@ -1315,6 +1353,18 @@ export class RelayDebugAPI {
   private findRelayByGuid(guid: string) {
     for (const r of this.plugin.relayManager.relays._map.values()) {
       if (r.guid === guid) return r;
+    }
+    return null;
+  }
+
+  /** Resolve a shared folder by exact path or path prefix. */
+  private resolveFolder(path: string): any | null {
+    if (!this.plugin?.sharedFolders?._set) return null;
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if ((folder as any).path === path) return folder;
+    }
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if (path.startsWith((folder as any).path + '/')) return folder;
     }
     return null;
   }
