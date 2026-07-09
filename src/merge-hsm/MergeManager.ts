@@ -1193,6 +1193,7 @@ export class MergeManager {
       const persistedState: PersistedMergeState = {
         guid,
         path: hsm.state.path,
+        folder: this._folderGuid,
         lca: lcaForPersistence
           ? {
               contents: lcaForPersistence.contents,
@@ -2095,6 +2096,7 @@ export class MergeManager {
         this._stateMetaCache.set(guid, {
           guid,
           path: effect.state.path,
+          folder: effect.state.folder,
           lcaMeta: restoredLCA ? lcaToMeta(restoredLCA) : null,
           disk: effect.state.disk,
           localSnapshot: effect.state.localSnapshot ?? null,
