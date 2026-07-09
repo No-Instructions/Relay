@@ -331,18 +331,18 @@ jobs:
           git clean -fd
           git checkout --detach origin/main
 
-          # Pull the prebuilt obsidian-metrics plugin from its GitHub release
+          # Pull the prebuilt TSDB metrics plugin from its GitHub release
           # (pinned tag) instead of cloning and building it from source.
-          echo ">>> obsidian-metrics: reached download step (relay-harness ok)"
-          mkdir -p ~/system3/obsidian-metrics/dist/obsidian-metrics
-          OBSIDIAN_METRICS_TAG=v1.0.0
+          echo ">>> tsdb: reached download step (relay-harness ok)"
+          mkdir -p ~/system3/obsidian-metrics/dist/tsdb
+          TSDB_TAG=1.0.2
           for f in main.js manifest.json styles.css; do
-            url="https://github.com/No-Instructions/obsidian-metrics/releases/download/${OBSIDIAN_METRICS_TAG}/$f"
-            echo ">>> fetching obsidian-metrics $f"
-            wget -q -O ~/system3/obsidian-metrics/dist/obsidian-metrics/"$f" "$url" \
+            url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
+            echo ">>> fetching tsdb $f"
+            wget -q -O ~/system3/obsidian-metrics/dist/tsdb/"$f" "$url" \
               || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
           done
-          echo ">>> obsidian-metrics download done"
+          echo ">>> tsdb download done"
 
           # Install uv (no apt/sudo) and the test-harness Python deps into a
           # venv, then export the interpreter so run-test-plan-suite.sh runs
@@ -368,7 +368,7 @@ jobs:
           echo ">>> playwright ok"
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
-          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
+          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
           cd ~/relay-harness
 
           TEST_EXIT=0
