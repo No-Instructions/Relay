@@ -252,12 +252,29 @@ export default class Live extends Plugin {
 				removedSharedRoots.push({ folder, path: folder.path });
 			}
 		}
-		for (const { folder } of removedSharedRoots) {
+		// Legacy folders: the root filter destroys the registration
+		// immediately and swallows same-batch children. FolderHSM folders:
+		// the root deletion is a collector signal — the burst (children
+		// included, which flow through notifyVaultDelete below) classifies
+		// as detach after the quiet window, nothing replicates, and the
+		// registration suspends relinkably instead of being destroyed.
+		const destroyedRoots: { folder: SharedFolder; path: string }[] = [];
+		for (const entry of removedSharedRoots) {
+			if (entry.folder.folderHSM) {
+				entry.folder.onRootDetach = () => {
+					this.sharedFolders.suspend(entry.folder);
+				};
+				entry.folder.notifyVaultRootDeleted();
+			} else {
+				destroyedRoots.push(entry);
+			}
+		}
+		for (const { folder } of destroyedRoots) {
 			this.sharedFolders.delete(folder);
 		}
 
 		const isUnderRemovedSharedRoot = (path: string): boolean => {
-			return removedSharedRoots.some(
+			return destroyedRoots.some(
 				(root) => path === root.path || path.startsWith(root.path + "/"),
 			);
 		};
@@ -274,7 +291,9 @@ export default class Live extends Plugin {
 				continue;
 			}
 			const vpath = folder.getVirtualPath(event.path);
-			if (folder.isPendingDelete(vpath)) {
+			// Consume the suppression token: this vault event IS the echo of
+			// our own trash effect.
+			if (folder.consumePendingDelete(vpath)) {
 				continue;
 			}
 			vaultLog("Delete", event.path);
@@ -803,6 +822,7 @@ export default class Live extends Plugin {
 			this._createSharedFolder.bind(this),
 			this.folderSettings,
 			this._hsmStore,
+			this.appId,
 		);
 
 		// Register the sync-status view factory before the workspace layout
