@@ -426,6 +426,16 @@ export class SyncStore extends Observable<SyncStore> {
 				return;
 			}
 
+			// A re-added entry supersedes any masked deletion for its path,
+			// whatever the transaction origin: a stale deleteSet entry would
+			// hide the live entry from every accessor and commit() would
+			// delete it outright.
+			event.changes.keys.forEach((change, path) => {
+				if (change.action !== "delete" && this.deleteSet.has(path)) {
+					this.deleteSet.delete(path);
+				}
+			});
+
 			const origin = event.transaction.origin;
 			if (origin == this) return;
 
@@ -439,6 +449,16 @@ export class SyncStore extends Observable<SyncStore> {
 			this.notifyListeners();
 		};
 		const legacyListener = async (event: Y.YMapEvent<string>) => {
+			// Old clients write the docs map alone: their deletion of a
+			// path tombstones it (getMeta's meta-without-legacy check), and
+			// their later re-add of the same path must clear that tombstone
+			// — otherwise the stale entry masks the re-created file from
+			// every accessor and commit() deletes it outright.
+			event.changes.keys.forEach((change, path) => {
+				if (change.action !== "delete" && this.deleteSet.has(path)) {
+					this.deleteSet.delete(path);
+				}
+			});
 			this.migrateUp();
 			this.notifyListeners();
 		};
@@ -501,6 +521,9 @@ export class SyncStore extends Observable<SyncStore> {
 		}
 
 		if (isDocumentMeta(meta) && !legacy) {
+			// Old clients delete documents by removing the docs-map entry
+			// only; meta-without-legacy converges that deletion. A re-added
+			// entry clears this tombstone through the meta observer.
 			this.deleteSet.add(vpath);
 			return undefined;
 		}
