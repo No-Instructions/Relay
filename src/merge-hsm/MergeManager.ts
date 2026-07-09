@@ -1193,6 +1193,7 @@ export class MergeManager {
       const persistedState: PersistedMergeState = {
         guid,
         path: hsm.state.path,
+        folder: this._folderGuid,
         lca: lcaForPersistence
           ? {
               contents: lcaForPersistence.contents,
