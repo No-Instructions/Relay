@@ -452,11 +452,12 @@ export function createToast(notifier: INotifier) {
 }
 
 // ============================================================================
-// Metrics Integration (for obsidian-metrics plugin)
+// Metrics Integration (for the TSDB plugin)
 // ============================================================================
 
 import type {
 	IObsidianMetricsAPI,
+	IObsidianMetricsRootAPI,
 	MetricInstance,
 	ObsidianMetricsPlugin,
 } from "./types/obsidian-metrics";
@@ -467,10 +468,10 @@ export type NetworkDomain = "auth" | "api" | "relay" | "external";
 export type NetworkResult = "success" | "error";
 
 /**
- * Metrics for Relay - uses obsidian-metrics plugin if available, no-ops otherwise.
+ * Metrics for Relay - uses the TSDB plugin if available, no-ops otherwise.
  *
- * Uses event-based initialization to handle plugin load order. The obsidian-metrics
- * plugin emits 'obsidian-metrics:ready' when loaded, and metric creation is idempotent.
+ * Uses event-based initialization to handle plugin load order. The TSDB
+ * plugin emits 'tsdb:ready' when loaded, and metric creation is idempotent.
  */
 class RelayMetrics {
 	private dbSize: MetricInstance | null = null;
@@ -529,7 +530,8 @@ class RelayMetrics {
 	private documentUpdateEvents: MetricInstance | null = null;
 
 	/**
-	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
+	 * Initialize metrics from Relay's metric store. Called when the TSDB
+	 * plugin becomes available.
 	 * Safe to call multiple times - metric creation is idempotent.
 	 */
 	initializeFromAPI(api: IObsidianMetricsAPI): void {
@@ -938,7 +940,7 @@ class RelayMetrics {
 
 /**
  * Initialize metrics integration with Obsidian app.
- * Sets up event listener for obsidian-metrics:ready and checks if already available.
+ * Sets up event listener for tsdb:ready and checks if already available.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function initializeMetrics(
@@ -950,10 +952,36 @@ export function initializeMetrics(
 		callback: () => void,
 	) => void,
 ): void {
+	// Relay records under the "relay" job in the TSDB store. A plugin with
+	// a mismatched API surface must degrade to no-op metrics, never break
+	// plugin load.
+	const tryInitialize = (api: IObsidianMetricsRootAPI) => {
+		try {
+			if (typeof api?.getStore !== "function") {
+				console.warn(
+					"[RelayMetrics] installed metrics plugin lacks the getStore API; metrics disabled",
+				);
+				return;
+			}
+			metrics.initializeFromAPI(
+				api.getStore("relay", {
+					displayName: "Relay",
+					description:
+						"Sync engine metrics: document storage, protocol IO, and network requests.",
+				}),
+			);
+		} catch (e) {
+			console.warn(
+				"[RelayMetrics] metrics initialization failed; metrics disabled",
+				e,
+			);
+		}
+	};
+
 	// Listen for metrics API becoming available (or re-initializing after reload)
 	registerEvent(
-		app.workspace.on("obsidian-metrics:ready", (api: IObsidianMetricsAPI) => {
-			metrics.initializeFromAPI(api);
+		app.workspace.on("tsdb:ready", (api: IObsidianMetricsRootAPI) => {
+			tryInitialize(api);
 		})
 	);
 	if (registerDomEvent && typeof document !== "undefined") {
@@ -963,12 +991,12 @@ export function initializeMetrics(
 		metrics.recordPageVisibility();
 	}
 
-	// Also try to get it immediately in case metrics plugin loaded first
-	const metricsPlugin = app.plugins?.plugins?.["obsidian-metrics"] as
+	// Also try to get it immediately in case the metrics plugin loaded first
+	const metricsPlugin = app.plugins?.plugins?.["tsdb"] as
 		| ObsidianMetricsPlugin
 		| undefined;
 	if (metricsPlugin?.api) {
-		metrics.initializeFromAPI(metricsPlugin.api);
+		tryInitialize(metricsPlugin.api);
 	}
 }
 
