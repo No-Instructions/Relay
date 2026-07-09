@@ -233,6 +233,7 @@ export class HSMStore {
         results.push({
           guid: s.guid,
           path: s.path,
+          folder: s.folder,
           lcaMeta: s.lca && (s.lca.snapshot || lcaLegacyStateVector)
             ? {
                 meta: { hash: s.lca.hash, mtime: s.lca.mtime },
