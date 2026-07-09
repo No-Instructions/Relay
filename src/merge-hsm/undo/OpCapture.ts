@@ -594,6 +594,27 @@ export class OpCapture {
 	}
 
 	/**
+	 * Map keys deleted by an entry, for scopes over Y.Map roots (an item's
+	 * parentSub is its map key). Used by deletion-history surfaces to
+	 * render captured bursts as path lists.
+	 */
+	deletedKeys(entry: CapturedOp): string[] {
+		const keys = new Set<string>();
+		transact(this.doc, (transaction: Transaction) => {
+			iterateDeletedStructs(transaction, entry.deletions, (item: Item | GC) => {
+				if (
+					item instanceof Item &&
+					item.parentSub != null &&
+					this.scope.some((type) => isParentOf(type, item))
+				) {
+					keys.add(item.parentSub);
+				}
+			});
+		});
+		return [...keys];
+	}
+
+	/**
 	 * Drop entries without reversing: remove from log and release GC holds.
 	 * The CRDT state is unchanged — Y.js is free to GC the released items.
 	 */
