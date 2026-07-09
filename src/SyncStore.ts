@@ -326,25 +326,31 @@ export class SyncStore extends Observable<SyncStore> {
 
 	set(vpath: string, meta: Meta) {
 		this.assertVPath(vpath);
-		if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
-			this.legacyIds.set(vpath, meta.id);
-		}
-		const existing = this.meta.get(vpath);
-		if (
-			existing &&
-			existing.id === meta.id &&
-			existing.mimetype == meta.mimetype &&
-			existing.type === meta.type &&
-			existing.hash === meta.hash
-		) {
-			return;
-		}
-		this.log("metadata write (path, existing, meta)", vpath, existing, meta);
-		this.meta.set(vpath, meta);
-		const pendingGuid = this.pendingUpload.get(vpath);
-		if (pendingGuid && pendingGuid === meta.id) {
-			this.pendingUpload.delete(vpath);
-		}
+		// Both membership maps commit in one transaction: a document entry
+		// must never be observable in one map without the other. A nested
+		// transact inherits the caller's transaction and origin; a bare
+		// call keeps the null origin its implicit transactions carried.
+		this.ydoc.transact(() => {
+			if (isDocumentMeta(meta) && this.legacyIds.get(vpath) !== meta.id) {
+				this.legacyIds.set(vpath, meta.id);
+			}
+			const existing = this.meta.get(vpath);
+			if (
+				existing &&
+				existing.id === meta.id &&
+				existing.mimetype == meta.mimetype &&
+				existing.type === meta.type &&
+				existing.hash === meta.hash
+			) {
+				return;
+			}
+			this.log("metadata write (path, existing, meta)", vpath, existing, meta);
+			this.meta.set(vpath, meta);
+			const pendingGuid = this.pendingUpload.get(vpath);
+			if (pendingGuid && pendingGuid === meta.id) {
+				this.pendingUpload.delete(vpath);
+			}
+		});
 	}
 
 	/**
@@ -555,9 +561,12 @@ export class SyncStore extends Observable<SyncStore> {
 
 	delete(vpath: string) {
 		this.assertVPath(vpath);
-		this.legacyIds.delete(vpath);
-		this.pendingUpload.delete(vpath);
-		return this.meta.delete(vpath);
+		// Mirror of set(): removal leaves both maps in one transaction.
+		return this.ydoc.transact(() => {
+			this.legacyIds.delete(vpath);
+			this.pendingUpload.delete(vpath);
+			return this.meta.delete(vpath);
+		});
 	}
 
 	public get remoteIds(): Set<string> {
