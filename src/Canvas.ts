@@ -232,8 +232,15 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		if (this.sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
 			return false;
-		} else if (this.s3rn instanceof S3Canvas) {
-			// convert to remote document
+		} else if (
+			this.s3rn instanceof S3Canvas ||
+			(this.s3rn instanceof S3RemoteCanvas &&
+				this.sharedFolder.relayId !== undefined &&
+				this.s3rn.relayId !== this.sharedFolder.relayId)
+		) {
+			// A local identity converts to remote; a remote identity minted
+			// for a previous relay re-derives after the folder moves relays —
+			// otherwise the canvas connects to the old relay's room forever.
 			if (this.sharedFolder.relayId) {
 				this.s3rn = new S3RemoteCanvas(
 					this.sharedFolder.relayId,
