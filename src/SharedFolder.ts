@@ -3005,6 +3005,15 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/**
+	 * Drop the folder's durable pending-upload records wholesale. Only for
+	 * folder removal: a suspended or merely unloaded folder still needs them
+	 * to resume first uploads after relink.
+	 */
+	public clearPendingUploads(): void {
+		this.pendingUpload.clear();
+	}
+
 	async markUploaded(file: IFile) {
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
@@ -4050,6 +4059,9 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				docGuids.push(doc.guid);
 			});
 			dbNames.push(item.guid);
+			// The folder's pending-upload records live in localStorage, not
+			// IDB; removal is the only point where they become garbage.
+			item.clearPendingUploads();
 		}
 		item?.destroy();
 		const deleted = super.delete(item);
