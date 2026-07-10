@@ -44,6 +44,10 @@ jobs:
           - name: scripted-all
             slug: all
             tests: tp000,tp001,tp002,tp003,tp004,tp006,tp007,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp030,tp031,tp032,tp033,tp034
+          - name: scripted-folder-hsm
+            slug: fhsm
+            tests: tp052
+            profile_flags: enableFolderHSM=true
     env:
       VM_NAME: ${{ format('{0}-tp-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
       SHARD_NAME: ${{ matrix.shard.name }}
@@ -387,6 +391,10 @@ jobs:
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
           export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
+          if [ -n "$SHARD_PROFILE_FLAGS" ]; then
+            export RELAY_PROFILE_FLAG_OVERRIDES="$SHARD_PROFILE_FLAGS"
+            echo ">>> profile flag overrides: $RELAY_PROFILE_FLAG_OVERRIDES"
+          fi
           cd ~/relay-harness
 
           TEST_EXIT=0
