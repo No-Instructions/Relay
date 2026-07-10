@@ -76,6 +76,15 @@ export interface FolderDocBridgeOptions {
 	 */
 	isHeld?: (mapName: FolderMapName, key: string) => boolean;
 	/**
+	 * Reconciliation classified the folder as a publication (wholly-empty
+	 * remote maps against non-empty local membership) and staged the
+	 * membership outbound. Fired once per reconcile, after the staging
+	 * transaction commits. The host re-uploads document content to the new
+	 * relay's per-document rooms — membership alone leaves every doc an
+	 * empty shell for joining peers.
+	 */
+	onPublication?: () => void;
+	/**
 	 * Attach-time divergence classifier (host-supplied, consults machine
 	 * dispositions / pendingUpload / local records). Default: remote-wins.
 	 */
@@ -294,6 +303,7 @@ export class FolderDocBridge {
 			key: string;
 			action: "delete" | "set";
 		}> = [];
+		let publicationStaged = false;
 		for (const entry of this.maps) {
 			// A wholly-empty remote map against non-empty local membership is
 			// a publication — initial share, re-share to a different relay,
@@ -301,6 +311,7 @@ export class FolderDocBridge {
 			// outbound; the classifier only arbitrates genuine per-key
 			// divergence between two populated replicas.
 			const publication = entry.remote.size === 0 && entry.local.size > 0;
+			if (publication) publicationStaged = true;
 			const keys = new Set<string>([
 				...entry.local.keys(),
 				...entry.remote.keys(),
@@ -343,6 +354,9 @@ export class FolderDocBridge {
 					}
 				}
 			}, BRIDGE_OUT_ORIGIN);
+			if (publicationStaged) {
+				this.opts.onPublication?.();
+			}
 		}
 		if (toLocal.length > 0) {
 			this.localDoc.transact(() => {

@@ -173,6 +173,11 @@ export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // token cannot swallow a genuine user deletion later.
 export const PENDING_DELETE_TTL_MS = 60 * 1000;
 
+// Cadence of the pending-download re-arm sweep. Slow enough to stay quiet,
+// fast enough that a joiner racing the sharer's content staging converges
+// within a couple of ticks.
+export const DOWNLOAD_SWEEP_INTERVAL_MS = 10_000;
+
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(() => super.notifyListeners(), 100);
@@ -237,6 +242,7 @@ export class SharedFolder extends HasProvider {
 
 
 	private _persistence: IndexeddbPersistence;
+	private _downloadSweepTimer: number | null = null;
 	/**
 	 * Vault-facing folder doc under the folder doc split (flag-on). Inherits
 	 * the folder's persistence key, so local history and native tombstones
@@ -497,6 +503,10 @@ export class SharedFolder extends HasProvider {
 				// reconcile() at provider sync converges the docs.
 				skipInboundOrigin: (origin) =>
 					origin != null && origin === this._remotePersistence,
+				// Publication staged the membership to an empty relay; the
+				// per-document rooms there are empty shells until content
+				// re-uploads. Stage every registered doc's content.
+				onPublication: () => this.stagePublicationUploads(),
 			});
 			this.deleteCollector = new DeleteCollector(
 				this.folderBridge,
@@ -512,7 +522,13 @@ export class SharedFolder extends HasProvider {
 						this.notifyListeners();
 					},
 					onRestored: (deletes) => this.handleCollectorRestore(deletes),
-					persist: (state) => this.persistCollectorState(state),
+					persist: (state) => {
+						this.persistCollectorState(state);
+						// A gated burst that grows or shrinks (keys absorbed, or
+						// keys re-asserted and dropped) reaches the deletion
+						// surface through the same listeners the pill uses.
+						this.notifyListeners();
+					},
 				},
 			);
 			// Retention: captured deletion bursts and deferred doc teardown
@@ -1474,6 +1490,67 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/**
+	 * Level-triggered re-arm for pending downloads (the safety net over the
+	 * edge-triggered enqueue): while membership holds pendingDownload
+	 * entries, periodically re-run the enqueue for entries with no download
+	 * in flight. Covers enqueues dropped against a mid-sync store and
+	 * downloads deferred because the sharer had not yet staged content to
+	 * the room ("server has guid but no content yet"). The guards inside
+	 * executeEnqueueDownload keep each pass cheap and idempotent; the sweep
+	 * disarms itself when nothing is pending.
+	 */
+	private armDownloadSweep(): void {
+		if (this.destroyed || this._downloadSweepTimer !== null) return;
+		if (!this.folderHSM) return;
+		this._downloadSweepTimer = this.timeProvider.setTimeout(() => {
+			this._downloadSweepTimer = null;
+			if (this.destroyed || !this.folderHSM) return;
+			const pending = this.folderHSM
+				.getSnapshot()
+				.entries.filter((entry) => entry.disposition === "pendingDownload");
+			for (const entry of pending) {
+				if (entry.guid === null) continue;
+				this.executeEnqueueDownload(entry.path, entry.guid);
+			}
+			if (pending.length > 0) {
+				this.armDownloadSweep();
+			}
+		}, DOWNLOAD_SWEEP_INTERVAL_MS);
+	}
+
+	/**
+	 * A publication staged this folder's membership onto an empty relay.
+	 * Every per-document room there is an empty shell until content
+	 * re-uploads, so joining peers would download guids without bodies.
+	 * Stage a local-authoritative upload for each registered doc; rooms
+	 * that already hold content absorb the merge idempotently.
+	 */
+	private stagePublicationUploads(): void {
+		// Reconciliation fires this synchronously after its staging
+		// transaction; enqueue on a fresh microtask so upload bookkeeping
+		// never re-enters observer or transaction context.
+		void Promise.resolve().then(() => {
+			if (this.destroyed) return;
+			let staged = 0;
+			this.files.forEach((doc) => {
+				if (isSyncFolder(doc)) return; // directories have no rooms
+				const p = this.backgroundSync
+					.enqueueUpload(doc as Document | Canvas | SyncFile)
+					.catch((e) => {
+						this.warn(
+							"[FolderHSM] publication staging failed",
+							doc.path,
+							e,
+						);
+					});
+				trackAsyncCleanup(p);
+				staged++;
+			});
+			this.log(`[FolderHSM] publication: staged ${staged} content uploads`);
+		});
+	}
+
 	public get settings(): SharedFolderSettings {
 		return this._settings.get();
 	}
@@ -1623,6 +1700,7 @@ export class SharedFolder extends HasProvider {
 		if (this._remote === value) {
 			return;
 		}
+		const previousRelayId = this.relayId;
 		this._remote = value;
 		this.relayId = value?.relay?.guid;
 		this.s3rn = this.relayId
@@ -1638,6 +1716,21 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.server = value?.relay.providerId;
+
+		// A folder pointed at a different relay finds empty per-document
+		// rooms there: membership replicates with the folder doc, content
+		// does not. Stage every registered doc's content once the new
+		// provider handshake completes — uploads drained before then run
+		// against a half-switched connection and fail terminally.
+		if (this.relayId !== undefined && this.relayId !== previousRelayId) {
+			const stagedRelayId = this.relayId;
+			const p = this.onceProviderSynced().then(() => {
+				if (this.destroyed || this.relayId !== stagedRelayId) return;
+				this.stagePublicationUploads();
+			});
+			trackAsyncCleanup(p);
+		}
+
 		this.notifyListeners();
 	}
 
@@ -2476,7 +2569,20 @@ export class SharedFolder extends HasProvider {
 		if (this.existsSync(vpath)) return;
 		if (this._pendingDownloads.has(vpath)) return;
 		const meta = this.syncStore.getMeta(vpath);
-		if (!meta || meta.id !== guid) return; // the map moved on — stale decision
+		if (!meta || meta.id !== guid) {
+			// A mid-sync store (meta/docs window) or a moved-on map. Report
+			// instead of dropping silently: the machine keeps the entry
+			// pendingDownload and retries on the next delta for the key.
+			this.warn(
+				"[FolderHSM] download enqueue dropped: store not ready",
+				vpath,
+				guid,
+				meta?.id,
+			);
+			this.folderHSM?.send({ type: "DOWNLOAD_FAILED", path: vpath, guid });
+			this.armDownloadSweep();
+			return;
+		}
 		const promise = this._handleServerCreate(vpath, meta)
 			.then((file) => {
 				if (file) {
@@ -2486,6 +2592,11 @@ export class SharedFolder extends HasProvider {
 						path: vpath,
 						guid,
 					});
+				} else {
+					// Deferred: the room exists but carries no content yet
+					// (the sharer has not finished staging). The sweep
+					// retries once content lands.
+					this.armDownloadSweep();
 				}
 				return file;
 			})
@@ -2496,6 +2607,7 @@ export class SharedFolder extends HasProvider {
 					path: vpath,
 					guid,
 				});
+				this.armDownloadSweep();
 			});
 		trackPromise(`folderHSMDownload:${this.guid}:${vpath}`, promise);
 	}
@@ -3873,6 +3985,10 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		if (this._downloadSweepTimer !== null) {
+			this.timeProvider.clearTimeout(this._downloadSweepTimer);
+			this._downloadSweepTimer = null;
+		}
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
