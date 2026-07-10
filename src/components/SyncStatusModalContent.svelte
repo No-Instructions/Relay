@@ -28,12 +28,33 @@
 		GitMerge,
 		Pause,
 		RefreshCw,
+		Trash2,
 	} from "lucide-svelte";
 
 	export let sharedFolder: SharedFolder;
 	export let app: App;
 	export let timeProvider: TimeProvider;
 	export let activityStore: SyncStatusActivityStore;
+	export let onReviewHeldDeletions: (() => void) | null = null;
+
+	// ── Held deletions ─────────────────────────────────────────────────
+
+	let deletionsGated = sharedFolder.deletionsGated;
+	let heldDeletionCount = countHeldDeletions();
+
+	function countHeldDeletions(): number {
+		return sharedFolder.deletionGate()?.paths.length ?? 0;
+	}
+
+	function refreshGateState() {
+		deletionsGated = sharedFolder.deletionsGated;
+		heldDeletionCount = countHeldDeletions();
+	}
+
+	// The gate publishes through the folder's connection listeners — the same
+	// channel the header pill uses — so a burst that empties or resolves
+	// clears this status without user action.
+	const unsubscribeGate = sharedFolder.subscribe({}, () => refreshGateState());
 
 	// ── Derived sync status model ──────────────────────────────────────
 
@@ -99,6 +120,7 @@
 		unsubscribeActivity();
 		unsubscribeSyncStatus();
 		unsubscribeFolderSnapshot();
+		unsubscribeGate();
 	});
 
 	// ── Helpers ─────────────────────────────────────────────────────────
@@ -248,6 +270,28 @@
 		>{snapshot.latestActivity ?? ""}</span>
 	</div>
 
+	{#if deletionsGated}
+		<div class="sync-status-section sync-status-held-deletions">
+			<div class="sync-status-section-header">Held deletions</div>
+			<div class="sync-status-held-body">
+				<span class="sync-status-icon held"><Trash2 size={14} /></span>
+				<span class="sync-status-held-text">
+					{heldDeletionCount}
+					{heldDeletionCount === 1 ? "file" : "files"} deleted on this device
+					{heldDeletionCount === 1 ? "is" : "are"} held from syncing until you
+					decide.
+				</span>
+				{#if onReviewHeldDeletions}
+					<button
+						class="sync-status-held-review"
+						type="button"
+						on:click={() => onReviewHeldDeletions?.()}
+					>Review</button>
+				{/if}
+			</div>
+		</div>
+	{/if}
+
 	{#if conflicts.length > 0}
 		<div class="sync-status-section">
 			<div class="sync-status-section-header">Conflicts ({conflicts.length})</div>
@@ -346,7 +390,7 @@
 		</div>
 	{/if}
 
-	{#if conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
+	{#if !deletionsGated && conflicts.length === 0 && errors.length === 0 && visibleActivity.length === 0}
 		<div class="sync-status-empty">No conflicts or errors.</div>
 	{/if}
 </div>
@@ -613,5 +657,35 @@
 		text-align: center;
 		color: var(--text-faint);
 		padding: 24px 0;
+	}
+
+	.sync-status-held-body {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 4px 0;
+	}
+
+	.sync-status-icon.held {
+		color: var(--color-yellow);
+		flex: 0 0 auto;
+		display: inline-flex;
+		align-self: flex-start;
+		margin-top: 2px;
+	}
+
+	.sync-status-held-text {
+		flex: 1 1 auto;
+		min-width: 0;
+		font-size: var(--font-ui-small);
+		color: var(--text-muted);
+		line-height: var(--line-height-tight);
+	}
+
+	.sync-status-held-review {
+		flex: 0 0 auto;
+		padding: 2px 10px;
+		font-size: var(--font-ui-smaller);
+		cursor: pointer;
 	}
 </style>
