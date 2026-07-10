@@ -173,6 +173,11 @@ export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 // token cannot swallow a genuine user deletion later.
 export const PENDING_DELETE_TTL_MS = 60 * 1000;
 
+// FolderHSM emits a PERSIST_STATE effect (full membership snapshot) on every
+// transition; a bulk operation over N files produces N snapshots of size N.
+// Only the newest matters, so writes coalesce into one per window.
+export const FOLDER_SYNC_PERSIST_WINDOW_MS = 250;
+
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(() => super.notifyListeners(), 100);
@@ -237,6 +242,8 @@ export class SharedFolder extends HasProvider {
 
 
 	private _persistence: IndexeddbPersistence;
+	private _pendingFolderSyncSnapshot: FolderSyncSnapshot | null = null;
+	private _folderSyncPersistTimer: number | null = null;
 	/**
 	 * Vault-facing folder doc under the folder doc split (flag-on). Inherits
 	 * the folder's persistence key, so local history and native tombstones
@@ -2472,15 +2479,42 @@ export class SharedFolder extends HasProvider {
 				this.notifyListeners();
 				return;
 			case "PERSIST_STATE":
-				try {
-					this._persistence.set(
-						"folderSync",
-						JSON.stringify(effect.snapshot),
-					);
-				} catch (e) {
-					// Projection persistence is best-effort.
-				}
+				this.schedulePersistFolderSync(effect.snapshot);
 				return;
+		}
+	}
+
+	/**
+	 * Coalesce folderSync snapshot persistence: hold the newest snapshot and
+	 * write once per window instead of serializing every burst member. The
+	 * projection is write-only at runtime, so the only cost of the window is
+	 * a snapshot that lags by at most FOLDER_SYNC_PERSIST_WINDOW_MS.
+	 */
+	private schedulePersistFolderSync(snapshot: FolderSyncSnapshot): void {
+		this._pendingFolderSyncSnapshot = snapshot;
+		if (this.destroyed) {
+			this.flushPendingFolderSync();
+			return;
+		}
+		if (this._folderSyncPersistTimer !== null) return;
+		this._folderSyncPersistTimer = this.timeProvider.setTimeout(() => {
+			this._folderSyncPersistTimer = null;
+			this.flushPendingFolderSync();
+		}, FOLDER_SYNC_PERSIST_WINDOW_MS);
+	}
+
+	private flushPendingFolderSync(): void {
+		if (this._folderSyncPersistTimer !== null) {
+			this.timeProvider.clearTimeout(this._folderSyncPersistTimer);
+			this._folderSyncPersistTimer = null;
+		}
+		const snapshot = this._pendingFolderSyncSnapshot;
+		this._pendingFolderSyncSnapshot = null;
+		if (!snapshot) return;
+		try {
+			this._persistence.set("folderSync", JSON.stringify(snapshot));
+		} catch (e) {
+			// Projection persistence is best-effort.
 		}
 	}
 
@@ -3890,6 +3924,9 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		// Persistence is torn down below with the ydoc; write the coalesced
+		// folderSync snapshot while it is still alive.
+		this.flushPendingFolderSync();
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
