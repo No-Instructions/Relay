@@ -80,6 +80,7 @@ jobs:
               --image-project="$GCP_PROJECT" \
               --boot-disk-size=20GB \
               --boot-disk-type=pd-standard \
+              --metadata=block-project-ssh-keys=TRUE \
               --tags=relay-e2e 2>&1 >/dev/null); then
               echo "Leased pool p${k} (free slots $(pool_free_slots "$k"); storage slots $(pool_storage_slots "$k"))"
               echo "VM_NAME=$VM" >> "$GITHUB_ENV"
