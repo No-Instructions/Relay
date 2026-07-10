@@ -389,6 +389,8 @@ jobs:
         if: always()
         run: |
           rm -f summary.json metadata.json
+          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
@@ -404,6 +406,7 @@ jobs:
           path: |
             summary.json
             metadata.json
+            suite-output.txt
           if-no-files-found: ignore
 
       - name: Delete VM (releases the pool lease)
