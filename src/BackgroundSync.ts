@@ -340,6 +340,19 @@ export class BackgroundSync extends HasLogging {
 		return item.doc.destroyed || this.cancelledDownloads.has(item.guid);
 	}
 
+	/**
+	 * A deletion landing while a download is queued or in flight makes the
+	 * op moot, not failed. The membership delta is the deletion's trigger,
+	 * so committed-meta absence is the earliest signal; the doc's destroyed
+	 * flag and folder registration lag it — the file can vanish from disk
+	 * mid-op, before doc teardown finishes.
+	 */
+	private downloadTargetDeleted(item: QueueItem): boolean {
+		if (item.doc.destroyed) return true;
+		if (!item.sharedFolder.files.has(item.guid)) return true;
+		return !item.sharedFolder.syncStore.getCommittedMeta(item.doc.path);
+	}
+
 	private shouldSkipDocumentSync(item: Document | Canvas | SyncFile): boolean {
 		return isDocument(item) && item.hsm?.getSyncStatus().status === "conflict";
 	}
@@ -1096,7 +1109,7 @@ export class BackgroundSync extends HasLogging {
 							this.markDownloadTerminal(item, "completed");
 						})
 						.catch((error) => {
-							if (this.isDownloadCancelled(item)) {
+							if (this.isDownloadCancelled(item) || this.downloadTargetDeleted(item)) {
 								item.status = "completed";
 								this.markDownloadTerminal(item, "skipped");
 								this.resolveDownloadCancellation(item.guid);
@@ -1131,7 +1144,7 @@ export class BackgroundSync extends HasLogging {
 							});
 						});
 				} catch (error) {
-					if (this.isDownloadCancelled(item)) {
+					if (this.isDownloadCancelled(item) || this.downloadTargetDeleted(item)) {
 						item.status = "completed";
 						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 						this.markDownloadTerminal(item, "skipped");
