@@ -432,6 +432,16 @@ export class MergeManager {
    */
   private _warmLRU = new Map<string, number>();
 
+  /**
+   * Reference counts of warm leases: guid → count of in-flight background
+   * operations holding the doc's YDocs. While a lease is held, hibernate()
+   * and evictLRU() defer exactly like an in-flight invoke — the pipeline's
+   * working set cannot be destroyed beneath a running upload/download by
+   * the warm timer or wake-queue pressure. Leases are scoped: wake() with
+   * `{ lease: true }` returns the release handle.
+   */
+  private _warmLeases = new Map<string, number>();
+
   /** Whether the wake queue processor is currently running. */
   private _isProcessingWakeQueue = false;
 
@@ -1017,17 +1027,31 @@ export class MergeManager {
    * Drains the hibernation buffer into the HSM immediately.
    * Does NOT connect a provider — the caller (Document.acquireLock) handles that.
    *
+   * With `{ lease: true }` the wake also takes a warm lease and returns its
+   * release handle: until released, hibernate() and LRU eviction defer, so a
+   * background operation's localDoc cannot be destroyed mid-pipeline. The
+   * lease is scoped to the operation — release exactly once when it
+   * resolves. Callers that do not pass the option get no lease (the editor
+   * path is protected by `active` instead).
+   *
    * @param guid - Document GUID
    * @param remoteDoc - The lazily-created remote YDoc to attach
    */
-  wake(guid: string, remoteDoc: Y.Doc): void {
-    if (this.destroyed) return;
+  wake(guid: string, remoteDoc: Y.Doc): void;
+  wake(guid: string, remoteDoc: Y.Doc, options: { lease: true }): () => void;
+  wake(
+    guid: string,
+    remoteDoc: Y.Doc,
+    options?: { lease: true },
+  ): (() => void) | void {
+    const lease = options?.lease ? this.acquireWarmLease(guid) : undefined;
+    if (this.destroyed) return lease;
 
     const doc = this._getDocument(guid);
     const hsm = doc?.hsm;
-    if (!hsm) return;
+    if (!hsm) return lease;
     const currentState = this.getHibernationState(guid);
-    if (currentState === 'active') return;
+    if (currentState === 'active') return lease;
 
     // Recreate localDoc destroyed during hibernation
     hsm.ensureLocalDocForIdle();
@@ -1050,6 +1074,7 @@ export class MergeManager {
     }
     this.resetHibernateTimer(guid);
     this._updateWakeQueueMetrics();
+    return lease;
   }
 
   /**
@@ -1062,6 +1087,14 @@ export class MergeManager {
     const currentState = this.getHibernationState(guid);
     if (currentState === 'hibernated') return;
     if (currentState === 'active') return; // Never hibernate active docs
+
+    // A leased doc has a background operation in flight. Defer like a
+    // running invoke: reschedule instead of destroying the localDoc the
+    // operation is reading.
+    if (this._warmLeases.has(guid)) {
+      this.resetHibernateTimer(guid);
+      return;
+    }
 
     const doc = this._getDocument(guid);
 
@@ -1812,6 +1845,7 @@ export class MergeManager {
     this._wakingDocs.clear();
     this._activeStateLoads.clear();
     this._warmLRU.clear();
+    this._warmLeases.clear();
     this._updateWakeQueueMetrics();
 
     // These callbacks close over SharedFolder and related plugin services.
@@ -1907,12 +1941,41 @@ export class MergeManager {
       const hsm = doc?.hsm;
       // Skip docs with in-flight async work
       if (hsm?.getActiveInvoke()) continue;
+      // Skip docs leased by an in-flight background operation
+      if (this._warmLeases.has(guid)) continue;
       // Skip active docs (shouldn't be in LRU, but guard anyway)
       if (this.getHibernationState(guid) === 'active') continue;
       this.hibernate(guid);
       return true;
     }
     return false;
+  }
+
+  /**
+   * Take a warm lease on a document. Reference-counted; returns an
+   * idempotent release. The last release restarts the normal hibernate
+   * countdown so the doc re-hibernates like any other warm doc.
+   */
+  private acquireWarmLease(guid: string): () => void {
+    if (this.destroyed) return () => {};
+    this._warmLeases.set(guid, (this._warmLeases.get(guid) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (this.destroyed) return;
+      const count = this._warmLeases.get(guid);
+      if (count === undefined) return;
+      if (count > 1) {
+        this._warmLeases.set(guid, count - 1);
+        return;
+      }
+      this._warmLeases.delete(guid);
+      const state = this.getHibernationState(guid);
+      if (state === 'working' || state === 'cached') {
+        this.resetHibernateTimer(guid);
+      }
+    };
   }
 
   /**
