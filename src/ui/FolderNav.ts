@@ -10,6 +10,7 @@ import { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { ConnectionState } from "src/HasProvider";
 import { Document } from "src/Document";
 import Pill from "src/components/Pill.svelte";
+import { sharedFolderGateView } from "src/ui/GatedDeletionView";
 import TextPill from "src/components/TextPill.svelte";
 import UploadPill from "src/components/UploadPill.svelte";
 import { flags, withAnyOf, withFlag } from "src/flagManager";
@@ -178,9 +179,16 @@ class PillDecoration {
 	sharedFolder: SharedFolder;
 	pill: Pill;
 	unsubscribe: Unsubscribe;
+	private iconsEl: HTMLElement | null = null;
+	private onReopenGatedDeletion: ((folder: SharedFolder) => void) | null;
 
-	constructor(el: HTMLElement, sharedFolder: SharedFolder) {
+	constructor(
+		el: HTMLElement,
+		sharedFolder: SharedFolder,
+		onReopenGatedDeletion?: (folder: SharedFolder) => void,
+	) {
 		this.sharedFolder = sharedFolder;
+		this.onReopenGatedDeletion = onReopenGatedDeletion ?? null;
 
 		// clean up failed destroys
 		const stalePills = el.querySelectorAll(".system3-folder-icons");
@@ -201,11 +209,19 @@ class PillDecoration {
 				remote: this.sharedFolder.remote,
 				localOnly: this.sharedFolder.localOnly,
 				enableDraftMode: flags().enableDraftMode,
+				deletionsGated: this.sharedFolder.deletionsGated,
+				pendingDeletions: this.heldDeletionCount(),
 				progress: 0,
 				showProgress: false,
 				syncStatus: "pending",
 			},
 		});
+
+		// The pill is otherwise decorative — clicks fall through to the folder
+		// row. In the gated state it becomes the reopen affordance for the
+		// held-deletion decision, routed through the controller.
+		this.iconsEl = this.el.querySelector<HTMLElement>(".system3-folder-icons");
+		this.iconsEl?.addEventListener("click", this.onPillClick);
 
 		const unsubs: Unsubscribe[] = [];
 		unsubs.push(
@@ -216,6 +232,8 @@ class PillDecoration {
 					remote: this.sharedFolder.remote,
 					localOnly: this.sharedFolder.localOnly,
 					enableDraftMode: flags().enableDraftMode,
+					deletionsGated: this.sharedFolder.deletionsGated,
+					pendingDeletions: this.heldDeletionCount(),
 				});
 			}),
 		);
@@ -235,7 +253,26 @@ class PillDecoration {
 		this.unsubscribe = () => unsubs.forEach((u) => u());
 	}
 
+	/** The same deduped file count the decision modal shows. */
+	private heldDeletionCount(): number {
+		if (!this.sharedFolder.deletionsGated) {
+			return 0;
+		}
+		return sharedFolderGateView(this.sharedFolder).heldPaths().length;
+	}
+
+	private onPillClick = (evt: MouseEvent) => {
+		if (!this.onReopenGatedDeletion || !this.sharedFolder.deletionsGated) {
+			return;
+		}
+		evt.preventDefault();
+		evt.stopPropagation();
+		this.onReopenGatedDeletion(this.sharedFolder);
+	};
+
 	destroy() {
+		this.iconsEl?.removeEventListener("click", this.onPillClick);
+		this.iconsEl = null;
 		this.pill.$destroy();
 		this.unsubscribe();
 		this.el.removeClass("system3-pill");
@@ -243,6 +280,12 @@ class PillDecoration {
 }
 
 class FolderPillVisitor extends BaseVisitor<PillDecoration> {
+	constructor(
+		private onReopenGatedDeletion?: (folder: SharedFolder) => void,
+	) {
+		super();
+	}
+
 	visitFolder(
 		folder: TFolder,
 		item: FolderItem,
@@ -250,7 +293,10 @@ class FolderPillVisitor extends BaseVisitor<PillDecoration> {
 		sharedFolder?: SharedFolder,
 	): PillDecoration | null {
 		if (sharedFolder && sharedFolder.path === folder.path) {
-			return storage || new PillDecoration(item.selfEl, sharedFolder);
+			return (
+				storage ||
+				new PillDecoration(item.selfEl, sharedFolder, this.onReopenGatedDeletion)
+			);
 		}
 		if (storage) {
 			storage.destroy();
@@ -790,16 +836,20 @@ export class FolderNavigationDecorations {
 	 */
 	private subscribedFolderFsets = new WeakSet<SharedFolder>();
 
+	private onReopenGatedDeletion: ((folder: SharedFolder) => void) | null;
+
 	constructor(
 		vault: Vault,
 		workspace: Workspace,
 		sharedFolders: SharedFolders,
 		backgroundSync: BackgroundSync,
+		onReopenGatedDeletion?: (folder: SharedFolder) => void,
 	) {
 		this.vault = vault;
 		this.workspace = workspace;
 		this.sharedFolders = sharedFolders;
 		this.backgroundSync = backgroundSync;
+		this.onReopenGatedDeletion = onReopenGatedDeletion ?? null;
 		this.treeState = new Map<WorkspaceLeaf, FileExplorerWalker>();
 		this.workspace.onLayoutReady(() => {
 			this.layoutReady = true;
@@ -886,7 +936,9 @@ export class FolderNavigationDecorations {
 	makeVisitors(): FileSystemVisitor<Destroyable>[] {
 		const visitors = [];
 		visitors.push(new FolderBarVisitor());
-		visitors.push(new FolderPillVisitor());
+		visitors.push(
+			new FolderPillVisitor(this.onReopenGatedDeletion ?? undefined),
+		);
 		withFlag(flag.enableDocumentStatus, () => {
 			visitors.push(new FileStatusVisitor());
 			visitors.push(
@@ -983,6 +1035,7 @@ export class FolderNavigationDecorations {
 		this.offLayoutChange();
 		this.offLayoutChange = null as any;
 
+		this.onReopenGatedDeletion = null;
 		this.vault = null as any;
 		this.workspace = null as any;
 		this.sharedFolders = null as any;
