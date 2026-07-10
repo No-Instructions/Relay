@@ -49,6 +49,9 @@ import {
 	pathWasDeleted,
 	type FolderEffect,
 	type FolderSyncSnapshot,
+	type DeletionGateSnapshot,
+	type DeleteCollectorOptions,
+	type GateResolution,
 	type HeldDelete,
 	type SerializedCollectorState,
 } from "./folder-hsm";
@@ -111,6 +114,11 @@ export interface SharedFolderSettings {
 	 */
 	suspended?: boolean;
 	suspendedAt?: number;
+}
+
+/** Host policy hooks that do not belong in replicated folder settings. */
+export interface SharedFolderOptions {
+	deleteCollector?: DeleteCollectorOptions;
 }
 
 interface Operation {
@@ -316,6 +324,7 @@ export class SharedFolder extends HasProvider {
 		relayId?: string,
 		authoritative: boolean = false,
 		remote?: RemoteSharedFolder,
+		options: SharedFolderOptions = {},
 	) {
 		const folderRelayId = remote?.relay.guid ?? relayId;
 		const s3rn = folderRelayId
@@ -517,7 +526,7 @@ export class SharedFolder extends HasProvider {
 					onReplicated: () => this.notifyListeners(),
 					onGated: (deletes) => {
 						this.log(
-							`[DeleteCollector] gated ${deletes.length} deletions pending send/restore`,
+							`[DeleteCollector] gated ${new Set(deletes.map((deleted) => deleted.key)).size} deletions pending send/restore`,
 						);
 						this.notifyListeners();
 					},
@@ -530,6 +539,7 @@ export class SharedFolder extends HasProvider {
 						this.notifyListeners();
 					},
 				},
+				options.deleteCollector,
 			);
 			// Retention: captured deletion bursts and deferred doc teardown
 			// expire together.
@@ -1842,19 +1852,24 @@ export class SharedFolder extends HasProvider {
 		return this.deleteCollector?.heldDeletes() ?? [];
 	}
 
+	/** Stable, logical-path projection of the current gated burst. */
+	deletionGate(): DeletionGateSnapshot | null {
+		return this.deleteCollector?.gateSnapshot() ?? null;
+	}
+
 	/** Whether the outbound delete gate is awaiting a send/restore decision. */
 	get deletionsGated(): boolean {
 		return this.deleteCollector?.currentPhase === "gated";
 	}
 
 	/** Explicitly replicate a gated deletion burst. */
-	sendHeldDeletions(): void {
-		this.deleteCollector?.send();
+	sendHeldDeletions(token: string): GateResolution {
+		return this.deleteCollector?.send(token) ?? "not-gated";
 	}
 
 	/** Explicitly discard a gated deletion burst and restore membership. */
-	restoreHeldDeletions(): void {
-		this.deleteCollector?.restore();
+	restoreHeldDeletions(token: string): GateResolution {
+		return this.deleteCollector?.restore(token) ?? "not-gated";
 	}
 
 	/**

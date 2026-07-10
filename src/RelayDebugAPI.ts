@@ -604,20 +604,26 @@ export class RelayDebugAPI {
       getFolderDeletionGate: (path: string) => {
         const folder = this.resolveFolder(path);
         if (!folder) return null;
+        const gate = folder.deletionGate?.() ?? null;
         return {
-          gated: folder.deletionsGated ?? false,
-          held: folder.heldDeletions?.() ?? [],
+          gated: gate !== null,
+          token: gate?.token ?? null,
+          gatedAt: gate?.gatedAt ?? null,
+          paths: gate?.paths ?? [],
+          held: gate?.deletes ?? [],
         };
       },
-      sendFolderHeldDeletions: (path: string) => {
+      sendFolderHeldDeletions: (path: string, token?: string) => {
         const folder = this.resolveFolder(path);
-        folder?.sendHeldDeletions?.();
-        return folder?.deletionsGated ?? null;
+        if (!folder) return null;
+        if (!token) return "stale";
+        return folder.sendHeldDeletions?.(token) ?? "not-gated";
       },
-      restoreFolderHeldDeletions: (path: string) => {
+      restoreFolderHeldDeletions: (path: string, token?: string) => {
         const folder = this.resolveFolder(path);
-        folder?.restoreHeldDeletions?.();
-        return folder?.deletionsGated ?? null;
+        if (!folder) return null;
+        if (!token) return "stale";
+        return folder.restoreHeldDeletions?.(token) ?? "not-gated";
       },
       getFolderDeletionHistory: (path: string) => {
         const folder = this.resolveFolder(path);
