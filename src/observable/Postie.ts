@@ -237,6 +237,25 @@ export class PostOffice {
 		});
 	}
 
+	/**
+	 * Continuation for a pass that ended with mail still pending. This must
+	 * be a macrotask, never a microtask: a notification cycle that produces
+	 * mail on every delivery would otherwise chain flush → microtask →
+	 * flush forever, and the browser drains microtasks before timers,
+	 * rendering, or CDP — the event loop never runs anything else again
+	 * (timers dead, log flushing dead, evals pending, process alive). With
+	 * a macrotask yield the same cycle degrades to a visible CPU bug that
+	 * watchdogs, logs, and the debugger can still observe.
+	 */
+	private scheduleContinuation(): void {
+		if (this.flushScheduled) return;
+		this.flushScheduled = true;
+		this.timeProvider.setTimeout(() => {
+			this.flushScheduled = false;
+			this.runDelivery();
+		}, 0);
+	}
+
 	private runDelivery(): void {
 		// Guard against firing on a torn-down singleton (a queued microtask or
 		// timer can outlive `destroy()`).
@@ -256,11 +275,11 @@ export class PostOffice {
 			this.isDelivering = false;
 			if (this.hasPendingMail()) {
 				// The per-flush bound was hit (a large or cyclic cascade — an
-				// ordinary re-entrant emit drains in the loop above). Re-poke on a
-				// microtask, never a timer: delivery must stay independent of timer
-				// throttling. The bound keeps each synchronous chunk finite.
+				// ordinary re-entrant emit drains in the loop above). Continue on
+				// a macrotask so a cycle can never starve the event loop; the
+				// timer-throttling cost is bounded (10k deliveries per chunk).
 				this.windowStartedAt = this.timeProvider.now();
-				this.scheduleFlush();
+				this.scheduleContinuation();
 			} else {
 				this.windowStartedAt = null;
 			}

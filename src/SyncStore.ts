@@ -347,6 +347,13 @@ export class SyncStore extends Observable<SyncStore> {
 	onMapDelta: ((delta: FolderMapDelta, origin: unknown) => void) | null =
 		null;
 
+	/**
+	 * Host-supplied predicate marking transaction origins that are the
+	 * host's own writes. Deltas from these origins never notify listeners:
+	 * the host already knows about work it did itself.
+	 */
+	isLocalOrigin: ((origin: unknown) => boolean) | null = null;
+
 	processFolderOperation(event: Y.YMapEvent<Meta>) {
 		const deletedFolders = new Map<string, string>();
 		const addedFolders = new Map<string, string>();
@@ -436,6 +443,11 @@ export class SyncStore extends Observable<SyncStore> {
 			if (this.onMapDelta) {
 				this.onMapDelta(extractMapDelta(event, this.meta), origin);
 			}
+			// Listener notification is for remote deltas. The host's own
+			// writes (its syncFileTree transactions, persistence loads) must
+			// not echo back into the host, or every tree-sync pass schedules
+			// another pass through the notification system.
+			if (this.isLocalOrigin?.(origin)) return;
 			this.notifyListeners();
 		};
 		const legacyListener = async (event: Y.YMapEvent<string>) => {

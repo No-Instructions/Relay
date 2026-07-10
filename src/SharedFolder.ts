@@ -318,6 +318,11 @@ export class SharedFolder extends HasProvider {
 			this.pendingUpload,
 			this.syncSettingsManager,
 		);
+		// Same origin set the membership feed below uses: without it, every
+		// write syncFileTree makes re-notifies the listener that runs
+		// syncFileTree, and each pass schedules the next.
+		this.syncStore.isLocalOrigin = (origin) =>
+			origin === this || origin === this._persistence;
 		this.syncStore.on(async () => {
 			await this.syncFileTree();
 		});
@@ -351,20 +356,21 @@ export class SharedFolder extends HasProvider {
 					return;
 				}
 				if (this.storageQuota !== quota.quota) {
-					if (
-						this.storageQuota !== undefined &&
-						quota.quota !== undefined &&
-						quota.quota > this.storageQuota
-					) {
-						this.debug(
-							"storage quota increase",
-							this.storageQuota,
-							quota.quota,
-						);
-						await this.netSync();
-					}
-					this.debug("storage quota update", this.storageQuota, quota.quota);
+					const previous = this.storageQuota;
+					// Record the new quota before any await: every upload bumps
+					// usage and re-delivers this handler, so a guard left stale
+					// behind a long netSync turns one quota increase into an
+					// unbounded stream of concurrent netSyncs.
 					this.storageQuota = quota.quota;
+					this.debug("storage quota update", previous, quota.quota);
+					if (
+						previous !== undefined &&
+						quota.quota !== undefined &&
+						quota.quota > previous
+					) {
+						this.debug("storage quota increase", previous, quota.quota);
+						await this.coalescedNetSync();
+					}
 				}
 			}),
 		);
@@ -1297,6 +1303,21 @@ export class SharedFolder extends HasProvider {
 			if (isDestroyedError(error)) return;
 			throw error;
 		}
+	}
+
+	private _netSyncInFlight: Promise<void> | null = null;
+
+	/**
+	 * Event-driven callers share one in-flight netSync. A burst of triggers
+	 * (e.g. storage-quota updates during a bulk upload) collapses to a single
+	 * pass plus at most one trailing pass for events that arrived mid-run.
+	 */
+	private coalescedNetSync(): Promise<void> {
+		if (this._netSyncInFlight) return this._netSyncInFlight;
+		this._netSyncInFlight = this.netSync().finally(() => {
+			this._netSyncInFlight = null;
+		});
+		return this._netSyncInFlight;
 	}
 
 	async resync(): Promise<void> {

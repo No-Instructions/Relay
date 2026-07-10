@@ -18,6 +18,7 @@ import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } f
 import { getHSMBootId, getHSMBootEntries, flushHSMRecording, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
+import { PostOffice } from './observable/Postie';
 import {
   buildFolderSyncStatusModel,
   type ActionableSyncFile,
@@ -355,6 +356,8 @@ export interface RelayDebugGlobal {
   // -- Promise tracking --
   getPendingPromises: () => { label: string; ageMs: number; owner?: string }[];
   getRecentPromises: () => { label: string; created: number; settledAt: number; state: "fulfilled" | "rejected"; owner?: string }[];
+  /** Last delivered PostOffice mail (sender type, recipient origin, tx, ts) — readable from a paused renderer via Debugger.evaluateOnCallFrame */
+  getPostieMailLog: () => { t: number; s: string; r: string; tx: number | null }[];
 
   // -- Relay server CRUD --
   createRelay: (name: string) => Promise<{ guid: string; name: string }>;
@@ -524,6 +527,13 @@ export class RelayDebugAPI {
       clearLca: async (path) => this.clearLca(path),
       getPendingPromises: () => this.plugin?.promises?.getPending() ?? [],
       getRecentPromises: () => getRecentPromises(),
+      getPostieMailLog: () =>
+        (PostOffice.peekInstance()?.getDeliveredMailLog() ?? []).map((m) => ({
+          t: m.timestamp,
+          s: m.sender?.constructor?.name ?? "?",
+          r: m.recipientOrigin ?? "?",
+          tx: m.transactionId ?? null,
+        })),
 
       createRelay: async (name) => {
         if (!this.plugin.relayManager) throw new Error('RelayManager not available');
