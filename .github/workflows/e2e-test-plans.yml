@@ -126,7 +126,9 @@ jobs:
           EOF
 
           git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
-          git -C ~/relay-harness checkout --detach "${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C ~/relay-harness checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C ~/relay-harness checkout --detach "$HREF"
 
       - name: Ensure VM is running
         if: steps.select-tests.outputs.should_run == 'true'
@@ -338,7 +340,8 @@ jobs:
           git fetch origin --prune
           git checkout -- .
           git clean -fd
-          git checkout --detach "$HARNESS_REF"
+          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
+            || git checkout --detach "$HARNESS_REF"
           echo "Relay harness checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
 
