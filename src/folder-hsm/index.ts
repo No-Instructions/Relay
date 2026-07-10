@@ -11,6 +11,10 @@ export {
 } from "./bridge";
 export {
 	DeleteCollector,
+	type DeletionGateSnapshot,
+	type DeleteCollectorOptions,
+	type DeletePolicyMode,
+	type GateResolution,
 	type HeldDelete,
 	type SerializedCollectorState,
 } from "./delete-collector";
