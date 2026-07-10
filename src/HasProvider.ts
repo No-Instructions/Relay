@@ -37,7 +37,6 @@ function makeProvider(
 			connect: false,
 			params: params,
 			disableBc: true,
-			maxConnectionErrors: 3,
 			readOnly: clientToken.authorization === "read-only",
 			timeProvider,
 		},
