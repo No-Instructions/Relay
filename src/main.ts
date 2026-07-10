@@ -28,6 +28,9 @@ import {
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
+import { GatedDeletionController } from "./ui/GatedDeletionController";
+import { GatedDeletionModal } from "./ui/GatedDeletionModal";
+import { sharedFolderGateView } from "./ui/GatedDeletionView";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
 import { MetadataRepairModal } from "./ui/MetadataRepairModal";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
@@ -148,6 +151,7 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
+	private gatedDeletions: GatedDeletionController | null = null;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
@@ -835,6 +839,8 @@ export default class Live extends Plugin {
 				new SyncStatusView(leaf, {
 					sharedFolders: this.sharedFolders,
 					timeProvider: this.timeProvider,
+					onReviewHeldDeletions: (folder) =>
+						this.gatedDeletions?.present(sharedFolderGateView(folder)),
 				}),
 		);
 
@@ -1259,11 +1265,53 @@ export default class Live extends Plugin {
 	}
 
 	setup() {
+		this.gatedDeletions = new GatedDeletionController({
+			openModal: (view, actions) =>
+				new GatedDeletionModal(this.app, view, actions).openHandle(),
+			notifyDisconnected: (view) => {
+				new Notice(
+					`"${view.name}" is disconnected. Reconnect to decide on its held deletions.`,
+					8000,
+				);
+			},
+		});
+		this.register(() => {
+			this.gatedDeletions?.destroy();
+			this.gatedDeletions = null;
+		});
+
+		// Watch each shared folder for its outbound delete gate closing on a
+		// held burst. A false→true edge opens the decision modal — for a
+		// fresh burst and for a burst rehydrated at load — while the gate
+		// staying closed after a dismissal never reopens it on its own.
+		const watchedGates = new WeakSet<SharedFolder>();
+		const lastGated = new WeakMap<SharedFolder, boolean>();
+		const watchFolderGate = (folder: SharedFolder) => {
+			if (watchedGates.has(folder)) return;
+			watchedGates.add(folder);
+			const view = sharedFolderGateView(folder);
+			const check = () => {
+				const gated = folder.deletionsGated;
+				const wasGated = lastGated.get(folder) ?? false;
+				lastGated.set(folder, gated);
+				if (gated && !wasGated) this.gatedDeletions?.present(view);
+			};
+			folder.onDestroy(folder.subscribe({}, check));
+			check();
+		};
+		this.register(
+			this.sharedFolders.subscribe(() => {
+				this.sharedFolders.forEach(watchFolderGate);
+			}),
+		);
+		this.sharedFolders.forEach(watchFolderGate);
+
 		this.folderNavDecorations = new FolderNavigationDecorations(
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders,
 			this.backgroundSync,
+			(folder) => this.gatedDeletions?.present(sharedFolderGateView(folder)),
 		);
 		this.folderNavDecorations.refresh();
 

@@ -362,3 +362,75 @@
 .is-phone .modal .setting-item-control button.system3-button {
 	width: auto !important;
 }
+
+/* Held-deletion decision modal: a fixed-width confirmation dialog whose
+   size does not depend on the burst — the path list sits behind a
+   collapsed disclosure and scrolls within a fixed cap. */
+.system3-gated-deletions-modal {
+	width: min(30rem, 90vw);
+}
+
+/* The title must clear the modal's absolutely-positioned close control,
+   and a folder name with no break points must still wrap. */
+.system3-gated-deletions-modal .modal-title {
+	padding-inline-end: var(--size-4-8);
+	overflow-wrap: anywhere;
+}
+
+.system3-gated-deletions-consequences {
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+}
+
+.system3-gated-deletions-details {
+	margin: var(--size-4-3) 0 0;
+}
+
+.system3-gated-deletions-details > summary {
+	cursor: pointer;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	user-select: none;
+}
+
+.system3-gated-deletions-details > summary:focus-visible {
+	outline: 2px solid var(--interactive-accent);
+	outline-offset: 2px;
+	border-radius: var(--radius-s);
+}
+
+.system3-gated-deletions-list {
+	max-height: 10em;
+	overflow-y: auto;
+	margin: var(--size-4-2) 0 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	background: var(--background-primary);
+}
+
+/* Rows read as a table: zebra striping, cell padding, and full vault
+   paths with the directory muted so the filename stays scannable. */
+.system3-gated-deletions-path {
+	display: flex;
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+	line-height: 1.5;
+	padding: var(--size-2-2) var(--size-4-2);
+	white-space: nowrap;
+}
+
+.system3-gated-deletions-path:nth-child(even) {
+	background: var(--background-secondary);
+}
+
+.system3-gated-deletions-path-dir {
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	flex: 0 1 auto;
+}
+
+.system3-gated-deletions-path-name {
+	color: var(--text-normal);
+	flex: none;
+}
