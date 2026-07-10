@@ -28,6 +28,8 @@ interface SyncStatusViewBindingOptions {
 export interface SyncStatusViewContext {
 	sharedFolders: SharedFolders;
 	timeProvider: TimeProvider;
+	/** Reopen the gated-deletion decision modal for a folder. */
+	onReviewHeldDeletions?: (folder: SharedFolder) => void;
 }
 
 export class SyncStatusView extends ItemView {
@@ -167,6 +169,7 @@ export class SyncStatusView extends ItemView {
 	}
 
 	private folderStatusIcon(folder: SharedFolder): string {
+		if (folder.deletionsGated) return "trash-2";
 		return iconForFolderSyncState(
 			folder.backgroundSync.getFolderSyncSnapshot(folder).visibleState,
 		);
@@ -194,16 +197,20 @@ export class SyncStatusView extends ItemView {
 			cls: "system3-sync-status-content",
 		});
 
+		const boundFolder = this.binding.sharedFolder;
 		this.component = new SyncStatusModalContent({
 			target: contentEl,
 			props: {
-				sharedFolder: this.binding.sharedFolder,
+				sharedFolder: boundFolder,
 				app: this.app,
 				timeProvider: this.binding.timeProvider,
 				activityStore: getSyncStatusActivityStore(
-					this.binding.sharedFolder,
+					boundFolder,
 					this.binding.timeProvider,
 				),
+				onReviewHeldDeletions: this.context.onReviewHeldDeletions
+					? () => this.context.onReviewHeldDeletions?.(boundFolder)
+					: null,
 			},
 		});
 	}
@@ -248,6 +255,7 @@ export class SyncStatusView extends ItemView {
 				remote: folder.remote,
 				localOnly: folder.localOnly,
 				enableDraftMode: flags().enableDraftMode,
+				deletionsGated: folder.deletionsGated,
 				progress: 0,
 				showProgress: false,
 				syncStatus: "pending",
@@ -262,6 +270,7 @@ export class SyncStatusView extends ItemView {
 					remote: folder.remote,
 					localOnly: folder.localOnly,
 					enableDraftMode: flags().enableDraftMode,
+					deletionsGated: folder.deletionsGated,
 				});
 			}),
 		);

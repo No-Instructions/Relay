@@ -20,6 +20,7 @@
  * later send cannot delete a key the user has since re-created.
  */
 
+import { uuidv4 } from "lib0/random";
 import type { TimeProvider } from "../TimeProvider";
 import type { FolderDocBridge, FolderMapName, OutboundDelete } from "./bridge";
 
@@ -31,9 +32,21 @@ export type BurstClassification = "detach" | "replicate" | "gate";
 
 export type CollectorPhase = "idle" | "collecting" | "gated";
 
+export type DeletePolicyMode = "gate" | "replicate";
+
+export type GateResolution = "resolved" | "not-gated" | "stale";
+
 export interface HeldDelete {
 	mapName: FolderMapName;
 	key: string;
+}
+
+/** Stable, display-ready view of one version of a gated burst. */
+export interface DeletionGateSnapshot {
+	token: string;
+	gatedAt: number;
+	paths: string[];
+	deletes: HeldDelete[];
 }
 
 /** Persistable collector state. Only a gated burst survives restart. */
@@ -41,6 +54,10 @@ export interface SerializedCollectorState {
 	phase: "gated";
 	deletes: HeldDelete[];
 	gatedAt: number;
+	/** Opaque identity of this gated burst. */
+	gateId?: string;
+	/** Increments whenever the live gated burst gains or loses a map key. */
+	version?: number;
 }
 
 export interface DeleteCollectorCallbacks {
@@ -63,6 +80,8 @@ export interface DeleteCollectorCallbacks {
 }
 
 export interface DeleteCollectorOptions {
+	/** Gate anomalous bursts, or replicate every non-detach burst. */
+	mode?: DeletePolicyMode;
 	quietWindowMs?: number;
 	thresholdFraction?: number;
 	thresholdFloor?: number;
@@ -72,13 +91,20 @@ function refKey(mapName: FolderMapName, key: string): string {
 	return `${mapName}\u0000${key}`;
 }
 
+function logicalPaths(deletes: Iterable<HeldDelete>): string[] {
+	return [...new Set([...deletes].map((deleted) => deleted.key))].sort();
+}
+
 export class DeleteCollector {
 	private held = new Map<string, HeldDelete>();
 	private phase: CollectorPhase = "idle";
 	private rootDeleted = false;
 	private timer: number | null = null;
 	private gatedAt: number | null = null;
+	private gateId: string | null = null;
+	private gateVersion = 0;
 
+	private readonly mode: DeletePolicyMode;
 	private readonly quietWindowMs: number;
 	private readonly thresholdFraction: number;
 	private readonly thresholdFloor: number;
@@ -89,6 +115,7 @@ export class DeleteCollector {
 		private readonly callbacks: DeleteCollectorCallbacks,
 		opts: DeleteCollectorOptions = {},
 	) {
+		this.mode = opts.mode ?? "gate";
 		this.quietWindowMs = opts.quietWindowMs ?? DELETE_COLLECTOR_QUIET_MS;
 		this.thresholdFraction =
 			opts.thresholdFraction ?? DELETE_COLLECTOR_THRESHOLD_FRACTION;
@@ -106,6 +133,23 @@ export class DeleteCollector {
 		}));
 	}
 
+	/** One logical path can have membership keys in both replicated maps. */
+	heldPaths(): string[] {
+		return logicalPaths(this.held.values());
+	}
+
+	/** Current decision token and logical paths, or null outside the gate. */
+	gateSnapshot(): DeletionGateSnapshot | null {
+		if (this.phase !== "gated" || this.gatedAt === null || this.gateId === null)
+			return null;
+		return {
+			token: `${this.gateId}:${this.gateVersion}`,
+			gatedAt: this.gatedAt,
+			paths: this.heldPaths(),
+			deletes: this.heldDeletes(),
+		};
+	}
+
 	/** Bridge option: whether inbound/reconcile should skip this key. */
 	isHeld = (mapName: FolderMapName, key: string): boolean => {
 		return this.held.has(refKey(mapName, key));
@@ -114,6 +158,7 @@ export class DeleteCollector {
 	/** Bridge option: outbound deletions enter the collector here. */
 	collect = (deletes: OutboundDelete[]): void => {
 		if (deletes.length === 0) return;
+		const before = this.held.size;
 		for (const d of deletes) {
 			this.held.set(refKey(d.mapName, d.key), {
 				mapName: d.mapName,
@@ -124,6 +169,7 @@ export class DeleteCollector {
 		// A gated folder absorbs further deletions into the gated burst
 		// without restarting evaluation; the gate only resolves explicitly.
 		if (this.phase === "gated") {
+			if (this.held.size !== before) this.gateVersion++;
 			this.callbacks.persist(this.serialize());
 			return;
 		}
@@ -141,11 +187,10 @@ export class DeleteCollector {
 		if (!changed) return;
 		if (this.held.size === 0) {
 			const wasGated = this.phase === "gated";
-			this.phase = "idle";
-			this.gatedAt = null;
-			this.clearTimer();
+			this.reset();
 			if (wasGated) this.callbacks.persist(null);
 		} else if (this.phase === "gated") {
+			this.gateVersion++;
 			this.callbacks.persist(this.serialize());
 		}
 	};
@@ -168,23 +213,27 @@ export class DeleteCollector {
 		this.resetTimer();
 	}
 
-	/** Explicitly replicate a gated burst. */
-	send(): void {
-		if (this.phase !== "gated") return;
+	/** Explicitly replicate a gated burst, rejecting a stale reviewed token. */
+	send(token: string): GateResolution {
+		if (this.phase !== "gated") return "not-gated";
+		if (token !== this.gateSnapshot()?.token) return "stale";
 		const deletes = this.heldDeletes();
 		this.bridge.replicateDeletes(deletes);
 		this.reset();
 		this.callbacks.persist(null);
 		this.callbacks.onReplicated(deletes);
+		return "resolved";
 	}
 
-	/** Explicitly discard a gated burst. */
-	restore(): void {
-		if (this.phase !== "gated") return;
+	/** Explicitly discard a gated burst, rejecting a stale reviewed token. */
+	restore(token: string): GateResolution {
+		if (this.phase !== "gated") return "not-gated";
+		if (token !== this.gateSnapshot()?.token) return "stale";
 		const deletes = this.heldDeletes();
 		this.reset();
 		this.callbacks.persist(null);
 		this.callbacks.onRestored(deletes);
+		return "resolved";
 	}
 
 	/** Rehydrate a persisted gated burst on folder load. */
@@ -195,6 +244,8 @@ export class DeleteCollector {
 		);
 		this.phase = "gated";
 		this.gatedAt = state.gatedAt;
+		this.gateId = state.gateId ?? `legacy-${state.gatedAt}`;
+		this.gateVersion = state.version ?? 1;
 	}
 
 	serialize(): SerializedCollectorState | null {
@@ -203,6 +254,8 @@ export class DeleteCollector {
 			phase: "gated",
 			deletes: this.heldDeletes(),
 			gatedAt: this.gatedAt ?? 0,
+			gateId: this.gateId ?? undefined,
+			version: this.gateVersion,
 		};
 	}
 
@@ -244,13 +297,16 @@ export class DeleteCollector {
 			this.thresholdFraction * this.callbacks.membershipSize(),
 			this.thresholdFloor,
 		);
-		if (deletes.length <= threshold) {
+		const logicalDeleteCount = logicalPaths(deletes).length;
+		if (this.mode === "replicate" || logicalDeleteCount <= threshold) {
 			this.bridge.replicateDeletes(deletes);
 			this.reset();
 			this.callbacks.onReplicated(deletes);
 		} else {
 			this.phase = "gated";
 			this.gatedAt = this.timeProvider.now();
+			this.gateId = uuidv4();
+			this.gateVersion = 1;
 			this.callbacks.persist(this.serialize());
 			this.callbacks.onGated(deletes);
 		}
@@ -268,6 +324,8 @@ export class DeleteCollector {
 		this.phase = "idle";
 		this.rootDeleted = false;
 		this.gatedAt = null;
+		this.gateId = null;
+		this.gateVersion = 0;
 		this.clearTimer();
 	}
 }
