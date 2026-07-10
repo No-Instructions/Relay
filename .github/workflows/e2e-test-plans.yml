@@ -369,6 +369,7 @@ jobs:
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
           export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
+          export RELAY_SKIP_METRICS_PLUGIN=1
           cd ~/relay-harness
 
           TEST_EXIT=0
