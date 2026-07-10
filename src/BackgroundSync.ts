@@ -2225,10 +2225,14 @@ export class BackgroundSync extends HasLogging {
 		const hsm = doc.hsm;
 		if (!hsm || hsm.state.lca || hsm.isActive()) return;
 
+		let releaseLease: () => void = () => {};
 		try {
 			const mergeManager = doc.sharedFolder.mergeManager;
 			if (mergeManager?.getHibernationState(doc.guid) === "hibernated") {
-				mergeManager.wake(doc.guid, doc.ensureRemoteDoc());
+				releaseLease =
+					mergeManager.wake(doc.guid, doc.ensureRemoteDoc(), {
+						lease: true,
+					}) ?? releaseLease;
 				await hsm.awaitPersistenceReady();
 			}
 
@@ -2251,6 +2255,8 @@ export class BackgroundSync extends HasLogging {
 				e,
 			);
 			throw e;
+		} finally {
+			releaseLease();
 		}
 	}
 
@@ -2286,12 +2292,20 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private async syncDocumentUpload(doc: Document | Canvas): Promise<void> {
-		if (isDocument(doc) && doc.hsm) {
-			await this.prepareDocumentUpload(doc);
-		}
-		await this.syncDocument(doc);
-		if (isDocument(doc) && doc.hsm) {
-			this.assertUploadedDocumentHasRemoteContent(doc);
+		// The lease from upload preparation must survive the websocket sync
+		// and the final content assert: hibernation mid-upload detaches the
+		// remoteDoc, which surfaces as an empty remote after preparation.
+		let releaseLease: () => void = () => {};
+		try {
+			if (isDocument(doc) && doc.hsm) {
+				releaseLease = await this.prepareDocumentUpload(doc);
+			}
+			await this.syncDocument(doc);
+			if (isDocument(doc) && doc.hsm) {
+				this.assertUploadedDocumentHasRemoteContent(doc);
+			}
+		} finally {
+			releaseLease();
 		}
 	}
 
@@ -2338,55 +2352,79 @@ export class BackgroundSync extends HasLogging {
 		const remoteDoc = doc.ensureRemoteDoc();
 		Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
 		const mergeManager = doc.sharedFolder.mergeManager;
+		let releaseLease: () => void = () => {};
 		if (mergeManager) {
-			mergeManager.wake(doc.guid, remoteDoc);
+			releaseLease =
+				mergeManager.wake(doc.guid, remoteDoc, { lease: true }) ??
+				releaseLease;
 		} else {
 			hsm.setRemoteDoc(remoteDoc);
 		}
-		const diskState = await doc.readDiskContent();
-		const settled = await hsm.bootstrapLCAFromDisk(diskState);
-		if (!settled && hsm.getSyncStatus().status === "pending") {
-			if (!hsm.hasPersistenceUserData()) {
+		try {
+			const diskState = await doc.readDiskContent();
+			const settled = await hsm.bootstrapLCAFromDisk(diskState);
+			if (!settled && hsm.getSyncStatus().status === "pending") {
+				if (!hsm.hasPersistenceUserData()) {
+					this.debug(
+						`[lca-backfill] deferred for ${doc.path}: awaiting local enrollment`,
+					);
+					return;
+				}
 				this.debug(
-					`[lca-backfill] deferred for ${doc.path}: awaiting local enrollment`,
+					`[lca-backfill] deferred for ${doc.path}: local or remote state is not ready`,
 				);
-				return;
 			}
-			this.debug(
-				`[lca-backfill] deferred for ${doc.path}: local or remote state is not ready`,
-			);
+		} finally {
+			releaseLease();
 		}
 	}
 
-	private async prepareDocumentUpload(doc: Document): Promise<void> {
+	/**
+	 * Wake the doc and encode its localDoc into the remoteDoc for upload.
+	 * Returns the warm-lease release; the caller holds it until the upload
+	 * resolves so hibernation cannot tear the doc down mid-pipeline.
+	 */
+	private async prepareDocumentUpload(doc: Document): Promise<() => void> {
 		const hsm = doc.hsm;
-		if (!hsm) return;
+		if (!hsm) return () => {};
 		if (hsm.hasFork()) {
 			throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
 		}
 
 		const remoteDoc = doc.ensureRemoteDoc();
 		const mergeManager = doc.sharedFolder.mergeManager;
+		let releaseLease: () => void = () => {};
 		if (!doc.userLock && !mergeManager?.isActive(doc.guid)) {
-			mergeManager?.wake(doc.guid, remoteDoc);
+			if (mergeManager) {
+				releaseLease =
+					mergeManager.wake(doc.guid, remoteDoc, {
+						lease: true,
+					}) ?? releaseLease;
+			}
 		} else {
 			hsm.setRemoteDoc(remoteDoc);
 		}
-		await hsm.awaitPersistenceReady();
+		try {
+			await hsm.awaitPersistenceReady();
 
-		if (hsm.hasFork()) {
-			throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
-		}
-		const localDoc = hsm.getLocalDoc();
-		if (!localDoc) {
-			throw new RetryableProviderSyncError(
-				`Local document is not ready for upload: ${this.fileName(doc.path)}`,
-			);
-		}
+			if (hsm.hasFork()) {
+				throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
+			}
+			const localDoc = hsm.getLocalDoc();
+			if (!localDoc) {
+				throw new RetryableProviderSyncError(
+					`Local document is not ready for upload: ${this.fileName(doc.path)}`,
+				);
+			}
 
-		Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
-		hsm.setRemoteDoc(remoteDoc);
-		this.assertUploadedDocumentHasRemoteContent(doc);
+			Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
+			hsm.setRemoteDoc(remoteDoc);
+			this.assertUploadedDocumentHasRemoteContent(doc);
+			return releaseLease;
+		} catch (e) {
+			releaseLease();
+			throw e;
+		}
 	}
 
 	private assertUploadedDocumentHasRemoteContent(doc: Document): void {
