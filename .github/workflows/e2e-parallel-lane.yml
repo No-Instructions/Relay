@@ -26,6 +26,10 @@ on:
         description: 'Optional profile flag overrides (e.g. enableFolderHSM=true)'
         required: false
         default: ''
+      tsdb_tag:
+        description: 'obsidian-tsdb release tag to install in slots'
+        required: false
+        default: '1.0.6'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
@@ -275,7 +279,7 @@ jobs:
           # (pinned tag) instead of cloning and building it from source.
           echo ">>> tsdb: reached download step (relay-harness ok)"
           mkdir -p ~/system3/obsidian-metrics/dist/tsdb
-          TSDB_TAG=1.0.4
+          TSDB_TAG='${{ github.event.inputs.tsdb_tag || '1.0.6' }}'
           for f in main.js manifest.json styles.css; do
             url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
             echo ">>> fetching tsdb $f"
