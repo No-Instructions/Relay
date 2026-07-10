@@ -103,7 +103,7 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 			UPLOAD_COMPLETE: { target: "tracking", actions: ["settleUpload"] },
 			UPLOAD_FAILED: { target: "tracking", actions: [] },
 			DOWNLOAD_COMPLETE: { target: "tracking", actions: ["settleDownload"] },
-			DOWNLOAD_FAILED: { target: "tracking", actions: [] },
+			DOWNLOAD_FAILED: { target: "tracking", actions: ["settleDownloadFailure"] },
 			TRASH_COMPLETE: { target: "tracking", actions: ["settleTrash"] },
 			CONNECTED: { target: "tracking", actions: ["setOnline"] },
 			// Connection is an input, not a state: offline tracking continues
