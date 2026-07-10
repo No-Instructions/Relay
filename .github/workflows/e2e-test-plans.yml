@@ -389,6 +389,7 @@ jobs:
           TEST_EXIT=0
           TEST_LOG="$HOME/test-plan-suite-output.txt"
           RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" \
+          RELAY_FREE_SLOT_CANDIDATES="3,4,5,6,7,8" \
             bash ./scripts/run-test-plan-suite.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
           echo "Scripted test-plan runner exited with status $TEST_EXIT"
 
