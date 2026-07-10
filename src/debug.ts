@@ -787,7 +787,7 @@ class RelayMetrics {
 
 	recordNetworkWebSocketConnection(
 		domain: NetworkDomain,
-		result: "attempt" | "connected" | "closed" | "error",
+		result: "attempt" | "connected" | "closed" | "error" | "reconnect",
 	): void {
 		this.networkWebSocketConnections?.labels({ domain, result }).inc();
 	}
