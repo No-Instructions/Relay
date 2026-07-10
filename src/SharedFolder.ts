@@ -729,9 +729,19 @@ export class SharedFolder extends HasProvider {
 					// folder persistence loaded, so the provenance ladder never
 					// runs against an empty record cache.
 					await this.assembleLocalRecordCache();
-				}
-				this.addLocalDocs();
-				if (this.folderHSM) {
+					// A clone's root directory may not exist on disk yet, so
+					// local discovery can have nothing to scan — valid evidence
+					// (every map entry classifies as a download). The machine
+					// must still hear PERSISTENCE_LOADED: without it, it stays
+					// in `loading` absorbing every observation forever.
+					try {
+						this.addLocalDocs();
+					} catch (e) {
+						this.warn(
+							"local doc discovery failed during machine bootstrap",
+							e,
+						);
+					}
 					this._hsmBootstrapScanned = true;
 					this.folderHSM.send({ type: "PERSISTENCE_LOADED" });
 					// Hydration builds on the folder readiness latch: a folder
@@ -742,6 +752,8 @@ export class SharedFolder extends HasProvider {
 					if (this.ready) {
 						this.folderHSM.send({ type: "PROVIDER_SYNCED" });
 					}
+				} else {
+					this.addLocalDocs();
 				}
 				await this.syncFileTree();
 				try {
