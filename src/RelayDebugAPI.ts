@@ -15,7 +15,7 @@ import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recordin
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { base64ToUint8Array, uint8ArrayToBase64 } from './merge-hsm/recording/serialization';
 import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
-import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
+import { getHSMBootId, getHSMBootEntries, flushHSMRecording, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
 import {
@@ -252,6 +252,8 @@ export interface RelayDebugGlobal {
   getBootId: () => string | null;
   /** Get entries from current boot (reads disk file, filters by boot ID) */
   getBootEntries: () => Promise<object[]>;
+  /** Flush buffered recording entries to the vault-local JSONL file */
+  flushRecording: () => Promise<void>;
   /** Get last N entries for a specific document (buffer + disk, newest files first) */
   getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
   /** Read Y.Doc text content from IndexedDB without waking the HSM */
@@ -497,6 +499,7 @@ export class RelayDebugAPI {
 
       getBootId: () => getHSMBootId(),
       getBootEntries: () => getHSMBootEntries(),
+      flushRecording: () => flushHSMRecording(),
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
