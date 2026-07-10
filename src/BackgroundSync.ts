@@ -2225,6 +2225,20 @@ export class BackgroundSync extends HasLogging {
 		const hsm = doc.hsm;
 		if (!hsm || hsm.state.lca || hsm.isActive()) return;
 
+		// A first download has not written the file yet — the applied server
+		// content materializes it through the WRITE_DISK effect. With no file
+		// on disk there is no on-disk content to reconcile, so there is no
+		// last-common-ancestor to recover from disk. Skip rather than read,
+		// which would throw for the absent TFile and fail the download for a
+		// doc that is simply arriving for the first time. The LCA is
+		// established once the file lands, through the idle-merge path.
+		if (!doc.tfile) {
+			this.debug(
+				`[bootstrapLCA] skipped for ${doc.path}: file not yet materialized`,
+			);
+			return;
+		}
+
 		let releaseLease: () => void = () => {};
 		try {
 			const mergeManager = doc.sharedFolder.mergeManager;
