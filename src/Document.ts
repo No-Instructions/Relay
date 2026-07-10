@@ -532,8 +532,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
 			return false;
-		} else if (this.s3rn instanceof S3Document) {
-			// convert to remote document
+		} else if (
+			this.s3rn instanceof S3Document ||
+			(this.s3rn instanceof S3RemoteDocument &&
+				sharedFolder.relayId !== undefined &&
+				this.s3rn.relayId !== sharedFolder.relayId)
+		) {
+			// A local identity converts to remote; a remote identity minted
+			// for a previous relay re-derives after the folder moves relays —
+			// otherwise the doc connects to the old relay's room forever.
 			if (sharedFolder.relayId) {
 				this.s3rn = new S3RemoteDocument(
 					sharedFolder.relayId,
