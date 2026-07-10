@@ -152,6 +152,10 @@ export class FolderHSM {
 					this.upsertEntry(event.guid, event.path, "synced");
 					this.rememberLocalFile(event.path, "bootstrap");
 				},
+				settleDownloadFailure: (_hsm, event) => {
+					if (event.type !== "DOWNLOAD_FAILED") return;
+					this.settleDownloadFailure(event.path, event.guid);
+				},
 				settleTrash: (_hsm, event) => {
 					if (event.type !== "TRASH_COMPLETE") return;
 					this.removeEntryAtPath(event.path);
@@ -600,16 +604,28 @@ export class FolderHSM {
 			this.upsertEntry(add.guid, add.path, "synced");
 			return;
 		}
-		const existing = this.entryByGuid(add.guid);
-		if (
-			existing &&
-			existing.path === add.path &&
-			existing.disposition === "pendingDownload"
-		) {
-			return; // already enqueued
-		}
+		// Re-emission for an entry already pendingDownload is deliberate:
+		// emission does not prove execution — the host's enqueue can drop
+		// against a mid-sync store — and a split-transaction join delivers
+		// a later delta for exactly these keys. The downstream path dedups:
+		// re-created files return early above, in-flight downloads are keyed
+		// by path, and the queue dedups by guid.
 		this.upsertEntry(add.guid, add.path, "pendingDownload");
 		this.emit({ type: "ENQUEUE_DOWNLOAD", path: add.path, guid: add.guid });
+	}
+
+	/**
+	 * A download attempt failed, or the host dropped the enqueue before it
+	 * reached the queue. The entry stays pendingDownload: retries are
+	 * delta-driven (applyMapAdd re-emits on the next add or update of the
+	 * key) and hydration-driven (a fresh hydrate re-emits for map entries
+	 * without local files). No re-emission here — the host's enqueue guard
+	 * reports failure synchronously, so an immediate retry would loop.
+	 */
+	private settleDownloadFailure(path: string, guid: string): void {
+		const entry = this.entryByGuid(guid);
+		if (!entry || entry.path !== path) return;
+		if (entry.disposition !== "pendingDownload") return;
 	}
 
 	private trackDiscoveredFile(
