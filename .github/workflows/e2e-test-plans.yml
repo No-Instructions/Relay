@@ -327,7 +327,8 @@ jobs:
           # fetched head, so fall back to fetching the ref directly.
           if ! git checkout --detach "$REF"; then
             git fetch origin "$REF"
-            git checkout --detach "$REF"
+            git checkout --detach "origin/${REF#origin/}" 2>/dev/null \
+              || git checkout --detach "$REF"
           fi
           echo "Relay product checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
