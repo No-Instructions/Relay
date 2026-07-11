@@ -34,6 +34,10 @@ on:
         description: 'Obsidian AppImage version to install'
         required: false
         default: '1.8.9'
+      metrics_variant:
+        description: 'Metrics plugin to install: tsdb or legacy'
+        required: false
+        default: 'tsdb'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
@@ -202,13 +206,14 @@ jobs:
           PROFILE_FLAGS_ARG="${{ github.event.inputs.profile_flags }}"
           HARNESS_REF_ARG="${{ github.event.inputs.harness_ref || 'origin/main' }}"
           OBSIDIAN_VERSION_ARG="${{ github.event.inputs.obsidian_version || '1.8.9' }}"
+          METRICS_VARIANT_ARG="${{ github.event.inputs.metrics_variant || 'tsdb' }}"
           FREE_SLOTS="${{ steps.lease.outputs.free_slots }}"
           STORAGE_SLOTS="${{ steps.lease.outputs.storage_slots }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$FREE_SLOTS' '$STORAGE_SLOTS' '$OBSIDIAN_VERSION_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$FREE_SLOTS' '$STORAGE_SLOTS' '$OBSIDIAN_VERSION_ARG' '$METRICS_VARIANT_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
@@ -218,6 +223,7 @@ jobs:
           FREE_SLOT_CANDIDATES="$6"
           STORAGE_SLOT_CANDIDATES="$7"
           OBSIDIAN_VERSION="$8"
+          METRICS_VARIANT="$9"
 
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
@@ -280,18 +286,21 @@ jobs:
           echo "Relay harness checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
 
-          # Pull the prebuilt TSDB metrics plugin from its GitHub release
-          # (pinned tag) instead of cloning and building it from source.
-          echo ">>> tsdb: reached download step (relay-harness ok)"
-          mkdir -p ~/system3/obsidian-metrics/dist/tsdb
-          TSDB_TAG='${{ github.event.inputs.tsdb_tag || '1.0.6' }}'
+          if [ "$METRICS_VARIANT" = "legacy" ]; then
+            METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
+            METRICS_RELEASE_URL="https://github.com/No-Instructions/obsidian-metrics/releases/download/v1.0.0"
+          else
+            TSDB_TAG='${{ github.event.inputs.tsdb_tag || '1.0.6' }}'
+            METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
+            METRICS_RELEASE_URL="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}"
+          fi
+          echo ">>> metrics: fetching $METRICS_VARIANT plugin"
+          mkdir -p "$METRICS_PLUGIN_DIR"
           for f in main.js manifest.json styles.css; do
-            url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
-            echo ">>> fetching tsdb $f"
-            wget -q -O ~/system3/obsidian-metrics/dist/tsdb/"$f" "$url" \
+            wget -q -O "$METRICS_PLUGIN_DIR/$f" "$METRICS_RELEASE_URL/$f" \
               || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
           done
-          echo ">>> tsdb download done"
+          echo ">>> metrics download done"
 
           # Install uv (no apt/sudo) and the test-harness Python deps into a
           # venv, then export the interpreter so run-test-plan-suite.sh runs
@@ -317,7 +326,7 @@ jobs:
           echo ">>> playwright ok"
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
-          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
+          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$METRICS_PLUGIN_DIR"
           if [ -n "$PROFILE_FLAGS" ]; then
             export RELAY_PROFILE_FLAG_OVERRIDES="$PROFILE_FLAGS"
             echo ">>> profile flag overrides: $RELAY_PROFILE_FLAG_OVERRIDES"
