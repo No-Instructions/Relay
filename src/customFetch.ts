@@ -28,6 +28,7 @@ type RelayRequestDomain = NetworkDomain;
 
 export interface RelayRequestInit extends RequestInit {
 	relayNetworkDomain?: RelayRequestDomain;
+	relayUseNativeFetch?: boolean;
 }
 
 export interface RelayRequestUrlParam extends RequestUrlParam {
@@ -227,6 +228,34 @@ export const customFetch = async (
 
 	const method = config?.method || "GET";
 	const domain = classifyNetworkDomain(urlString, config?.relayNetworkDomain);
+	if (config?.relayUseNativeFetch) {
+		const {
+			relayNetworkDomain: _relayNetworkDomain,
+			relayUseNativeFetch: _relayUseNativeFetch,
+			...fetchConfig
+		} = config;
+		const startMs = getNowMs();
+		try {
+			const response = await globalThis.fetch(urlString, fetchConfig);
+			recordRequestMetrics({
+				domain,
+				method,
+				status: response.status,
+				durationMs: getNowMs() - startMs,
+				responseBytes: Number(response.headers.get("content-length") ?? 0),
+			});
+			return response;
+		} catch (error) {
+			recordRequestMetrics({
+				domain,
+				method,
+				durationMs: getNowMs() - startMs,
+				responseBytes: 0,
+				result: "error",
+			});
+			throw error;
+		}
+	}
 
 	const headers = Object.assign(
 		{},
