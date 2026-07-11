@@ -39,7 +39,7 @@ on:
         required: false
         default: '1.8.9'
       metrics_variant:
-        description: 'Metrics plugin to install: tsdb or legacy'
+        description: 'Metrics plugin to install: tsdb, legacy, or none'
         required: false
         default: 'tsdb'
       vm_image:
@@ -323,21 +323,36 @@ jobs:
           echo "  payload: $HARNESS_PAYLOAD_SHA"
           echo "  runner:  $RUNNER_SHA"
 
-          if [ "$METRICS_VARIANT" = "legacy" ]; then
-            METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
-            METRICS_RELEASE_URL="https://github.com/No-Instructions/obsidian-metrics/releases/download/v1.0.0"
+          case "$METRICS_VARIANT" in
+            legacy)
+              METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
+              METRICS_RELEASE_URL="https://github.com/No-Instructions/obsidian-metrics/releases/download/v1.0.0"
+              ;;
+            none)
+              METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/none"
+              export RELAY_SKIP_METRICS_PLUGIN=1
+              ;;
+            tsdb)
+              TSDB_TAG='${{ github.event.inputs.tsdb_tag || '1.0.6' }}'
+              METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
+              METRICS_RELEASE_URL="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}"
+              ;;
+            *)
+              echo ">>> unsupported metrics variant: $METRICS_VARIANT"
+              exit 1
+              ;;
+          esac
+          if [ "$METRICS_VARIANT" != "none" ]; then
+            echo ">>> metrics: fetching $METRICS_VARIANT plugin"
+            mkdir -p "$METRICS_PLUGIN_DIR"
+            for f in main.js manifest.json styles.css; do
+              wget -q -O "$METRICS_PLUGIN_DIR/$f" "$METRICS_RELEASE_URL/$f" \
+                || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
+            done
+            echo ">>> metrics download done"
           else
-            TSDB_TAG='${{ github.event.inputs.tsdb_tag || '1.0.6' }}'
-            METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
-            METRICS_RELEASE_URL="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}"
+            echo ">>> metrics: intentionally disabled"
           fi
-          echo ">>> metrics: fetching $METRICS_VARIANT plugin"
-          mkdir -p "$METRICS_PLUGIN_DIR"
-          for f in main.js manifest.json styles.css; do
-            wget -q -O "$METRICS_PLUGIN_DIR/$f" "$METRICS_RELEASE_URL/$f" \
-              || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
-          done
-          echo ">>> metrics download done"
 
           # Install uv (no apt/sudo) and the test-harness Python deps into a
           # venv, then export the interpreter so run-test-plan-suite.sh runs
@@ -377,6 +392,10 @@ jobs:
           RELAY_SHARED_SLOT_CANDIDATES="$SHARED_SLOT_CANDIDATES" \
             bash ./scripts/run-test-plan-suite.lane.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
           echo "Scripted test-plan runner exited with status $TEST_EXIT"
+          if [ "$TEST_EXIT" -ne 0 ]; then
+            echo ">>> runner failure log"
+            tail -200 "$TEST_LOG"
+          fi
 
           LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
             | xargs -0 ls -t 2>/dev/null \
