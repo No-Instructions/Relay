@@ -66,7 +66,11 @@ export class ContentAddressedStore extends HasLogging {
 		const responseJson = await response.json();
 		const presignedUrl = responseJson.downloadUrl;
 		const downloadResponse = await this.s3Request(
-			() => customFetch(presignedUrl, { relayNetworkDomain: "external" }),
+			() =>
+				customFetch(presignedUrl, {
+					relayNetworkDomain: "external",
+					relayUseNodeHttps: true,
+				}),
 			"download attachment",
 		);
 		if (!downloadResponse.ok) {
@@ -105,6 +109,7 @@ export class ContentAddressedStore extends HasLogging {
 					headers: { "Content-Type": syncFile.mimetype },
 					body: content,
 					relayNetworkDomain: "external",
+					relayUseNodeHttps: true,
 				}),
 			"upload attachment",
 		);
