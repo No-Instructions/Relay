@@ -29,7 +29,7 @@ on:
       tsdb_tag:
         description: 'obsidian-tsdb release tag to install in slots'
         required: false
-        default: '1.0.6'
+        default: '1.0.12'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6

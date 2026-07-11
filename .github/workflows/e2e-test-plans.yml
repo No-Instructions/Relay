@@ -350,7 +350,7 @@ jobs:
           # (pinned tag) instead of cloning and building it from source.
           echo ">>> tsdb: reached download step (relay-harness ok)"
           mkdir -p ~/system3/obsidian-metrics/dist/tsdb
-          TSDB_TAG=1.0.6
+          TSDB_TAG=1.0.12
           for f in main.js manifest.json styles.css; do
             url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
             echo ">>> fetching tsdb $f"
