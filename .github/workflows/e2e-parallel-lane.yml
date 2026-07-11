@@ -2,8 +2,8 @@ name: E2E parallel lane
 
 # Manually dispatched, unlimited-concurrency E2E lane. Each run leases a
 # disjoint staging-user pool by atomically creating that pool's VM (GCE
-# instance names are unique per zone), boots it from the relay-e2e-base
-# golden image, runs the selected test plans, and deletes the VM — which
+# instance names are unique per zone), boots it from the requested GCE image
+# or image family, runs the selected test plans, and deletes the VM — which
 # releases the pool. Runs never share staging users, so any number of
 # dispatches can execute concurrently up to the pool/quota limit.
 
@@ -38,13 +38,24 @@ on:
         description: 'Metrics plugin to install: tsdb or legacy'
         required: false
         default: 'tsdb'
+      vm_image:
+        description: 'Exact GCE image name; when set, takes precedence over vm_image_family'
+        required: false
+        default: ''
+      vm_image_family:
+        description: 'GCE image family used when vm_image is empty'
+        required: false
+        default: 'relay-e2e-base'
+      vm_image_project:
+        description: 'Project containing vm_image or vm_image_family'
+        required: false
+        default: 'tactile-timer-426817-t6'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
   VM_ZONE: us-west1-b
   GCP_USE_IAP: "true"
   MAX_POOLS: "4"
-  VM_IMAGE_FAMILY: relay-e2e-base
 
 jobs:
   parallel-test:
@@ -82,19 +93,28 @@ jobs:
               1) echo "11,12" ;; 2) echo "15,16" ;; 3) echo "19,20" ;; 4) echo "23,25" ;;
             esac
           }
+          VM_IMAGE="${{ github.event.inputs.vm_image }}"
+          VM_IMAGE_FAMILY="${{ github.event.inputs.vm_image_family || 'relay-e2e-base' }}"
+          VM_IMAGE_PROJECT="${{ github.event.inputs.vm_image_project || 'tactile-timer-426817-t6' }}"
+          if [ -n "$VM_IMAGE" ]; then
+            IMAGE_ARGS=(--image="$VM_IMAGE" --image-project="$VM_IMAGE_PROJECT")
+            IMAGE_LABEL="$VM_IMAGE_PROJECT/$VM_IMAGE"
+          else
+            IMAGE_ARGS=(--image-family="$VM_IMAGE_FAMILY" --image-project="$VM_IMAGE_PROJECT")
+            IMAGE_LABEL="$VM_IMAGE_PROJECT/family:$VM_IMAGE_FAMILY"
+          fi
           for k in $(seq 1 "$MAX_POOLS"); do
             VM="relay-e2e-tt-p${k}"
             if ERR=$(gcloud compute instances create "$VM" \
               --project="$GCP_PROJECT" \
               --zone="$VM_ZONE" \
               --machine-type=e2-standard-4 \
-              --image-family="$VM_IMAGE_FAMILY" \
-              --image-project="$GCP_PROJECT" \
+              "${IMAGE_ARGS[@]}" \
               --boot-disk-size=20GB \
               --boot-disk-type=pd-standard \
               --metadata=block-project-ssh-keys=TRUE \
               --tags=relay-e2e 2>&1 >/dev/null); then
-              echo "Leased pool p${k} (free slots $(pool_free_slots "$k"); storage slots $(pool_storage_slots "$k"))"
+              echo "Leased pool p${k} from $IMAGE_LABEL (free slots $(pool_free_slots "$k"); storage slots $(pool_storage_slots "$k"))"
               echo "VM_NAME=$VM" >> "$GITHUB_ENV"
               echo "pool=p${k}" >> "$GITHUB_OUTPUT"
               echo "free_slots=$(pool_free_slots "$k")" >> "$GITHUB_OUTPUT"
@@ -125,6 +145,9 @@ jobs:
               --tunnel-through-iap \
               --command="echo ready" 2>/dev/null; then
               echo "VM is ready"
+              # A first command can succeed while sshd is still unstable enough
+              # for the immediately following SCP banner exchange to time out.
+              sleep 30
               break
             fi
             if [ "$i" -eq 30 ]; then
