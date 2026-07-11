@@ -7,6 +7,21 @@ import PocketBase from "pocketbase";
 import { HasLogging } from "./debug";
 import { s3ApiErrorFromResponse, s3ApiErrorFromUnknown } from "./S3Error";
 
+let externalUploadTail: Promise<void> = Promise.resolve();
+
+async function serializeExternalUpload<T>(request: () => Promise<T>): Promise<T> {
+	const previous = externalUploadTail;
+	let release = () => {};
+	externalUploadTail = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	await previous;
+	try {
+		return await request();
+	} finally {
+		release();
+	}
+}
 
 export class ContentAddressedStore extends HasLogging {
 	private pb: PocketBase;
@@ -100,12 +115,14 @@ export class ContentAddressedStore extends HasLogging {
 		const presignedUrl = responseJson.uploadUrl;
 		const uploadResponse = await this.s3Request(
 			() =>
-				customFetch(presignedUrl, {
-					method: "PUT",
-					headers: { "Content-Type": syncFile.mimetype },
-					body: content,
-					relayNetworkDomain: "external",
-				}),
+				serializeExternalUpload(() =>
+					customFetch(presignedUrl, {
+						method: "PUT",
+						headers: { "Content-Type": syncFile.mimetype },
+						body: content,
+						relayNetworkDomain: "external",
+					}),
+				),
 			"upload attachment",
 		);
 		if (!uploadResponse.ok) {
