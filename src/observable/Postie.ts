@@ -246,14 +246,38 @@ export class PostOffice {
 	 * (timers dead, log flushing dead, evals pending, process alive). With
 	 * a macrotask yield the same cycle degrades to a visible CPU bug that
 	 * watchdogs, logs, and the debugger can still observe.
+	 *
+	 * The macrotask is a MessageChannel post, not a timer: hidden windows
+	 * get their DOM timers throttled or suspended, and a background vault
+	 * mid-bulk-sync is exactly where large cascades happen — a timer here
+	 * would strand pending mail until the window surfaces. Message tasks
+	 * are exempt from timer throttling while still yielding the loop.
 	 */
+	private continuationChannel: MessageChannel | null = null;
+
+	private postContinuation(): void {
+		if (!this.continuationChannel) {
+			this.continuationChannel = new MessageChannel();
+			this.continuationChannel.port1.onmessage = () => {
+				this.flushScheduled = false;
+				this.runDelivery();
+			};
+		}
+		this.continuationChannel.port2.postMessage(null);
+	}
+
+	private closeContinuationChannel(): void {
+		if (!this.continuationChannel) return;
+		this.continuationChannel.port1.onmessage = null;
+		this.continuationChannel.port1.close();
+		this.continuationChannel.port2.close();
+		this.continuationChannel = null;
+	}
+
 	private scheduleContinuation(): void {
 		if (this.flushScheduled) return;
 		this.flushScheduled = true;
-		this.timeProvider.setTimeout(() => {
-			this.flushScheduled = false;
-			this.runDelivery();
-		}, 0);
+		this.postContinuation();
 	}
 
 	private runDelivery(): void {
@@ -277,7 +301,7 @@ export class PostOffice {
 				// The per-flush bound was hit (a large or cyclic cascade — an
 				// ordinary re-entrant emit drains in the loop above). Continue on
 				// a macrotask so a cycle can never starve the event loop; the
-				// timer-throttling cost is bounded (10k deliveries per chunk).
+				// MessageChannel continuation runs at most 10k deliveries per task.
 				this.windowStartedAt = this.timeProvider.now();
 				this.scheduleContinuation();
 			} else {
@@ -444,6 +468,7 @@ export class PostOffice {
 			// Cancel any pending delivery
 			PostOffice.instance.timeProvider.destroy();
 			PostOffice.instance.timeProvider = null as any;
+			PostOffice.instance.closeContinuationChannel();
 
 			// Reset flags
 			PostOffice.instance.isDelivering = false;
@@ -469,6 +494,7 @@ export class PostOffice {
 	static _resetForTesting(timeProvider?: TimeProvider): void {
 		if (PostOffice.instance) {
 			PostOffice.instance.timeProvider?.destroy();
+			PostOffice.instance.closeContinuationChannel();
 		}
 		PostOffice._destroyed = false;
 		PostOffice.instance = undefined as any;
