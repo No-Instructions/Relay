@@ -22,6 +22,10 @@ on:
         description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
         required: false
         default: 'origin/main'
+      runner_ref:
+        description: 'relay-harness ref providing run-test-plan-suite.sh; test code still comes from harness_ref'
+        required: false
+        default: 'origin/main'
       profile_flags:
         description: 'Optional profile flag overrides (e.g. enableFolderHSM=true)'
         required: false
@@ -55,7 +59,7 @@ env:
   GCP_PROJECT: tactile-timer-426817-t6
   VM_ZONE: us-west1-b
   GCP_USE_IAP: "true"
-  MAX_POOLS: "4"
+  MAX_POOLS: "8"
 
 jobs:
   parallel-test:
@@ -77,20 +81,16 @@ jobs:
       - name: Lease a user pool by creating its VM
         id: lease
         run: |
-          # Each pool owns four staging users: two free-tier slots and two
-          # storage slots whose users can see a storage-quota relay. Slots
-          # 1-8 and 24/26 belong to the push-triggered serial lane, so pools
-          # draw from slots 9 and up. Creating the pool's VM is the lease:
+          # Each pool owns two staging users that can see its storage-quota
+          # relay, so the pair can run ordinary and attachment plans serially.
+          # Slots 1-8 and 24/26 belong to local and push-triggered serial lanes.
+          # Creating the pool's VM is the lease:
           # instance names are unique, so two runs can never hold the same
           # pool. Deleting the VM (cleanup step) releases the lease.
-          pool_free_slots() {
-            case "$1" in
-              1) echo "9,10" ;; 2) echo "13,14" ;; 3) echo "17,18" ;; 4) echo "21,22" ;;
-            esac
-          }
-          pool_storage_slots() {
+          pool_slots() {
             case "$1" in
               1) echo "11,12" ;; 2) echo "15,16" ;; 3) echo "19,20" ;; 4) echo "23,25" ;;
+              5) echo "9,10" ;; 6) echo "13,14" ;; 7) echo "17,18" ;; 8) echo "21,22" ;;
             esac
           }
           VM_IMAGE="${{ github.event.inputs.vm_image }}"
@@ -114,11 +114,10 @@ jobs:
               --boot-disk-type=pd-standard \
               --metadata=block-project-ssh-keys=TRUE \
               --tags=relay-e2e 2>&1 >/dev/null); then
-              echo "Leased pool p${k} from $IMAGE_LABEL (free slots $(pool_free_slots "$k"); storage slots $(pool_storage_slots "$k"))"
+              echo "Leased pool p${k} from $IMAGE_LABEL (shared slots $(pool_slots "$k"))"
               echo "VM_NAME=$VM" >> "$GITHUB_ENV"
               echo "pool=p${k}" >> "$GITHUB_OUTPUT"
-              echo "free_slots=$(pool_free_slots "$k")" >> "$GITHUB_OUTPUT"
-              echo "storage_slots=$(pool_storage_slots "$k")" >> "$GITHUB_OUTPUT"
+              echo "shared_slots=$(pool_slots "$k")" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             if echo "$ERR" | grep -q "already exists"; then
@@ -228,23 +227,23 @@ jobs:
           LANE_SLUG="${{ steps.lease.outputs.pool }}-r${{ github.run_number }}"
           PROFILE_FLAGS_ARG="${{ github.event.inputs.profile_flags }}"
           HARNESS_REF_ARG="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          RUNNER_REF_ARG="${{ github.event.inputs.runner_ref || 'origin/main' }}"
           OBSIDIAN_VERSION_ARG="${{ github.event.inputs.obsidian_version || '1.8.9' }}"
           METRICS_VARIANT_ARG="${{ github.event.inputs.metrics_variant || 'tsdb' }}"
-          FREE_SLOTS="${{ steps.lease.outputs.free_slots }}"
-          STORAGE_SLOTS="${{ steps.lease.outputs.storage_slots }}"
+          SHARED_SLOTS="${{ steps.lease.outputs.shared_slots }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$FREE_SLOTS' '$STORAGE_SLOTS' '$OBSIDIAN_VERSION_ARG' '$METRICS_VARIANT_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$RUNNER_REF_ARG' '$SHARED_SLOTS' '$OBSIDIAN_VERSION_ARG' '$METRICS_VARIANT_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
           LANE_SLUG="$3"
           PROFILE_FLAGS="${4-}"
           HARNESS_REF="${5:-origin/main}"
-          FREE_SLOT_CANDIDATES="$6"
-          STORAGE_SLOT_CANDIDATES="$7"
+          RUNNER_REF="${6:-origin/main}"
+          SHARED_SLOT_CANDIDATES="$7"
           OBSIDIAN_VERSION="$8"
           METRICS_VARIANT="$9"
 
@@ -309,6 +308,21 @@ jobs:
           echo "Relay harness checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
 
+          HARNESS_PAYLOAD_SHA="$(git rev-parse HEAD)"
+          if ! RUNNER_SHA="$(git rev-parse --verify "${RUNNER_REF}^{commit}" 2>/dev/null)"; then
+            git fetch origin "$RUNNER_REF"
+            RUNNER_SHA="$(git rev-parse FETCH_HEAD)"
+          fi
+          # Keep the requested harness checkout as the payload while borrowing
+          # only the current lane-aware launcher. The copied launcher resolves
+          # every helper, test, fixture, and manifest relative to this payload.
+          git show "${RUNNER_SHA}:scripts/run-test-plan-suite.sh" \
+            > scripts/run-test-plan-suite.lane.sh
+          chmod +x scripts/run-test-plan-suite.lane.sh
+          echo "Relay harness composition:"
+          echo "  payload: $HARNESS_PAYLOAD_SHA"
+          echo "  runner:  $RUNNER_SHA"
+
           if [ "$METRICS_VARIANT" = "legacy" ]; then
             METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
             METRICS_RELEASE_URL="https://github.com/No-Instructions/obsidian-metrics/releases/download/v1.0.0"
@@ -356,13 +370,12 @@ jobs:
           fi
           cd ~/relay-harness
 
-          echo ">>> staging-user pool: free slots $FREE_SLOT_CANDIDATES; storage slots $STORAGE_SLOT_CANDIDATES"
+          echo ">>> staging-user pool: shared slots $SHARED_SLOT_CANDIDATES"
           TEST_EXIT=0
           TEST_LOG="$HOME/test-plan-suite-output.txt"
           RELAY_RUN_EXEC_SUFFIX="$LANE_SLUG" \
-          RELAY_FREE_SLOT_CANDIDATES="$FREE_SLOT_CANDIDATES" \
-          RELAY_STORAGE_SLOT_CANDIDATES="$STORAGE_SLOT_CANDIDATES" \
-            bash ./scripts/run-test-plan-suite.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
+          RELAY_SHARED_SLOT_CANDIDATES="$SHARED_SLOT_CANDIDATES" \
+            bash ./scripts/run-test-plan-suite.lane.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
           echo "Scripted test-plan runner exited with status $TEST_EXIT"
 
           LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
