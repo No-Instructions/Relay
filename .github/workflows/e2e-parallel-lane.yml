@@ -331,6 +331,15 @@ jobs:
             none)
               METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/none"
               export RELAY_SKIP_METRICS_PLUGIN=1
+              mkdir -p "$METRICS_PLUGIN_DIR"
+              cat > "$METRICS_PLUGIN_DIR/manifest.json" <<'EOF'
+          {"id":"obsidian-metrics","name":"Metrics disabled","version":"0.0.0","minAppVersion":"1.0.0","isDesktopOnly":false}
+          EOF
+              cat > "$METRICS_PLUGIN_DIR/main.js" <<'EOF'
+          const { Plugin } = require("obsidian");
+          module.exports = class extends Plugin {};
+          EOF
+              : > "$METRICS_PLUGIN_DIR/styles.css"
               ;;
             tsdb)
               TSDB_TAG='${{ github.event.inputs.tsdb_tag || '1.0.6' }}'
