@@ -2,6 +2,7 @@
 import { apiVersion, requestUrl as obsidianRequestUrl } from "obsidian";
 import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
+import * as https from "https";
 import { curryLog, metrics, type NetworkDomain, type NetworkResult } from "./debug";
 import { flags } from "./flagManager";
 
@@ -28,6 +29,7 @@ type RelayRequestDomain = NetworkDomain;
 
 export interface RelayRequestInit extends RequestInit {
 	relayNetworkDomain?: RelayRequestDomain;
+	relayUseNodeHttps?: boolean;
 }
 
 export interface RelayRequestUrlParam extends RequestUrlParam {
@@ -157,6 +159,94 @@ function recordRequestMetrics(args: {
 	);
 }
 
+const NODE_HTTPS_WRITE_BYTES = 1024 * 1024;
+
+async function nodeHttpsRequest(
+	urlString: string,
+	config: RelayRequestInit,
+	domain: NetworkDomain,
+	method: string,
+): Promise<Response> {
+	if (!(config.body instanceof ArrayBuffer)) {
+		throw new Error("Node HTTPS diagnostic transport requires an ArrayBuffer body");
+	}
+
+	const body = Buffer.from(config.body);
+	const requestHeaders: Record<string, string> = {};
+	new Headers(config.headers).forEach((value, name) => {
+		requestHeaders[name] = value;
+	});
+	requestHeaders["content-length"] = body.byteLength.toString();
+
+	const startMs = getNowMs();
+	try {
+		return await new Promise<Response>((resolve, reject) => {
+			const request = https.request(
+				urlString,
+				{ method, headers: requestHeaders },
+				(response) => {
+					const chunks: Buffer[] = [];
+					response.on("data", (chunk: Buffer | string) => {
+						chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+					});
+					response.on("error", reject);
+					response.on("end", () => {
+						const responseBody = Buffer.concat(chunks);
+						const status = response.statusCode ?? 500;
+						const responseHeaders = new Headers();
+						for (const [name, value] of Object.entries(response.headers)) {
+							if (Array.isArray(value)) {
+								for (const item of value) responseHeaders.append(name, item);
+							} else if (value !== undefined) {
+								responseHeaders.append(name, value);
+							}
+						}
+						recordRequestMetrics({
+							domain,
+							method,
+							status,
+							durationMs: getNowMs() - startMs,
+							responseBytes: responseBody.byteLength,
+						});
+						resolve(
+							new Response(responseBody, {
+								status,
+								statusText: response.statusMessage,
+								headers: responseHeaders,
+							}),
+						);
+					});
+				},
+			);
+			request.on("error", reject);
+
+			let offset = 0;
+			const writeNext = () => {
+				while (offset < body.byteLength) {
+					const end = Math.min(offset + NODE_HTTPS_WRITE_BYTES, body.byteLength);
+					const writable = request.write(body.subarray(offset, end));
+					offset = end;
+					if (!writable) {
+						request.once("drain", writeNext);
+						return;
+					}
+				}
+				request.end();
+			};
+			writeNext();
+		});
+	} catch (error) {
+		recordRequestMetrics({
+			domain,
+			method,
+			durationMs: getNowMs() - startMs,
+			responseBytes: 0,
+			result: "error",
+		});
+		throw error;
+	}
+}
+
 export async function requestUrlWithMetrics(
 	params: RelayRequestUrlParam,
 ): Promise<RequestUrlResponse> {
@@ -227,6 +317,9 @@ export const customFetch = async (
 
 	const method = config?.method || "GET";
 	const domain = classifyNetworkDomain(urlString, config?.relayNetworkDomain);
+	if (config?.relayUseNodeHttps) {
+		return nodeHttpsRequest(urlString, config, domain, method);
+	}
 
 	const headers = Object.assign(
 		{},
