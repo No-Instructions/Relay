@@ -344,7 +344,7 @@ jobs:
           cd "$HOME/relay-harness"
           ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}"
           SUMMARY="$HOME/winpair-summary.json"
-          echo "$SUMMARY" >> "$GITHUB_ENV"
+          echo "SUMMARY=$SUMMARY" >> "$GITHUB_ENV"
 
           # Log hygiene (public repo = public step logs): this lane drives real
           # Obsidian, so NOTHING derived from a plan or the running app is printed
