@@ -276,11 +276,15 @@ jobs:
                     --ssh-flag="-o ConnectTimeout=15")
           run_ps() { gcloud compute ssh "relay@$VM_WIN" --quiet "${SSHFLAGS[@]}" --command="$1"; }
 
-          echo "Waiting for Windows SSH (baked image boots slower) ..."
+          # The generalized baked image runs full first-boot specialization plus
+          # the metadata startup script (installs/starts OpenSSH, opens the
+          # firewall, authorizes this run's key), which can take past 15 min —
+          # match the bake's own ~22 min budget, exiting as soon as SSH answers.
+          echo "Waiting for Windows SSH (generalized image, first-boot specialize + startup script) ..."
           ok=0
-          for i in $(seq 1 45); do
+          for i in $(seq 1 66); do
             if run_ps "echo ready" >/dev/null 2>/tmp/win-ssh.err; then echo "Windows SSH ready ($i)"; ok=1; break; fi
-            echo "  waiting ($i/45)"; sleep 20
+            echo "  waiting ($i/66)"; sleep 20
           done
           [ "$ok" = 1 ] || { echo "::error::Windows SSH never ready"; tail -20 /tmp/win-ssh.err || true; exit 1; }
 
@@ -399,9 +403,13 @@ jobs:
           echo "=== $VM_LIN slot status ==="
           gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
             --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json; cat ~/relay-slots/config-*/slot-launch.log 2>/dev/null | tail -30' 2>/dev/null || echo "  (ssh failed)"
-          echo "=== $VM_WIN serial console (RELAY-SLOT/setup markers) ==="
+          echo "=== $VM_WIN serial console ==="
           gcloud compute instances get-serial-port-output "$VM_WIN" --port 1 \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 | grep -aE "RELAY-SLOT|SLOT-PROV" | tail -30 || true
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 > /tmp/win-serial.txt || true
+          echo "--- startup markers (RELAY-SLOT / SLOT-PROV) ---"
+          grep -aE "RELAY-SLOT|SLOT-PROV" /tmp/win-serial.txt | tail -40 || echo "  (no startup-script markers — did the metadata startup script run?)"
+          echo "--- serial tail (last 200 lines) ---"
+          tail -200 /tmp/win-serial.txt || true
 
       - name: Tear down VMs
         if: always()
