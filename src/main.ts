@@ -1375,11 +1375,11 @@ export default class Live extends Plugin {
 						}
 						return;
 					}
-					const newDocs = folder.placeHold([tfile]);
-					const vpath = folder.getVirtualPath(tfile.path);
-					if (newDocs.includes(vpath)) {
-						folder.uploadFile(tfile);
-					} else {
+					// Legacy (non-HSM) path: a known file materializes
+					// immediately; a genuinely-new file's registration settles
+					// for a debounce window so a short-lived atomic-write temp
+					// file vanishes before it is place-held and uploaded.
+					if (folder.notifyVaultCreateLegacy(tfile)) {
 						folder.whenReady()
 							.then((folder) => {
 								folder.getFile(tfile);
