@@ -253,6 +253,40 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Consecutive idle retry count — used for backoff when drain rate < queue rate
 	private idleRetryCount = 0;
 
+	// Consecutive superseded idle reconciliations. A superseded outcome (the
+	// world moved mid-operation) re-enters idle.loading to re-classify; this
+	// counter bounds that loop so a livelock surfaces as a visible error instead
+	// of spinning. Reset on any convergence to idle.synced.
+	private _consecutiveSupersessions = 0;
+	private _supersessionHistory: number[] = [];
+
+	// Whether the stored _error is retryable. Transport-caused actor exceptions
+	// are retryable and re-arm on new information; corrupt-state, invariant, and
+	// supersession-bound-exhausted failures are permanent.
+	private _errorRetryable = false;
+
+	// Generous bound (single digits) on consecutive supersessions before an idle
+	// reconciliation is treated as a permanent error rather than re-classified.
+	private static readonly IDLE_SUPERSESSION_BOUND = 8;
+
+	// Substrings that mark an idle-invoke exception as transport-caused, and so
+	// retryable. Matched case-insensitively against the error name and message.
+	private static readonly TRANSPORT_ERROR_SIGNATURES = [
+		"disconnect",
+		"socket",
+		"connection reset",
+		"connection closed",
+		"connection lost",
+		"not connected",
+		"network",
+		"websocket",
+		"token refresh",
+		"provider not synced",
+		"offline",
+		"econnreset",
+		"epipe",
+	];
+
 	// Persisted/enrolled local head. A resident localDoc may only refresh this
 	// after its persistence load has completed and matched this head.
 	private _enrolledLocalSnapshot: Uint8Array | null = null;
@@ -743,6 +777,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			remoteStateVector: this._remoteStateVector,
 			statePath: this._statePath,
 			error: this._error,
+			errorRetryable: this._error ? this._errorRetryable : undefined,
 			deferredConflict: this._deferredConflict,
 			fork: this._fork,
 			isOnline: this._isOnline,
@@ -2290,6 +2325,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			forkWasCreated: (_hsm, event) => (event as any).data?.forked === true,
 			awaitingProvider: (_hsm, event) => (event as any).data?.awaitingProvider === true,
 
+			// Outcome classification: the reconcile completed but the world moved
+			// during it (a remote update landed mid-operation), so the result is
+			// stale. Re-enter idle.loading to re-classify while the loop stays within
+			// its bound; past the bound the livelock becomes a real error.
+			mergeSuperseded: (_hsm, event) => (event as any).data?.superseded === true,
+			supersededWithinBound: (_hsm, event) =>
+				(event as any).data?.superseded === true
+				&& this._consecutiveSupersessions < MergeHSM.IDLE_SUPERSESSION_BOUND,
+
+			// A retryable stored error re-arms on new information; a permanent one
+			// keeps the idle.error self-loop trap.
+			errorIsRetryable: () => this._errorRetryable === true,
+
 			// Loop-back guards: merge succeeded but new data arrived during the await
 			mergeSucceededAndRemotePending: (_hsm, event) =>
 				(event as any).data?.success === true && this.pendingIdleUpdates !== null,
@@ -2527,6 +2575,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			resetIdleRetryCount: () => {
 				this.idleRetryCount = 0;
+				// Convergence clears the supersession bookkeeping and any error the
+				// re-classify/re-arm loops were working through — reaching this action
+				// means the note settled.
+				this._consecutiveSupersessions = 0;
+				this._supersessionHistory = [];
+				this._error = undefined;
+				this._errorRetryable = false;
 			},
 			clearSettledDiskContents: () => {
 				this.clearSettledDiskContents();
@@ -2545,9 +2600,34 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				const data = (event as any).data;
 				const error = data instanceof Error ? data : new Error(String(data ?? "invoke failed"));
 				this._error = error;
+				// Transport-caused exceptions (the provider dropped mid-operation) are
+				// retryable and re-arm on new information. Anything unrecognized is
+				// treated as permanent so the retry loop cannot mask real corruption.
+				this._errorRetryable = this.isTransportError(error);
 				this.hsmError(
-					`idle invoke failed | guid=${this._guid} state=${this._statePath} error=${error.message}`,
+					`idle invoke failed | guid=${this._guid} state=${this._statePath} retryable=${this._errorRetryable} error=${error.message}`,
 				);
+			},
+			countSupersession: () => {
+				this._consecutiveSupersessions++;
+				this._supersessionHistory.push(this.timeProvider.now());
+			},
+			storeSupersededError: () => {
+				const error = new Error(
+					`Idle reconciliation superseded ${this._consecutiveSupersessions} times without converging`,
+				);
+				this._error = error;
+				// The bound exists to convert livelock into a visible error, so this
+				// is permanent: a REMOTE_UPDATE must not silently re-arm it.
+				this._errorRetryable = false;
+				this.hsmError(`${error.message} | ${this.describeResourceContext("storeSupersededError")}`);
+			},
+			rearmRetryableError: () => {
+				// New information reached a retryable idle.error: drop the stored error
+				// so re-entering idle.loading is clean and a fresh failure classifies
+				// from scratch.
+				this._error = undefined;
+				this._errorRetryable = false;
 			},
 			storeUnresolvedIdleError: (_hsm, event) => {
 				const data = (event as any).data;
@@ -4143,6 +4223,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
+			// Hash first so the only async window in this reconcile sits before any
+			// durable mutation. A remote update that lands during the await moves
+			// remoteDoc past the content we merged: the outcome is superseded. Bail
+			// before touching localDoc or emitting writes so idle.loading can
+			// re-classify against the new remote state instead of committing — and
+			// then silently declaring converged on — a stale merge.
+			const hash = await this.hashFn(mergeResult.merged);
+			if (signal.aborted) {
+				return { success: false };
+			}
+			if (this.pendingIdleUpdates !== null) {
+				return { success: false, superseded: true };
+			}
+
 			// Cancel all disk ops — fork gates outbound sync so no peer
 			// has seen them. The merged result will be applied fresh via DMP.
 			const opCapture = this.getOpCapture();
@@ -4174,10 +4268,6 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			const stateVector = Y.encodeStateVector(localDoc);
 			const update = Y.encodeStateAsUpdate(localDoc);
 
-			const hash = await this.hashFn(mergeResult.merged);
-			if (signal.aborted) {
-				return { success: false };
-			}
 			this.emitEffect({
 				type: "WRITE_DISK",
 				guid: this._guid,
@@ -4361,6 +4451,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private hasDiskChangedSinceLCA(): boolean {
 		if (!this._lca || !this._disk) return false;
 		return this._lca.meta.hash !== this._disk.hash;
+	}
+
+	/**
+	 * Classify an idle-invoke exception as transport-caused (retryable) or not.
+	 *
+	 * The retry loop must not mask real corruption, so this recognizes only the
+	 * connectivity failure signatures — provider drop, socket close, token
+	 * refresh — and treats everything else as permanent.
+	 */
+	private isTransportError(error: Error): boolean {
+		const text = `${error.name} ${error.message}`.toLowerCase();
+		return MergeHSM.TRANSPORT_ERROR_SIGNATURES.some((sig) => text.includes(sig));
 	}
 
 	private hasRemoteChangedSinceLCA(): boolean {
