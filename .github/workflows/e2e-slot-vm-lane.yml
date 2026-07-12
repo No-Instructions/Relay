@@ -1,0 +1,356 @@
+name: E2E slot-VM lane (prototype)
+
+# Phase-2 prototype of the slot-VM topology (specs/slot VMs.md): one Obsidian
+# slot per VM, driven from the runner over SSH -L tunnels. Proves the spec's
+# core claim — plans are unchanged, the topology is per-slot — by running the
+# two-slot cross-vault plan (tp001) with each slot on its own GCE VM.
+#
+# The runner is the driver: it builds the plugin, creates two relay-e2e-base
+# VMs, provisions and starts one slot per VM via the cross-platform slot runner
+# (obsidian_slot.py), opens an SSH -L tunnel per VM mapping the slot's canonical
+# CDP port to the same local port (CDP stays loopback-bound on the VM, so an
+# SSH forward that terminates on the VM's loopback is the only way in), then
+# runs wait-for-ready + inject-auth + the plan against the tunneled local ports.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Product ref to test (e.g. origin/main, a branch, or a SHA)'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref (slot runner + test plans)'
+        required: false
+        default: 'origin/main'
+      plan:
+        description: 'Two-slot scripted plan id'
+        required: false
+        default: 'tp001'
+
+concurrency:
+  group: e2e-slot-vm-lane
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: tactile-timer-426817-t6
+  VM_ZONE: us-west1-b
+  VM_IMAGE_FAMILY: relay-e2e-base
+  # arlo/bella (slots 1/2) are the platform smoke's users; the pooled lanes use
+  # slots 9-23,25. charlie/donna (slots 3/4, ports 9225/9226) are free of both.
+  USER1: charlie
+  PORT1: '9225'
+  USER2: donna
+  PORT2: '9226'
+
+jobs:
+  slot-vm-lane:
+    name: slot-vm-lane
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+      RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          mkdir -p "$HOME/relay-bundle"
+          cp main.js manifest.json styles.css "$HOME/relay-bundle/"
+          echo "Bundle staged at $HOME/relay-bundle"
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install driver python and playwright deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install click websockets tree-sitter tree-sitter-javascript matplotlib
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+
+      - name: Clone relay-harness (driver)
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Sweep stale slot VMs
+        shell: bash
+        run: |
+          # Slot-VM names embed the run id. Anything under our prefix that is
+          # not this run is a leak from a crashed/preempted run, so delete it.
+          # This only ever matches relay-e2e-svm-* (never pool or platform VMs),
+          # and the concurrency group is serialized, so it cannot race a sibling.
+          KEEP="relay-e2e-svm-${GITHUB_RUN_ID}-"
+          stale=$(gcloud compute instances list --project="$GCP_PROJECT" \
+            --zones="$VM_ZONE" --filter="name~^relay-e2e-svm-" \
+            --format="value(name)" 2>/dev/null || true)
+          for name in $stale; do
+            case "$name" in
+              ${KEEP}*) echo "keeping $name (current run)" ;;
+              *) echo "sweeping stale $name";
+                 gcloud compute instances delete "$name" --quiet \
+                   --zone="$VM_ZONE" --project="$GCP_PROJECT" || true ;;
+            esac
+          done
+
+      - name: Create slot VMs
+        shell: bash
+        run: |
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
+          printf '\nHost *\n  ConnectTimeout 20\n  StrictHostKeyChecking no\n' >> ~/.ssh/config
+          VM1="relay-e2e-svm-${GITHUB_RUN_ID}-1"
+          VM2="relay-e2e-svm-${GITHUB_RUN_ID}-2"
+          echo "VM1=$VM1" >> "$GITHUB_ENV"
+          echo "VM2=$VM2" >> "$GITHUB_ENV"
+          for VM in "$VM1" "$VM2"; do
+            echo "Creating $VM ..."
+            gcloud compute instances create "$VM" \
+              --project="$GCP_PROJECT" --zone="$VM_ZONE" \
+              --machine-type=e2-standard-4 \
+              --image-family="$VM_IMAGE_FAMILY" --image-project="$GCP_PROJECT" \
+              --boot-disk-size=20GB --boot-disk-type=pd-standard \
+              --metadata=block-project-ssh-keys=TRUE \
+              --tags=relay-e2e
+          done
+
+      - name: Wait for VM SSH readiness
+        shell: bash
+        run: |
+          for VM in "$VM1" "$VM2"; do
+            ok=0
+            for i in $(seq 1 30); do
+              if gcloud compute ssh "$VM" --quiet \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+                --command="echo ready" 2>/dev/null; then
+                echo "$VM is ready"; ok=1; break
+              fi
+              sleep 5
+            done
+            [ "$ok" = 1 ] || { echo "::error::$VM SSH never became ready"; exit 1; }
+          done
+
+      - name: Provision and start a slot on each VM
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          HREF="${{ github.event.inputs.harness_ref }}"
+          echo "$HARNESS_DEPLOY_KEY" > /tmp/harness-key
+          chmod 600 /tmp/harness-key
+
+          setup_vm() {
+            local VM="$1" USER_NAME="$2" PORT="$3"
+            echo "=== provisioning $VM for $USER_NAME (port $PORT) ==="
+            # Ship the built plugin bundle and the harness deploy key. scp does
+            # not create intermediate dirs, so make the target dir first.
+            gcloud compute ssh "$VM" --quiet \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+              --command="mkdir -p ~/relay-bundle"
+            for f in main.js manifest.json styles.css; do
+              gcloud compute scp --quiet "$HOME/relay-bundle/$f" "$VM":"~/relay-bundle/$f" \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
+            done
+            gcloud compute scp --quiet /tmp/harness-key "$VM":"~/harness-key" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
+
+            gcloud compute ssh "$VM" --quiet \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+              --command="bash -s -- '$USER_NAME' '$HREF' '$PORT'" << 'REMOTE'
+          set -eo pipefail
+          USER_NAME="$1"
+          HARNESS_REF="$2"
+          PORT="$3"
+
+          # Harness deploy key + github known_hosts for the SSH clone.
+          mkdir -p ~/.ssh
+          mv ~/harness-key ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          cat > ~/.ssh/known_hosts_gh << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          EOF
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/harness-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_gh"
+
+          if [ ! -d ~/relay-harness ]; then
+            git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+          fi
+          cd ~/relay-harness
+          git fetch origin --prune
+          git checkout -- . || true
+          git clean -fd || true
+          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
+            || { git fetch origin "$HARNESS_REF"; git checkout --detach "$HARNESS_REF"; }
+          echo "harness: $(git rev-parse HEAD)"
+
+          # Obsidian AppImage (matches the pooled lane's baseline).
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
+          if [ ! -f "$OBSIDIAN_PATH" ]; then
+            mkdir -p ~/obsidian
+            OBSIDIAN_VERSION="1.8.9"
+            wget -q -O "$OBSIDIAN_PATH" \
+              "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+            chmod +x "$OBSIDIAN_PATH"
+          fi
+
+          # Slot runner deps (click drives the CLI; websockets backs slot status).
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v uv >/dev/null 2>&1 || wget -qO- https://astral.sh/uv/install.sh | sh
+          uv venv --clear ~/.slot-venv
+          SLOT_PY="$HOME/.slot-venv/bin/python"
+          uv pip install --python "$SLOT_PY" click websockets
+
+          cd ~/relay-harness
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision \
+            --user "$USER_NAME" --plugin-dir ~/relay-bundle
+          OBSIDIAN_PATH="$OBSIDIAN_PATH" "$SLOT_PY" .claude/scripts/obsidian_slot.py slot start \
+            --user "$USER_NAME" --wait-timeout 150
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot status --user "$USER_NAME" --json
+
+          # Authenticate the slot on the VM itself. app:reload + reconnect is
+          # fast and reliable against localhost; over an SSH tunnel the reload
+          # races the reconnect. The driver then only tunnels the plan, which
+          # does plain CDP evals (no reload) and tolerates the tunnel.
+          cd ~/relay-harness/playwright
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+          node utils/wait-for-ready.mjs "$PORT"
+          node utils/inject-auth.mjs "$USER_NAME" "$PORT"
+          echo "slot $USER_NAME authenticated on port $PORT"
+          REMOTE
+          }
+
+          setup_vm "$VM1" "$USER1" "$PORT1"
+          setup_vm "$VM2" "$USER2" "$PORT2"
+
+      - name: Tunnel and run the plan
+        shell: bash
+        run: |
+          # Background SSH tunnels must live in the same step as the plan: a
+          # process backgrounded in one step does not survive into the next.
+          # The ws URLs Obsidian hands back embed the VM's CDP port, so the
+          # local forward uses the SAME port number; -L <p>:localhost:<p>
+          # terminates on the VM's loopback, where CDP listens.
+          gcloud compute ssh "$VM1" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            -- -L "${PORT1}:localhost:${PORT1}" -N \
+            -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 &
+          TUN1_PID=$!
+          gcloud compute ssh "$VM2" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            -- -L "${PORT2}:localhost:${PORT2}" -N \
+            -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 &
+          TUN2_PID=$!
+          trap 'kill "$TUN1_PID" "$TUN2_PID" 2>/dev/null || true' EXIT
+
+          for PORT in "$PORT1" "$PORT2"; do
+            ok=0
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+                echo "tunnel to port $PORT is live"; ok=1; break
+              fi
+              sleep 2
+            done
+            [ "$ok" = 1 ] || { echo "::error::tunnel to port $PORT never came up"; exit 1; }
+          done
+
+          # The slots were already authenticated VM-locally during provisioning;
+          # the driver drives the plan straight over the tunnels.
+          cd "$HOME/relay-harness"
+          PLAN="${{ github.event.inputs.plan }}"
+          SCRIPT="$(node -e '
+            const m = require("./test-plans/scripts/manifest.json");
+            const t = m.tests.find(t => t.id === process.argv[1]);
+            if (!t) { console.error("unknown plan id: " + process.argv[1]); process.exit(3); }
+            if (Number(t.slots || 1) !== 2) { console.error(process.argv[1] + " is not a two-slot plan"); process.exit(4); }
+            process.stdout.write(t.script);
+          ' "$PLAN")"
+          RUN_DIR="$HOME/slot-vm-runs/$PLAN"
+          mkdir -p "$RUN_DIR"
+          # Log hygiene (public repo = public logs): plan stdout goes to a
+          # runner-local file, never the console; only the plan ID and pass/fail
+          # reach the step log.
+          echo "=== $PLAN: $USER1@$PORT1 x $USER2@$PORT2 ==="
+          if RELAY_CDP_ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}" \
+               python "test-plans/scripts/$SCRIPT" \
+                 --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build \
+                 > "$RUN_DIR/plan.log" 2>&1; then
+            echo "--- $PLAN PASSED ---"
+          else
+            echo "::error::$PLAN failed (plan stdout kept runner-local, not logged)"
+            exit 1
+          fi
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo "=== driver-side CDP reachability ==="
+            for PORT in "$PORT1" "$PORT2"; do
+              echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
+            done
+            for VM in "$VM1" "$VM2"; do
+              echo "=== $VM slot status ==="
+              gcloud compute ssh "$VM" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+                --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
+            done
+          } > "$HOME/diagnostics.log" 2>&1
+      - name: Tear down VMs
+        if: always()
+        shell: bash
+        run: |
+          # Delete both VMs in parallel so cleanup finishes fast and does not
+          # leave a VM leased if the runner is preempted mid-teardown.
+          pids=""
+          for VM in "$VM1" "$VM2"; do
+            [ -n "$VM" ] || continue
+            echo "Deleting $VM ..."
+            gcloud compute instances delete "$VM" --quiet \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" &
+            pids="$pids $!"
+          done
+          for p in $pids; do wait "$p" || true; done
+          echo "VM teardown complete"
