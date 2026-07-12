@@ -466,7 +466,10 @@ jobs:
             exit 1
           fi
 
-          cp "$REPORT_DIR/summary.json" ~/test-summary.json
+          # The public artifact gets counts + per-test {dir,status,duration} only;
+          # test names, suite paths, and failure messages stay in the private R2
+          # report (already uploaded above), never a public artifact.
+          node -e 'const fs=require("fs");const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));fs.writeFileSync(process.argv[2],JSON.stringify({summary:s.summary,state:s.state,tests:(s.tests||[]).map(t=>({dir:t.dir,status:t.status,duration:t.duration}))},null,2));' "$REPORT_DIR/summary.json" ~/test-summary.json
           REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
           echo "{\"reportUrl\":\"$REPORT_URL\",\"commit\":\"$COMMIT\",\"execId\":\"$EXEC_ID\"}" > ~/test-metadata.json
 

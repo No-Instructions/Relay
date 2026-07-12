@@ -490,7 +490,6 @@ jobs:
           path: |
             summary.json
             metadata.json
-            suite-output.txt
           if-no-files-found: ignore
 
       - name: Request shard VM stop

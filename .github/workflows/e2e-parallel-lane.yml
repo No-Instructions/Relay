@@ -484,7 +484,6 @@ jobs:
           path: |
             summary.json
             metadata.json
-            suite-output.txt
           if-no-files-found: ignore
 
       - name: Delete VM (releases the pool lease)
