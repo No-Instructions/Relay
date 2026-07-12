@@ -21,6 +21,7 @@ import {
 } from "./merge-hsm/integration/ProviderIntegration";
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
+import { readNoteText } from "./diskText";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
@@ -799,10 +800,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				`[Document] Cannot read disk content for ${this.path}: TFile not found`,
 			);
 		}
-		const content = await this.vault.read(tfile);
-		const encoder = new TextEncoder();
-		const hash = await generateHash(encoder.encode(content).buffer);
-		return { content, hash, mtime: tfile.stat.mtime };
+		const { contents, hash, mtime } = await readNoteText(this.vault, tfile);
+		return { content: contents, hash, mtime };
 	}
 
 	/**
