@@ -1,15 +1,12 @@
-name: E2E Android picker-bypass (emulator, seeded folder)
+name: E2E Android picker-confirm (emulator, SAF picker)
 
-# Hardware-free spike for the Android emulator folder-picker gate. Where
-# e2e-android-tier-a drives the native SAF picker (which does not foreground on a
-# cold headless emulator), this lane removes the picker from the flow: it
-# pre-seeds the folder registration through two mechanisms — the vault's raw
-# filesystem path, and its storage tree content-URI plus a matching persisted URI
-# permission — then launches Obsidian and checks whether the vault workspace
-# comes up with no picker. If either seed opens the vault, the run continues into
-# plugin install, auth, the CDP bridge, and the Tier-A single-slot plans. If
-# neither does, it fails with a per-mechanism classification: the hardware-free
-# bypass levers are exhausted and Android Tier-A stays device-only.
+# Confirm test for the Android emulator folder-picker gate. It fires
+# ACTION_OPEN_DOCUMENT_TREE directly on a google_apis emulator — no Obsidian, no
+# WebView — and asserts that DocumentsUI is installed, foregrounds, and exposes a
+# traversable hierarchy. GREEN means the emulator can drive the SAF picker, so
+# Android Tier-A is emulator-viable and the fix belongs in the picker automation;
+# RED means the picker does not foreground and Tier-A stays device-only on first-
+# party evidence.
 #
 # Dispatch-only; hosted runner (no GCE quota).
 
@@ -148,7 +145,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run Android picker-bypass flow on emulator
+      - name: Confirm the SAF picker foregrounds on the emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ github.event.inputs.api_level || '34' }}
@@ -159,20 +156,20 @@ jobs:
           ram-size: 4096M
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
-          # The emulator action runs `script` under dash; invoke the sequence as a
-          # committed bash script so pipefail and the failure trap survive. The
-          # seeds need a rootable image, which google_apis provides.
-          script: bash "$HOME/relay-harness/scripts/ci/android-picker-bypass.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}" > "$HOME/emu-run.log" 2>&1
+          # The emulator action runs `script` under dash; invoke the confirm as a
+          # committed bash script so pipefail and the failure trap survive. It
+          # fires the tree-picker intent directly and asserts DocumentsUI focus.
+          script: bash "$HOME/relay-harness/scripts/ci/android-picker-confirm.sh" "${{ github.event.inputs.user || 'erik' }}" > "$HOME/emu-run.log" 2>&1
 
-      # Coverage summary is plan-id/status/duration only (non-sensitive). No video
-      # or diagnostics artifact: this is a public repo, so nothing that could carry
-      # vault content or auth detail leaves the runner.
-      - name: Upload coverage summary
+      # Metadata artifact only: structural booleans (present / foregrounds /
+      # traversable) and element counts. No hierarchy dump or diagnostics leave
+      # the runner on this public repo.
+      - name: Upload confirm summary
         if: always()
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
-          name: testplans-android-picker-bypass-metadata
-          path: android-picker-bypass-summary.json
+          name: testplans-android-picker-confirm-metadata
+          path: android-picker-confirm-summary.json
           if-no-files-found: warn
           retention-days: 14
