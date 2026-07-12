@@ -344,15 +344,12 @@ jobs:
           cd "$HOME/relay-harness"
           ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}"
           SUMMARY="$HOME/winpair-summary.json"
+          echo "$SUMMARY" >> "$GITHUB_ENV"
 
-          # Diagnostic (non-fatal): which community plugins actually loaded on each
-          # slot. A plugin in the enable list but absent here means Obsidian refused
-          # to load it — the direct signal for the tp042 (kanban) unlock.
-          for V in "$USER1" "$USER2"; do
-            echo "--- $V loaded community plugins ---"
-            RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py --vault "$V" eval \
-              <<< 'JSON.stringify(Object.keys(app.plugins.plugins))' 2>&1 | tail -2 || true
-          done
+          # Log hygiene (public repo = public step logs): this lane drives real
+          # Obsidian, so NOTHING derived from a plan or the running app is printed
+          # to the step log. Plan and fixture stdout go to runner-local files; only
+          # pass/fail metadata reaches the console and the summary.json artifact.
 
           # Between-plan hygiene mirrors run-test-plan-suite.sh's sequential reuse
           # of persistent slots: close any editors the last plan left open and let
@@ -458,7 +455,7 @@ jobs:
                 fi
                 EXTRA+=(--folder "$FOLDER")
               else
-                echo "::error::$PLAN shared-fixture creation failed"; tail -20 "$RUN_DIR/fixture.log" || true
+                echo "::error::$PLAN shared-fixture creation failed (fixture stdout kept runner-local, not logged)"
                 ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-setup-failed"); write_summary "${RESULTS[@]}"; continue
               fi
             fi
@@ -473,8 +470,7 @@ jobs:
               echo "--- $PLAN PASSED ---"
             else
               STATUS=fail; ANY_FAIL=1; REASON=plan-failed
-              echo "::error::$PLAN failed on Windows x Windows"
-              echo "--- $PLAN FAILED (tail) ---"; tail -25 "$RUN_DIR/plan.log" || true
+              echo "::error::$PLAN failed on Windows x Windows (plan stdout kept runner-local, never logged)"
             fi
             DUR=$(( $(date +%s%3N) - START_MS ))
             echo "--- $PLAN ${STATUS} in $((DUR/1000))s ---"
