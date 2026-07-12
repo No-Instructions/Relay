@@ -32,6 +32,11 @@ jobs:
     name: ${{ format('slot-runner ({0})', matrix.platform.name) }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 45
+    env:
+      # The scripted plans print Unicode status glyphs (checkmarks); force
+      # UTF-8 stdout so Windows Python does not die encoding them to cp1252.
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
     strategy:
       fail-fast: false
       matrix:
