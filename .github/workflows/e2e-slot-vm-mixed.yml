@@ -1,11 +1,18 @@
 name: E2E slot-VM lane (mixed platform)
 
-# Phase-3 prototype of the slot-VM topology (specs/slot VMs.md): the two-slot
-# cross-vault plan (tp001) with slot 1 on a Linux VM (relay-e2e-base) and slot 2
-# on a Windows VM (relay-e2e-windows). Proves the spec's mixed-platform
-# acceptance — real cross-machine sync between a Linux and a Windows Obsidian,
-# each provisioned by the same cross-platform slot runner (obsidian_slot.py) and
-# driven from the runner over SSH -L tunnels.
+# Slot-VM topology (specs/slot VMs.md): two-slot scripted plans with slot 1 on a
+# Linux VM (relay-e2e-base) and slot 2 on a Windows VM (relay-e2e-windows). Real
+# cross-machine sync between a Linux and a Windows Obsidian, each provisioned by
+# the same cross-platform slot runner (obsidian_slot.py) and driven from the
+# runner over SSH -L tunnels.
+#
+# The `plans` input runs a whole list against the two persistent tunneled slots,
+# mirroring how run-test-plan-suite.sh reuses slots with between-plan hygiene.
+# sharedFixture plans get a folder created per plan (test-plan-shared-fixture.py)
+# and joined via --folder. Two plan classes are skipped with a reason because the
+# two ordinary staging slots cannot serve them: storage plans (need a
+# storage-quota relay) and folder-hsm plans (need the enableFolderHSM profile
+# flag the base test profile does not carry).
 #
 # Linux slot: same as e2e-slot-vm-lane.yml. Windows slot: boot the baked image
 # (OpenSSH + Node/Git/ffmpeg/Obsidian preinstalled), authorize the runner key
@@ -418,9 +425,12 @@ jobs:
           out = sys.argv[1]
           rows = []
           for item in sys.argv[2:]:
-              pid, status, dur = item.split(":")
+              parts = item.split("|")
+              pid, status, dur = parts[0], parts[1], parts[2]
+              reason = parts[3] if len(parts) > 3 else ""
               rows.append({"name": pid, "dir": pid, "status": status,
-                           "passed": status == "pass", "durationMs": int(dur)})
+                           "passed": status == "pass", "durationMs": int(dur),
+                           "reason": reason})
           counts = {}
           for r in rows:
               counts[r["status"]] = counts.get(r["status"], 0) + 1
@@ -433,47 +443,81 @@ jobs:
           PY
           }
 
+          # One manifest lookup per plan: script, slots, timeout, sharedFixture,
+          # storage, shard (tab-separated), or MISSING for an unknown id.
+          meta() {
+            node -e '
+              const m = require("./test-plans/scripts/manifest.json");
+              const t = m.tests.find(t => t.id === process.argv[1]);
+              if (!t) { process.stdout.write("MISSING"); process.exit(0); }
+              process.stdout.write([t.script, Number(t.slots||1),
+                Number(t.timeoutSeconds||600), t.sharedFixture?1:0,
+                t.requiresAttachmentStorage?1:0, t.shard||""].join("\t"));
+            ' "$1"
+          }
+
           for PLAN in "${PLANS[@]}"; do
             PLAN="$(echo "$PLAN" | tr -d '[:space:]')"
             [ -n "$PLAN" ] || continue
-            SCRIPT="$(node -e '
-              const m = require("./test-plans/scripts/manifest.json");
-              const t = m.tests.find(t => t.id === process.argv[1]);
-              if (!t) { console.error("unknown"); process.exit(3); }
-              if (Number(t.slots || 1) !== 2) { console.error("not-two-slot"); process.exit(4); }
-              process.stdout.write(t.script);
-            ' "$PLAN" 2>/tmp/plan-err)" || {
-              REASON="$(cat /tmp/plan-err)"
-              echo "::warning::skipping $PLAN ($REASON)"
-              RESULTS+=("$PLAN:skip:0")
-              write_summary "${RESULTS[@]}"
-              continue
-            }
-            [ "$FIRST" = 1 ] || hygiene
+            IFS=$'\t' read -r SCRIPT SLOTS TIMEOUT_S FIXTURE STORAGE SHARD <<< "$(meta "$PLAN")"
+            # Skips are structural — the mixed lane's two ordinary staging slots
+            # cannot serve these — so they are reported with a reason, not run.
+            if [ "$SCRIPT" = "MISSING" ]; then
+              echo "::warning::skip $PLAN (unknown plan id)"
+              RESULTS+=("$PLAN|skip|0|unknown-plan-id"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$SLOTS" != "2" ]; then
+              echo "::warning::skip $PLAN (not a two-slot plan)"
+              RESULTS+=("$PLAN|skip|0|not-two-slot"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$STORAGE" = "1" ]; then
+              echo "::warning::skip $PLAN (needs a storage-quota relay; mixed VMs use ordinary staging users)"
+              RESULTS+=("$PLAN|skip|0|needs-storage-relay"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$SHARD" = "scripted-folder-hsm" ]; then
+              echo "::warning::skip $PLAN (needs enableFolderHSM; the runner installs the base test profile)"
+              RESULTS+=("$PLAN|skip|0|needs-enableFolderHSM-flag"); write_summary "${RESULTS[@]}"; continue
+            fi
+
+            [ "$FIRST" = 1 ] || hygiene || true
             FIRST=0
             RUN_DIR="$HOME/slot-vm-runs/$PLAN"; mkdir -p "$RUN_DIR"
-            echo "=== $PLAN: $USER1@$PORT1 (linux) x $USER2@$PORT2 (windows) ==="
+            EXTRA=()
+            if [ "$FIXTURE" = "1" ]; then
+              STATE="$RUN_DIR/shared-fixture.json"
+              echo "--- $PLAN: creating shared fixture (charlie x donna) ---"
+              if RELAY_CDP_ENDPOINTS="$ENDPOINTS" python scripts/test-plan-shared-fixture.py \
+                   create --vault1 "$USER1" --vault2 "$USER2" \
+                   --name "mixed-fixture-${GITHUB_RUN_ID}-$PLAN" --state "$STATE" \
+                   > "$RUN_DIR/fixture.log" 2>&1; then
+                FOLDER="$(node -e 'const s=require(process.argv[1]);process.stdout.write(String(s.remoteFolder||s.folder1||""))' "$STATE" 2>/dev/null)"
+                if [ -z "$FOLDER" ]; then
+                  echo "::error::$PLAN fixture produced no folder"
+                  ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-no-folder"); write_summary "${RESULTS[@]}"; continue
+                fi
+                EXTRA+=(--folder "$FOLDER")
+              else
+                echo "::error::$PLAN shared-fixture creation failed"; tail -20 "$RUN_DIR/fixture.log" || true
+                ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-setup-failed"); write_summary "${RESULTS[@]}"; continue
+              fi
+            fi
+
+            echo "=== $PLAN: $USER1@$PORT1 (linux) x $USER2@$PORT2 (windows) ${EXTRA[*]} ==="
             START_MS=$(date +%s%3N)
-            TIMEOUT_S="$(node -e '
-              const m = require("./test-plans/scripts/manifest.json");
-              const t = m.tests.find(t => t.id === process.argv[1]);
-              process.stdout.write(String(Number(t.timeoutSeconds || 600)));
-            ' "$PLAN")"
             if RELAY_CDP_ENDPOINTS="$ENDPOINTS" timeout "${TIMEOUT_S}s" \
                  python "test-plans/scripts/$SCRIPT" \
-                   --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build \
+                   --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build "${EXTRA[@]}" \
                    > "$RUN_DIR/plan.log" 2>&1; then
-              STATUS=pass
+              STATUS=pass; REASON=""
               echo "--- $PLAN PASSED ---"
             else
-              STATUS=fail
-              ANY_FAIL=1
+              STATUS=fail; ANY_FAIL=1; REASON=plan-failed
               echo "::error::$PLAN failed on Linux x Windows"
               echo "--- $PLAN FAILED (tail) ---"; tail -25 "$RUN_DIR/plan.log" || true
             fi
             DUR=$(( $(date +%s%3N) - START_MS ))
             echo "--- $PLAN ${STATUS} in $((DUR/1000))s ---"
-            RESULTS+=("$PLAN:$STATUS:$DUR")
+            RESULTS+=("$PLAN|$STATUS|$DUR|$REASON")
             write_summary "${RESULTS[@]}"
           done
 
