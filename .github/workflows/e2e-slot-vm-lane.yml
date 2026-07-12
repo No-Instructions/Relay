@@ -309,10 +309,19 @@ jobs:
           ' "$PLAN")"
           RUN_DIR="$HOME/slot-vm-runs/$PLAN"
           mkdir -p "$RUN_DIR"
-          echo "=== $PLAN ($SCRIPT): $USER1@$PORT1 x $USER2@$PORT2 ==="
-          RELAY_CDP_ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}" \
-            python "test-plans/scripts/$SCRIPT" \
-              --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build
+          # Log hygiene (public repo = public logs): plan stdout goes to a
+          # runner-local file, never the console; only the plan ID and pass/fail
+          # reach the step log.
+          echo "=== $PLAN: $USER1@$PORT1 x $USER2@$PORT2 ==="
+          if RELAY_CDP_ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}" \
+               python "test-plans/scripts/$SCRIPT" \
+                 --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build \
+                 > "$RUN_DIR/plan.log" 2>&1; then
+            echo "--- $PLAN PASSED ---"
+          else
+            echo "::error::$PLAN failed (plan stdout kept runner-local, not logged)"
+            exit 1
+          fi
 
       - name: Collect diagnostics on failure
         if: failure()
@@ -323,9 +332,9 @@ jobs:
             echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
           done
           for VM in "$VM1" "$VM2"; do
-            echo "=== $VM slot status + launch log ==="
+            echo "=== $VM slot status ==="
             gcloud compute ssh "$VM" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-              --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json; echo "--- launch log ---"; cat ~/relay-slots/config-*/slot-launch.log 2>/dev/null | tail -40' 2>/dev/null || echo "  (ssh failed)"
+              --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
           done
 
       - name: Tear down VMs
