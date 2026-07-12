@@ -580,7 +580,7 @@ jobs:
           done
           echo "=== $VM_LIN slot status ==="
           gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-            --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json; cat ~/relay-slots/config-*/slot-launch.log 2>/dev/null | tail -30' 2>/dev/null || echo "  (ssh failed)"
+            --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
           echo "=== $VM_WIN CDP liveness (VM-local, is Obsidian still up?) ==="
           gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
             --ssh-key-file="$HOME/.ssh/win-slot" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
