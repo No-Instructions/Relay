@@ -266,7 +266,18 @@ jobs:
           SLOT_PY="$HOME/.slot-venv/bin/python"
           uv pip install --python "$SLOT_PY" click websockets
           cd ~/relay-harness
-          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision --user "$USER_NAME" --plugin-dir ~/relay-bundle
+          # Auxiliary community plugins some plans need: obsidian-kanban (tp042)
+          # and the TSDB metrics side-car (tp033). The runner installs each bundle
+          # and enables it alongside Relay via --extra-plugin-dir.
+          for pl in "obsidian-kanban=mgmeyers/obsidian-kanban/releases/download/2.0.51" "obsidian-tsdb=dtkav/obsidian-tsdb/releases/download/1.0.12"; do
+            id="${pl%%=*}"; base="https://github.com/${pl#*=}"; mkdir -p ~/"$id"-bundle
+            for f in main.js manifest.json styles.css; do wget -q -O ~/"$id"-bundle/"$f" "$base/$f" || true; done
+          done
+          # TSDB records nothing until onboarded with a metrics-server config;
+          # ship the same data.json the shared-slot lane writes so tp033 has data.
+          printf '%s' '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}' > ~/obsidian-tsdb-bundle/data.json
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision --user "$USER_NAME" --plugin-dir ~/relay-bundle \
+            --extra-plugin-dir ~/obsidian-kanban-bundle --extra-plugin-dir ~/obsidian-tsdb-bundle
           OBSIDIAN_PATH="$OBSIDIAN_PATH" "$SLOT_PY" .claude/scripts/obsidian_slot.py slot start --user "$USER_NAME" --wait-timeout 150
           "$SLOT_PY" .claude/scripts/obsidian_slot.py slot status --user "$USER_NAME" --json
           cd ~/relay-harness/playwright
@@ -352,7 +363,13 @@ jobs:
           $env:OBSIDIAN_PATH = $obs; Log ("obsidian: " + $obs)
 
           Set-Location C:\relay-harness
-          & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin
+          foreach ($pl in @(@{id="obsidian-kanban";base="https://github.com/mgmeyers/obsidian-kanban/releases/download/2.0.51"}, @{id="obsidian-tsdb";base="https://github.com/dtkav/obsidian-tsdb/releases/download/1.0.12"})) {
+            $dir = "C:\$($pl.id)-bundle"; New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            foreach ($f in @("main.js","manifest.json","styles.css")) { try { Invoke-WebRequest -UseBasicParsing -Uri "$($pl.base)/$f" -OutFile "$dir\$f" } catch { Log "$($pl.id) $f fetch: $_" } }
+          }
+          # TSDB needs its onboarded metrics-server config to record anything (tp033).
+          Set-Content -Path "C:\obsidian-tsdb-bundle\data.json" -Encoding ascii -Value '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}'
+          & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin --extra-plugin-dir C:\obsidian-kanban-bundle --extra-plugin-dir C:\obsidian-tsdb-bundle
           if ($LASTEXITCODE -ne 0) { throw "slot provision failed (exit $LASTEXITCODE)" }
           & $py .claude\scripts\obsidian_slot.py slot start --user $SlotUser --wait-timeout 180
           if ($LASTEXITCODE -ne 0) { throw "slot start failed (exit $LASTEXITCODE)" }
@@ -407,6 +424,15 @@ jobs:
           ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}"
           SUMMARY="$HOME/mixed-summary.json"
           echo "$SUMMARY" >> "$GITHUB_ENV"
+
+          # Diagnostic (non-fatal): which community plugins actually loaded on each
+          # slot. A plugin in the enable list but absent here means Obsidian refused
+          # to load it — the direct signal for the tp042 (kanban) / tp033 (tsdb) unlocks.
+          for V in "$USER1" "$USER2"; do
+            echo "--- $V loaded community plugins ---"
+            RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py --vault "$V" eval \
+              <<< 'JSON.stringify(Object.keys(app.plugins.plugins))' 2>&1 | tail -2 || true
+          done
 
           # Between-plan hygiene mirrors run-test-plan-suite.sh's sequential reuse
           # of persistent slots: close any editors the last plan left open and let
