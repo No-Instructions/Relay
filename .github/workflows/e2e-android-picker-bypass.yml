@@ -1,20 +1,17 @@
-name: E2E Android picker-bypass (slot-VM, seeded folder)
+name: E2E Android picker-bypass (emulator, seeded folder)
 
-# Hardware-free spike for the Android emulator folder-picker gate, on the
-# compliant slot-VM topology: the hosted runner is a DISPATCHER ONLY. It builds
-# the plugin and orchestrates over SSH; the emulator, Appium, the folder-seed
-# bypass, and the Tier-A single-slot plans all execute on a GCE nested-
-# virtualization VM (KVM), never on GitHub-hosted compute.
+# Hardware-free spike for the Android emulator folder-picker gate. Where
+# e2e-android-tier-a drives the native SAF picker (which does not foreground on a
+# cold headless emulator), this lane removes the picker from the flow: it
+# pre-seeds the folder registration through two mechanisms — the vault's raw
+# filesystem path, and its storage tree content-URI plus a matching persisted URI
+# permission — then launches Obsidian and checks whether the vault workspace
+# comes up with no picker. If either seed opens the vault, the run continues into
+# plugin install, auth, the CDP bridge, and the Tier-A single-slot plans. If
+# neither does, it fails with a per-mechanism classification: the hardware-free
+# bypass levers are exhausted and Android Tier-A stays device-only.
 #
-# The bypass removes the SAF picker from the flow: android-picker-bypass.sh
-# pre-seeds the vault's folder registration two ways — its raw filesystem path,
-# and its storage tree content-URI plus a matching persisted URI permission —
-# launches Obsidian, and checks whether the workspace comes up with no picker
-# before running the plans. VM-side provisioning noise and all sensitive
-# diagnostics stay on the VM; the dispatcher streams only stage markers and
-# verdicts to the public log, and the sole artifact is the coverage summary.
-#
-# Dispatch-only; disabled until scheduled.
+# Dispatch-only; hosted runner (no GCE quota).
 
 on:
   workflow_dispatch:
@@ -24,7 +21,7 @@ on:
         required: true
         default: 'origin/main'
       harness_ref:
-        description: 'relay-harness ref (VM bootstrap + picker-bypass + plans)'
+        description: 'relay-harness ref providing the Android helpers and plans'
         required: false
         default: 'origin/main'
       obsidian_version:
@@ -48,22 +45,14 @@ concurrency:
   group: e2e-android-picker-bypass
   cancel-in-progress: false
 
-env:
-  GCP_PROJECT: tactile-timer-426817-t6
-  VM_ZONE: us-west1-b
-  # Nested virtualization requires an N-series machine (E2 does not support it).
-  VM_MACHINE_TYPE: n2-standard-4
-  VM_IMAGE_FAMILY: ubuntu-2204-lts
-  VM_IMAGE_PROJECT: ubuntu-os-cloud
-
 jobs:
   android-picker-bypass:
-    name: android picker-bypass (slot-VM)
+    name: android picker-bypass
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    permissions:
-      contents: read
+    timeout-minutes: 60
     env:
+      APPIUM_PORT: '4723'
+      ANDROID_SERIAL: emulator-5554
       PYTHONUTF8: '1'
       PYTHONIOENCODING: 'utf-8'
 
@@ -91,150 +80,93 @@ jobs:
           npm ci --no-audit --no-fund
           node esbuild.config.mjs staging
           test -f main.js && test -f manifest.json && test -f styles.css
-          mkdir -p "$HOME/relay-bundle"
-          cp main.js manifest.json styles.css "$HOME/relay-bundle/"
           echo "Built plugin $(node -e 'console.log(require("./manifest.json").version)')"
 
-      - name: Auth to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
-
-      - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Sweep stale android VMs
-        shell: bash
-        run: |
-          # android slot-VM names embed the run id; anything else under the prefix
-          # is a leak from a crashed/preempted run. The concurrency group is
-          # serialized, so this cannot race a sibling.
-          KEEP="relay-e2e-android-${GITHUB_RUN_ID}"
-          stale=$(gcloud compute instances list --project="$GCP_PROJECT" \
-            --zones="$VM_ZONE" --filter="name~^relay-e2e-android-" \
-            --format="value(name)" 2>/dev/null || true)
-          for name in $stale; do
-            case "$name" in
-              "$KEEP") echo "keeping $name (current run)" ;;
-              *) echo "sweeping stale $name";
-                 gcloud compute instances delete "$name" --quiet \
-                   --zone="$VM_ZONE" --project="$GCP_PROJECT" || true ;;
-            esac
-          done
-
-      - name: Create nested-virt VM
-        shell: bash
-        run: |
-          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
-          printf '\nHost *\n  ConnectTimeout 20\n  StrictHostKeyChecking no\n' >> ~/.ssh/config
-          VM="relay-e2e-android-${GITHUB_RUN_ID}"
-          echo "VM=$VM" >> "$GITHUB_ENV"
-          echo "Creating $VM ..."
-          gcloud compute instances create "$VM" \
-            --project="$GCP_PROJECT" --zone="$VM_ZONE" \
-            --machine-type="$VM_MACHINE_TYPE" \
-            --enable-nested-virtualization \
-            --image-family="$VM_IMAGE_FAMILY" --image-project="$VM_IMAGE_PROJECT" \
-            --boot-disk-size=40GB --boot-disk-type=pd-ssd \
-            --metadata=block-project-ssh-keys=TRUE \
-            --tags=relay-e2e
-
-      - name: Wait for VM SSH readiness
-        shell: bash
-        run: |
-          ok=0
-          for i in $(seq 1 30); do
-            if gcloud compute ssh "$VM" --quiet \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-              --command="echo ready" 2>/dev/null; then
-              echo "$VM is ready"; ok=1; break
-            fi
-            sleep 5
-          done
-          [ "$ok" = 1 ] || { echo "::error::$VM SSH never became ready"; exit 1; }
-
-      - name: Provision and run the picker-bypass flow on the VM
+      - name: Clone relay-harness
         shell: bash
         env:
           HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
         run: |
-          USER_NAME="${{ github.event.inputs.user || 'erik' }}"
-          PLANS="${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}"
-          OBS_VER="${{ github.event.inputs.obsidian_version || '1.12.7' }}"
-          API_LEVEL="${{ github.event.inputs.api_level || '34' }}"
-          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
-
-          echo "$HARNESS_DEPLOY_KEY" > /tmp/harness-key
-          chmod 600 /tmp/harness-key
-
-          # Ship the harness deploy key + built plugin bundle to the VM. scp does
-          # not create intermediate dirs, so make the target dir first.
-          gcloud compute ssh "$VM" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-            --command="mkdir -p ~/relay-bundle"
-          for f in main.js manifest.json styles.css; do
-            gcloud compute scp --quiet "$HOME/relay-bundle/$f" "$VM":"~/relay-bundle/$f" \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
-          done
-          gcloud compute scp --quiet /tmp/harness-key "$VM":"~/harness-key" \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
-
-          # Clone the harness on the VM, then hand the whole emulator flow to the
-          # committed bootstrap script. Its stdout (stage markers + verdicts)
-          # streams back here to the public log; provisioning noise and all
-          # sensitive diagnostics stay VM-local.
-          gcloud compute ssh "$VM" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-            --command="bash -s -- '$USER_NAME' '$PLANS' '$OBS_VER' '$API_LEVEL' '$HREF'" << 'REMOTE'
-          set -Eeuo pipefail
-          USER_NAME="$1"; PLANS="$2"; OBS_VER="$3"; API_LEVEL="$4"; HARNESS_REF="$5"
-
           mkdir -p ~/.ssh
-          mv ~/harness-key ~/.ssh/harness-key
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
           chmod 600 ~/.ssh/harness-key
-          cat > ~/.ssh/known_hosts_gh << 'EOF'
-          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
-          EOF
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/harness-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_gh"
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
 
-          if [ ! -d ~/relay-harness ]; then
-            git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+      - name: Install harness playwright deps (webdriverio)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Install Appium and UiAutomator2 driver
+        shell: bash
+        run: |
+          npm install -g 'appium@^3'
+          appium driver install uiautomator2
+          appium --version
+          appium driver list --installed
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install device-slot python deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # obsidian_device_slot.py imports obsidian_slot (tree-sitter at import);
+          # the scripted plans import obsidian_ctl (tree-sitter); websockets drives
+          # both the CDP responsiveness probe and the seeded-vault-state probe.
+          python -m pip install click websockets tree-sitter tree-sitter-javascript
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+
+      - name: Download Obsidian APK
+        shell: bash
+        run: |
+          VER="${{ github.event.inputs.obsidian_version || '1.12.7' }}"
+          URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v${VER}/Obsidian-${VER}.apk"
+          echo "Downloading $URL"
+          curl -fL -o "$GITHUB_WORKSPACE/obsidian.apk" "$URL"
+          SIZE=$(stat -c%s "$GITHUB_WORKSPACE/obsidian.apk")
+          if [ "$SIZE" -lt 8000000 ]; then
+            echo "::error::Obsidian APK download looks wrong ($SIZE bytes)"; head -c 400 "$GITHUB_WORKSPACE/obsidian.apk" || true; exit 1
           fi
-          cd ~/relay-harness
-          git fetch origin --prune
-          git checkout -- . || true
-          git clean -fd || true
-          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
-            || { git fetch origin "$HARNESS_REF"; git checkout --detach "$HARNESS_REF"; }
-          echo "harness: $(git rev-parse HEAD)"
+          echo "APK $SIZE bytes"
 
-          bash scripts/ci/android-vm-bootstrap.sh "$USER_NAME" "$PLANS" "$OBS_VER" "$HOME/relay-bundle" "$API_LEVEL"
-          REMOTE
-
-      - name: Fetch coverage summary
-        if: always()
-        continue-on-error: true
+      - name: Enable KVM
         shell: bash
         run: |
-          [ -n "${VM:-}" ] || exit 0
-          gcloud compute scp --quiet \
-            "$VM":"~/android-workspace/android-picker-bypass-summary.json" \
-            "$GITHUB_WORKSPACE/android-picker-bypass-summary.json" \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap || true
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
-      - name: Collect structural diagnostics on failure
-        if: failure()
-        continue-on-error: true
-        shell: bash
-        run: |
-          # Structural facts only (bare adb state / focused component). No logcat,
-          # dumpsys, screen capture, or diag-log pull leaves the VM.
-          [ -n "${VM:-}" ] || exit 0
-          gcloud compute ssh "$VM" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-            --command='export PATH="$HOME/android-sdk/platform-tools:$PATH"; adb devices; adb shell dumpsys window 2>/dev/null | grep -m1 mCurrentFocus | grep -oE "[A-Za-z0-9_.]+/[A-Za-z0-9_.]+" | head -1 || true' \
-            2>/dev/null || echo "  (ssh diagnostics unavailable)"
+      - name: Run Android picker-bypass flow on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ github.event.inputs.api_level || '34' }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          # The emulator action runs `script` under dash; invoke the sequence as a
+          # committed bash script so pipefail and the failure trap survive. The
+          # seeds need a rootable image, which google_apis provides.
+          script: bash "$HOME/relay-harness/scripts/ci/android-picker-bypass.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}" > "$HOME/emu-run.log" 2>&1
 
+      # Coverage summary is plan-id/status/duration only (non-sensitive). No video
+      # or diagnostics artifact: this is a public repo, so nothing that could carry
+      # vault content or auth detail leaves the runner.
       - name: Upload coverage summary
         if: always()
         continue-on-error: true
@@ -244,13 +176,3 @@ jobs:
           path: android-picker-bypass-summary.json
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Tear down VM
-        if: always()
-        shell: bash
-        run: |
-          [ -n "${VM:-}" ] || { echo "no VM to delete"; exit 0; }
-          echo "Deleting $VM ..."
-          gcloud compute instances delete "$VM" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" || true
-          echo "VM teardown complete"
