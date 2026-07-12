@@ -1227,8 +1227,13 @@ export class SharedFolder extends HasProvider {
 	private connectForkedIdleDocument(file: Document): void {
 		const hsm = file.hsm;
 		if (!hsm) return;
-		if (hsm.state.fork === null) return;
-		if (!hsm.matches("idle.localAhead")) return;
+		// Re-engage the provider for idle documents whose reconciliation needs a
+		// live remote: forked documents awaiting fork-reconcile, and documents
+		// wedged in idle.error with a retryable stored error — the reconnect
+		// delivers the remote update that re-arms them.
+		const forkedIdle = hsm.state.fork !== null && hsm.matches("idle.localAhead");
+		const retryableError = hsm.matches("idle.error") && hsm.state.errorRetryable === true;
+		if (!forkedIdle && !retryableError) return;
 		if (file.hasProviderIntegration() && file.intent === "connected") return;
 		if (!this.shouldConnect) return;
 
