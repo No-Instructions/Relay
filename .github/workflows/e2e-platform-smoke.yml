@@ -6,6 +6,10 @@ name: E2E platform smoke
 # watching, Electron behavior) that Linux VMs cannot.
 
 on:
+  schedule:
+    # Nightly platform signal; scheduled runs test origin/main with the
+    # default strands. Concurrency serializes on the arlo/bella slots.
+    - cron: '17 9 * * *'
   workflow_dispatch:
     inputs:
       ref:
@@ -52,7 +56,7 @@ jobs:
       - name: Resolve product ref
         shell: bash
         run: |
-          REF="${{ github.event.inputs.ref }}"
+          REF="${{ github.event.inputs.ref || 'origin/main' }}"
           git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
           echo "Product commit: $(git rev-parse HEAD)"
 
@@ -79,7 +83,7 @@ jobs:
           ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
           GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
             git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
-          HREF="${{ github.event.inputs.harness_ref }}"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
           git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
             || git -C "$HOME/relay-harness" checkout --detach "$HREF"
           echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
@@ -182,7 +186,7 @@ jobs:
         shell: bash
         run: |
           cd "$HOME/relay-harness/playwright"
-          IFS=',' read -ra STRANDS <<< "${{ github.event.inputs.tests }}"
+          IFS=',' read -ra STRANDS <<< "${{ github.event.inputs.tests || 'test-basic-open-close,test-idle-registration' }}"
           FAIL=0
           for strand in "${STRANDS[@]}"; do
             echo "=== Running $strand on ${{ matrix.platform.name }} (port $CDP_PORT) ==="
