@@ -118,17 +118,28 @@ jobs:
       - name: Install Obsidian (windows)
         shell: pwsh
         run: |
-          choco install obsidian -y --no-progress
-          $roots = @("$env:LOCALAPPDATA\Programs\Obsidian", "$env:LOCALAPPDATA\Obsidian",
-                     "C:\Program Files\Obsidian", "C:\Users\runneradmin\AppData\Local\Programs\Obsidian")
-          $exe = $roots | Where-Object { Test-Path $_ } |
-            ForEach-Object { Get-ChildItem -Path $_ -Filter Obsidian.exe -Recurse -ErrorAction SilentlyContinue } |
-            Select-Object -First 1 -ExpandProperty FullName
-          if (-not $exe) {
-            $exe = Get-ChildItem -Path "$env:LOCALAPPDATA", "C:\Program Files" -Filter Obsidian.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+          # The Obsidian NSIS installer intermittently crashes under silent
+          # install on hosted Windows (choco reports exit -1073741819 / access
+          # violation), leaving no Obsidian.exe. Retry the whole install a few
+          # times and gate on the executable actually appearing.
+          $ErrorActionPreference = "Continue"
+          $exe = $null
+          for ($i = 1; $i -le 3; $i++) {
+            choco install obsidian -y --no-progress --force
+            $roots = @("$env:LOCALAPPDATA\Programs\Obsidian", "$env:LOCALAPPDATA\Obsidian",
+                       "C:\Program Files\Obsidian", "C:\Users\runneradmin\AppData\Local\Programs\Obsidian")
+            $exe = $roots | Where-Object { Test-Path $_ } |
+              ForEach-Object { Get-ChildItem -Path $_ -Filter Obsidian.exe -Recurse -ErrorAction SilentlyContinue } |
               Select-Object -First 1 -ExpandProperty FullName
+            if (-not $exe) {
+              $exe = Get-ChildItem -Path "$env:LOCALAPPDATA", "C:\Program Files" -Filter Obsidian.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+                Select-Object -First 1 -ExpandProperty FullName
+            }
+            if ($exe) { break }
+            Write-Host "Obsidian install attempt $i yielded no Obsidian.exe (installer may have crashed); retrying..."
+            Start-Sleep -Seconds 10
           }
-          if (-not $exe) { throw "Obsidian.exe not found after install" }
+          if (-not $exe) { throw "Obsidian.exe not found after install (3 attempts)" }
           echo "Found Obsidian at $exe"
           echo "OBSIDIAN_PATH=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
