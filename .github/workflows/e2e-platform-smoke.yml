@@ -198,7 +198,7 @@ jobs:
           python .claude/scripts/obsidian_slot.py slot status \
             --user "${{ matrix.platform.user }}" --probe-timeout 15
 
-      - name: Run scripted single-slot plans (recorded)
+      - name: Run scripted single-slot plans
         shell: bash
         env:
           RELAY_CDP_ENDPOINTS: http://127.0.0.1:${{ matrix.platform.port }}
@@ -206,19 +206,10 @@ jobs:
           # wait so a plan's own pass/fail (not metrics infra) decides the step.
           RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
         run: |
-          # A CDP screencast records the scripted plans for the whole step. It
-          # is fully non-fatal: a recording/ffmpeg failure never changes the
-          # plans' pass/fail (the step exits with the plan result). Frames land
-          # in RUNNER_TEMP and the mp4 in the workspace; both paths go straight
-          # to Node (which normalizes separators), so bash never fs-touches the
-          # OS-native paths.
-          FRAMEDIR="$RUNNER_TEMP/smoke-frames"
-          VIDEO="${{ github.workspace }}/platform-smoke-${{ matrix.platform.name }}.mp4"
-          cd "$HOME/relay-harness/playwright"
-          node lib/screencast-cli.mjs record "${{ matrix.platform.port }}" "$FRAMEDIR" > screencast.log 2>&1 &
-          REC_PID=$!
-          sleep 4
-
+          # Log hygiene (public repo = public logs AND public artifacts): each
+          # plan's stdout goes to a runner-local file, never the console; only the
+          # plan ID and pass/fail reach the log. No screencast — a screen recording
+          # of the running vault would ship note content as a public artifact.
           cd "$HOME/relay-harness"
           FAIL=0
           IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp000,tp002,tp003' }}"
@@ -234,36 +225,17 @@ jobs:
             ' "$plan")"
             RUN_DIR="$HOME/slot-runs/$plan"
             mkdir -p "$RUN_DIR"
-            echo "=== $plan ($script) on port ${{ matrix.platform.port }} ==="
+            echo "=== $plan on port ${{ matrix.platform.port }} ==="
             if python "test-plans/scripts/$script" \
-                 --vault "${{ matrix.platform.user }}" --run-dir "$RUN_DIR" --no-verify-build; then
+                 --vault "${{ matrix.platform.user }}" --run-dir "$RUN_DIR" --no-verify-build \
+                 > "$RUN_DIR/plan.log" 2>&1; then
               echo "--- $plan PASSED ---"
             else
-              echo "::error::$plan failed on ${{ matrix.platform.name }}"
+              echo "::error::$plan failed on ${{ matrix.platform.name }} (plan stdout kept runner-local, not logged)"
               FAIL=1
             fi
           done
-
-          # Stop the recorder and assemble the mp4 — all non-fatal.
-          kill "$REC_PID" 2>/dev/null || true
-          sleep 3
-          echo "=== screencast log ==="
-          cat "$HOME/relay-harness/playwright/screencast.log" 2>/dev/null || true
-          ( cd "$HOME/relay-harness/playwright" \
-            && node lib/screencast-cli.mjs assemble "$FRAMEDIR" "$VIDEO" ) \
-            || echo "screencast assemble failed (non-fatal)"
-
           exit $FAIL
-
-      - name: Upload smoke video
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: platform-smoke-video-${{ matrix.platform.name }}
-          path: platform-smoke-${{ matrix.platform.name }}.mp4
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Collect diagnostics on failure
         if: failure()
@@ -273,8 +245,6 @@ jobs:
           echo "=== slot status ==="
           python .claude/scripts/obsidian_slot.py slot status \
             --user "${{ matrix.platform.user }}" --json || true
-          echo "=== launch log ==="
-          python -c "import sys; sys.path.insert(0, '.claude/scripts'); import obsidian_slot as s; slot = s.Slot('${{ matrix.platform.user }}', s.slot_root(None)); print(slot.launch_log.read_text() if slot.launch_log.exists() else '(no launch log)')" || true
 
       - name: Stop slot
         if: always()
