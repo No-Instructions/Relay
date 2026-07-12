@@ -292,10 +292,14 @@ jobs:
           # clones the harness, then provisions/starts/authenticates the slot.
           cat > /tmp/win-slot-provision.ps1 <<'PS1'
           param([string]$SlotUser, [int]$Port, [string]$ProductRef = "origin/main", [string]$HarnessRef = "origin/main")
-          $ErrorActionPreference = "Stop"
+          # git, npm and node write ordinary progress to stderr (e.g. "HEAD is now
+          # at ..."); under "Stop" PowerShell turns any native-command stderr into a
+          # terminating NativeCommandError. Use "Continue" and gate on explicit exit
+          # codes / Test-Path checks below; GIT_REDIRECT_STDERR routes git to stdout.
+          $ErrorActionPreference = "Continue"
           function Log($m) { Write-Output "SLOT-PROV: $m" }
           $E2E = "C:\relay-e2e-testing"; New-Item -ItemType Directory -Path $E2E -Force | Out-Null
-          $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"
+          $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"; $env:GIT_REDIRECT_STDERR = "2>&1"
           Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
           function Refresh-Path { $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") }
           Refresh-Path
@@ -334,13 +338,17 @@ jobs:
 
           Set-Location C:\relay-harness
           & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin
+          if ($LASTEXITCODE -ne 0) { throw "slot provision failed (exit $LASTEXITCODE)" }
           & $py .claude\scripts\obsidian_slot.py slot start --user $SlotUser --wait-timeout 180
+          if ($LASTEXITCODE -ne 0) { throw "slot start failed (exit $LASTEXITCODE)" }
           & $py .claude\scripts\obsidian_slot.py slot status --user $SlotUser --json
 
           Set-Location C:\relay-harness\playwright
           npm install --ignore-scripts --no-audit --no-fund --loglevel=error
           node utils\wait-for-ready.mjs $Port
+          if ($LASTEXITCODE -ne 0) { throw "wait-for-ready failed (exit $LASTEXITCODE)" }
           node utils\inject-auth.mjs $SlotUser $Port
+          if ($LASTEXITCODE -ne 0) { throw "inject-auth failed (exit $LASTEXITCODE)" }
           Log ("windows slot " + $SlotUser + " authenticated on port " + $Port)
           PS1
 
