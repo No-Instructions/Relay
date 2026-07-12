@@ -109,8 +109,6 @@ jobs:
           git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
             || git -C "$HOME/relay-harness" checkout --detach "$HREF"
           echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
-          cd "$HOME/relay-harness/playwright"
-          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
 
       - name: Auth to GCP
         uses: google-github-actions/auth@v2
@@ -166,8 +164,8 @@ jobs:
           chmod 600 /tmp/harness-key
 
           setup_vm() {
-            local VM="$1" USER_NAME="$2"
-            echo "=== provisioning $VM for $USER_NAME ==="
+            local VM="$1" USER_NAME="$2" PORT="$3"
+            echo "=== provisioning $VM for $USER_NAME (port $PORT) ==="
             # Ship the built plugin bundle and the harness deploy key. scp does
             # not create intermediate dirs, so make the target dir first.
             gcloud compute ssh "$VM" --quiet \
@@ -182,10 +180,11 @@ jobs:
 
             gcloud compute ssh "$VM" --quiet \
               --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-              --command="bash -s -- '$USER_NAME' '$HREF'" << 'REMOTE'
+              --command="bash -s -- '$USER_NAME' '$HREF' '$PORT'" << 'REMOTE'
           set -eo pipefail
           USER_NAME="$1"
           HARNESS_REF="$2"
+          PORT="$3"
 
           # Harness deploy key + github known_hosts for the SSH clone.
           mkdir -p ~/.ssh
@@ -230,13 +229,23 @@ jobs:
           OBSIDIAN_PATH="$OBSIDIAN_PATH" "$SLOT_PY" .claude/scripts/obsidian_slot.py slot start \
             --user "$USER_NAME" --wait-timeout 150
           "$SLOT_PY" .claude/scripts/obsidian_slot.py slot status --user "$USER_NAME" --json
+
+          # Authenticate the slot on the VM itself. app:reload + reconnect is
+          # fast and reliable against localhost; over an SSH tunnel the reload
+          # races the reconnect. The driver then only tunnels the plan, which
+          # does plain CDP evals (no reload) and tolerates the tunnel.
+          cd ~/relay-harness/playwright
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+          node utils/wait-for-ready.mjs "$PORT"
+          node utils/inject-auth.mjs "$USER_NAME" "$PORT"
+          echo "slot $USER_NAME authenticated on port $PORT"
           REMOTE
           }
 
-          setup_vm "$VM1" "$USER1"
-          setup_vm "$VM2" "$USER2"
+          setup_vm "$VM1" "$USER1" "$PORT1"
+          setup_vm "$VM2" "$USER2" "$PORT2"
 
-      - name: Tunnel, authenticate, and run the plan
+      - name: Tunnel and run the plan
         shell: bash
         run: |
           # Background SSH tunnels must live in the same step as the plan: a
@@ -267,12 +276,8 @@ jobs:
             [ "$ok" = 1 ] || { echo "::error::tunnel to port $PORT never came up"; exit 1; }
           done
 
-          cd "$HOME/relay-harness/playwright"
-          node utils/wait-for-ready.mjs "$PORT1"
-          node utils/inject-auth.mjs "$USER1" "$PORT1"
-          node utils/wait-for-ready.mjs "$PORT2"
-          node utils/inject-auth.mjs "$USER2" "$PORT2"
-
+          # The slots were already authenticated VM-locally during provisioning;
+          # the driver drives the plan straight over the tunnels.
           cd "$HOME/relay-harness"
           PLAN="${{ github.event.inputs.plan }}"
           SCRIPT="$(node -e '
@@ -303,14 +308,19 @@ jobs:
               --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json; echo "--- launch log ---"; cat ~/relay-slots/config-*/slot-launch.log 2>/dev/null | tail -40' 2>/dev/null || echo "  (ssh failed)"
           done
 
-      - name: Tear down tunnels and VMs
+      - name: Tear down VMs
         if: always()
         shell: bash
         run: |
-          kill "${TUN1_PID:-0}" "${TUN2_PID:-0}" 2>/dev/null || true
+          # Delete both VMs in parallel so cleanup finishes fast and does not
+          # leave a VM leased if the runner is preempted mid-teardown.
+          pids=""
           for VM in "$VM1" "$VM2"; do
             [ -n "$VM" ] || continue
             echo "Deleting $VM ..."
             gcloud compute instances delete "$VM" --quiet \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" || true
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" &
+            pids="$pids $!"
           done
+          for p in $pids; do wait "$p" || true; done
+          echo "VM teardown complete"
