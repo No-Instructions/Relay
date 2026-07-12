@@ -144,7 +144,8 @@ jobs:
             const fs = require("fs"), path = require("path");
             const vault = process.argv[1], config = process.argv[2];
             fs.writeFileSync(path.join(config, "obsidian.json"), JSON.stringify({
-              vaultList: [{ path: vault, ts: Date.now(), open: true }]
+              vaults: { smokevault0001: { path: vault, ts: Date.now(), open: true } },
+              updateDisabled: true,
             }));
           ' "$VAULT_NATIVE" "$CONFIG"
 
@@ -162,10 +163,12 @@ jobs:
       - name: Start Obsidian
         shell: bash
         run: |
+          # The vault opens from obsidian.json (open: true); no URI argument
+          # needed, and a fresh install handles config-driven open more
+          # reliably than an obsidian:// argv link.
           "$OBSIDIAN_EXE" --user-data-dir="$SMOKE_CONFIG" \
             --remote-debugging-port="$CDP_PORT" \
-            --no-sandbox \
-            "obsidian://open?path=$SMOKE_VAULT" &
+            --no-sandbox &
           echo "Obsidian PID: $!"
 
       - name: Wait for ready and inject auth
