@@ -1,0 +1,357 @@
+name: E2E macOS full suite (two-slot, one host)
+
+# Full two-slot scripted suite on a single GitHub-hosted macOS runner. Two slots
+# live on the ONE host: distinct slot users get distinct --user-data-dir config
+# dirs and CDP ports, which yields two independent Electron/Obsidian instances
+# and locks on the same machine (no multi-instance re-signing needed). Real
+# macOS<->macOS sync between them, driven locally over 127.0.0.1 CDP — no SSH
+# tunnels, no GCE.
+#
+# This is the mixed lane's plan-running body (manifest-driven skips, per-plan
+# shared fixtures, between-plan hygiene, incremental summary) run against two
+# local slots instead of two tunneled VMs. The same plan classes are skipped
+# with a reason: storage (needs a storage-quota relay), folder-hsm (needs the
+# enableFolderHSM profile flag), and tp033 (metrics-heavy, platform-agnostic).
+#
+# Hosted-macOS minutes bill at a premium, so this is nightly/dispatch only (never
+# per-push).
+#
+# ACCOUNT SHARING (collision surface — keep explicit): no dedicated staging
+# accounts exist beyond the reserved band, so this lane reuses platform-smoke's
+# arlo/bella pair. The two never collide because their crons are separated —
+# platform-smoke at 09:17, this lane at 05:23 — and a run is ~45-90 min. Keep the
+# two crons hours apart, and when dispatching by hand pick a window when
+# platform-smoke is idle (or override user1/user2 with a free pair). The Windows
+# hosted full-suite lane reuses charlie/donna on its own separated cron.
+
+on:
+  schedule:
+    # Nightly at 05:23, hours clear of platform-smoke's 09:17 arlo/bella run.
+    - cron: '23 5 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Product ref to test'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref'
+        required: false
+        default: 'origin/main'
+      user1:
+        description: 'Slot 1 staging user'
+        required: false
+        default: 'arlo'
+      user2:
+        description: 'Slot 2 staging user'
+        required: false
+        default: 'bella'
+      plans:
+        description: 'Comma-separated two-slot scripted plan ids (default: the full two-slot suite)'
+        required: false
+        default: 'tp001,tp004,tp006,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp031,tp033,tp034,tp035,tp036,tp037,tp041,tp042,tp043,tp044,tp052,tp053'
+
+concurrency:
+  group: e2e-macos-fullsuite
+  cancel-in-progress: false
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+  RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
+  USER1: ${{ github.event.inputs.user1 || 'arlo' }}
+  USER2: ${{ github.event.inputs.user2 || 'bella' }}
+
+jobs:
+  macos-fullsuite:
+    name: macos-fullsuite
+    runs-on: macos-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref || 'origin/main' }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin (shared by both slots)
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          test -f main.js && test -f manifest.json && test -f styles.css
+
+      - name: Clone relay-harness (driver)
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Install Obsidian (macos)
+        shell: bash
+        run: |
+          brew install --cask obsidian
+          sudo xattr -dr com.apple.quarantine /Applications/Obsidian.app || true
+          test -x "/Applications/Obsidian.app/Contents/MacOS/Obsidian"
+          echo "OBSIDIAN_PATH=/Applications/Obsidian.app/Contents/MacOS/Obsidian" >> "$GITHUB_ENV"
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python and playwright deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install click websockets tree-sitter tree-sitter-javascript matplotlib
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Resolve slot ports and fetch aux plugins
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          PORT1=$(python -c "import sys; sys.path.insert(0,'.claude/scripts'); import obsidian_slot as s; print(s.slot_port('$USER1'))")
+          PORT2=$(python -c "import sys; sys.path.insert(0,'.claude/scripts'); import obsidian_slot as s; print(s.slot_port('$USER2'))")
+          echo "PORT1=$PORT1" >> "$GITHUB_ENV"
+          echo "PORT2=$PORT2" >> "$GITHUB_ENV"
+          echo "slot users: $USER1 -> $PORT1, $USER2 -> $PORT2"
+
+          # Auxiliary community plugins some plans need: obsidian-kanban (tp042)
+          # and the TSDB metrics side-car (tp033). Downloaded once; both slots
+          # enable them via --extra-plugin-dir.
+          for pl in "obsidian-kanban=mgmeyers/obsidian-kanban/releases/download/2.0.51" "obsidian-tsdb=dtkav/obsidian-tsdb/releases/download/1.0.12"; do
+            id="${pl%%=*}"; base="https://github.com/${pl#*=}"; mkdir -p "$HOME/$id-bundle"
+            for f in main.js manifest.json styles.css; do curl -fsSL -o "$HOME/$id-bundle/$f" "$base/$f" || true; done
+          done
+          printf '%s' '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}' > "$HOME/obsidian-tsdb-bundle/data.json"
+
+      - name: Provision, start and authenticate both slots
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          AUX=(--extra-plugin-dir "$HOME/obsidian-kanban-bundle" --extra-plugin-dir "$HOME/obsidian-tsdb-bundle")
+          start_slot() {
+            local user="$1" port="$2"
+            echo "=== provisioning slot $user (port $port) ==="
+            python .claude/scripts/obsidian_slot.py slot provision --user "$user" \
+              --plugin-dir "${{ github.workspace }}" "${AUX[@]}"
+            python .claude/scripts/obsidian_slot.py slot start --user "$user" --wait-timeout 120
+            python .claude/scripts/obsidian_slot.py slot status --user "$user" --json
+            ( cd "$HOME/relay-harness/playwright"
+              node utils/wait-for-ready.mjs "$port"
+              node utils/inject-auth.mjs "$user" "$port" )
+            echo "slot $user authenticated on port $port"
+          }
+          start_slot "$USER1" "$PORT1"
+          start_slot "$USER2" "$PORT2"
+
+      - name: Run the full two-slot suite
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}"
+          SUMMARY="$HOME/macos-fullsuite-summary.json"
+          echo "SUMMARY=$SUMMARY" >> "$GITHUB_ENV"
+
+          # Diagnostic (non-fatal): which community plugins actually loaded on each
+          # slot. A plugin in the enable list but absent here means Obsidian refused
+          # to load it — the direct signal for the tp042 (kanban) unlock.
+          for V in "$USER1" "$USER2"; do
+            echo "--- $V loaded community plugins ---"
+            RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py --vault "$V" eval \
+              <<< 'JSON.stringify(Object.keys(app.plugins.plugins))' 2>&1 | tail -2 || true
+          done
+
+          # Between-plan hygiene: close editors and let CRDT sync settle before the
+          # next plan builds its own relay. Non-fatal.
+          hygiene() {
+            for V in "$USER1" "$USER2"; do
+              RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py \
+                --vault "$V" editor close-all >/dev/null 2>&1 || true
+              RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py \
+                --vault "$V" relay wait-sync-idle --timeout-ms 60000 >/dev/null 2>&1 || true
+            done
+          }
+
+          IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp001,tp004,tp006,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp031,tp033,tp034,tp035,tp036,tp037,tp041,tp042,tp043,tp044,tp052,tp053' }}"
+          declare -a RESULTS=()
+          ANY_FAIL=0
+          FIRST=1
+          # Portable per-plan timeout: neither macOS nor Windows hosted runners
+          # ship a GNU `timeout`, so enforce the manifest timeout through python
+          # (exit 124 on expiry, mirroring coreutils). The subprocess inherits the
+          # exported RELAY_CDP_ENDPOINTS and the caller's redirected stdout/stderr.
+          run_plan() {
+            local t="$1"; shift
+            python - "$t" "$@" <<'PY'
+          import subprocess, sys
+          t = int(sys.argv[1]); cmd = sys.argv[2:]
+          try:
+              sys.exit(subprocess.run(cmd, timeout=t).returncode)
+          except subprocess.TimeoutExpired:
+              sys.exit(124)
+          PY
+          }
+          write_summary() {
+            python - "$SUMMARY" "$@" <<'PY'
+          import json, sys
+          out = sys.argv[1]
+          rows = []
+          for item in sys.argv[2:]:
+              parts = item.split("|")
+              pid, status, dur = parts[0], parts[1], parts[2]
+              reason = parts[3] if len(parts) > 3 else ""
+              rows.append({"name": pid, "dir": pid, "status": status,
+                           "passed": status == "pass", "durationMs": int(dur),
+                           "reason": reason})
+          counts = {}
+          for r in rows:
+              counts[r["status"]] = counts.get(r["status"], 0) + 1
+          summary = {"total": len(rows), "pass": counts.get("pass", 0),
+                     "fail": counts.get("fail", 0), "skip": counts.get("skip", 0),
+                     "duration": sum(r["durationMs"] for r in rows)}
+          state = "failure" if summary["fail"] else "success"
+          json.dump({"state": state, "summary": summary, "tests": rows},
+                    open(out, "w"), indent=2)
+          PY
+          }
+
+          meta() {
+            node -e '
+              const m = require("./test-plans/scripts/manifest.json");
+              const t = m.tests.find(t => t.id === process.argv[1]);
+              if (!t) { process.stdout.write("MISSING"); process.exit(0); }
+              process.stdout.write([t.script, Number(t.slots||1),
+                Number(t.timeoutSeconds||600), t.sharedFixture?1:0,
+                t.requiresAttachmentStorage?1:0, t.shard||""].join("\t"));
+            ' "$1"
+          }
+
+          for PLAN in "${PLANS[@]}"; do
+            PLAN="$(echo "$PLAN" | tr -d '[:space:]')"
+            [ -n "$PLAN" ] || continue
+            IFS=$'\t' read -r SCRIPT SLOTS TIMEOUT_S FIXTURE STORAGE SHARD <<< "$(meta "$PLAN")"
+            if [ "$SCRIPT" = "MISSING" ]; then
+              echo "::warning::skip $PLAN (unknown plan id)"
+              RESULTS+=("$PLAN|skip|0|unknown-plan-id"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$SLOTS" != "2" ]; then
+              echo "::warning::skip $PLAN (not a two-slot plan)"
+              RESULTS+=("$PLAN|skip|0|not-two-slot"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$STORAGE" = "1" ]; then
+              echo "::warning::skip $PLAN (needs a storage-quota relay; ordinary staging users)"
+              RESULTS+=("$PLAN|skip|0|needs-storage-relay"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$SHARD" = "scripted-folder-hsm" ]; then
+              echo "::warning::skip $PLAN (needs enableFolderHSM; the runner installs the base test profile)"
+              RESULTS+=("$PLAN|skip|0|needs-enableFolderHSM-flag"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$PLAN" = "tp033" ]; then
+              echo "::warning::skip tp033 (metrics-heavy, platform-agnostic; RELAY<->tsdb init gap)"
+              RESULTS+=("$PLAN|skip|0|metrics-platform-agnostic-relay-tsdb-init-gap"); write_summary "${RESULTS[@]}"; continue
+            fi
+
+            [ "$FIRST" = 1 ] || hygiene || true
+            FIRST=0
+            RUN_DIR="$HOME/slot-runs/$PLAN"; mkdir -p "$RUN_DIR"
+            EXTRA=()
+            if [ "$FIXTURE" = "1" ]; then
+              STATE="$RUN_DIR/shared-fixture.json"
+              echo "--- $PLAN: creating shared fixture ($USER1 x $USER2) ---"
+              if RELAY_CDP_ENDPOINTS="$ENDPOINTS" python scripts/test-plan-shared-fixture.py \
+                   create --vault1 "$USER1" --vault2 "$USER2" \
+                   --name "macos-fixture-${GITHUB_RUN_ID}-$PLAN" --state "$STATE" \
+                   > "$RUN_DIR/fixture.log" 2>&1; then
+                FOLDER="$(node -e 'const s=require(process.argv[1]);process.stdout.write(String(s.remoteFolder||s.folder1||""))' "$STATE" 2>/dev/null)"
+                if [ -z "$FOLDER" ]; then
+                  echo "::error::$PLAN fixture produced no folder"
+                  ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-no-folder"); write_summary "${RESULTS[@]}"; continue
+                fi
+                EXTRA+=(--folder "$FOLDER")
+              else
+                echo "::error::$PLAN shared-fixture creation failed"; tail -20 "$RUN_DIR/fixture.log" || true
+                ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-setup-failed"); write_summary "${RESULTS[@]}"; continue
+              fi
+            fi
+
+            echo "=== $PLAN ($SCRIPT): $USER1@$PORT1 x $USER2@$PORT2 (macos) ${EXTRA[*]} ==="
+            START_MS=$(python -c 'import time; print(int(time.time()*1000))')
+            if RELAY_CDP_ENDPOINTS="$ENDPOINTS" run_plan "$TIMEOUT_S" \
+                 python "test-plans/scripts/$SCRIPT" \
+                   --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build "${EXTRA[@]}" \
+                   > "$RUN_DIR/plan.log" 2>&1; then
+              STATUS=pass; REASON=""
+              echo "--- $PLAN PASSED ---"
+            else
+              STATUS=fail; ANY_FAIL=1; REASON=plan-failed
+              echo "::error::$PLAN failed on macos x macos"
+              echo "--- $PLAN FAILED (tail) ---"; tail -25 "$RUN_DIR/plan.log" || true
+            fi
+            DUR=$(( $(python -c 'import time; print(int(time.time()*1000))') - START_MS ))
+            echo "--- $PLAN ${STATUS} in $((DUR/1000))s ---"
+            RESULTS+=("$PLAN|$STATUS|$DUR|$REASON")
+            write_summary "${RESULTS[@]}"
+          done
+
+          echo "=== macos full-suite coverage summary ==="
+          cat "$SUMMARY"
+          exit "$ANY_FAIL"
+
+      - name: Upload coverage summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testplans-macos-fullsuite-metadata
+          path: |
+            ~/macos-fullsuite-summary.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness" || exit 0
+          for U in "$USER1" "$USER2"; do
+            echo "=== slot $U status ==="
+            python .claude/scripts/obsidian_slot.py slot status --user "$U" --json || true
+            echo "=== slot $U launch log ==="
+            python -c "import sys; sys.path.insert(0, '.claude/scripts'); import obsidian_slot as s; slot = s.Slot('$U', s.slot_root(None)); print(slot.launch_log.read_text() if slot.launch_log.exists() else '(no launch log)')" || true
+          done
+
+      - name: Stop both slots
+        if: always()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness" || exit 0
+          for U in "$USER1" "$USER2"; do
+            python .claude/scripts/obsidian_slot.py slot stop --user "$U" || true
+          done

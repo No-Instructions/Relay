@@ -344,7 +344,6 @@ jobs:
           cd "$HOME/relay-harness"
           ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}"
           SUMMARY="$HOME/winpair-summary.json"
-          echo "$SUMMARY" >> "$GITHUB_ENV"
 
           # Diagnostic (non-fatal): which community plugins actually loaded on each
           # slot. A plugin in the enable list but absent here means Obsidian refused
