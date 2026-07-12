@@ -43,7 +43,7 @@ jobs:
         shard:
           - name: scripted-all
             slug: all
-            tests: tp000,tp001,tp002,tp003,tp004,tp006,tp007,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp030,tp031,tp032,tp033,tp034
+            tests: tp000,tp001,tp002,tp003,tp004,tp006,tp007,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp030,tp031,tp032,tp033,tp034,tp038,tp055,tp057,tp054
           - name: scripted-folder-hsm
             slug: fhsm
             tests: tp052
