@@ -1254,9 +1254,15 @@ export class SharedFolder extends HasProvider {
 		const forkedIdle = hsm.state.fork !== null && hsm.matches("idle.localAhead");
 		const retryableError = hsm.matches("idle.error") && hsm.state.errorRetryable === true;
 		if (!forkedIdle && !retryableError) return;
-		if (file.hasProviderIntegration() && file.intent === "connected") return;
 		if (!this.shouldConnect) return;
 
+		// Re-drive on every reconnect without trusting a nominally-connected
+		// integration. A fork born during an outage strands an integration that
+		// still reports intent "connected" but never re-synced; skipping it here
+		// on that intent leaves the fork's edit gated and unpushed forever.
+		// connectForForkReconcile is idempotent — it coalesces concurrent calls
+		// and reuses an already-synced bridge — so re-driving a healthy document
+		// is a no-op.
 		file.connectForForkReconcile().catch(() => {});
 	}
 
@@ -1813,6 +1819,12 @@ export class SharedFolder extends HasProvider {
 		// ladder reruns only after a disconnect).
 		this.folderHSM?.send({ type: "CONNECTED" });
 		this.folderHSM?.send({ type: "PROVIDER_SYNCED" });
+		// The provider can revive on its own internal reconnect backoff without a
+		// fresh SharedFolder.connect() call, so a completed sync — not connect() —
+		// is the level signal that connectivity has returned. Re-drive any forked
+		// idle document here so a fork stranded during the outage reconciles now
+		// rather than waiting for a reconnect edge that self-heal never produces.
+		this.connectForkedIdleDocuments();
 		if (this.authoritative || this._persistence.hasServerSync) {
 			return;
 		}

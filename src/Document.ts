@@ -899,8 +899,17 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
+		// A fork must reconcile against a live, synced remote. Recreate the
+		// remoteDoc and provider when none exists OR when the existing integration
+		// is stranded — connected in name but not synced, which is exactly the
+		// state a fork born during an outage is left in. connect() alone
+		// early-returns on a nominally-connected provider and never re-syncs; a
+		// fresh remoteDoc forces the sync (and thus PROVIDER_SYNCED) that re-runs
+		// fork-reconcile. The fork's edit lives in localDoc, so discarding the
+		// ephemeral remoteDoc loses nothing.
 		const acquiredIntegration = this.ensureIdleProviderIntegration({
-			freshRemoteDoc: hsm.hasFork() && !this.hasProviderIntegration(),
+			freshRemoteDoc:
+				hsm.hasFork() && (!this.hasProviderIntegration() || !this.synced),
 		});
 		let unsubscribeState: (() => void) | null = null;
 		const cleanupIfDone = () => {
