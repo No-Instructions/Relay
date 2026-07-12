@@ -45,8 +45,88 @@ jobs:
     timeout-minutes: 90
     permissions:
       checks: write
+      contents: read
 
     steps:
+      - name: Write run manifest to R2
+        id: dispatch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_BUCKET: system3-ci
+          REQUESTED_REF: ${{ inputs.ref }}
+          REQUESTED_TESTS: ${{ inputs.tests }}
+          REQUESTED_HARNESS_REF: ${{ inputs.harness_ref }}
+          REQUESTED_PROFILE_FLAGS: ${{ inputs.profile_flags }}
+        run: |
+          API_REF="$REQUESTED_REF"
+          API_REF="${API_REF#origin/}"
+          API_REF="${API_REF#refs/heads/}"
+          API_REF="${API_REF#refs/tags/}"
+          ENCODED_REF=$(jq -rn --arg ref "$API_REF" '$ref | @uri')
+          PRODUCT_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${ENCODED_REF}" \
+            --jq .sha 2>/dev/null || true)
+
+          if [ -z "$PRODUCT_SHA" ]; then
+            echo "::error::Could not resolve $REQUESTED_REF before VM checkout"
+            exit 1
+          fi
+          echo "Resolved $REQUESTED_REF to $PRODUCT_SHA"
+          echo "product_sha=$PRODUCT_SHA" >> "$GITHUB_OUTPUT"
+
+          MANIFEST_KEY="github-runs/${GITHUB_RUN_ID}/manifest.json"
+          jq -n \
+            --arg githubRunId "$GITHUB_RUN_ID" \
+            --arg runNumber "$GITHUB_RUN_NUMBER" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg workflow "$GITHUB_WORKFLOW" \
+            --arg workflowRef "$GITHUB_REF" \
+            --arg workflowSha "$GITHUB_SHA" \
+            --arg event "$GITHUB_EVENT_NAME" \
+            --arg ref "$REQUESTED_REF" \
+            --arg productSha "$PRODUCT_SHA" \
+            --arg tests "$REQUESTED_TESTS" \
+            --arg harnessRef "$REQUESTED_HARNESS_REF" \
+            --arg profileFlags "$REQUESTED_PROFILE_FLAGS" \
+            --arg objectKey "$MANIFEST_KEY" \
+            '{
+              schema: 1,
+              githubRunId: $githubRunId,
+              runNumber: ($runNumber | tonumber),
+              runAttempt: ($runAttempt | tonumber),
+              workflow: $workflow,
+              workflowRef: $workflowRef,
+              workflowSha: $workflowSha,
+              event: $event,
+              inputs: {
+                ref: $ref,
+                productSha: $productSha,
+                tests: $tests,
+                harnessRef: $harnessRef,
+                profileFlags: $profileFlags
+              },
+              report: {
+                commit: $productSha,
+                execSuffix: ("-r" + $runNumber)
+              },
+              objectKey: $objectKey
+            }' > run-manifest.json
+
+          aws s3api put-object \
+            --endpoint-url "$CI_R2_ENDPOINT" \
+            --bucket "$CI_R2_BUCKET" \
+            --key "$MANIFEST_KEY" \
+            --body run-manifest.json \
+            --content-type application/json \
+            --cache-control 'no-cache, must-revalidate' \
+            --no-cli-pager >/dev/null
+          echo "Uploaded s3://${CI_R2_BUCKET}/${MANIFEST_KEY}"
+
       - name: Auth to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -188,7 +268,7 @@ jobs:
 
       - name: Run scripted test plans on VM
         run: |
-          REF="${{ github.event.inputs.ref }}"
+          REF="${{ steps.dispatch.outputs.product_sha || github.event.inputs.ref }}"
           SELECTED_TESTS="${{ github.event.inputs.tests }}"
           LANE_SLUG="${{ steps.lease.outputs.pool }}-r${{ github.run_number }}"
           PROFILE_FLAGS_ARG="${{ github.event.inputs.profile_flags }}"
