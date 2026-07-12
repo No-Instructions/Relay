@@ -88,7 +88,7 @@ import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { generateHash } from "./hashing";
-import { readNoteText } from "./diskText";
+import { readNoteText, normalizeNoteText } from "./diskText";
 import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
 import type { RemoteSharedFolder } from "./Relay";
@@ -1630,7 +1630,11 @@ export default class Live extends Plugin {
 								const doc = folder.proxy.getFile(file);
 								if (doc && isDocument(doc) && doc.hsm) {
 									// Read disk content only to compute diagnostic flags.
-									const diskContent = await plugin.app.vault.read(file);
+									// Normalize so a Windows CRLF file does not read as
+									// changed against the LF editor buffer.
+									const diskContent = normalizeNoteText(
+										await plugin.app.vault.read(file),
+									);
 									const contentChanged = lastSavedData !== diskContent;
 									const willMerge = dirty && contentChanged && isPlaintext;
 
