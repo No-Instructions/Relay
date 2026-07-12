@@ -48,6 +48,7 @@ import {
 	isEmptyRecoveryDelta,
 	pathWasDeleted,
 	type FolderEffect,
+	type LocalFileKind,
 	type FolderSyncSnapshot,
 	type DeletionGateSnapshot,
 	type DeleteCollectorOptions,
@@ -191,6 +192,14 @@ export const FOLDER_SYNC_PERSIST_WINDOW_MS = 250;
 // within a couple of ticks.
 export const DOWNLOAD_SWEEP_INTERVAL_MS = 10_000;
 
+// A genuinely-new file registers only after settling for this window. External
+// atomic writes (write `<name>.tmp.<pid>.<hash>`, then rename onto `<name>`) and
+// editor swap files surface as short-lived creates that a rename or delete
+// removes within a few milliseconds; waiting lets them vanish before we mint a
+// guid or enqueue an upload. Startup discovery and already-known files skip the
+// wait — only novel interactive creates settle.
+export const NEW_FILE_REGISTRATION_DEBOUNCE_MS = 500;
+
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(() => super.notifyListeners(), 100);
@@ -251,6 +260,12 @@ export class SharedFolder extends HasProvider {
 	 * never cleared on completion of the filesystem operation.
 	 */
 	private pendingDeletes: Map<string, number> = new Map();
+	/**
+	 * Debounce timers for genuinely-new file registrations, vpath → timer id.
+	 * A short-lived file (atomic-write temp file, editor swap file) that
+	 * vanishes within the window is cancelled before it registers.
+	 */
+	private pendingCreates: Map<string, number> = new Map();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
 
@@ -2467,12 +2482,76 @@ export class SharedFolder extends HasProvider {
 			});
 			return alreadyShared;
 		}
-		machine.send({ type: "FILE_CREATED", path: vpath, kind });
+		this.scheduleInteractiveCreate(vpath, kind);
 		return alreadyShared;
+	}
+
+	/**
+	 * A novel interactive create settles for a debounce window before entering
+	 * the machine, so a short-lived file removed by a rename or delete within
+	 * the window never registers. The timer re-checks that the file still
+	 * exists on disk before it fires — a rename-away leaves nothing to register.
+	 */
+	private scheduleInteractiveCreate(vpath: string, kind: LocalFileKind): void {
+		this.cancelPendingCreate(vpath);
+		const timer = this.timeProvider.setTimeout(() => {
+			this.pendingCreates.delete(vpath);
+			const machine = this.folderHSM;
+			if (!machine) return;
+			if (this.isPendingDelete(vpath)) return;
+			if (!this.vault.getAbstractFileByPath(this.getPath(vpath))) return;
+			machine.send({ type: "FILE_CREATED", path: vpath, kind });
+		}, NEW_FILE_REGISTRATION_DEBOUNCE_MS);
+		this.pendingCreates.set(vpath, timer);
+	}
+
+	/**
+	 * Legacy (non-HSM) create routing. A file already known to the sync store
+	 * materializes immediately (the caller reads it in); a genuinely-new file's
+	 * registration settles for the debounce window so a short-lived atomic-write
+	 * temp file vanishes before it is place-held and uploaded. Returns whether
+	 * the caller should materialize the file now.
+	 */
+	public notifyVaultCreateLegacy(tfile: TAbstractFile): boolean {
+		const vpath = this.getVirtualPath(tfile.path);
+		if (this.isPendingDelete(vpath)) return false;
+		if (this.syncStore.has(vpath)) return true;
+		this.scheduleLegacyCreate(vpath);
+		return false;
+	}
+
+	/**
+	 * Place-hold and upload a novel legacy-path file after the debounce window.
+	 * The timer re-checks that the file still exists on disk before acting — a
+	 * rename-away or delete within the window leaves nothing to register.
+	 */
+	private scheduleLegacyCreate(vpath: string): void {
+		this.cancelPendingCreate(vpath);
+		const timer = this.timeProvider.setTimeout(() => {
+			this.pendingCreates.delete(vpath);
+			if (this.isPendingDelete(vpath)) return;
+			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			if (!tfile) return;
+			const newDocs = this.placeHold([tfile]);
+			if (newDocs.includes(vpath)) {
+				this.uploadFile(tfile);
+			}
+		}, NEW_FILE_REGISTRATION_DEBOUNCE_MS);
+		this.pendingCreates.set(vpath, timer);
+	}
+
+	/** Cancel a settling interactive create — the path was removed or renamed away. */
+	private cancelPendingCreate(vpath: string): void {
+		const timer = this.pendingCreates.get(vpath);
+		if (timer !== undefined) {
+			this.timeProvider.clearTimeout(timer);
+			this.pendingCreates.delete(vpath);
+		}
 	}
 
 	/** Route a vault delete into the machine (skipping internal-trash echoes). */
 	public notifyVaultDelete(vpath: string): void {
+		this.cancelPendingCreate(vpath);
 		const machine = this.folderHSM;
 		if (!machine) return;
 		if (this.isPendingDelete(vpath)) return;
@@ -2481,6 +2560,7 @@ export class SharedFolder extends HasProvider {
 
 	/** Route an in-folder vault rename event into the machine. */
 	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
+		this.cancelPendingCreate(this.getVirtualPath(oldPath));
 		const machine = this.folderHSM;
 		if (!machine) return;
 		machine.send({
@@ -4079,6 +4159,8 @@ export class SharedFolder extends HasProvider {
 			this.timeProvider.clearTimeout(this._downloadSweepTimer);
 			this._downloadSweepTimer = null;
 		}
+		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
+		this.pendingCreates.clear();
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
