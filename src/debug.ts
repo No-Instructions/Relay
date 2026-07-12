@@ -57,66 +57,125 @@ type LogEntry = {
 	level: LogLevel;
 	message: string;
 	callerInfo: string;
+	/** Sink id resolved at log time; null/unknown drains to the default sink. */
+	sink?: string | null;
 };
+
+/**
+ * A registered log destination. In Obsidian exactly one sink exists and
+ * behavior is unchanged. Headless daemons (relay-cli) may host several
+ * runtimes in one process; each registers its own sink so one runtime's
+ * logging can never rebind another's lines.
+ */
+type LogSink = {
+	adapter: IFileAdapter;
+	logFilePath: string;
+};
+
+const logSinks = new Map<string, LogSink>();
+let defaultSinkId: string | null = null;
+let sinkResolver: (() => string | null) | null = null;
+
+/**
+ * Install a per-log-call sink resolver (e.g. AsyncLocalStorage-backed in the
+ * headless daemon). Returning null routes the line to the default
+ * (last-initialized) sink. No resolver = single-sink behavior.
+ */
+export function setLogSinkResolver(
+	resolver: (() => string | null) | null,
+): void {
+	sinkResolver = resolver;
+}
 
 export function initializeLogger(
 	adapter: IFileAdapter,
 	timeProvider: TimeProvider,
 	logFilePath: string,
 	config?: Partial<LogConfig>,
-) {
+): string {
+	// Sink ids are the log file path, disambiguated when two runtimes use
+	// the same relative path against different adapters.
+	let sinkId = logFilePath;
+	for (
+		let counter = 2;
+		logSinks.has(sinkId) && logSinks.get(sinkId)!.adapter !== adapter;
+		counter += 1
+	) {
+		sinkId = `${logFilePath}#${counter}`;
+	}
+	const existing = logSinks.get(sinkId);
+	logSinks.set(sinkId, { adapter, logFilePath });
+	// The most recently initialized sink is the default destination for
+	// lines that no resolver attributes to a specific sink.
+	defaultSinkId = sinkId;
 	fileAdapter = adapter;
 	currentLogFile = logFilePath;
 	if (config) {
 		logConfig = { ...logConfig, ...config };
 	}
-	timeProvider.setInterval(flushLogs, logConfig.batchInterval);
+	if (!existing) {
+		timeProvider.setInterval(flushLogs, logConfig.batchInterval);
+	}
+	return sinkId;
 }
 
 export async function flushLogs() {
 	if (logBuffer.length === 0) return;
 
-	const entries = [...logBuffer];
-	logBuffer.length = 0;
+	const entries = logBuffer.splice(0, logBuffer.length);
+	const groups = new Map<string, LogEntry[]>();
+	for (const entry of entries) {
+		const sinkId =
+			entry.sink && logSinks.has(entry.sink) ? entry.sink : defaultSinkId;
+		if (sinkId === null) continue; // no sink registered yet — drop (unchanged)
+		const group = groups.get(sinkId);
+		if (group) group.push(entry);
+		else groups.set(sinkId, [entry]);
+	}
 
-	for (let retry = 0; retry < logConfig.maxRetries; retry++) {
-		try {
-			await rotateLogIfNeeded();
-			const logContent = entries.map(formatLogEntry).join("\n") + "\n";
-			await fileAdapter.append(currentLogFile, logContent);
-			return;
-		} catch (error) {
-			console.error(`Failed to write logs (attempt ${retry + 1}):`, error);
-			if (retry === logConfig.maxRetries - 1) {
-				console.error("Max retries reached. Discarding log entries.");
+	for (const [sinkId, group] of groups) {
+		const sink = logSinks.get(sinkId)!;
+		for (let retry = 0; retry < logConfig.maxRetries; retry++) {
+			try {
+				await rotateLogIfNeeded(sink);
+				const logContent = group.map(formatLogEntry).join("\n") + "\n";
+				await sink.adapter.append(sink.logFilePath, logContent);
+				break;
+			} catch (error) {
+				console.error(`Failed to write logs (attempt ${retry + 1}):`, error);
+				if (retry === logConfig.maxRetries - 1) {
+					console.error("Max retries reached. Discarding log entries.");
+				}
 			}
 		}
 	}
 }
 
-async function rotateLogIfNeeded(): Promise<void> {
-	const stat = await fileAdapter.stat(currentLogFile);
+async function rotateLogIfNeeded(sink: LogSink): Promise<void> {
+	const logFile = sink.logFilePath;
+	const adapter = sink.adapter;
+	const stat = await adapter.stat(logFile);
 	if (stat && stat.size > logConfig.maxFileSize) {
 		for (let i = logConfig.maxBackups; i > 0; i--) {
-			const oldFile = `${currentLogFile}.${i}`;
-			const newFile = `${currentLogFile}.${i + 1}`;
-			if (await fileAdapter.exists(oldFile)) {
+			const oldFile = `${logFile}.${i}`;
+			const newFile = `${logFile}.${i + 1}`;
+			if (await adapter.exists(oldFile)) {
 				if (i === logConfig.maxBackups) {
 					// Remove oldest backup - ignore if already deleted (race condition)
 					try {
-						await fileAdapter.remove(oldFile);
+						await adapter.remove(oldFile);
 					} catch {
 						// File may have been deleted by concurrent rotation
 					}
 				} else {
 					// Remove destination first if it exists (Obsidian rename doesn't overwrite)
 					try {
-						await fileAdapter.remove(newFile);
+						await adapter.remove(newFile);
 					} catch {
 						// Destination didn't exist, which is fine
 					}
 					try {
-						await fileAdapter.rename(oldFile, newFile);
+						await adapter.rename(oldFile, newFile);
 					} catch {
 						// Source may have been moved by concurrent rotation
 					}
@@ -124,21 +183,21 @@ async function rotateLogIfNeeded(): Promise<void> {
 			}
 		}
 
-		if (await fileAdapter.exists(currentLogFile)) {
+		if (await adapter.exists(logFile)) {
 			// Remove destination first if it exists
 			try {
-				await fileAdapter.remove(`${currentLogFile}.1`);
+				await adapter.remove(`${logFile}.1`);
 			} catch {
 				// Destination didn't exist, which is fine
 			}
 			try {
-				await fileAdapter.rename(currentLogFile, `${currentLogFile}.1`);
+				await adapter.rename(logFile, `${logFile}.1`);
 			} catch {
 				// Source may have been moved by concurrent rotation
 			}
 		}
 
-		await fileAdapter.write(currentLogFile, "");
+		await adapter.write(logFile, "");
 	}
 }
 
@@ -225,6 +284,9 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 				level,
 				message: `${initialText}: ${serializedArgs}`,
 				callerInfo,
+				// Attribution happens at log time, not flush time: the batch
+				// flush runs outside any runtime's execution context.
+				sink: sinkResolver ? sinkResolver() : null,
 			};
 
 			if (!logConfig.disableConsole) {
@@ -390,22 +452,26 @@ export function createToast(notifier: INotifier) {
 }
 
 // ============================================================================
-// Metrics Integration (for obsidian-metrics plugin)
+// Metrics Integration (for the TSDB plugin)
 // ============================================================================
 
 import type {
 	IObsidianMetricsAPI,
+	IObsidianMetricsRootAPI,
 	MetricInstance,
 	ObsidianMetricsPlugin,
 } from "./types/obsidian-metrics";
 
 const PAGE_VISIBILITY_STATES = ["visible", "hidden", "prerender", "unloaded", "unknown"];
 
+export type NetworkDomain = "auth" | "api" | "relay" | "external";
+export type NetworkResult = "success" | "error";
+
 /**
- * Metrics for Relay - uses obsidian-metrics plugin if available, no-ops otherwise.
+ * Metrics for Relay - uses the TSDB plugin if available, no-ops otherwise.
  *
- * Uses event-based initialization to handle plugin load order. The obsidian-metrics
- * plugin emits 'obsidian-metrics:ready' when loaded, and metric creation is idempotent.
+ * Uses event-based initialization to handle plugin load order. The TSDB
+ * plugin emits 'tsdb:ready' when loaded, and metric creation is idempotent.
  */
 class RelayMetrics {
 	private dbSize: MetricInstance | null = null;
@@ -415,6 +481,12 @@ class RelayMetrics {
 	// Protocol IO
 	private protocolMessageCount: MetricInstance | null = null;
 	private protocolBytes: MetricInstance | null = null;
+
+	// Network requests
+	private networkRequests: MetricInstance | null = null;
+	private networkRequestDuration: MetricInstance | null = null;
+	private networkRequestBytes: MetricInstance | null = null;
+	private networkWebSocketConnections: MetricInstance | null = null;
 
 	// Wake queue
 	private wakeQueueSlots: MetricInstance | null = null;
@@ -458,7 +530,8 @@ class RelayMetrics {
 	private documentUpdateEvents: MetricInstance | null = null;
 
 	/**
-	 * Initialize metrics from the API. Called when obsidian-metrics becomes available.
+	 * Initialize metrics from Relay's metric store. Called when the TSDB
+	 * plugin becomes available.
 	 * Safe to call multiple times - metric creation is idempotent.
 	 */
 	initializeFromAPI(api: IObsidianMetricsAPI): void {
@@ -489,6 +562,29 @@ class RelayMetrics {
 			name: "relay_protocol_bytes",
 			help: "Sync protocol bytes by type and direction",
 			labelNames: ["type", "direction"],
+		});
+
+		// Network requests
+		this.networkRequests = api.createCounter({
+			name: "relay_network_requests_total",
+			help: "Total Relay network requests by destination domain, transport, method, and result",
+			labelNames: ["domain", "transport", "method", "status_class", "result"],
+		});
+		this.networkRequestDuration = api.createHistogram({
+			name: "relay_network_request_duration_seconds",
+			help: "Relay network request duration by destination domain, transport, method, and result",
+			labelNames: ["domain", "transport", "method", "status_class", "result"],
+			buckets: [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30],
+		});
+		this.networkRequestBytes = api.createCounter({
+			name: "relay_network_request_bytes",
+			help: "Relay network response bytes by destination domain, transport, method, and result",
+			labelNames: ["domain", "transport", "method", "status_class", "result"],
+		});
+		this.networkWebSocketConnections = api.createCounter({
+			name: "relay_network_websocket_connections_total",
+			help: "Relay WebSocket connection attempts by destination domain and result",
+			labelNames: ["domain", "result"],
 		});
 
 		// Wake queue
@@ -664,6 +760,40 @@ class RelayMetrics {
 		this.protocolBytes?.labels({ type, direction }).inc(bytes);
 	}
 
+	recordNetworkRequest(
+		domain: NetworkDomain,
+		transport: "http",
+		method: string,
+		status: number | undefined,
+		durationSeconds: number,
+		responseBytes: number,
+		result: NetworkResult,
+	): void {
+		const normalizedMethod = method.toUpperCase();
+		const statusClass = status === undefined
+			? "exception"
+			: `${Math.floor(status / 100)}xx`;
+		const labels = {
+			domain,
+			transport,
+			method: normalizedMethod,
+			status_class: statusClass,
+			result,
+		};
+		this.networkRequests?.labels(labels).inc();
+		this.networkRequestDuration?.labels(labels).observe(durationSeconds);
+		if (responseBytes > 0) {
+			this.networkRequestBytes?.labels(labels).inc(responseBytes);
+		}
+	}
+
+	recordNetworkWebSocketConnection(
+		domain: NetworkDomain,
+		result: "attempt" | "connected" | "closed" | "error" | "reconnect",
+	): void {
+		this.networkWebSocketConnections?.labels({ domain, result }).inc();
+	}
+
 	setWakeQueueSlots(folderGuid: string, used: number, pending: number, total: number): void {
 		this.wakeQueueSlots?.labels({ state: "used", folder: folderGuid }).set(used);
 		this.wakeQueueSlots?.labels({ state: "pending", folder: folderGuid }).set(pending);
@@ -810,7 +940,7 @@ class RelayMetrics {
 
 /**
  * Initialize metrics integration with Obsidian app.
- * Sets up event listener for obsidian-metrics:ready and checks if already available.
+ * Sets up event listener for tsdb:ready and checks if already available.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function initializeMetrics(
@@ -822,10 +952,36 @@ export function initializeMetrics(
 		callback: () => void,
 	) => void,
 ): void {
+	// Relay records under the "relay" job in the TSDB store. A plugin with
+	// a mismatched API surface must degrade to no-op metrics, never break
+	// plugin load.
+	const tryInitialize = (api: IObsidianMetricsRootAPI) => {
+		try {
+			if (typeof api?.getStore !== "function") {
+				console.warn(
+					"[RelayMetrics] installed metrics plugin lacks the getStore API; metrics disabled",
+				);
+				return;
+			}
+			metrics.initializeFromAPI(
+				api.getStore("relay", {
+					displayName: "Relay",
+					description:
+						"Sync engine metrics: document storage, protocol IO, and network requests.",
+				}),
+			);
+		} catch (e) {
+			console.warn(
+				"[RelayMetrics] metrics initialization failed; metrics disabled",
+				e,
+			);
+		}
+	};
+
 	// Listen for metrics API becoming available (or re-initializing after reload)
 	registerEvent(
-		app.workspace.on("obsidian-metrics:ready", (api: IObsidianMetricsAPI) => {
-			metrics.initializeFromAPI(api);
+		app.workspace.on("tsdb:ready", (api: IObsidianMetricsRootAPI) => {
+			tryInitialize(api);
 		})
 	);
 	if (registerDomEvent && typeof document !== "undefined") {
@@ -835,12 +991,12 @@ export function initializeMetrics(
 		metrics.recordPageVisibility();
 	}
 
-	// Also try to get it immediately in case metrics plugin loaded first
-	const metricsPlugin = app.plugins?.plugins?.["obsidian-metrics"] as
+	// Also try to get it immediately in case the metrics plugin loaded first
+	const metricsPlugin = app.plugins?.plugins?.["tsdb"] as
 		| ObsidianMetricsPlugin
 		| undefined;
 	if (metricsPlugin?.api) {
-		metrics.initializeFromAPI(metricsPlugin.api);
+		tryInitialize(metricsPlugin.api);
 	}
 }
 

@@ -45,6 +45,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
 import { trackPromise } from "./trackPromise";
 import { isDocumentDestroyedError } from "./DocumentDestroyedError";
+import { trackAsyncCleanup } from "./reloadUtils";
 
 /**
  * Access the LiveViewManager singleton via the Obsidian plugin registry.
@@ -117,6 +118,67 @@ function ViewsetsEqual(vs1: S3View[], vs2: S3View[]): boolean {
 		}
 	}
 	return true;
+}
+
+function refreshLeafViewForUnload(
+	leaf: WorkspaceLeaf | undefined,
+	options: {
+		file?: TFile | null;
+		filePath?: string;
+		label: string;
+		mode?: string;
+	},
+): void {
+	const rawLeaf = leaf as any;
+	if (!rawLeaf) return;
+
+	const cleanup = (async () => {
+		const viewState = rawLeaf.getViewState?.();
+		if (
+			viewState?.type === "markdown" &&
+			options.file &&
+			typeof rawLeaf.setViewState === "function" &&
+			typeof rawLeaf.openFile === "function"
+		) {
+			try {
+				await rawLeaf.setViewState({ type: "empty", state: {} }, { focus: false });
+				await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+				await rawLeaf.openFile(options.file, { active: false });
+				await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+				if (options.mode && rawLeaf.view?.getMode?.() !== options.mode) {
+					const currentState = rawLeaf.getViewState?.() ?? viewState;
+					await rawLeaf.setViewState(
+						{
+							...currentState,
+							state: {
+								...(currentState.state ?? {}),
+								file: options.filePath ?? options.file.path,
+								mode: options.mode,
+							},
+						},
+						{ focus: false },
+					);
+					await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+				}
+			} catch (error) {
+				try {
+					await rawLeaf.setViewState(viewState, { focus: false });
+				} catch {
+					// Best-effort restore; preserve the original failure for logging.
+				}
+				throw error;
+			}
+			return;
+		}
+
+		const result = rawLeaf.rebuildView?.();
+		if (result && typeof result.then === "function") {
+			await result;
+		}
+	})();
+
+	trackAsyncCleanup(cleanup, options.label);
 }
 
 export interface S3View {
@@ -431,7 +493,11 @@ export class RelayCanvasView implements S3View {
 		this.plugin = null as any;
 		this.release();
 		this.clearViewActions();
-		(this.view.leaf as any).rebuildView?.();
+		refreshLeafViewForUnload(this.view.leaf, {
+			file: this.view.file,
+			filePath: this.view.file?.path,
+			label: `canvasView:refreshLeaf:${this.canvas.guid}`,
+		});
 		this._parent = null as any;
 		this.view = null as any;
 		this.canvas = null as any;
@@ -1104,7 +1170,6 @@ export class LiveView<ViewType extends TextFileView>
 	destroy() {
 		this.release();
 		this.clearViewActions();
-		(this.view.leaf as any).rebuildView?.();
 		this._parent = null as any;
 		this.view = null as any;
 		this.document = null as any;
@@ -1186,6 +1251,24 @@ export class LiveViewManager {
 							});
 						});
 				})();
+
+				// whenReady() resolves for established folders even while
+				// they are still waiting on a provider handshake, so the
+				// refresh above can run before the folder is ready. Watch
+				// connection-state notifications and refresh once ready
+				// actually flips, then stop watching.
+				const watcherKey = {};
+				const offReady = folder.subscribe(watcherKey, () => {
+					if (this.destroyed) {
+						offReady();
+						return;
+					}
+					if (folder.ready) {
+						offReady();
+						void this.refresh("[Shared Folder Ready]");
+					}
+				});
+				folder.onDestroy(offReady);
 			}
 
 			return folder.fset.on(() => {
@@ -1817,9 +1900,32 @@ export class LiveViewManager {
 		this.workspace.updateOptions();
 	}
 
+	private refreshOpenEditorLeavesForUnload(): void {
+		const refreshed = new Set<WorkspaceLeaf>();
+		iterateTextFileViews(this.workspace, (view) => {
+			const leaf = view.leaf;
+			if (!leaf || refreshed.has(leaf)) return;
+			if (!((view as any).editor as any)?.cm) return;
+			refreshed.add(leaf);
+			refreshLeafViewForUnload(leaf, {
+				file: view.file,
+				filePath: view.file?.path,
+				label: `liveViews:refreshOpenLeaf:${view.file?.path ?? refreshed.size}`,
+				mode:
+					view instanceof MarkdownView
+						? view.getMode?.()
+						: undefined,
+			});
+		});
+	}
+
 	public destroy() {
 		this.destroyed = true;
 		this.releaseViews(this.views);
+		// Remove Relay's CM6 extensions before rebuilding open views so the
+		// replacement editors are created from clean workspace options.
+		this.wipe();
+		this.refreshOpenEditorLeavesForUnload();
 		this.offListeners.forEach((off) => off());
 		this.offListeners.length = 0;
 		this.metadataListeners.clear();
@@ -1831,7 +1937,6 @@ export class LiveViewManager {
 		this.documentViewers = null as any;
 		this.views.forEach((view) => view.destroy());
 		this.views = [];
-		this.wipe();
 		this.sharedFolders = null as any;
 		this.refreshQueue = null as any;
 		this.networkStatus = null as any;

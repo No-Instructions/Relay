@@ -1,0 +1,164 @@
+name: E2E Android smoke
+
+# Runs a small smoke against real Obsidian on an Android emulator, on a
+# GitHub-hosted ubuntu runner (KVM-accelerated x86_64 emulator). It complements
+# the desktop platform smoke and the Linux scripted lanes by catching
+# Android-specific breakage (WebView context, SAF vault access, mobile onboarding).
+#
+# The Obsidian APK is universal and ships x86_64 native libs, so it runs on the
+# accelerated emulator. Appium (UiAutomator2) drives the app; the WebView
+# context gives full JS execution, so the cross-platform relay-debug helpers
+# work unchanged.
+#
+# Dispatch-only for now (no cron) until the emulator lane has proven stable.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Product ref to test (e.g. origin/main, a branch, or a SHA)'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref providing the Android helpers and vault template'
+        required: false
+        default: 'origin/main'
+      obsidian_version:
+        description: 'Obsidian Android version to install (APK from obsidianmd/obsidian-releases)'
+        required: false
+        default: '1.12.7'
+      api_level:
+        description: 'Android API level for the emulator'
+        required: false
+        default: '34'
+      user:
+        description: 'Staging test user (maps to vault + auth account; non-pool)'
+        required: false
+        default: 'erik'
+      vault_template:
+        description: 'Vault template to materialize onto the device'
+        required: false
+        default: 'kepano-plus'
+
+concurrency:
+  group: e2e-android-smoke
+  cancel-in-progress: false
+
+jobs:
+  android-smoke:
+    name: android smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      APPIUM_PORT: '4723'
+      ANDROID_SERIAL: emulator-5554
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref || 'origin/main' }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          test -f main.js && test -f manifest.json && test -f styles.css
+          echo "Built plugin $(node -e 'console.log(require("./manifest.json").version)')"
+
+      - name: Clone relay-harness
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Install harness playwright deps (webdriverio)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Install Appium and UiAutomator2 driver
+        shell: bash
+        run: |
+          # Appium 3 is the current stable line; the uiautomator2 driver's
+          # current release requires it. Pin the major so the pair stays compatible.
+          npm install -g 'appium@^3'
+          appium driver install uiautomator2
+          appium --version
+          appium driver list --installed
+
+      - name: Download Obsidian APK
+        shell: bash
+        run: |
+          VER="${{ github.event.inputs.obsidian_version || '1.12.7' }}"
+          URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v${VER}/Obsidian-${VER}.apk"
+          echo "Downloading $URL"
+          curl -fL -o "$GITHUB_WORKSPACE/obsidian.apk" "$URL"
+          SIZE=$(stat -c%s "$GITHUB_WORKSPACE/obsidian.apk")
+          echo "APK size: $SIZE bytes"
+          # Sanity: the Obsidian APK is ~15 MB; anything under 8 MB is a bad
+          # download (e.g. an HTML error page saved as .apk).
+          if [ "$SIZE" -lt 8000000 ]; then
+            echo "::error::Obsidian APK download looks wrong ($SIZE bytes)"
+            head -c 400 "$GITHUB_WORKSPACE/obsidian.apk" || true
+            exit 1
+          fi
+          echo "APK sha256: $(sha256sum "$GITHUB_WORKSPACE/obsidian.apk" | cut -d' ' -f1)"
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run Android smoke on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ github.event.inputs.api_level || '34' }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          # The emulator action runs `script` under dash; invoke the sequence as
+          # a committed bash script so pipefail and the failure trap survive.
+          script: bash "$HOME/relay-harness/scripts/ci/android-smoke.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.vault_template || 'kepano-plus' }}"
+
+      # The smoke records the emulator screen and pulls it to the workspace before
+      # teardown; publish it as a watchable artifact. Never gates the smoke.
+      - name: Upload smoke video
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-video
+          path: android-smoke.mp4
+          if-no-files-found: warn

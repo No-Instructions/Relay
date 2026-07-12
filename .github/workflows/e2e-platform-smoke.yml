@@ -1,0 +1,285 @@
+name: E2E platform smoke
+
+# Runs a small smoke against real Obsidian on GitHub-hosted Windows and macOS
+# runners. Linux coverage lives in the scripted test-plan lanes; this workflow
+# exists to catch platform-specific breakage (paths, file watching, Electron
+# behavior) that Linux VMs cannot.
+#
+# Slots are materialized by the cross-platform runner
+# (.claude/scripts/obsidian_slot.py) — the single provisioning source of truth
+# shared with the Linux lanes. The single-slot scripted test plans run against
+# that one runner-provisioned slot, exercising the same TP harness the Linux
+# lanes use.
+
+on:
+  schedule:
+    # Nightly platform signal; scheduled runs test origin/main with the
+    # default strands/plans. Concurrency serializes on the arlo/bella slots.
+    - cron: '17 9 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to test (e.g. origin/main, a branch, or a SHA)'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref providing the slot runner, tests, and plans'
+        required: false
+        default: 'origin/main'
+      plans:
+        description: 'Comma-separated single-slot scripted plan ids'
+        required: false
+        # The self-contained single-slot plans (no shared fixture, no attachment
+        # storage). Measured per-plan wall-clock on macOS+Windows hosted runners
+        # is ~1-5s each (tp000 ~24s with first-launch warmup) — negligible beside
+        # the per-job Obsidian/npm/python setup, so the whole set fits the nightly
+        # budget. Excluded: tp007 (sharedFixture — the smoke creates no fixture),
+        # tp054 (needs a storage-quota relay).
+        default: 'tp000,tp002,tp003,tp030,tp032,tp038,tp055'
+
+concurrency:
+  group: e2e-platform-smoke
+  cancel-in-progress: false
+
+jobs:
+  platform-smoke:
+    name: ${{ format('smoke ({0})', matrix.platform.name) }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 45
+    env:
+      # The scripted plans print Unicode status glyphs (checkmarks); force
+      # UTF-8 stdout so Windows Python does not die encoding them to cp1252.
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          # arlo/bella are the local-dev slots the scripted lanes explicitly
+          # avoid, so this smoke never shares a staging user with a lane run.
+          - name: windows
+            runner: windows-latest
+            user: arlo    # slot 1, port 9223
+            port: 9223
+          - name: macos
+            runner: macos-latest
+            user: bella   # slot 2, port 9224
+            port: 9224
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref || 'origin/main' }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          test -f main.js && test -f manifest.json && test -f styles.css
+
+      - name: Clone relay-harness
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Install Obsidian (windows)
+        if: matrix.platform.name == 'windows'
+        shell: pwsh
+        run: |
+          choco install obsidian -y --no-progress
+          $roots = @("$env:LOCALAPPDATA\Programs\Obsidian", "$env:LOCALAPPDATA\Obsidian",
+                     "C:\Program Files\Obsidian", "C:\Users\runneradmin\AppData\Local\Programs\Obsidian")
+          $exe = $roots | Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-ChildItem -Path $_ -Filter Obsidian.exe -Recurse -ErrorAction SilentlyContinue } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) {
+            $exe = Get-ChildItem -Path "$env:LOCALAPPDATA", "C:\Program Files" -Filter Obsidian.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $exe) { throw "Obsidian.exe not found after install" }
+          echo "Found Obsidian at $exe"
+          # The slot runner discovers the executable via OBSIDIAN_PATH first.
+          echo "OBSIDIAN_PATH=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Obsidian (macos)
+        if: matrix.platform.name == 'macos'
+        shell: bash
+        run: |
+          brew install --cask obsidian
+          sudo xattr -dr com.apple.quarantine /Applications/Obsidian.app || true
+          test -x "/Applications/Obsidian.app/Contents/MacOS/Obsidian"
+          echo "OBSIDIAN_PATH=/Applications/Obsidian.app/Contents/MacOS/Obsidian" >> "$GITHUB_ENV"
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python and playwright deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # obsidian_ctl.py (imported by every scripted plan) needs tree-sitter
+          # at import time; websockets drives CDP; matplotlib backs the optional
+          # metrics plots. click powers the runner CLI.
+          python -m pip install click websockets tree-sitter tree-sitter-javascript matplotlib
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Ensure ffmpeg (windows)
+        if: matrix.platform.name == 'windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+          }
+
+      - name: Ensure ffmpeg (macos)
+        if: matrix.platform.name == 'macos'
+        continue-on-error: true
+        shell: bash
+        run: |
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          ffmpeg -version | head -1 || true
+
+      - name: Provision slot
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_slot.py slot provision \
+            --user "${{ matrix.platform.user }}" \
+            --plugin-dir "${{ github.workspace }}"
+
+      - name: Start slot
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_slot.py slot start \
+            --user "${{ matrix.platform.user }}" --wait-timeout 90
+
+      - name: Wait for ready and inject auth
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          node utils/wait-for-ready.mjs "${{ matrix.platform.port }}"
+          node utils/inject-auth.mjs "${{ matrix.platform.user }}" "${{ matrix.platform.port }}"
+
+      - name: Slot status (responsiveness probe)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_slot.py slot status \
+            --user "${{ matrix.platform.user }}" --probe-timeout 15
+
+      - name: Run scripted single-slot plans (recorded)
+        shell: bash
+        env:
+          RELAY_CDP_ENDPOINTS: http://127.0.0.1:${{ matrix.platform.port }}
+          # No TSDB side-car on hosted runners; skip the per-run metrics health
+          # wait so a plan's own pass/fail (not metrics infra) decides the step.
+          RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
+        run: |
+          # A CDP screencast records the scripted plans for the whole step. It
+          # is fully non-fatal: a recording/ffmpeg failure never changes the
+          # plans' pass/fail (the step exits with the plan result). Frames land
+          # in RUNNER_TEMP and the mp4 in the workspace; both paths go straight
+          # to Node (which normalizes separators), so bash never fs-touches the
+          # OS-native paths.
+          FRAMEDIR="$RUNNER_TEMP/smoke-frames"
+          VIDEO="${{ github.workspace }}/platform-smoke-${{ matrix.platform.name }}.mp4"
+          cd "$HOME/relay-harness/playwright"
+          node lib/screencast-cli.mjs record "${{ matrix.platform.port }}" "$FRAMEDIR" > screencast.log 2>&1 &
+          REC_PID=$!
+          sleep 4
+
+          cd "$HOME/relay-harness"
+          FAIL=0
+          IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp000,tp002,tp003' }}"
+          for plan in "${PLANS[@]}"; do
+            plan="$(echo "$plan" | tr -d '[:space:]')"
+            [ -n "$plan" ] || continue
+            script="$(node -e '
+              const m = require("./test-plans/scripts/manifest.json");
+              const t = m.tests.find(t => t.id === process.argv[1]);
+              if (!t) { console.error("unknown plan id: " + process.argv[1]); process.exit(3); }
+              if (Number(t.slots || 1) !== 1) { console.error(process.argv[1] + " is not single-slot"); process.exit(4); }
+              process.stdout.write(t.script);
+            ' "$plan")"
+            RUN_DIR="$HOME/slot-runs/$plan"
+            mkdir -p "$RUN_DIR"
+            echo "=== $plan ($script) on port ${{ matrix.platform.port }} ==="
+            if python "test-plans/scripts/$script" \
+                 --vault "${{ matrix.platform.user }}" --run-dir "$RUN_DIR" --no-verify-build; then
+              echo "--- $plan PASSED ---"
+            else
+              echo "::error::$plan failed on ${{ matrix.platform.name }}"
+              FAIL=1
+            fi
+          done
+
+          # Stop the recorder and assemble the mp4 — all non-fatal.
+          kill "$REC_PID" 2>/dev/null || true
+          sleep 3
+          echo "=== screencast log ==="
+          cat "$HOME/relay-harness/playwright/screencast.log" 2>/dev/null || true
+          ( cd "$HOME/relay-harness/playwright" \
+            && node lib/screencast-cli.mjs assemble "$FRAMEDIR" "$VIDEO" ) \
+            || echo "screencast assemble failed (non-fatal)"
+
+          exit $FAIL
+
+      - name: Upload smoke video
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-smoke-video-${{ matrix.platform.name }}
+          path: platform-smoke-${{ matrix.platform.name }}.mp4
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness" || exit 0
+          echo "=== slot status ==="
+          python .claude/scripts/obsidian_slot.py slot status \
+            --user "${{ matrix.platform.user }}" --json || true
+          echo "=== launch log ==="
+          python -c "import sys; sys.path.insert(0, '.claude/scripts'); import obsidian_slot as s; slot = s.Slot('${{ matrix.platform.user }}', s.slot_root(None)); print(slot.launch_log.read_text() if slot.launch_log.exists() else '(no launch log)')" || true
+
+      - name: Stop slot
+        if: always()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness" || exit 0
+          python .claude/scripts/obsidian_slot.py slot stop \
+            --user "${{ matrix.platform.user }}" || true

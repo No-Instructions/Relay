@@ -19,7 +19,7 @@ import type {
 } from "./CanvasView";
 import { areObjectsEqual } from "./areObjectsEqual";
 import { trackPromise } from "./trackPromise";
-import { formatCanvasData } from "./CanvasData";
+import { areCanvasDataEqual, formatCanvasData } from "./CanvasData";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -84,6 +84,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	unsubscribes: Unsubscriber[] = [];
 	private _awaitingUpdates: any;
 	private _canvas: any;
+	private _remoteFlushTimer: number | null = null;
 
 	constructor(
 		path: string,
@@ -131,6 +132,19 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			console.error(e);
 			throw e;
 		}
+
+		const onYdocUpdate = (_update: Uint8Array, origin: unknown) => {
+			if (this.destroyed) return;
+			// Local applyData transactions and IDB loads are already on
+			// disk (or about to be, via the view save path); only content
+			// arriving from elsewhere needs a flush.
+			if (origin === this || origin === this._persistence) return;
+			this.scheduleRemoteFlush();
+		};
+		this.ydoc.on("update", onYdocUpdate);
+		this.unsubscribes.push(() => {
+			this.ydoc.off("update", onYdocUpdate);
+		});
 
 		this.whenSynced()
 			.then(() => {
@@ -218,8 +232,15 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		if (this.sharedFolder.s3rn instanceof S3Folder) {
 			// Local only
 			return false;
-		} else if (this.s3rn instanceof S3Canvas) {
-			// convert to remote document
+		} else if (
+			this.s3rn instanceof S3Canvas ||
+			(this.s3rn instanceof S3RemoteCanvas &&
+				this.sharedFolder.relayId !== undefined &&
+				this.s3rn.relayId !== this.sharedFolder.relayId)
+		) {
+			// A local identity converts to remote; a remote identity minted
+			// for a previous relay re-derives after the folder moves relays —
+			// otherwise the canvas connects to the old relay's room forever.
 			if (this.sharedFolder.relayId) {
 				this.s3rn = new S3RemoteCanvas(
 					this.sharedFolder.relayId,
@@ -257,6 +278,11 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	async whenReady(): Promise<Canvas> {
+		if (this.destroyed) {
+			return Promise.reject(
+				new DocumentDestroyedError(this.guid, this.path),
+			);
+		}
 		const promiseFn = async (): Promise<Canvas> => {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
@@ -274,7 +300,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this.readyPromise =
 			this.readyPromise ||
 			new Dependency<Canvas>(promiseFn, (): [boolean, Canvas] => {
-				return [this.ready, this];
+				return [!this.destroyed && this.ready, this];
 			}, this.timeProvider);
 		return trackPromise(`canvas:whenReady:${this.guid}`, this.readyPromise.getPromise());
 	}
@@ -419,6 +445,88 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
+	private scheduleRemoteFlush(): void {
+		if (this._remoteFlushTimer !== null) {
+			this.timeProvider.clearTimeout(this._remoteFlushTimer);
+		}
+		this._remoteFlushTimer = this.timeProvider.setTimeout(() => {
+			this._remoteFlushTimer = null;
+			trackPromise(
+				`canvasRemoteFlush:${this.guid}`,
+				this.flushIfClean(),
+			).catch((e) => this.warn("remote flush failed", e));
+		}, 1000);
+	}
+
+	/**
+	 * Write the ydoc's content to disk when the disk file is safe to
+	 * overwrite: it already matches the ydoc, is empty, or matches the last
+	 * content this canvas flushed or observed clean — meaning no local edit
+	 * has landed on disk since. A disk file that diverged locally is left
+	 * alone; converging it needs a three-way merge against a common
+	 * ancestor, which canvases do not have yet.
+	 *
+	 * An open view owns the disk file through its own save path, so the
+	 * flush is skipped while the canvas is locked by a view.
+	 */
+	async flushIfClean(
+		cleanReference?: CanvasData,
+	): Promise<"flushed" | "clean" | "diverged" | "skipped"> {
+		if (this.destroyed || this.userLock) return "skipped";
+		if (!this.sharedFolder.syncStore.has(this.path)) return "skipped";
+		const current = Canvas.exportCanvasData(this.ydoc);
+		let raw: string | null = null;
+		try {
+			raw = await this.sharedFolder.read(this);
+		} catch (e) {
+			raw = null;
+		}
+		let diskData: CanvasData = { nodes: [], edges: [] };
+		if (raw && raw.trim()) {
+			try {
+				diskData = JSON.parse(raw) as CanvasData;
+			} catch (e) {
+				return "diverged";
+			}
+		}
+		if (areCanvasDataEqual(diskData, current)) {
+			await this.setFlushedData(current);
+			return "clean";
+		}
+		const diskEmpty =
+			(diskData.nodes?.length ?? 0) === 0 &&
+			(diskData.edges?.length ?? 0) === 0;
+		const lastFlushed = await this.getFlushedData();
+		const diskUntouched =
+			diskEmpty ||
+			(lastFlushed !== null && areCanvasDataEqual(diskData, lastFlushed)) ||
+			(cleanReference !== undefined &&
+				areCanvasDataEqual(diskData, cleanReference));
+		if (!diskUntouched) return "diverged";
+		await this.sharedFolder.flush(this, this.json);
+		await this.setFlushedData(current);
+		return "flushed";
+	}
+
+	private async setFlushedData(data: CanvasData): Promise<void> {
+		try {
+			await this._persistence.set("flushedData", JSON.stringify(data));
+		} catch (e) {
+			// pass
+		}
+	}
+
+	private async getFlushedData(): Promise<CanvasData | null> {
+		try {
+			const raw = await this._persistence.get("flushedData");
+			return typeof raw === "string" && raw
+				? (JSON.parse(raw) as CanvasData)
+				: null;
+		} catch (e) {
+			return null;
+		}
+	}
+
 	move(newPath: string, sharedFolder: SharedFolder) {
 		this.path = newPath;
 		this._parent = sharedFolder;
@@ -448,6 +556,10 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	destroy() {
 		const destroyedError = new DocumentDestroyedError(this.guid, this.path);
 		this.destroyed = true;
+		if (this._remoteFlushTimer !== null) {
+			this.timeProvider.clearTimeout(this._remoteFlushTimer);
+			this._remoteFlushTimer = null;
+		}
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});

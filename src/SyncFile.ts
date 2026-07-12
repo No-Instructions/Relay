@@ -77,6 +77,7 @@ export class ContentAddressedFileStore extends HasLogging {
 		path: string,
 		hash: string,
 		modifiedAt: number,
+		guid?: string,
 	): Promise<void> {
 		await this.ready;
 		if (!this.db) return;
@@ -86,7 +87,12 @@ export class ContentAddressedFileStore extends HasLogging {
 			const transaction = this.db.transaction(["files"], "readwrite");
 			const store = transaction.objectStore("files");
 
-			const request = store.put({ path, hash, modifiedAt });
+			// `guid` is a backward-compatible field: it turns a hash entry
+			// into a durable local record of which identity this path synced
+			// under.
+			const request = store.put(
+				guid ? { path, hash, modifiedAt, guid } : { path, hash, modifiedAt },
+			);
 
 			request.onsuccess = () => resolve();
 			request.onerror = () => {
@@ -96,9 +102,37 @@ export class ContentAddressedFileStore extends HasLogging {
 		});
 	}
 
+	/**
+	 * All stored entries, for assembling the local-record cache at startup.
+	 * Entries written before guid recording existed simply lack the field.
+	 */
+	async getAllEntries(): Promise<
+		Array<{ path: string; hash: string; modifiedAt: number; guid?: string }>
+	> {
+		await this.ready;
+		if (!this.db) return [];
+
+		return new Promise((resolve, reject) => {
+			if (!this.db) {
+				resolve([]);
+				return;
+			}
+			const transaction = this.db.transaction(["files"], "readonly");
+			const store = transaction.objectStore("files");
+
+			const request = store.getAll();
+
+			request.onsuccess = () => resolve(request.result ?? []);
+			request.onerror = () => {
+				this.error("Error listing hash entries:", request.error);
+				reject(request.error);
+			};
+		});
+	}
+
 	async getHash(
 		path: string,
-	): Promise<{ hash: string; modifiedAt: number } | null> {
+	): Promise<{ hash: string; modifiedAt: number; guid?: string } | null> {
 		await this.ready;
 		if (!this.db) return null;
 
@@ -171,6 +205,8 @@ export class ContentAddressedFile extends HasLogging {
 		private vault: Vault,
 		public path: string,
 		private store: ContentAddressedFileStore,
+		/** Supplies the owning file's guid so saved hashes double as local records. */
+		private guidProvider?: () => string | undefined,
 	) {
 		super();
 		const tfile = this.vault.getAbstractFileByPath(path);
@@ -240,7 +276,12 @@ export class ContentAddressedFile extends HasLogging {
 			size: content.byteLength,
 		});
 		try {
-			await this.store.saveHash(this.path, hash, mtime);
+			await this.store.saveHash(
+				this.path,
+				hash,
+				mtime,
+				this.guidProvider?.(),
+			);
 		} catch (error) {
 			this.warn("Failed to save hash to store:", error);
 		}
@@ -258,22 +299,37 @@ export class ContentAddressedFile extends HasLogging {
 			size: content.byteLength,
 		});
 		try {
-			await this.store.saveHash(this.path, hash, mtime);
+			await this.store.saveHash(
+				this.path,
+				hash,
+				mtime,
+				this.guidProvider?.(),
+			);
 		} catch (error) {
 			this.warn("Failed to save hash to store:", error);
 		}
 		return hash;
 	}
 
-	exists() {
-		if (this._tfile) {
-			return true;
+	move(newPath: string) {
+		if (newPath === this.path) {
+			return;
 		}
+		this.path = newPath;
+		const tfile = this.vault.getAbstractFileByPath(newPath);
+		this._tfile = tfile instanceof TFile ? tfile : null;
+	}
+
+	exists() {
+		// Re-verify against the vault on every call: a cached handle can go
+		// stale when the file is deleted or moved between checks, and a stale
+		// true here makes downstream TFile getters throw mid-flow.
 		const tfile = this.vault.getAbstractFileByPath(this.path);
 		if (tfile && tfile instanceof TFile) {
 			this._tfile = tfile;
 			return true;
 		}
+		this._tfile = null;
 		return false;
 	}
 
@@ -348,6 +404,9 @@ export class SyncFile
 			this.vault,
 			this.sharedFolder.getPath(path),
 			this.hashStore,
+			// Guid evidence records only accumulate when the membership
+			// engine that consumes them is enabled (enableFolderHSM).
+			this.sharedFolder.folderHSM ? () => this.guid : undefined,
 		);
 
 		this.log("created");
@@ -401,6 +460,7 @@ export class SyncFile
 		this._parent = sharedFolder;
 		this.debug("setting new path", newPath);
 		this.path = newPath;
+		this.caf.move(sharedFolder.getPath(newPath));
 		this.name = newPath.split("/").pop() || "";
 		this.extension = this.name.split(".").pop() || "";
 		this.basename = this.name.replace(`.${this.extension}`, "");
@@ -439,6 +499,10 @@ export class SyncFile
 		}
 		if (!this.sharedFolder.syncStore.canSync(this.path)) {
 			this.log("skipping push -- filetype is disabled");
+			return;
+		}
+		if (this.sharedFolder.intent !== "connected") {
+			this.log("skipping push -- folder is set to disconnected");
 			return;
 		}
 		const hash = await this.caf.hash();
@@ -739,6 +803,14 @@ export class SyncFile
 			await this.vault.adapter.writeBinary(vaultPath, content, {
 				mtime: edit.mtime,
 			});
+			// Save the hash eagerly: the pulled content's hash is known from
+			// meta, and a durable entry is the local evidence that this file
+			// synced — cleanup relies on it after a restart.
+			this.hashStore
+				.saveHash(vaultPath, this.meta.hash, edit.mtime, this.guid)
+				.catch((error) => {
+					this.warn("Failed to save pulled hash:", error);
+				});
 			if (this.uploadError) {
 				this.uploadError = undefined;
 				this.notifyListeners();

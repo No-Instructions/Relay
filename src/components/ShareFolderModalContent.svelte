@@ -28,6 +28,7 @@
 	let isPrivate = false;
 	let inputValue = "";
 	let acceptedFolder = "";
+	let sharing = false;
 
 	// Selected users with the role each will be granted.
 	const selectedUsers = writable(
@@ -109,7 +110,8 @@
 		// This will reset to empty since there's no selected folder
 	}
 
-	function handleMainNext() {
+	async function handleMainNext() {
+		if (sharing) return;
 		// If user typed but didn't accept via enter/tab, accept the current input
 		if (!acceptedFolder && inputValue.trim()) {
 			acceptedFolder = inputValue.trim();
@@ -119,7 +121,7 @@
 			currentStep = "users";
 			setTitle("Add Users to Folder");
 		} else {
-			handleShare();
+			await handleShare();
 		}
 	}
 
@@ -148,11 +150,13 @@
 	}
 
 	async function handleShare() {
+		if (sharing) return;
 		// If user typed but didn't accept via enter/tab, accept the current input
 		if (!acceptedFolder && inputValue.trim()) {
 			acceptedFolder = inputValue.trim();
 		}
 
+		sharing = true;
 		try {
 			// Filter out current user since their role is created automatically
 			const currentUserId = relayManager.user?.id;
@@ -169,6 +173,8 @@
 			);
 		} catch (error) {
 			handleServerError(error, "Failed to share folder.");
+		} finally {
+			sharing = false;
 		}
 	}
 
@@ -288,7 +294,8 @@
 		<SlimSettingItem name="">
 			<button
 				class="mod-cta"
-				disabled={!acceptedFolder && !inputValue.trim()}
+				disabled={sharing || (!acceptedFolder && !inputValue.trim())}
+				aria-busy={sharing}
 				on:click={handleMainNext}
 			>
 				{isPrivate ? "Add Users" : "Share"}
@@ -377,8 +384,13 @@
 		</div>
 
 		<div class="modal-button-container users-step">
-			<button class="mod-muted" on:click={goBack}>Back</button>
-			<button class="mod-cta" disabled={false} on:click={handleShare}>
+			<button class="mod-muted" disabled={sharing} on:click={goBack}>Back</button>
+			<button
+				class="mod-cta"
+				disabled={sharing}
+				aria-busy={sharing}
+				on:click={handleShare}
+			>
 				Share
 			</button>
 		</div>

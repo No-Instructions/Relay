@@ -16,14 +16,24 @@
 import { ViewPlugin, EditorView, ViewUpdate } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
-import { getConnectionManager } from "../../LiveViews";
-import { Document } from "../../Document";
+import { getLiveViews } from "../../editorContext";
+import type { Document } from "../../Document";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
 import type { PositionedChange } from "../types";
 import { buildBufferedCM6ReplayEvents } from "./replayBufferedEdits";
+
+type EditorConnectionManager = {
+  sharedFolders: { lookup(path: string): any };
+  findCanvas(editor: EditorView): unknown;
+  findView(editor: EditorView): { document: Document } | undefined;
+};
+
+function getConnectionManager(editor: EditorView): EditorConnectionManager | null {
+  return getLiveViews(editor) as EditorConnectionManager | null;
+}
 
 /**
  * Plugin value class that handles the editor ↔ HSM integration.
@@ -300,6 +310,7 @@ class HSMEditorPluginValue implements PluginValue {
     }
     this.pendingEdits = [];
     this.document = null;
+    this.editor = null as any;
   }
 }
 

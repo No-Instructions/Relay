@@ -15,7 +15,7 @@ import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recordin
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { base64ToUint8Array, uint8ArrayToBase64 } from './merge-hsm/recording/serialization';
 import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
-import { getHSMBootId, getHSMBootEntries, getRecentEntries, getSessionLogs } from './debug';
+import { getHSMBootId, getHSMBootEntries, flushHSMRecording, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
 import {
@@ -252,6 +252,8 @@ export interface RelayDebugGlobal {
   getBootId: () => string | null;
   /** Get entries from current boot (reads disk file, filters by boot ID) */
   getBootEntries: () => Promise<object[]>;
+  /** Flush buffered recording entries to the vault-local JSONL file */
+  flushRecording: () => Promise<void>;
   /** Get last N entries for a specific document (buffer + disk, newest files first) */
   getRecentEntries: (guid: string, limit?: number) => Promise<object[]>;
   /** Read Y.Doc text content from IndexedDB without waking the HSM */
@@ -268,6 +270,18 @@ export interface RelayDebugGlobal {
   lookupFolder: (path: string) => any | null;
   /** Folder-scoped sync rows from MergeManager.syncStatus keyed by guid. */
   getFolderSyncStatus: (folderGuid: string) => { guid: string; path: string; status: string }[];
+  /** FolderHSM membership projection for the folder owning `path`: statePath, entry dispositions, parked files. Null when the folder has no membership engine (enableFolderHSM off). */
+  getFolderSyncSnapshot: (path: string) => any | null;
+  /** Outbound delete gate for the folder at `path`: gated flag + held keys. Null without the split (enableFolderHSM off). */
+  getFolderDeletionGate: (path: string) => { gated: boolean; held: { mapName: string; key: string }[] } | null;
+  /** Explicitly replicate the folder's gated deletion burst. Returns the post-send gated flag, or null without a folder. */
+  sendFolderHeldDeletions: (path: string) => boolean | null;
+  /** Explicitly discard the folder's gated deletion burst and restore membership from server truth. */
+  restoreFolderHeldDeletions: (path: string) => boolean | null;
+  /** Captured deletion bursts for the folder at `path`: {id, origin: local|remote, timestamp, paths}. */
+  getFolderDeletionHistory: (path: string) => { id: number; origin: string; timestamp: number; paths: string[] }[];
+  /** Reverse one captured deletion burst (the compensating op replicates to every peer). */
+  undoFolderDeletion: (path: string, id: number) => boolean;
   /** Folder-scoped subset of sync rows where status === "error". */
   getFolderSyncErrors: (folderGuid: string) => { guid: string; path: string; status: string }[];
   /** Folder-scoped subset of sync rows where status === "conflict". */
@@ -495,6 +509,7 @@ export class RelayDebugAPI {
 
       getBootId: () => getHSMBootId(),
       getBootEntries: () => getHSMBootEntries(),
+      flushRecording: () => flushHSMRecording(),
       getRecentEntries: (guid, limit) => getRecentEntries(guid, limit),
       readIdbContent: readIdbContent,
       getSessionLogs: (options) => getSessionLogs(options),
@@ -568,6 +583,56 @@ export class RelayDebugAPI {
         return null;
       },
       getFolderSyncStatus: (folderGuid: string) => this.getFolderSyncStatus(folderGuid),
+      // FolderHSM membership projection: statePath,
+      // per-entry dispositions, and parked paths for a shared folder.
+      // Gracefully null when the folder has no machine (enableFolderHSM off).
+      getFolderSyncSnapshot: (path: string) => {
+        if (!this.plugin?.sharedFolders?._set) return null;
+        for (const folder of this.plugin.sharedFolders._set.values()) {
+          const candidate = folder as any;
+          if (
+            candidate.path === path ||
+            path.startsWith(candidate.path + "/")
+          ) {
+            return candidate.getFolderSyncSnapshot?.() ?? null;
+          }
+        }
+        return null;
+      },
+      // Deletion-intent surfaces (folder doc split, enableFolderHSM only).
+      // Null/empty when the folder has no bridge/collector.
+      getFolderDeletionGate: (path: string) => {
+        const folder = this.resolveFolder(path);
+        if (!folder) return null;
+        const gate = folder.deletionGate?.() ?? null;
+        return {
+          gated: gate !== null,
+          token: gate?.token ?? null,
+          gatedAt: gate?.gatedAt ?? null,
+          paths: gate?.paths ?? [],
+          held: gate?.deletes ?? [],
+        };
+      },
+      sendFolderHeldDeletions: (path: string, token?: string) => {
+        const folder = this.resolveFolder(path);
+        if (!folder) return null;
+        if (!token) return "stale";
+        return folder.sendHeldDeletions?.(token) ?? "not-gated";
+      },
+      restoreFolderHeldDeletions: (path: string, token?: string) => {
+        const folder = this.resolveFolder(path);
+        if (!folder) return null;
+        if (!token) return "stale";
+        return folder.restoreHeldDeletions?.(token) ?? "not-gated";
+      },
+      getFolderDeletionHistory: (path: string) => {
+        const folder = this.resolveFolder(path);
+        return folder?.deletionHistory?.() ?? [];
+      },
+      undoFolderDeletion: (path: string, id: number) => {
+        const folder = this.resolveFolder(path);
+        return folder?.undoDeletion?.(id) ?? false;
+      },
       getFolderSyncErrors: (folderGuid: string) => this.getFolderSyncErrors(folderGuid),
       getFolderConflicts: (folderGuid: string) => this.getFolderConflicts(folderGuid),
       listAllConflicts: () => this.listAllConflicts(),
@@ -1294,6 +1359,18 @@ export class RelayDebugAPI {
   private findRelayByGuid(guid: string) {
     for (const r of this.plugin.relayManager.relays._map.values()) {
       if (r.guid === guid) return r;
+    }
+    return null;
+  }
+
+  /** Resolve a shared folder by exact path or path prefix. */
+  private resolveFolder(path: string): any | null {
+    if (!this.plugin?.sharedFolders?._set) return null;
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if ((folder as any).path === path) return folder;
+    }
+    for (const folder of this.plugin.sharedFolders._set.values()) {
+      if (path.startsWith((folder as any).path + '/')) return folder;
     }
     return null;
   }

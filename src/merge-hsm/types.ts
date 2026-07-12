@@ -749,6 +749,8 @@ export type MergeEffect =
 export interface PersistedMergeState {
 	guid: string;
 	path: string;
+	/** Owning shared folder. Records without it predate folder scoping. */
+	folder?: string;
 	lca: {
 		contents: string;
 		hash: string;
@@ -774,6 +776,8 @@ export interface PersistedMergeState {
 export interface PersistedStateMeta {
 	guid: string;
 	path: string;
+	/** Owning shared folder. Records without it predate folder scoping. */
+	folder?: string;
 	lcaMeta: LCAMeta | null;
 	disk: MergeMetadata | null;
 	localSnapshot?: Uint8Array | null;

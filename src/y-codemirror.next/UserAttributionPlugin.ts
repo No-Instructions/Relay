@@ -9,7 +9,7 @@ import { StateEffect, StateField, Range, type EditorState } from "@codemirror/st
 import { editorInfoField } from "obsidian";
 import * as Y from "yjs";
 
-import { getConnectionManager } from "../LiveViews";
+import { getLiveViews } from "../editorContext";
 import { usercolors } from "../User";
 
 /**
@@ -53,6 +53,7 @@ function readAttributionFilter(state: EditorState): AttributionFilter {
 class UserAttributionPluginValue {
 	decorations: DecorationSet = Decoration.none;
 	editor: EditorView;
+	private destroyed = false;
 
 	constructor(editor: EditorView) {
 		this.editor = editor;
@@ -60,6 +61,7 @@ class UserAttributionPluginValue {
 	}
 
 	update(update: ViewUpdate) {
+		if (this.destroyed) return;
 		const filter = readAttributionFilter(update.state);
 		const prevFilter = readAttributionFilter(update.startState);
 		if (
@@ -72,6 +74,7 @@ class UserAttributionPluginValue {
 	}
 
 	private recalc() {
+		if (this.destroyed || !this.editor) return;
 		const view = this.editor;
 		const filter = readAttributionFilter(view.state);
 		if (filter === null) {
@@ -86,7 +89,7 @@ class UserAttributionPluginValue {
 			return;
 		}
 
-		const connectionManager = getConnectionManager(view);
+		const connectionManager = getLiveViews(view) as any;
 		const folder = connectionManager?.sharedFolders.lookup(file.path);
 		const doc = folder?.proxy.getDoc(file.path);
 		const ydoc = doc?.localDoc as Y.Doc | undefined;
@@ -181,6 +184,12 @@ class UserAttributionPluginValue {
 		}
 
 		this.decorations = Decoration.set(ranges, true);
+	}
+
+	destroy() {
+		this.destroyed = true;
+		this.decorations = Decoration.none;
+		this.editor = null as any;
 	}
 }
 

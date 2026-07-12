@@ -1,4 +1,4 @@
-import { requestUrl, type RequestUrlResponse } from "obsidian";
+import type { RequestUrlResponse } from "obsidian";
 import type { LoginManager } from "./LoginManager";
 import * as Y from "yjs";
 import { S3RN, S3RemoteCanvas, S3RemoteDocument } from "./S3RN";
@@ -28,7 +28,7 @@ import {
 	type FolderSyncWorkItemInput,
 } from "./BackgroundSyncProgress";
 import { errorFromUnknown, formatUserFacingError } from "./UserFacingError";
-import { getRelayRequestHeaders } from "./customFetch";
+import { getRelayRequestHeaders, requestUrlWithMetrics } from "./customFetch";
 import { isRetryableS3Error } from "./S3Error";
 
 export interface QueueItem {
@@ -112,6 +112,7 @@ const MAX_PROVIDER_SYNC_RETRIES = 5;
 const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
+const LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
 type BackgroundSyncOperation = "sync" | "download";
 type BackgroundSyncSortReason = "enqueue" | "retry" | "batch" | "group";
 
@@ -145,6 +146,10 @@ export class BackgroundSync extends HasLogging {
 
 	private syncQueue: QueueItem[] = [];
 	private downloadQueue: QueueItem[] = [];
+	// Local-ahead docs whose sync session did not converge (e.g. the server
+	// refuses the ops) stay advertised-out-of-sync forever; without a marker
+	// every subdoc index sync would re-enqueue a full session for them.
+	private localAheadAttempts = new Map<string, number>();
 	private isProcessingSync = false;
 	private isProcessingDownloads = false;
 	private isPaused = true;
@@ -333,6 +338,19 @@ export class BackgroundSync extends HasLogging {
 
 	private isDownloadCancelled(item: QueueItem): boolean {
 		return item.doc.destroyed || this.cancelledDownloads.has(item.guid);
+	}
+
+	/**
+	 * A deletion landing while a download is queued or in flight makes the
+	 * op moot, not failed. The membership delta is the deletion's trigger,
+	 * so committed-meta absence is the earliest signal; the doc's destroyed
+	 * flag and folder registration lag it — the file can vanish from disk
+	 * mid-op, before doc teardown finishes.
+	 */
+	private downloadTargetDeleted(item: QueueItem): boolean {
+		if (item.doc.destroyed) return true;
+		if (!item.sharedFolder.files.has(item.guid)) return true;
+		return !item.sharedFolder.syncStore.getCommittedMeta(item.doc.path);
 	}
 
 	private shouldSkipDocumentSync(item: Document | Canvas | SyncFile): boolean {
@@ -1104,7 +1122,7 @@ export class BackgroundSync extends HasLogging {
 							this.markDownloadTerminal(item, "completed");
 						})
 						.catch((error) => {
-							if (this.isDownloadCancelled(item)) {
+							if (this.isDownloadCancelled(item) || this.downloadTargetDeleted(item)) {
 								item.status = "completed";
 								this.markDownloadTerminal(item, "skipped");
 								this.resolveDownloadCancellation(item.guid);
@@ -1139,7 +1157,7 @@ export class BackgroundSync extends HasLogging {
 							});
 						});
 				} catch (error) {
-					if (this.isDownloadCancelled(item)) {
+					if (this.isDownloadCancelled(item) || this.downloadTargetDeleted(item)) {
 						item.status = "completed";
 						metrics.observeBgSyncOp("download", (performance.now() - opStart) / 1000);
 						this.markDownloadTerminal(item, "skipped");
@@ -1683,7 +1701,29 @@ export class BackgroundSync extends HasLogging {
 		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueSync(doc);
 		}
-		return docs.length;
+
+		// Canvases have no HSM sync session; an advertised head that is
+		// ahead of the local ydoc downloads through getCanvas, which applies
+		// the update and flushes to disk when the local copy is untouched.
+		// An open view carries its own connection and save path.
+		const canvases = [...sharedFolder.files.values()]
+			.filter(isCanvas)
+			.filter((canvas) => advertisedGuids.has(canvas.guid))
+			.filter((canvas) => !canvas.userLock)
+			.filter((canvas) => !this.downloadPromises.has(canvas.guid))
+			.filter((canvas) => {
+				const mergeManager = sharedFolder.mergeManager;
+				if (!mergeManager) return true;
+				return !mergeManager.isServerAdvertisedInSync(
+					canvas.guid,
+					snapshotFromDoc(canvas.ydoc).snapshot,
+				);
+			});
+		for (const canvas of canvases) {
+			void this.enqueueCanvasDownload(canvas, false);
+		}
+
+		return docs.length + canvases.length;
 	}
 
 	enqueueAdvertisedLCABackfills(
@@ -1747,7 +1787,20 @@ export class BackgroundSync extends HasLogging {
 		if (!this.canUploadContent(doc)) return false;
 		if (doc.userLock || mergeManager.isActive(doc.guid)) return false;
 		if (doc.intent === "connected") return false;
-		return mergeManager.isServerAdvertisedOutOfSync(doc.guid);
+		if (!mergeManager.isServerAdvertisedOutOfSync(doc.guid)) {
+			this.localAheadAttempts.delete(doc.guid);
+			return false;
+		}
+		const lastAttempt = this.localAheadAttempts.get(doc.guid);
+		const now = this.timeProvider.now();
+		if (
+			lastAttempt !== undefined &&
+			now - lastAttempt < LOCAL_AHEAD_RETRY_INTERVAL_MS
+		) {
+			return false;
+		}
+		this.localAheadAttempts.set(doc.guid, now);
+		return true;
 	}
 
 	private shouldEnqueueForLCABackfill(doc: Document): boolean {
@@ -1860,11 +1913,12 @@ export class BackgroundSync extends HasLogging {
 		const baseUrl = this.getBaseUrl(clientToken, entity);
 		const url = `${baseUrl}/as-update`;
 
-		const response = await requestUrl({
+		const response = await requestUrlWithMetrics({
 			url: url,
 			method: "GET",
 			headers: headers,
 			throw: false,
+			relayNetworkDomain: "relay",
 		});
 
 		if (response.status === 200) {
@@ -1915,11 +1969,12 @@ export class BackgroundSync extends HasLogging {
 		const baseUrl = this.getBaseUrl(clientToken, entity);
 		const url = `${baseUrl}/as-update`;
 
-		const response = await requestUrl({
+		const response = await requestUrlWithMetrics({
 			url,
 			method: "GET",
 			headers,
 			throw: false,
+			relayNetworkDomain: "relay",
 		});
 
 		if (response.status !== 200) {
@@ -2112,19 +2167,10 @@ export class BackgroundSync extends HasLogging {
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
 		try {
-			// Get the current contents before applying the update
-			const currentJson = Canvas.exportCanvasData(canvas.ydoc);
-			let currentFileContents: CanvasData = { edges: [], nodes: [] };
-			try {
-				const stringContents = await canvas.sharedFolder.read(canvas);
-				currentFileContents = JSON.parse(stringContents) as CanvasData;
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = areCanvasDataEqual(currentJson, currentFileContents);
-			const hasContents = currentFileContents.nodes.length > 0;
+			// The pre-download export identifies a disk file that simply
+			// trails the server: matching it counts as untouched when
+			// deciding whether the flush is safe.
+			const preUpdate = Canvas.exportCanvasData(canvas.ydoc);
 
 			const response = await this.downloadItem(canvas);
 			const rawUpdate = response.arrayBuffer;
@@ -2133,12 +2179,10 @@ export class BackgroundSync extends HasLogging {
 			this.log("[getCanvas] applying content from server");
 			Y.applyUpdate(canvas.ydoc, updateBytes);
 
-			if (hasContents && !contentsMatch) {
+			const outcome = await canvas.flushIfClean(preUpdate);
+			if (outcome === "diverged") {
 				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
-				canvas.sharedFolder.flush(canvas, canvas.json);
+			} else if (outcome === "flushed") {
 				this.log("[getCanvas] flushed");
 			}
 		} catch (e) {
@@ -2209,10 +2253,28 @@ export class BackgroundSync extends HasLogging {
 		const hsm = doc.hsm;
 		if (!hsm || hsm.state.lca || hsm.isActive()) return;
 
+		// A first download has not written the file yet — the applied server
+		// content materializes it through the WRITE_DISK effect. With no file
+		// on disk there is no on-disk content to reconcile, so there is no
+		// last-common-ancestor to recover from disk. Skip rather than read,
+		// which would throw for the absent TFile and fail the download for a
+		// doc that is simply arriving for the first time. The LCA is
+		// established once the file lands, through the idle-merge path.
+		if (!doc.tfile) {
+			this.debug(
+				`[bootstrapLCA] skipped for ${doc.path}: file not yet materialized`,
+			);
+			return;
+		}
+
+		let releaseLease: () => void = () => {};
 		try {
 			const mergeManager = doc.sharedFolder.mergeManager;
 			if (mergeManager?.getHibernationState(doc.guid) === "hibernated") {
-				mergeManager.wake(doc.guid, doc.ensureRemoteDoc());
+				releaseLease =
+					mergeManager.wake(doc.guid, doc.ensureRemoteDoc(), {
+						lease: true,
+					}) ?? releaseLease;
 				await hsm.awaitPersistenceReady();
 			}
 
@@ -2235,6 +2297,8 @@ export class BackgroundSync extends HasLogging {
 				e,
 			);
 			throw e;
+		} finally {
+			releaseLease();
 		}
 	}
 
@@ -2270,12 +2334,20 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	private async syncDocumentUpload(doc: Document | Canvas): Promise<void> {
-		if (isDocument(doc) && doc.hsm) {
-			await this.prepareDocumentUpload(doc);
-		}
-		await this.syncDocument(doc);
-		if (isDocument(doc) && doc.hsm) {
-			this.assertUploadedDocumentHasRemoteContent(doc);
+		// The lease from upload preparation must survive the websocket sync
+		// and the final content assert: hibernation mid-upload detaches the
+		// remoteDoc, which surfaces as an empty remote after preparation.
+		let releaseLease: () => void = () => {};
+		try {
+			if (isDocument(doc) && doc.hsm) {
+				releaseLease = await this.prepareDocumentUpload(doc);
+			}
+			await this.syncDocument(doc);
+			if (isDocument(doc) && doc.hsm) {
+				this.assertUploadedDocumentHasRemoteContent(doc);
+			}
+		} finally {
+			releaseLease();
 		}
 	}
 
@@ -2322,29 +2394,41 @@ export class BackgroundSync extends HasLogging {
 		const remoteDoc = doc.ensureRemoteDoc();
 		Y.applyUpdate(remoteDoc, updateBytes, remoteDoc);
 		const mergeManager = doc.sharedFolder.mergeManager;
+		let releaseLease: () => void = () => {};
 		if (mergeManager) {
-			mergeManager.wake(doc.guid, remoteDoc);
+			releaseLease =
+				mergeManager.wake(doc.guid, remoteDoc, { lease: true }) ??
+				releaseLease;
 		} else {
 			hsm.setRemoteDoc(remoteDoc);
 		}
-		const diskState = await doc.readDiskContent();
-		const settled = await hsm.bootstrapLCAFromDisk(diskState);
-		if (!settled && hsm.getSyncStatus().status === "pending") {
-			if (!hsm.hasPersistenceUserData()) {
+		try {
+			const diskState = await doc.readDiskContent();
+			const settled = await hsm.bootstrapLCAFromDisk(diskState);
+			if (!settled && hsm.getSyncStatus().status === "pending") {
+				if (!hsm.hasPersistenceUserData()) {
+					this.debug(
+						`[lca-backfill] deferred for ${doc.path}: awaiting local enrollment`,
+					);
+					return;
+				}
 				this.debug(
-					`[lca-backfill] deferred for ${doc.path}: awaiting local enrollment`,
+					`[lca-backfill] deferred for ${doc.path}: local or remote state is not ready`,
 				);
-				return;
 			}
-			this.debug(
-				`[lca-backfill] deferred for ${doc.path}: local or remote state is not ready`,
-			);
+		} finally {
+			releaseLease();
 		}
 	}
 
-	private async prepareDocumentUpload(doc: Document): Promise<void> {
+	/**
+	 * Wake the doc and encode its localDoc into the remoteDoc for upload.
+	 * Returns the warm-lease release; the caller holds it until the upload
+	 * resolves so hibernation cannot tear the doc down mid-pipeline.
+	 */
+	private async prepareDocumentUpload(doc: Document): Promise<() => void> {
 		const hsm = doc.hsm;
-		if (!hsm) return;
+		if (!hsm) return () => {};
 		// Hard stop: this path applies the local CRDT into remoteDoc directly,
 		// bypassing the provider's readOnly gate.
 		if (!this.canUploadContent(doc)) {
@@ -2358,26 +2442,38 @@ export class BackgroundSync extends HasLogging {
 
 		const remoteDoc = doc.ensureRemoteDoc();
 		const mergeManager = doc.sharedFolder.mergeManager;
+		let releaseLease: () => void = () => {};
 		if (!doc.userLock && !mergeManager?.isActive(doc.guid)) {
-			mergeManager?.wake(doc.guid, remoteDoc);
+			if (mergeManager) {
+				releaseLease =
+					mergeManager.wake(doc.guid, remoteDoc, {
+						lease: true,
+					}) ?? releaseLease;
+			}
 		} else {
 			hsm.setRemoteDoc(remoteDoc);
 		}
-		await hsm.awaitPersistenceReady();
+		try {
+			await hsm.awaitPersistenceReady();
 
-		if (hsm.hasFork()) {
-			throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
-		}
-		const localDoc = hsm.getLocalDoc();
-		if (!localDoc) {
-			throw new RetryableProviderSyncError(
-				`Local document is not ready for upload: ${this.fileName(doc.path)}`,
-			);
-		}
+			if (hsm.hasFork()) {
+				throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
+			}
+			const localDoc = hsm.getLocalDoc();
+			if (!localDoc) {
+				throw new RetryableProviderSyncError(
+					`Local document is not ready for upload: ${this.fileName(doc.path)}`,
+				);
+			}
 
-		Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
-		hsm.setRemoteDoc(remoteDoc);
-		this.assertUploadedDocumentHasRemoteContent(doc);
+			Y.applyUpdate(remoteDoc, Y.encodeStateAsUpdate(localDoc), hsm);
+			hsm.setRemoteDoc(remoteDoc);
+			this.assertUploadedDocumentHasRemoteContent(doc);
+			return releaseLease;
+		} catch (e) {
+			releaseLease();
+			throw e;
+		}
 	}
 
 	private assertUploadedDocumentHasRemoteContent(doc: Document): void {

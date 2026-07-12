@@ -21,6 +21,7 @@ import type { TimeProvider } from "../TimeProvider";
 
 const providerError = curryLog("[YSweetProvider]", "error");
 const providerLog = curryLog("[YSweetProvider]", "log");
+const providerDebug = curryLog("[YSweetProvider]", "debug");
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
@@ -174,24 +175,47 @@ messageHandlers[messageSubdocs] = (
 // @todo - this should depend on awareness.outdatedTime
 const messageReconnectTimeout = 30000;
 
+/**
+ * Reconnect backoff schedule. While intent is connected the provider retries
+ * indefinitely — there is no attempt ceiling. The delay grows exponentially
+ * from RECONNECT_BASE_DELAY_MS, doubling on each consecutive failure up to
+ * RECONNECT_MAX_DELAY_MS. Full jitter spreads a reconnecting fleet so a single
+ * server event (deploy, restart, drain) does not produce a synchronized retry
+ * storm. A connection that stays open for RECONNECT_STABILITY_MS is treated as
+ * healthy and resets the schedule so the next drop recovers quickly.
+ */
+export const RECONNECT_BASE_DELAY_MS = 300;
+export const RECONNECT_MAX_DELAY_MS = 30000;
+export const RECONNECT_STABILITY_MS = 30000;
+
 const permissionDeniedHandler = (provider: YSweetProvider, reason: string) =>
 	console.warn(`Permission denied to access ${provider.url}.\n${reason}`);
 
 function reconnectDelay(provider: YSweetProvider): number {
-	return math.min(
-		math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
+	// wsUnsuccessfulReconnects counts closes since the last stable connection,
+	// so the first retry after any close uses the base delay (exponent 0).
+	const exponent = math.max(0, provider.wsUnsuccessfulReconnects - 1);
+	const capped = math.min(
+		RECONNECT_BASE_DELAY_MS * math.pow(2, exponent),
 		provider.maxBackoffTime,
 	);
+	// Full jitter: pick uniformly in [0, capped].
+	return math.floor(Math.random() * capped);
 }
 
 function scheduleReconnect(provider: YSweetProvider): void {
 	if (!provider.canReconnect() || provider._reconnectTimeout !== null) {
 		return;
 	}
+	const delay = reconnectDelay(provider);
+	metrics.recordNetworkWebSocketConnection("relay", "reconnect");
+	providerDebug(
+		`[${provider.roomname}] scheduling reconnect #${provider.wsUnsuccessfulReconnects} in ${delay}ms`,
+	);
 	provider._reconnectTimeout = provider._setTimeout(() => {
 		provider._reconnectTimeout = null;
 		reconnectAfterRefresh(provider);
-	}, reconnectDelay(provider));
+	}, delay);
 }
 
 function setupReconnect(provider: YSweetProvider): void {
@@ -251,6 +275,7 @@ const readMessage = (
 const setupWS = (provider: YSweetProvider) => {
 	if (provider.shouldConnect && provider.ws === null) {
 		const websocket = new provider._WS(provider.url);
+		metrics.recordNetworkWebSocketConnection("relay", "attempt");
 		websocket.binaryType = "arraybuffer";
 		provider.ws = websocket;
 		provider.wsconnecting = true;
@@ -272,17 +297,19 @@ const setupWS = (provider: YSweetProvider) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
+			metrics.recordNetworkWebSocketConnection("relay", "error");
 			provider.emit("connection-error", [event, provider]);
 		};
 		websocket.onclose = (event) => {
 			if (provider.ws !== websocket) {
 				return;
 			}
+			metrics.recordNetworkWebSocketConnection("relay", "closed");
 			provider.emit("connection-close", [event, provider]);
 			provider.ws = null;
 			provider.wsconnecting = false;
 			provider.wsConnectStartTime = 0;
-			const wasConnected = provider.wsconnected;
+			provider._clearStableTimeout();
 			if (provider.wsconnected) {
 				provider.wsconnected = false;
 				provider.synced = false;
@@ -294,32 +321,39 @@ const setupWS = (provider: YSweetProvider) => {
 					),
 					provider,
 				);
-			} else {
-				provider.wsUnsuccessfulReconnects++;
 			}
+			// Every close counts against the backoff schedule until a
+			// connection proves stable: a live drop and a never-opened attempt
+			// both grow the delay, so a flapping socket cannot reconnect in a
+			// tight loop. The counter resets once a connection holds (onopen
+			// arms _stableTimeout).
+			provider.wsUnsuccessfulReconnects++;
 			provider.emit("status", [
 				{
 					status: "disconnected",
 					intent: provider.intent,
 				},
 			]);
-			// Start with no reconnect timeout and increase timeout by
-			// using exponential backoff starting with 100ms
+			// Reconnection continues indefinitely while intent is connected;
+			// canReconnect() only stops the schedule when the user disconnects
+			// (shouldConnect false) or no url is available.
 			if (provider.canReconnect()) {
 				scheduleReconnect(provider);
-			} else if (!wasConnected) {
-				provider.wsUnsuccessfulReconnects = provider.maxConnectionErrors;
 			}
 		};
 		websocket.onopen = () => {
 			if (provider.ws !== websocket) {
 				return;
 			}
+			metrics.recordNetworkWebSocketConnection("relay", "connected");
 			provider.wsLastMessageReceived = time.getUnixTime();
 			provider.wsconnecting = false;
 			provider.wsconnected = true;
 			provider.wsConnectStartTime = 0;
-			provider.wsUnsuccessfulReconnects = 0;
+			// Don't reset the backoff counter yet — a socket that opens and
+			// immediately drops must keep backing off. The counter resets only
+			// once the connection has held for RECONNECT_STABILITY_MS.
+			provider._armStableTimeout();
 			provider.emit("status", [
 				{
 					status: "connected",
@@ -413,7 +447,6 @@ export type YSweetProviderParams = {
 	resyncInterval?: number;
 	maxBackoffTime?: number;
 	disableBc?: boolean;
-	maxConnectionErrors?: number;
 	readOnly?: boolean;
 	timeProvider?: TimeProvider;
 };
@@ -587,7 +620,8 @@ export class YSweetProvider extends Observable<string> {
 	_unloadHandler: (...args: any[]) => any;
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	_reconnectTimeout: ReturnType<typeof setTimeout> | null;
-	maxConnectionErrors: number;
+	/** Timer that marks a held connection healthy and resets the backoff. */
+	_stableTimeout: ReturnType<typeof setTimeout> | null;
 	readOnly: boolean;
 	eventSubscriptions: Set<string>;
 	eventCallbacks: Map<string, EventCallback[]>;
@@ -669,9 +703,8 @@ export class YSweetProvider extends Observable<string> {
 			params = {},
 			WebSocketPolyfill = WebSocket,
 			resyncInterval = -1,
-			maxBackoffTime = 2500,
+			maxBackoffTime = RECONNECT_MAX_DELAY_MS,
 			disableBc = false,
-			maxConnectionErrors = 3,
 			readOnly = false,
 			timeProvider,
 		}: YSweetProviderParams = {},
@@ -707,7 +740,6 @@ export class YSweetProvider extends Observable<string> {
 		this.wsLastMessageReceived = 0;
 		this.wsConnectStartTime = 0;
 		this.shouldConnect = connect;
-		this.maxConnectionErrors = maxConnectionErrors;
 		this.eventSubscriptions = new Set();
 		this.eventCallbacks = new Map();
 		this.onSubdocIndex = null;
@@ -822,8 +854,34 @@ export class YSweetProvider extends Observable<string> {
 			}
 		}, messageReconnectTimeout / 10);
 		this._reconnectTimeout = null;
+		this._stableTimeout = null;
 		if (connect) {
 			this.connect();
+		}
+	}
+
+	/**
+	 * Arm the stability timer. If the current connection stays open for
+	 * RECONNECT_STABILITY_MS, the backoff counter resets so the next drop
+	 * recovers from the base delay instead of a grown one.
+	 */
+	_armStableTimeout(): void {
+		this._clearStableTimeout();
+		this._stableTimeout = this._setTimeout(() => {
+			this._stableTimeout = null;
+			if (this.wsUnsuccessfulReconnects !== 0) {
+				providerDebug(
+					`[${this.roomname}] connection held ${RECONNECT_STABILITY_MS}ms; reset reconnect backoff`,
+				);
+			}
+			this.wsUnsuccessfulReconnects = 0;
+		}, RECONNECT_STABILITY_MS);
+	}
+
+	_clearStableTimeout(): void {
+		if (this._stableTimeout !== null) {
+			this._clearTimeout(this._stableTimeout);
+			this._stableTimeout = null;
 		}
 	}
 
@@ -880,11 +938,10 @@ export class YSweetProvider extends Observable<string> {
 	}
 
 	canReconnect(): boolean {
-		return (
-			!!this.url &&
-			this.shouldConnect &&
-			this.wsUnsuccessfulReconnects < this.maxConnectionErrors
-		);
+		// Reconnection is indefinite while intent is connected — there is no
+		// attempt ceiling. Only an intentional disconnect (shouldConnect false)
+		// or a missing url stops the schedule.
+		return !!this.url && this.shouldConnect;
 	}
 
 	destroy() {
@@ -896,6 +953,7 @@ export class YSweetProvider extends Observable<string> {
 			this._clearTimeout(this._reconnectTimeout);
 			this._reconnectTimeout = null;
 		}
+		this._clearStableTimeout();
 
 		if (this.ws) {
 			this.ws.onopen = null;
@@ -1012,6 +1070,7 @@ export class YSweetProvider extends Observable<string> {
 			this._clearTimeout(this._reconnectTimeout);
 			this._reconnectTimeout = null;
 		}
+		this._clearStableTimeout();
 		this.disconnectBc();
 		if (this.ws !== null) {
 			this.ws.close();
@@ -1041,13 +1100,9 @@ export class YSweetProvider extends Observable<string> {
 			return;
 		}
 		if (!this.wsconnected && this.ws === null) {
-			// User-initiated reconnects should start a fresh retry budget.
-			// Without this, a previous exhausted reconnect cycle can leave the
-			// provider permanently offline until the plugin is recreated.
-			if (
-				wasDisconnected ||
-				this.wsUnsuccessfulReconnects >= this.maxConnectionErrors
-			) {
+			// An explicit connect after an intentional disconnect starts a
+			// fresh retry budget so the first attempt fires without backoff.
+			if (wasDisconnected) {
 				this.wsUnsuccessfulReconnects = 0;
 			}
 			setupWS(this);

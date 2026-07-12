@@ -1,6 +1,6 @@
-import { EditorView } from "@codemirror/view";
-import { App, editorInfoField } from "obsidian";
-import type { TFile, CachedMetadata } from "obsidian";
+import type { EditorView } from "@codemirror/view";
+import { editorInfoField } from "obsidian";
+import type { App, TFile, CachedMetadata } from "obsidian";
 import type { SharedFolders } from "./SharedFolder";
 
 export interface MetadataBridge {
@@ -24,6 +24,10 @@ export function getRelayPlugin(editor: EditorView): RelayPlugin | null {
 
 export function getSharedFolders(editor: EditorView): SharedFolders | null {
 	return getRelayPlugin(editor)?.sharedFolders ?? null;
+}
+
+export function getLiveViews(editor: EditorView): unknown | null {
+	return (getRelayPlugin(editor) as any)?._liveViews ?? null;
 }
 
 export function getApp(editor: EditorView): App | null {
