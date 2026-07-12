@@ -38,4 +38,11 @@
 	.relay-settings-back-button {
 		flex: 0 0 auto;
 	}
+
+	/* Keep Obsidian's close control above the full-width navigation row. */
+	:global(
+		.modal.mod-settings:has(.relay-settings-nav-bar) > .modal-header-button
+	) {
+		z-index: 1;
+	}
 </style>
