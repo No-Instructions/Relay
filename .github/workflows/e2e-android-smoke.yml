@@ -148,13 +148,17 @@ jobs:
           ram-size: 4096M
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          # The action executes this script with /usr/bin/sh (dash), which lacks
+          # `set -o pipefail` and the ERR trap; run the body under bash.
           script: |
-            set -euo pipefail
+            bash --noprofile --norc -eo pipefail <<'ANDROID_SMOKE'
+            set -u
+            PORT='4723'
+            SERIAL='emulator-5554'
             HARNESS="$HOME/relay-harness"
             USER_NAME="${{ github.event.inputs.user || 'erik' }}"
             VAULT_TEMPLATE="${{ github.event.inputs.vault_template || 'kepano-plus' }}"
             VAULT_NAME="vault-${USER_NAME}"
-            PORT="${APPIUM_PORT}"
 
             dump_diagnostics() {
               echo "::group::android diagnostics"
@@ -209,14 +213,15 @@ jobs:
             cd "$HARNESS/playwright"
 
             echo "=== First-run: select existing vault ==="
-            node utils/android-first-run.mjs "$PORT" "$VAULT_NAME" "$ANDROID_SERIAL"
+            node utils/android-first-run.mjs "$PORT" "$VAULT_NAME" "$SERIAL"
 
             echo "=== Install Relay plugin from the built product ==="
             node utils/setup-android-plugin.mjs "$USER_NAME" \
-              --plugin-path="$GITHUB_WORKSPACE" --device="$ANDROID_SERIAL"
+              --plugin-path="$GITHUB_WORKSPACE" --device="$SERIAL"
 
             echo "=== Inject auth (handles trust dialog + reload) ==="
-            node utils/inject-auth-android.mjs "$USER_NAME" "$PORT" "$ANDROID_SERIAL"
+            node utils/inject-auth-android.mjs "$USER_NAME" "$PORT" "$SERIAL"
 
             echo "=== Android smoke ==="
             node tests/test-android-quick.mjs
+            ANDROID_SMOKE
