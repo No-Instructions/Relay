@@ -907,6 +907,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const cleanupIfDone = () => {
 			if (hsm.matches("idle.localAhead")) return;
 			if (!hsm.state.lca && hsm.matches("idle.diverged")) return;
+			// Keep the integration up while a retryable error is pending so the
+			// reconnect can deliver the remote update that re-arms it.
+			if (hsm.matches("idle.error") && hsm.state.errorRetryable) return;
 			unsubscribeState?.();
 			unsubscribeState = null;
 			if (!hsm.isActive()) {
