@@ -4,14 +4,15 @@
 	import SettingGroup from "./SettingGroup.svelte";
 	import type Live from "src/main";
 	import { type SharedFolder } from "src/SharedFolder";
-	import { debounce } from "obsidian";
-	import { createEventDispatcher, onDestroy, onMount } from "svelte";
+	import { debounce, Notice } from "obsidian";
+	import { createEventDispatcher, onDestroy, onMount, tick } from "svelte";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
 
 	export let plugin: Live;
 	export let sharedFolder: SharedFolder;
 
 	const dispatch = createEventDispatcher();
+	let deletingLocal = false;
 
 	async function handleDeleteMetadata() {
 		if (sharedFolder) {
@@ -20,14 +21,27 @@
 		dispatch("goBack", { clear: true });
 	}
 
-	function handleDeleteLocal() {
-		if (sharedFolder) {
-			const folder = plugin.vault.getFolderByPath(sharedFolder.path);
-			if (folder) {
-				plugin.app.vault.trash(folder, false);
-			}
+	async function handleDeleteLocal() {
+		if (deletingLocal || !sharedFolder) return;
+		const folder = plugin.vault.getFolderByPath(sharedFolder.path);
+		if (!folder) {
+			dispatch("goBack", {});
+			return;
 		}
-		dispatch("goBack", {});
+
+		deletingLocal = true;
+		try {
+			await tick();
+			await new Promise<void>((resolve) =>
+				window.requestAnimationFrame(() => resolve()),
+			);
+			await plugin.app.vault.trash(folder, false);
+			dispatch("goBack", {});
+		} catch (error) {
+			deletingLocal = false;
+			console.error("Failed to move shared folder to trash", error);
+			new Notice("Failed to move the Shared Folder to trash.");
+		}
 	}
 </script>
 
@@ -74,9 +88,9 @@
 		>
 			<button
 				class="mod-warning"
-				on:click={debounce(() => {
-					handleDeleteLocal();
-				})}
+				disabled={deletingLocal}
+				aria-busy={deletingLocal}
+				on:click={handleDeleteLocal}
 			>
 				Move to trash
 			</button>
