@@ -505,6 +505,13 @@ export class SyncFile
 			this.log("skipping push -- folder is set to disconnected");
 			return;
 		}
+		if (!this.sharedFolder.canWriteContent) {
+			// Attachment uploads mint a /file-token and PUT bytes outside the
+			// provider's read-only WebSocket, so the transport gate never sees
+			// them. A Reader must not publish attachment content.
+			this.log("skipping push -- read-only access");
+			return;
+		}
 		const hash = await this.caf.hash();
 		this._refreshMeta();
 		if (this.meta?.hash === hash) {

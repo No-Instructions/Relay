@@ -76,6 +76,15 @@ export class ContentAddressedStore extends HasLogging {
 	}
 
 	async writeFile(syncFile: SyncFile): Promise<void> {
+		// Defense in depth: SyncFile.push gates this, but minting a file token
+		// and PUTting attachment bytes bypasses the provider's read-only
+		// WebSocket entirely, so refuse the write for a Reader here too. The
+		// server-side /file-token refusal remains the authoritative boundary.
+		if (!this.sharedFolder.canWriteContent) {
+			throw new Error(
+				`Cannot upload ${syncFile.path}: read-only access`,
+			);
+		}
 		const content = await syncFile.caf.read();
 		const hash = await syncFile.caf.hash();
 		this.log("writeFile", hash);
