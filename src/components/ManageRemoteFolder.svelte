@@ -10,8 +10,8 @@
 	import SettingItem from "./SettingItem.svelte";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
-	import { debounce } from "obsidian";
-	import { createEventDispatcher, onMount } from "svelte";
+	import { debounce, Notice } from "obsidian";
+	import { createEventDispatcher, onMount, tick } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import type { ObservableMap } from "src/observable/ObservableMap";
 	import Breadcrumbs from "./Breadcrumbs.svelte";
@@ -97,6 +97,8 @@
 	let nameInput: HTMLInputElement;
 	let updating = writable(false);
 	let lastSavedName = remoteFolder.name;
+	let deletingLocal = false;
+	let deletingRemote = false;
 
 	// Create a reactive variable for the private flag to ensure breadcrumbs update
 	$: isPrivate = $remoteFolder?.private || false;
@@ -211,16 +213,29 @@
 		dispatch("goBack", { clear: true });
 	}
 
-	function handleDeleteLocal() {
-		if ($folderStore) {
-			const folder = plugin.vault.getFolderByPath($folderStore.path);
-			if (folder) {
-				plugin.app.vault.trash(folder, false);
-			}
+	async function handleDeleteLocal() {
+		if (deletingLocal || !$folderStore) return;
+		const folder = plugin.vault.getFolderByPath($folderStore.path);
+		if (!folder) return;
+
+		deletingLocal = true;
+		try {
+			await tick();
+			await new Promise<void>((resolve) =>
+				window.requestAnimationFrame(() => resolve()),
+			);
+			await plugin.app.vault.trash(folder, false);
+		} catch (error) {
+			errorLog("Failed to move shared folder to trash", error);
+			new Notice("Failed to move the Shared Folder to trash.");
+		} finally {
+			deletingLocal = false;
 		}
 	}
 
 	async function handleDeleteRemote() {
+		if (deletingRemote) return;
+		deletingRemote = true;
 		try {
 			await plugin.relayManager.deleteRemote(remoteFolder);
 			if ($folderStore) {
@@ -231,6 +246,10 @@
 			}
 		} catch (error) {
 			errorLog("Failed to delete remote folder:", error);
+			handleServerError(error, "Failed to delete folder from Relay Server.");
+			return;
+		} finally {
+			deletingRemote = false;
 		}
 		dispatch("goBack", {});
 	}
@@ -275,16 +294,12 @@
 			plugin.app,
 			plugin.relayManager,
 			remoteFolder,
-			async (userIds: string[], role) => {
-				try {
-					// Add all selected users
-					for (const userId of userIds) {
-						await plugin.relayManager.addFolderRole(remoteFolder, userId, role);
-					}
-				} catch (error) {
-					handleServerError(error, "Failed to add users to folder.");
-				}
-			},
+			async (userIds: string[], role) =>
+				Promise.all(
+					userIds.map((userId) =>
+						plugin.relayManager.addFolderRole(remoteFolder, userId, role),
+					),
+				).then(() => undefined),
 		);
 		modal.open();
 	}
@@ -624,7 +639,12 @@
 					name="Remove from Relay Server"
 					description={`Deletes the remote folder from the Relay Server. Local files will be preserved.`}
 				>
-					<button class="mod-destructive" on:click={debounce(handleDeleteRemote)}>
+					<button
+						class="mod-destructive"
+						disabled={deletingRemote}
+						aria-busy={deletingRemote}
+						on:click={handleDeleteRemote}
+					>
 						Delete from Relay Server
 					</button>
 				</SettingItem>
@@ -638,9 +658,9 @@
 			>
 				<button
 					class="mod-warning"
-					on:click={debounce(() => {
-						handleDeleteLocal();
-					})}
+					disabled={deletingLocal}
+					aria-busy={deletingLocal}
+					on:click={handleDeleteLocal}
 				>
 					Move to trash
 				</button>
