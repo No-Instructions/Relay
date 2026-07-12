@@ -13,7 +13,6 @@ export class MetadataHealthSidebarNoticeMount {
 	constructor(
 		private workspace: Workspace,
 		private metadataHealth: MetadataHealth,
-		private onRepairClick: (() => void) | null = null,
 	) {
 		// onLayoutReady callbacks cannot be unregistered; Obsidian may invoke
 		// this after destroy() when the plugin unloads before layout settles.
@@ -64,7 +63,6 @@ export class MetadataHealthSidebarNoticeMount {
 			target: this.containerEl,
 			props: {
 				metadataHealth: this.metadataHealth,
-				onRepairClick: this.onRepairClick,
 			},
 		});
 	}
@@ -93,6 +91,5 @@ export class MetadataHealthSidebarNoticeMount {
 		this.unmount();
 		this.workspace = null as any;
 		this.metadataHealth = null as any;
-		this.onRepairClick = null;
 	}
 }
