@@ -369,10 +369,13 @@ jobs:
           gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
             -- -L "${PORT1}:localhost:${PORT1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 &
           TUN1_PID=$!
-          # Windows tunnel (relay user + key + ssh-flag port forward).
+          # Windows tunnel (relay user + key + ssh-flag port forward). Forward to
+          # 127.0.0.1, not localhost: on Windows localhost resolves to ::1 (IPv6)
+          # while Electron's CDP binds 127.0.0.1 (IPv4), so a localhost forward
+          # reaches a dead IPv6 address and the tunnel never carries CDP.
           gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
             --ssh-key-file="$KEY" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
-            --ssh-flag="-L ${PORT2}:localhost:${PORT2}" --ssh-flag="-N" --ssh-flag="-o ServerAliveInterval=30" &
+            --ssh-flag="-L ${PORT2}:127.0.0.1:${PORT2}" --ssh-flag="-N" --ssh-flag="-o ExitOnForwardFailure=yes" --ssh-flag="-o ServerAliveInterval=30" &
           TUN2_PID=$!
           trap 'kill "$TUN1_PID" "$TUN2_PID" 2>/dev/null || true' EXIT
 
@@ -411,6 +414,10 @@ jobs:
           echo "=== $VM_LIN slot status ==="
           gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
             --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json; cat ~/relay-slots/config-*/slot-launch.log 2>/dev/null | tail -30' 2>/dev/null || echo "  (ssh failed)"
+          echo "=== $VM_WIN CDP liveness (VM-local, is Obsidian still up?) ==="
+          gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --ssh-key-file="$HOME/.ssh/win-slot" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
+            --command="try { (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:${PORT2}/json/version' -TimeoutSec 5).Content } catch { 'CDP not answering on 127.0.0.1:${PORT2}: ' + \$_.Exception.Message }" 2>/dev/null || echo "  (ssh failed)"
           echo "=== $VM_WIN serial console ==="
           gcloud compute instances get-serial-port-output "$VM_WIN" --port 1 \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 > /tmp/win-serial.txt || true
