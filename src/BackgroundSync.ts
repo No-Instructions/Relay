@@ -113,8 +113,33 @@ const BACKGROUND_SYNC_QUEUE_PUMP_INTERVAL_MS = 1000;
 const BACKGROUND_SYNC_FOLDER_POLL_INTERVAL_MS = 5000;
 const BACKGROUND_SYNC_DRAIN_BUDGET_MS = 8;
 const LOCAL_AHEAD_RETRY_INTERVAL_MS = 5 * 60_000;
+// A provider-bound sync or download operation that has not settled in this long
+// is treated as timed out. Generous by design — a healthy but slow transfer
+// must never trip it — because the deadline only detects a wedged await (a dead
+// or stranded connection whose promise never resolves) and converts it into a
+// legible, retryable failure. It never schedules recovery: reconnection and the
+// queue's own retry/backoff do that.
+const PROVIDER_OP_DEADLINE_MS = 5 * 60_000;
 type BackgroundSyncOperation = "sync" | "download";
 type BackgroundSyncSortReason = "enqueue" | "retry" | "batch" | "group";
+
+// A provider-bound operation abandoned after PROVIDER_OP_DEADLINE_MS. Retryable
+// like any provider sync error so the queue re-drives it, but a distinct type so
+// a genuine operation error and a stalled transport are never conflated.
+class ProviderTimeoutError extends RetryableProviderSyncError {
+	constructor(
+		readonly operation: BackgroundSyncOperation,
+		readonly awaited: string,
+		readonly guid: string,
+		readonly deadlineMs: number,
+	) {
+		super(
+			`timed out awaiting provider ${awaited} for ${guid} after ` +
+				`${Math.round(deadlineMs / 1000)}s`,
+		);
+		this.name = "ProviderTimeoutError";
+	}
+}
 
 function isRetryableProviderSyncError(
 	error: unknown,
@@ -868,6 +893,49 @@ export class BackgroundSync extends HasLogging {
 		this.processDownloadQueue();
 	}
 
+	// Wrap a provider-bound operation so a wedged await cannot hold its
+	// concurrency slot forever. The op races a deadline timer on the injected
+	// TimeProvider (deterministic under test); on expiry the returned promise
+	// rejects with a retryable ProviderTimeoutError, which the queue's existing
+	// catch classifies as a provider failure, frees the slot, and reschedules. A
+	// settled op clears the timer; a genuinely hung underlying promise is left to
+	// be garbage-collected once its references drop.
+	private withProviderDeadline<T>(
+		work: Promise<T>,
+		operation: BackgroundSyncOperation,
+		awaited: string,
+		guid: string,
+	): Promise<T> {
+		// A TimeProvider without a scheduler cannot arm the deadline — only
+		// narrow test doubles lack one; production always injects a full
+		// TimeProvider. Run the operation undeadlined rather than failing it.
+		if (typeof this.timeProvider?.setTimeout !== "function") {
+			return work;
+		}
+		let timer: ReturnType<TimeProvider["setTimeout"]> | undefined;
+		const deadline = new Promise<never>((_, reject) => {
+			timer = this.timeProvider.setTimeout(() => {
+				reject(
+					new ProviderTimeoutError(
+						operation,
+						awaited,
+						guid,
+						PROVIDER_OP_DEADLINE_MS,
+					),
+				);
+			}, PROVIDER_OP_DEADLINE_MS);
+		});
+		// If the deadline wins the race the underlying promise is abandoned; a
+		// no-op catch keeps its eventual rejection from surfacing as an unhandled
+		// rejection.
+		work.catch(() => {});
+		return Promise.race([work, deadline]).finally(() => {
+			if (timer !== undefined) {
+				this.timeProvider.clearTimeout(timer);
+			}
+		});
+	}
+
 	private async processSyncQueue() {
 		if (this.isPaused || this.isProcessingSync) return;
 		const drainStart = performance.now();
@@ -919,16 +987,27 @@ export class BackgroundSync extends HasLogging {
 				try {
 					const doc = item.doc;
 					let syncPromise: Promise<any>;
+					let awaited: string;
 
 					if (doc instanceof SyncFile) {
 						syncPromise = this.syncFile(doc);
+						awaited = "file sync";
 					} else if (item.syncIntent === "upload") {
 						syncPromise = this.syncDocumentUpload(doc);
+						awaited = "upload ack";
 					} else if (item.syncIntent === "lca-backfill" && isDocument(doc)) {
 						syncPromise = this.syncDocumentLCABackfill(doc);
+						awaited = "lca-backfill sync";
 					} else {
 						syncPromise = this.syncDocument(doc);
+						awaited = "provider sync";
 					}
+					syncPromise = this.withProviderDeadline(
+						syncPromise,
+						"sync",
+						awaited,
+						item.guid,
+					);
 
 					syncPromise
 						.then(() => {
@@ -1093,6 +1172,12 @@ export class BackgroundSync extends HasLogging {
 					} else {
 						downloadPromise = this.getDocument(item.doc);
 					}
+					downloadPromise = this.withProviderDeadline(
+						downloadPromise,
+						"download",
+						"download delivery",
+						item.guid,
+					);
 
 					downloadPromise
 						.then((result) => {
