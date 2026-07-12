@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import { curryLog } from "./debug";
 import { diff_match_patch, type Diff } from "diff-match-patch";
 import { flags } from "./flagManager";
+import { normalizeNoteText } from "./diskText";
 
 export function diffMatchPatch(
 	ydoc: Y.Doc,
@@ -14,11 +15,16 @@ export function diffMatchPatch(
 	// Get the current content of the YText
 	const currentContent = ytext.toString();
 
+	// The CRDT holds note text with canonical LF line endings; normalize the
+	// incoming buffer so a CRLF disk read does not diff as a change on every
+	// line against an LF CRDT (which would corrupt concurrent edits on merge).
+	const normalizedBuffer = normalizeNoteText(diskBuffer);
+
 	// Create a new diff_match_patch object
 	const dmp = new diff_match_patch();
 
 	// Compute the diff between the current content and the disk buffer
-	const diffs: Diff[] = dmp.diff_main(currentContent, diskBuffer);
+	const diffs: Diff[] = dmp.diff_main(currentContent, normalizedBuffer);
 
 	// Optimize the diff
 	dmp.diff_cleanupSemantic(diffs);
@@ -33,7 +39,7 @@ export function diffMatchPatch(
 	// Log the overall change
 	log("Updating YDoc:");
 	log("Current content length:", currentContent.length);
-	log("Disk buffer length:", diskBuffer.length);
+	log("Disk buffer length:", normalizedBuffer.length);
 
 	if (diffs.length == 0) {
 		return;
