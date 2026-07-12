@@ -1,11 +1,13 @@
 <script lang="ts">
 	import type { App } from "obsidian";
+	import { Platform } from "obsidian";
 	import type { Relay, RelayUser, Role } from "../Relay";
 	import type { RelayManager } from "../RelayManager";
 	import type { SharedFolder, SharedFolders } from "../SharedFolder";
 	import SettingItemHeading from "./SettingItemHeading.svelte";
 	import SlimSettingItem from "./SlimSettingItem.svelte";
 	import SelectedFolder from "./SelectedFolder.svelte";
+	import TFolderSuggest from "./TFolderSuggest.svelte";
 	import { onMount, onDestroy } from "svelte";
 	import { derived, writable } from "svelte/store";
 	import { FolderSuggestModal } from "../ui/FolderSuggestModal";
@@ -28,7 +30,12 @@
 	let inputValue = "";
 	let acceptedFolder = "";
 	let sharing = false;
-	
+
+	// Obsidian's mobile clients have no room for the desktop suggest overlay,
+	// which hides the platform modal and mounts an unpositioned prompt. Mobile
+	// picks the folder through an inline suggest that stays inside this modal.
+	const isMobile = Platform?.isMobile ?? false;
+
 	const selectedUsers = writable(new Set<string>(relayManager.user?.id ? [relayManager.user.id] : []));
 	const searchQuery = writable("");
 
@@ -199,8 +206,8 @@
 	onMount(() => {
 		document.addEventListener("keydown", handleGlobalKeyDown);
 
-		// Auto-open folder selection prompt if no folder is selected
-		if (!acceptedFolder) {
+		// Desktop auto-opens the suggest overlay; mobile shows the inline picker.
+		if (!isMobile && !acceptedFolder) {
 			setTimeout(() => {
 				openFolderSuggest();
 			}, 100);
@@ -242,14 +249,23 @@
 	<div class="share-folder-modal" bind:this={modalEl}>
 		<div class="section">
 			<SettingItemHeading name="Folder" />
-			<SelectedFolder
-				selectedItem={acceptedFolder}
-				showTransformation={true}
-				{isPrivate}
-				selectButtonText="Choose or create folder..."
-				on:clear={clearSelectedFolder}
-				on:select={openFolderSuggest}
-			/>
+			{#if isMobile && !acceptedFolder}
+				<TFolderSuggest
+					{app}
+					placeholder="Choose or create folder..."
+					blockedPaths={getBlockedPaths()}
+					on:select={(e) => handleFolderSelect(e.detail.value)}
+				/>
+			{:else}
+				<SelectedFolder
+					selectedItem={acceptedFolder}
+					showTransformation={true}
+					{isPrivate}
+					selectButtonText="Choose or create folder..."
+					on:clear={clearSelectedFolder}
+					on:select={openFolderSuggest}
+				/>
+			{/if}
 		</div>
 
 		{#if relay.version > 0}
