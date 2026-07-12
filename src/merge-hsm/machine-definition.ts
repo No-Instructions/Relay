@@ -258,6 +258,11 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['clearForkAndUpdateLCA'] },
 				{ target: 'idle.localAhead', guard: 'awaitingProvider' },
 				{ target: 'idle.conflict', guard: 'hasPreexistingConflict', actions: ['prepareIdleConflictFromFork'] },
+				// A remote update landed mid-reconcile: re-enter loading to
+				// re-classify against the moved-on remote state. Bounded so a
+				// livelock surfaces as a real error instead of spinning.
+				{ target: 'idle.loading', guard: 'supersededWithinBound', actions: ['countSupersession'], reenter: true },
+				{ target: 'idle.error', guard: 'mergeSuperseded', actions: ['storeSupersededError'] },
 				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
 			],
 			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
@@ -486,8 +491,19 @@ export const MACHINE: MachineDefinition = {
 
 	'idle.error': {
 		on: {
-			REMOTE_UPDATE: { target: 'idle.error', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
-			DISK_CHANGED: { target: 'idle.error', actions: ['storeDiskMetadata'] },
+			// idle.error retains data while refusing processing: it keeps applying
+			// remote updates and recording disk changes. When the stored error is
+			// retryable, that new information re-enters idle.loading (the
+			// PERSISTENCE_LOADED reenter idiom) so the always-transitions
+			// re-classify. A permanent error keeps the self-loop trap.
+			REMOTE_UPDATE: [
+				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate', 'rearmRetryableError'], reenter: true },
+				{ target: 'idle.error', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+			],
+			DISK_CHANGED: [
+				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['storeDiskMetadata', 'rearmRetryableError'], reenter: true },
+				{ target: 'idle.error', actions: ['storeDiskMetadata'] },
+			],
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
 			UNLOAD: IDLE_LIFECYCLE.UNLOAD,
