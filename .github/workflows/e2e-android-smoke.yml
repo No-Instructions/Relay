@@ -151,3 +151,13 @@ jobs:
           # The emulator action runs `script` under dash; invoke the sequence as
           # a committed bash script so pipefail and the failure trap survive.
           script: bash "$HOME/relay-harness/scripts/ci/android-smoke.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.vault_template || 'kepano-plus' }}"
+
+      # The smoke records the emulator screen and pulls it to the workspace before
+      # teardown; publish it as a watchable artifact. Never gates the smoke.
+      - name: Upload smoke video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-smoke-video
+          path: android-smoke.mp4
+          if-no-files-found: warn
