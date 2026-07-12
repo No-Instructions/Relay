@@ -46,14 +46,14 @@ on:
         description: 'Staging test user (maps to vault + auth account + local CDP port)'
         required: false
         default: 'erik'
+      plans:
+        description: 'Comma-separated single-slot plan ids (Android Tier-A nightly set)'
+        required: false
+        default: 'tp000,tp002,tp003,tp030,tp032,tp038,tp055'
       serial:
         description: 'Device serial to target (optional; defaults to the only attached device)'
         required: false
         default: ''
-      plans:
-        description: 'Comma-separated single-slot Tier-A plan ids'
-        required: false
-        default: 'tp000,tp002,tp003,tp030,tp032,tp038,tp055'
   # Device workflows are dispatch-or-schedule only, never per-push: the fleet is
   # small and stateful. Uncomment to add a cadence once the lane is proven.
   # schedule:
@@ -177,65 +177,41 @@ jobs:
           python .claude/scripts/obsidian_device_slot.py device status \
             --user "$SLOT_USER" --probe-timeout 15
 
-      - name: Run scripted Tier-A single-slot plans
+      - name: Run Android Tier-A scripted plans
         shell: bash
         env:
           RELAY_CDP_ENDPOINTS: http://127.0.0.1:${{ env.SLOT_PORT }}
           # No TSDB side-car on the device runner; skip the per-run metrics
-          # health wait so each plan's own pass/fail decides its result.
+          # health wait so each plan's own pass/fail decides the step.
           RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
         run: |
           cd "$HOME/relay-harness"
-          SUMMARY="$HOME/device-summary.json"; echo "DEVICE_SUMMARY=$SUMMARY" >> "$GITHUB_ENV"
-          declare -a RESULTS=(); FAIL=0; FIRST=1
-          # Incremental summary in the parallel-lane schema, rewritten after every
-          # plan so a mid-run failure still leaves verdicts for what ran.
-          write_summary() {
-            python3 - "$SUMMARY" "$@" <<'PY'
-          import json, sys
-          out = sys.argv[1]; rows = []
-          for item in sys.argv[2:]:
-              pid, status, dur = item.split("|")
-              rows.append({"name": pid, "dir": pid, "status": status,
-                           "passed": status == "pass", "durationMs": int(dur)})
-          counts = {}
-          for r in rows: counts[r["status"]] = counts.get(r["status"], 0) + 1
-          summary = {"total": len(rows), "pass": counts.get("pass", 0),
-                     "fail": counts.get("fail", 0), "skip": counts.get("skip", 0),
-                     "duration": sum(r["durationMs"] for r in rows)}
-          json.dump({"state": "failure" if summary["fail"] else "success",
-                     "summary": summary, "tests": rows}, open(out, "w"), indent=2)
-          PY
-          }
+          # The plans run sequentially against the one provisioned/started device
+          # slot (each is single-slot and self-contained), the same way the
+          # desktop platform smoke runs its plan list against one slot.
+          FAIL=0
           IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}"
-          for PLAN in "${PLANS[@]}"; do
-            PLAN="$(echo "$PLAN" | tr -d '[:space:]')"; [ -n "$PLAN" ] || continue
-            SCRIPT="$(node -e '
+          for plan in "${PLANS[@]}"; do
+            plan="$(echo "$plan" | tr -d '[:space:]')"
+            [ -n "$plan" ] || continue
+            script="$(node -e '
               const m = require("./test-plans/scripts/manifest.json");
               const t = m.tests.find(t => t.id === process.argv[1]);
-              if (!t) { console.error("unknown"); process.exit(3); }
-              if (Number(t.slots || 1) !== 1) { console.error("not-single-slot"); process.exit(4); }
+              if (!t) { console.error("unknown plan id: " + process.argv[1]); process.exit(3); }
+              if (Number(t.slots || 1) !== 1) { console.error(process.argv[1] + " is not single-slot"); process.exit(4); }
               process.stdout.write(t.script);
-            ' "$PLAN" 2>/tmp/plan-err)" || {
-              echo "::warning::skip $PLAN ($(cat /tmp/plan-err))"
-              RESULTS+=("$PLAN|skip|0"); write_summary "${RESULTS[@]}"; continue
-            }
-            # Between-plan hygiene: close any editors the last plan left open, so
-            # the device slot is reused cleanly (mirrors the desktop suite runner).
-            [ "$FIRST" = 1 ] || python .claude/scripts/obsidian_ctl.py --vault "$SLOT_USER" editor close-all >/dev/null 2>&1 || true
-            FIRST=0
-            RUN_DIR="$HOME/device-runs/$PLAN"; mkdir -p "$RUN_DIR"
-            echo "=== $PLAN on port $SLOT_PORT ==="
-            START=$(date +%s%3N)
-            if python "test-plans/scripts/$SCRIPT" --vault "$SLOT_USER" --run-dir "$RUN_DIR" --no-verify-build > "$RUN_DIR/plan.log" 2>&1; then
-              STATUS=pass; echo "--- $PLAN PASSED ---"
+            ' "$plan")"
+            RUN_DIR="$HOME/device-runs/$plan"
+            mkdir -p "$RUN_DIR"
+            echo "=== $plan on port $SLOT_PORT ==="
+            if python "test-plans/scripts/$script" \
+                 --vault "$SLOT_USER" --run-dir "$RUN_DIR" --no-verify-build > "$RUN_DIR/plan.log" 2>&1; then
+              echo "--- $plan PASSED ---"
             else
-              STATUS=fail; FAIL=1; echo "::error::$PLAN failed on device"
+              echo "::error::$plan failed on the device slot"
+              FAIL=1
             fi
-            RESULTS+=("$PLAN|$STATUS|$(( $(date +%s%3N) - START ))")
-            write_summary "${RESULTS[@]}"
           done
-          echo "=== Tier-A device coverage ==="; cat "$SUMMARY"
           exit $FAIL
 
       - name: UI-driven smoke (CDP over the bridge)
