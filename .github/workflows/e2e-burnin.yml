@@ -1,0 +1,650 @@
+name: E2E burn-in
+
+# Nightly burn-in soak for graduation candidates. Slow, timing-sensitive, or
+# render-heavy plans must prove flake-free here BEFORE they enter the per-push
+# `scripted-all` suite. Each plan runs on its own freshly-leased pool VM (one
+# matrix leg per plan) so a flake in one plan cannot contaminate another's
+# verdict, and every night's per-plan pass/fail is appended to a persistent R2
+# ledger (s3://system3-ci/burnin/ledger.jsonl) so flake RATES accumulate across
+# nights rather than resetting with each run's artifacts.
+#
+# The default list is the graduation proposal's burn-in members (slow / timing /
+# render sensitive). A manual dispatch can override the list, ref, or harness.
+
+run-name: >-
+  burn-in ${{ inputs.tests || 'tp035,tp036,tp037,tp041,tp044,tp058' }}
+  @ ${{ inputs.ref || 'origin/main' }}
+
+on:
+  schedule:
+    # 08:29 UTC nightly — an off-minute clear of the 09:17 platform-smoke cron
+    # and the top-of-hour Actions congestion. Finishes before the smokes start;
+    # burn-in and the smokes draw from disjoint fleets (pool VMs vs hosted
+    # runners), so they never contend.
+    - cron: '29 8 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to soak (e.g. origin/main, a tag, or a SHA)'
+        required: false
+        default: 'origin/main'
+      tests:
+        description: 'Comma-separated plan ids to burn in (one pool VM each)'
+        required: false
+        default: 'tp035,tp036,tp037,tp041,tp044,tp058'
+      harness_ref:
+        description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
+        required: false
+        default: 'origin/main'
+      tsdb_tag:
+        description: 'obsidian-tsdb release tag to install in slots'
+        required: false
+        default: '1.0.12'
+
+env:
+  GCP_PROJECT: tactile-timer-426817-t6
+  VM_ZONE: us-west1-b
+  GCP_USE_IAP: "true"
+  MAX_POOLS: "8"
+  VM_IMAGE_FAMILY: relay-e2e-base
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      product_sha: ${{ steps.resolve.outputs.product_sha }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - name: Resolve ref and build the per-plan matrix
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REQ_REF="${{ inputs.ref }}"
+          [ -z "$REQ_REF" ] && REQ_REF="origin/main"
+          REQ_TESTS="${{ inputs.tests }}"
+          [ -z "$REQ_TESTS" ] && REQ_TESTS="tp035,tp036,tp037,tp041,tp044,tp058"
+
+          API_REF="$REQ_REF"
+          API_REF="${API_REF#origin/}"
+          API_REF="${API_REF#refs/heads/}"
+          API_REF="${API_REF#refs/tags/}"
+          ENCODED_REF=$(jq -rn --arg ref "$API_REF" '$ref | @uri')
+          PRODUCT_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/commits/${ENCODED_REF}" \
+            --jq .sha 2>/dev/null || true)
+          if [ -z "$PRODUCT_SHA" ]; then
+            echo "::error::Could not resolve $REQ_REF"
+            exit 1
+          fi
+          echo "Resolved $REQ_REF to $PRODUCT_SHA"
+          echo "product_sha=$PRODUCT_SHA" >> "$GITHUB_OUTPUT"
+          echo "ref=$REQ_REF" >> "$GITHUB_OUTPUT"
+
+          # One JSON array element per plan; each becomes its own matrix leg
+          # (its own pool VM), so a plan's flake stays isolated to its verdict.
+          MATRIX=$(echo "$REQ_TESTS" | tr ',' '\n' | sed 's/[[:space:]]//g' | sed '/^$/d' | jq -R . | jq -cs .)
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+          echo "Burn-in matrix: $MATRIX"
+
+  burnin:
+    name: burnin (${{ matrix.plan }})
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # Cap concurrency below MAX_POOLS so the fleet keeps headroom for any
+      # other lane sharing the pools; the lease step self-serializes anyway.
+      max-parallel: 6
+      matrix:
+        plan: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    steps:
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Lease a user pool by creating its VM
+        id: lease
+        run: |
+          # Each pool owns two staging users. The pair runs the plan and can see
+          # a pool-specific storage-quota relay. Creating the pool's VM is the
+          # lease: instance names are unique, so two legs can never hold the same
+          # pool. Deleting the VM (cleanup step) releases the lease.
+          pool_slots() {
+            case "$1" in
+              1) echo "11,12" ;; 2) echo "15,16" ;; 3) echo "19,20" ;; 4) echo "23,25" ;;
+              5) echo "9,10" ;; 6) echo "13,14" ;; 7) echo "17,18" ;; 8) echo "21,22" ;;
+            esac
+          }
+          for k in $(seq 1 "$MAX_POOLS"); do
+            VM="relay-e2e-bi-p${k}"
+            if ERR=$(gcloud compute instances create "$VM" \
+              --project="$GCP_PROJECT" \
+              --zone="$VM_ZONE" \
+              --machine-type=e2-standard-4 \
+              --image-family="$VM_IMAGE_FAMILY" \
+              --image-project="$GCP_PROJECT" \
+              --boot-disk-size=20GB \
+              --boot-disk-type=pd-standard \
+              --metadata=block-project-ssh-keys=TRUE \
+              --tags=relay-e2e 2>&1 >/dev/null); then
+              echo "Leased pool p${k} (shared slots $(pool_slots "$k"))"
+              echo "VM_NAME=$VM" >> "$GITHUB_ENV"
+              echo "pool=p${k}" >> "$GITHUB_OUTPUT"
+              echo "slots=$(pool_slots "$k")" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if echo "$ERR" | grep -q "already exists"; then
+              echo "Pool p${k} is leased by another leg; trying next pool"
+              continue
+            fi
+            echo "$ERR"
+            exit 1
+          done
+          echo "All $MAX_POOLS pools are leased. If a crashed run leaked a VM:"
+          echo "  gcloud compute instances list --project=$GCP_PROJECT"
+          exit 1
+
+      - name: Wait for VM SSH readiness
+        run: |
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
+          mkdir -p ~/.ssh
+          echo -e "\nHost *\n  ConnectTimeout 10" >> ~/.ssh/config
+
+          for i in $(seq 1 30); do
+            if gcloud compute ssh "$VM_NAME" --quiet \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --tunnel-through-iap \
+              --command="echo ready" 2>/dev/null; then
+              echo "VM is ready"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Timed out waiting for VM SSH"
+              exit 1
+            fi
+            sleep 5
+          done
+
+      - name: Provision VM credentials
+        run: |
+          scp_retry() {
+            local src="$1"
+            local dest="$2"
+            local label="$3"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute scp --quiet "$src" "$VM_NAME":"$dest" \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap; then
+                return 0
+              fi
+              echo "Retrying $label scp ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed to copy $label to VM after 5 attempts"
+            return 1
+          }
+
+          ssh_retry() {
+            local label="$1"
+            local command="$2"
+            local attempt
+
+            for attempt in $(seq 1 5); do
+              if gcloud compute ssh "$VM_NAME" --quiet \
+                --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+                --tunnel-through-iap \
+                --command="$command"; then
+                return 0
+              fi
+              echo "Retrying $label ssh command ($attempt/5) ..."
+              sleep 5
+            done
+
+            echo "Failed $label ssh command after 5 attempts"
+            return 1
+          }
+
+          echo '${{ secrets.GCP_SA_KEY_TACTILE }}' > /tmp/sa-key.json
+          scp_retry /tmp/sa-key.json ~/ci-sa-key.json "service-account key"
+          rm -f /tmp/sa-key.json
+
+          echo '${{ secrets.HARNESS_DEPLOY_KEY }}' > /tmp/deploy-key
+          chmod 600 /tmp/deploy-key
+          scp_retry /tmp/deploy-key ~/ci-deploy-key "deploy key"
+          rm -f /tmp/deploy-key
+
+          ssh_retry "relay-e2e config dir creation" "mkdir -p ~/.config/relay-e2e"
+
+          echo '${{ secrets.CI_R2_ENDPOINT }}' > /tmp/r2-endpoint
+          echo '${{ secrets.CI_R2_ACCESS_KEY_ID }}' > /tmp/r2-access-key
+          echo '${{ secrets.CI_R2_SECRET_ACCESS_KEY }}' > /tmp/r2-secret-key
+          ssh_retry "R2 env write" "cat > ~/.config/relay-e2e/r2-env.sh << 'CREDS'
+          export CI_R2_ENDPOINT='$(cat /tmp/r2-endpoint)'
+          export CI_R2_ACCESS_KEY_ID='$(cat /tmp/r2-access-key)'
+          export CI_R2_SECRET_ACCESS_KEY='$(cat /tmp/r2-secret-key)'
+          CREDS
+          chmod 600 ~/.config/relay-e2e/r2-env.sh"
+          rm -f /tmp/r2-endpoint /tmp/r2-access-key /tmp/r2-secret-key
+
+      - name: Run the burn-in plan on VM
+        run: |
+          REF="${{ needs.prepare.outputs.product_sha }}"
+          SELECTED_TESTS="${{ matrix.plan }}"
+          LANE_SLUG="burnin-${{ matrix.plan }}-r${{ github.run_number }}"
+          PROFILE_FLAGS_ARG=""
+          HARNESS_REF_ARG="${{ inputs.harness_ref || 'origin/main' }}"
+          SHARED_SLOTS="${{ steps.lease.outputs.slots }}"
+
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap \
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$SHARED_SLOTS'" 2>/dev/null << 'REMOTE_SCRIPT'
+          set -eo pipefail
+          REF="$1"
+          SELECTED_TESTS="$2"
+          LANE_SLUG="$3"
+          PROFILE_FLAGS="${4-}"
+          HARNESS_REF="${5:-origin/main}"
+          SHARED_SLOT_CANDIDATES="$6"
+
+          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
+
+          OBSIDIAN_VERSION="1.12.7"
+          # Version-specific filename so bumping OBSIDIAN_VERSION forces a fresh
+          # install instead of reusing a prior version's cached AppImage.
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+          if [ ! -f "$OBSIDIAN_PATH" ]; then
+            echo "Installing Obsidian AppImage..."
+            mkdir -p ~/obsidian
+            wget -q -O "$OBSIDIAN_PATH" \
+              "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+            chmod +x "$OBSIDIAN_PATH"
+            echo "Installed Obsidian $OBSIDIAN_VERSION"
+          fi
+
+          rm -rf /tmp/test-reports
+          rm -f ~/test-summary.json ~/test-metadata.json
+
+          gcloud auth activate-service-account --key-file="$HOME/ci-sa-key.json" 2>/dev/null
+
+          mkdir -p ~/.ssh
+          cp ~/ci-deploy-key ~/.ssh/ci-deploy-key
+          chmod 600 ~/.ssh/ci-deploy-key
+          cat > ~/.ssh/known_hosts << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ci-deploy-key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts"
+
+          if [ ! -d ~/relay-plugin ]; then
+            git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
+          fi
+          cd ~/relay-plugin
+          git fetch origin --force --prune \
+            '+refs/heads/*:refs/remotes/origin/*' \
+            '+refs/tags/*:refs/tags/*'
+          git checkout -- .
+          git clean -fd
+          # A commit orphaned by a force-push is not reachable from any
+          # fetched head, so fall back to fetching the ref directly.
+          if ! git checkout --detach "$REF"; then
+            git fetch origin "$REF"
+            git checkout --detach "$REF"
+          fi
+          echo "Relay product checkout:"
+          git show -s --format='  commit: %H%n  subject: %s'
+          echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
+
+          if [ ! -d ~/relay-harness ]; then
+            git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+          fi
+          cd ~/relay-harness
+          git fetch origin --prune
+          git checkout -- .
+          git clean -fd
+          if ! git checkout --detach "$HARNESS_REF"; then
+            git fetch origin "$HARNESS_REF"
+            git checkout --detach "$HARNESS_REF"
+          fi
+          echo "Relay harness checkout:"
+          git show -s --format='  commit: %H%n  subject: %s'
+
+          # Pull the prebuilt TSDB metrics plugin from its GitHub release
+          # (pinned tag) instead of cloning and building it from source.
+          echo ">>> tsdb: reached download step (relay-harness ok)"
+          mkdir -p ~/system3/obsidian-metrics/dist/tsdb
+          TSDB_TAG='${{ inputs.tsdb_tag || '1.0.12' }}'
+          for f in main.js manifest.json styles.css; do
+            url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
+            echo ">>> fetching tsdb $f"
+            wget -q -O ~/system3/obsidian-metrics/dist/tsdb/"$f" "$url" \
+              || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
+          done
+          echo ">>> tsdb download done"
+
+          # Install uv (no apt/sudo) and the test-harness Python deps into a
+          # venv, then export the interpreter so run-test-plan-suite.sh runs
+          # against that Python.
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v uv >/dev/null 2>&1; then
+            echo ">>> installing uv"
+            wget -qO- https://astral.sh/uv/install.sh | sh \
+              || { echo ">>> UV INSTALL FAILED (exit $?)"; exit 1; }
+          fi
+          echo ">>> uv: $(uv --version 2>&1)"
+          uv venv --clear ~/.harness-venv \
+            || { echo ">>> UV VENV FAILED (exit $?)"; exit 1; }
+          export RELAY_TEST_PLAN_PYTHON="$HOME/.harness-venv/bin/python"
+          uv pip install --python "$RELAY_TEST_PLAN_PYTHON" \
+            click websockets tree-sitter tree-sitter-javascript matplotlib \
+            || { echo ">>> UV DEPS INSTALL FAILED (exit $?)"; exit 1; }
+          "$RELAY_TEST_PLAN_PYTHON" -c "import click, websockets, tree_sitter, tree_sitter_javascript, matplotlib" \
+            || { echo ">>> PYTHON IMPORT FAILED (exit $?)"; exit 1; }
+          echo ">>> python deps ok; playwright npm install"
+          cd ~/relay-harness/playwright && npm install --ignore-scripts --no-audit --no-fund --loglevel=error \
+            || { echo ">>> PLAYWRIGHT NPM FAILED (exit $?)"; exit 1; }
+          echo ">>> playwright ok"
+
+          export RELAY_PLUGIN_DIR=~/relay-plugin
+          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
+          if [ -n "$PROFILE_FLAGS" ]; then
+            export RELAY_PROFILE_FLAG_OVERRIDES="$PROFILE_FLAGS"
+            echo ">>> profile flag overrides: $RELAY_PROFILE_FLAG_OVERRIDES"
+          fi
+          cd ~/relay-harness
+
+          echo ">>> staging-user pool: shared slots $SHARED_SLOT_CANDIDATES"
+          TEST_EXIT=0
+          TEST_LOG="$HOME/test-plan-suite-output.txt"
+          RELAY_RUN_EXEC_SUFFIX="$LANE_SLUG" \
+          RELAY_SHARED_SLOT_CANDIDATES="$SHARED_SLOT_CANDIDATES" \
+            bash ./scripts/run-test-plan-suite.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
+          echo "Scripted test-plan runner exited with status $TEST_EXIT"
+
+          LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null \
+            | head -1)
+          if [ -n "$LATEST_SUMMARY" ]; then
+            LATEST="$(dirname "$LATEST_SUMMARY")"
+
+            COMMIT=$(basename "$(dirname "$LATEST")")
+            EXEC_ID=$(basename "$LATEST")
+            REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
+            echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
+
+            node - "$LATEST_SUMMARY" > ~/test-summary.json <<'NODE'
+          const fs = require('fs');
+          const [summaryPath] = process.argv.slice(2);
+          const raw = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+
+          const planIdFor = test => {
+            const source = `${test?.dir || ''} ${test?.name || ''}`.toLowerCase();
+            const match = source.match(/\btp[-_ ]?(\d{3})\b/);
+            return match ? `tp${match[1]}` : 'tp???';
+          };
+
+          const tests = (raw.tests || []).map(test => ({
+            name: planIdFor(test),
+            dir: planIdFor(test),
+            status: test.status || (test.passed ? 'pass' : 'fail'),
+            passed: test.passed === true || test.status === 'pass',
+          }));
+
+          const counts = tests.reduce((acc, test) => {
+            acc[test.status] = (acc[test.status] || 0) + 1;
+            return acc;
+          }, {});
+          const rawSummary = raw.summary || {};
+          const summary = {
+            total: rawSummary.total ?? tests.length,
+            pass: rawSummary.pass ?? counts.pass ?? 0,
+            fail: rawSummary.fail ?? counts.fail ?? 0,
+            expectedFail: rawSummary.expectedFail ?? counts.expected_fail ?? 0,
+            unexpectedPass: rawSummary.unexpectedPass ?? counts.unexpected_pass ?? 0,
+            duration: rawSummary.duration ?? 0,
+          };
+
+          process.stdout.write(JSON.stringify({
+            state: raw.state || (summary.fail > 0 ? 'failure' : 'success'),
+            summary,
+            tests,
+          }, null, 2));
+          NODE
+          else
+            echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > ~/test-summary.json
+            echo '{"reportUrl":"","commit":"","execId":""}' > ~/test-metadata.json
+          fi
+
+          exit $TEST_EXIT
+          REMOTE_SCRIPT
+
+      - name: Fetch results
+        if: always()
+        run: |
+          rm -f summary.json metadata.json suite-output.txt
+          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
+          gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null || true
+          gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap 2>/dev/null || true
+          # Guarantee an artifact even when the VM produced nothing, so the
+          # aggregate job can classify this plan as an infra miss rather than
+          # silently dropping it from the ledger.
+          if [ ! -f summary.json ]; then
+            echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > summary.json
+          fi
+          if [ ! -f metadata.json ]; then
+            echo '{"reportUrl":"","commit":"","execId":""}' > metadata.json
+          fi
+
+      - name: Upload per-plan result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burnin-${{ matrix.plan }}
+          path: |
+            summary.json
+            metadata.json
+          if-no-files-found: warn
+
+      - name: Delete VM (releases the pool lease)
+        if: always()
+        run: |
+          # The delete is synchronous so the pool is genuinely free once the leg
+          # ends; --async could let the next lease see a half-deleted instance
+          # name. Deleting the VM also destroys the provisioned credentials.
+          if [ -n "${VM_NAME:-}" ]; then
+            gcloud compute instances delete "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet || true
+          fi
+
+  aggregate:
+    name: aggregate
+    needs: [prepare, burnin]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Download per-plan results
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: burnin-*
+          path: results
+
+      - name: Pull the persistent ledger from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_BUCKET: system3-ci
+        run: |
+          # The ledger accumulates one row per plan per night. S3 has no append,
+          # so read-modify-write it; the nightly cadence has a single writer.
+          aws s3api get-object \
+            --endpoint-url "$CI_R2_ENDPOINT" \
+            --bucket "$CI_R2_BUCKET" \
+            --key burnin/ledger.jsonl \
+            --no-cli-pager \
+            ledger.jsonl 2>/dev/null \
+            && echo "Fetched existing ledger ($(wc -l < ledger.jsonl) rows)" \
+            || { echo "No existing ledger; starting fresh"; : > ledger.jsonl; }
+
+      - name: Append tonight's verdicts and compute flake rates
+        uses: actions/github-script@v7
+        env:
+          PRODUCT_SHA: ${{ needs.prepare.outputs.product_sha }}
+          SOAK_REF: ${{ needs.prepare.outputs.ref }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            // Plans with an open, tracked cause: their red is expected and must
+            // not be counted as a flake. Keep this map current as bugs resolve.
+            const EXPECTED_RED = { tp058: 'BUG-243 (fork created mid-outage never reconciles)' };
+
+            const nightIso = new Date().toISOString();
+            const nightDay = nightIso.slice(0, 10);
+            const runId = String(context.runId);
+            const sha = (process.env.PRODUCT_SHA || '').slice(0, 12);
+            const soakRef = process.env.SOAK_REF || '';
+
+            // One subdirectory per plan artifact: results/burnin-tpNNN/summary.json
+            const root = 'results';
+            const dirs = fs.existsSync(root)
+              ? fs.readdirSync(root).filter(d => d.startsWith('burnin-'))
+              : [];
+
+            const rows = [];
+            for (const d of dirs) {
+              const plan = d.replace(/^burnin-/, '');
+              let summary = {};
+              try {
+                summary = JSON.parse(fs.readFileSync(path.join(root, d, 'summary.json'), 'utf8'));
+              } catch { summary = { state: 'error', summary: {}, tests: [] }; }
+              let meta = { reportUrl: '' };
+              try {
+                meta = JSON.parse(fs.readFileSync(path.join(root, d, 'metadata.json'), 'utf8'));
+              } catch {}
+
+              const s = summary.summary || {};
+              const executed = (s.total || 0) > 0 && summary.state !== 'error';
+              // Verdict for this plan tonight: pass / fail / infra (never ran).
+              let status;
+              if (!executed) status = 'infra';
+              else if ((s.fail || 0) > 0) status = 'fail';
+              else status = 'pass';
+
+              rows.push({
+                night: nightDay,
+                ts: nightIso,
+                runId,
+                sha,
+                ref: soakRef,
+                plan,
+                status,
+                durationMs: s.duration || 0,
+                expected: EXPECTED_RED[plan] || null,
+                reportUrl: meta.reportUrl || '',
+              });
+            }
+            rows.sort((a, b) => a.plan.localeCompare(b.plan));
+
+            // Append tonight's rows to the persistent ledger.
+            const existing = fs.readFileSync('ledger.jsonl', 'utf8')
+              .split('\n').filter(l => l.trim());
+            const all = existing.map(l => { try { return JSON.parse(l); } catch { return null; } })
+              .filter(Boolean)
+              .concat(rows);
+            fs.writeFileSync('ledger.jsonl', all.map(r => JSON.stringify(r)).join('\n') + '\n');
+
+            // Rolling flake rate per plan across all recorded nights. Infra
+            // misses do not count for or against the rate (they are not a
+            // product signal); expected reds are surfaced but excluded.
+            const byPlan = {};
+            for (const r of all) {
+              const p = (byPlan[r.plan] ||= { runs: 0, pass: 0, fail: 0, infra: 0, nights: new Set(), last: null, expected: null });
+              if (r.status === 'infra') p.infra++;
+              else { p.runs++; if (r.status === 'pass') p.pass++; else p.fail++; }
+              p.nights.add(r.night);
+              p.last = r;
+              if (r.expected) p.expected = r.expected;
+            }
+
+            const emoji = { pass: ':white_check_mark:', fail: ':x:', infra: ':grey_question:' };
+            let md = `## E2E burn-in — ${nightDay}\n\n`;
+            md += `Ref \`${soakRef}\` @ \`${sha}\` · run [${runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${runId})\n\n`;
+
+            md += `### Tonight\n\n| Plan | Verdict | Duration | Report |\n|------|---------|----------|--------|\n`;
+            for (const r of rows) {
+              const dur = r.durationMs ? `${Math.round(r.durationMs / 1000)}s` : '—';
+              const note = r.status === 'fail' && r.expected ? ` (expected: ${r.expected})` : '';
+              const rep = r.reportUrl ? `[report](${r.reportUrl})` : '—';
+              md += `| ${r.plan} | ${emoji[r.status] || ':grey_question:'} ${r.status}${note} | ${dur} | ${rep} |\n`;
+            }
+
+            md += `\n### Rolling flake rate (all recorded nights)\n\n`;
+            md += `| Plan | Pass rate | Runs | Nights | Last | Note |\n|------|-----------|------|--------|------|------|\n`;
+            for (const plan of Object.keys(byPlan).sort()) {
+              const p = byPlan[plan];
+              const rate = p.runs ? `${Math.round((p.pass / p.runs) * 100)}% (${p.pass}/${p.runs})` : 'n/a';
+              const infra = p.infra ? `, ${p.infra} infra` : '';
+              const note = p.expected ? `expected red: ${p.expected}` : '';
+              md += `| ${plan} | ${rate}${infra} | ${p.runs} | ${p.nights.size} | ${emoji[p.last.status]} ${p.last.status} | ${note} |\n`;
+            }
+
+            core.summary.addRaw(md);
+            await core.summary.write();
+
+      - name: Push the updated ledger to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_BUCKET: system3-ci
+        run: |
+          aws s3api put-object \
+            --endpoint-url "$CI_R2_ENDPOINT" \
+            --bucket "$CI_R2_BUCKET" \
+            --key burnin/ledger.jsonl \
+            --body ledger.jsonl \
+            --content-type application/x-ndjson \
+            --cache-control 'no-cache, must-revalidate' \
+            --no-cli-pager >/dev/null
+          echo "Pushed ledger ($(wc -l < ledger.jsonl) rows) to s3://${CI_R2_BUCKET}/burnin/ledger.jsonl"
+
+      - name: Upload ledger snapshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burnin-ledger
+          path: ledger.jsonl
+          if-no-files-found: warn
