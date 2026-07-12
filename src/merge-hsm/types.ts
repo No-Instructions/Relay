@@ -171,6 +171,12 @@ export interface MergeState {
 	error?: Error;
 
 	/**
+	 * Whether the stored error is retryable (transport-caused, re-arms on new
+	 * information) or permanent. Present only while `error` is set.
+	 */
+	errorRetryable?: boolean;
+
+	/**
 	 * Deferred conflict tracking.
 	 * When user dismisses a conflict, we store the hashes to avoid re-showing.
 	 */
