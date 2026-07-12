@@ -32,7 +32,6 @@ import { GatedDeletionController } from "./ui/GatedDeletionController";
 import { GatedDeletionModal } from "./ui/GatedDeletionModal";
 import { sharedFolderGateView } from "./ui/GatedDeletionView";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
-import { MetadataRepairModal } from "./ui/MetadataRepairModal";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
 import { LoginManager, type LoginSettings } from "./LoginManager";
@@ -1071,9 +1070,6 @@ export default class Live extends Plugin {
 			this.metadataHealthSidebarNotice = new MetadataHealthSidebarNoticeMount(
 				this.app.workspace,
 				metadataHealth,
-				() => {
-					new MetadataRepairModal(this.app, metadataHealth).open();
-				},
 			);
 		}
 	}
