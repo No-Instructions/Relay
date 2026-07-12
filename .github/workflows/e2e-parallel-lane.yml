@@ -103,7 +103,10 @@ jobs:
             IMAGE_ARGS=(--image-family="$VM_IMAGE_FAMILY" --image-project="$VM_IMAGE_PROJECT")
             IMAGE_LABEL="$VM_IMAGE_PROJECT/family:$VM_IMAGE_FAMILY"
           fi
-          for k in $(seq 1 "$MAX_POOLS"); do
+          # Probe pools in random order: sequential probing sends every
+          # low-concurrency dispatch to the same pool, so one unhealthy pool
+          # (a leaked slot process) captures all quiet-hours traffic.
+          for k in $(seq 1 "$MAX_POOLS" | shuf); do
             VM="relay-e2e-tt-p${k}"
             if ERR=$(gcloud compute instances create "$VM" \
               --project="$GCP_PROJECT" \
