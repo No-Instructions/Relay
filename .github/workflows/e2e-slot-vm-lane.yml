@@ -155,7 +155,7 @@ jobs:
           function Log($m) { Write-Output "RELAY-SLOT: $m" }
           for ($i = 1; $i -le 6; $i++) {
             if (Get-Service sshd -ErrorAction SilentlyContinue) { break }
-            try { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null } catch { Log "sshd add attempt $i: $_" }
+            try { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null } catch { Log "sshd add attempt ${i}: $_" }
             Start-Sleep -Seconds 10
           }
           Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
@@ -347,7 +347,7 @@ jobs:
           # Transfer the harness deploy key and the provisioning script over SSH
           # (base64 in an argv-sized command; both are small text).
           echo "$HARNESS_DEPLOY_KEY" > /tmp/harness-key; KEY_B64=$(base64 -w0 /tmp/harness-key)
-          run_ps "[IO.File]::WriteAllText('C:\\relay-e2e-testing\\harness-key',[Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('$KEY_B64')))"
+          run_ps "New-Item -ItemType Directory -Path 'C:\\relay-e2e-testing' -Force | Out-Null; [IO.File]::WriteAllText('C:\\relay-e2e-testing\\harness-key',[Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('$KEY_B64')))"
           PS_B64=$(base64 -w0 /tmp/win-slot-provision.ps1)
           run_ps "[IO.File]::WriteAllText('C:\\relay-e2e-testing\\win-slot-provision.ps1',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$PS_B64')))"
 
