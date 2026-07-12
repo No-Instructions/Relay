@@ -161,6 +161,9 @@ jobs:
           # committed bash script so pipefail and the failure trap survive.
           script: bash "$HOME/relay-harness/scripts/ci/android-tier-a.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}"
 
+      # Coverage summary is plan-id/status/duration only (non-sensitive). No video
+      # or diagnostics artifact: this is a public repo, so nothing that could carry
+      # vault content or auth detail leaves the runner.
       - name: Upload coverage summary
         if: always()
         continue-on-error: true
@@ -168,15 +171,5 @@ jobs:
         with:
           name: testplans-android-tier-a-metadata
           path: android-tier-a-summary.json
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Upload run video
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-tier-a-video
-          path: android-tier-a.mp4
           if-no-files-found: warn
           retention-days: 14
