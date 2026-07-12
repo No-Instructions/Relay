@@ -1,14 +1,20 @@
 name: E2E platform smoke
 
-# Runs a small Level-2 smoke against real Obsidian on GitHub-hosted Windows
-# and macOS runners. Linux coverage lives in the scripted test-plan lanes;
-# this workflow exists to catch platform-specific breakage (paths, file
-# watching, Electron behavior) that Linux VMs cannot.
+# Runs a small smoke against real Obsidian on GitHub-hosted Windows and macOS
+# runners. Linux coverage lives in the scripted test-plan lanes; this workflow
+# exists to catch platform-specific breakage (paths, file watching, Electron
+# behavior) that Linux VMs cannot.
+#
+# Slots are materialized by the cross-platform runner
+# (.claude/scripts/obsidian_slot.py) — the single provisioning source of truth
+# shared with the Linux lanes. Two coverage layers run against the one
+# runner-provisioned slot: the Level-2 .mjs strands (HSM state assertions) and
+# the single-slot scripted test plans (the full TP harness).
 
 on:
   schedule:
     # Nightly platform signal; scheduled runs test origin/main with the
-    # default strands. Concurrency serializes on the arlo/bella slots.
+    # default strands/plans. Concurrency serializes on the arlo/bella slots.
     - cron: '17 9 * * *'
   workflow_dispatch:
     inputs:
@@ -17,13 +23,17 @@ on:
         required: true
         default: 'origin/main'
       harness_ref:
-        description: 'relay-harness ref providing playwright tests/utils'
+        description: 'relay-harness ref providing the slot runner, tests, and plans'
         required: false
         default: 'origin/main'
       tests:
-        description: 'Comma-separated Level 2 strands to run'
+        description: 'Comma-separated Level 2 .mjs strands to run'
         required: false
-        default: 'test-basic-open-close'
+        default: 'test-basic-open-close,test-idle-registration'
+      plans:
+        description: 'Comma-separated single-slot scripted plan ids'
+        required: false
+        default: 'tp000,tp002,tp003'
 
 concurrency:
   group: e2e-platform-smoke
@@ -34,6 +44,11 @@ jobs:
     name: ${{ format('smoke ({0})', matrix.platform.name) }}
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 45
+    env:
+      # The scripted plans print Unicode status glyphs (checkmarks); force
+      # UTF-8 stdout so Windows Python does not die encoding them to cp1252.
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
     strategy:
       fail-fast: false
       matrix:
@@ -43,9 +58,11 @@ jobs:
           - name: windows
             runner: windows-latest
             user: arlo    # slot 1, port 9223
+            port: 9223
           - name: macos
             runner: macos-latest
             user: bella   # slot 2, port 9224
+            port: 9224
 
     steps:
       - name: Checkout product
@@ -104,7 +121,8 @@ jobs:
           }
           if (-not $exe) { throw "Obsidian.exe not found after install" }
           echo "Found Obsidian at $exe"
-          echo "OBSIDIAN_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # The slot runner discovers the executable via OBSIDIAN_PATH first.
+          echo "OBSIDIAN_PATH=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install Obsidian (macos)
         if: matrix.platform.name == 'macos'
@@ -113,98 +131,120 @@ jobs:
           brew install --cask obsidian
           sudo xattr -dr com.apple.quarantine /Applications/Obsidian.app || true
           test -x "/Applications/Obsidian.app/Contents/MacOS/Obsidian"
-          echo "OBSIDIAN_EXE=/Applications/Obsidian.app/Contents/MacOS/Obsidian" >> "$GITHUB_ENV"
+          echo "OBSIDIAN_PATH=/Applications/Obsidian.app/Contents/MacOS/Obsidian" >> "$GITHUB_ENV"
 
-      - name: Prepare slot vault and config
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python and playwright deps
         shell: bash
         run: |
-          USER_NAME="${{ matrix.platform.user }}"
-          FIRST=$(printf '%s' "$USER_NAME" | cut -c1)
-          SLOT=$(( $(printf '%d' "'$FIRST") - 96 ))
-          CDP_PORT=$((9222 + SLOT))
-          SLOT_ROOT="$HOME/relay-smoke"
-          VAULT="$SLOT_ROOT/vault-$USER_NAME"
-          CONFIG="$SLOT_ROOT/config-$USER_NAME"
-          PLUGIN_DIR="$VAULT/.obsidian/plugins/system3-relay"
-          mkdir -p "$PLUGIN_DIR" "$CONFIG"
-
-          cp main.js manifest.json styles.css "$PLUGIN_DIR/"
-          cp "$HOME/relay-harness/scripts/resources/relay-test-profile.json" "$PLUGIN_DIR/data.json"
-          printf '["system3-relay"]' > "$VAULT/.obsidian/community-plugins.json"
-          printf '{"promptDelete": false, "alwaysUpdateLinks": true}' > "$VAULT/.obsidian/app.json"
-          printf '# %s smoke vault\n' "$USER_NAME" > "$VAULT/Welcome.md"
-
-          # Obsidian needs OS-native paths in obsidian.json and the open URI;
-          # git-bash paths (/c/Users/...) are meaningless to Obsidian.exe.
-          if command -v cygpath >/dev/null 2>&1; then
-            VAULT_NATIVE=$(cygpath -w "$VAULT")
-            CONFIG_NATIVE=$(cygpath -w "$CONFIG")
-          else
-            VAULT_NATIVE="$VAULT"
-            CONFIG_NATIVE="$CONFIG"
-          fi
-
-          node -e '
-            const fs = require("fs"), path = require("path");
-            const vault = process.argv[1], config = process.argv[2];
-            fs.writeFileSync(path.join(config, "obsidian.json"), JSON.stringify({
-              vaults: { smokevault0001: { path: vault, ts: Date.now(), open: true } },
-              updateDisabled: true,
-            }));
-          ' "$VAULT_NATIVE" "$CONFIG"
-
-          echo "CDP_PORT=$CDP_PORT" >> "$GITHUB_ENV"
-          echo "SMOKE_VAULT=$VAULT_NATIVE" >> "$GITHUB_ENV"
-          echo "SMOKE_CONFIG=$CONFIG_NATIVE" >> "$GITHUB_ENV"
-          echo "SMOKE_USER=$USER_NAME" >> "$GITHUB_ENV"
-
-      - name: Install playwright deps
-        shell: bash
-        run: |
+          python -m pip install --upgrade pip
+          # obsidian_ctl.py (imported by every scripted plan) needs tree-sitter
+          # at import time; websockets drives CDP; matplotlib backs the optional
+          # metrics plots. click powers the runner CLI.
+          python -m pip install click websockets tree-sitter tree-sitter-javascript matplotlib
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
           cd "$HOME/relay-harness/playwright"
           npm install --ignore-scripts --no-audit --no-fund --loglevel=error
 
-      - name: Start Obsidian
+      - name: Provision slot
         shell: bash
         run: |
-          # The vault opens from obsidian.json (open: true); no URI argument
-          # needed, and a fresh install handles config-driven open more
-          # reliably than an obsidian:// argv link.
-          "$OBSIDIAN_EXE" --user-data-dir="$SMOKE_CONFIG" \
-            --remote-debugging-port="$CDP_PORT" \
-            --no-sandbox &
-          echo "Obsidian PID: $!"
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_slot.py slot provision \
+            --user "${{ matrix.platform.user }}" \
+            --plugin-dir "${{ github.workspace }}"
+
+      - name: Start slot
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_slot.py slot start \
+            --user "${{ matrix.platform.user }}" --wait-timeout 90
 
       - name: Wait for ready and inject auth
         shell: bash
         run: |
           cd "$HOME/relay-harness/playwright"
-          node utils/wait-for-ready.mjs "$CDP_PORT"
-          node utils/inject-auth.mjs "$SMOKE_USER" "$CDP_PORT"
+          node utils/wait-for-ready.mjs "${{ matrix.platform.port }}"
+          node utils/inject-auth.mjs "${{ matrix.platform.user }}" "${{ matrix.platform.port }}"
 
-      - name: Run smoke tests
+      - name: Slot status (responsiveness probe)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_slot.py slot status \
+            --user "${{ matrix.platform.user }}" --probe-timeout 15
+
+      - name: Run Level-2 strands
         shell: bash
         run: |
           cd "$HOME/relay-harness/playwright"
           IFS=',' read -ra STRANDS <<< "${{ github.event.inputs.tests || 'test-basic-open-close,test-idle-registration' }}"
           FAIL=0
           for strand in "${STRANDS[@]}"; do
-            echo "=== Running $strand on ${{ matrix.platform.name }} (port $CDP_PORT) ==="
-            if ! node "tests/${strand}.mjs" "$CDP_PORT"; then
+            strand="$(echo "$strand" | tr -d '[:space:]')"
+            [ -n "$strand" ] || continue
+            echo "=== Running $strand on ${{ matrix.platform.name }} (port ${{ matrix.platform.port }}) ==="
+            if ! node "tests/${strand}.mjs" "${{ matrix.platform.port }}"; then
               echo "::error::$strand failed on ${{ matrix.platform.name }}"
               FAIL=1
             fi
           done
           exit $FAIL
 
-      - name: Collect renderer log on failure
+      - name: Run scripted single-slot plans
+        shell: bash
+        env:
+          RELAY_CDP_ENDPOINTS: http://127.0.0.1:${{ matrix.platform.port }}
+          # No TSDB side-car on hosted runners; skip the per-run metrics health
+          # wait so a plan's own pass/fail (not metrics infra) decides the step.
+          RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
+        run: |
+          cd "$HOME/relay-harness"
+          FAIL=0
+          IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp000,tp002,tp003' }}"
+          for plan in "${PLANS[@]}"; do
+            plan="$(echo "$plan" | tr -d '[:space:]')"
+            [ -n "$plan" ] || continue
+            script="$(node -e '
+              const m = require("./test-plans/scripts/manifest.json");
+              const t = m.tests.find(t => t.id === process.argv[1]);
+              if (!t) { console.error("unknown plan id: " + process.argv[1]); process.exit(3); }
+              if (Number(t.slots || 1) !== 1) { console.error(process.argv[1] + " is not single-slot"); process.exit(4); }
+              process.stdout.write(t.script);
+            ' "$plan")"
+            RUN_DIR="$HOME/slot-runs/$plan"
+            mkdir -p "$RUN_DIR"
+            echo "=== $plan ($script) on port ${{ matrix.platform.port }} ==="
+            if python "test-plans/scripts/$script" \
+                 --vault "${{ matrix.platform.user }}" --run-dir "$RUN_DIR" --no-verify-build; then
+              echo "--- $plan PASSED ---"
+            else
+              echo "::error::$plan failed on ${{ matrix.platform.name }}"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      - name: Collect diagnostics on failure
         if: failure()
         shell: bash
         run: |
-          cd "$HOME/relay-harness/playwright" || exit 0
-          node -e '
-            const http = require("http");
-            http.get({host:"127.0.0.1", port: process.env.CDP_PORT, path:"/json"}, res => {
-              let d=""; res.on("data",c=>d+=c); res.on("end",()=>console.log(d));
-            }).on("error", e => console.log("CDP unreachable:", e.message));
-          ' || true
+          cd "$HOME/relay-harness" || exit 0
+          echo "=== slot status ==="
+          python .claude/scripts/obsidian_slot.py slot status \
+            --user "${{ matrix.platform.user }}" --json || true
+          echo "=== launch log ==="
+          python -c "import sys; sys.path.insert(0, '.claude/scripts'); import obsidian_slot as s; slot = s.Slot('${{ matrix.platform.user }}', s.slot_root(None)); print(slot.launch_log.read_text() if slot.launch_log.exists() else '(no launch log)')" || true
+
+      - name: Stop slot
+        if: always()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness" || exit 0
+          python .claude/scripts/obsidian_slot.py slot stop \
+            --user "${{ matrix.platform.user }}" || true
