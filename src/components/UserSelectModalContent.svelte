@@ -19,6 +19,7 @@
 
 	const selectedUsers = writable(new Set([...preSelectedUserIds]));
 	const searchQuery = writable("");
+	let adding = false;
 
 	// Create derived store for users in this relay
 	const relayUsers = derived(
@@ -109,13 +110,17 @@
 	}
 
 	async function handleAdd() {
+		if (adding) return;
 		const currentSelectedUsers = $selectedUsers;
 		if (currentSelectedUsers.size === 0) return;
 
+		adding = true;
 		try {
 		    await onAdd(Array.from(currentSelectedUsers), "Member");
 		} catch (error) {
-			handleServerError(error);
+			handleServerError(error, "Failed to add users to folder.");
+		} finally {
+			adding = false;
 		}
 	}
 
@@ -206,7 +211,12 @@
 				: `${$selectedCount} user${$selectedCount === 1 ? "" : "s"} selected`}
 		</span>
 
-		<button class="mod-cta" disabled={$selectedCount === 0} on:click={handleAdd}>
+		<button
+			class="mod-cta"
+			disabled={adding || $selectedCount === 0}
+			aria-busy={adding}
+			on:click={handleAdd}
+		>
 			Add Users
 		</button>
 	</div>
