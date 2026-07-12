@@ -29,7 +29,13 @@ on:
       plans:
         description: 'Comma-separated single-slot scripted plan ids'
         required: false
-        default: 'tp000,tp002,tp003'
+        # The self-contained single-slot plans (no shared fixture, no attachment
+        # storage). Measured per-plan wall-clock on macOS+Windows hosted runners
+        # is ~1-5s each (tp000 ~24s with first-launch warmup) — negligible beside
+        # the per-job Obsidian/npm/python setup, so the whole set fits the nightly
+        # budget. Excluded: tp007 (sharedFixture — the smoke creates no fixture),
+        # tp054 (needs a storage-quota relay).
+        default: 'tp000,tp002,tp003,tp030,tp032,tp038,tp055'
 
 concurrency:
   group: e2e-platform-smoke
