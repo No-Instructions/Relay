@@ -69,6 +69,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	private _idleProviderIntegrationRefs = 0;
 	private _activeProviderIntegration = false;
 	private _forkReconcileConnectPromise: Promise<void> | null = null;
+	// Consecutive re-drives that found this document's fork holding a
+	// connected-but-unsynced provider integration. A fork born during an
+	// outage is left exactly there — socket up, handshake never completed —
+	// and never re-syncs on its own. One such observation cannot be told
+	// apart from a fork mid-handshake, so the fresh-remoteDoc rebuild that
+	// forces a new sync only fires once the condition is stable across two
+	// observations. Reset whenever the document syncs, loses its fork, or is
+	// rebuilt.
+	private _forkReconcileStrandedObservations = 0;
 
 	private recordProviderSyncedRemoteHead = (snapshot: Uint8Array): void => {
 		this.sharedFolder.mergeManager?.seedServerAdvertisedSnapshotFromBytes(
@@ -899,8 +908,35 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
+		// A fork with no integration always needs a fresh remoteDoc to reconcile
+		// against. A fork whose integration exists but is stranded — connected in
+		// name yet never synced, the state a fork born during an outage is left
+		// in — also needs one: connect() alone early-returns on a nominally
+		// connected provider and never re-syncs, so only a fresh remoteDoc forces
+		// the sync (and thus PROVIDER_SYNCED) that re-runs fork-reconcile. The
+		// fork's edit lives in localDoc, so discarding the ephemeral remoteDoc
+		// loses nothing. A single connected-but-unsynced observation is
+		// indistinguishable from a fork mid-handshake, so the rebuild waits until
+		// the stranding is stable across two observations — a healthy handshake
+		// completes well within one reconnect-sweep interval and clears the count.
+		const strandedObservation =
+			hsm.hasFork() &&
+			this.hasProviderIntegration() &&
+			this.connected &&
+			!this.synced;
+		this._forkReconcileStrandedObservations = strandedObservation
+			? this._forkReconcileStrandedObservations + 1
+			: 0;
+		const stablyStranded = this._forkReconcileStrandedObservations >= 2;
+		const freshRemoteDoc =
+			hsm.hasFork() && (!this.hasProviderIntegration() || stablyStranded);
+		if (freshRemoteDoc) {
+			// The rebuild gives the fork a fresh handshake; start its stranding
+			// count over so the next rebuild is again gated on two observations.
+			this._forkReconcileStrandedObservations = 0;
+		}
 		const acquiredIntegration = this.ensureIdleProviderIntegration({
-			freshRemoteDoc: hsm.hasFork() && !this.hasProviderIntegration(),
+			freshRemoteDoc,
 		});
 		let unsubscribeState: (() => void) | null = null;
 		const cleanupIfDone = () => {

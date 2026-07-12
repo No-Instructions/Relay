@@ -1254,7 +1254,14 @@ export class SharedFolder extends HasProvider {
 		const forkedIdle = hsm.state.fork !== null && hsm.matches("idle.localAhead");
 		const retryableError = hsm.matches("idle.error") && hsm.state.errorRetryable === true;
 		if (!forkedIdle && !retryableError) return;
-		if (file.hasProviderIntegration() && file.intent === "connected") return;
+		// Skip only a document whose integration is genuinely healthy — connected
+		// and synced. A fork born during an outage strands an integration that
+		// reports intent "connected" but never completed its handshake; skipping
+		// it on intent alone (without checking synced) leaves that fork's edit
+		// gated and unpushed forever. connectForForkReconcile is idempotent —
+		// concurrent calls coalesce and a healthy bridge is reused — so
+		// re-driving a still-syncing document is a cheap no-op.
+		if (file.hasProviderIntegration() && file.intent === "connected" && file.synced) return;
 		if (!this.shouldConnect) return;
 
 		file.connectForForkReconcile().catch(() => {});
@@ -1813,6 +1820,17 @@ export class SharedFolder extends HasProvider {
 		// ladder reruns only after a disconnect).
 		this.folderHSM?.send({ type: "CONNECTED" });
 		this.folderHSM?.send({ type: "PROVIDER_SYNCED" });
+		// A completed folder sync is the level signal that connectivity has
+		// returned. The provider can revive on its own reconnect backoff without
+		// a fresh SharedFolder.connect() call, so a document that forked during
+		// the outage would otherwise wait for a reconnect edge that self-heal
+		// never produces. Re-drive forked idle documents here so such a fork
+		// reconciles on the sync-completion signal. This edge fires only on a
+		// genuine desynced→synced transition, and connectForForkReconcile is
+		// idempotent and rebuilds a remoteDoc only for a document confirmed
+		// stranded across observations, so re-driving healthy or mid-handshake
+		// documents is a cheap no-op.
+		this.connectForkedIdleDocuments();
 		if (this.authoritative || this._persistence.hasServerSync) {
 			return;
 		}
