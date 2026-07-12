@@ -1322,6 +1322,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/** @internal Used by SyncBridge */
+	applyChangesToLocalDoc(changes: PositionedChange[]): void {
+		if (!this.localDoc || changes.length === 0) return;
+		const ytext = this.localDoc.getText("contents");
+		this.localDoc.transact(() => {
+			this.applyChangesToYText(ytext, changes);
+		});
+	}
+
+	/** @internal Used by SyncBridge */
 	isSuppressLocalObserver(): boolean {
 		return this._suppressLocalObserver;
 	}
