@@ -1,0 +1,194 @@
+name: E2E platform smoke
+
+# Runs a small Level-2 smoke against real Obsidian on GitHub-hosted Windows
+# and macOS runners. Linux coverage lives in the scripted test-plan lanes;
+# this workflow exists to catch platform-specific breakage (paths, file
+# watching, Electron behavior) that Linux VMs cannot.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to test (e.g. origin/main, a branch, or a SHA)'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref providing playwright tests/utils'
+        required: false
+        default: 'origin/main'
+      tests:
+        description: 'Comma-separated Level 2 strands to run'
+        required: false
+        default: 'test-basic-open-close'
+
+concurrency:
+  group: e2e-platform-smoke
+  cancel-in-progress: false
+
+jobs:
+  platform-smoke:
+    name: ${{ format('smoke ({0})', matrix.platform.name) }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          # arlo/bella are the local-dev slots the scripted lanes explicitly
+          # avoid, so this smoke never shares a staging user with a lane run.
+          - name: windows
+            runner: windows-latest
+            user: arlo    # slot 1, port 9223
+          - name: macos
+            runner: macos-latest
+            user: bella   # slot 2, port 9224
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          test -f main.js && test -f manifest.json && test -f styles.css
+
+      - name: Clone relay-harness
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Install Obsidian (windows)
+        if: matrix.platform.name == 'windows'
+        shell: pwsh
+        run: |
+          choco install obsidian -y --no-progress
+          $exe = @("$env:LOCALAPPDATA\Obsidian\Obsidian.exe", "C:\Program Files\Obsidian\Obsidian.exe") |
+            Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) { throw "Obsidian.exe not found after install" }
+          echo "OBSIDIAN_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Obsidian (macos)
+        if: matrix.platform.name == 'macos'
+        shell: bash
+        run: |
+          brew install --cask obsidian --no-quarantine
+          test -x "/Applications/Obsidian.app/Contents/MacOS/Obsidian"
+          echo "OBSIDIAN_EXE=/Applications/Obsidian.app/Contents/MacOS/Obsidian" >> "$GITHUB_ENV"
+
+      - name: Prepare slot vault and config
+        shell: bash
+        run: |
+          USER_NAME="${{ matrix.platform.user }}"
+          FIRST=$(printf '%s' "$USER_NAME" | cut -c1)
+          SLOT=$(( $(printf '%d' "'$FIRST") - 96 ))
+          CDP_PORT=$((9222 + SLOT))
+          SLOT_ROOT="$HOME/relay-smoke"
+          VAULT="$SLOT_ROOT/vault-$USER_NAME"
+          CONFIG="$SLOT_ROOT/config-$USER_NAME"
+          PLUGIN_DIR="$VAULT/.obsidian/plugins/system3-relay"
+          mkdir -p "$PLUGIN_DIR" "$CONFIG"
+
+          cp main.js manifest.json styles.css "$PLUGIN_DIR/"
+          cp "$HOME/relay-harness/scripts/resources/relay-test-profile.json" "$PLUGIN_DIR/data.json"
+          printf '["system3-relay"]' > "$VAULT/.obsidian/community-plugins.json"
+          printf '{"promptDelete": false, "alwaysUpdateLinks": true}' > "$VAULT/.obsidian/app.json"
+          printf '# %s smoke vault\n' "$USER_NAME" > "$VAULT/Welcome.md"
+
+          # Obsidian needs OS-native paths in obsidian.json and the open URI;
+          # git-bash paths (/c/Users/...) are meaningless to Obsidian.exe.
+          if command -v cygpath >/dev/null 2>&1; then
+            VAULT_NATIVE=$(cygpath -w "$VAULT")
+            CONFIG_NATIVE=$(cygpath -w "$CONFIG")
+          else
+            VAULT_NATIVE="$VAULT"
+            CONFIG_NATIVE="$CONFIG"
+          fi
+
+          node -e '
+            const fs = require("fs"), path = require("path");
+            const vault = process.argv[1], config = process.argv[2];
+            fs.writeFileSync(path.join(config, "obsidian.json"), JSON.stringify({
+              vaultList: [{ path: vault, ts: Date.now(), open: true }]
+            }));
+          ' "$VAULT_NATIVE" "$CONFIG"
+
+          echo "CDP_PORT=$CDP_PORT" >> "$GITHUB_ENV"
+          echo "SMOKE_VAULT=$VAULT_NATIVE" >> "$GITHUB_ENV"
+          echo "SMOKE_CONFIG=$CONFIG_NATIVE" >> "$GITHUB_ENV"
+          echo "SMOKE_USER=$USER_NAME" >> "$GITHUB_ENV"
+
+      - name: Install playwright deps
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Start Obsidian
+        shell: bash
+        run: |
+          "$OBSIDIAN_EXE" --user-data-dir="$SMOKE_CONFIG" \
+            --remote-debugging-port="$CDP_PORT" \
+            --no-sandbox \
+            "obsidian://open?path=$SMOKE_VAULT" &
+          echo "Obsidian PID: $!"
+
+      - name: Wait for ready and inject auth
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          node utils/wait-for-ready.mjs "$CDP_PORT"
+          node utils/inject-auth.mjs "$SMOKE_USER" "$CDP_PORT"
+
+      - name: Run smoke tests
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          IFS=',' read -ra STRANDS <<< "${{ github.event.inputs.tests }}"
+          FAIL=0
+          for strand in "${STRANDS[@]}"; do
+            echo "=== Running $strand on ${{ matrix.platform.name }} (port $CDP_PORT) ==="
+            if ! node "tests/${strand}.mjs" "$CDP_PORT"; then
+              echo "::error::$strand failed on ${{ matrix.platform.name }}"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      - name: Collect renderer log on failure
+        if: failure()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright" || exit 0
+          node -e '
+            const http = require("http");
+            http.get({host:"127.0.0.1", port: process.env.CDP_PORT, path:"/json"}, res => {
+              let d=""; res.on("data",c=>d+=c); res.on("end",()=>console.log(d));
+            }).on("error", e => console.log("CDP unreachable:", e.message));
+          ' || true
