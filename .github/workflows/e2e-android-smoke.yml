@@ -104,7 +104,9 @@ jobs:
       - name: Install Appium and UiAutomator2 driver
         shell: bash
         run: |
-          npm install -g appium@2
+          # Appium 3 is the current stable line; the uiautomator2 driver's
+          # current release requires it. Pin the major so the pair stays compatible.
+          npm install -g 'appium@^3'
           appium driver install uiautomator2
           appium --version
           appium driver list --installed
