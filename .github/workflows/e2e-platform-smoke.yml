@@ -26,14 +26,19 @@ on:
         description: 'relay-harness ref providing the slot runner, tests, and plans'
         required: false
         default: 'origin/main'
-      tests:
-        description: 'Comma-separated Level 2 .mjs strands to run'
-        required: false
-        default: 'test-basic-open-close,test-idle-registration'
       plans:
-        description: 'Comma-separated single-slot scripted plan ids'
+        description: 'Comma-separated single-slot scripted plan ids (primary coverage)'
         required: false
         default: 'tp000,tp002,tp003'
+      tests:
+        # The scripted plans above are the primary coverage. This supplemental
+        # .mjs strand is retained only for its sibling-isolation assertion —
+        # that an external disk edit to one file leaves the other files in
+        # idle.synced — which tp002 does not currently check. tp000 fully
+        # subsumes test-basic-open-close, so that strand is not run here.
+        description: 'Supplemental Level 2 .mjs strand(s)'
+        required: false
+        default: 'test-idle-registration'
 
 concurrency:
   group: e2e-platform-smoke
@@ -179,23 +184,6 @@ jobs:
           python .claude/scripts/obsidian_slot.py slot status \
             --user "${{ matrix.platform.user }}" --probe-timeout 15
 
-      - name: Run Level-2 strands
-        shell: bash
-        run: |
-          cd "$HOME/relay-harness/playwright"
-          IFS=',' read -ra STRANDS <<< "${{ github.event.inputs.tests || 'test-basic-open-close,test-idle-registration' }}"
-          FAIL=0
-          for strand in "${STRANDS[@]}"; do
-            strand="$(echo "$strand" | tr -d '[:space:]')"
-            [ -n "$strand" ] || continue
-            echo "=== Running $strand on ${{ matrix.platform.name }} (port ${{ matrix.platform.port }}) ==="
-            if ! node "tests/${strand}.mjs" "${{ matrix.platform.port }}"; then
-              echo "::error::$strand failed on ${{ matrix.platform.name }}"
-              FAIL=1
-            fi
-          done
-          exit $FAIL
-
       - name: Run scripted single-slot plans
         shell: bash
         env:
@@ -225,6 +213,23 @@ jobs:
               echo "--- $plan PASSED ---"
             else
               echo "::error::$plan failed on ${{ matrix.platform.name }}"
+              FAIL=1
+            fi
+          done
+          exit $FAIL
+
+      - name: Run supplemental Level-2 strand
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          IFS=',' read -ra STRANDS <<< "${{ github.event.inputs.tests || 'test-idle-registration' }}"
+          FAIL=0
+          for strand in "${STRANDS[@]}"; do
+            strand="$(echo "$strand" | tr -d '[:space:]')"
+            [ -n "$strand" ] || continue
+            echo "=== Running $strand on ${{ matrix.platform.name }} (port ${{ matrix.platform.port }}) ==="
+            if ! node "tests/${strand}.mjs" "${{ matrix.platform.port }}"; then
+              echo "::error::$strand failed on ${{ matrix.platform.name }}"
               FAIL=1
             fi
           done
