@@ -14,7 +14,7 @@
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import RemoteFolder from "./RemoteFolder.svelte";
-	import { Notice, debounce, normalizePath, setIcon } from "obsidian";
+	import { Notice, Platform, debounce, normalizePath, setIcon } from "obsidian";
 	import { createEventDispatcher, onMount, onDestroy } from "svelte";
 	import { derived, writable, get } from "svelte/store";
 	import { Edit, Check, Download, X } from "lucide-svelte";
@@ -649,8 +649,10 @@
 			class="mod-cta"
 			aria-label="Select a folder to share it with this Relay Server"
 			on:click={debounce(() => {
-				if (relay.version === 0) {
-					// For relay version 0, go directly to folder selection
+				if (relay.version === 0 && !Platform.isMobile) {
+					// For relay version 0, go directly to folder selection.
+					// Mobile routes through the share modal instead, whose inline
+					// picker replaces the desktop-only suggest overlay.
 					const folderModal = new FolderSuggestModal(
 						plugin.app,
 						"Choose or create folder...",
