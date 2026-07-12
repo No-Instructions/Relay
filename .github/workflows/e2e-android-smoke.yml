@@ -156,6 +156,7 @@ jobs:
       # teardown; publish it as a watchable artifact. Never gates the smoke.
       - name: Upload smoke video
         if: always()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: android-smoke-video
