@@ -84,7 +84,7 @@ import {
 import { recordHSMEntry } from "./debug";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { DestroyedError, isDestroyedError } from "./DestroyedError";
-import { generateHash } from "./hashing";
+import { readNoteText } from "./diskText";
 import {
 	HSMStore,
 } from "./merge-hsm/persistence";
@@ -622,10 +622,7 @@ export class SharedFolder extends HasProvider {
 				const vaultPath = this.getPath(docPath);
 				const tfile = this.vault.getAbstractFileByPath(vaultPath);
 				if (!(tfile instanceof TFile)) return null;
-				const contents = await this.vault.read(tfile);
-				const encoder = new TextEncoder();
-				const hash = await generateHash(encoder.encode(contents).buffer);
-				return { contents, mtime: tfile.stat.mtime, hash };
+				return await readNoteText(this.vault, tfile);
 			},
 			loadAllStates: async () => {
 				try {
