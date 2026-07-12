@@ -151,7 +151,10 @@ jobs:
               5) echo "9,10" ;; 6) echo "13,14" ;; 7) echo "17,18" ;; 8) echo "21,22" ;;
             esac
           }
-          for k in $(seq 1 "$MAX_POOLS"); do
+          # Probe pools in random order: sequential probing sends every
+          # low-concurrency dispatch to the same pool, so one unhealthy pool
+          # (a leaked slot process) captures all quiet-hours traffic.
+          for k in $(seq 1 "$MAX_POOLS" | shuf); do
             VM="relay-e2e-tt-p${k}"
             if ERR=$(gcloud compute instances create "$VM" \
               --project="$GCP_PROJECT" \
