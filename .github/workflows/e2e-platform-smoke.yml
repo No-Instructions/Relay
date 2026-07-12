@@ -146,6 +146,23 @@ jobs:
           cd "$HOME/relay-harness/playwright"
           npm install --ignore-scripts --no-audit --no-fund --loglevel=error
 
+      - name: Ensure ffmpeg (windows)
+        if: matrix.platform.name == 'windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+            choco install ffmpeg -y --no-progress
+          }
+
+      - name: Ensure ffmpeg (macos)
+        if: matrix.platform.name == 'macos'
+        continue-on-error: true
+        shell: bash
+        run: |
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          ffmpeg -version | head -1 || true
+
       - name: Provision slot
         shell: bash
         run: |
@@ -175,7 +192,7 @@ jobs:
           python .claude/scripts/obsidian_slot.py slot status \
             --user "${{ matrix.platform.user }}" --probe-timeout 15
 
-      - name: Run scripted single-slot plans
+      - name: Run scripted single-slot plans (recorded)
         shell: bash
         env:
           RELAY_CDP_ENDPOINTS: http://127.0.0.1:${{ matrix.platform.port }}
@@ -183,6 +200,19 @@ jobs:
           # wait so a plan's own pass/fail (not metrics infra) decides the step.
           RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
         run: |
+          # A CDP screencast records the scripted plans for the whole step. It
+          # is fully non-fatal: a recording/ffmpeg failure never changes the
+          # plans' pass/fail (the step exits with the plan result). Frames land
+          # in RUNNER_TEMP and the mp4 in the workspace; both paths go straight
+          # to Node (which normalizes separators), so bash never fs-touches the
+          # OS-native paths.
+          FRAMEDIR="$RUNNER_TEMP/smoke-frames"
+          VIDEO="${{ github.workspace }}/platform-smoke-${{ matrix.platform.name }}.mp4"
+          cd "$HOME/relay-harness/playwright"
+          node lib/screencast-cli.mjs record "${{ matrix.platform.port }}" "$FRAMEDIR" > screencast.log 2>&1 &
+          REC_PID=$!
+          sleep 4
+
           cd "$HOME/relay-harness"
           FAIL=0
           IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp000,tp002,tp003' }}"
@@ -207,7 +237,27 @@ jobs:
               FAIL=1
             fi
           done
+
+          # Stop the recorder and assemble the mp4 — all non-fatal.
+          kill "$REC_PID" 2>/dev/null || true
+          sleep 3
+          echo "=== screencast log ==="
+          cat "$HOME/relay-harness/playwright/screencast.log" 2>/dev/null || true
+          ( cd "$HOME/relay-harness/playwright" \
+            && node lib/screencast-cli.mjs assemble "$FRAMEDIR" "$VIDEO" ) \
+            || echo "screencast assemble failed (non-fatal)"
+
           exit $FAIL
+
+      - name: Upload smoke video
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-smoke-video-${{ matrix.platform.name }}
+          path: platform-smoke-${{ matrix.platform.name }}.mp4
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Collect diagnostics on failure
         if: failure()
