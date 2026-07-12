@@ -118,6 +118,26 @@ jobs:
       - name: Setup gcloud
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Sweep stale slot VMs
+        shell: bash
+        run: |
+          # Slot-VM names embed the run id. Anything under our prefix that is
+          # not this run is a leak from a crashed/preempted run, so delete it.
+          # This only ever matches relay-e2e-svm-* (never pool or platform VMs),
+          # and the concurrency group is serialized, so it cannot race a sibling.
+          KEEP="relay-e2e-svm-${GITHUB_RUN_ID}-"
+          stale=$(gcloud compute instances list --project="$GCP_PROJECT" \
+            --zones="$VM_ZONE" --filter="name~^relay-e2e-svm-" \
+            --format="value(name)" 2>/dev/null || true)
+          for name in $stale; do
+            case "$name" in
+              ${KEEP}*) echo "keeping $name (current run)" ;;
+              *) echo "sweeping stale $name";
+                 gcloud compute instances delete "$name" --quiet \
+                   --zone="$VM_ZONE" --project="$GCP_PROJECT" || true ;;
+            esac
+          done
+
       - name: Create slot VMs
         shell: bash
         run: |
