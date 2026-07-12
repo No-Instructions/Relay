@@ -925,7 +925,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this.connected &&
 			!this.synced;
 		this._forkReconcileStrandedObservations = strandedObservation
-			? this._forkReconcileStrandedObservations + 1
+			? (this._forkReconcileStrandedObservations ?? 0) + 1
 			: 0;
 		const stablyStranded = this._forkReconcileStrandedObservations >= 2;
 		const freshRemoteDoc =
