@@ -460,7 +460,7 @@ jobs:
               fi
             fi
 
-            echo "=== $PLAN ($SCRIPT): $USER1@$PORT1 (windows) x $USER2@$PORT2 (windows) ${EXTRA[*]} ==="
+            echo "=== $PLAN: $USER1@$PORT1 (windows) x $USER2@$PORT2 (windows) ${EXTRA[*]} ==="
             START_MS=$(date +%s%3N)
             if RELAY_CDP_ENDPOINTS="$ENDPOINTS" timeout "${TIMEOUT_S}s" \
                  python "test-plans/scripts/$SCRIPT" \
