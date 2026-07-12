@@ -89,16 +89,25 @@ jobs:
         shell: pwsh
         run: |
           choco install obsidian -y --no-progress
-          $exe = @("$env:LOCALAPPDATA\Obsidian\Obsidian.exe", "C:\Program Files\Obsidian\Obsidian.exe") |
-            Where-Object { Test-Path $_ } | Select-Object -First 1
+          $roots = @("$env:LOCALAPPDATA\Programs\Obsidian", "$env:LOCALAPPDATA\Obsidian",
+                     "C:\Program Files\Obsidian", "C:\Users\runneradmin\AppData\Local\Programs\Obsidian")
+          $exe = $roots | Where-Object { Test-Path $_ } |
+            ForEach-Object { Get-ChildItem -Path $_ -Filter Obsidian.exe -Recurse -ErrorAction SilentlyContinue } |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $exe) {
+            $exe = Get-ChildItem -Path "$env:LOCALAPPDATA", "C:\Program Files" -Filter Obsidian.exe -Recurse -Depth 3 -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
           if (-not $exe) { throw "Obsidian.exe not found after install" }
+          echo "Found Obsidian at $exe"
           echo "OBSIDIAN_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install Obsidian (macos)
         if: matrix.platform.name == 'macos'
         shell: bash
         run: |
-          brew install --cask obsidian --no-quarantine
+          brew install --cask obsidian
+          sudo xattr -dr com.apple.quarantine /Applications/Obsidian.app || true
           test -x "/Applications/Obsidian.app/Contents/MacOS/Obsidian"
           echo "OBSIDIAN_EXE=/Applications/Obsidian.app/Contents/MacOS/Obsidian" >> "$GITHUB_ENV"
 
