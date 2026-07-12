@@ -7,7 +7,6 @@
 	} from "src/MetadataHealth";
 
 	export let metadataHealth: MetadataHealth;
-	export let onRepairClick: (() => void) | null = null;
 
 	let state: MetadataHealthState = metadataHealth.state;
 	let dismissed = false;
@@ -46,19 +45,10 @@
 			</button>
 		</div>
 		<div class="callout-content metadata-health-detail">
-			{#if onRepairClick}
-				<p>
-					<button
-						class="metadata-health-repair-link"
-						type="button"
-						on:click={() => onRepairClick?.()}
-					>
-						Repair or reload…
-					</button>
-				</p>
-			{:else}
-				<p>Restart Obsidian to restore indexing.</p>
-			{/if}
+			<p>
+				Relay detected that Obsidian's metadata database is locked. Restart Obsidian
+				to restore indexing.
+			</p>
 		</div>
 	</div>
 {/if}
@@ -94,17 +84,6 @@
 
 	.metadata-health-detail :global(p) {
 		margin: 0;
-	}
-
-	.metadata-health-repair-link {
-		background: none;
-		border: none;
-		box-shadow: none;
-		padding: 0;
-		color: var(--text-accent);
-		text-decoration: underline;
-		cursor: var(--cursor);
-		font-size: inherit;
 	}
 
 	.metadata-health-close {
