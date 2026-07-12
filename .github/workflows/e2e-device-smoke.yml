@@ -1,0 +1,236 @@
+name: E2E device smoke
+
+# Runs a small smoke against real Obsidian on a USB-attached Android device,
+# through the adb-forward CDP bridge. Every layer above the bridge — readiness
+# probing, auth injection, the scripted test-plan runner, the UI-driven strands —
+# is the same code the desktop slots use; the device is just another local CDP
+# port once `adb forward` maps its WebView debugging socket.
+#
+# ---------------------------------------------------------------------------
+# ENABLING THIS WORKFLOW (Daniel):
+#
+# This job targets `runs-on: [self-hosted, mobile-devices]`. Until a runner with
+# that label registers, the job is INERT — dispatching it queues a run that no
+# runner can pick up, so nothing executes and nothing is charged.
+#
+# To make it live, on the machine your phones/tablets plug into:
+#   1. GitHub repo -> Settings -> Actions -> Runners -> New self-hosted runner.
+#   2. Follow the registration steps for that host's OS.
+#   3. When the installer asks for labels (or afterward via
+#      `./config.sh --labels mobile-devices`), add the label: mobile-devices
+#   4. Ensure the runner host has: adb on PATH (or RELAY_ADB / the Android SDK
+#      platform-tools under ANDROID_HOME/ANDROID_SDK_ROOT), node, python 3.11,
+#      and at least one device in `adb devices` showing state `device`
+#      (USB debugging authorized). Obsidian must already be installed on the
+#      device with the target vault registered — this workflow resets vault
+#      contents in place, it never installs the app.
+#
+# TODO (runner host): add a device claim registry so two dispatched jobs cannot
+# grab the same phone at once (mirror the desktop slot-claim lock, keyed by
+# serial). Until then, run device dispatches serially or pin distinct --serial
+# values per concurrent job.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Product ref to test (e.g. origin/main, a branch, or a SHA)'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref providing the device slot runner and plans'
+        required: false
+        default: 'origin/main'
+      user:
+        description: 'Staging test user (maps to vault + auth account + local CDP port)'
+        required: false
+        default: 'erik'
+      serial:
+        description: 'Device serial to target (optional; defaults to the only attached device)'
+        required: false
+        default: ''
+  # Device workflows are dispatch-or-schedule only, never per-push: the fleet is
+  # small and stateful. Uncomment to add a cadence once the lane is proven.
+  # schedule:
+  #   - cron: '0 7 * * 1'   # Mondays 07:00 UTC
+
+concurrency:
+  group: e2e-device-smoke
+  cancel-in-progress: false
+
+jobs:
+  device-smoke:
+    name: device smoke
+    runs-on: [self-hosted, mobile-devices]
+    timeout-minutes: 45
+    env:
+      # The scripted plans print Unicode status glyphs; force UTF-8 stdout so a
+      # non-UTF-8 host locale does not die encoding them.
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+      # An empty serial input resolves to None inside the device runner, which
+      # then targets the only attached device.
+      ANDROID_SERIAL: ${{ github.event.inputs.serial }}
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref || 'origin/main' }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          test -f main.js && test -f manifest.json && test -f styles.css
+          echo "Built plugin $(node -e 'console.log(require("./manifest.json").version)')"
+
+      - name: Clone relay-harness
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install python and playwright deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # obsidian_ctl.py (imported by every scripted plan) needs tree-sitter
+          # at import time; websockets drives the CDP responsiveness probe;
+          # matplotlib backs the optional metrics plots; click powers the CLIs.
+          python -m pip install click websockets tree-sitter tree-sitter-javascript matplotlib
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Resolve slot user and local CDP port
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          SLOT_USER="${{ github.event.inputs.user || 'erik' }}"
+          PORT=$(python -c "import sys; sys.path.insert(0, '.claude/scripts'); import obsidian_slot as s; print(s.slot_port('$SLOT_USER'))")
+          echo "SLOT_USER=$SLOT_USER" >> "$GITHUB_ENV"
+          echo "SLOT_PORT=$PORT" >> "$GITHUB_ENV"
+          echo "Slot user $SLOT_USER -> local CDP port $PORT"
+          echo "Attached devices:"
+          "${RELAY_ADB:-adb}" devices || true
+
+      - name: Provision device slot
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_device_slot.py device provision \
+            --user "$SLOT_USER" \
+            --plugin-dir "${{ github.workspace }}"
+
+      - name: Start device slot (bridge + wait for CDP)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_device_slot.py device start \
+            --user "$SLOT_USER" --wait-timeout 90
+
+      - name: Wait for ready and inject auth (local CDP port)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          node utils/wait-for-ready.mjs "$SLOT_PORT"
+          node utils/inject-auth.mjs "$SLOT_USER" "$SLOT_PORT"
+
+      - name: Device status (responsiveness probe)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness"
+          python .claude/scripts/obsidian_device_slot.py device status \
+            --user "$SLOT_USER" --probe-timeout 15
+
+      - name: Run scripted single-slot plan (tp000)
+        shell: bash
+        env:
+          RELAY_CDP_ENDPOINTS: http://127.0.0.1:${{ env.SLOT_PORT }}
+          # No TSDB side-car on the device runner; skip the per-run metrics
+          # health wait so the plan's own pass/fail decides the step.
+          RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
+        run: |
+          cd "$HOME/relay-harness"
+          script="$(node -e '
+            const m = require("./test-plans/scripts/manifest.json");
+            const t = m.tests.find(t => t.id === "tp000");
+            if (!t) { console.error("tp000 missing from manifest"); process.exit(3); }
+            if (Number(t.slots || 1) !== 1) { console.error("tp000 is not single-slot"); process.exit(4); }
+            process.stdout.write(t.script);
+          ')"
+          RUN_DIR="$HOME/device-runs/tp000"
+          mkdir -p "$RUN_DIR"
+          echo "=== tp000 on port $SLOT_PORT ==="
+          python "test-plans/scripts/$script" \
+            --vault "$SLOT_USER" --run-dir "$RUN_DIR" --no-verify-build > "$RUN_DIR/plan.log" 2>&1
+
+      - name: UI-driven smoke (CDP over the bridge)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          # The UI-driven strand runs over the same local CDP port as the
+          # scripted plan — CDP touch/click events are real taps in the app's
+          # WebView, so a desktop-style CDP driver exercises the mobile UI.
+          #
+          # NOTE: playwright/tests/test-android-quick.mjs is the Android-native
+          # variant, but it drives through Appium (lib/connect-android.mjs). To
+          # fold it into this bridge-only lane it must be adapted to CDP: swap
+          # connectAndroid() for the desktop connect() against the bridged port
+          # (connect(SLOT_PORT, { platform: 'desktop' })) so it reuses the
+          # forwarded socket instead of an Appium/UiAutomator2 session. Until
+          # that adaptation lands, drive the CDP-native single-slot UI strand:
+          node level2-test.mjs "$SLOT_PORT" --tests=test-basic-open-close > "$HOME/node-run.log" 2>&1
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          {
+            cd "$HOME/relay-harness" || exit 0
+            echo "=== device status ==="
+            python .claude/scripts/obsidian_device_slot.py device status \
+              --user "$SLOT_USER" --json || true
+            echo "=== adb forward --list ==="
+            "${RELAY_ADB:-adb}" forward --list || true
+            echo "=== logcat (obsidian/chromium/crashes) ==="
+            "${RELAY_ADB:-adb}" logcat -d -t 400 2>/dev/null \
+              | grep -iE 'obsidian|chromium|AndroidRuntime|FATAL|ANR' | tail -n 150 || true
+          } > "$HOME/diagnostics.log" 2>&1
+      - name: Stop device slot (tear down bridge)
+        if: always()
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness" || exit 0
+          python .claude/scripts/obsidian_device_slot.py device stop \
+            --user "$SLOT_USER" || true
