@@ -220,23 +220,60 @@ jobs:
           # ffmpeg, Obsidian), leaving a clean image with no slot/vault/auth state.
           run_ps "powershell -ExecutionPolicy Bypass -File C:\\relay-e2e-testing\\windows-setup.ps1"
 
-      - name: Stop VM and create image
+      - name: Generalize with GCESysprep and create image
         shell: bash
         run: |
           IMG="${{ github.event.inputs.image_name }}"
           if [ -z "$IMG" ]; then IMG="relay-e2e-windows-$(date +%Y%m%d)"; fi
           echo "IMAGE_NAME=$IMG" >> "$GITHUB_ENV"
           echo "Target image: $IMG"
-          gcloud compute instances stop "$VM_NAME" \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet
-          # A plain image (no GCESysprep) is intentional: these are disposable
-          # single-use test VMs, so generalization is unnecessary.
+
+          KEY="$HOME/.ssh/win-bake"
+          SSHFLAGS=(--zone="$VM_ZONE" --project="$GCP_PROJECT"
+                    --tunnel-through-iap --ssh-key-file="$KEY"
+                    --ssh-flag="-o StrictHostKeyChecking=no"
+                    --ssh-flag="-o UserKnownHostsFile=/dev/null"
+                    --ssh-flag="-o ConnectTimeout=15")
+          run_ps() { gcloud compute ssh "relay@$VM_NAME" --quiet "${SSHFLAGS[@]}" --command="$1"; }
+
+          # Generalize the disk before imaging. A VM booted from a NON-generalized
+          # image does not complete first-boot specialization, so its metadata
+          # windows-startup-script-ps1 never runs — leaving OpenSSH, the firewall
+          # rule, and the per-run authorized key unestablished (the consumer VM is
+          # then unreachable over SSH). GCESysprep generalizes the image so the
+          # consumer's first boot re-runs specialize + the guest-agent startup
+          # script, which is how the mixed-platform slot-VM lane authorizes its
+          # own ephemeral key.
+          SYSPREP='C:\Program Files\Google\Compute Engine\sysprep\gcesysprep.bat'
+          run_ps "if (-not (Test-Path '$SYSPREP')) { throw 'gcesysprep.bat not found' }; 'gcesysprep present'"
+
+          # GCESysprep powers the VM off itself, dropping this SSH session; tolerate
+          # the drop, then wait for the instance to reach TERMINATED before imaging.
+          echo "Running GCESysprep (the VM powers itself off) ..."
+          timeout 240 gcloud compute ssh "relay@$VM_NAME" --quiet "${SSHFLAGS[@]}" \
+            --command="& '$SYSPREP'" || echo "sysprep SSH session ended (expected on shutdown)"
+
+          echo "Waiting for the VM to reach TERMINATED ..."
+          ok=0
+          for i in $(seq 1 40); do
+            ST=$(gcloud compute instances describe "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --format='value(status)' 2>/dev/null || echo "")
+            echo "  status: ${ST:-<none>} ($i/40)"
+            if [ "$ST" = "TERMINATED" ]; then ok=1; break; fi
+            sleep 15
+          done
+          if [ "$ok" != 1 ]; then
+            echo "VM did not reach TERMINATED after sysprep; forcing a stop"
+            gcloud compute instances stop "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet
+          fi
+
           gcloud compute images create "$IMG" \
             --project="$GCP_PROJECT" \
             --source-disk="$VM_NAME" \
             --source-disk-zone="$VM_ZONE" \
             --family="$IMAGE_FAMILY"
-          echo "Created image $IMG in family $IMAGE_FAMILY"
+          echo "Created generalized image $IMG in family $IMAGE_FAMILY"
 
       - name: Verify image is READY
         shell: bash
