@@ -88,6 +88,7 @@ import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { generateHash } from "./hashing";
+import { readNoteText } from "./diskText";
 import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
 import type { RemoteSharedFolder } from "./Relay";
@@ -1485,13 +1486,11 @@ export default class Live extends Plugin {
 						tfile instanceof TFile
 					) {
 						try {
-							const contents = await this.app.vault.read(tfile);
-							const encoder = new TextEncoder();
-							const hash = await generateHash(encoder.encode(contents).buffer);
+							const { contents, hash, mtime } = await readNoteText(this.app.vault, tfile);
 							file.hsm.send({
 								type: 'DISK_CHANGED',
 								contents,
-								mtime: tfile.stat.mtime,
+								mtime,
 								hash,
 							});
 						} catch (e) {
