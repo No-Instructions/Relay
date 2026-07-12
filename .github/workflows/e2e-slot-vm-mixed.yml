@@ -246,7 +246,13 @@ jobs:
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/harness-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_gh"
           if [ ! -d ~/relay-harness ]; then git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness; fi
           cd ~/relay-harness; git fetch origin --prune; git checkout -- . || true; git clean -fd || true
-          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null || { git fetch origin "$HARNESS_REF"; git checkout --detach "$HARNESS_REF"; }
+          # A bare SHA is not a fetchable ref (GitHub rejects `fetch origin <sha>`),
+          # but the full clone above already has it if it is reachable from a
+          # branch (e.g. the current origin/main tip). Try the direct checkout
+          # before falling back to a fetch, so a pinned harness SHA works.
+          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
+            || git checkout --detach "$HARNESS_REF" 2>/dev/null \
+            || { git fetch origin "$HARNESS_REF"; git checkout --detach "$HARNESS_REF"; }
           echo "harness: $(git rev-parse HEAD)"
           export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
           if [ ! -f "$OBSIDIAN_PATH" ]; then
@@ -260,12 +266,7 @@ jobs:
           SLOT_PY="$HOME/.slot-venv/bin/python"
           uv pip install --python "$SLOT_PY" click websockets
           cd ~/relay-harness
-          for pl in "obsidian-kanban=mgmeyers/obsidian-kanban/releases/download/2.0.51" "obsidian-tsdb=dtkav/obsidian-tsdb/releases/download/1.0.12"; do
-            id="${pl%%=*}"; base="https://github.com/${pl#*=}"; mkdir -p ~/"$id"-bundle
-            for f in main.js manifest.json styles.css; do wget -q -O ~/"$id"-bundle/"$f" "$base/$f" || true; done
-          done
-          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision --user "$USER_NAME" --plugin-dir ~/relay-bundle \
-            --extra-plugin-dir ~/obsidian-kanban-bundle --extra-plugin-dir ~/obsidian-tsdb-bundle
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision --user "$USER_NAME" --plugin-dir ~/relay-bundle
           OBSIDIAN_PATH="$OBSIDIAN_PATH" "$SLOT_PY" .claude/scripts/obsidian_slot.py slot start --user "$USER_NAME" --wait-timeout 150
           "$SLOT_PY" .claude/scripts/obsidian_slot.py slot status --user "$USER_NAME" --json
           cd ~/relay-harness/playwright
@@ -337,7 +338,9 @@ jobs:
           if (-not (Test-Path C:\relay-harness)) { git clone git@github.com:No-Instructions/relay-harness.git C:\relay-harness }
           Set-Location C:\relay-harness; git fetch origin --prune | Out-Null
           $hr = $HarnessRef -replace '^origin/',''
-          git checkout --detach "origin/$hr" 2>$null; if ($LASTEXITCODE -ne 0) { git fetch origin $HarnessRef; git checkout --detach $HarnessRef }
+          git checkout --detach "origin/$hr" 2>$null
+          if ($LASTEXITCODE -ne 0) { git checkout --detach $HarnessRef 2>$null }
+          if ($LASTEXITCODE -ne 0) { git fetch origin $HarnessRef; git checkout --detach $HarnessRef }
           Log ("harness: " + (git rev-parse HEAD))
 
           & $py -m pip install --upgrade pip | Out-Null
@@ -349,11 +352,7 @@ jobs:
           $env:OBSIDIAN_PATH = $obs; Log ("obsidian: " + $obs)
 
           Set-Location C:\relay-harness
-          foreach ($pl in @(@{id="obsidian-kanban";base="https://github.com/mgmeyers/obsidian-kanban/releases/download/2.0.51"}, @{id="obsidian-tsdb";base="https://github.com/dtkav/obsidian-tsdb/releases/download/1.0.12"})) {
-            $dir = "C:\$($pl.id)-bundle"; New-Item -ItemType Directory -Path $dir -Force | Out-Null
-            foreach ($f in @("main.js","manifest.json","styles.css")) { try { Invoke-WebRequest -UseBasicParsing -Uri "$($pl.base)/$f" -OutFile "$dir\$f" } catch { Log "$($pl.id) $f fetch: $_" } }
-          }
-          & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin --extra-plugin-dir C:\obsidian-kanban-bundle --extra-plugin-dir C:\obsidian-tsdb-bundle
+          & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin
           if ($LASTEXITCODE -ne 0) { throw "slot provision failed (exit $LASTEXITCODE)" }
           & $py .claude\scripts\obsidian_slot.py slot start --user $SlotUser --wait-timeout 180
           if ($LASTEXITCODE -ne 0) { throw "slot start failed (exit $LASTEXITCODE)" }
