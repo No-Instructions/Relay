@@ -3,6 +3,7 @@ import { uuidv4 } from "lib0/random";
 import {
 	FileManager,
 	type MetadataCache,
+	Notice,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -190,6 +191,10 @@ export const FOLDER_SYNC_PERSIST_WINDOW_MS = 250;
 // fast enough that a joiner racing the sharer's content staging converges
 // within a couple of ticks.
 export const DOWNLOAD_SWEEP_INTERVAL_MS = 10_000;
+/** Window over which per-file reader-edit-overwrite notices coalesce into one. */
+export const READER_EDIT_OVERWRITE_COALESCE_MS = 300;
+/** How long the coalesced reader-edit-overwrite notice stays on screen. */
+export const READER_EDIT_OVERWRITE_NOTICE_MS = 12_000;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
@@ -261,6 +266,9 @@ export class SharedFolder extends HasProvider {
 	private _pendingFolderSyncSnapshot: FolderSyncSnapshot | null = null;
 	private _folderSyncPersistTimer: number | null = null;
 	private _downloadSweepTimer: number | null = null;
+	/** Paths of Reader edits a repair sweep overwrote, pending one coalesced notice. */
+	private _readerEditOverwrites: string[] = [];
+	private _readerEditOverwriteTimer: number | null = null;
 	/**
 	 * Vault-facing folder doc under the folder doc split (flag-on). Inherits
 	 * the folder's persistence key, so local history and native tombstones
@@ -700,6 +708,8 @@ export class SharedFolder extends HasProvider {
 					await this.handleIdleSyncToRemote(guid, effect.update);
 				} else if (effect.type === "WRITE_DISK") {
 					await this.handleIdleWriteDisk(guid, effect.contents);
+				} else if (effect.type === "READER_EDIT_OVERWRITTEN") {
+					this.recordReaderEditOverwrite(guid, effect.path);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -2743,6 +2753,51 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	/**
+	 * Buffer a read-only repair that overwrote a differing on-disk Reader edit,
+	 * coalescing a burst (e.g. a git pull the reader's client catches up on)
+	 * into one summary notice instead of one per file.
+	 */
+	private recordReaderEditOverwrite(guid: string, path: string): void {
+		if (this.destroyed) return;
+		const file = this.files.get(guid);
+		const fullPath =
+			file && isDocument(file) ? join(this.path, file.path) : path || guid;
+		if (!this._readerEditOverwrites.includes(fullPath)) {
+			this._readerEditOverwrites.push(fullPath);
+		}
+		if (this._readerEditOverwriteTimer !== null) return;
+		this._readerEditOverwriteTimer = this.timeProvider.setTimeout(() => {
+			this._readerEditOverwriteTimer = null;
+			this.flushReaderEditOverwrites();
+		}, READER_EDIT_OVERWRITE_COALESCE_MS);
+	}
+
+	private flushReaderEditOverwrites(): void {
+		if (this._readerEditOverwriteTimer !== null) {
+			this.timeProvider.clearTimeout(this._readerEditOverwriteTimer);
+			this._readerEditOverwriteTimer = null;
+		}
+		const paths = this._readerEditOverwrites;
+		this._readerEditOverwrites = [];
+		if (paths.length === 0) return;
+
+		const shown = paths.slice(0, 3);
+		const remainder = paths.length - shown.length;
+		const fileList =
+			shown.join(", ") + (remainder > 0 ? `, +${remainder} more` : "");
+		const lead =
+			paths.length === 1
+				? `A Reader edit to ${shown[0]} was replaced by the shared version.`
+				: `Reader edits to ${paths.length} files were replaced by the shared version: ${fileList}.`;
+		const message =
+			`${lead} Your edit was not shared and is not kept on disk, but it is ` +
+			`recoverable: open Obsidian's File Recovery (core plugin) for a snapshot, ` +
+			`or use git if this vault is version-controlled.`;
+		new Notice(message, READER_EDIT_OVERWRITE_NOTICE_MS);
+		this.log(`[read-only] reader edits overwritten: ${paths.join(", ")}`);
+	}
+
 	private executeEnqueueUpload(vpath: string): void {
 		try {
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
@@ -4184,6 +4239,11 @@ export class SharedFolder extends HasProvider {
 			this.timeProvider.clearTimeout(this._downloadSweepTimer);
 			this._downloadSweepTimer = null;
 		}
+		if (this._readerEditOverwriteTimer !== null) {
+			this.timeProvider.clearTimeout(this._readerEditOverwriteTimer);
+			this._readerEditOverwriteTimer = null;
+		}
+		this._readerEditOverwrites = [];
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});

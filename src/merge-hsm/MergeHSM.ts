@@ -179,6 +179,20 @@ class SimpleObservable<T> implements IObservable<T> {
 // MergeHSM Class
 // =============================================================================
 
+/**
+ * Stable, cheap signature of overwritten text for the READER_EDIT_OVERWRITTEN
+ * log stream. Not cryptographic — it only needs to identify which content a
+ * repair discarded, and it must be synchronous because effects are emitted
+ * inside state-machine actions.
+ */
+function readerEditContentSignature(text: string): string {
+	let h = 5381;
+	for (let i = 0; i < text.length; i++) {
+		h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+	}
+	return `${(h >>> 0).toString(16)}:${text.length}`;
+}
+
 export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Current state path
 	private _statePath: StatePath = "unloaded";
@@ -2591,6 +2605,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 				// Write merged content to disk
 				if (result.mergedContent !== undefined && result.needsDiskWrite !== false) {
+					// Read mode: this repair replaces the closed file's on-disk
+					// content with the shared version. When the drifted disk text
+					// differs from what we are about to write, an external Reader
+					// edit is being discarded — surface it before the overwrite so
+					// the pre-overwrite text stays recoverable.
+					this.raiseReaderEditOverwrittenNotice(
+						this.pendingDiskContents,
+						result.mergedContent,
+					);
 					this.emitEffect({ type: "WRITE_DISK", guid: this._guid, contents: result.mergedContent, mtime: result.newLCA?.meta?.mtime });
 				}
 
@@ -3409,6 +3432,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (shared === null) return;
 				if (typeof e.viewId === "string") {
 					if (e.docText !== shared) {
+						this.raiseReaderEditOverwrittenNotice(e.docText, shared);
 						this.emitEffect({
 							type: "SET_CM6",
 							targetView: e.viewId,
@@ -3416,6 +3440,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						});
 					}
 				} else if (typeof e.docText === "string" && e.docText !== shared) {
+					this.raiseReaderEditOverwrittenNotice(e.docText, shared);
 					const changes = this.computeDiffChanges(e.docText, shared);
 					if (changes.length > 0) {
 						this.emitEffect({ type: "DISPATCH_CM6", changes });
@@ -5084,6 +5109,43 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
+	 * Surface a Reader edit that a repair is about to discard. Emits a
+	 * READER_EDIT_OVERWRITTEN status effect (the consumer coalesces per repair
+	 * sweep and renders a transient, dismissible notice with a recovery
+	 * pointer) plus a DIAGNOSTIC for the log stream. No-ops when not in read
+	 * mode, when there is no overwritten text, or when the overwritten text
+	 * already equals the shared version — nothing is lost in those cases.
+	 */
+	private raiseReaderEditOverwrittenNotice(
+		overwrittenText: string | null | undefined,
+		sharedText: string | null,
+	): void {
+		if (!this.isReadMode()) return;
+		if (
+			overwrittenText == null ||
+			sharedText == null ||
+			overwrittenText === sharedText
+		) {
+			return;
+		}
+		const contentHash = readerEditContentSignature(overwrittenText);
+		this.emitEffect({
+			type: "READER_EDIT_OVERWRITTEN",
+			guid: this._guid,
+			path: this.path,
+			contentHash,
+		});
+		this.emitEffect({
+			type: "DIAGNOSTIC",
+			code: "READER_EDIT_OVERWRITTEN",
+			message:
+				`read repair overwrote a differing on-disk Reader edit | ` +
+				`guid=${this._guid} path=${this.path}`,
+			detail: { path: this.path, contentHash },
+		});
+	}
+
+	/**
 	 * Demotion bookkeeping, shared by the tracking/merging/conflict handlers.
 	 * Drops write intent (nothing drains — emitting a write the user is no
 	 * longer authorized to make is the failure mode) and preserves anything
@@ -5097,8 +5159,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// In write mode local ops were applied to the in-memory remoteDoc as
 		// they happened; whatever was never broadcast is unrecoverable from
 		// the doc itself, so the doc is untrusted until the provider swaps in
-		// a fresh one.
-		this._readRemoteDocFresh = false;
+		// a fresh one — UNLESS this demotion is cleanly converged (online,
+		// provider-synced, no fork, local == remote). There every local op was
+		// broadcast and the remoteDoc already reflects server truth, so it
+		// stays fresh and auditReadModeFork / read-repair run without waiting
+		// for a provider doc swap. (demotionNeedsFork() is false in exactly
+		// that case.)
+		this._readRemoteDocFresh =
+			!!this.localDoc && !this._fork && !this.demotionNeedsFork();
 		if (!this._fork && this.localDoc && this.demotionNeedsFork()) {
 			this.preserveDemotionFork(false);
 		}

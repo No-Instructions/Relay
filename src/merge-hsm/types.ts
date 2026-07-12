@@ -731,6 +731,20 @@ export interface DiagnosticEffect {
 	detail?: Record<string, unknown>;
 }
 
+/**
+ * A read-only repair replaced on-disk content that differed from the shared
+ * document, discarding a Reader's local edit. Advisory only — the shared
+ * document is authoritative for a Reader, so no action is required; the
+ * surface names the file and points to recovery (Obsidian File Recovery, git).
+ * `contentHash` is a signature of the overwritten text for the log stream.
+ */
+export interface ReaderEditOverwrittenEffect {
+	type: "READER_EDIT_OVERWRITTEN";
+	guid: string;
+	path: string;
+	contentHash: string;
+}
+
 export type MergeEffect =
 	| DispatchCM6Effect
 	| SetCM6Effect
@@ -740,7 +754,8 @@ export type MergeEffect =
 	| StatusChangedEffect
 	| RequestProviderSyncEffect
 	| RequestHibernateEffect
-	| DiagnosticEffect;
+	| DiagnosticEffect
+	| ReaderEditOverwrittenEffect;
 
 // =============================================================================
 // Persistence Types

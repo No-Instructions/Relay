@@ -250,6 +250,7 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
     case 'DISPATCH_CM6':
     case 'SET_CM6':
     case 'WRITE_DISK':
+    case 'READER_EDIT_OVERWRITTEN':
       return effect as unknown as SerializableEffect;
 
     default:
