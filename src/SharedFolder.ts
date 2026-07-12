@@ -35,6 +35,7 @@ import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
 import type { CapturedOp } from "./merge-hsm/undo";
+import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
@@ -1250,17 +1251,72 @@ export class SharedFolder extends HasProvider {
 	private connectForkedIdleDocument(file: Document): void {
 		const hsm = file.hsm;
 		if (!hsm) return;
-		// Re-engage the provider for idle documents whose reconciliation needs a
-		// live remote: forked documents awaiting fork-reconcile, and documents
-		// wedged in idle.error with a retryable stored error — the reconnect
-		// delivers the remote update that re-arms them.
-		const forkedIdle = hsm.state.fork !== null && hsm.matches("idle.localAhead");
-		const retryableError = hsm.matches("idle.error") && hsm.state.errorRetryable === true;
-		if (!forkedIdle && !retryableError) return;
-		if (file.hasProviderIntegration() && file.intent === "connected") return;
 		if (!this.shouldConnect) return;
 
+		// A fork awaiting reconciliation in idle.localAhead re-arms on the
+		// connectivity level, redelivery-first — see recoverForkedIdleDocument.
+		const forkedIdle =
+			hsm.state.fork !== null && hsm.matches("idle.localAhead");
+		if (forkedIdle) {
+			this.recoverForkedIdleDocument(file, hsm);
+			return;
+		}
+
+		// A note wedged in idle.error with a retryable stored error re-arms when
+		// the reconnect delivers the remote update; skip an integration that is
+		// already connected and syncing.
+		const retryableError =
+			hsm.matches("idle.error") && hsm.state.errorRetryable === true;
+		if (!retryableError) return;
+		if (file.hasProviderIntegration() && file.intent === "connected") return;
 		file.connectForForkReconcile().catch(() => {});
+	}
+
+	/**
+	 * Re-drive a document holding an unreconciled fork in idle.localAhead toward
+	 * reconciliation on the connectivity level rather than a single
+	 * PROVIDER_SYNCED edge.
+	 *
+	 * Redelivery first: when the document's own provider has completed a sync on
+	 * the current connection its remoteDoc reflects server truth, so a fork that
+	 * never observed the PROVIDER_SYNCED edge is reconciled by redelivering that
+	 * edge to its machine — a synthetic sync-completion that restarts
+	 * fork-reconcile with no reconnect and no rebuild, and so cannot perturb a
+	 * transfer in flight.
+	 *
+	 * Any recovery that instead touches the transport — a fresh connect for a
+	 * document with no live provider, or a remoteDoc rebuild for a stranded
+	 * integration that reports connected but never synced its subdoc — waits for
+	 * the transport to settle. Forcing a fresh sync while the transport still
+	 * flaps drives the in-flight reconcile into a transport error and strands it
+	 * in idle.error, the very failure this recovery exists to heal. The rebuild
+	 * is the last resort, reserved for a document that stays
+	 * connected-but-desynced after the transport is stable.
+	 */
+	private recoverForkedIdleDocument(file: Document, hsm: MergeHSM): void {
+		if (file.connected && file.synced) {
+			hsm.send({ type: "PROVIDER_SYNCED" });
+			return;
+		}
+		if (!this.connectionStable) return;
+		if (!file.hasProviderIntegration() || !file.connected) {
+			file.connectForForkReconcile().catch(() => {});
+			return;
+		}
+		file.connectForForkReconcile({ rebuildRemoteDoc: true }).catch(() => {});
+	}
+
+	private recoverForkedIdleDocuments(): void {
+		if (!this.shouldConnect) return;
+		for (const file of this.files.values()) {
+			if (!isDocument(file)) continue;
+			const hsm = file.hsm;
+			if (!hsm) continue;
+			if (hsm.state.fork === null || !hsm.matches("idle.localAhead")) {
+				continue;
+			}
+			this.recoverForkedIdleDocument(file, hsm);
+		}
 	}
 
 	private shouldReadDiskForPoll(
@@ -1816,6 +1872,12 @@ export class SharedFolder extends HasProvider {
 		// ladder reruns only after a disconnect).
 		this.folderHSM?.send({ type: "CONNECTED" });
 		this.folderHSM?.send({ type: "PROVIDER_SYNCED" });
+		// The folder provider completing a sync is the connectivity-level signal
+		// that the transport has returned. It fires on the provider's own
+		// reconnect-backoff self-heal, which never routes through connect(), so a
+		// sweep triggered only by connect misses a self-heal. Re-drive every
+		// document still holding an unreconciled fork toward reconciliation.
+		this.recoverForkedIdleDocuments();
 		if (this.authoritative || this._persistence.hasServerSync) {
 			return;
 		}
