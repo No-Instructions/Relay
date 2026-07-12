@@ -62,6 +62,9 @@
 	);
 
 	export let sharedFolders!: SharedFolders;
+	const pendingFolderShares = new Map<string, Promise<SharedFolder>>();
+	const pendingFolderGuids = new Map<string, string>();
+	const pendingRemoteFolders = new Map<string, RemoteSharedFolder>();
 
 	const hasDownloadedFolders = derived(
 		[remoteFolders, sharedFolders, plugin.relayManager.folderRoles],
@@ -432,54 +435,74 @@
 		userIds?: string[],
 	): Promise<SharedFolder> {
 		const normalizedPath = normalizePath(folderPath);
-		let folder = sharedFolders.find((folder) => folder.path == normalizedPath);
+		const pending = pendingFolderShares.get(normalizedPath);
+		if (pending) return pending;
 
-		if (plugin.vault.getFolderByPath(normalizedPath) === null) {
-			await plugin.vault.createFolder(normalizedPath);
-		}
-
-		const remoteName =
-			folderName || normalizedPath.split("/").pop() || normalizedPath;
-		let remote: RemoteSharedFolder;
-
-		// If folder doesn't exist as shared folder yet, create it
-		if (!folder) {
-			remote = await plugin.relayManager.createRemoteFolder(
-				uuidv4(),
-				remoteName,
-				relay,
-				isPrivate ?? false,
+		const operation = (async () => {
+			let folder = sharedFolders.find(
+				(folder) => folder.path == normalizedPath,
 			);
-			folder = sharedFolders.init(normalizedPath, remote);
-		} else {
-			remote = await plugin.relayManager.createRemoteFolder(
-				folder.guid,
-				remoteName,
-				relay,
-				isPrivate ?? false,
-			);
-			folder.remote = remote;
-		}
 
-		// Add users to the private folder if it's private
-		if (isPrivate && userIds && userIds.length > 0) {
-			for (const userId of userIds) {
-				await plugin.relayManager.addFolderRole(remote, userId, "Member");
+			if (plugin.vault.getFolderByPath(normalizedPath) === null) {
+				await plugin.vault.createFolder(normalizedPath);
+			}
+
+			const remoteName =
+				folderName || normalizedPath.split("/").pop() || normalizedPath;
+			const folderGuid =
+				folder?.guid ?? pendingFolderGuids.get(normalizedPath) ?? uuidv4();
+			pendingFolderGuids.set(normalizedPath, folderGuid);
+
+			let remote =
+				folder?.remote ??
+				pendingRemoteFolders.get(normalizedPath) ??
+				relay.folders.find((remote) => remote.guid === folderGuid);
+			if (!remote) {
+				remote = await plugin.relayManager.createRemoteFolder(
+					folderGuid,
+					remoteName,
+					relay,
+					isPrivate ?? false,
+				);
+				pendingRemoteFolders.set(normalizedPath, remote);
+			}
+			if (!folder) {
+				folder = sharedFolders.init(normalizedPath, remote);
+			} else {
+				folder.remote = remote;
+			}
+
+			if (isPrivate && userIds && userIds.length > 0) {
+				await Promise.all(
+					userIds.map((userId) =>
+						plugin.relayManager.addFolderRole(remote, userId, "Member"),
+					),
+				);
+			}
+
+			folder.connect();
+			plugin.sharedFolders.notifyListeners();
+			pendingFolderGuids.delete(normalizedPath);
+			pendingRemoteFolders.delete(normalizedPath);
+
+			if (userIds && userIds.length > 0) {
+				setTimeout(() => {
+					dispatch("manageRemoteFolder", {
+						remoteFolder: remote,
+					});
+				}, 100);
+			}
+			return folder;
+		})();
+
+		pendingFolderShares.set(normalizedPath, operation);
+		try {
+			return await operation;
+		} finally {
+			if (pendingFolderShares.get(normalizedPath) === operation) {
+				pendingFolderShares.delete(normalizedPath);
 			}
 		}
-
-		folder.connect();
-		plugin.sharedFolders.notifyListeners();
-
-		if (userIds && userIds.length > 0) {
-			// Navigate to the remote folder after successful creation
-			setTimeout(() => {
-				dispatch("manageRemoteFolder", {
-					remoteFolder: remote,
-				});
-			}, 100);
-		}
-		return folder;
 	}
 
 	const shareFolderModal = new ShareFolderModal(
