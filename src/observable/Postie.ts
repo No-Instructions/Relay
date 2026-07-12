@@ -21,10 +21,14 @@
  * - Recipient callbacks must not run synchronously up a caller's `send` stack.
  *   Overdue flushes are scheduled on a microtask; deadline callbacks already run
  *   on a clean stack.
+ * - A large or cyclic cascade is delivered in time-budgeted chunks. When a chunk
+ *   hits its budget it continues on a macrotask (a MessageChannel message), not
+ *   a microtask or timer, so the event loop services timers, paint, and input
+ *   between chunks while the queue is still draining.
  */
 
 import { DefaultTimeProvider, type TimeProvider } from "../TimeProvider";
-import { RelayInstances, curryLog, metrics } from "../debug";
+import { RelayInstances, curryLog, isDebugging, metrics } from "../debug";
 import type { IObservable } from "./Observable";
 
 // Hoisted so `deliver()` doesn't allocate a logger each pass. curryLog
@@ -53,10 +57,20 @@ export class PostOffice {
 	private deadlineTimer: number | null = null;
 	private windowStartedAt: number | null = null;
 	private flushScheduled: boolean = false;
+	// Persistent MessageChannel used to continue a chunked cascade on a
+	// macrotask. Unlike a microtask, a macrotask returns to the event loop
+	// between chunks, so timers, paint, and input are serviced while a large
+	// cascade is still draining. Created lazily on the first continuation.
+	private continuationChannel: MessageChannel | null = null;
 	private currentTransactionId: number = 0;
 	private isInTransaction: boolean = false;
 
 	private static readonly MAX_DELIVERIES_PER_FLUSH = 10_000;
+	// A synchronous delivery chunk yields once it has run for this many wall-clock
+	// milliseconds, even if the count cap is not reached. This bounds how long one
+	// chunk can hold the main thread before the macrotask continuation lets the
+	// event loop run; the count cap remains a backstop.
+	private static readonly MAX_FLUSH_MS = 8;
 	// Diagnostic ring buffers: bounded so a long, busy session can't grow them
 	// without limit (each entry pins its sender observable and recipient closure).
 	private static readonly MAX_MAIL_LOG = 1_000;
@@ -127,14 +141,18 @@ export class PostOffice {
 		recipient: (value: T) => void,
 		immediate: boolean = false,
 	): void {
-		const mail: Mail<T> = {
-			sender,
-			recipient,
-			transactionId: this.currentTransactionId,
-			timestamp: Date.now(),
-			recipientOrigin: this.getFunctionOrigin(recipient),
-		};
-		this.recordMail(this.allMailLog, mail);
+		// Recording a mail-log entry stringifies the recipient closure
+		// (getFunctionOrigin), so it rides the debug flag like the delivery-side
+		// logging below rather than running on every send.
+		if (isDebugging()) {
+			this.recordMail(this.allMailLog, {
+				sender,
+				recipient,
+				transactionId: this.currentTransactionId,
+				timestamp: Date.now(),
+				recipientOrigin: this.getFunctionOrigin(recipient),
+			});
+		}
 
 		if (!this.mailboxes.has(recipient)) {
 			this.mailboxes.set(recipient, new Set());
@@ -158,13 +176,15 @@ export class PostOffice {
 		recipient: (value: T) => void,
 	): void {
 		recipient(sender);
-		this.recordMail(this.deliveredMailLog, {
-			sender,
-			recipient,
-			transactionId: this.currentTransactionId,
-			timestamp: Date.now(),
-			recipientOrigin: this.getFunctionOrigin(recipient),
-		});
+		if (isDebugging()) {
+			this.recordMail(this.deliveredMailLog, {
+				sender,
+				recipient,
+				transactionId: this.currentTransactionId,
+				timestamp: Date.now(),
+				recipientOrigin: this.getFunctionOrigin(recipient),
+			});
+		}
 	}
 
 	/**
@@ -237,6 +257,42 @@ export class PostOffice {
 		});
 	}
 
+	// The first flush after a notification uses a microtask (scheduleFlush), so
+	// recipients run promptly on a clean stack. A cascade that outgrows one chunk
+	// continues here on a macrotask instead: draining back-to-back on microtasks
+	// would never return to the event loop, starving timers and paint for the
+	// whole cascade. A macrotask yields between chunks, and — unlike a timer — it
+	// is not subject to hidden-window throttling.
+	private scheduleContinuation(): void {
+		if (this.flushScheduled) return;
+		this.flushScheduled = true;
+		this.ensureContinuationChannel();
+		if (this.continuationChannel) {
+			this.continuationChannel.port2.postMessage(0);
+		} else {
+			// No MessageChannel in this runtime (a headless/test host). Fall back
+			// to a microtask: correctness is unchanged, only the between-chunk
+			// yield is lost, which matters solely in a live renderer where
+			// MessageChannel is always present.
+			queueMicrotask(() => {
+				this.flushScheduled = false;
+				this.runDelivery();
+			});
+		}
+	}
+
+	private ensureContinuationChannel(): void {
+		if (this.continuationChannel || typeof MessageChannel === "undefined") {
+			return;
+		}
+		const channel = new MessageChannel();
+		channel.port1.onmessage = () => {
+			this.flushScheduled = false;
+			this.runDelivery();
+		};
+		this.continuationChannel = channel;
+	}
+
 	private runDelivery(): void {
 		// Guard against firing on a torn-down singleton (a queued microtask or
 		// timer can outlive `destroy()`).
@@ -255,12 +311,14 @@ export class PostOffice {
 		} finally {
 			this.isDelivering = false;
 			if (this.hasPendingMail()) {
-				// The per-flush bound was hit (a large or cyclic cascade — an
-				// ordinary re-entrant emit drains in the loop above). Re-poke on a
-				// microtask, never a timer: delivery must stay independent of timer
-				// throttling. The bound keeps each synchronous chunk finite.
+				// A delivery bound was hit — the time budget or the count cap on a
+				// large or cyclic cascade (an ordinary re-entrant emit drains in the
+				// loop above). Continue on a macrotask, never a timer: delivery must
+				// stay independent of timer throttling, and a macrotask returns to
+				// the event loop so timers and paint run between chunks. The bounds
+				// keep each synchronous chunk finite.
 				this.windowStartedAt = this.timeProvider.now();
-				this.scheduleFlush();
+				this.scheduleContinuation();
 			} else {
 				this.windowStartedAt = null;
 			}
@@ -281,21 +339,34 @@ export class PostOffice {
 		// otherwise unsubscribe the recipient and strip its in-flight mail.
 		for (const [recipient, senders] of this.mailboxes) {
 			for (const sender of senders) {
-				if (processed >= PostOffice.MAX_DELIVERIES_PER_FLUSH) {
+				// Yield when the chunk has run its time budget or hit the count cap.
+				// The finally in runDelivery re-pokes on a macrotask so the rest of
+				// the cascade drains after the event loop has had a turn.
+				if (
+					processed >= PostOffice.MAX_DELIVERIES_PER_FLUSH ||
+					performance.now() - t0 > PostOffice.MAX_FLUSH_MS
+				) {
 					metrics.observePostieDelivery((performance.now() - t0) / 1000);
 					return;
 				}
 				try {
 					recipient(sender);
 					metrics.incPostieDeliveries();
-					postieDebug("send", sender.constructor.name, recipient);
-					this.recordMail(this.deliveredMailLog, {
-						sender,
-						recipient,
-						transactionId: this.currentTransactionId,
-						timestamp: Date.now(),
-						recipientOrigin: this.getFunctionOrigin(recipient),
-					});
+					// Per-delivery diagnostics are opt-in behind the debug flag:
+					// building a mail-log entry stringifies the recipient closure
+					// (getFunctionOrigin) on every delivery, which dominates the cost
+					// of a large cascade. The scraped delivery counter above is always
+					// kept; the detail rides the flag, as postieDebug already does.
+					if (isDebugging()) {
+						postieDebug("send", sender.constructor.name, recipient);
+						this.recordMail(this.deliveredMailLog, {
+							sender,
+							recipient,
+							transactionId: this.currentTransactionId,
+							timestamp: Date.now(),
+							recipientOrigin: this.getFunctionOrigin(recipient),
+						});
+					}
 				} catch (cause) {
 					// Always count failures: the metric is scraped and survives with
 					// the debug flag off. Detail goes through curryLog, which
@@ -426,6 +497,15 @@ export class PostOffice {
 			PostOffice.instance.timeProvider.destroy();
 			PostOffice.instance.timeProvider = null as any;
 
+			// Tear down the continuation port so a queued macrotask cannot fire on
+			// the destroyed singleton and the port stops keeping a headless event
+			// loop alive.
+			if (PostOffice.instance.continuationChannel) {
+				PostOffice.instance.continuationChannel.port1.onmessage = null;
+				PostOffice.instance.continuationChannel.port1.close();
+				PostOffice.instance.continuationChannel = null;
+			}
+
 			// Reset flags
 			PostOffice.instance.isDelivering = false;
 			PostOffice.instance.isInTransaction = false;
@@ -450,6 +530,11 @@ export class PostOffice {
 	static _resetForTesting(timeProvider?: TimeProvider): void {
 		if (PostOffice.instance) {
 			PostOffice.instance.timeProvider?.destroy();
+			if (PostOffice.instance.continuationChannel) {
+				PostOffice.instance.continuationChannel.port1.onmessage = null;
+				PostOffice.instance.continuationChannel.port1.close();
+				PostOffice.instance.continuationChannel = null;
+			}
 		}
 		PostOffice._destroyed = false;
 		PostOffice.instance = undefined as any;
