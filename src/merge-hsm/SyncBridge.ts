@@ -551,8 +551,23 @@ export class SyncBridge {
 
 					// Reduce to the single-repair expected text: a normal,
 					// published-safe delete of the surplus duplicate run.
+					//
+					// The reduction targets the whole-document expectedText frozen
+					// at registration, so it only removes the adopted duplicate when
+					// the local text before the adopt was exactly that single repair.
+					// If the local text has diverged beyond the snapshot — an
+					// ordinary user edit typed after registration and before this
+					// echo-match — reducing toward expectedText would delete that
+					// edit and propagate the delete outbound. Guard on it: reduce
+					// only when the pre-adopt local text is the expected repair;
+					// otherwise keep the adopted (benign doubled) run and the user's
+					// content untouched. The surplus dedup is forgone in that rare
+					// interleaved case; no user content is ever deleted.
 					const dupText = localDoc.getText("contents").toString();
-					if (dupText !== match.expectedText) {
+					if (
+						dupText !== match.expectedText &&
+						beforeText === match.expectedText
+					) {
 						const reduction = this.host.computeDiffChanges(
 							dupText,
 							match.expectedText,
