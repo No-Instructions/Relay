@@ -26,6 +26,7 @@ export {
 export type {
 	Disposition,
 	FileOrigin,
+	LocalFileKind,
 	FolderEffect,
 	FolderEvent,
 	FolderHSMConfig,
