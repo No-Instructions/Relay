@@ -1355,12 +1355,12 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					const alreadyShared = folder.notifyVaultCreate(tfile);
 					if (folder.folderHSM) {
 						// Membership classification is the machine's job; the
 						// origin discriminator inside notifyVaultCreate keeps
 						// Obsidian's startup create replay from laundering
 						// into user intent.
-						const alreadyShared = folder.notifyVaultCreate(tfile);
 						if (alreadyShared) {
 							folder.whenReady()
 								.then((folder) => {

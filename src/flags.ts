@@ -15,6 +15,7 @@ export interface FeatureFlags {
 	enableMetadataHealthNotice: boolean;
 	enableFolderHSM: boolean;
 	enableNoteStateInspector: boolean;
+	enableTombstoneDeleteGate: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -157,6 +158,13 @@ export const FeatureFlagSchema: {
 		title: "Note state inspector",
 		description:
 			"Show a sidebar panel with live merge state for the active note: HSM state path, in-flight disk writes, and store consistency checks.",
+	},
+	enableTombstoneDeleteGate: {
+		default: true,
+		category: "danger",
+		title: "Require deletion evidence for local cleanup",
+		description:
+			"Require a deletion tombstone and local ordering evidence before trashing an absent shared file; disable to use legacy absence-based cleanup.",
 	},
 };
 

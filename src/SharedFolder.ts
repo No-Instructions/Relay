@@ -240,6 +240,15 @@ export class SharedFolder extends HasProvider {
 	private unsubscribes: Unsubscriber[] = [];
 	private storageQuota?: number;
 	/**
+	 * Wall-clock time at which this process observed each committed membership
+	 * deletion. Yjs tombstones carry causal order but no wall-clock timestamp, so
+	 * this local evidence is what lets cleanup distinguish older materialized
+	 * bytes from a file created after the deletion reached this client. A vault
+	 * create event clears the path because it is stronger path-survival evidence
+	 * than timestamps preserved by a restore or import.
+	 */
+	private deletionObservedAt: Map<string, number> = new Map();
+	/**
 	 * One-shot suppression tokens for vault-delete echoes of our own trash
 	 * effects, vpath → marked-at. Obsidian dispatches reconcile events
 	 * seconds after the underlying rename resolves, so tokens are consumed
@@ -388,6 +397,7 @@ export class SharedFolder extends HasProvider {
 			this.pendingUpload,
 			this.syncSettingsManager,
 		);
+		this.observeMembershipDeletions();
 		this.syncStore.on(async () => {
 			await this.syncFileTree();
 		});
@@ -2329,6 +2339,8 @@ export class SharedFolder extends HasProvider {
 		// Delete files that are no longer shared
 		const ffiles = this.getSyncFiles();
 		const deletes: Delete[] = [];
+		const tombstoneDeleteGateEnabled =
+			flags().enableTombstoneDeleteGate;
 		const folders = ffiles.filter((file) => file instanceof TFolder);
 		const files = ffiles.filter((file) => file instanceof TFile);
 		const sync = (file: TAbstractFile) => {
@@ -2340,7 +2352,11 @@ export class SharedFolder extends HasProvider {
 			const filePending = this.pendingUpload.has(vpath);
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (fileInFolder && isSyncableFile && !fileInMap && !filePending) {
-				if (synced) {
+				if (
+					synced &&
+					(!tombstoneDeleteGateEnabled ||
+						this.shouldTrashRemotelyDeletedFile(file, vpath))
+				) {
 					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
 					this.markPendingDelete(vpath);
 					const promise = this.vault.adapter.trashLocal(file.path).finally(() => {
@@ -2357,6 +2373,45 @@ export class SharedFolder extends HasProvider {
 		files.forEach(sync);
 		folders.forEach(sync);
 		return deletes;
+	}
+
+	private observeMembershipDeletions(): void {
+		const meta = this.folderDoc.getMap<Meta>("filemeta_v0");
+		const observer = (event: Y.YMapEvent<Meta>) => {
+			event.changes.keys.forEach((change, path) => {
+				if (change.action === "delete") {
+					this.deletionObservedAt.set(path, this.timeProvider.now());
+				} else {
+					this.deletionObservedAt.delete(path);
+				}
+			});
+		};
+		meta.observe(observer);
+		this.unsubscribes.push(() => meta.unobserve(observer));
+	}
+
+	/**
+	 * A tombstone proves that the old membership was deleted, while its observed
+	 * time provides a fallback for deciding whether bytes at an otherwise
+	 * untouched path predate the deletion. Vault create events clear that evidence
+	 * directly; files changed at or after the observation are also kept so their
+	 * create handler can register and upload them. Missing or unordered time
+	 * evidence keeps the file. Folders have no file timestamps in Obsidian and
+	 * retain the tombstone-only behavior.
+	 */
+	private shouldTrashRemotelyDeletedFile(
+		file: TAbstractFile,
+		vpath: string,
+	): boolean {
+		if (!pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath)) {
+			return false;
+		}
+		if (!(file instanceof TFile)) return true;
+
+		const deletedAt = this.deletionObservedAt.get(vpath);
+		if (deletedAt === undefined) return false;
+		const localChangedAt = Math.max(file.stat.ctime, file.stat.mtime);
+		return Number.isFinite(localChangedAt) && localChangedAt < deletedAt;
 	}
 
 	private getDesiredRemotePaths(): Set<string> {
@@ -2405,16 +2460,21 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Route a vault create event into the machine with its origin decided
-	 * by the discriminator: interactive iff the bootstrap scan completed and the
-	 * path was not already known as a local file. Obsidian replays create
-	 * events for every existing file at vault load; those must never
-	 * launder into user intent.
+	 * Record every vault create as evidence that the path should survive cleanup,
+	 * then route it into the machine when enabled. Clearing live deletion evidence
+	 * before async registration keeps mtime-preserving restores from being
+	 * mistaken for the stale bytes a tombstone deleted.
+	 *
+	 * The machine's origin discriminator classifies a create as interactive iff
+	 * the bootstrap scan completed and the path was not already known as a local
+	 * file. Obsidian replays create events for every existing file at vault load;
+	 * those must never launder into user intent.
 	 */
 	public notifyVaultCreate(tfile: TAbstractFile): boolean {
+		const vpath = this.getVirtualPath(tfile.path);
+		this.deletionObservedAt.delete(vpath);
 		const machine = this.folderHSM;
 		if (!machine) return false;
-		const vpath = this.getVirtualPath(tfile.path);
 		if (this.isPendingDelete(vpath)) return false;
 		// Capture shared-ness before the machine runs: its upload effect
 		// place-holds the path, which must not be mistaken for an
