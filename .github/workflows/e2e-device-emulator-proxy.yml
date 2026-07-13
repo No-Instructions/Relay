@@ -130,4 +130,15 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           # dash parses `script`; run the sequence under bash.
-          script: bash "$HOME/relay-harness/scripts/ci/device-emulator-proxy.sh" "${{ github.event.inputs.user || 'erik' }}" > "$HOME/emu-run.log" 2>&1
+          script: bash "$HOME/relay-harness/scripts/ci/device-emulator-proxy.sh" "${{ github.event.inputs.user || 'erik' }}" > "$HOME/device-emulator-proxy-output.log" 2>&1
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" device-emulator-proxy \
+            "$HOME/device-emulator-proxy-output.log" \
+            "$HOME/device-proxy-diag.log"

@@ -150,5 +150,16 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           # The emulator action runs `script` under dash; invoke the sequence as
           # a committed bash script so pipefail and the failure trap survive.
-          script: bash "$HOME/relay-harness/scripts/ci/android-smoke.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.vault_template || 'kepano-plus' }}" > "$HOME/emu-run.log" 2>&1
+          script: bash "$HOME/relay-harness/scripts/ci/android-smoke.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.vault_template || 'kepano-plus' }}" > "$HOME/android-smoke-output.log" 2>&1
 
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" android-smoke \
+            "$HOME/android-smoke-output.log" \
+            "$HOME/android-smoke-diag.log" \
+            "$GITHUB_WORKSPACE/android-smoke.mp4"

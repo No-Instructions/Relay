@@ -227,7 +227,8 @@ jobs:
             RUN_DIR="$HOME/device-runs/$PLAN"; mkdir -p "$RUN_DIR"
             echo "=== $PLAN on port $SLOT_PORT ==="
             START=$(date +%s%3N)
-            if python "test-plans/scripts/$SCRIPT" --vault "$SLOT_USER" --run-dir "$RUN_DIR" --no-verify-build > "$RUN_DIR/plan.log" 2>&1; then
+            if python "test-plans/scripts/$SCRIPT" --vault "$SLOT_USER" --run-dir "$RUN_DIR" --no-verify-build \
+                 > "$RUN_DIR/plan.log" 2>&1; then
               STATUS=pass; echo "--- $PLAN PASSED ---"
             else
               STATUS=fail; FAIL=1; echo "::error::$PLAN failed on device"
@@ -235,7 +236,6 @@ jobs:
             RESULTS+=("$PLAN|$STATUS|$(( $(date +%s%3N) - START ))")
             write_summary "${RESULTS[@]}"
           done
-          echo "=== Tier-A device coverage ==="; cat "$SUMMARY"
           exit $FAIL
 
       - name: UI-driven smoke (CDP over the bridge)
@@ -253,12 +253,14 @@ jobs:
           # (connect(SLOT_PORT, { platform: 'desktop' })) so it reuses the
           # forwarded socket instead of an Appium/UiAutomator2 session. Until
           # that adaptation lands, drive the CDP-native single-slot UI strand:
-          node level2-test.mjs "$SLOT_PORT" --tests=test-basic-open-close > "$HOME/node-run.log" 2>&1
+          node level2-test.mjs "$SLOT_PORT" --tests=test-basic-open-close \
+            > "$HOME/device-runs/ui-smoke.log" 2>&1
 
       - name: Collect diagnostics on failure
         if: failure()
         shell: bash
         run: |
+          mkdir -p "$HOME/device-runs"
           {
             cd "$HOME/relay-harness" || exit 0
             echo "=== device status ==="
@@ -266,10 +268,21 @@ jobs:
               --user "$SLOT_USER" --json || true
             echo "=== adb forward --list ==="
             "${RELAY_ADB:-adb}" forward --list || true
-            echo "=== logcat (obsidian/chromium/crashes) ==="
-            "${RELAY_ADB:-adb}" logcat -d -t 400 2>/dev/null \
-              | grep -iE 'obsidian|chromium|AndroidRuntime|FATAL|ANR' | tail -n 150 || true
-          } > "$HOME/diagnostics.log" 2>&1
+            echo "=== logcat ==="
+            "${RELAY_ADB:-adb}" logcat -d -t 400 2>/dev/null || true
+          } > "$HOME/device-runs/diagnostics.log" 2>&1
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" device-smoke \
+            "$HOME/device-runs" \
+            "${DEVICE_SUMMARY:-$HOME/device-summary.json}"
+
       - name: Stop device slot (tear down bridge)
         if: always()
         shell: bash

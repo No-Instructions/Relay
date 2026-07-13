@@ -556,44 +556,44 @@ jobs:
             write_summary "${RESULTS[@]}"
           done
 
-          echo "=== mixed-lane coverage summary ==="
-          cat "$SUMMARY"
           exit "$ANY_FAIL"
-
-      - name: Upload coverage summary
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: testplans-mixed-metadata
-          path: |
-            /home/runner/mixed-summary.json
-          if-no-files-found: warn
-          retention-days: 14
 
       - name: Collect diagnostics on failure
         if: failure()
         shell: bash
         run: |
-          {
-            echo "=== driver CDP reachability ==="
-            for PORT in "$PORT1" "$PORT2"; do
-              echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
-            done
-            echo "=== $VM_LIN slot status ==="
-            gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-              --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
-            echo "=== $VM_WIN CDP liveness (VM-local, is Obsidian still up?) ==="
-            gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-              --ssh-key-file="$HOME/.ssh/win-slot" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
-              --command="try { (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:${PORT2}/json/version' -TimeoutSec 5).Content } catch { 'CDP not answering on 127.0.0.1:${PORT2}: ' + \$_.Exception.Message }" 2>/dev/null || echo "  (ssh failed)"
-            echo "=== $VM_WIN serial console ==="
-            gcloud compute instances get-serial-port-output "$VM_WIN" --port 1 \
-              --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 > /tmp/win-serial.txt || true
-            echo "--- startup markers (RELAY-SLOT / SLOT-PROV) ---"
-            grep -aE "RELAY-SLOT|SLOT-PROV" /tmp/win-serial.txt | tail -40 || echo "  (no startup-script markers — did the metadata startup script run?)"
-            echo "--- serial tail (last 200 lines) ---"
-            tail -200 /tmp/win-serial.txt || true
-          } > "$HOME/diagnostics.log" 2>&1
+          mkdir -p "$HOME/slot-vm-runs"
+          exec > "$HOME/slot-vm-runs/diagnostics.log" 2>&1
+          echo "=== driver CDP reachability ==="
+          for PORT in "$PORT1" "$PORT2"; do
+            echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
+          done
+          echo "=== $VM_LIN slot status ==="
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
+          echo "=== $VM_WIN CDP liveness (VM-local, is Obsidian still up?) ==="
+          gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --ssh-key-file="$HOME/.ssh/win-slot" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
+            --command="try { (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:${PORT2}/json/version' -TimeoutSec 5).Content } catch { 'CDP not answering on 127.0.0.1:${PORT2}: ' + \$_.Exception.Message }" 2>/dev/null || echo "  (ssh failed)"
+          echo "=== $VM_WIN serial console ==="
+          gcloud compute instances get-serial-port-output "$VM_WIN" --port 1 \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 > /tmp/win-serial.txt || true
+          echo "--- startup markers (RELAY-SLOT / SLOT-PROV) ---"
+          grep -aE "RELAY-SLOT|SLOT-PROV" /tmp/win-serial.txt | tail -40 || echo "  (no startup-script markers — did the metadata startup script run?)"
+          echo "--- serial tail (last 200 lines) ---"
+          tail -200 /tmp/win-serial.txt || true
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" slot-vm-mixed \
+            "$HOME/slot-vm-runs" \
+            "$HOME/mixed-summary.json"
+
       - name: Tear down VMs
         if: always()
         shell: bash

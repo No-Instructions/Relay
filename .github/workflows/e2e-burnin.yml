@@ -389,6 +389,9 @@ jobs:
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
             REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
+            cp "$TEST_LOG" "$LATEST/suite-output.txt"
+            node scripts/upload-report.mjs "$LATEST" "$COMMIT" "$EXEC_ID" \
+              > "$HOME/final-report-upload.log" 2>&1 || TEST_EXIT=1
             echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
 
             node - "$LATEST_SUMMARY" > ~/test-summary.json <<'NODE'
@@ -440,18 +443,14 @@ jobs:
       - name: Fetch results
         if: always()
         run: |
-          rm -f summary.json metadata.json suite-output.txt
-          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
+          rm -f summary.json metadata.json
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
-          # Guarantee an artifact even when the VM produced nothing, so the
-          # aggregate job can classify this plan as an infra miss rather than
-          # silently dropping it from the ledger.
+          # Preserve an infra verdict when the VM produced no report metadata.
           if [ ! -f summary.json ]; then
             echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > summary.json
           fi
@@ -459,15 +458,19 @@ jobs:
             echo '{"reportUrl":"","commit":"","execId":""}' > metadata.json
           fi
 
-      - name: Upload per-plan result
+      - name: Publish per-plan result
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: burnin-${{ matrix.plan }}
-          path: |
-            summary.json
-            metadata.json
-          if-no-files-found: warn
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_BUCKET: system3-ci
+        run: |
+          PREFIX="github-runs/$GITHUB_RUN_ID/attempt-$GITHUB_RUN_ATTEMPT/burnin/burnin-${{ matrix.plan }}"
+          aws s3 cp summary.json "s3://$CI_R2_BUCKET/$PREFIX/summary.json" --endpoint-url "$CI_R2_ENDPOINT" --only-show-errors
+          aws s3 cp metadata.json "s3://$CI_R2_BUCKET/$PREFIX/metadata.json" --endpoint-url "$CI_R2_ENDPOINT" --only-show-errors
 
       - name: Delete VM (releases the pool lease)
         if: always()
@@ -490,10 +493,18 @@ jobs:
     steps:
       - name: Download per-plan results
         continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          pattern: burnin-*
-          path: results
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: "true"
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_BUCKET: system3-ci
+        run: |
+          mkdir -p results
+          aws s3 cp \
+            "s3://$CI_R2_BUCKET/github-runs/$GITHUB_RUN_ID/attempt-$GITHUB_RUN_ATTEMPT/burnin/" \
+            results/ --recursive --endpoint-url "$CI_R2_ENDPOINT" --only-show-errors
 
       - name: Pull the persistent ledger from R2
         env:
@@ -619,7 +630,7 @@ jobs:
               md += `| ${plan} | ${rate}${infra} | ${p.runs} | ${p.nights.size} | ${emoji[p.last.status]} ${p.last.status} | ${note} |\n`;
             }
 
-            core.summary.addRaw(md);
+            core.summary.addRaw('## E2E burn-in\n\n[Report](https://ci.system3.dev/burnin/ledger.jsonl)\n');
             await core.summary.write();
 
       - name: Push the updated ledger to R2
@@ -640,11 +651,3 @@ jobs:
             --cache-control 'no-cache, must-revalidate' \
             --no-cli-pager >/dev/null
           echo "Pushed ledger ($(wc -l < ledger.jsonl) rows) to s3://${CI_R2_BUCKET}/burnin/ledger.jsonl"
-
-      - name: Upload ledger snapshot artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: burnin-ledger
-          path: ledger.jsonl
-          if-no-files-found: warn

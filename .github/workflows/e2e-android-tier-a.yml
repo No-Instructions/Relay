@@ -159,17 +159,18 @@ jobs:
           emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           # The emulator action runs `script` under dash; invoke the sequence as a
           # committed bash script so pipefail and the failure trap survive.
-          script: bash "$HOME/relay-harness/scripts/ci/android-tier-a.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}" > "$HOME/emu-run.log" 2>&1
+          script: bash "$HOME/relay-harness/scripts/ci/android-tier-a.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}" > "$HOME/android-tier-a-output.log" 2>&1
 
-      # Coverage summary is plan-id/status/duration only (non-sensitive). No video
-      # or diagnostics artifact: this is a public repo, so nothing that could carry
-      # vault content or auth detail leaves the runner.
-      - name: Upload coverage summary
+      - name: Publish run report
         if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: testplans-android-tier-a-metadata
-          path: android-tier-a-summary.json
-          if-no-files-found: warn
-          retention-days: 14
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" android-tier-a \
+            "$HOME/android-tier-a-output.log" \
+            "$HOME/android-tier-a-diag.log" \
+            "$GITHUB_WORKSPACE/android-tier-a-summary.json" \
+            "$GITHUB_WORKSPACE/android-tier-a.mp4" \
+            "$HOME/android-tier-a-runs"

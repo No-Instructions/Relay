@@ -327,17 +327,28 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          {
-            echo "=== driver-side CDP reachability ==="
-            for PORT in "$PORT1" "$PORT2"; do
-              echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
-            done
-            for VM in "$VM1" "$VM2"; do
-              echo "=== $VM slot status ==="
-              gcloud compute ssh "$VM" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-                --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
-            done
-          } > "$HOME/diagnostics.log" 2>&1
+          mkdir -p "$HOME/slot-vm-runs"
+          exec > "$HOME/slot-vm-runs/diagnostics.log" 2>&1
+          echo "=== driver-side CDP reachability ==="
+          for PORT in "$PORT1" "$PORT2"; do
+            echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
+          done
+          for VM in "$VM1" "$VM2"; do
+            echo "=== $VM slot status ==="
+            gcloud compute ssh "$VM" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+              --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
+          done
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" slot-vm \
+            "$HOME/slot-vm-runs"
+
       - name: Tear down VMs
         if: always()
         shell: bash

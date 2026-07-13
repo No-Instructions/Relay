@@ -206,10 +206,14 @@ jobs:
           # wait so a plan's own pass/fail (not metrics infra) decides the step.
           RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
         run: |
-          # Log hygiene (public repo = public logs AND public artifacts): each
-          # plan's stdout goes to a runner-local file, never the console; only the
-          # plan ID and pass/fail reach the log. No screencast — a screen recording
-          # of the running vault would ship note content as a public artifact.
+          FRAMEDIR="$RUNNER_TEMP/smoke-frames"
+          VIDEO="${{ github.workspace }}/platform-smoke-${{ matrix.platform.name }}.mp4"
+          cd "$HOME/relay-harness/playwright"
+          node lib/screencast-cli.mjs record "${{ matrix.platform.port }}" "$FRAMEDIR" \
+            > "$RUNNER_TEMP/screencast.log" 2>&1 &
+          REC_PID=$!
+          sleep 4
+
           cd "$HOME/relay-harness"
           FAIL=0
           IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans || 'tp000,tp002,tp003' }}"
@@ -235,18 +239,38 @@ jobs:
               FAIL=1
             fi
           done
+          kill "$REC_PID" 2>/dev/null || true
+          sleep 3
+          ( cd "$HOME/relay-harness/playwright" \
+            && node lib/screencast-cli.mjs assemble "$FRAMEDIR" "$VIDEO" ) \
+            > "$RUNNER_TEMP/screencast-assemble.log" 2>&1 || true
           exit $FAIL
 
       - name: Collect diagnostics on failure
         if: failure()
         shell: bash
         run: |
-          {
-            cd "$HOME/relay-harness" || exit 0
-            echo "=== slot status ==="
-            python .claude/scripts/obsidian_slot.py slot status \
-              --user "${{ matrix.platform.user }}" --json || true
-          } > "$HOME/diagnostics.log" 2>&1
+          mkdir -p "$HOME/slot-runs"
+          exec > "$HOME/slot-runs/diagnostics.log" 2>&1
+          cd "$HOME/relay-harness" || exit 0
+          echo "=== slot status ==="
+          python .claude/scripts/obsidian_slot.py slot status \
+            --user "${{ matrix.platform.user }}" --json || true
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" \
+            "platform-${{ matrix.platform.name }}" \
+            "$HOME/slot-runs" \
+            "$RUNNER_TEMP/screencast.log" \
+            "$RUNNER_TEMP/screencast-assemble.log" \
+            "${{ github.workspace }}/platform-smoke-${{ matrix.platform.name }}.mp4"
+
       - name: Stop slot
         if: always()
         shell: bash

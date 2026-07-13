@@ -159,17 +159,17 @@ jobs:
           # The emulator action runs `script` under dash; invoke the confirm as a
           # committed bash script so pipefail and the failure trap survive. It
           # fires the tree-picker intent directly and asserts DocumentsUI focus.
-          script: bash "$HOME/relay-harness/scripts/ci/android-picker-confirm.sh" "${{ github.event.inputs.user || 'erik' }}" > "$HOME/emu-run.log" 2>&1
+          script: bash "$HOME/relay-harness/scripts/ci/android-picker-confirm.sh" "${{ github.event.inputs.user || 'erik' }}" > "$HOME/android-picker-confirm-output.log" 2>&1
 
-      # Metadata artifact only: structural booleans (present / foregrounds /
-      # traversable) and element counts. No hierarchy dump or diagnostics leave
-      # the runner on this public repo.
-      - name: Upload confirm summary
+      - name: Publish run report
         if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: testplans-android-picker-confirm-metadata
-          path: android-picker-confirm-summary.json
-          if-no-files-found: warn
-          retention-days: 14
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" android-picker-confirm \
+            "$HOME/android-picker-confirm-output.log" \
+            "$HOME/android-picker-confirm-diag.log" \
+            "$GITHUB_WORKSPACE/android-picker-confirm-summary.json" \
+            "$HOME/ui.xml"
