@@ -2455,7 +2455,7 @@ export class SharedFolder extends HasProvider {
 			const filePending = this.pendingUpload.has(vpath);
 			const synced = this._provider?.synced && this._persistence?.synced;
 			if (fileInFolder && isSyncableFile && !fileInMap && !filePending) {
-				if (synced) {
+				if (synced && this.wasRemotelyDeleted(vpath)) {
 					diffLog.push(`deleted local file ${vpath} for remotely deleted doc`);
 					this.markPendingDelete(vpath);
 					const promise = this.vault.adapter.trashLocal(file.path).finally(() => {
@@ -2472,6 +2472,22 @@ export class SharedFolder extends HasProvider {
 		files.forEach(sync);
 		folders.forEach(sync);
 		return deletes;
+	}
+
+	/**
+	 * Positive evidence that a local file's absence from the membership map is a
+	 * genuine remote deletion: the folder's committed metadata carries a deletion
+	 * tombstone for the path. Absence WITHOUT a tombstone is not a deletion — the
+	 * path was either never committed (a not-yet-registered bulk import) or moved
+	 * transiently (a rename / guid-remap burst), and trashing on absence alone
+	 * destroys never-synced or still-active user files (per-guid IDB and merge
+	 * state go with it, so CRDT history cannot restore them). A legitimate remote
+	 * deletion tombstones the path, so it still cleans up. This is the
+	 * deletion-requires-positive-evidence rule the FolderHSM engine applies,
+	 * carried onto the default (enableFolderHSM-off) path.
+	 */
+	private wasRemotelyDeleted(vpath: string): boolean {
+		return pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath);
 	}
 
 	private getDesiredRemotePaths(): Set<string> {
