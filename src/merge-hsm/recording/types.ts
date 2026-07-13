@@ -35,7 +35,7 @@ export interface RecordableHSM {
   getLocalDocLength(): Promise<number>;
   getRemoteDoc(): Y.Doc | null;
   getSyncStatus(): SyncStatus;
-  checkAndCorrectDrift(actualEditorText?: string): boolean;
+  checkAndCorrectDrift(actualEditorText?: string, viewId?: string): boolean;
   subscribe(listener: (effect: MergeEffect) => void): () => void;
   onStateChange(listener: (from: StatePath, to: StatePath, event: MergeEvent) => void): () => void;
 }
