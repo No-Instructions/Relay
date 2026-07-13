@@ -1964,7 +1964,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 * path (e.g. Obsidian's metadata renderer calling setViewData), the
 	 * cached value will be stale.
 	 */
-	checkAndCorrectDrift(actualEditorText?: string): boolean {
+	checkAndCorrectDrift(actualEditorText?: string, viewId?: string): boolean {
 		if (this._statePath !== "active.tracking") {
 			return false;
 		}
@@ -2001,16 +2001,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		});
 		this.logDrift(editorText, yjsText);
 
-		this.send({
-			type: "MERGE_CONFLICT",
-			origin: "drift",
-			base: yjsText,
-			ours: yjsText,
-			theirs: editorText,
-			oursLabel: "Remote",
-			theirsLabel: "Local",
-			conflictRegions: [],
-		});
+		// A drift where base === ours (localDoc) is not a real conflict: the
+		// editor simply fell behind localDoc — e.g. a machine-edit dispatch was
+		// rejected against a stale editor length, or Obsidian's metadata renderer
+		// wrote the editor outside the CM6_CHANGE path. Re-dispatch the
+		// authoritative localDoc into the editor so it converges, instead of
+		// fabricating a zero-region MERGE_CONFLICT that opens
+		// active.conflict.bannerShown for a conflict that does not exist.
+		// Target the leaf that actually drifted. The caller (a CM6Integration
+		// bound to one leaf) passes its own viewId, so under duplicate leaves the
+		// re-dispatch lands on the drifting editor rather than a stale or absent
+		// target. Fall back to the last CM6 origin view when no caller viewId is
+		// supplied (a non-integration caller).
+		const target = viewId ?? this._localDocDispatchOriginView;
+		if (target !== undefined) {
+			this.emitEffect({
+				type: "SET_CM6",
+				targetView: target,
+				text: yjsText,
+			});
+		}
 
 		return true;
 	}
@@ -3150,6 +3160,63 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			updateDiskFromSave: (_hsm, event) => {
 				const e = event as any;
+
+				// Disk-freshness gate: in active mode Document.save writes localText
+				// and hashes those same bytes into SAVE_COMPLETE, so localDoc below is
+				// the buffer that just became disk truth. If an un-ingested external
+				// disk write is still pending and this save writes different bytes,
+				// merge the two against their last agreement. Clean merges are applied
+				// and written back; genuine overlaps remain recoverable as a conflict.
+				const externalPending = this.pendingDiskContents;
+				if (
+					this.localDoc &&
+					this.pendingDiskSource === "disk-event" &&
+					externalPending !== null &&
+					this.pendingDiskHash !== e.hash
+				) {
+					const ours = this.localDoc.getText("contents").toString();
+					if (externalPending !== ours) {
+						const base = this._lca?.contents ?? ours;
+						const merge = computeConflict(base, ours, externalPending);
+						this._disk = { mtime: e.mtime, hash: e.hash };
+						this._needsDiskContentLoad = false;
+						this.clearPendingDiskContents();
+
+						if (!merge.hasConflict) {
+							const merged = merge.merged!;
+							const editorText = this.readCurrentEditorText() ?? ours;
+							this.applyContentToLocalDoc(merged);
+							this._bridge.flushOutbound();
+
+							if (editorText !== merged) {
+								const changes = this.computeDiffChanges(editorText, merged);
+								if (changes.length > 0) {
+									this.emitEffect({ type: "DISPATCH_CM6", changes });
+								}
+							}
+							this.lastKnownEditorText = merged;
+							this.emitEffect({
+								type: "WRITE_DISK",
+								guid: this._guid,
+								contents: merged,
+							});
+							return;
+						}
+
+						this.send({
+							type: "MERGE_CONFLICT",
+							origin: "disk-freshness",
+							base,
+							ours,
+							theirs: externalPending,
+							oursLabel: "Editor",
+							theirsLabel: "Disk",
+							conflictRegions: merge.regions,
+						});
+						return;
+					}
+				}
+
 				this._disk = { mtime: e.mtime, hash: e.hash };
 				this._needsDiskContentLoad = false;
 				this.discardSupersededPendingDiskContents();

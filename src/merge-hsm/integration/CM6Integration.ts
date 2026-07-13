@@ -99,7 +99,7 @@ export class CM6Integration {
 		}
 
 		const editorText = this.view.state.doc.toString();
-		const driftDetected = this.hsm.checkAndCorrectDrift(editorText);
+		const driftDetected = this.hsm.checkAndCorrectDrift(editorText, this.viewId);
 		this.warn(
 			`${phase}: CM6 rejected patch (${message}). ` +
 				`${driftDetected ? "Triggered drift recovery." : "Editor/localDoc already match; dropping stale patch."}`,
@@ -367,7 +367,7 @@ export class CM6Integration {
 			if (!this.isEditorStillValid()) return;
 
 			const editorText = this.view.state.doc.toString();
-			const driftDetected = this.hsm.checkAndCorrectDrift(editorText);
+			const driftDetected = this.hsm.checkAndCorrectDrift(editorText, this.viewId);
 
 			if (driftDetected) {
 				this.warn(

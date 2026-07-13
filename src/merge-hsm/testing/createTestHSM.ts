@@ -217,7 +217,7 @@ export interface TestableHSM {
 		hash: string;
 		mtime: number;
 	}): Promise<boolean>;
-	checkAndCorrectDrift(actualEditorText?: string): boolean;
+	checkAndCorrectDrift(actualEditorText?: string, viewId?: string): boolean;
 	subscribe(listener: (effect: MergeEffect) => void): () => void;
 	onStateChange(
 		listener: (from: StatePath, to: StatePath, event: MergeEvent) => void,
