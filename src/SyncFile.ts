@@ -712,9 +712,25 @@ export class SyncFile
 			return true;
 		}
 		if (this.lastServerEdit) {
-			// A session marker exists but this meta is not a successor: either we
-			// already hold meta.hash, or a local user edit supersedes it. Keep the
-			// local content — never decide the pull from a cross-vault clock.
+			if (meta.hash === this.lastServerEdit.hash) {
+				// We already hold exactly this revision on disk — nothing to pull.
+				return false;
+			}
+			// A session marker exists and this is a different revision, but it was
+			// not accepted as a successor because a local user edit shadows the
+			// marker (hasUserEditAfter). Keep the local content only when that edit
+			// is genuinely unpushed — i.e., the file on disk no longer matches the
+			// last server content we wrote. When the file still matches our last
+			// server edit (the shadowing edit was already pushed and became that
+			// content, so its stat equals the marker's), the differing remote meta
+			// is a legitimate remote advance and must pull; otherwise the session
+			// marker would block the file forever, since nothing advances it
+			// without a pull or a fresh local push. pull() re-guards by content
+			// hash, so a redundant pull is a cheap no-op that never clobbers an
+			// actual local change. Still never decide from a cross-vault clock.
+			if (this.matchesEditStat(this.lastServerEdit, tfile.stat)) {
+				return true;
+			}
 			return false;
 		}
 		// No causal marker this session (a fresh peer, or after a restart cleared
