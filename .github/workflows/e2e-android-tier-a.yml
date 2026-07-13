@@ -1,0 +1,176 @@
+name: E2E Android Tier-A (emulator, full flow)
+
+# Decisive spike for the Android emulator SAF frontier. Where e2e-android-smoke
+# stops at boot + WebView, this lane drives the FULL flow on a KVM-accelerated
+# x86_64 emulator: materialize a vault, open it through the native SAF picker
+# (the one gate that keeps plugin-loaded plans off the emulator), install the
+# Relay plugin, inject auth, bridge the WebView to a local CDP port, and run the
+# Tier-A single-slot plans. The SAF vault-open stage fails loudly and specifically
+# if the picker ANRs — a red there confirms Android Tier-A is device-only, a green
+# proves the cold-emulator picker workaround and unlocks emulator Tier-A nightlies.
+#
+# Dispatch-only; hosted runner (no GCE quota).
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Product ref to test (e.g. origin/main, a branch, or a SHA)'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref providing the Android helpers and plans'
+        required: false
+        default: 'origin/main'
+      obsidian_version:
+        description: 'Obsidian Android APK version'
+        required: false
+        default: '1.12.7'
+      api_level:
+        description: 'Android API level for the emulator'
+        required: false
+        default: '34'
+      user:
+        description: 'Staging test user (maps to vault + auth account + local CDP port)'
+        required: false
+        default: 'erik'
+      plans:
+        description: 'Comma-separated single-slot Tier-A plan ids'
+        required: false
+        default: 'tp000,tp002,tp003,tp030,tp032,tp038,tp055'
+
+concurrency:
+  group: e2e-android-tier-a
+  cancel-in-progress: false
+
+jobs:
+  android-tier-a:
+    name: android tier-a
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      APPIUM_PORT: '4723'
+      ANDROID_SERIAL: emulator-5554
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref || 'origin/main' }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          test -f main.js && test -f manifest.json && test -f styles.css
+          echo "Built plugin $(node -e 'console.log(require("./manifest.json").version)')"
+
+      - name: Clone relay-harness
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Install harness playwright deps (webdriverio)
+        shell: bash
+        run: |
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+
+      - name: Install Appium and UiAutomator2 driver
+        shell: bash
+        run: |
+          npm install -g 'appium@^3'
+          appium driver install uiautomator2
+          appium --version
+          appium driver list --installed
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install device-slot python deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          # obsidian_device_slot.py imports obsidian_slot (tree-sitter at import);
+          # the scripted plans import obsidian_ctl (tree-sitter); websockets drives
+          # the CDP responsiveness probe.
+          python -m pip install click websockets tree-sitter tree-sitter-javascript
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+
+      - name: Download Obsidian APK
+        shell: bash
+        run: |
+          VER="${{ github.event.inputs.obsidian_version || '1.12.7' }}"
+          URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v${VER}/Obsidian-${VER}.apk"
+          echo "Downloading $URL"
+          curl -fL -o "$GITHUB_WORKSPACE/obsidian.apk" "$URL"
+          SIZE=$(stat -c%s "$GITHUB_WORKSPACE/obsidian.apk")
+          if [ "$SIZE" -lt 8000000 ]; then
+            echo "::error::Obsidian APK download looks wrong ($SIZE bytes)"; head -c 400 "$GITHUB_WORKSPACE/obsidian.apk" || true; exit 1
+          fi
+          echo "APK $SIZE bytes"
+
+      - name: Enable KVM
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run Android Tier-A full flow on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ github.event.inputs.api_level || '34' }}
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          cores: 2
+          ram-size: 4096M
+          disable-animations: true
+          emulator-options: -no-window -no-snapshot -noaudio -no-boot-anim -gpu swiftshader_indirect -camera-back none
+          # The emulator action runs `script` under dash; invoke the sequence as a
+          # committed bash script so pipefail and the failure trap survive.
+          script: bash "$HOME/relay-harness/scripts/ci/android-tier-a.sh" "${{ github.event.inputs.user || 'erik' }}" "${{ github.event.inputs.plans || 'tp000,tp002,tp003,tp030,tp032,tp038,tp055' }}" > "$HOME/android-tier-a-output.log" 2>&1
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" android-tier-a \
+            "$HOME/android-tier-a-output.log" \
+            "$HOME/android-tier-a-diag.log" \
+            "$GITHUB_WORKSPACE/android-tier-a-summary.json" \
+            "$GITHUB_WORKSPACE/android-tier-a.mp4" \
+            "$HOME/android-tier-a-runs"
