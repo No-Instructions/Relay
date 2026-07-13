@@ -2001,12 +2001,41 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		});
 		this.logDrift(editorText, yjsText);
 
-		// A drift where base === ours (localDoc) is not a real conflict: the
-		// editor simply fell behind localDoc — e.g. a machine-edit dispatch was
-		// rejected against a stale editor length, or Obsidian's metadata renderer
-		// wrote the editor outside the CM6_CHANGE path. Re-dispatch the
-		// authoritative localDoc into the editor so it converges, instead of
-		// fabricating a zero-region MERGE_CONFLICT that opens
+		// Discriminate before acting. Re-dispatching localDoc into the editor is
+		// only safe when the editor has fallen BEHIND localDoc — it then holds no
+		// content the re-dispatch would discard. But the editor can instead be
+		// AHEAD: the user typed while a machine edit advanced localDoc, so both
+		// diverge from the last settled ancestor. Blindly overwriting the editor
+		// there would silently drop the user's unsynced work. Compare editor and
+		// localDoc against their common ancestor: a genuine 3-way conflict means
+		// the editor contributes divergent content, so surface it as a recoverable
+		// conflict (editor text as "theirs", with the real conflict regions)
+		// instead of discarding it. With no settled ancestor to prove otherwise,
+		// fall through to the re-dispatch below.
+		const lca = this._lca?.contents ?? null;
+		if (lca !== null) {
+			const { regions } = computeConflict(lca, yjsText, editorText);
+			if (regions.length > 0) {
+				this.send({
+					type: "MERGE_CONFLICT",
+					origin: "drift",
+					base: lca,
+					ours: yjsText,
+					theirs: editorText,
+					oursLabel: "Remote",
+					theirsLabel: "Local",
+					conflictRegions: regions,
+				});
+				return true;
+			}
+		}
+
+		// The editor fell behind localDoc (base === ours, or the editor is an
+		// ancestor of localDoc): not a real conflict — e.g. a machine-edit
+		// dispatch was rejected against a stale editor length, or Obsidian's
+		// metadata renderer wrote the editor outside the CM6_CHANGE path.
+		// Re-dispatch the authoritative localDoc into the editor so it converges,
+		// instead of fabricating a zero-region MERGE_CONFLICT that opens
 		// active.conflict.bannerShown for a conflict that does not exist.
 		// Target the leaf that actually drifted. The caller (a CM6Integration
 		// bound to one leaf) passes its own viewId, so under duplicate leaves the
