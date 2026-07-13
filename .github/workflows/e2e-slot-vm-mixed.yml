@@ -1,0 +1,609 @@
+name: E2E slot-VM lane (mixed platform)
+
+# Slot-VM topology (specs/slot VMs.md): two-slot scripted plans with slot 1 on a
+# Linux VM (relay-e2e-base) and slot 2 on a Windows VM (relay-e2e-windows). Real
+# cross-machine sync between a Linux and a Windows Obsidian, each provisioned by
+# the same cross-platform slot runner (obsidian_slot.py) and driven from the
+# runner over SSH -L tunnels.
+#
+# The `plans` input runs a whole list against the two persistent tunneled slots,
+# mirroring how run-test-plan-suite.sh reuses slots with between-plan hygiene.
+# sharedFixture plans get a folder created per plan (test-plan-shared-fixture.py)
+# and joined via --folder. Two plan classes are skipped with a reason because the
+# two ordinary staging slots cannot serve them: storage plans (need a
+# storage-quota relay) and folder-hsm plans (need the enableFolderHSM profile
+# flag the base test profile does not carry).
+#
+# Linux slot: same as e2e-slot-vm-lane.yml. Windows slot: boot the baked image
+# (OpenSSH + Node/Git/ffmpeg/Obsidian preinstalled), authorize the runner key
+# via a startup script, then run one PowerShell provisioning script that installs
+# python, builds the plugin on the VM, clones the harness, and provisions/starts/
+# authenticates the slot. Both VMs carry the relay-e2e-svm- prefix so the shared
+# sweep covers them.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Product ref to test'
+        required: true
+        default: 'origin/main'
+      harness_ref:
+        description: 'relay-harness ref'
+        required: false
+        default: 'origin/main'
+      plans:
+        description: 'Comma-separated two-slot scripted plan ids (default: the full two-slot suite)'
+        required: false
+        default: 'tp001,tp004,tp006,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp031,tp033,tp034,tp035,tp036,tp037,tp041,tp042,tp043,tp044,tp052,tp053'
+
+concurrency:
+  group: e2e-slot-vm-mixed
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT: tactile-timer-426817-t6
+  VM_ZONE: us-west1-b
+  LINUX_IMAGE_FAMILY: relay-e2e-base
+  WINDOWS_IMAGE_FAMILY: relay-e2e-windows
+  USER1: charlie
+  PORT1: '9225'
+  USER2: donna
+  PORT2: '9226'
+
+jobs:
+  slot-vm-mixed:
+    name: slot-vm-mixed
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    env:
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+      RELAY_METRICS_HEALTH_TIMEOUT_S: '0'
+
+    steps:
+      - name: Checkout product
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve product ref
+        shell: bash
+        run: |
+          REF="${{ github.event.inputs.ref }}"
+          git checkout --detach "origin/${REF#origin/}" 2>/dev/null || git checkout --detach "$REF"
+          echo "Product commit: $(git rev-parse HEAD)"
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build staging plugin (Linux slot bundle)
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          mkdir -p "$HOME/relay-bundle"
+          cp main.js manifest.json styles.css "$HOME/relay-bundle/"
+
+      - name: Setup python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install driver python deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install click websockets tree-sitter tree-sitter-javascript matplotlib
+          python -c "import click, websockets, tree_sitter, tree_sitter_javascript"
+
+      - name: Clone relay-harness (driver)
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Sweep stale slot VMs
+        shell: bash
+        run: |
+          KEEP="relay-e2e-svm-${GITHUB_RUN_ID}-"
+          stale=$(gcloud compute instances list --project="$GCP_PROJECT" \
+            --zones="$VM_ZONE" --filter="name~^relay-e2e-svm-" \
+            --format="value(name)" 2>/dev/null || true)
+          for name in $stale; do
+            case "$name" in
+              ${KEEP}*) echo "keeping $name (current run)" ;;
+              *) echo "sweeping stale $name";
+                 gcloud compute instances delete "$name" --quiet \
+                   --zone="$VM_ZONE" --project="$GCP_PROJECT" || true ;;
+            esac
+          done
+
+      - name: Create VMs (Linux + Windows)
+        shell: bash
+        run: |
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
+          printf '\nHost *\n  ConnectTimeout 20\n  StrictHostKeyChecking no\n' >> ~/.ssh/config
+          VM_LIN="relay-e2e-svm-${GITHUB_RUN_ID}-lin"
+          VM_WIN="relay-e2e-svm-${GITHUB_RUN_ID}-win"
+          echo "VM_LIN=$VM_LIN" >> "$GITHUB_ENV"
+          echo "VM_WIN=$VM_WIN" >> "$GITHUB_ENV"
+
+          # Runner key that the Windows startup script authorizes for `relay`.
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/win-slot -N "" -q
+          WIN_PUBKEY="$(cat ~/.ssh/win-slot.pub)"
+
+          # Windows startup script: ensure OpenSSH, PowerShell default shell, the
+          # relay admin user, and authorize this run's key (from instance metadata).
+          cat > /tmp/win-startup.ps1 <<'PS1'
+          $ErrorActionPreference = "Continue"
+          function Log($m) { Write-Output "RELAY-SLOT: $m" }
+          for ($i = 1; $i -le 6; $i++) {
+            if (Get-Service sshd -ErrorAction SilentlyContinue) { break }
+            try { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null } catch { Log "sshd add attempt ${i}: $_" }
+            Start-Sleep -Seconds 10
+          }
+          Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
+          Start-Service sshd -ErrorAction SilentlyContinue
+          if (-not (Get-NetFirewallRule -Name sshd-relay -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name sshd-relay -DisplayName 'OpenSSH Server (relay)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+          }
+          Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+          if (Test-Path "HKLM:\SOFTWARE\OpenSSH") {
+            New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force | Out-Null
+          }
+          $rand = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
+          $pw = ConvertTo-SecureString ($rand + '!Aa9') -AsPlainText -Force
+          if (-not (Get-LocalUser -Name relay -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name relay -Password $pw -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+            Add-LocalGroupMember -Group Administrators -Member relay
+          }
+          $pub = $null
+          try { $pub = Invoke-RestMethod -Headers @{'Metadata-Flavor'='Google'} -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/attributes/relay-ssh-pubkey' } catch { Log "pubkey fetch failed: $_" }
+          New-Item -ItemType Directory -Path "C:\ProgramData\ssh" -Force | Out-Null
+          $adminKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
+          if ($pub) {
+            Set-Content -Path $adminKeys -Value $pub -Encoding ascii
+            icacls $adminKeys /inheritance:r | Out-Null
+            icacls $adminKeys /grant "SYSTEM:F" | Out-Null
+            icacls $adminKeys /grant "BUILTIN\Administrators:F" | Out-Null
+          }
+          Restart-Service sshd -ErrorAction SilentlyContinue
+          Log "startup complete"
+          PS1
+
+          echo "Creating $VM_LIN (linux) ..."
+          gcloud compute instances create "$VM_LIN" \
+            --project="$GCP_PROJECT" --zone="$VM_ZONE" \
+            --machine-type=e2-standard-4 \
+            --image-family="$LINUX_IMAGE_FAMILY" --image-project="$GCP_PROJECT" \
+            --boot-disk-size=20GB --boot-disk-type=pd-standard \
+            --metadata=block-project-ssh-keys=TRUE --tags=relay-e2e
+
+          echo "Creating $VM_WIN (windows) ..."
+          gcloud compute instances create "$VM_WIN" \
+            --project="$GCP_PROJECT" --zone="$VM_ZONE" \
+            --machine-type=e2-standard-4 \
+            --image-family="$WINDOWS_IMAGE_FAMILY" --image-project="$GCP_PROJECT" \
+            --boot-disk-size=100GB --boot-disk-type=pd-ssd --tags=relay-e2e \
+            --metadata=block-project-ssh-keys=TRUE,relay-ssh-pubkey="$WIN_PUBKEY" \
+            --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1
+
+      - name: Provision Linux slot (charlie)
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          HREF="${{ github.event.inputs.harness_ref }}"
+          echo "$HARNESS_DEPLOY_KEY" > /tmp/harness-key
+          chmod 600 /tmp/harness-key
+
+          for i in $(seq 1 30); do
+            gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --tunnel-through-iap --command="echo ready" 2>/dev/null && break
+            echo "waiting for $VM_LIN ssh ($i/30)"; sleep 5
+          done
+
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap --command="mkdir -p ~/relay-bundle"
+          for f in main.js manifest.json styles.css; do
+            gcloud compute scp --quiet "$HOME/relay-bundle/$f" "$VM_LIN":"~/relay-bundle/$f" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
+          done
+          gcloud compute scp --quiet /tmp/harness-key "$VM_LIN":"~/harness-key" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
+
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap --command="bash -s -- '$USER1' '$HREF' '$PORT1'" << 'REMOTE'
+          set -eo pipefail
+          USER_NAME="$1"; HARNESS_REF="$2"; PORT="$3"
+          mkdir -p ~/.ssh; mv ~/harness-key ~/.ssh/harness-key; chmod 600 ~/.ssh/harness-key
+          cat > ~/.ssh/known_hosts_gh << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          EOF
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/harness-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts_gh"
+          if [ ! -d ~/relay-harness ]; then git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness; fi
+          cd ~/relay-harness; git fetch origin --prune; git checkout -- . || true; git clean -fd || true
+          # A bare SHA is not a fetchable ref (GitHub rejects `fetch origin <sha>`),
+          # but the full clone above already has it if it is reachable from a
+          # branch (e.g. the current origin/main tip). Try the direct checkout
+          # before falling back to a fetch, so a pinned harness SHA works.
+          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
+            || git checkout --detach "$HARNESS_REF" 2>/dev/null \
+            || { git fetch origin "$HARNESS_REF"; git checkout --detach "$HARNESS_REF"; }
+          echo "harness: $(git rev-parse HEAD)"
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
+          if [ ! -f "$OBSIDIAN_PATH" ]; then
+            mkdir -p ~/obsidian
+            wget -q -O "$OBSIDIAN_PATH" "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.8.9/Obsidian-1.8.9.AppImage"
+            chmod +x "$OBSIDIAN_PATH"
+          fi
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v uv >/dev/null 2>&1 || wget -qO- https://astral.sh/uv/install.sh | sh
+          uv venv --clear ~/.slot-venv
+          SLOT_PY="$HOME/.slot-venv/bin/python"
+          uv pip install --python "$SLOT_PY" click websockets
+          cd ~/relay-harness
+          # Auxiliary community plugins some plans need: obsidian-kanban (tp042)
+          # and the TSDB metrics side-car (tp033). The runner installs each bundle
+          # and enables it alongside Relay via --extra-plugin-dir.
+          for pl in "obsidian-kanban=mgmeyers/obsidian-kanban/releases/download/2.0.51" "obsidian-tsdb=dtkav/obsidian-tsdb/releases/download/1.0.12"; do
+            id="${pl%%=*}"; base="https://github.com/${pl#*=}"; mkdir -p ~/"$id"-bundle
+            for f in main.js manifest.json styles.css; do wget -q -O ~/"$id"-bundle/"$f" "$base/$f" || true; done
+          done
+          # TSDB records nothing until onboarded with a metrics-server config;
+          # ship the same data.json the shared-slot lane writes so tp033 has data.
+          printf '%s' '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}' > ~/obsidian-tsdb-bundle/data.json
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision --user "$USER_NAME" --plugin-dir ~/relay-bundle \
+            --extra-plugin-dir ~/obsidian-kanban-bundle --extra-plugin-dir ~/obsidian-tsdb-bundle
+          OBSIDIAN_PATH="$OBSIDIAN_PATH" "$SLOT_PY" .claude/scripts/obsidian_slot.py slot start --user "$USER_NAME" --wait-timeout 150
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot status --user "$USER_NAME" --json
+          cd ~/relay-harness/playwright
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+          node utils/wait-for-ready.mjs "$PORT"
+          node utils/inject-auth.mjs "$USER_NAME" "$PORT"
+          echo "linux slot $USER_NAME authenticated on port $PORT"
+          REMOTE
+
+      - name: Provision Windows slot (donna)
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          HREF="${{ github.event.inputs.harness_ref }}"
+          REF="${{ github.event.inputs.ref }}"
+          KEY="$HOME/.ssh/win-slot"
+          SSHFLAGS=(--zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap --ssh-key-file="$KEY"
+                    --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null"
+                    --ssh-flag="-o ConnectTimeout=15")
+          run_ps() { gcloud compute ssh "relay@$VM_WIN" --quiet "${SSHFLAGS[@]}" --command="$1"; }
+
+          # The generalized baked image runs full first-boot specialization plus
+          # the metadata startup script (installs/starts OpenSSH, opens the
+          # firewall, authorizes this run's key), which can take past 15 min —
+          # match the bake's own ~22 min budget, exiting as soon as SSH answers.
+          echo "Waiting for Windows SSH (generalized image, first-boot specialize + startup script) ..."
+          ok=0
+          for i in $(seq 1 66); do
+            if run_ps "echo ready" >/dev/null 2>/tmp/win-ssh.err; then echo "Windows SSH ready ($i)"; ok=1; break; fi
+            echo "  waiting ($i/66)"; sleep 20
+          done
+          [ "$ok" = 1 ] || { echo "::error::Windows SSH never ready"; tail -20 /tmp/win-ssh.err || true; exit 1; }
+
+          # Provisioning PowerShell: installs python, builds the plugin on the VM,
+          # clones the harness, then provisions/starts/authenticates the slot.
+          cat > /tmp/win-slot-provision.ps1 <<'PS1'
+          param([string]$SlotUser, [int]$Port, [string]$ProductRef = "origin/main", [string]$HarnessRef = "origin/main")
+          # git, npm and node write ordinary progress to stderr (e.g. "HEAD is now
+          # at ..."); under "Stop" PowerShell turns any native-command stderr into a
+          # terminating NativeCommandError. Use "Continue" and gate on explicit exit
+          # codes / Test-Path checks below; GIT_REDIRECT_STDERR routes git to stdout.
+          $ErrorActionPreference = "Continue"
+          function Log($m) { Write-Output "SLOT-PROV: $m" }
+          $E2E = "C:\relay-e2e-testing"; New-Item -ItemType Directory -Path $E2E -Force | Out-Null
+          $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"; $env:GIT_REDIRECT_STDERR = "2>&1"
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
+          function Refresh-Path { $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") }
+          Refresh-Path
+
+          if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Log "install python"; choco install python -y --no-progress | Out-Null; Refresh-Path }
+          $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+          if (-not $py) { $c = Get-ChildItem "C:\Python*","C:\ProgramData\chocolatey\lib\python*" -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $py = $c.FullName } }
+          if (-not $py) { throw "python not found" }
+          Log ("python: " + $py); & $py --version
+
+          if (-not (Test-Path C:\relay-plugin)) { git clone https://github.com/No-Instructions/Relay.git C:\relay-plugin }
+          Set-Location C:\relay-plugin; git fetch origin --prune | Out-Null
+          $pr = $ProductRef -replace '^origin/',''
+          git checkout --detach "origin/$pr" 2>$null; if ($LASTEXITCODE -ne 0) { git fetch origin $ProductRef; git checkout --detach $ProductRef }
+          Log ("product: " + (git rev-parse HEAD))
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          if (-not (Test-Path C:\relay-plugin\main.js)) { throw "no main.js after build" }
+
+          $key = "$E2E\harness-key"; if (-not (Test-Path $key)) { throw "harness key missing" }
+          icacls $key /inheritance:r | Out-Null; icacls $key /grant "relay:F" | Out-Null
+          $env:GIT_SSH_COMMAND = "ssh -i `"$key`" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL"
+          if (-not (Test-Path C:\relay-harness)) { git clone git@github.com:No-Instructions/relay-harness.git C:\relay-harness }
+          Set-Location C:\relay-harness; git fetch origin --prune | Out-Null
+          $hr = $HarnessRef -replace '^origin/',''
+          git checkout --detach "origin/$hr" 2>$null
+          if ($LASTEXITCODE -ne 0) { git checkout --detach $HarnessRef 2>$null }
+          if ($LASTEXITCODE -ne 0) { git fetch origin $HarnessRef; git checkout --detach $HarnessRef }
+          Log ("harness: " + (git rev-parse HEAD))
+
+          & $py -m pip install --upgrade pip | Out-Null
+          & $py -m pip install click websockets | Out-Null
+
+          $obs = @("$env:LOCALAPPDATA\Programs\Obsidian\Obsidian.exe","$env:LOCALAPPDATA\Obsidian\Obsidian.exe","C:\Program Files\Obsidian\Obsidian.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $obs) { $obs = (Get-ChildItem "$env:LOCALAPPDATA","C:\Program Files" -Filter Obsidian.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          if (-not $obs) { throw "Obsidian.exe not found" }
+          $env:OBSIDIAN_PATH = $obs; Log ("obsidian: " + $obs)
+
+          Set-Location C:\relay-harness
+          foreach ($pl in @(@{id="obsidian-kanban";base="https://github.com/mgmeyers/obsidian-kanban/releases/download/2.0.51"}, @{id="obsidian-tsdb";base="https://github.com/dtkav/obsidian-tsdb/releases/download/1.0.12"})) {
+            $dir = "C:\$($pl.id)-bundle"; New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            foreach ($f in @("main.js","manifest.json","styles.css")) { try { Invoke-WebRequest -UseBasicParsing -Uri "$($pl.base)/$f" -OutFile "$dir\$f" } catch { Log "$($pl.id) $f fetch: $_" } }
+          }
+          # TSDB needs its onboarded metrics-server config to record anything (tp033).
+          Set-Content -Path "C:\obsidian-tsdb-bundle\data.json" -Encoding ascii -Value '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}'
+          & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin --extra-plugin-dir C:\obsidian-kanban-bundle --extra-plugin-dir C:\obsidian-tsdb-bundle
+          if ($LASTEXITCODE -ne 0) { throw "slot provision failed (exit $LASTEXITCODE)" }
+          & $py .claude\scripts\obsidian_slot.py slot start --user $SlotUser --wait-timeout 180
+          if ($LASTEXITCODE -ne 0) { throw "slot start failed (exit $LASTEXITCODE)" }
+          & $py .claude\scripts\obsidian_slot.py slot status --user $SlotUser --json
+
+          Set-Location C:\relay-harness\playwright
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+          node utils\wait-for-ready.mjs $Port
+          if ($LASTEXITCODE -ne 0) { throw "wait-for-ready failed (exit $LASTEXITCODE)" }
+          node utils\inject-auth.mjs $SlotUser $Port
+          if ($LASTEXITCODE -ne 0) { throw "inject-auth failed (exit $LASTEXITCODE)" }
+          Log ("windows slot " + $SlotUser + " authenticated on port " + $Port)
+          PS1
+
+          # Transfer the harness deploy key and the provisioning script over SSH
+          # (base64 in an argv-sized command; both are small text).
+          echo "$HARNESS_DEPLOY_KEY" > /tmp/harness-key; KEY_B64=$(base64 -w0 /tmp/harness-key)
+          run_ps "New-Item -ItemType Directory -Path 'C:\\relay-e2e-testing' -Force | Out-Null; [IO.File]::WriteAllText('C:\\relay-e2e-testing\\harness-key',[Text.Encoding]::ASCII.GetString([Convert]::FromBase64String('$KEY_B64')))"
+          PS_B64=$(base64 -w0 /tmp/win-slot-provision.ps1)
+          run_ps "[IO.File]::WriteAllText('C:\\relay-e2e-testing\\win-slot-provision.ps1',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$PS_B64')))"
+
+          run_ps "powershell -ExecutionPolicy Bypass -File C:\\relay-e2e-testing\\win-slot-provision.ps1 -SlotUser '$USER2' -Port $PORT2 -ProductRef '$REF' -HarnessRef '$HREF'"
+
+      - name: Tunnel and run the plans (Linux x Windows)
+        shell: bash
+        run: |
+          KEY="$HOME/.ssh/win-slot"
+          # Linux tunnel.
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            -- -L "${PORT1}:localhost:${PORT1}" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 &
+          TUN1_PID=$!
+          # Windows tunnel (relay user + key + ssh-flag port forward). Forward to
+          # 127.0.0.1, not localhost: on Windows localhost resolves to ::1 (IPv6)
+          # while Electron's CDP binds 127.0.0.1 (IPv4), so a localhost forward
+          # reaches a dead IPv6 address and the tunnel never carries CDP.
+          gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --ssh-key-file="$KEY" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
+            --ssh-flag="-L ${PORT2}:127.0.0.1:${PORT2}" --ssh-flag="-N" --ssh-flag="-o ExitOnForwardFailure=yes" --ssh-flag="-o ServerAliveInterval=30" &
+          TUN2_PID=$!
+          trap 'kill "$TUN1_PID" "$TUN2_PID" 2>/dev/null || true' EXIT
+
+          for PORT in "$PORT1" "$PORT2"; do
+            ok=0
+            for i in $(seq 1 40); do
+              if curl -fsS "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then echo "tunnel $PORT live"; ok=1; break; fi
+              sleep 2
+            done
+            [ "$ok" = 1 ] || { echo "::error::tunnel to port $PORT never came up"; exit 1; }
+          done
+
+          cd "$HOME/relay-harness"
+          ENDPOINTS="http://127.0.0.1:${PORT1},http://127.0.0.1:${PORT2}"
+          SUMMARY="$HOME/mixed-summary.json"
+
+          # Log hygiene (public repo = public step logs): this lane drives real
+          # Obsidian, so NOTHING derived from a plan or the running app is printed
+          # to the step log. Plan and fixture stdout go to runner-local files; only
+          # pass/fail metadata reaches the console and the summary.json artifact.
+
+          # Between-plan hygiene mirrors run-test-plan-suite.sh's sequential reuse
+          # of persistent slots: close any editors the last plan left open and let
+          # CRDT sync settle before the next plan builds its own relay. Non-fatal —
+          # a hygiene hiccup must not change a plan's verdict.
+          hygiene() {
+            for V in "$USER1" "$USER2"; do
+              RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py \
+                --vault "$V" editor close-all >/dev/null 2>&1 || true
+              RELAY_CDP_ENDPOINTS="$ENDPOINTS" python .claude/scripts/obsidian_ctl.py \
+                --vault "$V" relay wait-sync-idle --timeout-ms 60000 >/dev/null 2>&1 || true
+            done
+          }
+
+          IFS=',' read -ra PLANS <<< "${{ github.event.inputs.plans }}"
+          declare -a RESULTS=()
+          ANY_FAIL=0
+          FIRST=1
+          # Incremental summary in the parallel lane's schema, rewritten after
+          # every plan so a job timeout still leaves verdicts for what ran.
+          write_summary() {
+            python3 - "$SUMMARY" "$@" <<'PY'
+          import json, sys
+          out = sys.argv[1]
+          rows = []
+          for item in sys.argv[2:]:
+              parts = item.split("|")
+              pid, status, dur = parts[0], parts[1], parts[2]
+              reason = parts[3] if len(parts) > 3 else ""
+              rows.append({"name": pid, "dir": pid, "status": status,
+                           "passed": status == "pass", "durationMs": int(dur),
+                           "reason": reason})
+          counts = {}
+          for r in rows:
+              counts[r["status"]] = counts.get(r["status"], 0) + 1
+          summary = {"total": len(rows), "pass": counts.get("pass", 0),
+                     "fail": counts.get("fail", 0), "skip": counts.get("skip", 0),
+                     "duration": sum(r["durationMs"] for r in rows)}
+          state = "failure" if summary["fail"] else "success"
+          json.dump({"state": state, "summary": summary, "tests": rows},
+                    open(out, "w"), indent=2)
+          PY
+          }
+
+          # One manifest lookup per plan: script, slots, timeout, sharedFixture,
+          # storage, shard (tab-separated), or MISSING for an unknown id.
+          meta() {
+            node -e '
+              const m = require("./test-plans/scripts/manifest.json");
+              const t = m.tests.find(t => t.id === process.argv[1]);
+              if (!t) { process.stdout.write("MISSING"); process.exit(0); }
+              process.stdout.write([t.script, Number(t.slots||1),
+                Number(t.timeoutSeconds||600), t.sharedFixture?1:0,
+                t.requiresAttachmentStorage?1:0, t.shard||""].join("\t"));
+            ' "$1"
+          }
+
+          for PLAN in "${PLANS[@]}"; do
+            PLAN="$(echo "$PLAN" | tr -d '[:space:]')"
+            [ -n "$PLAN" ] || continue
+            IFS=$'\t' read -r SCRIPT SLOTS TIMEOUT_S FIXTURE STORAGE SHARD <<< "$(meta "$PLAN")"
+            # Skips are structural — the mixed lane's two ordinary staging slots
+            # cannot serve these — so they are reported with a reason, not run.
+            if [ "$SCRIPT" = "MISSING" ]; then
+              echo "::warning::skip $PLAN (unknown plan id)"
+              RESULTS+=("$PLAN|skip|0|unknown-plan-id"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$SLOTS" != "2" ]; then
+              echo "::warning::skip $PLAN (not a two-slot plan)"
+              RESULTS+=("$PLAN|skip|0|not-two-slot"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$STORAGE" = "1" ]; then
+              echo "::warning::skip $PLAN (needs a storage-quota relay; mixed VMs use ordinary staging users)"
+              RESULTS+=("$PLAN|skip|0|needs-storage-relay"); write_summary "${RESULTS[@]}"; continue
+            fi
+            if [ "$SHARD" = "scripted-folder-hsm" ]; then
+              echo "::warning::skip $PLAN (needs enableFolderHSM; the runner installs the base test profile)"
+              RESULTS+=("$PLAN|skip|0|needs-enableFolderHSM-flag"); write_summary "${RESULTS[@]}"; continue
+            fi
+            # tp033's assertions are metric-presence checks (platform-agnostic,
+            # covered by the Linux 31). The TSDB plugin loads here but RELAY emits
+            # no metrics to it — a RELAY<->tsdb init gap, not cross-platform sync.
+            if [ "$PLAN" = "tp033" ]; then
+              echo "::warning::skip tp033 (metrics-heavy, platform-agnostic; RELAY<->tsdb init gap on mixed)"
+              RESULTS+=("$PLAN|skip|0|metrics-platform-agnostic-relay-tsdb-init-gap"); write_summary "${RESULTS[@]}"; continue
+            fi
+
+            [ "$FIRST" = 1 ] || hygiene || true
+            FIRST=0
+            RUN_DIR="$HOME/slot-vm-runs/$PLAN"; mkdir -p "$RUN_DIR"
+            EXTRA=()
+            if [ "$FIXTURE" = "1" ]; then
+              STATE="$RUN_DIR/shared-fixture.json"
+              echo "--- $PLAN: creating shared fixture (charlie x donna) ---"
+              if RELAY_CDP_ENDPOINTS="$ENDPOINTS" python scripts/test-plan-shared-fixture.py \
+                   create --vault1 "$USER1" --vault2 "$USER2" \
+                   --name "mixed-fixture-${GITHUB_RUN_ID}-$PLAN" --state "$STATE" \
+                   > "$RUN_DIR/fixture.log" 2>&1; then
+                FOLDER="$(node -e 'const s=require(process.argv[1]);process.stdout.write(String(s.remoteFolder||s.folder1||""))' "$STATE" 2>/dev/null)"
+                if [ -z "$FOLDER" ]; then
+                  echo "::error::$PLAN fixture produced no folder"
+                  ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-no-folder"); write_summary "${RESULTS[@]}"; continue
+                fi
+                EXTRA+=(--folder "$FOLDER")
+              else
+                echo "::error::$PLAN shared-fixture creation failed (fixture stdout kept runner-local, not logged)"
+                ANY_FAIL=1; RESULTS+=("$PLAN|fail|0|fixture-setup-failed"); write_summary "${RESULTS[@]}"; continue
+              fi
+            fi
+
+            echo "=== $PLAN: $USER1@$PORT1 (linux) x $USER2@$PORT2 (windows) ${EXTRA[*]} ==="
+            START_MS=$(date +%s%3N)
+            if RELAY_CDP_ENDPOINTS="$ENDPOINTS" timeout "${TIMEOUT_S}s" \
+                 python "test-plans/scripts/$SCRIPT" \
+                   --vault1 "$USER1" --vault2 "$USER2" --run-dir "$RUN_DIR" --no-verify-build "${EXTRA[@]}" \
+                   > "$RUN_DIR/plan.log" 2>&1; then
+              STATUS=pass; REASON=""
+              echo "--- $PLAN PASSED ---"
+            else
+              STATUS=fail; ANY_FAIL=1; REASON=plan-failed
+              echo "::error::$PLAN failed on Linux x Windows (plan stdout kept runner-local, never logged)"
+            fi
+            DUR=$(( $(date +%s%3N) - START_MS ))
+            echo "--- $PLAN ${STATUS} in $((DUR/1000))s ---"
+            RESULTS+=("$PLAN|$STATUS|$DUR|$REASON")
+            write_summary "${RESULTS[@]}"
+          done
+
+          exit "$ANY_FAIL"
+
+      - name: Collect diagnostics on failure
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p "$HOME/slot-vm-runs"
+          exec > "$HOME/slot-vm-runs/diagnostics.log" 2>&1
+          echo "=== driver CDP reachability ==="
+          for PORT in "$PORT1" "$PORT2"; do
+            echo "port $PORT:"; curl -fsS "http://127.0.0.1:${PORT}/json/version" 2>&1 | head -3 || echo "  unreachable"
+          done
+          echo "=== $VM_LIN slot status ==="
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --command='cd ~/relay-harness && ~/.slot-venv/bin/python .claude/scripts/obsidian_slot.py slot status --json' 2>/dev/null || echo "  (ssh failed)"
+          echo "=== $VM_WIN CDP liveness (VM-local, is Obsidian still up?) ==="
+          gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --ssh-key-file="$HOME/.ssh/win-slot" --ssh-flag="-o StrictHostKeyChecking=no" --ssh-flag="-o UserKnownHostsFile=/dev/null" \
+            --command="try { (Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:${PORT2}/json/version' -TimeoutSec 5).Content } catch { 'CDP not answering on 127.0.0.1:${PORT2}: ' + \$_.Exception.Message }" 2>/dev/null || echo "  (ssh failed)"
+          echo "=== $VM_WIN serial console ==="
+          gcloud compute instances get-serial-port-output "$VM_WIN" --port 1 \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 > /tmp/win-serial.txt || true
+          echo "--- startup markers (RELAY-SLOT / SLOT-PROV) ---"
+          grep -aE "RELAY-SLOT|SLOT-PROV" /tmp/win-serial.txt | tail -40 || echo "  (no startup-script markers — did the metadata startup script run?)"
+          echo "--- serial tail (last 200 lines) ---"
+          tail -200 /tmp/win-serial.txt || true
+
+      - name: Publish run report
+        if: always()
+        env:
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+        run: |
+          bash "$HOME/relay-harness/scripts/ci/publish-run-evidence.sh" slot-vm-mixed \
+            "$HOME/slot-vm-runs" \
+            "$HOME/mixed-summary.json"
+
+      - name: Tear down VMs
+        if: always()
+        shell: bash
+        run: |
+          pids=""
+          for VM in "$VM_LIN" "$VM_WIN"; do
+            [ -n "$VM" ] || continue
+            echo "Deleting $VM ..."
+            gcloud compute instances delete "$VM" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" &
+            pids="$pids $!"
+          done
+          for p in $pids; do wait "$p" || true; done
+          echo "VM teardown complete"
