@@ -5402,6 +5402,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	private async drainPendingMachineEditsForRelease(signal: AbortSignal): Promise<void> {
+		// Complete any half-applied link repair before draining/tearing down. A
+		// repair (delete of the old name + insert of the new) can reach the HSM as
+		// two CM6 steps; if RELEASE_LOCK fires between them the trailing insert
+		// arrives in `unloading` and is dropped, leaving the mangled run in
+		// localDoc. Bring localDoc up to the registered expectedText so the drain
+		// publishes the complete repair, never the half-applied one.
+		this.completeHalfAppliedMachineEdits();
 		while (!signal.aborted && this._pendingMachineEdits.length > 0) {
 			this.expireMachineEdits();
 			if (this._pendingMachineEdits.length === 0) return;
@@ -5410,6 +5417,26 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.nextMachineEditExpiryDelay(),
 				signal,
 			);
+		}
+	}
+
+	/**
+	 * Complete a half-applied machine edit whose trailing step was dropped by
+	 * teardown. Only INSERT-only reconciliations are applied — a diff from the
+	 * current localDoc to a registered expectedText that adds text without
+	 * removing any. That restores a lost insert (the BUG-214 half-apply) while
+	 * refusing to revert a concurrent user edit (which would show up as a delete
+	 * against a now-stale expectedText).
+	 */
+	private completeHalfAppliedMachineEdits(): void {
+		if (!this.localDoc) return;
+		for (const entry of this._pendingMachineEdits) {
+			const cur = this.localDoc.getText("contents").toString();
+			if (cur === entry.expectedText) continue;
+			const changes = this.computeDiffChanges(cur, entry.expectedText);
+			if (changes.length > 0 && changes.every((c) => c.to === c.from)) {
+				this.applyChangesToLocalDoc(changes);
+			}
 		}
 	}
 
