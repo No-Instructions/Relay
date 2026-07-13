@@ -199,7 +199,10 @@ jobs:
           elif [ "$REF_TYPE" = "tag" ]; then
             REF="refs/tags/$REF_NAME"
           else
-            REF="origin/$REF_NAME"
+            # Branch pushes test the exact commit that triggered the run so
+            # that re-run attempts reproduce the original checkout instead of
+            # whatever the branch tip has moved to since.
+            REF="${{ github.sha }}"
           fi
 
           gcloud compute ssh "$VM_NAME" --quiet \
@@ -240,7 +243,12 @@ jobs:
             '+refs/tags/0.8.0*:refs/tags/0.8.0*'
           git checkout -- .
           git clean -fd
-          git checkout --detach "$REF"
+          # A commit orphaned by a force-push is not reachable from any
+          # fetched head, so fall back to fetching the ref directly.
+          if ! git checkout --detach "$REF"; then
+            git fetch origin "$REF"
+            git checkout --detach "$REF"
+          fi
           git crypt unlock ~/.config/relay-e2e/relay-git-crypt-key
           if ! grep -q "describe\\|test\\|it(" __tests__/TestMinimark.ts; then
             echo "git-crypt unlock did not expose the private unit tests"
@@ -458,7 +466,10 @@ jobs:
             exit 1
           fi
 
-          cp "$REPORT_DIR/summary.json" ~/test-summary.json
+          # The public artifact gets counts + per-test {dir,status,duration} only;
+          # test names, suite paths, and failure messages stay in the private R2
+          # report (already uploaded above), never a public artifact.
+          node -e 'const fs=require("fs");const s=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));fs.writeFileSync(process.argv[2],JSON.stringify({summary:s.summary,state:s.state,tests:(s.tests||[]).map(t=>({dir:t.dir,status:t.status,duration:t.duration}))},null,2));' "$REPORT_DIR/summary.json" ~/test-summary.json
           REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
           echo "{\"reportUrl\":\"$REPORT_URL\",\"commit\":\"$COMMIT\",\"execId\":\"$EXEC_ID\"}" > ~/test-metadata.json
 
@@ -483,16 +494,6 @@ jobs:
           gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
-
-      - name: Upload unit metadata
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-metadata
-          path: |
-            summary.json
-            metadata.json
-          if-no-files-found: ignore
 
       - name: Request VM stop
         if: always()
