@@ -253,6 +253,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Consecutive idle retry count — used for backoff when drain rate < queue rate
 	private idleRetryCount = 0;
 
+	// Bounded, backed-off convergence re-checks that re-drive a retryable idle.error
+	// when the provider is already connected (no PROVIDER_SYNCED edge is coming) and
+	// the peer has converged (no REMOTE_UPDATE arrives). Reset when the note settles.
+	private static readonly MAX_CONVERGENCE_RECHECKS = 5;
+	private convergenceRecheckCount = 0;
+
 	// Consecutive superseded idle reconciliations. A superseded outcome (the
 	// world moved mid-operation) re-enters idle.loading to re-classify; this
 	// counter bounds that loop so a livelock surfaces as a visible error instead
@@ -2633,6 +2639,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			resetIdleRetryCount: () => {
 				this.idleRetryCount = 0;
+				this.convergenceRecheckCount = 0;
 				// Convergence clears the supersession bookkeeping and any error the
 				// re-classify/re-arm loops were working through — reaching this action
 				// means the note settled.
@@ -2711,6 +2718,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// while its local edit is never pushed (the TP-058 cycle-3 wedge).
 				this._errorRetryable = true;
 				this.hsmError(`${error.message} (${detail}) | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
+				// Edge re-arms (REMOTE_UPDATE / DISK_CHANGED / PROVIDER_SYNCED) recover
+				// this error when new information or a reconnect arrives. When the
+				// provider is already connected and the peer has converged, none of
+				// those events come — so also drive a bounded, level-triggered
+				// convergence re-check off a timer.
+				this.scheduleConvergenceRecheck();
 			},
 			scheduleIdleRetry: () => {
 				this.idleRetryCount++;
@@ -4564,6 +4577,36 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private isTransportError(error: Error): boolean {
 		const text = `${error.name} ${error.message}`.toLowerCase();
 		return MergeHSM.TRANSPORT_ERROR_SIGNATURES.some((sig) => text.includes(sig));
+	}
+
+	/**
+	 * Schedule a bounded, backed-off convergence re-check for a retryable idle.error.
+	 *
+	 * idle.error re-arms on a REMOTE_UPDATE, DISK_CHANGED, or PROVIDER_SYNCED edge.
+	 * When the provider is already connected there is no reconnect edge, and a
+	 * converged peer sends no remote update — so an unresolved (retryable) reconcile
+	 * failure would sit wedged with its local edit unpushed (the TP-058 cycle-3
+	 * residual). This re-drives reconciliation off a timer instead of waiting for an
+	 * edge that may never come. It only fires while the provider is connected — an
+	 * offline note is left for the PROVIDER_SYNCED edge — and is bounded so a
+	 * deterministically-failing reconcile cannot hot-loop; after the bound the note
+	 * stays a visible idle.error rather than retrying forever.
+	 */
+	private scheduleConvergenceRecheck(): void {
+		if (this.convergenceRecheckCount >= MergeHSM.MAX_CONVERGENCE_RECHECKS) return;
+		if (!this._isProviderSynced()) return;
+		this.convergenceRecheckCount++;
+		const delay = Math.min(250 * 2 ** (this.convergenceRecheckCount - 1), 5000);
+		this.timeProvider.setTimeout(() => {
+			// Re-check the level at fire time: only re-drive if still a retryable
+			// idle.error with the provider connected. A move-on, a demotion to a
+			// permanent error, or a disconnect (the PROVIDER_SYNCED edge will re-arm)
+			// all cancel the re-drive.
+			if (this._statePath !== "idle.error") return;
+			if (!this._errorRetryable) return;
+			if (!this._isProviderSynced()) return;
+			this.send({ type: "CONVERGENCE_RECHECK" });
+		}, delay);
 	}
 
 	private hasRemoteChangedSinceLCA(): boolean {

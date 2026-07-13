@@ -513,6 +513,15 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['markProviderSynced', 'rearmRetryableError'], reenter: true },
 				{ target: 'idle.error', actions: ['markProviderSynced'] },
 			],
+			// Level-triggered recovery: a retryable idle.error whose provider is
+			// already connected receives no PROVIDER_SYNCED edge and, from a converged
+			// peer, no REMOTE_UPDATE. A bounded convergence re-check (host timer)
+			// re-drives reconciliation against the connected provider so the note is
+			// not stranded false-synced waiting for an edge that never comes.
+			CONVERGENCE_RECHECK: [
+				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['rearmRetryableError'], reenter: true },
+				{ target: 'idle.error' },
+			],
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
 			UNLOAD: IDLE_LIFECYCLE.UNLOAD,

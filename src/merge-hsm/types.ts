@@ -586,6 +586,7 @@ export type MergeEvent =
 	| ErrorEvent
 	| IdleMergeCompleteEvent
 	| { type: 'IDLE_RETRY' }
+	| { type: 'CONVERGENCE_RECHECK' }
 	// Diagnostic (from Obsidian monkeypatches)
 	| ObsidianLoadFileInternalEvent
 	| ObsidianSetViewDataEvent
