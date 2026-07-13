@@ -2415,6 +2415,28 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		};
 	}
 
+	private storeUnresolvedIdleError(event: MergeEvent, retryable: boolean): void {
+		const data = (event as any).data;
+		const detail = data === undefined
+			? "no invoke result"
+			: JSON.stringify({
+				success: data?.success,
+				kind: data?.kind,
+				reason: data?.reason,
+				awaitingProvider: data?.awaitingProvider,
+				forked: data?.forked,
+			});
+		const error = new Error(
+			"Unable to continue idle reconciliation",
+		);
+		this._error = error;
+		// Only fork-reconcile's unresolved outcome is transient. Unrecognized
+		// idle-merge and recover-LCA outcomes stay permanent so retries cannot
+		// mask an invariant failure.
+		this._errorRetryable = retryable;
+		this.hsmError(`${error.message} (${detail}) | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
+	}
+
 	private buildActions(): Record<string, ActionFn> {
 		return {
 			// === Idle loading ===
@@ -2649,21 +2671,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._errorRetryable = false;
 			},
 			storeUnresolvedIdleError: (_hsm, event) => {
-				const data = (event as any).data;
-				const detail = data === undefined
-					? "no invoke result"
-					: JSON.stringify({
-						success: data?.success,
-						kind: data?.kind,
-						reason: data?.reason,
-						awaitingProvider: data?.awaitingProvider,
-						forked: data?.forked,
-					});
-				const error = new Error(
-					"Unable to continue idle reconciliation",
-				);
-				this._error = error;
-				this.hsmError(`${error.message} (${detail}) | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
+				this.storeUnresolvedIdleError(event, false);
+			},
+			storeRetryableUnresolvedIdleError: (_hsm, event) => {
+				this.storeUnresolvedIdleError(event, true);
 			},
 			scheduleIdleRetry: () => {
 				this.idleRetryCount++;

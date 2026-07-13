@@ -263,7 +263,7 @@ export const MACHINE: MachineDefinition = {
 				// livelock surfaces as a real error instead of spinning.
 				{ target: 'idle.loading', guard: 'supersededWithinBound', actions: ['countSupersession'], reenter: true },
 				{ target: 'idle.error', guard: 'mergeSuperseded', actions: ['storeSupersededError'] },
-				{ target: 'idle.error', actions: ['storeUnresolvedIdleError'] },
+				{ target: 'idle.error', actions: ['storeRetryableUnresolvedIdleError'] },
 			],
 			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
@@ -503,6 +503,15 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: [
 				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['storeDiskMetadata', 'rearmRetryableError'], reenter: true },
 				{ target: 'idle.error', actions: ['storeDiskMetadata'] },
+			],
+			// A retryable idle.error re-arms on the connectivity level too, not just
+			// on new remote/disk information. A note whose peer is already converged
+			// receives no REMOTE_UPDATE after a reconnect, so without this a
+			// retryable error would sit wedged with its local edit unpushed once the
+			// provider returns (the unresolved-reconcile wedge).
+			PROVIDER_SYNCED: [
+				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['markProviderSynced', 'rearmRetryableError'], reenter: true },
+				{ target: 'idle.error', actions: ['markProviderSynced'] },
 			],
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
