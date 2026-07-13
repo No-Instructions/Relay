@@ -706,12 +706,25 @@ export class SyncFile
 		}
 	}
 
-	shouldPull(meta: FileMetas) {
+	shouldPull(meta: FileMetas): boolean {
 		const tfile = this.tfile;
 		if (this.isLastServerEditSuccessor(meta)) {
 			return true;
 		}
-		return meta.synctime > tfile.stat.mtime;
+		if (this.lastServerEdit) {
+			// A session marker exists but this meta is not a successor: either we
+			// already hold meta.hash, or a local user edit supersedes it. Keep the
+			// local content — never decide the pull from a cross-vault clock.
+			return false;
+		}
+		// No causal marker this session (a fresh peer, or after a restart cleared
+		// the in-memory marker). meta.synctime is derived from the *writer* vault's
+		// local file stat and is not comparable to this peer's mtime, so it must
+		// never be the deciding factor — comparing them can skip a genuinely
+		// committed remote revision. Attempt the pull instead: pull() re-guards by
+		// content hash (it skips the download when the bytes are already local) and
+		// seeds the marker, so subsequent checks resolve causally and cheaply.
+		return tfile != null;
 	}
 
 	private isCleanLastServerEdit(meta: FileMetas, stat: FileStats): boolean {
@@ -780,6 +793,15 @@ export class SyncFile
 				statMtime: this.stat.mtime,
 			});
 			if (hash === this.meta.hash) {
+				// The committed content is already on disk. Seed the server-edit
+				// marker from it so subsequent shouldPull checks resolve causally by
+				// hash (via isLastServerEditSuccessor) instead of re-attempting a
+				// pull and re-hashing the file on every reconciliation.
+				this.lastServerEdit = {
+					mtime: this.stat.mtime,
+					size: this.stat.size,
+					hash: this.meta.hash,
+				};
 				this.debug("pull skipped -- hash already local", {
 					path: this.path,
 					guid: this.guid,
