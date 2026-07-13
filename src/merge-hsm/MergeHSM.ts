@@ -2653,6 +2653,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					"Unable to continue idle reconciliation",
 				);
 				this._error = error;
+				// An unresolved reconcile outcome (a bare invoke {success:false} that
+				// classified as neither converged, awaitingProvider, conflict, nor
+				// superseded) is recoverable: fresh information — a remote update, a
+				// disk edit, or a provider reconnect — must be able to re-drive the
+				// pipeline. Unlike storeSupersededError (bound-exhausted, deliberately
+				// permanent), leaving this permanent strands the note in idle.error
+				// while its local edit is never pushed (the TP-058 cycle-3 wedge).
+				this._errorRetryable = true;
 				this.hsmError(`${error.message} (${detail}) | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
 			},
 			scheduleIdleRetry: () => {
