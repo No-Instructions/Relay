@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy, createEventDispatcher, tick } from "svelte";
 	import { App, TFolder } from "obsidian";
+	import { shouldOfferCreate } from "./folderSuggestion";
 
 	// Portal action to render content at body level
 	function portal(node: HTMLElement) {
@@ -80,9 +81,10 @@
 		const rootFolder = app.vault.getRoot();
 		getAllFoldersRecursively(rootFolder);
 
-		// Add create option if input doesn't match exactly
+		// Add create option if input doesn't match exactly and is not blocked
+		// (the vault root and already-shared/reserved folders are never offered).
 		const trimmed = query.trim();
-		if (trimmed && !folders.includes(trimmed)) {
+		if (shouldOfferCreate(trimmed, folders.includes(trimmed), blockedPaths)) {
 			// Ensure create option starts with slash too
 			const createPath = trimmed.startsWith("/") ? trimmed : "/" + trimmed;
 			folders.unshift(`[Create] ${createPath}`);

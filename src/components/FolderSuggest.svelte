@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { App, TFolder } from "obsidian";
 	import GenericSuggest from "./GenericSuggest.svelte";
+	import { shouldOfferCreate } from "./folderSuggestion";
 	import type { SharedFolders } from "../SharedFolder";
 	import { Layers } from "lucide-svelte";
 
@@ -60,9 +61,16 @@
 		const rootFolder = app.vault.getRoot();
 		getAllFoldersRecursively(rootFolder);
 
-		// Add create option if input doesn't match exactly
+		// Add create option if input doesn't match exactly and is not blocked
+		// (the vault root and already-shared/reserved folders are never offered).
 		const trimmed = query.trim();
-		if (trimmed && !existingPaths.has(trimmed.toLowerCase())) {
+		if (
+			shouldOfferCreate(
+				trimmed,
+				existingPaths.has(trimmed.toLowerCase()),
+				blockedPaths,
+			)
+		) {
 			suggestions.unshift({
 				path: trimmed,
 				isCreate: true,
