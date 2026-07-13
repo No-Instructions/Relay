@@ -504,6 +504,15 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['storeDiskMetadata', 'rearmRetryableError'], reenter: true },
 				{ target: 'idle.error', actions: ['storeDiskMetadata'] },
 			],
+			// A retryable idle.error re-arms on the connectivity level too, not just
+			// on new remote/disk information. A note whose peer is already converged
+			// receives no REMOTE_UPDATE after a reconnect, so without this a
+			// retryable error would sit wedged with its local edit unpushed once the
+			// provider returns (the TP-058 cycle-3 wedge).
+			PROVIDER_SYNCED: [
+				{ target: 'idle.loading', guard: 'errorIsRetryable', actions: ['markProviderSynced', 'rearmRetryableError'], reenter: true },
+				{ target: 'idle.error', actions: ['markProviderSynced'] },
+			],
 			CM6_CHANGE: { target: 'idle.error', actions: ['accumulateCM6Change'] },
 			ACQUIRE_LOCK: IDLE_LIFECYCLE.ACQUIRE_LOCK,
 			UNLOAD: IDLE_LIFECYCLE.UNLOAD,
