@@ -384,10 +384,15 @@ export class FolderDocBridge {
 			for (const { mapName, key } of refs) {
 				const entry = this.maps.find((m) => m.name === mapName)!;
 				if (entry.remote.has(key)) {
-					const value = entry.remote.get(key);
-					if (!valuesEqual(entry.local.get(key), value)) {
-						entry.local.set(key, value);
-					}
+					// Re-assert unconditionally, even when the local entry already
+					// equals remote. Restore runs against the post-reload gated
+					// state, where the split localDoc was rebuilt from remote (so
+					// the map entry is already present) while the on-disk copy
+					// stayed removed. A value-equality skip would emit no delta and
+					// the machine would never re-materialize the file. The re-set
+					// carries BRIDGE_IN_ORIGIN, which the outbound observer ignores,
+					// so it drives inbound re-materialization without map churn.
+					entry.local.set(key, entry.remote.get(key));
 				} else if (entry.local.has(key)) {
 					entry.local.delete(key);
 				}
