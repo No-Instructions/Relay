@@ -15,6 +15,10 @@ on:
         description: 'Optional comma-separated scripted test ids (e.g. tp000,tp006,tp031)'
         required: false
         default: ''
+      harness_ref:
+        description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
+        required: false
+        default: 'origin/main'
 
 concurrency:
   group: e2e-test-plans-linux
@@ -122,6 +126,9 @@ jobs:
           EOF
 
           git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C ~/relay-harness checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C ~/relay-harness checkout --detach "$HREF"
 
       - name: Ensure VM is running
         if: steps.select-tests.outputs.should_run == 'true'
@@ -256,28 +263,38 @@ jobs:
           elif [ "$REF_TYPE" = "tag" ]; then
             REF="refs/tags/$REF_NAME"
           else
-            REF="origin/$REF_NAME"
+            # Branch pushes test the exact commit that triggered the run so
+            # that re-run attempts reproduce the original checkout instead of
+            # whatever the branch tip has moved to since.
+            REF="${{ github.sha }}"
           fi
 
           SELECTED_TESTS="${{ steps.select-tests.outputs.selected_tests }}"
           SHARD_SLUG_ARG="${{ matrix.shard.slug }}"
+          SHARD_PROFILE_FLAGS_ARG="${{ matrix.shard.profile_flags }}"
+          HARNESS_REF_ARG="${{ github.event.inputs.harness_ref || 'origin/main' }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG' '$SHARD_PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
           SHARD_SLUG="$3"
+          SHARD_PROFILE_FLAGS="${4-}"
+          HARNESS_REF="${5:-origin/main}"
 
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
-          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian.AppImage"
+          OBSIDIAN_VERSION="1.12.7"
+          # Version-specific filename so bumping OBSIDIAN_VERSION forces a fresh
+          # install on the persistent VM instead of reusing a prior version's
+          # cached AppImage.
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
           if [ ! -f "$OBSIDIAN_PATH" ]; then
             echo "Installing Obsidian AppImage..."
             mkdir -p ~/obsidian
-            OBSIDIAN_VERSION="1.8.9"
             wget -q -O "$OBSIDIAN_PATH" \
               "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
             chmod +x "$OBSIDIAN_PATH"
@@ -309,7 +326,13 @@ jobs:
             '+refs/tags/*:refs/tags/*'
           git checkout -- .
           git clean -fd
-          git checkout --detach "$REF"
+          # A commit orphaned by a force-push is not reachable from any
+          # fetched head, so fall back to fetching the ref directly.
+          if ! git checkout --detach "$REF"; then
+            git fetch origin "$REF"
+            git checkout --detach "origin/${REF#origin/}" 2>/dev/null \
+              || git checkout --detach "$REF"
+          fi
           echo "Relay product checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
           echo "  describe: $(git describe --tags --always --long 2>/dev/null || git rev-parse --short HEAD)"
@@ -321,20 +344,23 @@ jobs:
           git fetch origin --prune
           git checkout -- .
           git clean -fd
-          git checkout --detach origin/main
+          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
+            || git checkout --detach "$HARNESS_REF"
+          echo "Relay harness checkout:"
+          git show -s --format='  commit: %H%n  subject: %s'
 
-          # Pull the prebuilt obsidian-metrics plugin from its GitHub release
+          # Pull the prebuilt TSDB metrics plugin from its GitHub release
           # (pinned tag) instead of cloning and building it from source.
-          echo ">>> obsidian-metrics: reached download step (relay-harness ok)"
-          mkdir -p ~/system3/obsidian-metrics/dist/obsidian-metrics
-          OBSIDIAN_METRICS_TAG=v1.0.0
+          echo ">>> tsdb: reached download step (relay-harness ok)"
+          mkdir -p ~/system3/obsidian-metrics/dist/tsdb
+          TSDB_TAG=1.0.12
           for f in main.js manifest.json styles.css; do
-            url="https://github.com/No-Instructions/obsidian-metrics/releases/download/${OBSIDIAN_METRICS_TAG}/$f"
-            echo ">>> fetching obsidian-metrics $f"
-            wget -q -O ~/system3/obsidian-metrics/dist/obsidian-metrics/"$f" "$url" \
+            url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
+            echo ">>> fetching tsdb $f"
+            wget -q -O ~/system3/obsidian-metrics/dist/tsdb/"$f" "$url" \
               || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
           done
-          echo ">>> obsidian-metrics download done"
+          echo ">>> tsdb download done"
 
           # Install uv (no apt/sudo) and the test-harness Python deps into a
           # venv, then export the interpreter so run-test-plan-suite.sh runs
@@ -360,12 +386,13 @@ jobs:
           echo ">>> playwright ok"
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
-          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/obsidian-metrics"
+          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
           cd ~/relay-harness
 
           TEST_EXIT=0
           TEST_LOG="$HOME/test-plan-suite-output.txt"
           RELAY_RUN_EXEC_SUFFIX="$SHARD_SLUG" \
+          RELAY_FREE_SLOT_CANDIDATES="3,4,5,6,7,8" \
             bash ./scripts/run-test-plan-suite.sh --upload --force-slots "--tests=$SELECTED_TESTS" >"$TEST_LOG" 2>&1 || TEST_EXIT=$?
           echo "Scripted test-plan runner exited with status $TEST_EXIT"
 
@@ -438,6 +465,8 @@ jobs:
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
           rm -f summary.json metadata.json
+          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
@@ -453,6 +482,7 @@ jobs:
           path: |
             summary.json
             metadata.json
+            suite-output.txt
           if-no-files-found: ignore
 
       - name: Request shard VM stop
