@@ -395,6 +395,25 @@ export class HasProvider extends HasLogging {
 		return this._providerSynced;
 	}
 
+	/**
+	 * True once the transport has been held long enough for the provider's
+	 * reconnect backoff to reset — the socket has stayed open for
+	 * RECONNECT_STABILITY_MS without a drop, so `wsUnsuccessfulReconnects` is
+	 * back to zero. A connection still inside a reconnect flap reports connected
+	 * but has a non-zero backoff counter until it settles. Recovery that must
+	 * touch the transport (a fresh connect or a remoteDoc rebuild) waits for this
+	 * level so it never competes with a still-flapping reconnect and drives an
+	 * in-flight reconcile into a transport error.
+	 */
+	public get connectionStable(): boolean {
+		const provider = this._provider;
+		return (
+			this.connected &&
+			provider !== null &&
+			provider.wsUnsuccessfulReconnects === 0
+		);
+	}
+
 	private clearDeferredDisconnect(): void {
 		if (this._deferredDisconnectTimer !== null) {
 			this.timeProvider.clearTimeout(this._deferredDisconnectTimer);

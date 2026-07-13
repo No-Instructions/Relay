@@ -21,6 +21,7 @@ import {
 } from "./merge-hsm/integration/ProviderIntegration";
 import { reconnectProvider } from "./merge-hsm/integration/ProviderLifecycle";
 import { generateHash } from "./hashing";
+import { readNoteText } from "./diskText";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { trackPromise } from "./trackPromise";
 import { DocumentDestroyedError } from "./DocumentDestroyedError";
@@ -799,10 +800,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				`[Document] Cannot read disk content for ${this.path}: TFile not found`,
 			);
 		}
-		const content = await this.vault.read(tfile);
-		const encoder = new TextEncoder();
-		const hash = await generateHash(encoder.encode(content).buffer);
-		return { content, hash, mtime: tfile.stat.mtime };
+		const { contents, hash, mtime } = await readNoteText(this.vault, tfile);
+		return { content: contents, hash, mtime };
 	}
 
 	/**
@@ -877,13 +876,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Cleanup: call destroyIdleProviderIntegration() or releaseLock()
 	 * when the provider is no longer needed (e.g. on hibernate).
 	 */
-	connectForForkReconcile(): Promise<void> {
+	connectForForkReconcile(options?: {
+		rebuildRemoteDoc?: boolean;
+	}): Promise<void> {
 		if (this._forkReconcileConnectPromise) {
 			return this._forkReconcileConnectPromise;
 		}
 
 		const promise = this.lifetime.guard(() =>
-			this.connectForForkReconcileOnce(),
+			this.connectForForkReconcileOnce(options),
 		);
 		const tracked = promise.finally(() => {
 			if (this._forkReconcileConnectPromise === tracked) {
@@ -894,19 +895,31 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return tracked;
 	}
 
-	private async connectForForkReconcileOnce(): Promise<void> {
+	private async connectForForkReconcileOnce(options?: {
+		rebuildRemoteDoc?: boolean;
+	}): Promise<void> {
 		const hsm = this._hsm;
 		if (!hsm) return;
 		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
+		// A rebuild forces a fresh remoteDoc even when an integration already
+		// exists: the last resort for a stranded integration that reports
+		// connected but whose subdoc sync never completed and will not re-sync on
+		// its own. Otherwise a fresh remoteDoc is built only for a fork that has
+		// no integration yet.
 		const acquiredIntegration = this.ensureIdleProviderIntegration({
-			freshRemoteDoc: hsm.hasFork() && !this.hasProviderIntegration(),
+			freshRemoteDoc:
+				options?.rebuildRemoteDoc === true ||
+				(hsm.hasFork() && !this.hasProviderIntegration()),
 		});
 		let unsubscribeState: (() => void) | null = null;
 		const cleanupIfDone = () => {
 			if (hsm.matches("idle.localAhead")) return;
 			if (!hsm.state.lca && hsm.matches("idle.diverged")) return;
+			// Keep the integration up while a retryable error is pending so the
+			// reconnect can deliver the remote update that re-arms it.
+			if (hsm.matches("idle.error") && hsm.state.errorRetryable) return;
 			unsubscribeState?.();
 			unsubscribeState = null;
 			if (!hsm.isActive()) {
