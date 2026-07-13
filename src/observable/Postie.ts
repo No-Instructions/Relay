@@ -71,6 +71,11 @@ export class PostOffice {
 	// chunk can hold the main thread before the macrotask continuation lets the
 	// event loop run; the count cap remains a backstop.
 	private static readonly MAX_FLUSH_MS = 8;
+	// The per-chunk yield budget, read from the injected TimeProvider so a frozen
+	// test clock cannot trip it mid-flush. Defaults to MAX_FLUSH_MS; a test can pin
+	// it (e.g. Infinity) through _resetForTesting for deterministic synchronous
+	// delivery.
+	private maxFlushMs: number = PostOffice.MAX_FLUSH_MS;
 	// Diagnostic ring buffers: bounded so a long, busy session can't grow them
 	// without limit (each entry pins its sender observable and recipient closure).
 	private static readonly MAX_MAIL_LOG = 1_000;
@@ -327,6 +332,11 @@ export class PostOffice {
 
 	private deliver(): void {
 		const t0 = performance.now();
+		// The delivery-latency metric measures real elapsed time (performance.now);
+		// the yield budget reads the injected TimeProvider, so a frozen test clock
+		// keeps a batch synchronous while production (DefaultTimeProvider = Date.now)
+		// still yields after maxFlushMs of real work.
+		const budgetStart = this.timeProvider.now();
 		metrics.setPostieMailboxDepth(this.mailboxes.size);
 		// Counts items processed (delivered or failed), not successes — it bounds
 		// total work per pass so a recipient that re-emits on every delivery can't
@@ -344,7 +354,7 @@ export class PostOffice {
 				// the cascade drains after the event loop has had a turn.
 				if (
 					processed >= PostOffice.MAX_DELIVERIES_PER_FLUSH ||
-					performance.now() - t0 > PostOffice.MAX_FLUSH_MS
+					this.timeProvider.now() - budgetStart > this.maxFlushMs
 				) {
 					metrics.observePostieDelivery((performance.now() - t0) / 1000);
 					return;
@@ -526,8 +536,10 @@ export class PostOffice {
 	/**
 	 * Reset PostOffice for testing with a custom TimeProvider.
 	 * This clears any existing instance and allows a new one to be created.
+	 * Pass maxFlushMs (e.g. Infinity) to pin the yield budget so a deterministic
+	 * test batch is delivered synchronously in a single flush.
 	 */
-	static _resetForTesting(timeProvider?: TimeProvider): void {
+	static _resetForTesting(timeProvider?: TimeProvider, maxFlushMs?: number): void {
 		if (PostOffice.instance) {
 			PostOffice.instance.timeProvider?.destroy();
 			if (PostOffice.instance.continuationChannel) {
@@ -540,6 +552,9 @@ export class PostOffice {
 		PostOffice.instance = undefined as any;
 		if (timeProvider) {
 			PostOffice.instance = new PostOffice(timeProvider);
+			if (maxFlushMs !== undefined) {
+				PostOffice.instance.maxFlushMs = maxFlushMs;
+			}
 			RelayInstances.set(PostOffice.instance, "postie");
 		}
 	}
