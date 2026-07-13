@@ -43,11 +43,7 @@ jobs:
         shard:
           - name: scripted-all
             slug: all
-            tests: default
-          - name: scripted-folder-hsm
-            slug: fhsm
-            tests: tp052
-            profile_flags: enableFolderHSM=true
+            tests: tp000,tp001,tp002,tp003,tp004,tp006,tp007,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp030,tp031,tp032,tp033,tp034
     env:
       VM_NAME: ${{ format('{0}-tp-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
       SHARD_NAME: ${{ matrix.shard.name }}
@@ -256,7 +252,6 @@ jobs:
           rm -f /tmp/r2-endpoint /tmp/r2-access-key /tmp/r2-secret-key
 
       - name: Run scripted test plans on VM
-        id: run-plans
         if: steps.select-tests.outputs.should_run == 'true'
         run: |
           INPUT_REF="${{ github.event.inputs.ref || '' }}"
@@ -392,10 +387,6 @@ jobs:
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
           export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
-          if [ -n "$SHARD_PROFILE_FLAGS" ]; then
-            export RELAY_PROFILE_FLAG_OVERRIDES="$SHARD_PROFILE_FLAGS"
-            echo ">>> profile flag overrides: $RELAY_PROFILE_FLAG_OVERRIDES"
-          fi
           cd ~/relay-harness
 
           TEST_EXIT=0
@@ -414,9 +405,6 @@ jobs:
             COMMIT=$(basename "$(dirname "$LATEST")")
             EXEC_ID=$(basename "$LATEST")
             REPORT_URL="https://ci.system3.dev/runs/${COMMIT}/${EXEC_ID}/index.html"
-            cp "$TEST_LOG" "$LATEST/suite-output.txt"
-            node scripts/upload-report.mjs "$LATEST" "$COMMIT" "$EXEC_ID" \
-              > "$HOME/final-report-upload.log" 2>&1 || TEST_EXIT=1
             echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > ~/test-metadata.json
 
             node - "$LATEST_SUMMARY" > ~/test-summary.json <<'NODE'
@@ -465,37 +453,6 @@ jobs:
           exit $TEST_EXIT
           REMOTE_SCRIPT
 
-      - name: Upload suite-log tail if no report was published
-        if: always() && steps.select-tests.outputs.should_run == 'true' && steps.run-plans.outcome != 'success'
-        run: |
-          # Last-resort diagnosability (R2-only, add-only on the failure path).
-          # If the run step failed or was killed (a hung plan timing the step
-          # out) and the in-suite finalize trap published nothing, tail the
-          # suite log on the VM and upload it under a crash-scoped key so the
-          # shard still leaves evidence. Runs before credential cleanup so the
-          # R2 env is present. Skips entirely when a report URL already exists,
-          # so it can never overwrite a real report. Best-effort.
-          gcloud compute ssh "$VM_NAME" --quiet \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
-            --command="bash -s" 2>/dev/null << 'REMOTE_FALLBACK' || true
-          set -u
-          META="$HOME/test-metadata.json"
-          if [ -s "$META" ] && grep -q '"reportUrl": *"https' "$META"; then
-            echo "report already published; skipping fallback"; exit 0
-          fi
-          LOG="$HOME/test-plan-suite-output.txt"
-          [ -s "$LOG" ] || { echo "no suite log; nothing to upload"; exit 0; }
-          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
-          COMMIT=$(git -C ~/relay-plugin rev-parse HEAD 2>/dev/null || echo unknown)
-          EXEC="crash-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"
-          DIR="/tmp/test-reports/runs/${COMMIT}/${EXEC}"
-          mkdir -p "$DIR"
-          tail -c 200000 "$LOG" > "$DIR/suite-output-tail.txt"
-          printf '%s\n' '{"state":"error","synthetic":true,"reason":"suite produced no report; log tail only","summary":{"total":0,"pass":0,"fail":0},"tests":[]}' > "$DIR/summary.json"
-          cd ~/relay-harness && node scripts/upload-report.mjs "$DIR" "$COMMIT" "$EXEC" 2>&1 | tail -20 || true
-          echo "crash log-tail: https://ci.system3.dev/runs/${COMMIT}/${EXEC}/index.html"
-          REMOTE_FALLBACK
-
       - name: Clean up VM credentials
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
@@ -508,12 +465,25 @@ jobs:
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
           rm -f summary.json metadata.json
+          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
+
+      - name: Upload shard metadata
+        if: always() && steps.select-tests.outputs.should_run == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: testplans-${{ matrix.shard.slug }}-metadata
+          path: |
+            summary.json
+            metadata.json
+            suite-output.txt
+          if-no-files-found: ignore
 
       - name: Request shard VM stop
         if: always() && steps.select-tests.outputs.should_run == 'true'
