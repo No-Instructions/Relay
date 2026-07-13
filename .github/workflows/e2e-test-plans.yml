@@ -256,6 +256,7 @@ jobs:
           rm -f /tmp/r2-endpoint /tmp/r2-access-key /tmp/r2-secret-key
 
       - name: Run scripted test plans on VM
+        id: run-plans
         if: steps.select-tests.outputs.should_run == 'true'
         run: |
           INPUT_REF="${{ github.event.inputs.ref || '' }}"
@@ -463,6 +464,37 @@ jobs:
 
           exit $TEST_EXIT
           REMOTE_SCRIPT
+
+      - name: Upload suite-log tail if no report was published
+        if: always() && steps.select-tests.outputs.should_run == 'true' && steps.run-plans.outcome != 'success'
+        run: |
+          # Last-resort diagnosability (R2-only, add-only on the failure path).
+          # If the run step failed or was killed (a hung plan timing the step
+          # out) and the in-suite finalize trap published nothing, tail the
+          # suite log on the VM and upload it under a crash-scoped key so the
+          # shard still leaves evidence. Runs before credential cleanup so the
+          # R2 env is present. Skips entirely when a report URL already exists,
+          # so it can never overwrite a real report. Best-effort.
+          gcloud compute ssh "$VM_NAME" --quiet \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --command="bash -s" 2>/dev/null << 'REMOTE_FALLBACK' || true
+          set -u
+          META="$HOME/test-metadata.json"
+          if [ -s "$META" ] && grep -q '"reportUrl": *"https' "$META"; then
+            echo "report already published; skipping fallback"; exit 0
+          fi
+          LOG="$HOME/test-plan-suite-output.txt"
+          [ -s "$LOG" ] || { echo "no suite log; nothing to upload"; exit 0; }
+          [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
+          COMMIT=$(git -C ~/relay-plugin rev-parse HEAD 2>/dev/null || echo unknown)
+          EXEC="crash-$(hostname)-$(date -u +%Y%m%dT%H%M%SZ)"
+          DIR="/tmp/test-reports/runs/${COMMIT}/${EXEC}"
+          mkdir -p "$DIR"
+          tail -c 200000 "$LOG" > "$DIR/suite-output-tail.txt"
+          printf '%s\n' '{"state":"error","synthetic":true,"reason":"suite produced no report; log tail only","summary":{"total":0,"pass":0,"fail":0},"tests":[]}' > "$DIR/summary.json"
+          cd ~/relay-harness && node scripts/upload-report.mjs "$DIR" "$COMMIT" "$EXEC" 2>&1 | tail -20 || true
+          echo "crash log-tail: https://ci.system3.dev/runs/${COMMIT}/${EXEC}/index.html"
+          REMOTE_FALLBACK
 
       - name: Clean up VM credentials
         if: always() && steps.select-tests.outputs.should_run == 'true'
