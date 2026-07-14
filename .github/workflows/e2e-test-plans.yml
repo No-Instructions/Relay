@@ -465,14 +465,17 @@ jobs:
         if: always() && steps.select-tests.outputs.should_run == 'true'
         run: |
           rm -f summary.json metadata.json
-          gcloud compute scp --quiet "$VM_NAME":~/test-plan-suite-output.txt ./suite-output.txt \
-            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-summary.json ./summary.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
           gcloud compute scp --quiet "$VM_NAME":~/test-metadata.json ./metadata.json \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
+          # The public artifact carries counts + per-test {dir,status,duration}
+          # only; plan names and any output stay in the private report store.
+          if [ -s summary.json ]; then
+            node -e 'const fs=require("fs");const s=JSON.parse(fs.readFileSync("summary.json","utf8"));fs.writeFileSync("summary.json",JSON.stringify({summary:s.summary,state:s.state,tests:(s.tests||[]).map(t=>({dir:t.dir,status:t.status,duration:t.duration}))},null,2));'
+          fi
 
       - name: Upload shard metadata
         if: always() && steps.select-tests.outputs.should_run == 'true'
@@ -482,7 +485,6 @@ jobs:
           path: |
             summary.json
             metadata.json
-            suite-output.txt
           if-no-files-found: ignore
 
       - name: Request shard VM stop
