@@ -1,0 +1,309 @@
+name: Bake Windows E2E image
+
+# One-shot, manually dispatched image bake. Boots a Windows Server 2022 VM in
+# the tactile-timer project, installs the E2E software stack (Node, Git,
+# ffmpeg, Obsidian) with infra/windows-setup.ps1, then captures a reusable GCE
+# image so a future Windows lane can boot fast instead of choco-installing on
+# every run — mirroring the relay-e2e-base golden image the Linux lanes use.
+#
+# CI-only: no push/PR trigger, so it is inert on main until dispatched.
+# All GCP access is through the workflow's service account (GCP_SA_KEY_TACTILE);
+# nothing here depends on a locally authenticated gcloud.
+
+on:
+  workflow_dispatch:
+    inputs:
+      harness_ref:
+        description: 'relay-harness ref providing infra/ setup scripts'
+        required: false
+        default: 'origin/main'
+      image_name:
+        description: 'Image name to create (default relay-e2e-windows-YYYYMMDD)'
+        required: false
+        default: ''
+      keep_vm:
+        description: 'Keep the build VM instead of deleting it (debugging)'
+        required: false
+        default: 'false'
+
+env:
+  GCP_PROJECT: tactile-timer-426817-t6
+  VM_ZONE: us-west1-b
+  IMAGE_FAMILY: relay-e2e-windows
+  SOURCE_IMAGE_FAMILY: windows-2022
+  SOURCE_IMAGE_PROJECT: windows-cloud
+
+jobs:
+  bake:
+    name: bake-windows-image
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: read
+
+    steps:
+      - name: Clone relay-harness
+        shell: bash
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --depth 50 git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref }}"
+          git -C "$HOME/relay-harness" checkout --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --detach "$HREF"
+          echo "Harness commit: $(git -C "$HOME/relay-harness" rev-parse HEAD)"
+          test -f "$HOME/relay-harness/infra/windows-setup.ps1"
+
+      - name: Auth to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Generate build SSH key and startup script
+        shell: bash
+        run: |
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/win-bake -N "" -q
+          PUB=$(cat ~/.ssh/win-bake.pub)
+          echo "WIN_PUBKEY=$PUB" >> "$GITHUB_ENV"
+
+          # Self-contained Windows startup script. The GCE Windows guest agent
+          # does not wire ssh-keys metadata into OpenSSH, so this installs
+          # OpenSSH Server and authorizes exactly the runner's key (passed via
+          # the relay-ssh-pubkey instance-metadata attribute) for a local admin
+          # account. Every stage logs a RELAY-BAKE marker to the serial console
+          # so a failed bake can be diagnosed from get-serial-port-output.
+          cat > /tmp/win-startup.ps1 <<'PS1'
+          $ErrorActionPreference = "Continue"
+          function Log($m) { Write-Output "RELAY-BAKE: $m" }
+          Log "startup begin"
+
+          # Add-WindowsCapability -Online is synchronous but can transiently
+          # fail before the FoD source is reachable; retry until sshd exists.
+          for ($i = 1; $i -le 6; $i++) {
+            if (Get-Service sshd -ErrorAction SilentlyContinue) { break }
+            try { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null }
+            catch { Log "Add-WindowsCapability attempt $i failed: $_" }
+            Start-Sleep -Seconds 10
+          }
+          if (-not (Get-Service sshd -ErrorAction SilentlyContinue)) { Log "ERROR: sshd not installed after retries" }
+
+          Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
+          Start-Service sshd -ErrorAction SilentlyContinue
+          Log "sshd install+start done"
+
+          if (-not (Get-NetFirewallRule -Name sshd-relay -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name sshd-relay -DisplayName 'OpenSSH Server (relay)' `
+              -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+          }
+          Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+
+          if (Test-Path "HKLM:\SOFTWARE\OpenSSH") {
+            New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell `
+              -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" `
+              -PropertyType String -Force | Out-Null
+          }
+
+          # Access is SSH-key-only, so the local account password is a throwaway
+          # generated at boot and never persisted or logged.
+          $rand = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
+          $pw = ConvertTo-SecureString ($rand + '!Aa9') -AsPlainText -Force
+          if (-not (Get-LocalUser -Name relay -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name relay -Password $pw -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+            Add-LocalGroupMember -Group Administrators -Member relay
+          }
+          Log "relay user ready"
+
+          $pub = $null
+          try {
+            $pub = Invoke-RestMethod -Headers @{'Metadata-Flavor'='Google'} `
+              -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/attributes/relay-ssh-pubkey'
+          } catch { Log "ERROR: could not fetch relay-ssh-pubkey: $_" }
+
+          New-Item -ItemType Directory -Path "C:\ProgramData\ssh" -Force | Out-Null
+          $adminKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
+          if ($pub) {
+            Set-Content -Path $adminKeys -Value $pub -Encoding ascii
+            icacls $adminKeys /inheritance:r | Out-Null
+            icacls $adminKeys /grant "SYSTEM:F" | Out-Null
+            icacls $adminKeys /grant "BUILTIN\Administrators:F" | Out-Null
+            Log "authorized_keys written (len=$($pub.Length))"
+          } else {
+            Log "ERROR: no pubkey; authorized_keys not written"
+          }
+
+          Restart-Service sshd -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path "C:\relay-e2e-testing" -Force | Out-Null
+          $svc = Get-Service sshd -ErrorAction SilentlyContinue
+          Log "startup complete; sshd status=$($svc.Status)"
+          PS1
+          echo "Startup script and key generated."
+
+      - name: Create Windows build VM
+        id: create
+        shell: bash
+        run: |
+          VM="relay-e2e-winbake-${GITHUB_RUN_ID}"
+          echo "VM_NAME=$VM" >> "$GITHUB_ENV"
+          # Reuse the relay-e2e network tag so the existing IAP->tcp:22
+          # firewall rule (used by the Linux lanes) admits this VM too.
+          gcloud compute instances create "$VM" \
+            --project="$GCP_PROJECT" \
+            --zone="$VM_ZONE" \
+            --machine-type=e2-standard-4 \
+            --image-family="$SOURCE_IMAGE_FAMILY" \
+            --image-project="$SOURCE_IMAGE_PROJECT" \
+            --boot-disk-size=100GB \
+            --boot-disk-type=pd-ssd \
+            --tags=relay-e2e \
+            --metadata=block-project-ssh-keys=TRUE,relay-ssh-pubkey="$WIN_PUBKEY" \
+            --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1
+          echo "Created build VM $VM"
+
+      - name: Wait for SSH over IAP
+        shell: bash
+        run: |
+          KEY="$HOME/.ssh/win-bake"
+          # gcloud --ssh-flag args must each be a single argv token; passing them
+          # through an unquoted string word-splits "-o Opt=val" and gcloud rejects
+          # it. Invoke with the flags inline (properly quoted) instead.
+          ssh_try() {
+            gcloud compute ssh "relay@$VM_NAME" --quiet \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --tunnel-through-iap --ssh-key-file="$KEY" \
+              --ssh-flag="-o StrictHostKeyChecking=no" \
+              --ssh-flag="-o UserKnownHostsFile=/dev/null" \
+              --ssh-flag="-o ConnectTimeout=15" \
+              --command="$1"
+          }
+          ERR=/tmp/ssh-wait.err
+          # Windows Server 2022 first boot + specialization + OpenSSH install can
+          # take well past 10 min; wait up to ~22 min, exiting as soon as ready.
+          for i in $(seq 1 66); do
+            if ssh_try "echo ready" >/dev/null 2>"$ERR"; then
+              echo "SSH ready (attempt $i)"
+              exit 0
+            fi
+            echo "Waiting for Windows boot + OpenSSH ($i/66) ..."
+            sleep 20
+          done
+          echo "::error::Timed out waiting for Windows SSH after ~22 min"
+          echo "----- last gcloud ssh stderr -----"
+          tail -40 "$ERR" || true
+          exit 1
+
+      - name: Run windows-setup.ps1 (software-only)
+        shell: bash
+        run: |
+          KEY="$HOME/.ssh/win-bake"
+          SSHFLAGS=(--zone="$VM_ZONE" --project="$GCP_PROJECT"
+                    --tunnel-through-iap --ssh-key-file="$KEY"
+                    --ssh-flag="-o StrictHostKeyChecking=no"
+                    --ssh-flag="-o UserKnownHostsFile=/dev/null"
+                    --ssh-flag="-o ConnectTimeout=15")
+          run_ps() { gcloud compute ssh "relay@$VM_NAME" --quiet "${SSHFLAGS[@]}" --command="$1"; }
+          # gcloud compute scp does not accept --ssh-flag and mishandles Windows
+          # C:\ destinations, so transfer the script over the (working) SSH path:
+          # base64 it on the runner, decode + write it on the VM. windows-setup.ps1
+          # is ~7.9 KB (~10.5 KB base64), well under the Windows command limit.
+          B64=$(base64 -w0 "$HOME/relay-harness/infra/windows-setup.ps1")
+          run_ps "New-Item -ItemType Directory -Path 'C:\\relay-e2e-testing' -Force | Out-Null; [IO.File]::WriteAllText('C:\\relay-e2e-testing\\windows-setup.ps1',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$B64')))"
+          run_ps "\$f='C:\\relay-e2e-testing\\windows-setup.ps1'; if(!(Test-Path \$f)){throw 'setup script not written'}; Write-Output ('setup script bytes: ' + (Get-Item \$f).Length)"
+          # No -User: install the software stack only (Chocolatey, Node, Git,
+          # ffmpeg, Obsidian), leaving a clean image with no slot/vault/auth state.
+          run_ps "powershell -ExecutionPolicy Bypass -File C:\\relay-e2e-testing\\windows-setup.ps1"
+
+      - name: Generalize with GCESysprep and create image
+        shell: bash
+        run: |
+          IMG="${{ github.event.inputs.image_name }}"
+          if [ -z "$IMG" ]; then IMG="relay-e2e-windows-$(date +%Y%m%d)"; fi
+          echo "IMAGE_NAME=$IMG" >> "$GITHUB_ENV"
+          echo "Target image: $IMG"
+
+          KEY="$HOME/.ssh/win-bake"
+          SSHFLAGS=(--zone="$VM_ZONE" --project="$GCP_PROJECT"
+                    --tunnel-through-iap --ssh-key-file="$KEY"
+                    --ssh-flag="-o StrictHostKeyChecking=no"
+                    --ssh-flag="-o UserKnownHostsFile=/dev/null"
+                    --ssh-flag="-o ConnectTimeout=15")
+          run_ps() { gcloud compute ssh "relay@$VM_NAME" --quiet "${SSHFLAGS[@]}" --command="$1"; }
+
+          # Generalize the disk before imaging. A VM booted from a NON-generalized
+          # image does not complete first-boot specialization, so its metadata
+          # windows-startup-script-ps1 never runs — leaving OpenSSH, the firewall
+          # rule, and the per-run authorized key unestablished (the consumer VM is
+          # then unreachable over SSH). GCESysprep generalizes the image so the
+          # consumer's first boot re-runs specialize + the guest-agent startup
+          # script, which is how the mixed-platform slot-VM lane authorizes its
+          # own ephemeral key.
+          SYSPREP='C:\Program Files\Google\Compute Engine\sysprep\gcesysprep.bat'
+          run_ps "if (-not (Test-Path '$SYSPREP')) { throw 'gcesysprep.bat not found' }; 'gcesysprep present'"
+
+          # GCESysprep powers the VM off itself, dropping this SSH session; tolerate
+          # the drop, then wait for the instance to reach TERMINATED before imaging.
+          echo "Running GCESysprep (the VM powers itself off) ..."
+          timeout 240 gcloud compute ssh "relay@$VM_NAME" --quiet "${SSHFLAGS[@]}" \
+            --command="& '$SYSPREP'" || echo "sysprep SSH session ended (expected on shutdown)"
+
+          echo "Waiting for the VM to reach TERMINATED ..."
+          ok=0
+          for i in $(seq 1 40); do
+            ST=$(gcloud compute instances describe "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --format='value(status)' 2>/dev/null || echo "")
+            echo "  status: ${ST:-<none>} ($i/40)"
+            if [ "$ST" = "TERMINATED" ]; then ok=1; break; fi
+            sleep 15
+          done
+          if [ "$ok" != 1 ]; then
+            echo "VM did not reach TERMINATED after sysprep; forcing a stop"
+            gcloud compute instances stop "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet
+          fi
+
+          gcloud compute images create "$IMG" \
+            --project="$GCP_PROJECT" \
+            --source-disk="$VM_NAME" \
+            --source-disk-zone="$VM_ZONE" \
+            --family="$IMAGE_FAMILY"
+          echo "Created generalized image $IMG in family $IMAGE_FAMILY"
+
+      - name: Verify image is READY
+        shell: bash
+        run: |
+          echo "Describing image $IMAGE_NAME ..."
+          gcloud compute images describe "$IMAGE_NAME" \
+            --project="$GCP_PROJECT" \
+            --format="value(name,status,family)"
+          STATUS=$(gcloud compute images describe "$IMAGE_NAME" \
+            --project="$GCP_PROJECT" --format="value(status)")
+          echo "Image status: $STATUS"
+          test "$STATUS" = "READY"
+
+      - name: Dump serial console on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "===== serial port 1 (COM1: boot + startup-script/RELAY-BAKE logs) ====="
+          gcloud compute instances get-serial-port-output "$VM_NAME" \
+            --port 1 --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>&1 | tail -250 || true
+
+      - name: Delete build VM
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.keep_vm }}" = "true" ]; then
+            echo "keep_vm=true — leaving $VM_NAME for inspection"
+            exit 0
+          fi
+          if [ -n "$VM_NAME" ]; then
+            gcloud compute instances delete "$VM_NAME" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet || true
+          fi
