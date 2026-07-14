@@ -154,7 +154,9 @@ jobs:
           echo "VM_NAME=$VM" >> "$GITHUB_ENV"
           # Reuse the relay-e2e network tag so the existing IAP->tcp:22
           # firewall rule (used by the Linux lanes) admits this VM too.
-          gcloud compute instances create "$VM" \
+          # Discard stdout: the create table prints instance addresses, which
+          # do not belong in the public log.
+          if ! ERR=$(gcloud compute instances create "$VM" \
             --project="$GCP_PROJECT" \
             --zone="$VM_ZONE" \
             --machine-type=e2-standard-4 \
@@ -164,7 +166,11 @@ jobs:
             --boot-disk-type=pd-ssd \
             --tags=relay-e2e \
             --metadata=block-project-ssh-keys=TRUE,relay-ssh-pubkey="$WIN_PUBKEY" \
-            --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1
+            --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1 \
+            2>&1 >/dev/null); then
+            echo "$ERR"
+            exit 1
+          fi
           echo "Created build VM $VM"
 
       - name: Wait for SSH over IAP
