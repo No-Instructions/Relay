@@ -20,7 +20,12 @@
  */
 
 import { processEvent } from "../merge-hsm/machine-interpreter";
-import type { ActiveInvoke, PersistedCanvasState } from "../merge-hsm/types";
+import type {
+	ActiveInvoke,
+	PersistedCanvasState,
+	SyncStatus,
+	SyncStatusType,
+} from "../merge-hsm/types";
 import { areCanvasDataEqual } from "../CanvasData";
 import type { CanvasData } from "../CanvasView";
 import { generateHash } from "../hashing";
@@ -518,6 +523,29 @@ export class CanvasHSM {
 	// =========================================================================
 	// Introspection / lifecycle
 	// =========================================================================
+
+	/**
+	 * Per-file status for the shared sync surfaces. The canvas machine has
+	 * no conflict-resolution states; the parked divergence is the
+	 * actionable posture, and opening the canvas resolves it additively —
+	 * the same "Open to resolve" affordance conflicted documents present.
+	 */
+	getSyncStatus(): SyncStatus {
+		const status: SyncStatusType =
+			this._statePath === "idle.diverged"
+				? "conflict"
+				: this._statePath === "loading" ||
+					  this._statePath === "idle.loading"
+					? "pending"
+					: "synced";
+		return {
+			guid: this.config.guid,
+			status,
+			diskMtime: this.context.disk?.mtime ?? 0,
+			localStateVector: new Uint8Array(),
+			remoteStateVector: new Uint8Array(),
+		};
+	}
 
 	getSnapshot(): {
 		statePath: CanvasStatePath;

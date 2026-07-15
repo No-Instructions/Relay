@@ -1786,6 +1786,8 @@ export class BackgroundSync extends HasLogging {
 				);
 			});
 		for (const canvas of canvases) {
+			// An advertised head is fresh evidence the server has content.
+			sharedFolder.clearServerEmpty(canvas.guid);
 			canvas.hsm.send({ type: "SERVER_AHEAD" });
 			if (!canvas.isMaterialized) {
 				sharedFolder.mergeManager?.enqueueWake({
@@ -2025,12 +2027,16 @@ export class BackgroundSync extends HasLogging {
 		sharedFolder: SharedFolder,
 		guid: string,
 		path: string,
+		kind: "doc" | "canvas" = "doc",
 	): Promise<Uint8Array | undefined> {
-		const entity = new S3RemoteDocument(
-			sharedFolder.relayId!,
-			sharedFolder.guid,
-			guid,
-		);
+		const entity =
+			kind === "canvas"
+				? new S3RemoteCanvas(sharedFolder.relayId!, sharedFolder.guid, guid)
+				: new S3RemoteDocument(
+						sharedFolder.relayId!,
+						sharedFolder.guid,
+						guid,
+					);
 		this.log("[downloadByGuid]", path, S3RN.encode(entity));
 
 		const clientToken = await sharedFolder.tokenStore.getToken(
@@ -2123,7 +2129,11 @@ export class BackgroundSync extends HasLogging {
 		}
 		const sharedFolder = doc.sharedFolder;
 		const refreshQueueKey = S3RN.encode(doc.s3rn);
-		const isActive = doc.userLock || sharedFolder?.mergeManager?.isActive(doc.guid);
+		// Manager activeness only exists for documents; canvas activeness
+		// is the view lock alone.
+		const isActive =
+			doc.userLock ||
+			(isDocument(doc) && sharedFolder?.mergeManager?.isActive(doc.guid));
 		const startedDisconnected = doc.intent === "disconnected";
 		const hadProviderIntegration = isDocument(doc) && doc.hasProviderIntegration();
 		const acquiredIdleIntegration =
@@ -2243,10 +2253,35 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
+		if (canvas.sharedFolder.serverEmptyTerminal(canvas.guid)) {
+			this.debug(
+				`[getCanvas] skipped ${canvas.path}: server has no content for guid; awaiting server evidence`,
+			);
+			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
+			return;
+		}
 		try {
 			const response = await this.downloadItem(canvas);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
+
+			// A guid that is registered but never uploaded downloads as an
+			// empty doc; defer instead of reporting a contentless download
+			// as complete. Enrolled canvases always carry the header op, so
+			// only truly never-uploaded content defers.
+			const peekDoc = new Y.Doc();
+			Y.applyUpdate(peekDoc, updateBytes);
+			const serverEmpty = isEmptyDoc(peekDoc);
+			peekDoc.destroy();
+			if (serverEmpty) {
+				canvas.sharedFolder.recordServerEmpty(canvas.guid);
+				this.log(
+					"[getCanvas] server has guid registered but no content",
+					canvas.path,
+				);
+				canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
+				return;
+			}
 
 			this.log("[getCanvas] applying content from server");
 			// Server content lands on the provider-facing remoteDoc; the

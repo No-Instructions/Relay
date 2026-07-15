@@ -912,6 +912,8 @@ export class SharedFolder extends HasProvider {
 		if (!file) return;
 
 		if (isCanvas(file)) {
+			// A live update event is fresh evidence the server has content.
+			this.clearServerEmpty(guid);
 			if (!event.update) return;
 			const update =
 				event.update instanceof Uint8Array
@@ -993,21 +995,33 @@ export class SharedFolder extends HasProvider {
 
 		const localFile = this.files.get(localGuid);
 		const committedMeta = this.syncStore.getCommittedMeta(path);
-		if (!localFile || !isDocument(localFile) || !isDocumentMeta(committedMeta)) {
+		if (!localFile || committedMeta?.id !== guid) return;
+
+		if (isDocument(localFile) && isDocumentMeta(committedMeta)) {
+			this._pendingRemaps.add(path);
+			this.executeRemap({
+				path,
+				fromGuid: localGuid,
+				toGuid: guid,
+			}).catch((e) => {
+				this.warn(`[${path}] remap retry from update event failed`, e);
+			}).finally(() => {
+				this._pendingRemaps.delete(path);
+			});
 			return;
 		}
-		if (committedMeta.id !== guid) return;
-
-		this._pendingRemaps.add(path);
-		this.executeRemap({
-			path,
-			fromGuid: localGuid,
-			toGuid: guid,
-		}).catch((e) => {
-			this.warn(`[${path}] remap retry from update event failed`, e);
-		}).finally(() => {
-			this._pendingRemaps.delete(path);
-		});
+		if (isCanvas(localFile) && isCanvasMeta(committedMeta)) {
+			this._pendingRemaps.add(path);
+			this.executeCanvasRemap({
+				path,
+				fromGuid: localGuid,
+				toGuid: guid,
+			}).catch((e) => {
+				this.warn(`[${path}] canvas remap retry from update event failed`, e);
+			}).finally(() => {
+				this._pendingRemaps.delete(path);
+			});
+		}
 	}
 
 	/** True when empty downloads for the guid have exhausted their attempts. */
@@ -1032,12 +1046,22 @@ export class SharedFolder extends HasProvider {
 		if (!path || this._pendingDownloads.has(path)) return;
 
 		const committedMeta = this.syncStore.getCommittedMeta(path);
-		if (!isDocumentMeta(committedMeta) || committedMeta.id !== guid) {
+		if (committedMeta?.id !== guid) {
 			return;
 		}
 
 		const localGuid = this.syncStore.get(path);
 		if (!localGuid || localGuid !== guid || this.files.has(guid)) {
+			return;
+		}
+
+		if (isCanvasMeta(committedMeta)) {
+			void this.downloadCanvas(path, true).catch((e) => {
+				this.warn(`[${path}] deferred canvas download retry failed`, e);
+			});
+			return;
+		}
+		if (!isDocumentMeta(committedMeta)) {
 			return;
 		}
 
@@ -2243,6 +2267,77 @@ export class SharedFolder extends HasProvider {
 		await this.executeRemap({ path, fromGuid: guid, toGuid: guid });
 	}
 
+	/**
+	 * Adopt the committed GUID for a canvas whose path resolves to a
+	 * different identity than the one enrolled locally. Tears down the
+	 * local canvas (IDB, machine record, in-memory instance), creates a
+	 * fresh Canvas under the canonical GUID, and seeds its remoteDoc from
+	 * the server; the bridge and the machine converge localDoc and disk
+	 * from there. On failure, pendingUpload stays intact so the next
+	 * observer event or startup scan retries.
+	 */
+	private async executeCanvasRemap({ path, fromGuid, toGuid }: {
+		path: string;
+		fromGuid: string;
+		toGuid: string;
+	}): Promise<void> {
+		if (!this.connected) {
+			this.log(`[${path}] canvas remap deferred: folder offline`);
+			return;
+		}
+		if (this.serverEmptyTerminal(toGuid)) {
+			this.debug(
+				`[${path}] canvas remap skipped: server has no content for guid; awaiting server evidence`,
+			);
+			return;
+		}
+
+		let updateBytes: Uint8Array | undefined;
+		try {
+			updateBytes = await this.backgroundSync.downloadByGuid(
+				this,
+				toGuid,
+				path,
+				"canvas",
+			);
+		} catch (e) {
+			this.warn(`[${path}] canvas remap download failed, deferring`, e);
+			return;
+		}
+		if (!updateBytes) {
+			this.recordServerEmpty(toGuid);
+			this.log(`[${path}] canvas remap deferred: server has guid but no content yet`);
+			return;
+		}
+		if (this.destroyed) return;
+
+		const existing = this.files.get(fromGuid);
+		try {
+			indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${fromGuid}`);
+		} catch { /* best effort stale database cleanup */ }
+		const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
+		trackAsyncCleanup(p);
+		this.backgroundSync.cancelDocumentWork(fromGuid);
+		this.mergeManager?.unregisterManagedFile(fromGuid);
+
+		if (existing) {
+			this.files.delete(fromGuid);
+			this.fset.delete(existing);
+			existing.cleanup();
+			existing.destroy();
+		}
+		this.syncStore.pendingUpload.delete(path);
+
+		const canvas = this.getOrCreateCanvas(toGuid, path);
+		this.files.set(toGuid, canvas);
+		this.fset.add(canvas, true);
+		canvas.wake();
+		Y.applyUpdate(canvas.ydoc, updateBytes);
+		canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
+
+		this.log(`Remapped Canvas ${path}: ${fromGuid} → ${toGuid}`);
+	}
+
 	private applyRemoteState(
 		guid: string,
 		path: string,
@@ -2888,6 +2983,17 @@ export class SharedFolder extends HasProvider {
 					}),
 				};
 			}
+			if (isCanvasMeta(committedMeta) && pendingFile && isCanvas(pendingFile)) {
+				return {
+					op: "update",
+					path,
+					promise: this.executeCanvasRemap({
+						path,
+						fromGuid: pendingGuid,
+						toGuid: committedMeta.id,
+					}),
+				};
+			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -3196,6 +3302,21 @@ export class SharedFolder extends HasProvider {
 						toGuid: committedMeta.id,
 					}).catch((e) => {
 						this.warn(`[${file.path}] remap retry from markUploaded failed`, e);
+					}).finally(() => {
+						this._pendingRemaps.delete(file.path);
+					});
+				} else if (
+					isCanvas(file) &&
+					isCanvasMeta(committedMeta) &&
+					!this._pendingRemaps.has(file.path)
+				) {
+					this._pendingRemaps.add(file.path);
+					this.executeCanvasRemap({
+						path: file.path,
+						fromGuid: file.guid,
+						toGuid: committedMeta.id,
+					}).catch((e) => {
+						this.warn(`[${file.path}] canvas remap from markUploaded failed`, e);
 					}).finally(() => {
 						this._pendingRemaps.delete(file.path);
 					});

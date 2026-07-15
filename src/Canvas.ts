@@ -210,6 +210,12 @@ export class Canvas
 			onEffect: (effect) => this.executeEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[hsm] ${from} -> ${to} (${eventType})`);
+				// Feed the shared per-file status surfaces (sync modal,
+				// activity feed, folder pill); updateSyncStatus dedupes.
+				this.sharedFolder.mergeManager?.updateSyncStatus(
+					this.guid,
+					this.hsm.getSyncStatus(),
+				);
 			},
 		});
 
@@ -617,11 +623,9 @@ export class Canvas
 	 */
 	releaseLock(): void {
 		this.userLock = false;
-
-		const mergeManager = this.sharedFolder.mergeManager;
-		if (mergeManager) {
-			mergeManager.unload(this.guid);
-		}
+		// Canvases are managed files, never document HSM registrations —
+		// the manager's unload path has nothing to release for them; the
+		// hibernate timer re-arms through the managed warm accounting.
 		this.hsm.send({ type: "RELEASE_LOCK" });
 	}
 
