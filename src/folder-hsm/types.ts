@@ -47,6 +47,12 @@ export type FileOrigin = "bootstrap" | "interactive";
 
 export type LocalFileKind = "file" | "folder";
 
+/** Local provenance for an enclosing Obsidian file move. */
+export type MachineEditAuthority =
+	| "local-origin"
+	| "remote-projection"
+	| "unknown";
+
 export interface FolderContext {
 	persistenceLoaded: boolean;
 	providerSynced: boolean;

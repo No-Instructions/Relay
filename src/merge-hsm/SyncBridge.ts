@@ -15,9 +15,9 @@
 import * as Y from "yjs";
 import type { SyncGate, MergeEffect, PositionedChange } from "./types";
 import type { OpCapture } from "./undo";
-import { MACHINE_EDIT_ORIGIN } from "./undo";
 import { snapshotFromDoc, snapshotsEqual, yjsDocsEqual } from "./state-vectors";
 import { curryLog } from "../debug";
+import type { PendingMachineEdit } from "./machine-edits";
 
 const bridgeError = curryLog("[SyncBridge]", "error");
 
@@ -43,21 +43,17 @@ export interface SyncBridgeHost {
 	/** Get the OpCapture instance from persistence */
 	getOpCapture(): OpCapture | null;
 	/** Pending machine edits awaiting remote match */
-	getPendingMachineEdits(): ReadonlyArray<{
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	}>;
+	getPendingMachineEdits(): ReadonlyArray<PendingMachineEdit>;
+	/** OpCapture entries owned by exactly one pending machine edit. */
+	getMachineEditOps(entry: PendingMachineEdit): ReturnType<OpCapture["since"]>;
 	/** Find a pending machine edit matched by remoteText */
-	matchMachineEdit(remoteText: string): {
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	} | null;
+	matchMachineEdit(remoteText: string): PendingMachineEdit | null;
+	/** Whether a captured callback has not supplied its structural diff yet. */
+	hasPreparingMachineEdit?(): boolean;
+	/** Remember an origin update that arrived before the local CM6 echo. */
+	markMachineEditRemoteMatched?(entry: PendingMachineEdit): void;
 	/** Remove a matched machine edit registration */
-	removeMachineEdit(entry: { captureMark: number }): void;
+	removeMachineEdit(entry: PendingMachineEdit): void;
 	/** Compute positioned diff changes between two strings */
 	computeDiffChanges(from: string, to: string): PositionedChange[];
 	/** Apply positioned changes to the local doc's contents Y.Text */
@@ -79,6 +75,8 @@ export interface SyncBridgeHost {
 export interface OutboundEntry {
 	update: Uint8Array;
 	machineEditMark: number | null;
+	/** Exact captured-lane owner; marks alone can collide before either lane emits ops. */
+	machineEditId: number | null;
 }
 
 // =============================================================================
@@ -108,6 +106,7 @@ export class SyncBridge {
 
 	/** Current machine edit mark for tagging outbound queue entries */
 	private _currentMachineEditMark: number | null = null;
+	private _currentMachineEditId: number | null = null;
 
 	/**
 	 * Machine-edit marks whose deferred ops have been published to the server
@@ -177,6 +176,14 @@ export class SyncBridge {
 		this._currentMachineEditMark = value;
 	}
 
+	get currentMachineEditId(): number | null {
+		return this._currentMachineEditId;
+	}
+
+	set currentMachineEditId(value: number | null) {
+		this._currentMachineEditId = value;
+	}
+
 	get outboundQueue(): OutboundEntry[] {
 		return this._outboundQueue;
 	}
@@ -197,13 +204,21 @@ export class SyncBridge {
 		this._inboundQueue = [];
 	}
 
-	/**
-	 * Remove outbound entries matching a specific machine edit mark.
-	 */
-	discardOutboundByMark(captureMark: number): void {
+	/** Remove only the outbound updates owned by one pending machine edit. */
+	discardOutboundForMachineEdit(entry: PendingMachineEdit): void {
 		this._outboundQueue = this._outboundQueue.filter(
-			e => e.machineEditMark !== captureMark,
+			(outbound) => !this.isOutboundForMachineEdit(outbound, entry),
 		);
+	}
+
+	private isOutboundForMachineEdit(
+		outbound: OutboundEntry,
+		entry: PendingMachineEdit,
+	): boolean {
+		return entry.kind === "captured"
+			? outbound.machineEditId === entry.id
+			: outbound.machineEditId === null &&
+				outbound.machineEditMark === entry.captureMark;
 	}
 
 	/**
@@ -222,9 +237,8 @@ export class SyncBridge {
 				if (this.host.isSuppressLocalObserver()) return; // rewind ops
 				this._outboundQueue.push({
 					update,
-					machineEditMark: origin === MACHINE_EDIT_ORIGIN
-						? this._currentMachineEditMark
-						: null,
+					machineEditMark: this._currentMachineEditMark,
+					machineEditId: this._currentMachineEditId,
 				});
 			};
 			localDoc.on('update', this._localDocUpdateHandler);
@@ -324,6 +338,14 @@ export class SyncBridge {
 		this.host.emitEffect({ type: "SYNC_TO_REMOTE", update });
 	}
 
+	/** Publish the complete local state and mark every captured op as visible. */
+	syncFullStateToRemote(): void {
+		const localDoc = this.host.getLocalDoc();
+		if (!localDoc || !this.host.getRemoteDoc()) return;
+		this.syncToRemote(Y.encodeStateAsUpdate(localDoc));
+		this.host.getOpCapture()?.notifySynced();
+	}
+
 	/**
 	 * Apply an inbound update (from remoteDoc) to localDoc.
 	 * This is the ONLY method that should apply remote ops to localDoc.
@@ -381,15 +403,25 @@ export class SyncBridge {
 
 		// Queue path (active editing -- listener installed)
 		if (this._localDocUpdateHandler) {
-			const pendingMarks = new Set(
-				this.host.getPendingMachineEdits().map(e => e.captureMark),
+			const pendingCapturedIds = new Set(
+				this.host
+					.getPendingMachineEdits()
+					.flatMap((entry) => entry.kind === "captured" ? [entry.id] : []),
+			);
+			const pendingLegacyMarks = new Set(
+				this.host
+					.getPendingMachineEdits()
+					.flatMap((entry) => entry.kind === "captured" ? [] : [entry.captureMark]),
 			);
 			const toSend: Uint8Array[] = [];
 			const toDefer: OutboundEntry[] = [];
 
 			for (const entry of this._outboundQueue) {
-				if (entry.machineEditMark !== null
-					&& pendingMarks.has(entry.machineEditMark)) {
+				const isPendingMachineEdit = entry.machineEditId !== null
+					? pendingCapturedIds.has(entry.machineEditId)
+					: entry.machineEditMark !== null &&
+						pendingLegacyMarks.has(entry.machineEditMark);
+				if (isPendingMachineEdit) {
 					toDefer.push(entry);
 				} else {
 					toSend.push(entry.update);
@@ -448,6 +480,17 @@ export class SyncBridge {
 		}
 
 		// Fallback: full state diff (loading, idle -- before listener installed)
+		const hasDeferredCapturedEdit = this.host
+			.getPendingMachineEdits()
+			.some(
+				(entry) =>
+					entry.kind === "captured" &&
+					entry.authority !== "local-origin",
+			);
+		if (hasDeferredCapturedEdit) {
+			this._syncGate.pendingOutbound++;
+			return;
+		}
 		const update = Y.encodeStateAsUpdate(
 			localDoc,
 			Y.encodeStateVector(remoteDoc),
@@ -471,7 +514,10 @@ export class SyncBridge {
 		if (!this._localDocUpdateHandler) return;
 
 		const pendingMarks = new Set(
-			this.host.getPendingMachineEdits().map(e => e.captureMark),
+			this.host
+				.getPendingMachineEdits()
+				.filter((entry) => entry.kind !== "captured")
+				.map((entry) => entry.captureMark),
 		);
 		if (pendingMarks.size === 0) return;
 
@@ -479,7 +525,11 @@ export class SyncBridge {
 		const remaining: OutboundEntry[] = [];
 		const publishedMarks: number[] = [];
 		for (const entry of this._outboundQueue) {
-			if (entry.machineEditMark !== null && pendingMarks.has(entry.machineEditMark)) {
+			if (
+				entry.machineEditId === null &&
+				entry.machineEditMark !== null &&
+				pendingMarks.has(entry.machineEditMark)
+			) {
 				toSend.push(entry.update);
 				publishedMarks.push(entry.machineEditMark);
 			} else {
@@ -494,6 +544,19 @@ export class SyncBridge {
 			// cancelling (see flushInbound).
 			for (const mark of publishedMarks) this._publishedMachineEditMarks.add(mark);
 			this.syncToRemote(Y.mergeUpdates(toSend));
+		}
+	}
+
+	/** Publish every remaining local delta and record all included captured ops. */
+	private publishReconcileTail(localDoc: Y.Doc, remoteDoc: Y.Doc): void {
+		const outbound = Y.encodeStateAsUpdate(
+			localDoc,
+			Y.encodeStateVector(remoteDoc),
+		);
+		this._outboundQueue = [];
+		if (outbound.length > 2) {
+			this.syncToRemote(outbound);
+			this.host.getOpCapture()?.notifySynced();
 		}
 	}
 
@@ -521,6 +584,13 @@ export class SyncBridge {
 			return;
 		}
 
+		// The callback invocation is the only source of structural identity.
+		// Hold the short preparation window rather than guessing from text.
+		if (this.host.hasPreparingMachineEdit?.()) {
+			this._syncGate.pendingInbound++;
+			return;
+		}
+
 		const remoteText = remoteDoc.getText("contents").toString();
 
 		// Check for machine edit match -- if the remote already has this
@@ -528,6 +598,47 @@ export class SyncBridge {
 		const match = this.host.matchMachineEdit(remoteText);
 		if (match) {
 			const opCapture = this.host.getOpCapture();
+			const machineOps = opCapture
+				? this.host.getMachineEditOps(match)
+				: [];
+
+			// A full-state or catch-up publish can expose a captured candidate
+			// before its echo arrives. Synced entries cannot be cancel()'d; adopt
+			// the already-published remote state and release their tracking.
+			if (
+				match.kind === "captured" &&
+				opCapture &&
+				machineOps.length > 0 &&
+				!opCapture.canCancel(machineOps)
+			) {
+				const beforeText = localDoc.getText("contents").toString();
+				this.host.setSuppressLocalObserver(true);
+				try {
+					const adopt = Y.encodeStateAsUpdate(
+						remoteDoc,
+						Y.encodeStateVector(localDoc),
+					);
+					this.syncToLocal(adopt);
+				} finally {
+					this.host.setSuppressLocalObserver(false);
+				}
+
+				this._inboundQueue = [];
+				opCapture.drop(machineOps);
+
+				const afterText = localDoc.getText("contents").toString();
+				if (beforeText !== afterText) {
+					const changes = this.host.computeDiffChanges(beforeText, afterText);
+					if (changes.length > 0) {
+						this.host.emitEffect({ type: "DISPATCH_CM6", changes });
+					}
+				}
+
+				this.host.removeMachineEdit(match);
+				this.publishReconcileTail(localDoc, remoteDoc);
+				this.assertStateVectorConvergence();
+				return;
+			}
 
 			// Publish-aware reconcile. Once flushPendingMachineEditOutbound has
 			// published this insert, a peer holds it: cancel()+republish-delete
@@ -537,7 +648,10 @@ export class SyncBridge {
 			// deleting the surplus duplicate down to expectedText. Every peer
 			// computes the identical reduction over the identical shared CRDT, so
 			// all peers delete the same loser run(s) and keep one survivor.
-			if (this._publishedMachineEditMarks.has(match.captureMark)) {
+			if (
+				match.kind !== "captured" &&
+				this._publishedMachineEditMarks.has(match.captureMark)
+			) {
 				const beforeText = localDoc.getText("contents").toString();
 
 				this.host.setSuppressLocalObserver(true);
@@ -566,9 +680,6 @@ export class SyncBridge {
 				}
 
 				this._inboundQueue = [];
-				this._outboundQueue = this._outboundQueue.filter(
-					e => e.machineEditMark !== match.captureMark,
-				);
 
 				const afterText = localDoc.getText("contents").toString();
 				if (beforeText !== afterText) {
@@ -585,24 +696,13 @@ export class SyncBridge {
 				this.host.removeMachineEdit(match);
 				this._publishedMachineEditMarks.delete(match.captureMark);
 
-				const outbound = Y.encodeStateAsUpdate(
-					localDoc,
-					Y.encodeStateVector(remoteDoc),
-				);
-				this._outboundQueue = [];
-				if (outbound.length > 0) {
-					this.syncToRemote(outbound);
-				}
+				this.publishReconcileTail(localDoc, remoteDoc);
 				this.assertStateVectorConvergence();
 				return;
 			}
 
 			if (opCapture) {
-				const machineOps = opCapture.sinceByOrigin(
-					match.captureMark,
-					MACHINE_EDIT_ORIGIN,
-				);
-				if (machineOps.length > 0) {
+				if (machineOps.length > 0 && opCapture.canCancel(machineOps)) {
 					const beforeText = localDoc.getText("contents").toString();
 
 					// Suppress observer during rewind to avoid spurious DISPATCH_CM6
@@ -629,9 +729,7 @@ export class SyncBridge {
 					this._inboundQueue = [];
 
 					// Discard matched entry's deferred outbound updates
-					this._outboundQueue = this._outboundQueue.filter(
-						e => e.machineEditMark !== match.captureMark,
-					);
+					this.discardOutboundForMachineEdit(match);
 
 					// Compute net diff and dispatch to editor (usually empty)
 					const afterText = localDoc.getText("contents").toString();
@@ -648,22 +746,24 @@ export class SyncBridge {
 					// Drain remaining user edits + cancel-op metadata in
 					// one shot. Full-state diff covers both the SV entries
 					// from the cancel and any queued user edits.
-					const outbound = Y.encodeStateAsUpdate(
-						localDoc,
-						Y.encodeStateVector(remoteDoc),
-					);
-					this._outboundQueue = [];
-					if (outbound.length > 0) {
-						this.syncToRemote(outbound);
-					}
+					this.publishReconcileTail(localDoc, remoteDoc);
 					this.assertStateVectorConvergence();
 					return;
 				}
 			}
 
-			// OpCapture unavailable or no ops captured yet (CM6 transaction hasn't
-			// fired). Remove the registration.
-			this.host.removeMachineEdit(match);
+			// A structural origin update can beat the local CM6 echo. Adopt it but
+			// retain the registration so the later positional editor transaction is
+			// recognized and suppressed without a second CRDT operation.
+			if (match.kind === "captured") {
+				if (this.host.markMachineEditRemoteMatched) {
+					this.host.markMachineEditRemoteMatched(match);
+				} else {
+					this.host.removeMachineEdit(match);
+				}
+			} else {
+				this.host.removeMachineEdit(match);
+			}
 		}
 
 		// Drain buffered inbound updates.

@@ -29,6 +29,7 @@ import type {
 	FolderSyncSnapshot,
 	MapDeltaAdd,
 	MapEntrySummary,
+	MachineEditAuthority,
 	MembershipEntry,
 } from "./types";
 
@@ -229,6 +230,30 @@ export class FolderHSM {
 	 */
 	hasLocalFile(path: string): boolean {
 		return this.context.localFiles.has(path);
+	}
+
+	/**
+	 * Classify a FileManager.renameFile call before it runs. A remote map move
+	 * places the entry at a pendingRename destination before RENAME_LOCAL;
+	 * a user move still has its synced entry at the source.
+	 */
+	classifyMoveAuthority(from: string, to: string): MachineEditAuthority {
+		if (this._statePath !== "tracking" || from === to) return "unknown";
+		const destination = this.entryAtPath(to);
+		if (destination?.disposition === "pendingRename") {
+			return this.context.localFiles.has(from)
+				? "remote-projection"
+				: "unknown";
+		}
+		if (destination) return "unknown";
+		const source = this.entryAtPath(from);
+		if (
+			source?.disposition === "synced" &&
+			this.context.localFiles.has(from)
+		) {
+			return "local-origin";
+		}
+		return "unknown";
 	}
 
 	getSnapshot(): FolderSyncSnapshot {

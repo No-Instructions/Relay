@@ -16,6 +16,7 @@ import type { PositionedChange } from "../types";
 // Import the shared annotation to prevent feedback loops
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
+import { machineEditMoveContext } from "../MachineEditMoveContext";
 
 /**
  * Callback to verify the editor is still bound to the expected document.
@@ -340,12 +341,19 @@ export class CM6Integration {
 			const userEvent = update.transactions
 				.map((tr) => tr.annotation(Transaction.userEvent))
 				.find((e) => e != null);
+			const isHumanInput = update.transactions.some((tr) =>
+				tr.isUserEvent("input"),
+			);
+			const machineEditAuthority = isHumanInput
+				? null
+				: machineEditMoveContext.current();
 			this.hsm.send({
 				type: "CM6_CHANGE",
 				changes,
 				docText: update.state.doc.toString(),
 				viewId: this.viewId,
 				userEvent,
+				...(machineEditAuthority !== null ? { machineEditAuthority } : {}),
 			});
 			this.scheduleDriftCheck();
 		}

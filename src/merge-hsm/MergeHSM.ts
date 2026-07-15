@@ -24,6 +24,7 @@
  */
 
 import * as Y from "yjs";
+import { uuidv4 } from "lib0/random";
 import { diff3Merge } from "node-diff3";
 import { diff_match_patch } from "diff-match-patch";
 import {
@@ -71,7 +72,7 @@ import { Lifetime } from "../promiseUtils";
 import { processEvent } from "./machine-interpreter";
 import { MACHINE, createInterpreterConfig, validateMachine } from "./machine-definition";
 import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./types";
-import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
+import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture, type CapturedOp } from "./undo";
 import {
 	isEmptyDoc,
 	snapshotFromDoc,
@@ -89,6 +90,18 @@ import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
 import { errorFromUnknown, formatUserFacingError } from "../UserFacingError";
 import { DiskFileNotFoundError } from "./DiskFileNotFoundError";
+import type { MachineEditAuthority } from "../folder-hsm/types";
+import {
+	captureMachineEditSplices,
+	matchCapturedPositionedChanges,
+	remoteDocMatchesMachineEdit,
+	resolveAppliedMachineEditSplices,
+	resolveMachineEditSplices,
+	type CapturedPendingMachineEdit,
+	type MachineEditCaptureHandle,
+	type PendingMachineEdit,
+	type ResolvedMachineEditSplice,
+} from "./machine-edits";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
@@ -370,7 +383,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private _accumulatedEvents: Array<
 		| { type: "REMOTE_UPDATE"; update: Uint8Array; affectsText?: boolean }
 		| { type: "DISK_CHANGED"; contents: string; mtime: number; hash: string }
-		| { type: "CM6_CHANGE"; changes: any[]; docText: string; userEvent?: string; viewId?: string }
+		| {
+			type: "CM6_CHANGE";
+			changes: any[];
+			docText: string;
+			userEvent?: string;
+			viewId?: string;
+			machineEditAuthority?: MachineEditAuthority;
+		}
 	> = [];
 
 	// Mode decision during loading state (null = not decided, 'idle' or 'active')
@@ -380,12 +400,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private _enteringFromDiverged: boolean = false;
 
 	// Machine edit rewind: pending vault.process() edits awaiting remote match
-	private _pendingMachineEdits: Array<{
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	}> = [];
+	private _pendingMachineEdits: PendingMachineEdit[] = [];
+	private _nextCapturedMachineEditId = 1;
+	private readonly _machineEditSessionId = uuidv4();
+	private _capturedMachineEditForkId: number | null = null;
 	private _machineEditDrainWaiters: Set<() => void> = new Set();
 	private _suppressLocalObserver = false;
 	private _localDocDispatchOriginView: string | undefined;
@@ -1339,27 +1357,49 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/** @internal Used by SyncBridge */
-	getPendingMachineEdits(): ReadonlyArray<{
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	}> {
+	getPendingMachineEdits(): ReadonlyArray<PendingMachineEdit> {
 		return this._pendingMachineEdits;
 	}
 
 	/** @internal Used by SyncBridge */
-	matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
+	getMachineEditOps(entry: PendingMachineEdit): CapturedOp[] {
+		const opCapture = this.getOpCapture();
+		if (!opCapture) return [];
+		return entry.kind === "captured"
+			? opCapture.byOrigin(entry.origin)
+			: opCapture.sinceByOrigin(entry.captureMark, MACHINE_EDIT_ORIGIN);
+	}
+
+	/** @internal Used by SyncBridge */
+	matchMachineEdit(remoteText: string): PendingMachineEdit | null {
 		return this._matchMachineEdit(remoteText);
 	}
 
 	/** @internal Used by SyncBridge */
-	removeMachineEdit(entry: { captureMark: number }): void {
-		const idx = this._pendingMachineEdits.findIndex(
-			e => e.captureMark === entry.captureMark,
+	hasPreparingMachineEdit(): boolean {
+		return this._pendingMachineEdits.some(
+			(entry) => entry.kind === "captured" && entry.capture === null,
 		);
+	}
+
+	/** @internal Used by SyncBridge */
+	markMachineEditRemoteMatched(entry: PendingMachineEdit): void {
+		if (entry.kind === "captured") entry.remoteMatched = true;
+	}
+
+	/** @internal Used by SyncBridge */
+	removeMachineEdit(entry: PendingMachineEdit): void {
+		const idx = this._pendingMachineEdits.indexOf(entry);
 		if (idx >= 0) {
-			this._pendingMachineEdits.splice(idx, 1);
+			const [removed] = this._pendingMachineEdits.splice(idx, 1);
+			if (removed.kind === "captured") {
+				removed.baseDoc?.destroy();
+				removed.baseDoc = null;
+				this._captureOpts?.trackedOrigins.delete(removed.origin);
+				if (this._capturedMachineEditForkId === removed.id) {
+					this._capturedMachineEditForkId = null;
+				}
+			}
 			this.notifyMachineEditDrainWaiters();
 		}
 	}
@@ -1453,6 +1493,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			const captureMark = opCapture?.mark() ?? 0;
 
 			this._pendingMachineEdits.push({
+				kind: "legacy",
 				fn,
 				expectedText,
 				captureMark,
@@ -1533,6 +1574,196 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			`registerMachineEdit (idle fork) | guid=${this._guid} | ` +
 			`state=${this._statePath} | captureMark=${this._fork.captureMark}`
 		);
+	}
+
+	/**
+	 * Prepare the FolderHSM-gated machine-edit lane without invoking or storing
+	 * the vault.process callback. Obsidian supplies the callback's sole input
+	 * and output later through captureMachineEditInvocation().
+	 */
+	async beginCapturedMachineEdit(
+		authority: MachineEditAuthority,
+	): Promise<MachineEditCaptureHandle | null> {
+		const id = this._nextCapturedMachineEditId++;
+		const origin = Symbol.for(
+			`relay:machine-edit:${this._guid}:${this._machineEditSessionId}:${id}`,
+		);
+		this._captureOpts?.trackedOrigins.add(origin);
+		const entry: CapturedPendingMachineEdit = {
+			kind: "captured",
+			id,
+			authority,
+			origin,
+			captureMark: 0,
+			registeredAt: this.timeProvider.now(),
+			baseDoc: null,
+			capture: null,
+			remoteMatched: false,
+		};
+
+		const armDeadline = () => {
+			this.timeProvider.setTimeout(() => {
+				this.expireMachineEdits();
+			}, MergeHSM.MACHINE_EDIT_TTL);
+		};
+
+		if (this._statePath === "active.tracking") {
+			if (!this.localDoc) {
+				this._captureOpts?.trackedOrigins.delete(origin);
+				return null;
+			}
+			const baseDoc = new Y.Doc({ gc: false });
+			Y.applyUpdate(baseDoc, Y.encodeStateAsUpdate(this.localDoc));
+			entry.baseDoc = baseDoc;
+			entry.captureMark = this.getOpCapture()?.mark() ?? 0;
+			this._pendingMachineEdits.push(entry);
+			armDeadline();
+			return { id };
+		}
+
+		if (!this._statePath.startsWith("idle.") || this._fork || !this._lca) {
+			this._captureOpts?.trackedOrigins.delete(origin);
+			return null;
+		}
+
+		this._pendingMachineEdits.push(entry);
+		armDeadline();
+		this.ensureLocalDocForIdle();
+		const baseText = this.requireLcaContents("beginCapturedMachineEdit idle");
+		if (baseText === null || !this.localDoc) {
+			this.abortCapturedMachineEdit({ id });
+			return null;
+		}
+
+		this._fork = {
+			base: baseText,
+			localStateVector: this._lca.stateVector ?? new Uint8Array([0]),
+			remoteStateVector: this._remoteStateVector ?? new Uint8Array([0]),
+			localSnapshot: this._lca.snapshot,
+			remoteSnapshot: this.remoteDoc
+				? snapshotFromDoc(this.remoteDoc).snapshot
+				: undefined,
+			origin: "machine-edit-captured",
+			created: entry.registeredAt,
+			captureMark: 0,
+		};
+		this._capturedMachineEditForkId = id;
+
+		if (this.localPersistence && !this.localPersistence.synced) {
+			await this.awaitLocalPersistenceWhenSynced();
+		}
+		const current = this.findCapturedMachineEdit(id);
+		if (!current || !this.localDoc || !this._fork) {
+			if (!current) {
+				this._captureOpts?.trackedOrigins.delete(origin);
+				if (this._capturedMachineEditForkId === id) {
+					this._capturedMachineEditForkId = null;
+					if (this._fork?.origin === "machine-edit-captured") {
+						this._fork = null;
+					}
+				}
+			}
+			this.abortCapturedMachineEdit({ id });
+			return null;
+		}
+
+		current.captureMark = this.getOpCapture()?.mark() ?? 0;
+		this._fork.captureMark = current.captureMark;
+		this._fork.localStateVector = Y.encodeStateVector(this.localDoc);
+		this._fork.localSnapshot = snapshotFromDoc(this.localDoc).snapshot;
+		const baseDoc = new Y.Doc({ gc: false });
+		Y.applyUpdate(baseDoc, Y.encodeStateAsUpdate(this.localDoc));
+		current.baseDoc = baseDoc;
+		return { id };
+	}
+
+	/**
+	 * Open editors may receive Obsidian's rename repair directly through CM6,
+	 * without a vault.process callback. Capture that exact before/after pair at
+	 * the editor boundary so it enters the same isolated structural lane.
+	 */
+	private captureActiveMachineEditEvent(
+		authority: MachineEditAuthority,
+		output: string,
+	): CapturedPendingMachineEdit | null {
+		if (this._statePath !== "active.tracking" || !this.localDoc) return null;
+		const input = this.localDoc.getText("contents").toString();
+		const baseDoc = new Y.Doc({ gc: false });
+		Y.applyUpdate(baseDoc, Y.encodeStateAsUpdate(this.localDoc));
+		const capture = captureMachineEditSplices(baseDoc, input, output);
+		baseDoc.destroy();
+		if (!capture) return null;
+
+		const id = this._nextCapturedMachineEditId++;
+		const origin = Symbol.for(
+			`relay:machine-edit:${this._guid}:${this._machineEditSessionId}:${id}`,
+		);
+		this._captureOpts?.trackedOrigins.add(origin);
+		const entry: CapturedPendingMachineEdit = {
+			kind: "captured",
+			id,
+			authority,
+			origin,
+			captureMark: this.getOpCapture()?.mark() ?? 0,
+			registeredAt: this.timeProvider.now(),
+			baseDoc: null,
+			capture,
+			remoteMatched: false,
+		};
+		this._pendingMachineEdits.push(entry);
+		this.timeProvider.setTimeout(() => {
+			this.expireMachineEdits();
+		}, MergeHSM.MACHINE_EDIT_TTL);
+		return entry;
+	}
+
+	captureMachineEditInvocation(
+		handle: MachineEditCaptureHandle,
+		input: string,
+		output: string,
+	): boolean {
+		const entry = this.findCapturedMachineEdit(handle.id);
+		if (!entry?.baseDoc) return false;
+		const capture = captureMachineEditSplices(entry.baseDoc, input, output);
+		entry.baseDoc.destroy();
+		entry.baseDoc = null;
+		if (!capture) {
+			this.abortCapturedMachineEdit(handle);
+			return false;
+		}
+		entry.capture = capture;
+		// Inbound traffic is held only while the callback's structural identity
+		// is unavailable. Once captured, drain independent or matching traffic.
+		this._bridge.flushInbound();
+		return true;
+	}
+
+	abortCapturedMachineEdit(handle: MachineEditCaptureHandle): void {
+		const entry = this.findCapturedMachineEdit(handle.id);
+		if (entry) {
+			this._bridge.discardOutboundForMachineEdit(entry);
+			if (
+				this._capturedMachineEditForkId === handle.id &&
+				this._fork?.origin === "machine-edit-captured" &&
+				this._statePath === "idle.synced" &&
+				this.pendingDiskContents === null
+			) {
+				this._fork = null;
+			}
+			this.removeMachineEdit(entry);
+		}
+		// A preparing capture gates inbound traffic. Every abort path, including
+		// duplicate cleanup calls, must release that traffic immediately.
+		this._bridge.flushInbound();
+	}
+
+	private findCapturedMachineEdit(
+		id: number,
+	): CapturedPendingMachineEdit | null {
+		const entry = this._pendingMachineEdits.find(
+			(candidate) => candidate.kind === "captured" && candidate.id === id,
+		);
+		return entry?.kind === "captured" ? entry : null;
 	}
 
 	/**
@@ -2651,8 +2882,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 				// Sync to remote (three-way merge)
 				if (result.needsSync && this.localDoc) {
-					const update = Y.encodeStateAsUpdate(this.localDoc);
-					this._bridge.syncToRemote(update);
+					this._bridge.syncFullStateToRemote();
 				}
 			},
 			resetIdleRetryCount: () => {
@@ -2968,6 +3198,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					docText: e.docText,
 					userEvent: e.userEvent,
 					viewId: e.viewId,
+					machineEditAuthority: e.machineEditAuthority,
 				});
 			},
 			accumulateDiskChanged: (_hsm, event) => {
@@ -3051,7 +3282,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!this._lca && data.disk) {
 					this.captureCleanInitialLCA(data.disk);
 				}
-				this._bridge.syncToRemote(Y.encodeStateAsUpdate(this.localDoc));
+				this._bridge.syncFullStateToRemote();
 				this._bridge.clearOutboundQueue();
 				this.lastKnownEditorText = data.localText;
 				this._fork = null;
@@ -3100,12 +3331,29 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.lastKnownEditorText = e.docText;
 				let observerWillDispatch = false;
 				if (this.localDoc) {
-					// Check if this CM6 change matches a pending machine edit
+					let capturedMatch = this.matchCapturedMachineEditEvent(e);
+					if (!capturedMatch && e.machineEditAuthority) {
+						const createdEntry = this.captureActiveMachineEditEvent(
+							e.machineEditAuthority,
+							e.docText,
+						);
+						capturedMatch = this.matchCapturedMachineEditEvent(e);
+						if (createdEntry && !capturedMatch) {
+							this.removeMachineEdit(createdEntry);
+						}
+					}
+					// The flag-off implementation retains its expectedText path.
 					const machineEditIdx = this._pendingMachineEdits.findIndex(
-						(me) => me.expectedText === e.docText,
+						(me) => me.kind === "legacy" && me.expectedText === e.docText,
 					);
 
-					if (machineEditIdx >= 0) {
+					if (capturedMatch) {
+						observerWillDispatch = this.applyCapturedMachineEditEvent(
+							e,
+							capturedMatch.entry,
+							capturedMatch.changeIndexes,
+						);
+					} else if (machineEditIdx >= 0) {
 						// Machine edit: apply via a temp proxy Y.Doc so the
 						// items get the proxy's clientID, not localDoc's. This
 						// decouples user edits from machine edits at the state
@@ -3122,8 +3370,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						// registerMachineEdit → setViewData, which requires
 						// the machine-edit capture to prevent peer-side
 						// duplication (the live2 butter.md concat shape).
-						this._bridge.currentMachineEditMark =
-							this._pendingMachineEdits[machineEditIdx].captureMark;
+						const legacyEntry = this._pendingMachineEdits[machineEditIdx];
+						this._bridge.currentMachineEditMark = legacyEntry.captureMark;
 						this._localDocDispatchOriginView = e.viewId;
 						observerWillDispatch = true;
 
@@ -3974,6 +4222,39 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Snapshot and clear — new REMOTE_UPDATEs accumulate into fresh buffer
 		this.pendingIdleUpdates = null;
 
+		const capturedMatch = this._pendingMachineEdits.find(
+			(entry): entry is CapturedPendingMachineEdit =>
+				entry.kind === "captured" &&
+				Boolean(
+					entry.capture &&
+					this.remoteDoc &&
+					remoteDocMatchesMachineEdit(this.remoteDoc, entry.capture),
+				),
+		);
+		if (capturedMatch && this.remoteDoc) {
+			const opCapture = this.getOpCapture();
+			const machineOps = this.getMachineEditOps(capturedMatch);
+			if (machineOps.length > 0) {
+				if (opCapture?.canCancel(machineOps)) {
+					this.withLocalObserverSuppressed(() => opCapture.cancel(machineOps));
+				} else {
+					opCapture?.drop(machineOps);
+				}
+			}
+			const inbound = Y.encodeStateAsUpdate(
+				this.remoteDoc,
+				Y.encodeStateVector(localDoc),
+			);
+			this._bridge.syncToLocal(inbound);
+			this.removeMachineEdit(capturedMatch);
+			const outbound = Y.encodeStateAsUpdate(
+				localDoc,
+				Y.encodeStateVector(this.remoteDoc),
+			);
+			if (outbound.length > 2) this._bridge.syncToRemote(outbound);
+			return this.buildSettledRemoteAheadResult(signal, localDoc);
+		}
+
 		this.idleMergeLog(`[idle-merge-debug] ${this._guid} updatesLen=${updates.byteLength}`);
 
 		// Compute merge on a temp doc (clone localDoc state + apply updates).
@@ -4008,10 +4289,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// CRDT duplication.
 				if (this._lca) {
 					const machineIdx = this._pendingMachineEdits.findIndex(entry =>
+						entry.kind === "legacy" &&
 						entry.expectedText === this._lca!.contents
 					);
 					if (machineIdx >= 0) {
-						this._pendingMachineEdits.splice(machineIdx, 1);
+						this.removeMachineEdit(this._pendingMachineEdits[machineIdx]);
 						this.hsmWarn(
 							`idle-merge: skipped duplicate machine edit | guid=${this._guid}`
 						);
@@ -4277,6 +4559,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		const fork = this._fork;
+		const capturedForkEntry = this._capturedMachineEditForkId === null
+			? null
+			: this.findCapturedMachineEdit(this._capturedMachineEditForkId);
 		const localContent = localDoc.getText("contents").toString();
 
 		// Apply any pending remote updates before reading remoteDoc content
@@ -4285,6 +4570,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			this.pendingIdleUpdates = null;
 		}
 		const remoteContent = remoteDoc.getText("contents").toString();
+		const remoteCarriesCapturedEdit = Boolean(
+			capturedForkEntry?.capture &&
+			remoteDocMatchesMachineEdit(remoteDoc, capturedForkEntry.capture),
+		);
 
 		this.hsmDebug('reconcileForkInIdle', JSON.stringify({
 			guid: this._guid, captureMark: fork.captureMark, origin: fork.origin,
@@ -4344,10 +4633,48 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			);
 			this._bridge.syncToLocal(remoteUpdate);
 
-			this.applyContentToLocalDoc(mergeResult.merged);
+			let deferCapturedCandidate = false;
+			if (
+				capturedForkEntry?.capture &&
+				!remoteCarriesCapturedEdit &&
+				capturedForkEntry.authority !== "local-origin"
+			) {
+				const alreadyApplied = resolveAppliedMachineEditSplices(
+					localDoc,
+					capturedForkEntry.capture,
+				);
+				if (alreadyApplied) {
+					// A second fork can re-enter while the first deferred candidate is
+					// still isolated. Preserve that origin and apply only the new merge
+					// delta as ordinary local work; never fall through to a full publish.
+					this.applyContentToLocalDoc(mergeResult.merged);
+					deferCapturedCandidate = true;
+				} else {
+					const splices = resolveMachineEditSplices(
+						localDoc,
+						capturedForkEntry.capture,
+					);
+					if (splices) {
+						this.applyCapturedSplicesWithMachineOrigin(
+							capturedForkEntry,
+							splices,
+						);
+						deferCapturedCandidate = true;
+					} else {
+						this.applyContentToLocalDoc(mergeResult.merged);
+					}
+				}
+			} else {
+				this.applyContentToLocalDoc(mergeResult.merged);
+			}
 
 			const stateVector = Y.encodeStateVector(localDoc);
-			const update = Y.encodeStateAsUpdate(localDoc);
+			const update = Y.encodeStateAsUpdate(
+				localDoc,
+				capturedForkEntry
+					? Y.encodeStateVector(remoteDoc)
+					: undefined,
+			);
 
 			const mtime = this.timeProvider.now();
 			this.emitWriteDisk(
@@ -4355,13 +4682,29 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				hash,
 				mtime,
 			);
-			this._bridge.syncToRemote(update);
+			if (!deferCapturedCandidate && update.length > 2) {
+				this._bridge.syncToRemote(update);
+			}
+
+			if (capturedForkEntry && remoteCarriesCapturedEdit) {
+				this.removeMachineEdit(capturedForkEntry);
+				this._capturedMachineEditForkId = null;
+			} else if (
+				capturedForkEntry &&
+				capturedForkEntry.authority === "local-origin"
+			) {
+				const ops = this.getMachineEditOps(capturedForkEntry);
+				if (ops.length > 0) opCapture?.drop(ops);
+				this.removeMachineEdit(capturedForkEntry);
+				this._capturedMachineEditForkId = null;
+			}
 
 			// If fork originated from a machine edit, register as pending so
 			// the late-arriving remote CRDT (same edit from the other vault)
 			// is detected and skipped by idle-merge.
 			if (fork.origin === 'machine-edit' && fork.machineEditFn) {
 				this._pendingMachineEdits.push({
+					kind: "legacy",
 					fn: fork.machineEditFn,
 					expectedText: mergeResult.merged,
 					captureMark: fork.captureMark,
@@ -5255,7 +5598,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 		this.lastKnownEditorText = resolvedText;
 
-		this._bridge.syncToRemote(Y.encodeStateAsUpdate(localDoc));
+		this._bridge.syncFullStateToRemote();
 		this._bridge.clearOutboundQueue();
 
 		this._fork = null;
@@ -5440,6 +5783,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 */
 	private _matchMachineEdit(remoteText: string): typeof this._pendingMachineEdits[number] | null {
 		for (const entry of this._pendingMachineEdits) {
+			if (entry.kind === "captured") {
+				if (
+					entry.capture &&
+					this.remoteDoc &&
+					remoteDocMatchesMachineEdit(this.remoteDoc, entry.capture)
+				) {
+					return entry;
+				}
+				continue;
+			}
 			if (remoteText === entry.expectedText) {
 				return entry;
 			}
@@ -5491,7 +5844,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		for (const entry of this._pendingMachineEdits) {
 			nextExpiry = Math.min(
 				nextExpiry,
-				entry.registeredAt + MergeHSM.MACHINE_EDIT_TTL + 100,
+				entry.registeredAt +
+					MergeHSM.MACHINE_EDIT_TTL +
+					(entry.kind === "legacy" ? 100 : 0),
 			);
 		}
 		return Number.isFinite(nextExpiry) ? Math.max(0, nextExpiry - now) : 0;
@@ -5520,7 +5875,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 		for (let i = this._pendingMachineEdits.length - 1; i >= 0; i--) {
 			const entry = this._pendingMachineEdits[i];
-			if (now - entry.registeredAt > MergeHSM.MACHINE_EDIT_TTL) {
+			const expired = entry.kind === "captured"
+				? now - entry.registeredAt >= MergeHSM.MACHINE_EDIT_TTL
+				: now - entry.registeredAt > MergeHSM.MACHINE_EDIT_TTL;
+			if (expired) {
+				if (entry.kind === "captured") {
+					this.promoteCapturedMachineEditAtDeadline(entry);
+					anyExpired = true;
+					continue;
+				}
 				if (opCapture) {
 					const ops = opCapture.sinceByOrigin(entry.captureMark, MACHINE_EDIT_ORIGIN);
 					if (ops.length > 0) {
@@ -5533,8 +5896,98 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		if (anyExpired) {
-			this._bridge.flushOutbound();
+			this._bridge.flush();
 			this.notifyMachineEditDrainWaiters();
+		}
+	}
+
+	/**
+	 * End intentional isolation at the hard deadline. If the local candidate is
+	 * still unpublished, cancel its private item IDs and reapply the captured
+	 * splice as an ordinary transaction against the current CRDT. This preserves
+	 * disk intent while making both local replicas structurally converge; a late
+	 * origin update may visibly duplicate but is never withheld.
+	 */
+	private promoteCapturedMachineEditAtDeadline(
+		entry: CapturedPendingMachineEdit,
+	): void {
+		if (!this.localDoc) {
+			this.removeMachineEdit(entry);
+			return;
+		}
+		const opCapture = this.getOpCapture();
+		const machineOps = this.getMachineEditOps(entry);
+		const applied = entry.capture
+			? resolveAppliedMachineEditSplices(this.localDoc, entry.capture)
+			: null;
+		const reapply =
+			opCapture &&
+			machineOps.length > 0 &&
+			opCapture.canCancel(machineOps) &&
+			applied
+				? this.previewCapturedPromotion(entry, opCapture, applied)
+				: null;
+
+		if (machineOps.length > 0 && reapply) {
+			this._bridge.discardOutboundForMachineEdit(entry);
+			this.withLocalObserverSuppressed(() => opCapture!.cancel(machineOps));
+			const ytext = this.localDoc.getText("contents");
+			this.localDoc.transact(() => {
+				this.applyChangesToYText(
+					ytext,
+					reapply.map((splice) => ({
+						from: splice.from,
+						to: splice.to,
+						insert: splice.insert,
+					})),
+				);
+				this.syncFrontmatterToMap();
+			}, this);
+		} else if (machineOps.length > 0) {
+			// Published, inseparable, or drifted candidates cannot be destructively
+			// cancelled. Release their tracking and publish them unchanged.
+			opCapture?.drop(machineOps);
+		}
+
+		this.removeMachineEdit(entry);
+	}
+
+	/** Simulate cancel on a clone so an unresolvable candidate is never mutated. */
+	private previewCapturedPromotion(
+		entry: CapturedPendingMachineEdit,
+		opCapture: OpCapture,
+		applied: ResolvedMachineEditSplice[],
+	): ResolvedMachineEditSplice[] | null {
+		if (!this.localDoc || !entry.capture || !this._captureOpts) return null;
+		const probe = new Y.Doc({ gc: false });
+		let probeCapture: OpCapture | null = null;
+		try {
+			Y.applyUpdate(probe, Y.encodeStateAsUpdate(this.localDoc));
+			probeCapture = OpCapture.restore(
+				probe,
+				probe.getText("contents"),
+				opCapture.serialize(),
+				this._captureOpts,
+			);
+			const probeOps = probeCapture.byOrigin(entry.origin);
+			if (probeOps.length === 0) return null;
+			probeCapture.cancel(probeOps);
+
+			const resolved = resolveMachineEditSplices(probe, entry.capture);
+			if (resolved) return resolved;
+			const text = probe.getText("contents").toString();
+			const fallback = applied.map((splice) => ({
+				...splice,
+				to: splice.from + splice.deleted.length,
+			}));
+			return fallback.every(
+				(splice) => text.slice(splice.from, splice.to) === splice.deleted,
+			)
+				? fallback
+				: null;
+		} finally {
+			probeCapture?.destroy();
+			probe.destroy();
 		}
 	}
 
@@ -5546,16 +5999,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (this._pendingMachineEdits.length === 0) return;
 
 		const opCapture = this.getOpCapture();
-		for (const entry of this._pendingMachineEdits) {
+		for (const entry of [...this._pendingMachineEdits]) {
+			if (entry.kind === "captured") {
+				this.promoteCapturedMachineEditAtDeadline(entry);
+				continue;
+			}
 			if (opCapture) {
 				const ops = opCapture.sinceByOrigin(entry.captureMark, MACHINE_EDIT_ORIGIN);
 				if (ops.length > 0) {
 					opCapture.drop(ops);
 				}
 			}
+			this.removeMachineEdit(entry);
 		}
-		this._pendingMachineEdits.length = 0;
-		this._bridge.flushOutbound();
+		this._bridge.flush();
 		this.notifyMachineEditDrainWaiters();
 	}
 
@@ -5688,6 +6145,137 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			result = result.slice(0, change.from) + change.insert + result.slice(change.to);
 		}
 		return result;
+	}
+
+	private matchCapturedMachineEditEvent(event: {
+		changes: PositionedChange[];
+		userEvent?: string;
+		machineEditAuthority?: MachineEditAuthority;
+	}): { entry: CapturedPendingMachineEdit; changeIndexes: Set<number> } | null {
+		if (
+			!this.localDoc ||
+			(event.userEvent === "set" && !event.machineEditAuthority)
+		) return null;
+		for (const pending of this._pendingMachineEdits) {
+			if (pending.kind !== "captured" || !pending.capture) continue;
+			const changeIndexes = matchCapturedPositionedChanges(
+				this.localDoc,
+				pending.capture,
+				event.changes,
+				pending.remoteMatched,
+			);
+			if (changeIndexes) return { entry: pending, changeIndexes };
+		}
+		return null;
+	}
+
+	/**
+	 * Apply one CM6 transaction while keeping captured machine items on their
+	 * own proxy clients. Unrelated changes in the same transaction retain the
+	 * ordinary local origin and are never owned by cancellation.
+	 */
+	private applyCapturedMachineEditEvent(
+		event: {
+			changes: PositionedChange[];
+			viewId?: string;
+		},
+		entry: CapturedPendingMachineEdit,
+		machineIndexes: Set<number>,
+	): boolean {
+		if (!this.localDoc) return false;
+		const ordered = event.changes
+			.map((change, index) => ({ change, index }))
+			.sort((a, b) => {
+				const byStart = b.change.from - a.change.from;
+				return byStart !== 0 ? byStart : b.change.to - a.change.to;
+			});
+		let machineApplied = false;
+		this._localDocDispatchOriginView = event.viewId;
+		try {
+			for (const { change, index } of ordered) {
+				if (!machineIndexes.has(index)) {
+					const ytext = this.localDoc.getText("contents");
+					this.localDoc.transact(() => {
+						this.applyChangesToYText(ytext, [change]);
+					}, this);
+					continue;
+				}
+				if (entry.remoteMatched) continue;
+
+				const proxyDoc = new Y.Doc();
+				try {
+					Y.applyUpdate(proxyDoc, Y.encodeStateAsUpdate(this.localDoc));
+					proxyDoc.transact(() => {
+						this.applyChangesToYText(proxyDoc.getText("contents"), [change]);
+					});
+					const update = Y.encodeStateAsUpdate(
+						proxyDoc,
+						Y.encodeStateVector(this.localDoc),
+					);
+					this._bridge.currentMachineEditMark = entry.captureMark;
+					this._bridge.currentMachineEditId = entry.id;
+					this.localDoc.transact(() => {
+						Y.applyUpdate(this.localDoc!, update, entry.origin);
+					}, entry.origin);
+					machineApplied = true;
+				} finally {
+					this._bridge.currentMachineEditMark = null;
+					this._bridge.currentMachineEditId = null;
+					proxyDoc.destroy();
+				}
+			}
+			this.syncFrontmatterToMap();
+		} finally {
+			this._localDocDispatchOriginView = undefined;
+		}
+
+		if (entry.authority === "local-origin" || entry.remoteMatched) {
+			const machineOps = this.getMachineEditOps(entry);
+			if (entry.authority === "local-origin" && machineOps.length > 0) {
+				this.getOpCapture()?.drop(machineOps);
+			}
+			if (entry.remoteMatched) {
+				this._bridge.discardOutboundForMachineEdit(entry);
+			}
+			this.removeMachineEdit(entry);
+		}
+
+		return machineApplied;
+	}
+
+	private applyCapturedSplicesWithMachineOrigin(
+		entry: CapturedPendingMachineEdit,
+		splices: ResolvedMachineEditSplice[],
+	): void {
+		if (!this.localDoc || splices.length === 0) return;
+		const proxyDoc = new Y.Doc();
+		try {
+			Y.applyUpdate(proxyDoc, Y.encodeStateAsUpdate(this.localDoc));
+			proxyDoc.transact(() => {
+				this.applyChangesToYText(
+					proxyDoc.getText("contents"),
+					splices.map((splice) => ({
+						from: splice.from,
+						to: splice.to,
+						insert: splice.insert,
+					})),
+				);
+			});
+			const update = Y.encodeStateAsUpdate(
+				proxyDoc,
+				Y.encodeStateVector(this.localDoc),
+			);
+			this._bridge.currentMachineEditMark = entry.captureMark;
+			this._bridge.currentMachineEditId = entry.id;
+			this.localDoc.transact(() => {
+				Y.applyUpdate(this.localDoc!, update, entry.origin);
+				this.syncFrontmatterToMap();
+			}, entry.origin);
+		} finally {
+			this._bridge.currentMachineEditMark = null;
+			this._bridge.currentMachineEditId = null;
+			proxyDoc.destroy();
+		}
 	}
 
 	/**

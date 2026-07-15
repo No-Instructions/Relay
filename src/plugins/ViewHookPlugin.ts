@@ -9,6 +9,7 @@ import type { ChangeSpec } from "@codemirror/state";
 import { trackPromise } from "../trackPromise";
 import diff_match_patch from "diff-match-patch";
 import { MetadataRenderer } from "./MetadataRenderer";
+import { machineEditMoveContext } from "../merge-hsm/MachineEditMoveContext";
 
 /**
  * Centralized Obsidian UI hooks coordinator.
@@ -67,11 +68,13 @@ export class ViewHookPlugin extends HasLogging {
 			return;
 		}
 
+		const machineEditAuthority = machineEditMoveContext.current();
 		hsm.send({
 			type: "CM6_CHANGE",
 			changes: hsm.computeDiffChanges(this.document.localText, text),
 			docText: text,
 			userEvent: "set",
+			...(machineEditAuthority !== null ? { machineEditAuthority } : {}),
 		});
 	}
 

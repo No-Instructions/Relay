@@ -7,6 +7,7 @@ import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { isLive, type LiveView } from "./LiveViews";
 import { YText, YTextEvent, Transaction } from "yjs/dist/src/internals";
 import { trackPromise } from "./trackPromise";
+import { machineEditMoveContext } from "./merge-hsm/MachineEditMoveContext";
 
 export class TextFileViewPlugin extends HasLogging {
 	view: LiveView<TextFileView>;
@@ -285,11 +286,13 @@ export class TextFileViewPlugin extends HasLogging {
 								if (!hsm) {
 									throw new Error("TextFileViewPlugin requestSave: no HSM");
 								}
+								const machineEditAuthority = machineEditMoveContext.current();
 								hsm.send({
 									type: "CM6_CHANGE",
 									changes: hsm.computeDiffChanges(that.doc.localText, docText),
 									docText,
 									userEvent: "set",
+									...(machineEditAuthority !== null ? { machineEditAuthority } : {}),
 								});
 								return old.call(this);
 							} else {

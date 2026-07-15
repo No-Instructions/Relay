@@ -310,6 +310,8 @@ export interface CM6ChangeEvent {
 	docText: string;
 	viewId?: string;
 	userEvent?: string;
+	/** Enclosing FolderHSM-classified rename, when this is an editor repair. */
+	machineEditAuthority?: import("../folder-hsm/types").MachineEditAuthority;
 }
 
 export interface ProviderSyncedEvent {

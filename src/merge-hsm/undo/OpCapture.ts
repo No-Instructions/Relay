@@ -452,6 +452,11 @@ export class OpCapture {
 		}
 	}
 
+	/** Whether every selected entry is still safe for destructive cancel. */
+	canCancel(entries: CapturedOp[]): boolean {
+		return entries.every((entry) => !entry._synced);
+	}
+
 	/**
 	 * Cancel entries: truly undo the CRDT ops so the document state is as
 	 * if they never happened. Inserted items are deleted; deleted items are
