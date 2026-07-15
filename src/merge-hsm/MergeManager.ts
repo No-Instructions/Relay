@@ -21,6 +21,7 @@ import type {
   MergeEffect,
   PersistedMergeState,
   PersistedStateMeta,
+  ManagedFile,
   CreatePersistence,
   PersistenceMetadata,
   LCAState,
@@ -379,6 +380,13 @@ export class MergeManager {
         `mergeManager:beginShutdown:destroyLocalDoc:${guid}`,
       );
     }
+    // Managed files close their own IDB connections on hibernate;
+    // refusals (held locks) are torn down by their owners' destroy paths.
+    for (const managed of this._managedFiles.values()) {
+      if (!managed.destroyed) {
+        managed.tryHibernate();
+      }
+    }
   }
 
   // Track initialized state - initialize() must be called before registering HSMs
@@ -465,6 +473,16 @@ export class MergeManager {
 
   /** Per-HSM manager subscription unsubscribers, keyed by guid. */
   private _hsmUnsubs = new Map<string, () => void>();
+
+  /**
+   * Non-document files (canvases today) sharing the hibernation
+   * substrate: same warm budget, timers, LRU, leases, and buffers as
+   * documents. Registered via registerManagedFile.
+   */
+  private _managedFiles = new Map<string, ManagedFile>();
+
+  /** Bulk-loaded metadata for managed-file records (kind-discriminated). */
+  private _managedMetaCache = new Map<string, PersistedStateMeta>();
 
   // Hibernation configuration
   private _hibernateTimeoutMs: number;
@@ -925,6 +943,7 @@ export class MergeManager {
     this._lcaCache.delete(guid);
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
+    this._managedMetaCache.delete(guid);
     this._updateWakeQueueMetrics();
   }
 
@@ -951,6 +970,7 @@ export class MergeManager {
     this._lcaCache.delete(guid);
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
+    this._managedMetaCache.delete(guid);
     this._updateWakeQueueMetrics();
   }
 
@@ -985,6 +1005,82 @@ export class MergeManager {
    * For P1 (OPEN_DOC), the caller should also call wake() directly for
    * synchronous/blocking wake (acquireLock needs the doc ready immediately).
    */
+  // ===========================================================================
+  // Managed files (non-document types on the shared substrate)
+  // ===========================================================================
+
+  /**
+   * Register a non-document file with the hibernation substrate. Cold
+   * registrations start hibernated; warm ones enter the pool and start
+   * the hibernate countdown like any other warm file.
+   */
+  registerManagedFile(file: ManagedFile): void {
+    if (this.destroyed || this._managedFiles.has(file.guid)) return;
+    this._managedFiles.set(file.guid, file);
+    if (file.isWarm()) {
+      this._hibernationState.set(file.guid, 'cached');
+      this.touchWarmLRU(file.guid);
+      this.resetHibernateTimer(file.guid);
+    } else {
+      this._hibernationState.set(file.guid, 'hibernated');
+    }
+    this._updateWakeQueueMetrics();
+  }
+
+  unregisterManagedFile(guid: string): void {
+    if (!this._managedFiles.delete(guid)) return;
+    this._managedMetaCache.delete(guid);
+    this.stopTracking(guid);
+  }
+
+  /**
+   * A managed file materialized lazily (any content access wakes it).
+   * Account the warm slot and bound the pool.
+   */
+  notifyManagedFileWarm(guid: string): void {
+    if (this.destroyed || !this._managedFiles.has(guid)) return;
+    if (this.getHibernationState(guid) === 'hibernated') {
+      this._hibernationState.set(guid, 'cached');
+    }
+    this.touchWarmLRU(guid);
+    this.resetHibernateTimer(guid);
+    let warmCount = 0;
+    for (const [, state] of this._hibernationState) {
+      if (state === 'working' || state === 'cached') warmCount++;
+    }
+    if (warmCount > this._maxConcurrentWarm) {
+      this.evictLRU();
+    }
+    this._updateWakeQueueMetrics();
+  }
+
+  /**
+   * Synchronously wake a managed file (the P1 analog of wake()): build
+   * the working form and drain buffered remote updates.
+   */
+  wakeManagedFile(guid: string): void {
+    const managed = this._managedFiles.get(guid);
+    if (!managed || this.destroyed || managed.destroyed) return;
+    managed.wake();
+    const buffered = this._hibernationBuffer.get(guid);
+    if (buffered) {
+      this._hibernationBuffer.delete(guid);
+      managed.applyRemoteUpdate(buffered);
+    }
+    this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
+    if (this.getHibernationState(guid) === 'hibernated') {
+      this._hibernationState.set(guid, 'cached');
+    }
+    this.touchWarmLRU(guid);
+    this.resetHibernateTimer(guid);
+    this._updateWakeQueueMetrics();
+  }
+
+  /** Bulk-loaded record metadata for a managed file (cold-start input). */
+  getManagedMeta(guid: string): PersistedStateMeta | undefined {
+    return this._managedMetaCache.get(guid);
+  }
+
   enqueueWake(request: WakeRequest): void {
     if (this.destroyed) return;
 
@@ -1093,6 +1189,22 @@ export class MergeManager {
     // operation is reading.
     if (this._warmLeases.has(guid)) {
       this.resetHibernateTimer(guid);
+      return;
+    }
+
+    const managed = this._managedFiles.get(guid);
+    if (managed) {
+      // The file owns its eligibility (in-flight work, held lock,
+      // unsettled machine) — a refusal defers like a running invoke.
+      if (!managed.tryHibernate()) {
+        this.resetHibernateTimer(guid);
+        return;
+      }
+      this.clearHibernateTimer(guid);
+      this.removeFromWarmLRU(guid);
+      this._hibernationState.set(guid, 'hibernated');
+      this._updateWakeQueueMetrics();
+      this.processWakeQueue();
       return;
     }
 
@@ -1279,6 +1391,14 @@ export class MergeManager {
         return;
       }
       for (const state of allMeta) {
+        // Managed-file records (kind-discriminated) feed the managed meta
+        // cache and the local-head cache — advertised-head comparisons
+        // work for hibernated files — but never the document caches.
+        if (state.kind === 'canvas') {
+          this._managedMetaCache.set(state.guid, state);
+          this._localSnapshotCache.set(state.guid, state.localSnapshot ?? null);
+          continue;
+        }
         this._stateMetaCache.set(state.guid, state);
         this._lcaCache.set(state.guid, state.lcaMeta);
 
@@ -1438,6 +1558,27 @@ export class MergeManager {
    * If warm/active, forwards directly to the HSM.
    */
   handleRemoteUpdate(guid: string, update: Uint8Array): void {
+    const managed = this._managedFiles.get(guid);
+    if (managed) {
+      const managedUpdateError = validateUpdate(update);
+      if (managedUpdateError) {
+        this._error(`Dropping invalid remote update for ${guid} (${update.byteLength} bytes): ${managedUpdateError}`);
+        return;
+      }
+      if (!managed.isWarm()) {
+        this.enqueueWake({
+          guid,
+          priority: WakePriority.REMOTE_UPDATE,
+          update,
+        });
+        return;
+      }
+      managed.applyRemoteUpdate(update);
+      this.touchWarmLRU(guid);
+      this.resetHibernateTimer(guid);
+      return;
+    }
+
     const doc = this._getDocument(guid);
     const hsm = doc?.hsm;
     if (!hsm) return; // Document not found or no HSM - ignore
@@ -1827,6 +1968,8 @@ export class MergeManager {
     this._activeStateLoads.clear();
     this._warmLRU.clear();
     this._warmLeases.clear();
+    this._managedFiles.clear();
+    this._managedMetaCache.clear();
     this._updateWakeQueueMetrics();
 
     // These callbacks close over SharedFolder and related plugin services.
@@ -1918,14 +2061,21 @@ export class MergeManager {
    */
   private evictLRU(): boolean {
     for (const [guid] of this._warmLRU) {
+      // Skip files leased by an in-flight background operation
+      if (this._warmLeases.has(guid)) continue;
+      // Skip active files (shouldn't be in LRU, but guard anyway)
+      if (this.getHibernationState(guid) === 'active') continue;
+      if (this._managedFiles.has(guid)) {
+        // The file owns its eligibility; hibernate() defers internally
+        // on refusal, so success shows up as a state change.
+        this.hibernate(guid);
+        if (this.getHibernationState(guid) === 'hibernated') return true;
+        continue;
+      }
       const doc = this._getDocument(guid);
       const hsm = doc?.hsm;
       // Skip docs with in-flight async work
       if (hsm?.getActiveInvoke()) continue;
-      // Skip docs leased by an in-flight background operation
-      if (this._warmLeases.has(guid)) continue;
-      // Skip active docs (shouldn't be in LRU, but guard anyway)
-      if (this.getHibernationState(guid) === 'active') continue;
       this.hibernate(guid);
       return true;
     }
@@ -1996,6 +2146,23 @@ export class MergeManager {
 
         // Skip if already warm/active
         if (currentState !== 'hibernated') continue;
+
+        const managed = this._managedFiles.get(request.guid);
+        if (managed) {
+          if (managed.destroyed) continue;
+          this._wakingDocs.add(request.guid);
+          managed.wake();
+          const managedBuffer = this._hibernationBuffer.get(request.guid);
+          if (managedBuffer) {
+            this._hibernationBuffer.delete(request.guid);
+            managed.applyRemoteUpdate(managedBuffer);
+          }
+          this._hibernationState.set(request.guid, 'working');
+          this.touchWarmLRU(request.guid);
+          this.resetHibernateTimer(request.guid);
+          this._wakingDocs.delete(request.guid);
+          continue;
+        }
 
         const doc = this._getDocument(request.guid);
         const hsm = doc?.hsm;

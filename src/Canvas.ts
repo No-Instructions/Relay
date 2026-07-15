@@ -27,6 +27,7 @@ import {
 	CANVAS_BRIDGE_IN_ORIGIN,
 } from "./canvas-hsm";
 import type { CanvasEffect } from "./canvas-hsm";
+import type { ManagedFile } from "./merge-hsm/types";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -69,7 +70,10 @@ function replaceYTextContent(ytext: Y.Text, nextText: string): void {
 	}
 }
 
-export class Canvas extends HasProvider implements IFile, HasMimeType {
+export class Canvas
+	extends HasProvider
+	implements IFile, HasMimeType, ManagedFile
+{
 	private _parent: SharedFolder;
 	private _persistenceInstance: IndexeddbPersistence | null = null;
 	private _localDoc: Y.Doc | null = null;
@@ -105,6 +109,26 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 
 	get isMaterialized(): boolean {
 		return this._materialized;
+	}
+
+	// =========================================================================
+	// ManagedFile surface (MergeManager's shared hibernation substrate)
+	// =========================================================================
+
+	isWarm(): boolean {
+		return this._materialized;
+	}
+
+	wake(): void {
+		this.materialize();
+	}
+
+	tryHibernate(): boolean {
+		return this.hibernate();
+	}
+
+	applyRemoteUpdate(update: Uint8Array): void {
+		Y.applyUpdate(this.ydoc, update, this.sharedFolder);
 	}
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
@@ -749,6 +773,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			this.timeProvider.clearTimeout(this._docChangedTimer);
 			this._docChangedTimer = null;
 		}
+		this.sharedFolder.mergeManager?.unregisterManagedFile(this.guid);
 		this.hsm?.destroy();
 		this._bridge?.destroy();
 		this._viewReconciler = null;

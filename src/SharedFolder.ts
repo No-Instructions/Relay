@@ -629,13 +629,12 @@ export class SharedFolder extends HasProvider {
 					const committed = new Set(
 						this.syncStore.getCommittedSubdocGuids(),
 					);
+					// Canvas records pass through: initializeCaches routes them
+					// to the managed-file caches, never the document caches.
 					return all.filter(
-						// Canvas records live in the same store but belong to
-						// CanvasHSMs; the document caches must never see them.
 						(meta) =>
-							meta.kind !== "canvas" &&
-							(meta.folder === this.guid ||
-								(meta.folder === undefined && committed.has(meta.guid))),
+							meta.folder === this.guid ||
+							(meta.folder === undefined && committed.has(meta.guid)),
 					);
 				} catch {
 					return [];
@@ -921,10 +920,16 @@ export class SharedFolder extends HasProvider {
 			// Folder-routed canvas updates land on the provider-facing
 			// remoteDoc; the CanvasDocBridge merges them into the localDoc,
 			// where the CanvasHSM observes the change and decides whether
-			// disk follows. Update classification and keyframe catch-up are
-			// document machinery; reconnect sweeps and remote-head downloads
-			// cover any gapped canvas updates.
-			Y.applyUpdate(file.ydoc, update, this);
+			// disk follows. The manager buffers bytes for hibernated
+			// canvases and wakes them through the shared queue. Update
+			// classification and keyframe catch-up are document machinery;
+			// reconnect sweeps and remote-head downloads cover any gapped
+			// canvas updates.
+			if (this.mergeManager) {
+				this.mergeManager.handleRemoteUpdate(guid, update);
+			} else {
+				Y.applyUpdate(file.ydoc, update, this);
+			}
 			return;
 		}
 
@@ -3334,6 +3339,14 @@ export class SharedFolder extends HasProvider {
 		if (this._localOnly) {
 			canvas.setLocalOnly(true);
 		}
+		if (this.mergeManager) {
+			const mergeManager = this.mergeManager;
+			mergeManager.registerManagedFile(canvas);
+			// Lazy materialization anywhere (a view touching localDoc, an
+			// explicit whenSynced) flows back into warm accounting.
+			canvas.onMaterialize = () =>
+				mergeManager.notifyManagedFileWarm(canvas.guid);
+		}
 		return canvas;
 	}
 
@@ -3418,6 +3431,23 @@ export class SharedFolder extends HasProvider {
 			throw new Error("expected guid");
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
+
+		// Cold start: a persisted record whose last known disk state matches
+		// the file on disk proves the canvas was cleanly synced — the shell
+		// stays hibernated with no IDB open and no connection. Wake triggers
+		// (lock acquisition, remote traffic, disk change) materialize it.
+		const managedMeta = this.mergeManager?.getManagedMeta(guid);
+		if (
+			!canvas.isMaterialized &&
+			managedMeta?.lcaMeta &&
+			managedMeta.disk &&
+			canvas.tfile?.stat.mtime === managedMeta.disk.mtime &&
+			!this.pendingUpload.get(canvas.path)
+		) {
+			this.files.set(guid, canvas);
+			this.fset.add(canvas, update);
+			return canvas;
+		}
 
 		void trackPromise(`folder:canvasReady:${canvas.guid}`, this.whenReady())
 			.then(async () => {

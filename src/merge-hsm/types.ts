@@ -754,6 +754,30 @@ export interface PersistedCanvasState {
 /** Any record shape held by the HSMStore states store. */
 export type PersistedHSMRecord = PersistedMergeState | PersistedCanvasState;
 
+/**
+ * The lifecycle slice a non-document file type registers with
+ * MergeManager: enough for the shared hibernation substrate (warm slots,
+ * hibernate timers, LRU eviction, warm leases, the wake queue, and
+ * buffered remote updates) to drive it. Documents remain on their
+ * MergeManagerDocument path; canvases implement this today, and future
+ * file types implement it to inherit the lifecycle.
+ */
+export interface ManagedFile {
+	readonly guid: string;
+	readonly destroyed: boolean;
+	/** Whether the working form (local YDoc + persistence) is in memory. */
+	isWarm(): boolean;
+	/** Build the working form (idempotent). */
+	wake(): void;
+	/**
+	 * Release the working form. Returns false to defer — in-flight work,
+	 * a held lock, or an unsettled machine — and the manager reschedules.
+	 */
+	tryHibernate(): boolean;
+	/** Apply remote update bytes to the file's provider-facing doc. */
+	applyRemoteUpdate(update: Uint8Array): void;
+}
+
 /** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
 export interface PersistedStateMeta {
 	/** Present ("canvas") when the record belongs to a CanvasHSM. */

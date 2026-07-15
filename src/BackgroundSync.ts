@@ -21,6 +21,7 @@ import type { CanvasData } from "./CanvasView";
 import { areCanvasDataEqual } from "./CanvasData";
 import { SyncFile, isSyncFile } from "./SyncFile";
 import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
+import { WakePriority } from "./merge-hsm/MergeManager";
 import {
 	buildFolderSyncSnapshot,
 	FolderSyncSnapshotSmoother,
@@ -1764,10 +1765,12 @@ export class BackgroundSync extends HasLogging {
 		}
 
 		// Canvases: SERVER_AHEAD is a signal, not a command — each canvas's
-		// machine decides whether a download is appropriate (never while a
-		// view is attached, deduped against its own pending download). The
+		// machine decides whether a download is appropriate (never while
+		// the lock is held, deduped against its own pending download). The
 		// advertised-head comparison stays host-side because it reads the
-		// MergeManager's advertised-head table.
+		// MergeManager's advertised-head table; hibernated canvases compare
+		// against their persisted local head and wake through the shared
+		// queue (the machine remembers the signal until it settles).
 		const canvases = [...sharedFolder.files.values()]
 			.filter(isCanvas)
 			.filter((canvas) => advertisedGuids.has(canvas.guid))
@@ -1777,11 +1780,19 @@ export class BackgroundSync extends HasLogging {
 				if (!mergeManager) return true;
 				return !mergeManager.isServerAdvertisedInSync(
 					canvas.guid,
-					snapshotFromDoc(canvas.ydoc).snapshot,
+					canvas.isMaterialized
+						? snapshotFromDoc(canvas.ydoc).snapshot
+						: undefined,
 				);
 			});
 		for (const canvas of canvases) {
 			canvas.hsm.send({ type: "SERVER_AHEAD" });
+			if (!canvas.isMaterialized) {
+				sharedFolder.mergeManager?.enqueueWake({
+					guid: canvas.guid,
+					priority: WakePriority.REMOTE_UPDATE,
+				});
+			}
 		}
 
 		return docs.length + canvases.length;
