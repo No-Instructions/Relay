@@ -741,6 +741,12 @@ export interface PersistedCanvasState {
 		mtime: number;
 	} | null;
 	disk: MergeMetadata | null;
+	/**
+	 * The canvas localDoc's head at persist time. Lets the advertised-head
+	 * sweep decide whether a hibernated canvas trails the server without
+	 * waking it.
+	 */
+	localSnapshot?: Uint8Array | null;
 	lastStatePath: string;
 	persistedAt: number;
 }

@@ -148,6 +148,12 @@ export interface CanvasHSMConfig {
 	formatData: (data: CanvasData) => string;
 	/** Content hash (defaults to the vault-wide SHA-256 helper). */
 	hashFn?: (contents: string) => Promise<string>;
+	/**
+	 * The localDoc's current head, persisted so the advertised-head sweep
+	 * can classify this canvas while hibernated. Absent on hosts that do
+	 * not track snapshots (tests).
+	 */
+	getLocalSnapshot?: () => Uint8Array | null;
 	/** Clock for persistedAt stamps (injectable for tests). */
 	now?: () => number;
 	onEffect: (effect: CanvasEffect) => void;

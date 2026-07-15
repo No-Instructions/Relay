@@ -112,8 +112,20 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 			},
 		],
 		on: {
+			// Hibernation re-enters loading: context resets (freeing the
+			// resident LCA contents) and the machine waits for the wake's
+			// PERSISTENCE_LOADED. Only synced and diverged handle LOAD —
+			// hibernating mid-flush or mid-download is structurally
+			// impossible.
+			LOAD: { target: "loading", actions: ["resetContext"] },
 			LOCAL_DOC_CHANGED: { target: "evaluating" },
 			DISK_CHANGED: { target: "evaluating" },
+			// Wake rehydration: the manager reloads the record after
+			// rematerializing the docs; posture is re-derived, never trusted.
+			PERSISTENCE_LOADED: {
+				target: "evaluating",
+				actions: ["restorePersistedState"],
+			},
 			SERVER_AHEAD: { target: "synced", actions: ["requestDownload"] },
 			DOWNLOAD_COMPLETE: {
 				target: "evaluating",
@@ -166,8 +178,13 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 		},
 		entry: ["surfaceStatus", "drainPendingSignals"],
 		on: {
+			LOAD: { target: "loading", actions: ["resetContext"] },
 			LOCAL_DOC_CHANGED: { target: "evaluating" },
 			DISK_CHANGED: { target: "evaluating" },
+			PERSISTENCE_LOADED: {
+				target: "evaluating",
+				actions: ["restorePersistedState"],
+			},
 			SERVER_AHEAD: { target: "diverged", actions: ["requestDownload"] },
 			DOWNLOAD_COMPLETE: {
 				target: "evaluating",
@@ -194,6 +211,10 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 			VIEW_DATA_LOADED: {
 				target: "active",
 				actions: ["emitReconcileView"],
+			},
+			PERSISTENCE_LOADED: {
+				target: "active",
+				actions: ["restorePersistedState"],
 			},
 			VIEW_ATTACHED: { target: "active", actions: [] },
 			VIEW_DETACHED: {

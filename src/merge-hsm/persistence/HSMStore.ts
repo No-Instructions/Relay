@@ -74,6 +74,7 @@ function sanitizeCanvasState(state: PersistedCanvasState): PersistedCanvasState 
     disk: state.disk
       ? { hash: state.disk.hash, mtime: state.disk.mtime }
       : null,
+    localSnapshot: state.localSnapshot ?? null,
     lastStatePath: state.lastStatePath,
     persistedAt: state.persistedAt,
   };
@@ -276,7 +277,7 @@ export class HSMStore {
               ? { meta: { hash: record.lca.hash, mtime: record.lca.mtime } }
               : null,
             disk: record.disk,
-            localSnapshot: null,
+            localSnapshot: record.localSnapshot ?? null,
             lastStatePath: record.lastStatePath as PersistedStateMeta['lastStatePath'],
             hasFork: false,
             persistedAt: record.persistedAt,

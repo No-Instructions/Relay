@@ -417,6 +417,7 @@ export class CanvasHSM {
 			folder: this.config.folderGuid,
 			lca: this.context.lca ? { ...this.context.lca } : null,
 			disk: this.context.disk ? { ...this.context.disk } : null,
+			localSnapshot: this.config.getLocalSnapshot?.() ?? null,
 			lastStatePath: this._statePath,
 			persistedAt: this.now(),
 		};

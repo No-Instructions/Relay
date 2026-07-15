@@ -3,6 +3,7 @@ import { HasProvider } from "./HasProvider";
 import type { HasMimeType, IFile } from "./IFile";
 import type { LoginManager } from "./LoginManager";
 import { S3Canvas, S3Folder, S3RN, S3RemoteCanvas } from "./S3RN";
+import { snapshotFromDoc } from "./merge-hsm/state-vectors";
 import * as Y from "yjs";
 import type { SharedFolder } from "./SharedFolder";
 import { getMimeType } from "./mimetypes";
@@ -70,20 +71,40 @@ function replaceYTextContent(ytext: Y.Text, nextText: string): void {
 
 export class Canvas extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
-	private _persistence: IndexeddbPersistence;
-	/**
-	 * The vault-facing replica: views, disk ingestion, and export all read
-	 * and write here, and the existing relay-canvas database persists it.
-	 * HasProvider's ydoc is the provider-facing remoteDoc; the
-	 * CanvasDocBridge is the sole conduit between the two.
-	 */
-	readonly localDoc: Y.Doc;
+	private _persistenceInstance: IndexeddbPersistence | null = null;
+	private _localDoc: Y.Doc | null = null;
 	readonly hsm: CanvasHSM;
-	private _bridge: CanvasDocBridge;
+	private _bridge: CanvasDocBridge | null = null;
+	private _materialized = false;
+	private _materialUnsubs: Unsubscriber[] = [];
 	private _docChangedTimer: number | null = null;
 	private _pendingDocChangeOrigin: "bridge" | "ingest" | "unknown" =
 		"unknown";
 	private _viewReconciler: (() => void) | null = null;
+	/** Manager hook: warm-slot accounting on lazy materialization. */
+	onMaterialize: (() => void) | null = null;
+
+	/**
+	 * The vault-facing replica: views, disk ingestion, and export all read
+	 * and write here, and the existing relay-canvas database persists it.
+	 * HasProvider's ydoc is the provider-facing remoteDoc; the
+	 * CanvasDocBridge is the sole conduit between the two. Access
+	 * materializes a hibernated canvas — any code path that touches
+	 * content transparently wakes it.
+	 */
+	get localDoc(): Y.Doc {
+		this.materialize();
+		return this._localDoc!;
+	}
+
+	private get _persistence(): IndexeddbPersistence {
+		this.materialize();
+		return this._persistenceInstance!;
+	}
+
+	get isMaterialized(): boolean {
+		return this._materialized;
+	}
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
 	readyPromise?: Dependency<Canvas>;
@@ -136,27 +157,6 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		);
 
 		this.setLoggers(`[Canvas](${this.path})`);
-		this.localDoc = new Y.Doc();
-		try {
-			const key = `${this.sharedFolder.appId}-relay-canvas-${this.guid}`;
-			this._persistence = new IndexeddbPersistence(
-				key,
-				this.localDoc,
-				null,
-				null,
-				this.timeProvider,
-			);
-		} catch (e) {
-			this.warn("Unable to open persistence.", this.guid);
-			console.error(e);
-			throw e;
-		}
-
-		this._bridge = new CanvasDocBridge(this.localDoc, this.ydoc, {
-			// The localDoc's IDB replay is not local intent; the remoteDoc
-			// converges from the server through the provider and reconcile().
-			skipOutboundOrigin: (origin) => origin === this._persistence,
-		});
 
 		this.hsm = new CanvasHSM({
 			guid: this.guid,
@@ -176,30 +176,77 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			},
 			exportData: () => Canvas.exportCanvasData(this.localDoc),
 			formatData: formatCanvasData,
+			getLocalSnapshot: () =>
+				this._localDoc
+					? snapshotFromDoc(this._localDoc).snapshot
+					: null,
 			onEffect: (effect) => this.executeEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[hsm] ${from} -> ${to} (${eventType})`);
 			},
 		});
 
+		this._tfile = null;
+	}
+
+	/**
+	 * Bring the canvas from its cold shell to the working form: localDoc,
+	 * IDB persistence, bridge, update observer, machine hydration, and the
+	 * first-sync connect. Idempotent; runs implicitly on any localDoc or
+	 * persistence access.
+	 */
+	materialize(): void {
+		if (this._materialized || this.destroyed) return;
+		this._materialized = true;
+
+		this._localDoc = new Y.Doc();
+		try {
+			const key = `${this.sharedFolder.appId}-relay-canvas-${this.guid}`;
+			this._persistenceInstance = new IndexeddbPersistence(
+				key,
+				this._localDoc,
+				null,
+				null,
+				this.timeProvider,
+			);
+		} catch (e) {
+			this.warn("Unable to open persistence.", this.guid);
+			console.error(e);
+			this._materialized = false;
+			this._localDoc.destroy();
+			this._localDoc = null;
+			throw e;
+		}
+
+		this._bridge = new CanvasDocBridge(this._localDoc, this.ydoc, {
+			// The localDoc's IDB replay is not local intent; the remoteDoc
+			// converges from the server through the provider and reconcile().
+			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
+		});
+
+		const localDoc = this._localDoc;
 		const onLocalDocUpdate = (_update: Uint8Array, origin: unknown) => {
 			if (this.destroyed) return;
-			if (origin === this._persistence) return;
+			if (origin === this._persistenceInstance) return;
 			this.scheduleDocChanged(origin);
 		};
-		this.localDoc.on("update", onLocalDocUpdate);
-		this.unsubscribes.push(() => {
-			this.localDoc.off("update", onLocalDocUpdate);
+		localDoc.on("update", onLocalDocUpdate);
+		this._materialUnsubs.push(() => {
+			localDoc.off("update", onLocalDocUpdate);
 		});
 
 		this.whenSynced()
 			.then(() => {
+				if (!this._materialized) return;
 				this.updateStats();
 				try {
-					this._persistence.set("path", this.path);
-					this._persistence.set("relay", this.sharedFolder.relayId || "");
-					this._persistence.set("appId", this.sharedFolder.appId);
-					this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+					this._persistenceInstance?.set("path", this.path);
+					this._persistenceInstance?.set(
+						"relay",
+						this.sharedFolder.relayId || "",
+					);
+					this._persistenceInstance?.set("appId", this.sharedFolder.appId);
+					this._persistenceInstance?.set("s3rn", S3RN.encode(this.s3rn));
 				} catch (e) {
 					// pass
 				}
@@ -208,7 +255,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 					const state = await this.sharedFolder.loadCanvasState(
 						this.guid,
 					);
-					if (this.destroyed) return;
+					if (this.destroyed || !this._materialized) return;
 					this.hsm.send({ type: "PERSISTENCE_LOADED", state });
 				})().catch((e) => this.warn("canvas state load failed", e));
 
@@ -224,7 +271,51 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			})
 			.catch((e) => this.warn("canvas persistence sync failed", e));
 
-		this._tfile = null;
+		this.onMaterialize?.();
+	}
+
+	/**
+	 * Release the working form: destroy the localDoc and its IDB
+	 * connection, drop the bridge, and reset the machine to loading (which
+	 * frees the resident LCA contents). Refuses while a view is attached,
+	 * a download or flush is pending, a doc-change debounce is armed, or
+	 * the machine is mid-decision — hibernation is only legal from a
+	 * settled posture. The remoteDoc stays, matching document hibernation
+	 * (MergeManager detaches but never destroys the provider doc).
+	 */
+	hibernate(): boolean {
+		if (!this._materialized) return true;
+		if (this.destroyed) return false;
+		if (this.userLock) return false;
+		if (this._docChangedTimer != null) return false;
+		const snapshot = this.hsm.getSnapshot();
+		if (snapshot.viewAttached || snapshot.downloadPending) return false;
+		if (
+			snapshot.statePath !== "synced" &&
+			snapshot.statePath !== "diverged"
+		) {
+			return false;
+		}
+
+		this._materialized = false;
+		this._materialUnsubs.forEach((unsubscribe) => unsubscribe());
+		this._materialUnsubs = [];
+		this._bridge?.destroy();
+		this._bridge = null;
+		if (this._persistenceInstance) {
+			const p = this._persistenceInstance.destroy().catch(() => {});
+			trackAsyncCleanup(p);
+			this._persistenceInstance = null;
+		}
+		this._localDoc?.destroy();
+		this._localDoc = null;
+		// The memoized readiness promises are bound to the destroyed
+		// persistence; the next materialize rebuilds them.
+		this.whenSyncedPromise = null;
+		this.readyPromise = undefined;
+		this.persistenceSynced = false;
+		this.hsm.send({ type: "LOAD" });
+		return true;
 	}
 
 	/**
@@ -233,7 +324,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	 * localDoc update observer.
 	 */
 	protected handleProviderSynced(): void {
-		this._bridge.reconcile();
+		this._bridge?.reconcile();
 	}
 
 	private scheduleDocChanged(origin: unknown): void {
@@ -459,6 +550,8 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	 * call repeatedly — Obsidian re-attaches views across file switches.
 	 */
 	attachView(): void {
+		// P1 wake: a view opening is synchronous and unconditional.
+		this.materialize();
 		this.userLock = true;
 		this.hsm.send({ type: "VIEW_ATTACHED" });
 	}
@@ -641,6 +734,10 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this.hsm?.destroy();
 		this._bridge?.destroy();
 		this._viewReconciler = null;
+		this._materialUnsubs?.forEach((unsubscribe) => {
+			unsubscribe();
+		});
+		this._materialUnsubs = [];
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
@@ -648,11 +745,13 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this.whenSyncedPromise = null as any;
 		this.readyPromise?.destroy(destroyedError);
 		this.readyPromise = null as any;
-		if (this._persistence) {
-			const p = this._persistence.destroy().catch(() => {});
+		if (this._persistenceInstance) {
+			const p = this._persistenceInstance.destroy().catch(() => {});
 			trackAsyncCleanup(p);
+			this._persistenceInstance = null;
 		}
-		this.localDoc?.destroy();
+		this._localDoc?.destroy();
+		this._localDoc = null;
 		super.destroy();
 	}
 }
