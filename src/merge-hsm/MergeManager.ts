@@ -21,6 +21,7 @@ import type {
   MergeEffect,
   PersistedMergeState,
   PersistedStateMeta,
+  PersistedCanvasState,
   ManagedFile,
   ConflictProvider,
   CreatePersistence,
@@ -865,19 +866,22 @@ export class MergeManager {
       // Intent edge: stop wake/hibernate now so a destroying HSM is never
       // re-woken or treated as active. Keep the effect subscription and caches
       // until the machine-driven teardown emits its final PERSIST_STATE, then
-      // drop them at the terminal edge.
+      // drop them at the terminal edge. The deferred unregister carries this
+      // HSM's own teardown bundle: a new HSM registered for the same guid
+      // before cleanup settles must keep its subscriptions and providers.
       this.stopTracking(guid);
-      void hsm.awaitCleanupSettled().finally(() => this.unregisterHSM(guid));
+      void hsm.awaitCleanupSettled().finally(() => this.unregisterHSM(guid, unsubs));
     });
     const unsubscribeConflicts = this.registerConflictProvider(
       guid,
       this.createDocumentConflictProvider(guid),
     );
-    this._hsmUnsubs.set(guid, () => {
+    const unsubs = () => {
       unsubscribeEffects();
       unsubscribeDestroyed();
       unsubscribeConflicts();
-    });
+    };
+    this._hsmUnsubs.set(guid, unsubs);
 
     // Enter loading state — HSM accumulates events until async load completes
     hsm.send({ type: 'LOAD', guid });
@@ -999,7 +1003,9 @@ export class MergeManager {
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
     this._managedMetaCache.delete(guid);
-    this._conflictProviders.delete(guid);
+    // Conflict providers are removed only through their identity-guarded
+    // unsubscribe: a raw delete here would take out the provider a newer
+    // HSM registered for the same guid.
     this._updateWakeQueueMetrics();
   }
 
@@ -1009,8 +1015,15 @@ export class MergeManager {
    * forwarded to handleHSMEffect. Re-clears the caches the final persist may
    * have repopulated; the deletes are idempotent with stopTracking.
    */
-  private unregisterHSM(guid: string): void {
+  private unregisterHSM(guid: string, expected?: () => void): void {
     if (this.destroyed) return;
+    if (expected && this._hsmUnsubs.get(guid) !== expected) {
+      // A newer HSM owns this guid: run only the retiring HSM's own
+      // teardown bundle (its conflict unsubscribe is identity-guarded and
+      // leaves the new provider in place) and keep the live registration.
+      expected();
+      return;
+    }
     this._hsmUnsubs.get(guid)?.();
     this._hsmUnsubs.delete(guid);
     this._hibernationState.delete(guid);
@@ -1027,7 +1040,8 @@ export class MergeManager {
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
     this._managedMetaCache.delete(guid);
-    this._conflictProviders.delete(guid);
+    // Conflict providers are removed only through their identity-guarded
+    // unsubscribe (part of the bundle above).
     this._updateWakeQueueMetrics();
   }
 
@@ -1092,13 +1106,23 @@ export class MergeManager {
 
   /**
    * A managed file materialized lazily (any content access wakes it).
-   * Account the warm slot and bound the pool.
+   * Account the warm slot, deliver updates buffered while it hibernated,
+   * and bound the pool. Without the drain, a pending wake request would
+   * later be skipped as already-warm and the buffered bytes lost until an
+   * unrelated event.
    */
   notifyManagedFileWarm(guid: string): void {
     if (this.destroyed || !this._managedFiles.has(guid)) return;
     if (this.getHibernationState(guid) === 'hibernated') {
       this._hibernationState.set(guid, 'cached');
     }
+    const managed = this._managedFiles.get(guid);
+    const buffered = this._hibernationBuffer.get(guid);
+    if (managed && !managed.destroyed && buffered) {
+      this._hibernationBuffer.delete(guid);
+      managed.applyRemoteUpdate(buffered);
+    }
+    this._wakeQueue = this._wakeQueue.filter(r => r.guid !== guid);
     this.touchWarmLRU(guid);
     this.resetHibernateTimer(guid);
     let warmCount = 0;
@@ -1136,6 +1160,31 @@ export class MergeManager {
   /** Bulk-loaded record metadata for a managed file (cold-start input). */
   getManagedMeta(guid: string): PersistedStateMeta | undefined {
     return this._managedMetaCache.get(guid);
+  }
+
+  /**
+   * Refresh the managed-file caches from a freshly persisted record,
+   * projected into the same lightweight meta shape the cold-start bulk
+   * load produces. Without this, advertised-head comparisons for a
+   * re-hibernated file run against its startup-era snapshot forever.
+   */
+  refreshManagedRecord(state: PersistedCanvasState): void {
+    if (this.destroyed) return;
+    this._managedMetaCache.set(state.guid, {
+      kind: 'canvas',
+      guid: state.guid,
+      path: state.path,
+      folder: state.folder,
+      lcaMeta: state.lca
+        ? { meta: { hash: state.lca.hash, mtime: state.lca.mtime } }
+        : null,
+      disk: state.disk,
+      localSnapshot: state.localSnapshot ?? null,
+      lastStatePath: state.lastStatePath as PersistedStateMeta['lastStatePath'],
+      hasFork: false,
+      persistedAt: state.persistedAt,
+    });
+    this._localSnapshotCache.set(state.guid, state.localSnapshot ?? null);
   }
 
   enqueueWake(request: WakeRequest): void {
