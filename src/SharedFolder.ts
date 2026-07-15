@@ -1152,6 +1152,25 @@ export class SharedFolder extends HasProvider {
 
 		for (const guid of targetGuids) {
 			const file = this.files.get(guid);
+			if (isCanvas(file)) {
+				// The canvas machine re-reads disk itself; a stat mismatch
+				// against its last known disk meta is the whole signal. A
+				// hibernated canvas cannot act on the event — disk change is
+				// a wake trigger, and the wake's first evaluation reads the
+				// changed file.
+				const tfile = file.tfile;
+				if (
+					tfile &&
+					file.hsm.getSnapshot().disk?.mtime !== tfile.stat.mtime
+				) {
+					if (file.isMaterialized) {
+						file.hsm.send({ type: "DISK_CHANGED" });
+					} else {
+						this.mergeManager?.wakeManagedFile(guid);
+					}
+				}
+				continue;
+			}
 			if (!file || !isDocument(file)) continue;
 
 			const hsm = file.hsm;
@@ -3323,6 +3342,9 @@ export class SharedFolder extends HasProvider {
 
 	/** Persist a canvas machine record; background write, failures logged. */
 	public saveCanvasState(guid: string, state: PersistedCanvasState): void {
+		// Advertised-head comparisons for a re-hibernated canvas read the
+		// manager's caches; every persisted record refreshes them.
+		this.mergeManager?.refreshManagedRecord(state);
 		const p = this._hsmStore.saveState(guid, state).catch((err) => {
 			this.error(`[CanvasHSM] saveState failed for ${guid}:`, err);
 		});

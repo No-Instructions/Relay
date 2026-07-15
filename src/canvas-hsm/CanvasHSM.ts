@@ -71,10 +71,24 @@ function isCanvasDataEmpty(data: CanvasData): boolean {
 
 function parseCanvasData(raw: string): CanvasData | null {
 	try {
-		const parsed = JSON.parse(raw) as CanvasData;
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		// Valid JSON that is not canvas-shaped must park, never be
+		// overwritten: a canvas file is an object whose nodes/edges are
+		// arrays when present, and an object with other keys but no canvas
+		// keys is some other format that happens to share the extension.
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return null;
+		}
+		const nodes = parsed.nodes;
+		const edges = parsed.edges;
+		if (nodes !== undefined && !Array.isArray(nodes)) return null;
+		if (edges !== undefined && !Array.isArray(edges)) return null;
+		if (nodes === undefined && edges === undefined && Object.keys(parsed).length > 0) {
+			return null;
+		}
 		return {
-			nodes: parsed.nodes ?? [],
-			edges: parsed.edges ?? [],
+			nodes: (nodes as CanvasData["nodes"]) ?? [],
+			edges: (edges as CanvasData["edges"]) ?? [],
 		};
 	} catch (e) {
 		return null;

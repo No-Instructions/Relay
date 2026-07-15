@@ -86,6 +86,7 @@ import type { ReleaseSettings } from "./UpdateManager";
 import { SyncSettingsManager } from "./SyncSettings";
 import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
+import { isCanvas } from "./Canvas";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { generateHash } from "./hashing";
 import { normalizeNoteText } from "./diskText";
@@ -1490,6 +1491,22 @@ export default class Live extends Plugin {
 							await file.handleDiskChange();
 						} catch (e) {
 							vaultLog("Failed to send DISK_CHANGED to HSM", e);
+						}
+					}
+
+					// Canvas machines re-read disk themselves; the modify
+					// event is the whole signal. A hibernated canvas cannot
+					// act on it — disk change is a wake trigger, and the
+					// wake's first evaluation reads the changed file.
+					if (file && isCanvas(file) && tfile instanceof TFile) {
+						try {
+							if (file.isMaterialized) {
+								file.hsm.send({ type: 'DISK_CHANGED' });
+							} else {
+								folder?.mergeManager?.wakeManagedFile(file.guid);
+							}
+						} catch (e) {
+							vaultLog("Failed to send DISK_CHANGED to canvas", e);
 						}
 					}
 

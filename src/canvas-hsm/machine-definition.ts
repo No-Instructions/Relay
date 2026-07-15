@@ -177,6 +177,16 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 			canSurfaceStatus: true,
 		},
 		entry: ["surfaceStatus", "drainPendingSignals"],
+		// A change observed mid-flight (e.g. a disk write during a flush
+		// that then failed) re-evaluates instead of parking on the stale
+		// verdict.
+		always: [
+			{
+				target: "idle.loading",
+				guard: "reevaluatePending",
+				actions: ["clearReevaluatePending"],
+			},
+		],
 		on: {
 			LOAD: { target: "loading", actions: ["resetContext"] },
 			LOCAL_DOC_CHANGED: { target: "idle.loading" },

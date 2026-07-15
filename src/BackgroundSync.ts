@@ -1825,9 +1825,12 @@ export class BackgroundSync extends HasLogging {
 		if (isCanvas(item)) {
 			const mergeManager = item.sharedFolder.mergeManager;
 			if (!mergeManager) return true;
+			// A hibernated canvas compares against its persisted local head;
+			// snapshotting the ephemeral remoteDoc (empty every fresh
+			// session) would enqueue every canvas on every folder sync.
 			return !mergeManager.isServerAdvertisedInSync(
 				item.guid,
-				snapshotFromDoc(item.ydoc).snapshot,
+				item.isMaterialized ? snapshotFromDoc(item.ydoc).snapshot : undefined,
 			);
 		}
 		if (!isDocument(item)) return true;
@@ -2081,6 +2084,10 @@ export class BackgroundSync extends HasLogging {
 		if (this.isSyncCancelledForDoc(doc)) return false;
 		// if the local file is synced, then we do the two step process
 		if (isCanvas(doc)) {
+			// A cold canvas materializes on export; wait for the IDB replay
+			// so the comparison runs against the real local state instead of
+			// a freshly created empty localDoc.
+			await doc.whenSynced();
 			// Store the exported canvas data rather than a stringified version
 			const currentCanvasData = doc.exportData();
 			let canvasContentsMismatch = false;
@@ -2244,8 +2251,11 @@ export class BackgroundSync extends HasLogging {
 			this.log("[getCanvas] applying content from server");
 			// Server content lands on the provider-facing remoteDoc; the
 			// CanvasDocBridge merges it into the localDoc, and the canvas's
-			// machine decides whether disk follows (the old pre-download
-			// disk check is now the machine's LCA comparison).
+			// machine decides whether disk follows. The canvas must be warm
+			// first — on a hibernated canvas the update would land on a
+			// bridge-less remoteDoc, and a later re-download of the same ops
+			// produces no update events to recover it.
+			canvas.wake();
 			Y.applyUpdate(canvas.ydoc, updateBytes);
 			canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
 		} catch (e) {

@@ -189,15 +189,17 @@ export class Canvas
 			getPath: () => this.path,
 			isMember: () => this.sharedFolder.syncStore.has(this.path),
 			readDisk: async () => {
-				try {
-					const contents = await this.sharedFolder.read(this);
-					return {
-						contents,
-						mtime: this.tfile?.stat.mtime ?? Date.now(),
-					};
-				} catch (e) {
-					return null;
-				}
+				// Absent and unreadable are different verdicts: an absent
+				// file materializes, but a transient read failure (a locked
+				// file, a file-provider hiccup) must propagate so the
+				// machine parks instead of overwriting content it never saw.
+				const exists = await this.sharedFolder.exists(this);
+				if (!exists) return null;
+				const contents = await this.sharedFolder.read(this);
+				return {
+					contents,
+					mtime: this.tfile?.stat.mtime ?? Date.now(),
+				};
 			},
 			exportData: () => Canvas.exportCanvasData(this.localDoc),
 			formatData: formatCanvasData,
@@ -266,6 +268,11 @@ export class Canvas
 		this.whenSynced()
 			.then(() => {
 				if (!this._materialized) return;
+				// The localDoc has replayed from IDB; converge the replicas.
+				// Remote content that landed on the still-alive remoteDoc
+				// while this canvas was hibernated produces no update events
+				// on rewire — only a state-vector reconcile reaches it.
+				this._bridge?.reconcile();
 				this.updateStats();
 				try {
 					this._persistenceInstance?.set("path", this.path);
@@ -289,10 +296,15 @@ export class Canvas
 
 				(async () => {
 					const serverSynced = await this.getServerSynced();
+					// A hibernated or destroyed canvas must not be pulled
+					// back warm by this continuation — markSynced reaches
+					// the persistence getter, which re-materializes.
+					if (this.destroyed || !this._materialized) return;
 					if (!serverSynced) {
 						const connected = await this.connect();
 						if (!connected) return;
 						await trackPromise(`canvasSync:${this.guid}`, this.onceProviderSynced());
+						if (this.destroyed || !this._materialized) return;
 						await this.markSynced();
 					}
 				})().catch((e) => this.warn("canvas provider sync failed", e));
@@ -786,7 +798,13 @@ export class Canvas
 	// Helper method to update file stats
 	private updateStats(): void {
 		this.stat.mtime = Date.now();
-		this.stat.size = this.json.length;
+		if (this._materialized && this._localDoc) {
+			this.stat.size = this.json.length;
+		} else {
+			// The json getter materializes; a cold canvas keeps its disk
+			// stat so renames and startup enumeration never wake it.
+			this.stat.size = this.tfile?.stat.size ?? this.stat.size;
+		}
 	}
 
 	destroy() {
