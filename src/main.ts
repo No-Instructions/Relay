@@ -826,6 +826,8 @@ export default class Live extends Plugin {
 			this._createSharedFolder.bind(this),
 			this.folderSettings,
 			this._hsmStore,
+			this.hashStore,
+			this.timeProvider,
 			this.appId,
 		);
 
