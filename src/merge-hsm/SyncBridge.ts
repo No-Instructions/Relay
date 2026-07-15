@@ -21,6 +21,59 @@ import { curryLog } from "../debug";
 
 const bridgeError = curryLog("[SyncBridge]", "error");
 
+interface MachineEditReductionSplice {
+	start: Uint8Array;
+	end: Uint8Array;
+	insert: string;
+}
+
+function duplicateMachineEditReduction(
+	doc: Y.Doc,
+	splices: ReadonlyArray<MachineEditReductionSplice>,
+): PositionedChange[] | null {
+	if (splices.length === 0) return null;
+
+	const ytext = doc.getText("contents");
+	const text = ytext.toString();
+	const reduction: PositionedChange[] = [];
+
+	for (const splice of splices) {
+		const start = Y.createAbsolutePositionFromRelativePosition(
+			Y.decodeRelativePosition(splice.start),
+			doc,
+		);
+		const end = Y.createAbsolutePositionFromRelativePosition(
+			Y.decodeRelativePosition(splice.end),
+			doc,
+		);
+		if (!start || !end || start.type !== ytext || end.type !== ytext) return null;
+		if (start.index > end.index) return null;
+
+		const contents = text.slice(start.index, end.index);
+		if (splice.insert.length === 0) {
+			if (contents.length !== 0) return null;
+			continue;
+		}
+
+		if (
+			contents.length % splice.insert.length !== 0 ||
+			contents !== splice.insert.repeat(contents.length / splice.insert.length)
+		) {
+			return null;
+		}
+
+		if (contents.length > splice.insert.length) {
+			reduction.push({
+				from: start.index + splice.insert.length,
+				to: end.index,
+				insert: "",
+			});
+		}
+	}
+
+	return reduction;
+}
+
 // =============================================================================
 // Host Interface
 // =============================================================================
@@ -46,6 +99,11 @@ export interface SyncBridgeHost {
 	getPendingMachineEdits(): ReadonlyArray<{
 		fn: (data: string) => string;
 		expectedText: string;
+		reductionSplices: ReadonlyArray<{
+			start: Uint8Array;
+			end: Uint8Array;
+			insert: string;
+		}>;
 		captureMark: number;
 		registeredAt: number;
 	}>;
@@ -53,6 +111,11 @@ export interface SyncBridgeHost {
 	matchMachineEdit(remoteText: string): {
 		fn: (data: string) => string;
 		expectedText: string;
+		reductionSplices: ReadonlyArray<{
+			start: Uint8Array;
+			end: Uint8Array;
+			insert: string;
+		}>;
 		captureMark: number;
 		registeredAt: number;
 	} | null;
@@ -549,17 +612,18 @@ export class SyncBridge {
 					);
 					this.syncToLocal(adopt);
 
-					// Reduce to the single-repair expected text: a normal,
-					// published-safe delete of the surplus duplicate run.
-					const dupText = localDoc.getText("contents").toString();
-					if (dupText !== match.expectedText) {
-						const reduction = this.host.computeDiffChanges(
-							dupText,
-							match.expectedText,
-						);
-						if (reduction.length > 0) {
-							this.host.applyChangesToLocalDoc(reduction);
-						}
+					// The registration captured the repair's changed ranges as
+					// positions anchored to the shared CRDT base. Resolve those
+					// ranges after the adopt and reduce only an exact repeated copy
+					// of the repair's inserted bytes. Unrelated local or remote edits
+					// stay outside the delete. If a changed range no longer has that
+					// exact shape, keep the doubled repair instead of guessing.
+					const reduction = duplicateMachineEditReduction(
+						localDoc,
+						match.reductionSplices,
+					);
+					if (reduction && reduction.length > 0) {
+						this.host.applyChangesToLocalDoc(reduction);
 					}
 				} finally {
 					this.host.setSuppressLocalObserver(false);

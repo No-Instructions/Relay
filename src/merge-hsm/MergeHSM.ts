@@ -381,6 +381,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private _pendingMachineEdits: Array<{
 		fn: (data: string) => string;
 		expectedText: string;
+		reductionSplices: Array<{
+			start: Uint8Array;
+			end: Uint8Array;
+			insert: string;
+		}>;
 		captureMark: number;
 		registeredAt: number;
 	}> = [];
@@ -1329,6 +1334,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	getPendingMachineEdits(): ReadonlyArray<{
 		fn: (data: string) => string;
 		expectedText: string;
+		reductionSplices: ReadonlyArray<{
+			start: Uint8Array;
+			end: Uint8Array;
+			insert: string;
+		}>;
 		captureMark: number;
 		registeredAt: number;
 	}> {
@@ -1438,10 +1448,23 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 			const opCapture = this.getOpCapture();
 			const captureMark = opCapture?.mark() ?? 0;
+			const reductionSplices = computeDiffMatchPatchChanges(
+				currentText,
+				expectedText,
+			).map((change) => ({
+				start: Y.encodeRelativePosition(
+					Y.createRelativePositionFromTypeIndex(ytext, change.from, -1),
+				),
+				end: Y.encodeRelativePosition(
+					Y.createRelativePositionFromTypeIndex(ytext, change.to, 0),
+				),
+				insert: change.insert,
+			}));
 
 			this._pendingMachineEdits.push({
 				fn,
 				expectedText,
+				reductionSplices,
 				captureMark,
 				registeredAt: this.timeProvider.now(),
 			});
@@ -4291,6 +4314,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._pendingMachineEdits.push({
 					fn: fork.machineEditFn,
 					expectedText: mergeResult.merged,
+					reductionSplices: [],
 					captureMark: fork.captureMark,
 					registeredAt: this.timeProvider.now(),
 				});
