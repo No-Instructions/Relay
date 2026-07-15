@@ -2572,6 +2572,34 @@ export class SharedFolder extends HasProvider {
 	 * hash-store entries (attachments). Runs before the folder is declared
 	 * hydrated so the provenance ladder never sees an empty cache.
 	 */
+	/**
+	 * Remove the durable records this folder owns outside its per-file IDB
+	 * databases: merge-HSM states scoped to this folder and hash-store rows
+	 * for paths inside it. Both stores are app-wide and outlive the folder
+	 * instance; explicit removal is the only point where these records
+	 * become garbage.
+	 */
+	public async reclaimOwnedRecords(): Promise<void> {
+		try {
+			const stateMetas = await this._hsmStore.getAllStateMeta();
+			for (const stateMeta of stateMetas) {
+				if (stateMeta.folder !== this.guid) continue;
+				await this._hsmStore.deleteState(stateMeta.guid).catch(() => {});
+			}
+		} catch (e) {
+			this.warn("record reclaim: HSM state metadata unavailable", e);
+		}
+		try {
+			const entries = await this.hashStore.getAllEntries();
+			for (const entry of entries) {
+				if (!this.checkPath(entry.path)) continue;
+				await this.hashStore.removeHash(entry.path).catch(() => {});
+			}
+		} catch (e) {
+			this.warn("record reclaim: hash store unavailable", e);
+		}
+	}
+
 	private async assembleLocalRecordCache(): Promise<void> {
 		try {
 			const stateMetas = await this._hsmStore.getAllStateMeta();
@@ -4169,6 +4197,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		) => SharedFolder,
 		private settings: NamespacedSettings<SharedFolderSettings[]>,
 		private _hsmStore: HSMStore,
+		private hashStore: ContentAddressedFileStore,
+		private timeProvider: TimeProvider,
 		private appId: string = "app",
 	) {
 		super();
@@ -4198,14 +4228,28 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		const dbNames: string[] = [];
 		const docGuids: string[] = [];
 		if (item) {
-			item.files.forEach((doc: IFile) => {
-				dbNames.push(`${item.appId}-relay-doc-${doc.guid}`);
-				docGuids.push(doc.guid);
+			item.files.forEach((file: IFile) => {
+				// Databases are named by file type; attachments have no
+				// per-file database (their rows live in the hash store,
+				// reclaimed below).
+				if (isCanvas(file)) {
+					dbNames.push(`${item.appId}-relay-canvas-${file.guid}`);
+				} else if (isDocument(file)) {
+					dbNames.push(`${item.appId}-relay-doc-${file.guid}`);
+				}
+				docGuids.push(file.guid);
 			});
+			// Folder-level databases: the raw-guid database and the split-era
+			// local and remote folder databases.
 			dbNames.push(item.guid);
+			dbNames.push(`${item.appId}-relay-folder-${item.guid}`);
+			dbNames.push(`${item.appId}-relay-folder-${item.guid}-remote`);
 			// The folder's pending-upload records live in localStorage, not
 			// IDB; removal is the only point where they become garbage.
 			item.clearPendingUploads();
+			// Folder-scoped HSM states and in-folder hash rows, including
+			// records for files outside the current in-memory enumeration.
+			void item.reclaimOwnedRecords();
 		}
 		item?.destroy();
 		const deleted = super.delete(item);
@@ -4226,6 +4270,86 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			void this._hsmStore.deleteState(guid).catch(() => {});
 		}
 		return deleted;
+	}
+
+	/**
+	 * Complete cleanup for a suspension that expired without the folder
+	 * returning. No in-memory instance exists, so children are enumerated
+	 * from the folder doc read out of IDB before the databases are dropped.
+	 */
+	private async reclaimExpiredFolder(
+		guid: string,
+		folderPath: string,
+	): Promise<void> {
+		const childGuids = new Set<string>();
+		const childDbNames = new Set<string>();
+		// The split-era database holds the authoritative maps; the raw-guid
+		// database carries the same maps for folders predating the split.
+		for (const dbName of [`${this.appId}-relay-folder-${guid}`, guid]) {
+			const ydoc = new Y.Doc();
+			const persistence = new IndexeddbPersistence(
+				dbName,
+				ydoc,
+				null,
+				null,
+				this.timeProvider,
+			);
+			try {
+				await persistence.whenSynced;
+				ydoc.getMap("filemeta_v0").forEach((value: unknown) => {
+					const meta = value as Meta;
+					const id = meta?.id;
+					if (!id) return;
+					childGuids.add(id);
+					if (isCanvasMeta(meta)) {
+						childDbNames.add(`${this.appId}-relay-canvas-${id}`);
+					} else if (isDocumentMeta(meta)) {
+						childDbNames.add(`${this.appId}-relay-doc-${id}`);
+					}
+				});
+				ydoc.getMap("docs").forEach((docGuid: unknown) => {
+					if (typeof docGuid !== "string") return;
+					childGuids.add(docGuid);
+					childDbNames.add(`${this.appId}-relay-doc-${docGuid}`);
+				});
+			} catch (e) {
+				// An unreadable folder doc bounds cleanup to the folder-level
+				// databases and the path- and folder-keyed records below.
+			} finally {
+				persistence.destroy();
+				ydoc.destroy();
+			}
+		}
+		for (const name of childDbNames) {
+			indexedDB.deleteDatabase(name);
+		}
+		for (const child of childGuids) {
+			void this._hsmStore.deleteState(child).catch(() => {});
+		}
+		try {
+			const stateMetas = await this._hsmStore.getAllStateMeta();
+			for (const stateMeta of stateMetas) {
+				if (stateMeta.folder !== guid) continue;
+				void this._hsmStore.deleteState(stateMeta.guid).catch(() => {});
+			}
+		} catch (e) {
+			// App-wide store unavailable; the databases below still fall.
+		}
+		try {
+			const prefix = folderPath.endsWith("/")
+				? folderPath
+				: `${folderPath}/`;
+			const entries = await this.hashStore.getAllEntries();
+			for (const entry of entries) {
+				if (!entry.path.startsWith(prefix)) continue;
+				void this.hashStore.removeHash(entry.path).catch(() => {});
+			}
+		} catch (e) {
+			// Hash store unavailable; the databases below still fall.
+		}
+		indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}`);
+		indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}-remote`);
+		indexedDB.deleteDatabase(guid);
 	}
 
 	/**
@@ -4297,7 +4421,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 
 	private _load(folders: SharedFolderSettings[]) {
 		let updated = false;
-		const expiredSuspensions: string[] = [];
+		const expiredSuspensions: { guid: string; path: string }[] = [];
 		const relinked: string[] = [];
 		folders.forEach((folder: SharedFolderSettings) => {
 			// Validate required fields
@@ -4323,7 +4447,10 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 				) {
 					// The suspension expired without the folder returning.
 					this.log(`Expiring suspended folder ${folder.path}`);
-					expiredSuspensions.push(folder.guid);
+					expiredSuspensions.push({
+						guid: folder.guid,
+						path: folder.path,
+					});
 					return;
 				} else {
 					// Suspended and absent: stay inert, keep the registration.
@@ -4345,10 +4472,11 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		});
 
 		if (expiredSuspensions.length > 0 || relinked.length > 0) {
+			const expiredGuids = expiredSuspensions.map((s) => s.guid);
 			void this.settings
 				.update((current) =>
 					current
-						.filter((s) => !expiredSuspensions.includes(s.guid))
+						.filter((s) => !expiredGuids.includes(s.guid))
 						.map((s) =>
 							relinked.includes(s.guid)
 								? { ...s, suspended: undefined, suspendedAt: undefined }
@@ -4356,14 +4484,11 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 						),
 				)
 				.catch(() => {});
-			// Expired suspensions release their folder-level databases. Doc
-			// databases are enumerated in the folder doc, which is being
-			// dropped here; they are reclaimed by the deferred-teardown sweep
-			// if the folder is ever re-created, and are bounded in size.
-			for (const guid of expiredSuspensions) {
-				indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}`);
-				indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}-remote`);
-				indexedDB.deleteDatabase(guid);
+			// An expired suspension gets the same complete cleanup as an
+			// explicit removal; the folder never returned, so nothing is
+			// left for a re-creation sweep.
+			for (const expired of expiredSuspensions) {
+				void this.reclaimExpiredFolder(expired.guid, expired.path);
 			}
 		}
 
