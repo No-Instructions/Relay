@@ -315,9 +315,36 @@ export class ContentAddressedFile extends HasLogging {
 		if (newPath === this.path) {
 			return;
 		}
+		const oldPath = this.path;
 		this.path = newPath;
 		const tfile = this.vault.getAbstractFileByPath(newPath);
 		this._tfile = tfile instanceof TFile ? tfile : null;
+		// The hash store is keyed by vault-absolute path and its rows carry
+		// durable identity evidence; a row left behind at the old path would
+		// hand this file's identity to whatever is created there next.
+		this.transferStoredRecord(oldPath, newPath).catch((error) => {
+			this.warn("Failed to transfer stored hash on move:", error);
+		});
+	}
+
+	private async transferStoredRecord(
+		oldPath: string,
+		newPath: string,
+	): Promise<void> {
+		const stored = await this.store.getHash(oldPath);
+		await this.store.removeHash(oldPath);
+		if (stored) {
+			await this.store.saveHash(
+				newPath,
+				stored.hash,
+				stored.modifiedAt,
+				stored.guid,
+			);
+		} else {
+			// Nothing to carry over; a row already at the destination belongs
+			// to whatever previously lived there and must not be inherited.
+			await this.store.removeHash(newPath);
+		}
 	}
 
 	exists() {
