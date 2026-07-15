@@ -747,10 +747,36 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	getFailures(sharedFolder: SharedFolder): BackgroundSyncFailure[] {
+		this.clearVanishedFailures(sharedFolder);
 		return this.failures
 			.values()
 			.filter((failure) => failure.sharedFolder === sharedFolder)
 			.sort((a, b) => a.path.localeCompare(b.path));
+	}
+
+	/**
+	 * A failure survives only while its document is still registered. An
+	 * external atomic write's temp file can register, fail a queued op with
+	 * ENOENT, then unregister when the rename removes it — stranding a failure
+	 * row for a path that resolves to no doc. Such a row is stale the moment its
+	 * target is gone: drop it rather than let it hold the folder's "Sync issue"
+	 * badge until a manual clear.
+	 */
+	private clearVanishedFailures(sharedFolder: SharedFolder): void {
+		for (const failure of this.failures.values()) {
+			if (failure.sharedFolder !== sharedFolder) continue;
+			if (this.failureTargetVanished(failure)) {
+				this.clearFailure(failure.id);
+			}
+		}
+	}
+
+	private failureTargetVanished(failure: BackgroundSyncFailure): boolean {
+		const { sharedFolder, guid, path } = failure;
+		return (
+			!sharedFolder.files.has(guid) &&
+			!sharedFolder.syncStore.getCommittedMeta(path)
+		);
 	}
 
 	clearFailure(id: string): void {

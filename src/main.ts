@@ -99,6 +99,7 @@ import {
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
+import { routeVaultDelete, routeVaultRename } from "./vaultEventRouting";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -301,10 +302,9 @@ export default class Live extends Plugin {
 				continue;
 			}
 			vaultLog("Delete", event.path);
-			if (folder.folderHSM) {
+			if (routeVaultDelete(folder, vpath)) {
 				// Local delete intent flows through the machine; its
 				// MAP_DELETE effect executes the map mutation.
-				folder.notifyVaultDelete(vpath);
 				continue;
 			}
 			let batch = batches.get(folder);
@@ -1378,11 +1378,11 @@ export default class Live extends Plugin {
 						}
 						return;
 					}
-					const newDocs = folder.placeHold([tfile]);
-					const vpath = folder.getVirtualPath(tfile.path);
-					if (newDocs.includes(vpath)) {
-						folder.uploadFile(tfile);
-					} else {
+					// Legacy (non-HSM) path: a known file materializes
+					// immediately; a genuinely-new file's registration settles
+					// for a debounce window so a short-lived atomic-write temp
+					// file vanishes before it is place-held and uploaded.
+					if (folder.notifyVaultCreateLegacy(tfile)) {
 						folder.whenReady()
 							.then((folder) => {
 								folder.getFile(tfile);
@@ -1419,27 +1419,14 @@ export default class Live extends Plugin {
 				}
 				const fromFolder = this.sharedFolders.lookup(oldPath);
 				const toFolder = this.sharedFolders.lookup(file.path);
-				const folder = fromFolder || toFolder;
-				if (fromFolder && toFolder) {
-					// between two shared folders
+				if (routeVaultRename(file, oldPath, fromFolder, toFolder)) {
 					vaultLog("Rename", file.path, oldPath);
-					fromFolder.renameFile(file, oldPath);
-					toFolder.renameFile(file, oldPath);
 					this._liveViews.refresh("rename");
-					this.folderNavDecorations.quickRefresh();
-				} else if (folder) {
-					vaultLog("Rename", file.path, oldPath);
-					if (folder.folderHSM && fromFolder === toFolder) {
-						// In-folder moves flow through the machine; its
-						// MAP_SET effect executes the map rename. Moves
-						// across the folder boundary keep the imperative
-						// pipeline (each side resolves its own half).
-						folder.notifyVaultRename(file, oldPath);
+					if (fromFolder && toFolder) {
+						this.folderNavDecorations.quickRefresh();
 					} else {
-						folder.renameFile(file, oldPath);
+						this.folderNavDecorations.refresh();
 					}
-					this._liveViews.refresh("rename");
-					this.folderNavDecorations.refresh();
 				}
 			}),
 		);
