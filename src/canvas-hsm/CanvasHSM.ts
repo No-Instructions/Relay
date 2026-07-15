@@ -79,7 +79,7 @@ async function defaultHashFn(contents: string): Promise<string> {
 function freshContext(): CanvasContext {
 	return {
 		persistenceLoaded: false,
-		viewAttached: false,
+		userLock: false,
 		serverAheadPending: false,
 		downloadPending: false,
 		reevaluatePending: false,
@@ -126,14 +126,14 @@ export class CanvasHSM {
 		this.interpreterConfig = {
 			guards: {
 				persistenceLoaded: () => this.context.persistenceLoaded,
-				persistenceLoadedAndViewAttached: () =>
-					this.context.persistenceLoaded && this.context.viewAttached,
-				viewAttached: () => this.context.viewAttached,
+				persistenceLoadedAndLocked: () =>
+					this.context.persistenceLoaded && this.context.userLock,
+				userLock: () => this.context.userLock,
 				reevaluatePending: () => this.context.reevaluatePending,
 				evaluationNotMember: verdictIs("not-member"),
-				evaluationEmptyLocal: verdictIs("empty-local"),
-				evaluationInSync: verdictIs("in-sync"),
-				evaluationLocalAhead: verdictIs("local-ahead"),
+				evaluationAwaitingEnrollment: verdictIs("awaiting-enrollment"),
+				evaluationSynced: verdictIs("synced"),
+				evaluationRemoteAhead: verdictIs("remote-ahead"),
 			},
 			actions: {
 				resetContext: () => this.resetContext(),
@@ -147,11 +147,11 @@ export class CanvasHSM {
 						: null;
 					this.context.persistenceLoaded = true;
 				},
-				markViewAttached: () => {
-					this.context.viewAttached = true;
+				markLocked: () => {
+					this.context.userLock = true;
 				},
-				markViewDetached: () => {
-					this.context.viewAttached = false;
+				markUnlocked: () => {
+					this.context.userLock = false;
 				},
 				rememberServerAhead: () => {
 					this.context.serverAheadPending = true;
@@ -213,7 +213,7 @@ export class CanvasHSM {
 				emitWriteDisk: () => {
 					const result = this._lastEvaluation;
 					if (!result) {
-						this.warn("entered flushing without an evaluation");
+						this.warn("entered idle.remoteAhead without an evaluation");
 						return;
 					}
 					this.emit({
@@ -368,25 +368,25 @@ export class CanvasHSM {
 		const localEmpty = isCanvasDataEmpty(data);
 
 		if (diskEmpty && localEmpty) {
-			return { ...base, verdict: "in-sync", disk };
+			return { ...base, verdict: "synced", disk };
 		}
 		if (localEmpty) {
 			// A localDoc with no content yet (first sync or enrollment in
 			// flight) must never flush emptiness over a real file.
-			return { ...base, verdict: "empty-local", disk };
+			return { ...base, verdict: "awaiting-enrollment", disk };
 		}
 		if (areCanvasDataEqual(diskData, data)) {
-			return { ...base, verdict: "in-sync", disk };
+			return { ...base, verdict: "synced", disk };
 		}
 		if (diskEmpty) {
-			return { ...base, verdict: "local-ahead", disk };
+			return { ...base, verdict: "remote-ahead", disk };
 		}
 
 		const lcaData = this.context.lca
 			? parseCanvasData(this.context.lca.contents)
 			: null;
 		if (lcaData && areCanvasDataEqual(diskData, lcaData)) {
-			return { ...base, verdict: "local-ahead", disk };
+			return { ...base, verdict: "remote-ahead", disk };
 		}
 		if (lcaData && areCanvasDataEqual(data, lcaData)) {
 			return { ...base, verdict: "disk-ahead", disk };
@@ -404,7 +404,7 @@ export class CanvasHSM {
 
 	private resetContext(): void {
 		const fresh = freshContext();
-		fresh.viewAttached = this.context.viewAttached;
+		fresh.userLock = this.context.userLock;
 		Object.assign(this.context, fresh);
 		this._lastEvaluation = null;
 	}
@@ -429,14 +429,14 @@ export class CanvasHSM {
 
 	getSnapshot(): {
 		statePath: CanvasStatePath;
-		viewAttached: boolean;
+		userLock: boolean;
 		hasLCA: boolean;
 		disk: CanvasDiskMeta | null;
 		downloadPending: boolean;
 	} {
 		return {
 			statePath: this._statePath,
-			viewAttached: this.context.viewAttached,
+			userLock: this.context.userLock,
 			hasLCA: this.context.lca !== null,
 			disk: this.context.disk ? { ...this.context.disk } : null,
 			downloadPending: this.context.downloadPending,

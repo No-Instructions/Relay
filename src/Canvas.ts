@@ -81,6 +81,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	private _pendingDocChangeOrigin: "bridge" | "ingest" | "unknown" =
 		"unknown";
 	private _viewReconciler: (() => void) | null = null;
+	private _localOnly = false;
 	/** Manager hook: warm-slot accounting on lazy materialization. */
 	onMaterialize: (() => void) | null = null;
 
@@ -223,6 +224,9 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			// converges from the server through the provider and reconcile().
 			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
 		});
+		if (this._localOnly) {
+			this._bridge.setLocalOnly(true);
+		}
 
 		const localDoc = this._localDoc;
 		const onLocalDocUpdate = (_update: Uint8Array, origin: unknown) => {
@@ -289,10 +293,10 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		if (this.userLock) return false;
 		if (this._docChangedTimer != null) return false;
 		const snapshot = this.hsm.getSnapshot();
-		if (snapshot.viewAttached || snapshot.downloadPending) return false;
+		if (snapshot.userLock || snapshot.downloadPending) return false;
 		if (
-			snapshot.statePath !== "synced" &&
-			snapshot.statePath !== "diverged"
+			snapshot.statePath !== "idle.synced" &&
+			snapshot.statePath !== "idle.diverged"
 		) {
 			return false;
 		}
@@ -325,6 +329,20 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	 */
 	protected handleProviderSynced(): void {
 		this._bridge?.reconcile();
+	}
+
+	get isLocalOnly(): boolean {
+		return this._localOnly;
+	}
+
+	/**
+	 * Local-only gates the bridge in both directions; disk convergence
+	 * continues untouched (replication policy lives in the bridge, never
+	 * in the machine). Applies at materialization for cold canvases.
+	 */
+	setLocalOnly(value: boolean): void {
+		this._localOnly = value;
+		this._bridge?.setLocalOnly(value);
 	}
 
 	private scheduleDocChanged(origin: unknown): void {
@@ -517,7 +535,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				await trackPromise(`canvasConnected:${this.guid}`, this.onceConnected());
 				this.log("connected");
 				await trackPromise(`canvasReady:${this.guid}`, this.onceProviderSynced());
-				this.log("synced");
+				this.log("idle.synced");
 				return this;
 			}
 			return this;
@@ -549,11 +567,11 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	 * A view took ownership of this canvas (and of its disk file). Safe to
 	 * call repeatedly — Obsidian re-attaches views across file switches.
 	 */
-	attachView(): void {
+	acquireLock(): void {
 		// P1 wake: a view opening is synchronous and unconditional.
 		this.materialize();
 		this.userLock = true;
-		this.hsm.send({ type: "VIEW_ATTACHED" });
+		this.hsm.send({ type: "ACQUIRE_LOCK" });
 	}
 
 	/**
@@ -568,7 +586,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		if (mergeManager) {
 			mergeManager.unload(this.guid);
 		}
-		this.hsm.send({ type: "VIEW_DETACHED" });
+		this.hsm.send({ type: "RELEASE_LOCK" });
 	}
 
 	/**

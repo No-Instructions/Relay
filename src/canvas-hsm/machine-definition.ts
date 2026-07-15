@@ -8,7 +8,7 @@
  * Structural invariants encoded here (verified by __tests__/canvas-hsm):
  * - WRITE_DISK only from `flushing`: only that node grants canWriteDisk,
  *   and CanvasHSM refuses to emit without the capability. A view-attached
- *   canvas can never reach `flushing` — every state routes VIEW_ATTACHED
+ *   canvas can never reach `flushing` — every state routes ACQUIRE_LOCK
  *   to `active`, and `evaluating` re-checks attachment on invoke
  *   completion.
  * - RECONCILE_VIEW only from `active`: only that node grants
@@ -29,7 +29,7 @@ import type { CanvasEventHandler, CanvasMachineDefinition } from "./types";
  * yet: context is updated, no effects are emitted.
  */
 const REMEMBER_SIGNALS = (
-	target: "loading" | "evaluating" | "flushing",
+	target: "loading" | "idle.loading" | "idle.remoteAhead",
 ): Record<string, CanvasEventHandler> => ({
 	SERVER_AHEAD: { target, actions: ["rememberServerAhead"] },
 	DOWNLOAD_COMPLETE: { target, actions: ["settleDownload"] },
@@ -45,60 +45,60 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 				actions: ["restorePersistedState"],
 				reenter: true,
 			},
-			VIEW_ATTACHED: { target: "loading", actions: ["markViewAttached"] },
-			VIEW_DETACHED: { target: "loading", actions: ["markViewDetached"] },
+			ACQUIRE_LOCK: { target: "loading", actions: ["markLocked"] },
+			RELEASE_LOCK: { target: "loading", actions: ["markUnlocked"] },
 			LOCAL_DOC_CHANGED: { target: "loading", actions: [] },
 			DISK_CHANGED: { target: "loading", actions: [] },
 			...REMEMBER_SIGNALS("loading"),
 		},
 		always: [
-			{ target: "active", guard: "persistenceLoadedAndViewAttached" },
-			{ target: "evaluating", guard: "persistenceLoaded" },
+			{ target: "active", guard: "persistenceLoadedAndLocked" },
+			{ target: "idle.loading", guard: "persistenceLoaded" },
 		],
 	},
 
 	// Transient: read disk, compare disk / localDoc / LCA, route on the
-	// verdict. Attachment races resolve toward the view: a VIEW_ATTACHED
+	// verdict. Attachment races resolve toward the view: a ACQUIRE_LOCK
 	// mid-read exits immediately (cancelling the invoke), and the verdict
 	// handler re-checks attachment before acting on the read.
-	evaluating: {
+	"idle.loading": {
 		invoke: {
 			src: "evaluate",
 			onDone: [
-				{ target: "active", guard: "viewAttached" },
-				{ target: "synced", guard: "evaluationNotMember" },
+				{ target: "active", guard: "userLock" },
+				{ target: "idle.synced", guard: "evaluationNotMember" },
 				{
-					target: "flushing",
-					guard: "evaluationLocalAhead",
+					target: "idle.remoteAhead",
+					guard: "evaluationRemoteAhead",
 					actions: ["recordEvaluation"],
 				},
 				{
-					target: "synced",
-					guard: "evaluationInSync",
+					target: "idle.synced",
+					guard: "evaluationSynced",
 					actions: ["recordEvaluation", "advanceLCAFromEvaluation"],
 				},
 				{
-					target: "synced",
-					guard: "evaluationEmptyLocal",
+					target: "idle.synced",
+					guard: "evaluationAwaitingEnrollment",
 					actions: ["recordEvaluation"],
 				},
 				// disk-ahead and diverged both park until snapshot ingestion
 				// ships; the verdicts stay distinct in the evaluation result.
-				{ target: "diverged", actions: ["recordEvaluation"] },
+				{ target: "idle.diverged", actions: ["recordEvaluation"] },
 			],
-			onError: [{ target: "diverged", actions: ["recordEvaluationError"] }],
+			onError: [{ target: "idle.diverged", actions: ["recordEvaluationError"] }],
 		},
 		on: {
-			VIEW_ATTACHED: { target: "active", actions: ["markViewAttached"] },
-			VIEW_DETACHED: { target: "evaluating", actions: ["markViewDetached"] },
+			ACQUIRE_LOCK: { target: "active", actions: ["markLocked"] },
+			RELEASE_LOCK: { target: "idle.loading", actions: ["markUnlocked"] },
 			// A fresh change invalidates the in-flight read; restart it.
-			LOCAL_DOC_CHANGED: { target: "evaluating", reenter: true },
-			DISK_CHANGED: { target: "evaluating", reenter: true },
-			...REMEMBER_SIGNALS("evaluating"),
+			LOCAL_DOC_CHANGED: { target: "idle.loading", reenter: true },
+			DISK_CHANGED: { target: "idle.loading", reenter: true },
+			...REMEMBER_SIGNALS("idle.loading"),
 		},
 	},
 
-	synced: {
+	"idle.synced": {
 		capabilities: {
 			canEmitEffects: true,
 			canDownload: true,
@@ -106,7 +106,7 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 		entry: ["drainPendingSignals"],
 		always: [
 			{
-				target: "evaluating",
+				target: "idle.loading",
 				guard: "reevaluatePending",
 				actions: ["clearReevaluatePending"],
 			},
@@ -118,29 +118,29 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 			// hibernating mid-flush or mid-download is structurally
 			// impossible.
 			LOAD: { target: "loading", actions: ["resetContext"] },
-			LOCAL_DOC_CHANGED: { target: "evaluating" },
-			DISK_CHANGED: { target: "evaluating" },
+			LOCAL_DOC_CHANGED: { target: "idle.loading" },
+			DISK_CHANGED: { target: "idle.loading" },
 			// Wake rehydration: the manager reloads the record after
 			// rematerializing the docs; posture is re-derived, never trusted.
 			PERSISTENCE_LOADED: {
-				target: "evaluating",
+				target: "idle.loading",
 				actions: ["restorePersistedState"],
 			},
-			SERVER_AHEAD: { target: "synced", actions: ["requestDownload"] },
+			SERVER_AHEAD: { target: "idle.synced", actions: ["requestDownload"] },
 			DOWNLOAD_COMPLETE: {
-				target: "evaluating",
+				target: "idle.loading",
 				actions: ["settleDownload"],
 			},
-			DOWNLOAD_FAILED: { target: "synced", actions: ["settleDownload"] },
-			VIEW_ATTACHED: { target: "active", actions: ["markViewAttached"] },
-			VIEW_DETACHED: { target: "synced", actions: ["markViewDetached"] },
+			DOWNLOAD_FAILED: { target: "idle.synced", actions: ["settleDownload"] },
+			ACQUIRE_LOCK: { target: "active", actions: ["markLocked"] },
+			RELEASE_LOCK: { target: "idle.synced", actions: ["markUnlocked"] },
 		},
 	},
 
 	// The localDoc is ahead of a disk file that is provably untouched
 	// (matches the LCA, or is empty/absent). The WRITE_DISK effect is
 	// emitted on entry; the host reports completion.
-	flushing: {
+	"idle.remoteAhead": {
 		capabilities: {
 			canEmitEffects: true,
 			canWriteDisk: true,
@@ -148,20 +148,20 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 		entry: ["emitWriteDisk"],
 		on: {
 			FLUSH_COMPLETE: {
-				target: "synced",
+				target: "idle.synced",
 				actions: ["advanceLCAFromFlush"],
 			},
-			FLUSH_FAILED: { target: "diverged", actions: ["recordFlushFailure"] },
+			FLUSH_FAILED: { target: "idle.diverged", actions: ["recordFlushFailure"] },
 			LOCAL_DOC_CHANGED: {
-				target: "flushing",
+				target: "idle.remoteAhead",
 				actions: ["rememberReevaluate"],
 			},
-			DISK_CHANGED: { target: "flushing", actions: ["rememberReevaluate"] },
+			DISK_CHANGED: { target: "idle.remoteAhead", actions: ["rememberReevaluate"] },
 			// The in-flight write completes under the view; FLUSH_COMPLETE
 			// in `active` still advances the LCA.
-			VIEW_ATTACHED: { target: "active", actions: ["markViewAttached"] },
-			VIEW_DETACHED: { target: "flushing", actions: ["markViewDetached"] },
-			...REMEMBER_SIGNALS("flushing"),
+			ACQUIRE_LOCK: { target: "active", actions: ["markLocked"] },
+			RELEASE_LOCK: { target: "idle.remoteAhead", actions: ["markUnlocked"] },
+			...REMEMBER_SIGNALS("idle.remoteAhead"),
 		},
 	},
 
@@ -170,7 +170,7 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 	// allowed), and opening the view resolves additively. Snapshot
 	// ingestion (per-id three-way against the LCA) will exit this state
 	// automatically once it ships.
-	diverged: {
+	"idle.diverged": {
 		capabilities: {
 			canEmitEffects: true,
 			canDownload: true,
@@ -179,20 +179,20 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 		entry: ["surfaceStatus", "drainPendingSignals"],
 		on: {
 			LOAD: { target: "loading", actions: ["resetContext"] },
-			LOCAL_DOC_CHANGED: { target: "evaluating" },
-			DISK_CHANGED: { target: "evaluating" },
+			LOCAL_DOC_CHANGED: { target: "idle.loading" },
+			DISK_CHANGED: { target: "idle.loading" },
 			PERSISTENCE_LOADED: {
-				target: "evaluating",
+				target: "idle.loading",
 				actions: ["restorePersistedState"],
 			},
-			SERVER_AHEAD: { target: "diverged", actions: ["requestDownload"] },
+			SERVER_AHEAD: { target: "idle.diverged", actions: ["requestDownload"] },
 			DOWNLOAD_COMPLETE: {
-				target: "evaluating",
+				target: "idle.loading",
 				actions: ["settleDownload"],
 			},
-			DOWNLOAD_FAILED: { target: "diverged", actions: ["settleDownload"] },
-			VIEW_ATTACHED: { target: "active", actions: ["markViewAttached"] },
-			VIEW_DETACHED: { target: "diverged", actions: ["markViewDetached"] },
+			DOWNLOAD_FAILED: { target: "idle.diverged", actions: ["settleDownload"] },
+			ACQUIRE_LOCK: { target: "active", actions: ["markLocked"] },
+			RELEASE_LOCK: { target: "idle.diverged", actions: ["markUnlocked"] },
 		},
 	},
 
@@ -208,7 +208,7 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 		},
 		entry: ["emitReconcileView"],
 		on: {
-			VIEW_DATA_LOADED: {
+			OBSIDIAN_SET_VIEW_DATA: {
 				target: "active",
 				actions: ["emitReconcileView"],
 			},
@@ -216,10 +216,10 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 				target: "active",
 				actions: ["restorePersistedState"],
 			},
-			VIEW_ATTACHED: { target: "active", actions: [] },
-			VIEW_DETACHED: {
-				target: "evaluating",
-				actions: ["markViewDetached"],
+			ACQUIRE_LOCK: { target: "active", actions: [] },
+			RELEASE_LOCK: {
+				target: "idle.loading",
+				actions: ["markUnlocked"],
 			},
 			LOCAL_DOC_CHANGED: { target: "active", actions: [] },
 			DISK_CHANGED: { target: "active", actions: [] },

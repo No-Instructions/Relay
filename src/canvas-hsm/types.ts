@@ -23,10 +23,10 @@ import type { PersistedCanvasState } from "../merge-hsm/types";
 
 export type CanvasStatePath =
 	| "loading" // persistence loading; events absorbed, no effects
-	| "evaluating" // reading disk and comparing disk / localDoc / LCA
-	| "synced" // disk and localDoc agree (or nothing to act on); LCA current
-	| "flushing" // localDoc ahead of a provably untouched disk; write in flight
-	| "diverged" // disk changed with no safe convergence path; parked
+	| "idle.loading" // reading disk and comparing disk / localDoc / LCA
+	| "idle.synced" // disk and localDoc agree (or nothing to act on); LCA current
+	| "idle.remoteAhead" // localDoc ahead of a provably untouched disk; write in flight
+	| "idle.diverged" // disk changed with no safe convergence path; parked
 	| "active"; // a view is attached; the view owns the disk file
 
 // =============================================================================
@@ -52,12 +52,12 @@ export interface CanvasDiskMeta {
 
 export interface CanvasContext {
 	persistenceLoaded: boolean;
-	viewAttached: boolean;
+	userLock: boolean;
 	/** SERVER_AHEAD observed while the machine could not act on it. */
 	serverAheadPending: boolean;
 	/** An ENQUEUE_DOWNLOAD effect emitted and not yet settled. */
 	downloadPending: boolean;
-	/** A change arrived while evaluating/flushing; re-evaluate on settle. */
+	/** A change arrived while idle.loading/idle.remoteAhead is in flight; re-evaluate on settle. */
 	reevaluatePending: boolean;
 	lca: CanvasLCA | null;
 	/** Metadata of the disk file as last observed by evaluation or flush. */
@@ -72,9 +72,9 @@ export interface CanvasContext {
 
 export type EvaluationVerdict =
 	| "not-member" // path absent from folder membership; no disk authority
-	| "empty-local" // localDoc has no content yet; nothing may be flushed
-	| "in-sync" // disk matches localDoc
-	| "local-ahead" // disk untouched since the LCA (or empty); localDoc ahead
+	| "awaiting-enrollment" // localDoc has no content yet; nothing may be flushed
+	| "synced" // disk matches localDoc
+	| "remote-ahead" // disk untouched since the LCA (or empty); localDoc ahead
 	| "disk-ahead" // disk changed, localDoc still at the LCA (ingestion slot)
 	| "diverged"; // disk changed and cannot be proven untouched
 
@@ -106,9 +106,9 @@ export type CanvasEvent =
 			origin: "bridge" | "ingest" | "view" | "unknown";
 	  }
 	| { type: "DISK_CHANGED" }
-	| { type: "VIEW_ATTACHED" }
-	| { type: "VIEW_DETACHED" }
-	| { type: "VIEW_DATA_LOADED" }
+	| { type: "ACQUIRE_LOCK" }
+	| { type: "RELEASE_LOCK" }
+	| { type: "OBSIDIAN_SET_VIEW_DATA" }
 	| { type: "SERVER_AHEAD" }
 	| { type: "FLUSH_COMPLETE"; contents: string; hash: string; mtime: number }
 	| { type: "FLUSH_FAILED"; error?: unknown }
@@ -198,7 +198,7 @@ export type CanvasInvokeDef = {
  * to emit an effect from a state whose node does not grant the capability.
  */
 export interface CanvasCapabilities {
-	/** Master switch — loading and evaluating leave it unset. */
+	/** Master switch — loading and idle.loading leave it unset. */
 	canEmitEffects?: boolean;
 	canWriteDisk?: boolean;
 	canReconcileView?: boolean;

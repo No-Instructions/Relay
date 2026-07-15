@@ -393,7 +393,7 @@ export class CanvasPlugin extends HasLogging {
 	 * not been pushed yet.
 	 *
 	 * Runs as the machine's RECONCILE_VIEW executor: the CanvasHSM emits
-	 * the effect on view attach and after every VIEW_DATA_LOADED, and only
+	 * the effect on view attach and after every OBSIDIAN_SET_VIEW_DATA, and only
 	 * from its active state.
 	 */
 	private reconcileViewWithCanvas() {
@@ -443,7 +443,7 @@ export class CanvasPlugin extends HasLogging {
 						// file would overwrite anything imported earlier; the
 						// machine re-reconciles after every load.
 						try {
-							that.relayCanvas.hsm.send({ type: "VIEW_DATA_LOADED" });
+							that.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
 						} catch (e) {
 							that.log(e);
 						}
@@ -559,7 +559,7 @@ export class CanvasPlugin extends HasLogging {
 		// The reconciler is registered now; ask the machine for the
 		// install-time reconcile (content that arrived before this view
 		// opened produced no observer events).
-		this.relayCanvas.hsm.send({ type: "VIEW_DATA_LOADED" });
+		this.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
 
 		this.relayCanvasView.tracking = true;
 	}
