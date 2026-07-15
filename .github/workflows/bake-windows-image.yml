@@ -28,7 +28,8 @@ on:
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
-  VM_ZONE: us-west1-b
+  # Set the CI_VM_ZONE repository variable to move CI to another zone.
+  VM_ZONE: ${{ vars.CI_VM_ZONE || 'us-west1-b' }}
   IMAGE_FAMILY: relay-e2e-windows
   SOURCE_IMAGE_FAMILY: windows-2022
   SOURCE_IMAGE_PROJECT: windows-cloud
@@ -168,6 +169,9 @@ jobs:
             --metadata=block-project-ssh-keys=TRUE,relay-ssh-pubkey="$WIN_PUBKEY" \
             --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1 \
             2>&1 >/dev/null); then
+            if echo "$ERR" | grep -qE "ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources"; then
+              echo "::error::Zone $VM_ZONE has no capacity. Set the CI_VM_ZONE repository variable to move CI to another zone."
+            fi
             echo "$ERR"
             exit 1
           fi

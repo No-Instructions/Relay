@@ -37,7 +37,10 @@ on:
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
-  VM_ZONE: us-west1-b
+  # Set the CI_VM_ZONE repository variable to move CI to another zone.
+  # Drain in-flight runs first: the VM-name pool lease only holds within
+  # one zone, so runs straddling a switch could double-lease a pool.
+  VM_ZONE: ${{ vars.CI_VM_ZONE || 'us-west1-b' }}
   MAX_POOLS: "8"
   VM_IMAGE_FAMILY: relay-e2e-base
 
@@ -190,6 +193,10 @@ jobs:
             if echo "$ERR" | grep -q "already exists"; then
               echo "Pool p${k} is leased by another run; trying next pool"
               continue
+            fi
+            if echo "$ERR" | grep -qE "ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources"; then
+              echo "::error::Zone $VM_ZONE has no capacity. Set the CI_VM_ZONE repository variable to move CI to another zone."
+              exit 1
             fi
             echo "$ERR"
             exit 1
@@ -386,6 +393,9 @@ jobs:
             --metadata=block-project-ssh-keys=TRUE,relay-ssh-pubkey="$(cat ~/.ssh/mnw-key.pub)" \
             --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1 \
             2>&1 >/dev/null); then
+            if echo "$ERR" | grep -qE "ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources"; then
+              echo "::error::Zone $VM_ZONE has no capacity. Set the CI_VM_ZONE repository variable to move CI to another zone."
+            fi
             echo "$ERR"
             exit 1
           fi
