@@ -97,7 +97,8 @@ export class ProviderIntegration {
    *
    * Asserts that the provider actually delivered data into remoteDoc.
    * If remoteDoc's state vector is empty after sync, the provider lied
-   * about being synced (BUG-123).
+   * about being synced: a provider can report sync before its transport
+   * has delivered anything.
    */
   private handleSync(synced?: boolean): void {
     if (synced === false) return;

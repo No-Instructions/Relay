@@ -41,7 +41,8 @@ export class MockYjsProvider implements YjsProvider {
 		// Forward remoteDoc updates to server (like y-websocket does).
 		// Only forwards when wsReady is true — matches y-websocket's broadcastMessage
 		// which checks wsconnected && ws.readyState === OPEN. Updates that arrive
-		// before the WebSocket opens are SILENTLY DROPPED (BUG-123 sender-side root cause).
+		// before the WebSocket opens are SILENTLY DROPPED, exactly like the real
+		// sender — the mock must reproduce that loss so tests can exercise it.
 		this._updateHandler = (update: Uint8Array, origin: unknown) => {
 			if (origin === "provider" || this._destroyed) return;
 			if (!this.wsReady) return; // WebSocket not open yet — drop silently
