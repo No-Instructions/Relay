@@ -2120,6 +2120,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 */
 	setStatePath(target: StatePath): void {
 		const oldStatus = this.lastSyncStatus;
+		// Converging to idle.synced means the note is reconciled: drop any
+		// materialized conflict/error so a stale conflict cannot surface a phantom
+		// "Open to resolve" row (which resolveConflict no-ops in idle.synced) or
+		// trip the idle.synced resource contract on every later transition.
+		// Convergence exits (fork-reconcile, idle-merge) reach idle.synced through
+		// here, not only the DISK_CHANGED recompute that runs clearConflictForRecompute.
+		if (target === "idle.synced") {
+			this._conflict = null;
+			this._error = undefined;
+		}
 		this._statePath = target;
 
 		const newStatus = this.computeSyncStatusType();
