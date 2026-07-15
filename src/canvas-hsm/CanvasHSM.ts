@@ -97,6 +97,8 @@ export class CanvasHSM {
 	private _queue: CanvasEvent[] = [];
 	private _currentEventType = "";
 	private _destroyed = false;
+	private _stateWaiters = new Set<(statePath: CanvasStatePath) => void>();
+	private _waiterAborts = new Set<() => void>();
 	/** Result of the most recent completed evaluation (flush payload). */
 	private _lastEvaluation: EvaluationResult | null = null;
 	private readonly hashFn: (contents: string) => Promise<string>;
@@ -248,7 +250,53 @@ export class CanvasHSM {
 		this._statePath = target;
 		if (from !== target) {
 			this.config.onTransition?.(from, target, this._currentEventType);
+			for (const waiter of [...this._stateWaiters]) {
+				waiter(target);
+			}
 		}
+	}
+
+	/**
+	 * Resolve once the state path satisfies `check` — immediately when it
+	 * already does — or reject after `timeoutMs`. Event-driven off state
+	 * transitions; no polling.
+	 */
+	awaitState(
+		check: (statePath: CanvasStatePath) => boolean,
+		timeoutMs = 10_000,
+	): Promise<CanvasStatePath> {
+		if (this._destroyed) {
+			return Promise.reject(new Error("CanvasHSM destroyed"));
+		}
+		if (check(this._statePath)) {
+			return Promise.resolve(this._statePath);
+		}
+		return new Promise((resolve, reject) => {
+			const settle = (fn: () => void) => {
+				clearTimeout(timer);
+				this._stateWaiters.delete(waiter);
+				this._waiterAborts.delete(abort);
+				fn();
+			};
+			const timer = setTimeout(() => {
+				settle(() =>
+					reject(
+						new Error(
+							`awaitState timed out after ${timeoutMs}ms (state: ${this._statePath})`,
+						),
+					),
+				);
+			}, timeoutMs);
+			const waiter = (statePath: CanvasStatePath) => {
+				if (!check(statePath)) return;
+				settle(() => resolve(statePath));
+			};
+			const abort = () => {
+				settle(() => reject(new Error("CanvasHSM destroyed")));
+			};
+			this._stateWaiters.add(waiter);
+			this._waiterAborts.add(abort);
+		});
 	}
 
 	getActiveInvoke(): ActiveInvoke | null {
@@ -458,5 +506,8 @@ export class CanvasHSM {
 			this._activeInvoke = null;
 		}
 		this._queue.length = 0;
+		for (const abort of [...this._waiterAborts]) {
+			abort();
+		}
 	}
 }

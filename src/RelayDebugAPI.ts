@@ -26,6 +26,8 @@ import {
   type QueueWorkItem,
 } from './ui/SyncStatusModel';
 import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
+import { Canvas, isCanvas } from './Canvas';
+import { areCanvasDataEqual } from './CanvasData';
 
 export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
 
@@ -42,6 +44,41 @@ export interface DocumentContentSnapshot {
   idb: { content: string; stateVector: string } | null;
   disk: { content: string; mtime: number } | null;
   server: { content: string; stateVector: string; updateSize: number } | null;
+}
+
+/**
+ * Every representation of one canvas: the vault-facing localDoc, the
+ * provider-facing remoteDoc, the .canvas file on disk, the open view (when
+ * one shows this file), the server's own copy, and the machine posture.
+ * Data payloads are CanvasData exports; equality flags use the
+ * order-insensitive canvas comparison.
+ */
+export interface CanvasContentSnapshot {
+  path: string;
+  guid: string;
+  folder: string;
+  statePath: string;
+  connected: boolean;
+  /** Whether the canvas was materialized before this probe ran. */
+  wasMaterialized: boolean;
+  userLock: boolean;
+  downloadPending: boolean;
+  local: { data: unknown; stateVector: string } | null;
+  remote: { data: unknown; stateVector: string } | null;
+  disk: { data: unknown; mtime: number; parseError: boolean } | null;
+  view: { data: unknown } | null;
+  server: { data: unknown; stateVector: string; updateSize: number } | null;
+  localRemoteContentEqual: boolean | null;
+  diskMatchesLocal: boolean | null;
+  serverMatchesLocal: boolean | null;
+  viewMatchesLocal: boolean | null;
+  lca: { present: boolean; diskHash: string | null; diskMtime: number | null };
+  persisted: {
+    lastStatePath: string;
+    persistedAt: number;
+    hasLca: boolean;
+    hasLocalSnapshot: boolean;
+  } | null;
 }
 
 export interface HsmStateTransition {
@@ -305,6 +342,19 @@ export interface RelayDebugGlobal {
    */
   awaitHsmState: (path: string, statePrefix: string, timeoutMs: number) => Promise<string>;
   /**
+   * Snapshot every representation of a canvas — localDoc, remoteDoc, disk,
+   * open view, server copy — plus machine posture, LCA presence, and the
+   * persisted record, with cross-representation equality flags. Reading the
+   * localDoc materializes a hibernated canvas; pass `{ wake: false }` for a
+   * non-waking probe (local/view come back null while hibernated).
+   */
+  getCanvasState: (path: string, options?: { wake?: boolean }) => Promise<CanvasContentSnapshot>;
+  /**
+   * Wait for a canvas machine to reach a state path that starts with
+   * `statePrefix`. Thin bridge over `CanvasHSM.awaitState` — event-driven.
+   */
+  awaitCanvasState: (path: string, statePrefix: string, timeoutMs: number) => Promise<string>;
+  /**
    * Focused conflict snapshot: base/ours/theirs plus labels so callers
    * can pick the right side by semantic name without pulling the whole
    * HsmStateSnapshot. Throws if the document is not found.
@@ -519,6 +569,9 @@ export class RelayDebugAPI {
       getEditorInfo: (handle) => this.getEditorInfo(handle),
       listEditors: () => this.listEditors(),
       getDocumentContent: async (path) => this.getDocumentContent(path),
+      getCanvasState: async (path, options) => this.getCanvasState(path, options),
+      awaitCanvasState: async (path, statePrefix, timeoutMs) =>
+        this.awaitCanvasState(path, statePrefix, timeoutMs),
       getHsmStateSnapshot: async (path) => this.getHsmStateSnapshot(path),
       getIdbContent: async (path) => this.getIdbContent(path),
       getIdbHistory: async (path) => this.getIdbHistory(path),
@@ -1106,6 +1159,186 @@ export class RelayDebugAPI {
     } catch { /* server download failed */ }
 
     return result;
+  }
+
+  /**
+   * Resolve the Canvas owning a vault-level path. Resolves through the
+   * folder's membership map so a member without a file on disk (a canvas
+   * awaiting materialization) is still reachable.
+   */
+  private lookupCanvas(path: string): { canvas: any; folder: any; guid: string } {
+    let owner: any = null;
+    if (this.plugin?.sharedFolders?._set) {
+      for (const folder of this.plugin.sharedFolders._set.values()) {
+        if (path.startsWith((folder as any).path + '/')) {
+          owner = folder;
+          break;
+        }
+      }
+    }
+    if (!owner) throw new Error(`No shared folder owns: ${path}`);
+    const vpath = path.slice(owner.path.length);
+    const guid = owner.syncStore.get(vpath);
+    if (!guid) throw new Error(`Canvas not in folder membership: ${path}`);
+    let canvas = owner.files.get(guid);
+    if (!canvas) {
+      const tfile = this.plugin.app.vault.getAbstractFileByPath(path);
+      if (tfile) canvas = owner.getFile(tfile, false);
+    }
+    if (!isCanvas(canvas)) {
+      throw new Error(`Not a canvas: ${path}`);
+    }
+    return { canvas, folder: owner, guid };
+  }
+
+  /**
+   * Snapshot every representation of a canvas plus machine posture and
+   * cross-representation equality flags. See CanvasContentSnapshot.
+   */
+  private async getCanvasState(
+    path: string,
+    options?: { wake?: boolean },
+  ): Promise<CanvasContentSnapshot> {
+    const { canvas, folder, guid } = this.lookupCanvas(path);
+    const wake = options?.wake ?? true;
+    const wasMaterialized = !!canvas.isMaterialized;
+    const machine = canvas.hsm.getSnapshot();
+
+    const result: CanvasContentSnapshot = {
+      path,
+      guid,
+      folder: folder.path || folder.name,
+      statePath: machine.statePath,
+      connected: !!canvas.connected,
+      wasMaterialized,
+      userLock: !!machine.userLock,
+      downloadPending: !!machine.downloadPending,
+      local: null,
+      remote: null,
+      disk: null,
+      view: null,
+      server: null,
+      localRemoteContentEqual: null,
+      diskMatchesLocal: null,
+      serverMatchesLocal: null,
+      viewMatchesLocal: null,
+      lca: {
+        present: !!machine.hasLCA,
+        diskHash: machine.disk?.hash ?? null,
+        diskMtime: machine.disk?.mtime ?? null,
+      },
+      persisted: null,
+    };
+
+    // Local doc (materializes a hibernated canvas unless wake === false)
+    try {
+      if (wake || wasMaterialized) {
+        const localDoc = canvas.localDoc;
+        result.local = {
+          data: Canvas.exportCanvasData(localDoc),
+          stateVector: this.toHex(Y.encodeStateVector(localDoc)),
+        };
+      }
+    } catch { /* localDoc not available */ }
+
+    // Remote doc (provider-facing)
+    try {
+      const remoteDoc = canvas.ydoc;
+      if (remoteDoc) {
+        result.remote = {
+          data: Canvas.exportCanvasData(remoteDoc),
+          stateVector: this.toHex(Y.encodeStateVector(remoteDoc)),
+        };
+      }
+    } catch { /* remoteDoc not available */ }
+
+    // Disk
+    try {
+      const adapter = this.plugin.app.vault.adapter;
+      const raw = await adapter.read(path);
+      const stat = await adapter.stat(path);
+      try {
+        const parsed = raw.trim().length > 0 ? JSON.parse(raw) : {};
+        result.disk = {
+          data: { nodes: parsed.nodes ?? [], edges: parsed.edges ?? [] },
+          mtime: stat?.mtime ?? 0,
+          parseError: false,
+        };
+      } catch {
+        result.disk = { data: null, mtime: stat?.mtime ?? 0, parseError: true };
+      }
+    } catch { /* no file on disk */ }
+
+    // Open view (when a canvas leaf shows this file)
+    try {
+      this.plugin.app.workspace.iterateAllLeaves((leaf: any) => {
+        if (
+          leaf.view?.getViewType?.() === 'canvas' &&
+          leaf.view?.file?.path === path
+        ) {
+          const data = leaf.view.canvas.getData();
+          result.view = {
+            data: { nodes: data.nodes ?? [], edges: data.edges ?? [] },
+          };
+        }
+      });
+    } catch { /* view not readable */ }
+
+    // Server copy
+    try {
+      const response = await folder.backgroundSync.downloadItem(canvas);
+      const rawUpdate = new Uint8Array(response.arrayBuffer);
+      const tempDoc = new Y.Doc();
+      Y.applyUpdate(tempDoc, rawUpdate);
+      result.server = {
+        data: Canvas.exportCanvasData(tempDoc),
+        stateVector: this.toHex(Y.encodeStateVector(tempDoc)),
+        updateSize: rawUpdate.byteLength,
+      };
+      tempDoc.destroy();
+    } catch { /* server download failed */ }
+
+    // Persisted machine record
+    try {
+      const record = await folder.loadCanvasState(guid);
+      if (record) {
+        result.persisted = {
+          lastStatePath: record.lastStatePath,
+          persistedAt: record.persistedAt,
+          hasLca: record.lca != null,
+          hasLocalSnapshot: record.localSnapshot != null,
+        };
+      }
+    } catch { /* persisted record not readable */ }
+
+    const eq = (a: unknown, b: unknown) =>
+      areCanvasDataEqual(a as any, b as any);
+    if (result.local && result.remote) {
+      result.localRemoteContentEqual = eq(result.local.data, result.remote.data);
+    }
+    if (result.local && result.disk && !result.disk.parseError) {
+      result.diskMatchesLocal = eq(result.disk.data, result.local.data);
+    }
+    if (result.local && result.server) {
+      result.serverMatchesLocal = eq(result.server.data, result.local.data);
+    }
+    if (result.local && result.view) {
+      result.viewMatchesLocal = eq(result.view.data, result.local.data);
+    }
+
+    return result;
+  }
+
+  private async awaitCanvasState(
+    path: string,
+    statePrefix: string,
+    timeoutMs: number,
+  ): Promise<string> {
+    const { canvas } = this.lookupCanvas(path);
+    return canvas.hsm.awaitState(
+      (statePath: string) => statePath.startsWith(statePrefix),
+      timeoutMs,
+    );
   }
 
   /**
