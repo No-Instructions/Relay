@@ -55,6 +55,16 @@ const EFFECT_CAPABILITY: Record<
 
 const EMPTY_CANVAS: CanvasData = { nodes: [], edges: [] };
 
+const TRANSITION_BUFFER_SIZE = 50;
+
+export interface CanvasStateTransition {
+	ts: number;
+	seq: number;
+	event: string;
+	from: CanvasStatePath;
+	to: CanvasStatePath;
+}
+
 function isCanvasDataEmpty(data: CanvasData): boolean {
 	return (data.nodes?.length ?? 0) === 0 && (data.edges?.length ?? 0) === 0;
 }
@@ -99,6 +109,9 @@ export class CanvasHSM {
 	private _destroyed = false;
 	private _stateWaiters = new Set<(statePath: CanvasStatePath) => void>();
 	private _waiterAborts = new Set<() => void>();
+	private _transitionSeq = 0;
+	/** Ring buffer of recent transitions for diagnostics and harness dumps. */
+	private _recentTransitions: CanvasStateTransition[] = [];
 	/** Result of the most recent completed evaluation (flush payload). */
 	private _lastEvaluation: EvaluationResult | null = null;
 	private readonly hashFn: (contents: string) => Promise<string>;
@@ -249,6 +262,16 @@ export class CanvasHSM {
 		const from = this._statePath;
 		this._statePath = target;
 		if (from !== target) {
+			this._recentTransitions.push({
+				ts: this.now(),
+				seq: ++this._transitionSeq,
+				event: this._currentEventType,
+				from,
+				to: target,
+			});
+			if (this._recentTransitions.length > TRANSITION_BUFFER_SIZE) {
+				this._recentTransitions.shift();
+			}
 			this.config.onTransition?.(from, target, this._currentEventType);
 			for (const waiter of [...this._stateWaiters]) {
 				waiter(target);
@@ -488,6 +511,7 @@ export class CanvasHSM {
 		hasLCA: boolean;
 		disk: CanvasDiskMeta | null;
 		downloadPending: boolean;
+		recentTransitions: CanvasStateTransition[];
 	} {
 		return {
 			statePath: this._statePath,
@@ -495,6 +519,7 @@ export class CanvasHSM {
 			hasLCA: this.context.lca !== null,
 			disk: this.context.disk ? { ...this.context.disk } : null,
 			downloadPending: this.context.downloadPending,
+			recentTransitions: this._recentTransitions.map((t) => ({ ...t })),
 		};
 	}
 

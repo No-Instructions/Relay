@@ -79,6 +79,8 @@ export interface CanvasContentSnapshot {
     hasLca: boolean;
     hasLocalSnapshot: boolean;
   } | null;
+  /** Ring buffer of recent machine transitions, oldest first. */
+  recentTransitions: HsmStateTransition[];
 }
 
 export interface HsmStateTransition {
@@ -1228,6 +1230,7 @@ export class RelayDebugAPI {
         diskMtime: machine.disk?.mtime ?? null,
       },
       persisted: null,
+      recentTransitions: machine.recentTransitions ?? [],
     };
 
     // Local doc (materializes a hibernated canvas unless wake === false)
