@@ -3,7 +3,8 @@
  *
  * Database: {appId}-relay-hsm
  * Stores:
- *   - states: HSM state per document (PersistedMergeState)
+ *   - states: HSM state per document (PersistedMergeState) and per canvas
+ *     (PersistedCanvasState, discriminated by kind: "canvas")
  *
  * NOTE: Yjs updates are stored in y-indexeddb (per-document databases),
  * NOT in this database. Persistence writes to IDB automatically
@@ -12,6 +13,8 @@
 
 import * as idb from 'lib0/indexeddb';
 import type {
+  PersistedCanvasState,
+  PersistedHSMRecord,
   PersistedMergeState,
   PersistedStateMeta,
 } from '../types';
@@ -51,10 +54,41 @@ function stateVectorFromSnapshotOrLegacy(
 }
 
 /**
+ * Allow-list a canvas record's fields. Canvas records carry no fork,
+ * snapshots, or deferred conflict — only the LCA contents and disk
+ * metadata the CanvasHSM decides with.
+ */
+function sanitizeCanvasState(state: PersistedCanvasState): PersistedCanvasState {
+  return {
+    kind: 'canvas',
+    guid: state.guid,
+    path: state.path,
+    folder: state.folder,
+    lca: state.lca
+      ? {
+          contents: state.lca.contents,
+          hash: state.lca.hash,
+          mtime: state.lca.mtime,
+        }
+      : null,
+    disk: state.disk
+      ? { hash: state.disk.hash, mtime: state.disk.mtime }
+      : null,
+    lastStatePath: state.lastStatePath,
+    persistedAt: state.persistedAt,
+  };
+}
+
+/**
  * Allow-list all fields to prevent non-serializable values (closures, DOM refs)
  * from reaching IDB's structured clone algorithm.
  */
-export function sanitizeState(state: PersistedMergeState): PersistedMergeState {
+export function sanitizeState(state: PersistedHSMRecord): PersistedHSMRecord {
+  if (state.kind === 'canvas') return sanitizeCanvasState(state);
+  return sanitizeMergeState(state);
+}
+
+function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
   const lcaSnapshot = state.lca?.snapshot;
   const localSnapshot = state.localSnapshot ?? null;
   const forkLocalSnapshot = state.fork?.localSnapshot ?? null;
@@ -158,7 +192,7 @@ export class HSMStore {
   // Document-scoped operations (states store)
   // ===========================================================================
 
-  async saveState(guid: string, state: PersistedMergeState): Promise<void> {
+  async saveState(guid: string, state: PersistedHSMRecord): Promise<void> {
     if (this._destroyed) return;
     const sanitized = sanitizeState({ ...state, guid });
     const p = this._db
@@ -175,11 +209,11 @@ export class HSMStore {
     await p;
   }
 
-  async loadState(guid: string): Promise<PersistedMergeState | null> {
-    return this._read<PersistedMergeState | null>(null, async db => {
+  async loadState(guid: string): Promise<PersistedHSMRecord | null> {
+    return this._read<PersistedHSMRecord | null>(null, async db => {
       const [store] = idb.transact(db, [STORES.states], 'readonly');
       const result = await idb.get(store, guid);
-      return (result as unknown as PersistedMergeState) ?? null;
+      return (result as unknown as PersistedHSMRecord) ?? null;
     });
   }
 
@@ -207,11 +241,11 @@ export class HSMStore {
     });
   }
 
-  async getAllStates(): Promise<PersistedMergeState[]> {
-    return this._read<PersistedMergeState[]>([], async db => {
+  async getAllStates(): Promise<PersistedHSMRecord[]> {
+    return this._read<PersistedHSMRecord[]>([], async db => {
       const [store] = idb.transact(db, [STORES.states], 'readonly');
       const states = await idb.getAll(store);
-      return (states as unknown as PersistedMergeState[]) ?? [];
+      return (states as unknown as PersistedHSMRecord[]) ?? [];
     });
   }
 
@@ -227,7 +261,30 @@ export class HSMStore {
       req.onsuccess = () => {
         const cursor = req.result;
         if (!cursor) { resolve(results); return; }
-        const s = cursor.value as PersistedMergeState;
+        const record = cursor.value as PersistedHSMRecord;
+        if (record.kind === 'canvas') {
+          // Canvas records project their own lightweight meta: no
+          // snapshots, no fork, lastStatePath opaque (a canvas state
+          // path, cast for the shared projection shape). Consumers must
+          // discriminate on `kind` before interpreting document fields.
+          results.push({
+            kind: 'canvas',
+            guid: record.guid,
+            path: record.path,
+            folder: record.folder,
+            lcaMeta: record.lca
+              ? { meta: { hash: record.lca.hash, mtime: record.lca.mtime } }
+              : null,
+            disk: record.disk,
+            localSnapshot: null,
+            lastStatePath: record.lastStatePath as PersistedStateMeta['lastStatePath'],
+            hasFork: false,
+            persistedAt: record.persistedAt,
+          });
+          cursor.continue();
+          return;
+        }
+        const s = record;
         const lcaLegacyStateVector = s.lca && !s.lca.snapshot
           ? stateVectorFromSnapshotOrLegacy(s.lca.snapshot, s.lca.stateVector)
           : null;

@@ -387,7 +387,7 @@ export class RelayCanvasView implements S3View {
 
 	attach(): Promise<RelayCanvasView> {
 		// can be called multiple times, whereas release is only ever called once
-		this.canvas.userLock = true;
+		this.canvas.attachView();
 
 		// Add CSS class to indicate this view should have live editing
 		this.view.containerEl.addClass("relay-live-editor");

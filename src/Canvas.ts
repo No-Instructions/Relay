@@ -20,6 +20,12 @@ import type {
 import { areObjectsEqual } from "./areObjectsEqual";
 import { trackPromise } from "./trackPromise";
 import { formatCanvasData } from "./CanvasData";
+import {
+	CanvasDocBridge,
+	CanvasHSM,
+	CANVAS_BRIDGE_IN_ORIGIN,
+} from "./canvas-hsm";
+import type { CanvasEffect } from "./canvas-hsm";
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -65,6 +71,19 @@ function replaceYTextContent(ytext: Y.Text, nextText: string): void {
 export class Canvas extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
 	private _persistence: IndexeddbPersistence;
+	/**
+	 * The vault-facing replica: views, disk ingestion, and export all read
+	 * and write here, and the existing relay-canvas database persists it.
+	 * HasProvider's ydoc is the provider-facing remoteDoc; the
+	 * CanvasDocBridge is the sole conduit between the two.
+	 */
+	readonly localDoc: Y.Doc;
+	readonly hsm: CanvasHSM;
+	private _bridge: CanvasDocBridge;
+	private _docChangedTimer: number | null = null;
+	private _pendingDocChangeOrigin: "bridge" | "ingest" | "unknown" =
+		"unknown";
+	private _viewReconciler: (() => void) | null = null;
 	whenSyncedPromise: Dependency<void> | null = null;
 	persistenceSynced: boolean = false;
 	readyPromise?: Dependency<Canvas>;
@@ -117,11 +136,12 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		);
 
 		this.setLoggers(`[Canvas](${this.path})`);
+		this.localDoc = new Y.Doc();
 		try {
 			const key = `${this.sharedFolder.appId}-relay-canvas-${this.guid}`;
 			this._persistence = new IndexeddbPersistence(
 				key,
-				this.ydoc,
+				this.localDoc,
 				null,
 				null,
 				this.timeProvider,
@@ -131,6 +151,46 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			console.error(e);
 			throw e;
 		}
+
+		this._bridge = new CanvasDocBridge(this.localDoc, this.ydoc, {
+			// The localDoc's IDB replay is not local intent; the remoteDoc
+			// converges from the server through the provider and reconcile().
+			skipOutboundOrigin: (origin) => origin === this._persistence,
+		});
+
+		this.hsm = new CanvasHSM({
+			guid: this.guid,
+			folderGuid: parent.guid,
+			getPath: () => this.path,
+			isMember: () => this.sharedFolder.syncStore.has(this.path),
+			readDisk: async () => {
+				try {
+					const contents = await this.sharedFolder.read(this);
+					return {
+						contents,
+						mtime: this.tfile?.stat.mtime ?? Date.now(),
+					};
+				} catch (e) {
+					return null;
+				}
+			},
+			exportData: () => Canvas.exportCanvasData(this.localDoc),
+			formatData: formatCanvasData,
+			onEffect: (effect) => this.executeEffect(effect),
+			onTransition: (from, to, eventType) => {
+				this.debug(`[hsm] ${from} -> ${to} (${eventType})`);
+			},
+		});
+
+		const onLocalDocUpdate = (_update: Uint8Array, origin: unknown) => {
+			if (this.destroyed) return;
+			if (origin === this._persistence) return;
+			this.scheduleDocChanged(origin);
+		};
+		this.localDoc.on("update", onLocalDocUpdate);
+		this.unsubscribes.push(() => {
+			this.localDoc.off("update", onLocalDocUpdate);
+		});
 
 		this.whenSynced()
 			.then(() => {
@@ -143,6 +203,14 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				} catch (e) {
 					// pass
 				}
+
+				(async () => {
+					const state = await this.sharedFolder.loadCanvasState(
+						this.guid,
+					);
+					if (this.destroyed) return;
+					this.hsm.send({ type: "PERSISTENCE_LOADED", state });
+				})().catch((e) => this.warn("canvas state load failed", e));
 
 				(async () => {
 					const serverSynced = await this.getServerSynced();
@@ -159,20 +227,100 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		this._tfile = null;
 	}
 
+	/**
+	 * Provider sync means the remoteDoc mirrors the server; converge the
+	 * two replicas. Bridge-applied changes reach the machine through the
+	 * localDoc update observer.
+	 */
+	protected handleProviderSynced(): void {
+		this._bridge.reconcile();
+	}
+
+	private scheduleDocChanged(origin: unknown): void {
+		const kind =
+			origin === CANVAS_BRIDGE_IN_ORIGIN
+				? "bridge"
+				: origin === this
+					? "ingest"
+					: "unknown";
+		this._pendingDocChangeOrigin = kind;
+		if (this._docChangedTimer !== null) {
+			this.timeProvider.clearTimeout(this._docChangedTimer);
+		}
+		this._docChangedTimer = this.timeProvider.setTimeout(() => {
+			this._docChangedTimer = null;
+			this.hsm.send({
+				type: "LOCAL_DOC_CHANGED",
+				origin: this._pendingDocChangeOrigin,
+			});
+		}, 1000);
+	}
+
+	private executeEffect(effect: CanvasEffect): void {
+		switch (effect.type) {
+			case "WRITE_DISK": {
+				const p = (async () => {
+					await this.sharedFolder.flush(this, effect.contents);
+					this.hsm.send({
+						type: "FLUSH_COMPLETE",
+						contents: effect.contents,
+						hash: effect.hash,
+						mtime: this.tfile?.stat.mtime ?? Date.now(),
+					});
+				})().catch((e) => {
+					this.warn("canvas flush failed", e);
+					this.hsm.send({ type: "FLUSH_FAILED", error: e });
+				});
+				trackPromise(`canvasFlush:${this.guid}`, p);
+				return;
+			}
+			case "RECONCILE_VIEW": {
+				try {
+					this._viewReconciler?.();
+				} catch (e) {
+					this.warn("view reconcile failed", e);
+				}
+				return;
+			}
+			case "ENQUEUE_DOWNLOAD": {
+				const p = this.sharedFolder.backgroundSync
+					.enqueueCanvasDownload(this, false)
+					.catch(() => {
+						this.hsm.send({ type: "DOWNLOAD_FAILED" });
+					});
+				trackPromise(`canvasDownload:${this.guid}`, p);
+				return;
+			}
+			case "PERSIST_STATE": {
+				this.sharedFolder.saveCanvasState(this.guid, effect.state);
+				return;
+			}
+			case "SURFACE_STATUS": {
+				this.sharedFolder.notifyListeners();
+				return;
+			}
+		}
+	}
+
 	public get yedges(): Y.Map<CanvasEdgeData> {
-		return this.ydoc.getMap("edges");
+		return this.localDoc.getMap("edges");
 	}
 
 	public get ynodes(): Y.Map<CanvasNodeData> {
-		return this.ydoc.getMap("nodes");
+		return this.localDoc.getMap("nodes");
 	}
 
 	public textNode(node: CanvasNodeData): Y.Text {
-		const ytext = this.ydoc.getText(node.id);
+		const ytext = this.localDoc.getText(node.id);
 		if (ytext.toString() === "") {
 			ytext.insert(0, node.text);
 		}
 		return ytext;
+	}
+
+	/** The vault-facing canvas data (the localDoc's export). */
+	public exportData(): CanvasData {
+		return Canvas.exportCanvasData(this.localDoc);
 	}
 
 	static exportCanvasData(ydoc: Y.Doc): CanvasData {
@@ -307,6 +455,15 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
+	 * A view took ownership of this canvas (and of its disk file). Safe to
+	 * call repeatedly — Obsidian re-attaches views across file switches.
+	 */
+	attachView(): void {
+		this.userLock = true;
+		this.hsm.send({ type: "VIEW_ATTACHED" });
+	}
+
+	/**
 	 * Release lock on this canvas.
 	 * Transitions HSM from active back to idle mode.
 	 * Call this when editor closes.
@@ -317,6 +474,21 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (mergeManager) {
 			mergeManager.unload(this.guid);
+		}
+		this.hsm.send({ type: "VIEW_DETACHED" });
+	}
+
+	/**
+	 * The RECONCILE_VIEW executor. CanvasPlugin registers the reconciler
+	 * while its patches are installed; without one the effect is a no-op.
+	 */
+	setViewReconciler(fn: () => void): void {
+		this._viewReconciler = fn;
+	}
+
+	clearViewReconciler(fn: () => void): void {
+		if (this._viewReconciler === fn) {
+			this._viewReconciler = null;
 		}
 	}
 
@@ -368,7 +540,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		data.nodes.forEach((node: CanvasNodeData) => {
 			seen.add(node.id);
 			if (node.type === "text" && typeof node.text === "string") {
-				const ytext = this.ydoc.getText(node.id);
+				const ytext = this.localDoc.getText(node.id);
 				if (ytext.toString() !== node.text) {
 					changed_text.set(node.id, node.text);
 				}
@@ -408,13 +580,13 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			changed_text.size > 0
 		) {
 			Y.transact(
-				this.ydoc,
+				this.localDoc,
 				() => {
 					for (const node of changed_nodes.values()) {
 						this.ynodes.set(node.id, node);
 					}
 					for (const [node_id, text] of changed_text) {
-						replaceYTextContent(this.ydoc.getText(node_id), text);
+						replaceYTextContent(this.localDoc.getText(node_id), text);
 					}
 					for (const node_id of deleted_nodes) {
 						this.ynodes.delete(node_id);
@@ -445,7 +617,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public get json(): string {
-		const data = Canvas.exportCanvasData(this.ydoc);
+		const data = Canvas.exportCanvasData(this.localDoc);
 		return formatCanvasData(data);
 	}
 
@@ -460,6 +632,15 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	destroy() {
 		const destroyedError = new DocumentDestroyedError(this.guid, this.path);
 		this.destroyed = true;
+		// Optional chaining throughout: unit tests construct bare canvases
+		// via Object.create(Canvas.prototype), skipping field initializers.
+		if (this._docChangedTimer != null) {
+			this.timeProvider.clearTimeout(this._docChangedTimer);
+			this._docChangedTimer = null;
+		}
+		this.hsm?.destroy();
+		this._bridge?.destroy();
+		this._viewReconciler = null;
 		this.unsubscribes.forEach((unsubscribe) => {
 			unsubscribe();
 		});
@@ -471,6 +652,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			const p = this._persistence.destroy().catch(() => {});
 			trackAsyncCleanup(p);
 		}
+		this.localDoc?.destroy();
 		super.destroy();
 	}
 }

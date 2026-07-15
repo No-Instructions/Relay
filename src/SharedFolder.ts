@@ -89,6 +89,7 @@ import { readNoteText } from "./diskText";
 import {
 	HSMStore,
 } from "./merge-hsm/persistence";
+import type { PersistedCanvasState } from "./merge-hsm/types";
 import { trackPromise } from "./trackPromise";
 import {
 	RemoteActivityIndex,
@@ -629,9 +630,12 @@ export class SharedFolder extends HasProvider {
 						this.syncStore.getCommittedSubdocGuids(),
 					);
 					return all.filter(
+						// Canvas records live in the same store but belong to
+						// CanvasHSMs; the document caches must never see them.
 						(meta) =>
-							meta.folder === this.guid ||
-							(meta.folder === undefined && committed.has(meta.guid)),
+							meta.kind !== "canvas" &&
+							(meta.folder === this.guid ||
+								(meta.folder === undefined && committed.has(meta.guid))),
 					);
 				} catch {
 					return [];
@@ -639,7 +643,10 @@ export class SharedFolder extends HasProvider {
 			},
 			loadState: async (guid: string) => {
 				try {
-					return await this._hsmStore.loadState(guid);
+					const record = await this._hsmStore.loadState(guid);
+					// A canvas record under a document guid cannot happen (guids
+					// are minted per file), but the type union narrows here.
+					return record?.kind === "canvas" ? null : (record ?? null);
 				} catch {
 					return null;
 				}
@@ -903,7 +910,25 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const file = this.files.get(guid);
-		if (!file || !isDocument(file)) return;
+		if (!file) return;
+
+		if (isCanvas(file)) {
+			if (!event.update) return;
+			const update =
+				event.update instanceof Uint8Array
+					? event.update
+					: new Uint8Array(event.update);
+			// Folder-routed canvas updates land on the provider-facing
+			// remoteDoc; the CanvasDocBridge merges them into the localDoc,
+			// where the CanvasHSM observes the change and decides whether
+			// disk follows. Update classification and keyframe catch-up are
+			// document machinery; reconnect sweeps and remote-head downloads
+			// cover any gapped canvas updates.
+			Y.applyUpdate(file.ydoc, update, this);
+			return;
+		}
+
+		if (!isDocument(file)) return;
 
 		// Active documents: ProviderIntegration handles sync via y-protocols
 		if (this.mergeManager.isActive(guid)) {
@@ -3274,6 +3299,26 @@ export class SharedFolder extends HasProvider {
 		return newDocs;
 	}
 
+	/** Load this canvas's persisted machine state from the vault-wide store. */
+	public async loadCanvasState(
+		guid: string,
+	): Promise<PersistedCanvasState | null> {
+		try {
+			const record = await this._hsmStore.loadState(guid);
+			return record?.kind === "canvas" ? record : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Persist a canvas machine record; background write, failures logged. */
+	public saveCanvasState(guid: string, state: PersistedCanvasState): void {
+		const p = this._hsmStore.saveState(guid, state).catch((err) => {
+			this.error(`[CanvasHSM] saveState failed for ${guid}:`, err);
+		});
+		trackAsyncCleanup(p);
+	}
+
 	getOrCreateCanvas(guid: string, vpath: string): Canvas {
 		const canvas =
 			this.files.get(guid) || new Canvas(vpath, guid, this.loginManager, this);
@@ -3880,6 +3925,9 @@ export class SharedFolder extends HasProvider {
 
 	private teardownDocState(guid: string): void {
 		indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
+		// Canvases persist under their own prefix; deleting the unused name
+		// for either file type is a no-op.
+		indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${guid}`);
 		const p = this._hsmStore.deleteState(guid).catch(() => {});
 		trackAsyncCleanup(p);
 	}

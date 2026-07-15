@@ -695,6 +695,8 @@ export type MergeEffect =
 // =============================================================================
 
 export interface PersistedMergeState {
+	/** Absent on document records; discriminates against canvas records. */
+	kind?: undefined;
 	guid: string;
 	path: string;
 	/** Owning shared folder. Records without it predate folder scoping. */
@@ -720,8 +722,36 @@ export interface PersistedMergeState {
 	persistedAt: number;
 }
 
+/**
+ * A canvas record in the same HSMStore states store, discriminated by
+ * `kind`. The LCA is the formatted canvas JSON on which disk and the
+ * canvas localDoc last agreed. lastStatePath is opaque at the schema
+ * level — canvas state paths are not document StatePaths, so consumers
+ * must discriminate on `kind` before interpreting it.
+ */
+export interface PersistedCanvasState {
+	kind: "canvas";
+	guid: string;
+	path: string;
+	/** Owning shared folder. */
+	folder: string;
+	lca: {
+		contents: string;
+		hash: string;
+		mtime: number;
+	} | null;
+	disk: MergeMetadata | null;
+	lastStatePath: string;
+	persistedAt: number;
+}
+
+/** Any record shape held by the HSMStore states store. */
+export type PersistedHSMRecord = PersistedMergeState | PersistedCanvasState;
+
 /** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
 export interface PersistedStateMeta {
+	/** Present ("canvas") when the record belongs to a CanvasHSM. */
+	kind?: "canvas";
 	guid: string;
 	path: string;
 	/** Owning shared folder. Records without it predate folder scoping. */

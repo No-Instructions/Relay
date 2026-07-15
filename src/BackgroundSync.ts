@@ -824,7 +824,7 @@ export class BackgroundSync extends HasLogging {
 			return "Canvas file contains invalid JSON. Open the canvas and repair it before syncing.";
 		}
 
-		const currentCanvasData = Canvas.exportCanvasData(canvas.ydoc);
+		const currentCanvasData = canvas.exportData();
 		if (areCanvasDataEqual(currentCanvasData, currentFileJson)) {
 			return null;
 		}
@@ -838,16 +838,13 @@ export class BackgroundSync extends HasLogging {
 		canvas: Canvas,
 		currentFileJson: CanvasData,
 	): Promise<boolean> {
-		const currentCanvasMapData = Canvas.exportCanvasMapData(canvas.ydoc);
+		const currentCanvasMapData = Canvas.exportCanvasMapData(canvas.localDoc);
 		if (!areCanvasDataEqual(currentCanvasMapData, currentFileJson)) {
 			return false;
 		}
 
 		await canvas.applyData(currentFileJson);
-		return areCanvasDataEqual(
-			Canvas.exportCanvasData(canvas.ydoc),
-			currentFileJson,
-		);
+		return areCanvasDataEqual(canvas.exportData(), currentFileJson);
 	}
 
 	getAllGroupsProgress(): GroupProgress[] {
@@ -1765,7 +1762,29 @@ export class BackgroundSync extends HasLogging {
 		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueSync(doc);
 		}
-		return docs.length;
+
+		// Canvases: SERVER_AHEAD is a signal, not a command — each canvas's
+		// machine decides whether a download is appropriate (never while a
+		// view is attached, deduped against its own pending download). The
+		// advertised-head comparison stays host-side because it reads the
+		// MergeManager's advertised-head table.
+		const canvases = [...sharedFolder.files.values()]
+			.filter(isCanvas)
+			.filter((canvas) => advertisedGuids.has(canvas.guid))
+			.filter((canvas) => !this.downloadPromises.has(canvas.guid))
+			.filter((canvas) => {
+				const mergeManager = sharedFolder.mergeManager;
+				if (!mergeManager) return true;
+				return !mergeManager.isServerAdvertisedInSync(
+					canvas.guid,
+					snapshotFromDoc(canvas.ydoc).snapshot,
+				);
+			});
+		for (const canvas of canvases) {
+			canvas.hsm.send({ type: "SERVER_AHEAD" });
+		}
+
+		return docs.length + canvases.length;
 	}
 
 	enqueueAdvertisedLCABackfills(
@@ -2052,7 +2071,7 @@ export class BackgroundSync extends HasLogging {
 		// if the local file is synced, then we do the two step process
 		if (isCanvas(doc)) {
 			// Store the exported canvas data rather than a stringified version
-			const currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
+			const currentCanvasData = doc.exportData();
 			let canvasContentsMismatch = false;
 			try {
 				const currentFileContents = await doc.sharedFolder.read(doc);
@@ -2207,37 +2226,20 @@ export class BackgroundSync extends HasLogging {
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
 		try {
-			// Get the current contents before applying the update
-			const currentJson = Canvas.exportCanvasData(canvas.ydoc);
-			let currentFileContents: CanvasData = { edges: [], nodes: [] };
-			try {
-				const stringContents = await canvas.sharedFolder.read(canvas);
-				currentFileContents = JSON.parse(stringContents) as CanvasData;
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = areCanvasDataEqual(currentJson, currentFileContents);
-			const hasContents = currentFileContents.nodes.length > 0;
-
 			const response = await this.downloadItem(canvas);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
 			this.log("[getCanvas] applying content from server");
+			// Server content lands on the provider-facing remoteDoc; the
+			// CanvasDocBridge merges it into the localDoc, and the canvas's
+			// machine decides whether disk follows (the old pre-download
+			// disk check is now the machine's LCA comparison).
 			Y.applyUpdate(canvas.ydoc, updateBytes);
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
-				return;
-			}
-			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
-				canvas.sharedFolder.flush(canvas, canvas.json);
-				this.log("[getCanvas] flushed");
-			}
+			canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
 		} catch (e) {
 			this.logError("[getCanvas] failed", e);
+			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
 			throw e;
 		}
 	}

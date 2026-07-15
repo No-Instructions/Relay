@@ -1,5 +1,6 @@
 import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
+import { mergeCanvasViewData } from "./CanvasData";
 import type {
 	CanvasEdge,
 	CanvasEdgeData,
@@ -382,6 +383,38 @@ export class CanvasPlugin extends HasLogging {
 		);
 	}
 
+	/**
+	 * Bring the view in line with the canvas localDoc. Content that reached
+	 * the localDoc before this view opened produces no observer events, so
+	 * a view loaded from a stale disk file would otherwise render stale
+	 * forever — and its first save would push that stale state back into
+	 * the localDoc, deleting newer peer content via applyData's diff.
+	 * View-only nodes and edges are kept: they are local edits that have
+	 * not been pushed yet.
+	 *
+	 * Runs as the machine's RECONCILE_VIEW executor: the CanvasHSM emits
+	 * the effect on view attach and after every VIEW_DATA_LOADED, and only
+	 * from its active state.
+	 */
+	private reconcileViewWithCanvas() {
+		if (!this.canvas || !this.relayCanvas) return;
+		// Obsidian reuses canvas views across file switches; a stale effect
+		// firing for another file must not merge two canvases together.
+		if (!this.view.file?.path.endsWith(this.relayCanvas.path)) return;
+		const merged = mergeCanvasViewData(
+			this.relayCanvas.exportData(),
+			this.canvas.getData(),
+		);
+		if (!merged) return;
+		this.debug(
+			"reconciling view with canvas localDoc",
+			this.view.file?.path,
+			merged,
+		);
+		this.canvas.importData(merged, true);
+		this.canvas.requestSave();
+	}
+
 	private install() {
 		if (!this.canvas) return;
 
@@ -393,14 +426,32 @@ export class CanvasPlugin extends HasLogging {
 
 		// eslint-disable-next-line
 		const that = this;
-		const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
-		const hasCanvasData =
-			exported.nodes.length > 0 || exported.edges.length > 0;
-		const hasLocalDB = this.relayCanvas.hasLocalDB();
 
-		if (hasLocalDB && hasCanvasData) {
-			this.canvas.importData(exported, true);
-		}
+		const reconciler = () => this.reconcileViewWithCanvas();
+		this.relayCanvas.setViewReconciler(reconciler);
+		this.unsubscribes.push(() => {
+			this.relayCanvas.clearViewReconciler(reconciler);
+		});
+
+		this.unsubscribes.push(
+			getPatcher().patch(this.view, {
+				setViewData(old: any) {
+					return function (data: string, clear: boolean) {
+						// @ts-ignore
+						const res = old.call(this, data, clear);
+						// The file load lands after install, so a stale disk
+						// file would overwrite anything imported earlier; the
+						// machine re-reconciles after every load.
+						try {
+							that.relayCanvas.hsm.send({ type: "VIEW_DATA_LOADED" });
+						} catch (e) {
+							that.log(e);
+						}
+						return res;
+					};
+				},
+			}),
+		);
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.canvas, {
@@ -452,7 +503,7 @@ export class CanvasPlugin extends HasLogging {
 			if (event.transaction.origin === this.relayCanvas) {
 				return;
 			}
-			const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
+			const exported = this.relayCanvas.exportData();
 			for (const [key, delta] of event.changes.keys) {
 				log += `key: ${key} action: ${delta.action}\n\n`;
 			}
@@ -504,6 +555,11 @@ export class CanvasPlugin extends HasLogging {
 		this.unsubscribes.push(() => {
 			this.relayCanvas.yedges.unobserve(_edgeObserver);
 		});
+
+		// The reconciler is registered now; ask the machine for the
+		// install-time reconcile (content that arrived before this view
+		// opened produced no observer events).
+		this.relayCanvas.hsm.send({ type: "VIEW_DATA_LOADED" });
 
 		this.relayCanvasView.tracking = true;
 	}
