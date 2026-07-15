@@ -415,7 +415,7 @@ const setupWS = (provider: YSweetProvider) => {
 	}
 };
 
-const broadcastMessage = (provider: YSweetProvider, buf: ArrayBuffer) => {
+const broadcastMessage = (provider: YSweetProvider, buf: Uint8Array) => {
 	const ws = provider.ws;
 	if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
 		ws.send(buf);
@@ -602,7 +602,7 @@ export class YSweetProvider extends Observable<string> {
 	wsUnsuccessfulReconnects: number;
 	messageHandlers: Array<HandlerFunction>;
 	/** Messages buffered while WebSocket was not ready. Flushed on next send. */
-	_pendingMessages: ArrayBuffer[];
+	_pendingMessages: Uint8Array[];
 	_synced: boolean;
 	ws: WebSocket | null;
 	wsLastMessageReceived: number;

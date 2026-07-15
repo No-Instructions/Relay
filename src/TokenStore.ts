@@ -241,12 +241,12 @@ export class TokenStore<TokenType extends HasToken> {
 			return null;
 		}
 		this.log("getting next item in queue");
-		if (this.refreshQueue.size > 0) {
-			const nextDocumentId = this.refreshQueue.values().next().value;
-			this.refreshQueue.delete(nextDocumentId);
-			return nextDocumentId;
+		const nextDocumentId = this.refreshQueue.values().next().value;
+		if (nextDocumentId === undefined) {
+			return null;
 		}
-		return null;
+		this.refreshQueue.delete(nextDocumentId);
+		return nextDocumentId;
 	}
 
 	private addToRefreshQueue(documentId: string) {
