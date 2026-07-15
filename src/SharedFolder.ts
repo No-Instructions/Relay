@@ -898,18 +898,6 @@ export class SharedFolder extends HasProvider {
 		if (!guid) return;
 		metrics.recordDocumentUpdateEvent("received", this.guid);
 
-		if (!event.user || !this.isLocalUserId(event.user)) {
-			const timestamp = normalizeRemoteActivityTimestamp(
-				event.timestamp,
-				this.currentTime(),
-			);
-			if (timestamp !== null) {
-				this.recordRemoteActivities([
-					{ guid, timestamp, userId: event.user },
-				]);
-			}
-		}
-
 		if (!this.files.has(guid)) {
 			this.retryDeferredDownloadForGuid(guid);
 			this.retryDeferredRemapForGuid(guid);
