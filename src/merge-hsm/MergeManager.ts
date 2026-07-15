@@ -2096,6 +2096,7 @@ export class MergeManager {
         this._stateMetaCache.set(guid, {
           guid,
           path: effect.state.path,
+          folder: effect.state.folder,
           lcaMeta: restoredLCA ? lcaToMeta(restoredLCA) : null,
           disk: effect.state.disk,
           localSnapshot: effect.state.localSnapshot ?? null,

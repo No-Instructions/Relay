@@ -54,7 +54,7 @@ function stateVectorFromSnapshotOrLegacy(
  * Allow-list all fields to prevent non-serializable values (closures, DOM refs)
  * from reaching IDB's structured clone algorithm.
  */
-function sanitizeState(state: PersistedMergeState): PersistedMergeState {
+export function sanitizeState(state: PersistedMergeState): PersistedMergeState {
   const lcaSnapshot = state.lca?.snapshot;
   const localSnapshot = state.localSnapshot ?? null;
   const forkLocalSnapshot = state.fork?.localSnapshot ?? null;
@@ -63,6 +63,7 @@ function sanitizeState(state: PersistedMergeState): PersistedMergeState {
   return {
     guid: state.guid,
     path: state.path,
+    ...(state.folder ? { folder: state.folder } : {}),
     lca: state.lca
       ? {
           contents: state.lca.contents,
