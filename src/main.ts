@@ -64,6 +64,11 @@ import { FeatureFlagManager, flags, withFlag } from "./flagManager";
 import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { HSMStore } from "./merge-hsm/persistence";
+import {
+	MachineEditMoveContext,
+	classifyFolderMoveAuthority,
+} from "./merge-hsm/MachineEditMoveContext";
+import { runCapturedVaultProcess } from "./merge-hsm/machine-edits";
 import { trackAsyncCleanup } from "./reloadUtils";
 import { isDestroyedError } from "./DestroyedError";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
@@ -1664,6 +1669,34 @@ export default class Live extends Plugin {
 			},
 		});
 
+		const machineEditMoveContext = new MachineEditMoveContext();
+
+		getPatcher().patch(this.app.fileManager, {
+			renameFile(old: any) {
+				return async function (
+					this: FileManager,
+					file: TAbstractFile,
+					newPath: string,
+				) {
+					const oldPath = file.path;
+					const fromFolder = plugin.sharedFolders.lookup(oldPath);
+					const toFolder = plugin.sharedFolders.lookup(newPath);
+					const authority = classifyFolderMoveAuthority(
+						fromFolder,
+						toFolder,
+						oldPath,
+						newPath,
+					);
+					if (authority === null) {
+						return old.call(this, file, newPath);
+					}
+					return machineEditMoveContext.run(authority, () =>
+						old.call(this, file, newPath),
+					);
+				};
+			},
+		});
+
 		getPatcher().patch(this.app.vault, {
 			process(old: any) {
 				return async function (
@@ -1672,6 +1705,9 @@ export default class Live extends Plugin {
 					fn: (data: string) => string,
 					options: any,
 				) {
+					let captured:
+						| { hsm: import("./merge-hsm/MergeHSM").MergeHSM; id: number }
+						| null = null;
 					try {
 						const folder = plugin.sharedFolders.lookup(tfile.path);
 						if (folder) {
@@ -1679,7 +1715,15 @@ export default class Live extends Plugin {
 							if (tfile instanceof TFile && file && isDocument(file)) {
 								const hsm = file.hsm;
 								if (hsm) {
-									await hsm.registerMachineEdit(fn);
+									const authority = machineEditMoveContext.current();
+									if (authority !== null) {
+										const handle = await hsm.beginCapturedMachineEdit(authority);
+										if (handle) captured = { hsm, id: handle.id };
+									} else {
+										// FolderHSM flag off, or vault.process was not part of a
+										// classified rename cascade: retain the existing behavior.
+										await hsm.registerMachineEdit(fn);
+									}
 								}
 							}
 						}
@@ -1687,7 +1731,15 @@ export default class Live extends Plugin {
 						plugin.log(e);
 					}
 
-					return old.call(this, tfile, fn, options);
+					if (!captured) return old.call(this, tfile, fn, options);
+
+					const handle = { id: captured.id };
+					return runCapturedVaultProcess(
+						captured.hsm,
+						handle,
+						fn,
+						(wrapped) => old.call(this, tfile, wrapped, options),
+					);
 				};
 			},
 		});

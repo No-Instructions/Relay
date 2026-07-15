@@ -18,6 +18,7 @@ import type { OpCapture } from "./undo";
 import { MACHINE_EDIT_ORIGIN } from "./undo";
 import { snapshotFromDoc, snapshotsEqual, yjsDocsEqual } from "./state-vectors";
 import { curryLog } from "../debug";
+import type { PendingMachineEdit } from "./machine-edits";
 
 const bridgeError = curryLog("[SyncBridge]", "error");
 
@@ -43,21 +44,15 @@ export interface SyncBridgeHost {
 	/** Get the OpCapture instance from persistence */
 	getOpCapture(): OpCapture | null;
 	/** Pending machine edits awaiting remote match */
-	getPendingMachineEdits(): ReadonlyArray<{
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	}>;
+	getPendingMachineEdits(): ReadonlyArray<PendingMachineEdit>;
 	/** Find a pending machine edit matched by remoteText */
-	matchMachineEdit(remoteText: string): {
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	} | null;
+	matchMachineEdit(remoteText: string): PendingMachineEdit | null;
+	/** Whether a captured callback has not supplied its structural diff yet. */
+	hasPreparingMachineEdit?(): boolean;
+	/** Remember an origin update that arrived before the local CM6 echo. */
+	markMachineEditRemoteMatched?(entry: PendingMachineEdit): void;
 	/** Remove a matched machine edit registration */
-	removeMachineEdit(entry: { captureMark: number }): void;
+	removeMachineEdit(entry: PendingMachineEdit): void;
 	/** Compute positioned diff changes between two strings */
 	computeDiffChanges(from: string, to: string): PositionedChange[];
 	/** Apply positioned changes to the local doc's contents Y.Text */
@@ -448,6 +443,17 @@ export class SyncBridge {
 		}
 
 		// Fallback: full state diff (loading, idle -- before listener installed)
+		const hasDeferredCapturedEdit = this.host
+			.getPendingMachineEdits()
+			.some(
+				(entry) =>
+					entry.kind === "captured" &&
+					entry.authority !== "local-origin",
+			);
+		if (hasDeferredCapturedEdit) {
+			this._syncGate.pendingOutbound++;
+			return;
+		}
 		const update = Y.encodeStateAsUpdate(
 			localDoc,
 			Y.encodeStateVector(remoteDoc),
@@ -471,7 +477,10 @@ export class SyncBridge {
 		if (!this._localDocUpdateHandler) return;
 
 		const pendingMarks = new Set(
-			this.host.getPendingMachineEdits().map(e => e.captureMark),
+			this.host
+				.getPendingMachineEdits()
+				.filter((entry) => entry.kind !== "captured")
+				.map((entry) => entry.captureMark),
 		);
 		if (pendingMarks.size === 0) return;
 
@@ -521,6 +530,13 @@ export class SyncBridge {
 			return;
 		}
 
+		// The callback invocation is the only source of structural identity.
+		// Hold the short preparation window rather than guessing from text.
+		if (this.host.hasPreparingMachineEdit?.()) {
+			this._syncGate.pendingInbound++;
+			return;
+		}
+
 		const remoteText = remoteDoc.getText("contents").toString();
 
 		// Check for machine edit match -- if the remote already has this
@@ -537,7 +553,10 @@ export class SyncBridge {
 			// deleting the surplus duplicate down to expectedText. Every peer
 			// computes the identical reduction over the identical shared CRDT, so
 			// all peers delete the same loser run(s) and keep one survivor.
-			if (this._publishedMachineEditMarks.has(match.captureMark)) {
+			if (
+				match.kind !== "captured" &&
+				this._publishedMachineEditMarks.has(match.captureMark)
+			) {
 				const beforeText = localDoc.getText("contents").toString();
 
 				this.host.setSuppressLocalObserver(true);
@@ -661,9 +680,18 @@ export class SyncBridge {
 				}
 			}
 
-			// OpCapture unavailable or no ops captured yet (CM6 transaction hasn't
-			// fired). Remove the registration.
-			this.host.removeMachineEdit(match);
+			// A structural origin update can beat the local CM6 echo. Adopt it but
+			// retain the registration so the later positional editor transaction is
+			// recognized and suppressed without a second CRDT operation.
+			if (match.kind === "captured") {
+				if (this.host.markMachineEditRemoteMatched) {
+					this.host.markMachineEditRemoteMatched(match);
+				} else {
+					this.host.removeMachineEdit(match);
+				}
+			} else {
+				this.host.removeMachineEdit(match);
+			}
 		}
 
 		// Drain buffered inbound updates.

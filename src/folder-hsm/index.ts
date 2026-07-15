@@ -35,5 +35,6 @@ export type {
 	MapDeltaDelete,
 	MapDeltaMove,
 	MapEntrySummary,
+	MachineEditAuthority,
 	MembershipEntry,
 } from "./types";

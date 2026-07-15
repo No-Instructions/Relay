@@ -14,7 +14,7 @@ import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
 import { base64ToUint8Array, uint8ArrayToBase64 } from './merge-hsm/recording/serialization';
-import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
+import { snapshotContains, snapshotFromDoc, snapshotsEqual, yjsDocsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
 import { getHSMBootId, getHSMBootEntries, flushHSMRecording, getRecentEntries, getSessionLogs } from './debug';
 import type { SessionLogOptions } from './debug';
 import { getRecentPromises } from './trackPromise';
@@ -58,6 +58,13 @@ export interface HsmSyncGate {
   localOnly: boolean;
   pendingInbound: number;
   pendingOutbound: number;
+}
+
+export interface HsmMachineEditLane {
+  kind: string;
+  authority: string | null;
+  captureReady: boolean;
+  ageMs: number;
 }
 
 export interface IdbContentSnapshot {
@@ -173,6 +180,8 @@ export interface HsmStateSnapshot {
   diskMtime: number | null;
   diskContent: string | null;
   stateVectorsEqual: boolean | null;
+  localRemoteDocsEqual: boolean | null;
+  machineEditLanes: HsmMachineEditLane[];
   diskMatchesIdb: boolean;
   idbMatchesLca: boolean;
   idbMatchesPersistedLca: boolean;
@@ -1224,6 +1233,20 @@ export class RelayDebugAPI {
       pendingInbound: syncGateRaw.pendingInbound ?? 0,
       pendingOutbound: syncGateRaw.pendingOutbound ?? 0,
     } : null;
+    const remoteDoc = hsmAny.remoteDoc;
+    const localRemoteDocsEqual = localDoc && remoteDoc
+      ? yjsDocsEqual(localDoc, remoteDoc)
+      : null;
+    const machineEditLanes: HsmMachineEditLane[] = Array.isArray(hsmAny._pendingMachineEdits)
+      ? hsmAny._pendingMachineEdits.map((entry: any) => ({
+          kind: typeof entry?.kind === 'string' ? entry.kind : 'unknown',
+          authority: typeof entry?.authority === 'string' ? entry.authority : null,
+          captureReady: entry?.kind === 'captured' ? entry.capture != null : true,
+          ageMs: typeof entry?.registeredAt === 'number'
+            ? Math.max(0, this.plugin.timeProvider.now() - entry.registeredAt)
+            : 0,
+        }))
+      : [];
     const diskMatchesIdb =
       diskContent !== null && idbContent !== null && diskContent === idbContent;
     const idbMatchesLca =
@@ -1258,6 +1281,8 @@ export class RelayDebugAPI {
       diskMtime: disk?.mtime || null,
       diskContent,
       stateVectorsEqual,
+      localRemoteDocsEqual,
+      machineEditLanes,
       diskMatchesIdb,
       idbMatchesLca,
       idbMatchesPersistedLca,
