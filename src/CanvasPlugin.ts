@@ -43,6 +43,15 @@ export class CanvasPlugin extends HasLogging {
 	 * comparison for views that were already settled.
 	 */
 	private viewDataOwned = false;
+	/**
+	 * Set when Obsidian ingests an external disk change into an owned view
+	 * (loadFileInternal → setData → setViewData with clear=false; a file
+	 * open always clears). Obsidian's ingest is authoritative — an
+	 * id-preserving destructive import of the disk state — so the next
+	 * reconcile flows view→localDoc instead of overwriting the view with
+	 * the CRDT copy.
+	 */
+	private viewIngestPending = false;
 
 	constructor(
 		private connectionManager: LiveViewManager,
@@ -453,6 +462,20 @@ export class CanvasPlugin extends HasLogging {
 		// reused view that has not finished loading this file's data.
 		if (!this.view.file || this.view.file !== this.relayCanvas.tfile) return;
 		if (!this.viewDataOwned) return;
+		if (this.viewIngestPending) {
+			// Obsidian already reconciled the external disk state into the
+			// view (an id-preserving destructive import). Keep its result
+			// untouched and converge the localDoc to it — never the reverse.
+			this.viewIngestPending = false;
+			this.debug(
+				"ingesting externally loaded view data",
+				this.view.file?.path,
+			);
+			void this.relayCanvas
+				.importFromView(this.view)
+				.catch((e) => this.log(e));
+			return;
+		}
 		const merged = mergeCanvasViewData(
 			this.relayCanvas.exportData(),
 			this.canvas.getData(),
@@ -496,6 +519,17 @@ export class CanvasPlugin extends HasLogging {
 						// stale disk file would overwrite anything imported
 						// earlier; the machine re-reconciles after every load.
 						try {
+							// A non-clearing load of an already-owned view is
+							// Obsidian ingesting an external disk change (file
+							// opens always clear): the rendered view is disk
+							// truth, and the reconcile must flow view→localDoc.
+							if (
+								!clear &&
+								that.viewDataOwned &&
+								that.view.file === that.relayCanvas.tfile
+							) {
+								that.viewIngestPending = true;
+							}
 							that.markViewDataOwned();
 							that.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
 						} catch (e) {
