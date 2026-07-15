@@ -22,6 +22,7 @@ import type {
   PersistedMergeState,
   PersistedStateMeta,
   ManagedFile,
+  ConflictProvider,
   CreatePersistence,
   PersistenceMetadata,
   LCAState,
@@ -484,6 +485,13 @@ export class MergeManager {
   /** Bulk-loaded metadata for managed-file records (kind-discriminated). */
   private _managedMetaCache = new Map<string, PersistedStateMeta>();
 
+  /**
+   * Per-guid conflict surfaces. Documents register at createHSM; other
+   * types register when they can materialize conflicts. The public
+   * conflict API is pure delegation — no file-type knowledge here.
+   */
+  private _conflictProviders = new Map<string, ConflictProvider>();
+
   // Hibernation configuration
   private _hibernateTimeoutMs: number;
   private _maxConcurrentWarm: number;
@@ -684,14 +692,33 @@ export class MergeManager {
     return hsm;
   }
 
+  /**
+   * Register a guid's conflict surface. Returns the unsubscriber; the
+   * registration also falls away with stopTracking/destroy.
+   */
+  registerConflictProvider(guid: string, provider: ConflictProvider): () => void {
+    this._conflictProviders.set(guid, provider);
+    return () => {
+      if (this._conflictProviders.get(guid) === provider) {
+        this._conflictProviders.delete(guid);
+      }
+    };
+  }
+
+  private conflictProviderFor(guid: string): ConflictProvider {
+    const provider = this._conflictProviders.get(guid);
+    if (!provider) {
+      throw new Error(`No conflict provider registered for ${guid}`);
+    }
+    return provider;
+  }
+
   async getConflictInfo(guid: string): Promise<ConflictInfoSnapshot> {
-    const hsm = await this.prepareHeadlessConflictResolution(guid);
-    return hsm.getConflictInfoSnapshot();
+    return (await this.conflictProviderFor(guid).getConflictInfo()) as ConflictInfoSnapshot;
   }
 
   async resolveConflict(guid: string, contents: string): Promise<StatePath> {
-    const hsm = await this.prepareHeadlessConflictResolution(guid);
-    return hsm.resolveConflictContents(contents);
+    return (await this.conflictProviderFor(guid).resolveConflict(contents)) as StatePath;
   }
 
   async resolveConflictHunk(
@@ -699,8 +726,31 @@ export class MergeManager {
     hunkId: string,
     resolution: ResolveHunkEvent['resolution'],
   ): Promise<StatePath> {
-    const hsm = await this.prepareHeadlessConflictResolution(guid);
-    return hsm.resolveConflictHunk(hunkId, resolution);
+    return (await this.conflictProviderFor(guid).resolveConflictHunk(
+      hunkId,
+      resolution,
+    )) as StatePath;
+  }
+
+  /** The MergeHSM-backed conflict dialect (text hunks). */
+  private createDocumentConflictProvider(guid: string): ConflictProvider {
+    return {
+      getConflictInfo: async () => {
+        const hsm = await this.prepareHeadlessConflictResolution(guid);
+        return hsm.getConflictInfoSnapshot();
+      },
+      resolveConflict: async (contents: string) => {
+        const hsm = await this.prepareHeadlessConflictResolution(guid);
+        return hsm.resolveConflictContents(contents);
+      },
+      resolveConflictHunk: async (hunkId: string, resolution: unknown) => {
+        const hsm = await this.prepareHeadlessConflictResolution(guid);
+        return hsm.resolveConflictHunk(
+          hunkId,
+          resolution as ResolveHunkEvent['resolution'],
+        );
+      },
+    };
   }
 
   /**
@@ -819,9 +869,14 @@ export class MergeManager {
       this.stopTracking(guid);
       void hsm.awaitCleanupSettled().finally(() => this.unregisterHSM(guid));
     });
+    const unsubscribeConflicts = this.registerConflictProvider(
+      guid,
+      this.createDocumentConflictProvider(guid),
+    );
     this._hsmUnsubs.set(guid, () => {
       unsubscribeEffects();
       unsubscribeDestroyed();
+      unsubscribeConflicts();
     });
 
     // Enter loading state — HSM accumulates events until async load completes
@@ -944,6 +999,7 @@ export class MergeManager {
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
     this._managedMetaCache.delete(guid);
+    this._conflictProviders.delete(guid);
     this._updateWakeQueueMetrics();
   }
 
@@ -971,6 +1027,7 @@ export class MergeManager {
     this._legacyLocalStateVectorCache.delete(guid);
     this._localSnapshotCache.delete(guid);
     this._managedMetaCache.delete(guid);
+    this._conflictProviders.delete(guid);
     this._updateWakeQueueMetrics();
   }
 
@@ -1970,6 +2027,7 @@ export class MergeManager {
     this._warmLeases.clear();
     this._managedFiles.clear();
     this._managedMetaCache.clear();
+    this._conflictProviders.clear();
     this._updateWakeQueueMetrics();
 
     // These callbacks close over SharedFolder and related plugin services.

@@ -778,6 +778,23 @@ export interface ManagedFile {
 	applyRemoteUpdate(update: Uint8Array): void;
 }
 
+/**
+ * Per-guid conflict surface registered with MergeManager. Documents
+ * register a MergeHSM-backed provider when their HSM is created;
+ * canvases register one once snapshot ingestion can materialize
+ * conflicts. Payload shapes are the provider's dialect — text hunks for
+ * documents, per-item fields for canvases — and consumers address the
+ * dialect they know. A guid with no provider has no conflict surface.
+ */
+export interface ConflictProvider {
+	/** Wake and prepare state, then snapshot the conflict for UI/debug. */
+	getConflictInfo(): Promise<unknown>;
+	/** Apply fully resolved content; resolves to the resulting state label. */
+	resolveConflict(contents: string): Promise<string>;
+	/** Resolve one conflict region. */
+	resolveConflictHunk(hunkId: string, resolution: unknown): Promise<string>;
+}
+
 /** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
 export interface PersistedStateMeta {
 	/** Present ("canvas") when the record belongs to a CanvasHSM. */
