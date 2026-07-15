@@ -380,6 +380,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Machine edit rewind: pending vault.process() edits awaiting remote match
 	private _pendingMachineEdits: Array<{
 		fn: (data: string) => string;
+		sourceText: string;
 		expectedText: string;
 		captureMark: number;
 		registeredAt: number;
@@ -1441,6 +1442,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 			this._pendingMachineEdits.push({
 				fn,
+				sourceText: currentText,
 				expectedText,
 				captureMark,
 				registeredAt: this.timeProvider.now(),
@@ -2001,42 +2003,53 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		});
 		this.logDrift(editorText, yjsText);
 
-		// Discriminate before acting. Re-dispatching localDoc into the editor is
-		// only safe when the editor has fallen BEHIND localDoc — it then holds no
-		// content the re-dispatch would discard. But the editor can instead be
-		// AHEAD: the user typed while a machine edit advanced localDoc, so both
-		// diverge from the last settled ancestor. Blindly overwriting the editor
-		// there would silently drop the user's unsynced work. Compare editor and
-		// localDoc against their common ancestor: a genuine 3-way conflict means
-		// the editor contributes divergent content, so surface it as a recoverable
-		// conflict (editor text as "theirs", with the real conflict regions)
-		// instead of discarding it. With no settled ancestor to prove otherwise,
-		// fall through to the re-dispatch below.
-		const lca = this._lca?.contents ?? null;
-		if (lca !== null) {
-			const { regions } = computeConflict(lca, yjsText, editorText);
-			if (regions.length > 0) {
-				this.send({
-					type: "MERGE_CONFLICT",
-					origin: "drift",
-					base: lca,
-					ours: yjsText,
-					theirs: editorText,
-					oursLabel: "Remote",
-					theirsLabel: "Local",
-					conflictRegions: regions,
-				});
-				return true;
-			}
+		// Discriminate before acting. The active-mode LCA tracks localDoc — its
+		// contents are captured from localDoc — and the editor-open boot path may
+		// have no settled ancestor at all, so a 3-way merge base is unavailable.
+		// Compare the editor against localDoc directly with a two-way diff. Any
+		// editor-side region (content the editor holds that localDoc lacks) is
+		// content a blind re-dispatch would silently discard — surface it as a
+		// recoverable conflict (editor text as "theirs", with the real two-way
+		// regions). This covers both the pure editor-ahead append on an editor-open
+		// boot and a mutual divergence where a live single-leaf editor holds un-ingested
+		// non-CM6 content while localDoc advanced (e.g. a rejected remote dispatch
+		// via recoverFromDispatchError); Guard C only guards external disk bytes,
+		// not editor-buffer content, so the drift check is that content's only
+		// backstop.
+		//
+		// A pending machine edit is benign only when the editor and localDoc are
+		// exactly its registered before/after pair in either direction. Any other
+		// editor-side residue is unexplained content that the re-dispatch would
+		// discard, even while a machine edit happens to be armed.
+		const driftRegions = computeTwoWayConflictRegions(yjsText, editorText);
+		const editorHoldsUnsyncedContent = driftRegions.some(
+			(region) => region.theirsContent.length > 0,
+		);
+		const pendingMachineEditExplainsDrift = this._pendingMachineEdits.some(
+			(edit) =>
+				(yjsText === edit.sourceText && editorText === edit.expectedText) ||
+				(yjsText === edit.expectedText && editorText === edit.sourceText),
+		);
+		if (editorHoldsUnsyncedContent && !pendingMachineEditExplainsDrift) {
+			this.send({
+				type: "MERGE_CONFLICT",
+				origin: "drift",
+				base: yjsText,
+				ours: yjsText,
+				theirs: editorText,
+				oursLabel: "Remote",
+				theirsLabel: "Local",
+				conflictRegions: driftRegions,
+			});
+			return true;
 		}
 
-		// The editor fell behind localDoc (base === ours, or the editor is an
-		// ancestor of localDoc): not a real conflict — e.g. a machine-edit
-		// dispatch was rejected against a stale editor length, or Obsidian's
-		// metadata renderer wrote the editor outside the CM6_CHANGE path.
-		// Re-dispatch the authoritative localDoc into the editor so it converges,
-		// instead of fabricating a zero-region MERGE_CONFLICT that opens
-		// active.conflict.bannerShown for a conflict that does not exist.
+		// The editor fell behind localDoc (its content is fully preserved in
+		// localDoc): not a real conflict — e.g. a machine-edit dispatch was
+		// rejected against a stale editor length, or Obsidian's metadata renderer
+		// wrote the editor outside the CM6_CHANGE path. Re-dispatch the
+		// authoritative localDoc into the editor so it converges, instead of
+		// fabricating a conflict banner for a divergence that loses nothing.
 		// Target the leaf that actually drifted. The caller (a CM6Integration
 		// bound to one leaf) passes its own viewId, so under duplicate leaves the
 		// re-dispatch lands on the drifting editor rather than a stale or absent
@@ -4386,6 +4399,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			if (fork.origin === 'machine-edit' && fork.machineEditFn) {
 				this._pendingMachineEdits.push({
 					fn: fork.machineEditFn,
+					sourceText: fork.base,
 					expectedText: mergeResult.merged,
 					captureMark: fork.captureMark,
 					registeredAt: this.timeProvider.now(),
