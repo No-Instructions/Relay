@@ -650,9 +650,34 @@ export class Canvas
 	}
 
 	async applyJSON(json: string) {
-		if (json === "") return;
-		const data = JSON.parse(json);
-		return await this.applyData(data);
+		// A brand-new canvas file may be blank or hold a bare "{}"; both
+		// carry no content and neither may crash enrollment.
+		if (json.trim() === "") return;
+		const parsed = JSON.parse(json);
+		return await this.applyData({
+			nodes: parsed.nodes ?? [],
+			edges: parsed.edges ?? [],
+		});
+	}
+
+	/**
+	 * First-upload enrollment: stamp the `relay` header op, then apply the
+	 * file's JSON. The header guarantees every enrolled canvas produces a
+	 * non-empty state vector, so the server and peers can tell "uploaded"
+	 * from "never uploaded" even when the canvas itself has no nodes or
+	 * edges — the same contract document enrollment establishes in the
+	 * IndexedDB persistence layer.
+	 */
+	async enrollLocal(json: string): Promise<void> {
+		Y.transact(
+			this.localDoc,
+			() => {
+				const header = this.localDoc.getMap("relay");
+				if (!header.has("v")) header.set("v", 0);
+			},
+			this,
+		);
+		await this.applyJSON(json);
 	}
 
 	async importFromView(view: CanvasView) {

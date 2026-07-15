@@ -3399,14 +3399,12 @@ export class SharedFolder extends HasProvider {
 			]);
 			if (!awaitingUpdates && origin === undefined) {
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
-				this.folderDoc.transact(() => {
-					try {
-						canvas.applyJSON(contents);
-					} catch (e) {
-						console.warn(contents);
-						throw e;
-					}
-				}, this._persistence);
+				try {
+					await canvas.enrollLocal(contents);
+				} catch (e) {
+					console.warn(contents);
+					throw e;
+				}
 				canvas.markOrigin("local");
 				this.log(`[${canvas.path}] Uploading file`);
 				await this.backgroundSync.enqueueUpload(canvas);

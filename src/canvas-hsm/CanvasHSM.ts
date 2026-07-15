@@ -367,6 +367,13 @@ export class CanvasHSM {
 		const diskEmpty = isCanvasDataEmpty(diskData);
 		const localEmpty = isCanvasDataEmpty(data);
 
+		if (diskFile === null) {
+			// A member with no file on disk is a remotely added canvas that
+			// has not been materialized yet. Write the localDoc's export even
+			// when it is empty — the folder meta already lists this path, and
+			// the vault must gain the file for the membership to be visible.
+			return { ...base, verdict: "remote-ahead", disk: null };
+		}
 		if (diskEmpty && localEmpty) {
 			return { ...base, verdict: "synced", disk };
 		}
