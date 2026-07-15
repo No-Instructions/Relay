@@ -93,6 +93,27 @@ import { DiskFileNotFoundError } from "./DiskFileNotFoundError";
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
 type RecoverLCADisk = { content: string; hash: string; mtime: number };
+type MachineEditTeardownCompletion =
+	| {
+		kind: "watching";
+		sourceText: string;
+		intermediateText: string;
+		deleteChanges: PositionedChange[];
+		insertChanges: PositionedChange[];
+	}
+	| {
+		kind: "half-applied";
+		intermediateText: string;
+		insertChanges: PositionedChange[];
+	}
+	| { kind: "closed" };
+type PendingMachineEdit = {
+	fn: (data: string) => string;
+	expectedText: string;
+	captureMark: number;
+	registeredAt: number;
+	teardownCompletion: MachineEditTeardownCompletion;
+};
 type ConflictInit = {
 	base: string;
 	ours: string;
@@ -390,12 +411,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private _enteringFromDiverged: boolean = false;
 
 	// Machine edit rewind: pending vault.process() edits awaiting remote match
-	private _pendingMachineEdits: Array<{
-		fn: (data: string) => string;
-		expectedText: string;
-		captureMark: number;
-		registeredAt: number;
-	}> = [];
+	private _pendingMachineEdits: PendingMachineEdit[] = [];
 	private _machineEditDrainWaiters: Set<() => void> = new Set();
 	private _suppressLocalObserver = false;
 	private _localDocDispatchOriginView: string | undefined;
@@ -1467,6 +1483,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				expectedText,
 				captureMark,
 				registeredAt: this.timeProvider.now(),
+				teardownCompletion: this.buildMachineEditTeardownCompletion(
+					currentText,
+					expectedText,
+				),
 			});
 
 			this.hsmDebug(
@@ -3103,6 +3123,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					const ytext = this.localDoc.getText("contents");
 					const ytextStr = ytext.toString();
 					const prevEditor = this.lastKnownEditorText;
+					if (typeof e.docText === "string") {
+						this.trackMachineEditTeardownProgress(
+							ytextStr,
+							e.changes as PositionedChange[],
+							e.docText,
+						);
+					}
 					if (prevEditor !== null && ytextStr !== prevEditor) {
 					// Frontmatter drift detected — no action needed currently
 					}
@@ -4378,6 +4405,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					expectedText: mergeResult.merged,
 					captureMark: fork.captureMark,
 					registeredAt: this.timeProvider.now(),
+					teardownCompletion: { kind: "closed" },
 				});
 				const MACHINE_EDIT_TTL = 5000;
 				this.timeProvider.setTimeout(() => {
@@ -5574,6 +5602,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	private async drainPendingMachineEditsForRelease(signal: AbortSignal): Promise<void> {
+		// Complete any half-applied link repair before draining/tearing down. A
+		// repair (delete of the old name + insert of the new) can reach the HSM as
+		// two CM6 steps; if RELEASE_LOCK fires between them the trailing insert
+		// arrives in `unloading` and is dropped, leaving the mangled run in
+		// localDoc. Bring localDoc up to the registered expectedText so the drain
+		// publishes the complete repair, never the half-applied one.
+		this.completeHalfAppliedMachineEdits();
 		while (!signal.aborted && this._pendingMachineEdits.length > 0) {
 			this.expireMachineEdits();
 			if (this._pendingMachineEdits.length === 0) return;
@@ -5583,6 +5618,104 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				signal,
 			);
 		}
+	}
+
+	private buildMachineEditTeardownCompletion(
+		sourceText: string,
+		expectedText: string,
+	): MachineEditTeardownCompletion {
+		const plannedChanges = this.computeDiffChanges(sourceText, expectedText);
+		const deleteChanges = plannedChanges
+			.filter((change) => change.to > change.from)
+			.map((change) => ({ from: change.from, to: change.to, insert: "" }));
+		if (deleteChanges.length === 0) return { kind: "closed" };
+
+		const intermediateText = this.applyChangesToText(sourceText, deleteChanges);
+		const insertChanges = computeInsertOnlyChanges(intermediateText, expectedText);
+		if (!insertChanges || insertChanges.length === 0) return { kind: "closed" };
+
+		return {
+			kind: "watching",
+			sourceText,
+			intermediateText,
+			deleteChanges,
+			insertChanges,
+		};
+	}
+
+	/**
+	 * Arm teardown completion only after observing the registered edit's exact
+	 * delete phase. Once the full result or any intervening edit is observed, the
+	 * registration is permanently closed so a later user deletion cannot re-arm it.
+	 */
+	private trackMachineEditTeardownProgress(
+		beforeText: string,
+		changes: PositionedChange[],
+		afterText: string,
+	): void {
+		if (beforeText === afterText) return;
+
+		for (const entry of this._pendingMachineEdits) {
+			const completion = entry.teardownCompletion;
+			if (completion.kind === "closed") continue;
+
+			if (afterText === entry.expectedText) {
+				entry.teardownCompletion = { kind: "closed" };
+				continue;
+			}
+
+			if (completion.kind === "half-applied") {
+				entry.teardownCompletion = { kind: "closed" };
+				continue;
+			}
+
+			if (
+				beforeText === completion.sourceText &&
+				afterText === completion.intermediateText &&
+				positionedChangesEqual(changes, completion.deleteChanges)
+			) {
+				entry.teardownCompletion = {
+					kind: "half-applied",
+					intermediateText: completion.intermediateText,
+					insertChanges: completion.insertChanges,
+				};
+			} else {
+				entry.teardownCompletion = { kind: "closed" };
+			}
+		}
+	}
+
+	/**
+	 * Complete one unambiguous half-applied machine edit whose trailing insert was
+	 * dropped by teardown. Every registration is checked against the same localDoc
+	 * snapshot and closed before mutation, making the operation idempotent and
+	 * preventing whole-document expectations from being chained together.
+	 */
+	private completeHalfAppliedMachineEdits(): void {
+		if (!this.localDoc) return;
+		const snapshot = this.localDoc.getText("contents").toString();
+		const candidates = new Map<string, PositionedChange[]>();
+
+		for (const entry of this._pendingMachineEdits) {
+			const completion = entry.teardownCompletion;
+			if (completion.kind !== "half-applied") continue;
+
+			entry.teardownCompletion = { kind: "closed" };
+			if (completion.intermediateText !== snapshot) continue;
+
+			const changes = computeInsertOnlyChanges(snapshot, entry.expectedText);
+			if (
+				!changes ||
+				changes.length === 0 ||
+				!positionedChangesEqual(changes, completion.insertChanges)
+			) {
+				continue;
+			}
+			candidates.set(entry.expectedText, changes);
+		}
+
+		if (candidates.size !== 1) return;
+		this.applyChangesToLocalDoc(candidates.values().next().value!);
 	}
 
 	/**
@@ -6198,6 +6331,59 @@ export function computeDiffMatchPatchChanges(
 	}
 
 	return mergeAdjacentChanges(changes);
+}
+
+/**
+ * Return the insertions that derive `after` from `before`, or null when the
+ * transition removes or replaces text. The greedy scan finds the earliest
+ * surviving occurrence of each UTF-16 code unit, yielding changes positioned
+ * against the original `before` snapshot.
+ */
+function computeInsertOnlyChanges(
+	before: string,
+	after: string,
+): PositionedChange[] | null {
+	const changes: PositionedChange[] = [];
+	let beforePos = 0;
+	let afterPos = 0;
+
+	while (beforePos < before.length) {
+		const nextMatch = after.indexOf(before[beforePos], afterPos);
+		if (nextMatch < 0) return null;
+		if (nextMatch > afterPos) {
+			changes.push({
+				from: beforePos,
+				to: beforePos,
+				insert: after.slice(afterPos, nextMatch),
+			});
+		}
+		beforePos++;
+		afterPos = nextMatch + 1;
+	}
+
+	if (afterPos < after.length) {
+		changes.push({
+			from: before.length,
+			to: before.length,
+			insert: after.slice(afterPos),
+		});
+	}
+	return changes;
+}
+
+function positionedChangesEqual(
+	left: PositionedChange[],
+	right: PositionedChange[],
+): boolean {
+	if (left.length !== right.length) return false;
+	return left.every((change, index) => {
+		const other = right[index];
+		return (
+			change.from === other.from &&
+			change.to === other.to &&
+			change.insert === other.insert
+		);
+	});
 }
 
 function mergeAdjacentChanges(changes: PositionedChange[]): PositionedChange[] {
