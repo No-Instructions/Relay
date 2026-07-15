@@ -41,6 +41,7 @@ export interface CanvasDocBridgeOptions {
 
 export class CanvasDocBridge {
 	private destroyed = false;
+	private _localOnly = false;
 	private readonly outboundFn: (
 		update: Uint8Array,
 		origin: unknown,
@@ -53,19 +54,37 @@ export class CanvasDocBridge {
 		private readonly opts: CanvasDocBridgeOptions = {},
 	) {
 		this.outboundFn = (update, origin) => {
-			if (this.destroyed) return;
+			if (this.destroyed || this._localOnly) return;
 			if (origin === CANVAS_BRIDGE_IN_ORIGIN) return;
 			if (this.opts.skipOutboundOrigin?.(origin)) return;
 			Y.applyUpdate(this.remoteDoc, update, CANVAS_BRIDGE_OUT_ORIGIN);
 		};
 		this.inboundFn = (update, origin) => {
-			if (this.destroyed) return;
+			if (this.destroyed || this._localOnly) return;
 			if (origin === CANVAS_BRIDGE_OUT_ORIGIN) return;
 			if (this.opts.skipInboundOrigin?.(origin)) return;
 			Y.applyUpdate(this.localDoc, update, CANVAS_BRIDGE_IN_ORIGIN);
 		};
 		localDoc.on("update", this.outboundFn);
 		remoteDoc.on("update", this.inboundFn);
+	}
+
+	get isLocalOnly(): boolean {
+		return this._localOnly;
+	}
+
+	/**
+	 * Local-only mode gates the bridge in both directions — the canvas
+	 * edits and flushes normally, but nothing replicates. Clearing the
+	 * mode reconciles: the state-vector diff converges everything that
+	 * accumulated on either side, the same mechanism as offline catch-up.
+	 */
+	setLocalOnly(value: boolean): void {
+		if (this._localOnly === value) return;
+		this._localOnly = value;
+		if (!value) {
+			this.reconcile();
+		}
 	}
 
 	/**
@@ -75,7 +94,7 @@ export class CanvasDocBridge {
 	 * and reconcile covers everything that happened while they were not.
 	 */
 	reconcile(): void {
-		if (this.destroyed) return;
+		if (this.destroyed || this._localOnly) return;
 		const toLocal = Y.encodeStateAsUpdate(
 			this.remoteDoc,
 			Y.encodeStateVector(this.localDoc),

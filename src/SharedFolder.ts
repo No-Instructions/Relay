@@ -1492,6 +1492,11 @@ export class SharedFolder extends HasProvider {
 		}));
 		const guids = Array.from(this.files.keys());
 		this.mergeManager?.setLocalOnly(guids, value);
+		for (const file of this.files.values()) {
+			if (isCanvas(file)) {
+				file.setLocalOnly(value);
+			}
+		}
 	}
 
 	async netSync() {
@@ -3326,6 +3331,9 @@ export class SharedFolder extends HasProvider {
 			throw new Error("getOrCreateCanvas(): unexpected ifile type");
 		}
 		canvas.move(vpath, this);
+		if (this._localOnly) {
+			canvas.setLocalOnly(true);
+		}
 		return canvas;
 	}
 
