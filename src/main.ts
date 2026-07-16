@@ -1494,7 +1494,7 @@ export default class Live extends Plugin {
 
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
-						this.app.metadataCache.trigger("resolve", file);
+						this.app.metadataCache.trigger("resolve", tfile);
 					}, 10);
 				}
 			}),
