@@ -9,6 +9,8 @@ import type { ChangeSpec } from "@codemirror/state";
 import { trackPromise } from "../trackPromise";
 import diff_match_patch from "diff-match-patch";
 import { MetadataRenderer } from "./MetadataRenderer";
+import { flags } from "../flagManager";
+import { SyncDebugOverlayRenderer } from "./SyncDebugOverlayRenderer";
 
 /**
  * Centralized Obsidian UI hooks coordinator.
@@ -36,6 +38,9 @@ export class ViewHookPlugin extends HasLogging {
 		this.renderers = [];
 		this.renderers.push(new PreviewRenderer(view));
 		this.renderers.push(new MetadataRenderer(view));
+		if (flags().enableSyncDebugOverlay) {
+			this.renderers.push(new SyncDebugOverlayRenderer(view, document));
+		}
 
 		this.installMarkdownHooks(this.view);
 	}
@@ -212,7 +217,7 @@ export class ViewHookPlugin extends HasLogging {
 				return;
 			}
 
-			this.renderAll();
+			this.renderAll(true);
 		};
 
 		this._ytext.observe(this.observer);
@@ -228,14 +233,18 @@ export class ViewHookPlugin extends HasLogging {
 	/**
 	 * Update all UI renderers when document changes
 	 */
-	private renderAll(): void {
+	private renderAll(queueDeferredRenderers = false): void {
 		const viewMode =
 			// @ts-ignore
 			this.view.getMode?.() || this.view.getViewType?.() || "unknown";
 		this.runWithRelaySaving(() => {
 			this.renderers.forEach((renderer) => {
 				try {
-					renderer.render(this.document, viewMode);
+					if (queueDeferredRenderers && renderer.requestRender) {
+						renderer.requestRender();
+					} else {
+						renderer.render(this.document, viewMode);
+					}
 				} catch (error) {
 					this.error("Error in renderer:", error);
 				}

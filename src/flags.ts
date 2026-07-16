@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
 	enableFolderHSM: boolean;
+	enableSyncDebugOverlay: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -149,6 +150,13 @@ export const FeatureFlagSchema: {
 		title: "Folder membership state machine (experimental)",
 		description:
 			"Drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated state is unchanged either way.",
+	},
+	enableSyncDebugOverlay: {
+		default: false,
+		category: "debugging",
+		title: "Show per-document sync debug overlay",
+		description:
+			"Show live HSM, sync gate, transport, disk, LCA, fork, error, event, and drift diagnostics above shared Markdown editors. Read when a view attaches; enabling affects newly attached views, and existing views must be reopened.",
 	},
 };
 

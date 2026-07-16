@@ -26,6 +26,7 @@ import {
   type QueueWorkItem,
 } from './ui/SyncStatusModel';
 import type { FolderSyncSnapshot } from './BackgroundSyncProgress';
+import { readSyncDebugGate } from './ui/SyncDebugSnapshot';
 
 export type { ConflictHunkInfo, ConflictInfoSnapshot } from './merge-hsm/conflict';
 
@@ -1213,17 +1214,7 @@ export class RelayDebugAPI {
     const localDoc = hsmAny.localDoc;
     const statePath = hsmAny._statePath || 'unknown';
     const disk = hsmAny._disk;
-    const syncGateRaw =
-      hsmAny._syncGate ||
-      hsmAny._bridge?.syncGate ||
-      hsmAny._bridge?._syncGate;
-    const syncGate: HsmSyncGate | null = syncGateRaw ? {
-      providerConnected: !!doc?.connected,
-      providerSynced: !!syncGateRaw.providerSynced,
-      localOnly: !!syncGateRaw.localOnly,
-      pendingInbound: syncGateRaw.pendingInbound ?? 0,
-      pendingOutbound: syncGateRaw.pendingOutbound ?? 0,
-    } : null;
+    const syncGate: HsmSyncGate | null = readSyncDebugGate(!!doc?.connected, hsm);
     const diskMatchesIdb =
       diskContent !== null && idbContent !== null && diskContent === idbContent;
     const idbMatchesLca =
