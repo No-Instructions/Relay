@@ -1218,7 +1218,7 @@ export class RelayDebugAPI {
       hsmAny._bridge?.syncGate ||
       hsmAny._bridge?._syncGate;
     const syncGate: HsmSyncGate | null = syncGateRaw ? {
-      providerConnected: !!syncGateRaw.providerConnected,
+      providerConnected: !!doc?.connected,
       providerSynced: !!syncGateRaw.providerSynced,
       localOnly: !!syncGateRaw.localOnly,
       pendingInbound: syncGateRaw.pendingInbound ?? 0,
@@ -1232,8 +1232,6 @@ export class RelayDebugAPI {
       idbContent !== null &&
       persistedLcaContent !== null &&
       idbContent === persistedLcaContent;
-
-    void doc; // referenced for future expansion; silences lint
 
     return {
       path: this.toVaultPath(folder, filePath),
