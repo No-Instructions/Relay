@@ -22,6 +22,7 @@ import type {
 	IYDocPersistence,
 	DiskLoader,
 	CaptureOpts,
+	DiskContent,
 } from "../types";
 import { OpCapture } from "../undo";
 import type { TimeProvider } from "../../TimeProvider";
@@ -133,6 +134,9 @@ export interface TestHSM {
 
 	/** Directly set the provider synced state without triggering a state transition */
 	setProviderSynced(value: boolean): void;
+
+	/** Set the disk contents returned by the default test loader. */
+	setDefaultDiskState(disk: DiskContent): void;
 
 	/**
 	 * Seed the mock IndexedDB with updates.
@@ -403,14 +407,15 @@ export async function createTestHSM(
 	const guid = options.guid ?? "test-guid";
 	const remoteDoc = new Y.Doc();
 
-	// Default diskLoader for tests - returns empty content
+	// The default loader reflects the disk state configured by test boot helpers.
+	let defaultDiskState: DiskContent = {
+		content: "",
+		hash: "empty-hash",
+		mtime: Date.now(),
+	};
 	const baseDiskLoader =
 		options.diskLoader ??
-		(async () => ({
-			content: "",
-			hash: "empty-hash",
-			mtime: Date.now(),
-		}));
+		(async () => defaultDiskState);
 
 	// Wrap diskLoader with random delay for timing variability
 	const diskLoader: DiskLoader = async () => {
@@ -617,6 +622,9 @@ export async function createTestHSM(
 		syncRemoteWithUpdate,
 		setProviderSynced: (value: boolean) => {
 			providerState.synced = value;
+		},
+		setDefaultDiskState: (disk: DiskContent) => {
+			defaultDiskState = disk;
 		},
 		replayFromIDB: () => {
 			if (updateRows.length === 0) return "";

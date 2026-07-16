@@ -183,7 +183,7 @@ export type SerializableEvent =
 export type SerializableEffect =
   | { type: 'DISPATCH_CM6'; changes: Array<{ from: number; to: number; insert: string }> }
   | { type: 'SET_CM6'; targetView: string; text: string }
-  | { type: 'WRITE_DISK'; guid: string; contents: string }
+  | { type: 'WRITE_DISK'; guid: string; contents: string; hash?: string; mtime?: number }
   | { type: 'PERSIST_STATE'; guid: string; state: SerializablePersistedState }
   | { type: 'SYNC_TO_REMOTE'; update: string } // base64
   | { type: 'STATUS_CHANGED'; guid: string; status: SerializableSyncStatus };

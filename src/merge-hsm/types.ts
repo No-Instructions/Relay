@@ -622,6 +622,8 @@ export interface WriteDiskEffect {
 	type: "WRITE_DISK";
 	guid: string;
 	contents: string;
+	/** Hash of the bytes this effect intends to write. */
+	hash?: string;
 	mtime?: number;
 }
 
