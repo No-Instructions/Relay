@@ -16,6 +16,7 @@ export interface FeatureFlags {
 	enableFolderHSM: boolean;
 	enableNoteStateInspector: boolean;
 	enableSavingFlagPolyfill: boolean;
+	enableSyncDebugOverlay: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -165,6 +166,13 @@ export const FeatureFlagSchema: {
 		title: "Keep the file saving flag accurate",
 		description:
 			"Count overlapping writes per file so Obsidian's saving flag clears when the last write finishes; stands down on versions without the remember/restore bookkeeping.",
+	},
+	enableSyncDebugOverlay: {
+		default: false,
+		category: "debugging",
+		title: "Show per-document sync debug overlay",
+		description:
+			"Show live HSM, sync gate, transport, disk, LCA, fork, error, event, and drift diagnostics above shared Markdown editors. Read when a view attaches; enabling affects newly attached views, and existing views must be reopened.",
 	},
 };
 

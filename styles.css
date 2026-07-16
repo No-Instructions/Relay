@@ -117,6 +117,44 @@
 	color: var(--color-red);
 }
 
+.system3-sync-debug-overlay {
+	display: flex;
+	flex: 0 0 auto;
+	align-items: center;
+	gap: 0;
+	min-width: 0;
+	padding: 3px 8px;
+	overflow-x: auto;
+	border-bottom: 1px solid var(--background-modifier-border);
+	background: var(--background-secondary);
+	color: var(--text-muted);
+	font-family: var(--font-monospace);
+	font-size: 10px;
+	line-height: 1.35;
+	white-space: nowrap;
+	user-select: text;
+}
+
+.system3-sync-debug-overlay.has-drift {
+	border-bottom-color: var(--text-error);
+}
+
+.system3-sync-debug-segment + .system3-sync-debug-segment::before {
+	content: "│";
+	padding: 0 6px;
+	color: var(--text-faint);
+}
+
+.system3-sync-debug-segment.is-fork {
+	color: var(--text-warning);
+}
+
+.system3-sync-debug-segment.is-error,
+.system3-sync-debug-segment.is-drift {
+	color: var(--text-error);
+	font-weight: var(--font-semibold);
+}
+
 .workspace-split.mod-root
 	.workspace-leaf:nth-child(n)
 	.workspace-leaf-content[data-type="markdown"]:has(

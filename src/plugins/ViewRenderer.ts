@@ -13,6 +13,9 @@ export interface ViewRenderer {
 	 * @param viewMode - Current view mode (e.g., "preview", "source", "live-preview")
 	 */
 	render(document: Document, viewMode: string): void;
+
+	/** Queue a coalesced render when synchronous work is unsafe for the caller. */
+	requestRender?(): void;
 	
 	/**
 	 * Clean up any UI elements or listeners when the renderer is no longer needed.
