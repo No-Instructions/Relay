@@ -77,7 +77,7 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
-import { MergeManager } from "./merge-hsm/MergeManager";
+import { MergeManager, WakePriority } from "./merge-hsm/MergeManager";
 import {
 	E2ERecordingBridge,
 	type HSMLogEntry,
@@ -923,14 +923,38 @@ export class SharedFolder extends HasProvider {
 			// remoteDoc; the CanvasDocBridge merges them into the localDoc,
 			// where the CanvasHSM observes the change and decides whether
 			// disk follows. The manager buffers bytes for hibernated
-			// canvases and wakes them through the shared queue. Update
-			// classification and keyframe catch-up are document machinery;
-			// reconnect sweeps and remote-head downloads cover any gapped
-			// canvas updates.
-			if (this.mergeManager) {
-				this.mergeManager.handleRemoteUpdate(guid, update);
-			} else {
+			// canvases and wakes them through the shared queue.
+			if (!this.mergeManager) {
 				Y.applyUpdate(file.ydoc, update, this);
+				return;
+			}
+			// The event stream is lossy — the server coalesces events per
+			// sender and a dropped batch leaves a dependency gap that Yjs
+			// buffers silently forever. Classify against the applied-remote
+			// baseline the way documents do; a gap heals through the
+			// machine's full-state download instead of a blind apply.
+			const canvasClassification = this.mergeManager.classifyUpdate(
+				guid,
+				update,
+			);
+			switch (canvasClassification) {
+				case "apply":
+					this.mergeManager.handleRemoteUpdate(guid, update);
+					metrics.recordDocumentUpdateEvent("applied", this.guid);
+					this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
+					break;
+				case "stale":
+					break;
+				case "gap":
+					metrics.recordDocumentUpdateEvent("catchup", this.guid);
+					file.hsm.send({ type: "SERVER_AHEAD" });
+					if (!file.isMaterialized) {
+						this.mergeManager.enqueueWake({
+							guid,
+							priority: WakePriority.REMOTE_UPDATE,
+						});
+					}
+					break;
 			}
 			return;
 		}

@@ -2292,6 +2292,13 @@ export class BackgroundSync extends HasLogging {
 			// produces no update events to recover it.
 			canvas.wake();
 			Y.applyUpdate(canvas.ydoc, updateBytes);
+			// A full-state download is the canvas keyframe: seed the
+			// applied-remote baseline so later folder events classify
+			// against it instead of gapping once per session.
+			canvas.sharedFolder.mergeManager?.seedAppliedRemoteUpdate(
+				canvas.guid,
+				updateBytes,
+			);
 			canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
 		} catch (e) {
 			this.logError("[getCanvas] failed", e);
