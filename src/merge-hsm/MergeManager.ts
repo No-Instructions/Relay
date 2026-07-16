@@ -1783,26 +1783,6 @@ export class MergeManager {
   }
 
   /**
-   * Determine if DISK_CHANGED event should be sent based on current vs new disk state.
-   * Returns true if disk state has changed, false if unchanged.
-   */
-  private shouldSendDiskChanged(
-    currentDisk: { hash: string; mtime: number } | null,
-    newDiskState: { mtime: number; hash: string }
-  ): boolean {
-    // No current disk state - always send
-    if (!currentDisk) return true;
-
-    // Compare mtime first (fast check)
-    if (currentDisk.mtime !== newDiskState.mtime) return true;
-
-    // Compare hash as fallback (handles clock skew edge cases)
-    if (currentDisk.hash !== newDiskState.hash) return true;
-
-    return false;
-  }
-
-  /**
    * Get HSM without acquiring lock (for inspection/testing).
    * Returns undefined if document is not registered.
    */

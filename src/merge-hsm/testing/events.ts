@@ -362,6 +362,12 @@ export interface HSMHandle {
 	syncRemoteWithUpdate?(update: Uint8Array): void;
 	/** Directly set provider synced state without triggering a state transition */
 	setProviderSynced?(value: boolean): void;
+	/** Configure the default test disk loader for this boot. */
+	setDefaultDiskState?(disk: {
+		content: string;
+		hash: string;
+		mtime: number;
+	}): void;
 }
 
 export interface LoadAndActivateOptions {
@@ -409,6 +415,11 @@ export async function loadAndActivate(
 		? Y.encodeStateVectorFromUpdate(updates)
 		: new Uint8Array([0]);
 	const lca = await createLCA(content, mtime, stateVector);
+	hsm.setDefaultDiskState?.({
+		content,
+		hash: lca.meta.hash,
+		mtime: lca.meta.mtime,
+	});
 
 	// Seed the mock IndexedDB with the content BEFORE any transitions.
 	// This simulates content that was persisted in a previous session.
@@ -492,6 +503,8 @@ export interface LoadToIdleOptions {
 	content?: string | null;
 	/** LCA mtime (default: Date.now()) */
 	mtime?: number;
+	/** Whether persisted disk metadata is known to match the LCA (default: false). */
+	diskKnown?: boolean;
 }
 
 /**
@@ -521,6 +534,11 @@ export async function loadToIdle(
 		? Y.encodeStateVectorFromUpdate(updates)
 		: new Uint8Array([0]);
 	const lca = await createLCA(content ?? "", mtime, stateVector);
+	hsm.setDefaultDiskState?.({
+		content: content ?? "",
+		hash: lca.meta.hash,
+		mtime: lca.meta.mtime,
+	});
 
 	// Seed the mock IndexedDB with the content BEFORE any transitions.
 	// content=null means unenrolled (don't seed). content='' means enrolled empty doc (seed).
@@ -545,7 +563,10 @@ export async function loadToIdle(
 	// 1. LOAD → loading
 	hsm.send(load(guid));
 	// 2. PERSISTENCE_LOADED → stays in loading, stores LCA
-	hsm.send(persistenceLoadedFromUpdate(updates, lca));
+	hsm.send({
+		...persistenceLoadedFromUpdate(updates, lca),
+		...(opts?.diskKnown === true ? { disk: lca.meta } : {}),
+	});
 	// 3. SET_MODE_IDLE → idle.loading → idle.synced (or other idle substate)
 	hsm.send({ type: "SET_MODE_IDLE" });
 	// 4. Mark provider as synced so idle auto-merges can proceed.

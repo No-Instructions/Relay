@@ -6,7 +6,7 @@ import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
-import { debounce } from "obsidian";
+import { debounce, normalizePath } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency, Lifetime } from "./promiseUtils";
 import { withFlag } from "./flagManager";
@@ -15,6 +15,7 @@ import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import type { EditorViewRef } from "./merge-hsm/types";
+import { DiskFileNotFoundError } from "./merge-hsm/DiskFileNotFoundError";
 import {
 	ProviderIntegration,
 	type YjsProvider,
@@ -29,6 +30,17 @@ import { DocumentDestroyedError } from "./DocumentDestroyedError";
 export function isDocument(file?: IFile): file is Document {
 	return file instanceof Document;
 }
+
+type DiskContents = {
+	content: string;
+	hash: string;
+	mtime: number;
+};
+
+type EngineWriteIdentity = {
+	hash: string;
+	mtime: number | null;
+};
 
 export class Document extends HasProvider implements IFile, HasMimeType {
 	private _parent: SharedFolder;
@@ -82,6 +94,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Used to distinguish our writes from external modifications.
 	 */
 	private _isSaving: boolean = false;
+	private _queuedDiskWrites: number = 0;
+	private _diskWriteTail: Promise<void> = Promise.resolve();
+	private _lastEngineWrite: EngineWriteIdentity | null = null;
+	private _deferredDiskChange = false;
 
 	constructor(
 		path: string,
@@ -134,7 +150,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// Subscribe to effects
 		this.unsubscribes.push(
 			this._hsm.subscribe((effect) => {
-				this.handleEffect(effect);
+				void this.handleEffect(effect).catch((error) => {
+					this.warn("[handleEffect] Failed to handle HSM effect", error);
+				});
 			}),
 		);
 
@@ -674,34 +692,17 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return getMimeType(this.path);
 	}
 
-	async save() {
-		if (!this.tfile) {
-			return;
-		}
-		if (this.sharedFolder.isPendingDelete(this.path)) {
-			this.warn("skipping save for pending delete", this.path);
-			return;
-		}
+	async save(): Promise<void> {
+		return this.enqueueDiskWrite(async () => {
+			const tfile = this.tfile;
+			if (!tfile) return;
 
-		// Mark that we're saving to distinguish from external modifications
-		this._isSaving = true;
-		try {
 			// Use localDoc content when in HSM active mode; ydoc (remoteDoc) is stale there.
 			const contents = this.localDoc ? this.localText : this.text;
-			await this.vault.modify(this.tfile, contents);
-			this.warn("file saved", this.path);
-
-			// Notify HSM of save completion with new mtime and hash.
-			// Use optional chaining so async save tails don't emit after teardown.
-			if (this.tfile) {
-				const mtime = this.tfile.stat.mtime;
-				const encoder = new TextEncoder();
-				const hash = await generateHash(encoder.encode(contents).buffer);
-				this._hsm?.send({ type: "SAVE_COMPLETE", mtime, hash });
+			if (await this.writeDiskContents(contents, { createIfMissing: false })) {
+				this.warn("file saved", this.path);
 			}
-		} finally {
-			this._isSaving = false;
-		}
+		});
 	}
 
 	/**
@@ -710,6 +711,36 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 */
 	get isSaving(): boolean {
 		return this._isSaving;
+	}
+
+	/** Whether disk metadata identifies the most recent write made by Relay. */
+	isEngineWrite(disk: { hash: string; mtime: number }): boolean {
+		return (
+			this._lastEngineWrite?.hash === disk.hash &&
+			this._lastEngineWrite.mtime === disk.mtime
+		);
+	}
+
+	/**
+	 * Route a producer's disk observation across the self-write boundary.
+	 * Observations made while the write queue is active are resolved from a
+	 * fresh read after the queue drains, when the final write identity is known.
+	 */
+	async handleDiskChange(disk?: DiskContents): Promise<void> {
+		if (this.destroyed) return;
+		if (this._isSaving) {
+			this._deferredDiskChange = true;
+			return;
+		}
+
+		const observed = disk ?? (await this.readDiskContent());
+		if (this.destroyed) return;
+		if (this._isSaving) {
+			this._deferredDiskChange = true;
+			return;
+		}
+
+		this.sendExternalDiskChange(observed);
 	}
 
 	requestSave = debounce(this.save, 2000);
@@ -796,9 +827,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}> {
 		const tfile = this.tfile;
 		if (!tfile) {
-			throw new Error(
-				`[Document] Cannot read disk content for ${this.path}: TFile not found`,
-			);
+			throw new DiskFileNotFoundError(this.path);
 		}
 		const { contents, hash, mtime } = await readNoteText(this.vault, tfile);
 		return { content: contents, hash, mtime };
@@ -826,37 +855,125 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		contents: string,
 		mtime?: number,
 	): Promise<void> {
-		const tfile = this.tfile;
-		if (!tfile) {
-			this.warn("[handleEffect:WRITE_DISK] TFile not found, cannot write");
+		return this.enqueueDiskWrite(async () => {
+			const wrote = await this.writeDiskContents(contents, {
+				createIfMissing: true,
+				excludeWhileActive: true,
+				mtime,
+			});
+			if (wrote) {
+				this.debug?.("[handleEffect:WRITE_DISK] Wrote to disk", this.path);
+			}
+		});
+	}
+
+	private enqueueDiskWrite(write: () => Promise<void>): Promise<void> {
+		this._queuedDiskWrites = (this._queuedDiskWrites ?? 0) + 1;
+		this._isSaving = true;
+		const queued = (this._diskWriteTail ?? Promise.resolve())
+			.then(write)
+			.finally(() => this.finishQueuedDiskWrite());
+		this._diskWriteTail = queued.catch(() => undefined);
+		return queued;
+	}
+
+	private async finishQueuedDiskWrite(): Promise<void> {
+		this._queuedDiskWrites--;
+		if (this._queuedDiskWrites > 0) return;
+
+		let finalDisk: DiskContents | null = null;
+		while (this._deferredDiskChange && this._queuedDiskWrites === 0) {
+			this._deferredDiskChange = false;
+			try {
+				finalDisk = await this.readDiskContent();
+			} catch {
+				finalDisk = null;
+			}
+		}
+
+		// A new write may have joined the tail while the re-stat was in flight.
+		// Let that write's eventual drain decide from its final filesystem state.
+		if (this._queuedDiskWrites > 0) {
+			this._deferredDiskChange = true;
 			return;
+		}
+
+		this._isSaving = false;
+		if (finalDisk) this.sendExternalDiskChange(finalDisk);
+	}
+
+	private sendExternalDiskChange(disk: DiskContents): void {
+		if (this.destroyed || this.isEngineWrite(disk)) return;
+		this._hsm?.send({
+			type: "DISK_CHANGED",
+			contents: disk.content,
+			mtime: disk.mtime,
+			hash: disk.hash,
+		});
+	}
+
+	private async writeDiskContents(
+		contents: string,
+		options: {
+			createIfMissing: boolean;
+			excludeWhileActive?: boolean;
+			mtime?: number;
+		},
+	): Promise<boolean> {
+		if (this.destroyed) {
+			this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
+			return false;
 		}
 		if (this.sharedFolder.isPendingDelete(this.path)) {
-			this.warn(
-				"[handleEffect:WRITE_DISK] Skipping write for pending delete",
-				this.path,
-			);
-			return;
+			this.warn("[writeDiskContents] Skipping write for pending delete", this.path);
+			return false;
+		}
+		if (options.excludeWhileActive && this.userLock) {
+			this.warn("[writeDiskContents] Skipping idle write for active document", this.path);
+			return false;
 		}
 
-		this._isSaving = true;
+		const encoder = new TextEncoder();
+		const hash = await generateHash(encoder.encode(contents).buffer);
+		if (this.destroyed) {
+			this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
+			return false;
+		}
+		let tfile = this.tfile;
+		if (!tfile && !options.createIfMissing) {
+			return false;
+		}
+
+		const previousIdentity = this._lastEngineWrite;
+		const intent: EngineWriteIdentity = { hash, mtime: null };
+		this._lastEngineWrite = intent;
+
 		try {
-			const options = mtime !== undefined ? { mtime } : undefined;
-			await this.vault.modify(tfile, contents, options);
-			this.debug?.("[handleEffect:WRITE_DISK] Wrote to disk", this.path);
-
-			// Notify HSM of save completion with new mtime and hash.
-			// Use optional chaining so async write tails don't emit after teardown.
-			const encoder = new TextEncoder();
-			const hash = await generateHash(encoder.encode(contents).buffer);
-			this._hsm?.send({
-				type: "SAVE_COMPLETE",
-				mtime: tfile.stat.mtime,
-				hash,
-			});
-		} finally {
-			this._isSaving = false;
+			if (tfile) {
+				const modifyOptions =
+					options.mtime !== undefined ? { mtime: options.mtime } : undefined;
+				await this.vault.modify(tfile, contents, modifyOptions);
+			} else {
+				const vaultPath = normalizePath(this.sharedFolder.getPath(this.path));
+				const parentPath = vaultPath.substring(0, vaultPath.lastIndexOf("/"));
+				if (parentPath && !this.vault.getAbstractFileByPath(parentPath)) {
+					await this.vault.createFolder(parentPath);
+				}
+				tfile = await this.vault.create(vaultPath, contents);
+				this._tfile = tfile;
+			}
+		} catch (error) {
+			if (this._lastEngineWrite === intent) {
+				this._lastEngineWrite = previousIdentity;
+			}
+			throw error;
 		}
+
+		const identity = { hash, mtime: tfile.stat.mtime };
+		this._lastEngineWrite = identity;
+		// Use optional chaining so async write tails don't confirm after teardown.
+		this._hsm?.confirmDiskWrite(identity);
+		return true;
 	}
 
 	private async handlePersistState(

@@ -157,6 +157,7 @@ export const MACHINE: MachineDefinition = {
 			{ target: 'idle.synced', guard: 'allSyncedAtLoad' },
 			{ target: 'idle.recoverLCA', guard: 'canRecoverLCAWithPendingDisk', actions: ['prepareRecoverLCAFromPendingDisk'] },
 			{ target: 'idle.diverged', guard: 'noLCADiskConflictAtLoad' },
+			{ target: 'idle.localAhead', guard: 'restoredForkHasFreshDiskContents', actions: ['ingestDiskToLocalDoc'] },
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
 			{ target: 'idle.diskAhead', guard: 'diskAheadAtLoad' },
@@ -173,7 +174,7 @@ export const MACHINE: MachineDefinition = {
 			lcaMetadata: 'present',
 			lcaContents: 'present',
 			pendingDiskContents: 'optional',
-			fork: 'absent',
+			fork: 'optional',
 			conflict: 'absent',
 		},
 		capabilities: {
@@ -187,6 +188,7 @@ export const MACHINE: MachineDefinition = {
 			onError: { target: 'idle.error', actions: ['storeInvokeError'] },
 		},
 		on: {
+			PROVIDER_SYNCED: { target: 'idle.loadingDiskContents', actions: ['markProviderSynced'] },
 			DISK_CHANGED: { target: 'idle.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			DISK_METADATA_CHANGED: { target: 'idle.loadingDiskContents', actions: ['storeDiskMetadataForLoad'] },
 			REMOTE_UPDATE: { target: 'idle.loadingDiskContents', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
@@ -215,6 +217,7 @@ export const MACHINE: MachineDefinition = {
 		on: {
 			REMOTE_UPDATE: [
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededBeforeRemoteMerge', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.diverged', guard: 'diskChangedSinceLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.remoteAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],
@@ -275,6 +278,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: [
 				// If fork exists, stay in localAhead and accumulate - fork-reconcile will handle it
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
+				{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededBeforeRemoteMerge', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.diverged', guard: 'diskChangedSinceLCA', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.localAhead', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],

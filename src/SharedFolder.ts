@@ -661,8 +661,6 @@ export class SharedFolder extends HasProvider {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
 					await this.handleIdleSyncToRemote(guid, effect.update);
-				} else if (effect.type === "WRITE_DISK") {
-					await this.handleIdleWriteDisk(guid, effect.contents);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -1113,52 +1111,6 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Handle WRITE_DISK effect in idle mode.
-	 *
-	 * When a document is in idle mode and receives remote updates, the HSM
-	 * may need to write merged content to disk. This happens when:
-	 * 1. Remote update arrives (from server)
-	 * 2. HSM performs idle auto-merge (remote → local CRDT)
-	 * 3. HSM emits WRITE_DISK effect to update the file on disk
-	 *
-	 * Without this handler, the effect is dropped.
-	 */
-	private async handleIdleWriteDisk(
-		guid: string,
-		contents: string,
-	): Promise<void> {
-		try {
-			// Look up document by guid to get current path (handles renames)
-			const file = this.files.get(guid);
-			if (!file || !isDocument(file)) {
-				this.warn(`[handleIdleWriteDisk] Document not found for guid: ${guid}`);
-				return;
-			}
-
-			const vaultPath = this.getPath(file.path);
-			let tfile = this.vault.getAbstractFileByPath(vaultPath);
-
-			if (tfile instanceof TFile) {
-				await this.vault.modify(tfile, contents);
-			} else {
-				// File doesn't exist on disk yet (new remote file) — create it
-				const normalized = normalizePath(vaultPath);
-				// Ensure parent folders exist
-				const parentPath = normalized.substring(0, normalized.lastIndexOf("/"));
-				if (parentPath && !this.vault.getAbstractFileByPath(parentPath)) {
-					await this.vault.createFolder(parentPath);
-				}
-				tfile = await this.vault.create(normalized, contents);
-			}
-
-			this.log(`[handleIdleWriteDisk] Wrote merged content to ${vaultPath}`);
-
-		} catch (e) {
-			this.warn(`[handleIdleWriteDisk] Failed to write for guid ${guid}:`, e);
-		}
-	}
-
-	/**
 	 * Poll for disk changes on all documents in this SharedFolder.
 	 * Only sends DISK_CHANGED if the disk state actually differs from HSM's knowledge.
 	 * Works for all documents regardless of hibernation state.
@@ -1184,15 +1136,18 @@ export class SharedFolder extends HasProvider {
 			// hashing every document on every poll is too expensive for large vaults.
 			try {
 				if (this.shouldReadDiskForPoll(currentDisk, file)) {
-					const diskState = await file.readDiskContent();
+					if (file.isSaving) {
+						await file.handleDiskChange();
+					} else {
+						const diskState = await file.readDiskContent();
 
-					if (this.shouldSendDiskChanged(currentDisk, diskState)) {
-						hsm.send({
-							type: "DISK_CHANGED",
-							contents: diskState.content,
-							mtime: diskState.mtime,
-							hash: diskState.hash,
-						});
+						if (
+							!currentDisk ||
+							currentDisk.mtime !== diskState.mtime ||
+							currentDisk.hash !== diskState.hash
+						) {
+							await file.handleDiskChange(diskState);
+						}
 					}
 				}
 			} catch (e) {
@@ -1333,26 +1288,6 @@ export class SharedFolder extends HasProvider {
 		const tfile = this.getTFile(file);
 		if (!tfile) return null;
 		return this.getStartupDiskMetadata(tfile);
-	}
-
-	/**
-	 * Determine if DISK_CHANGED event should be sent based on current vs new disk state.
-	 * Returns true if disk state has changed, false if unchanged.
-	 */
-	private shouldSendDiskChanged(
-		currentDisk: { hash: string; mtime: number } | null,
-		newDiskState: { mtime: number; hash: string },
-	): boolean {
-		// No current disk state - always send
-		if (!currentDisk) return true;
-
-		// Compare mtime first (fast check)
-		if (currentDisk.mtime !== newDiskState.mtime) return true;
-
-		// Compare hash as fallback (handles clock skew edge cases)
-		if (currentDisk.hash !== newDiskState.hash) return true;
-
-		return false;
 	}
 
 	private addLocalDocs(types?: SyncType[]): void {

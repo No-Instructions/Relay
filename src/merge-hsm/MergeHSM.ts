@@ -88,6 +88,7 @@ import { SyncBridge } from "./SyncBridge";
 import type { SyncBridgeHost } from "./SyncBridge";
 import type { FrontMatterPrimitives } from "./types";
 import { errorFromUnknown, formatUserFacingError } from "../UserFacingError";
+import { DiskFileNotFoundError } from "./DiskFileNotFoundError";
 
 const FRONTMATTER_MIRROR_ORIGIN = "frontmatter-mirror";
 type PendingDiskSource = "disk-event" | "view-data" | "derived";
@@ -196,6 +197,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private _guid: string;
 	private _getPath: () => string;
 	private _lca: LCAState | null = null;
+	// An invoke result's LCA held until the executor confirms the paired disk
+	// write. The baseline never advances past confirmed disk content: an idle
+	// write can be skipped (editor lock, teardown) with no failure signal, and
+	// an eagerly committed LCA then poisons every later three-way base with
+	// content the file never carried.
+	private _pendingDiskConfirmLCA: {
+		lca: LCAState;
+		priorLocalStateVector: Uint8Array | null;
+		priorRemoteStateVector: Uint8Array | null;
+	} | null = null;
 	private _disk: MergeMetadata | null = null;
 	private _localStateVector: Uint8Array | null = null;
 	private _remoteStateVector: Uint8Array | null = null;
@@ -235,6 +246,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private pendingDiskSource: PendingDiskSource | null = null;
 	private pendingRecoverLCADisk: RecoverLCADisk | null = null;
 	private _needsDiskContentLoad = false;
+	private _restoredForkNeedsDiskRead = false;
 
 	// Editor content from ACQUIRE_LOCK event, used for merge during reconciliation
 	private pendingEditorContent: string | null = null;
@@ -750,9 +762,25 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	private needsDiskContentAtLoad(): boolean {
-		if (!this._lca || this._fork || this._conflict) return false;
+		if (!this._lca || this._conflict) return false;
+		if (!this._disk) return true;
+		if (this._fork) {
+			return (
+				this._restoredForkNeedsDiskRead &&
+				!this.hasSessionFreshDiskContents()
+			);
+		}
 		if (this._needsDiskContentLoad) return true;
 		return this.hasDiskChangedSinceLCA() && !this.hasFreshPendingDiskContents();
+	}
+
+	private hasSessionFreshDiskContents(): boolean {
+		return (
+			this.pendingDiskSource === "disk-event" &&
+			this.pendingDiskContents !== null &&
+			this.pendingDiskHash !== null &&
+			this.pendingDiskHash === this._disk?.hash
+		);
 	}
 
 	// ===========================================================================
@@ -1216,12 +1244,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				stateVector,
 			});
 			this._disk = { hash, mtime };
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: resolvedText,
-				mtime,
-			});
+			this.emitWriteDisk(resolvedText, hash, mtime);
 			this.setStatePath("idle.synced");
 			this.emitPersistState();
 		});
@@ -2065,6 +2088,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return this._effects.subscribe(listener);
 	}
 
+	/** Record a successful executor write without routing idle bookkeeping through the machine. */
+	confirmDiskWrite(identity: { hash: string; mtime: number }): void {
+		if (this._statePath === "destroyed") return;
+		if (this._statePath === "active.tracking") {
+			this.send({ type: "SAVE_COMPLETE", ...identity });
+			return;
+		}
+		this.updateDiskFromConfirmedWrite(identity);
+		this.commitPendingLCAOnDiskConfirm(identity);
+	}
+
 	/**
 	 * Send the current localDoc text to a newly attached editor view.
 	 * Only valid once active mode has finished reconciling and localDoc is
@@ -2285,8 +2319,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			localAheadAtLoad: () => {
 				// Persisted fork means we were in localAhead before — go straight
-				// back so fork-reconcile runs instead of re-creating the fork.
-				if (this._fork) return true;
+				// back after this session has read and ingested the current disk.
+				if (this._fork) return !this.needsDiskContentAtLoad();
 				if (this.needsDiskContentAtLoad()) return false;
 				if (!this._lca) {
 					if (this.pendingIdleUpdates !== null || (this.remoteDoc && !isEmptyDoc(this.remoteDoc))) return false;
@@ -2294,6 +2328,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				}
 				return this.hasLocalChangedSinceLCA() && !this.hasDiskChangedSinceLCA() && !this.hasRemoteChangedSinceLCA();
 			},
+			restoredForkHasFreshDiskContents: () =>
+				this._fork !== null && this.hasSessionFreshDiskContents(),
 			shouldWakeLCARecoveryAfterPersistenceSynced: (_hsm, event) =>
 				this.shouldWakeLCARecoveryAfterPersistenceSynced((event as any).hasContent === true),
 			noLCADiskConflictAtLoad: () => {
@@ -2326,6 +2362,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 			// Idle event guards (for REMOTE_UPDATE candidates)
 			diskChangedSinceLCA: () => this.hasDiskChangedSinceLCA(),
+			diskContentsNeededBeforeRemoteMerge: () =>
+				this._lca !== null && this._disk === null,
 			diskMatchesConvergedDocs: (_hsm, event) => {
 				const e = event as any;
 				if (typeof e.contents !== "string") return false;
@@ -2551,6 +2589,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (!disk) return;
 				this._needsDiskContentLoad = false;
 				this._disk = { hash: disk.hash, mtime: disk.mtime };
+				if (this._fork) {
+					// A restored fork's localDoc reflects the prior session. Preserve the
+					// session-fresh disk bytes so they are ingested before reconciliation.
+					this.setPendingDiskContents(disk.content, "disk-event", disk.hash);
+					return;
+				}
 				if (
 					this._lca &&
 					!this._fork &&
@@ -2605,7 +2649,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 				// Write merged content to disk
 				if (result.mergedContent !== undefined && result.needsDiskWrite !== false) {
-					this.emitEffect({ type: "WRITE_DISK", guid: this._guid, contents: result.mergedContent, mtime: result.newLCA?.meta?.mtime });
+					// With no disk observation, there is nothing proving that a write is
+					// safe. Keep disk bookkeeping unknown until a real read/event lands.
+					if (this._disk !== null) {
+						this.emitWriteDisk(
+							result.mergedContent,
+							result.newLCA?.meta?.hash,
+							result.newLCA?.meta?.mtime,
+						);
+					}
 				}
 
 				// Sync to remote (three-way merge)
@@ -2641,10 +2693,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				const data = (event as any).data;
 				const error = data instanceof Error ? data : new Error(String(data ?? "invoke failed"));
 				this._error = error;
-				// Transport-caused exceptions (the provider dropped mid-operation) are
-				// retryable and re-arm on new information. Anything unrecognized is
-				// treated as permanent so the retry loop cannot mask real corruption.
-				this._errorRetryable = this.isTransportError(error);
+				// A missing backing file can race folder materialization/deletion, while
+				// transport failures can race provider reconnects. Both re-arm on new
+				// information; unrecognized failures remain permanent so retries cannot
+				// mask corrupt state or broken invariants.
+				this._errorRetryable =
+					error instanceof DiskFileNotFoundError || this.isTransportError(error);
 				this.hsmError(
 					`idle invoke failed | guid=${this._guid} state=${this._statePath} retryable=${this._errorRetryable} error=${error.message}`,
 				);
@@ -2695,14 +2749,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			updateLCAFromInvokeResult: (_hsm, event) => {
 				const result = (event as any).data;
 				if (result?.newLCA) {
-					this._setLCA(result.newLCA);
-					this._localStateVector = result.newLCA.stateVector;
-					this._remoteStateVector = result.newLCA.stateVector;
-					// The idle-merge emits WRITE_DISK, so disk now matches LCA
-					if (result.newLCA.meta) {
-						this._disk = { hash: result.newLCA.meta.hash, mtime: result.newLCA.meta.mtime };
-						this.discardSupersededPendingDiskContents();
-					}
+					// WRITE_DISK is only an emitted request here. Disk metadata and
+					// a disk-bearing LCA advance when the executor directly confirms
+					// that the write finished.
+					this.commitLCAWithDiskConfirmation(result.newLCA);
 					this.emitPersistState();
 				}
 			},
@@ -2732,6 +2782,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._disk = null;
 				this._remoteStateVector = null;
 				this._needsDiskContentLoad = false;
+				this._restoredForkNeedsDiskRead = false;
 				this.clearEnrolledLocalHead();
 			},
 			storeError: (_hsm, event) => {
@@ -2762,6 +2813,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				// Restore fork from persisted state
 				if (e.fork !== undefined) {
 					this._fork = e.fork ?? null;
+					this._restoredForkNeedsDiskRead = this._fork !== null;
 				}
 			},
 			storeEnrollmentComplete: (_hsm, event) => {
@@ -3171,9 +3223,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			updateDiskFromSave: (_hsm, event) => {
 				const e = event as any;
-				this._disk = { mtime: e.mtime, hash: e.hash };
-				this._needsDiskContentLoad = false;
-				this.discardSupersededPendingDiskContents();
+				this.updateDiskFromConfirmedWrite({ mtime: e.mtime, hash: e.hash });
+				this.commitPendingLCAOnDiskConfirm({ mtime: e.mtime, hash: e.hash });
 			},
 			storeDiskMetadataOnly: (_hsm, event) => {
 				const e = event as any;
@@ -3225,9 +3276,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.pendingIdleUpdates = null;
 				const result = (event as any).data;
 				if (result?.newLCA) {
-					this._setLCA(result.newLCA);
-					this._localStateVector = result.newLCA.stateVector;
-					this._remoteStateVector = result.newLCA.stateVector;
+					this.commitLCAWithDiskConfirmation(result.newLCA);
 				}
 				// Flush pending inbound/outbound through the queue drain path
 				this._bridge.flush();
@@ -3255,6 +3304,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (this.pendingDiskContents !== null) {
 					this.applyContentToLocalDoc(this.pendingDiskContents, DISK_ORIGIN);
 					this._ingestionTexts.push(this.pendingDiskContents);
+					this._restoredForkNeedsDiskRead = false;
 				}
 			},
 			reconcileForkInActive: () => {
@@ -4250,7 +4300,20 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			baseLen: fork.base.length, localLen: localContent.length, remoteLen: remoteContent.length,
 			...(flags().enableDeltaLogging ? { base: fork.base, local: localContent, remote: remoteContent } : {}),
 		}));
-		const mergeResult = performThreeWayMerge(fork.base, localContent, remoteContent);
+		const currentRemoteStateVector = Y.encodeStateVector(remoteDoc);
+		// A provider replacement can attach a server replica that is behind the
+		// remote head captured with the fork. Missing CRDT history is not a remote
+		// deletion: keep the disk-ingested local side intact and republish it.
+		// The skip requires strict dominance: when each vector holds clocks the
+		// other lacks, the replica carries genuine concurrent peer progress, and
+		// skipping the merge would republish the local snapshot as a deletion of
+		// that progress.
+		const remoteDroppedForkState =
+			stateVectorIsAhead(fork.remoteStateVector, currentRemoteStateVector) &&
+			!stateVectorIsAhead(currentRemoteStateVector, fork.remoteStateVector);
+		const mergeResult = remoteDroppedForkState
+			? { success: true as const, merged: localContent }
+			: performThreeWayMerge(fork.base, localContent, remoteContent);
 
 		if (mergeResult.success) {
 			// Hash first so the only async window in this reconcile sits before any
@@ -4298,11 +4361,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			const stateVector = Y.encodeStateVector(localDoc);
 			const update = Y.encodeStateAsUpdate(localDoc);
 
-			this.emitEffect({
-				type: "WRITE_DISK",
-				guid: this._guid,
-				contents: mergeResult.merged,
-			});
+			const mtime = this.timeProvider.now();
+			this.emitWriteDisk(
+				mergeResult.merged,
+				hash,
+				mtime,
+			);
 			this._bridge.syncToRemote(update);
 
 			// If fork originated from a machine edit, register as pending so
@@ -4325,7 +4389,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				success: true,
 				newLCA: {
 					contents: mergeResult.merged,
-					meta: { hash, mtime: this.timeProvider.now() },
+					meta: { hash, mtime },
 					stateVector,
 				},
 			};
@@ -4344,6 +4408,91 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			regions: mergeResult.conflictRegions ?? [],
 		});
 		return { success: false };
+	}
+
+	private emitWriteDisk(
+		contents: string,
+		hash: string | undefined,
+		mtime?: number,
+	): void {
+		this.emitEffect({
+			type: "WRITE_DISK",
+			guid: this._guid,
+			contents,
+			...(hash ? { hash } : {}),
+			...(mtime !== undefined ? { mtime } : {}),
+		});
+	}
+
+	private updateDiskFromConfirmedWrite(identity: {
+		hash: string;
+		mtime: number;
+	}): void {
+		this._disk = identity;
+		this._needsDiskContentLoad = false;
+		this.discardSupersededPendingDiskContents();
+	}
+
+	/**
+	 * Commit an invoke result's LCA immediately when disk already carries its
+	 * content, otherwise hold it for commitPendingLCAOnDiskConfirm. A held
+	 * result that never confirms leaves the previous baseline in place, so
+	 * later classification re-derives from content the file actually has.
+	 */
+	private commitLCAWithDiskConfirmation(newLCA: LCAState): void {
+		if (!this._disk || this._disk.hash === newLCA.meta.hash) {
+			this._setLCA(newLCA);
+			this._localStateVector = newLCA.stateVector;
+			this._remoteStateVector = newLCA.stateVector;
+			return;
+		}
+		this._pendingDiskConfirmLCA = {
+			lca: newLCA,
+			priorLocalStateVector: this._localStateVector,
+			priorRemoteStateVector: this._remoteStateVector,
+		};
+	}
+
+	private commitPendingLCAOnDiskConfirm(identity: {
+		hash: string;
+		mtime: number;
+	}): void {
+		const pending = this._pendingDiskConfirmLCA;
+		if (!pending) return;
+		this._pendingDiskConfirmLCA = null;
+		if (pending.lca.meta.hash !== identity.hash) {
+			// A different write landed; the held result no longer describes
+			// disk. Keep the confirmed baseline and let the next
+			// classification re-derive.
+			return;
+		}
+		const previousLCA = this._lca;
+		this._setLCA({
+			...pending.lca,
+			meta: { ...pending.lca.meta, hash: identity.hash, mtime: identity.mtime },
+		});
+		if (this._lca === previousLCA) {
+			// _setLCA refused the capture (localDoc moved past the held
+			// result); the confirmed baseline stands.
+			return;
+		}
+		const unchangedSince = (
+			current: Uint8Array | null,
+			prior: Uint8Array | null,
+		): boolean =>
+			current === prior ||
+			(current !== null &&
+				prior !== null &&
+				stateVectorsEqual(current, prior));
+		// A state vector that moved while the write was in flight carries
+		// newer knowledge than the held result; never regress it.
+		if (unchangedSince(this._localStateVector, pending.priorLocalStateVector)) {
+			this._localStateVector = pending.lca.stateVector;
+		}
+		if (unchangedSince(this._remoteStateVector, pending.priorRemoteStateVector)) {
+			this._remoteStateVector = pending.lca.stateVector;
+		}
+		this.emitPersistState();
 	}
 
 	// ===========================================================================
@@ -5064,6 +5213,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				lca = { ...lca, snapshot: snapshotFromDoc(this.localDoc).snapshot };
 			}
 		}
+		// Any baseline reaching this point supersedes a held invoke result.
+		this._pendingDiskConfirmLCA = null;
 		this._lca = lca;
 	}
 
