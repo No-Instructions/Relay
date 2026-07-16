@@ -485,6 +485,16 @@ jobs:
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap 2>/dev/null || true
 
+      - name: Upload lane metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: testplans-lane-metadata
+          path: |
+            summary.json
+            metadata.json
+          if-no-files-found: ignore
+
       - name: Upload suite-log tail if no report was published
         if: always() && steps.run-plans.outcome != 'success'
         run: |
