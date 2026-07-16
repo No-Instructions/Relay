@@ -88,7 +88,7 @@ import { ContentAddressedFileStore, isSyncFile } from "./SyncFile";
 import { isDocument } from "./Document";
 import { EndpointManager, type EndpointSettings } from "./EndpointManager";
 import { generateHash } from "./hashing";
-import { readNoteText, normalizeNoteText } from "./diskText";
+import { normalizeNoteText } from "./diskText";
 import { SelfHostModal } from "./ui/SelfHostModal";
 import { DeviceManager } from "./DeviceManager";
 import type { RemoteSharedFolder } from "./Relay";
@@ -1478,23 +1478,15 @@ export default class Live extends Plugin {
 						}
 					}
 
-					// Send DISK_CHANGED to HSM for documents with active lock
-					// (but not when we're the ones doing the save)
+					// Send only genuinely external changes to the document HSM.
 					if (
 						file &&
 						isDocument(file) &&
 						file.hsm &&
-						!file.isSaving &&
 						tfile instanceof TFile
 					) {
 						try {
-							const { contents, hash, mtime } = await readNoteText(this.app.vault, tfile);
-							file.hsm.send({
-								type: 'DISK_CHANGED',
-								contents,
-								mtime,
-								hash,
-							});
+							await file.handleDiskChange();
 						} catch (e) {
 							vaultLog("Failed to send DISK_CHANGED to HSM", e);
 						}
