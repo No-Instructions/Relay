@@ -1,5 +1,9 @@
+import { diff_match_patch } from "diff-match-patch";
 import { areObjectsEqual } from "./areObjectsEqual";
+import { curryLog } from "./debug";
 import type { CanvasData } from "./CanvasView";
+
+const warnMerge = curryLog("[CanvasData]", "warn");
 
 interface CanvasItem {
 	id: string;
@@ -30,6 +34,204 @@ function areCanvasItemsEqual<T extends CanvasItem>(
 		}
 	}
 	return true;
+}
+
+/**
+ * Merge canvas data exported from the CRDT with the data a view currently
+ * renders. CRDT items are authoritative for shared ids; view-only items are
+ * kept because they are local edits that have not been pushed yet. Deletes
+ * are not inferred here — a view that has never synchronized with the CRDT
+ * legitimately lacks items, and treating absence as deletion is what
+ * destroys peer content.
+ *
+ * Returns null when the view already renders the merged result.
+ */
+export function mergeCanvasViewData(
+	crdt: CanvasData,
+	view: CanvasData,
+): CanvasData | null {
+	const merged: CanvasData = {
+		nodes: [...crdt.nodes],
+		edges: [...crdt.edges],
+	};
+	const knownNodes = new Set(crdt.nodes.map((node) => node.id));
+	const knownEdges = new Set(crdt.edges.map((edge) => edge.id));
+	for (const node of view.nodes) {
+		if (!knownNodes.has(node.id)) {
+			merged.nodes.push(node);
+		}
+	}
+	for (const edge of view.edges) {
+		if (!knownEdges.has(edge.id)) {
+			merged.edges.push(edge);
+		}
+	}
+	if (merged.nodes.length === 0 && merged.edges.length === 0) return null;
+	if (areCanvasDataEqual(merged, view)) return null;
+	return merged;
+}
+
+function fieldsEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	if (
+		typeof a === "object" &&
+		typeof b === "object" &&
+		a !== null &&
+		b !== null
+	) {
+		return areObjectsEqual(a, b);
+	}
+	return false;
+}
+
+/**
+ * Character-level three-way text merge: the base→theirs diff is applied
+ * onto ours, so concurrent edits to different regions both survive and
+ * overlapping edits resolve toward the ours substrate — the localDoc
+ * export, carrying the peers' edits.
+ */
+function mergeText(base: string, ours: string, theirs: string): string {
+	if (ours === theirs || base === theirs) return ours;
+	if (base === ours) return theirs;
+	const dmp = new diff_match_patch();
+	const diffs = dmp.diff_main(base, theirs);
+	if (diffs.length > 2) {
+		dmp.diff_cleanupSemantic(diffs);
+	}
+	const patches = dmp.patch_make(base, diffs);
+	const [result, applied] = dmp.patch_apply(patches, ours);
+	const failed = applied.filter((ok) => !ok).length;
+	if (failed > 0) {
+		// Overlapping concurrent edits: part of the base→theirs edit could
+		// not be replayed onto ours. The ours substrate survives —
+		// but never silently: this function's contract is that edits to
+		// different regions both survive, so a dropped patch must be
+		// visible in the logs (and to the harness) when it happens.
+		warnMerge(
+			`character merge dropped ${failed}/${applied.length} patch(es); ` +
+				"keeping the peer-side text for the overlapping region",
+		);
+	}
+	return result;
+}
+
+function mergeItem<T extends CanvasItem>(
+	base: T | undefined,
+	ours: T,
+	theirs: T,
+): T {
+	const keys = new Set([
+		...Object.keys(ours),
+		...Object.keys(theirs),
+		...(base ? Object.keys(base) : []),
+	]);
+	const out: Record<string, unknown> = {};
+	const baseRec = (base ?? {}) as Record<string, unknown>;
+	const oursRec = ours as Record<string, unknown>;
+	const theirsRec = theirs as Record<string, unknown>;
+	for (const key of keys) {
+		const b = baseRec[key];
+		const o = oursRec[key];
+		const t = theirsRec[key];
+		if (
+			key === "text" &&
+			typeof o === "string" &&
+			typeof t === "string"
+		) {
+			out[key] = mergeText(typeof b === "string" ? b : "", o, t);
+			continue;
+		}
+		const oursChanged = !fieldsEqual(b, o);
+		const theirsChanged = !fieldsEqual(b, t);
+		// A field changed on one side takes that side; changed on both
+		// takes ours — the localDoc export, carrying what the peers sent
+		// through the CRDT. The disk side loses value conflicts; its
+		// one-sided edits and additions still survive.
+		let value = theirsChanged && !oursChanged ? t : o;
+		// One asymmetry is disallowed: a field DELETED on one side never
+		// beats a concurrent edit on the other — the same edit-wins-over-
+		// delete rule the item level applies. (This covers `text` when the
+		// localDoc side dropped it: the string/string merge guard above
+		// cannot fire, and without this rule the value rule would take
+		// undefined.)
+		if (value === undefined && theirsChanged && t !== undefined) {
+			value = t;
+		}
+		if (value !== undefined) {
+			out[key] = value;
+		}
+	}
+	return out as T;
+}
+
+function mergeItemLists<T extends CanvasItem>(
+	base: readonly T[],
+	ours: readonly T[],
+	theirs: readonly T[],
+): T[] {
+	const baseById = new Map(base.map((item) => [item.id, item]));
+	const oursById = new Map(ours.map((item) => [item.id, item]));
+	const theirsById = new Map(theirs.map((item) => [item.id, item]));
+	const ids = new Set([
+		...oursById.keys(),
+		...theirsById.keys(),
+		...baseById.keys(),
+	]);
+	const merged: T[] = [];
+	for (const id of ids) {
+		const b = baseById.get(id);
+		const o = oursById.get(id);
+		const t = theirsById.get(id);
+		if (o && t) {
+			merged.push(mergeItem(b, o, t));
+			continue;
+		}
+		const survivor = o ?? t;
+		if (!survivor) continue; // in base only: deleted on both sides
+		if (!b) {
+			merged.push(survivor); // added on one side
+			continue;
+		}
+		// In base and on one side only: a delete on the other side wins
+		// only when the surviving side is unchanged — an edit wins over
+		// a delete.
+		if (!areObjectsEqual(survivor, b)) {
+			merged.push(survivor);
+		}
+	}
+	return merged;
+}
+
+/**
+ * Three-way canvas merge with a fixed orientation: base is the LCA — the
+ * last state disk and localDoc agreed on; ours is the localDoc export,
+ * carrying everything that arrived through the CRDT; theirs is the disk
+ * file. One-sided changes take the side that made them; a value changed
+ * on both sides resolves to ours — the peers' edits — while an edit on
+ * either side beats a concurrent delete on the other. Identity is the
+ * unit of merging, the field is the unit of conflict, and card text
+ * merges at character level. Edges whose endpoints did not survive are
+ * dropped.
+ */
+export function mergeCanvasThreeWay(
+	base: CanvasData,
+	ours: CanvasData,
+	theirs: CanvasData,
+): CanvasData {
+	const nodes = mergeItemLists(
+		base.nodes ?? [],
+		ours.nodes ?? [],
+		theirs.nodes ?? [],
+	);
+	const nodeIds = new Set(nodes.map((node) => node.id));
+	const edges = mergeItemLists(
+		base.edges ?? [],
+		ours.edges ?? [],
+		theirs.edges ?? [],
+	).filter(
+		(edge) => nodeIds.has(edge.fromNode) && nodeIds.has(edge.toNode),
+	);
+	return { nodes, edges };
 }
 
 export function formatCanvasData(data: CanvasData): string {

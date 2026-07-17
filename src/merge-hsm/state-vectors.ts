@@ -324,6 +324,67 @@ export function updateHasDeleteSet(update: Uint8Array): boolean {
 	return decodeUpdateData(update).ds.clients.size > 0;
 }
 
+/** Sort ranges by clock and coalesce overlapping/adjacent ones. */
+function normalizeDeleteRanges(ranges: DeleteRange[]): DeleteRange[] {
+	const sorted = [...ranges].sort((a, b) => a.clock - b.clock);
+	const merged: DeleteRange[] = [];
+	for (const range of sorted) {
+		const last = merged[merged.length - 1];
+		if (last && range.clock <= last.clock + last.len) {
+			const end = Math.max(last.clock + last.len, range.clock + range.len);
+			last.len = end - last.clock;
+		} else {
+			merged.push({ clock: range.clock, len: range.len });
+		}
+	}
+	return merged;
+}
+
+/**
+ * Decode the delete set carried by an update into per-client sorted,
+ * coalesced ranges. Together with a tracked state vector this fully
+ * describes a baseline for containment checks — without retaining or
+ * re-decoding the update bytes that produced it.
+ */
+export function decodeUpdateDeleteSet(update: Uint8Array): DecodedDeleteSet {
+	const raw = decodeUpdateData(update).ds.clients as Map<
+		number,
+		DeleteRange[]
+	>;
+	const out: DecodedDeleteSet = new Map();
+	for (const [client, ranges] of raw) {
+		if (ranges.length === 0) continue;
+		out.set(
+			client,
+			normalizeDeleteRanges(
+				ranges.map((r) => ({ clock: r.clock, len: r.len })),
+			),
+		);
+	}
+	return out;
+}
+
+/**
+ * Merge two decoded delete sets into a new normalized one (per-client
+ * range union). Neither input is mutated.
+ */
+export function mergeDecodedDeleteSets(
+	a: DecodedDeleteSet,
+	b: DecodedDeleteSet,
+): DecodedDeleteSet {
+	const out: DecodedDeleteSet = new Map();
+	const clients = new Set([...a.keys(), ...b.keys()]);
+	for (const client of clients) {
+		const combined = [...(a.get(client) ?? []), ...(b.get(client) ?? [])].map(
+			(r) => ({ clock: r.clock, len: r.len }),
+		);
+		if (combined.length > 0) {
+			out.set(client, normalizeDeleteRanges(combined));
+		}
+	}
+	return out;
+}
+
 // ---- Convenience wrappers for encoded Uint8Array inputs ----
 
 /**

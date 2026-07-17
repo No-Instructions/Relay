@@ -21,6 +21,7 @@ import type { CanvasData } from "./CanvasView";
 import { areCanvasDataEqual } from "./CanvasData";
 import { SyncFile, isSyncFile } from "./SyncFile";
 import { isEmptyDoc, snapshotFromDoc } from "./merge-hsm/state-vectors";
+import { WakePriority } from "./merge-hsm/MergeManager";
 import {
 	buildFolderSyncSnapshot,
 	FolderSyncSnapshotSmoother,
@@ -850,7 +851,7 @@ export class BackgroundSync extends HasLogging {
 			return "Canvas file contains invalid JSON. Open the canvas and repair it before syncing.";
 		}
 
-		const currentCanvasData = Canvas.exportCanvasData(canvas.ydoc);
+		const currentCanvasData = canvas.exportData();
 		if (areCanvasDataEqual(currentCanvasData, currentFileJson)) {
 			return null;
 		}
@@ -864,16 +865,13 @@ export class BackgroundSync extends HasLogging {
 		canvas: Canvas,
 		currentFileJson: CanvasData,
 	): Promise<boolean> {
-		const currentCanvasMapData = Canvas.exportCanvasMapData(canvas.ydoc);
+		const currentCanvasMapData = Canvas.exportCanvasMapData(canvas.localDoc);
 		if (!areCanvasDataEqual(currentCanvasMapData, currentFileJson)) {
 			return false;
 		}
 
 		await canvas.applyData(currentFileJson);
-		return areCanvasDataEqual(
-			Canvas.exportCanvasData(canvas.ydoc),
-			currentFileJson,
-		);
+		return areCanvasDataEqual(canvas.exportData(), currentFileJson);
 	}
 
 	getAllGroupsProgress(): GroupProgress[] {
@@ -1791,7 +1789,41 @@ export class BackgroundSync extends HasLogging {
 		for (const doc of this.sortByPath(docs, "sync", "batch")) {
 			void this.enqueueSync(doc);
 		}
-		return docs.length;
+
+		// Canvases: SERVER_AHEAD is a signal, not a command — each canvas's
+		// machine decides whether a download is appropriate (never while
+		// the lock is held, deduped against its own pending download). The
+		// advertised-head comparison stays host-side because it reads the
+		// MergeManager's advertised-head table; hibernated canvases compare
+		// against their persisted local head and wake through the shared
+		// queue (the machine remembers the signal until it settles).
+		const canvases = [...sharedFolder.files.values()]
+			.filter(isCanvas)
+			.filter((canvas) => advertisedGuids.has(canvas.guid))
+			.filter((canvas) => !this.downloadPromises.has(canvas.guid))
+			.filter((canvas) => {
+				const mergeManager = sharedFolder.mergeManager;
+				if (!mergeManager) return true;
+				return !mergeManager.isServerAdvertisedInSync(
+					canvas.guid,
+					canvas.isMaterialized
+						? snapshotFromDoc(canvas.ydoc).snapshot
+						: undefined,
+				);
+			});
+		for (const canvas of canvases) {
+			// An advertised head is fresh evidence the server has content.
+			sharedFolder.clearServerEmpty(canvas.guid);
+			canvas.hsm.send({ type: "SERVER_AHEAD" });
+			if (!canvas.isMaterialized) {
+				sharedFolder.mergeManager?.enqueueWake({
+					guid: canvas.guid,
+					priority: WakePriority.REMOTE_UPDATE,
+				});
+			}
+		}
+
+		return docs.length + canvases.length;
 	}
 
 	enqueueAdvertisedLCABackfills(
@@ -1821,9 +1853,12 @@ export class BackgroundSync extends HasLogging {
 		if (isCanvas(item)) {
 			const mergeManager = item.sharedFolder.mergeManager;
 			if (!mergeManager) return true;
+			// A hibernated canvas compares against its persisted local head;
+			// snapshotting the ephemeral remoteDoc (empty every fresh
+			// session) would enqueue every canvas on every folder sync.
 			return !mergeManager.isServerAdvertisedInSync(
 				item.guid,
-				snapshotFromDoc(item.ydoc).snapshot,
+				item.isMaterialized ? snapshotFromDoc(item.ydoc).snapshot : undefined,
 			);
 		}
 		if (!isDocument(item)) return true;
@@ -2018,12 +2053,16 @@ export class BackgroundSync extends HasLogging {
 		sharedFolder: SharedFolder,
 		guid: string,
 		path: string,
+		kind: "doc" | "canvas" = "doc",
 	): Promise<Uint8Array | undefined> {
-		const entity = new S3RemoteDocument(
-			sharedFolder.relayId!,
-			sharedFolder.guid,
-			guid,
-		);
+		const entity =
+			kind === "canvas"
+				? new S3RemoteCanvas(sharedFolder.relayId!, sharedFolder.guid, guid)
+				: new S3RemoteDocument(
+						sharedFolder.relayId!,
+						sharedFolder.guid,
+						guid,
+					);
 		this.log("[downloadByGuid]", path, S3RN.encode(entity));
 
 		const clientToken = await sharedFolder.tokenStore.getToken(
@@ -2077,8 +2116,12 @@ export class BackgroundSync extends HasLogging {
 		if (this.isSyncCancelledForDoc(doc)) return false;
 		// if the local file is synced, then we do the two step process
 		if (isCanvas(doc)) {
+			// A cold canvas materializes on export; wait for the IDB replay
+			// so the comparison runs against the real local state instead of
+			// a freshly created empty localDoc.
+			await doc.whenSynced();
 			// Store the exported canvas data rather than a stringified version
-			const currentCanvasData = Canvas.exportCanvasData(doc.ydoc);
+			const currentCanvasData = doc.exportData();
 			let canvasContentsMismatch = false;
 			try {
 				const currentFileContents = await doc.sharedFolder.read(doc);
@@ -2112,7 +2155,11 @@ export class BackgroundSync extends HasLogging {
 		}
 		const sharedFolder = doc.sharedFolder;
 		const refreshQueueKey = S3RN.encode(doc.s3rn);
-		const isActive = doc.userLock || sharedFolder?.mergeManager?.isActive(doc.guid);
+		// Manager activeness only exists for documents; canvas activeness
+		// is the view lock alone.
+		const isActive =
+			doc.userLock ||
+			(isDocument(doc) && sharedFolder?.mergeManager?.isActive(doc.guid));
 		const startedDisconnected = doc.intent === "disconnected";
 		const hadProviderIntegration = isDocument(doc) && doc.hasProviderIntegration();
 		const acquiredIdleIntegration =
@@ -2232,38 +2279,56 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	async getCanvas(canvas: Canvas, retry = 3, wait = 3000) {
+		if (canvas.sharedFolder.serverEmptyTerminal(canvas.guid)) {
+			this.debug(
+				`[getCanvas] skipped ${canvas.path}: server has no content for guid; awaiting server evidence`,
+			);
+			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
+			return;
+		}
 		try {
-			// Get the current contents before applying the update
-			const currentJson = Canvas.exportCanvasData(canvas.ydoc);
-			let currentFileContents: CanvasData = { edges: [], nodes: [] };
-			try {
-				const stringContents = await canvas.sharedFolder.read(canvas);
-				currentFileContents = JSON.parse(stringContents) as CanvasData;
-			} catch (e) {
-				// File doesn't exist
-			}
-
-			// Only proceed with update if file matches current ydoc state
-			const contentsMatch = areCanvasDataEqual(currentJson, currentFileContents);
-			const hasContents = currentFileContents.nodes.length > 0;
-
 			const response = await this.downloadItem(canvas);
 			const rawUpdate = response.arrayBuffer;
 			const updateBytes = new Uint8Array(rawUpdate);
 
-			this.log("[getCanvas] applying content from server");
-			Y.applyUpdate(canvas.ydoc, updateBytes);
-
-			if (hasContents && !contentsMatch) {
-				this.log("Skipping flush - file requires merge conflict resolution.");
+			// A guid that is registered but never uploaded downloads as an
+			// empty doc; defer instead of reporting a contentless download
+			// as complete. Enrolled canvases always carry the header op, so
+			// only truly never-uploaded content defers.
+			const peekDoc = new Y.Doc();
+			Y.applyUpdate(peekDoc, updateBytes);
+			const serverEmpty = isEmptyDoc(peekDoc);
+			peekDoc.destroy();
+			if (serverEmpty) {
+				canvas.sharedFolder.recordServerEmpty(canvas.guid);
+				this.log(
+					"[getCanvas] server has guid registered but no content",
+					canvas.path,
+				);
+				canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
 				return;
 			}
-			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
-				canvas.sharedFolder.flush(canvas, canvas.json);
-				this.log("[getCanvas] flushed");
-			}
+
+			this.log("[getCanvas] applying content from server");
+			// Server content lands on the provider-facing remoteDoc; the
+			// CanvasDocBridge merges it into the localDoc, and the canvas's
+			// machine decides whether disk follows. The canvas must be warm
+			// first — on a hibernated canvas the update would land on a
+			// bridge-less remoteDoc, and a later re-download of the same ops
+			// produces no update events to recover it.
+			canvas.wake();
+			Y.applyUpdate(canvas.ydoc, updateBytes);
+			// A full-state download is the canvas keyframe: seed the
+			// applied-remote baseline so later folder events classify
+			// against it instead of gapping once per session.
+			canvas.sharedFolder.mergeManager?.seedAppliedRemoteUpdate(
+				canvas.guid,
+				updateBytes,
+			);
+			canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
 		} catch (e) {
 			this.logError("[getCanvas] failed", e);
+			canvas.hsm.send({ type: "DOWNLOAD_FAILED" });
 			throw e;
 		}
 	}

@@ -268,6 +268,7 @@ export class RelayCanvasView implements S3View {
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
 	private _awarenessPlugin?: AwarenessViewPlugin;
+	private _lockViewer?: DocumentViewer;
 	tracking: boolean;
 
 	constructor(
@@ -387,7 +388,8 @@ export class RelayCanvasView implements S3View {
 
 	attach(): Promise<RelayCanvasView> {
 		// can be called multiple times, whereas release is only ever called once
-		this.canvas.userLock = true;
+		this._lockViewer = this._lockViewer ?? this.view.leaf ?? Symbol(`canvas:${this.canvas.path}`);
+		this._parent.acquireCanvasLock(this.canvas, this._lockViewer);
 
 		// Add CSS class to indicate this view should have live editing
 		this.view.containerEl.addClass("relay-live-editor");
@@ -483,8 +485,14 @@ export class RelayCanvasView implements S3View {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
 		}
-		this.canvas.disconnect();
-		this.canvas.releaseLock();
+		// Another pane may still show this canvas; only the last viewer
+		// releases the machine lock and the connection.
+		const viewer =
+			this._lockViewer ?? this.view.leaf ?? Symbol(`canvas:${this.canvas.path}`);
+		const stillHeld = this._parent.releaseCanvasLock(this.canvas, viewer);
+		if (!stillHeld) {
+			this.canvas.disconnect();
+		}
 	}
 
 	destroy() {
@@ -1041,6 +1049,7 @@ export class LiveViewManager {
 	networkStatus: NetworkStatus;
 	refreshQueue: (() => Promise<boolean>)[];
 	private documentViewers: Map<string, Set<DocumentViewer>>;
+	private canvasViewers: Map<string, Set<DocumentViewer>>;
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
 
@@ -1059,6 +1068,7 @@ export class LiveViewManager {
 		this.networkStatus = networkStatus;
 		this.refreshQueue = [];
 		this.documentViewers = new Map();
+		this.canvasViewers = new Map();
 
 		this.log = curryLog("[LiveViews]", "log");
 		this.warn = curryLog("[LiveViews]", "warn");
@@ -1187,6 +1197,76 @@ export class LiveViewManager {
 			}
 		});
 		return open;
+	}
+
+	private isCanvasOpenInWorkspace(canvas: Canvas): boolean {
+		const sharedFolder = canvas.sharedFolder;
+		if (!sharedFolder) return false;
+		const fullPath = sharedFolder.getPath(canvas.path);
+		let open = false;
+		iterateCanvasViews(this.workspace, (view) => {
+			if (open) return;
+			if (view.file?.path === fullPath) {
+				open = true;
+			}
+		});
+		return open;
+	}
+
+	/**
+	 * Ref-counted canvas lock: the same canvas open in several panes holds
+	 * one machine lock, acquired on the first viewer and released only
+	 * when the last viewer lets go and no workspace leaf still shows the
+	 * file — the same contract documents get from acquireDocumentLock.
+	 */
+	acquireCanvasLock(canvas: Canvas, viewer: DocumentViewer): void {
+		let viewers = this.canvasViewers.get(canvas.guid);
+		if (!viewers) {
+			viewers = new Set();
+			this.canvasViewers.set(canvas.guid, viewers);
+		}
+
+		if (viewers.has(viewer)) {
+			canvas.userLock = true;
+			return;
+		}
+
+		const wasEmpty = viewers.size === 0;
+		viewers.add(viewer);
+		canvas.userLock = true;
+
+		if (wasEmpty) {
+			canvas.acquireLock();
+		}
+	}
+
+	/** Returns true while other viewers (or open leaves) still hold the lock. */
+	releaseCanvasLock(canvas: Canvas, viewer: DocumentViewer): boolean {
+		const viewers = this.canvasViewers.get(canvas.guid);
+		if (!viewers) {
+			if (this.isCanvasOpenInWorkspace(canvas)) {
+				canvas.userLock = true;
+				return true;
+			}
+			canvas.userLock = false;
+			canvas.releaseLock();
+			return false;
+		}
+
+		viewers.delete(viewer);
+		if (viewers.size > 0) {
+			canvas.userLock = true;
+			return true;
+		}
+
+		this.canvasViewers.delete(canvas.guid);
+		if (this.isCanvasOpenInWorkspace(canvas)) {
+			canvas.userLock = true;
+			return true;
+		}
+		canvas.userLock = false;
+		canvas.releaseLock();
+		return false;
 	}
 
 	acquireDocumentLock(

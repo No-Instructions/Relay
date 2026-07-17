@@ -695,6 +695,8 @@ export type MergeEffect =
 // =============================================================================
 
 export interface PersistedMergeState {
+	/** Absent on document records; discriminates against canvas records. */
+	kind?: undefined;
 	guid: string;
 	path: string;
 	/** Owning shared folder. Records without it predate folder scoping. */
@@ -720,8 +722,83 @@ export interface PersistedMergeState {
 	persistedAt: number;
 }
 
+/**
+ * A canvas record in the same HSMStore states store, discriminated by
+ * `kind`. The LCA is the formatted canvas JSON on which disk and the
+ * canvas localDoc last agreed. lastStatePath is opaque at the schema
+ * level — canvas state paths are not document StatePaths, so consumers
+ * must discriminate on `kind` before interpreting it.
+ */
+export interface PersistedCanvasState {
+	kind: "canvas";
+	guid: string;
+	path: string;
+	/** Owning shared folder. */
+	folder: string;
+	lca: {
+		contents: string;
+		hash: string;
+		mtime: number;
+	} | null;
+	disk: MergeMetadata | null;
+	/**
+	 * The canvas localDoc's head at persist time. Lets the advertised-head
+	 * sweep decide whether a hibernated canvas trails the server without
+	 * waking it.
+	 */
+	localSnapshot?: Uint8Array | null;
+	lastStatePath: string;
+	persistedAt: number;
+}
+
+/** Any record shape held by the HSMStore states store. */
+export type PersistedHSMRecord = PersistedMergeState | PersistedCanvasState;
+
+/**
+ * The lifecycle slice a non-document file type registers with
+ * MergeManager: enough for the shared hibernation substrate (warm slots,
+ * hibernate timers, LRU eviction, warm leases, the wake queue, and
+ * buffered remote updates) to drive it. Documents remain on their
+ * MergeManagerDocument path; canvases implement this today, and future
+ * file types implement it to inherit the lifecycle.
+ */
+export interface ManagedFile {
+	readonly guid: string;
+	readonly destroyed: boolean;
+	/** Whether the working form (local YDoc + persistence) is in memory. */
+	isWarm(): boolean;
+	/** Build the working form (idempotent). */
+	wake(): void;
+	/**
+	 * Release the working form. Returns false to defer — in-flight work,
+	 * a held lock, or an unsettled machine — and the manager reschedules.
+	 */
+	tryHibernate(): boolean;
+	/** Apply remote update bytes to the file's provider-facing doc. */
+	applyRemoteUpdate(update: Uint8Array): void;
+}
+
+/**
+ * Per-guid conflict surface registered with MergeManager. Documents
+ * register a MergeHSM-backed provider when their HSM is created;
+ * canvases register one once snapshot ingestion can materialize
+ * conflicts. Payload shapes are the provider's dialect — text hunks for
+ * documents, per-item fields for canvases — and consumers address the
+ * dialect they know. A guid with no provider has no conflict surface.
+ */
+export interface ConflictProvider {
+	/** Wake and prepare state, then snapshot the conflict for UI/debug. */
+	getConflictInfo(): Promise<unknown>;
+	/** Apply fully resolved content; resolves to the resulting state label. */
+	resolveConflict(contents: string): Promise<string>;
+	/** Resolve one conflict region. */
+	resolveConflictHunk(hunkId: string, resolution: unknown): Promise<string>;
+}
+
 /** Lightweight projection of PersistedMergeState without heavy fields (lca.contents, fork body). */
 export interface PersistedStateMeta {
+	/** Present ("canvas") when the record belongs to a CanvasHSM. */
+	kind?: "canvas";
 	guid: string;
 	path: string;
 	/** Owning shared folder. Records without it predate folder scoping. */
