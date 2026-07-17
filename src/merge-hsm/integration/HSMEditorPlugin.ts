@@ -26,6 +26,7 @@ import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
 import { flags } from "../../flagManager";
 import type { PositionedChange } from "../types";
+import { registerOwnedEditor, unregisterOwnedEditor } from "../../readOnlyEditorState";
 import {
   buildBufferedCM6ReplayEvents,
   buildTextChanges,
@@ -137,6 +138,7 @@ export class HSMEditorPluginValue implements PluginValue {
     this.bindingEpoch += 1;
     this.bornAttachedRenderPending = false;
     this.lastInitializationRetry = null;
+    unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -307,6 +309,7 @@ export class HSMEditorPluginValue implements PluginValue {
   /** Permanently inert this instance and drop any buffered fragment input. */
   private inertSubEditor(): boolean {
     this.subEditor = true;
+    unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -469,6 +472,13 @@ export class HSMEditorPluginValue implements PluginValue {
       if (!bornAttached || adoptedByLiveView) return false;
       return this.isEditorShowingFile(expectedGuid, expectedFile);
     });
+    // Only editors that passed the fail-closed owner allow-list and actually
+    // bound may inherit an owning editor's access mode. Inert fragment and
+    // table-cell editors return before this point and remain untouched.
+    const owner = this.ownerEditorView();
+    if (owner && owner !== this.editor) {
+      registerOwnedEditor(owner, this.editor);
+    }
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
     const currentText = this.editor.state.doc.toString();
@@ -543,6 +553,7 @@ export class HSMEditorPluginValue implements PluginValue {
       const ownerCm = this.ownerEditorView();
       if (ownerCm !== this.editor) {
         abort("owner view no longer adopts this editor");
+        unregisterOwnedEditor(this.editor);
         if (this.cm6Integration) {
           this.cm6Integration.destroy();
           this.cm6Integration = null;
@@ -876,6 +887,7 @@ export class HSMEditorPluginValue implements PluginValue {
    */
   destroy(): void {
     this.destroyed = true;
+    unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;

@@ -4,6 +4,12 @@ import type { ObservableMap } from "./observable/ObservableMap";
 
 export type Role = "Owner" | "Member" | "Reader";
 
+/** A user selected for folder access together with the role to grant. */
+export interface UserRoleGrant {
+	userId: string;
+	role: Role;
+}
+
 export type Resource = [string, string];
 
 interface Identified {
