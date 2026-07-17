@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
 	enableSyncConvergenceLatch: boolean;
+	enableReadOnlyPermissions: boolean;
 	enableNoteStateInspector: boolean;
 	enableSavingFlagPolyfill: boolean;
 	enableFrontmatterDuplicateRecovery: boolean;
@@ -152,6 +153,13 @@ export const FeatureFlagSchema: {
 		title: "Wait for server sync before publishing local files",
 		description:
 			"Defer locally discovered file publication until the folder completes its first server sync. Read at folder construction; toggling applies on the next folder (re)load.",
+	},
+	enableReadOnlyPermissions: {
+		default: false,
+		category: "labs",
+		title: "Reader permissions",
+		description:
+			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
 	},
 	enableNoteStateInspector: {
 		default: false,
