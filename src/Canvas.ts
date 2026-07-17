@@ -173,6 +173,8 @@ export class Canvas
 	unsubscribes: Unsubscriber[] = [];
 	private _awaitingUpdates: any;
 	private _canvas: any;
+	/** A rejected Reader edit must be reconciled to shared truth before promotion. */
+	private _readerEditRejected = false;
 
 	constructor(
 		path: string,
@@ -821,12 +823,39 @@ export class Canvas
 
 	async importFromView(view: CanvasView) {
 		if (view.file && view.file === this.tfile) {
-			return await this.applyData(view.canvas.getData());
+			const applied = await this.applyData(view.canvas.getData());
+			if (!applied) {
+				// Restore the authoritative shared state in both the live Canvas
+				// surface and its native .canvas save. The patched follow-up save
+				// re-enters here with matching data and terminates without mutation.
+				view.canvas.importData(Canvas.exportCanvasData(this.ydoc), true);
+				view.canvas.requestSave();
+			}
+			return applied;
 		}
 	}
 
-	async applyData(data: CanvasData) {
+	async applyData(
+		data: CanvasData,
+		origin: "user" | "repair" = "user",
+	): Promise<boolean> {
+		const sharedData = Canvas.exportCanvasData(this.localDoc);
+		const hasChanges = !areCanvasDataEqual(sharedData, data);
+		const canWrite = this.sharedFolder?.canWriteContent ?? true;
+		if (!canWrite && hasChanges) {
+			if (origin === "user") {
+				this._readerEditRejected = true;
+				this.sharedFolder.recordReaderEditOverwrite(this.guid, this.path);
+			}
+			return false;
+		}
+		if (this._readerEditRejected) {
+			if (hasChanges) return false;
+			this._readerEditRejected = false;
+		}
+		if (!hasChanges) return true;
 		this.applyDataInternal(data, null);
+		return true;
 	}
 
 	/**
