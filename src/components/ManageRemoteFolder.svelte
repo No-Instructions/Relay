@@ -31,6 +31,7 @@
 	import { Check, Edit } from "lucide-svelte";
 	import { UserSelectModal } from "src/ui/UserSelectModal";
 	import { handleServerError } from "src/utils/toastStore";
+	import { effectiveFolderGrantRole } from "src/readOnlyPermissions";
 	export let plugin: Live;
 	export let remoteFolder: RemoteSharedFolder;
 	export let sharedFolders: SharedFolders;
@@ -294,10 +295,14 @@
 			plugin.app,
 			plugin.relayManager,
 			remoteFolder,
-			async (userIds: string[], role) =>
+			async (grants) =>
 				Promise.all(
-					userIds.map((userId) =>
-						plugin.relayManager.addFolderRole(remoteFolder, userId, role),
+					grants.map((grant) =>
+						plugin.relayManager.addFolderRole(
+							remoteFolder,
+							grant.userId,
+							effectiveFolderGrantRole(grant.role),
+						),
 					),
 				).then(() => undefined),
 		);

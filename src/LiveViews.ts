@@ -1,4 +1,4 @@
-import type { Extension } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
 	App,
@@ -21,6 +21,7 @@ import NetworkStatus from "./NetworkStatus";
 import { SharedFolder, SharedFolders } from "./SharedFolder";
 import { curryLog, HasLogging, RelayInstances, metrics } from "./debug";
 import { Banner } from "./ui/Banner";
+import { PreservedEditsModal } from "./ui/PreservedEditsModal";
 import { HSMEditorPlugin } from "./merge-hsm/integration/HSMEditorPlugin";
 import {
 	yRemoteSelections,
@@ -45,6 +46,10 @@ import { DiskBuffer } from "./DiskBuffer";
 import { trackPromise } from "./trackPromise";
 import { isDocumentDestroyedError } from "./DocumentDestroyedError";
 import { trackAsyncCleanup } from "./reloadUtils";
+import {
+	isReadingAccessState,
+	preservedForkText,
+} from "./readOnlyPermissions";
 
 /**
  * Access the LiveViewManager singleton via the Obsidian plugin registry.
@@ -503,6 +508,13 @@ export class RelayCanvasView implements S3View {
 	}
 }
 
+/**
+ * Per-view CM6 configuration slot for access mode. Registered once in the
+ * global extension list; each view reconfigures its own state through it
+ * (empty for write access, non-editable for read access).
+ */
+export const accessModeCompartment = new Compartment();
+
 export class LiveView<ViewType extends TextFileView>
 	extends HasLogging
 	implements S3View
@@ -519,6 +531,10 @@ export class LiveView<ViewType extends TextFileView>
 	private offConnectionStatusSubscription?: () => void;
 	private _parent: LiveViewManager;
 	private _banner?: Banner;
+	private _forkNotice?: Banner;
+	private _forcedPreviewForReadOnly = false;
+	/** Last access mode observed by the editor UX edge detector. */
+	private _lastEditableReading: boolean | null = null;
 	_tracking: boolean;
 	private _awarenessPlugin?: AwarenessViewPlugin;
 	private _hsmStateUnsubscribe?: () => void;
@@ -579,6 +595,19 @@ export class LiveView<ViewType extends TextFileView>
 			return this.document.hsm.state.statePath === "active.tracking";
 		}
 		return this._tracking;
+	}
+
+	/**
+	 * Whether this view renders a read-only live session. Reading is live
+	 * (connected, receiving) but never writable-tracking — write paths gate
+	 * on `tracking`, connection UI on `live`.
+	 */
+	public get reading() {
+		return isReadingAccessState(this.document?.hsm?.state.statePath);
+	}
+
+	public get live() {
+		return this.tracking || this.reading;
 	}
 
 	public set tracking(value: boolean) {
@@ -713,6 +742,58 @@ export class LiveView<ViewType extends TextFileView>
 		return () => {};
 	}
 
+	preservedEditsBanner(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		this._forkNotice = new Banner(
+			this.view,
+			{
+				short: "Edits preserved",
+				long: "Local edits preserved (read-only access) -- click to review",
+			},
+			async () => {
+				const hsm = this.document.hsm;
+				if (!hsm) return false;
+				new PreservedEditsModal(this._parent.app, {
+					fileName: this.document.path.split("/").pop() ?? this.document.path,
+					onCompare: () => {
+						const localDoc = hsm.getLocalDoc();
+						const remoteDoc = hsm.getRemoteDoc();
+						const preservedText = preservedForkText(
+							localDoc,
+							hsm.state.fork,
+						);
+						if (preservedText === null || !remoteDoc) return;
+						const preserved = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Your edits)",
+							preservedText,
+						);
+						const shared = new DiskBuffer(
+							this._parent.app.vault,
+							this.document.path + " (Shared version)",
+							remoteDoc.getText("contents").toString(),
+						);
+						this._parent.openDiffView({
+							file1: preserved,
+							file2: shared,
+							showMergeOption: false,
+							oursLabel: "Your edits",
+							theirsLabel: "Shared version",
+							sourceVaultPath: this.document.tfile?.path,
+						});
+					},
+					onDiscard: () => {
+						hsm.send({ type: "DISCARD_LOCAL_FORK" });
+					},
+				}).open();
+				// The state subscription hides the notice when the fork clears.
+				return false;
+			},
+		);
+	}
+
 	offlineBanner(): () => void {
 		if (this.shouldConnect) {
 			const banner = new Banner(
@@ -779,7 +860,10 @@ export class LiveView<ViewType extends TextFileView>
 				this._hsmStateUnsubscribe = hsm.stateChanges.subscribe((state) => {
 					if (!this.document.sharedFolder) return;
 					this._viewActions?.$set({
-						tracking: state.statePath === "active.tracking",
+						tracking:
+							state.statePath === "active.tracking" ||
+							(flags().enableReadOnlyPermissions &&
+								state.statePath.startsWith("active.reading")),
 						localOnly: this.document.hsm?.isLocalOnly ?? false,
 						enableDraftMode: flags().enableDraftMode,
 						folderConnected: this.document.sharedFolder.connected,
@@ -799,6 +883,20 @@ export class LiveView<ViewType extends TextFileView>
 						this._banner.destroy();
 						this._banner = undefined;
 					}
+					const showForkNotice =
+						flags().enableReadOnlyPermissions &&
+						state.statePath.startsWith("active.reading") &&
+						(this.document.hsm?.hasFork() ?? false);
+					if (showForkNotice && !this._forkNotice) {
+						this.log(
+							"[LiveView] read mode with preserved fork, showing notice",
+						);
+						this.preservedEditsBanner();
+					} else if (!showForkNotice && this._forkNotice) {
+						this._forkNotice.destroy();
+						this._forkNotice = undefined;
+					}
+					this.applyEditableState();
 				});
 			}
 			this._viewActions.$set({
@@ -865,6 +963,87 @@ export class LiveView<ViewType extends TextFileView>
 		}
 		const plugin = cm.plugin(HSMEditorPlugin);
 		plugin?.initializeIfReady();
+		this.applyEditableState(true);
+	}
+
+	/**
+	 * Align the view presentation with the document's access mode. Reading
+	 * sessions land in Obsidian's reading view (no caret, no editor
+	 * affordances); a manual switch to the source view stays read-only with
+	 * the caret hidden via the CM6 compartment. UX only — the HSM rejects
+	 * write intent regardless (preview-mode interactions and vault.process
+	 * bypass CM6 entirely). Deferred a microtask because state changes can
+	 * fire synchronously inside a CM6 update cycle, where dispatch is
+	 * illegal.
+	 */
+	private applyEditableState(forceEditorConfiguration = false): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		if (!(this.view instanceof MarkdownView)) {
+			return;
+		}
+		const view = this.view;
+		const readOnly = this.reading;
+		const modeChanged = this._lastEditableReading !== readOnly;
+		if (!modeChanged && !forceEditorConfiguration) return;
+		const previousReading = this._lastEditableReading;
+		this._lastEditableReading = readOnly;
+		queueMicrotask(() => {
+			if (this._released) return;
+			if (this._lastEditableReading !== readOnly || this.reading !== readOnly) {
+				return;
+			}
+			if (modeChanged) {
+				view.containerEl.toggleClass("relay-read-only", readOnly);
+			}
+
+			// Reading belongs in Obsidian's reading view. Restore the source
+			// view on promotion only when this view forced the transition.
+			if (modeChanged && readOnly && view.getMode() === "source") {
+				this._forcedPreviewForReadOnly = true;
+				const leafState = view.leaf.getViewState();
+				void view.leaf.setViewState({
+					...leafState,
+					state: { ...leafState.state, mode: "preview" },
+				});
+			} else if (
+				modeChanged &&
+				previousReading === true &&
+				!readOnly &&
+				this._forcedPreviewForReadOnly
+			) {
+				this._forcedPreviewForReadOnly = false;
+				if (view.getMode() === "preview") {
+					const leafState = view.leaf.getViewState();
+					void view.leaf.setViewState({
+						...leafState,
+						state: { ...leafState.state, mode: "source" },
+					});
+				}
+			}
+
+			const cm = (view.editor as any)?.cm as EditorView | undefined;
+			if (!cm) return;
+			const current = accessModeCompartment.get(cm.state);
+			const configuredReadOnly =
+				Array.isArray(current) && current.length > 0;
+			if (readOnly === configuredReadOnly) return;
+			cm.dispatch({
+				effects: accessModeCompartment.reconfigure(
+					readOnly
+						? [
+								EditorView.editable.of(false),
+								EditorState.readOnly.of(true),
+								EditorView.theme({
+									".cm-cursorLayer": { display: "none" },
+									".cm-content": { caretColor: "transparent" },
+								}),
+							]
+						: [],
+				),
+			});
+		});
 	}
 
 	attach(): Promise<this> {
@@ -972,15 +1151,20 @@ export class LiveView<ViewType extends TextFileView>
 		}
 		this._released = true;
 
-		// Remove the live editor class
+		// Remove the live editor classes
 		if (this.view instanceof MarkdownView) {
 			this.view.containerEl.removeClass("relay-live-editor");
+			this.view.containerEl.removeClass("relay-read-only");
 		}
+		this._lastEditableReading = null;
+		this._forcedPreviewForReadOnly = false;
 
 		this._viewActions?.$destroy();
 		this._viewActions = undefined;
 		this._banner?.destroy();
 		this._banner = undefined;
+		this._forkNotice?.destroy();
+		this._forkNotice = undefined;
 		if (this.offConnectionStatusSubscription) {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
@@ -1742,6 +1926,7 @@ export class LiveViewManager {
 			userAttributionTheme,
 			userAttributionPlugin,
 			InvalidLinkPlugin,
+			accessModeCompartment.of([]),
 		]);
 		this.workspace.updateOptions();
 	}

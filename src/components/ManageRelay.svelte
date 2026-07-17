@@ -10,6 +10,7 @@
 		type RelaySubscription,
 		type RemoteSharedFolder,
 		type Role,
+		type UserRoleGrant,
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
@@ -33,6 +34,7 @@
 	import SettingGroup from "./SettingGroup.svelte";
 	import RelayConfigBlock from "./RelayConfigBlock.svelte";
 	import { uuidv4 } from "lib0/random";
+	import { effectiveFolderGrantRole } from "src/readOnlyPermissions";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
@@ -425,14 +427,14 @@
 		folderPath: string,
 		folderName: string,
 		isPrivate: boolean,
-		userIds: string[],
+		grants: UserRoleGrant[],
 	): Promise<SharedFolder>;
 	// Implementation
 	async function onChoose(
 		folderPath: string,
 		folderName?: string,
 		isPrivate?: boolean,
-		userIds?: string[],
+		grants?: UserRoleGrant[],
 	): Promise<SharedFolder> {
 		const normalizedPath = normalizePath(folderPath);
 		const pending = pendingFolderShares.get(normalizedPath);
@@ -472,10 +474,14 @@
 				folder.remote = remote;
 			}
 
-			if (isPrivate && userIds && userIds.length > 0) {
+			if (isPrivate && grants && grants.length > 0) {
 				await Promise.all(
-					userIds.map((userId) =>
-						plugin.relayManager.addFolderRole(remote, userId, "Member"),
+					grants.map((grant) =>
+						plugin.relayManager.addFolderRole(
+							remote,
+							grant.userId,
+							effectiveFolderGrantRole(grant.role),
+						),
 					),
 				);
 			}
@@ -485,7 +491,7 @@
 			pendingFolderGuids.delete(normalizedPath);
 			pendingRemoteFolders.delete(normalizedPath);
 
-			if (userIds && userIds.length > 0) {
+			if (grants && grants.length > 0) {
 				setTimeout(() => {
 					dispatch("manageRemoteFolder", {
 						remoteFolder: remote,
