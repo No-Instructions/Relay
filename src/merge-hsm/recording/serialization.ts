@@ -90,6 +90,9 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
         ...(event.deferredConflict !== undefined
           ? { deferredConflict: event.deferredConflict }
           : {}),
+        ...(event.readDiscardPending !== undefined
+          ? { readDiscardPending: event.readDiscardPending }
+          : {}),
       };
 
     case 'MERGE_SUCCESS':
@@ -123,6 +126,7 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'ACQUIRE_LOCK':
       return {
         type: 'ACQUIRE_LOCK',
+        ...(event.accessMode ? { accessMode: event.accessMode } : {}),
       } as unknown as SerializableEvent;
 
     // Events without binary data pass through
@@ -141,6 +145,9 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
     case 'DISMISS_CONFLICT':
     case 'OPEN_DIFF_VIEW':
     case 'CANCEL':
+    case 'DEMOTE_TO_READ':
+    case 'PROMOTE_TO_WRITE':
+    case 'DISCARD_LOCAL_FORK':
     case 'PERSISTENCE_SYNCED':
     case 'MERGE_CONFLICT':
     case 'REMOTE_DOC_UPDATED':
@@ -174,6 +181,7 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
           ? base64ToUint8Array(event.localSnapshot)
           : null,
         deferredConflict: event.deferredConflict,
+        readDiscardPending: event.readDiscardPending,
       };
 
     case 'MERGE_SUCCESS':
@@ -243,6 +251,7 @@ export function serializeEffect(effect: MergeEffect): SerializableEffect {
     case 'DISPATCH_CM6':
     case 'SET_CM6':
     case 'WRITE_DISK':
+    case 'READER_EDIT_OVERWRITTEN':
       return effect as unknown as SerializableEffect;
 
     default:
@@ -299,6 +308,7 @@ function _serializePersistedState(state: PersistedMergeState): SerializablePersi
     localSnapshot: localSnapshot ? uint8ArrayToBase64(localSnapshot) : null,
     lastStatePath: state.lastStatePath,
     deferredConflict: state.deferredConflict,
+    readDiscardPending: state.readDiscardPending,
     persistedAt: state.persistedAt,
   };
 }
@@ -321,6 +331,7 @@ function _deserializePersistedState(state: SerializablePersistedState): Persiste
       : null,
     lastStatePath: state.lastStatePath,
     deferredConflict: state.deferredConflict,
+    readDiscardPending: state.readDiscardPending,
     persistedAt: state.persistedAt,
   };
 }

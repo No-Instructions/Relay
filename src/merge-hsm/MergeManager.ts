@@ -34,6 +34,7 @@ import type {
   MergeEvent,
   ResolveHunkEvent,
   StatePath,
+  ActiveAccessMode,
 } from './types';
 import type { ConflictInfoSnapshot } from './conflict';
 import type { TimeProvider } from '../TimeProvider';
@@ -124,6 +125,9 @@ export interface MergeManagerConfig {
 
   /** Callback when an effect is emitted by any HSM */
   onEffect?: (guid: string, effect: MergeEffect) => void;
+
+  /** Durable write used to order destructive document repair after HSM state. */
+  persistStateBarrier?: (guid: string, state: PersistedMergeState) => Promise<void>;
 
   /**
    * Callback to get disk state for a document (for polling).
@@ -223,6 +227,7 @@ function restorePersistedFork(fork: PersistedMergeState['fork']): Fork | null {
     origin: fork.origin,
     created: fork.created,
     captureMark: fork.captureMark,
+    ...(fork.baselined !== undefined ? { baselined: fork.baselined } : {}),
   };
 }
 
@@ -393,6 +398,7 @@ export class MergeManager {
   private hashFn?: (contents: string) => Promise<string>;
   private loadAllStates?: () => Promise<PersistedStateMeta[]>;
   private onEffect?: (guid: string, effect: MergeEffect) => void;
+  private persistStateBarrier?: (guid: string, state: PersistedMergeState) => Promise<void>;
   private getDiskState?: (path: string) => Promise<{
     contents: string;
     mtime: number;
@@ -413,6 +419,7 @@ export class MergeManager {
     this.hashFn = config.hashFn;
     this.loadAllStates = config.loadAllStates;
     this.onEffect = config.onEffect;
+    this.persistStateBarrier = config.persistStateBarrier;
     this.getDiskState = config.getDiskState;
     this.loadState = config.loadState;
     this.createPersistence = config.createPersistence;
@@ -708,6 +715,7 @@ export class MergeManager {
     getCurrentDiskMetadata?: () => { mtime: number; hash?: string } | null;
     getPersistenceMetadata?: () => PersistenceMetadata;
     isFolderConnected?: () => boolean;
+    getAccessMode?: () => ActiveAccessMode;
   }): MergeHSM {
     const {
       guid,
@@ -717,6 +725,7 @@ export class MergeManager {
       getCurrentDiskMetadata,
       getPersistenceMetadata,
       isFolderConnected,
+      getAccessMode,
     } = config;
 
     const hsm = new MergeHSM({
@@ -727,9 +736,16 @@ export class MergeManager {
       timeProvider: this.timeProvider,
       hashFn: this.hashFn,
       createPersistence: this.createPersistence,
+      persistStateBarrier: async (state) => {
+        if (!this.persistStateBarrier) {
+          throw new Error('No durable HSM state writer is configured');
+        }
+        await this.persistStateBarrier(guid, state);
+      },
       persistenceMetadata: getPersistenceMetadata?.(),
       diskLoader: getDiskContent,
       isFolderConnected,
+      getAccessMode,
       yaml: this._yaml ?? undefined,
     });
 
@@ -800,6 +816,7 @@ export class MergeManager {
         localSnapshot: persistedMeta.localSnapshot ?? null,
         deferredConflict: persistedMeta.deferredConflict,
         fork: null,
+        readDiscardPending: false,
       });
       hsm.send({ type: 'SET_MODE_IDLE_COLD' });
       this.residency.markCold(guid);
@@ -828,6 +845,7 @@ export class MergeManager {
         localSnapshot: state?.localSnapshot ?? null,
         deferredConflict: state?.deferredConflict,
         fork: restorePersistedFork(state?.fork ?? null),
+        readDiscardPending: state?.readDiscardPending ?? false,
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
       this.residency.updateMetrics();
@@ -842,6 +860,7 @@ export class MergeManager {
         lca,
         disk: null,
         localSnapshot: this._localSnapshotCache.get(guid) ?? null,
+        readDiscardPending: false,
       });
       hsm.send({ type: 'SET_MODE_IDLE' });
       this.residency.updateMetrics();
@@ -1151,6 +1170,7 @@ export class MergeManager {
         localSnapshot: state?.localSnapshot ?? null,
         deferredConflict: state?.deferredConflict,
         fork: restorePersistedFork(state?.fork ?? null),
+        readDiscardPending: state?.readDiscardPending ?? false,
       });
     }).catch((err) => {
       this._activeStateLoads.delete(guid);

@@ -94,6 +94,13 @@ export interface Fork {
 	captureMark: number;
 	/** Transform function from vault.process (machine-edit forks only) */
 	machineEditFn?: (data: string) => string;
+	/**
+	 * Demotion forks only: whether remoteSnapshot was captured from a
+	 * server-truth remoteDoc. A fork created at demotion snapshots whatever
+	 * remoteDoc holds — possibly polluted with never-sent local ops — and
+	 * refreshes that snapshot from the rebuilt provider doc on the next sync.
+	 */
+	baselined?: boolean;
 }
 
 export interface PersistedFork {
@@ -107,6 +114,8 @@ export interface PersistedFork {
 	created: number;
 	captureMark: number;
 	machineEditFn?: (data: string) => string;
+	/** Demotion forks only: remote snapshot captured from server truth. */
+	baselined?: boolean;
 }
 
 
@@ -243,6 +252,17 @@ export interface MergeState {
 }
 
 // =============================================================================
+// Access Mode
+// =============================================================================
+
+/**
+ * Content-write permission for an active document session.
+ * Derived from the provider token: authorization === "read-only" maps to
+ * "read"; any write-capable token maps to "write".
+ */
+export type ActiveAccessMode = "write" | "read";
+
+// =============================================================================
 // State Path Types (Discriminated Union)
 // =============================================================================
 
@@ -265,6 +285,8 @@ export type StatePath =
 	| "active.entering.awaitingPersistence"
 	| "active.entering.reconciling"
 	| "active.tracking"
+	| "active.reading"
+	| "active.reading.repairing"
 	| "active.merging.twoWay"
 	| "active.merging.threeWay"
 	| "active.conflict.bannerShown"
@@ -299,6 +321,40 @@ export interface AcquireLockEvent {
 	 * when DISK_CHANGED fires and dirty === false (auto-save has flushed).
 	 */
 	editorViewRef?: EditorViewRef;
+	/**
+	 * Content-write permission for this active session.
+	 * Omitted means the HSM consults its getAccessMode callback
+	 * (absent callback defaults to "write").
+	 */
+	accessMode?: ActiveAccessMode;
+}
+
+/**
+ * Live write→read permission flip for an open document.
+ * Sent by Document when a token refresh turns the provider read-only.
+ * Drops write intent, preserves not-yet-on-server edits as a fork,
+ * and enters active.reading.
+ */
+export interface DemoteToReadEvent {
+	type: "DEMOTE_TO_READ";
+}
+
+/**
+ * Live read→write permission flip for an open document.
+ * Sent by Document when a token refresh restores write authorization.
+ * Targets active.tracking, whose entry actions reconcile any preserved fork.
+ */
+export interface PromoteToWriteEvent {
+	type: "PROMOTE_TO_WRITE";
+}
+
+/**
+ * User action: discard the fork preserved at demotion.
+ * Rebuilds localDoc from remoteDoc (IDB reset + re-enrollment) so the
+ * discarded ops are durably gone.
+ */
+export interface DiscardLocalForkEvent {
+	type: "DISCARD_LOCAL_FORK";
 }
 
 export interface ReleaseLockEvent {
@@ -446,6 +502,8 @@ export interface CancelEvent {
 export interface PersistenceLoadedEvent {
 	type: "PERSISTENCE_LOADED";
 	lca: LCAState | null;
+	/** A requested reader-fork discard that has not completed its rebuild. */
+	readDiscardPending?: boolean;
 	/** Last known disk metadata from persisted HSM state. */
 	disk?: MergeMetadata | null;
 	/**
@@ -650,6 +708,10 @@ export type MergeEvent =
 	| DismissConflictEvent
 	| OpenDiffViewEvent
 	| CancelEvent
+	| DiscardLocalForkEvent
+	// Permission transitions (from Document token refresh)
+	| DemoteToReadEvent
+	| PromoteToWriteEvent
 	// Internal
 	| PersistenceLoadedEvent
 	| PersistenceSyncedEvent
@@ -770,6 +832,20 @@ export interface DiagnosticEffect {
 	detail?: Record<string, unknown>;
 }
 
+/**
+ * A read-only repair replaced on-disk content that differed from the shared
+ * document, discarding a Reader's local edit. Advisory only — the shared
+ * document is authoritative for a Reader, so no action is required; the
+ * surface names the file and points to recovery (Obsidian File Recovery, git).
+ * `contentHash` is a signature of the overwritten text for the log stream.
+ */
+export interface ReaderEditOverwrittenEffect {
+	type: "READER_EDIT_OVERWRITTEN";
+	guid: string;
+	path: string;
+	contentHash: string;
+}
+
 export type MergeEffect =
 	| DispatchCM6Effect
 	| SetCM6Effect
@@ -780,7 +856,8 @@ export type MergeEffect =
 	| StatusChangedEffect
 	| RequestProviderSyncEffect
 	| RequestHibernateEffect
-	| DiagnosticEffect;
+	| DiagnosticEffect
+	| ReaderEditOverwrittenEffect;
 
 // =============================================================================
 // Persistence Types
@@ -808,6 +885,8 @@ export interface PersistedMergeState {
 		localHash: string;
 	};
 	fork?: PersistedFork | null;
+	/** Keeps an explicit discard authoritative across release and restart. */
+	readDiscardPending?: boolean;
 	persistedAt: number;
 }
 
@@ -962,6 +1041,12 @@ export interface IYDocPersistence {
 	 */
 	initializeFromRemote?(update: Uint8Array, origin?: unknown): Promise<boolean>;
 	/**
+	 * Delete every stored row for this document so a rebuild re-enrolls
+	 * from scratch. Used by localDoc rebuilds (fork discard) where ops must
+	 * be durably gone, not just absent from the in-memory doc.
+	 */
+	clearDocumentData?(): Promise<void>;
+	/**
 	 * OpCapture instance managed by this persistence layer.
 	 * Initialized during the persistence sync lifecycle when captureOpts
 	 * is passed to the constructor.
@@ -1056,6 +1141,9 @@ export interface MergeHSMConfig {
 	 */
 	createPersistence: CreatePersistence;
 
+	/** Durably store HSM state before destructive local-persistence repair. */
+	persistStateBarrier?: (state: PersistedMergeState) => Promise<void>;
+
 	/**
 	 * Metadata to store on the persistence for recovery/debugging.
 	 * Set after persistence syncs.
@@ -1082,6 +1170,15 @@ export interface MergeHSMConfig {
 	 * newly-created HSM that has not yet received its own CONNECTED event.
 	 */
 	isFolderConnected?: () => boolean;
+
+	/**
+	 * Query the current content-write permission for this document.
+	 * Consulted by idle-state guards and the SyncBridge outbound gate,
+	 * and as the ACQUIRE_LOCK default when the event carries no accessMode.
+	 * Token-derived when a provider exists; role-derived otherwise.
+	 * If not provided, defaults to "write".
+	 */
+	getAccessMode?: () => ActiveAccessMode;
 
 	/**
 	 * When true, invoke sources return never-resolving promises instead of
@@ -1180,6 +1277,10 @@ export interface CapabilityContract {
 	canPersistFullLca?: boolean;
 	canUseRemoteDoc?: boolean;
 	canUsePendingDiskContents?: boolean;
+	/** Whether local editor/machine/disk content may enter localDoc. */
+	canAcceptLocalContent?: boolean;
+	/** Whether local CRDT state may flow to remoteDoc / SYNC_TO_REMOTE. */
+	canSyncOutbound?: boolean;
 }
 
 /** A single state node in the machine definition */
