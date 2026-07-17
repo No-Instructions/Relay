@@ -85,7 +85,7 @@ import { SyncSettingsManager, type SyncFlags } from "./SyncSettings";
 import { ContentAddressedFileStore, SyncFile, isSyncFile } from "./SyncFile";
 import { Canvas, isCanvas } from "./Canvas";
 import { flags } from "./flagManager";
-import { MergeManager } from "./merge-hsm/MergeManager";
+import { MergeManager, WakePriority } from "./merge-hsm/MergeManager";
 import {
 	E2ERecordingBridge,
 	type HSMLogEntry,
@@ -97,6 +97,7 @@ import { readNoteText } from "./diskText";
 import {
 	HSMStore,
 } from "./merge-hsm/persistence";
+import type { PersistedCanvasState } from "./merge-hsm/types";
 import { trackPromise } from "./trackPromise";
 import {
 	RemoteActivityIndex,
@@ -739,6 +740,8 @@ export class SharedFolder extends HasProvider {
 					const committed = new Set(
 						this.syncStore.getCommittedSubdocGuids(),
 					);
+					// Canvas records pass through: initializeCaches routes them
+					// to the managed-file caches, never the document caches.
 					return all.filter(
 						(meta) =>
 							meta.folder === this.guid ||
@@ -750,7 +753,10 @@ export class SharedFolder extends HasProvider {
 			},
 			loadState: async (guid: string) => {
 				try {
-					return await this._hsmStore.loadState(guid);
+					const record = await this._hsmStore.loadState(guid);
+					// A canvas record under a document guid cannot happen (guids
+					// are minted per file), but the type union narrows here.
+					return record?.kind === "canvas" ? null : (record ?? null);
 				} catch {
 					return null;
 				}
@@ -1013,7 +1019,57 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const file = this.files.get(guid);
-		if (!file || !isDocument(file)) return;
+		if (!file) return;
+
+		if (isCanvas(file)) {
+			// A live update event is fresh evidence the server has content.
+			this.clearServerEmpty(guid);
+			if (!event.update) return;
+			const update =
+				event.update instanceof Uint8Array
+					? event.update
+					: new Uint8Array(event.update);
+			// Folder-routed canvas updates land on the provider-facing
+			// remoteDoc; the CanvasDocBridge merges them into the localDoc,
+			// where the CanvasHSM observes the change and decides whether
+			// disk follows. The manager buffers bytes for hibernated
+			// canvases and wakes them through the shared queue.
+			if (!this.mergeManager) {
+				Y.applyUpdate(file.ydoc, update, this);
+				return;
+			}
+			// The event stream is lossy — the server coalesces events per
+			// sender and a dropped batch leaves a dependency gap that Yjs
+			// buffers silently forever. Classify against the applied-remote
+			// baseline the way documents do; a gap heals through the
+			// machine's full-state download instead of a blind apply.
+			const canvasClassification = this.mergeManager.classifyUpdate(
+				guid,
+				update,
+			);
+			switch (canvasClassification) {
+				case "apply":
+					this.mergeManager.handleRemoteUpdate(guid, update);
+					metrics.recordDocumentUpdateEvent("applied", this.guid);
+					this.mergeManager.advanceAppliedRemoteUpdate(guid, update);
+					break;
+				case "stale":
+					break;
+				case "gap":
+					metrics.recordDocumentUpdateEvent("catchup", this.guid);
+					file.hsm.send({ type: "SERVER_AHEAD" });
+					if (!file.isMaterialized) {
+						this.mergeManager.enqueueWake({
+							guid,
+							priority: WakePriority.REMOTE_UPDATE,
+						});
+					}
+					break;
+			}
+			return;
+		}
+
+		if (!isDocument(file)) return;
 
 		// Active documents: ProviderIntegration handles sync via y-protocols
 		if (this.mergeManager.isActive(guid)) {
@@ -1102,23 +1158,39 @@ export class SharedFolder extends HasProvider {
 		const localIdentity = this.findNonCanonicalIdentityAtPath(path, guid);
 		if (!localIdentity) return;
 		const committedMeta = this.syncStore.getCommittedMeta(path);
+		if (committedMeta?.id !== guid) return;
+
 		if (
-			(localIdentity.file && !isDocument(localIdentity.file)) ||
-			!isDocumentMeta(committedMeta)
+			(!localIdentity.file || isDocument(localIdentity.file)) &&
+			isDocumentMeta(committedMeta)
 		) {
+			// executeRemap owns the in-flight claim for the path (raised before its
+			// first await, released in its finally).
+			this.executeRemap({
+				path,
+				fromGuid: localIdentity.guid,
+				toGuid: guid,
+			}).catch((e) => {
+				this.warn(`[${path}] remap retry from update event failed`, e);
+			});
 			return;
 		}
-		if (committedMeta.id !== guid) return;
-
-		// executeRemap owns the in-flight claim for the path (raised before its
-		// first await, released in its finally).
-		this.executeRemap({
-			path,
-			fromGuid: localIdentity.guid,
-			toGuid: guid,
-		}).catch((e) => {
-			this.warn(`[${path}] remap retry from update event failed`, e);
-		});
+		if (
+			localIdentity.file &&
+			isCanvas(localIdentity.file) &&
+			isCanvasMeta(committedMeta)
+		) {
+			this._pendingRemaps.add(path);
+			this.executeCanvasRemap({
+				path,
+				fromGuid: localIdentity.guid,
+				toGuid: guid,
+			}).catch((e) => {
+				this.warn(`[${path}] canvas remap retry from update event failed`, e);
+			}).finally(() => {
+				this._pendingRemaps.delete(path);
+			});
+		}
 	}
 
 	/** True when empty downloads for the guid have exhausted their attempts. */
@@ -1176,13 +1248,23 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const committedMeta = this.syncStore.getCommittedMeta(path);
-		if (!isDocumentMeta(committedMeta) || committedMeta.id !== guid) {
+		if (committedMeta?.id !== guid) {
 			return false;
 		}
 
 		const localGuid = this.syncStore.get(path);
 		if (!localGuid || localGuid !== guid) return false;
 		if (this.files.has(guid) && !options.evenIfDocumentLoaded) return false;
+
+		if (isCanvasMeta(committedMeta)) {
+			void this.downloadCanvas(path, true).catch((e) => {
+				this.warn(`[${path}] deferred canvas download retry failed`, e);
+			});
+			return true;
+		}
+		if (!isDocumentMeta(committedMeta)) {
+			return false;
+		}
 
 		this._pendingDownloads.add(path);
 		this.downloadDoc(path, true)
@@ -1309,6 +1391,26 @@ export class SharedFolder extends HasProvider {
 
 		for (const guid of targetGuids) {
 			const file = this.files.get(guid);
+			if (isCanvas(file)) {
+				// The canvas machine re-reads disk itself; a stat mismatch
+				// against its last known disk meta is the whole signal. A
+				// hibernated canvas cannot act on the event — disk change is
+				// a wake trigger, and the wake's first evaluation reads the
+				// changed file. getDiskMeta is the light accessor: the full
+				// snapshot deep-copies the transition ring per call.
+				const tfile = file.tfile;
+				if (
+					tfile &&
+					file.hsm.getDiskMeta()?.mtime !== tfile.stat.mtime
+				) {
+					if (file.isMaterialized) {
+						file.hsm.send({ type: "DISK_CHANGED" });
+					} else {
+						this.mergeManager?.wakeManagedFile(guid);
+					}
+				}
+				continue;
+			}
 			if (!file || !isDocument(file)) continue;
 
 			const hsm = file.hsm;
@@ -1681,6 +1783,11 @@ export class SharedFolder extends HasProvider {
 		}));
 		const guids = Array.from(this.files.keys());
 		this.mergeManager?.setLocalOnly(guids, value);
+		for (const file of this.files.values()) {
+			if (isCanvas(file)) {
+				file.setLocalOnly(value);
+			}
+		}
 	}
 
 	async netSync() {
@@ -2723,6 +2830,88 @@ export class SharedFolder extends HasProvider {
 		await this.executeRemap({ path, fromGuid: guid, toGuid: guid });
 	}
 
+	/**
+	 * Adopt the committed GUID for a canvas whose path resolves to a
+	 * different identity than the one enrolled locally. Tears down the
+	 * local canvas (IDB, machine record, in-memory instance), creates a
+	 * fresh Canvas under the canonical GUID, and seeds its remoteDoc from
+	 * the server; the bridge and the machine converge localDoc and disk
+	 * from there. On failure, pendingUpload stays intact so the next
+	 * observer event or startup scan retries.
+	 */
+	private async executeCanvasRemap({ path, fromGuid, toGuid }: {
+		path: string;
+		fromGuid: string;
+		toGuid: string;
+	}): Promise<void> {
+		if (!this.connected) {
+			this.log(`[${path}] canvas remap deferred: folder offline`);
+			return;
+		}
+		if (this.serverEmptyTerminal(toGuid)) {
+			this.debug(
+				`[${path}] canvas remap skipped: server has no content for guid; awaiting server evidence`,
+			);
+			return;
+		}
+
+		let updateBytes: Uint8Array | undefined;
+		try {
+			updateBytes = await this.backgroundSync.downloadByGuid(
+				this,
+				toGuid,
+				path,
+				"canvas",
+			);
+		} catch (e) {
+			this.warn(`[${path}] canvas remap download failed, deferring`, e);
+			return;
+		}
+		if (!updateBytes) {
+			this.recordServerEmpty(toGuid);
+			this.log(`[${path}] canvas remap deferred: server has guid but no content yet`);
+			return;
+		}
+		if (this.destroyed) return;
+
+		// From here the local identity's CRDT history is discarded: the
+		// localDoc database and machine record are deleted, and only the
+		// disk file carries the local content forward. The new canvas meets
+		// that file with no LCA and converges by additive union on its
+		// first evaluation — nothing durable is lost that the disk file
+		// does not hold, but edit history under the old guid is gone. This
+		// mirrors the document-remap precedent.
+		const existing = this.files.get(fromGuid);
+		try {
+			indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${fromGuid}`);
+		} catch { /* best effort stale database cleanup */ }
+		const p = this._hsmStore.deleteState(fromGuid).catch(() => {});
+		trackAsyncCleanup(p);
+		this.backgroundSync.cancelDocumentWork(fromGuid);
+		this.mergeManager?.unregisterManagedFile(fromGuid);
+
+		if (existing) {
+			this.files.delete(fromGuid);
+			this.fset.delete(existing);
+			existing.cleanup();
+			existing.destroy();
+		}
+		this.syncStore.pendingUpload.delete(path);
+
+		const canvas = this.getOrCreateCanvas(toGuid, path);
+		this.files.set(toGuid, canvas);
+		this.fset.add(canvas, true);
+		canvas.wake();
+		Y.applyUpdate(canvas.ydoc, updateBytes);
+		canvas.hsm.send({ type: "DOWNLOAD_COMPLETE" });
+
+		this.log(
+			`Remapped Canvas ${path}: ${fromGuid} → ${toGuid} ` +
+				"(local history under the old identity discarded; disk content " +
+				"re-converges when the canvas is next opened)",
+		);
+	}
+
 	private applyRemoteState(
 		guid: string,
 		path: string,
@@ -3760,6 +3949,17 @@ export class SharedFolder extends HasProvider {
 					}),
 				};
 			}
+			if (isCanvasMeta(committedMeta) && pendingFile && isCanvas(pendingFile)) {
+				return {
+					op: "update",
+					path,
+					promise: this.executeCanvasRemap({
+						path,
+						fromGuid: pendingGuid,
+						toGuid: committedMeta.id,
+					}),
+				};
+			}
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -4186,6 +4386,21 @@ export class SharedFolder extends HasProvider {
 					}).catch((e) => {
 						this.warn(`[${file.path}] remap retry from markUploaded failed`, e);
 					});
+				} else if (
+					isCanvas(file) &&
+					isCanvasMeta(committedMeta) &&
+					!this._pendingRemaps.has(file.path)
+				) {
+					this._pendingRemaps.add(file.path);
+					this.executeCanvasRemap({
+						path: file.path,
+						fromGuid: file.guid,
+						toGuid: committedMeta.id,
+					}).catch((e) => {
+						this.warn(`[${file.path}] canvas remap from markUploaded failed`, e);
+					}).finally(() => {
+						this._pendingRemaps.delete(file.path);
+					});
 				}
 				return;
 			}
@@ -4337,6 +4552,29 @@ export class SharedFolder extends HasProvider {
 		return newDocs;
 	}
 
+	/** Load this canvas's persisted machine state from the vault-wide store. */
+	public async loadCanvasState(
+		guid: string,
+	): Promise<PersistedCanvasState | null> {
+		try {
+			const record = await this._hsmStore.loadState(guid);
+			return record?.kind === "canvas" ? record : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Persist a canvas machine record; background write, failures logged. */
+	public saveCanvasState(guid: string, state: PersistedCanvasState): void {
+		// Advertised-head comparisons for a re-hibernated canvas read the
+		// manager's caches; every persisted record refreshes them.
+		this.mergeManager?.refreshManagedRecord(state);
+		const p = this._hsmStore.saveState(guid, state).catch((err) => {
+			this.error(`[CanvasHSM] saveState failed for ${guid}:`, err);
+		});
+		trackAsyncCleanup(p);
+	}
+
 	getOrCreateCanvas(guid: string, vpath: string): Canvas {
 		const canvas =
 			this.files.get(guid) || new Canvas(vpath, guid, this.loginManager, this);
@@ -4344,6 +4582,17 @@ export class SharedFolder extends HasProvider {
 			throw new Error("getOrCreateCanvas(): unexpected ifile type");
 		}
 		canvas.move(vpath, this);
+		if (this._localOnly) {
+			canvas.setLocalOnly(true);
+		}
+		if (this.mergeManager) {
+			const mergeManager = this.mergeManager;
+			mergeManager.registerManagedFile(canvas);
+			// Lazy materialization anywhere (a view touching localDoc, an
+			// explicit whenSynced) flows back into warm accounting.
+			canvas.onMaterialize = () =>
+				mergeManager.notifyManagedFileWarm(canvas.guid);
+		}
 		return canvas;
 	}
 
@@ -4411,14 +4660,12 @@ export class SharedFolder extends HasProvider {
 					return;
 				}
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
-				this.folderDoc.transact(() => {
-					try {
-						canvas.applyJSON(contents);
-					} catch (e) {
-						console.warn(contents);
-						throw e;
-					}
-				}, this._persistence);
+				try {
+					await canvas.enrollLocal(contents);
+				} catch (e) {
+					console.warn(contents);
+					throw e;
+				}
 				canvas.markOrigin("local");
 				this.log(`[${canvas.path}] Uploading file`);
 				await this.backgroundSync.enqueueUpload(canvas);
@@ -4443,6 +4690,23 @@ export class SharedFolder extends HasProvider {
 			throw new Error("expected guid");
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
+
+		// Cold start: a persisted record whose last known disk state matches
+		// the file on disk proves the canvas was cleanly synced — the shell
+		// stays hibernated with no IDB open and no connection. Wake triggers
+		// (lock acquisition, remote traffic, disk change) materialize it.
+		const managedMeta = this.mergeManager?.getManagedMeta(guid);
+		if (
+			!canvas.isMaterialized &&
+			managedMeta?.lcaMeta &&
+			managedMeta.disk &&
+			canvas.tfile?.stat.mtime === managedMeta.disk.mtime &&
+			!this.pendingUpload.get(canvas.path)
+		) {
+			this.files.set(guid, canvas);
+			this.fset.add(canvas, update);
+			return canvas;
+		}
 
 		void trackPromise(`folder:canvasReady:${canvas.guid}`, this.whenReady())
 			.then(async () => {
@@ -5233,6 +5497,9 @@ export class SharedFolder extends HasProvider {
 
 	private teardownDocState(guid: string): void {
 		indexedDB.deleteDatabase(`${this.appId}-relay-doc-${guid}`);
+		// Canvases persist under their own prefix; deleting the unused name
+		// for either file type is a no-op.
+		indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${guid}`);
 		const p = this._hsmStore.deleteState(guid).catch(() => {});
 		trackAsyncCleanup(p);
 	}
