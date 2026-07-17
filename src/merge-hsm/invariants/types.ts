@@ -87,6 +87,9 @@ export interface InvariantCheckContext {
   /** Sync status */
   syncStatus: 'synced' | 'pending' | 'conflict' | 'error';
 
+  /** Whether a fork is active (preserved local state gating sync) */
+  hasFork: boolean;
+
   /** Time provider */
   now: () => number;
 }
