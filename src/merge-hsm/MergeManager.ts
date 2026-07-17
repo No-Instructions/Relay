@@ -33,6 +33,7 @@ import type {
   MergeEvent,
   ResolveHunkEvent,
   StatePath,
+  ActiveAccessMode,
 } from './types';
 import type { ConflictInfoSnapshot } from './conflict';
 import type { TimeProvider } from '../TimeProvider';
@@ -268,6 +269,7 @@ function restorePersistedFork(fork: PersistedMergeState['fork']): Fork | null {
     origin: fork.origin,
     created: fork.created,
     captureMark: fork.captureMark,
+    ...(fork.baselined !== undefined ? { baselined: fork.baselined } : {}),
   };
 }
 
@@ -844,6 +846,7 @@ export class MergeManager {
     getPersistenceMetadata?: () => PersistenceMetadata;
     isFolderConnected?: () => boolean;
     isProviderSynced?: () => boolean;
+    getAccessMode?: () => ActiveAccessMode;
   }): MergeHSM {
     const {
       guid,
@@ -854,6 +857,7 @@ export class MergeManager {
       getPersistenceMetadata,
       isFolderConnected,
       isProviderSynced,
+      getAccessMode,
     } = config;
 
     // Get lightweight metadata from cache (bulk-loaded during initialize())
@@ -871,6 +875,7 @@ export class MergeManager {
       diskLoader: getDiskContent,
       isFolderConnected,
       isProviderSynced,
+      getAccessMode,
       yaml: this._yaml ?? undefined,
     });
 

@@ -11,18 +11,27 @@ import type { InvariantDefinition, InvariantCheckContext, InvariantViolation } f
 // =============================================================================
 
 /**
- * In active.tracking, editor text should match localDoc text.
+ * The open editor should match the document model it renders from:
+ * localDoc in active.tracking, and in active.reading whenever no preserved
+ * fork exists (a fork freezes localDoc while the editor shows remoteDoc,
+ * covered by READING_EDITOR_MATCHES_SHARED).
  */
 export const EDITOR_MATCHES_LOCAL_DOC: InvariantDefinition = {
   id: 'editor-matches-local-doc',
   name: 'Editor matches localDoc',
-  description: 'In active.tracking state, editor content should match localDoc content',
+  description: 'In active.tracking and fork-free active.reading, editor content should match localDoc content',
   severity: 'warning',
   trigger: 'on-state',
-  applicableStates: ['active.tracking'],
+  applicableStates: ['active.tracking', 'active.reading'],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
     if (ctx.editorText === null || ctx.localDocText === null) {
       return null; // Can't check without both values
+    }
+    if (ctx.statePath.startsWith('active.reading') && ctx.hasFork) {
+      return null; // Fork freezes localDoc; the editor renders remoteDoc
+    }
+    if (ctx.statePath === 'active.reading.repairing') {
+      return null; // localDoc is being rebuilt
     }
 
     if (ctx.editorText !== ctx.localDocText) {
@@ -157,12 +166,16 @@ export const ACTIVE_HAS_LOCAL_DOC: InvariantDefinition = {
     'active.entering.awaitingPersistence',
     'active.entering.reconciling',
     'active.tracking',
+    'active.reading',
     'active.merging.twoWay',
     'active.merging.threeWay',
     'active.conflict.bannerShown',
     'active.conflict.resolving',
   ],
   check: (ctx: InvariantCheckContext): InvariantViolation | null => {
+    if (ctx.statePath === 'active.reading.repairing') {
+      return null; // localDoc is intentionally absent during the rebuild
+    }
     if (ctx.statePath.startsWith('active.') && ctx.localDocText === null) {
       return {
         invariantId: 'active-has-local-doc',
@@ -256,6 +269,38 @@ export const CONFLICT_HAS_DIVERGENCE: InvariantDefinition = {
   },
 };
 
+/**
+ * In active.reading with a preserved fork, the editor renders remoteDoc.
+ */
+export const READING_EDITOR_MATCHES_SHARED: InvariantDefinition = {
+  id: 'reading-editor-matches-shared',
+  name: 'Reading editor matches shared version',
+  description: 'In active.reading with a preserved fork, editor content should match remoteDoc content',
+  severity: 'warning',
+  trigger: 'on-state',
+  applicableStates: ['active.reading'],
+  check: (ctx: InvariantCheckContext): InvariantViolation | null => {
+    if (ctx.statePath !== 'active.reading' || !ctx.hasFork) {
+      return null;
+    }
+    if (ctx.editorText === null || ctx.remoteDocText === null) {
+      return null;
+    }
+    if (ctx.editorText !== ctx.remoteDocText) {
+      return {
+        invariantId: 'reading-editor-matches-shared',
+        severity: 'warning',
+        timestamp: ctx.now(),
+        message: 'Read-mode editor does not match the shared remote version',
+        statePath: ctx.statePath,
+        expected: ctx.remoteDocText.substring(0, 100) + (ctx.remoteDocText.length > 100 ? '...' : ''),
+        actual: ctx.editorText.substring(0, 100) + (ctx.editorText.length > 100 ? '...' : ''),
+      };
+    }
+    return null;
+  },
+};
+
 // =============================================================================
 // All Standard Invariants
 // =============================================================================
@@ -271,6 +316,7 @@ export const STANDARD_INVARIANTS: InvariantDefinition[] = [
   ACTIVE_HAS_LOCAL_DOC,
   IDLE_NO_LOCAL_DOC,
   CONFLICT_HAS_DIVERGENCE,
+  READING_EDITOR_MATCHES_SHARED,
 ];
 
 /**

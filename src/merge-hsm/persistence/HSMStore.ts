@@ -138,6 +138,9 @@ function sanitizeMergeState(state: PersistedMergeState): PersistedMergeState {
           origin: state.fork.origin,
           created: state.fork.created,
           captureMark: state.fork.captureMark,
+          ...(state.fork.baselined !== undefined
+            ? { baselined: state.fork.baselined }
+            : {}),
         }
       : null,
     persistedAt: state.persistedAt,
