@@ -191,6 +191,8 @@ export class Canvas
 	unsubscribes: Unsubscriber[] = [];
 	private _awaitingUpdates?: boolean;
 	private _canvas: unknown;
+	/** A rejected Reader edit must be reconciled to shared truth before promotion. */
+	private _readerEditRejected = false;
 
 	constructor(
 		path: string,
@@ -233,6 +235,8 @@ export class Canvas
 			timeProvider: this.timeProvider,
 			getPath: () => this.path,
 			isMember: () => this.sharedFolder.syncStore.has(this.path),
+			canWriteContent: () => this.canPublishContent,
+			hasSharedContent: () => this._persistenceInstance?.hasServerSync === true,
 			readDisk: async () => {
 				// Absent and unreadable are different verdicts: an absent
 				// file materializes, but a transient read failure (a locked
@@ -510,6 +514,9 @@ export class Canvas
 						return;
 					}
 					await this.sharedFolder.flush(this, effect.contents);
+					if (effect.readerEditOverwritten) {
+						this.sharedFolder.recordReaderEditOverwrite(this.guid, this.path);
+					}
 					this.hsm.send({
 						type: "FLUSH_COMPLETE",
 						contents: effect.contents,
@@ -532,6 +539,10 @@ export class Canvas
 						// and writing here would race its writer.
 						this.debug("ingest skipped: view owns disk");
 						this.hsm.send({ type: "FLUSH_FAILED" });
+						return;
+					}
+					if (!this.canPublishContent || this.hsm.canIngestContent === false) {
+						this.hsm.rejectDiskEdit();
 						return;
 					}
 					// One unit: the merged data reaches the localDoc (and
@@ -609,7 +620,7 @@ export class Canvas
 
 	public textNode(node: CanvasNodeData): Y.Text {
 		const ytext = this.localDoc.getText(node.id);
-		if (ytext.toString() === "") {
+		if (ytext.toString() === "" && this.canEditContent) {
 			ytext.insert(0, node.text);
 		}
 		return ytext;
@@ -831,6 +842,10 @@ export class Canvas
 		return true;
 	}
 
+	public get canPublishContent(): boolean {
+		return this.sharedFolder?.canWriteContent ?? true;
+	}
+
 	async runSyncSession(
 		_intent: SessionIntent,
 		context: SyncOperationContext,
@@ -1025,7 +1040,7 @@ export class Canvas
 	async applyJSON(json: string) {
 		// A brand-new canvas file may be blank or hold a bare "{}"; both
 		// carry no content and neither may crash enrollment.
-		if (json.trim() === "") return;
+		if (json.trim() === "") return true;
 		const parsed = JSON.parse(json) as Partial<CanvasData>;
 		return await this.applyData({
 			nodes: parsed.nodes ?? [],
@@ -1034,14 +1049,16 @@ export class Canvas
 	}
 
 	/**
-	 * First-upload enrollment: stamp the `relay` header op, then apply the
-	 * file's JSON. The header guarantees every enrolled canvas produces
+	 * First-upload enrollment: apply the file's JSON, then stamp the
+	 * `relay` header op. The header guarantees every enrolled canvas produces
 	 * non-empty CRDT history, so the server and peers can tell "uploaded"
 	 * from "never uploaded" even when the canvas itself has no nodes or
 	 * edges — the same contract document enrollment establishes in the
 	 * IndexedDB persistence layer.
 	 */
-	async enrollLocal(json: string): Promise<void> {
+	async enrollLocal(json: string): Promise<boolean> {
+		if (!this.canEditContent) return false;
+		if (!(await this.applyJSON(json))) return false;
 		Y.transact(
 			this.localDoc,
 			() => {
@@ -1050,17 +1067,54 @@ export class Canvas
 			},
 			this,
 		);
-		await this.applyJSON(json);
+		return true;
 	}
 
 	async importFromView(view: CanvasView) {
 		if (view.file && view.file === this.tfile) {
-			return await this.applyData(view.canvas.getData());
+			const applied = await this.applyData(view.canvas.getData());
+			if (!applied) {
+				// Restore the authoritative shared state in both the live Canvas
+				// surface and its native .canvas save. The patched follow-up save
+				// re-enters here with matching data and terminates without mutation.
+				view.canvas.importData(Canvas.exportCanvasData(this.localDoc), true);
+				view.canvas.requestSave();
+			}
+			return applied;
 		}
 	}
 
-	async applyData(data: CanvasData) {
+	public get canEditContent(): boolean {
+		return (
+			this.canPublishContent &&
+			this.hsm?.canIngestContent !== false &&
+			!this._readerEditRejected
+		);
+	}
+
+	public rejectReaderEdit(): void {
+		this._readerEditRejected = true;
+		if (!this.canPublishContent) {
+			this.sharedFolder.recordReaderEditOverwrite(this.guid, this.path);
+		}
+	}
+
+	async applyData(data: CanvasData): Promise<boolean> {
+		const canWrite =
+			this.canPublishContent && this.hsm?.canIngestContent !== false;
+		if (!canWrite || this._readerEditRejected) {
+			const hasChanges = !areCanvasDataEqual(
+				Canvas.exportCanvasData(this.localDoc), data,
+			);
+			if (hasChanges) {
+				if (!canWrite) this.rejectReaderEdit();
+				return false;
+			}
+			this._readerEditRejected = false;
+			return true;
+		}
 		this.applyDataInternal(data, null);
+		return true;
 	}
 
 	/**
@@ -1075,6 +1129,9 @@ export class Canvas
 	 * present in `ours`: a merge can never delete content it never saw.
 	 */
 	applyMerge(merge: { data: CanvasData; ours: CanvasData }): boolean {
+		if (!this.canPublishContent || this.hsm?.canIngestContent === false) {
+			return false;
+		}
 		const current = Canvas.exportCanvasData(this.localDoc);
 		if (!areCanvasDataEqual(current, merge.ours)) {
 			return false;

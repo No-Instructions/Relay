@@ -25,6 +25,7 @@ const providerError = curryLog("[YSweetProvider]", "error");
 const providerLog = curryLog("[YSweetProvider]", "log");
 const providerDebug = curryLog("[YSweetProvider]", "debug");
 const providerWarn = curryLog("[YSweetProvider]", "warn");
+import type { Capabilities } from "./types";
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
@@ -96,7 +97,7 @@ messageHandlers[messageQueryAwareness] = (
 	_emitSynced,
 	_messageType,
 ) => {
-	if (provider.readOnly) {
+	if (!provider.presence) {
 		return;
 	}
 	encoding.writeVarUint(encoder, messageAwareness);
@@ -191,8 +192,11 @@ export const RECONNECT_BASE_DELAY_MS = 300;
 export const RECONNECT_MAX_DELAY_MS = 30000;
 export const RECONNECT_STABILITY_MS = 30000;
 
+// A refusal is evidence about the token, not an instruction: the grant
+// stays whatever the token says, and the host answers by fetching a fresh
+// one. Flipping here would silence every channel on the connection and
+// fight the next refresh.
 const permissionDeniedHandler = (provider: YSweetProvider, reason: string) => {
-	provider.setReadOnly(true);
 	providerWarn("Permission denied", {
 		room: provider.roomname,
 		reason,
@@ -406,7 +410,7 @@ const setupWS = (provider: YSweetProvider) => {
 			});
 			// broadcast local awareness state
 			if (provider.awareness.getLocalState() !== null) {
-				if (!provider.readOnly) {
+				if (provider.presence) {
 					const encoderAwarenessState = encoding.createEncoder();
 					encoding.writeVarUint(encoderAwarenessState, messageAwareness);
 					encoding.writeVarUint8Array(
@@ -454,7 +458,10 @@ export type YSweetProviderParams = {
 	resyncInterval?: number;
 	maxBackoffTime?: number;
 	disableBc?: boolean;
+	/** Shorthand for a grant that may not write content but keeps presence. */
 	readOnly?: boolean;
+	/** What the connection's grant allows; overrides readOnly when given. */
+	capabilities?: Capabilities;
 	timeProvider?: TimeProvider;
 };
 
@@ -649,6 +656,7 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 	/** Timer that marks a held connection healthy and resets the backoff. */
 	_stableTimeout: ReturnType<typeof setTimeout> | null;
 	readOnly: boolean;
+	presence: boolean;
 	eventSubscriptions: Set<string>;
 	eventCallbacks: Map<string, EventCallback[]>;
 	onSubdocIndex: SubdocIndexCallback | null;
@@ -730,6 +738,7 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 			maxBackoffTime = RECONNECT_MAX_DELAY_MS,
 			disableBc = false,
 			readOnly = false,
+			capabilities,
 			timeProvider,
 		}: YSweetProviderParams = {},
 	) {
@@ -756,7 +765,9 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		this.bcconnected = false;
 		this.disableBc = disableBc;
 		this.wsUnsuccessfulReconnects = 0;
-		this.readOnly = readOnly;
+		const grant = capabilities ?? { writeContent: !readOnly, presence: true };
+		this.readOnly = !grant.writeContent;
+		this.presence = grant.presence;
 		this.messageHandlers = messageHandlers.slice();
 		this._synced = false;
 		this.ws = null;
@@ -826,7 +837,7 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 			}: { added: Array<number>; updated: Array<number>; removed: Array<number> },
 			_origin: unknown,
 		) => {
-			if (this.readOnly) {
+			if (!this.presence) {
 				return;
 			}
 			const changedClients = added.concat(updated).concat(removed);
@@ -1068,7 +1079,7 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 	}
 
 	disconnectBc() {
-		if (this.readOnly) {
+		if (!this.presence) {
 			if (this.bcconnected) {
 				bc.unsubscribe(this.bcChannel, this._bcSubscriber);
 				this.bcconnected = false;
@@ -1120,11 +1131,16 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		}
 	}
 
-	setReadOnly(readOnly: boolean) {
-		this.readOnly = readOnly;
-		if (readOnly) {
+	setCapabilities(capabilities: Capabilities) {
+		this.readOnly = !capabilities.writeContent;
+		this.presence = capabilities.presence;
+		if (this.readOnly) {
 			this._pendingMessages = [];
 		}
+	}
+
+	setReadOnly(readOnly: boolean) {
+		this.setCapabilities({ writeContent: !readOnly, presence: this.presence });
 	}
 
 	connect() {
@@ -1155,10 +1171,10 @@ export class YSweetProvider extends ObservableV2<YSweetProviderEvents> {
 		serverUrl: string,
 		roomname: string,
 		token: string,
-		readOnly?: boolean,
+		capabilities?: Capabilities,
 	): { urlChanged: boolean; newUrl: string } {
-		if (readOnly !== undefined) {
-			this.setReadOnly(readOnly);
+		if (capabilities !== undefined) {
+			this.setCapabilities(capabilities);
 		}
 		// ensure that url is always ends with /
 		while (serverUrl[serverUrl.length - 1] === "/") {

@@ -34,7 +34,7 @@ export interface ClientToken {
 
 	token: string;
 
-	authorization?: "full" | "read-only";
+	authorization?: string;
 	expiryTime?: number;
 	contentType?: number;
 	contentLength?: number;
@@ -42,7 +42,7 @@ export interface ClientToken {
 }
 
 export interface FileToken extends ClientToken {
-	authorization: "full" | "read-only";
+	authorization: string;
 
 	docId: string;
 	folder: string;
@@ -94,4 +94,29 @@ export function decodeClientToken(token: string): ClientToken {
 	}
 	const jsonString = base64ToString(base64);
 	return JSON.parse(jsonString) as ClientToken;
+}
+
+/** What a token's grant allows this client to do on the connection. */
+export interface Capabilities {
+	/** May originate document content and send it. */
+	writeContent: boolean;
+	/** May publish awareness, so others see this client's presence. */
+	presence: boolean;
+}
+
+/**
+ * The one place a grant is interpreted. A token without a grant is a
+ * legacy full-access token. Read-only is the least permissive grant there
+ * is: a Reader is visible on the document, just unable to change it. A
+ * grant this client does not recognize names a scope this client cannot
+ * honor, so it is treated as read-only; whatever else the server allows or
+ * refuses for it, the server decides.
+ */
+export function capabilitiesOf(
+	authorization: string | null | undefined,
+): Capabilities {
+	if (authorization == null || authorization === "full") {
+		return { writeContent: true, presence: true };
+	}
+	return { writeContent: false, presence: true };
 }

@@ -5,13 +5,15 @@ import {
 	type ConnectionState,
 	type ConnectionIntent,
 	type CloseEventLike,
+	type PermissionDeniedEvent,
 } from "./client/provider";
+import { flags } from "./flagManager";
 export type { ConnectionState, ConnectionIntent };
 import { User } from "./User";
 import { HasLogging } from "./debug";
 import { LoginManager } from "./LoginManager";
 import { LiveTokenStore } from "./LiveTokenStore";
-import type { ClientToken } from "./client/types";
+import { capabilitiesOf, type Capabilities, type ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
@@ -74,12 +76,25 @@ function makeProvider(
 			awareness,
 			params: params,
 			disableBc: true,
-			readOnly: clientToken.authorization === "read-only",
+			capabilities: providerCapabilities(clientToken),
 			timeProvider,
 		},
 	);
 
 	return provider;
+}
+
+/**
+ * The grant as this provider should honor it. With the read-only feature
+ * off, a token that cannot write stays silent as well, so nothing about a
+ * Reader's connection changes until the feature ships.
+ */
+function providerCapabilities(clientToken: ClientToken): Capabilities {
+	const capabilities = capabilitiesOf(clientToken.authorization);
+	if (!capabilities.writeContent && !flags().enableReadOnlyPermissions) {
+		return { ...capabilities, presence: false };
+	}
+	return capabilities;
 }
 
 /** Disconnected state returned when no provider exists */
@@ -125,6 +140,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionClose: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	private _offSynced: (() => void) | null = null;
+	private _offPermissionDenied: (() => void) | null = null;
 	private _offLoginManager: (() => void) | null = null;
 	private _awarenessActive: boolean;
 	listeners: Map<unknown, Listener>;
@@ -250,6 +266,12 @@ export class HasProvider extends HasLogging {
 		syncedSub.on();
 		this._offSynced = syncedSub.off;
 
+		const permissionDeniedSub = this.providerPermissionDeniedSubscription(
+			() => this.handlePermissionDenied(),
+		);
+		permissionDeniedSub.on();
+		this._offPermissionDenied = permissionDeniedSub.off;
+
 		return this._ydoc;
 	}
 
@@ -309,6 +331,19 @@ export class HasProvider extends HasLogging {
 	protected handleProviderDesynced(): void {}
 
 	/**
+	 * The server refused a write this provider believed it could make, so
+	 * the held token no longer matches the role the server holds. Ask for a
+	 * token the server has checked against its roles; the authorization it
+	 * carries drives the access-mode transition like any other refresh.
+	 */
+	protected handlePermissionDenied(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
+	}
+
+	/**
 	 * Destroy the remote YDoc and provider, freeing memory.
 	 * The document can be re-created later via ensureRemoteDoc().
 	 */
@@ -335,6 +370,10 @@ export class HasProvider extends HasLogging {
 		if (this._offSynced) {
 			this._offSynced();
 			this._offSynced = null;
+		}
+		if (this._offPermissionDenied) {
+			this._offPermissionDenied();
+			this._offPermissionDenied = null;
 		}
 		if (this._provider) {
 			this._provider.destroy();
@@ -418,28 +457,43 @@ export class HasProvider extends HasLogging {
 
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
+		const previousWrite = this.clientToken
+			? capabilitiesOf(this.clientToken.authorization).writeContent
+			: null;
 		this.clientToken = clientToken;
+		const capabilities = providerCapabilities(clientToken);
+		this.onClientToken(clientToken);
 
-		if (!this._provider) {
-			// No provider yet - token will be used when ensureRemoteDoc() is called
-			return;
+		if (this._provider) {
+			const result = this._provider.refreshToken(
+				clientToken.url,
+				clientToken.docId,
+				clientToken.token,
+				capabilities,
+			);
+
+			if (result.urlChanged) {
+				this.log(`Token Refreshed: setting new provider url, ${result.newUrl}`);
+			}
 		}
 
-		const result = this._provider.refreshToken(
-			clientToken.url,
-			clientToken.docId,
-			clientToken.token,
-			clientToken.authorization === "read-only",
-		);
-
-		if (result.urlChanged) {
-			const maskedUrl = result.newUrl.replace(
-				/token=[^&]+/,
-				"token=[REDACTED]",
-			);
-			this.log(`Token Refreshed: setting new provider url, ${maskedUrl}`);
+		if (previousWrite !== null && previousWrite !== capabilities.writeContent) {
+			this.onAccessModeChanged(!capabilities.writeContent);
 		}
 	}
+
+	/**
+	 * Called when a token refresh flips content-write permission.
+	 * Subclasses drive live permission transitions from here (the provider
+	 * itself emits nothing when readOnly changes).
+	 */
+	protected onAccessModeChanged(_readOnly: boolean): void {}
+
+	/**
+	 * Called with every token this host receives, flip or not. Subclasses
+	 * that remember the server's last answer record it here.
+	 */
+	protected onClientToken(_clientToken: ClientToken): void {}
 
 	public get connected(): boolean {
 		return this.state.status === "connected";
@@ -824,6 +878,18 @@ export class HasProvider extends HasLogging {
 		};
 		const off = () => {
 			this._provider?.off("synced", f);
+		};
+		return { on, off };
+	}
+
+	private providerPermissionDeniedSubscription(
+		f: (event: PermissionDeniedEvent) => void,
+	): Subscription {
+		const on = () => {
+			this._provider?.on("permission-denied", f);
+		};
+		const off = () => {
+			this._provider?.off("permission-denied", f);
 		};
 		return { on, off };
 	}

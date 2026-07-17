@@ -248,7 +248,7 @@ export interface MergeState {
 
 /**
  * Content-write permission for an active document session.
- * Derived from the provider token: authorization === "read-only" maps to
+ * Derived from the provider token: a grant without content write maps to
  * "read"; any write-capable token maps to "write".
  */
 export type ActiveAccessMode = "write" | "read";

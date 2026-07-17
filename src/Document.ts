@@ -5,17 +5,18 @@ import * as Y from "yjs";
 import { HasProvider } from "./HasProvider";
 import { LoginManager } from "./LoginManager";
 import { S3Document, S3Folder, S3RN, S3RemoteDocument } from "./S3RN";
+import { capabilitiesOf } from "./client/types";
 import { SharedFolder } from "./SharedFolder";
 import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce, normalizePath } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency, Lifetime } from "./promiseUtils";
-import { withFlag } from "./flagManager";
+import { flags, withFlag } from "./flagManager";
 import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
-import type { EditorViewRef } from "./merge-hsm/types";
+import type { ActiveAccessMode, EditorViewRef } from "./merge-hsm/types";
 import { DiskFileNotFoundError } from "./merge-hsm/DiskFileNotFoundError";
 import {
 	ProviderIntegration,
@@ -102,6 +103,12 @@ export class Document
 	 * Created when lock is acquired, destroyed when released.
 	 */
 	private _providerIntegration: ProviderIntegration | null = null;
+	// Access mode the current remote replica serves. A replica used under
+	// write access holds every local op the bridge applied, including ops a
+	// provider that lost write access never sent, so it is replaced before
+	// the machine enters read mode; one that has only served read access
+	// holds nothing local and is kept.
+	private _remoteDocAccessMode: ActiveAccessMode | null = null;
 	private _idleProviderIntegrationRefs = 0;
 	private _forkReconcileIdleLease = false;
 	private _activeProviderIntegration = false;
@@ -171,6 +178,7 @@ export class Document
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,
+			getAccessMode: () => this.activeAccessMode,
 			getPersistenceMetadata: () => ({
 				path: this.path,
 				relay: this.sharedFolder.relayId || "",
@@ -428,6 +436,10 @@ export class Document
 		return this.hsm?.getSyncStatus().status !== "conflict";
 	}
 
+	public get canPublishContent(): boolean {
+		return this.canWriteContent;
+	}
+
 	async runSyncSession(
 		intent: SessionIntent,
 		context: SyncOperationContext,
@@ -561,6 +573,9 @@ export class Document
 	async prepareUpload(context: SyncOperationContext): Promise<() => void> {
 				const hsm = this.hsm;
 		if (!hsm) return () => {};
+		if (!this.canPublishContent) {
+			throw new Error(`Cannot upload ${fileName(this.path)}: read-only access`);
+		}
 		if (hsm.hasFork()) {
 			throw new Error(`Cannot upload ${fileName(this.path)} while a fork exists`);
 		}
@@ -712,7 +727,7 @@ export class Document
 			Y.applyUpdate(newDoc, updateBytes);
 
 			if (isEmptyDoc(newDoc)) {
-				if (this.text) {
+				if (this.text && this.canPublishContent) {
 					this.log(
 						"[transfer] server CRDT empty, local has content — uploading",
 					);
@@ -723,6 +738,11 @@ export class Document
 					);
 					this.hsm?.send({ type: "DOWNLOAD_FAILED" });
 					return undefined;
+				}
+				if (this.text) {
+					this.log(
+						"[transfer] server CRDT empty, local has content but access is read-only — awaiting a writer",
+					);
 				}
 				// The server pushes a document.updated event once a peer
 				// uploads content, which re-enables downloads for the guid —
@@ -844,7 +864,17 @@ export class Document
 		const isNew = !this.isRemoteDocLoaded;
 		const doc = super.ensureRemoteDoc();
 		if (isNew) {
-			const seedUpdate = this._hsm?.getRemoteDocSeedUpdate() ?? null;
+			const accessMode = this.activeAccessMode;
+			this._remoteDocAccessMode = accessMode;
+			// A replica consulted under read access is filled by the handshake
+			// alone. The seed is bounded by the retained server head, and a
+			// head recorded at a write session's sync can include ops a
+			// provider without write access never sent; seeding from it would
+			// present those ops as shared.
+			const seedUpdate =
+				accessMode === "write"
+					? (this._hsm?.getRemoteDocSeedUpdate() ?? null)
+					: null;
 			if (seedUpdate) {
 				Y.applyUpdate(doc, seedUpdate, this._provider);
 			}
@@ -893,6 +923,7 @@ export class Document
 		hsm.send({
 			type: "ACQUIRE_LOCK",
 			editorViewRef,
+			accessMode: this.activeAccessMode,
 		});
 		mergeManager.markActive(this.guid);
 		this.setAwarenessActive(true);
@@ -1067,6 +1098,11 @@ export class Document
 	 * @throws Error if HSM is not in active mode (no localDoc available)
 	 */
 	public getWritableDoc(): Y.Doc {
+		if (!this.canWriteContent) {
+			throw new Error(
+				`Document ${this.path}: Cannot write - read-only access.`,
+			);
+		}
 		const localDoc = this.localDoc;
 		if (!localDoc) {
 			throw new Error(
@@ -1078,10 +1114,41 @@ export class Document
 	}
 
 	/**
-	 * Check if the document is in a writable state (HSM active mode).
+	 * Check if the document is active and content-write permission is granted.
 	 */
 	public get isWritable(): boolean {
-		return this.localDoc !== null;
+		return this.canWriteContent && this.localDoc !== null;
+	}
+
+	/**
+	 * Content-write permission for this document. The role-derived policy
+	 * answer is primary — tokens are minted from roles but served through
+	 * an API cache, so during a live transition the token lags the role.
+	 * The token fills in when role data has not synced, and unknown states
+	 * default to write — the server enforces real authorization, and
+	 * failing open avoids stranding writes on missing client state.
+	 */
+	public get canWriteContent(): boolean {
+		if (!flags().enableReadOnlyPermissions) {
+			return true;
+		}
+		const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
+		// A folder-level denial is authoritative even if this document still
+		// holds a token granting write access.
+		if (!this.sharedFolder?.canWriteContent) {
+			return false;
+		}
+		if (policy !== null) {
+			return policy;
+		}
+		if (this.clientToken) {
+			return capabilitiesOf(this.clientToken.authorization).writeContent;
+		}
+		return true;
+	}
+
+	public get activeAccessMode(): ActiveAccessMode {
+		return this.canWriteContent ? "write" : "read";
 	}
 
 	async connect(): Promise<boolean> {
@@ -1130,8 +1197,21 @@ export class Document
 		) {
 			return false;
 		}
-
 		return super.connect();
+	}
+
+	/** Reconcile cached authorization on first connect and provider reconnect. */
+	async getProviderToken() {
+		return this.tokenStore.getToken(
+			S3RN.encode(this.s3rn),
+			this.path || "unknown",
+			this.refreshProvider.bind(this),
+			(token) => {
+				if (!flags().enableReadOnlyPermissions) return false;
+				const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
+				return policy !== null && capabilitiesOf(token.authorization).writeContent !== policy;
+			},
+		);
 	}
 
 	onceConnected(): Promise<void> {
@@ -1445,6 +1525,19 @@ export class Document
 		return wrote;
 	}
 
+	/** Recreate a deleted disk object without replacing live merge state. */
+	async restoreDeletedFile(contents: string): Promise<boolean> {
+		let wrote = false;
+		await this.enqueueDiskWrite(async () => {
+			this._tfile = null;
+			wrote = await this.writeDiskContents(contents, {
+				createIfMissing: true,
+				onlyIfMissing: true,
+			});
+		});
+		return wrote;
+	}
+
 	private async handleWriteDisk(
 		contents: string,
 		mtime?: number,
@@ -1589,6 +1682,7 @@ export class Document
 		contents: string,
 		options: {
 			createIfMissing: boolean;
+			onlyIfMissing?: boolean;
 			excludeWhileActive?: boolean;
 			/**
 			 * Re-ask the merge machine, immediately before the bytes go out,
@@ -1620,7 +1714,8 @@ export class Document
 			this.warn("[writeDiskContents] Skipping write for destroyed document", this.path);
 			return false;
 		}
-		let tfile = this.tfile;
+		let tfile = options.onlyIfMissing ? this.getTFile() : this.tfile;
+		if (options.onlyIfMissing && tfile) return false;
 		if (!tfile && !options.createIfMissing) {
 			return false;
 		}
@@ -1770,6 +1865,91 @@ export class Document
 		if (!this._forkReconcileIdleLease) return;
 		this._forkReconcileIdleLease = false;
 		this.destroyIdleProviderIntegration();
+	}
+
+	/**
+	 * Re-derive access mode and drive the HSM transition for an open
+	 * document. Fired by SharedFolder on role changes and by token
+	 * refreshes; both converge on the derived access mode (role-first,
+	 * token fallback), so a stale cached token can never override a fresh
+	 * role in either direction. The HSM treats a repeated mode as a no-op,
+	 * so the two signal paths compose. Idle documents need no event: the
+	 * HSM's getAccessMode callback re-derives on demand.
+	 *
+	 * Entering read access replaces the remote replica before the machine
+	 * hears about it. In read mode the machine reads the replica as server
+	 * truth, and a replica built during a write session can hold local ops
+	 * the server never took, so the machine must only ever see one the
+	 * handshake filled under the current access. A read-session replica
+	 * carries nothing local, so leaving read access replaces nothing.
+	 */
+	public notifyAccessModeChanged(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		const accessMode = this.activeAccessMode;
+		if (accessMode === "read" && this._remoteDocAccessMode !== "read") {
+			this.replaceRemoteDocForReadAccess();
+		}
+		if (this.isRemoteDocLoaded) {
+			// Under write access the bridge applies local ops to the replica
+			// from here on, so the next entry into read access replaces it.
+			this._remoteDocAccessMode = accessMode;
+		}
+		const hsm = this._hsm;
+		if (!hsm || !hsm.isActive()) {
+			return;
+		}
+		if (accessMode === "read") {
+			hsm.send({ type: "DEMOTE_TO_READ" });
+		} else {
+			hsm.send({ type: "PROMOTE_TO_WRITE" });
+		}
+	}
+
+	/**
+	 * Replace the remote replica with one the handshake fills under read
+	 * access. With a bridge up, the provider reconnects on the fresh replica
+	 * so the machine receives its PROVIDER_SYNCED. Without one, the machine
+	 * is handed the fresh replica if it held the old one, and whoever
+	 * attaches a bridge next connects it.
+	 */
+	private replaceRemoteDocForReadAccess(): void {
+		if (!this.isRemoteDocLoaded) {
+			return;
+		}
+		const hsm = this._hsm;
+		if (hsm && this._providerIntegration) {
+			const result = reconnectProvider({
+				hsm,
+				integration: this._providerIntegration,
+				createFreshRemoteDoc: () => this.ensureRemoteDoc(),
+				destroyCurrentRemoteDoc: () => this.destroyRemoteDoc(),
+				createAndConnectProvider: (_remoteDoc) => {
+					void this.connect();
+					return this._provider as YjsProvider;
+				},
+				providerIntegrationOptions: {
+					onSyncedRemoteHead: this.recordProviderSyncedRemoteHead,
+				},
+			});
+			this._providerIntegration = result.integration;
+			return;
+		}
+		const machineHeldReplica = !!hsm?.getRemoteDoc();
+		this.destroyRemoteDoc();
+		if (hsm && machineHeldReplica) {
+			hsm.setRemoteDoc(this.ensureRemoteDoc());
+		}
+	}
+
+	/**
+	 * Token refreshes flip provider gating; the HSM transition re-derives
+	 * from the role-first access mode, so a stale cached token cannot
+	 * override a fresh role.
+	 */
+	protected onAccessModeChanged(_readOnly: boolean): void {
+		this.notifyAccessModeChanged();
 	}
 
 	/**

@@ -167,6 +167,7 @@ export class CanvasHSM implements SyncMachine {
 	private _recentTransitions: CanvasStateTransition[] = [];
 	/** Result of the most recent completed evaluation (flush payload). */
 	private _lastEvaluation: EvaluationResult | null = null;
+	private _readerRepairPending = false;
 	/**
 	 * The persisted record's local head, retained outside the resettable
 	 * context so a hibernated machine (context reset by LOAD) still answers
@@ -263,6 +264,7 @@ export class CanvasHSM implements SyncMachine {
 					const result = (event as { data?: EvaluationResult }).data;
 					if (!result) return;
 					this._lastEvaluation = result;
+					if (result.readerRepair) this._readerRepairPending = true;
 					this.context.disk = result.disk ? { ...result.disk } : null;
 					this.touch();
 				},
@@ -289,6 +291,7 @@ export class CanvasHSM implements SyncMachine {
 					this.touch();
 				},
 				advanceLCAFromEvaluation: () => {
+					this._readerRepairPending = false;
 					const result = this._lastEvaluation;
 					if (!result) return;
 					this.context.lca = {
@@ -300,6 +303,7 @@ export class CanvasHSM implements SyncMachine {
 				},
 				advanceLCAFromFlush: (_hsm, event) => {
 					if (event.type !== "FLUSH_COMPLETE") return;
+					this._readerRepairPending = false;
 					this.context.lca = {
 						contents: event.contents,
 						hash: event.hash,
@@ -316,6 +320,7 @@ export class CanvasHSM implements SyncMachine {
 					}
 					this.emit({
 						type: "WRITE_DISK",
+						...(result.readerEditOverwritten ? { readerEditOverwritten: true } : {}),
 						contents: result.contents,
 						hash: result.hash,
 					});
@@ -516,12 +521,23 @@ export class CanvasHSM implements SyncMachine {
 	// Evaluation
 	// =========================================================================
 
+	/** Recheck at application time, since a queued merge can outlive its permission. */
+	public get canIngestContent(): boolean {
+		return !this._readerRepairPending && this.config.canWriteContent?.() !== false;
+	}
+
+	public rejectDiskEdit(): void {
+		this._readerRepairPending = true;
+		this.send({ type: "FLUSH_FAILED" });
+		this.send({ type: "DISK_CHANGED" });
+	}
+
 	/**
-	 * Read the disk file and compare disk / localDoc / LCA. Pure with
-	 * respect to machine state: returns a verdict; routing and context
-	 * mutation happen in the machine's guarded onDone handlers.
+	 * Read disk and compare it with localDoc and the LCA. Returns a verdict;
+	 * context mutation and effects belong to the guarded completion handlers.
 	 */
 	private async evaluate(_signal: AbortSignal): Promise<EvaluationResult> {
+		const writableAtStart = this.canIngestContent;
 		const data = this.config.exportData();
 		const contents = this.config.formatData(data);
 		const hash = await this.hashFn(contents);
@@ -541,6 +557,28 @@ export class CanvasHSM implements SyncMachine {
 			disk = {
 				hash: await this.hashFn(diskFile.contents),
 				mtime: diskFile.mtime,
+			};
+		}
+
+		// The disk is never an input to shared content while reading. Capture
+		// permission before the asynchronous read as well as after it, so a
+		// promotion during I/O cannot adopt a Reader's rejected file.
+		if (!writableAtStart || !this.canIngestContent) {
+			if (
+				isCanvasDataEmpty(data) &&
+				!this.context.lca &&
+				!this.config.hasSharedContent?.() &&
+				hasDiskFile
+			) {
+				return { ...base, verdict: "awaiting-enrollment", disk, readerRepair: true };
+			}
+			const parsed = hasDiskFile ? parseCanvasData(raw) : EMPTY_CANVAS;
+			if (diskFile && parsed && areCanvasDataEqual(parsed, data)) {
+				return { ...base, verdict: "synced", disk };
+			}
+			return {
+				...base, verdict: "remote-ahead", disk, readerRepair: true,
+				readerEditOverwritten: diskFile !== null && (hasDiskFile || !!this.context.lca) && disk?.hash !== this.context.lca?.hash,
 			};
 		}
 
