@@ -29,7 +29,7 @@ import type { CanvasEventHandler, CanvasMachineDefinition } from "./types";
  * yet: context is updated, no effects are emitted.
  */
 const REMEMBER_SIGNALS = (
-	target: "loading" | "idle.loading" | "idle.remoteAhead",
+	target: "loading" | "idle.loading" | "idle.remoteAhead" | "idle.ingesting",
 ): Record<string, CanvasEventHandler> => ({
 	SERVER_AHEAD: { target, actions: ["rememberServerAhead"] },
 	DOWNLOAD_COMPLETE: { target, actions: ["settleDownload"] },
@@ -82,8 +82,13 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 					guard: "evaluationAwaitingEnrollment",
 					actions: ["recordEvaluation"],
 				},
-				// disk-ahead and diverged both park until snapshot ingestion
-				// ships; the verdicts stay distinct in the evaluation result.
+				{
+					target: "idle.ingesting",
+					guard: "evaluationIngest",
+					actions: ["recordEvaluation"],
+				},
+				// Diverged parks: a non-empty disk with no baseline, or a
+				// file that fails to parse as a canvas, proves nothing.
 				{ target: "idle.diverged", actions: ["recordEvaluation"] },
 			],
 			onError: [{ target: "idle.diverged", actions: ["recordEvaluationError"] }],
@@ -165,11 +170,42 @@ export const CANVAS_MACHINE: CanvasMachineDefinition = {
 		},
 	},
 
-	// Disk changed locally and cannot be proven untouched. Nothing is
-	// written; remote updates keep converging in CRDT space (downloads are
-	// allowed), and opening the view resolves additively. Snapshot
-	// ingestion (per-id three-way against the LCA) will exit this state
-	// automatically once it ships.
+	// Three-way merge in flight: the INGEST_MERGE effect applies the
+	// merged data into the localDoc and writes the formatted merge to
+	// disk as one host-executed unit. Completion advances the LCA to the
+	// merged state; failure parks in idle.diverged with nothing destroyed.
+	"idle.ingesting": {
+		capabilities: {
+			canEmitEffects: true,
+			canWriteDisk: true,
+		},
+		entry: ["emitIngestMerge"],
+		on: {
+			FLUSH_COMPLETE: {
+				target: "idle.synced",
+				actions: ["advanceLCAFromFlush"],
+			},
+			FLUSH_FAILED: { target: "idle.diverged", actions: ["recordFlushFailure"] },
+			LOCAL_DOC_CHANGED: {
+				target: "idle.ingesting",
+				actions: ["rememberReevaluate"],
+			},
+			DISK_CHANGED: {
+				target: "idle.ingesting",
+				actions: ["rememberReevaluate"],
+			},
+			// The in-flight ingest completes under the view; FLUSH_COMPLETE
+			// in `active` still advances the LCA.
+			ACQUIRE_LOCK: { target: "active", actions: ["markLocked"] },
+			RELEASE_LOCK: { target: "idle.ingesting", actions: ["markUnlocked"] },
+			...REMEMBER_SIGNALS("idle.ingesting"),
+		},
+	},
+
+	// Disk changed locally and no baseline can prove anything: a non-empty
+	// file without an LCA, or a file that fails to parse as a canvas.
+	// Nothing is written; remote updates keep converging in CRDT space
+	// (downloads are allowed), and opening the view resolves additively.
 	"idle.diverged": {
 		capabilities: {
 			canEmitEffects: true,

@@ -165,6 +165,24 @@ export function createTestCanvasVault(
 				});
 				return;
 			}
+			case "INGEST_MERGE": {
+				void canvas
+					.applyData(effect.data)
+					.then(() => {
+						disk.contents = effect.contents;
+						disk.mtime = ++clock;
+						vault.hsm.send({
+							type: "FLUSH_COMPLETE",
+							contents: effect.contents,
+							hash: effect.hash,
+							mtime: disk.mtime,
+						});
+					})
+					.catch((e) => {
+						vault.hsm.send({ type: "FLUSH_FAILED", error: e });
+					});
+				return;
+			}
 			case "PERSIST_STATE":
 				persistedRecords.push(effect.state);
 				return;

@@ -26,6 +26,7 @@ export type CanvasStatePath =
 	| "idle.loading" // reading disk and comparing disk / localDoc / LCA
 	| "idle.synced" // disk and localDoc agree (or nothing to act on); LCA current
 	| "idle.remoteAhead" // localDoc ahead of a provably untouched disk; write in flight
+	| "idle.ingesting" // three-way merge against the LCA in flight
 	| "idle.diverged" // disk changed with no safe convergence path; parked
 	| "active"; // a view is attached; the view owns the disk file
 
@@ -75,8 +76,8 @@ export type EvaluationVerdict =
 	| "awaiting-enrollment" // localDoc has no content yet; nothing may be flushed
 	| "synced" // disk matches localDoc
 	| "remote-ahead" // disk untouched since the LCA (or empty); localDoc ahead
-	| "disk-ahead" // disk changed, localDoc still at the LCA (ingestion slot)
-	| "diverged"; // disk changed and cannot be proven untouched
+	| "ingest" // disk changed with an LCA base; three-way merge computed
+	| "diverged"; // disk changed and no baseline can prove anything
 
 export interface EvaluationResult {
 	verdict: EvaluationVerdict;
@@ -88,6 +89,13 @@ export interface EvaluationResult {
 	disk: CanvasDiskMeta | null;
 	/** The disk JSON failed to parse. */
 	parseError: boolean;
+	/** Three-way merge result; present only with the ingest verdict. */
+	merged?: {
+		data: CanvasData;
+		/** Formatted merge including the disk file's unknown top-level keys. */
+		contents: string;
+		hash: string;
+	};
 }
 
 // =============================================================================
@@ -123,6 +131,17 @@ export type CanvasEvent =
 
 export type CanvasEffect =
 	| { type: "WRITE_DISK"; contents: string; hash: string }
+	| {
+			/**
+			 * Apply the merged data into the localDoc, then write the
+			 * formatted merge to disk, then report FLUSH_COMPLETE — one
+			 * unit; a failure at any step reports FLUSH_FAILED.
+			 */
+			type: "INGEST_MERGE";
+			data: CanvasData;
+			contents: string;
+			hash: string;
+	  }
 	| { type: "RECONCILE_VIEW" }
 	| { type: "ENQUEUE_DOWNLOAD" }
 	| { type: "PERSIST_STATE"; state: PersistedCanvasState }

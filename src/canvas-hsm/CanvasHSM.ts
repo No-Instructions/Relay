@@ -26,7 +26,7 @@ import type {
 	SyncStatus,
 	SyncStatusType,
 } from "../merge-hsm/types";
-import { areCanvasDataEqual } from "../CanvasData";
+import { areCanvasDataEqual, mergeCanvasThreeWay } from "../CanvasData";
 import type { CanvasData } from "../CanvasView";
 import { generateHash } from "../hashing";
 import { curryLog } from "../debug";
@@ -52,6 +52,7 @@ const EFFECT_CAPABILITY: Record<
 	| "canEmitEffects"
 > = {
 	WRITE_DISK: "canWriteDisk",
+	INGEST_MERGE: "canWriteDisk",
 	RECONCILE_VIEW: "canReconcileView",
 	ENQUEUE_DOWNLOAD: "canDownload",
 	SURFACE_STATUS: "canSurfaceStatus",
@@ -72,6 +73,27 @@ export interface CanvasStateTransition {
 
 function isCanvasDataEmpty(data: CanvasData): boolean {
 	return (data.nodes?.length ?? 0) === 0 && (data.edges?.length ?? 0) === 0;
+}
+
+/** Top-level keys in a canvas file the localDoc does not model. */
+function parseCanvasExtras(raw: string): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		if (
+			parsed === null ||
+			typeof parsed !== "object" ||
+			Array.isArray(parsed)
+		) {
+			return {};
+		}
+		const extras: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(parsed)) {
+			if (key !== "nodes" && key !== "edges") extras[key] = value;
+		}
+		return extras;
+	} catch {
+		return {};
+	}
 }
 
 function parseCanvasData(raw: string): CanvasData | null {
@@ -168,6 +190,7 @@ export class CanvasHSM {
 				evaluationAwaitingEnrollment: verdictIs("awaiting-enrollment"),
 				evaluationSynced: verdictIs("synced"),
 				evaluationRemoteAhead: verdictIs("remote-ahead"),
+				evaluationIngest: verdictIs("ingest"),
 			},
 			actions: {
 				resetContext: () => this.resetContext(),
@@ -254,6 +277,19 @@ export class CanvasHSM {
 						type: "WRITE_DISK",
 						contents: result.contents,
 						hash: result.hash,
+					});
+				},
+				emitIngestMerge: () => {
+					const merged = this._lastEvaluation?.merged;
+					if (!merged) {
+						this.warn("entered idle.ingesting without a merge result");
+						return;
+					}
+					this.emit({
+						type: "INGEST_MERGE",
+						data: merged.data,
+						contents: merged.contents,
+						hash: merged.hash,
 					});
 				},
 				emitReconcileView: () => {
@@ -485,8 +521,26 @@ export class CanvasHSM {
 		if (lcaData && areCanvasDataEqual(diskData, lcaData)) {
 			return { ...base, verdict: "remote-ahead", disk };
 		}
-		if (lcaData && areCanvasDataEqual(data, lcaData)) {
-			return { ...base, verdict: "disk-ahead", disk };
+		if (lcaData) {
+			// Disk changed with a baseline: per-id three-way merge. Base is
+			// the LCA, ours the localDoc export (the CRDT side), theirs the
+			// disk file — the vault's most recent intentional act. Unknown
+			// top-level keys in the file pass through to the written result.
+			const mergedData = mergeCanvasThreeWay(lcaData, data, diskData);
+			const mergedContents = this.config.formatData({
+				...parseCanvasExtras(raw),
+				...mergedData,
+			} as CanvasData);
+			return {
+				...base,
+				verdict: "ingest",
+				disk,
+				merged: {
+					data: mergedData,
+					contents: mergedContents,
+					hash: await this.hashFn(mergedContents),
+				},
+			};
 		}
 		return { ...base, verdict: "diverged", disk };
 	}
@@ -523,6 +577,16 @@ export class CanvasHSM {
 	// =========================================================================
 	// Introspection / lifecycle
 	// =========================================================================
+
+	/**
+	 * The LCA parsed as canvas data — the base for three-way merges. Null
+	 * while no LCA exists or its contents fail to parse.
+	 */
+	getLCAData(): CanvasData | null {
+		return this.context.lca
+			? parseCanvasData(this.context.lca.contents)
+			: null;
+	}
 
 	/**
 	 * Per-file status for the shared sync surfaces. The canvas machine has

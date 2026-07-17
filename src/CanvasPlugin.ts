@@ -1,6 +1,10 @@
 import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
-import { areCanvasDataEqual, mergeCanvasViewData } from "./CanvasData";
+import {
+	areCanvasDataEqual,
+	mergeCanvasThreeWay,
+	mergeCanvasViewData,
+} from "./CanvasData";
 import type {
 	CanvasEdge,
 	CanvasEdgeData,
@@ -476,10 +480,23 @@ export class CanvasPlugin extends HasLogging {
 				.catch((e) => this.log(e));
 			return;
 		}
-		const merged = mergeCanvasViewData(
-			this.relayCanvas.exportData(),
-			this.canvas.getData(),
-		);
+		// With an LCA the reconcile merges three-way — base = LCA, ours =
+		// localDoc, theirs = the loaded view data — so external edits to
+		// existing nodes survive a file open. Without a baseline, the
+		// additive union protects a fresh localDoc from a stale disk file.
+		const lcaData = this.relayCanvas.hsm.getLCAData?.();
+		const viewData = this.canvas.getData();
+		let merged: ReturnType<typeof mergeCanvasViewData>;
+		if (lcaData) {
+			const threeWay = mergeCanvasThreeWay(
+				lcaData,
+				this.relayCanvas.exportData(),
+				viewData,
+			);
+			merged = areCanvasDataEqual(threeWay, viewData) ? null : threeWay;
+		} else {
+			merged = mergeCanvasViewData(this.relayCanvas.exportData(), viewData);
+		}
 		if (!merged) return;
 		this.debug(
 			"reconciling view with canvas localDoc",

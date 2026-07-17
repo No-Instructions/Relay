@@ -425,6 +425,26 @@ export class Canvas
 				trackPromise(`canvasFlush:${this.guid}`, p);
 				return;
 			}
+			case "INGEST_MERGE": {
+				const p = (async () => {
+					// One unit: the merged data reaches the localDoc (and
+					// through it every peer), then the formatted merge
+					// reaches disk. A failure at any step parks safely.
+					await this.applyData(effect.data);
+					await this.sharedFolder.flush(this, effect.contents);
+					this.hsm.send({
+						type: "FLUSH_COMPLETE",
+						contents: effect.contents,
+						hash: effect.hash,
+						mtime: this.tfile?.stat.mtime ?? Date.now(),
+					});
+				})().catch((e) => {
+					this.warn("canvas ingest failed", e);
+					this.hsm.send({ type: "FLUSH_FAILED", error: e });
+				});
+				trackPromise(`canvasIngest:${this.guid}`, p);
+				return;
+			}
 			case "RECONCILE_VIEW": {
 				try {
 					this._viewReconciler?.();
