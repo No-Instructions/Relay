@@ -74,6 +74,13 @@ export interface TestHSMOptions {
 
 	/** Optional delay before each mock persistence instance reports synced. */
 	persistenceSyncDelay?: () => Promise<void> | null;
+
+	/**
+	 * Live content-write permission callback (default: write).
+	 * Consulted by idle guards and the SyncBridge outbound gate; active
+	 * sessions can also override per-lock via ACQUIRE_LOCK.accessMode.
+	 */
+	getAccessMode?: () => "write" | "read";
 }
 
 export interface TestHSM {
@@ -233,6 +240,7 @@ export interface TestableHSM {
 	awaitCleanupSettled(): Promise<void>;
 	awaitIdleAutoMerge(): Promise<void>;
 	awaitForkReconcile(): Promise<void>;
+	awaitReadRepair(): Promise<void>;
 	hasFork(): boolean;
 	awaitState(predicate: (statePath: string) => boolean): Promise<void>;
 	getConflictData(options?: { fresh?: boolean }): ConflictData | null;
@@ -412,6 +420,12 @@ export async function createTestHSM(
 				initializedAfterSync = true;
 				return true;
 			},
+			async clearDocumentData() {
+				// Simulates y-indexeddb clearDocumentData: every stored row for
+				// the document is removed so a rebuild re-enrolls from scratch.
+				updateRows.length = 0;
+				captureEntries.clear();
+			},
 			opCapture: null as OpCapture | null,
 		};
 
@@ -453,6 +467,7 @@ export async function createTestHSM(
 		diskLoader,
 		isProviderSynced: () => providerState.synced,
 		replayMode: options.replayMode,
+		getAccessMode: options.getAccessMode,
 		yaml: {
 			parse: (raw: string) =>
 				parseYaml(raw, { schema: "core" }) as any,
