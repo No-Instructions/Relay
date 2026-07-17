@@ -238,6 +238,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	// Live reference to the editor view for reading the dirty flag
 	private _editorViewRef: EditorViewRef | null = null;
+	// CM6 replaces _editorViewRef with a narrower live text reader after attach.
+	// Retain the owning TextFileView separately so its live dirty flag remains
+	// available for external-disk ingestion decisions.
+	private _editorDirtyRef: EditorViewRef | null = null;
 
 	// Obsidian file lifecycle tracking (from workspace events)
 	private _obsidianFileOpen: boolean = false;
@@ -1302,11 +1306,42 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return this.lastKnownEditorText ?? this.pendingEditorContent;
 	}
 
+	private activeEditorBufferIsClean(): boolean {
+		if (this._statePath !== "active.tracking" || this._fork) return false;
+		// A materialized conflict (even one whose banner was dismissed — that
+		// only parks it as deferred, it is cleared on reaching idle.synced) or a
+		// restored deferred conflict means localDoc is not a settled base:
+		// fast-forwarding it to fresh disk bytes would silently resolve the
+		// conflict theirs-wins with no hunk review. Keep the conservative
+		// pending path until the conflict is genuinely gone.
+		if (this._conflict !== null || this._deferredConflict) return false;
+		if (
+			this._editorDirtyRef?.dirty !== false ||
+			!this._editorViewRef ||
+			!this.localDoc
+		) {
+			return false;
+		}
+		// Read-only: guards must not mutate HSM state (the ingest action does
+		// its own read and re-validates equality before diffing).
+		try {
+			return (
+				this._editorViewRef.getViewData() ===
+				this.localDoc.getText("contents").toString()
+			);
+		} catch {
+			return false;
+		}
+	}
+
 	/**
 	 * Rebind the HSM to the current editor view after the editor is recreated.
 	 */
 	attachEditorView(editorViewRef: EditorViewRef, currentText?: string): void {
 		this._editorViewRef = editorViewRef;
+		if (editorViewRef.dirty !== undefined) {
+			this._editorDirtyRef = editorViewRef;
+		}
 		if (currentText !== undefined) {
 			this.lastKnownEditorText = currentText;
 		}
@@ -2434,6 +2469,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 
 			// === Active entering/tracking guards ===
+			activeEditorBufferIsClean: () => this.activeEditorBufferIsClean(),
 			persistenceHasContent: (_hsm, event) => (event as any).hasContent === true,
 			hasPreexistingConflict: () => this._conflict !== null,
 			hasNoLCA: () => this._lca === null,
@@ -2771,6 +2807,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			storeEditorContent: (_hsm, event) => {
 				const e = event as any;
 				this._editorViewRef = e.editorViewRef ?? null;
+				this._editorDirtyRef = e.editorViewRef ?? null;
 				if (this._statePath.startsWith("idle.")) {
 					this._enteringFromDiverged =
 						this._statePath === "idle.diverged" ||
@@ -2928,6 +2965,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					this.lastKnownEditorText = this._editorViewRef.getViewData();
 				}
 				this._editorViewRef = null;
+				this._editorDirtyRef = null;
 				this._cleanupWasConflict = this._statePath.includes("conflict");
 				this._cleanupType = 'release';
 				this._bridge.providerSynced = false;
@@ -3236,6 +3274,51 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				}
 
 				// Always flush — the queue handles filtering
+				this._bridge.flushOutbound();
+			},
+			ingestCleanActiveDisk: (_hsm, event) => {
+				const e = event as any;
+				if (
+					!this.localDoc ||
+					typeof e.contents !== "string" ||
+					!this._editorViewRef
+				) {
+					return;
+				}
+				// Read the live buffer directly (not through any cache the guard
+				// may have touched) and re-validate that it still equals localDoc:
+				// the diff below is only correct against that exact base. Guard and
+				// action run synchronously back to back today, but this keeps the
+				// invariant local instead of depending on interpreter ordering.
+				let editorText: string;
+				try {
+					editorText = this._editorViewRef.getViewData();
+				} catch {
+					return;
+				}
+				if (
+					editorText !== this.localDoc.getText("contents").toString()
+				) {
+					return;
+				}
+
+				// Treat clean-buffer disk input like an editor edit: apply the same
+				// diff-based CRDT mutation used by normal CM6 changes, explicitly
+				// dispatch the disk-vs-editor patch to every view, then drain the
+				// ordinary outbound queue. The sync annotation on DISPATCH_CM6 keeps
+				// the editor reflection from being ingested a second time.
+				const changes = this.computeDiffChanges(editorText, e.contents);
+				if (changes.length > 0) {
+					const ytext = this.localDoc.getText("contents");
+					this.localDoc.transact(() => {
+						this.applyChangesToYText(ytext, changes);
+						this.syncFrontmatterToMap();
+					}, this);
+				}
+				this.lastKnownEditorText = e.contents;
+				if (changes.length > 0) {
+					this.emitEffect({ type: "DISPATCH_CM6", changes });
+				}
 				this._bridge.flushOutbound();
 			},
 			updateDiskFromSave: (_hsm, event) => {
@@ -5018,10 +5101,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// (save completed but file watcher hasn't fired yet)
 			const contentMatches =
 				hashMatches ||
-				this.pendingDiskContents === finalContent ||
 				this.lastKnownEditorText === finalContent;
 
-			if (contentMatches && !this._fork) {
+			// A pending disk body is evidence that the current disk bytes have not
+			// been ingested. In particular, lastKnownEditorText only proves what the
+			// closing editor showed; it must not turn the new disk hash into an LCA
+			// for the old CRDT text. Leave the LCA frozen so idle.loading classifies
+			// the pending body as diskAhead/diverged and reconciles it.
+			if (
+				contentMatches &&
+				!this._fork &&
+				this.pendingDiskContents === null
+			) {
 				// Disk matches localDoc - update LCA to reflect the synced state.
 				// Use disk.hash (not contentHash) to ensure hasDiskChangedSinceLCA()
 				// returns false, even if hash functions differ between sources.

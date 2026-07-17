@@ -35,10 +35,13 @@ export interface FrontMatterPrimitives {
 
 /**
  * Narrow interface for reading editor view state.
- * Used to capture the definitive editor content on release.
+ * Used to capture the definitive editor content on release and to distinguish
+ * a clean Obsidian buffer from one with unflushed user edits.
  */
 export interface EditorViewRef {
 	getViewData(): string;
+	/** Obsidian TextFileView dirty flag. Omitted by editor types without one. */
+	readonly dirty?: boolean;
 }
 
 // =============================================================================

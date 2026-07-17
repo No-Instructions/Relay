@@ -1210,8 +1210,55 @@ export class LiveViewManager {
 		document.userLock = true;
 
 		if (wasEmpty) {
-			document.acquireLock(editorViewRef);
+			document.acquireLock(this.liveEditorViewRef(document, editorViewRef));
 		}
+	}
+
+	/**
+	 * Wrap the lock-time editor ref so `dirty` resolves the owning views at
+	 * read time. Only the FIRST viewer of a document acquires the lock, so the
+	 * captured view can outlive its pane while a sibling pane keeps the
+	 * document open — and a dead view's dirty flag settles at `false`, which
+	 * would falsely vouch for a buffer the surviving pane has since edited.
+	 * Clean (`false`) is reported only when at least one live text view of the
+	 * file exists and every one of them reports exactly `false`; anything else
+	 * reads as not-provably-clean (`true`/`undefined`), which downstream
+	 * consumers treat conservatively.
+	 */
+	private liveEditorViewRef(
+		document: Document,
+		editorViewRef: EditorViewRef,
+	): EditorViewRef {
+		const resolveDirty = (): boolean | undefined => {
+			const sharedFolder = document.destroyed
+				? null
+				: document.sharedFolder;
+			if (!sharedFolder) return undefined;
+			const fullPath = sharedFolder.getPath(document.path);
+			let found = false;
+			let sawDirty = false;
+			let sawUnknown = false;
+			iterateTextFileViews(this.workspace, (view) => {
+				if (view.file?.path !== fullPath) return;
+				found = true;
+				const viewDirty = (view as TextFileView & { dirty?: boolean })
+					.dirty;
+				if (viewDirty === true) {
+					sawDirty = true;
+				} else if (viewDirty !== false) {
+					sawUnknown = true;
+				}
+			});
+			if (sawDirty) return true;
+			if (!found || sawUnknown) return undefined;
+			return false;
+		};
+		return {
+			getViewData: () => editorViewRef.getViewData(),
+			get dirty(): boolean | undefined {
+				return resolveDirty();
+			},
+		};
 	}
 
 	releaseDocumentLock(

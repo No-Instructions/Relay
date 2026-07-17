@@ -727,7 +727,14 @@ export const MACHINE: MachineDefinition = {
 				],
 			},
 			SAVE_COMPLETE: { target: 'active.tracking', actions: ['updateDiskFromSave'] },
-			DISK_CHANGED: { target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
+			DISK_CHANGED: [
+				{
+					target: 'active.tracking',
+					guard: 'activeEditorBufferIsClean',
+					actions: ['ingestCleanActiveDisk', 'storeDiskMetadataOnly'],
+				},
+				{ target: 'active.tracking', actions: ['storeDiskMetadataOnly'] },
+			],
 			CONNECTED: { target: 'active.tracking', actions: ['flushPendingToRemote', 'mergeRemoteToLocal'] },
 			DISCONNECTED: { target: 'active.tracking', actions: ['setOffline'] },
 			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'reconcileForkInActive'] },
