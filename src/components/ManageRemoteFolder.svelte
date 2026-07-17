@@ -56,7 +56,9 @@
 
 	// Dynamic role loading for forwards compatibility
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return $roles.values().sort(rolePrioritySort);
+		return [...$roles.values()].sort(
+			rolePrioritySort,
+		);
 	});
 
 	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
@@ -295,10 +297,13 @@
 			plugin.app,
 			plugin.relayManager,
 			remoteFolder,
-			async (userIds: string[], role) =>
+			async (grants) =>
 				Promise.all(
-					userIds.map((userId) =>
-						plugin.relayManager.addFolderRole(remoteFolder, userId, role),
+					grants.map((grant) =>
+						plugin.relayManager.addFolderRole(
+							remoteFolder,
+							grant,
+						),
 					),
 				).then(() => undefined),
 		);
@@ -307,7 +312,10 @@
 
 	async function handleFolderRoleChange(folderRole: FolderRole, newRole: Role) {
 		try {
-			await plugin.relayManager.updateFolderRole(folderRole, newRole);
+			await plugin.relayManager.updateFolderRole(
+				folderRole,
+				newRole,
+			);
 		} catch (error) {
 			handleServerError(error, "Failed to change user role.");
 			throw error;

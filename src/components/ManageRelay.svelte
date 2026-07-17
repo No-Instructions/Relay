@@ -11,6 +11,7 @@
 		type RemoteSharedFolder,
 		type Role,
 	} from "src/Relay";
+	import type { FolderRoleGrant } from "src/RelayManager";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
 	import RemoteFolder from "./RemoteFolder.svelte";
@@ -149,7 +150,9 @@
 
 	// Dynamic role loading for forwards compatibility
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return $roles.values().sort(rolePrioritySort);
+		return [...$roles.values()].sort(
+			rolePrioritySort,
+		);
 	});
 
 	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
@@ -367,7 +370,10 @@
 
 	async function handleRoleChange(relay_role: RelayRole, newRole: Role) {
 		try {
-			await plugin.relayManager.updateRelayRole(relay_role, newRole);
+			await plugin.relayManager.updateRelayRole(
+				relay_role,
+				newRole,
+			);
 		} catch (error) {
 			handleServerError(error, "Failed to change user role.");
 			throw error;
@@ -426,14 +432,14 @@
 		folderPath: string,
 		folderName: string,
 		isPrivate: boolean,
-		userIds: string[],
+		grants: FolderRoleGrant[],
 	): Promise<SharedFolder>;
 	// Implementation
 	async function onChoose(
 		folderPath: string,
 		folderName?: string,
 		isPrivate?: boolean,
-		userIds?: string[],
+		grants?: FolderRoleGrant[],
 	): Promise<SharedFolder> {
 		const normalizedPath = normalizePath(folderPath);
 		const pending = pendingFolderShares.get(normalizedPath);
@@ -473,10 +479,13 @@
 				folder.remote = remote;
 			}
 
-			if (isPrivate && userIds && userIds.length > 0) {
+			if (isPrivate && grants && grants.length > 0) {
 				await Promise.all(
-					userIds.map((userId) =>
-						plugin.relayManager.addFolderRole(remote, userId, "Member"),
+					grants.map((grant) =>
+						plugin.relayManager.addFolderRole(
+							remote,
+							grant,
+						),
 					),
 				);
 			}
@@ -486,7 +495,7 @@
 			pendingFolderGuids.delete(normalizedPath);
 			pendingRemoteFolders.delete(normalizedPath);
 
-			if (userIds && userIds.length > 0) {
+			if (grants && grants.length > 0) {
 				setTimeout(() => {
 					dispatch("manageRemoteFolder", {
 						remoteFolder: remote,
