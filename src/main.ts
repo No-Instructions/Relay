@@ -841,6 +841,7 @@ export default class Live extends Plugin {
 				new SyncStatusView(leaf, {
 					sharedFolders: this.sharedFolders,
 					timeProvider: this.timeProvider,
+					debugAPI: this.relayDebugAPI,
 					onReviewHeldDeletions: (folder) =>
 						this.gatedDeletions?.present(sharedFolderGateView(folder)),
 				}),

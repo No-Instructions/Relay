@@ -270,6 +270,11 @@
 		>{snapshot.latestActivity ?? ""}</span>
 	</div>
 
+	<!-- Mount point for the note state inspector strip. The strip component
+	     is owned by SyncStatusView and re-parented here after each render;
+	     the div is unconditional so Svelte keeps it stable across updates. -->
+	<div class="system3-note-state-slot"></div>
+
 	{#if deletionsGated}
 		<div class="sync-status-section sync-status-held-deletions">
 			<div class="sync-status-section-header">Held deletions</div>
