@@ -740,6 +740,11 @@ export class BackgroundSync extends HasLogging {
 		target: SyncParticipant,
 		trigger = "upload",
 	): Promise<SyncCompletionOutcome> {
+		if (!target.canPublishContent) {
+			this.debug(`[enqueueUpload] skipped ${target.path}: read-only access`);
+			this.clearFailure(this.failureKey("sync", target.guid));
+			return "cancelled";
+		}
 		const completion = await this.admit(
 			createWorkRequest(target, "upload", trigger),
 		);

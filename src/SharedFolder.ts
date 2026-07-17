@@ -3,6 +3,7 @@ import { uuidv4 } from "lib0/random";
 import {
 	FileManager,
 	type MetadataCache,
+	Notice,
 	TAbstractFile,
 	TFile,
 	TFolder,
@@ -198,6 +199,13 @@ export const NEW_FILE_REGISTRATION_DEBOUNCE_MS = 500;
 // does not remain eligible for restoration indefinitely.
 export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Window over which per-file reader-edit-overwrite notices coalesce into one. */
+export const READER_EDIT_OVERWRITE_COALESCE_MS = 300;
+/** How long the coalesced reader-edit-overwrite notice stays on screen. */
+export const READER_EDIT_OVERWRITE_NOTICE_MS = 12_000;
+/** Suppress repeated Reader-rejection notices for a path while one is visible. */
+export const READER_EDIT_OVERWRITE_COOLDOWN_MS =
+	READER_EDIT_OVERWRITE_NOTICE_MS;
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
 	notifyListeners = debounce(() => super.notifyListeners(), 100);
@@ -237,6 +245,14 @@ export class SharedFolder extends HasProvider {
 	fset: Files;
 	relayId?: string;
 	_remote?: RemoteSharedFolder;
+	// Last observed content-write permission; null until the role
+	// subscription delivers its first snapshot.
+	private _lastCanWriteContent: boolean | null = null;
+	private _lastCanManageFiles: boolean | null = null;
+	/** Cached tri-state role-policy answer; undefined means invalidated. */
+	private _canWriteContentAnswerCache: boolean | null | undefined = undefined;
+	/** Cached folder-structure policy answer; undefined means invalidated. */
+	private _canManageFilesAnswerCache: boolean | null | undefined = undefined;
 	_shouldConnect: boolean;
 	private _localOnly: boolean;
 	destroyed: boolean = false;
@@ -268,9 +284,16 @@ export class SharedFolder extends HasProvider {
 	 * vanishes within the window is cancelled before it registers.
 	 */
 	private pendingCreates: Map<string, number> = new Map();
+	/** Vault rename echoes produced while restoring a Reader-rejected move. */
+	private readerRestoreRenameEchoes: Set<string> = new Set();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
 	private _persistence: IndexeddbPersistence;
+	/** Paths of Reader edits a repair sweep overwrote, pending one coalesced notice. */
+	private _readerEditOverwrites: string[] = [];
+	private _readerEditOverwriteTimer: number | null = null;
+	/** Paths already surfaced while their notice remains visible. */
+	private _recentReaderEditOverwrites: Map<string, number> = new Map();
 	proxy: SharedFolder;
 	cas: ContentAddressedStore;
 	syncSettingsManager: SyncSettingsManager;
@@ -488,6 +511,50 @@ export class SharedFolder extends HasProvider {
 			}),
 		);
 
+		// Role changes arrive live over the PocketBase subscription. A change
+		// to the current user's write permission drives the HSM immediately and
+		// forces a token refresh so the provider transport catches up.
+		this._lastCanWriteContent = null;
+		let roleSnapshotReceived = false;
+		const onRoleChange = () => {
+			if (!flags().enableReadOnlyPermissions) {
+				// Flag-off role notifications retain legacy behavior and avoid
+				// paying for a policy derivation nobody consumes.
+				this._canWriteContentAnswerCache = undefined;
+				this._canManageFilesAnswerCache = undefined;
+				this._lastCanWriteContent = null;
+				this._lastCanManageFiles = null;
+				return;
+			}
+			const writeAnswer = this.deriveCanWriteContentAnswer();
+			const manageAnswer = this.deriveCanManageFilesAnswer();
+			this._canWriteContentAnswerCache = writeAnswer;
+			this._canManageFilesAnswerCache = manageAnswer;
+			const canWrite = writeAnswer ?? true;
+			const canManage = manageAnswer ?? true;
+			if (!roleSnapshotReceived) {
+				roleSnapshotReceived = true;
+				this._lastCanWriteContent = canWrite;
+				this._lastCanManageFiles = canManage;
+				return;
+			}
+			const changed =
+				this._lastCanWriteContent !== canWrite ||
+				this._lastCanManageFiles !== canManage;
+			this._lastCanWriteContent = canWrite;
+			this._lastCanManageFiles = canManage;
+			if (!changed) {
+				return;
+			}
+			this.refreshDocumentTokensForPermissionChange();
+		};
+		this.unsubscribes.push(
+			this.relayManager.folderRoles.subscribe(onRoleChange),
+		);
+		this.unsubscribes.push(
+			this.relayManager.relayRoles.subscribe(onRoleChange),
+		);
+
 		this.unsubscribes.push(
 			this.relayManager.storageQuotas.subscribe(async (storageQuotas) => {
 				const quota = storageQuotas.find((quota) => {
@@ -634,6 +701,8 @@ export class SharedFolder extends HasProvider {
 					// When a file is closed, ProviderIntegration is destroyed so no one
 					// listens for these effects. Handle them at the SharedFolder level.
 					await this.handleIdleSyncToRemote(guid, effect.update);
+				} else if (effect.type === "READER_EDIT_OVERWRITTEN") {
+					this.recordReaderEditOverwrite(guid, effect.path);
 				}
 			},
 			getPersistenceMetadata: (guid: string, path: string) => {
@@ -1147,6 +1216,14 @@ export class SharedFolder extends HasProvider {
 			return;
 		}
 
+		// Read-only access publishes nothing.
+		if (!file.canWriteContent) {
+			this.debug?.(
+				`[handleIdleSyncToRemote] Document ${guid} has read-only access, skipping`,
+			);
+			return;
+		}
+
 		try {
 			// Apply update to the document's remoteDoc (which is file.ydoc).
 			// This intentionally triggers lazy creation (wake from hibernation).
@@ -1385,7 +1462,10 @@ export class SharedFolder extends HasProvider {
 		// rename/delete), rather than registered early by a scan.
 		let syncTFiles = this.getSyncFiles().filter((tfile) => {
 			const vpath = this.getVirtualPath(tfile.path);
-			return !this.pendingCreates.has(vpath);
+			return (
+				!this.pendingCreates.has(vpath) &&
+				(this.canManageFiles || this.syncStore.has(vpath))
+			);
 		});
 		if (types) {
 			syncTFiles = syncTFiles.filter((tfile) => {
@@ -1804,6 +1884,119 @@ export class SharedFolder extends HasProvider {
 		return this._remote;
 	}
 
+	/**
+	 * Tri-state content-write answer from the client-side role policy.
+	 * Null means the role data needed to answer has not synced (every real
+	 * folder carries at least its owner's role record), so callers should
+	 * fall back to token- or default-derived modes rather than trusting a
+	 * fail-closed policy evaluation over missing data.
+	 *
+	 * The role is the primary access-mode source: tokens are minted from
+	 * roles but served through an API cache, so a freshly flipped role with
+	 * a stale cached token is the normal case during a live transition.
+	 */
+	private deriveCanWriteContentAnswer(): boolean | null {
+		return this.deriveFolderPolicyAnswer("edit_content");
+	}
+
+	private deriveCanManageFilesAnswer(): boolean | null {
+		return this.deriveFolderPolicyAnswer("manage_files");
+	}
+
+	private deriveFolderPolicyAnswer(
+		action: "edit_content" | "manage_files",
+	): boolean | null {
+		const remote = this.remote;
+		if (!remote) {
+			return null;
+		}
+		const userId = this.relayManager?.user?.id;
+		const policyManager = this.relayManager?.policyManager;
+		if (!userId || !policyManager) {
+			return null;
+		}
+		const folderRolesSynced = this.relayManager.folderRoles
+			.values()
+			.some((r) => r.sharedFolderId === remote.id);
+		const relayRolesSynced = this.relayManager.relayRoles
+			.values()
+			.some((r) => r.relayId === remote.relayId);
+		if (!folderRolesSynced && !relayRolesSynced) {
+			return null;
+		}
+		const result = policyManager.isAllowed({
+			principal: userId,
+			action,
+			resource: ["folder", remote.id],
+		});
+		return result.allowed;
+	}
+
+	public get canWriteContentAnswer(): boolean | null {
+		if (this._canWriteContentAnswerCache === undefined) {
+			this._canWriteContentAnswerCache =
+				this.deriveCanWriteContentAnswer();
+		}
+		return this._canWriteContentAnswerCache;
+	}
+
+	/**
+	 * Content-write permission for documents in this folder. Unknown states
+	 * default to write — the server enforces real authorization, and failing
+	 * open avoids stranding writes on missing client state.
+	 */
+	public get canWriteContent(): boolean {
+		if (!flags().enableReadOnlyPermissions) {
+			return true;
+		}
+		if (this._lastCanWriteContent == null) {
+			this._lastCanWriteContent = this.canWriteContentAnswer ?? true;
+		}
+		return this._lastCanWriteContent;
+	}
+
+	/** Whether local create, rename, move, and delete intent may change membership. */
+	public get canManageFiles(): boolean {
+		if (!flags().enableReadOnlyPermissions) return true;
+		if (this._canManageFilesAnswerCache === undefined) {
+			this._canManageFilesAnswerCache = this.deriveCanManageFilesAnswer();
+		}
+		return this._canManageFilesAnswerCache ?? true;
+	}
+
+	private rejectReaderFolderChange(paths: string[]): boolean {
+		if (this.canManageFiles) return false;
+		for (const path of paths) {
+			this.recordReaderEditOverwrite("", this.getPath(path));
+		}
+		return true;
+	}
+
+	/**
+	 * Propagate a content-write permission flip to this folder's documents.
+	 * Open documents transition immediately from the role change itself;
+	 * documents holding a registered token also get a forced refresh so the
+	 * provider's authorization catches up with the role-derived policy.
+	 */
+	private refreshDocumentTokensForPermissionChange(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		this.debug(
+			`content-write permission changed; refreshing document tokens`,
+		);
+		this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
+		this.files.forEach((file) => {
+			const s3rn = (file as unknown as { s3rn?: HasProvider["s3rn"] }).s3rn;
+			if (s3rn) {
+				this.tokenStore.forceRefresh(S3RN.encode(s3rn));
+			}
+			if (isDocument(file)) {
+				file.notifyAccessModeChanged();
+			}
+		});
+	}
+
 	private subscribeToRemoteRelay(remote: RemoteSharedFolder): void {
 		this.unsubscribes.push(
 			remote.relay.subscribe((relay) => {
@@ -1820,6 +2013,10 @@ export class SharedFolder extends HasProvider {
 		}
 		const previousRelayId = this.relayId;
 		this._remote = value;
+		this._canWriteContentAnswerCache = undefined;
+		this._canManageFilesAnswerCache = undefined;
+		this._lastCanWriteContent = null;
+		this._lastCanManageFiles = null;
 		this.relayId = value?.relay?.guid;
 		this.s3rn = this.relayId
 			? new S3RemoteFolder(this.relayId, this.guid)
@@ -2806,6 +3003,7 @@ export class SharedFolder extends HasProvider {
 			if (this.isPendingDelete(vpath)) return;
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!tfile) return;
+			if (this.rejectReaderFolderChange([vpath])) return;
 			const newDocs = this.placeHold([tfile]);
 			if (newDocs.includes(vpath)) {
 				this.uploadFile(tfile);
@@ -2823,8 +3021,41 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	private readerRestoreRenameKey(oldPath: string, newPath: string): string {
+		return `${oldPath}\0${newPath}`;
+	}
+
+	private consumeReaderRestoreRenameEcho(
+		file: TAbstractFile,
+		oldPath: string,
+	): boolean {
+		const echoes = this.readerRestoreRenameEchoes ??= new Set();
+		return echoes.delete(this.readerRestoreRenameKey(oldPath, file.path));
+	}
+
+	private restoreUntrackedReaderRename(
+		file: TAbstractFile,
+		oldPath: string,
+	): Promise<void> {
+		const echoes = this.readerRestoreRenameEchoes ??= new Set();
+		const key = this.readerRestoreRenameKey(file.path, oldPath);
+		echoes.add(key);
+		let restore: Promise<void>;
+		try {
+			restore = this.fileManager.renameFile(file, normalizePath(oldPath));
+		} catch (error) {
+			echoes.delete(key);
+			throw error;
+		}
+		return restore.catch((error) => {
+			echoes.delete(key);
+			throw error;
+		});
+	}
+
 	/** Route an in-folder vault rename. */
 	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
+		if (this.consumeReaderRestoreRenameEcho(file, oldPath)) return;
 		const oldVPath = this.getVirtualPath(oldPath);
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
@@ -2832,13 +3063,25 @@ export class SharedFolder extends HasProvider {
 		if (this.consumeMoveEcho(oldVPath, newVPath)) {
 			return;
 		}
-		if (this.syncStore.has(oldVPath)) {
+		const oldTracked = this.syncStore.has(oldVPath);
+		const newTracked = this.syncStore.has(newVPath);
+		const hasPendingClaim =
+			this.pendingUpload.has(oldVPath) || this.pendingUpload.has(newVPath);
+		if (!this.canManageFiles && !oldTracked && !hasPendingClaim) return;
+		if (this.rejectReaderFolderChange([oldVPath, newVPath])) {
+			const guid = this.syncStore.get(oldVPath);
+			const sharedFile = guid ? this.files.get(guid) : undefined;
+			const restore = sharedFile
+				? this._handleServerRename(sharedFile, oldVPath, file)
+				: this.restoreUntrackedReaderRename(file, oldPath);
+			trackPromise(`restoreReaderRename:${this.guid}:${oldVPath}`, restore);
+			return;
+		}
+		if (oldTracked) {
 			this.renameFile(file, oldPath);
 			return;
 		}
-		if (this.syncStore.has(newVPath) || !this.isSyncableTFile(file)) {
-			return;
-		}
+		if (newTracked || !this.isSyncableTFile(file)) return;
 		// A distinct file renamed into the vacated source is a new disk
 		// occupant. It may claim the path without taking over the moved guid.
 		this.observeMoveSourceRecreation(newVPath);
@@ -2876,6 +3119,56 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
+	public recordReaderEditOverwrite(guid: string, path: string): void {
+		if (this.destroyed || !flags().enableReadOnlyPermissions) return;
+		const file = this.files.get(guid);
+		const fullPath =
+			file && (isDocument(file) || isCanvas(file))
+				? join(this.path, file.path)
+				: path || guid;
+		const now = this.timeProvider.now();
+		const lastShown = this._recentReaderEditOverwrites.get(fullPath);
+		if (
+			lastShown !== undefined &&
+			now - lastShown < READER_EDIT_OVERWRITE_COOLDOWN_MS
+		) {
+			return;
+		}
+		this._recentReaderEditOverwrites.set(fullPath, now);
+		if (!this._readerEditOverwrites.includes(fullPath)) {
+			this._readerEditOverwrites.push(fullPath);
+		}
+		if (this._readerEditOverwriteTimer !== null) return;
+		this._readerEditOverwriteTimer = this.timeProvider.setTimeout(() => {
+			this._readerEditOverwriteTimer = null;
+			this.flushReaderEditOverwrites();
+		}, READER_EDIT_OVERWRITE_COALESCE_MS);
+	}
+
+	private flushReaderEditOverwrites(): void {
+		if (this._readerEditOverwriteTimer !== null) {
+			this.timeProvider.clearTimeout(this._readerEditOverwriteTimer);
+			this._readerEditOverwriteTimer = null;
+		}
+		const paths = this._readerEditOverwrites;
+		this._readerEditOverwrites = [];
+		if (paths.length === 0) return;
+
+		const shown = paths.slice(0, 3);
+		const remainder = paths.length - shown.length;
+		const fileList =
+			shown.join(", ") + (remainder > 0 ? `, +${remainder} more` : "");
+		const lead =
+			paths.length === 1
+				? `A local edit to ${shown[0]} was rejected because this folder is read-only.`
+				: `Local edits to ${paths.length} files were rejected because this folder is read-only: ${fileList}.`;
+		const message =
+			`${lead} The shared version remains authoritative and the edit was not shared. ` +
+			`If the edit reached disk, open Obsidian's File Recovery (core plugin), ` +
+			`or use git if this vault is version-controlled.`;
+		new Notice(message, READER_EDIT_OVERWRITE_NOTICE_MS);
+		this.log(`[read-only] reader edits overwritten: ${paths.join(", ")}`);
+	}
 	syncByType(
 		syncStore: SyncStore,
 		diffLog: string[],
@@ -3388,7 +3681,7 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	private getDoc(vpath: string): Document {
+	private getDoc(vpath: string): Document | null {
 		const id = this.syncStore.get(vpath);
 		if (id !== undefined) {
 			const doc = this.files.get(id);
@@ -3407,6 +3700,7 @@ export class SharedFolder extends HasProvider {
 				return this.createDoc(vpath);
 			}
 		} else {
+			if (!this.canManageFiles) return null;
 			// the File exists, but the ID doesn't
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!(tfile instanceof TFile)) {
@@ -3422,7 +3716,7 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	private getCanvas(vpath: string): Canvas {
+	private getCanvas(vpath: string): Canvas | null {
 		const id = this.syncStore.get(vpath);
 		if (id !== undefined) {
 			const canvas = this.files.get(id);
@@ -3441,6 +3735,7 @@ export class SharedFolder extends HasProvider {
 				return this.createCanvas(vpath);
 			}
 		} else {
+			if (!this.canManageFiles) return null;
 			// the File exists, but the ID doesn't
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!(tfile instanceof TFile)) {
@@ -3469,6 +3764,12 @@ export class SharedFolder extends HasProvider {
 		file: IFile,
 		outcome: SyncCompletionOutcome = "completed",
 	) {
+		if (isSyncFolder(file) && !this.canManageFiles) {
+			if (this.pendingUpload.get(file.path) === file.guid) {
+				this.recordReaderEditOverwrite("", this.getPath(file.path));
+			}
+			return;
+		}
 		// Claim-implies-fetchable: membership is never published for content
 		// whose transfer did not complete. A cancelled transfer must stand
 		// down even when the slot reads empty — the competing claim that
@@ -4590,6 +4891,25 @@ export class SharedFolder extends HasProvider {
 		if (paths.length === 0) {
 			return;
 		}
+		if (!this.canManageFiles) {
+			const readerOwnedPaths = paths.filter(
+				(vpath) => !!this.syncStore.getMeta(vpath) || this.pendingUpload.has(vpath),
+			);
+			if (readerOwnedPaths.length === 0) {
+				// A local-only path has no shared membership to protect.
+				return;
+			}
+			this.rejectReaderFolderChange(readerOwnedPaths);
+			for (const vpath of readerOwnedPaths) {
+				const meta = this.syncStore.getMeta(vpath);
+				if (!meta || this.existsSync(vpath)) continue;
+				trackPromise(
+					`restoreReaderDelete:${this.guid}:${vpath}`,
+					this._handleServerCreate(vpath, meta).then(() => undefined),
+				);
+			}
+			return;
+		}
 		const cleanupGuids = new Map<string, string>();
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
@@ -4648,6 +4968,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	renameFile(tfile: TAbstractFile, oldPath: string) {
+		if (this.consumeReaderRestoreRenameEcho(tfile, oldPath)) return;
 		const newPath = tfile.path;
 		let newVPath = "";
 		let oldVPath = "";
@@ -4664,6 +4985,23 @@ export class SharedFolder extends HasProvider {
 
 		if (!newVPath && !oldVPath) {
 			// not related to shared folders
+			return;
+		}
+		const oldTracked = oldVPath ? this.syncStore.has(oldVPath) : false;
+		const newTracked = newVPath ? this.syncStore.has(newVPath) : false;
+		const hasPendingClaim =
+			(oldVPath ? this.pendingUpload.has(oldVPath) : false) ||
+			(newVPath ? this.pendingUpload.has(newVPath) : false);
+		if (!this.canManageFiles && !oldTracked && !newTracked && !hasPendingClaim) {
+			return;
+		}
+		if (this.rejectReaderFolderChange([oldVPath, newVPath].filter(Boolean))) {
+			const guid = oldVPath ? this.syncStore.get(oldVPath) : undefined;
+			const sharedFile = guid ? this.files.get(guid) : undefined;
+			const restore = sharedFile && oldVPath && newVPath
+				? this._handleServerRename(sharedFile, oldVPath, tfile)
+				: this.restoreUntrackedReaderRename(tfile, oldPath);
+			trackPromise(`restoreReaderRename:${this.guid}:${oldVPath}`, restore);
 			return;
 		} else if (!oldVPath) {
 			// if this was moved from outside the shared folder context, we need to create a live doc
@@ -4754,6 +5092,11 @@ export class SharedFolder extends HasProvider {
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
 		this.clearDownloadsDeferredByState();
+		if (this._readerEditOverwriteTimer !== null) {
+			this.timeProvider.clearTimeout(this._readerEditOverwriteTimer);
+			this._readerEditOverwriteTimer = null;
+		}
+		this._readerEditOverwrites = [];
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});

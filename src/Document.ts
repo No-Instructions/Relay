@@ -9,12 +9,12 @@ import type { TFile, Vault, TFolder } from "obsidian";
 import { debounce, normalizePath } from "obsidian";
 import type { Unsubscriber } from "./observable/Observable";
 import { Dependency, Lifetime } from "./promiseUtils";
-import { withFlag } from "./flagManager";
+import { flags, withFlag } from "./flagManager";
 import { flag } from "./flags";
 import type { HasMimeType, IFile } from "./IFile";
 import { getMimeType } from "./mimetypes";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
-import type { EditorViewRef } from "./merge-hsm/types";
+import type { ActiveAccessMode, EditorViewRef } from "./merge-hsm/types";
 import { DiskFileNotFoundError } from "./merge-hsm/DiskFileNotFoundError";
 import {
 	ProviderIntegration,
@@ -170,6 +170,7 @@ export class Document
 			getCurrentDiskMetadata: () =>
 				this.sharedFolder.getCurrentDiskMetadata(this),
 			isFolderConnected: () => this.sharedFolder.connected,
+			getAccessMode: () => this.activeAccessMode,
 			getPersistenceMetadata: () => ({
 				path: this.path,
 				relay: this.sharedFolder.relayId || "",
@@ -427,6 +428,10 @@ export class Document
 		return this.hsm?.getSyncStatus().status !== "conflict";
 	}
 
+	public get canPublishContent(): boolean {
+		return this.canWriteContent;
+	}
+
 	async runSyncSession(
 		intent: SessionIntent,
 		context: SyncOperationContext,
@@ -560,6 +565,9 @@ export class Document
 	async prepareUpload(context: SyncOperationContext): Promise<() => void> {
 				const hsm = this.hsm;
 		if (!hsm) return () => {};
+		if (!this.canPublishContent) {
+			throw new Error(`Cannot upload ${fileName(this.path)}: read-only access`);
+		}
 		if (hsm.hasFork()) {
 			throw new Error(`Cannot upload ${fileName(this.path)} while a fork exists`);
 		}
@@ -711,7 +719,7 @@ export class Document
 			Y.applyUpdate(newDoc, updateBytes);
 
 			if (isEmptyDoc(newDoc)) {
-				if (this.text) {
+				if (this.text && this.canPublishContent) {
 					this.log(
 						"[transfer] server CRDT empty, local has content — uploading",
 					);
@@ -722,6 +730,11 @@ export class Document
 					);
 					this.hsm?.send({ type: "DOWNLOAD_FAILED" });
 					return undefined;
+				}
+				if (this.text) {
+					this.log(
+						"[transfer] server CRDT empty, local has content but access is read-only — awaiting a writer",
+					);
 				}
 				// The server pushes a document.updated event once a peer
 				// uploads content, which re-enables downloads for the guid —
@@ -892,6 +905,7 @@ export class Document
 		hsm.send({
 			type: "ACQUIRE_LOCK",
 			editorViewRef,
+			accessMode: this.activeAccessMode,
 		});
 		mergeManager.markActive(this.guid);
 		this.setAwarenessActive(true);
@@ -1066,6 +1080,11 @@ export class Document
 	 * @throws Error if HSM is not in active mode (no localDoc available)
 	 */
 	public getWritableDoc(): Y.Doc {
+		if (!this.canWriteContent) {
+			throw new Error(
+				`Document ${this.path}: Cannot write - read-only access.`,
+			);
+		}
 		const localDoc = this.localDoc;
 		if (!localDoc) {
 			throw new Error(
@@ -1077,10 +1096,42 @@ export class Document
 	}
 
 	/**
-	 * Check if the document is in a writable state (HSM active mode).
+	 * Check if the document is active and content-write permission is granted.
 	 */
 	public get isWritable(): boolean {
-		return this.localDoc !== null;
+		return this.canWriteContent && this.localDoc !== null;
+	}
+
+	/**
+	 * Content-write permission for this document. The role-derived policy
+	 * answer is primary — tokens are minted from roles but served through
+	 * an API cache, so during a live transition the token lags the role.
+	 * The token fills in when role data has not synced, and unknown states
+	 * default to write — the server enforces real authorization, and
+	 * failing open avoids stranding writes on missing client state.
+	 */
+	public get canWriteContent(): boolean {
+		if (!flags().enableReadOnlyPermissions) {
+			return true;
+		}
+		const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
+		// A folder-level denial is authoritative. This is normally the same
+		// cached role-derived policy used below, and is also the integration
+		// seam for embedders and E2E role-transition forcing.
+		if (!this.sharedFolder.canWriteContent) {
+			return false;
+		}
+		if (policy !== null) {
+			return policy;
+		}
+		if (this.clientToken?.authorization) {
+			return this.clientToken.authorization !== "read-only";
+		}
+		return true;
+	}
+
+	public get activeAccessMode(): ActiveAccessMode {
+		return this.canWriteContent ? "write" : "read";
 	}
 
 	async connect(): Promise<boolean> {
@@ -1130,7 +1181,31 @@ export class Document
 			return false;
 		}
 
+		this.reconcileHeldTokenIfStale();
 		return super.connect();
+	}
+
+	/**
+	 * Mismatch-on-use: a held token whose authorization disagrees with the
+	 * role-derived policy view is reconciled before it gets relied on. This
+	 * covers role changes the client missed as events (offline during the
+	 * flip, plugin restart) — the disagreement is a state comparison, not
+	 * an event edge.
+	 */
+	private reconcileHeldTokenIfStale(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		const policy = this.sharedFolder?.canWriteContentAnswer ?? null;
+		const held = this.clientToken?.authorization;
+		if (policy === null || !held) {
+			return;
+		}
+		const heldReadOnly = held === "read-only";
+		const policyReadOnly = !policy;
+		if (heldReadOnly !== policyReadOnly) {
+			this.tokenStore.forceRefresh(S3RN.encode(this.s3rn));
+		}
 	}
 
 	onceConnected(): Promise<void> {
@@ -1769,6 +1844,61 @@ export class Document
 		if (!this._forkReconcileIdleLease) return;
 		this._forkReconcileIdleLease = false;
 		this.destroyIdleProviderIntegration();
+	}
+
+	/**
+	 * Re-derive access mode and drive the HSM transition for an open
+	 * document. Fired by SharedFolder on role changes and by token
+	 * refreshes; both converge on the derived access mode (role-first,
+	 * token fallback), so a stale cached token can never override a fresh
+	 * role in either direction. The HSM treats a repeated mode as a no-op,
+	 * so the two signal paths compose. Idle documents need no event: the
+	 * HSM's getAccessMode callback re-derives on demand.
+	 */
+	public notifyAccessModeChanged(): void {
+		if (!flags().enableReadOnlyPermissions) {
+			return;
+		}
+		const hsm = this._hsm;
+		if (!hsm || !hsm.isActive()) {
+			return;
+		}
+		const readOnly = this.activeAccessMode === "read";
+		if (readOnly) {
+			hsm.send({ type: "DEMOTE_TO_READ" });
+			// Demotion may have preserved a fork because local ops were not
+			// provably on the server. The in-session remoteDoc applied those
+			// ops as they happened and a read-only provider will never send
+			// them, so swap in a fresh provider doc: the fork audit then
+			// judges containment and re-baselines against server truth.
+			if (hsm.hasFork() && this._providerIntegration) {
+				const result = reconnectProvider({
+					hsm,
+					integration: this._providerIntegration,
+					createFreshRemoteDoc: () => this.ensureRemoteDoc(),
+					destroyCurrentRemoteDoc: () => this.destroyRemoteDoc(),
+					createAndConnectProvider: (_remoteDoc) => {
+						void this.connect();
+						return this._provider as YjsProvider;
+					},
+					providerIntegrationOptions: {
+						onSyncedRemoteHead: this.recordProviderSyncedRemoteHead,
+					},
+				});
+				this._providerIntegration = result.integration;
+			}
+		} else {
+			hsm.send({ type: "PROMOTE_TO_WRITE" });
+		}
+	}
+
+	/**
+	 * Token refreshes flip provider gating; the HSM transition re-derives
+	 * from the role-first access mode, so a stale cached token cannot
+	 * override a fresh role.
+	 */
+	protected onAccessModeChanged(_readOnly: boolean): void {
+		this.notifyAccessModeChanged();
 	}
 
 	/**
