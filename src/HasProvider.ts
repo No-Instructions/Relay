@@ -324,28 +324,40 @@ export class HasProvider extends HasLogging {
 
 	refreshProvider(clientToken: ClientToken) {
 		// updates the provider when a new token is received
+		const previousReadOnly = this.clientToken
+			? this.clientToken.authorization === "read-only"
+			: null;
 		this.clientToken = clientToken;
+		const readOnly = clientToken.authorization === "read-only";
 
-		if (!this._provider) {
-			// No provider yet - token will be used when ensureRemoteDoc() is called
-			return;
+		if (this._provider) {
+			const result = this._provider.refreshToken(
+				clientToken.url,
+				clientToken.docId,
+				clientToken.token,
+				readOnly,
+			);
+
+			if (result.urlChanged) {
+				const maskedUrl = result.newUrl.replace(
+					/token=[^&]+/,
+					"token=[REDACTED]",
+				);
+				this.log(`Token Refreshed: setting new provider url, ${maskedUrl}`);
+			}
 		}
 
-		const result = this._provider.refreshToken(
-			clientToken.url,
-			clientToken.docId,
-			clientToken.token,
-			clientToken.authorization === "read-only",
-		);
-
-		if (result.urlChanged) {
-			const maskedUrl = result.newUrl.replace(
-				/token=[^&]+/,
-				"token=[REDACTED]",
-			);
-			this.log(`Token Refreshed: setting new provider url, ${maskedUrl}`);
+		if (previousReadOnly !== null && previousReadOnly !== readOnly) {
+			this.onAccessModeChanged(readOnly);
 		}
 	}
+
+	/**
+	 * Called when a token refresh flips content-write permission.
+	 * Subclasses drive live permission transitions from here (the provider
+	 * itself emits nothing when readOnly changes).
+	 */
+	protected onAccessModeChanged(_readOnly: boolean): void {}
 
 	public get connected(): boolean {
 		return this.state.status === "connected";

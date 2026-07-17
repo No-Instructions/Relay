@@ -300,6 +300,9 @@ export default class Live extends Plugin {
 			if (folder.consumePendingDelete(vpath)) {
 				continue;
 			}
+			if (folder.rejectReaderDelete(vpath)) {
+				continue;
+			}
 			vaultLog("Delete", event.path);
 			if (folder.folderHSM) {
 				// Local delete intent flows through the machine; its
@@ -1355,6 +1358,9 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
+					if (folder.rejectReaderCreate(tfile)) {
+						return;
+					}
 					if (folder.folderHSM) {
 						// Membership classification is the machine's job; the
 						// origin discriminator inside notifyVaultCreate keeps
@@ -1423,12 +1429,30 @@ export default class Live extends Plugin {
 				if (fromFolder && toFolder) {
 					// between two shared folders
 					vaultLog("Rename", file.path, oldPath);
-					fromFolder.renameFile(file, oldPath);
-					toFolder.renameFile(file, oldPath);
+					const fromRejected = fromFolder.rejectReaderRename(
+						file,
+						oldPath,
+					);
+					if (!fromRejected) {
+						fromFolder.renameFile(file, oldPath);
+					}
+					if (toFolder !== fromFolder) {
+						if (!toFolder.rejectReaderRename(file, oldPath)) {
+							toFolder.renameFile(file, oldPath);
+						}
+					} else if (!fromRejected) {
+						// Preserve the legacy same-folder double dispatch.
+						toFolder.renameFile(file, oldPath);
+					}
 					this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
 					vaultLog("Rename", file.path, oldPath);
+					if (folder.rejectReaderRename(file, oldPath)) {
+						this._liveViews.refresh("rename");
+						this.folderNavDecorations.refresh();
+						return;
+					}
 					if (folder.folderHSM && fromFolder === toFolder) {
 						// In-folder moves flow through the machine; its
 						// MAP_SET effect executes the map rename. Moves

@@ -383,6 +383,19 @@ export class BackgroundSync extends HasLogging {
 	}
 
 	/**
+	 * Whether local content may be published for this item. Documents carry
+	 * token-derived permission; other item types fall back to the folder
+	 * policy. Every upload path must consult this — the direct-upload path
+	 * bypasses the provider's readOnly gate entirely.
+	 */
+	private canUploadContent(item: Document | Canvas | SyncFile): boolean {
+		if (isDocument(item)) {
+			return item.canWriteContent;
+		}
+		return item.sharedFolder.canWriteContent;
+	}
+
+	/**
 	 * A queued item is drainable only when its folder is connected and the
 	 * user hasn't asked it to pause. Items for disconnected folders stay in
 	 * the queue — enqueues made while offline (pending uploads, remaps) must
@@ -1428,6 +1441,14 @@ export class BackgroundSync extends HasLogging {
 			return Promise.resolve();
 		}
 
+		if (!this.canUploadContent(item)) {
+			this.debug(
+				`[enqueueUpload] skipped ${item.path}: read-only access`,
+			);
+			this.clearFailure(this.failureKey("sync", item.guid));
+			return Promise.resolve();
+		}
+
 		if (this.inProgressSyncs.has(item.guid)) {
 			const queued = this.syncQueue.find((queued) => queued.guid === item.guid);
 			if (queued) {
@@ -1825,6 +1846,8 @@ export class BackgroundSync extends HasLogging {
 		// open editor, so no other path pushes those ops — run a sync
 		// session to flush them. Skip docs with an open editor or a live
 		// provider: their own connection already carries local ops.
+		// Read-only access never flushes local ops.
+		if (!this.canUploadContent(doc)) return false;
 		if (doc.userLock || mergeManager.isActive(doc.guid)) return false;
 		if (doc.intent === "connected") return false;
 		if (!mergeManager.isServerAdvertisedOutOfSync(doc.guid)) {
@@ -2259,12 +2282,17 @@ export class BackgroundSync extends HasLogging {
 			Y.applyUpdate(newDoc, updateBytes);
 
 			if (isEmptyDoc(newDoc)) {
-				if (doc.text) {
+				if (doc.text && this.canUploadContent(doc)) {
 					this.log(
 						"[getDocument] server CRDT empty, local has content — uploading",
 					);
 					this.enqueueSync(doc);
 					return undefined;
+				}
+				if (doc.text) {
+					this.log(
+						"[getDocument] server CRDT empty, local has content but access is read-only — awaiting a writer",
+					);
 				}
 				// The server pushes a document.updated event once a peer
 				// uploads content, which re-enables downloads for the guid —
@@ -2475,6 +2503,13 @@ export class BackgroundSync extends HasLogging {
 	private async prepareDocumentUpload(doc: Document): Promise<() => void> {
 		const hsm = doc.hsm;
 		if (!hsm) return () => {};
+		// Hard stop: this path applies the local CRDT into remoteDoc directly,
+		// bypassing the provider's readOnly gate.
+		if (!this.canUploadContent(doc)) {
+			throw new Error(
+				`Cannot upload ${this.fileName(doc.path)}: read-only access`,
+			);
+		}
 		if (hsm.hasFork()) {
 			throw new Error(`Cannot upload ${this.fileName(doc.path)} while a fork exists`);
 		}

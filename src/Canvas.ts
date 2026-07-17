@@ -19,7 +19,21 @@ import type {
 } from "./CanvasView";
 import { areObjectsEqual } from "./areObjectsEqual";
 import { trackPromise } from "./trackPromise";
-import { formatCanvasData } from "./CanvasData";
+import { areCanvasDataEqual, formatCanvasData } from "./CanvasData";
+
+export interface CanvasReaderFork {
+	/** Shared canvas state before the rejected Reader edit. */
+	base: CanvasData;
+	/** Most recent local canvas state rejected while access was read-only. */
+	local: CanvasData;
+}
+
+function cloneCanvasData(data: CanvasData): CanvasData {
+	return {
+		nodes: data.nodes.map((node) => ({ ...node })),
+		edges: data.edges.map((edge) => ({ ...edge })),
+	};
+}
 
 export function isCanvas(file?: IFile | null): file is Canvas {
 	return file instanceof Canvas;
@@ -84,6 +98,13 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	unsubscribes: Unsubscriber[] = [];
 	private _awaitingUpdates: any;
 	private _canvas: any;
+	/**
+	 * In-memory capture of Canvas edits rejected while access is read-only.
+	 * It is deliberately never applied to ydoc: promotion cannot publish
+	 * Reader-era operations, and Obsidian's file recovery remains the durable
+	 * recovery surface without adding a Relay storage record.
+	 */
+	private _readerFork: CanvasReaderFork | null = null;
 
 	constructor(
 		path: string,
@@ -350,11 +371,39 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 
 	async importFromView(view: CanvasView) {
 		if (view.file && view.file === this.tfile) {
-			return await this.applyData(view.canvas.getData());
+			const applied = await this.applyData(view.canvas.getData());
+			if (!applied) {
+				// Restore the authoritative shared state in both the live Canvas
+				// surface and its native .canvas save. The patched follow-up save
+				// re-enters here with matching data and terminates without mutation.
+				view.canvas.importData(Canvas.exportCanvasData(this.ydoc), true);
+				view.canvas.requestSave();
+			}
+			return applied;
 		}
 	}
 
-	async applyData(data: CanvasData) {
+	async applyData(data: CanvasData): Promise<boolean> {
+		const sharedData = Canvas.exportCanvasData(this.ydoc);
+		const hasChanges = !areCanvasDataEqual(sharedData, data);
+		const canWrite = this.sharedFolder?.canWriteContent ?? true;
+		if (!canWrite && hasChanges) {
+			this._readerFork = {
+				base: this._readerFork?.base ?? cloneCanvasData(sharedData),
+				local: cloneCanvasData(data),
+			};
+			this.sharedFolder.recordReaderEditOverwrite(this.guid, this.path);
+			return false;
+		}
+		if (this._readerFork) {
+			// A role promotion must not turn the captured Reader side into a
+			// writable intake. First restore the view to the unchanged ydoc;
+			// a later, genuinely new Writer edit can then start from that base.
+			if (hasChanges) return false;
+			this._readerFork = null;
+		}
+		if (!hasChanges) return true;
+
 		const yedges = this.yedges;
 		const ynodes = this.ynodes;
 		const seen = new Set<string>();
@@ -429,6 +478,11 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 				this,
 			);
 		}
+		return true;
+	}
+
+	public get readerFork(): CanvasReaderFork | null {
+		return this._readerFork;
 	}
 
 	move(newPath: string, sharedFolder: SharedFolder) {

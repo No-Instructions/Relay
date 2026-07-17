@@ -13,6 +13,7 @@ export interface FeatureFlags {
 	enableResourceMeter: boolean;
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
+	enableReadOnlyPermissions: boolean;
 	enableFolderHSM: boolean;
 	enableNoteStateInspector: boolean;
 }
@@ -143,6 +144,13 @@ export const FeatureFlagSchema: {
 		title: "Metadata database health notice",
 		description:
 			"Show a sidebar notice when Obsidian's metadata database cannot be queried.",
+	},
+	enableReadOnlyPermissions: {
+		default: false,
+		category: "labs",
+		title: "Reader permissions",
+		description:
+			"Offer the Reader role when sharing folders and inviting users. Readers receive live updates without publishing changes.",
 	},
 	enableFolderHSM: {
 		default: false,

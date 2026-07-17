@@ -1,6 +1,6 @@
 // This file is the Obsidian Live variant of the token store.
 import { TokenStore } from "./TokenStore";
-import type { TokenInfo } from "./TokenStore";
+import type { RefreshContext, TokenInfo } from "./TokenStore";
 import type { TimeProvider } from "./TimeProvider";
 import { LoginManager } from "./LoginManager";
 import { curryLog } from "./debug";
@@ -37,12 +37,13 @@ async function refresh(
 	documentId: string,
 	onSuccess: (clientToken: ClientToken) => void,
 	onError: (err: Error) => void,
+	context?: RefreshContext<ClientToken>,
 ) {
 	const debug = curryLog("[TokenStore][Refresh]", "debug");
 	const error = curryLog("[TokenStore][Refresh]", "error");
 	debug(`${documentId}`);
 	const entity: S3RNType = S3RN.decode(documentId);
-	let payloadObj: Record<string, string>;
+	let payloadObj: Record<string, string | boolean>;
 	if (entity instanceof S3RemoteDocument) {
 		payloadObj = {
 			docId: entity.documentId,
@@ -77,6 +78,13 @@ async function refresh(
 	}
 	if (deviceId) {
 		payloadObj.device = deviceId;
+	}
+	if (context?.reconcile && context.heldToken?.token) {
+		// The doc token this client holds and believes carries stale
+		// authorization. Submitting it asks the server to verify roles
+		// against its source of truth (rate limited server-side) and mint
+		// a replacement, instead of answering from the auth cache.
+		payloadObj.supersede = context.heldToken.token;
 	}
 	const payload = JSON.stringify(payloadObj);
 	const headers = {
