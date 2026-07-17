@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
 	enableFolderHSM: boolean;
+	enableNoteStateInspector: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -149,6 +150,13 @@ export const FeatureFlagSchema: {
 		title: "Folder membership state machine (experimental)",
 		description:
 			"Drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated state is unchanged either way.",
+	},
+	enableNoteStateInspector: {
+		default: false,
+		category: "debugging",
+		title: "Note state inspector",
+		description:
+			"Show a sidebar panel with live merge state for the active note: HSM state path, in-flight disk writes, and store consistency checks.",
 	},
 };
 

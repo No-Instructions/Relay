@@ -8,10 +8,13 @@ import {
 } from "obsidian";
 import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte";
 import Pill from "../components/Pill.svelte";
-import { flags } from "../flagManager";
+import { FeatureFlagManager, flags } from "../flagManager";
+import { flag } from "../flags";
 import type { FolderSyncVisibleState } from "../BackgroundSyncProgress";
+import type { RelayDebugAPI } from "../RelayDebugAPI";
 import type { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { TimeProvider } from "../TimeProvider";
+import { NoteStateSection } from "./NoteStateSection";
 import { getSyncStatusActivityStore } from "./SyncStatusActivity";
 
 export const VIEW_TYPE_SYNC_STATUS = "system3-sync-status";
@@ -28,6 +31,8 @@ interface SyncStatusViewBindingOptions {
 export interface SyncStatusViewContext {
 	sharedFolders: SharedFolders;
 	timeProvider: TimeProvider;
+	/** Backs the note state inspector strip when its feature flag is on. */
+	debugAPI?: RelayDebugAPI;
 	/** Reopen the gated-deletion decision modal for a folder. */
 	onReviewHeldDeletions?: (folder: SharedFolder) => void;
 }
@@ -38,6 +43,7 @@ export class SyncStatusView extends ItemView {
 	private binding: SyncStatusViewBinding | null = null;
 	private headerUnsubscribers: (() => void)[] = [];
 	private followActiveFile = true;
+	private noteState?: NoteStateSection;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -83,8 +89,21 @@ export class SyncStatusView extends ItemView {
 		container.empty();
 		container.addClass("system3-sync-status-panel");
 
+		const flagManager = FeatureFlagManager.getInstance();
+		this.register(
+			flagManager.subscribe((manager) => {
+				this.setNoteStateInspectorEnabled(
+					manager.getFlag(flag.enableNoteStateInspector),
+				);
+			}),
+		);
+		this.setNoteStateInspectorEnabled(
+			flagManager.getFlag(flag.enableNoteStateInspector),
+		);
+
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
+				this.noteState?.bindToFile(file?.path ?? null);
 				if (!this.followActiveFile) return;
 				this.rebindToFile(file ?? null);
 			}),
@@ -106,10 +125,12 @@ export class SyncStatusView extends ItemView {
 		// `getActiveFile()` returns the real focused file rather than null
 		// during the plugin-load race.
 		this.app.workspace.onLayoutReady(() => {
+			this.noteState?.bindToFile(this.app.workspace.getActiveFile()?.path ?? null);
 			if (!this.followActiveFile) return;
 			this.bindToActiveFile();
 		});
 
+		this.noteState?.bindToFile(this.app.workspace.getActiveFile()?.path ?? null);
 		if (this.followActiveFile) {
 			this.bindToActiveFile();
 		}
@@ -119,7 +140,38 @@ export class SyncStatusView extends ItemView {
 	async onClose(): Promise<void> {
 		this.component?.$destroy();
 		this.component = undefined;
+		this.destroyNoteState();
 		this.destroyFolderHeader();
+	}
+
+	private setNoteStateInspectorEnabled(enabled: boolean): void {
+		if (!enabled || !this.context.debugAPI) {
+			this.destroyNoteState();
+			return;
+		}
+		if (this.noteState) return;
+
+		this.noteState = new NoteStateSection({
+			app: this.app,
+			timeProvider: this.context.timeProvider,
+			debugAPI: this.context.debugAPI,
+		});
+		this.noteState.bindToFile(this.app.workspace.getActiveFile()?.path ?? null);
+		this.attachNoteState();
+	}
+
+	private attachNoteState(): void {
+		if (!this.noteState) return;
+		const container = this.containerEl.children[1] as HTMLElement;
+		const slot = container?.querySelector<HTMLElement>(
+			".system3-note-state-slot",
+		);
+		if (slot) this.noteState.attach(slot);
+	}
+
+	private destroyNoteState(): void {
+		this.noteState?.destroy();
+		this.noteState = undefined;
 	}
 
 	private rebindToFile(file: TFile | null): void {
@@ -185,6 +237,8 @@ export class SyncStatusView extends ItemView {
 		container.empty();
 
 		if (!this.binding) {
+			container.createDiv({ cls: "system3-note-state-slot" });
+			this.attachNoteState();
 			container.createEl("div", {
 				cls: "system3-sync-status-empty",
 				text: "No folder selected.",
@@ -213,6 +267,11 @@ export class SyncStatusView extends ItemView {
 					: null,
 			},
 		});
+
+		// Re-parent the note-state strip into the component's slot, beneath
+		// the folder sync state and above the sections that follow it. The
+		// strip element survives re-renders; only its parent changes.
+		this.attachNoteState();
 	}
 
 	private renderFolderHeader(
