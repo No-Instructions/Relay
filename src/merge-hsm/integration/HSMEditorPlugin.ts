@@ -26,6 +26,7 @@ import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
 import type { PositionedChange } from "../types";
+import { registerOwnedEditor, unregisterOwnedEditor } from "../../readOnlyEditorState";
 import {
   buildBufferedCM6ReplayEvents,
   buildTextChanges,
@@ -253,9 +254,15 @@ export class HSMEditorPluginValue implements PluginValue {
    * covers the window before the DOM is attached.
    */
   private probeSubEditor(): boolean {
-    if (this.subEditor) return true;
+    if (this.subEditor) {
+      const owner = this.ownerEditorView();
+      if (owner && owner !== this.editor) registerOwnedEditor(owner, this.editor);
+      return true;
+    }
     if (!this.editor.dom.closest(".table-cell-wrapper")) return false;
     this.subEditor = true;
+    const owner = this.ownerEditorView();
+    if (owner && owner !== this.editor) registerOwnedEditor(owner, this.editor);
     this.log("Refusing to bind an embedded table-cell editor");
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
@@ -811,6 +818,7 @@ export class HSMEditorPluginValue implements PluginValue {
    */
   destroy(): void {
     this.destroyed = true;
+    unregisterOwnedEditor(this.editor);
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;

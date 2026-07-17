@@ -10,6 +10,7 @@
 		type RelaySubscription,
 		type RemoteSharedFolder,
 		type Role,
+		type UserRoleGrant,
 	} from "src/Relay";
 	import type Live from "src/main";
 	import { SharedFolders, type SharedFolder } from "src/SharedFolder";
@@ -33,6 +34,11 @@
 	import SettingGroup from "./SettingGroup.svelte";
 	import RelayConfigBlock from "./RelayConfigBlock.svelte";
 	import { uuidv4 } from "lib0/random";
+	import {
+		effectiveFolderGrantRole,
+		effectiveRoleChange,
+		filterRolesForReadOnlyFeature,
+	} from "src/readOnlyPermissions";
 
 	export let relay: Relay;
 	const remoteFolders = relay.folders;
@@ -149,7 +155,9 @@
 
 	// Dynamic role loading for forwards compatibility
 	const availableRoles = derived([plugin.relayManager.roles], ([$roles]) => {
-		return $roles.values().sort(rolePrioritySort);
+		return filterRolesForReadOnlyFeature($roles.values()).sort(
+			rolePrioritySort,
+		);
 	});
 
 	function rolePrioritySort(a: { name: Role }, b: { name: Role }) {
@@ -367,7 +375,10 @@
 
 	async function handleRoleChange(relay_role: RelayRole, newRole: Role) {
 		try {
-			await plugin.relayManager.updateRelayRole(relay_role, newRole);
+			await plugin.relayManager.updateRelayRole(
+				relay_role,
+				effectiveRoleChange(newRole),
+			);
 		} catch (error) {
 			handleServerError(error, "Failed to change user role.");
 			throw error;
@@ -426,14 +437,14 @@
 		folderPath: string,
 		folderName: string,
 		isPrivate: boolean,
-		userIds: string[],
+		grants: UserRoleGrant[],
 	): Promise<SharedFolder>;
 	// Implementation
 	async function onChoose(
 		folderPath: string,
 		folderName?: string,
 		isPrivate?: boolean,
-		userIds?: string[],
+		grants?: UserRoleGrant[],
 	): Promise<SharedFolder> {
 		const normalizedPath = normalizePath(folderPath);
 		const pending = pendingFolderShares.get(normalizedPath);
@@ -473,10 +484,14 @@
 				folder.remote = remote;
 			}
 
-			if (isPrivate && userIds && userIds.length > 0) {
+			if (isPrivate && grants && grants.length > 0) {
 				await Promise.all(
-					userIds.map((userId) =>
-						plugin.relayManager.addFolderRole(remote, userId, "Member"),
+					grants.map((grant) =>
+						plugin.relayManager.addFolderRole(
+							remote,
+							grant.userId,
+							effectiveFolderGrantRole(grant.role),
+						),
 					),
 				);
 			}
@@ -486,7 +501,7 @@
 			pendingFolderGuids.delete(normalizedPath);
 			pendingRemoteFolders.delete(normalizedPath);
 
-			if (userIds && userIds.length > 0) {
+			if (grants && grants.length > 0) {
 				setTimeout(() => {
 					dispatch("manageRemoteFolder", {
 						remoteFolder: remote,
