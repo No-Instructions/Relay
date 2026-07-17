@@ -30,6 +30,7 @@ import type {
   MergeEvent,
   ResolveHunkEvent,
   StatePath,
+  ActiveAccessMode,
 } from './types';
 import type { ConflictInfoSnapshot } from './conflict';
 import type { TimeProvider } from '../TimeProvider';
@@ -734,6 +735,7 @@ export class MergeManager {
     getCurrentDiskMetadata?: () => { mtime: number; hash?: string } | null;
     getPersistenceMetadata?: () => PersistenceMetadata;
     isFolderConnected?: () => boolean;
+    getAccessMode?: () => ActiveAccessMode;
   }): MergeHSM {
     const {
       guid,
@@ -743,6 +745,7 @@ export class MergeManager {
       getCurrentDiskMetadata,
       getPersistenceMetadata,
       isFolderConnected,
+      getAccessMode,
     } = config;
 
     // Get lightweight metadata from cache (bulk-loaded during initialize())
@@ -759,6 +762,7 @@ export class MergeManager {
       persistenceMetadata: getPersistenceMetadata?.(),
       diskLoader: getDiskContent,
       isFolderConnected,
+      getAccessMode,
       yaml: this._yaml ?? undefined,
     });
 
