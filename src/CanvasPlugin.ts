@@ -1,5 +1,11 @@
+import type { TFile } from "obsidian";
 import { getPatcher } from "./Patcher";
 import { Canvas } from "src/Canvas";
+import {
+	areCanvasDataEqual,
+	mergeCanvasThreeWay,
+	mergeCanvasViewData,
+} from "./CanvasData";
 import type {
 	CanvasEdge,
 	CanvasEdgeData,
@@ -29,6 +35,41 @@ export class CanvasPlugin extends HasLogging {
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
 	trackedEmbedViews: Set<any>;
+	/**
+	 * True once the view's rendered data is known to belong to view.file.
+	 * Obsidian reuses canvas views across file switches: between the file
+	 * pointer moving and setViewData landing, the view still renders the
+	 * previous file's nodes, and merging those into this canvas would
+	 * splice two canvases together. Until ownership is established, no
+	 * content crosses between the view and the localDoc in either
+	 * direction. Ownership is granted by setViewData (a load for
+	 * view.file), by a native save (which writes the rendered data into
+	 * view.file by definition), or by the construction-time disk
+	 * comparison for views that were already settled.
+	 */
+	private viewDataOwned = false;
+	/**
+	 * Monotonic count of setViewData deliveries; keys a pending ingest to
+	 * the exact load that armed it.
+	 */
+	private loadSeq = 0;
+	/**
+	 * Set when Obsidian ingests an external disk change into an owned view
+	 * (loadFileInternal → setData → setViewData with clear=false; a file
+	 * open always clears). Obsidian's ingest is authoritative — an
+	 * id-preserving destructive import of the disk state — so the next
+	 * reconcile flows view→localDoc instead of overwriting the view with
+	 * the CRDT copy.
+	 *
+	 * Never a bare boolean: the record is keyed to the load (seq) and file
+	 * it describes, and is voided by any clearing load (a file open), by
+	 * any later load, by a file switch, and by destroy. A stale ingest
+	 * flag consumed after an ordinary file open would push the just-loaded
+	 * disk state into the localDoc destructively — deleting newer peer
+	 * content, replicated — which is exactly the stale-disk overwrite this
+	 * plugin exists to prevent.
+	 */
+	private pendingViewIngest: { seq: number; file: TFile } | null = null;
 
 	constructor(
 		private connectionManager: LiveViewManager,
@@ -43,13 +84,48 @@ export class CanvasPlugin extends HasLogging {
 		this.observedTextNodes = new Set();
 		this.trackedEmbedViews = new Set();
 		this.install();
+		this.verifyViewDataOwnership();
+	}
 
+	/**
+	 * Establish ownership by comparing the view's rendered data against
+	 * the file's contents on disk. A mismatch means a load is in flight
+	 * (or the view holds unsaved edits); ownership then arrives with the
+	 * next setViewData or native save instead.
+	 */
+	private async verifyViewDataOwnership(): Promise<void> {
+		const file = this.view?.file;
+		if (!file || this.viewDataOwned) return;
+		try {
+			const raw = await this.relayCanvas.vault.cachedRead(file);
+			if (!this.canvas || !this.relayCanvas) return;
+			if (this.view.file !== file) return;
+			const parsed = raw.trim().length > 0 ? JSON.parse(raw) : {};
+			const diskData = {
+				nodes: parsed.nodes ?? [],
+				edges: parsed.edges ?? [],
+			};
+			if (areCanvasDataEqual(diskData, this.canvas.getData())) {
+				this.markViewDataOwned();
+			}
+		} catch (e) {
+			this.debug("view data ownership deferred to next load", e);
+		}
+	}
+
+	private markViewDataOwned(): void {
+		if (this.viewDataOwned || !this.relayCanvas) return;
+		this.viewDataOwned = true;
 		for (const node of this.getEmbedViews()) {
 			if (!node.file) {
 				continue;
 			}
 			this.connectEmbedView(node);
 		}
+		// Content that reached the localDoc before ownership was
+		// established produced no view updates; ask the machine for a
+		// reconcile now that the view may be written.
+		this.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
 	}
 
 	destroy() {
@@ -57,6 +133,7 @@ export class CanvasPlugin extends HasLogging {
 			this.unsubscribes.forEach((unsubscribe) => unsubscribe());
 			this.unsubscribes = [];
 		}
+		this.pendingViewIngest = null;
 		this.relayCanvasView.tracking = false;
 		this.canvas = null as any;
 		this.relayCanvas = null as any;
@@ -382,6 +459,84 @@ export class CanvasPlugin extends HasLogging {
 		);
 	}
 
+	/**
+	 * Bring the view in line with the canvas localDoc. Content that reached
+	 * the localDoc before this view opened produces no observer events, so
+	 * a view loaded from a stale disk file would otherwise render stale
+	 * forever — and its first save would push that stale state back into
+	 * the localDoc, deleting newer peer content via applyData's diff.
+	 * View-only nodes and edges are kept: they are local edits that have
+	 * not been pushed yet.
+	 *
+	 * Runs as the machine's RECONCILE_VIEW executor: the CanvasHSM emits
+	 * the effect on view attach and after every OBSIDIAN_SET_VIEW_DATA, and only
+	 * from its active state.
+	 */
+	private reconcileViewWithCanvas() {
+		if (!this.canvas || !this.relayCanvas) return;
+		// Obsidian reuses canvas views across file switches; a stale effect
+		// firing for another file must not merge two canvases together. The
+		// TFile identity check rejects aliases (two folders can hold
+		// canvases at the same relative path), and ownership rejects a
+		// reused view that has not finished loading this file's data.
+		if (!this.view.file || this.view.file !== this.relayCanvas.tfile) return;
+		if (!this.viewDataOwned) return;
+		const pending = this.pendingViewIngest;
+		if (pending) {
+			// Consumed or voided either way: the record describes exactly
+			// one load, and this reconcile is its one chance to act.
+			this.pendingViewIngest = null;
+			if (
+				pending.seq === this.loadSeq &&
+				pending.file === this.view.file
+			) {
+				// Obsidian already reconciled the external disk state into
+				// the view (an id-preserving destructive import). Keep its
+				// result untouched and converge the localDoc to it — never
+				// the reverse.
+				this.debug(
+					"ingesting externally loaded view data",
+					this.view.file?.path,
+				);
+				void this.relayCanvas
+					.importFromView(this.view)
+					.catch((e) => this.log(e));
+				return;
+			}
+			// Stale (a later load or file switch intervened): fall through
+			// to the merge path, the safe default.
+			this.debug(
+				"voiding stale pending view ingest",
+				this.view.file?.path,
+			);
+		}
+		// With an LCA the reconcile merges three-way — base = LCA, ours =
+		// localDoc, theirs = the loaded view data — so external edits to
+		// existing nodes survive a file open. Without a baseline, the
+		// additive union protects a fresh localDoc from a stale disk file.
+		const lcaData = this.relayCanvas.hsm.getLCAData?.();
+		const viewData = this.canvas.getData();
+		let merged: ReturnType<typeof mergeCanvasViewData>;
+		if (lcaData) {
+			const threeWay = mergeCanvasThreeWay(
+				lcaData,
+				this.relayCanvas.exportData(),
+				viewData,
+			);
+			merged = areCanvasDataEqual(threeWay, viewData) ? null : threeWay;
+		} else {
+			merged = mergeCanvasViewData(this.relayCanvas.exportData(), viewData);
+		}
+		if (!merged) return;
+		this.debug(
+			"reconciling view with canvas localDoc",
+			this.view.file?.path,
+			merged,
+		);
+		this.canvas.importData(merged, true);
+		this.canvas.requestSave();
+	}
+
 	private install() {
 		if (!this.canvas) return;
 
@@ -393,14 +548,56 @@ export class CanvasPlugin extends HasLogging {
 
 		// eslint-disable-next-line
 		const that = this;
-		const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
-		const hasCanvasData =
-			exported.nodes.length > 0 || exported.edges.length > 0;
-		const hasLocalDB = this.relayCanvas.hasLocalDB();
 
-		if (hasLocalDB && hasCanvasData) {
-			this.canvas.importData(exported, true);
-		}
+		const reconciler = () => this.reconcileViewWithCanvas();
+		this.relayCanvas.setViewReconciler(reconciler);
+		this.unsubscribes.push(() => {
+			this.relayCanvas.clearViewReconciler(reconciler);
+		});
+
+		this.unsubscribes.push(
+			getPatcher().patch(this.view, {
+				setViewData(old: any) {
+					return function (data: string, clear: boolean) {
+						// @ts-ignore
+						const res = old.call(this, data, clear);
+						// A load delivers view.file's own data, so it grants
+						// ownership. The file load lands after install, so a
+						// stale disk file would overwrite anything imported
+						// earlier; the machine re-reconciles after every load.
+						try {
+							that.loadSeq++;
+							// A non-clearing load of an already-owned view is
+							// Obsidian ingesting an external disk change (file
+							// opens always clear): the rendered view is disk
+							// truth, and the reconcile must flow view→localDoc.
+							// A clearing load — an ordinary file open — voids
+							// any pending ingest: whatever load armed it has
+							// been superseded, and consuming it against the
+							// freshly opened file would destructively import
+							// stale disk state.
+							if (clear) {
+								that.pendingViewIngest = null;
+							} else if (
+								that.viewDataOwned &&
+								that.view.file &&
+								that.view.file === that.relayCanvas.tfile
+							) {
+								that.pendingViewIngest = {
+									seq: that.loadSeq,
+									file: that.view.file,
+								};
+							}
+							that.markViewDataOwned();
+							that.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
+						} catch (e) {
+							that.log(e);
+						}
+						return res;
+					};
+				},
+			}),
+		);
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.canvas, {
@@ -409,6 +606,12 @@ export class CanvasPlugin extends HasLogging {
 						// @ts-ignore
 						const res = old.call(this);
 						try {
+							// A native save writes the rendered data into
+							// view.file, which makes that data the file's by
+							// definition — this is what re-establishes
+							// ownership for a view that held unsaved edits
+							// when the plugin attached.
+							that.markViewDataOwned();
 							that.relayCanvas.importFromView(that.view);
 						} catch (e) {
 							that.log(e);
@@ -421,7 +624,9 @@ export class CanvasPlugin extends HasLogging {
 						// @ts-ignore
 						const res = old.call(this, data);
 						try {
-							that.relayCanvas.importFromView(that.view);
+							if (that.viewDataOwned) {
+								that.relayCanvas.importFromView(that.view);
+							}
 						} catch (e) {
 							that.log(e);
 						}
@@ -445,14 +650,18 @@ export class CanvasPlugin extends HasLogging {
 				this.log("canvas is already destroyed");
 				return;
 			}
-			if (!this.view.file?.path.endsWith(this.relayCanvas.path)) {
-				this.log("event is for another node");
+			if (!this.view.file || this.view.file !== this.relayCanvas.tfile) {
+				this.log("event is for another file");
+				return;
+			}
+			if (!this.viewDataOwned) {
+				this.log("view has not loaded this file's data yet");
 				return;
 			}
 			if (event.transaction.origin === this.relayCanvas) {
 				return;
 			}
-			const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
+			const exported = this.relayCanvas.exportData();
 			for (const [key, delta] of event.changes.keys) {
 				log += `key: ${key} action: ${delta.action}\n\n`;
 			}
@@ -504,6 +713,12 @@ export class CanvasPlugin extends HasLogging {
 		this.unsubscribes.push(() => {
 			this.relayCanvas.yedges.unobserve(_edgeObserver);
 		});
+
+		// The install-time reconcile (content that arrived before this view
+		// opened produced no observer events) is requested by
+		// markViewDataOwned once the rendered data provably belongs to
+		// view.file — never against a reused view that still renders the
+		// previous file.
 
 		this.relayCanvasView.tracking = true;
 	}

@@ -1,0 +1,698 @@
+/**
+ * CanvasHSM
+ *
+ * One machine per canvas, deciding when the canvas localDoc may be written
+ * to disk, when the disk file has diverged, and when an attached view must
+ * be reconciled. The declarative CANVAS_MACHINE definition is interpreted
+ * by the merge-hsm interpreter; guards, actions, invoke sources, and
+ * effect emission are bound per instance here.
+ *
+ * The machine reasons over exactly three inputs — the disk file, the
+ * localDoc export, and the persisted LCA. Remote convergence is not its
+ * concern: the CanvasDocBridge merges remote state into the localDoc in
+ * CRDT space, and the machine only observes the result as
+ * LOCAL_DOC_CHANGED.
+ *
+ * Effects are executed by the host (Canvas / SharedFolder /
+ * BackgroundSync): disk writes via SharedFolder.flush, downloads via
+ * BackgroundSync, view reconciliation via CanvasPlugin, persistence via
+ * the vault-wide HSMStore.
+ */
+
+import { processEvent } from "../merge-hsm/machine-interpreter";
+import type {
+	ActiveInvoke,
+	PersistedCanvasState,
+	SyncStatus,
+	SyncStatusType,
+} from "../merge-hsm/types";
+import {
+	areCanvasDataEqual,
+	mergeCanvasThreeWay,
+	mergeCanvasViewData,
+} from "../CanvasData";
+import type { CanvasData } from "../CanvasView";
+import { generateHash } from "../hashing";
+import { curryLog } from "../debug";
+import { CANVAS_MACHINE } from "./machine-definition";
+import type {
+	CanvasContext,
+	CanvasDiskMeta,
+	CanvasEffect,
+	CanvasEvent,
+	CanvasHSMConfig,
+	CanvasStatePath,
+	EvaluationResult,
+	EvaluationVerdict,
+} from "./types";
+
+/** Capability each effect type requires from the current state's node. */
+const EFFECT_CAPABILITY: Record<
+	CanvasEffect["type"],
+	| "canWriteDisk"
+	| "canReconcileView"
+	| "canDownload"
+	| "canSurfaceStatus"
+	| "canEmitEffects"
+> = {
+	WRITE_DISK: "canWriteDisk",
+	INGEST_MERGE: "canWriteDisk",
+	RECONCILE_VIEW: "canReconcileView",
+	ENQUEUE_DOWNLOAD: "canDownload",
+	SURFACE_STATUS: "canSurfaceStatus",
+	PERSIST_STATE: "canEmitEffects",
+};
+
+const EMPTY_CANVAS: CanvasData = { nodes: [], edges: [] };
+
+const TRANSITION_BUFFER_SIZE = 50;
+
+export interface CanvasStateTransition {
+	ts: number;
+	seq: number;
+	event: string;
+	from: CanvasStatePath;
+	to: CanvasStatePath;
+}
+
+function isCanvasDataEmpty(data: CanvasData): boolean {
+	return (data.nodes?.length ?? 0) === 0 && (data.edges?.length ?? 0) === 0;
+}
+
+/** Top-level keys in a canvas file the localDoc does not model. */
+function parseCanvasExtras(raw: string): Record<string, unknown> {
+	try {
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		if (
+			parsed === null ||
+			typeof parsed !== "object" ||
+			Array.isArray(parsed)
+		) {
+			return {};
+		}
+		const extras: Record<string, unknown> = {};
+		for (const [key, value] of Object.entries(parsed)) {
+			if (key !== "nodes" && key !== "edges") extras[key] = value;
+		}
+		return extras;
+	} catch {
+		return {};
+	}
+}
+
+function parseCanvasData(raw: string): CanvasData | null {
+	try {
+		const parsed = JSON.parse(raw) as Record<string, unknown>;
+		// Valid JSON that is not canvas-shaped must park, never be
+		// overwritten: a canvas file is an object whose nodes/edges are
+		// arrays when present, and an object with other keys but no canvas
+		// keys is some other format that happens to share the extension.
+		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+			return null;
+		}
+		const nodes = parsed.nodes;
+		const edges = parsed.edges;
+		if (nodes !== undefined && !Array.isArray(nodes)) return null;
+		if (edges !== undefined && !Array.isArray(edges)) return null;
+		if (nodes === undefined && edges === undefined && Object.keys(parsed).length > 0) {
+			return null;
+		}
+		return {
+			nodes: (nodes as CanvasData["nodes"]) ?? [],
+			edges: (edges as CanvasData["edges"]) ?? [],
+		};
+	} catch (e) {
+		return null;
+	}
+}
+
+async function defaultHashFn(contents: string): Promise<string> {
+	const encoder = new TextEncoder();
+	return generateHash(encoder.encode(contents).buffer as ArrayBuffer);
+}
+
+function freshContext(): CanvasContext {
+	return {
+		persistenceLoaded: false,
+		userLock: false,
+		serverAheadPending: false,
+		downloadPending: false,
+		reevaluatePending: false,
+		lca: null,
+		disk: null,
+		revision: 0,
+	};
+}
+
+export class CanvasHSM {
+	readonly context: CanvasContext;
+	private _statePath: CanvasStatePath = "loading";
+	private _activeInvoke: ActiveInvoke | null = null;
+	private _processing = false;
+	private _queue: CanvasEvent[] = [];
+	private _currentEventType = "";
+	private _destroyed = false;
+	private _stateWaiters = new Set<(statePath: CanvasStatePath) => void>();
+	private _waiterAborts = new Set<() => void>();
+	private _transitionSeq = 0;
+	/** Ring buffer of recent transitions for diagnostics and harness dumps. */
+	private _recentTransitions: CanvasStateTransition[] = [];
+	/** Result of the most recent completed evaluation (flush payload). */
+	private _lastEvaluation: EvaluationResult | null = null;
+	private readonly hashFn: (contents: string) => Promise<string>;
+	private readonly now: () => number;
+	private interpreterConfig: {
+		guards: Record<string, (hsm: unknown, event: CanvasEvent) => boolean>;
+		actions: Record<string, (hsm: unknown, event: CanvasEvent) => void>;
+		invokeSources: Record<
+			string,
+			(hsm: unknown, signal: AbortSignal) => Promise<unknown>
+		>;
+	};
+	private warn = curryLog("[CanvasHSM]", "warn");
+
+	constructor(private config: CanvasHSMConfig) {
+		this.context = freshContext();
+		this.hashFn = config.hashFn ?? defaultHashFn;
+		this.now = config.now ?? (() => Date.now());
+
+		const verdictIs = (verdict: EvaluationVerdict) => {
+			return (_hsm: unknown, event: CanvasEvent): boolean => {
+				const result = (event as { data?: EvaluationResult }).data;
+				return result?.verdict === verdict;
+			};
+		};
+
+		this.interpreterConfig = {
+			guards: {
+				persistenceLoaded: () => this.context.persistenceLoaded,
+				persistenceLoadedAndLocked: () =>
+					this.context.persistenceLoaded && this.context.userLock,
+				userLock: () => this.context.userLock,
+				reevaluatePending: () => this.context.reevaluatePending,
+				evaluationNotMember: verdictIs("not-member"),
+				evaluationAwaitingEnrollment: verdictIs("awaiting-enrollment"),
+				evaluationSynced: verdictIs("synced"),
+				evaluationRemoteAhead: verdictIs("remote-ahead"),
+				evaluationIngest: verdictIs("ingest"),
+			},
+			actions: {
+				resetContext: () => this.resetContext(),
+				restorePersistedState: (_hsm, event) => {
+					if (event.type !== "PERSISTENCE_LOADED") return;
+					this.context.lca = event.state?.lca
+						? { ...event.state.lca }
+						: null;
+					this.context.disk = event.state?.disk
+						? { ...event.state.disk }
+						: null;
+					this.context.persistenceLoaded = true;
+				},
+				markLocked: () => {
+					this.context.userLock = true;
+				},
+				markUnlocked: () => {
+					this.context.userLock = false;
+				},
+				rememberServerAhead: () => {
+					this.context.serverAheadPending = true;
+				},
+				rememberReevaluate: () => {
+					this.context.reevaluatePending = true;
+				},
+				clearReevaluatePending: () => {
+					this.context.reevaluatePending = false;
+				},
+				requestDownload: () => this.requestDownload(),
+				drainPendingSignals: () => {
+					if (this.context.serverAheadPending) {
+						this.context.serverAheadPending = false;
+						this.requestDownload();
+					}
+				},
+				settleDownload: () => {
+					this.context.downloadPending = false;
+				},
+				recordEvaluation: (_hsm, event) => {
+					const result = (event as { data?: EvaluationResult }).data;
+					if (!result) return;
+					this._lastEvaluation = result;
+					this.context.disk = result.disk ? { ...result.disk } : null;
+					this.touch();
+				},
+				recordEvaluationError: (_hsm, event) => {
+					this.warn(
+						"evaluation failed",
+						this.config.getPath(),
+						(event as { data?: unknown }).data,
+					);
+				},
+				recordFlushFailure: (_hsm, event) => {
+					if (event.type !== "FLUSH_FAILED") return;
+					this.warn("flush failed", this.config.getPath(), event.error);
+				},
+				clearDiskMeta: () => {
+					// After a failed write the machine's disk knowledge is
+					// unreliable (the write may have partially landed) — and a
+					// cleanly failed write leaves the recorded mtime matching
+					// the file, so the folder poll's stat comparison would
+					// never re-fire. Dropping the meta makes the next poll
+					// cycle re-deliver DISK_CHANGED and retry instead of
+					// parking a transient failure as a permanent conflict.
+					this.context.disk = null;
+					this.touch();
+				},
+				advanceLCAFromEvaluation: () => {
+					const result = this._lastEvaluation;
+					if (!result) return;
+					this.context.lca = {
+						contents: result.contents,
+						hash: result.hash,
+						mtime: result.disk?.mtime ?? this.now(),
+					};
+					this.touch();
+				},
+				advanceLCAFromFlush: (_hsm, event) => {
+					if (event.type !== "FLUSH_COMPLETE") return;
+					this.context.lca = {
+						contents: event.contents,
+						hash: event.hash,
+						mtime: event.mtime,
+					};
+					this.context.disk = { hash: event.hash, mtime: event.mtime };
+					this.touch();
+				},
+				emitWriteDisk: () => {
+					const result = this._lastEvaluation;
+					if (!result) {
+						this.warn("entered idle.remoteAhead without an evaluation");
+						return;
+					}
+					this.emit({
+						type: "WRITE_DISK",
+						contents: result.contents,
+						hash: result.hash,
+					});
+				},
+				emitIngestMerge: () => {
+					const merged = this._lastEvaluation?.merged;
+					if (!merged) {
+						this.warn("entered idle.ingesting without a merge result");
+						return;
+					}
+					this.emit({
+						type: "INGEST_MERGE",
+						data: merged.data,
+						contents: merged.contents,
+						hash: merged.hash,
+						ours: merged.ours,
+					});
+				},
+				emitReconcileView: () => {
+					this.emit({ type: "RECONCILE_VIEW" });
+				},
+				surfaceStatus: () => {
+					this.emit({ type: "SURFACE_STATUS" });
+				},
+			},
+			invokeSources: {
+				evaluate: (_hsm, signal) => this.evaluate(signal),
+			},
+		};
+	}
+
+	// =========================================================================
+	// MachineHSM surface (consumed by the merge-hsm interpreter)
+	// =========================================================================
+
+	get statePath(): CanvasStatePath {
+		return this._statePath;
+	}
+
+	setStatePath(target: CanvasStatePath): void {
+		const from = this._statePath;
+		this._statePath = target;
+		if (from !== target) {
+			this._recentTransitions.push({
+				ts: this.now(),
+				seq: ++this._transitionSeq,
+				event: this._currentEventType,
+				from,
+				to: target,
+			});
+			if (this._recentTransitions.length > TRANSITION_BUFFER_SIZE) {
+				this._recentTransitions.shift();
+			}
+			this.config.onTransition?.(from, target, this._currentEventType);
+			for (const waiter of [...this._stateWaiters]) {
+				waiter(target);
+			}
+		}
+	}
+
+	/**
+	 * Resolve once the state path satisfies `check` — immediately when it
+	 * already does — or reject after `timeoutMs`. Event-driven off state
+	 * transitions; no polling.
+	 */
+	awaitState(
+		check: (statePath: CanvasStatePath) => boolean,
+		timeoutMs = 10_000,
+	): Promise<CanvasStatePath> {
+		if (this._destroyed) {
+			return Promise.reject(new Error("CanvasHSM destroyed"));
+		}
+		if (check(this._statePath)) {
+			return Promise.resolve(this._statePath);
+		}
+		return new Promise((resolve, reject) => {
+			const settle = (fn: () => void) => {
+				clearTimeout(timer);
+				this._stateWaiters.delete(waiter);
+				this._waiterAborts.delete(abort);
+				fn();
+			};
+			const timer = setTimeout(() => {
+				settle(() =>
+					reject(
+						new Error(
+							`awaitState timed out after ${timeoutMs}ms (state: ${this._statePath})`,
+						),
+					),
+				);
+			}, timeoutMs);
+			const waiter = (statePath: CanvasStatePath) => {
+				if (!check(statePath)) return;
+				settle(() => resolve(statePath));
+			};
+			const abort = () => {
+				settle(() => reject(new Error("CanvasHSM destroyed")));
+			};
+			this._stateWaiters.add(waiter);
+			this._waiterAborts.add(abort);
+		});
+	}
+
+	getActiveInvoke(): ActiveInvoke | null {
+		return this._activeInvoke;
+	}
+
+	setActiveInvoke(invoke: ActiveInvoke | null): void {
+		this._activeInvoke = invoke;
+	}
+
+	send(event: CanvasEvent): void {
+		if (this._destroyed) return;
+		if (this._processing) {
+			this._queue.push(event);
+			return;
+		}
+		this._processing = true;
+		try {
+			this.dispatch(event);
+			while (this._queue.length > 0) {
+				this.dispatch(this._queue.shift()!);
+			}
+		} finally {
+			this._processing = false;
+		}
+	}
+
+	private dispatch(event: CanvasEvent): void {
+		this._currentEventType = event.type;
+		const revisionBefore = this.context.revision;
+		const stateBefore = this._statePath;
+		// The interpreter is generic at runtime; its types are bound to
+		// MergeHSM's unions, so the boundary casts here are deliberate.
+		processEvent(
+			this as never,
+			event as never,
+			CANVAS_MACHINE as never,
+			this.interpreterConfig as never,
+		);
+		if (
+			(this.context.revision !== revisionBefore ||
+				this._statePath !== stateBefore) &&
+			this.currentCapabilities()?.canEmitEffects
+		) {
+			this.emit({ type: "PERSIST_STATE", state: this.buildPersistedState() });
+		}
+	}
+
+	// =========================================================================
+	// Effects
+	// =========================================================================
+
+	private currentCapabilities() {
+		return CANVAS_MACHINE[this._statePath]?.capabilities;
+	}
+
+	private emit(effect: CanvasEffect): void {
+		const capability = EFFECT_CAPABILITY[effect.type];
+		const granted = this.currentCapabilities()?.[capability];
+		if (!granted) {
+			throw new Error(
+				`CanvasHSM: state '${this._statePath}' does not grant ` +
+					`${capability} (effect ${effect.type})`,
+			);
+		}
+		this.config.onEffect(effect);
+	}
+
+	private requestDownload(): void {
+		if (this.context.downloadPending) return;
+		this.context.downloadPending = true;
+		this.emit({ type: "ENQUEUE_DOWNLOAD" });
+	}
+
+	// =========================================================================
+	// Evaluation
+	// =========================================================================
+
+	/**
+	 * Read the disk file and compare disk / localDoc / LCA. Pure with
+	 * respect to machine state: returns a verdict; routing and context
+	 * mutation happen in the machine's guarded onDone handlers.
+	 */
+	private async evaluate(_signal: AbortSignal): Promise<EvaluationResult> {
+		const data = this.config.exportData();
+		const contents = this.config.formatData(data);
+		const hash = await this.hashFn(contents);
+
+		const base = { contents, hash, parseError: false };
+
+		if (!this.config.isMember()) {
+			return { ...base, verdict: "not-member", disk: null };
+		}
+
+		const diskFile = await this.config.readDisk();
+		const raw = diskFile?.contents ?? "";
+		const hasDiskFile = diskFile !== null && raw.trim().length > 0;
+
+		let disk: CanvasDiskMeta | null = null;
+		if (diskFile !== null) {
+			disk = {
+				hash: await this.hashFn(diskFile.contents),
+				mtime: diskFile.mtime,
+			};
+		}
+
+		let diskData: CanvasData = EMPTY_CANVAS;
+		if (hasDiskFile) {
+			const parsed = parseCanvasData(raw);
+			if (parsed === null) {
+				return { ...base, verdict: "diverged", disk, parseError: true };
+			}
+			diskData = parsed;
+		}
+
+		const diskEmpty = isCanvasDataEmpty(diskData);
+		const localEmpty = isCanvasDataEmpty(data);
+
+		if (diskFile === null) {
+			// A member with no file on disk is a remotely added canvas that
+			// has not been materialized yet. Write the localDoc's export even
+			// when it is empty — the folder meta already lists this path, and
+			// the vault must gain the file for the membership to be visible.
+			return { ...base, verdict: "remote-ahead", disk: null };
+		}
+		if (diskEmpty && localEmpty) {
+			return { ...base, verdict: "synced", disk };
+		}
+		if (localEmpty) {
+			// A localDoc with no content yet (first sync or enrollment in
+			// flight) must never flush emptiness over a real file.
+			return { ...base, verdict: "awaiting-enrollment", disk };
+		}
+		if (areCanvasDataEqual(diskData, data)) {
+			return { ...base, verdict: "synced", disk };
+		}
+		if (diskEmpty) {
+			return { ...base, verdict: "remote-ahead", disk };
+		}
+
+		const lcaData = this.context.lca
+			? parseCanvasData(this.context.lca.contents)
+			: null;
+		if (lcaData && areCanvasDataEqual(diskData, lcaData)) {
+			return { ...base, verdict: "remote-ahead", disk };
+		}
+		if (lcaData) {
+			// Disk changed with a baseline: per-id three-way merge. Base is
+			// the LCA, ours the localDoc export (the CRDT side, which wins
+			// value conflicts), theirs the disk file. Unknown top-level keys
+			// in the file pass through to the written result.
+			const mergedData = mergeCanvasThreeWay(lcaData, data, diskData);
+			const mergedContents = this.config.formatData({
+				...parseCanvasExtras(raw),
+				...mergedData,
+			} as CanvasData);
+			return {
+				...base,
+				verdict: "ingest",
+				disk,
+				merged: {
+					data: mergedData,
+					contents: mergedContents,
+					hash: await this.hashFn(mergedContents),
+					ours: data,
+				},
+			};
+		}
+		// No baseline proves intent, but the file parses: converge
+		// additively instead of parking until a view opens. The union by
+		// identity has the same semantics as the view-attach import —
+		// shared ids take the localDoc side (the CRDT carries the peers'
+		// edits), disk-only items survive, nothing is deleted from an
+		// unprovable state. The write travels the same host-executed
+		// INGEST_MERGE unit as the three-way path.
+		const unionData = mergeCanvasViewData(data, diskData) ?? diskData;
+		const unionContents = this.config.formatData({
+			...parseCanvasExtras(raw),
+			...unionData,
+		} as CanvasData);
+		return {
+			...base,
+			verdict: "ingest",
+			disk,
+			merged: {
+				data: unionData,
+				contents: unionContents,
+				hash: await this.hashFn(unionContents),
+				ours: data,
+			},
+		};
+	}
+
+	// =========================================================================
+	// Context / persistence
+	// =========================================================================
+
+	private touch(): void {
+		this.context.revision++;
+	}
+
+	private resetContext(): void {
+		const fresh = freshContext();
+		fresh.userLock = this.context.userLock;
+		Object.assign(this.context, fresh);
+		this._lastEvaluation = null;
+	}
+
+	private buildPersistedState(): PersistedCanvasState {
+		return {
+			kind: "canvas",
+			guid: this.config.guid,
+			path: this.config.getPath(),
+			folder: this.config.folderGuid,
+			lca: this.context.lca ? { ...this.context.lca } : null,
+			disk: this.context.disk ? { ...this.context.disk } : null,
+			localSnapshot: this.config.getLocalSnapshot?.() ?? null,
+			lastStatePath: this._statePath,
+			persistedAt: this.now(),
+		};
+	}
+
+	// =========================================================================
+	// Introspection / lifecycle
+	// =========================================================================
+
+	/**
+	 * The LCA parsed as canvas data — the base for three-way merges. Null
+	 * while no LCA exists or its contents fail to parse.
+	 */
+	getLCAData(): CanvasData | null {
+		return this.context.lca
+			? parseCanvasData(this.context.lca.contents)
+			: null;
+	}
+
+	/**
+	 * Per-file status for the shared sync surfaces. The canvas machine has
+	 * no conflict-resolution states; the parked divergence is the
+	 * actionable posture. Parseable divergence resolves machine-side
+	 * (three-way ingest with a baseline, additive union without), so what
+	 * parks is a file the engine cannot read or a failed write awaiting
+	 * its retry — and opening the canvas still resolves the view path
+	 * additively, the same "Open to resolve" affordance conflicted
+	 * documents present.
+	 */
+	getSyncStatus(): SyncStatus {
+		const status: SyncStatusType =
+			this._statePath === "idle.diverged"
+				? "conflict"
+				: this._statePath === "loading" ||
+					  this._statePath === "idle.loading" ||
+					  this._statePath === "idle.remoteAhead" ||
+					  this._statePath === "idle.ingesting"
+					? "pending"
+					: "synced";
+		return {
+			guid: this.config.guid,
+			status,
+			diskMtime: this.context.disk?.mtime ?? 0,
+			localStateVector: new Uint8Array(),
+			remoteStateVector: new Uint8Array(),
+		};
+	}
+
+	/**
+	 * Disk metadata as last observed by evaluation or flush. Pollers should
+	 * prefer this over getSnapshot(): the snapshot deep-copies the
+	 * recent-transitions ring on every call.
+	 */
+	getDiskMeta(): CanvasDiskMeta | null {
+		return this.context.disk ? { ...this.context.disk } : null;
+	}
+
+	getSnapshot(): {
+		statePath: CanvasStatePath;
+		userLock: boolean;
+		hasLCA: boolean;
+		disk: CanvasDiskMeta | null;
+		downloadPending: boolean;
+		recentTransitions: CanvasStateTransition[];
+	} {
+		return {
+			statePath: this._statePath,
+			userLock: this.context.userLock,
+			hasLCA: this.context.lca !== null,
+			disk: this.context.disk ? { ...this.context.disk } : null,
+			downloadPending: this.context.downloadPending,
+			recentTransitions: this._recentTransitions.map((t) => ({ ...t })),
+		};
+	}
+
+	destroy(): void {
+		if (this._destroyed) return;
+		this._destroyed = true;
+		if (this._activeInvoke) {
+			this._activeInvoke.controller.abort();
+			this._activeInvoke = null;
+		}
+		this._queue.length = 0;
+		for (const abort of [...this._waiterAborts]) {
+			abort();
+		}
+	}
+}
