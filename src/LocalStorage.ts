@@ -1,9 +1,31 @@
+const keyIndexes = new WeakMap<Storage, Map<string, Set<string>>>();
+
 export class LocalStorage<T> implements Map<string, T> {
 	private namespace: string;
 	private seperator = "/";
+	private storage: Storage;
+	private keyIndex: Set<string>;
 
 	constructor(namespace: string) {
 		this.namespace = namespace;
+		this.storage = localStorage;
+
+		let storageIndexes = keyIndexes.get(this.storage);
+		if (!storageIndexes) {
+			storageIndexes = new Map();
+			keyIndexes.set(this.storage, storageIndexes);
+		}
+
+		const existingIndex = storageIndexes.get(this.namespace);
+		if (existingIndex) {
+			this.keyIndex = existingIndex;
+		} else {
+			const prefix = this.namespace + this.seperator;
+			this.keyIndex = new Set(
+				Object.keys(this.storage).filter((key) => key.startsWith(prefix)),
+			);
+			storageIndexes.set(this.namespace, this.keyIndex);
+		}
 	}
 
 	private fullKey(key: string): string {
@@ -11,21 +33,21 @@ export class LocalStorage<T> implements Map<string, T> {
 	}
 
 	public get size(): number {
-		return Object.keys(localStorage).filter((key: string) =>
-			key.startsWith(this.namespace + this.seperator),
-		).length;
+		return this.keyIndex.size;
 	}
 
 	public clear(): void {
-		Object.keys(localStorage)
-			.filter((key: string) => key.startsWith(this.namespace + this.seperator))
-			.forEach((key: string) => localStorage.removeItem(key));
+		Array.from(this.keyIndex).forEach((key) => {
+			this.storage.removeItem(key);
+			this.keyIndex.delete(key);
+		});
 	}
 
 	public delete(key: string): boolean {
 		const storageKey = this.fullKey(key);
-		const exists = localStorage.getItem(storageKey) !== null;
-		localStorage.removeItem(storageKey);
+		const exists = this.storage.getItem(storageKey) !== null;
+		this.storage.removeItem(storageKey);
+		this.keyIndex.delete(storageKey);
 		return exists;
 	}
 
@@ -33,36 +55,35 @@ export class LocalStorage<T> implements Map<string, T> {
 		callbackfn: (value: T, key: string, map: Map<string, T>) => void,
 		thisArg?: unknown,
 	): void {
-		Object.keys(localStorage)
-			.filter((key: string) => key.startsWith(this.namespace + this.seperator))
-			.forEach((key: string) => {
-				const storageKey = key.split(`${this.namespace}${this.seperator}`)[1];
-				const value = this.get(storageKey) as unknown as T;
-				callbackfn.call(thisArg, value, storageKey, this);
-			});
+		Array.from(this.keyIndex).forEach((key) => {
+			const storageKey = key.split(`${this.namespace}${this.seperator}`)[1];
+			const value = this.get(storageKey) as unknown as T;
+			callbackfn.call(thisArg, value, storageKey, this);
+		});
 	}
 
 	public get(key: string): T | undefined {
 		const storageKey = this.fullKey(key);
-		const item = localStorage.getItem(storageKey);
+		const item = this.storage.getItem(storageKey);
 		return item ? JSON.parse(item) : undefined;
 	}
 
 	public has(key: string): boolean {
 		const storageKey = this.fullKey(key);
-		return localStorage.getItem(storageKey) !== null;
+		return this.storage.getItem(storageKey) !== null;
 	}
 
 	public set(key: string, value: T): this {
 		const storageKey = this.fullKey(key);
-		localStorage.setItem(storageKey, JSON.stringify(value));
+		this.storage.setItem(storageKey, JSON.stringify(value));
+		this.keyIndex.add(storageKey);
 		return this;
 	}
 
 	public keys(): IterableIterator<string> {
-		const keys = Object.keys(localStorage)
-			.filter((key: string) => key.startsWith(this.namespace + this.seperator))
-			.map((key: string) => key.split(`${this.namespace}${this.seperator}`)[1]);
+		const keys = Array.from(this.keyIndex).map(
+			(key: string) => key.split(`${this.namespace}${this.seperator}`)[1],
+		);
 		return keys.values();
 	}
 
