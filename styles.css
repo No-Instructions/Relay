@@ -434,3 +434,79 @@
 	color: var(--text-normal);
 	flex: none;
 }
+
+/* Note state inspector — debugging strip in the sync-status sidebar showing
+   per-note merge state: HSM state path, disk write/ingest lanes, and store
+   convergence. */
+.system3-note-state {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-m);
+	padding: var(--size-2-3) var(--size-4-2);
+	margin: var(--size-4-2) 0;
+	font-size: var(--font-ui-small);
+	background: var(--background-secondary);
+}
+
+.system3-note-state-header {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	margin-bottom: var(--size-2-2);
+}
+
+.system3-note-state-title {
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+}
+
+.system3-note-state-pill {
+	flex: none;
+	padding: 0 var(--size-4-1);
+	border-radius: var(--radius-l);
+	border: 1px solid var(--background-modifier-border);
+	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
+}
+
+.system3-note-state-row {
+	display: flex;
+	justify-content: space-between;
+	gap: var(--size-4-2);
+	padding: 1px 0;
+	line-height: 1.4;
+}
+
+.system3-note-state-label {
+	color: var(--text-muted);
+	flex: none;
+}
+
+.system3-note-state-value {
+	text-align: right;
+	overflow-wrap: anywhere;
+}
+
+.system3-note-state-mono {
+	font-family: var(--font-monospace);
+	font-size: var(--font-ui-smaller);
+}
+
+.system3-note-state-ok {
+	color: var(--color-green);
+}
+
+.system3-note-state-warn {
+	color: var(--color-yellow);
+}
+
+.system3-note-state-bad {
+	color: var(--color-red);
+}
+
+.system3-note-state-muted {
+	color: var(--text-faint);
+}

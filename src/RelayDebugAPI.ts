@@ -639,36 +639,7 @@ export class RelayDebugAPI {
       getSyncPanelStatus: (folderGuid: string) => this.getSyncPanelStatus(folderGuid),
       listSyncPanelStatus: () => this.listSyncPanelStatus(),
 
-      lookupDocument: (path: string) => {
-        const sharedFolders = this.plugin?.sharedFolders;
-        if (!sharedFolders) return null;
-        if (!path.startsWith('/')) {
-          for (const folder of (sharedFolders as any)._set.values()) {
-            const doc = folder.mergeManager?._getDocument(path);
-            const hsm = doc?._hsm;
-            if (hsm) return { doc, hsm, guid: path, folder, filePath: hsm.path || path };
-          }
-          throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
-        }
-        const vaultPath = path.slice(1);
-        const folder: any = sharedFolders.lookup(vaultPath);
-        if (!folder) {
-          const available = Array.from((sharedFolders as any)._set.values())
-            .map((f: any) => '/' + f.path + '/')
-            .join(', ') || '(none)';
-          throw new Error(
-            `Document path must be a vault-level path under a shared folder ` +
-            `(got: ${JSON.stringify(path)}; shared folders: ${available})`
-          );
-        }
-        const vpath = folder.getVirtualPath(vaultPath);
-        const guid = folder.syncStore?.get(vpath);
-        if (!guid) return null;
-        const doc = folder.mergeManager?._getDocument(guid);
-        const hsm = doc?._hsm;
-        if (!hsm) return null;
-        return { doc, hsm, guid, folder, filePath: hsm.path || vpath };
-      },
+      lookupDocument: (path: string) => this.lookupDocument(path),
 
     };
 
@@ -677,6 +648,43 @@ export class RelayDebugAPI {
       ...api,
       registerBridge: (folderPath: string, bridge: E2ERecordingBridge) => this.registerBridge(folderPath, bridge),
     };
+  }
+
+  /**
+   * Look up a document by vault-level path including the shared-folder prefix
+   * (e.g. "/private/foo.md"), or by bare GUID. Returns document, HSM, folder,
+   * and GUID. Shared by the `window.__relayDebug` global and in-plugin debug
+   * UI like the note state inspector.
+   */
+  lookupDocument(path: string): { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null {
+    const sharedFolders = this.plugin?.sharedFolders;
+    if (!sharedFolders) return null;
+    if (!path.startsWith('/')) {
+      for (const folder of (sharedFolders as any)._set.values()) {
+        const doc = folder.mergeManager?._getDocument(path);
+        const hsm = doc?._hsm;
+        if (hsm) return { doc, hsm, guid: path, folder, filePath: hsm.path || path };
+      }
+      throw new Error(`Document paths must start with '/' (got: ${JSON.stringify(path)})`);
+    }
+    const vaultPath = path.slice(1);
+    const folder: any = sharedFolders.lookup(vaultPath);
+    if (!folder) {
+      const available = Array.from((sharedFolders as any)._set.values())
+        .map((f: any) => '/' + f.path + '/')
+        .join(', ') || '(none)';
+      throw new Error(
+        `Document path must be a vault-level path under a shared folder ` +
+        `(got: ${JSON.stringify(path)}; shared folders: ${available})`
+      );
+    }
+    const vpath = folder.getVirtualPath(vaultPath);
+    const guid = folder.syncStore?.get(vpath);
+    if (!guid) return null;
+    const doc = folder.mergeManager?._getDocument(guid);
+    const hsm = doc?._hsm;
+    if (!hsm) return null;
+    return { doc, hsm, guid, folder, filePath: hsm.path || vpath };
   }
 
   /**
@@ -1101,12 +1109,12 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Build the HsmStateSnapshot for a document. Factored here so the CLI
-   * and the Python RelayClient can both reach the same shape via a
-   * single `__relayDebug.getHsmStateSnapshot(path)` call.
+   * Build the HsmStateSnapshot for a document. Factored here so the CLI,
+   * the Python RelayClient, and in-plugin debug UI can all reach the same
+   * shape — the CDP callers via `__relayDebug.getHsmStateSnapshot(path)`.
    */
-  private async getHsmStateSnapshot(path: string): Promise<HsmStateSnapshot> {
-    const lookup = this.debugGlobal()?.lookupDocument?.(path);
+  async getHsmStateSnapshot(path: string): Promise<HsmStateSnapshot> {
+    const lookup = this.lookupDocument(path);
     if (!lookup) {
       throw new Error(`HSM not found: ${path}`);
     }
@@ -1144,15 +1152,27 @@ export class RelayDebugAPI {
       } catch { /* noop */ }
     }
 
-    // SV equality — only meaningful if both sides exist.
+    // SV equality — only meaningful if both sides exist. Warm docs are
+    // compared by freshly encoded vectors: the HSM's cached _localStateVector
+    // and _remoteStateVector fields only refresh at lifecycle points and go
+    // stale during active editing, reporting mismatch on converged docs.
+    // Hibernated docs fall back to the cached/persisted vectors, which is
+    // the persistence-level check the idle fixtures assert.
     let stateVectorsEqual: boolean | null = null;
     try {
-      const remoteStateVector: Uint8Array | null =
-        hsmAny._remoteStateVector || null;
-      if (idbStateVector && remoteStateVector) {
-        const localArr = Array.from(idbStateVector);
-        const remoteArr = Array.from(remoteStateVector);
-        stateVectorsEqual = JSON.stringify(localArr) === JSON.stringify(remoteArr);
+      const svEqual = (a: Uint8Array, b: Uint8Array) =>
+        JSON.stringify(Array.from(a)) === JSON.stringify(Array.from(b));
+      if (hsmAny.localDoc && hsmAny.remoteDoc) {
+        stateVectorsEqual = svEqual(
+          Y.encodeStateVector(hsmAny.localDoc),
+          Y.encodeStateVector(hsmAny.remoteDoc),
+        );
+      } else {
+        const remoteStateVector: Uint8Array | null =
+          hsmAny._remoteStateVector || null;
+        if (idbStateVector && remoteStateVector) {
+          stateVectorsEqual = svEqual(idbStateVector, remoteStateVector);
+        }
       }
     } catch { /* noop */ }
 

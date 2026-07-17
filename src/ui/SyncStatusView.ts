@@ -10,8 +10,10 @@ import SyncStatusModalContent from "../components/SyncStatusModalContent.svelte"
 import Pill from "../components/Pill.svelte";
 import { flags } from "../flagManager";
 import type { FolderSyncVisibleState } from "../BackgroundSyncProgress";
+import type { RelayDebugAPI } from "../RelayDebugAPI";
 import type { SharedFolder, SharedFolders } from "../SharedFolder";
 import type { TimeProvider } from "../TimeProvider";
+import { NoteStateSection } from "./NoteStateSection";
 import { getSyncStatusActivityStore } from "./SyncStatusActivity";
 
 export const VIEW_TYPE_SYNC_STATUS = "system3-sync-status";
@@ -28,6 +30,8 @@ interface SyncStatusViewBindingOptions {
 export interface SyncStatusViewContext {
 	sharedFolders: SharedFolders;
 	timeProvider: TimeProvider;
+	/** Backs the note state inspector strip when its feature flag is on. */
+	debugAPI?: RelayDebugAPI;
 	/** Reopen the gated-deletion decision modal for a folder. */
 	onReviewHeldDeletions?: (folder: SharedFolder) => void;
 }
@@ -38,6 +42,7 @@ export class SyncStatusView extends ItemView {
 	private binding: SyncStatusViewBinding | null = null;
 	private headerUnsubscribers: (() => void)[] = [];
 	private followActiveFile = true;
+	private noteState?: NoteStateSection;
 
 	constructor(
 		leaf: WorkspaceLeaf,
@@ -83,8 +88,17 @@ export class SyncStatusView extends ItemView {
 		container.empty();
 		container.addClass("system3-sync-status-panel");
 
+		if (this.context.debugAPI && flags().enableNoteStateInspector) {
+			this.noteState = new NoteStateSection({
+				app: this.app,
+				timeProvider: this.context.timeProvider,
+				debugAPI: this.context.debugAPI,
+			});
+		}
+
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
+				this.noteState?.bindToFile(file?.path ?? null);
 				if (!this.followActiveFile) return;
 				this.rebindToFile(file ?? null);
 			}),
@@ -106,10 +120,12 @@ export class SyncStatusView extends ItemView {
 		// `getActiveFile()` returns the real focused file rather than null
 		// during the plugin-load race.
 		this.app.workspace.onLayoutReady(() => {
+			this.noteState?.bindToFile(this.app.workspace.getActiveFile()?.path ?? null);
 			if (!this.followActiveFile) return;
 			this.bindToActiveFile();
 		});
 
+		this.noteState?.bindToFile(this.app.workspace.getActiveFile()?.path ?? null);
 		if (this.followActiveFile) {
 			this.bindToActiveFile();
 		}
@@ -119,6 +135,8 @@ export class SyncStatusView extends ItemView {
 	async onClose(): Promise<void> {
 		this.component?.$destroy();
 		this.component = undefined;
+		this.noteState?.destroy();
+		this.noteState = undefined;
 		this.destroyFolderHeader();
 	}
 
@@ -185,6 +203,7 @@ export class SyncStatusView extends ItemView {
 		container.empty();
 
 		if (!this.binding) {
+			this.noteState?.attach(container);
 			container.createEl("div", {
 				cls: "system3-sync-status-empty",
 				text: "No folder selected.",
@@ -213,6 +232,16 @@ export class SyncStatusView extends ItemView {
 					: null,
 			},
 		});
+
+		// Re-parent the note-state strip into the component's slot, beneath
+		// the folder sync state and above the sections that follow it. The
+		// strip element survives re-renders; only its parent changes.
+		if (this.noteState) {
+			const slot = contentEl.querySelector<HTMLElement>(
+				".system3-note-state-slot",
+			);
+			if (slot) this.noteState.attach(slot);
+		}
 	}
 
 	private renderFolderHeader(
