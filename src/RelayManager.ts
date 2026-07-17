@@ -121,7 +121,7 @@ interface RelayRoleDAO extends RecordModel {
 	relay: string;
 }
 
-interface FolderRoleDAO extends RecordModel {
+export interface FolderRoleDAO extends RecordModel {
 	id: string;
 	user: string;
 	role: string;
@@ -2237,20 +2237,14 @@ export class RelayManager extends HasLogging {
 
 	async addFolderRole(
 		folder: RemoteFolder,
-		userId: string,
-		roleName: Role,
+		fields: Pick<FolderRoleDAO, "user" | "role">,
 	): Promise<FolderRole> {
 		if (!this.pb) throw new Error("Failed to add folder role");
-		const role = this.roles.find((r) => r.name === roleName);
-		if (!role) {
-			throw new Error("Failed to find role");
-		}
 		const record = await this.pb
 			.collection("shared_folder_roles")
 			.create<FolderRoleDAO>({
-				user: userId,
+				...fields,
 				shared_folder: folder.id,
-				role: role.id,
 			});
 		const folderRole = this.store?.ingest<FolderRole>(record);
 		if (!folderRole) {

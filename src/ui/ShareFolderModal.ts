@@ -1,7 +1,7 @@
 import { App, Modal } from "obsidian";
 import type { Relay } from "src/Relay";
 import type { SharedFolder, SharedFolders } from "src/SharedFolder";
-import type { RelayManager } from "src/RelayManager";
+import type { FolderRoleDAO, RelayManager } from "src/RelayManager";
 import ShareFolderModalContent from "../components/ShareFolderModalContent.svelte";
 import { mountComponent, type MountedComponent } from "./svelteHost.svelte";
 
@@ -17,7 +17,7 @@ export class ShareFolderModal extends Modal {
 			folderPath: string,
 			folderName: string,
 			isPrivate: boolean,
-			userIds: string[],
+			grants: Pick<FolderRoleDAO, "user" | "role">[],
 		) => Promise<SharedFolder>,
 	) {
 		super(app);
@@ -39,13 +39,13 @@ export class ShareFolderModal extends Modal {
 					folderPath: string,
 					folderName: string,
 					isPrivate: boolean,
-					userIds: string[],
+					grants: Pick<FolderRoleDAO, "user" | "role">[],
 				) => {
 					const result = await this.onConfirm(
 						folderPath,
 						folderName,
 						isPrivate,
-						userIds,
+						grants,
 					);
 					this.close();
 					return result;
