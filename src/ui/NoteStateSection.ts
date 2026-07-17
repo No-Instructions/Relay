@@ -46,6 +46,10 @@ interface IngestEvidence {
 	contentHash: string | null;
 	addedSpans: string[];
 	pendingCleared: boolean;
+	/** Settled by measured convergence rather than by carrying the lane's
+	 * content identity: the row reads "none", but the evidence stays live
+	 * for revert detection like any other completed ingest. */
+	clearedByConvergence: boolean;
 }
 
 interface EditorLocalMismatch {
@@ -108,6 +112,10 @@ export class NoteStateSection {
 	private pendingMachineEditorTexts: string[] = [];
 	/** Most recent point at which editor, localDoc, and disk agreed. */
 	private lastAgreementAt: number | null = null;
+	/** Bad-class stores label aging toward the verdict's persistence
+	 * threshold, keyed to the label so a just-flipped label is never
+	 * presented as persistent. Null while ok, warn, or unmeasured. */
+	private storesMismatch: { label: string; since: number } | null = null;
 	private editorChangeRef: EventRef;
 
 	private snapshot: HsmStateSnapshot | null = null;
@@ -183,6 +191,7 @@ export class NoteStateSection {
 		this.editorLocalMismatch = null;
 		this.pendingMachineEditorTexts = [];
 		this.lastAgreementAt = null;
+		this.storesMismatch = null;
 		this.snapshot = null;
 		this.snapshotAt = null;
 		this.snapshotDiskMtime = null;
@@ -342,7 +351,58 @@ export class NoteStateSection {
 		}
 
 		this.settleActiveIngest(localText);
+		this.clearConvergedIngest(localText);
 		this.detectCompletedIngestRevert(localText);
+	}
+
+	/**
+	 * A cleared pending buffer with fresh measured store agreement means
+	 * the dataflow settled without preserving the lane's content identity —
+	 * a normalizing merge, or a deletion folded into later edits. The
+	 * stores agree, so no ingest is outstanding: the lane clears rather
+	 * than aging a timer on stale evidence. Runs after settleActiveIngest
+	 * so same-pass completion and the reverted latch win over a plain
+	 * clear; across passes the evidence is retained in the completed slot,
+	 * so a revert to the pre-ingest content within the completed-write TTL
+	 * still latches, exactly as it does after a completion.
+	 */
+	private clearConvergedIngest(localText: string | null): void {
+		const ingest = this.activeIngest;
+		if (!ingest || !ingest.pendingCleared) return;
+		if (!this.measuredConvergence(localText)) return;
+		ingest.settledAt = this.context.timeProvider.now();
+		ingest.clearedByConvergence = true;
+		this.activeIngest = null;
+		this.completedIngest = ingest;
+	}
+
+	/**
+	 * Measured agreement between the live localDoc and a disk read that is
+	 * stat-paired to the latest adapter mtime — the same belief-free
+	 * comparison the stores row trusts, never the HSM's disk metadata.
+	 * Fresh evidence only: the stat must be no older than one tick and the
+	 * snapshot no older than its refresh cadence. Ticks suspend while the
+	 * panel is hidden but state changes keep driving the lane tracker, so
+	 * without this bound the pairing guard passes vacuously on frozen
+	 * values and live localDoc gets compared against a disk read of
+	 * unbounded age. Refusing stale evidence fails conservative: the lane
+	 * keeps waiting until the polling loop measures again.
+	 */
+	private measuredConvergence(localText: string | null): boolean {
+		const diskContent = this.snapshot?.diskContent ?? null;
+		const now = this.context.timeProvider.now();
+		return (
+			localText !== null &&
+			diskContent !== null &&
+			this.diskStatMtime !== null &&
+			this.snapshotDiskMtime !== null &&
+			this.diskStatMtime === this.snapshotDiskMtime &&
+			this.diskStatAt !== null &&
+			now - this.diskStatAt <= TICK_MS &&
+			this.snapshotAt !== null &&
+			now - this.snapshotAt <= SNAPSHOT_EVERY_TICKS * TICK_MS &&
+			localText === diskContent
+		);
 	}
 
 	private beginIngest(content: string, localText: string): void {
@@ -359,6 +419,7 @@ export class NoteStateSection {
 					: null,
 			addedSpans: this.addedSpans(localText, content),
 			pendingCleared: false,
+			clearedByConvergence: false,
 		};
 		void this.fillIngestHashes(evidence).catch(() => undefined);
 
@@ -807,6 +868,25 @@ export class NoteStateSection {
 		return { label: "converged", cls: "ok" };
 	}
 
+	/** Age bad-class store disagreement so the verdict can hold it to a
+	 * persistence threshold. The clock belongs to the label being named:
+	 * agreement, an unmeasurable check, a warn-class label, or a label
+	 * change all deliberately reset it, so what escalates is a specific
+	 * pair's persistent disagreement — never a streak of assorted non-ok
+	 * samples. Resetting on unmeasurable fails conservative. */
+	private trackStoresMismatch(stores: StoresCheck | null): void {
+		if (!stores || stores.cls !== "bad") {
+			this.storesMismatch = null;
+			return;
+		}
+		if (this.storesMismatch?.label !== stores.label) {
+			this.storesMismatch = {
+				label: stores.label,
+				since: this.context.timeProvider.now(),
+			};
+		}
+	}
+
 	private verdict(lookup: LookupResult, stores: StoresCheck | null): Verdict {
 		if (lookup.status === "unshared")
 			return { label: "not shared", cls: "muted" };
@@ -828,6 +908,21 @@ export class NoteStateSection {
 				return { label: "tracking", cls: "ok" };
 			if (statePath === "idle.synced") return { label: "synced", cls: "ok" };
 			return { label: "ok", cls: "ok" };
+		}
+		// A bad-class store disagreement that has kept the same label past
+		// the threshold names the failing pair and its direction; that
+		// outranks the bare lane timers and gate backlog below, which only
+		// say something is slow, not which store is wrong. Warn-class labels
+		// never claim this slot (they must not downgrade a bad lane verdict)
+		// and a just-flipped label starts a fresh clock; both still reach
+		// the pill through the fallback below when nothing else claims it.
+		if (
+			stores?.cls === "bad" &&
+			this.storesMismatch !== null &&
+			this.storesMismatch.label === stores.label &&
+			now - this.storesMismatch.since > STUCK_MS
+		) {
+			return { label: stores.label, cls: stores.cls };
 		}
 		const pending = this.pendingWrites();
 		if (pending.length > 0) {
@@ -897,6 +992,7 @@ export class NoteStateSection {
 		const localText = this.localDocText();
 		this.trackStoreTexts(editorText, localText);
 		const stores = this.storesCheck(editorText, localText);
+		this.trackStoresMismatch(stores);
 		const verdict = this.verdict(lookup, stores);
 		const statePath: string = this.hsm?.state?.statePath ?? "unknown";
 		this.lastRenderedStatePath = statePath;
@@ -1022,7 +1118,8 @@ export class NoteStateSection {
 		}
 		if (
 			this.completedIngest?.settledAt !== null &&
-			this.completedIngest?.settledAt !== undefined
+			this.completedIngest?.settledAt !== undefined &&
+			!this.completedIngest.clearedByConvergence
 		) {
 			this.row(
 				"disk ingest",
@@ -1031,6 +1128,9 @@ export class NoteStateSection {
 			);
 			return;
 		}
+		// A convergence-cleared ingest renders as no lane — claiming "✓" for
+		// content the dataflow did not preserve would be dishonest — but its
+		// evidence above keeps watching for a revert until the TTL prune.
 		this.row("disk ingest", "none", "muted");
 	}
 }
