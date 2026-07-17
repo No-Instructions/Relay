@@ -37,10 +37,15 @@ export interface DocumentContentSnapshot {
   path: string;
   guid: string;
   folder: string;
+  /** Live resident HSM localDoc text, captured after the asynchronous store probes. */
   local: { content: string; stateVector: string } | null;
+  /** Live resident HSM remoteDoc text, captured after the asynchronous store probes. */
   remote: { content: string; stateVector: string } | null;
+  /** Independently reconstructed per-document IndexedDB state. */
   idb: { content: string; stateVector: string } | null;
+  /** Vault-adapter file contents and mtime. */
   disk: { content: string; mtime: number } | null;
+  /** Independently downloaded and reconstructed server state. */
   server: { content: string; stateVector: string; updateSize: number } | null;
 }
 
@@ -260,7 +265,11 @@ export interface RelayDebugGlobal {
   readIdbContent: (guid: string, appId: string) => Promise<{ content: string; stateVector: Uint8Array } | null>;
   /** Get plugin log entries from the current session, with optional level/pattern filtering */
   getSessionLogs: (options?: SessionLogOptions) => Promise<object[]>;
-  /** Get a snapshot of all content views for a document */
+  /**
+   * Get independent content views for a document. `local.content` is the
+   * live HSM localDoc Y.Text; the IDB, disk, and server fields read their
+   * named stores and may legitimately differ.
+   */
   getDocumentContent: (path: string) => Promise<DocumentContentSnapshot>;
   /** Set the editor text via minimal CM6 transactions. Throws if the leaf drifted. */
   setEditorContent: (handle: EditorHandle, content: string, options?: SetEditorContentOptions) => Promise<SetEditorContentResult>;
@@ -1028,12 +1037,17 @@ export class RelayDebugAPI {
   }
 
   /**
-   * Get a snapshot of all content views (local, remote, IDB, disk, server) for a document.
+   * Get independent content views for a document. `local` and `remote` read
+   * the resident HSM Y.Docs, `idb` reconstructs the per-document IndexedDB,
+   * `disk` reads the vault adapter, and `server` downloads the remote update.
+   * The live HSM views are captured last so the returned `local.content` is
+   * exactly `hsm.getLocalDoc().getText('contents').toString()` at resolution
+   * time, without EOL or trailing-newline normalization.
    */
   private async getDocumentContent(path: string): Promise<DocumentContentSnapshot> {
     const lookup = this.debugGlobal()?.lookupDocument?.(path);
     if (!lookup) throw new Error(`Document not found: ${path}`);
-    const { doc, folder, guid, filePath } = lookup;
+    const { doc, hsm, folder, guid, filePath } = lookup;
 
     const result: DocumentContentSnapshot = {
       path: this.toVaultPath(folder, filePath),
@@ -1045,28 +1059,6 @@ export class RelayDebugAPI {
       disk: null,
       server: null,
     };
-
-    // Local doc
-    try {
-      const localDoc = doc.localDoc;
-      if (localDoc) {
-        result.local = {
-          content: localDoc.getText('contents').toString(),
-          stateVector: this.toHex(Y.encodeStateVector(localDoc)),
-        };
-      }
-    } catch { /* localDoc not available */ }
-
-    // Remote doc (ydoc)
-    try {
-      const remoteDoc = doc.ydoc;
-      if (remoteDoc) {
-        result.remote = {
-          content: remoteDoc.getText('contents').toString(),
-          stateVector: this.toHex(Y.encodeStateVector(remoteDoc)),
-        };
-      }
-    } catch { /* remoteDoc not available */ }
 
     // IDB
     try {
@@ -1104,6 +1096,29 @@ export class RelayDebugAPI {
       };
       tempDoc.destroy();
     } catch { /* server download failed */ }
+
+    // Capture the live HSM docs after every asynchronous store probe. Reading
+    // these before the awaits can return an internally consistent but stale
+    // local snapshot when an edit lands while IDB/disk/server are being read.
+    try {
+      const localDoc = hsm.getLocalDoc();
+      if (localDoc) {
+        result.local = {
+          content: localDoc.getText('contents').toString(),
+          stateVector: this.toHex(Y.encodeStateVector(localDoc)),
+        };
+      }
+    } catch { /* localDoc not available */ }
+
+    try {
+      const remoteDoc = hsm.getRemoteDoc();
+      if (remoteDoc) {
+        result.remote = {
+          content: remoteDoc.getText('contents').toString(),
+          stateVector: this.toHex(Y.encodeStateVector(remoteDoc)),
+        };
+      }
+    } catch { /* remoteDoc not available */ }
 
     return result;
   }
