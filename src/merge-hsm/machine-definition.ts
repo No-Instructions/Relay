@@ -177,6 +177,8 @@ export const MACHINE: MachineDefinition = {
 			{ target: 'idle.localAhead', guard: 'restoredForkHasFreshDiskContents', actions: ['ingestDiskToLocalDoc'] },
 			{ target: 'idle.localAhead', guard: 'localAheadAtLoad' },
 			{ target: 'idle.remoteAhead', guard: 'remoteAheadAtLoad' },
+			// Read access settles disk drift from remote instead of forking.
+			{ target: 'idle.remoteAhead', guard: 'readModeDiskAheadAtLoad' },
 			{ target: 'idle.diskAhead', guard: 'diskAheadAtLoad' },
 			{ target: 'idle.loadingDiskContents', guard: 'diskContentsNeededAtLoad' },
 			{ target: 'idle.diverged', guard: 'divergedAtLoad' },
@@ -243,6 +245,8 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.synced', guard: 'diskMatchesConvergedDocs', actions: ['storeDiskMetadataOnly'] },
 				{ target: 'idle.synced', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
 				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
+				// Read access repairs disk drift from remote, never forking.
+				{ target: 'idle.remoteAhead', guard: 'isReadMode', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diverged', guard: 'remoteOrLocalAhead', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'] },
 			],
@@ -304,6 +308,8 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: [
 				{ target: 'idle.diverged', guard: 'hasNoLCA', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.localAhead', guard: 'diskMatchesLCA', actions: ['storeDiskMetadata', 'updateLCAMtime'] },
+				// Read access never ingests disk; the fork parks.
+				{ target: 'idle.localAhead', guard: 'isReadMode', actions: ['storeDiskMetadata'] },
 				{ target: 'idle.localAhead', actions: ['storeDiskMetadata', 'ingestDiskToLocalDoc'], reenter: true },
 			],
 			CM6_CHANGE: { target: 'idle.localAhead', actions: ['accumulateCM6Change'] },
@@ -375,7 +381,8 @@ export const MACHINE: MachineDefinition = {
 		invoke: {
 			src: 'idle-merge',
 			onDone: [
-				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['updateLCAFromInvokeResult'] },
+				// Only read mode reports success here; write mode forks instead.
+				{ target: 'idle.synced', guard: 'mergeSucceeded', actions: ['applyIdleMergeResult', 'updateLCAFromInvokeResult'] },
 				{ target: 'idle.localAhead', guard: 'forkWasCreated' },
 				{ target: 'idle.conflict', guard: 'canMaterializeIdleConflict', actions: ['materializeIdleConflict'] },
 				{ target: 'idle.error', guard: 'lcaUnavailable', actions: ['storeLcaUnavailableError'] },
@@ -389,7 +396,10 @@ export const MACHINE: MachineDefinition = {
 				{ target: 'idle.localAhead', guard: 'hasFork', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 				{ target: 'idle.diverged', actions: ['applyRemoteToRemoteDoc', 'storePendingRemoteUpdate'] },
 			],
-			DISK_CHANGED: { target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
+			DISK_CHANGED: [
+				{ target: 'idle.remoteAhead', guard: 'isReadMode', actions: ['storeDiskMetadata'] },
+				{ target: 'idle.diskAhead', actions: ['storeDiskMetadata'], reenter: true },
+			],
 			CM6_CHANGE: { target: 'idle.diskAhead', actions: ['accumulateCM6Change'] },
 			SERVER_AHEAD: { target: 'idle.diskAhead', actions: ['actOnServerAhead'] },
 			RECOVER_LCA: RECOVER_LCA_HANDLER,
@@ -581,6 +591,7 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'active.merging.twoWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.twoWay', actions: ['applyRemoteToRemoteDoc'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.merging.twoWay'),
+			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotion'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
@@ -603,6 +614,7 @@ export const MACHINE: MachineDefinition = {
 			CM6_CHANGE: { target: 'active.merging.threeWay', actions: ['trackEditorText'] },
 			REMOTE_UPDATE: { target: 'active.merging.threeWay', actions: ['applyRemoteToRemoteDoc'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.merging.threeWay'),
+			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotion'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 		},
@@ -631,6 +643,7 @@ export const MACHINE: MachineDefinition = {
 			DISK_CHANGED: { target: 'active.conflict.bannerShown', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			RESOLVE_HUNK: { target: 'active.conflict.bannerShown', actions: ['resolveHunk'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.conflict.bannerShown'),
+			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotionFromConflict'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
 		},
@@ -659,6 +672,7 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'active.conflict.resolving', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.conflict.resolving', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.conflict.resolving'),
+			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotionFromConflict'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['storeDeferredConflict', 'beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['storeDeferredConflict', 'beginUnload'] },
 		},
@@ -678,6 +692,8 @@ export const MACHINE: MachineDefinition = {
 			REMOTE_UPDATE: { target: 'active.loading', actions: ['applyRemoteToRemoteDoc', 'accumulateRemoteUpdate'] },
 			DISK_CHANGED: { target: 'active.loading', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.loading'),
+			DEMOTE_TO_READ: { target: 'active.loading', actions: ['setReadAccessMode'] },
+			PROMOTE_TO_WRITE: { target: 'active.loading', actions: ['setWriteAccessMode'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.loading', actions: ['storeError'] },
@@ -725,6 +741,8 @@ export const MACHINE: MachineDefinition = {
 			},
 			DISK_CHANGED: { target: 'active.entering.awaitingPersistence', actions: ['storeDiskMetadata', 'accumulateDiskChanged'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.entering.awaitingPersistence'),
+			DEMOTE_TO_READ: { target: 'active.entering.awaitingPersistence', actions: ['setReadAccessMode'] },
+			PROMOTE_TO_WRITE: { target: 'active.entering.awaitingPersistence', actions: ['setWriteAccessMode'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.entering.awaitingPersistence', actions: ['storeError'] },
@@ -733,6 +751,10 @@ export const MACHINE: MachineDefinition = {
 
 	'active.entering.reconciling': {
 		always: [
+			// Read mode clears a persisted conflict; the reading audit preserves
+			// divergent local state as a fork.
+			{ target: 'active.reading', guard: 'isReadMode', actions: ['clearConflictForRead', 'clearEnteringState'] },
+			{ target: 'active.conflict.bannerShown', guard: 'hasDemotionFork', actions: ['presentReadFork', 'clearEnteringState'] },
 			{ target: 'active.conflict.bannerShown', guard: 'hasPreexistingConflict', actions: ['clearEnteringState'] },
 			{ target: 'active.merging.twoWay', guard: 'isRecoveryMode', actions: ['clearEnteringState'] },
 			{ target: 'active.merging.threeWay', actions: ['clearEnteringState'] },
@@ -755,6 +777,7 @@ export const MACHINE: MachineDefinition = {
 			canPersistFullLca: true,
 			canUseRemoteDoc: true,
 		},
+		always: [{ target: 'active.conflict.bannerShown', guard: 'hasDemotionFork', actions: ['presentReadFork'] }],
 		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'repairFrontmatter', 'assertConvergence', 'reconcileForkInActive'],
 		on: {
 			CM6_CHANGE: { target: 'active.tracking', actions: ['applyCM6ToLocalDoc'] },
@@ -775,9 +798,126 @@ export const MACHINE: MachineDefinition = {
 			PROVIDER_SYNCED: { target: 'active.tracking', actions: ['markProviderSynced', 'mergeRemoteToLocal', 'seedFrontmatterMap', 'reconcileForkInActive'] },
 			MERGE_CONFLICT: { target: 'active.conflict.bannerShown', actions: ['storeConflictData'] },
 			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.tracking'),
+			DEMOTE_TO_READ: { target: 'active.reading', actions: ['prepareDemotion'] },
+			PROMOTE_TO_WRITE: { target: 'active.tracking', actions: ['setWriteAccessMode'] },
 			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
 			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
 			ERROR: { target: 'active.tracking', actions: ['storeError'] },
+		},
+	},
+
+	// =========================================================================
+	// Active reading (read-only access)
+	//
+	// Inbound only: localDoc mirrors the replica and the editor renders it.
+	// Local edits are rejected and restored; nothing flushes outbound. The
+	// audit on each provider sync preserves write-era ops the server lacks
+	// as a fork, which freezes localDoc while the editor renders the replica.
+	// =========================================================================
+
+	'active.reading': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'present',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canPersistFullLca: true,
+			canUseRemoteDoc: true,
+			canAcceptLocalContent: false,
+			canSyncOutbound: false,
+		},
+		entry: [
+			'retainReadFork',
+			'discardBufferedLocalEditsForRead',
+			'auditReadModeFork',
+			'mergeRemoteToLocal',
+			'renderSharedVersionToEditors',
+		],
+		on: {
+			CM6_CHANGE: { target: 'active.reading', actions: ['rejectAndRestoreCM6'] },
+			REMOTE_UPDATE: {
+				target: 'active.reading',
+				actions: ['applyRemoteToRemoteDoc', 'mergeRemoteToLocal', 'renderSharedVersionToEditors'],
+			},
+			REMOTE_DOC_UPDATED: {
+				target: 'active.reading',
+				actions: ['mergeRemoteToLocal', 'renderSharedVersionToEditors'],
+			},
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.reading'),
+			SAVE_COMPLETE: { target: 'active.reading', actions: ['updateDiskFromSave'] },
+			DISK_CHANGED: { target: 'active.reading', actions: ['storeDiskMetadataOnly'] },
+			CONNECTED: { target: 'active.reading', actions: ['setOnlineWithoutFlush'] },
+			DISCONNECTED: { target: 'active.reading', actions: ['setOffline'] },
+			PROVIDER_SYNCED: {
+				target: 'active.reading',
+				actions: ['markProviderSynced', 'auditReadModeFork', 'mergeRemoteToLocal', 'renderSharedVersionToEditors'],
+			},
+			DEMOTE_TO_READ: { target: 'active.reading', actions: ['setReadAccessMode'] },
+			PROMOTE_TO_WRITE: [
+				{ target: 'active.conflict.bannerShown', guard: 'hasFork', actions: ['setWriteAccessMode', 'presentReadFork'] },
+				{ target: 'active.tracking', actions: ['setWriteAccessMode'] },
+			],
+			// Discard needs a synced replica; otherwise the fork stays.
+			DISCARD_LOCAL_FORK: { target: 'active.reading.repairing', guard: 'canDiscardFork' },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			ERROR: { target: 'active.reading', actions: ['storeError'] },
+		},
+	},
+
+	'active.reading.repairing': {
+		resources: {
+			residency: ['awake'],
+			localDoc: 'optional',
+			remoteDoc: 'present',
+			lcaMetadata: 'optional',
+			lcaContents: 'optional',
+			pendingDiskContents: 'optional',
+			fork: 'optional',
+			conflict: 'absent',
+		},
+		capabilities: {
+			canMergeRemote: true,
+			canUseRemoteDoc: true,
+			canAcceptLocalContent: false,
+			canSyncOutbound: false,
+		},
+		invoke: {
+			src: 'read-repair',
+			onDone: [
+				{ target: 'active.tracking', guard: 'readRepairSucceededWantsWrite', actions: ['clearReadRepairStatus'] },
+				{ target: 'active.reading', guard: 'readRepairSucceeded', actions: ['clearReadRepairStatus'] },
+				{ target: 'active.conflict.bannerShown', guard: 'readRepairFailedWantsWriteWithFork', actions: ['storeReadRepairFailure', 'presentReadFork'] },
+				{ target: 'active.tracking', guard: 'isWriteMode', actions: ['storeReadRepairFailure'] },
+				{ target: 'active.reading', actions: ['storeReadRepairFailure'] },
+			],
+			onError: [
+				{ target: 'active.conflict.bannerShown', guard: 'readRepairFailedWantsWriteWithFork', actions: ['storeInvokeError', 'presentReadFork'] },
+				{ target: 'active.tracking', guard: 'isWriteMode', actions: ['storeInvokeError'] },
+				{ target: 'active.reading', actions: ['storeInvokeError'] },
+			],
+		},
+		on: {
+			CM6_CHANGE: { target: 'active.reading.repairing', actions: ['rejectAndRestoreCM6'] },
+			REMOTE_UPDATE: { target: 'active.reading.repairing', actions: ['applyRemoteToRemoteDoc'] },
+			SERVER_AHEAD: POCKET_SERVER_AHEAD('active.reading.repairing'),
+			DISK_CHANGED: { target: 'active.reading.repairing', actions: ['storeDiskMetadataOnly'] },
+			CONNECTED: { target: 'active.reading.repairing', actions: ['setOnlineWithoutFlush'] },
+			DISCONNECTED: { target: 'active.reading.repairing', actions: ['setOffline'] },
+			PROVIDER_SYNCED: { target: 'active.reading.repairing', actions: ['markProviderSynced'] },
+			// The mode recorded here routes the invoke's completion.
+			PROMOTE_TO_WRITE: { target: 'active.reading.repairing', actions: ['setWriteAccessMode'] },
+			DEMOTE_TO_READ: { target: 'active.reading.repairing', actions: ['setReadAccessMode'] },
+			RELEASE_LOCK: { target: 'unloading', actions: ['beginReleaseLock'] },
+			UNLOAD: { target: 'unloading', actions: ['beginUnload'] },
+			ERROR: { target: 'active.reading.repairing', actions: ['storeError'] },
 		},
 	},
 };

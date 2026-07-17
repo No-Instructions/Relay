@@ -77,6 +77,8 @@ export interface SyncBridgeHost {
 	isSuppressLocalObserver(): boolean;
 	/** Set suppress local observer flag */
 	setSuppressLocalObserver(value: boolean): void;
+	/** Gates every outbound path. */
+	isReadMode(): boolean;
 }
 
 // =============================================================================
@@ -318,10 +320,23 @@ export class SyncBridge {
 	// =========================================================================
 
 	/**
-	 * Apply an outbound update (from localDoc) to remoteDoc.
-	 * This is the ONLY method that should apply local ops to remoteDoc.
+	 * Apply an outbound update (from localDoc) to remoteDoc. In read mode
+	 * the update is dropped and diagnosed.
 	 */
 	syncToRemote(update: Uint8Array): void {
+		if (this.host.isReadMode()) {
+			bridgeError(
+				`syncToRemote blocked in read mode (guid=${this.host.guid}, ` +
+				`path=${this.host.path}, updateBytes=${update.length})`,
+			);
+			this.host.emitEffect({
+				type: "DIAGNOSTIC",
+				code: "READ_MODE_OUTBOUND_BLOCKED",
+				message: "syncToRemote called while document access is read-only",
+				detail: { updateBytes: update.length },
+			});
+			return;
+		}
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!remoteDoc) {
 			bridgeError("syncToRemote called but remoteDoc is null");
@@ -374,6 +389,9 @@ export class SyncBridge {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc || !remoteDoc) return;
+
+		// Read mode publishes nothing.
+		if (this.host.isReadMode()) return;
 
 		if (this.host.hasFork()) {
 			this._syncGate.pendingOutbound++;
@@ -474,6 +492,7 @@ export class SyncBridge {
 		const localDoc = this.host.getLocalDoc();
 		const remoteDoc = this.host.getRemoteDoc();
 		if (!localDoc || !remoteDoc) return;
+		if (this.host.isReadMode()) return;
 		if (this.host.hasFork() || this._syncGate.localOnly) return;
 		if (!this._localDocUpdateHandler) return;
 
@@ -748,6 +767,15 @@ export class SyncBridge {
 		bridgeError(msg);
 		if (syncBridgeInvariants.throwOnDivergence) {
 			throw new Error(msg);
+		}
+
+		// Read mode repairs inbound only.
+		if (this.host.isReadMode()) {
+			const inbound = Y.encodeStateAsUpdate(remoteDoc, localSV);
+			if (inbound.length > 0) {
+				this.syncToLocal(inbound);
+			}
+			return;
 		}
 
 		// Bidirectional sync: apply each direction's missing ops
