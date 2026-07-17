@@ -36,6 +36,7 @@ import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
 import type { CapturedOp } from "./merge-hsm/undo";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import type { PersistedStateMeta } from "./merge-hsm/types";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
@@ -275,6 +276,11 @@ export class SharedFolder extends HasProvider {
 	deleteCollector: DeleteCollector | null = null;
 	/** Deleted docs awaiting expired teardown (split only). */
 	private _deferredTeardown: Array<{ guid: string; deletedAt: number }> = [];
+	private _deferredTeardownHydration: Promise<void> = Promise.resolve();
+	private _deleteCollectorHydration: Promise<void> = Promise.resolve();
+	private _orphanRecordCollectionReady = false;
+	private _orphanRecordSweepRequested = false;
+	private _orphanRecordSweepPromise: Promise<void> | null = null;
 	/** Host hook: the collector classified a burst as root detach. */
 	onRootDetach: (() => void) | null = null;
 	proxy: SharedFolder;
@@ -555,7 +561,9 @@ export class SharedFolder extends HasProvider {
 			// Retention: captured deletion bursts and deferred doc teardown
 			// expire together.
 			void this.whenSynced()
-				.then(() => {
+				.then(async () => {
+					if (this.destroyed) return;
+					await this._deferredTeardownHydration;
 					if (this.destroyed) return;
 					this._persistence.opCapture?.dropBefore(
 						this.timeProvider.now() - FOLDER_DELETION_RETENTION_MS,
@@ -563,7 +571,7 @@ export class SharedFolder extends HasProvider {
 					this.sweepDeferredTeardown();
 				})
 				.catch(() => {});
-			void this._persistence
+			this._deferredTeardownHydration = this._persistence
 				.get("deferredDocTeardown")
 				.then((raw: unknown) => {
 					if (this.destroyed || typeof raw !== "string" || !raw) return;
@@ -577,7 +585,7 @@ export class SharedFolder extends HasProvider {
 					}
 				})
 				.catch(() => {});
-			void this._persistence
+			this._deleteCollectorHydration = this._persistence
 				.get("deleteCollector")
 				.then((raw: unknown) => {
 					if (this.destroyed || typeof raw !== "string" || !raw) return;
@@ -772,6 +780,9 @@ export class SharedFolder extends HasProvider {
 					this.addLocalDocs();
 				}
 				await this.syncFileTree();
+				this._orphanRecordCollectionReady = true;
+				this.scheduleOrphanRecordSweep();
+				await this._orphanRecordSweepPromise;
 				try {
 					this._persistence.set("path", this.path);
 					this._persistence.set("relay", this.relayId || "");
@@ -2377,17 +2388,25 @@ export class SharedFolder extends HasProvider {
 
 	private observeMembershipDeletions(): void {
 		const meta = this.folderDoc.getMap<Meta>("filemeta_v0");
-		const observer = (event: Y.YMapEvent<Meta>) => {
+		const legacy = this.folderDoc.getMap<string>("docs");
+		const observe = (event: Y.YMapEvent<unknown>) => {
+			let deleted = false;
 			event.changes.keys.forEach((change, path) => {
 				if (change.action === "delete") {
 					this.deletionObservedAt.set(path, this.timeProvider.now());
+					deleted = true;
 				} else {
 					this.deletionObservedAt.delete(path);
 				}
 			});
+			if (deleted) this.scheduleOrphanRecordSweep();
 		};
-		meta.observe(observer);
-		this.unsubscribes.push(() => meta.unobserve(observer));
+		const metaObserver = observe as (event: Y.YMapEvent<Meta>) => void;
+		const legacyObserver = observe as (event: Y.YMapEvent<string>) => void;
+		meta.observe(metaObserver);
+		legacy.observe(legacyObserver);
+		this.unsubscribes.push(() => meta.unobserve(metaObserver));
+		this.unsubscribes.push(() => legacy.unobserve(legacyObserver));
 	}
 
 	/**
@@ -2555,6 +2574,154 @@ export class SharedFolder extends HasProvider {
 	 * hash-store entries (attachments). Runs before the folder is declared
 	 * hydrated so the provenance ladder never sees an empty cache.
 	 */
+	private scheduleOrphanRecordSweep(): void {
+		if (this.destroyed || !this._orphanRecordCollectionReady) return;
+		this._orphanRecordSweepRequested = true;
+		if (this._orphanRecordSweepPromise) return;
+
+		const run = (async () => {
+			do {
+				this._orphanRecordSweepRequested = false;
+				// Let every observer of the membership transaction run first. In
+				// split mode the delete collector may hold this path for review.
+				await Promise.resolve();
+				await this.reclaimOrphanedSyncRecords();
+			} while (this._orphanRecordSweepRequested && !this.destroyed);
+		})()
+			.catch((e) => {
+				if (!this.destroyed) this.warn("orphan record sweep failed", e);
+			})
+			.finally(() => {
+				this._orphanRecordSweepPromise = null;
+			});
+		this._orphanRecordSweepPromise = run;
+		trackAsyncCleanup(run, `folder:orphanRecordSweep:${this.guid}`);
+	}
+
+	private orphanRecordHasSurvivalEvidence(
+		guid: string,
+		path: string,
+	): boolean {
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(path));
+		if (tfile instanceof TFile) return true;
+		if (this.syncStore.has(path) || this.pendingUpload.has(path)) return true;
+		if (this.isPendingDelete(path)) return true;
+		if (this._deferredTeardown.some((entry) => entry.guid === guid)) return true;
+		return Boolean(
+			this.deleteCollector?.isHeld("filemeta_v0", path) ||
+				this.deleteCollector?.isHeld("docs", path),
+		);
+	}
+
+	private orphanRecordHasProtectedMergeState(
+		guid: string,
+		doc: Document | undefined,
+		stateMeta: PersistedStateMeta | undefined,
+	): boolean {
+		const hsm = doc?.hsm;
+		const statePath = hsm?.state.statePath ?? stateMeta?.lastStatePath;
+		if (doc?.userLock || this.mergeManager?.isActive(guid) || hsm?.isActive()) {
+			return true;
+		}
+		if (
+			statePath?.startsWith("active.") ||
+			statePath?.includes("conflict") ||
+			statePath === "idle.diverged" ||
+			statePath === "idle.recoverLCA"
+		) {
+			return true;
+		}
+		return Boolean(
+			hsm?.hasFork() ||
+				hsm?.state.deferredConflict ||
+				stateMeta?.hasFork ||
+				stateMeta?.deferredConflict,
+		);
+	}
+
+	/**
+	 * Reclaim document persistence only when neither disk nor folder membership
+	 * can still name the record. Folder-scoped persisted metadata is included so
+	 * a cold orphan does not need to be materialized merely to be collected.
+	 */
+	private async reclaimOrphanedSyncRecords(): Promise<void> {
+		await Promise.all([
+			this._deferredTeardownHydration,
+			this._deleteCollectorHydration,
+		]);
+		if (this.destroyed) return;
+
+		const candidates = new Map<
+			string,
+			{
+				path: string;
+				doc?: Document;
+				stateMeta?: PersistedStateMeta;
+			}
+		>();
+		try {
+			const stateMetas = await this._hsmStore.getAllStateMeta();
+			for (const stateMeta of stateMetas) {
+				if (stateMeta.folder !== this.guid) continue;
+				candidates.set(stateMeta.guid, {
+					path: stateMeta.path,
+					stateMeta,
+				});
+			}
+		} catch (e) {
+			this.warn("orphan record sweep: HSM state metadata unavailable", e);
+		}
+
+		for (const file of this.files.values()) {
+			if (!isDocument(file)) continue;
+			const existing = candidates.get(file.guid);
+			candidates.set(file.guid, {
+				path: file.path,
+				doc: file,
+				stateMeta: existing?.stateMeta,
+			});
+		}
+
+		let removedLiveDocs = false;
+		for (const [guid, candidate] of candidates) {
+			const { doc, stateMeta } = candidate;
+			const path = candidate.path;
+			if (!path || !Document.checkExtension(path)) continue;
+			if (this.orphanRecordHasSurvivalEvidence(guid, path)) continue;
+			if (this.orphanRecordHasProtectedMergeState(guid, doc, stateMeta)) {
+				continue;
+			}
+
+			if (doc) {
+				const hsm = doc.hsm;
+				this.files.delete(guid);
+				this.fset.delete(doc);
+				removedLiveDocs = true;
+				try {
+					await doc.cleanup();
+				} catch (e) {
+					this.warn("orphan record cleanup failed", path, e);
+				}
+				doc.destroy();
+				try {
+					await hsm?.awaitCleanupSettled();
+				} catch (e) {
+					this.warn("orphan HSM cleanup failed", path, e);
+				}
+				// A remote re-add can race asynchronous HSM teardown. Keep the
+				// durable record if fresh survival evidence arrived meanwhile.
+				if (this.orphanRecordHasSurvivalEvidence(guid, path)) continue;
+			}
+
+			this.teardownDocState(guid);
+			for (const [recordPath, recordGuid] of this._localRecordCache) {
+				if (recordGuid === guid) this._localRecordCache.delete(recordPath);
+			}
+			this.log("reclaimed orphaned document record", path, guid);
+		}
+		if (removedLiveDocs) this.fset.update();
+	}
+
 	/**
 	 * Remove the durable records this folder owns outside its per-file IDB
 	 * databases: merge-HSM states scoped to this folder and hash-store rows
