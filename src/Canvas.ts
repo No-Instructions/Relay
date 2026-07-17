@@ -1,4 +1,5 @@
 import type { TFile, Vault } from "obsidian";
+import { writeAccessUnder } from "./client/types";
 import { HasProvider } from "./HasProvider";
 import type { HasMimeType, IFile } from "./IFile";
 import type { LoginManager } from "./LoginManager";
@@ -191,6 +192,11 @@ export class Canvas
 	unsubscribes: Unsubscriber[] = [];
 	private _awaitingUpdates?: boolean;
 	private _canvas: unknown;
+	/** Set by a rejected Reader edit; cleared once the shared state is restored. */
+	private _readerEditRejected = false;
+	// Access the current replica has served. One that served write access
+	// holds local ops, so entering read access replaces it.
+	private _remoteDocAccessMode: "write" | "read" | null = null;
 
 	constructor(
 		path: string,
@@ -233,6 +239,8 @@ export class Canvas
 			timeProvider: this.timeProvider,
 			getPath: () => this.path,
 			isMember: () => this.sharedFolder.syncStore.has(this.path),
+			canWriteContent: () => this.canPublishContent,
+			hasSharedContent: () => this._persistenceInstance?.hasServerSync === true,
 			readDisk: async () => {
 				// Absent and unreadable are different verdicts: an absent
 				// file materializes, but a transient read failure (a locked
@@ -246,8 +254,8 @@ export class Canvas
 					mtime: this.tfile?.stat.mtime ?? Date.now(),
 				};
 			},
-			exportData: () => Canvas.exportCanvasData(this.localDoc),
-			exportMapData: () => Canvas.exportCanvasMapData(this.localDoc),
+			exportData: () => Canvas.exportCanvasData(this.sharedDoc),
+			exportMapData: () => Canvas.exportCanvasMapData(this.sharedDoc),
 			formatData: formatCanvasData,
 			// The live doc is the basis only once its persistence has
 			// replayed — mid-replay it reads as empty and would call every
@@ -303,14 +311,7 @@ export class Canvas
 			throw e;
 		}
 
-		this._bridge = new CanvasDocBridge(this._localDoc, this.ydoc, {
-			// The localDoc's IDB replay is not local intent; the remoteDoc
-			// converges from the server through the provider and reconcile().
-			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
-		});
-		if (this._localOnly) {
-			this._bridge.setLocalOnly(true);
-		}
+		this.wireBridge(this._localDoc);
 
 		const localDoc = this._localDoc;
 		const onLocalDocUpdate = (_update: Uint8Array, origin: unknown) => {
@@ -424,6 +425,19 @@ export class Canvas
 	 */
 	protected handleProviderSynced(): void {
 		this._bridge?.reconcile();
+		if (!this.canPublishContent) this.refreshSharedView();
+	}
+
+	private wireBridge(localDoc: Y.Doc): void {
+		this._bridge = new CanvasDocBridge(localDoc, this.ydoc, {
+			// The localDoc's IDB replay is not local intent; the remoteDoc
+			// converges from the server through the provider and reconcile().
+			skipOutboundOrigin: (origin) => origin === this._persistenceInstance,
+			canPublish: () => this.canPublishContent,
+		});
+		if (this._localOnly) {
+			this._bridge.setLocalOnly(true);
+		}
 	}
 
 	get isLocalOnly(): boolean {
@@ -510,6 +524,9 @@ export class Canvas
 						return;
 					}
 					await this.sharedFolder.flush(this, effect.contents);
+					if (effect.readerEditOverwritten) {
+						this.sharedFolder.recordReaderEditOverwrite(this.guid, this.path);
+					}
 					this.hsm.send({
 						type: "FLUSH_COMPLETE",
 						contents: effect.contents,
@@ -532,6 +549,10 @@ export class Canvas
 						// and writing here would race its writer.
 						this.debug("ingest skipped: view owns disk");
 						this.hsm.send({ type: "FLUSH_FAILED" });
+						return;
+					}
+					if (!this.canPublishContent || this.hsm.canIngestContent === false) {
+						this.hsm.rejectDiskEdit();
 						return;
 					}
 					// One unit: the merged data reaches the localDoc (and
@@ -609,15 +630,23 @@ export class Canvas
 
 	public textNode(node: CanvasNodeData): Y.Text {
 		const ytext = this.localDoc.getText(node.id);
-		if (ytext.toString() === "") {
+		if (ytext.toString() === "" && this.canEditContent) {
 			ytext.insert(0, node.text);
 		}
 		return ytext;
 	}
 
-	/** The vault-facing canvas data (the localDoc's export). */
+	/** The canvas data the view and disk follow. */
 	public exportData(): CanvasData {
-		return Canvas.exportCanvasData(this.localDoc);
+		return Canvas.exportCanvasData(this.sharedDoc);
+	}
+
+	/** The synced replica while reading, since the localDoc may hold ops the server lacks; else the localDoc. */
+	private get sharedDoc(): Y.Doc {
+		if (!this.canPublishContent && this.isRemoteDocLoaded && this.synced) {
+			return this.ydoc;
+		}
+		return this.localDoc;
 	}
 
 	static exportCanvasData(ydoc: Y.Doc): CanvasData {
@@ -831,6 +860,64 @@ export class Canvas
 		return true;
 	}
 
+	public get canPublishContent(): boolean {
+		return writeAccessUnder(this.sharedFolder, this.clientToken);
+	}
+
+	ensureRemoteDoc(): Y.Doc {
+		const isNew = !this.isRemoteDocLoaded;
+		const doc = super.ensureRemoteDoc();
+		if (isNew) {
+			this._remoteDocAccessMode = this.canPublishContent ? "write" : "read";
+		}
+		return doc;
+	}
+
+	/**
+	 * Entering read access replaces the replica first, since one that served
+	 * write access holds local ops. Leaving it publishes what the localDoc
+	 * held back, through the bridge's ordinary reconcile.
+	 */
+	public notifyAccessModeChanged(): void {
+		const accessMode = this.canPublishContent ? "write" : "read";
+		if (accessMode === "read" && this._remoteDocAccessMode !== "read") {
+			this.replaceRemoteDocForReadAccess();
+		}
+		if (this.isRemoteDocLoaded) {
+			this._remoteDocAccessMode = accessMode;
+		}
+		if (accessMode === "write") {
+			this._bridge?.reconcile();
+		}
+		this.refreshSharedView();
+	}
+
+	protected onAccessModeChanged(_readOnly: boolean): void {
+		this.notifyAccessModeChanged();
+	}
+
+	private replaceRemoteDocForReadAccess(): void {
+		if (!this.isRemoteDocLoaded) return;
+		const reconnect = this.intent === "connected";
+		this._bridge?.destroy();
+		this._bridge = null;
+		this.destroyRemoteDoc();
+		this.ensureRemoteDoc();
+		if (this._materialized && this._localDoc) {
+			this.wireBridge(this._localDoc);
+		}
+		if (reconnect) {
+			void this.connect();
+		}
+	}
+
+	/** Re-render the view and re-evaluate disk against the shared source. */
+	private refreshSharedView(): void {
+		if (!this._materialized) return;
+		this._viewReconciler?.();
+		this.scheduleDocChanged("unknown");
+	}
+
 	async runSyncSession(
 		_intent: SessionIntent,
 		context: SyncOperationContext,
@@ -1025,7 +1112,7 @@ export class Canvas
 	async applyJSON(json: string) {
 		// A brand-new canvas file may be blank or hold a bare "{}"; both
 		// carry no content and neither may crash enrollment.
-		if (json.trim() === "") return;
+		if (json.trim() === "") return true;
 		const parsed = JSON.parse(json) as Partial<CanvasData>;
 		return await this.applyData({
 			nodes: parsed.nodes ?? [],
@@ -1034,14 +1121,16 @@ export class Canvas
 	}
 
 	/**
-	 * First-upload enrollment: stamp the `relay` header op, then apply the
-	 * file's JSON. The header guarantees every enrolled canvas produces
+	 * First-upload enrollment: apply the file's JSON, then stamp the
+	 * `relay` header op. The header guarantees every enrolled canvas produces
 	 * non-empty CRDT history, so the server and peers can tell "uploaded"
 	 * from "never uploaded" even when the canvas itself has no nodes or
 	 * edges — the same contract document enrollment establishes in the
 	 * IndexedDB persistence layer.
 	 */
-	async enrollLocal(json: string): Promise<void> {
+	async enrollLocal(json: string): Promise<boolean> {
+		if (!this.canEditContent) return false;
+		if (!(await this.applyJSON(json))) return false;
 		Y.transact(
 			this.localDoc,
 			() => {
@@ -1050,17 +1139,51 @@ export class Canvas
 			},
 			this,
 		);
-		await this.applyJSON(json);
+		return true;
 	}
 
 	async importFromView(view: CanvasView) {
 		if (view.file && view.file === this.tfile) {
-			return await this.applyData(view.canvas.getData());
+			const applied = await this.applyData(view.canvas.getData());
+			if (!applied) {
+				// Restore the shared state to the canvas and its file; the
+				// follow-up save re-enters with matching data.
+				view.canvas.importData(this.exportData(), true);
+				view.canvas.requestSave();
+			}
+			return applied;
 		}
 	}
 
-	async applyData(data: CanvasData) {
+	public get canEditContent(): boolean {
+		return (
+			this.canPublishContent &&
+			this.hsm?.canIngestContent !== false &&
+			!this._readerEditRejected
+		);
+	}
+
+	public rejectReaderEdit(): void {
+		this._readerEditRejected = true;
+		if (!this.canPublishContent) {
+			this.sharedFolder.recordReaderEditOverwrite(this.guid, this.path);
+		}
+	}
+
+	async applyData(data: CanvasData): Promise<boolean> {
+		const canWrite =
+			this.canPublishContent && this.hsm?.canIngestContent !== false;
+		if (!canWrite || this._readerEditRejected) {
+			const hasChanges = !areCanvasDataEqual(this.exportData(), data);
+			if (hasChanges) {
+				if (!canWrite) this.rejectReaderEdit();
+				return false;
+			}
+			this._readerEditRejected = false;
+			return true;
+		}
 		this.applyDataInternal(data, null);
+		return true;
 	}
 
 	/**
@@ -1075,6 +1198,9 @@ export class Canvas
 	 * present in `ours`: a merge can never delete content it never saw.
 	 */
 	applyMerge(merge: { data: CanvasData; ours: CanvasData }): boolean {
+		if (!this.canPublishContent || this.hsm?.canIngestContent === false) {
+			return false;
+		}
 		const current = Canvas.exportCanvasData(this.localDoc);
 		if (!areCanvasDataEqual(current, merge.ours)) {
 			return false;
@@ -1190,8 +1316,7 @@ export class Canvas
 	}
 
 	public get json(): string {
-		const data = Canvas.exportCanvasData(this.localDoc);
-		return formatCanvasData(data);
+		return formatCanvasData(this.exportData());
 	}
 
 	public async cleanup(): Promise<void> {}

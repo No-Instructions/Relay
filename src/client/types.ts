@@ -34,7 +34,7 @@ export interface ClientToken {
 
 	token: string;
 
-	authorization?: "full" | "read-only";
+	authorization?: string;
 	expiryTime?: number;
 	contentType?: number;
 	contentLength?: number;
@@ -42,7 +42,7 @@ export interface ClientToken {
 }
 
 export interface FileToken extends ClientToken {
-	authorization: "full" | "read-only";
+	authorization: string;
 
 	docId: string;
 	folder: string;
@@ -94,4 +94,43 @@ export function decodeClientToken(token: string): ClientToken {
 	}
 	const jsonString = base64ToString(base64);
 	return JSON.parse(jsonString) as ClientToken;
+}
+
+/** What a token's grant allows this client to do on the connection. */
+export interface Capabilities {
+	/** May originate document content and send it. */
+	writeContent: boolean;
+	/** May publish awareness, so others see this client's presence. */
+	presence: boolean;
+}
+
+/**
+ * The one place a grant is interpreted. No grant means full access; any
+ * grant other than `full`, including one this client does not recognize,
+ * means read-only with presence, the least permissive grant there is.
+ */
+export function capabilitiesOf(
+	authorization: string | null | undefined,
+): Capabilities {
+	if (authorization == null || authorization === "full") {
+		return { writeContent: true, presence: true };
+	}
+	return { writeContent: false, presence: true };
+}
+
+export interface WriteAccessSource {
+	canWriteContent: boolean;
+	canWriteContentAnswer: boolean | null;
+}
+
+/** The folder's answer is a ceiling; under it the role policy, then the token, decide. */
+export function writeAccessUnder(
+	folder: WriteAccessSource | null | undefined,
+	token: { authorization?: string } | null | undefined,
+): boolean {
+	if (folder && !folder.canWriteContent) return false;
+	const policy = folder?.canWriteContentAnswer ?? null;
+	if (policy !== null) return policy;
+	if (token) return capabilitiesOf(token.authorization).writeContent;
+	return true;
 }

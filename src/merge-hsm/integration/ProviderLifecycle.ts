@@ -37,7 +37,7 @@ export interface ProviderLifecycleHost {
  *
  * Steps:
  * 1. Destroy old integration (unsubscribes from provider/HSM events)
- * 2. Destroy old remoteDoc (resets providerSynced via setRemoteDoc(null))
+ * 2. Detach and destroy old remoteDoc (resets the provider-synced gate)
  * 3. Create fresh remoteDoc and wire into HSM
  * 4. Create provider and connect
  * 5. Create new ProviderIntegration
@@ -51,7 +51,8 @@ export function reconnectProvider(host: ProviderLifecycleHost): {
     host.integration.destroy();
   }
 
-  // 2. Destroy old remoteDoc (resets providerSynced via setRemoteDoc(null))
+  // 2. Detach and destroy the old remoteDoc; detaching resets the synced gate.
+  host.hsm.setRemoteDoc(null);
   host.destroyCurrentRemoteDoc();
 
   // 3. Create fresh remoteDoc + wire into HSM
