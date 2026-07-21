@@ -26,6 +26,10 @@ on:
         description: 'Optional profile flag overrides (e.g. enableFolderHSM=true)'
         required: false
         default: ''
+      obsidian_url:
+        description: 'Optional direct URL to an Obsidian AppImage (e.g. an installer beta); overrides the pinned version'
+        required: false
+        default: ''
       tsdb_tag:
         description: 'obsidian-tsdb release tag to install in slots'
         required: false
@@ -283,13 +287,14 @@ jobs:
           SELECTED_TESTS="${{ github.event.inputs.tests }}"
           LANE_SLUG="${{ steps.lease.outputs.pool }}-r${{ github.run_number }}"
           PROFILE_FLAGS_ARG="${{ github.event.inputs.profile_flags }}"
+          OBSIDIAN_URL_ARG="${{ github.event.inputs.obsidian_url }}"
           HARNESS_REF_ARG="${{ github.event.inputs.harness_ref || 'origin/main' }}"
           SHARED_SLOTS="${{ steps.lease.outputs.slots }}"
 
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$SHARED_SLOTS'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$SHARED_SLOTS' '$OBSIDIAN_URL_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
@@ -297,10 +302,24 @@ jobs:
           PROFILE_FLAGS="${4-}"
           HARNESS_REF="${5:-origin/main}"
           SHARED_SLOT_CANDIDATES="$6"
+          OBSIDIAN_URL_OVERRIDE="${7-}"
 
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
           OBSIDIAN_VERSION="1.12.7"
+          if [ -n "$OBSIDIAN_URL_OVERRIDE" ]; then
+            # Override installers get URL-hashed filenames so different betas
+            # never reuse each other's cached AppImage.
+            URL_HASH=$(printf '%s' "$OBSIDIAN_URL_OVERRIDE" | sha256sum | cut -c1-12)
+            export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-override-${URL_HASH}.AppImage"
+            if [ ! -f "$OBSIDIAN_PATH" ]; then
+              echo "Installing Obsidian from override URL (hash $URL_HASH)..."
+              mkdir -p ~/obsidian
+              wget -q -O "$OBSIDIAN_PATH" "$OBSIDIAN_URL_OVERRIDE"
+              chmod +x "$OBSIDIAN_PATH"
+              echo "Installed Obsidian override ($URL_HASH)"
+            fi
+          else
           # Version-specific filename so bumping OBSIDIAN_VERSION forces a fresh
           # install instead of reusing a prior version's cached AppImage.
           export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
@@ -311,6 +330,7 @@ jobs:
               "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
             chmod +x "$OBSIDIAN_PATH"
             echo "Installed Obsidian $OBSIDIAN_VERSION"
+          fi
           fi
 
           rm -rf /tmp/test-reports
