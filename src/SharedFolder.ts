@@ -1216,14 +1216,14 @@ export class SharedFolder extends HasProvider {
 	 * fork-reconcile with no reconnect and no rebuild, and so cannot perturb a
 	 * transfer in flight.
 	 *
-	 * Any recovery that instead touches the transport — a fresh connect for a
-	 * document with no live provider, or a remoteDoc rebuild for a stranded
-	 * integration that reports connected but never synced its subdoc — waits for
-	 * the transport to settle. Forcing a fresh sync while the transport still
-	 * flaps drives the in-flight reconcile into a transport error and strands it
-	 * in idle.error, the very failure this recovery exists to heal. The rebuild
-	 * is the last resort, reserved for a document that stays
-	 * connected-but-desynced after the transport is stable.
+	 * A document with no live provider gets a fresh connect once the transport
+	 * is stable. Forcing a connect while the transport still flaps drives the
+	 * in-flight reconcile into a transport error and strands it in idle.error,
+	 * the very failure this recovery exists to heal. A document that is
+	 * connected but has not completed its subdoc sync is left alone: the
+	 * handshake in flight produces the PROVIDER_SYNCED that restarts the
+	 * reconcile, and destroying the integration would abort that handshake on
+	 * every poll.
 	 */
 	private recoverForkedIdleDocument(file: Document, hsm: MergeHSM): void {
 		if (file.connected && file.synced) {
@@ -1233,9 +1233,7 @@ export class SharedFolder extends HasProvider {
 		if (!this.connectionStable) return;
 		if (!file.hasProviderIntegration() || !file.connected) {
 			file.connectForForkReconcile().catch(() => {});
-			return;
 		}
-		file.connectForForkReconcile({ rebuildRemoteDoc: true }).catch(() => {});
 	}
 
 	private recoverForkedIdleDocuments(): void {

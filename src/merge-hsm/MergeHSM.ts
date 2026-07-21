@@ -4307,9 +4307,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}
 
 		const localDoc = this.requireLocalDoc("fork reconcile");
-		const remoteDoc = this.requireRemoteDoc("fork reconcile");
-		if (!localDoc || !remoteDoc) {
+		if (!localDoc) {
 			return { success: false };
+		}
+		const remoteDoc = this.remoteDoc;
+		if (!remoteDoc) {
+			// No remote replica is attached — an unmet precondition, not a
+			// failure. Rest in idle.localAhead; the folder poll connects forked
+			// documents, and the resulting PROVIDER_SYNCED restarts this invoke
+			// with the replica present.
+			return { success: false, awaitingProvider: true };
 		}
 
 		const fork = this._fork;
