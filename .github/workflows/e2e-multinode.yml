@@ -7,9 +7,13 @@ name: E2E multi-node
 # and render the shared summary. Plan selection, slot provisioning, skip
 # policy, evidence, and publishing all live in the harness.
 #
-# Topology is input data: `slots` lists each slot's platform. Both slots
-# run colocated on one host. Supported today: linux,linux and
-# windows,windows.
+# Topology is input data: `slots` lists each slot's platform. In the
+# homogeneous topologies (linux,linux and windows,windows) both slots run
+# colocated on one host and the harness node script drives the plans on
+# that host. In the mixed topology (windows,linux) each slot gets its own
+# VM — slot 1 on a Windows VM, slot 2 on a Linux VM — and the runner
+# drives the plans itself through the same orchestrator, over IAP SSH
+# tunnels to each VM's CDP and metrics ports.
 
 on:
   workflow_dispatch:
@@ -27,7 +31,7 @@ on:
         required: false
         default: 'origin/main'
       slots:
-        description: 'Comma-separated slot platforms (e.g. linux,linux or windows,windows)'
+        description: 'Comma-separated slot platforms (linux,linux, windows,windows, or windows,linux)'
         required: false
         default: 'linux,linux'
       tsdb_tag:
@@ -140,7 +144,7 @@ jobs:
         run: |
           SLOTS="${{ github.event.inputs.slots }}"
           case "$SLOTS" in
-            linux,linux|windows,windows) echo "topology: $SLOTS" ;;
+            linux,linux|windows,windows|windows,linux) echo "topology: $SLOTS" ;;
             *) echo "::error::unsupported slot list: $SLOTS"; exit 1 ;;
           esac
 
@@ -502,6 +506,505 @@ jobs:
             gcloud compute instances delete "$VM_NAME" \
               --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet || true
           fi
+
+      # ---- mixed topology: windows,linux ---------------------------------
+      # Slot 1 runs on its own Windows VM (relay-e2e-windows) and slot 2 on
+      # its own Linux VM (relay-e2e-base). Each VM provisions and starts one
+      # slot locally, including auth injection; the runner then opens one IAP
+      # SSH tunnel per VM carrying that VM's CDP port and metrics port and
+      # drives the plans itself through the multi-node orchestrator, so the
+      # run publishes the same summary/metadata evidence as the colocated
+      # topologies. Slot bring-up detail stays in VM-side logs; only
+      # allowlisted progress lines reach the public log.
+
+      - name: Create mixed VM pair
+        if: github.event.inputs.slots == 'windows,linux'
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/google_compute_engine -N "" -q 2>/dev/null || true
+          ssh-keygen -t rsa -b 3072 -f ~/.ssh/mnx-key -N "" -q
+          echo -e "\nHost *\n  ConnectTimeout 10" >> ~/.ssh/config
+          cat > /tmp/win-startup.ps1 <<'PS1'
+          $ErrorActionPreference = "Continue"
+          function Log($m) { Write-Output "RELAY-SLOT: $m" }
+          for ($i = 1; $i -le 6; $i++) {
+            if (Get-Service sshd -ErrorAction SilentlyContinue) { break }
+            try { Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null } catch { Log "sshd add attempt ${i}: $_" }
+            Start-Sleep -Seconds 10
+          }
+          Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
+          Start-Service sshd -ErrorAction SilentlyContinue
+          if (-not (Get-NetFirewallRule -Name sshd-relay -ErrorAction SilentlyContinue)) {
+            New-NetFirewallRule -Name sshd-relay -DisplayName 'OpenSSH Server (relay)' -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22 | Out-Null
+          }
+          Enable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
+          if (Test-Path "HKLM:\SOFTWARE\OpenSSH") {
+            New-ItemProperty -Path "HKLM:\SOFTWARE\OpenSSH" -Name DefaultShell -Value "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -PropertyType String -Force | Out-Null
+          }
+          $rand = -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 24 | ForEach-Object {[char]$_})
+          $pw = ConvertTo-SecureString ($rand + '!Aa9') -AsPlainText -Force
+          if (-not (Get-LocalUser -Name relay -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name relay -Password $pw -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+            Add-LocalGroupMember -Group Administrators -Member relay
+          }
+          $pub = $null
+          try { $pub = Invoke-RestMethod -Headers @{'Metadata-Flavor'='Google'} -Uri 'http://metadata.google.internal/computeMetadata/v1/instance/attributes/relay-ssh-pubkey' } catch { Log "pubkey fetch failed: $_" }
+          New-Item -ItemType Directory -Path "C:\ProgramData\ssh" -Force | Out-Null
+          $adminKeys = "C:\ProgramData\ssh\administrators_authorized_keys"
+          if ($pub) {
+            Set-Content -Path $adminKeys -Value $pub -Encoding ascii
+            icacls $adminKeys /inheritance:r | Out-Null
+            icacls $adminKeys /grant "SYSTEM:F" | Out-Null
+            icacls $adminKeys /grant "BUILTIN\Administrators:F" | Out-Null
+          }
+          Restart-Service sshd -ErrorAction SilentlyContinue
+          Log "startup complete"
+          PS1
+          VM_WIN="relay-e2e-mnx-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-w"
+          VM_LIN="relay-e2e-mnx-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-l"
+          # Discard stdout: the create table prints instance addresses, which
+          # do not belong in the public log. The Windows VM is created first
+          # so its slow first boot overlaps the rest of the setup.
+          if ! ERR=$(gcloud compute instances create "$VM_WIN" \
+            --project="$GCP_PROJECT" --zone="$VM_ZONE" \
+            --machine-type=e2-standard-8 \
+            --image-family=relay-e2e-windows --image-project="$GCP_PROJECT" \
+            --boot-disk-size=100GB --boot-disk-type=pd-ssd --tags=relay-e2e \
+            --metadata=block-project-ssh-keys=TRUE,relay-ssh-pubkey="$(cat ~/.ssh/mnx-key.pub)" \
+            --metadata-from-file=windows-startup-script-ps1=/tmp/win-startup.ps1 \
+            2>&1 >/dev/null); then
+            if echo "$ERR" | grep -qE "ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources"; then
+              echo "::error::Zone $VM_ZONE has no capacity. Set the CI_VM_ZONE repository variable to move CI to another zone."
+            fi
+            echo "$ERR"
+            exit 1
+          fi
+          echo "Created $VM_WIN (windows, slot 1)"
+          echo "VM_WIN=$VM_WIN" >> "$GITHUB_ENV"
+          if ! ERR=$(gcloud compute instances create "$VM_LIN" \
+            --project="$GCP_PROJECT" --zone="$VM_ZONE" \
+            --machine-type=e2-standard-4 \
+            --image-family="$VM_IMAGE_FAMILY" --image-project="$GCP_PROJECT" \
+            --boot-disk-size=20GB --boot-disk-type=pd-standard \
+            --metadata=block-project-ssh-keys=TRUE \
+            --tags=relay-e2e 2>&1 >/dev/null); then
+            if echo "$ERR" | grep -qE "ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources"; then
+              echo "::error::Zone $VM_ZONE has no capacity. Set the CI_VM_ZONE repository variable to move CI to another zone."
+            fi
+            echo "$ERR"
+            exit 1
+          fi
+          echo "Created $VM_LIN (linux, slot 2)"
+          echo "VM_LIN=$VM_LIN" >> "$GITHUB_ENV"
+
+      - name: Setup mixed driver node
+        if: github.event.inputs.slots == 'windows,linux'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup mixed driver python
+        if: github.event.inputs.slots == 'windows,linux'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install mixed driver harness
+        if: github.event.inputs.slots == 'windows,linux'
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet click websockets tree-sitter tree-sitter-javascript matplotlib
+          mkdir -p ~/.ssh
+          echo "$HARNESS_DEPLOY_KEY" > ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/harness-key -o IdentitiesOnly=yes" \
+            git clone --quiet git@github.com:No-Instructions/relay-harness.git "$HOME/relay-harness"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          git -C "$HOME/relay-harness" checkout --quiet --detach "origin/${HREF#origin/}" 2>/dev/null \
+            || git -C "$HOME/relay-harness" checkout --quiet --detach "$HREF"
+          echo "harness: $(git -C "$HOME/relay-harness" log -1 --format='%h')"
+          cd "$HOME/relay-harness/playwright"
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error >/dev/null
+
+      - name: Provision mixed Linux slot
+        if: github.event.inputs.slots == 'windows,linux'
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          set -o pipefail
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          PRODUCT_SHA="${{ steps.dispatch.outputs.product_sha }}"
+          TSDB_TAG="${{ github.event.inputs.tsdb_tag }}"
+          echo "$HARNESS_DEPLOY_KEY" > /tmp/harness-key
+          chmod 600 /tmp/harness-key
+
+          for i in $(seq 1 30); do
+            if gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+              --tunnel-through-iap --command="echo ready" 2>/dev/null; then
+              break
+            fi
+            if [ "$i" -eq 30 ]; then echo "Timed out waiting for Linux VM SSH"; exit 1; fi
+            sleep 5
+          done
+
+          gcloud compute scp --quiet /tmp/harness-key "$VM_LIN":"~/harness-key" \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap
+          rm -f /tmp/harness-key
+
+          # Slot bring-up, auth injection included, runs VM-locally; tool
+          # output stays in the VM-side ~/provision.log. The final line
+          # reports the port the metrics side-car bound so the runner knows
+          # what to tunnel.
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap --command="bash -s -- 'donna' '$HREF' '9226' '$PRODUCT_SHA' '$TSDB_TAG'" \
+            << 'REMOTE_LIN' | tee /tmp/lin-provision-out.txt
+          set -eo pipefail
+          USER_NAME="$1"; HARNESS_REF="$2"; PORT="$3"; PRODUCT_SHA="$4"; TSDB_TAG="$5"
+          # The bring-up body runs as its own script so its set -e is fully
+          # effective even though the invocation below sits in a || list.
+          cat > ~/provision-slot.sh << 'EOS'
+          #!/bin/bash
+          set -eo pipefail
+          USER_NAME="$1"; HARNESS_REF="$2"; PORT="$3"; PRODUCT_SHA="$4"; TSDB_TAG="$5"
+          mkdir -p ~/.ssh
+          mv ~/harness-key ~/.ssh/harness-key
+          chmod 600 ~/.ssh/harness-key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/harness-key -o IdentitiesOnly=yes"
+          [ -d ~/relay-harness ] || git clone git@github.com:No-Instructions/relay-harness.git ~/relay-harness
+          cd ~/relay-harness
+          git checkout -- . && git clean -fdq && git fetch origin
+          git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
+            || { git fetch origin "$HARNESS_REF" && git checkout --detach FETCH_HEAD; }
+          [ -d ~/relay-plugin ] || git clone https://github.com/No-Instructions/Relay.git ~/relay-plugin
+          cd ~/relay-plugin
+          git checkout -- . && git clean -fdq && git fetch origin --tags --force
+          git checkout --detach "$PRODUCT_SHA" 2>/dev/null \
+            || { git fetch origin "$PRODUCT_SHA" && git checkout --detach FETCH_HEAD; }
+          npm ci --no-audit --no-fund
+          node esbuild.config.mjs staging
+          [ -f ~/relay-plugin/main.js ]
+          mkdir -p ~/tsdb-plugin
+          for f in main.js manifest.json styles.css; do
+            wget -q -O ~/tsdb-plugin/"$f" \
+              "https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG:-1.0.12}/$f"
+          done
+          OBSIDIAN_VERSION="${RELAY_OBSIDIAN_APP_VERSION:-1.12.7}"
+          export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+          if [ ! -f "$OBSIDIAN_PATH" ]; then
+            mkdir -p ~/obsidian
+            wget -q -O "$OBSIDIAN_PATH" \
+              "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
+            chmod +x "$OBSIDIAN_PATH"
+          fi
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v uv >/dev/null 2>&1 || wget -qO- https://astral.sh/uv/install.sh | sh
+          uv venv --clear ~/.slot-venv
+          SLOT_PY="$HOME/.slot-venv/bin/python"
+          uv pip install --python "$SLOT_PY" click websockets
+          cd ~/relay-harness
+          "$SLOT_PY" .claude/scripts/obsidian_slot.py slot provision --user "$USER_NAME" \
+            --plugin-dir ~/relay-plugin --extra-plugin-dir ~/tsdb-plugin
+          OBSIDIAN_PATH="$OBSIDIAN_PATH" "$SLOT_PY" .claude/scripts/obsidian_slot.py slot start \
+            --user "$USER_NAME" --wait-timeout 150
+          cd ~/relay-harness/playwright
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error
+          node utils/wait-for-ready.mjs "$PORT"
+          node utils/inject-auth.mjs "$USER_NAME" "$PORT"
+          EOS
+          chmod +x ~/provision-slot.sh
+          ~/provision-slot.sh "$USER_NAME" "$HARNESS_REF" "$PORT" "$PRODUCT_SHA" "$TSDB_TAG" \
+            >> ~/provision.log 2>&1 \
+            || { echo "linux slot provisioning failed (detail in VM-side logs)"; exit 1; }
+          echo "linux slot ready on port $PORT"
+          MPORT=""
+          for i in $(seq 1 24); do
+            for p in $(seq 9090 9099); do
+              if curl -fsS "http://127.0.0.1:$p/health" >/dev/null 2>&1; then MPORT="$p"; break 2; fi
+            done
+            sleep 5
+          done
+          [ -n "$MPORT" ] || { echo "metrics side-car never served /health on 9090-9099"; exit 1; }
+          echo "SLOT-METRICS-PORT: $MPORT"
+          REMOTE_LIN
+          LIN_TSDB_PORT=$(grep -oE 'SLOT-METRICS-PORT: [0-9]+' /tmp/lin-provision-out.txt | tail -1 | grep -oE '[0-9]+$' || true)
+          if [ -z "$LIN_TSDB_PORT" ]; then
+            echo "::error::Linux slot did not report a metrics port"
+            exit 1
+          fi
+          echo "LIN_TSDB_PORT=$LIN_TSDB_PORT" >> "$GITHUB_ENV"
+
+      - name: Provision mixed Windows slot
+        if: github.event.inputs.slots == 'windows,linux'
+        env:
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          set -o pipefail
+          WSSH() { gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" \
+            --tunnel-through-iap --ssh-key-file="$HOME/.ssh/mnx-key" \
+            --ssh-flag="-oStrictHostKeyChecking=no" --ssh-flag="-oUserKnownHostsFile=/dev/null" \
+            --ssh-flag="-oBatchMode=yes" --ssh-flag="-oPasswordAuthentication=no" "$@"; }
+          push_b64() { # $1 = local file, $2 = remote path
+            local B64=$(base64 -w0 "$1")
+            WSSH --command="powershell -NoProfile -Command \"[IO.File]::WriteAllText('$2',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$B64')))\""
+          }
+
+          # The image runs full first-boot specialization plus the metadata
+          # startup script before SSH answers, which can take well past 15
+          # minutes; wait long, exiting as soon as SSH answers.
+          for i in $(seq 1 66); do
+            if WSSH --command="Write-Output ready" 2>/dev/null | grep -q ready; then echo "windows ssh up"; break; fi
+            if [ "$i" -eq 66 ]; then echo "Timed out waiting for Windows SSH"; exit 1; fi
+            sleep 20
+          done
+
+          WSSH --command="New-Item -ItemType Directory -Path 'C:\relay-e2e-testing' -Force | Out-Null"
+          echo "$HARNESS_DEPLOY_KEY" > /tmp/deploy-key
+          push_b64 /tmp/deploy-key 'C:\relay-e2e-testing\harness-key'
+          rm -f /tmp/deploy-key
+
+          # Slot provisioning, auth injection included, runs VM-locally; tool
+          # output stays in the VM-side provision log. git, npm and node write
+          # ordinary progress to stderr, and under "Stop" PowerShell turns any
+          # native-command stderr into a terminating NativeCommandError — so
+          # the script runs under "Continue" and gates on explicit exit codes
+          # and Test-Path checks; GIT_REDIRECT_STDERR routes git to stdout.
+          cat > /tmp/mnx-slot-provision.ps1 <<'PS1'
+          param([string]$SlotUser, [int]$Port, [string]$ProductSha, [string]$HarnessRef = "origin/main", [string]$TsdbTag = "1.0.12")
+          $ErrorActionPreference = "Continue"
+          function Log($m) { Write-Output "SLOT-PROV: $m" }
+          $E2E = "C:\relay-e2e-testing"; New-Item -ItemType Directory -Path $E2E -Force | Out-Null
+          $ProvLog = "$E2E\provision.log"
+          $env:PYTHONUTF8 = "1"; $env:PYTHONIOENCODING = "utf-8"; $env:GIT_REDIRECT_STDERR = "2>&1"
+          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
+          function Refresh-Path { $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [Environment]::GetEnvironmentVariable("Path","User") }
+          Refresh-Path
+
+          if (-not (Get-Command python -ErrorAction SilentlyContinue)) { Log "install python"; choco install python -y --no-progress *>> $ProvLog; Refresh-Path }
+          $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+          if (-not $py) { $c = Get-ChildItem "C:\Python*","C:\ProgramData\chocolatey\lib\python*" -Filter python.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1; if ($c) { $py = $c.FullName } }
+          if (-not $py) { throw "python not found" }
+          Log "python present"
+
+          if (-not (Test-Path C:\relay-plugin)) { git clone https://github.com/No-Instructions/Relay.git C:\relay-plugin *>> $ProvLog }
+          Set-Location C:\relay-plugin
+          git fetch origin --tags --force *>> $ProvLog
+          git checkout --detach $ProductSha *>> $ProvLog
+          if ($LASTEXITCODE -ne 0) { git fetch origin $ProductSha *>> $ProvLog; git checkout --detach FETCH_HEAD *>> $ProvLog }
+          if ($LASTEXITCODE -ne 0) { throw "product checkout failed" }
+          Log ("product: " + (git rev-parse HEAD))
+          npm ci --no-audit --no-fund *>> $ProvLog
+          node esbuild.config.mjs staging *>> $ProvLog
+          if (-not (Test-Path C:\relay-plugin\main.js)) { throw "no main.js after build" }
+
+          $key = "$E2E\harness-key"; if (-not (Test-Path $key)) { throw "harness key missing" }
+          icacls $key /inheritance:r | Out-Null; icacls $key /grant "relay:F" | Out-Null
+          $env:GIT_SSH_COMMAND = "ssh -i `"$key`" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL"
+          if (-not (Test-Path C:\relay-harness)) { git clone git@github.com:No-Instructions/relay-harness.git C:\relay-harness *>> $ProvLog }
+          Set-Location C:\relay-harness
+          git fetch origin --prune *>> $ProvLog
+          $hr = $HarnessRef -replace '^origin/',''
+          git checkout --detach "origin/$hr" *>> $ProvLog
+          if ($LASTEXITCODE -ne 0) { git fetch origin $HarnessRef *>> $ProvLog; git checkout --detach FETCH_HEAD *>> $ProvLog }
+          if ($LASTEXITCODE -ne 0) { throw "harness checkout failed" }
+          Log ("harness: " + (git rev-parse HEAD))
+
+          $tsdb = "$E2E\tsdb"; New-Item -ItemType Directory -Path $tsdb -Force | Out-Null
+          foreach ($f in @("main.js","manifest.json","styles.css")) {
+            Invoke-WebRequest -UseBasicParsing -Uri ("https://github.com/dtkav/obsidian-tsdb/releases/download/{0}/{1}" -f $TsdbTag, $f) -OutFile "$tsdb\$f"
+            if (-not (Test-Path "$tsdb\$f")) { throw "metrics side-car download failed: $f" }
+          }
+
+          & $py -m pip install --upgrade pip *>> $ProvLog
+          & $py -m pip install click websockets *>> $ProvLog
+
+          $obs = @("$env:LOCALAPPDATA\Programs\Obsidian\Obsidian.exe","$env:LOCALAPPDATA\Obsidian\Obsidian.exe","C:\Program Files\Obsidian\Obsidian.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $obs) { $obs = (Get-ChildItem "$env:LOCALAPPDATA","C:\Program Files" -Filter Obsidian.exe -Recurse -Depth 4 -ErrorAction SilentlyContinue | Select-Object -First 1).FullName }
+          if (-not $obs) { throw "Obsidian.exe not found" }
+          $env:OBSIDIAN_PATH = $obs
+
+          Set-Location C:\relay-harness
+          & $py .claude\scripts\obsidian_slot.py slot provision --user $SlotUser --plugin-dir C:\relay-plugin --extra-plugin-dir $tsdb *>> $ProvLog
+          if ($LASTEXITCODE -ne 0) { throw "slot provision failed (exit $LASTEXITCODE)" }
+          & $py .claude\scripts\obsidian_slot.py slot start --user $SlotUser --wait-timeout 180 *>> $ProvLog
+          if ($LASTEXITCODE -ne 0) { throw "slot start failed (exit $LASTEXITCODE)" }
+
+          Set-Location C:\relay-harness\playwright
+          npm install --ignore-scripts --no-audit --no-fund --loglevel=error *>> $ProvLog
+          node utils\wait-for-ready.mjs $Port *>> $ProvLog
+          if ($LASTEXITCODE -ne 0) { throw "wait-for-ready failed (exit $LASTEXITCODE)" }
+          node utils\inject-auth.mjs $SlotUser $Port *>> $ProvLog
+          if ($LASTEXITCODE -ne 0) { throw "inject-auth failed (exit $LASTEXITCODE)" }
+          Log ("windows slot ready on port " + $Port)
+          PS1
+          push_b64 /tmp/mnx-slot-provision.ps1 'C:\relay-e2e-testing\slot-provision.ps1'
+
+          cat > /tmp/mnx-metrics-port.ps1 <<'PS1'
+          $mp = ''
+          foreach ($i in 1..24) {
+            foreach ($p in 9090..9099) {
+              try {
+                Invoke-WebRequest -UseBasicParsing -Uri ("http://127.0.0.1:{0}/health" -f $p) -TimeoutSec 2 | Out-Null
+                $mp = $p; break
+              } catch {}
+            }
+            if ($mp) { break }
+            Start-Sleep -Seconds 5
+          }
+          if ($mp) { Write-Output ("SLOT-METRICS-PORT: {0}" -f $mp) } else { Write-Output "SLOT-METRICS-PORT: none" }
+          PS1
+          push_b64 /tmp/mnx-metrics-port.ps1 'C:\relay-e2e-testing\metrics-port.ps1'
+
+          PRODUCT_SHA="${{ steps.dispatch.outputs.product_sha }}"
+          HREF="${{ github.event.inputs.harness_ref || 'origin/main' }}"
+          WSSH --command="powershell -NoProfile -ExecutionPolicy Bypass -File C:\relay-e2e-testing\slot-provision.ps1 -SlotUser 'charlie' -Port 9225 -ProductSha '$PRODUCT_SHA' -HarnessRef '$HREF' -TsdbTag '${{ github.event.inputs.tsdb_tag }}'"
+
+          WSSH --command="powershell -NoProfile -ExecutionPolicy Bypass -File C:\relay-e2e-testing\metrics-port.ps1" \
+            | tee /tmp/win-metrics-port.txt
+          WIN_TSDB_PORT=$(grep -oE 'SLOT-METRICS-PORT: [0-9]+' /tmp/win-metrics-port.txt | tail -1 | grep -oE '[0-9]+$' || true)
+          if [ -z "$WIN_TSDB_PORT" ]; then
+            echo "::error::Windows slot did not report a metrics port"
+            exit 1
+          fi
+          echo "WIN_TSDB_PORT=$WIN_TSDB_PORT" >> "$GITHUB_ENV"
+
+      - name: Run mixed plans from the runner
+        if: github.event.inputs.slots == 'windows,linux'
+        env:
+          PYTHONUTF8: '1'
+          PYTHONIOENCODING: 'utf-8'
+          CI_R2_ENDPOINT: ${{ secrets.CI_R2_ENDPOINT }}
+          CI_R2_ACCESS_KEY_ID: ${{ secrets.CI_R2_ACCESS_KEY_ID }}
+          CI_R2_SECRET_ACCESS_KEY: ${{ secrets.CI_R2_SECRET_ACCESS_KEY }}
+          CI_R2_BUCKET: system3-ci
+        run: |
+          # One IAP tunnel per VM, carrying that VM's CDP port and metrics
+          # port. Forward to 127.0.0.1, not localhost: on Windows localhost
+          # resolves to ::1 (IPv6) while Electron's CDP binds 127.0.0.1
+          # (IPv4), so a localhost forward reaches a dead IPv6 address and
+          # the tunnel never carries CDP.
+          gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --ssh-key-file="$HOME/.ssh/mnx-key" \
+            --ssh-flag="-oStrictHostKeyChecking=no" --ssh-flag="-oUserKnownHostsFile=/dev/null" \
+            --ssh-flag="-L 9225:127.0.0.1:9225" --ssh-flag="-L 9290:127.0.0.1:${WIN_TSDB_PORT}" \
+            --ssh-flag="-N" --ssh-flag="-o ExitOnForwardFailure=yes" --ssh-flag="-o ServerAliveInterval=30" &
+          TUN_WIN=$!
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            -- -L "9226:127.0.0.1:9226" -L "9291:127.0.0.1:${LIN_TSDB_PORT}" -N \
+            -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 &
+          TUN_LIN=$!
+          trap 'kill "$TUN_WIN" "$TUN_LIN" 2>/dev/null || true' EXIT
+
+          for PORT in 9225 9226; do
+            ok=0
+            for i in $(seq 1 40); do
+              if curl -fsS "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then echo "CDP tunnel $PORT live"; ok=1; break; fi
+              sleep 2
+            done
+            [ "$ok" = 1 ] || { echo "::error::CDP tunnel to port $PORT never came up"; exit 1; }
+          done
+
+          cat > "$HOME/mixed-slots.json" << 'SLOTS_JSON'
+          [
+            {"index": 1, "platform": "windows",
+             "cdpEndpoint": "http://127.0.0.1:9225",
+             "metricsEndpoint": "http://127.0.0.1:9290",
+             "vault": "vault-charlie",
+             "capabilities": {"attachmentStorage": false, "profileFlags": {}}},
+            {"index": 2, "platform": "linux",
+             "cdpEndpoint": "http://127.0.0.1:9226",
+             "metricsEndpoint": "http://127.0.0.1:9291",
+             "vault": "vault-donna",
+             "capabilities": {"attachmentStorage": false, "profileFlags": {}}}
+          ]
+          SLOTS_JSON
+
+          cd "$HOME/relay-harness"
+          # Metrics preflight over the tunnels: every plan's teardown asserts
+          # metric presence, so an unreachable metrics server would fail every
+          # plan with an opaque exit code. Fail once here, with the real cause
+          # named, before any plan runs.
+          export RELAY_CDP_ENDPOINTS="http://127.0.0.1:9225,http://127.0.0.1:9226"
+          export RELAY_TSDB_ENDPOINTS="vault-charlie=http://127.0.0.1:9290,vault-donna=http://127.0.0.1:9291"
+          python .claude/scripts/obsidian_ctl.py metrics-health \
+            --vaults vault-charlie,vault-donna --wait 90
+
+          COMMIT="${{ steps.dispatch.outputs.product_sha }}"
+          LANE_SLUG="mn-x-r${{ github.run_number }}"
+          export RELAY_REPORT_ROOT=/tmp/test-reports
+          TEST_EXIT=0
+          python scripts/orchestrate_test_plans.py \
+            --slots "$HOME/mixed-slots.json" --plans "${{ github.event.inputs.plans }}" \
+            --commit "$COMMIT" --lane-slug "$LANE_SLUG" --upload \
+            > "$HOME/mn-orchestrator.log" 2>&1 || TEST_EXIT=$?
+          # Verdict lines are plan ids and statuses only — the public log's
+          # allowed vocabulary — so a red run names its failures without
+          # exposing anything.
+          grep -E "^\[tp[0-9]+\]|^summary:|^report:|^slots:|^plans:" "$HOME/mn-orchestrator.log" || true
+          [ "$TEST_EXIT" -eq 0 ] || echo "orchestrator exit $TEST_EXIT (detail in the private report)"
+          exit $TEST_EXIT
+
+      - name: Collect mixed results
+        if: always() && github.event.inputs.slots == 'windows,linux'
+        run: |
+          rm -f summary.json metadata.json suite-output.txt
+          COMMIT="${{ steps.dispatch.outputs.product_sha }}"
+          LATEST_SUMMARY=$(find /tmp/test-reports/runs -mindepth 3 -maxdepth 3 -type f -name summary.json -print0 2>/dev/null \
+            | xargs -0 ls -t 2>/dev/null | head -1)
+          LATEST="${LATEST_SUMMARY:+$(dirname "$LATEST_SUMMARY")}"
+          if [ -n "$LATEST" ] && [ -f "$LATEST/summary.json" ]; then
+            EXEC_ID=$(basename "$LATEST")
+            REPORT_URL="https://ci.system3.dev/runs/${COMMIT:0:7}/${EXEC_ID}/index.html"
+            echo "{\"reportUrl\": \"$REPORT_URL\", \"commit\": \"$COMMIT\", \"execId\": \"$EXEC_ID\"}" > metadata.json
+            cp "$LATEST/summary.json" summary.json
+          else
+            echo '{"summary":{"total":0,"pass":0,"fail":0},"tests":[],"state":"error"}' > summary.json
+            echo '{"reportUrl":"","commit":"","execId":""}' > metadata.json
+          fi
+          grep -E "^\[tp[0-9]+\]|^summary:|^report:|^slots:|^plans:" "$HOME/mn-orchestrator.log" \
+            > suite-output.txt 2>/dev/null || true
+
+      - name: Collect mixed diagnostics on failure
+        if: failure() && github.event.inputs.slots == 'windows,linux'
+        run: |
+          echo "=== Linux VM CDP liveness (VM-local, is the slot still up?) ==="
+          gcloud compute ssh "$VM_LIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --command='curl -fsS http://127.0.0.1:9226/json/version >/dev/null 2>&1 && echo "CDP answering on 9226" || echo "CDP not answering on 9226"' \
+            2>/dev/null || echo "  (ssh failed)"
+          echo "=== Windows VM CDP liveness (VM-local, is the slot still up?) ==="
+          gcloud compute ssh "relay@$VM_WIN" --quiet --zone="$VM_ZONE" --project="$GCP_PROJECT" --tunnel-through-iap \
+            --ssh-key-file="$HOME/.ssh/mnx-key" \
+            --ssh-flag="-oStrictHostKeyChecking=no" --ssh-flag="-oUserKnownHostsFile=/dev/null" \
+            --command="try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:9225/json/version' -TimeoutSec 5 | Out-Null; 'CDP answering on 9225' } catch { 'CDP not answering on 9225' }" \
+            2>/dev/null || echo "  (ssh failed)"
+          echo "=== Windows serial console startup markers ==="
+          gcloud compute instances get-serial-port-output "$VM_WIN" --port 1 \
+            --zone="$VM_ZONE" --project="$GCP_PROJECT" 2>/dev/null > /tmp/win-serial.txt || true
+          grep -aE "RELAY-SLOT|SLOT-PROV" /tmp/win-serial.txt | tail -40 || echo "  (no startup-script markers)"
+
+      - name: Delete mixed VM pair
+        if: always() && github.event.inputs.slots == 'windows,linux'
+        run: |
+          # Both deletes always run, in parallel; each is synchronous so the
+          # names are genuinely free when the run ends. A failed delete is
+          # loudly named so a leaked instance never sits unnoticed.
+          pids=""
+          for VM in "${VM_WIN:-}" "${VM_LIN:-}"; do
+            [ -n "$VM" ] || continue
+            gcloud compute instances delete "$VM" \
+              --zone="$VM_ZONE" --project="$GCP_PROJECT" --quiet &
+            pids="$pids $!"
+          done
+          leaked=0
+          for p in $pids; do wait "$p" || leaked=1; done
+          if [ "$leaked" -ne 0 ]; then
+            echo "::warning::A mixed-topology VM delete failed; a relay-e2e-mnx-* instance may have leaked. List instances to check:"
+            echo "  gcloud compute instances list --project=$GCP_PROJECT"
+          fi
+          echo "mixed VM teardown complete"
 
       - name: Upload shard metadata
         if: always()
