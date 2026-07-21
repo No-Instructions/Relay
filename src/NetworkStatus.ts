@@ -15,6 +15,11 @@ interface ServiceStatus {
 
 type Callback = (status?: ServiceStatus) => void;
 
+// A network switch (VPN toggle, interface change) surfaces as
+// ERR_NETWORK_CHANGED without implying a disconnect, so the check retries
+// immediately — but a flapping interface must not recurse unbounded.
+const NETWORK_CHANGED_RETRY_LIMIT = 3;
+
 class NetworkStatus {
 	private url: string;
 	private interval: number;
@@ -25,6 +30,7 @@ class NetworkStatus {
 	private _log: (message: string, ...args: unknown[]) => void;
 	status?: ServiceStatus;
 	online = true;
+	private _networkChangedRetries = 0;
 
 	constructor(
 		private timeProvider: TimeProvider,
@@ -80,6 +86,7 @@ class NetworkStatus {
 		})
 			.then((response) => {
 				if (response.status === 200) {
+					this._networkChangedRetries = 0;
 					if (response.json && response.json.status) {
 						this.status = response.json;
 					}
@@ -98,14 +105,26 @@ class NetworkStatus {
 				}
 			})
 			.catch((error) => {
-				if (error.message.includes("ERR_NETWORK_CHANGED")) {
+				if (
+					error.message.includes("ERR_NETWORK_CHANGED") &&
+					this._networkChangedRetries < NETWORK_CHANGED_RETRY_LIMIT
+				) {
 					// This doesn't necessarily imply a disconnect,
 					// We should immediately try again to get a name resolution error.
+					this._networkChangedRetries++;
 					this._checkStatus();
 					return;
 				}
+				this._networkChangedRetries = 0;
+				// Only notify on the online→offline edge. While already
+				// offline, each poll is a bare probe: re-firing the offline
+				// callbacks re-runs the full teardown across every tracked
+				// doc, which costs O(docs) work and log volume per tick.
+				const wasOnline = this.online;
 				this.online = false;
-				this.onOffline?.forEach((callback) => callback(this.status));
+				if (wasOnline) {
+					this.onOffline?.forEach((callback) => callback(this.status));
+				}
 			});
 	}
 
