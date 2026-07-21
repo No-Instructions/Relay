@@ -1566,9 +1566,11 @@ export default class Live extends Plugin {
 								if (folder) {
 									const doc = folder.proxy.getFile(file);
 									if (doc && isDocument(doc) && doc.hsm) {
+										// Note text is LF everywhere past this
+										// boundary.
 										doc.hsm.send({
 											type: 'OBSIDIAN_SET_VIEW_DATA',
-											data,
+											data: normalizeNoteText(data),
 											clear,
 										});
 									}
@@ -1612,12 +1614,15 @@ export default class Live extends Plugin {
 								const doc = folder.proxy.getFile(file);
 								if (doc && isDocument(doc) && doc.hsm) {
 									// Read disk content only to compute diagnostic flags.
-									// Normalize so a Windows CRLF file does not read as
-									// changed against the LF editor buffer.
+									// Normalize both sides so platform EOLs never
+									// register as content changes.
 									const diskContent = normalizeNoteText(
 										await plugin.app.vault.read(file),
 									);
-									const contentChanged = lastSavedData !== diskContent;
+									const contentChanged =
+										(typeof lastSavedData === "string"
+											? normalizeNoteText(lastSavedData)
+											: lastSavedData) !== diskContent;
 									const willMerge = dirty && contentChanged && isPlaintext;
 
 									doc.hsm.send({

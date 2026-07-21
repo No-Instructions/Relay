@@ -4,10 +4,13 @@ import { generateHash } from "./hashing";
 /**
  * Canonical in-memory line ending for note text. A note's CRDT contents and
  * content hash are normalized to LF so they are identical regardless of the
- * platform's on-disk EOL: Obsidian on Windows writes CRLF, and hashing or
- * diffing raw disk bytes would otherwise make the same logical note diverge
- * between a Windows peer and a Linux/macOS peer (a persistent LCA-hash mismatch,
- * and CRLF-shifted machine-edit diffs that corrupt concurrent link repairs).
+ * on-disk EOL. Obsidian saves LF on every platform (the editor joins lines
+ * with LF), but external tools writing to a vault — git checkouts with
+ * autocrlf, Windows editors, other sync clients — produce CRLF files, and
+ * Obsidian's vault.read returns disk bytes raw apart from BOM stripping.
+ * Hashing or diffing raw disk bytes would make the same logical note diverge
+ * between peers (a persistent LCA-hash mismatch, and CRLF-shifted
+ * machine-edit diffs that corrupt concurrent link repairs).
  *
  * Note text only. Binary and attachment content is never routed through here —
  * it must stay byte-exact (see SyncFile's readBinary path).
