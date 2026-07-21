@@ -47,6 +47,7 @@ import {
 	stopHSMRecording,
 } from "./debug";
 import { getPatcher, Patcher } from "./Patcher";
+import { SavingFlagPolyfill } from "./SavingFlagPolyfill";
 import { LiveTokenStore } from "./LiveTokenStore";
 import NetworkStatus from "./NetworkStatus";
 import { RelayManager } from "./RelayManager";
@@ -159,6 +160,7 @@ export default class Live extends Plugin {
 	deviceManager!: DeviceManager;
 	private relayDebugAPI!: RelayDebugAPI;
 	private metadataHealth: MetadataHealth | null = null;
+	private savingFlagPolyfill: SavingFlagPolyfill | null = null;
 	settingsTab!: LiveSettingsTab;
 	settings!: Settings<RelaySettings>;
 	updateManager!: UpdateManager;
@@ -617,6 +619,19 @@ export default class Live extends Plugin {
 					manager.getFlag(flag.enableMetadataHealthNotice),
 				);
 			}),
+		);
+
+		this.savingFlagPolyfill = new SavingFlagPolyfill(Vault.prototype);
+		this.register(
+			flagManager.subscribe((manager) => {
+				if (this._unloading) return;
+				this.savingFlagPolyfill?.setEnabled(
+					manager.getFlag(flag.enableSavingFlagPolyfill),
+				);
+			}),
+		);
+		this.savingFlagPolyfill.setEnabled(
+			flagManager.getFlag(flag.enableSavingFlagPolyfill),
 		);
 
 		// Initialize HSM disk recording if enabled
@@ -1837,6 +1852,11 @@ export default class Live extends Plugin {
 			this.relayDebugAPI?.destroy();
 		});
 		this.relayDebugAPI = null as any;
+
+		teardownStep("savingFlagPolyfill.disarm", () => {
+			this.savingFlagPolyfill?.disarm();
+		});
+		this.savingFlagPolyfill = null;
 
 		// Cleanup all monkeypatches and destroy the singleton
 		teardownStep("Patcher.destroy", () => {

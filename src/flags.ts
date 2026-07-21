@@ -15,6 +15,7 @@ export interface FeatureFlags {
 	enableMetadataHealthNotice: boolean;
 	enableFolderHSM: boolean;
 	enableNoteStateInspector: boolean;
+	enableSavingFlagPolyfill: boolean;
 }
 
 export type FeatureFlagCategory = "labs" | "debugging" | "danger";
@@ -157,6 +158,13 @@ export const FeatureFlagSchema: {
 		title: "Note state inspector",
 		description:
 			"Show a sidebar panel with live merge state for the active note: HSM state path, in-flight disk writes, and store consistency checks.",
+	},
+	enableSavingFlagPolyfill: {
+		default: true,
+		category: "labs",
+		title: "Keep the file saving flag accurate",
+		description:
+			"Count overlapping writes per file so Obsidian's saving flag clears when the last write finishes; stands down on versions without the remember/restore bookkeeping.",
 	},
 };
 
