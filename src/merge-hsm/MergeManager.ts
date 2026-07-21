@@ -438,9 +438,13 @@ export class MergeManager {
    * and evictLRU() defer exactly like an in-flight invoke — the pipeline's
    * working set cannot be destroyed beneath a running upload/download by
    * the warm timer or wake-queue pressure. Leases are scoped: wake() with
-   * `{ lease: true }` returns the release handle.
+   * `{ lease: true }` returns the release handle. Holders are tracked as a
+   * set of per-acquisition tokens rather than a bare count, so a release
+   * handle can only ever remove the acquisition it belongs to — a stale
+   * handle surviving stopTracking/re-track churn cannot strip a successor
+   * operation's lease.
    */
-  private _warmLeases = new Map<string, number>();
+  private _warmLeases = new Map<string, Set<symbol>>();
 
   /** Whether the wake queue processor is currently running. */
   private _isProcessingWakeQueue = false;
@@ -912,6 +916,7 @@ export class MergeManager {
    */
   private stopTracking(guid: string): void {
     if (this.destroyed) return;
+    this._warmLeases.delete(guid);
     this._hibernationState.delete(guid);
     this._hibernationBuffer.delete(guid);
     this._appliedRemoteSV.delete(guid);
@@ -938,6 +943,7 @@ export class MergeManager {
     if (this.destroyed) return;
     this._hsmUnsubs.get(guid)?.();
     this._hsmUnsubs.delete(guid);
+    this._warmLeases.delete(guid);
     this._hibernationState.delete(guid);
     this._hibernationBuffer.delete(guid);
     this._appliedRemoteSV.delete(guid);
@@ -1933,24 +1939,32 @@ export class MergeManager {
   }
 
   /**
-   * Take a warm lease on a document. Reference-counted; returns an
-   * idempotent release. The last release restarts the normal hibernate
-   * countdown so the doc re-hibernates like any other warm doc.
+   * Take a warm lease on a document. Concurrent leases are tracked as
+   * individual holder tokens; returns an idempotent release scoped to this
+   * acquisition. The last release restarts the normal hibernate countdown
+   * so the doc re-hibernates like any other warm doc.
    */
   private acquireWarmLease(guid: string): () => void {
     if (this.destroyed) return () => {};
-    this._warmLeases.set(guid, (this._warmLeases.get(guid) ?? 0) + 1);
+    const holder = Symbol('warmLease');
+    let holders = this._warmLeases.get(guid);
+    if (!holders) {
+      holders = new Set();
+      this._warmLeases.set(guid, holders);
+    }
+    holders.add(holder);
     let released = false;
     return () => {
       if (released) return;
       released = true;
       if (this.destroyed) return;
-      const count = this._warmLeases.get(guid);
-      if (count === undefined) return;
-      if (count > 1) {
-        this._warmLeases.set(guid, count - 1);
-        return;
-      }
+      const current = this._warmLeases.get(guid);
+      // Identity guard: after stopTracking and a re-track, the guid's entry
+      // holds successor acquisitions. This handle's token can only be in the
+      // set it was acquired into, so a stale handle is a no-op here.
+      if (!current || !current.has(holder)) return;
+      current.delete(holder);
+      if (current.size > 0) return;
       this._warmLeases.delete(guid);
       const state = this.getHibernationState(guid);
       if (state === 'working' || state === 'cached') {
