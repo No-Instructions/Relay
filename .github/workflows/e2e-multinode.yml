@@ -692,6 +692,11 @@ jobs:
             wget -q -O ~/tsdb-plugin/"$f" \
               "https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG:-1.0.12}/$f"
           done
+          # The side-car's HTTP server is opt-in through its settings file; the
+          # release bundle ships without one, so seed the same settings the
+          # homogeneous topologies install (serve /metrics on 9090-9099) or the
+          # health probe below has nothing to find.
+          echo '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}' > ~/tsdb-plugin/data.json
           OBSIDIAN_VERSION="${RELAY_OBSIDIAN_APP_VERSION:-1.12.7}"
           export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
           if [ ! -f "$OBSIDIAN_PATH" ]; then
@@ -817,6 +822,11 @@ jobs:
             Invoke-WebRequest -UseBasicParsing -Uri ("https://github.com/dtkav/obsidian-tsdb/releases/download/{0}/{1}" -f $TsdbTag, $f) -OutFile "$tsdb\$f"
             if (-not (Test-Path "$tsdb\$f")) { throw "metrics side-car download failed: $f" }
           }
+          # The side-car's HTTP server is opt-in through its settings file; the
+          # release bundle ships without one, so seed the same settings the
+          # homogeneous topologies install (serve /metrics on 9090-9099) or the
+          # health probe step has nothing to find.
+          Set-Content -Path "$tsdb\data.json" -Encoding ascii -Value '{"serverConfig":{"port":9090,"portRangeEnd":9099,"path":"/metrics","enabled":true},"customMetricsPrefix":"obsidian_","onboarded":true}'
 
           & $py -m pip install --upgrade pip *>> $ProvLog
           & $py -m pip install click websockets *>> $ProvLog
