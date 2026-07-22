@@ -341,6 +341,14 @@ export class SharedFolder extends HasProvider {
 			await this.syncFileTree();
 		});
 
+		// The newly-enabled-types diff in syncFileTree compares against this
+		// baseline. It must be populated before the first syncFileTree can
+		// run: an empty baseline reads as "every type was just enabled" and
+		// runs addLocalDocs while the folder is still disconnected, before
+		// readiness gates that discovery.
+		this.enabledSyncTypes = new Set(
+			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+		);
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
@@ -538,9 +546,6 @@ export class SharedFolder extends HasProvider {
 				// Remote folder metadata can also land before SyncStore observers are
 				// installed, so replay both local doc discovery and file-tree sync after
 				// start() to avoid missing the first batch of remote entries.
-				this.enabledSyncTypes = new Set(
-					this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
-				);
 				this.addLocalDocs();
 				await this.syncFileTree();
 				try {
