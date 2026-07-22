@@ -146,11 +146,11 @@ export const FeatureFlagSchema: {
 			"Show a sidebar notice when Obsidian's metadata database cannot be queried.",
 	},
 	enableFolderHSM: {
-		default: false,
+		default: true,
 		category: "danger",
-		title: "Folder membership state machine (experimental)",
+		title: "Folder membership state machine",
 		description:
-			"Drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated state is unchanged either way.",
+			"Drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated data formats are unchanged; large deletion bursts are held for confirmation before replicating.",
 	},
 	enableNoteStateInspector: {
 		default: false,
