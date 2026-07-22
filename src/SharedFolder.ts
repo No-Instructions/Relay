@@ -171,6 +171,18 @@ interface Noop extends Operation {
 
 type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 
+/**
+ * A durable local record's projection into the membership guards: the
+ * identity a path once synced under, plus the content evidence (hash and
+ * mtime of the file the record described) that lets the guards check the
+ * record still matches what is on disk.
+ */
+interface LocalFileRecord {
+	guid: string;
+	hash?: string;
+	mtime?: number;
+}
+
 // Empty downloads for a guid become terminal after this many attempts; the
 // server pushes a document.updated event (and advertises the guid in the
 // subdoc index) once content exists, so polling past this is wasted work.
@@ -311,10 +323,13 @@ export class SharedFolder extends HasProvider {
 	folderHSM: FolderHSM | null = null;
 	/**
 	 * Synchronous local-record lookups for the FolderHSM guards: vpath →
-	 * guid, assembled from persisted HSM state metadata and guid-bearing
-	 * hash-store entries before hydration completes.
+	 * identity plus the content evidence (hash/mtime) captured when the
+	 * record was written, assembled from persisted HSM state metadata and
+	 * guid-bearing hash-store entries before hydration completes. The
+	 * evidence is what ties the recorded identity to the file currently on
+	 * disk; a record without it never authorizes destruction.
 	 */
-	private _localRecordCache: Map<string, string> = new Map();
+	private _localRecordCache: Map<string, LocalFileRecord> = new Map();
 	/**
 	 * True once the bootstrap discovery pass over the local tree has run —
 	 * the boundary the origin discriminator uses to tell interactive vault
@@ -2428,7 +2443,9 @@ export class SharedFolder extends HasProvider {
 			getPendingUploadGuid: (vpath: string) =>
 				this.pendingUpload.get(vpath) ?? undefined,
 			getLocalRecordGuid: (vpath: string) =>
-				this._localRecordCache.get(vpath),
+				this._localRecordCache.get(vpath)?.guid,
+			localRecordMatchesFile: (vpath: string) =>
+				this.localRecordMatchesFile(vpath),
 			pathTombstoned: (vpath: string) =>
 				pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath),
 			// Live doc state only — the persisted hasServerSync latch can
@@ -2663,7 +2680,11 @@ export class SharedFolder extends HasProvider {
 				// classify a fresh local file as a stale materialization.
 				if (stateMeta?.folder !== this.guid) continue;
 				if (stateMeta?.path && stateMeta?.guid) {
-					this._localRecordCache.set(stateMeta.path, stateMeta.guid);
+					this._localRecordCache.set(stateMeta.path, {
+						guid: stateMeta.guid,
+						hash: stateMeta.disk?.hash,
+						mtime: stateMeta.disk?.mtime,
+					});
 				}
 			}
 		} catch (e) {
@@ -2675,13 +2696,62 @@ export class SharedFolder extends HasProvider {
 				if (!entry.guid) continue;
 				// Hash store keys are vault-absolute paths.
 				if (!this.checkPath(entry.path)) continue;
-				this._localRecordCache.set(
-					this.getVirtualPath(entry.path),
-					entry.guid,
-				);
+				this._localRecordCache.set(this.getVirtualPath(entry.path), {
+					guid: entry.guid,
+					hash: entry.hash,
+					mtime: entry.modifiedAt,
+				});
 			}
 		} catch (e) {
 			this.warn("local record cache: hash store unavailable", e);
+		}
+	}
+
+	/**
+	 * Content-evidence agreement between the local record for `vpath` and
+	 * the file now on disk. The record proves that SOME file at this path
+	 * synced under its guid; only its stored mtime agreeing with the file's
+	 * current stat ties that identity to the current content. A record
+	 * without evidence, or a path without a file, never agrees.
+	 */
+	private localRecordMatchesFile(vpath: string): boolean {
+		const record = this._localRecordCache.get(vpath);
+		if (!record || record.mtime === undefined) return false;
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		if (!(tfile instanceof TFile)) return false;
+		return tfile.stat.mtime === record.mtime;
+	}
+
+	/**
+	 * A record for a path whose on-disk state IS the synced state (a
+	 * download that just landed, an upload that just committed): capture
+	 * the file's current mtime as the record's content evidence.
+	 */
+	private recordSyncedNow(vpath: string, guid: string): LocalFileRecord {
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+		return tfile instanceof TFile
+			? { guid, mtime: tfile.stat.mtime }
+			: { guid };
+	}
+
+	/**
+	 * End the durable identity records for deleted paths: the in-memory
+	 * record and the persisted hash-store row. A row left behind would hand
+	 * the deleted file's identity to whatever is created at the path next —
+	 * the same principle the rename path honors by moving its row. Doc HSM
+	 * states are deliberately NOT touched here: their teardown is deferred
+	 * to serve undo, and the membership guards separately refuse to act on
+	 * a record whose content evidence disagrees with the disk.
+	 */
+	private clearLocalRecords(vpaths: Iterable<string>): void {
+		for (const vpath of vpaths) {
+			this._localRecordCache.delete(vpath);
+			const p = this.hashStore
+				.removeHash(this.getPath(vpath))
+				.catch((e) => {
+					this.warn("failed to remove stored record", vpath, e);
+				});
+			trackAsyncCleanup(p);
 		}
 	}
 
@@ -2761,7 +2831,10 @@ export class SharedFolder extends HasProvider {
 		const promise = this._handleServerCreate(vpath, meta)
 			.then((file) => {
 				if (file) {
-					this._localRecordCache.set(vpath, guid);
+					this._localRecordCache.set(
+						vpath,
+						this.recordSyncedNow(vpath, guid),
+					);
 					this.folderHSM?.send({
 						type: "DOWNLOAD_COMPLETE",
 						path: vpath,
@@ -2791,6 +2864,10 @@ export class SharedFolder extends HasProvider {
 		const fullPath = this.getPath(vpath);
 		const tfile = this.vault.getAbstractFileByPath(fullPath);
 		if (!tfile) {
+			// The file is already gone; any identity record left at the path
+			// describes nothing on disk and must not be inherited by the
+			// next file created there.
+			this.clearLocalRecords([vpath]);
 			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
 			return;
 		}
@@ -2847,7 +2924,11 @@ export class SharedFolder extends HasProvider {
 				}
 			}
 			this.pendingUpload.delete(vpath);
-			this._localRecordCache.delete(vpath);
+			// The durable identity records die with the files they described:
+			// the whole trashed subtree, not just the root — every descendant
+			// row would otherwise hand its identity to the next file at its
+			// path (the rename path moves its row for the same reason).
+			this.clearLocalRecords(marked);
 			this.fset.update();
 			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
 		})();
@@ -3328,7 +3409,10 @@ export class SharedFolder extends HasProvider {
 			if (this.folderHSM) {
 				// A committed upload is a durable local record of this path's
 				// identity, and it settles the machine's membership entry.
-				this._localRecordCache.set(file.path, meta.id);
+				this._localRecordCache.set(
+					file.path,
+					this.recordSyncedNow(file.path, meta.id),
+				);
 				this.folderHSM.send({
 					type: "UPLOAD_COMPLETE",
 					path: file.path,
@@ -4038,6 +4122,11 @@ export class SharedFolder extends HasProvider {
 			// The tagged origin exists for deletion capture, which only
 			// rides the split; flag-off keeps the folder instance origin.
 		}, this._localDoc ? FOLDER_LOCAL_DELETE_ORIGIN : this);
+
+		// Deletion ends each path's durable identity record; the persisted
+		// hash row would otherwise outlive the file and hand its identity to
+		// the next file created at the path.
+		this.clearLocalRecords(paths);
 
 		if (this._localDoc) {
 			// Under the split, teardown of a deleted doc's local CRDT

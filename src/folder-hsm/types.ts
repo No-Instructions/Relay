@@ -197,6 +197,16 @@ export interface FolderHSMConfig {
 	 * cache before hydration completes.
 	 */
 	getLocalRecordGuid: (path: string) => string | undefined;
+	/**
+	 * Whether the local record for `path` still describes the file now on
+	 * disk: the record's stored content evidence (hash/mtime captured when
+	 * the record was written) agrees with the file's current stat. A record
+	 * proves that SOME file at this path synced under its guid; only content
+	 * agreement ties that identity to the current content. Records carrying
+	 * no content evidence never match — the existence of an identity record
+	 * alone must not authorize destroying local content.
+	 */
+	localRecordMatchesFile: (path: string) => boolean;
 	/** Native tombstone query (wraps pathWasDeleted). */
 	pathTombstoned: (path: string) => boolean;
 	/**

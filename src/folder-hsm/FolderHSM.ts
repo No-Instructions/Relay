@@ -310,7 +310,13 @@ export class FolderHSM {
 		) {
 			return true;
 		}
-		return this.config.getLocalRecordGuid(path) === guid;
+		// Cold-boot fallback: the durable record attests the path's identity,
+		// but a record can outlive the file it described. Only content
+		// agreement with the file now on disk lets the record condemn it.
+		return (
+			this.config.getLocalRecordGuid(path) === guid &&
+			this.config.localRecordMatchesFile(path)
+		);
 	}
 
 	private pathTombstoned(path: string): boolean {
@@ -518,11 +524,18 @@ export class FolderHSM {
 						to: guidElsewhere.path,
 						guid: recordGuid,
 					});
-				} else {
+					continue;
+				}
+				if (this.config.localRecordMatchesFile(path)) {
 					this.upsertEntry(recordGuid, path, "pendingTrash");
 					this.emit({ type: "TRASH_LOCAL", path, guid: recordGuid });
+					continue;
 				}
-				continue;
+				// The record disagrees with the disk (or carries no content
+				// evidence): the file now at this path is not the file the
+				// record described — trashing it would destroy new user
+				// content. Fall through to the tombstone/upload rungs; park
+				// or upload, never destroy on identity alone.
 			}
 
 			// Rung 3: previously deleted path, no proof of new content → park.
