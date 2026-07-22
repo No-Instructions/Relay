@@ -192,6 +192,7 @@ class PillDecoration {
 
 		this.el = el;
 		this.el.addClass("system3-pill");
+		this.el.setAttribute("data-relay-state", this.sharedFolder.state.status);
 
 		this.pill = new Pill({
 			target: this.el,
@@ -210,6 +211,7 @@ class PillDecoration {
 		const unsubs: Unsubscribe[] = [];
 		unsubs.push(
 			this.sharedFolder.subscribe(this.el, (state: ConnectionState) => {
+				this.el.setAttribute("data-relay-state", state.status);
 				this.pill.$set({
 					status: state.status,
 					relayId: this.sharedFolder.relayId,
@@ -239,6 +241,7 @@ class PillDecoration {
 		this.pill.$destroy();
 		this.unsubscribe();
 		this.el.removeClass("system3-pill");
+		this.el.removeAttribute("data-relay-state");
 	}
 }
 
@@ -438,6 +441,7 @@ class NotSyncedPillDecoration {
 	constructor(
 		private el: HTMLElement,
 		label: string,
+		reason: string,
 	) {
 		this.el.querySelectorAll(".system3-filepill").forEach((el) => {
 			el.remove();
@@ -448,12 +452,13 @@ class NotSyncedPillDecoration {
 			props: {
 				text: "NOT SYNCED",
 				label,
+				reason,
 			},
 		});
 	}
 
-	setLabel(label: string) {
-		this.pill.$set({ label });
+	setLabel(label: string, reason: string) {
+		this.pill.$set({ label, reason });
 	}
 
 	destroy() {
@@ -477,14 +482,16 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 			(sharedFolder.isStorageBlockedTFile(file) ||
 				!sharedFolder.isSyncableTFile(file))
 		) {
-			const label = sharedFolder.isStorageBlockedTFile(file)
+			const storageBlocked = sharedFolder.isStorageBlockedTFile(file);
+			const label = storageBlocked
 				? "Attachment storage is required to sync this file"
 				: "Syncing this file type is disabled";
+			const reason = storageBlocked ? "storage-required" : "file-type-disabled";
 			if (storage) {
-				storage.setLabel(label);
+				storage.setLabel(label, reason);
 				return storage;
 			}
-			return new NotSyncedPillDecoration(item.selfEl, label);
+			return new NotSyncedPillDecoration(item.selfEl, label, reason);
 		}
 		if (storage) {
 			storage.destroy();
