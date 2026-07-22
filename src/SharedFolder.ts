@@ -220,6 +220,15 @@ export class SharedFolder extends HasProvider {
 			await this.syncFileTree(this.syncStore);
 		});
 
+		// The newly-enabled-types diff in syncFileTree compares against this
+		// baseline. It must be populated before the first syncFileTree can
+		// run: an empty baseline reads as "every type was just enabled" and
+		// enqueues local files while the folder is still disconnected, where
+		// uploads are silently skipped and never retried.
+		this.enabledSyncTypes = new Set(
+			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
+		);
+
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
 				this.remote = folders.find((folder) => folder.guid == this.guid);
@@ -273,9 +282,6 @@ export class SharedFolder extends HasProvider {
 
 		this.whenReady().then(() => {
 			if (!this.destroyed) {
-				this.enabledSyncTypes = new Set(
-					this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
-				);
 				this.addLocalDocs();
 				this.syncFileTree(this.syncStore);
 			}
