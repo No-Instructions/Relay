@@ -33,13 +33,13 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Use Node.js
-      uses: actions/setup-node@v4
+      uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
       with:
         node-version: '20.x'
     - run: npm ci
     - run: npm run release
     - name: Generate artifact attestations
-      uses: actions/attest@v4
+      uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6  # v4
       with:
         subject-path: |
           main.js

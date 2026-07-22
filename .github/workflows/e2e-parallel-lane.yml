@@ -131,12 +131,12 @@ jobs:
           echo "Uploaded s3://${CI_R2_BUCKET}/${MANIFEST_KEY}"
 
       - name: Auth to GCP
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY_TACTILE }}
 
       - name: Setup gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f  # v2
 
       - name: Lease a user pool by creating its VM
         id: lease
@@ -487,7 +487,7 @@ jobs:
 
       - name: Upload lane metadata
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: testplans-lane-metadata
           path: |
@@ -541,7 +541,7 @@ jobs:
 
       - name: Generate job summary
         if: always()
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         with:
           script: |
             const fs = require('fs');
