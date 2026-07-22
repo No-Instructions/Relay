@@ -202,6 +202,7 @@
 			bind:value={shareKey}
 			disabled={invitePending}
 			placeholder="Enter share key"
+			name="share-key"
 			readonly={false}
 			copyOnClick={false}
 			on:input={handleShareKeyInput}
@@ -210,6 +211,7 @@
 		/>
 		<button
 			class="mod-cta system3-button"
+			data-action="join-relay"
 			disabled={invitePending}
 			on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
 		>

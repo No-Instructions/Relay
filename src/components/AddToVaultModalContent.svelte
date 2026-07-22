@@ -109,6 +109,7 @@
 		{/if}
 		<button
 			class="mod-cta"
+			data-action="confirm-add-to-vault"
 			disabled={!selectedRemoteFolder || !folderName.trim()}
 			on:click={debounce(async () => {
 				if (!selectedRemoteFolder) {

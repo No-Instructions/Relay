@@ -1,9 +1,10 @@
 <script lang="ts">
 	export let text: string;
 	export let label: string;
+	export let reason: string | undefined = undefined;
 </script>
 
-<div class="nav-file-tag system3-filepill" aria-label={label}>
+<div class="nav-file-tag system3-filepill" aria-label={label} data-reason={reason}>
 	<span>{text}</span>
 </div>
 
