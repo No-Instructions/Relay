@@ -2184,6 +2184,18 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			this._conflict = null;
 			this._error = undefined;
 		}
+		// Entering active.tracking is the active path's convergence point: every
+		// external route into it (clean two-way merge, successful three-way
+		// merge, conflict resolution or dismissal) supersedes a stored idle-mode
+		// error, so drop it — otherwise a document that failed idle
+		// reconciliation and then healed through the active path keeps
+		// reporting the stale error indefinitely. Internal self-transitions
+		// (e.g. the ERROR self-loop that stores a fresh error while tracking)
+		// never reach setStatePath, so errors stored while tracking survive.
+		if (target === "active.tracking") {
+			this._error = undefined;
+			this._errorRetryable = false;
+		}
 		this._statePath = target;
 
 		const newStatus = this.computeSyncStatusType();
