@@ -58,6 +58,7 @@ function freshContext(): FolderContext {
 		localFiles: new Map(),
 		locallyDeleted: new Set(),
 		parked: new Map(),
+		ladderDeferred: false,
 	};
 }
 
@@ -83,6 +84,7 @@ export class FolderHSM {
 				hydrated: () =>
 					this.context.persistenceLoaded && this.context.providerSynced,
 				reconnectPending: () => !this.context.providerSynced,
+				ladderDeferred: () => this.context.ladderDeferred,
 			},
 			actions: {
 				resetContext: () => this.resetContext(),
@@ -425,6 +427,20 @@ export class FolderHSM {
 
 	private runProvenanceLadder(): void {
 		const ctx = this.context;
+		// Never classify against a map with pending sync state: an
+		// undelivered deletion reads as a never-present key, sends a
+		// deleted path down the upload rung, and resurrects it for every
+		// peer. Defer the whole pass; the host reports the drain with
+		// SYNC_DRAINED and the ladder re-runs then. This must probe the
+		// live doc — a persisted readiness latch can be stale.
+		if (this.config.hasPendingSyncState?.()) {
+			ctx.ladderDeferred = true;
+			this.warn(
+				"provenance ladder deferred: folder doc holds pending sync state",
+			);
+			return;
+		}
+		ctx.ladderDeferred = false;
 		const mapEntries = this.config.listMapEntries();
 		const mapByPath = new Map(mapEntries.map((entry) => [entry.path, entry]));
 		const mapByGuid = new Map(mapEntries.map((entry) => [entry.guid, entry]));

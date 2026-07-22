@@ -119,6 +119,12 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 				},
 				{ target: "tracking", actions: ["markProviderSynced"] },
 			],
+			// A ladder pass deferred on pending sync state re-runs when the
+			// host observes the drain; otherwise the drain is a no-op.
+			SYNC_DRAINED: [
+				{ target: "reconciling", guard: "ladderDeferred" },
+				{ target: "tracking" },
+			],
 			REBUILD_STARTED: { target: "rebuilding" },
 		},
 	},

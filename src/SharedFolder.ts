@@ -424,6 +424,25 @@ export class SharedFolder extends HasProvider {
 					return;
 				this.folderHSM?.send({ type: "MAP_DELTA", ...delta });
 			};
+			// A provenance ladder deferred on pending sync state re-runs
+			// when that state drains. Every folder-doc transaction that
+			// integrates structs can complete the drain, so probe after
+			// each update; the checks are two null reads and the machine
+			// consumes the event only while a deferred ladder is armed.
+			const drainWatcher = () => {
+				if (
+					this.folderHSM?.context.ladderDeferred &&
+					!this.folderDocsHavePendingSyncState()
+				) {
+					this.folderHSM.send({ type: "SYNC_DRAINED" });
+				}
+			};
+			this.ydoc.on("update", drainWatcher);
+			this._localDoc?.on("update", drainWatcher);
+			this.unsubscribes.push(() => {
+				this.ydoc.off("update", drainWatcher);
+				this._localDoc?.off("update", drainWatcher);
+			});
 		}
 
 		this.unsubscribes.push(
@@ -2412,11 +2431,31 @@ export class SharedFolder extends HasProvider {
 				this._localRecordCache.get(vpath),
 			pathTombstoned: (vpath: string) =>
 				pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath),
+			// Live doc state only — the persisted hasServerSync latch can
+			// declare a folder synced while the current session's handshake
+			// is incomplete or faulty.
+			hasPendingSyncState: () => this.folderDocsHavePendingSyncState(),
 			onEffect: (effect) => this.handleFolderHSMEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
 			},
 		});
+	}
+
+	/**
+	 * Whether either folder doc holds pending sync state: structs whose
+	 * dependencies never arrived, or a delete set with no structs to
+	 * attach to (the signature of a deletion delivered for a key this
+	 * replica never held). While true, the membership map understates
+	 * remote deletions and the provenance ladder must not classify.
+	 */
+	private folderDocsHavePendingSyncState(): boolean {
+		// Tolerate docs that are not fully constructed (test harnesses,
+		// teardown races): no readable store means nothing pending.
+		const pending = (doc: Y.Doc | null): boolean =>
+			doc?.store != null &&
+			(doc.store.pendingStructs !== null || doc.store.pendingDs !== null);
+		return pending(this.ydoc) || pending(this._localDoc);
 	}
 
 	/** Live membership snapshot for status surfaces; null when the engine is off. */
@@ -3947,7 +3986,17 @@ export class SharedFolder extends HasProvider {
 				this.pendingUpload.delete(vpath);
 				const guid = this.syncStore?.get(vpath);
 				if (guid) {
-					this.syncStore.delete(vpath);
+					if (this._localDoc) {
+						// Under the split the deletion stays a bare local
+						// removal so it rides the outbound delete policy; the
+						// bridge commits it as a durable marker on replicate.
+						this.syncStore.delete(vpath);
+					} else {
+						// Flag-off commits straight to the synced doc: record
+						// a durable marker so a peer that never held the key
+						// still sees the deletion.
+						this.syncStore.markDeleted(vpath);
+					}
 					const doc = this.files.get(guid);
 					if (doc) {
 						this.fset.delete(doc);
@@ -4066,7 +4115,11 @@ export class SharedFolder extends HasProvider {
 			if (!newVPath) {
 				// moving out of shared folder.. destroy the live doc.
 				this.folderDoc.transact(() => {
-					this.syncStore.delete(oldVPath);
+					if (this._localDoc) {
+						this.syncStore.delete(oldVPath);
+					} else {
+						this.syncStore.markDeleted(oldVPath);
+					}
 				}, this);
 				if (file) {
 					file.cleanup();

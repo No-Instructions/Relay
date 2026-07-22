@@ -9,8 +9,10 @@ import {
 	SyncType,
 	TypeRegistry,
 	isCanvasMeta,
+	isDeletedMeta,
 	isDocumentMeta,
 	isSyncFolderMeta,
+	makeDeletionMeta,
 	makeDocumentMeta,
 	makeFolderMeta,
 	type Meta,
@@ -67,7 +69,10 @@ export function extractMapDelta(
 	event.changes.keys.forEach((change, path) => {
 		if (change.action === "delete") {
 			const oldValue = change.oldValue as Meta | undefined;
-			if (oldValue?.id) {
+			// A removed durable deletion marker carries the deleted entry's
+			// guid, but removing deletion history is not a member deletion —
+			// never let it pair into a move or associate with a local file.
+			if (oldValue?.id && !isDeletedMeta(oldValue)) {
 				deletedByGuid.set(oldValue.id, {
 					path,
 					oldValue: { id: oldValue.id, type: oldValue.type },
@@ -79,6 +84,21 @@ export function extractMapDelta(
 		}
 		const newMeta = meta.get(path);
 		if (!newMeta) return;
+		if (isDeletedMeta(newMeta)) {
+			// A durable deletion marker written over the entry (or arriving
+			// for a never-known path) IS the deletion; surface it as one.
+			// Markers are written alone by the replicate path, never inside
+			// a move transaction, so they do not participate in pairing.
+			const oldValue = change.oldValue as Meta | undefined;
+			deletes.push({
+				path,
+				oldValue:
+					oldValue?.id && !isDeletedMeta(oldValue)
+						? { id: oldValue.id, type: oldValue.type }
+						: undefined,
+			});
+			return;
+		}
 		const summary: MapDeltaEntry = {
 			path,
 			guid: newMeta.id,
@@ -213,7 +233,8 @@ export class SyncStore extends Observable<SyncStore> {
 	forEach(callbackFn: (meta: Meta, path: string) => void) {
 		//this.migrateUp();
 		this.meta.forEach((meta, path) => {
-			if (!this.deleteSet.has(path)) {
+			// Durable deletion markers are deletion history, not membership.
+			if (!this.deleteSet.has(path) && !isDeletedMeta(meta)) {
 				callbackFn(meta, path);
 			}
 		});
@@ -238,10 +259,14 @@ export class SyncStore extends Observable<SyncStore> {
 
 	/**
 	 * Committed membership size — the delete collector's threshold
-	 * denominator.
+	 * denominator. Durable deletion markers are history, not members.
 	 */
 	committedEntryCount(): number {
-		return this.meta.size;
+		let count = 0;
+		this.meta.forEach((meta) => {
+			if (!isDeletedMeta(meta)) count++;
+		});
+		return count;
 	}
 
 	getCommittedSubdocGuids(): string[] {
@@ -270,7 +295,7 @@ export class SyncStore extends Observable<SyncStore> {
 	) {
 		const seen = new Set<string>();
 		this.meta.forEach((meta, path) => {
-			if (this.deleteSet.has(path)) return;
+			if (this.deleteSet.has(path) || isDeletedMeta(meta)) return;
 			seen.add(path);
 			callbackFn(meta, path);
 		});
@@ -292,8 +317,9 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.deleteSet.has(path)) {
 			return false;
 		}
+		const committed = this.meta.get(path);
 		return (
-			this.meta.has(path) ||
+			(committed !== undefined && !isDeletedMeta(committed)) ||
 			this.legacyIds.has(path) ||
 			this.overlay.has(path) ||
 			this.pendingUpload.has(path)
@@ -520,7 +546,14 @@ export class SyncStore extends Observable<SyncStore> {
 			return undefined;
 		}
 
-		const meta = this.meta.get(vpath) || this.overlay.get(vpath);
+		// A durable deletion marker reads as absence. A later docs-map
+		// re-add by an old client resurrects the path through the overlay
+		// migration below, superseding the marker on the next commit.
+		let committed = this.meta.get(vpath);
+		if (isDeletedMeta(committed)) {
+			committed = undefined;
+		}
+		const meta = committed || this.overlay.get(vpath);
 		const legacy = this.legacyIds.has(vpath);
 
 		if (!meta && this.legacyIds.has(vpath)) {
@@ -556,7 +589,8 @@ export class SyncStore extends Observable<SyncStore> {
 		if (this.deleteSet.has(vpath)) {
 			return undefined;
 		}
-		return this.meta.get(vpath);
+		const committed = this.meta.get(vpath);
+		return isDeletedMeta(committed) ? undefined : committed;
 	}
 
 	delete(vpath: string) {
@@ -566,6 +600,33 @@ export class SyncStore extends Observable<SyncStore> {
 			this.legacyIds.delete(vpath);
 			this.pendingUpload.delete(vpath);
 			return this.meta.delete(vpath);
+		});
+	}
+
+	/**
+	 * Commit a deletion durably: replace the committed entry with a live
+	 * deletion marker instead of a bare key removal. A bare removal rides
+	 * sync as a delete-set entry, which a peer that never held the key
+	 * cannot act on — the key then reads "never present" and the path can
+	 * resurrect. The marker is ordinary state and survives any handshake;
+	 * any later re-add of the path supersedes it (set() overwrites the
+	 * key, the same convention that clears masked deletions).
+	 *
+	 * Used where deletions commit directly to the synced doc; under the
+	 * folder doc split the bridge writes the marker when the deletion
+	 * replicates, so local deletions there stay bare and keep riding the
+	 * outbound delete policy.
+	 */
+	markDeleted(vpath: string) {
+		this.assertVPath(vpath);
+		return this.ydoc.transact(() => {
+			this.legacyIds.delete(vpath);
+			this.pendingUpload.delete(vpath);
+			const existing = this.meta.get(vpath);
+			if (existing === undefined || isDeletedMeta(existing)) {
+				return;
+			}
+			this.meta.set(vpath, makeDeletionMeta(existing.id));
 		});
 	}
 
@@ -683,9 +744,17 @@ export class SyncStore extends Observable<SyncStore> {
 
 	migrateFile(guid: string, vpath: string) {
 		this.assertVPath(vpath);
-		if (this.meta.get(vpath)?.id === guid) {
+		// A durable deletion marker is history, not a committed entry: an
+		// old client's docs-map re-add must resurrect the path through the
+		// overlay migration, exactly as it does for a bare-deleted key.
+		const committed = this.meta.get(vpath);
+		if (!isDeletedMeta(committed) && committed?.id === guid) {
 			return;
 		}
+		const hasCommitted = (path: string) => {
+			const existing = this.meta.get(path);
+			return existing !== undefined && !isDeletedMeta(existing);
+		};
 
 		const folders = new Set<string>();
 		const parts = vpath.split(sep);
@@ -695,7 +764,7 @@ export class SyncStore extends Observable<SyncStore> {
 			folders.add(currentPath);
 		}
 
-		if (!(this.meta.has(vpath) || this.overlay.has(vpath))) {
+		if (!(hasCommitted(vpath) || this.overlay.has(vpath))) {
 			if (vpath.endsWith(".md")) {
 				this.warn(`migrated legacy key on ${vpath}`);
 				this.overlay.set(vpath, makeDocumentMeta(guid));
@@ -705,7 +774,7 @@ export class SyncStore extends Observable<SyncStore> {
 		folders.forEach((folderPath) => {
 			if (
 				folderPath &&
-				!(this.meta.has(folderPath) || this.overlay.has(folderPath))
+				!(hasCommitted(folderPath) || this.overlay.has(folderPath))
 			) {
 				const guid = uuidv4();
 				console.log("creating folder path", folderPath, guid);

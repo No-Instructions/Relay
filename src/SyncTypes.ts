@@ -12,6 +12,7 @@ export enum SyncType {
 	Video = "video",
 	Base = "base",
 	File = "file",
+	Deleted = "deleted",
 }
 
 export type SyncFileType =
@@ -78,6 +79,20 @@ export interface FileMeta extends BaseFileMeta {
 	type: SyncType.File;
 }
 
+/**
+ * A durable deletion marker: a live map entry recording that the path's
+ * committed entry was deleted. A bare key removal travels as delete-set
+ * arithmetic, which a peer that never held the key cannot act on; the
+ * marker is ordinary state and rides every handshake. Written when a
+ * deletion commits to the synced doc; consulted first by the folder
+ * machine's tombstone query; superseded by any later re-add of the path.
+ * `id` preserves the deleted entry's guid.
+ */
+export interface DeletedMeta extends MetaBase {
+	version: 0;
+	type: SyncType.Deleted;
+}
+
 export type FileMetas =
 	| ImageMeta
 	| PDFMeta
@@ -86,7 +101,12 @@ export type FileMetas =
 	| BaseMeta
 	| FileMeta;
 
-export type Meta = FolderMeta | DocumentMeta | FileMetas | CanvasMeta;
+export type Meta =
+	| FolderMeta
+	| DocumentMeta
+	| FileMetas
+	| CanvasMeta
+	| DeletedMeta;
 
 type SyncTypeToMeta = {
 	[SyncType.Folder]: FolderMeta;
@@ -120,6 +140,7 @@ export const SyncTypeToFlagMap: Record<SyncType, keyof SyncFlags | null> = {
 	[SyncType.PDF]: "pdfs",
 	[SyncType.Base]: "bases",
 	[SyncType.File]: "otherTypes",
+	[SyncType.Deleted]: null, // Never syncs as a file; markers are pure metadata
 };
 
 export function isDocumentMeta(meta?: Meta): meta is DocumentMeta {
@@ -158,6 +179,19 @@ export function isBaseMeta(meta?: Meta): meta is BaseMeta {
 	return meta?.type === SyncType.Base;
 }
 
+/**
+ * Runtime guard for durable deletion markers. Accepts `unknown` because
+ * the folder doc bridge and the tombstone query read map values without
+ * a Meta-typed view.
+ */
+export function isDeletedMeta(meta: unknown): meta is DeletedMeta {
+	return (
+		typeof meta === "object" &&
+		meta !== null &&
+		(meta as { type?: unknown }).type === SyncType.Deleted
+	);
+}
+
 export function makeDocumentMeta(guid: string): DocumentMeta {
 	return {
 		version: 0,
@@ -179,6 +213,15 @@ export function makeFolderMeta(guid: string): FolderMeta {
 		version: 0,
 		id: guid,
 		type: SyncType.Folder,
+	};
+}
+
+/** Durable deletion marker preserving the deleted entry's guid. */
+export function makeDeletionMeta(guid: string): DeletedMeta {
+	return {
+		version: 0,
+		id: guid,
+		type: SyncType.Deleted,
 	};
 }
 

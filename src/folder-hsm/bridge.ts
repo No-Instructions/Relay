@@ -28,6 +28,11 @@
 
 import type * as Y from "yjs";
 import { areObjectsEqual } from "../areObjectsEqual";
+import {
+	isDeletedMeta,
+	makeDeletionMeta,
+	type DeletedMeta,
+} from "../SyncTypes";
 
 /** Origin of bridge-applied transactions on the localDoc (inbound). */
 export const BRIDGE_IN_ORIGIN = "relay:folder-bridge-in";
@@ -116,6 +121,17 @@ function valuesEqual(a: unknown, b: unknown): boolean {
 		return areObjectsEqual(a, b);
 	}
 	return false;
+}
+
+/** Durable deletion marker preserving the replaced entry's guid. */
+function deletionMarkerFor(previous: unknown): DeletedMeta {
+	const id =
+		typeof previous === "object" &&
+		previous !== null &&
+		typeof (previous as { id?: unknown }).id === "string"
+			? (previous as { id: string }).id
+			: "";
+	return makeDeletionMeta(id);
 }
 
 export class FolderDocBridge {
@@ -264,6 +280,15 @@ export class FolderDocBridge {
 	/**
 	 * Replicate held (or policy-free) deletions to the remoteDoc. Called by
 	 * the delete collector on `replicate` evaluation or gate `send`.
+	 *
+	 * Meta-map deletions commit as durable deletion markers, not bare key
+	 * removals: a bare removal travels as delete-set arithmetic, which a
+	 * peer that never held the key cannot act on — the deletion parks
+	 * silently in its pending state and the path can resurrect on its
+	 * next bootstrap. The marker is a live entry (ordinary state under any
+	 * handshake) and any later re-add of the key supersedes it. The legacy
+	 * docs map keeps bare removals: old clients express deletion there
+	 * themselves and its values are strings, not Meta objects.
 	 */
 	replicateDeletes(deletes: Array<{ mapName: FolderMapName; key: string }>): void {
 		if (this.destroyed || deletes.length === 0) return;
@@ -277,7 +302,15 @@ export class FolderDocBridge {
 			for (const [mapName, keys] of byMap) {
 				const remote = this.maps.find((m) => m.name === mapName)!.remote;
 				for (const key of keys) {
-					if (remote.has(key)) remote.delete(key);
+					if (!remote.has(key)) continue;
+					if (mapName === "filemeta_v0") {
+						const previous = remote.get(key);
+						if (!isDeletedMeta(previous)) {
+							remote.set(key, deletionMarkerFor(previous));
+						}
+					} else {
+						remote.delete(key);
+					}
 				}
 			}
 		}, BRIDGE_OUT_ORIGIN);
@@ -350,7 +383,16 @@ export class FolderDocBridge {
 					if (action === "set") {
 						entry.remote.set(key, entry.local.get(key));
 					} else if (entry.remote.has(key)) {
-						entry.remote.delete(key);
+						// Outbound deletions commit as durable markers on the
+						// meta map (see replicateDeletes).
+						if (mapName === "filemeta_v0") {
+							const previous = entry.remote.get(key);
+							if (!isDeletedMeta(previous)) {
+								entry.remote.set(key, deletionMarkerFor(previous));
+							}
+						} else {
+							entry.remote.delete(key);
+						}
 					}
 				}
 			}, BRIDGE_OUT_ORIGIN);
