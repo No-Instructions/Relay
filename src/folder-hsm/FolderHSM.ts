@@ -58,6 +58,8 @@ function freshContext(): FolderContext {
 		localFiles: new Map(),
 		locallyDeleted: new Set(),
 		parked: new Map(),
+		ladderDeferred: false,
+		latchHydrated: false,
 	};
 }
 
@@ -83,13 +85,27 @@ export class FolderHSM {
 				hydrated: () =>
 					this.context.persistenceLoaded && this.context.providerSynced,
 				reconnectPending: () => !this.context.providerSynced,
+				ladderDeferred: () => this.context.ladderDeferred,
+				latchHydrated: () => this.context.latchHydrated,
 			},
 			actions: {
 				resetContext: () => this.resetContext(),
 				markPersistenceLoaded: () => {
 					this.context.persistenceLoaded = true;
 				},
-				markProviderSynced: () => {
+				markProviderSynced: (_hsm, event) => {
+					if (event.type === "PROVIDER_SYNCED" && event.latch) {
+						// The persisted latch can declare hydration but never
+						// confirm it: a pass classified under it runs ahead of
+						// the session's first handshake and stays provisional.
+						// A latch claim after a completed handshake changes
+						// nothing.
+						if (!this.context.providerSynced) {
+							this.context.latchHydrated = true;
+						}
+					} else {
+						this.context.latchHydrated = false;
+					}
 					this.context.providerSynced = true;
 				},
 				setOnline: () => {
@@ -425,6 +441,20 @@ export class FolderHSM {
 
 	private runProvenanceLadder(): void {
 		const ctx = this.context;
+		// Never classify against a map with pending sync state: an
+		// undelivered deletion reads as a never-present key, sends a
+		// deleted path down the upload rung, and resurrects it for every
+		// peer. Defer the whole pass; the host reports the drain with
+		// SYNC_DRAINED and the ladder re-runs then. This must probe the
+		// live doc — a persisted readiness latch can be stale.
+		if (this.config.hasPendingSyncState?.()) {
+			ctx.ladderDeferred = true;
+			this.warn(
+				"provenance ladder deferred: folder doc holds pending sync state",
+			);
+			return;
+		}
+		ctx.ladderDeferred = false;
 		const mapEntries = this.config.listMapEntries();
 		const mapByPath = new Map(mapEntries.map((entry) => [entry.path, entry]));
 		const mapByGuid = new Map(mapEntries.map((entry) => [entry.guid, entry]));
@@ -442,9 +472,20 @@ export class FolderHSM {
 				continue;
 			}
 
-			// Rung 1: ours, awaiting → upload.
+			// Rung 1: ours, awaiting → upload. A hold outranks the ladder
+			// only while it does not contradict a visible deletion: a
+			// tombstoned path holding a bootstrap-origin hold means the hold
+			// was minted by a pass that could not yet see the deletion — a
+			// re-run must correct that decision, not replay it. The hold is
+			// disregarded and the path falls through to the rungs below
+			// (record, tombstone), which park or trash but never upload.
+			// Interactive origin keeps its intent: the user (re)created the
+			// path on purpose this session.
 			const pendingGuid = this.config.getPendingUploadGuid(path);
-			if (pendingGuid !== undefined) {
+			if (
+				pendingGuid !== undefined &&
+				(info.origin === "interactive" || !this.pathTombstoned(path))
+			) {
 				this.upsertEntry(pendingGuid, path, "pendingUpload");
 				this.emit({ type: "ENQUEUE_UPLOAD", path, origin: info.origin });
 				continue;

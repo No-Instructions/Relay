@@ -1,6 +1,7 @@
 export { FolderHSM } from "./FolderHSM";
 export { FOLDER_MACHINE } from "./machine-definition";
 export { pathWasDeleted } from "./tombstones";
+export { docsHavePendingSyncState, observeSyncDrain } from "./pending-sync";
 export {
 	FolderDocBridge,
 	BRIDGE_IN_ORIGIN,

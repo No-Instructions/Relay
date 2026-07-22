@@ -48,6 +48,8 @@ import {
 	deriveRecoveryDelta,
 	isEmptyRecoveryDelta,
 	pathWasDeleted,
+	docsHavePendingSyncState,
+	observeSyncDrain,
 	type FolderEffect,
 	type LocalFileKind,
 	type FolderSyncSnapshot,
@@ -433,6 +435,12 @@ export class SharedFolder extends HasProvider {
 					return;
 				this.folderHSM?.send({ type: "MAP_DELTA", ...delta });
 			};
+			// A provenance ladder deferred on pending sync state re-runs
+			// when that state drains; the observer's logic lives with the
+			// engine — this is only its installation on the folder docs.
+			this.unsubscribes.push(
+				observeSyncDrain(this.folderHSM, [this.ydoc, this._localDoc]),
+			);
 		}
 
 		this.unsubscribes.push(
@@ -775,9 +783,14 @@ export class SharedFolder extends HasProvider {
 					// that completed the sync handshake before (hasServerSync)
 					// or that is authoritative is hydrated as soon as
 					// persistence loads; fresh folders wait for the first
-					// provider handshake (handleProviderSynced).
+					// provider handshake (handleProviderSynced). The latch
+					// flag marks this sync claim as declared, not handshaken:
+					// the machine treats the resulting classification pass as
+					// provisional and re-enters it when the session's first
+					// real handshake reports (handleProviderSynced sends the
+					// unflagged event).
 					if (this.ready) {
-						this.folderHSM.send({ type: "PROVIDER_SYNCED" });
+						this.folderHSM.send({ type: "PROVIDER_SYNCED", latch: true });
 					}
 				} else {
 					this.addLocalDocs();
@@ -2418,6 +2431,11 @@ export class SharedFolder extends HasProvider {
 				this._localRecordCache.get(vpath),
 			pathTombstoned: (vpath: string) =>
 				pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath),
+			// Live doc state only — the persisted hasServerSync latch can
+			// declare a folder synced while the current session's handshake
+			// is incomplete or faulty.
+			hasPendingSyncState: () =>
+				docsHavePendingSyncState(this.ydoc, this._localDoc),
 			onEffect: (effect) => this.handleFolderHSMEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
@@ -2696,6 +2714,11 @@ export class SharedFolder extends HasProvider {
 				return;
 			case "PARK":
 				this.log(`[FolderHSM] parked ${effect.path}: ${effect.reason}`);
+				// A parked path has no map entry and no pending upload by
+				// definition: release any upload hold a blind classification
+				// pass left behind, or a background flush would publish the
+				// very file this pass refused to.
+				this.retractPendingUpload(effect.path);
 				return;
 			case "SURFACE_STATUS":
 				this.notifyListeners();
@@ -2883,6 +2906,34 @@ export class SharedFolder extends HasProvider {
 			this.deleteFile(vpath);
 		} catch (e) {
 			this.warn("[FolderHSM] map delete effect failed", vpath, e);
+		}
+	}
+
+	/**
+	 * Withdraw an unpublished upload. A hold (guid minted at placeHold
+	 * time) is only local intent; when classification later refuses the
+	 * path — a re-run saw the deletion the minting pass could not — the
+	 * hold and its queued work must die together, before any retry path
+	 * (the sync sweep, document-ready callbacks) publishes the file. The
+	 * local file itself is untouched.
+	 */
+	private retractPendingUpload(vpath: string): void {
+		const guid = this.pendingUpload.get(vpath);
+		if (!guid) return;
+		this.pendingUpload.delete(vpath);
+		this.backgroundSync.cancelDocumentWork(guid);
+		const file = this.files.get(guid);
+		if (file) {
+			this.fset.delete(file);
+			this.files.delete(guid);
+			file.cleanup();
+			file.destroy();
+			if (this._localDoc) {
+				this.deferDocTeardown([guid]);
+			} else {
+				this.teardownDocState(guid);
+			}
+			this.fset.update();
 		}
 	}
 
@@ -3221,6 +3272,15 @@ export class SharedFolder extends HasProvider {
 	async markUploaded(file: IFile) {
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
+				return;
+			}
+
+			// An upload can resolve after its hold was withdrawn (the path
+			// parked or was deleted while the enqueue was queued or in
+			// flight). With no hold and no committed entry there is no
+			// membership to record — writing one would publish the very
+			// path classification refused.
+			if (!this.syncStore.has(file.path)) {
 				return;
 			}
 

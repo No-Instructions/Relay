@@ -109,15 +109,33 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 			// Connection is an input, not a state: offline tracking continues
 			// to record local intent.
 			DISCONNECTED: { target: "tracking", actions: ["setOffline"] },
-			// The ladder reruns exactly once per connect: only a resync after
-			// a disconnect re-enters reconciling.
+			// The ladder reruns exactly once per connect: a resync after a
+			// disconnect re-enters reconciling, and so does the session's
+			// first completed handshake when hydration was declared by the
+			// persisted readiness latch — that pass classified before the
+			// provider delivered anything, so the handshake's truth (a map
+			// converged since last session, or sync state that cannot yet
+			// apply) re-enters classification; the ladder's entry probe
+			// defers it while sync state is pending. A repeat sync on a
+			// live connection stays a no-op.
 			PROVIDER_SYNCED: [
 				{
 					target: "reconciling",
 					guard: "reconnectPending",
 					actions: ["markProviderSynced"],
 				},
+				{
+					target: "reconciling",
+					guard: "latchHydrated",
+					actions: ["markProviderSynced"],
+				},
 				{ target: "tracking", actions: ["markProviderSynced"] },
+			],
+			// A ladder pass deferred on pending sync state re-runs when the
+			// host observes the drain; otherwise the drain is a no-op.
+			SYNC_DRAINED: [
+				{ target: "reconciling", guard: "ladderDeferred" },
+				{ target: "tracking" },
 			],
 			REBUILD_STARTED: { target: "rebuilding" },
 		},

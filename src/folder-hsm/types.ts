@@ -64,6 +64,24 @@ export interface FolderContext {
 	locallyDeleted: Set<string>;
 	/** Parked paths with a human-readable reason. */
 	parked: Map<string, string>;
+	/**
+	 * The provenance ladder was skipped because the folder doc held
+	 * pending sync state (undelivered structs or an unattached delete
+	 * set): classifying against that map would misread undelivered
+	 * deletions as never-present paths. The ladder re-runs on
+	 * SYNC_DRAINED.
+	 */
+	ladderDeferred: boolean;
+	/**
+	 * Hydration was declared by the persisted readiness latch before this
+	 * session completed a provider handshake. A pass classified under the
+	 * latch is provisional — it ran against a map that predates whatever
+	 * the session's first handshake will deliver — so that handshake
+	 * re-enters classification, where the pending-sync-state probe decides
+	 * between classifying immediately and deferring until the state
+	 * drains. Cleared by the first handshake-grade sync report.
+	 */
+	latchHydrated: boolean;
 }
 
 // =============================================================================
@@ -97,7 +115,13 @@ export interface MapDeltaMove {
 export type FolderEvent =
 	| { type: "LOAD" }
 	| { type: "PERSISTENCE_LOADED" }
-	| { type: "PROVIDER_SYNCED" }
+	/**
+	 * The provider claims sync. `latch: true` marks a claim derived from
+	 * the persisted readiness latch (has-synced-before) rather than a
+	 * handshake completed this session: it hydrates the machine but leaves
+	 * the classification pass provisional until a real handshake reports.
+	 */
+	| { type: "PROVIDER_SYNCED"; latch?: boolean }
 	| { type: "CONNECTED" }
 	| { type: "DISCONNECTED" }
 	| {
@@ -124,7 +148,9 @@ export type FolderEvent =
 	| { type: "DOWNLOAD_FAILED"; path: string; guid: string }
 	| { type: "TRASH_COMPLETE"; path: string; guid: string | null }
 	| { type: "REBUILD_STARTED" }
-	| { type: "REBUILD_COMPLETE" };
+	| { type: "REBUILD_COMPLETE" }
+	/** The folder doc's pending sync state drained (host-observed). */
+	| { type: "SYNC_DRAINED" };
 
 // =============================================================================
 // Effects (executed by the host)
@@ -173,6 +199,14 @@ export interface FolderHSMConfig {
 	getLocalRecordGuid: (path: string) => string | undefined;
 	/** Native tombstone query (wraps pathWasDeleted). */
 	pathTombstoned: (path: string) => boolean;
+	/**
+	 * Live pending-sync-state probe (the folder docs' pendingStructs /
+	 * pendingDs). While true, the provenance ladder defers instead of
+	 * classifying against a membership map with undelivered deletions or
+	 * struct gaps; the host reports the drain with SYNC_DRAINED. Must
+	 * read the live doc, never a persisted readiness latch.
+	 */
+	hasPendingSyncState?: () => boolean;
 	onEffect: (effect: FolderEffect) => void;
 	onTransition?: (
 		from: FolderStatePath,
