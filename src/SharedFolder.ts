@@ -1425,9 +1425,15 @@ export class SharedFolder extends HasProvider {
 			const text = doc.ydoc.getText("contents");
 			if (!awaitingUpdates && origin === undefined) {
 				this.log(`[${doc.path}] No Known Peers: Syncing file into ytext.`);
-				this.ydoc.transact(() => {
+				doc.ydoc.transact(() => {
+					// Insert content. The `relay` map carries a single op so
+					// every enrolled doc produces a non-empty state vector —
+					// lets the server (and peers) tell "uploaded" from "never
+					// uploaded" for truly-empty content.
+					const header = doc.ydoc.getMap("relay");
+					if (!header.has("v")) header.set("v", 0);
 					text.insert(0, contents);
-				}, this._persistence);
+				});
 				doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(doc);
