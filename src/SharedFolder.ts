@@ -1465,9 +1465,17 @@ export class SharedFolder extends HasProvider {
 	private getSyncFiles(): TAbstractFile[] {
 		const folder = this.vault.getAbstractFileByPath(this.path);
 		if (!(folder instanceof TFolder)) {
-			throw new Error(
-				`Could not find shared folders on file system at ${this.path}`,
+			// A clone's root directory may not exist on disk yet: scans run
+			// against it before the first download materializes the folder.
+			// An absent root is an empty scan, not an error — every map
+			// entry classifies as a download, and the sweep re-runs on the
+			// next file-tree sync once the root exists. Genuine mid-session
+			// disappearance is handled by the vault delete event and the
+			// suspension flow, not here.
+			this.debug(
+				`folder root not on disk at ${this.path}; treating scan as empty`,
 			);
+			return [];
 		}
 		const files: TAbstractFile[] = [];
 		Vault.recurseChildren(folder, (file: TAbstractFile) => {
