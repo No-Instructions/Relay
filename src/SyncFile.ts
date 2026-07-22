@@ -368,15 +368,18 @@ export class SyncFile
 		return meta;
 	}
 
-	public async push(force = false) {
+	// Resolves false when the push was skipped or failed and the caller
+	// still owes an upload. A skip must not read as success: the background
+	// queue records successful syncs as complete and never revisits them.
+	public async push(force = false): Promise<boolean> {
 		this.log("push");
 		if (!this.sharedFolder.connected) {
 			this.log("skipping push -- folder is disconnected");
-			return;
+			return false;
 		}
 		if (!this.sharedFolder.syncStore.canSync(this.path)) {
 			this.log("skipping push -- filetype is disabled");
-			return;
+			return false;
 		}
 		const hash = await this.caf.hash();
 		this._refreshMeta();
@@ -395,9 +398,10 @@ export class SyncFile
 				}
 				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
 				this.notifyListeners();
+				return false;
 			}
 		}
-		return;
+		return true;
 	}
 
 	public async sync() {
@@ -411,7 +415,12 @@ export class SyncFile
 			await this.pull();
 			return;
 		} else if (!this.meta) {
-			await this.push();
+			const pushed = await this.push();
+			if (!pushed) {
+				throw new Error(
+					`[${this.path}] initial push did not complete: ${this.uploadError ?? "folder disconnected or filetype disabled"}`,
+				);
+			}
 			return;
 		}
 
@@ -431,7 +440,12 @@ export class SyncFile
 			if (hash !== this.meta.hash) {
 				// local is newer
 				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
-					await this.push();
+					const pushed = await this.push();
+					if (!pushed) {
+						throw new Error(
+							`[${this.path}] push did not complete: ${this.uploadError ?? "folder disconnected or filetype disabled"}`,
+						);
+					}
 					return;
 				}
 				// remote is newer

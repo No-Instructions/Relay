@@ -262,6 +262,16 @@ export class SharedFolder extends HasProvider {
 			}),
 		);
 
+		// A reconnect re-runs the tree sync so uploads that were skipped
+		// while disconnected get retried.
+		const reconnectSub = this.providerStateSubscription((state) => {
+			if (state.status === "connected") {
+				this.syncFileTree(this.syncStore);
+			}
+		});
+		reconnectSub.on();
+		this.unsubscribes.push(reconnectSub.off);
+
 		this.proxy = createPathProxy(this, this.path, (globalPath: string) => {
 			return this.getVirtualPath(globalPath);
 		});
@@ -807,6 +817,51 @@ export class SharedFolder extends HasProvider {
 		return deletes;
 	}
 
+	// A pendingUpload record with no meta is an upload that never completed.
+	// Uploads are skipped without error when the folder is disconnected or
+	// mid-handshake, and the registered file object masks them from
+	// addLocalDocs afterward, so nothing else ever re-attempts them.
+	private retryPendingUploads(diffLog: string[]) {
+		if (!this.connected) {
+			return;
+		}
+		this.pendingUpload.forEach((guid, vpath) => {
+			if (this.syncStore.getMeta(vpath)) {
+				return;
+			}
+			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
+			if (!(tfile instanceof TFile)) {
+				return;
+			}
+			diffLog.push(`retrying pending upload ${vpath}`);
+			const file = this.files.get(guid);
+			if (file && (isDocument(file) || isCanvas(file))) {
+				file
+					.getOrigin()
+					.then((origin: string | undefined) => {
+						if (origin === undefined) {
+							// Never seeded -- the upload path will seed and enqueue.
+							this.uploadFile(tfile, false);
+						} else {
+							// Seeded, but the enqueue or meta write never landed.
+							return this.backgroundSync.enqueueSync(file).then(() => {
+								this.markUploaded(file);
+							});
+						}
+					})
+					.catch((e: unknown) => {
+						this.warn("pending upload retry failed", vpath, e);
+					});
+			} else {
+				try {
+					this.uploadFile(tfile, false);
+				} catch (e) {
+					this.warn("pending upload retry failed", vpath, e);
+				}
+			}
+		});
+	}
+
 	private getDesiredRemotePaths(): Set<string> {
 		const paths = new Set<string>();
 		this.syncStore.forEach((_meta, path) => {
@@ -893,6 +948,7 @@ export class SharedFolder extends HasProvider {
 
 				const remotePaths = this.getDesiredRemotePaths();
 				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
+				this.retryPendingUploads(diffLog);
 				if ([...ops, ...deletes].every((op) => op.op === "noop")) {
 					this.debug("sync: noop");
 				} else {
