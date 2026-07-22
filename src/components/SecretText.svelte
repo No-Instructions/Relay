@@ -14,6 +14,7 @@
 	export let copyOnClick: boolean = true;
 	export let successMessage: string = "Copied to clipboard";
 	export let invalid: boolean = false;
+	export let name: string | undefined = undefined;
 
 	// Internal state
 	let showSecret = writable(false);
@@ -83,6 +84,7 @@
 		<input
 			{value}
 			{placeholder}
+			{name}
 			type="text"
 			{readonly}
 			on:click={copyOnClick ? debounce(copyValue) : null}
@@ -98,6 +100,7 @@
 		<input
 			{value}
 			{placeholder}
+			{name}
 			type="password"
 			{readonly}
 			on:click={copyOnClick ? debounce(copyValue) : null}
