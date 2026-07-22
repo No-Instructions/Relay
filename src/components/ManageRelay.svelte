@@ -626,6 +626,7 @@
 							handleAddToVault(remote);
 						})}
 						label="Add to vault"
+						action="add-to-vault"
 					>
 						<Download
 							class="svg-icon lucide-settings"
