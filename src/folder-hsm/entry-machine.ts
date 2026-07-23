@@ -17,8 +17,9 @@
  * cross-product and refuses on violation.
  *
  * Evidence rules the guards encode (see FolderHSM for the bindings):
- * - destruction requires positive identity association AND content
- *   agreement AND confirmed confidence — absence never deletes;
+ * - destruction requires positive identity association at confirmed
+ *   confidence — absence never deletes, and content is never consulted:
+ *   identity decides, so the outcome cannot depend on event ordering;
  * - a path carrying a persisted upload hold is never trashed and its
  *   minted identity is never silently discarded: the hold marks content
  *   the server does not have;
@@ -120,22 +121,18 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 		otherwise: "absorb",
 		on: {
 			MAP_REMOVED: [
-				{
-					target: "trashing",
-					guard: "identityMatchesAndContentAgrees",
-					actions: ["emitTrashLocal"],
-					requires: ["canTrash"],
-				},
-				// The content-disagreement case. OPEN DECISION: the default
-				// here is that the removal prevails into recoverable trash;
-				// the alternative candidate is { target: "conflicted" }.
+				// Removal prevails into recoverable trash: identity decides,
+				// content never does. A locally edited copy trashes the same
+				// as an untouched one — the trash keeps the bytes recoverable.
 				{
 					target: "trashing",
 					guard: "identityMatches",
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
-				// Identity mismatch: a recreated path — never trash.
+				// Identity mismatch: the removed entry was a different
+				// document — never trash on this event; reclassify against
+				// present truth.
 				{ target: "unclassified", actions: ["scheduleClassify"] },
 			],
 			MAP_MOVED: [

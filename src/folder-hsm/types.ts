@@ -362,16 +362,15 @@ export interface FolderSerializableSnapshot {
 
 /**
  * Device-local records: durable proof that some file at a path once
- * synced under a guid, plus the content evidence that ties the recorded
- * identity to the bytes now on disk. All lookups must be synchronous —
- * the host assembles its caches before hydration completes. A record's
- * existence alone never authorizes destruction; only `recordMatchesDisk`
- * lets a record condemn the current file.
+ * synced under a guid. All lookups must be synchronous — the host
+ * assembles its caches before hydration completes. Identity is the
+ * whole decision surface: a recorded identity that has left the
+ * committed map condemns the file it describes, and content is never
+ * consulted. That makes retirement load-bearing — records must retire
+ * with observed deletions so they never outlive their files.
  */
 export interface LocalRecordSource {
 	getRecordGuid: (path: string) => string | undefined;
-	/** Stored content evidence agrees with the file currently on disk. */
-	recordMatchesDisk: (path: string) => boolean;
 	/** Retire the record when its row retires — a record never outlives its file. */
 	retireRecord: (path: string) => void;
 	/** Follow a rename so the record keeps describing the same file. */

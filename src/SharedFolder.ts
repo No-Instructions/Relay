@@ -2664,15 +2664,13 @@ export class SharedFolder extends HasProvider {
 					this.pendingUpload.set(to, guid);
 				},
 			},
-			// Local records: the in-memory evidence cache assembled from
+			// Local records: the in-memory identity cache assembled from
 			// persisted merge-state metadata and guid-bearing hash rows.
 			// Retirement removes only the cache row; the underlying stores
 			// keep their own lifecycles.
 			records: {
 				getRecordGuid: (vpath: string) =>
 					this._localRecordCache.get(vpath)?.guid,
-				recordMatchesDisk: (vpath: string) =>
-					this.localRecordMatchesFile(vpath),
 				retireRecord: (vpath: string) => {
 					this._localRecordCache.delete(vpath);
 				},
@@ -2704,21 +2702,6 @@ export class SharedFolder extends HasProvider {
 				}
 			},
 		});
-	}
-
-	/**
-	 * Content-evidence agreement between the local record for `vpath` and
-	 * the file now on disk. The record proves that SOME file at this path
-	 * synced under its guid; only its stored mtime agreeing with the
-	 * file's current stat ties that identity to the current content. A
-	 * record without evidence, or a path without a file, never agrees.
-	 */
-	private localRecordMatchesFile(vpath: string): boolean {
-		const record = this._localRecordCache.get(vpath);
-		if (!record || record.mtime === undefined) return false;
-		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
-		if (!(tfile instanceof TFile)) return false;
-		return tfile.stat.mtime === record.mtime;
 	}
 
 	/**

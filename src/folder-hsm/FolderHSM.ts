@@ -1186,14 +1186,14 @@ export class FolderHSM {
 				if (heldAt(row.path)) return false;
 				const recordGuid = this.config.records.getRecordGuid(row.path);
 				if (recordGuid === undefined) return false;
-				const anywhere = this.config
+				// Identity decides: a recorded identity that has left the
+				// committed map condemns the file it describes, regardless
+				// of edits since — the trash keeps the bytes recoverable.
+				// Records retire with observed deletions, so a genuinely
+				// new file at a reused path carries no record.
+				return !this.config
 					.listMapEntries()
 					.some((entry) => entry.guid === recordGuid);
-				if (anywhere) return false;
-				// Content agreement is part of the guard, never optional: a
-				// record can outlive the file it described, and a new file
-				// at an old path is a different file.
-				return this.config.records.recordMatchesDisk(row.path);
 			},
 			tombstonedEmptyDirectory: (row) =>
 				confirmed() &&
@@ -1209,17 +1209,6 @@ export class FolderHSM {
 			recordedDeleteIntent: (row) =>
 				this.context.recordedDeleteIntents.has(row.path),
 			indexEntryKnown: (row) => this.getMapEntry(row.path) !== undefined,
-			identityMatchesAndContentAgrees: (row, event) => {
-				if (!confirmed()) return false;
-				if (heldAt(row.path)) return false;
-				const guid = eventGuid(event);
-				if (guid === undefined) return false;
-				const matches =
-					guid === row.guid ||
-					guid === this.config.records.getRecordGuid(row.path);
-				if (!matches) return false;
-				return this.config.records.recordMatchesDisk(row.path);
-			},
 			identityMatches: (row, event) => {
 				if (!confirmed()) return false;
 				if (heldAt(row.path)) return false;
