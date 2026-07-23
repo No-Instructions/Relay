@@ -55,7 +55,7 @@
 			{/if}
 		{:else}
 			<div bind:this={popoverEl} class="popover" class:visible={isVisible}>
-				<div class="arrow" />
+				<div class="arrow"></div>
 				<p>{helpText}</p>
 			</div>
 		{/if}

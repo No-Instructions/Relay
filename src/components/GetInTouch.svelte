@@ -41,7 +41,7 @@
 
 	{#if isOpen}
 		<div class="menu-dropdown" use:clickOutside>
-			<div class="arrow" />
+			<div class="arrow"></div>
 			<div class="menu-content">
 				<span style="text-align: center; display: flex">
 					<a
