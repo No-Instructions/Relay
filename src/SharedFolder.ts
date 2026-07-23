@@ -370,6 +370,25 @@ export class SharedFolder extends HasProvider {
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
+	/**
+	 * Whether a folder is its own membership authority. Explicitly
+	 * requested authority (sharing a local folder) always holds; a clone
+	 * defers to the server it was cloned from. Beyond the explicit cases,
+	 * a folder with no relay is its own authority: there is no server
+	 * picture its local tree could understate, and no handshake will ever
+	 * arrive to confirm one. Persisted folder settings carry no authority
+	 * field, so every (re)construction DERIVES it — a reloaded local-only
+	 * folder must hydrate exactly like the session that shared it, or its
+	 * publication verdicts wait forever for a confirmation that cannot
+	 * come.
+	 */
+	static deriveAuthority(
+		requested: boolean | undefined,
+		relayId: string | undefined,
+	): boolean {
+		return requested === true || relayId === undefined;
+	}
+
 	constructor(
 		public appId: string,
 		guid: string,
@@ -386,7 +405,7 @@ export class SharedFolder extends HasProvider {
 		private _hsmStore: HSMStore,
 		timeProvider: TimeProvider,
 		relayId?: string,
-		authoritative: boolean = false,
+		authoritative?: boolean,
 		remote?: RemoteSharedFolder,
 		options: SharedFolderOptions = {},
 	) {
@@ -430,7 +449,10 @@ export class SharedFolder extends HasProvider {
 			this.persistRemoteActivity();
 		}
 
-		this.authoritative = authoritative;
+		this.authoritative = SharedFolder.deriveAuthority(
+			authoritative,
+			folderRelayId,
+		);
 
 		this.syncSettingsManager = this._settings.getChild<
 			Record<keyof SyncFlags, boolean>,
