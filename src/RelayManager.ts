@@ -28,7 +28,7 @@ import { RelayInstances, HasLogging } from "./debug";
 import { customFetch } from "./customFetch";
 import type { SharedFolder } from "./SharedFolder";
 import type { LoginManager } from "./LoginManager";
-import type { Unsubscriber } from "svelte/motion";
+import type { Unsubscriber } from "svelte/store";
 import { Observable } from "./observable/Observable";
 import { PostOffice } from "./observable/Postie";
 import {
