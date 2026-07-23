@@ -297,12 +297,20 @@ export type FolderEffect =
 	 * marks content the server does not have, and that identity is never
 	 * discarded without a completed publication or an explicit user
 	 * action.
+	 *
+	 * `supersededBy` names the committed identity when one superseded the
+	 * mint AND the row is adopting it directly (no download queued): the
+	 * retraction is then also a rebind instruction — the host rebuilds
+	 * the path's live document on the committed history, seeding the
+	 * merge base from the bytes on disk, because a bare retraction would
+	 * leave the path with no canonical document at all.
 	 */
 	| {
 			type: "RETRACT_UPLOAD";
 			path: string;
 			guid: string | null;
 			releaseHold: boolean;
+			supersededBy?: string;
 	}
 	| { type: "PARK"; path: string; reason: string }
 	| { type: "SURFACE_STATUS" }

@@ -3015,6 +3015,7 @@ export class SharedFolder extends HasProvider {
 					effect.path,
 					effect.guid,
 					effect.releaseHold,
+					effect.supersededBy,
 				);
 				return;
 			case "PARK":
@@ -3073,12 +3074,17 @@ export class SharedFolder extends HasProvider {
 	 * work and tears down provisional live-doc state; releases the
 	 * persisted hold only when the machine sanctioned it (the local file
 	 * is gone, or a committed identity superseded the mint) — otherwise
-	 * the hold's identity is preserved with the file.
+	 * the hold's identity is preserved with the file. When the retraction
+	 * names the committed identity that superseded the mint, the path is
+	 * rebound: bare retraction would leave it with no live document at
+	 * all — the mint's provisional state is torn down and nothing has
+	 * materialized the committed history.
 	 */
 	private executeRetractUpload(
 		vpath: string,
 		guid: string | null,
 		releaseHold: boolean,
+		supersededBy?: string,
 	): void {
 		this._uploadDispatches.delete(vpath);
 		const heldGuid = this.pendingUpload.get(vpath) ?? guid ?? undefined;
@@ -3103,6 +3109,35 @@ export class SharedFolder extends HasProvider {
 				}
 			}
 		}
+		if (supersededBy === undefined || supersededBy === heldGuid) {
+			return;
+		}
+		// Rebuild the path's document on the committed history, seeding
+		// the merge base from the bytes on disk — the same convergence the
+		// committed-guid-differs path in markUploaded drives. Documents
+		// only: content-addressed files materialize through their own
+		// pipeline.
+		const committedMeta = this.syncStore.getCommittedMeta(vpath);
+		if (
+			!heldGuid ||
+			!isDocumentMeta(committedMeta) ||
+			committedMeta.id !== supersededBy ||
+			this._pendingRemaps.has(vpath)
+		) {
+			return;
+		}
+		this._pendingRemaps.add(vpath);
+		this.executeRemap({
+			path: vpath,
+			fromGuid: heldGuid,
+			toGuid: supersededBy,
+		})
+			.catch((e) => {
+				this.warn(`[${vpath}] rebind to committed identity failed`, e);
+			})
+			.finally(() => {
+				this._pendingRemaps.delete(vpath);
+			});
 	}
 
 	private executeEnqueueDownload(vpath: string, guid: string): void {

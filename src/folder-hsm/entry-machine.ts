@@ -214,12 +214,20 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				},
 			],
 			MAP_ADDED: [
-				// A peer published this path first: adopt the committed
-				// identity; the unpublished mint is superseded.
+				// A peer published this path first: the unpublished mint is
+				// superseded. The retraction names the committed identity so
+				// the host rebinds the path's document to the committed
+				// history (the row lands in `synced` with no download
+				// queued); then the row adopts the committed identity. When
+				// the committed identity is our own mint replicated back,
+				// nothing retracts.
 				{
 					target: "synced",
 					guard: "committedIdentityAtPath",
-					actions: ["adoptCommittedIdentity", "emitRetractUpload"],
+					actions: [
+						"retractSupersededMintAndRebind",
+						"adoptCommittedIdentity",
+					],
 				},
 				{ target: "upload.held" },
 			],
@@ -258,10 +266,15 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				{ target: "upload.inFlight" },
 			],
 			MAP_ADDED: [
+				// Same supersession contract as upload.held: retract naming
+				// the committed identity as the rebind target, then adopt.
 				{
 					target: "synced",
 					guard: "committedIdentityAtPath",
-					actions: ["adoptCommittedIdentity", "emitRetractUpload"],
+					actions: [
+						"retractSupersededMintAndRebind",
+						"adoptCommittedIdentity",
+					],
 				},
 				{ target: "upload.inFlight" },
 			],

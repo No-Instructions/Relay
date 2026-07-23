@@ -1531,6 +1531,32 @@ export class FolderHSM {
 					releaseHold: true,
 				});
 			},
+			retractSupersededMintAndRebind: (row) => {
+				// A committed identity is adopting this row while its own
+				// mint is unpublished (held or in flight). The mint is
+				// superseded — but the row lands directly in `synced`, with
+				// no download queued, so a bare retraction would tear the
+				// mint down and leave the path with no live document at all.
+				// The retraction therefore names the committed identity as
+				// the rebind target: the host rebuilds the path's document
+				// on the committed history with the bytes on disk as the
+				// merge base. When the committed identity IS the row's own
+				// mint (our map write replicated back to us), nothing was
+				// superseded and nothing retracts — a retraction here would
+				// cancel the very upload the committed entry references.
+				const committed = this.getMapEntry(row.path)?.guid;
+				const minted =
+					this.config.holds.getHold(row.path) ?? row.guid ?? null;
+				if (minted === null || committed === undefined) return;
+				if (minted === committed) return;
+				this.emit({
+					type: "RETRACT_UPLOAD",
+					path: row.path,
+					guid: minted,
+					releaseHold: true,
+					supersededBy: committed,
+				});
+			},
 			cancelWork: (row) => {
 				// The identity this download served was removed; the host
 				// cancels via the retraction contract for downloads too.
