@@ -640,6 +640,7 @@
 							remoteFolder: remote,
 						});
 					})}
+					action="manage-folder"
 				></SettingsControl>
 			</SlimSettingItem>
 		{/if}

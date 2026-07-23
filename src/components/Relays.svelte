@@ -241,6 +241,7 @@
 				on:settings={() => {
 					handleManageRelay(relay);
 				}}
+				action="manage-relay"
 			></SettingsControl>
 		</SlimSettingItem>
 	{/each}
@@ -278,6 +279,7 @@
 					on:settings={debounce(() => {
 						handleManageRemoteFolder(folder.remote);
 					})}
+					action="manage-folder"
 				></SettingsControl>
 			{:else}
 				<SettingsControl
@@ -287,6 +289,7 @@
 						});
 						handleManageSharedFolder(folder, relay);
 					})}
+					action="manage-folder"
 				></SettingsControl>
 			{/if}
 		</SlimSettingItem>
