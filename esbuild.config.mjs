@@ -143,7 +143,10 @@ const context = await esbuild.context({
 	format: "cjs",
 	plugins: [
 		esbuildSvelte({
-			compilerOptions: { css: "injected" },
+			compilerOptions: {
+				css: "injected",
+				compatibility: { componentApi: 4 },
+			},
 			preprocess: sveltePreprocess(),
 		}),
 		YjsInternalsPlugin,
