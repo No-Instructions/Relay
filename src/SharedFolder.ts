@@ -1873,26 +1873,15 @@ export class SharedFolder extends HasProvider {
 
 	/**
 	 * Load the folder's persisted state row (the withheld deletion fork,
-	 * the retained-doc ledger, and the remote-index cache). Legacy
-	 * engine-era artifacts — the old custom-store keys and the separate
-	 * remote-doc database — are deleted without being read: the engine
-	 * builds its state fresh.
+	 * the retained-doc ledger, and the remote-index cache). The engine
+	 * manages only its own storage and builds its state fresh when no
+	 * row exists.
 	 */
 	private async loadPersistedFolderState(): Promise<void> {
 		const store = this._folderStateStore;
 		if (!store) {
 			this._folderStateLoaded = true;
 			return;
-		}
-		// Legacy artifacts go, unread.
-		void this._persistence.del("deleteCollector").catch(() => {});
-		void this._persistence.del("deferredDocTeardown").catch(() => {});
-		try {
-			indexedDB.deleteDatabase(
-				`${this.appId}-relay-folder-${this.guid}-remote`,
-			);
-		} catch (e) {
-			// Deletion of legacy debris is best-effort.
 		}
 		const row = await store.loadState(this.guid);
 		if (this.destroyed) return;
