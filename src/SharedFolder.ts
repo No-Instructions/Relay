@@ -3315,26 +3315,41 @@ export class SharedFolder extends HasProvider {
 			// local origin whenever a cascade-trashed child's own effect
 			// resolved late — the deletion-echo defect. Only the live doc
 			// object and local records are cleaned up.
-			const doc =
-				(guid ? this.files.get(guid) : undefined) ??
-				this.fset.find((f) => f.path === vpath);
-			if (doc) {
-				this.fset.delete(doc);
-				this.files.delete(doc.guid);
-				doc.cleanup();
-				doc.destroy();
-				if (this._localDoc) {
-					this.deferDocTeardown([{ guid: doc.guid, path: vpath }]);
-				} else {
-					this.teardownDocState(doc.guid);
+			//
+			// The completion report is unconditional from here: the file
+			// has left the disk, so the work IS done. A cleanup failure
+			// must neither swallow the report — an unreported completion
+			// strands the row in its trashing state, and the tracked
+			// promise records a rejection without a word — nor pass
+			// unnarrated.
+			try {
+				const doc =
+					(guid ? this.files.get(guid) : undefined) ??
+					this.fset.find((f) => f.path === vpath);
+				if (doc) {
+					this.fset.delete(doc);
+					this.files.delete(doc.guid);
+					doc.cleanup();
+					doc.destroy();
+					if (this._localDoc) {
+						this.deferDocTeardown([{ guid: doc.guid, path: vpath }]);
+					} else {
+						this.teardownDocState(doc.guid);
+					}
 				}
+				this.pendingUpload.delete(vpath);
+				this._localRecordCache.delete(vpath);
+				this._uploadDispatches.delete(vpath);
+				this.fset.update();
+			} catch (e) {
+				this.warn("[FolderHSM] trash cleanup failed", vpath, e);
 			}
-			this.pendingUpload.delete(vpath);
-			this._localRecordCache.delete(vpath);
-			this._uploadDispatches.delete(vpath);
-			this.fset.update();
 			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
-		})();
+		})().catch((e) => {
+			// Nothing on this path may die silently: whatever slips the
+			// inner handling is narrated here.
+			this.warn("[FolderHSM] trash completion failed", vpath, e);
+		});
 		// Suppression tokens are NOT cleared here: the cascade's vault
 		// delete events arrive seconds after the rename resolves, so each
 		// token is consumed by its event (consumePendingDelete) or expires
