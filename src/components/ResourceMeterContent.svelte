@@ -82,7 +82,7 @@
 >
 	<div class="bars">
 		{#each bars as color}
-			<div class="bar {color === 'empty' ? 'empty' : 'filled ' + color}" />
+			<div class="bar {color === 'empty' ? 'empty' : 'filled ' + color}"></div>
 		{/each}
 	</div>
 
@@ -92,7 +92,7 @@
 			class="popover"
 			style={popoverStyle}
 		>
-			<div class="arrow" class:above={position === "above"} class:below={position === "below"} style={position === "above" ? "bottom: -5px;" : "top: -5px;"} />
+			<div class="arrow" class:above={position === "above"} class:below={position === "below"} style={position === "above" ? "bottom: -5px;" : "top: -5px;"}></div>
 			<h4 class="popover-title">{label}</h4>
 			{#each folders as f}
 				<div class="folder-section">
@@ -101,7 +101,7 @@
 						<span class="popover-value">{f.used}/{f.total}</span>
 					</div>
 					<div class="progress-track">
-						<div class="progress-fill {levelFor(f)}" style="width: {percentFor(f)}%;" />
+						<div class="progress-fill {levelFor(f)}" style="width: {percentFor(f)}%;"></div>
 					</div>
 					{#if f.pending > 0}
 						<div class="popover-row pending-row">
