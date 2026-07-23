@@ -3739,13 +3739,24 @@ export class SharedFolder extends HasProvider {
 			// With the row outside the upload states there is no membership
 			// to record — writing one would publish the very file the
 			// machine refused. Defense at both layers: the machine also
-			// refuses the late completion.
+			// refuses the late completion. The fence stops only the
+			// refused: a `synced` row refreshing the identity the map
+			// already committed is not a publication — an edited
+			// content-addressed file's steady-state hash refresh must keep
+			// flowing, or the map's picture of the bytes goes permanently
+			// stale.
+			let syncedRefresh = false;
 			if (this.folderHSM && !this.folderHSM.holdIsPublishable(file.path)) {
-				this.warn(
-					"[markUploaded] dropped: the membership row no longer accepts publication",
-					file.path,
-				);
-				return;
+				syncedRefresh =
+					this.folderHSM.getRowState(file.path) === "synced" &&
+					this.syncStore.getCommittedMeta(file.path)?.id === meta.id;
+				if (!syncedRefresh) {
+					this.warn(
+						"[markUploaded] dropped: the membership row no longer accepts publication",
+						file.path,
+					);
+					return;
+				}
 			}
 
 			// Server-authoritative rule: never overwrite an existing committed
@@ -3798,11 +3809,15 @@ export class SharedFolder extends HasProvider {
 					this.recordSyncedNow(file.path, meta.id),
 				);
 				this._uploadDispatches.delete(file.path);
-				this.folderHSM.send({
-					type: "UPLOAD_COMPLETE",
-					path: file.path,
-					guid: meta.id,
-				});
+				if (!syncedRefresh) {
+					// A synced row's refresh has no outstanding work to
+					// settle; only an upload state's completion is reported.
+					this.folderHSM.send({
+						type: "UPLOAD_COMPLETE",
+						path: file.path,
+						guid: meta.id,
+					});
+				}
 			}
 		};
 		if (isDocument(file)) {
