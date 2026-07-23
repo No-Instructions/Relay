@@ -98,7 +98,7 @@
 					class="relay-feature-flag-tab-icon"
 					aria-hidden="true"
 					use:icon={tab.icon}
-				/>
+				></span>
 				<span>{tab.label}</span>
 			</button>
 		{/each}
@@ -140,7 +140,7 @@
 									on:keydown={(event) => handleToggleKey(event, flagName)}
 								>
 									<input type="checkbox" tabindex="-1" checked={value} />
-									<div class="checkbox-toggle" />
+									<div class="checkbox-toggle"></div>
 								</div>
 							</div>
 						</div>
