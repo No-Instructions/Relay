@@ -1293,7 +1293,13 @@ export class LiveViewManager {
 				const folder = this.sharedFolders.lookup(filePath);
 				if (!folder?.mergeManager || !folder.ready) continue;
 
-				const embeddedDoc = folder.proxy.getDoc(filePath);
+				let embeddedDoc: Document;
+				try {
+					embeddedDoc = folder.proxy.getDoc(filePath);
+				} catch {
+					// No shared handle (membership refused or undecided).
+					continue;
+				}
 				if (!embeddedDoc) continue;
 
 				if (!folderToGuids.has(folder)) {
@@ -1413,13 +1419,22 @@ export class LiveViewManager {
 					});
 					views.push(view);
 				} else if (folder.ready) {
-					const doc = folder.proxy.getDoc(viewFilePath);
-					const view = new LiveView<typeof textFileView>(
-						this,
-						textFileView,
-						doc,
-					);
-					views.push(view);
+					try {
+						const doc = folder.proxy.getDoc(viewFilePath);
+						const view = new LiveView<typeof textFileView>(
+							this,
+							textFileView,
+							doc,
+						);
+						views.push(view);
+					} catch (e) {
+						// No shared handle (membership refused or undecided):
+						// the file opens as a plain local editor.
+						this.log(
+							`No shared document for ${viewFilePath}; skipping view.`,
+							e,
+						);
+					}
 				} else {
 					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
 				}
