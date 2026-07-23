@@ -793,36 +793,7 @@ export class SharedFolder extends HasProvider {
 					// folder persistence loaded, so the provenance ladder never
 					// runs against an empty record cache.
 					await this.assembleLocalRecordCache();
-					// A clone's root directory may not exist on disk yet, so
-					// local discovery can have nothing to scan — valid evidence
-					// (every map entry classifies as a download). The machine
-					// must still hear PERSISTENCE_LOADED: without it, it stays
-					// in `loading` absorbing every observation forever.
-					try {
-						this.addLocalDocs();
-					} catch (e) {
-						this.warn(
-							"local doc discovery failed during machine bootstrap",
-							e,
-						);
-					}
-					this._hsmBootstrapScanned = true;
-					this.folderHSM.send({ type: "PERSISTENCE_LOADED" });
-					// Hydration builds on the folder readiness latch: a folder
-					// that completed the sync handshake before (hasServerSync)
-					// or that is authoritative is hydrated as soon as
-					// persistence loads; fresh folders wait for the first
-					// provider handshake (handleProviderSynced). The latch is
-					// a BLIND claim: it hydrates the machine, but decisions
-					// made under it are provisional — nothing destructive or
-					// publishing dispatches until the session's first real
-					// handshake confirms the picture.
-					if (this.ready) {
-						this.folderHSM.send({
-							type: "PROVIDER_SYNCED",
-							tier: "blind",
-						});
-					}
+					this.hydrateFolderMachine();
 				} else {
 					this.addLocalDocs();
 				}
@@ -1815,6 +1786,52 @@ export class SharedFolder extends HasProvider {
 
 	async markSynced(): Promise<void> {
 		await this._persistence.markServerSynced();
+	}
+
+	/**
+	 * Feed the machine the bootstrap scan, declare its persistence
+	 * loaded, and assert the hydration-time sync claim. The claim's
+	 * confidence depends on who the folder's membership authority is:
+	 *
+	 * - A folder that syncs with a server boots from its persisted
+	 *   has-synced marker — a BLIND claim. The server may have moved
+	 *   while the session was closed, so decisions made under it are
+	 *   provisional: nothing destructive or publishing dispatches until
+	 *   the session's first real handshake confirms the picture
+	 *   (handleProviderSynced).
+	 * - An AUTHORITATIVE folder is its own membership authority: there
+	 *   is no server picture its local one could understate, so its
+	 *   local tree IS the confirmed picture. It hydrates at confirmed
+	 *   confidence — local files mint identities and register live doc
+	 *   objects immediately, and only the network transfer waits for a
+	 *   connection (queued upload work drains when the folder connects).
+	 */
+	private hydrateFolderMachine(): void {
+		const machine = this.folderHSM;
+		if (!machine) return;
+		// A clone's root directory may not exist on disk yet, so local
+		// discovery can have nothing to scan — valid evidence (every map
+		// entry classifies as a download). The machine must still hear
+		// PERSISTENCE_LOADED: without it, it stays in `loading` absorbing
+		// every observation forever.
+		try {
+			this.addLocalDocs();
+		} catch (e) {
+			this.warn("local doc discovery failed during machine bootstrap", e);
+		}
+		this._hsmBootstrapScanned = true;
+		machine.send({ type: "PERSISTENCE_LOADED" });
+		// Hydration builds on the folder readiness latch: a folder that
+		// completed the sync handshake before (hasServerSync) or that is
+		// authoritative is hydrated as soon as persistence loads; fresh
+		// folders wait for the first provider handshake
+		// (handleProviderSynced).
+		if (this.ready) {
+			machine.send({
+				type: "PROVIDER_SYNCED",
+				tier: this.authoritative ? "confirmed" : "blind",
+			});
+		}
 	}
 
 	/**

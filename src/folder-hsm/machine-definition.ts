@@ -11,8 +11,12 @@
  * - No effects are emitted from `loading`, `syncing`, or `rebuilding`:
  *   those nodes grant no effect capabilities, and the emit chokepoint
  *   refuses without one.
- * - Bootstrap-origin uploads dispatch only from `reconciling`;
- *   interactive uploads also from `tracking`.
+ * - Uploads dispatch from `reconciling` and `tracking` — the two
+ *   postures in which classification runs. The posture grant says WHERE
+ *   a publication verdict may execute; WHEN is the dispatch gate's job
+ *   (confirmed confidence and write authorization, enforced at emit),
+ *   and publication verdicts themselves come only from the CLASSIFY
+ *   ladder.
  * - `rebuilding` exits into `reconciling`, never directly into
  *   `tracking`.
  *
@@ -100,6 +104,16 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 			canEmitEffects: true,
 			canTrash: true,
 			canUploadInteractive: true,
+			// Bootstrap-origin uploads dispatch from steady state too.
+			// Publication verdicts come only from the CLASSIFY ladder,
+			// which visits late-discovered rows in tracking (scheduled
+			// classification) under exactly the trust and tier gates the
+			// reconciling pass honors, and the emit chokepoint still
+			// refuses any upload at blind confidence. Without this grant a
+			// file discovered after the reconciling pass sits decided but
+			// undispatched until the next reconnect re-enters
+			// classification — a deadlock, not a safety margin.
+			canUploadBootstrap: true,
 			canDownload: true,
 			canRenameLocal: true,
 			canMutateMap: true,
