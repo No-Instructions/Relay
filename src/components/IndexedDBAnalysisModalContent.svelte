@@ -100,17 +100,17 @@
 				}}
 			>
 				<input type="checkbox" tabindex="-1" checked={searchAcrossVaults} />
-				<div class="checkbox-toggle" />
+				<div class="checkbox-toggle"></div>
 			</div>
 		</div>
 	</div>
 
 	{#if $isLoading}
 		<div class="system3-loading-container">
-			<div class="system3-loading-spinner" />
+			<div class="system3-loading-spinner"></div>
 			<div class="loading-text">Analyzing Databases...</div>
 			<div class="system3-progress-bar">
-				<div class="system3-progress-fill" style="width: {$progress}%" />
+				<div class="system3-progress-fill" style="width: {$progress}%"></div>
 			</div>
 		</div>
 	{:else if $error}
