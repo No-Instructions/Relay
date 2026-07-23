@@ -367,6 +367,22 @@ export class SharedFolder extends HasProvider {
 	 * creates from startup replays.
 	 */
 	private _hsmBootstrapScanned = false;
+	/**
+	 * Membership before content: latched when the membership machine's
+	 * first confirmed classification pass of the session completes (an
+	 * authoritative folder settles at hydration; a server-backed folder at
+	 * its handshake). Per-document OUTBOUND flow — fork-reconcile
+	 * connects, idle sync-to-remote execution, the folder-wide upload
+	 * flush — waits on it, so content whose file the settlement will
+	 * condemn (a re-creation at a remotely deleted path above all) cannot
+	 * race to the server ahead of the membership decision. Inbound and
+	 * download flow never consults it. Trivially true when the machine is
+	 * off; resolved on destroy so held work observes teardown instead of
+	 * pending forever.
+	 */
+	private _membershipSettled = false;
+	private _membershipSettledPromise: Promise<void> | undefined;
+	private _resolveMembershipSettled: (() => void) | undefined;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
@@ -487,6 +503,12 @@ export class SharedFolder extends HasProvider {
 		);
 
 		this.folderHSM = this.maybeConstructFolderHSM();
+		this._membershipSettledPromise = new Promise<void>((resolve) => {
+			this._resolveMembershipSettled = resolve;
+		});
+		if (!this.folderHSM) {
+			this.markMembershipSettled();
+		}
 		if (this.folderHSM) {
 			// Remote map deltas (provider-applied transactions) drive
 			// membership; our own transactions are direct expressions of
@@ -904,20 +926,28 @@ export class SharedFolder extends HasProvider {
 			}
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
-				.then(() => {
-					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
+				.then(async () => {
+					// Backfills are download-side and flow immediately.
+					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
 						this,
 						advertisedGuids,
 					);
-					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
+					if (queuedLCABackfill > 0) {
+						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
+					}
+					// Membership before content: remote-head sync sessions
+					// push local-ahead ops, so they wait for the session's
+					// first confirmed membership settlement.
+					if (!this._membershipSettled) {
+						await this.whenMembershipSettled();
+					}
+					if (this.destroyed) return;
+					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
 						this,
 						advertisedGuids,
 					);
 					if (queuedRemoteHead > 0) {
 						this.debug(`[subdoc-index] queued ${queuedRemoteHead} remote-head syncs`);
-					}
-					if (queuedLCABackfill > 0) {
-						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
 					}
 				})
 				.catch((e) => this.error("subdoc index sync sweep failed", e));
@@ -1128,6 +1158,14 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		update: Uint8Array,
 	): Promise<void> {
+		// Membership before content: outbound execution waits for the
+		// session's first confirmed membership settlement, so a file the
+		// settlement will condemn cannot push its content first. The work
+		// is held, not dropped — the effect is not re-emitted.
+		if (!this._membershipSettled) {
+			await this.whenMembershipSettled();
+		}
+		if (this.destroyed) return;
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) {
 			this.warn(
@@ -1538,6 +1576,13 @@ export class SharedFolder extends HasProvider {
 			if (this.destroyed) return;
 			this.addLocalDocs();
 			await this.syncFileTree();
+			// Membership before content: the folder-wide flush pushes local
+			// ops, so it waits for the session's first confirmed membership
+			// settlement. Discovery above is unaffected.
+			if (!this._membershipSettled) {
+				await this.whenMembershipSettled();
+			}
+			if (this.destroyed) return;
 			this.backgroundSync.enqueueSharedFolderSync(this);
 		} catch (error) {
 			if (isDestroyedError(error)) return;
@@ -1594,8 +1639,13 @@ export class SharedFolder extends HasProvider {
 	private stagePublicationUploads(): void {
 		// Reconciliation fires this synchronously after its staging
 		// transaction; enqueue on a fresh microtask so upload bookkeeping
-		// never re-enters observer or transaction context.
-		void Promise.resolve().then(() => {
+		// never re-enters observer or transaction context. Membership
+		// before content: the staged uploads also wait for the settlement
+		// the same handshake produces moments later.
+		void Promise.resolve().then(async () => {
+			if (!this._membershipSettled) {
+				await this.whenMembershipSettled();
+			}
 			if (this.destroyed) return;
 			let staged = 0;
 			this.files.forEach((doc) => {
@@ -2696,9 +2746,20 @@ export class SharedFolder extends HasProvider {
 				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
 				// A classification pass settling at confirmed confidence is
 				// a natural sync moment: refresh the remote-index cache on
-				// the next persist.
+				// the next persist. It is also the session's membership
+				// settlement — the moment held outbound flow may run. A
+				// pass the trust gate deferred settled nothing; the drained
+				// re-run comes back through here.
 				if (from === "reconciling" && to === "tracking") {
 					this._remoteIndexDirty = true;
+					const machine = this.folderHSM;
+					if (
+						machine &&
+						machine.context.tier === "confirmed" &&
+						!machine.context.classificationDeferred
+					) {
+						this.markMembershipSettled();
+					}
 				}
 			},
 		});
@@ -2722,6 +2783,27 @@ export class SharedFolder extends HasProvider {
 	/** Live membership snapshot for status surfaces; null when the engine is off. */
 	public getFolderSyncSnapshot(): FolderSyncSnapshot | null {
 		return this.folderHSM?.getSnapshot() ?? null;
+	}
+
+	/**
+	 * Membership before content: true once per-document outbound flow may
+	 * run — the membership machine's first confirmed classification pass
+	 * of the session has completed (trivially true with the machine off).
+	 * Inbound and download flow never consults this.
+	 */
+	public get membershipSettled(): boolean {
+		return this._membershipSettled;
+	}
+
+	/** Resolves at membership settlement (immediately when already settled). */
+	public whenMembershipSettled(): Promise<void> {
+		return this._membershipSettledPromise ?? Promise.resolve();
+	}
+
+	private markMembershipSettled(): void {
+		if (this._membershipSettled) return;
+		this._membershipSettled = true;
+		this._resolveMembershipSettled?.();
 	}
 
 	/**
@@ -4711,6 +4793,9 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		// Release outbound work held for membership settlement: awaiters
+		// re-check `destroyed` and bail instead of pending forever.
+		this.markMembershipSettled();
 		if (this._downloadSweepTimer !== null) {
 			this.timeProvider.clearTimeout(this._downloadSweepTimer);
 			this._downloadSweepTimer = null;
