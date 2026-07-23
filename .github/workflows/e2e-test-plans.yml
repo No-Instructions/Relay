@@ -43,7 +43,7 @@ jobs:
         shard:
           - name: scripted-all
             slug: all
-            tests: tp000,tp001,tp002,tp003,tp004,tp006,tp007,tp008,tp010,tp011,tp012,tp013,tp014,tp015,tp016,tp017,tp018,tp019,tp020,tp021,tp022,tp023,tp024,tp025,tp028,tp029,tp030,tp031,tp032,tp033,tp034
+            tests: default
     env:
       VM_NAME: ${{ format('{0}-tp-{1}', secrets.GCP_VM_NAME, matrix.shard.slug) }}
       SHARD_NAME: ${{ matrix.shard.name }}
@@ -67,34 +67,12 @@ jobs:
           TARGETED_TESTS="${{ github.event.inputs.tests || '' }}"
           SHARD_TESTS="${{ matrix.shard.tests }}"
 
-          select_tests() {
-            local available="$1"
-            local wanted="$2"
-            local filtered=""
-            local test match
-
-            IFS=',' read -r -a available_tests <<< "$available"
-            IFS=',' read -r -a wanted_tests <<< "$wanted"
-
-            for test in "${available_tests[@]}"; do
-              test="${test//[[:space:]]/}"
-              [ -n "$test" ] || continue
-              for match in "${wanted_tests[@]}"; do
-                match="${match//[[:space:]]/}"
-                [ -n "$match" ] || continue
-                if [ "$test" = "$match" ]; then
-                  filtered="${filtered:+$filtered,}$test"
-                  break
-                fi
-              done
-            done
-
-            printf '%s' "$filtered"
-          }
-
+          # The suite runner resolves ids against the harness manifest and
+          # fails loudly on unknown ids, so targeted dispatches pass through;
+          # a roster intersection here would silently skip unknown ids.
           SELECTED_TESTS="$SHARD_TESTS"
           if [ -n "$TARGETED_TESTS" ]; then
-            SELECTED_TESTS="$(select_tests "$SHARD_TESTS" "$TARGETED_TESTS")"
+            SELECTED_TESTS="$TARGETED_TESTS"
           fi
 
           if [ -n "$SELECTED_TESTS" ]; then
