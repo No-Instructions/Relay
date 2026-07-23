@@ -81,6 +81,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
+				// A directory in a subtree the group deleted, still holding
+				// children: each child's own row decides its fate, and the
+				// directory waits — publication work for a doomed directory
+				// and a parked verdict are both wrong. When the last
+				// child's trash completes, the emptied-parent review
+				// re-runs this ladder and the rung above removes the
+				// directory.
+				{
+					target: "unclassified",
+					guard: "tombstonedDirectoryAwaitingChildren",
+				},
 				{
 					target: "parked",
 					guard: "tombstoned",
@@ -244,6 +255,18 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 			// Retried on the next occasion.
 			UPLOAD_FAILED: { target: "upload.held" },
 			CLASSIFY: [
+				// An emptied directory at a deleted path: directories hold
+				// no content to protect, so the queued work is cancelled
+				// and the directory is removed like any other stale
+				// materialization. Reached when the deletion emptied the
+				// directory after this row minted (the emptied-parent
+				// review re-runs classification here).
+				{
+					target: "trashing",
+					guard: "tombstonedEmptyDirectory",
+					actions: ["emitCancelUploadWork", "emitTrashLocal"],
+					requires: ["canTrash"],
+				},
 				// A re-run saw the deletion the minting pass could not: the
 				// queued work is cancelled, but the hold's minted identity is
 				// PRESERVED with the parked file — held-but-unpublished

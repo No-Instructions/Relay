@@ -154,6 +154,11 @@ export class FolderHSM {
 	private _queue: FolderEvent[] = [];
 	private _currentEventType = "";
 	private _classifyQueue = new Set<string>();
+	// Paths this session's trash effects removed from the local tree.
+	// In-memory evidence only (the entry table is in-memory authority):
+	// a directory emptied by these removals is judged against the map
+	// tombstones of the paths that emptied it.
+	private _sessionTrashedPaths = new Set<string>();
 	private _surfaceDirty = false;
 	private _lastPersistedRevision = 0;
 	private interpreterConfig: {
@@ -284,10 +289,18 @@ export class FolderHSM {
 						// the disk; cascade echoes are suppressed host-side,
 						// so the local-tree evidence updates here.
 						this.context.localFiles.delete(event.path);
+						this._sessionTrashedPaths.add(event.path);
 						this.bump();
 					}
 					const row = this.rowAtPath(event.path);
 					if (row) this.tickRow(row, event);
+					if (event.type === "TRASH_COMPLETE") {
+						// A completed trash may have emptied its parent
+						// directory: re-run the emptied-directory decision
+						// on the parent's row now that the local-tree
+						// evidence has moved.
+						this.reviewEmptiedParent(event.path);
+					}
 				},
 				routePolicyOutcomeToRows: (_hsm, event) => {
 					if (
@@ -586,6 +599,7 @@ export class FolderHSM {
 			return; // no change — keep sweeps quiet
 		}
 		this.context.localFiles.set(path, { origin: nextOrigin, kind: nextKind });
+		this._sessionTrashedPaths.delete(path);
 		this.bump();
 	}
 
@@ -597,6 +611,7 @@ export class FolderHSM {
 			info ?? { origin: "interactive", kind: "file" },
 		);
 		this.context.recordedDeleteIntents.delete(to);
+		this._sessionTrashedPaths.delete(to);
 		this.bump();
 	}
 
@@ -606,6 +621,67 @@ export class FolderHSM {
 			if (candidate !== path && candidate.startsWith(prefix)) return true;
 		}
 		return false;
+	}
+
+	/** Any committed map entry at or under this directory path. */
+	private hasCommittedEntriesUnder(path: string): boolean {
+		const prefix = path.endsWith("/") ? path : `${path}/`;
+		return this.config
+			.listMapEntries()
+			.some(
+				(entry) => entry.path === path || entry.path.startsWith(prefix),
+			);
+	}
+
+	/**
+	 * Whether the group deleted this directory's subtree. Directories do
+	 * not always carry their own map key, so the directory's own
+	 * tombstone is only one form of the evidence; a tombstone on a child
+	 * path — one still on disk, or one this session's trash effects
+	 * removed — carries the same decision: the group deleted content at
+	 * paths under this directory.
+	 */
+	private directoryAtDeletedPath(path: string): boolean {
+		if (this.config.pathTombstoned(path)) return true;
+		const prefix = path.endsWith("/") ? path : `${path}/`;
+		for (const candidate of this.context.localFiles.keys()) {
+			if (
+				candidate !== path &&
+				candidate.startsWith(prefix) &&
+				this.config.pathTombstoned(candidate)
+			) {
+				return true;
+			}
+		}
+		for (const trashed of this._sessionTrashedPaths) {
+			if (
+				trashed.startsWith(prefix) &&
+				this.config.pathTombstoned(trashed)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * A completed trash can empty its parent directory. An emptied
+	 * directory at a deleted path holds no content to protect and is
+	 * removed like any other stale materialization — but the decision
+	 * lives in the entry ladder, so this only re-runs classification on
+	 * the parent's row; the guards decide. One level per completion: the
+	 * parent's own trash completion reviews the grandparent.
+	 */
+	private reviewEmptiedParent(childPath: string): void {
+		const cut = childPath.lastIndexOf("/");
+		if (cut <= 0) return;
+		const parent = childPath.slice(0, cut);
+		if (!this.context.localFiles.has(parent)) return;
+		const row = this.rowAtPath(parent) ?? this.seedRow(parent);
+		if (row.kind !== "folder") return;
+		if (this.hasLocalChildren(parent)) return;
+		this.scheduleClassifyRow(row);
+		this.drainScheduledClassifies();
 	}
 
 	private getMapEntry(path: string): MapEntrySummary | undefined {
@@ -1226,8 +1302,22 @@ export class FolderHSM {
 				row.kind === "folder" &&
 				this.context.localFiles.has(row.path) &&
 				!heldAt(row.path) &&
-				this.config.pathTombstoned(row.path) &&
-				!this.hasLocalChildren(row.path),
+				!this.hasLocalChildren(row.path) &&
+				this.getMapEntry(row.path) === undefined &&
+				!this.hasCommittedEntriesUnder(row.path) &&
+				this.directoryAtDeletedPath(row.path),
+			// A directory whose subtree the group deleted, while its
+			// children are still on disk: their own rows are deciding (a
+			// trash per child), so the directory waits undecided instead
+			// of minting publication work or parking. The emptied-parent
+			// review re-runs this ladder when the last child's trash
+			// completes, and the emptied-directory rung above removes it.
+			tombstonedDirectoryAwaitingChildren: (row) =>
+				row.kind === "folder" &&
+				this.context.localFiles.has(row.path) &&
+				this.hasLocalChildren(row.path) &&
+				this.getMapEntry(row.path) === undefined &&
+				this.directoryAtDeletedPath(row.path),
 			tombstoned: (row) =>
 				this.context.localFiles.has(row.path) &&
 				this.config.pathTombstoned(row.path),
