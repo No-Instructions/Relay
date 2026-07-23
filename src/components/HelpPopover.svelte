@@ -53,7 +53,7 @@
 				class="arrow"
 				class:left={position === "left"}
 				class:right={position === "right"}
-			/>
+			></div>
 			<p>{helpText}</p>
 		</div>
 	{/if}
