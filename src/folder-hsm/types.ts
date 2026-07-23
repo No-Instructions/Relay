@@ -114,6 +114,19 @@ export interface EntryRow {
 	dispatched: boolean;
 	/** Content evidence freshness; FILE_MODIFIED marks it stale. */
 	contentAgreement: ContentAgreement;
+	/**
+	 * An inbound removal (or move away from this path) observed before
+	 * the session's confidence reached confirmed. Destruction requires
+	 * confirmed confidence, but the observation is evidence bound to the
+	 * row's identity: it is retained here — never laundered into a fresh
+	 * classification that no longer knows a removal happened — and the
+	 * session's first confirmed pass completes it through the same
+	 * identity semantics, re-derived against the map of that moment (a
+	 * re-committed identity voids it instead of replaying it). In-memory
+	 * by design: the map it derives from is durable, and a reload
+	 * re-derives the same discrepancy by comparison.
+	 */
+	removalEvidence?: { guid: string };
 	/** What outbound destructive intent targeted (deletes and renames). */
 	observedIdentity?: { guid: string; path: string };
 	/** parked / conflicted surfacing. */

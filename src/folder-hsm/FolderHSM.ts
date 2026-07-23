@@ -952,14 +952,18 @@ export class FolderHSM {
 
 		// Decisions made at blind confidence are provisional: the session's
 		// first confirmed pass returns them to unclassified and revisits.
-		// Acknowledged in-flight work is adopted, never demoted.
+		// Acknowledged in-flight work is adopted, never demoted. A row
+		// carrying a deferred removal is not a provisional decision — its
+		// completion path is the evidence re-derivation below, which a
+		// demotion here would hide from.
 		if (this.context.tier === "confirmed") {
 			for (const row of Array.from(this.context.rows.values())) {
 				if (
 					row.decidedTier === "blind" &&
 					row.state !== "unclassified" &&
 					row.state !== "upload.inFlight" &&
-					row.state !== "download.inFlight"
+					row.state !== "download.inFlight" &&
+					row.removalEvidence === undefined
 				) {
 					row.state = "unclassified";
 					row.decidedTier = this.context.tier;
@@ -988,20 +992,34 @@ export class FolderHSM {
 		// the machine could not act: a synced row whose identity the map
 		// no longer holds anywhere was remotely deleted (a real decision —
 		// absence alone never deletes; the identity is the association);
-		// one whose identity lives at another path moved.
+		// one whose identity lives at another path moved. Rows carrying a
+		// deferred removal complete here too, whatever their state — the
+		// event is re-derived from the current map, so an identity
+		// re-committed in the meantime voids the evidence instead of
+		// replaying it. Evidence completion runs only at confirmed
+		// confidence; retained evidence survives a blind pass untouched.
 		for (const row of Array.from(this.context.rows.values())) {
-			if (row.state !== "synced" || row.guid === null) continue;
-			const inMap = mapByGuid.get(row.guid);
+			const evidenced =
+				row.removalEvidence !== undefined &&
+				this.context.tier === "confirmed";
+			if (!evidenced && row.state !== "synced") continue;
+			const guid = row.guid ?? row.removalEvidence?.guid ?? null;
+			if (guid === null) continue;
+			if (evidenced) {
+				row.removalEvidence = undefined;
+				this.bump();
+			}
+			const inMap = mapByGuid.get(guid);
 			if (!inMap) {
 				this.tickRow(row, {
 					type: "MAP_REMOVED",
 					path: row.path,
-					guid: row.guid,
+					guid,
 				});
 			} else if (inMap.path !== row.path) {
 				this.tickRow(row, {
 					type: "MAP_MOVED",
-					guid: row.guid,
+					guid,
 					from: row.path,
 					to: inMap.path,
 				});
@@ -1059,8 +1077,16 @@ export class FolderHSM {
 				this.tickRow(row, { type: "MAP_REMOVED", path: del.path, guid });
 			} else if (this.context.localFiles.has(del.path)) {
 				// A removal for a path the table has never decided about:
-				// the evidence ladder decides, it does not trash on arrival.
+				// seed the row and route the removal through it, so the
+				// event's identity is retained (or acted on at confirmed
+				// confidence) instead of decaying into a bare tombstone the
+				// ladder would park on.
 				const seeded = this.seedRow(del.path, guid ?? null);
+				this.tickRow(seeded, {
+					type: "MAP_REMOVED",
+					path: del.path,
+					guid,
+				});
 				this.scheduleClassifyRow(seeded);
 			}
 		}
@@ -1219,6 +1245,28 @@ export class FolderHSM {
 					guid === this.config.records.getRecordGuid(row.path)
 				);
 			},
+			// The pre-confirmation counterpart of identityMatches: the same
+			// identity association, one tier early — the removal is retained
+			// on the row instead of acted on. Held content stays exempt, and
+			// an identity another row already carries is never adopted here
+			// (one authority per identity).
+			removalDeferredForConfirmation: (row, event) => {
+				if (confirmed()) return false;
+				if (!this.context.localFiles.has(row.path)) return false;
+				if (heldAt(row.path)) return false;
+				const guid = eventGuid(event);
+				if (guid === undefined) return false;
+				if (row.guid !== null) return row.guid === guid;
+				return this.rowByGuid(guid) === undefined;
+			},
+			moveAwayDeferredForConfirmation: (row, event) => {
+				if (confirmed()) return false;
+				if (event.type !== "MAP_MOVED") return false;
+				if (heldAt(row.path)) return false;
+				return this.context.localFiles.has(event.from);
+			},
+			carriesRemovalEvidence: (row) =>
+				row.removalEvidence !== undefined,
 			committedIdentityAtPath: (row) =>
 				this.getMapEntry(row.path) !== undefined,
 			tombstonedBootstrapHold: (row) =>
@@ -1301,6 +1349,22 @@ export class FolderHSM {
 			scheduleClassify: (row) => this.scheduleClassifyRow(row),
 			recordDeleteIntent: (row) => {
 				this.context.recordedDeleteIntents.add(row.path);
+				this.bump();
+			},
+			retainRemovalEvidence: (row, event) => {
+				const guid =
+					"guid" in event && typeof event.guid === "string"
+						? event.guid
+						: undefined;
+				if (guid === undefined) return;
+				row.removalEvidence = { guid };
+				// A guid-less row adopts the identity the removal names —
+				// the same adoption the delta router performs when it seeds
+				// a removal row. The guard already refused identities other
+				// rows carry.
+				if (row.guid === null && this.rowByGuid(guid) === undefined) {
+					this.rekeyRowGuid(row, guid);
+				}
 				this.bump();
 			},
 			recordObservedIdentity: (row) => {
@@ -1626,8 +1690,14 @@ export class FolderHSM {
 		};
 		for (const row of this.context.rows.values()) {
 			if (row.state === "synced") {
+				// A deferred removal is the declared exception: the map has
+				// already dropped or moved the identity, and the row holds
+				// its place until the confirmed pass completes the removal.
 				const entry = this.getMapEntry(row.path);
-				if (!entry || (row.guid !== null && entry.guid !== row.guid)) {
+				if (
+					row.removalEvidence === undefined &&
+					(!entry || (row.guid !== null && entry.guid !== row.guid))
+				) {
 					report(
 						"synced-agrees",
 						"error",

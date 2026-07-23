@@ -46,6 +46,13 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					guard: "indexEntryAtPathWithLocalFile",
 					actions: ["adoptCommittedIdentity"],
 				},
+				// A row carrying a deferred removal is not undecided — its
+				// decision is made and waiting for confirmed confidence. No
+				// lower rung may re-interpret the file while the evidence
+				// stands: the tombstone rung would park it and the
+				// publication rungs would mint for it, both laundering a
+				// removal into something else.
+				{ target: "unclassified", guard: "carriesRemovalEvidence" },
 				{
 					target: "upload.held",
 					guard: "holdAdoptable",
@@ -97,11 +104,30 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					requires: ["canDownload"],
 				},
 			],
+			// A removal reaching a row still undecided: condemn on identity
+			// at confirmed confidence, retain as evidence before it, and
+			// absorb an identity mismatch — never trash on this event.
+			MAP_REMOVED: [
+				{
+					target: "trashing",
+					guard: "identityMatches",
+					actions: ["emitTrashLocal"],
+					requires: ["canTrash"],
+				},
+				{
+					target: "unclassified",
+					guard: "removalDeferredForConfirmation",
+					actions: ["retainRemovalEvidence"],
+				},
+				{ target: "unclassified" },
+			],
 			FILE_CREATED: {
 				target: "unclassified",
 				actions: ["upgradeOriginInteractive", "scheduleClassify"],
 			},
 			FILE_DELETED: [
+				// Deferred-removal agreement: see the synced cell.
+				{ target: "retired", guard: "carriesRemovalEvidence" },
 				{
 					target: "delete.pending",
 					guard: "indexEntryKnown",
@@ -130,6 +156,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
+				// Pre-confirmation the removal cannot act — destruction
+				// requires confirmed confidence — but it must not launder
+				// into a fresh classification that no longer knows a removal
+				// happened. The row retains it as evidence; the session's
+				// first confirmed pass completes it through the same
+				// identity semantics.
+				{
+					target: "synced",
+					guard: "removalDeferredForConfirmation",
+					actions: ["retainRemovalEvidence"],
+				},
 				// Identity mismatch: the removed entry was a different
 				// document — never trash on this event; reclassify against
 				// present truth.
@@ -142,6 +179,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitRenameLocal"],
 					requires: ["canRenameLocal"],
 				},
+				// The rename-away form of a pre-confirmation removal: the
+				// local file must follow its identity, but the local rename
+				// is destructive at the source and waits for confirmed
+				// confidence. Retained like a removal; the confirmed pass
+				// re-derives the destination from the map of that moment
+				// and completes it as a rename.
+				{
+					target: "synced",
+					guard: "moveAwayDeferredForConfirmation",
+					actions: ["retainRemovalEvidence"],
+				},
 				{
 					target: "synced",
 					guard: "destinationPresent",
@@ -153,11 +201,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					requires: ["canDownload"],
 				},
 			],
-			FILE_DELETED: {
-				target: "delete.pending",
-				actions: ["recordObservedIdentity", "emitIndexDelete"],
-				requires: ["canMutateMap"],
-			},
+			FILE_DELETED: [
+				// With a deferred removal on the row, the local delete is
+				// agreement, not new intent: both sides already decided the
+				// file's identity is gone — nothing remains to replicate.
+				{ target: "retired", guard: "carriesRemovalEvidence" },
+				{
+					target: "delete.pending",
+					actions: ["recordObservedIdentity", "emitIndexDelete"],
+					requires: ["canMutateMap"],
+				},
+			],
 			// Carries the observed identity outbound.
 			FILE_RENAMED_AWAY: {
 				target: "synced",
