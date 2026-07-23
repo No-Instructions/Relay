@@ -35,6 +35,7 @@ const watch = process.argv[2] === "watch" || process.argv.includes("--watch");
 const debug = process.argv[2] === "debug" || watch || staging || develop;
 const positionalArgs = process.argv.slice(3).filter((a) => !a.startsWith("--"));
 const out = positionalArgs[0] || ".";
+const outfile = out + "/main.js";
 const tld = staging ? "dev" : "md";
 
 const apiUrl = `https://api.system3.${tld}`;
@@ -117,6 +118,23 @@ const YjsInternalsPlugin = {
 	},
 };
 
+const SvelteTrustedTypesPlugin = {
+	name: "svelte-trusted-types",
+	setup(build) {
+		build.onLoad({ filter: /[\\/]svelte[\\/]src[\\/]internal[\\/]client[\\/]dom[\\/]reconciler\.js$/ }, async (args) => {
+			const source = await fs.promises.readFile(args.path, "utf8");
+			const callback = /createHTML: \(html\) => \{\s*return html;\s*\}/;
+			if (!callback.test(source)) {
+				throw new Error("Svelte's Trusted Types callback changed; update the realm-neutral rewrite");
+			}
+			return {
+				contents: source.replace(callback, "createHTML: String"),
+				loader: "js",
+			};
+		});
+	},
+};
+
 const context = await esbuild.context({
 	banner: {
 		js: banner,
@@ -142,8 +160,12 @@ const context = await esbuild.context({
 	],
 	format: "cjs",
 	plugins: [
+		SvelteTrustedTypesPlugin,
 		esbuildSvelte({
-			compilerOptions: { css: "injected" },
+			compilerOptions: {
+				css: "injected",
+				compatibility: { componentApi: 4 },
+			},
 			preprocess: sveltePreprocess(),
 		}),
 		YjsInternalsPlugin,
@@ -162,7 +184,7 @@ const context = await esbuild.context({
 		REPOSITORY: `"No-Instructions/Relay"`,
 	},
 	treeShaking: true,
-	outfile: out + "/main.js",
+	outfile,
 });
 
 const copyFile = (src, dest) => {
@@ -171,6 +193,14 @@ const copyFile = (src, dest) => {
 	}
 	fs.copyFileSync(src, dest);
 	console.log(`Copied ${src} to ${dest}`);
+};
+
+const assertRealmNeutralSveltePolicy = () => {
+	const bundle = fs.readFileSync(outfile, "utf8");
+	const realmNeutralPolicy = /createPolicy\(["']svelte-trusted-html["'],\s*\{[\s\S]{0,100}createHTML:\s*String\s*\}/;
+	if (!realmNeutralPolicy.test(bundle)) {
+		throw new Error("Built bundle does not use the realm-neutral Svelte Trusted Types callback");
+	}
 };
 
 const watchAndMove = (fnames, mapping) => {
@@ -220,6 +250,7 @@ if (watch) {
 	watchAndMove(files, mapping);
 } else {
 	await context.rebuild();
+	assertRealmNeutralSveltePolicy();
 	move(files, mapping);
 	if (!develop && out !== ".") {
 		updateManifest();
