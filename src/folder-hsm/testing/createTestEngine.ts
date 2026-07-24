@@ -31,8 +31,8 @@ export interface TestSubstrate {
 	tombstones: Set<string>;
 	/** The local tree: what is actually on disk. */
 	localTree: Set<string>;
-	/** Persisted device-local records: path → identity + agreement flag. */
-	records: Map<string, { guid: string; matchesDisk: boolean }>;
+	/** Persisted device-local records: path → identity. */
+	records: Map<string, { guid: string }>;
 	/** Persisted upload holds: path → minted identity. */
 	holds: Map<string, string>;
 	/** The live replica's trust probe result. */
@@ -74,6 +74,15 @@ export interface TestEngine {
 	): Array<Extract<FolderEffect, { type: T }>>;
 	entryFor(path: string): MembershipEntry | undefined;
 	rowState(path: string): string | undefined;
+	/**
+	 * The guard that decided the row's current state — WHICH rung of the
+	 * evidence ladder owns the path. Two rungs can target the same state
+	 * through actions that no-op on the same input, and are then
+	 * indistinguishable by outcome; asserting the rung is what pins the
+	 * partition between them, rather than the coincidence that they happen
+	 * to look alike today.
+	 */
+	decidedBy(path: string): string | undefined;
 	/** Substrate mutations that also deliver the matching delta. */
 	remoteAdd(path: string, guid: string, type?: string): void;
 	remoteRemove(path: string): void;
@@ -134,8 +143,6 @@ function attachEngine(
 		pathTombstoned: (path: string) => substrate.tombstones.has(path),
 		records: {
 			getRecordGuid: (path: string) => substrate.records.get(path)?.guid,
-			recordMatchesDisk: (path: string) =>
-				substrate.records.get(path)?.matchesDisk ?? false,
 			retireRecord: (path: string) => {
 				substrate.records.delete(path);
 			},
@@ -232,6 +239,10 @@ function attachEngine(
 		entryFor: (path: string) =>
 			engine.getSnapshot().entries.find((entry) => entry.path === path),
 		rowState: (path: string) => engine.getRowState(path),
+		decidedBy: (path: string) =>
+			engine
+				.getSerializableSnapshot()
+				.rows.find((row) => row.path === path)?.decidedBy,
 		remoteAdd: (path, guid, type) => {
 			substrate.index.set(path, { guid, type });
 			substrate.tombstones.delete(path);

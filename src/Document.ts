@@ -1021,6 +1021,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!hsm) return;
 		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
+		// Membership before content: fork reconciliation pushes local ops,
+		// so it waits for the folder's first confirmed membership
+		// settlement of the session. Returning is safe — the idle-document
+		// polls re-drive this connect, and the folder handshake that
+		// settles membership re-drives forked documents itself.
+		if (!this.sharedFolder.membershipSettled) return;
 
 		// A fresh remoteDoc is built only for a fork that has no integration
 		// yet; an existing integration keeps its remoteDoc and any handshake it
