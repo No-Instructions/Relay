@@ -370,6 +370,25 @@ export class SharedFolder extends HasProvider {
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
+	/**
+	 * Whether a folder is its own membership authority. Explicitly
+	 * requested authority (sharing a local folder) always holds; a clone
+	 * defers to the server it was cloned from. Beyond the explicit cases,
+	 * a folder with no relay is its own authority: there is no server
+	 * picture its local tree could understate, and no handshake will ever
+	 * arrive to confirm one. Persisted folder settings carry no authority
+	 * field, so every (re)construction DERIVES it — a reloaded local-only
+	 * folder must hydrate exactly like the session that shared it, or its
+	 * publication verdicts wait forever for a confirmation that cannot
+	 * come.
+	 */
+	static deriveAuthority(
+		requested: boolean | undefined,
+		relayId: string | undefined,
+	): boolean {
+		return requested === true || relayId === undefined;
+	}
+
 	constructor(
 		public appId: string,
 		guid: string,
@@ -386,7 +405,7 @@ export class SharedFolder extends HasProvider {
 		private _hsmStore: HSMStore,
 		timeProvider: TimeProvider,
 		relayId?: string,
-		authoritative: boolean = false,
+		authoritative?: boolean,
 		remote?: RemoteSharedFolder,
 		options: SharedFolderOptions = {},
 	) {
@@ -430,7 +449,10 @@ export class SharedFolder extends HasProvider {
 			this.persistRemoteActivity();
 		}
 
-		this.authoritative = authoritative;
+		this.authoritative = SharedFolder.deriveAuthority(
+			authoritative,
+			folderRelayId,
+		);
 
 		this.syncSettingsManager = this._settings.getChild<
 			Record<keyof SyncFlags, boolean>,
@@ -912,19 +934,21 @@ export class SharedFolder extends HasProvider {
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
 				.then(() => {
-					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
+					// Backfills are download-side and flow immediately.
+					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
 						this,
 						advertisedGuids,
 					);
-					const queuedLCABackfill = this.backgroundSync.enqueueAdvertisedLCABackfills(
+					if (queuedLCABackfill > 0) {
+						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
+					}
+					if (this.destroyed) return;
+					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
 						this,
 						advertisedGuids,
 					);
 					if (queuedRemoteHead > 0) {
 						this.debug(`[subdoc-index] queued ${queuedRemoteHead} remote-head syncs`);
-					}
-					if (queuedLCABackfill > 0) {
-						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
 					}
 				})
 				.catch((e) => this.error("subdoc index sync sweep failed", e));
@@ -1167,6 +1191,7 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		update: Uint8Array,
 	): Promise<void> {
+		if (this.destroyed) return;
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) {
 			this.warn(
@@ -1577,6 +1602,7 @@ export class SharedFolder extends HasProvider {
 			if (this.destroyed) return;
 			this.addLocalDocs();
 			await this.syncFileTree();
+			if (this.destroyed) return;
 			this.backgroundSync.enqueueSharedFolderSync(this);
 		} catch (error) {
 			if (isDestroyedError(error)) return;
@@ -4153,6 +4179,7 @@ export class SharedFolder extends HasProvider {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
 			if (!awaitingUpdates) {
+				if (this.destroyed) return;
 				// The entry row is the per-file authority: a preserved hold
 				// on a row the machine parked or condemned is identity
 				// safekeeping, not publication intent — neither content nor
