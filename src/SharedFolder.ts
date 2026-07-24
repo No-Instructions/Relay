@@ -334,17 +334,17 @@ export class SharedFolder extends HasProvider {
 	 * work would only be picked up by the download sweep, which the default
 	 * configuration does not run.
 	 */
-	private _downloadsDeferredByRemap: Set<string> = new Set();
+	private _downloadsDeferredByRemap!: Set<string>;
 	/**
 	 * Reconciliations that stood aside for one already running on their path,
 	 * keyed by path. The running one re-drives them when it finishes, for the
 	 * same reason downloads get re-driven: nothing else re-detects the newer
 	 * identity until the next sweep.
 	 */
-	private _remapsDeferredByRemap: Map<
+	private _remapsDeferredByRemap!: Map<
 		string,
 		{ path: string; fromGuid: string; toGuid: string }
-	> = new Map();
+	>;
 	/**
 	 * Paths whose download stood down because the document is carrying work of
 	 * its own, keyed by path. Standing down is only cheap when there is a way
@@ -357,10 +357,10 @@ export class SharedFolder extends HasProvider {
 	 * the download is re-driven the moment that machine's answer changes — on
 	 * the state the refusal was actually made from, not on a timer.
 	 */
-	private _downloadsDeferredByState: Map<
+	private _downloadsDeferredByState!: Map<
 		string,
 		{ guid: string; hsm: MergeHSM; unsubscribe: () => void }
-	> = new Map();
+	>;
 	private _pendingDownloads: Set<string> = new Set();
 	private _pendingDownloadPromises: Map<string, Promise<Document | undefined>> =
 		new Map();
@@ -445,6 +445,9 @@ export class SharedFolder extends HasProvider {
 			: new S3Folder(guid);
 
 		super(guid, s3rn, tokenStore, loginManager);
+		// First: before anything wired up below can defer work into these,
+		// and before any teardown can be asked to drain them.
+		this.initializeDeferralRegistries();
 		this.timeProvider = timeProvider;
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
@@ -4701,6 +4704,22 @@ export class SharedFolder extends HasProvider {
 					`and the file is still missing`,
 			);
 		}
+	}
+
+	/**
+	 * Stand up the three registries of work that stood aside and is owed a
+	 * re-drive. Teardown walks the last of them to release the subscriptions
+	 * it holds, so it has to exist for the whole life of the folder, from
+	 * before anything can defer until after destroy() has drained it.
+	 *
+	 * It lives in one method, like the membership latch, so that anything
+	 * standing in for the constructor delegates here instead of restating
+	 * which registries there are and drifting the next time one is added.
+	 */
+	private initializeDeferralRegistries(): void {
+		this._downloadsDeferredByRemap = new Set();
+		this._remapsDeferredByRemap = new Map();
+		this._downloadsDeferredByState = new Map();
 	}
 
 	/** Drop the wait on one path, without re-driving anything. */
