@@ -857,6 +857,40 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
+	/**
+	 * Write contents the engine produced — a download's first materialisation
+	 * of the file, for instance — through the same path every other engine
+	 * write takes.
+	 *
+	 * The distinction matters beyond bookkeeping. A write that does not record
+	 * its own identity comes back through the vault as an ordinary file change
+	 * and is ingested into the CRDT as if a person had typed it, so a write
+	 * that only replaced bytes on disk ends up replacing the local copy of the
+	 * document as well. Going through here records the identity, and the
+	 * observation is recognised as ours.
+	 *
+	 * The write joins the document's write queue and its content is hashed
+	 * before it lands, so the caller's decision to write is separated from the
+	 * write by an unbounded wait — long enough for the document to start
+	 * carrying work of its own. The question is therefore asked again inside
+	 * the queued write, immediately before the bytes go out.
+	 *
+	 * Which means the caller's decision to write and what actually happened
+	 * are two different facts, and only this method knows the second one.
+	 * Resolves false when the queued write stood down, so a caller cannot book
+	 * a write that never landed as done.
+	 */
+	async writeEngineContents(contents: string): Promise<boolean> {
+		let wrote = false;
+		await this.enqueueDiskWrite(async () => {
+			wrote = await this.writeDiskContents(contents, {
+				createIfMissing: true,
+				onlyWhileAcceptingRemoteEnrollment: true,
+			});
+		});
+		return wrote;
+	}
+
 	private async handleWriteDisk(
 		contents: string,
 		mtime?: number,
@@ -923,6 +957,14 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		options: {
 			createIfMissing: boolean;
 			excludeWhileActive?: boolean;
+			/**
+			 * Re-ask the merge machine, immediately before the bytes go out,
+			 * whether the document still accepts a copy from elsewhere. For
+			 * writes that carry someone else's content: everything ahead of
+			 * this point — the write queue, the hash — takes long enough for
+			 * the document to start carrying work of its own.
+			 */
+			onlyWhileAcceptingRemoteEnrollment?: boolean;
 			mtime?: number;
 		},
 	): Promise<boolean> {
@@ -947,6 +989,18 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 		let tfile = this.tfile;
 		if (!tfile && !options.createIfMissing) {
+			return false;
+		}
+		// Last thing before the write. From here to vault.modify nothing
+		// suspends, so a document that says no here cannot be written over.
+		if (
+			options.onlyWhileAcceptingRemoteEnrollment &&
+			!this._hsm?.acceptsRemoteEnrollment
+		) {
+			this.warn(
+				"[writeDiskContents] Skipping write: the document no longer accepts a remote copy",
+				this.path,
+			);
 			return false;
 		}
 
