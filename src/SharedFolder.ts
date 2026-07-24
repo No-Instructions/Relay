@@ -962,8 +962,12 @@ export class SharedFolder extends HasProvider {
 		metrics.recordDocumentUpdateEvent("received", this.guid);
 
 		if (!this.files.has(guid)) {
-			this.retryDeferredDownloadForGuid(guid);
+			// Remap first: when a competing local identity exists at this path,
+			// this claims _pendingRemaps synchronously, so the download retry
+			// below observes the claim and defers instead of racing it for the
+			// same guid/path.
 			this.retryDeferredRemapForGuid(guid);
+			this.retryDeferredDownloadForGuid(guid);
 			return;
 		}
 
@@ -1097,6 +1101,12 @@ export class SharedFolder extends HasProvider {
 		this.clearServerEmpty(guid);
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingDownloads.has(path)) return;
+
+		// A remap is already reconciling this identity (see
+		// retryDeferredRemapForGuid and executeRemap's other callers) — let it
+		// own the resolution instead of racing a plain download against it for
+		// the same guid/path.
+		if (this._pendingRemaps.has(path)) return;
 
 		const committedMeta = this.syncStore.getCommittedMeta(path);
 		if (!isDocumentMeta(committedMeta) || committedMeta.id !== guid) {
@@ -4107,6 +4117,17 @@ export class SharedFolder extends HasProvider {
 		if (!updateBytes) {
 			this.recordServerEmpty(guid);
 			this.log(`[${vpath}] download deferred: server has guid but no content yet`);
+			return undefined;
+		}
+
+		// A remap claimed this path while the fetch above was in flight (see
+		// retryDeferredRemapForGuid/executeRemap) — it owns reconciling this
+		// identity now. Stop here instead of enrolling and flushing content
+		// that the remap may already have superseded.
+		if (this._pendingRemaps.has(vpath)) {
+			this.log(
+				`[${vpath}] download deferred: a remap is resolving this identity`,
+			);
 			return undefined;
 		}
 
