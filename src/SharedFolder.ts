@@ -912,6 +912,7 @@ export class SharedFolder extends HasProvider {
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
 				.then(() => {
+					if (this.destroyed) return;
 					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
 						this,
 						advertisedGuids,
@@ -1167,6 +1168,7 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		update: Uint8Array,
 	): Promise<void> {
+		if (this.destroyed) return;
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) {
 			this.warn(
@@ -1577,6 +1579,7 @@ export class SharedFolder extends HasProvider {
 			if (this.destroyed) return;
 			this.addLocalDocs();
 			await this.syncFileTree();
+			if (this.destroyed) return;
 			this.backgroundSync.enqueueSharedFolderSync(this);
 		} catch (error) {
 			if (isDestroyedError(error)) return;
@@ -4153,6 +4156,7 @@ export class SharedFolder extends HasProvider {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
 			if (!awaitingUpdates) {
+				if (this.destroyed) return;
 				// The entry row is the per-file authority: a preserved hold
 				// on a row the machine parked or condemned is identity
 				// safekeeping, not publication intent — neither content nor
