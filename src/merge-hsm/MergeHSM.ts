@@ -868,6 +868,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const savedEffects = this._pendingEffects;
 		if (captureEffects) this._pendingEffects = [];
 		this.handleEvent(event);
+		this.retireDeferredConflictWhenReconciled();
 		if (!this._activeInvoke) {
 			this.assertMachineResources(`after ${event.type}`);
 		}
@@ -1046,6 +1047,98 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const { hasConflict, regions } = computeConflict(base, ours, theirs);
 		if (!hasConflict) return null;
 		return new Conflict({ base, ours, theirs, regions }).toData();
+	}
+
+	/**
+	 * Whether the server's copy of this document may be taken as its starting
+	 * point: enrolled as its common ancestor, and written over its file.
+	 *
+	 * Stated as a whitelist, deliberately. Asking instead which states are
+	 * dangerous gets two things wrong: it waves through every state the
+	 * machine gains later, and — the reason this is written the way it is —
+	 * it waves through the states the machine passes through while it is
+	 * still working on a divergence. A recompute out of a parked conflict
+	 * clears the conflict record on the way, and can come to rest carrying
+	 * only the fork. At that point neither the state name nor the conflict
+	 * record says that the device's own writing is the only unreconciled
+	 * copy of the note, and it still is.
+	 *
+	 * Exactly two shapes qualify:
+	 *
+	 * - A document with no history of its own: still loading, or still being
+	 *   classified, with no ancestor recorded. That is what a genuine first
+	 *   download meets. Once an ancestor is recorded the machine has history
+	 *   it has not finished comparing against the file, so the answer is no
+	 *   until it has.
+	 * - A document the machine has settled with nothing outstanding on this
+	 *   device: `idle.synced`, or `idle.remoteAhead` where the server is
+	 *   ahead but neither the file nor the local copy has moved since the
+	 *   ancestor. This is also the shape a completed enrollment produces, so
+	 *   the last check before an ordinary download's write still passes.
+	 *
+	 * Everything else is refused, including a destroyed or unloading machine,
+	 * and anything with the file open for editing.
+	 *
+	 * Answered from machine state alone: no document, disk, or remote text is
+	 * read or compared. That makes it safe as a precondition for operations
+	 * that destroy what is on disk.
+	 */
+	get acceptsRemoteEnrollment(): boolean {
+		// Records of work that exists only on this device. Taking the server's
+		// copy as the ancestor and writing it over the file discards every one
+		// of them and leaves nothing behind saying they were ever there.
+		if (this._conflict !== null) return false;
+		if (this._fork !== null) return false;
+		if (this._deferredConflict !== undefined) return false;
+		if (this.pendingDiskContents !== null) return false;
+
+		switch (this._statePath) {
+			case "unloaded":
+			case "loading":
+			case "idle.loading":
+				return this._lca === null;
+			case "idle.synced":
+			case "idle.remoteAhead":
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	/**
+	 * Retire the record that a difference was outstanding when the user walked
+	 * away from it.
+	 *
+	 * That record is written when a note carrying a conflict is closed or the
+	 * app quits with one open, and it survives restarts by design — it is the
+	 * only durable evidence that the divergence happened. Nothing ever retired
+	 * it, which was harmless while nothing read it. Now that it refuses the
+	 * server's copy, never retiring it means a note that has long since been
+	 * reconciled goes on refusing a fresh copy for the rest of its life, while
+	 * reading as fully synced.
+	 *
+	 * Once the machine has settled against an ancestor with nothing outstanding
+	 * on this device — no conflict, no unpublished fork, no disk contents still
+	 * to be reconciled — the difference the record describes demonstrably no
+	 * longer exists, so the record is retired and the note can take a copy from
+	 * the server again. Decided from machine state alone: no content is read or
+	 * compared.
+	 */
+	private retireDeferredConflictWhenReconciled(): void {
+		if (this._deferredConflict === undefined) return;
+		if (this._statePath !== "idle.synced") return;
+		if (this._conflict !== null) return;
+		if (this._fork !== null) return;
+		if (this.pendingDiskContents !== null) return;
+		// Without an ancestor nothing has been reconciled against anything, so
+		// a settled-looking state is not evidence.
+		if (this._lca === null) return;
+
+		this._deferredConflict = undefined;
+		this.hsmDebug(
+			`deferred conflict retired: the note reconciled | guid=${this._guid}`,
+		);
+		this.emitPersistState();
 	}
 
 	getConflictInfoSnapshot(): ConflictInfoSnapshot {
@@ -1983,6 +2076,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (this._lca) return true;
 		await this.ensurePersistence();
 		if (this._lca) return true;
+		// Re-asked after the await: work that arrived while persistence was
+		// loading must not be settled by an enrollment that started before it.
+		// Completing here would take the ancestor from the server and leave
+		// whatever this device had outstanding with nothing recording it.
+		if (!this.acceptsRemoteEnrollment) {
+			this.hsmWarn(
+				`initial remote enrollment refused: the document is not in a state that accepts one | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return false;
+		}
 		if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
 
 		const localText = this.localDoc.getText("contents").toString();
@@ -5394,6 +5498,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this._fork = null;
 		this._ingestionTexts = [];
 		this._conflict = null;
+		// The user just settled this difference by hand. Any record that it was
+		// left outstanding at some earlier point is describing something that
+		// no longer exists, and leaving it behind refuses the note a fresh copy
+		// from the server for good.
+		this._deferredConflict = undefined;
 		this.clearPendingDiskContents();
 		this.pendingEditorContent = null;
 		return resolvedText;
