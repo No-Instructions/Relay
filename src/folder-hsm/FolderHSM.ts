@@ -154,6 +154,11 @@ export class FolderHSM {
 	private _queue: FolderEvent[] = [];
 	private _currentEventType = "";
 	private _classifyQueue = new Set<string>();
+	// Paths this session's trash effects removed from the local tree.
+	// In-memory evidence only (the entry table is in-memory authority):
+	// a directory emptied by these removals is judged against the map
+	// tombstones of the paths that emptied it.
+	private _sessionTrashedPaths = new Set<string>();
 	private _surfaceDirty = false;
 	private _lastPersistedRevision = 0;
 	private interpreterConfig: {
@@ -284,10 +289,18 @@ export class FolderHSM {
 						// the disk; cascade echoes are suppressed host-side,
 						// so the local-tree evidence updates here.
 						this.context.localFiles.delete(event.path);
+						this._sessionTrashedPaths.add(event.path);
 						this.bump();
 					}
 					const row = this.rowAtPath(event.path);
 					if (row) this.tickRow(row, event);
+					if (event.type === "TRASH_COMPLETE") {
+						// A completed trash may have emptied its parent
+						// directory: re-run the emptied-directory decision
+						// on the parent's row now that the local-tree
+						// evidence has moved.
+						this.reviewEmptiedParent(event.path);
+					}
 				},
 				routePolicyOutcomeToRows: (_hsm, event) => {
 					if (
@@ -586,6 +599,7 @@ export class FolderHSM {
 			return; // no change — keep sweeps quiet
 		}
 		this.context.localFiles.set(path, { origin: nextOrigin, kind: nextKind });
+		this._sessionTrashedPaths.delete(path);
 		this.bump();
 	}
 
@@ -597,6 +611,7 @@ export class FolderHSM {
 			info ?? { origin: "interactive", kind: "file" },
 		);
 		this.context.recordedDeleteIntents.delete(to);
+		this._sessionTrashedPaths.delete(to);
 		this.bump();
 	}
 
@@ -606,6 +621,67 @@ export class FolderHSM {
 			if (candidate !== path && candidate.startsWith(prefix)) return true;
 		}
 		return false;
+	}
+
+	/** Any committed map entry at or under this directory path. */
+	private hasCommittedEntriesUnder(path: string): boolean {
+		const prefix = path.endsWith("/") ? path : `${path}/`;
+		return this.config
+			.listMapEntries()
+			.some(
+				(entry) => entry.path === path || entry.path.startsWith(prefix),
+			);
+	}
+
+	/**
+	 * Whether the group deleted this directory's subtree. Directories do
+	 * not always carry their own map key, so the directory's own
+	 * tombstone is only one form of the evidence; a tombstone on a child
+	 * path — one still on disk, or one this session's trash effects
+	 * removed — carries the same decision: the group deleted content at
+	 * paths under this directory.
+	 */
+	private directoryAtDeletedPath(path: string): boolean {
+		if (this.config.pathTombstoned(path)) return true;
+		const prefix = path.endsWith("/") ? path : `${path}/`;
+		for (const candidate of this.context.localFiles.keys()) {
+			if (
+				candidate !== path &&
+				candidate.startsWith(prefix) &&
+				this.config.pathTombstoned(candidate)
+			) {
+				return true;
+			}
+		}
+		for (const trashed of this._sessionTrashedPaths) {
+			if (
+				trashed.startsWith(prefix) &&
+				this.config.pathTombstoned(trashed)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * A completed trash can empty its parent directory. An emptied
+	 * directory at a deleted path holds no content to protect and is
+	 * removed like any other stale materialization — but the decision
+	 * lives in the entry ladder, so this only re-runs classification on
+	 * the parent's row; the guards decide. One level per completion: the
+	 * parent's own trash completion reviews the grandparent.
+	 */
+	private reviewEmptiedParent(childPath: string): void {
+		const cut = childPath.lastIndexOf("/");
+		if (cut <= 0) return;
+		const parent = childPath.slice(0, cut);
+		if (!this.context.localFiles.has(parent)) return;
+		const row = this.rowAtPath(parent) ?? this.seedRow(parent);
+		if (row.kind !== "folder") return;
+		if (this.hasLocalChildren(parent)) return;
+		this.scheduleClassifyRow(row);
+		this.drainScheduledClassifies();
 	}
 
 	private getMapEntry(path: string): MapEntrySummary | undefined {
@@ -952,14 +1028,18 @@ export class FolderHSM {
 
 		// Decisions made at blind confidence are provisional: the session's
 		// first confirmed pass returns them to unclassified and revisits.
-		// Acknowledged in-flight work is adopted, never demoted.
+		// Acknowledged in-flight work is adopted, never demoted. A row
+		// carrying a deferred removal is not a provisional decision — its
+		// completion path is the evidence re-derivation below, which a
+		// demotion here would hide from.
 		if (this.context.tier === "confirmed") {
 			for (const row of Array.from(this.context.rows.values())) {
 				if (
 					row.decidedTier === "blind" &&
 					row.state !== "unclassified" &&
 					row.state !== "upload.inFlight" &&
-					row.state !== "download.inFlight"
+					row.state !== "download.inFlight" &&
+					row.removalEvidence === undefined
 				) {
 					row.state = "unclassified";
 					row.decidedTier = this.context.tier;
@@ -988,20 +1068,34 @@ export class FolderHSM {
 		// the machine could not act: a synced row whose identity the map
 		// no longer holds anywhere was remotely deleted (a real decision —
 		// absence alone never deletes; the identity is the association);
-		// one whose identity lives at another path moved.
+		// one whose identity lives at another path moved. Rows carrying a
+		// deferred removal complete here too, whatever their state — the
+		// event is re-derived from the current map, so an identity
+		// re-committed in the meantime voids the evidence instead of
+		// replaying it. Evidence completion runs only at confirmed
+		// confidence; retained evidence survives a blind pass untouched.
 		for (const row of Array.from(this.context.rows.values())) {
-			if (row.state !== "synced" || row.guid === null) continue;
-			const inMap = mapByGuid.get(row.guid);
+			const evidenced =
+				row.removalEvidence !== undefined &&
+				this.context.tier === "confirmed";
+			if (!evidenced && row.state !== "synced") continue;
+			const guid = row.guid ?? row.removalEvidence?.guid ?? null;
+			if (guid === null) continue;
+			if (evidenced) {
+				row.removalEvidence = undefined;
+				this.bump();
+			}
+			const inMap = mapByGuid.get(guid);
 			if (!inMap) {
 				this.tickRow(row, {
 					type: "MAP_REMOVED",
 					path: row.path,
-					guid: row.guid,
+					guid,
 				});
 			} else if (inMap.path !== row.path) {
 				this.tickRow(row, {
 					type: "MAP_MOVED",
-					guid: row.guid,
+					guid,
 					from: row.path,
 					to: inMap.path,
 				});
@@ -1059,8 +1153,16 @@ export class FolderHSM {
 				this.tickRow(row, { type: "MAP_REMOVED", path: del.path, guid });
 			} else if (this.context.localFiles.has(del.path)) {
 				// A removal for a path the table has never decided about:
-				// the evidence ladder decides, it does not trash on arrival.
+				// seed the row and route the removal through it, so the
+				// event's identity is retained (or acted on at confirmed
+				// confidence) instead of decaying into a bare tombstone the
+				// ladder would park on.
 				const seeded = this.seedRow(del.path, guid ?? null);
+				this.tickRow(seeded, {
+					type: "MAP_REMOVED",
+					path: del.path,
+					guid,
+				});
 				this.scheduleClassifyRow(seeded);
 			}
 		}
@@ -1186,22 +1288,36 @@ export class FolderHSM {
 				if (heldAt(row.path)) return false;
 				const recordGuid = this.config.records.getRecordGuid(row.path);
 				if (recordGuid === undefined) return false;
-				const anywhere = this.config
+				// Identity decides: a recorded identity that has left the
+				// committed map condemns the file it describes, regardless
+				// of edits since — the trash keeps the bytes recoverable.
+				// Records retire with observed deletions, so a genuinely
+				// new file at a reused path carries no record.
+				return !this.config
 					.listMapEntries()
 					.some((entry) => entry.guid === recordGuid);
-				if (anywhere) return false;
-				// Content agreement is part of the guard, never optional: a
-				// record can outlive the file it described, and a new file
-				// at an old path is a different file.
-				return this.config.records.recordMatchesDisk(row.path);
 			},
 			tombstonedEmptyDirectory: (row) =>
 				confirmed() &&
 				row.kind === "folder" &&
 				this.context.localFiles.has(row.path) &&
 				!heldAt(row.path) &&
-				this.config.pathTombstoned(row.path) &&
-				!this.hasLocalChildren(row.path),
+				!this.hasLocalChildren(row.path) &&
+				this.getMapEntry(row.path) === undefined &&
+				!this.hasCommittedEntriesUnder(row.path) &&
+				this.directoryAtDeletedPath(row.path),
+			// A directory whose subtree the group deleted, while its
+			// children are still on disk: their own rows are deciding (a
+			// trash per child), so the directory waits undecided instead
+			// of minting publication work or parking. The emptied-parent
+			// review re-runs this ladder when the last child's trash
+			// completes, and the emptied-directory rung above removes it.
+			tombstonedDirectoryAwaitingChildren: (row) =>
+				row.kind === "folder" &&
+				this.context.localFiles.has(row.path) &&
+				this.hasLocalChildren(row.path) &&
+				this.getMapEntry(row.path) === undefined &&
+				this.directoryAtDeletedPath(row.path),
 			tombstoned: (row) =>
 				this.context.localFiles.has(row.path) &&
 				this.config.pathTombstoned(row.path),
@@ -1209,17 +1325,6 @@ export class FolderHSM {
 			recordedDeleteIntent: (row) =>
 				this.context.recordedDeleteIntents.has(row.path),
 			indexEntryKnown: (row) => this.getMapEntry(row.path) !== undefined,
-			identityMatchesAndContentAgrees: (row, event) => {
-				if (!confirmed()) return false;
-				if (heldAt(row.path)) return false;
-				const guid = eventGuid(event);
-				if (guid === undefined) return false;
-				const matches =
-					guid === row.guid ||
-					guid === this.config.records.getRecordGuid(row.path);
-				if (!matches) return false;
-				return this.config.records.recordMatchesDisk(row.path);
-			},
 			identityMatches: (row, event) => {
 				if (!confirmed()) return false;
 				if (heldAt(row.path)) return false;
@@ -1230,6 +1335,28 @@ export class FolderHSM {
 					guid === this.config.records.getRecordGuid(row.path)
 				);
 			},
+			// The pre-confirmation counterpart of identityMatches: the same
+			// identity association, one tier early — the removal is retained
+			// on the row instead of acted on. Held content stays exempt, and
+			// an identity another row already carries is never adopted here
+			// (one authority per identity).
+			removalDeferredForConfirmation: (row, event) => {
+				if (confirmed()) return false;
+				if (!this.context.localFiles.has(row.path)) return false;
+				if (heldAt(row.path)) return false;
+				const guid = eventGuid(event);
+				if (guid === undefined) return false;
+				if (row.guid !== null) return row.guid === guid;
+				return this.rowByGuid(guid) === undefined;
+			},
+			moveAwayDeferredForConfirmation: (row, event) => {
+				if (confirmed()) return false;
+				if (event.type !== "MAP_MOVED") return false;
+				if (heldAt(row.path)) return false;
+				return this.context.localFiles.has(event.from);
+			},
+			carriesRemovalEvidence: (row) =>
+				row.removalEvidence !== undefined,
 			committedIdentityAtPath: (row) =>
 				this.getMapEntry(row.path) !== undefined,
 			tombstonedBootstrapHold: (row) =>
@@ -1312,6 +1439,22 @@ export class FolderHSM {
 			scheduleClassify: (row) => this.scheduleClassifyRow(row),
 			recordDeleteIntent: (row) => {
 				this.context.recordedDeleteIntents.add(row.path);
+				this.bump();
+			},
+			retainRemovalEvidence: (row, event) => {
+				const guid =
+					"guid" in event && typeof event.guid === "string"
+						? event.guid
+						: undefined;
+				if (guid === undefined) return;
+				row.removalEvidence = { guid };
+				// A guid-less row adopts the identity the removal names —
+				// the same adoption the delta router performs when it seeds
+				// a removal row. The guard already refused identities other
+				// rows carry.
+				if (row.guid === null && this.rowByGuid(guid) === undefined) {
+					this.rekeyRowGuid(row, guid);
+				}
 				this.bump();
 			},
 			recordObservedIdentity: (row) => {
@@ -1531,6 +1674,32 @@ export class FolderHSM {
 					releaseHold: true,
 				});
 			},
+			retractSupersededMintAndRebind: (row) => {
+				// A committed identity is adopting this row while its own
+				// mint is unpublished (held or in flight). The mint is
+				// superseded — but the row lands directly in `synced`, with
+				// no download queued, so a bare retraction would tear the
+				// mint down and leave the path with no live document at all.
+				// The retraction therefore names the committed identity as
+				// the rebind target: the host rebuilds the path's document
+				// on the committed history with the bytes on disk as the
+				// merge base. When the committed identity IS the row's own
+				// mint (our map write replicated back to us), nothing was
+				// superseded and nothing retracts — a retraction here would
+				// cancel the very upload the committed entry references.
+				const committed = this.getMapEntry(row.path)?.guid;
+				const minted =
+					this.config.holds.getHold(row.path) ?? row.guid ?? null;
+				if (minted === null || committed === undefined) return;
+				if (minted === committed) return;
+				this.emit({
+					type: "RETRACT_UPLOAD",
+					path: row.path,
+					guid: minted,
+					releaseHold: true,
+					supersededBy: committed,
+				});
+			},
 			cancelWork: (row) => {
 				// The identity this download served was removed; the host
 				// cancels via the retraction contract for downloads too.
@@ -1611,8 +1780,14 @@ export class FolderHSM {
 		};
 		for (const row of this.context.rows.values()) {
 			if (row.state === "synced") {
+				// A deferred removal is the declared exception: the map has
+				// already dropped or moved the identity, and the row holds
+				// its place until the confirmed pass completes the removal.
 				const entry = this.getMapEntry(row.path);
-				if (!entry || (row.guid !== null && entry.guid !== row.guid)) {
+				if (
+					row.removalEvidence === undefined &&
+					(!entry || (row.guid !== null && entry.guid !== row.guid))
+				) {
 					report(
 						"synced-agrees",
 						"error",

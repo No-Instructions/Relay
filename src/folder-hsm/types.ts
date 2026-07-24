@@ -114,6 +114,19 @@ export interface EntryRow {
 	dispatched: boolean;
 	/** Content evidence freshness; FILE_MODIFIED marks it stale. */
 	contentAgreement: ContentAgreement;
+	/**
+	 * An inbound removal (or move away from this path) observed before
+	 * the session's confidence reached confirmed. Destruction requires
+	 * confirmed confidence, but the observation is evidence bound to the
+	 * row's identity: it is retained here — never laundered into a fresh
+	 * classification that no longer knows a removal happened — and the
+	 * session's first confirmed pass completes it through the same
+	 * identity semantics, re-derived against the map of that moment (a
+	 * re-committed identity voids it instead of replaying it). In-memory
+	 * by design: the map it derives from is durable, and a reload
+	 * re-derives the same discrepancy by comparison.
+	 */
+	removalEvidence?: { guid: string };
 	/** What outbound destructive intent targeted (deletes and renames). */
 	observedIdentity?: { guid: string; path: string };
 	/** parked / conflicted surfacing. */
@@ -297,12 +310,20 @@ export type FolderEffect =
 	 * marks content the server does not have, and that identity is never
 	 * discarded without a completed publication or an explicit user
 	 * action.
+	 *
+	 * `supersededBy` names the committed identity when one superseded the
+	 * mint AND the row is adopting it directly (no download queued): the
+	 * retraction is then also a rebind instruction — the host rebuilds
+	 * the path's live document on the committed history, seeding the
+	 * merge base from the bytes on disk, because a bare retraction would
+	 * leave the path with no canonical document at all.
 	 */
 	| {
 			type: "RETRACT_UPLOAD";
 			path: string;
 			guid: string | null;
 			releaseHold: boolean;
+			supersededBy?: string;
 	}
 	| { type: "PARK"; path: string; reason: string }
 	| { type: "SURFACE_STATUS" }
@@ -354,16 +375,15 @@ export interface FolderSerializableSnapshot {
 
 /**
  * Device-local records: durable proof that some file at a path once
- * synced under a guid, plus the content evidence that ties the recorded
- * identity to the bytes now on disk. All lookups must be synchronous —
- * the host assembles its caches before hydration completes. A record's
- * existence alone never authorizes destruction; only `recordMatchesDisk`
- * lets a record condemn the current file.
+ * synced under a guid. All lookups must be synchronous — the host
+ * assembles its caches before hydration completes. Identity is the
+ * whole decision surface: a recorded identity that has left the
+ * committed map condemns the file it describes, and content is never
+ * consulted. That makes retirement load-bearing — records must retire
+ * with observed deletions so they never outlive their files.
  */
 export interface LocalRecordSource {
 	getRecordGuid: (path: string) => string | undefined;
-	/** Stored content evidence agrees with the file currently on disk. */
-	recordMatchesDisk: (path: string) => boolean;
 	/** Retire the record when its row retires — a record never outlives its file. */
 	retireRecord: (path: string) => void;
 	/** Follow a rename so the record keeps describing the same file. */
