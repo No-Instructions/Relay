@@ -1587,6 +1587,8 @@ export default class Live extends Plugin {
 											type: 'OBSIDIAN_SET_VIEW_DATA',
 											data: normalizeNoteText(data),
 											clear,
+											diskReload:
+												this.__relayLoading === "reload" ? true : undefined,
 										});
 									}
 								}
@@ -1604,7 +1606,7 @@ export default class Live extends Plugin {
 					// reassigned by the caller; view.data is still stale until
 					// setData runs inside the original call. The getViewData
 					// patch above throws while this flag is set.
-					this.__relayLoading = true;
+					this.__relayLoading = isInitialLoad ? "initial" : "reload";
 
 					// Capture state before calling original
 					const dirty = this.dirty;

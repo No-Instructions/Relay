@@ -451,9 +451,7 @@ export type IdleMergeCompleteEvent =
 	| { type: "IDLE_MERGE_COMPLETE"; success: true; newLCA: LCAState; source: "remote" | "disk" | "threeWay" }
 	| { type: "IDLE_MERGE_COMPLETE"; success: false; error?: Error; source: "remote" | "disk" | "threeWay" };
 
-// Diagnostic Events (from Obsidian monkeypatches)
-// These events are informational only - they don't trigger state transitions.
-// They provide visibility into Obsidian's internal file handling for debugging.
+// Obsidian lifecycle events (from monkeypatches). Most are diagnostic only.
 
 /**
  * Fired when Obsidian's loadFileInternal is called.
@@ -477,10 +475,10 @@ export interface ObsidianLoadFileInternalEvent {
  * arrives before the view finishes loading and before any downstream
  * ACQUIRE_LOCK or three-way merge runs.
  *
- * When `clear=true` Obsidian is doing a fresh load (initial open, external
- * edit, file switch). That's the authoritative disk→CRDT ingest point.
- * When `clear=false` the call is an internal state update (metadata
- * renderer, properties panel). Treat it as informational.
+ * `diskReload` identifies calls made by
+ * `loadFileInternal(..., isInitialLoad=false)`, including external reloads where
+ * Obsidian passes `clear=false`. Those calls are the authoritative disk→CRDT
+ * ingest point. Initial loads still reconcile through active entry.
  */
 export interface ObsidianSetViewDataEvent {
 	type: "OBSIDIAN_SET_VIEW_DATA";
@@ -488,6 +486,8 @@ export interface ObsidianSetViewDataEvent {
 	data: string;
 	/** `true` when Obsidian is replacing the whole view, `false` for updates. */
 	clear: boolean;
+	/** Present when the call reloads disk into an already-open view. */
+	diskReload?: true;
 }
 
 /**

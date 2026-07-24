@@ -473,6 +473,34 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.pendingDiskHash = null;
 	}
 
+	private capturePendingDiskLCA(contents: string): void {
+		if (
+			this._fork ||
+			this._conflict ||
+			!this.localDoc ||
+			!this._disk ||
+			this.pendingDiskSource !== "disk-event" ||
+			this.pendingDiskContents === null ||
+			this.pendingDiskContents !== contents ||
+			this.pendingDiskHash === null ||
+			this.pendingDiskHash !== this._disk.hash
+		) {
+			return;
+		}
+
+		if (this.localDoc.getText("contents").toString() !== contents) {
+			return;
+		}
+
+		this._setLCA({
+			contents,
+			meta: { hash: this.pendingDiskHash, mtime: this._disk.mtime },
+			stateVector: Y.encodeStateVector(this.localDoc),
+		});
+		this.clearPendingDiskContents();
+		this.emitPersistState();
+	}
+
 	private clearSettledDiskContents(): void {
 		if (this._statePath === "idle.synced" && !this._fork && !this._conflict) {
 			this.clearPendingDiskContents();
@@ -3259,25 +3287,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.setPendingDiskContents(e.contents, "disk-event", e.hash);
 				this._needsDiskContentLoad = false;
 
-				// Advance LCA when localDoc already matches the new disk
-				// content and no fork is active. The match check is the
-				// real invariant (LCA captures a state both sides agreed
-				// on); it silently skips the external-change race where
-				// DISK_CHANGED lands before CM6 propagates localDoc.
-				// Routed through _setLCA so its warn stays a canary for
-				// genuinely bad captures.
-				if (!this._fork && this.localDoc) {
-					const localText = this.localDoc.getText("contents").toString();
-					if (localText === e.contents) {
-						this._setLCA({
-							contents: e.contents,
-							meta: { hash: e.hash, mtime: e.mtime },
-							stateVector: Y.encodeStateVector(this.localDoc),
-						});
-						this.clearPendingDiskContents();
-						this.emitPersistState();
-					}
-				}
+				this.capturePendingDiskLCA(e.contents);
 			},
 			flushPendingToRemote: () => {
 				this._isOnline = true;
@@ -4548,12 +4558,24 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				return; // Diagnostic only, no state transition
 			}
 		if (event.type === 'OBSIDIAN_SET_VIEW_DATA') {
-			// Ingest synchronously during loadFileInternal, before ACQUIRE_LOCK
-			// or the three-way merge run. Only `clear=true` carries a fresh
-			// disk load; partial updates (metadata renderer, properties panel)
-			// pass `clear=false` and must not shadow the authoritative disk
-			// text.
-			if (event.clear) {
+			// loadFileInternal is the authoritative open-view disk ingress.
+			// In active tracking, apply its final (possibly three-way merged)
+			// view body immediately. The following CM6 "set" transaction is an
+			// idempotent editor echo, not a second opportunity to infer origin.
+			if (
+				event.diskReload &&
+				this._statePath === "active.tracking" &&
+				!this._fork &&
+				!this._conflict &&
+				this.localDoc
+			) {
+				this.applyContentToLocalDoc(event.data);
+				this.lastKnownEditorText = event.data;
+				this._bridge.flushOutbound();
+				this.capturePendingDiskLCA(event.data);
+			} else if (event.clear && this._statePath !== "active.tracking") {
+				// Before active tracking, retain a full replacement as the disk
+				// side of active-entry reconciliation.
 				this.setPendingDiskContents(event.data, "view-data", this._disk?.hash ?? null);
 			}
 			return;
