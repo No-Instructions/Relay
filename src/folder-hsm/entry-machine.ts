@@ -17,8 +17,9 @@
  * cross-product and refuses on violation.
  *
  * Evidence rules the guards encode (see FolderHSM for the bindings):
- * - destruction requires positive identity association AND content
- *   agreement AND confirmed confidence — absence never deletes;
+ * - destruction requires positive identity association at confirmed
+ *   confidence — absence never deletes, and content is never consulted:
+ *   identity decides, so the outcome cannot depend on event ordering;
  * - a path carrying a persisted upload hold is never trashed and its
  *   minted identity is never silently discarded: the hold marks content
  *   the server does not have;
@@ -45,6 +46,13 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					guard: "indexEntryAtPathWithLocalFile",
 					actions: ["adoptCommittedIdentity"],
 				},
+				// A row carrying a deferred removal is not undecided — its
+				// decision is made and waiting for confirmed confidence. No
+				// lower rung may re-interpret the file while the evidence
+				// stands: the tombstone rung would park it and the
+				// publication rungs would mint for it, both laundering a
+				// removal into something else.
+				{ target: "unclassified", guard: "carriesRemovalEvidence" },
 				{
 					target: "upload.held",
 					guard: "holdAdoptable",
@@ -73,6 +81,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
+				// A directory in a subtree the group deleted, still holding
+				// children: each child's own row decides its fate, and the
+				// directory waits — publication work for a doomed directory
+				// and a parked verdict are both wrong. When the last
+				// child's trash completes, the emptied-parent review
+				// re-runs this ladder and the rung above removes the
+				// directory.
+				{
+					target: "unclassified",
+					guard: "tombstonedDirectoryAwaitingChildren",
+				},
 				{
 					target: "parked",
 					guard: "tombstoned",
@@ -96,11 +115,30 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					requires: ["canDownload"],
 				},
 			],
+			// A removal reaching a row still undecided: condemn on identity
+			// at confirmed confidence, retain as evidence before it, and
+			// absorb an identity mismatch — never trash on this event.
+			MAP_REMOVED: [
+				{
+					target: "trashing",
+					guard: "identityMatches",
+					actions: ["emitTrashLocal"],
+					requires: ["canTrash"],
+				},
+				{
+					target: "unclassified",
+					guard: "removalDeferredForConfirmation",
+					actions: ["retainRemovalEvidence"],
+				},
+				{ target: "unclassified" },
+			],
 			FILE_CREATED: {
 				target: "unclassified",
 				actions: ["upgradeOriginInteractive", "scheduleClassify"],
 			},
 			FILE_DELETED: [
+				// Deferred-removal agreement: see the synced cell.
+				{ target: "retired", guard: "carriesRemovalEvidence" },
 				{
 					target: "delete.pending",
 					guard: "indexEntryKnown",
@@ -120,22 +158,29 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 		otherwise: "absorb",
 		on: {
 			MAP_REMOVED: [
-				{
-					target: "trashing",
-					guard: "identityMatchesAndContentAgrees",
-					actions: ["emitTrashLocal"],
-					requires: ["canTrash"],
-				},
-				// The content-disagreement case. OPEN DECISION: the default
-				// here is that the removal prevails into recoverable trash;
-				// the alternative candidate is { target: "conflicted" }.
+				// Removal prevails into recoverable trash: identity decides,
+				// content never does. A locally edited copy trashes the same
+				// as an untouched one — the trash keeps the bytes recoverable.
 				{
 					target: "trashing",
 					guard: "identityMatches",
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
-				// Identity mismatch: a recreated path — never trash.
+				// Pre-confirmation the removal cannot act — destruction
+				// requires confirmed confidence — but it must not launder
+				// into a fresh classification that no longer knows a removal
+				// happened. The row retains it as evidence; the session's
+				// first confirmed pass completes it through the same
+				// identity semantics.
+				{
+					target: "synced",
+					guard: "removalDeferredForConfirmation",
+					actions: ["retainRemovalEvidence"],
+				},
+				// Identity mismatch: the removed entry was a different
+				// document — never trash on this event; reclassify against
+				// present truth.
 				{ target: "unclassified", actions: ["scheduleClassify"] },
 			],
 			MAP_MOVED: [
@@ -144,6 +189,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					guard: "sourceFilePresent",
 					actions: ["emitRenameLocal"],
 					requires: ["canRenameLocal"],
+				},
+				// The rename-away form of a pre-confirmation removal: the
+				// local file must follow its identity, but the local rename
+				// is destructive at the source and waits for confirmed
+				// confidence. Retained like a removal; the confirmed pass
+				// re-derives the destination from the map of that moment
+				// and completes it as a rename.
+				{
+					target: "synced",
+					guard: "moveAwayDeferredForConfirmation",
+					actions: ["retainRemovalEvidence"],
 				},
 				{
 					target: "synced",
@@ -156,11 +212,17 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					requires: ["canDownload"],
 				},
 			],
-			FILE_DELETED: {
-				target: "delete.pending",
-				actions: ["recordObservedIdentity", "emitIndexDelete"],
-				requires: ["canMutateMap"],
-			},
+			FILE_DELETED: [
+				// With a deferred removal on the row, the local delete is
+				// agreement, not new intent: both sides already decided the
+				// file's identity is gone — nothing remains to replicate.
+				{ target: "retired", guard: "carriesRemovalEvidence" },
+				{
+					target: "delete.pending",
+					actions: ["recordObservedIdentity", "emitIndexDelete"],
+					requires: ["canMutateMap"],
+				},
+			],
 			// Carries the observed identity outbound.
 			FILE_RENAMED_AWAY: {
 				target: "synced",
@@ -193,6 +255,18 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 			// Retried on the next occasion.
 			UPLOAD_FAILED: { target: "upload.held" },
 			CLASSIFY: [
+				// An emptied directory at a deleted path: directories hold
+				// no content to protect, so the queued work is cancelled
+				// and the directory is removed like any other stale
+				// materialization. Reached when the deletion emptied the
+				// directory after this row minted (the emptied-parent
+				// review re-runs classification here).
+				{
+					target: "trashing",
+					guard: "tombstonedEmptyDirectory",
+					actions: ["emitCancelUploadWork", "emitTrashLocal"],
+					requires: ["canTrash"],
+				},
 				// A re-run saw the deletion the minting pass could not: the
 				// queued work is cancelled, but the hold's minted identity is
 				// PRESERVED with the parked file — held-but-unpublished
@@ -214,12 +288,20 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				},
 			],
 			MAP_ADDED: [
-				// A peer published this path first: adopt the committed
-				// identity; the unpublished mint is superseded.
+				// A peer published this path first: the unpublished mint is
+				// superseded. The retraction names the committed identity so
+				// the host rebinds the path's document to the committed
+				// history (the row lands in `synced` with no download
+				// queued); then the row adopts the committed identity. When
+				// the committed identity is our own mint replicated back,
+				// nothing retracts.
 				{
 					target: "synced",
 					guard: "committedIdentityAtPath",
-					actions: ["adoptCommittedIdentity", "emitRetractUpload"],
+					actions: [
+						"retractSupersededMintAndRebind",
+						"adoptCommittedIdentity",
+					],
 				},
 				{ target: "upload.held" },
 			],
@@ -258,10 +340,15 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				{ target: "upload.inFlight" },
 			],
 			MAP_ADDED: [
+				// Same supersession contract as upload.held: retract naming
+				// the committed identity as the rebind target, then adopt.
 				{
 					target: "synced",
 					guard: "committedIdentityAtPath",
-					actions: ["adoptCommittedIdentity", "emitRetractUpload"],
+					actions: [
+						"retractSupersededMintAndRebind",
+						"adoptCommittedIdentity",
+					],
 				},
 				{ target: "upload.inFlight" },
 			],
