@@ -1017,18 +1017,50 @@ export class SharedFolder extends HasProvider {
 		return match;
 	}
 
+	/**
+	 * Resolve the losing local identity after committed metadata has already
+	 * moved a path to canonicalGuid. SyncStore.get(path) cannot answer this:
+	 * it resolves the new committed identity (or a pending hold), not the
+	 * identity still carried by a loaded file object.
+	 */
+	private findNonCanonicalIdentityAtPath(
+		path: string,
+		canonicalGuid: string,
+	): { guid: string; file?: IFile } | null {
+		for (const candidate of this.files.values()) {
+			if (candidate.path === path && candidate.guid !== canonicalGuid) {
+				return { guid: candidate.guid, file: candidate };
+			}
+		}
+
+		const setCandidate = this.fset.find(
+			(candidate) =>
+				candidate.path === path && candidate.guid !== canonicalGuid,
+		);
+		if (setCandidate) {
+			return { guid: setCandidate.guid, file: setCandidate };
+		}
+
+		const pendingGuid = this.pendingUpload.get(path);
+		if (pendingGuid && pendingGuid !== canonicalGuid) {
+			return { guid: pendingGuid };
+		}
+		return null;
+	}
+
 	private retryDeferredRemapForGuid(guid: string): void {
 		// A live update event is fresh evidence the server has content now.
 		this.clearServerEmpty(guid);
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingRemaps.has(path)) return;
 
-		const localGuid = this.syncStore.get(path);
-		if (!localGuid || localGuid === guid) return;
-
-		const localFile = this.files.get(localGuid);
+		const localIdentity = this.findNonCanonicalIdentityAtPath(path, guid);
+		if (!localIdentity) return;
 		const committedMeta = this.syncStore.getCommittedMeta(path);
-		if (!localFile || !isDocument(localFile) || !isDocumentMeta(committedMeta)) {
+		if (
+			(localIdentity.file && !isDocument(localIdentity.file)) ||
+			!isDocumentMeta(committedMeta)
+		) {
 			return;
 		}
 		if (committedMeta.id !== guid) return;
@@ -1036,7 +1068,7 @@ export class SharedFolder extends HasProvider {
 		this._pendingRemaps.add(path);
 		this.executeRemap({
 			path,
-			fromGuid: localGuid,
+			fromGuid: localIdentity.guid,
 			toGuid: guid,
 		}).catch((e) => {
 			this.warn(`[${path}] remap retry from update event failed`, e);
@@ -2444,8 +2476,9 @@ export class SharedFolder extends HasProvider {
 			// guid locally than meta.id. Reconcile by swapping identity to
 			// the canonical meta.id.
 			if (!file) {
-				const localGuid = this.syncStore.get(path);
-				const localFile = localGuid ? this.files.get(localGuid) : null;
+				const localIdentity = this.findNonCanonicalIdentityAtPath(path, guid);
+				const localGuid = localIdentity?.guid;
+				const localFile = localIdentity?.file;
 
 				if (localGuid && localFile && isSyncFile(localFile) && isSyncFileMeta(meta)) {
 					const promise = this.remapIfHashMatches(
