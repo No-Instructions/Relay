@@ -88,12 +88,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		null;
 	private _forkReconcileWatchRegistered = false;
 
-	private recordProviderSyncedRemoteHead = (snapshot: Uint8Array): void => {
+	private recordProviderSyncedRemoteHead(snapshot: Uint8Array): void {
 		this.sharedFolder.mergeManager?.seedServerAdvertisedSnapshotFromBytes(
 			this.guid,
 			snapshot,
 		);
-	};
+	}
 
 	/**
 	 * Flag to track when we're in the middle of our own save operation.
@@ -373,7 +373,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				hsm,
 				remoteDoc,
 				this._provider! as YjsProvider,
-				{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
+				{
+					onSyncedRemoteHead: (snapshot) =>
+						this.recordProviderSyncedRemoteHead(snapshot),
+				},
 			);
 		}
 		this._activeProviderIntegration = true;
@@ -991,21 +994,21 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
-	 * Connect the provider for idle-mode fork reconciliation.
-	 * Creates a temporary ProviderIntegration so the HSM receives
-	 * CONNECTED/PROVIDER_SYNCED events and SYNC_TO_REMOTE effects
-	 * flow through the live WebSocket.
+	 * Refresh the authoritative remote document for fork reconciliation.
 	 *
-	 * Cleanup: call destroyIdleProviderIntegration() or releaseLock()
-	 * when the provider is no longer needed (e.g. on hibernate).
+	 * A document that is only re-arming after a recoverable error reads the
+	 * server's copy with a single request, so a passive read does not announce
+	 * the reader in the note. Anything that will merge and publish — an
+	 * outstanding fork — and anything with a session already open keeps using
+	 * the live session; see shouldUseLiveProviderForReconcile.
 	 */
 	connectForForkReconcile(): Promise<void> {
 		if (this._forkReconcileConnectPromise) {
 			return this._forkReconcileConnectPromise;
 		}
 
-		const promise = this.lifetime.guard(() =>
-			this.connectForForkReconcileOnce(),
+		const promise = this.lifetime.guard((signal) =>
+			this.connectForForkReconcileOnce(signal),
 		);
 		const tracked = promise.finally(() => {
 			if (this._forkReconcileConnectPromise === tracked) {
@@ -1016,12 +1019,120 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return tracked;
 	}
 
-	private async connectForForkReconcileOnce(): Promise<void> {
+	private async connectForForkReconcileOnce(
+		signal: AbortSignal,
+	): Promise<void> {
 		const hsm = this._hsm;
 		if (!hsm) return;
 		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
+		if (this.shouldUseLiveProviderForReconcile(hsm)) {
+			await this.connectForForkReconcileWithProvider(hsm);
+			return;
+		}
+
+		// The server has already told us, repeatedly, that it holds no content
+		// for this guid. This path is re-driven by the folder poll, so asking
+		// again would be a full-document download every few seconds for the
+		// rest of the session. Park it until the server produces fresh
+		// evidence — an update event or a subdoc-index entry clears the count.
+		if (this.sharedFolder.serverEmptyTerminal(this.guid)) {
+			this.debug(
+				`[${this.path}] fork reconcile skipped: server has no content for this document yet`,
+			);
+			return;
+		}
+
+		// Hold a warm lease across the download. Hibernation and LRU eviction
+		// defer for an in-flight machine invoke or a warm lease and for nothing
+		// else, so without a lease the document can be hibernated while the
+		// download is in flight — its local replica destroyed — and the commit
+		// below would deliver remote state into a torn-down machine. Every
+		// other operation that mutates the remote replica across an await takes
+		// the same lease.
+		const mergeManager = this.sharedFolder.mergeManager;
+		const releaseLease = mergeManager
+			? mergeManager.wake(this.guid, this.ensureRemoteDoc(), { lease: true })
+			: () => {};
+		try {
+			const update = await this.sharedFolder.backgroundSync.downloadByGuid(
+				this.sharedFolder,
+				this.guid,
+				this.path,
+			);
+			if (signal.aborted) return;
+			if (this.shouldUseLiveProviderForReconcile(hsm)) {
+				await this.connectForForkReconcileWithProvider(hsm);
+				return;
+			}
+			if (!update) {
+				// An empty answer is a documented, legitimate state: the server
+				// knows this document but no peer has uploaded content for it
+				// yet. Defer the way every other download does — counting the
+				// attempt so a document the server never fills stops being
+				// re-requested — instead of raising an error into callers that
+				// all discard it.
+				this.sharedFolder.recordServerEmpty(this.guid);
+				this.log(
+					`[${this.path}] fork reconcile deferred: server has no content for this document yet`,
+				);
+				return;
+			}
+
+			// The lease makes hibernation impossible from here to the end of
+			// the commit, and commitDocumentState rejects a destroyed document,
+			// so the machine captured before the download is still this
+			// document's machine with its local replica intact.
+			this.commitDocumentState(() => {
+				// The replica is kept, never rebuilt. The provider path rebuilds
+				// only for a fork, and a forked document never reaches here — so
+				// rebuilding would go beyond what the live path does, and would
+				// throw away a merge that has been applied to the replica and
+				// only queued for upload.
+				const remoteDoc = this.ensureRemoteDoc();
+				Y.applyUpdate(remoteDoc, update, this._provider);
+				hsm.setRemoteDoc(remoteDoc);
+				hsm.send({ type: "REMOTE_UPDATE", update });
+				this.recordProviderSyncedRemoteHead(
+					Y.encodeSnapshot(Y.snapshot(remoteDoc)),
+				);
+				hsm.send({ type: "PROVIDER_SYNCED" });
+			});
+		} finally {
+			releaseLease();
+		}
+	}
+
+	/**
+	 * Whether reconciliation must run over the document's live session rather
+	 * than a downloaded snapshot.
+	 *
+	 * An outstanding fork is the important case. Reconciling a fork merges the
+	 * user's edit against the server's copy and publishes the result, and a
+	 * downloaded snapshot is a point-in-time read with no subscription behind
+	 * it: another vault's concurrent edit to the same passage lands after the
+	 * merge has already committed, and the two edits then combine into
+	 * duplicated text on disk in both vaults. A live session keeps correcting
+	 * the replica while the fork is open, so the merge sees the other vault's
+	 * edit and resolves to one result. The remaining reasons are sessions that
+	 * already exist or are about to: downloading a second copy there would be
+	 * wasted work on every poll.
+	 */
+	private shouldUseLiveProviderForReconcile(hsm: MergeHSM): boolean {
+		return (
+			hsm.hasFork() ||
+			hsm.isActive() ||
+			this.userLock ||
+			this.hasProviderIntegration() ||
+			this.connected ||
+			this.intent === "connected"
+		);
+	}
+
+	private async connectForForkReconcileWithProvider(
+		hsm: MergeHSM,
+	): Promise<void> {
 		// A fresh remoteDoc is built only for a fork that has no integration
 		// yet; an existing integration keeps its remoteDoc and any handshake it
 		// has in flight.
@@ -1115,7 +1226,8 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 					return this._provider as YjsProvider;
 				},
 				providerIntegrationOptions: {
-					onSyncedRemoteHead: this.recordProviderSyncedRemoteHead,
+					onSyncedRemoteHead: (snapshot) =>
+						this.recordProviderSyncedRemoteHead(snapshot),
 				},
 			});
 			this._providerIntegration = result.integration;
@@ -1137,7 +1249,10 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			hsm,
 			remoteDoc,
 			this._provider as YjsProvider,
-			{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
+			{
+				onSyncedRemoteHead: (snapshot) =>
+					this.recordProviderSyncedRemoteHead(snapshot),
+			},
 		);
 		return true;
 	}

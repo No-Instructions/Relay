@@ -68,7 +68,7 @@ import { trackPromise } from '../trackPromise';
  */
 export interface MergeManagerDocument {
   hsm: import('./MergeHSM').MergeHSM | null;
-  /** Connect the WebSocket provider for idle-mode fork reconciliation. */
+  /** Refresh authoritative remote state for fork reconciliation. */
   connectForForkReconcile(): Promise<void>;
   /** Tear down the idle-mode provider integration (on hibernate). */
   destroyIdleProviderIntegration(): void;
