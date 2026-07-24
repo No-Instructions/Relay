@@ -1048,6 +1048,27 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return new Conflict({ base, ours, theirs, regions }).toData();
 	}
 
+	/**
+	 * True when this document is holding a conflict the machine has already
+	 * established: either it is parked in a conflict state, or it still
+	 * carries the conflict after a later transition moved it on without
+	 * surfacing it (an enrollment completed over a parked conflict leaves
+	 * exactly that residue — the state reads settled while the conflict is
+	 * still outstanding).
+	 *
+	 * Answered from machine state alone: no document, disk, or remote text is
+	 * read or compared. That makes it safe as a precondition for operations
+	 * that destroy what is on disk.
+	 */
+	get holdsEstablishedConflict(): boolean {
+		if (this._statePath === "destroyed") return false;
+		return (
+			this._conflict !== null ||
+			this._statePath === "idle.conflict" ||
+			this._statePath.startsWith("active.conflict.")
+		);
+	}
+
 	getConflictInfoSnapshot(): ConflictInfoSnapshot {
 		return toConflictInfoSnapshot({
 			path: this.path,
@@ -1983,6 +2004,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (this._lca) return true;
 		await this.ensurePersistence();
 		if (this._lca) return true;
+		// Re-asked after the await: a conflict established while persistence
+		// was loading must not be settled by an enrollment that started before
+		// it. Completing here would take the ancestor from the remote side and
+		// leave the conflict outstanding but out of sight.
+		if (this.holdsEstablishedConflict) {
+			this.hsmWarn(
+				`initial remote enrollment refused: the document is holding an unresolved conflict | ` +
+					`guid=${this._guid} state=${this._statePath}`,
+			);
+			return false;
+		}
 		if (!this.localDoc || !this.hasEnrolledLocalCRDT()) return false;
 
 		const localText = this.localDoc.getText("contents").toString();
