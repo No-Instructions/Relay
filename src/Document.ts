@@ -591,6 +591,26 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			return false;
 		}
 
+		if (sharedFolder.isPendingUpload(this.path)) {
+			// A provisional document is fully writable offline, but its room
+			// must not connect until the folder handshake resolves whether the
+			// path is genuinely new or needs a GUID remap/same-GUID rebuild.
+			// Connecting earlier would publish the provisional Yjs history
+			// before reconciliation has a chance to inspect server evidence.
+			try {
+				await sharedFolder.onceProviderSynced();
+			} catch {
+				return false;
+			}
+			if (
+				this.destroyed ||
+				!this._parent ||
+				!sharedFolder.canPublishPendingUpload(this.path, this.guid)
+			) {
+				return false;
+			}
+		}
+
 		return super.connect();
 	}
 

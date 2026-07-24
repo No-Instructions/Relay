@@ -779,6 +779,8 @@ export interface IYDocPersistence {
 	/**
 	 * Initialize document with content if not already initialized.
 	 * Checks origin in one IDB session, calls contentLoader only if needed.
+	 * When remoteEvidence yields a non-empty remote state vector, the group
+	 * provably holds the document already and the seed is refused.
 	 * @returns true if initialization happened, false if already initialized
 	 */
 	initializeWithContent?(
@@ -788,6 +790,7 @@ export interface IYDocPersistence {
 			mtime: number;
 		}>,
 		fieldName?: string,
+		remoteEvidence?: (() => Uint8Array | null) | null,
 	): Promise<boolean>;
 	/**
 	 * Initialize document from remote CRDT state if not already initialized.

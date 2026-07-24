@@ -402,6 +402,13 @@ export class BackgroundSync extends HasLogging {
 	 * queues — rather than being dropped at enqueue time.
 	 */
 	private isDrainable(item: QueueItem): boolean {
+		if (
+			item.syncIntent === "upload" &&
+			isDocument(item.doc) &&
+			!item.sharedFolder.canPublishPendingUpload(item.doc.path, item.guid)
+		) {
+			return false;
+		}
 		return (
 			item.sharedFolder.connected &&
 			item.sharedFolder.intent !== "disconnected"

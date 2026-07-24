@@ -1023,8 +1023,12 @@ export class SharedFolder extends HasProvider {
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingRemaps.has(path)) return;
 
-		const localGuid = this.syncStore.get(path);
-		if (!localGuid || localGuid === guid) return;
+		const localGuid = this.pendingUpload.get(path) ?? this.syncStore.get(path);
+		if (!localGuid) return;
+		// A live update is current server evidence even when the provisional
+		// and committed GUID strings match. That shape needs a same-GUID
+		// rebuild before the provisional history can publish.
+		if (localGuid === guid && this.pendingUpload.get(path) !== guid) return;
 
 		const localFile = this.files.get(localGuid);
 		const committedMeta = this.syncStore.getCommittedMeta(path);
@@ -1848,6 +1852,14 @@ export class SharedFolder extends HasProvider {
 		// sweep triggered only by connect misses a self-heal. Re-drive every
 		// document still holding an unreconciled fork toward reconciliation.
 		this.recoverForkedIdleDocuments();
+		// Pending uploads stay local-authoritative until this handshake gives
+		// us a current server view. Reconcile immediately so a committed
+		// identity is rebuilt/remapped before its upload queue can drain.
+		void this.syncFileTree().catch((error) => {
+			if (!isDestroyedError(error)) {
+				this.warn("post-handshake pending-upload reconciliation failed", error);
+			}
+		});
 		if (this.authoritative || this._persistence.hasServerSync) {
 			return;
 		}
@@ -2428,6 +2440,23 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (this.existsSync(path)) {
+			const pendingGuid = this.pendingUpload.get(path);
+			// pendingUpload remains local authority while offline. A completed
+			// folder handshake turns this committed row into current server
+			// evidence; only then do we rebuild (same GUID) or remap (different
+			// GUID) before the provisional upload is allowed to drain.
+			if (this.synced && pendingGuid && isDocumentMeta(meta)) {
+				return {
+					op: "update",
+					path,
+					promise: this.executeRemap({
+						path,
+						fromGuid: pendingGuid,
+						toGuid: guid,
+					}),
+				};
+			}
+
 			// Check for type mismatch: local SyncFile vs remote Canvas
 			if (file && isSyncFile(file) && isCanvasMeta(meta)) {
 				// Upgrade SyncFile to Canvas type
@@ -4132,7 +4161,22 @@ export class SharedFolder extends HasProvider {
 					);
 					return;
 				}
-				await doc.hsm?.initializeWithContent();
+				const didEnroll =
+					(await doc.hsm?.initializeWithContent()) ?? true;
+				if (!didEnroll && !doc.hsm?.hasPersistenceUserData()) {
+					// A live/tracked remote state vector refused the local
+					// seed. Rebuild through the remap path so disk edits are
+					// reconciled against that history. With no remote evidence,
+					// offline provisional enrollment still seeds normally.
+					const committedGuid =
+						this.syncStore.getCommittedMeta(vpath)?.id ?? guid;
+					await this.executeRemap({
+						path: vpath,
+						fromGuid: guid,
+						toGuid: committedGuid,
+					});
+					return;
+				}
 				await this.backgroundSync.enqueueUpload(doc);
 				await this.markUploaded(doc);
 			}
@@ -4404,6 +4448,18 @@ export class SharedFolder extends HasProvider {
 
 	isPendingUpload(vpath: string): boolean {
 		return this.pendingUpload.has(vpath);
+	}
+
+	/**
+	 * Whether a provisional document may cross the network. The persisted
+	 * hold remains local-authoritative while disconnected; a current folder
+	 * handshake must first show that no committed identity occupies the path.
+	 */
+	canPublishPendingUpload(vpath: string, guid: string): boolean {
+		if (this.pendingUpload.get(vpath) !== guid) return true;
+		if (this.authoritative) return true;
+		if (!this.synced) return false;
+		return this.syncStore.getCommittedMeta(vpath) === undefined;
 	}
 
 	expandDeletePaths(

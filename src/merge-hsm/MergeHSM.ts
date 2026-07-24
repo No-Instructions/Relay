@@ -1867,8 +1867,21 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return cachedDiskContent;
 		};
 
+		// Best-known remote evidence for the enrollment gate: a live remote
+		// doc wins; otherwise the remote state vector tracked from an earlier
+		// session. Null means remote state cannot be consulted and the
+		// caller's identity checks carry the decision.
+		const remoteEvidence = (): Uint8Array | null => {
+			if (this.remoteDoc) return Y.encodeStateVector(this.remoteDoc);
+			return this._remoteStateVector;
+		};
+
 		// Use persistence's initializeWithContent which checks origin in same IDB session
-		const didEnroll = await this.localPersistence!.initializeWithContent!(cachingLoader);
+		const didEnroll = await this.localPersistence!.initializeWithContent!(
+			cachingLoader,
+			undefined,
+			remoteEvidence,
+		);
 
 		if (didEnroll && cachedDiskContent) {
 			// Enrollment happened - set LCA to match initial content
