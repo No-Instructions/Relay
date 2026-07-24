@@ -232,7 +232,14 @@ export class CanvasPlugin extends HasLogging {
 		this.trackedEmbedViews.add(embedView);
 		this.unsubscribes.push(
 			(() => {
-				const document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
+				let document: Document;
+				try {
+					document = this.relayCanvas.sharedFolder.proxy.getDoc(embedView.file.path);
+				} catch {
+					// No shared handle (membership refused or undecided): the
+					// embed renders without live sync.
+					return () => {};
+				}
 				const viewRef = this.createEmbedEditorViewRef(embedView);
 				const syncEmbedViewToDocument = this.syncEmbedViewToDocument.bind(this);
 				const syncDocumentToEmbedView = this.syncDocumentToEmbedView.bind(this);

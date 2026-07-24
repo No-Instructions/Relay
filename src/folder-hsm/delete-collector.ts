@@ -39,6 +39,15 @@ export type GateResolution = "resolved" | "not-gated" | "stale";
 export interface HeldDelete {
 	mapName: FolderMapName;
 	key: string;
+	/**
+	 * The identity the deletion observed at decision time (captured from
+	 * the removed value before compaction). Resolution replays a deletion
+	 * only while the committed value still carries this identity; a
+	 * mismatch drops the stale intent instead of destroying. Absent on
+	 * rows rehydrated from formats that recorded no identity — those
+	 * replay on the user's explicit send, which is itself authorization.
+	 */
+	guid?: string;
 }
 
 /** Stable, display-ready view of one version of a gated burst. */
@@ -77,6 +86,18 @@ export interface DeleteCollectorCallbacks {
 	onRestored(deletes: HeldDelete[]): void;
 	/** Collector state changed in a way the host should persist. */
 	persist(state: SerializedCollectorState | null): void;
+	/**
+	 * The identity the committed remote replica currently holds for a
+	 * key, for the expired-intent check at send() resolution. Absent, no
+	 * intent is ever classified stale.
+	 */
+	currentRemoteIdentity?(mapName: FolderMapName, key: string): string | undefined;
+	/**
+	 * Deletions dropped at send() resolution because their target changed
+	 * since the intent was recorded. The keys stay on the remote replica;
+	 * the host re-asserts them locally so the replicas converge.
+	 */
+	onDroppedStale?(deletes: HeldDelete[]): void;
 }
 
 export interface DeleteCollectorOptions {
@@ -89,6 +110,23 @@ export interface DeleteCollectorOptions {
 
 function refKey(mapName: FolderMapName, key: string): string {
 	return `${mapName}\u0000${key}`;
+}
+
+/**
+ * The identity carried by a removed map value: filemeta rows carry it as
+ * `id`; the legacy docs map stores the identity string itself.
+ */
+function observedIdentity(oldValue: unknown): string | undefined {
+	if (typeof oldValue === "string") return oldValue;
+	if (
+		oldValue !== null &&
+		typeof oldValue === "object" &&
+		"id" in oldValue &&
+		typeof (oldValue as { id: unknown }).id === "string"
+	) {
+		return (oldValue as { id: string }).id;
+	}
+	return undefined;
 }
 
 function logicalPaths(deletes: Iterable<HeldDelete>): string[] {
@@ -127,9 +165,10 @@ export class DeleteCollector {
 	}
 
 	heldDeletes(): HeldDelete[] {
-		return [...this.held.values()].map(({ mapName, key }) => ({
+		return [...this.held.values()].map(({ mapName, key, guid }) => ({
 			mapName,
 			key,
+			...(guid !== undefined ? { guid } : {}),
 		}));
 	}
 
@@ -160,9 +199,18 @@ export class DeleteCollector {
 		if (deletes.length === 0) return;
 		const before = this.held.size;
 		for (const d of deletes) {
+			const observed = observedIdentity(d.oldValue);
+			const existing = this.held.get(refKey(d.mapName, d.key));
 			this.held.set(refKey(d.mapName, d.key), {
 				mapName: d.mapName,
 				key: d.key,
+				// Keep the first observed identity: it is what the user's
+				// decision was actually about.
+				...(existing?.guid !== undefined
+					? { guid: existing.guid }
+					: observed !== undefined
+						? { guid: observed }
+						: {}),
 			});
 		}
 		if (this.phase === "idle") this.phase = "collecting";
@@ -218,10 +266,32 @@ export class DeleteCollector {
 		if (this.phase !== "gated") return "not-gated";
 		if (token !== this.gateSnapshot()?.token) return "stale";
 		const deletes = this.heldDeletes();
-		this.bridge.replicateDeletes(deletes);
+		// Expired-intent check at resolution: a deletion replays only
+		// while its target still carries the identity it observed at
+		// decision time. A changed target's deletion is dropped — the
+		// intent expired — and the key converges back from remote truth.
+		const replayable: HeldDelete[] = [];
+		const stale: HeldDelete[] = [];
+		const identityOf = this.callbacks.currentRemoteIdentity;
+		for (const deleted of deletes) {
+			if (
+				identityOf === undefined ||
+				deleted.guid === undefined ||
+				identityOf(deleted.mapName, deleted.key) === undefined ||
+				identityOf(deleted.mapName, deleted.key) === deleted.guid
+			) {
+				replayable.push(deleted);
+			} else {
+				stale.push(deleted);
+			}
+		}
+		this.bridge.replicateDeletes(replayable);
 		this.reset();
 		this.callbacks.persist(null);
-		this.callbacks.onReplicated(deletes);
+		if (stale.length > 0) {
+			this.callbacks.onDroppedStale?.(stale);
+		}
+		this.callbacks.onReplicated(replayable);
 		return "resolved";
 	}
 

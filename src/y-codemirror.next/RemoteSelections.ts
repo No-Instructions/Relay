@@ -231,8 +231,13 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			}
 			const folder = this.connectionManager?.sharedFolders.lookup(file.path);
 			if (folder) {
-				this.document = folder.proxy.getDoc(file.path);
-				return this.document;
+				try {
+					this.document = folder.proxy.getDoc(file.path);
+					return this.document;
+				} catch {
+					// No shared handle (membership refused or undecided):
+					// fall through to the view fallback.
+				}
 			}
 		}
 		
