@@ -857,6 +857,24 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
+	/**
+	 * Write contents the engine produced — a download's first materialisation
+	 * of the file, for instance — through the same path every other engine
+	 * write takes.
+	 *
+	 * The distinction matters beyond bookkeeping. A write that does not record
+	 * its own identity comes back through the vault as an ordinary file change
+	 * and is ingested into the CRDT as if a person had typed it, so a write
+	 * that only replaced bytes on disk ends up replacing the local copy of the
+	 * document as well. Going through here records the identity, and the
+	 * observation is recognised as ours.
+	 */
+	async writeEngineContents(contents: string): Promise<void> {
+		return this.enqueueDiskWrite(async () => {
+			await this.writeDiskContents(contents, { createIfMissing: true });
+		});
+	}
+
 	private async handleWriteDisk(
 		contents: string,
 		mtime?: number,
