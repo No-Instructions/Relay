@@ -38,7 +38,10 @@ import { isCanvas, type Canvas } from "./Canvas";
 import { CanvasPlugin } from "./CanvasPlugin";
 import { LiveNode } from "./y-codemirror.next/LiveNodePlugin";
 import { flags } from "./flagManager";
-import { AwarenessViewPlugin } from "./AwarenessViewPlugin";
+import {
+	AwarenessViewPlugin,
+	resolveMarkdownAwarenessAnchor,
+} from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
@@ -910,24 +913,25 @@ export class LiveView<ViewType extends TextFileView>
 
 		this.setConnectionDot();
 
-		// Initialize awareness plugin if not already created.
-		if (isLiveMd(this) && !this._awarenessPlugin) {
-			this._awarenessPlugin = new AwarenessViewPlugin(
-				{
-					view: this.view,
-					doc: this.document,
-					resolveAnchor: (containerEl) => {
-						const inlineTitle = containerEl.querySelector(
-							".inline-title",
-						) as HTMLElement | null;
-						return inlineTitle
-							? { anchor: inlineTitle, position: "afterend" }
-							: null;
+		if (isLiveMd(this)) {
+			if (!this._awarenessPlugin) {
+				this._awarenessPlugin = new AwarenessViewPlugin(
+					{
+						view: this.view,
+						doc: this.document,
+						resolveAnchor: (containerEl) =>
+							resolveMarkdownAwarenessAnchor(
+								containerEl,
+								this.view.getMode(),
+							),
+						variantClass: "user-awareness-container--markdown",
+						getEditor: () => this.view.editor,
 					},
-					getEditor: () => this.view.editor,
-				},
-				this._parent.sharedFolders.manager.users,
-			);
+					this._parent.sharedFolders.manager.users,
+				);
+			} else {
+				this._awarenessPlugin.refresh();
+			}
 		}
 
 		return new Promise((resolve, reject) => {
