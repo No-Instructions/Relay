@@ -19,7 +19,7 @@ import type { PluginValue, DecorationSet } from "@codemirror/view";
 import { getLiveViews } from "../editorContext";
 
 import * as Y from "yjs";
-import { Awareness } from "y-protocols/awareness.js";
+import type { Awareness } from "y-protocols/awareness.js";
 import { curryLog } from "src/debug";
 import { editorInfoField } from "obsidian";
 import type { Document } from "../Document";
@@ -187,38 +187,56 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		this.decorations = RangeSet.of([]);
 		this.connectionManager = getConnectionManager(this.editor) ?? undefined;
 
-		// Allowlist: Check for live editing markers (same as LiveEditPlugin)
+		// We do NOT check isLiveEditor() here and set destroyed=true, because the
+		// relay-live-editor CSS class is added asynchronously by LiveViews after
+		// acquireLock(). If we destroy here, the plugin will never initialize
+		// when the class appears later. update() re-checks readiness on every
+		// call instead of latching a permanent verdict here.
+		if (this.isLiveEditor()) {
+			this.ensureAwarenessListener();
+		}
+	}
+
+	/**
+	 * Check for live editing markers (same allowlist as LiveEditPlugin): either
+	 * the editor is inside a `.relay-live-editor` wrapper, or it's an embedded
+	 * canvas editor (identified by `mod-inside-iframe` on its source view --
+	 * we can't always find those via the connection manager).
+	 */
+	private isLiveEditor(): boolean {
 		const sourceView = this.editor.dom.closest(".markdown-source-view");
 		const isLiveEditor = this.editor.dom.closest(".relay-live-editor");
 		const hasIframeClass = sourceView?.classList.contains("mod-inside-iframe");
+		return !!(isLiveEditor || hasIframeClass);
+	}
 
-		// For embedded canvas editors, we can't always find the canvas via ConnectionManager
-		// but if it has mod-inside-iframe, it's likely a legitimate embedded editor
-		const isEmbeddedInCanvas = hasIframeClass;
-
-		if (!isLiveEditor && !isEmbeddedInCanvas) {
-			this.destroyed = true;
+	/**
+	 * Attach the awareness change listener that forces a redraw when a peer's
+	 * cursor/selection moves without a local edit. Finding the view depends on
+	 * LiveViews having attached, which can lag behind isLiveEditor() becoming
+	 * true, so this is retried on every update until it succeeds.
+	 */
+	private ensureAwarenessListener() {
+		if (this._listener) {
 			return;
 		}
-
-		this.view = this.connectionManager?.findView(editor);
-		if (this.view) {
-			const provider = this.view.document?._provider;
-			this._listener = ({ added, updated, removed }, s, t) => {
-				const clients = added.concat(updated).concat(removed);
-				if (
-					clients.findIndex((id) => id !== this._awareness?.doc.clientID) >= 0
-				) {
-					editor.dispatch({
-						annotations: [yRemoteSelectionsAnnotation.of([])],
-					});
-				}
-			};
-			if (provider) {
-				this._awareness = provider.awareness;
-				this._awareness.on("change", this._listener);
-			}
+		this.view = this.connectionManager?.findView(this.editor);
+		const provider = this.view?.document?._provider;
+		if (!provider) {
+			return;
 		}
+		this._listener = ({ added, updated, removed }, s, t) => {
+			const clients = added.concat(updated).concat(removed);
+			if (
+				clients.findIndex((id) => id !== this._awareness?.doc.clientID) >= 0
+			) {
+				this.editor.dispatch({
+					annotations: [yRemoteSelectionsAnnotation.of([])],
+				});
+			}
+		};
+		this._awareness = provider.awareness;
+		this._awareness.on("change", this._listener);
 	}
 
 	getDocument(): Document | undefined {
@@ -264,6 +282,13 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		if (this.destroyed) {
 			return;
 		}
+		// Readiness is re-checked on every update rather than latched once at
+		// construction, since the relay-live-editor class can appear well
+		// after this plugin is constructed (see isLiveEditor()).
+		if (!this.isLiveEditor()) {
+			return;
+		}
+		this.ensureAwarenessListener();
 		this.document = this.getDocument();
 		const ytext = this.document?.localDoc?.getText("contents") ?? this.document?.ytext;
 		if (!(this.document && ytext && ytext.doc)) {
