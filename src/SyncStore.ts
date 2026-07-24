@@ -115,6 +115,19 @@ export function extractMapDelta(
 	return { adds, updates, deletes, moves };
 }
 
+/**
+ * Membership over the folder doc's committed maps (`filemeta_v0` and the
+ * legacy `docs` map old clients write), plus the local staging around them
+ * (pending mints, the migration overlay, tombstones, rename aliases).
+ *
+ * The store keeps a guid → committed-paths reverse index over both
+ * committed maps so identity lookups (hasCollectiveRecord) answer in O(1)
+ * instead of scanning the maps. The index is rebuilt when start() attaches
+ * the map observers and kept current by those observers from then on —
+ * whatever the transaction origin; a query arriving before start() builds
+ * it on demand. Tombstones (deleteSet) are filtered at query time, never
+ * indexed, so the semantics match a direct scan of the maps exactly.
+ */
 export class SyncStore extends Observable<SyncStore> {
 	private legacyIds: Y.Map<string>; // Maps file paths to Document guids
 	private meta: Y.Map<Meta>;
@@ -122,6 +135,11 @@ export class SyncStore extends Observable<SyncStore> {
 	deleteSet: Set<string>;
 	typeRegistry: TypeRegistry;
 	renames: Map<string, string>;
+	// guid → committed paths carrying it, one index per committed map (see
+	// the class header).
+	private metaPathsByGuid: Map<string, Set<string>>;
+	private legacyPathsByGuid: Map<string, Set<string>>;
+	private guidIndexReady = false;
 
 	constructor(
 		public ydoc: Y.Doc,
@@ -135,6 +153,8 @@ export class SyncStore extends Observable<SyncStore> {
 		this.overlay = new Map();
 		this.renames = new Map();
 		this.deleteSet = new Set();
+		this.metaPathsByGuid = new Map();
+		this.legacyPathsByGuid = new Map();
 		this.typeRegistry = new TypeRegistry(this.syncSettingsManager);
 	}
 
@@ -440,6 +460,19 @@ export class SyncStore extends Observable<SyncStore> {
 				return;
 			}
 
+			// Keep the guid index mirroring the committed map, whatever the
+			// transaction origin (see the class header).
+			event.changes.keys.forEach((change, path) => {
+				const oldId = (change.oldValue as Meta | undefined)?.id;
+				if (oldId) {
+					this.guidIndexRemove(this.metaPathsByGuid, oldId, path);
+				}
+				const newId = this.meta.get(path)?.id;
+				if (newId) {
+					this.guidIndexAdd(this.metaPathsByGuid, newId, path);
+				}
+			});
+
 			// A re-added entry supersedes any masked deletion for its path,
 			// whatever the transaction origin: a stale deleteSet entry would
 			// hide the live entry from every accessor and commit() would
@@ -463,6 +496,18 @@ export class SyncStore extends Observable<SyncStore> {
 			this.notifyListeners();
 		};
 		const legacyListener = async (event: Y.YMapEvent<string>) => {
+			// The legacy half of the guid index (see the class header).
+			event.changes.keys.forEach((change, path) => {
+				const oldId = change.oldValue as string | undefined;
+				if (oldId) {
+					this.guidIndexRemove(this.legacyPathsByGuid, oldId, path);
+				}
+				const newId = this.legacyIds.get(path);
+				if (newId) {
+					this.guidIndexAdd(this.legacyPathsByGuid, newId, path);
+				}
+			});
+
 			// Old clients write the docs map alone: their deletion of a
 			// path tombstones it (getMeta's meta-without-legacy check), and
 			// their later re-add of the same path must clear that tombstone
@@ -476,6 +521,10 @@ export class SyncStore extends Observable<SyncStore> {
 			this.migrateUp();
 			this.notifyListeners();
 		};
+		// Build the reverse index at the same moment observation begins:
+		// everything already in the maps is captured here, and every later
+		// transaction flows through the observers attached just below.
+		this.rebuildGuidIndex();
 		this.legacyIds.observe(legacyListener);
 		this.meta.observe(syncFileObserver);
 		this.unsubscribes.push(() => {
@@ -542,6 +591,98 @@ export class SyncStore extends Observable<SyncStore> {
 			return undefined;
 		}
 		return meta;
+	}
+
+	/**
+	 * Collective evidence check: does the committed shared map (or the
+	 * legacy ids map old clients write) already carry this path or this
+	 * guid? Committed rows are written only after a completed upload, so a
+	 * row means some device already published content for the identity.
+	 * Local staging (pendingUpload, the migration overlay) never counts —
+	 * it records intent, not collective state — and locally tombstoned
+	 * paths are on their way out, so they do not count either. The guid
+	 * half answers from the maintained reverse index (see the class
+	 * header) — O(1), never a map scan.
+	 */
+	hasCollectiveRecord(vpath: string, guid: string): boolean {
+		this.assertVPath(vpath);
+		if (this.renames.has(vpath)) {
+			vpath = this.renames.get(vpath)!;
+		}
+		if (
+			!this.deleteSet.has(vpath) &&
+			(this.meta.has(vpath) || this.legacyIds.has(vpath))
+		) {
+			return true;
+		}
+		if (!this.guidIndexReady) {
+			this.rebuildGuidIndex();
+		}
+		return (
+			this.guidHasLiveCommittedPath(this.metaPathsByGuid, guid) ||
+			this.guidHasLiveCommittedPath(this.legacyPathsByGuid, guid)
+		);
+	}
+
+	/** Any indexed committed path for the guid that is not tombstoned. */
+	private guidHasLiveCommittedPath(
+		index: Map<string, Set<string>>,
+		guid: string,
+	): boolean {
+		const paths = index.get(guid);
+		if (!paths) {
+			return false;
+		}
+		for (const path of paths) {
+			if (!this.deleteSet.has(path)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	private guidIndexAdd(
+		index: Map<string, Set<string>>,
+		guid: string,
+		path: string,
+	) {
+		let paths = index.get(guid);
+		if (!paths) {
+			paths = new Set();
+			index.set(guid, paths);
+		}
+		paths.add(path);
+	}
+
+	private guidIndexRemove(
+		index: Map<string, Set<string>>,
+		guid: string,
+		path: string,
+	) {
+		const paths = index.get(guid);
+		if (!paths) {
+			return;
+		}
+		paths.delete(path);
+		if (paths.size === 0) {
+			index.delete(guid);
+		}
+	}
+
+	private rebuildGuidIndex() {
+		this.metaPathsByGuid.clear();
+		this.legacyPathsByGuid.clear();
+		this.meta.forEach((meta, path) => {
+			if (meta?.id) {
+				this.guidIndexAdd(this.metaPathsByGuid, meta.id, path);
+			}
+		});
+		this.legacyIds.forEach((id, path) => {
+			if (id) {
+				this.guidIndexAdd(this.legacyPathsByGuid, id, path);
+			}
+		});
+		this.guidIndexReady = true;
 	}
 
 	/**
@@ -726,6 +867,8 @@ export class SyncStore extends Observable<SyncStore> {
 		this.overlay.clear();
 		this.deleteSet.clear();
 		this.renames.clear();
+		this.metaPathsByGuid.clear();
+		this.legacyPathsByGuid.clear();
 		this.legacyIds = null as any;
 		this.meta = null as any;
 	}

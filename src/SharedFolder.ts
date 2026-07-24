@@ -36,6 +36,7 @@ import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
 import type { CapturedOp } from "./merge-hsm/undo";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
+import { isEmptyDoc } from "./merge-hsm/state-vectors";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
@@ -3852,6 +3853,50 @@ export class SharedFolder extends HasProvider {
 		return newDocs;
 	}
 
+	/**
+	 * Seeding local content is exclusively part of PUBLISHING a locally-
+	 * minted document. The primary, structural rule: a document the index
+	 * already maps (a committed row for the path or the guid) is
+	 * collectively held, and its enrollment NEVER seeds — it adopts the
+	 * existing history through the ordinary download path and reconciles
+	 * disk-vs-doc differences the usual way. This is what keeps
+	 * device-local database loss folder-safe: with every origin marker
+	 * gone, a mapped folder re-enrolls by download alone and cannot mint
+	 * independent rival histories (which stack content when merged).
+	 * Origin markers are recovery hints, never authority.
+	 *
+	 * Secondary requirement: publication needs this device's durable mint
+	 * record (placeHold wrote it). Without the mint there is nothing to
+	 * publish — only history to adopt.
+	 */
+	private mustAdoptExistingHistory(vpath: string, guid: string): boolean {
+		// The cheap mint check answers first; the collective-record lookup
+		// runs only for identities this device actually minted.
+		if (this.pendingUpload.get(vpath) !== guid) {
+			return true;
+		}
+		return this.syncStore.hasCollectiveRecord(vpath, guid);
+	}
+
+	/**
+	 * The adopt half of the gate: never seed; release a mint record the
+	 * committed map has already satisfied (keeping it would route every
+	 * lookup back through the upload path); the caller then enqueues the
+	 * ordinary download so the collective history lands and disk-vs-doc
+	 * differences resolve through the usual reconciliation.
+	 */
+	private releaseSatisfiedHold(vpath: string, guid: string): void {
+		this.log(
+			`[${vpath}] the group already holds this document: adopting its history instead of seeding`,
+		);
+		if (
+			this.pendingUpload.get(vpath) === guid &&
+			this.syncStore.getCommittedMeta(vpath)?.id === guid
+		) {
+			this.pendingUpload.delete(vpath);
+		}
+	}
+
 	getOrCreateCanvas(guid: string, vpath: string): Canvas {
 		const canvas =
 			this.files.get(guid) || new Canvas(vpath, guid, this.loginManager, this);
@@ -3919,9 +3964,40 @@ export class SharedFolder extends HasProvider {
 					);
 					return;
 				}
+				// Enrollment of a canvas the index already maps never seeds —
+				// seeding is exclusively part of publishing a locally-minted
+				// canvas (see uploadDoc / mustAdoptExistingHistory).
+				if (this.mustAdoptExistingHistory(vpath, guid)) {
+					this.releaseSatisfiedHold(vpath, guid);
+					this.backgroundSync.enqueueCanvasDownload(canvas, false);
+					return;
+				}
+				// Evidence gate at the seed itself: a canvas doc that already
+				// carries CRDT state (server history that raced in, or local
+				// updates that outlived their origin marker) is never seeded
+				// over — stacking independent histories is how content
+				// duplicates.
+				if (!isEmptyDoc(canvas.ydoc)) {
+					this.log(
+						`[${canvas.path}] canvas already carries history; skipping first-content seed`,
+					);
+					// Same adopt shape as the identity gate above: whatever
+					// the group holds arrives through the ordinary download
+					// (a CRDT merge — the racing state here is never lost)
+					// instead of the entry wedging.
+					this.releaseSatisfiedHold(vpath, guid);
+					this.backgroundSync.enqueueCanvasDownload(canvas, false);
+					return;
+				}
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
 				this.folderDoc.transact(() => {
 					try {
+						// The header op is enrollment evidence: every enrolled
+						// doc has a non-empty state vector, so peers can tell
+						// "uploaded" from "never uploaded" without content
+						// inspection — even when the content itself is empty.
+						const header = canvas.ydoc.getMap("relay");
+						if (!header.has("v")) header.set("v", 0);
 						canvas.applyJSON(contents);
 					} catch (e) {
 						console.warn(contents);
@@ -4132,7 +4208,30 @@ export class SharedFolder extends HasProvider {
 					);
 					return;
 				}
-				await doc.hsm?.initializeWithContent();
+				// Enrollment of a document the index already maps never seeds
+				// — seeding is exclusively part of publishing a locally-minted
+				// document (see mustAdoptExistingHistory). Adopt the existing
+				// history and reconcile with disk normally.
+				if (this.mustAdoptExistingHistory(vpath, guid)) {
+					this.releaseSatisfiedHold(vpath, guid);
+					this.backgroundSync.enqueueDownload(doc, false);
+					return;
+				}
+				const didEnroll =
+					(await doc.hsm?.initializeWithContent()) ?? true;
+				if (!didEnroll && !doc.hsm?.hasPersistenceUserData()) {
+					// The persistence-level evidence gate refused the seed
+					// and nothing local is enrolled: the group already holds
+					// this document (see initializeWithContent). Same verdict
+					// as the identity gate above — adopt instead of falling
+					// through to publish an empty doc. A refusal that leaves
+					// enrolled local content standing (an earlier session's
+					// un-uploaded enrollment) falls through and resumes its
+					// first upload as before.
+					this.releaseSatisfiedHold(vpath, guid);
+					this.backgroundSync.enqueueDownload(doc, false);
+					return;
+				}
 				await this.backgroundSync.enqueueUpload(doc);
 				await this.markUploaded(doc);
 			}

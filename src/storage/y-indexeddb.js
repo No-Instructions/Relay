@@ -896,9 +896,12 @@ export class IndexeddbPersistence extends Observable {
    * Checks origin in one IDB session, calls contentLoader only if needed.
    * @param {() => Promise<{content: string, hash: string, mtime: number}>} contentLoader
    * @param {string} [fieldName='contents'] - Y.Text field name
+   * @param {(() => Uint8Array|null)|null} [remoteEvidence=null] - returns the
+   *        best-known remote state vector, or null when remote state cannot
+   *        be consulted
    * @return {Promise<boolean>} true if initialization happened, false if already initialized
    */
-  async initializeWithContent (contentLoader, fieldName = 'contents') {
+  async initializeWithContent (contentLoader, fieldName = 'contents', remoteEvidence = null) {
     await this.whenSynced
     if (this._destroyed || !this._hasLiveDoc()) return false
 
@@ -912,6 +915,21 @@ export class IndexeddbPersistence extends Observable {
     // Also check for user data (belt and suspenders)
     if (this.hasUserData()) {
       return false
+    }
+
+    // Collective evidence gate: every enrolled peer's doc is non-empty (the
+    // `relay` header op below ships with even empty content), so a remote
+    // state vector carrying any clock at all proves the group already holds
+    // this document. Seeding here would mint an independent rival history
+    // that stacks content when merged. Origin is deliberately left unset so
+    // the ordinary remote-adoption path still runs. When remote state cannot
+    // be consulted, the caller's identity checks carry the decision.
+    if (remoteEvidence) {
+      const remoteStateVector = await remoteEvidence()
+      if (this._destroyed || !this._hasLiveDoc()) return false
+      if (remoteStateVector && Y.decodeStateVector(remoteStateVector).size > 0) {
+        return false
+      }
     }
 
     // Not initialized - load content lazily
