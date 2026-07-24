@@ -857,6 +857,40 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 	}
 
+	/**
+	 * Write contents the engine produced — a download's first materialisation
+	 * of the file, for instance — through the same path every other engine
+	 * write takes.
+	 *
+	 * The distinction matters beyond bookkeeping. A write that does not record
+	 * its own identity comes back through the vault as an ordinary file change
+	 * and is ingested into the CRDT as if a person had typed it, so a write
+	 * that only replaced bytes on disk ends up replacing the local copy of the
+	 * document as well. Going through here records the identity, and the
+	 * observation is recognised as ours.
+	 *
+	 * The write joins the document's write queue and its content is hashed
+	 * before it lands, so the caller's decision to write is separated from the
+	 * write by an unbounded wait — long enough for the document to start
+	 * carrying work of its own. The question is therefore asked again inside
+	 * the queued write, immediately before the bytes go out.
+	 *
+	 * Which means the caller's decision to write and what actually happened
+	 * are two different facts, and only this method knows the second one.
+	 * Resolves false when the queued write stood down, so a caller cannot book
+	 * a write that never landed as done.
+	 */
+	async writeEngineContents(contents: string): Promise<boolean> {
+		let wrote = false;
+		await this.enqueueDiskWrite(async () => {
+			wrote = await this.writeDiskContents(contents, {
+				createIfMissing: true,
+				onlyWhileAcceptingRemoteEnrollment: true,
+			});
+		});
+		return wrote;
+	}
+
 	private async handleWriteDisk(
 		contents: string,
 		mtime?: number,
@@ -918,11 +952,57 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		});
 	}
 
+	/**
+	 * Make sure the directory a new file is about to be created in is there,
+	 * treating "something else already made it" as success.
+	 *
+	 * The directory tree is materialised by more than one writer — the folder
+	 * objects create their own directories from a promise nobody awaits, and
+	 * the first download of a note lands in the middle of that sweep. Whether
+	 * a directory is there is read from the vault index, which does not learn
+	 * of one until the creation that made it has resolved, so between the
+	 * index answering no and the request to create it the directory can
+	 * already exist. Asking for it a second time is reported as a failure.
+	 *
+	 * That failure would be harmless if it stopped here. It does not: it is
+	 * thrown from underneath the write, and the download doing the writing has
+	 * by then registered the document and settled its ancestor — so the throw
+	 * leaves a document that reads as synced and a file that was never
+	 * created, which every later download declines to fetch because the
+	 * document is loaded. The file never arrives and nothing says so.
+	 *
+	 * Only the end state matters, so a directory that is there is a success
+	 * whoever made it. Anything else is rethrown.
+	 */
+	private async ensureParentDirectory(vaultPath: string): Promise<void> {
+		const parentPath = vaultPath.substring(0, vaultPath.lastIndexOf("/"));
+		if (!parentPath) return;
+		if (this.vault.getAbstractFileByPath(parentPath)) return;
+		try {
+			await this.vault.createFolder(parentPath);
+		} catch (error) {
+			// The index may have caught up while the losing creation was in
+			// flight. When it has not, the adapter is asked instead, because
+			// it reads the filesystem rather than the index.
+			if (this.vault.getAbstractFileByPath(parentPath)) return;
+			if (await this.vault.adapter.exists(parentPath)) return;
+			throw error;
+		}
+	}
+
 	private async writeDiskContents(
 		contents: string,
 		options: {
 			createIfMissing: boolean;
 			excludeWhileActive?: boolean;
+			/**
+			 * Re-ask the merge machine, immediately before the bytes go out,
+			 * whether the document still accepts a copy from elsewhere. For
+			 * writes that carry someone else's content: everything ahead of
+			 * this point — the write queue, the hash — takes long enough for
+			 * the document to start carrying work of its own.
+			 */
+			onlyWhileAcceptingRemoteEnrollment?: boolean;
 			mtime?: number;
 		},
 	): Promise<boolean> {
@@ -949,6 +1029,18 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!tfile && !options.createIfMissing) {
 			return false;
 		}
+		// Last thing before the write. From here to vault.modify nothing
+		// suspends, so a document that says no here cannot be written over.
+		if (
+			options.onlyWhileAcceptingRemoteEnrollment &&
+			!this._hsm?.acceptsRemoteEnrollment
+		) {
+			this.warn(
+				"[writeDiskContents] Skipping write: the document no longer accepts a remote copy",
+				this.path,
+			);
+			return false;
+		}
 
 		const previousIdentity = this._lastEngineWrite;
 		const intent: EngineWriteIdentity = { hash, mtime: null };
@@ -961,10 +1053,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				await this.vault.modify(tfile, contents, modifyOptions);
 			} else {
 				const vaultPath = normalizePath(this.sharedFolder.getPath(this.path));
-				const parentPath = vaultPath.substring(0, vaultPath.lastIndexOf("/"));
-				if (parentPath && !this.vault.getAbstractFileByPath(parentPath)) {
-					await this.vault.createFolder(parentPath);
-				}
+				await this.ensureParentDirectory(vaultPath);
 				tfile = await this.vault.create(vaultPath, contents);
 				this._tfile = tfile;
 			}
