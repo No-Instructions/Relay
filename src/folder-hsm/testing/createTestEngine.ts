@@ -31,8 +31,8 @@ export interface TestSubstrate {
 	tombstones: Set<string>;
 	/** The local tree: what is actually on disk. */
 	localTree: Set<string>;
-	/** Persisted device-local records: path → identity + agreement flag. */
-	records: Map<string, { guid: string; matchesDisk: boolean }>;
+	/** Persisted device-local records: path → identity. */
+	records: Map<string, { guid: string }>;
 	/** Persisted upload holds: path → minted identity. */
 	holds: Map<string, string>;
 	/** The live replica's trust probe result. */
@@ -134,8 +134,6 @@ function attachEngine(
 		pathTombstoned: (path: string) => substrate.tombstones.has(path),
 		records: {
 			getRecordGuid: (path: string) => substrate.records.get(path)?.guid,
-			recordMatchesDisk: (path: string) =>
-				substrate.records.get(path)?.matchesDisk ?? false,
 			retireRecord: (path: string) => {
 				substrate.records.delete(path);
 			},
