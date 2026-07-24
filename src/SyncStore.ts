@@ -545,6 +545,43 @@ export class SyncStore extends Observable<SyncStore> {
 	}
 
 	/**
+	 * Collective evidence check: does the committed shared map (or the
+	 * legacy ids map old clients write) already carry this path or this
+	 * guid? Committed rows are written only after a completed upload, so a
+	 * row means some device already published content for the identity.
+	 * Local staging (pendingUpload, the migration overlay) never counts —
+	 * it records intent, not collective state — and locally tombstoned
+	 * paths are on their way out, so they do not count either.
+	 */
+	hasCollectiveRecord(vpath: string, guid: string): boolean {
+		this.assertVPath(vpath);
+		if (this.renames.has(vpath)) {
+			vpath = this.renames.get(vpath)!;
+		}
+		if (
+			!this.deleteSet.has(vpath) &&
+			(this.meta.has(vpath) || this.legacyIds.has(vpath))
+		) {
+			return true;
+		}
+		let found = false;
+		this.meta.forEach((meta, path) => {
+			if (meta.id === guid && !this.deleteSet.has(path)) {
+				found = true;
+			}
+		});
+		if (found) {
+			return true;
+		}
+		this.legacyIds.forEach((id, path) => {
+			if (id === guid && !this.deleteSet.has(path)) {
+				found = true;
+			}
+		});
+		return found;
+	}
+
+	/**
 	 * Get committed file metadata from the shared Y.Map only.
 	 * Does not include pending uploads, overlay migration entries, or legacy ids.
 	 */
