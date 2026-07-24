@@ -13,8 +13,8 @@ export interface AwarenessHost {
 	doc: HasProvider & { whenReady(): Promise<unknown>; path?: string };
 	/**
 	 * Resolves the anchor inside `containerEl` that the avatar element is
-	 * inserted relative to, along with the insertion position. Called once
-	 * during `install()`. Returning `null` skips mounting.
+	 * inserted relative to, along with the insertion position. Called whenever
+	 * the host view refreshes. Returning `null` skips mounting.
 	 */
 	resolveAnchor(containerEl: HTMLElement): {
 		anchor: HTMLElement;
@@ -33,11 +33,48 @@ export interface AwarenessHost {
 	getEditor?: () => unknown;
 }
 
+export interface AwarenessAnchor {
+	anchor: HTMLElement;
+	position: InsertPosition;
+}
+
+export function resolveMarkdownAwarenessAnchor(
+	containerEl: HTMLElement,
+	mode: "preview" | "source",
+): AwarenessAnchor | null {
+	const modeRoot = containerEl.querySelector(
+		mode === "preview" ? ".markdown-reading-view" : ".markdown-source-view",
+	) as HTMLElement | null;
+	const inlineTitle = modeRoot?.querySelector(
+		".inline-title",
+	) as HTMLElement | null;
+	if (inlineTitle) {
+		return { anchor: inlineTitle, position: "afterend" };
+	}
+
+	const modeContent = modeRoot?.querySelector(
+		mode === "preview" ? ".markdown-preview-sizer" : ".cm-sizer",
+	) as HTMLElement | null;
+	if (modeContent) {
+		return { anchor: modeContent, position: "afterbegin" };
+	}
+
+	const viewContent = containerEl.querySelector(
+		".view-content",
+	) as HTMLElement | null;
+	return viewContent
+		? { anchor: viewContent, position: "afterbegin" }
+		: null;
+}
+
 export class AwarenessViewPlugin extends HasLogging {
 	private host: AwarenessHost;
 	private destroyed = false;
+	private ready = false;
 	private awarenessComponent?: UserAwareness;
 	private awarenessElement?: HTMLElement;
+	private positioningParent?: HTMLElement;
+	private addedPositioningClass = false;
 	private relayUsersStore: any;
 
 	constructor(host: AwarenessHost, relayUsersStore: any) {
@@ -57,8 +94,8 @@ export class AwarenessViewPlugin extends HasLogging {
 
 		this.log("Installing awareness component");
 
-		// Wrap the title immediately to avoid focus loss later
-		this.wrapTitle();
+		// Create the empty container immediately to avoid focus loss later.
+		this.refresh();
 
 		// Wait for the document to be ready
 		await trackPromise(
@@ -68,16 +105,15 @@ export class AwarenessViewPlugin extends HasLogging {
 
 		if (this.destroyed) return;
 
-		// Mount the Svelte component (needs awareness to be available)
-		this.mountAwarenessComponent();
+		this.ready = true;
+		this.refresh();
 	}
 
-	private wrapTitle() {
-		const containerEl = this.host.view?.containerEl;
-		if (!containerEl || this.destroyed) return;
+	public refresh() {
+		if (this.destroyed) return;
 
-		// Already created
-		if (this.awarenessElement) return;
+		const containerEl = this.host.view?.containerEl;
+		if (!containerEl) return;
 
 		const resolved = this.host.resolveAnchor(containerEl);
 		if (!resolved) {
@@ -85,25 +121,87 @@ export class AwarenessViewPlugin extends HasLogging {
 			return;
 		}
 
-		// Create container for the awareness component
-		this.awarenessElement = containerEl.ownerDocument.createElement("div");
-		this.awarenessElement.className = "user-awareness-container";
-		if (this.host.variantClass) {
-			this.awarenessElement.classList.add(this.host.variantClass);
+		if (!this.awarenessElement) {
+			this.awarenessElement = containerEl.ownerDocument.createElement("div");
+			this.awarenessElement.className = "user-awareness-container";
+			if (this.host.variantClass) {
+				this.awarenessElement.classList.add(this.host.variantClass);
+			}
 		}
 
-		resolved.anchor.insertAdjacentElement(resolved.position, this.awarenessElement);
+		if (!this.isAtResolvedAnchor(resolved)) {
+			const inserted = resolved.anchor.insertAdjacentElement(
+				resolved.position,
+				this.awarenessElement,
+			);
+			if (!inserted) {
+				this.warn("Could not insert awareness component at resolved anchor");
+				return;
+			}
+		}
 
 		this.host.configureContainer?.(this.awarenessElement);
 
 		// The CSS pins the container top-right of its positioning parent. Make
 		// sure that parent can host absolute children.
-		const positioningParent =
+		this.setPositioningParent(
 			resolved.position === "afterbegin" || resolved.position === "beforeend"
 				? resolved.anchor
-				: resolved.anchor.parentElement;
-		if (positioningParent) {
-			positioningParent.addClass("user-awareness-positioning-parent");
+				: resolved.anchor.parentElement,
+		);
+
+		if (this.ready && !this.awarenessComponent) {
+			this.mountAwarenessComponent();
+		}
+	}
+
+	private isAtResolvedAnchor(resolved: AwarenessAnchor): boolean {
+		if (!this.awarenessElement) return false;
+
+		switch (resolved.position) {
+			case "afterbegin":
+				return resolved.anchor.firstElementChild === this.awarenessElement;
+			case "beforeend":
+				return resolved.anchor.lastElementChild === this.awarenessElement;
+			case "beforebegin":
+				return (
+					resolved.anchor.previousElementSibling === this.awarenessElement
+				);
+			case "afterend":
+				return resolved.anchor.nextElementSibling === this.awarenessElement;
+		}
+	}
+
+	private setPositioningParent(parent: HTMLElement | null) {
+		if (parent === this.positioningParent) {
+			if (
+				parent &&
+				!parent.classList.contains("user-awareness-positioning-parent")
+			) {
+				parent.classList.add("user-awareness-positioning-parent");
+				this.addedPositioningClass = true;
+			}
+			return;
+		}
+
+		if (this.positioningParent && this.addedPositioningClass) {
+			this.positioningParent.classList.remove(
+				"user-awareness-positioning-parent",
+			);
+		}
+
+		this.positioningParent = parent ?? undefined;
+		this.addedPositioningClass = false;
+		if (
+			this.positioningParent &&
+			!this.positioningParent.classList.contains(
+				"user-awareness-positioning-parent",
+			)
+		) {
+			this.positioningParent.classList.add(
+				"user-awareness-positioning-parent",
+			);
+			this.addedPositioningClass = true;
 		}
 	}
 
@@ -153,6 +251,7 @@ export class AwarenessViewPlugin extends HasLogging {
 			this.awarenessElement = undefined;
 		}
 
+		this.setPositioningParent(null);
 		this.host = null as any;
 	}
 }
