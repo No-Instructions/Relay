@@ -147,6 +147,14 @@ export default class Live extends Plugin {
 	openModals: Modal[] = [];
 	loadTime?: number;
 	private _unloading = false;
+	/**
+	 * True once teardown has begun. Surfaces handed to other plugins outlive
+	 * this instance, so they check it before touching plugin state, exactly as
+	 * this class's own deferred callbacks do.
+	 */
+	get isUnloading(): boolean {
+		return this._unloading;
+	}
 	sharedFolders!: SharedFolders;
 	vault!: Vault;
 	notifier!: ObsidianNotifier;
