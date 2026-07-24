@@ -365,6 +365,18 @@
 		z-index: 10;
 	}
 
+	/* On narrow panes the note heading needs the full content width. Let the
+	 * markdown facepile occupy its own row instead of covering the first line. */
+	@media (max-width: 480px) {
+		:global(.user-awareness-container--markdown) {
+			position: relative;
+			top: auto;
+			right: auto;
+			width: 100%;
+			justify-content: flex-end;
+		}
+	}
+
 	.user-awareness {
 		position: relative;
 		display: flex;
@@ -441,8 +453,8 @@
 		border: 1px solid var(--background-modifier-border);
 		border-radius: 8px;
 		box-shadow: var(--shadow-s);
-		min-width: 200px;
-		max-width: 300px;
+		min-width: min(200px, calc(100vw - 24px));
+		max-width: min(300px, calc(100vw - 24px));
 		z-index: 1000;
 	}
 
