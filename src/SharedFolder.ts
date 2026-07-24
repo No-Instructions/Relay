@@ -735,6 +735,7 @@ export class SharedFolder extends HasProvider {
 
 		trackPromise(`folder:whenSynced:${this.guid}`, this.whenSynced())
 			.then(async () => {
+				if (this.destroyed) return;
 				// Load persisted HSM metadata before sync startup can create
 				// Documents. Document construction immediately creates HSMs,
 				// and cold-start needs this cache to decide whether a doc can
@@ -868,6 +869,7 @@ export class SharedFolder extends HasProvider {
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
 				.then(() => {
+					if (this.destroyed) return;
 					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
 						this,
 						advertisedGuids,
@@ -883,7 +885,16 @@ export class SharedFolder extends HasProvider {
 						this.debug(`[subdoc-index] queued ${queuedLCABackfill} LCA backfills`);
 					}
 				})
-				.catch((e) => this.error("subdoc index sync sweep failed", e));
+				.catch((e) => {
+					// Teardown reaches this sweep two ways. If the tree sync
+					// is genuinely in flight it is rejected with the folder's
+					// destroyed error — shutdown, not a sweep failure, and
+					// read here the same way the folder-wide net sync reads
+					// it. If it had already resumed, it fulfils instead and
+					// the re-check above is what stops the work.
+					if (isDestroyedError(e)) return;
+					this.error("subdoc index sync sweep failed", e);
+				});
 		};
 		this.unsubscribes.push(() => {
 			provider.onSubdocIndex = null;
@@ -1084,6 +1095,11 @@ export class SharedFolder extends HasProvider {
 	): void {
 		this._pendingKeyframeUpdates.set(guid, pending);
 		this.backgroundSync.enqueueDownload(file, false).then((keyframe) => {
+			// The longest window in the folder: a network round trip, after
+			// which every branch below reaches for the merge manager that
+			// teardown released. This callback has no rejection handler, so
+			// a download that lands after teardown escapes unreported.
+			if (this.destroyed) return;
 			const buf = this._pendingKeyframeUpdates.get(guid);
 			this._pendingKeyframeUpdates.delete(guid);
 			if (!buf || buf.length === 0) return;
@@ -1123,6 +1139,7 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		update: Uint8Array,
 	): Promise<void> {
+		if (this.destroyed) return;
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) {
 			this.warn(
@@ -1529,10 +1546,12 @@ export class SharedFolder extends HasProvider {
 	async netSync() {
 		try {
 			await this.whenReady();
+			if (this.destroyed) return;
 			await this.mergeManager.initialize();
 			if (this.destroyed) return;
 			this.addLocalDocs();
 			await this.syncFileTree();
+			if (this.destroyed) return;
 			this.backgroundSync.enqueueSharedFolderSync(this);
 		} catch (error) {
 			if (isDestroyedError(error)) return;
@@ -3469,6 +3488,11 @@ export class SharedFolder extends HasProvider {
 
 		(async () => {
 			const exists = await this.exists(canvas);
+			// Same shape as uploadDoc: a detached dispatch with no rejection
+			// handler, resuming on a folder that may since have been torn
+			// down — and after teardown the file is usually gone, so the
+			// existence failure below is the expected outcome.
+			if (this.destroyed) return;
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
@@ -3477,6 +3501,7 @@ export class SharedFolder extends HasProvider {
 				originPromise,
 				awaitingUpdatesPromise,
 			]);
+			if (this.destroyed) return;
 			if (!awaitingUpdates && origin === undefined) {
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
 				this.folderDoc.transact(() => {
@@ -3669,11 +3694,22 @@ export class SharedFolder extends HasProvider {
 				this.exists(doc),
 				this.awaitingUpdates(),
 			]);
+			// Re-check where the dispatch resumes, above the existence
+			// failure: a folder is usually torn down because its file went
+			// away, so after teardown `exists` is false as a matter of
+			// course — and this function is detached with no rejection
+			// handler, so the throw below escapes the process as an
+			// unhandled rejection rather than reaching a log.
+			if (this.destroyed) return;
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
 			if (!awaitingUpdates) {
 				await doc.hsm?.initializeWithContent();
+				// The second window in this dispatch: the queue reached for
+				// below is one teardown releases, so resuming here after it
+				// ran throws out of a detached call with nothing to catch it.
+				if (this.destroyed) return;
 				await this.backgroundSync.enqueueUpload(doc);
 				await this.markUploaded(doc);
 			}
