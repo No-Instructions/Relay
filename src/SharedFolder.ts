@@ -335,6 +335,16 @@ export class SharedFolder extends HasProvider {
 	 * configuration does not run.
 	 */
 	private _downloadsDeferredByRemap: Set<string> = new Set();
+	/**
+	 * Reconciliations that stood aside for one already running on their path,
+	 * keyed by path. The running one re-drives them when it finishes, for the
+	 * same reason downloads get re-driven: nothing else re-detects the newer
+	 * identity until the next sweep.
+	 */
+	private _remapsDeferredByRemap: Map<
+		string,
+		{ path: string; fromGuid: string; toGuid: string }
+	> = new Map();
 	private _pendingDownloads: Set<string> = new Set();
 	private _pendingDownloadPromises: Map<string, Promise<Document | undefined>> =
 		new Map();
@@ -1112,8 +1122,15 @@ export class SharedFolder extends HasProvider {
 	 * Start the deferred download for a guid without treating the call as
 	 * fresh server evidence — the remap-side resume re-drives work that was
 	 * already deferred and must not reset the empty-server backoff.
+	 *
+	 * `evenIfDocumentLoaded` lifts the "the document is already loaded, so
+	 * there is nothing to download" stand-down for the one caller that knows
+	 * better: a registered document whose file was never created.
 	 */
-	private startDeferredDownloadForGuid(guid: string): void {
+	private startDeferredDownloadForGuid(
+		guid: string,
+		options: { evenIfDocumentLoaded?: boolean } = {},
+	): void {
 		const path = this.findCommittedPathByGuid(guid);
 		if (!path || this._pendingDownloads.has(path)) return;
 
@@ -1135,9 +1152,8 @@ export class SharedFolder extends HasProvider {
 		}
 
 		const localGuid = this.syncStore.get(path);
-		if (!localGuid || localGuid !== guid || this.files.has(guid)) {
-			return;
-		}
+		if (!localGuid || localGuid !== guid) return;
+		if (this.files.has(guid) && !options.evenIfDocumentLoaded) return;
 
 		this._pendingDownloads.add(path);
 		this.downloadDoc(path, true)
@@ -2357,10 +2373,15 @@ export class SharedFolder extends HasProvider {
 		// One reconciliation owns a path at a time. Two running together tear
 		// down each other's document, and the first to finish would release
 		// the claim while the second is still mid-flight — which would let a
-		// download commit over it.
+		// download commit over it. Standing aside is recorded rather than
+		// dropped: when committed metadata moves a path on again while a
+		// reconciliation toward the previous identity is still running, the
+		// newer one is real work, and nothing else re-detects it until the
+		// next sweep.
 		if (this._pendingRemaps.has(path)) {
+			this._remapsDeferredByRemap.set(path, args);
 			this.log(
-				`[${path}] ${operation} skipped: another reconciliation already owns this path`,
+				`[${path}] ${operation} deferred: another reconciliation already owns this path`,
 			);
 			return;
 		}
@@ -2375,22 +2396,49 @@ export class SharedFolder extends HasProvider {
 			await this.runRemap(args, operation);
 		} finally {
 			this._pendingRemaps.delete(path);
+			// The reconciliation goes first: if one was waiting it claims the
+			// path again in this same turn, and the download below sees the
+			// claim and defers to it rather than racing it.
+			this.resumeRemapDeferredByRemap(path);
 			this.resumeDownloadDeferredByRemap(path, toGuid);
 		}
+	}
+
+	/**
+	 * Re-drive the reconciliation that stood aside for this one. The record is
+	 * consumed before the re-drive, so the resumed reconciliation cannot
+	 * observe the claim it deferred to and cannot defer to itself.
+	 */
+	private resumeRemapDeferredByRemap(path: string): void {
+		const deferred = this._remapsDeferredByRemap.get(path);
+		if (!deferred) return;
+		this._remapsDeferredByRemap.delete(path);
+		if (this.destroyed) return;
+		this.log(`[${path}] resuming the reconciliation that deferred to the remap`);
+		this.executeRemap(deferred).catch((e) => {
+			this.warn(`[${path}] deferred remap retry failed`, e);
+		});
 	}
 
 	/**
 	 * A download that stood aside for a reconciliation has no other retry on
 	 * the default configuration — the download sweep only runs with the folder
 	 * engine enabled — so the reconciliation that displaced it is what
-	 * discharges it. Only paths that actually deferred are re-driven, and only
-	 * when the reconciliation did not load the document itself.
+	 * discharges it. Only paths that actually deferred are re-driven.
 	 */
 	private resumeDownloadDeferredByRemap(path: string, guid: string): void {
 		if (!this._downloadsDeferredByRemap.delete(path)) return;
 		if (this.destroyed) return;
 		this.log(`[${path}] resuming the download that deferred to the remap`);
-		this.startDeferredDownloadForGuid(guid);
+		// A reconciliation registers its document before it reads the file,
+		// and reading a file that is not there is exactly how it fails — so a
+		// failed one can leave the document registered and the file still
+		// missing. The download is the only thing that restores the file, so
+		// the resume asks whether the file is there, not whether the document
+		// is loaded.
+		this.startDeferredDownloadForGuid(guid, {
+			evenIfDocumentLoaded: !this.existsSync(path),
+		});
 	}
 
 	private async runRemap(
@@ -3590,18 +3638,29 @@ export class SharedFolder extends HasProvider {
 	}
 
 	flush(doc: IFile, content: string): Promise<void> {
-		// Last line of defence in front of the one operation that destroys
-		// what the user has on disk. Whatever decided to write, a document
-		// holding an unresolved conflict is not ours to overwrite: the write
-		// would settle that conflict in the writer's favour with no record and
-		// no way back. Decided from machine state alone, never from content.
-		if (isDocument(doc) && doc.hsm?.holdsEstablishedConflict) {
-			this.warn(
-				`[${doc.path}] write refused: the document is holding an unresolved conflict`,
-			);
-			return Promise.resolve();
-		}
 		const vaultPath = join(this.path, doc.path);
+		if (isDocument(doc)) {
+			// Last line of defence in front of the one operation that destroys
+			// what the user has on disk. Whatever decided to write, a document
+			// carrying work of its own is not ours to overwrite: the write
+			// would settle the difference in the writer's favour, with no
+			// record of it and no way back. Decided from machine state alone,
+			// never from content — and fail-closed on a missing machine,
+			// because a document that has been torn down cannot answer for
+			// what is on its disk and is not the one anybody is tracking.
+			if (!doc.hsm?.acceptsRemoteEnrollment) {
+				this.warn(
+					`[${doc.path}] write refused: the document is not in a state that accepts a remote copy`,
+				);
+				return Promise.resolve();
+			}
+			// Through the document, so the write records its own identity and
+			// comes back recognised as ours. Written straight to the adapter it
+			// reads as a change the user made, and is ingested into the local
+			// copy of the document as one.
+			this.log("writing to ", normalizePath(vaultPath));
+			return doc.writeEngineContents(content);
+		}
 		this.log("writing to ", normalizePath(vaultPath));
 		return this.vault.adapter.write(normalizePath(vaultPath), content);
 	}
@@ -4256,11 +4315,14 @@ export class SharedFolder extends HasProvider {
 	 * identity and machine state — never from document content:
 	 *
 	 * - a reconciliation holds the path, so it owns this identity's outcome;
-	 * - the document is already holding a conflict, which the download would
-	 *   settle in the server's favour by enrolling and writing over it.
+	 * - the document is not in a state that accepts the server's copy as its
+	 *   starting point, so enrolling it and writing it over the file would
+	 *   discard whatever the document is carrying.
 	 *
-	 * The second reason stands on its own: an established conflict must not be
-	 * overwritten even when no reconciliation is in flight to announce it.
+	 * The second reason stands on its own: a document carrying its own work
+	 * must not be overwritten even when no reconciliation is in flight to
+	 * announce it. It is asked of the live machine at every step, because the
+	 * answer can change inside any of the awaits between them.
 	 */
 	private downloadMayProceed(
 		doc: Document | undefined,
@@ -4276,9 +4338,12 @@ export class SharedFolder extends HasProvider {
 			);
 			return false;
 		}
-		if (doc?.hsm?.holdsEstablishedConflict) {
+		// Fail-closed: a document with no machine cannot say what it is
+		// carrying, so it does not get enrolled or written over.
+		if (doc && !doc.hsm?.acceptsRemoteEnrollment) {
 			this.log(
-				`[${vpath}] download stopped ${stage}: the document is holding an unresolved conflict`,
+				`[${vpath}] download stopped ${stage}: the document is not in a state ` +
+					`that accepts a remote copy (${doc.hsm?.state.statePath ?? "no machine"})`,
 			);
 			return false;
 		}

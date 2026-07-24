@@ -1049,24 +1049,59 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	/**
-	 * True when this document is holding a conflict the machine has already
-	 * established: either it is parked in a conflict state, or it still
-	 * carries the conflict after a later transition moved it on without
-	 * surfacing it (an enrollment completed over a parked conflict leaves
-	 * exactly that residue — the state reads settled while the conflict is
-	 * still outstanding).
+	 * Whether the server's copy of this document may be taken as its starting
+	 * point: enrolled as its common ancestor, and written over its file.
+	 *
+	 * Stated as a whitelist, deliberately. Asking instead which states are
+	 * dangerous gets two things wrong: it waves through every state the
+	 * machine gains later, and — the reason this is written the way it is —
+	 * it waves through the states the machine passes through while it is
+	 * still working on a divergence. A recompute out of a parked conflict
+	 * clears the conflict record on the way, and can come to rest carrying
+	 * only the fork. At that point neither the state name nor the conflict
+	 * record says that the device's own writing is the only unreconciled
+	 * copy of the note, and it still is.
+	 *
+	 * Exactly two shapes qualify:
+	 *
+	 * - A document with no history of its own: still loading, or still being
+	 *   classified, with no ancestor recorded. That is what a genuine first
+	 *   download meets. Once an ancestor is recorded the machine has history
+	 *   it has not finished comparing against the file, so the answer is no
+	 *   until it has.
+	 * - A document the machine has settled with nothing outstanding on this
+	 *   device: `idle.synced`, or `idle.remoteAhead` where the server is
+	 *   ahead but neither the file nor the local copy has moved since the
+	 *   ancestor. This is also the shape a completed enrollment produces, so
+	 *   the last check before an ordinary download's write still passes.
+	 *
+	 * Everything else is refused, including a destroyed or unloading machine,
+	 * and anything with the file open for editing.
 	 *
 	 * Answered from machine state alone: no document, disk, or remote text is
 	 * read or compared. That makes it safe as a precondition for operations
 	 * that destroy what is on disk.
 	 */
-	get holdsEstablishedConflict(): boolean {
-		if (this._statePath === "destroyed") return false;
-		return (
-			this._conflict !== null ||
-			this._statePath === "idle.conflict" ||
-			this._statePath.startsWith("active.conflict.")
-		);
+	get acceptsRemoteEnrollment(): boolean {
+		// Records of work that exists only on this device. Taking the server's
+		// copy as the ancestor and writing it over the file discards every one
+		// of them and leaves nothing behind saying they were ever there.
+		if (this._conflict !== null) return false;
+		if (this._fork !== null) return false;
+		if (this._deferredConflict !== undefined) return false;
+		if (this.pendingDiskContents !== null) return false;
+
+		switch (this._statePath) {
+			case "unloaded":
+			case "loading":
+			case "idle.loading":
+				return this._lca === null;
+			case "idle.synced":
+			case "idle.remoteAhead":
+				return true;
+			default:
+				return false;
+		}
 	}
 
 	getConflictInfoSnapshot(): ConflictInfoSnapshot {
@@ -2004,13 +2039,13 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (this._lca) return true;
 		await this.ensurePersistence();
 		if (this._lca) return true;
-		// Re-asked after the await: a conflict established while persistence
-		// was loading must not be settled by an enrollment that started before
-		// it. Completing here would take the ancestor from the remote side and
-		// leave the conflict outstanding but out of sight.
-		if (this.holdsEstablishedConflict) {
+		// Re-asked after the await: work that arrived while persistence was
+		// loading must not be settled by an enrollment that started before it.
+		// Completing here would take the ancestor from the server and leave
+		// whatever this device had outstanding with nothing recording it.
+		if (!this.acceptsRemoteEnrollment) {
 			this.hsmWarn(
-				`initial remote enrollment refused: the document is holding an unresolved conflict | ` +
+				`initial remote enrollment refused: the document is not in a state that accepts one | ` +
 					`guid=${this._guid} state=${this._statePath}`,
 			);
 			return false;
