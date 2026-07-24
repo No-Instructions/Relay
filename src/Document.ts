@@ -991,21 +991,18 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
-	 * Connect the provider for idle-mode fork reconciliation.
-	 * Creates a temporary ProviderIntegration so the HSM receives
-	 * CONNECTED/PROVIDER_SYNCED events and SYNC_TO_REMOTE effects
-	 * flow through the live WebSocket.
-	 *
-	 * Cleanup: call destroyIdleProviderIntegration() or releaseLock()
-	 * when the provider is no longer needed (e.g. on hibernate).
+	 * Refresh the authoritative remote document for fork reconciliation.
+	 * Idle documents download a one-shot HTTP snapshot so passive reads do not
+	 * create an awareness-visible WebSocket session. Open documents and
+	 * existing provider sessions keep using their live provider.
 	 */
 	connectForForkReconcile(): Promise<void> {
 		if (this._forkReconcileConnectPromise) {
 			return this._forkReconcileConnectPromise;
 		}
 
-		const promise = this.lifetime.guard(() =>
-			this.connectForForkReconcileOnce(),
+		const promise = this.lifetime.guard((signal) =>
+			this.connectForForkReconcileOnce(signal),
 		);
 		const tracked = promise.finally(() => {
 			if (this._forkReconcileConnectPromise === tracked) {
@@ -1016,12 +1013,63 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		return tracked;
 	}
 
-	private async connectForForkReconcileOnce(): Promise<void> {
+	private async connectForForkReconcileOnce(
+		signal: AbortSignal,
+	): Promise<void> {
 		const hsm = this._hsm;
 		if (!hsm) return;
 		if (this.destroyed) return;
 		if (!this.sharedFolder.shouldConnect) return;
 
+		if (this.shouldUseLiveProviderForReconcile(hsm)) {
+			await this.connectForForkReconcileWithProvider(hsm);
+			return;
+		}
+
+		const update = await this.sharedFolder.backgroundSync.downloadByGuid(
+			this.sharedFolder,
+			this.guid,
+			this.path,
+		);
+		if (signal.aborted) return;
+		if (this.shouldUseLiveProviderForReconcile(hsm)) {
+			await this.connectForForkReconcileWithProvider(hsm);
+			return;
+		}
+		if (!update) {
+			throw new Error(
+				`Remote document is empty while reconciling ${this.path}`,
+			);
+		}
+
+		this.commitDocumentState(() => {
+			if (this._hsm !== hsm) return;
+
+			this.destroyRemoteDoc();
+			const remoteDoc = this.ensureRemoteDoc();
+			Y.applyUpdate(remoteDoc, update, this._provider);
+			hsm.setRemoteDoc(remoteDoc);
+			hsm.send({ type: "REMOTE_UPDATE", update });
+			this.recordProviderSyncedRemoteHead(
+				Y.encodeSnapshot(Y.snapshot(remoteDoc)),
+			);
+			hsm.send({ type: "PROVIDER_SYNCED" });
+		});
+	}
+
+	private shouldUseLiveProviderForReconcile(hsm: MergeHSM): boolean {
+		return (
+			hsm.isActive() ||
+			this.userLock ||
+			this.hasProviderIntegration() ||
+			this.connected ||
+			this.intent === "connected"
+		);
+	}
+
+	private async connectForForkReconcileWithProvider(
+		hsm: MergeHSM,
+	): Promise<void> {
 		// A fresh remoteDoc is built only for a fork that has no integration
 		// yet; an existing integration keeps its remoteDoc and any handshake it
 		// has in flight.

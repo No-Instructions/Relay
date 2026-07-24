@@ -4269,9 +4269,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._fork = fork;
 				this._bridge.providerSynced = false;
 
-				// Request provider sync so connectForForkReconcile creates a
-				// ProviderIntegration and fires PROVIDER_SYNCED once the server
-				// state is loaded into a fresh remoteDoc.
+				// Request authoritative remote state. The host fires
+				// PROVIDER_SYNCED once the server state is loaded into a fresh
+				// remoteDoc.
 				this.emitEffect({ type: "REQUEST_PROVIDER_SYNC", guid: this._guid });
 
 				return { success: false, forked: true };
