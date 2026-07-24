@@ -470,7 +470,11 @@
 			name="Add this folder to your vault"
 			description="Download and sync this folder to your local device"
 		>
-			<button class="mod-cta system3-button" on:click={debounce(handleAddToVault)}>
+			<button
+				class="mod-cta system3-button"
+				data-action="add-to-vault"
+				on:click={debounce(handleAddToVault)}
+			>
 				Add to vault
 			</button>
 		</SettingItem>
@@ -575,7 +579,11 @@
 			{@const on = category.enabled && !locked}
 			{@const disabled = isUpdating || !category.canToggle}
 			<SlimSettingItem name={category.name} description={category.description}>
-				<div class="setting-item-control">
+				<div
+					class="setting-item-control"
+					data-sync-category={name}
+					data-locked={locked}
+				>
 					{#if locked}
 						<Lock />
 					{/if}
@@ -604,6 +612,7 @@
 			<SlimSettingItem name="">
 				<button
 					class="mod-cta"
+					data-action="buy-storage"
 					on:click={debounce(() => {
 						handleUpgrade($relayStore);
 					})}

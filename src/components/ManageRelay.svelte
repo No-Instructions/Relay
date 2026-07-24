@@ -626,6 +626,7 @@
 							handleAddToVault(remote);
 						})}
 						label="Add to vault"
+						action="add-to-vault"
 					>
 						<Download
 							class="svg-icon lucide-settings"
@@ -639,6 +640,7 @@
 							remoteFolder: remote,
 						});
 					})}
+					action="manage-folder"
 				></SettingsControl>
 			</SlimSettingItem>
 		{/if}
@@ -647,6 +649,7 @@
 	<SettingItem description="" name="">
 		<button
 			class="mod-cta"
+			data-action="share-folder"
 			aria-label="Select a folder to share it with this Relay Server"
 			on:click={debounce(() => {
 				if (relay.version === 0 && !Platform.isMobile) {
@@ -981,6 +984,7 @@
 		>
 			<button
 				class="mod-warning"
+				data-action="leave-relay"
 				on:click={debounce(() => {
 					handleLeaveRelay();
 				})}

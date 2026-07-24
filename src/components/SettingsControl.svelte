@@ -5,6 +5,7 @@
 	const dispatch = createEventDispatcher();
 
 	export var label = "Options";
+	export var action: string | undefined = undefined;
 
 	function handleSettingsClick(event: KeyboardEvent | MouseEvent) {
 		if (
@@ -20,6 +21,7 @@
 <div
 	class="clickable-icon extra-setting-button"
 	aria-label={label}
+	data-action={action}
 	role="button"
 	tabindex="0"
 	on:click={handleSettingsClick}

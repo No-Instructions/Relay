@@ -202,6 +202,7 @@
 			bind:value={shareKey}
 			disabled={invitePending}
 			placeholder="Enter share key"
+			name="share-key"
 			readonly={false}
 			copyOnClick={false}
 			on:input={handleShareKeyInput}
@@ -210,6 +211,7 @@
 		/>
 		<button
 			class="mod-cta system3-button"
+			data-action="join-relay"
 			disabled={invitePending}
 			on:click={debounce(() => handleJoinRelayFromInvite(shareKey))}
 		>
@@ -239,6 +241,7 @@
 				on:settings={() => {
 					handleManageRelay(relay);
 				}}
+				action="manage-relay"
 			></SettingsControl>
 		</SlimSettingItem>
 	{/each}
@@ -276,6 +279,7 @@
 					on:settings={debounce(() => {
 						handleManageRemoteFolder(folder.remote);
 					})}
+					action="manage-folder"
 				></SettingsControl>
 			{:else}
 				<SettingsControl
@@ -285,6 +289,7 @@
 						});
 						handleManageSharedFolder(folder, relay);
 					})}
+					action="manage-folder"
 				></SettingsControl>
 			{/if}
 		</SlimSettingItem>
