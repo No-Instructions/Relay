@@ -1517,7 +1517,11 @@ export class SharedFolder extends HasProvider {
 				// Pending-upload-only paths are ladder rung 1: the machine
 				// re-enqueues them after hydration. Materializing them here
 				// would route through uploadDoc before the hydration gate.
-				if (this.pendingUpload.has(vpath)) return;
+				// Deferring only works while the hydration the machine is
+				// waiting on can actually arrive (canConfirmMembership).
+				if (this.pendingUpload.has(vpath) && this.canConfirmMembership()) {
+					return;
+				}
 			}
 			const guid = this.syncStore.get(vpath);
 			if (this.folderHSM && !guid) return;
@@ -1953,6 +1957,30 @@ export class SharedFolder extends HasProvider {
 
 	async markSynced(): Promise<void> {
 		await this._persistence.markServerSynced();
+	}
+
+	/**
+	 * Whether a confirmed membership pass can still arrive for this folder.
+	 *
+	 * Confirmed confidence comes from one of two places: the folder is its
+	 * own authority and settles at hydration, or a provider handshake
+	 * confirms the server's picture. A folder with no relay has neither —
+	 * it is not the authority (a folder can be left without a relay by
+	 * losing access to one, and losing access must never promote the
+	 * device to authority), and there is no provider to hand it a
+	 * handshake. Its hydration claim is blind and stays blind for the life
+	 * of the session.
+	 *
+	 * That matters wherever work is deferred until the confirmation
+	 * arrives. Deferring is only ever a wait; on a folder that can never
+	 * be confirmed it is a refusal, and one that no later event retracts.
+	 * Callers use this to tell the two apart. It grants nothing: what a
+	 * folder may publish and what it may destroy are still decided by the
+	 * membership row and the dispatch gates, which go on refusing at blind
+	 * confidence exactly as before.
+	 */
+	private canConfirmMembership(): boolean {
+		return this.authoritative || this.relayId !== undefined;
 	}
 
 	/**
