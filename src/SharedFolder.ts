@@ -3385,23 +3385,26 @@ export class SharedFolder extends HasProvider {
 		if (
 			!heldGuid ||
 			!isDocumentMeta(committedMeta) ||
-			committedMeta.id !== supersededBy ||
-			this._pendingRemaps.has(vpath)
+			committedMeta.id !== supersededBy
 		) {
 			return;
 		}
-		this._pendingRemaps.add(vpath);
+		// The claim on the path belongs to the reconciliation routine, which
+		// raises it before its own first await. Raising it here as well hands
+		// that routine a path already claimed — by this call — so it stands
+		// aside for a reconciliation that is only itself, records the request
+		// against a claim no reconciliation is holding, and returns. Nothing
+		// re-drives that record: it is consumed only where a reconciliation
+		// that actually ran releases the path. The rebind would be dropped in
+		// silence, on the one path where the evidence of the divergence is
+		// the local document this call has just destroyed.
 		this.executeRemap({
 			path: vpath,
 			fromGuid: heldGuid,
 			toGuid: supersededBy,
-		})
-			.catch((e) => {
-				this.warn(`[${vpath}] rebind to committed identity failed`, e);
-			})
-			.finally(() => {
-				this._pendingRemaps.delete(vpath);
-			});
+		}).catch((e) => {
+			this.warn(`[${vpath}] rebind to committed identity failed`, e);
+		});
 	}
 
 	private executeEnqueueDownload(vpath: string, guid: string): void {
