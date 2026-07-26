@@ -43,6 +43,10 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		this.unsubscribes = [];
 	}
 
+	get value(): T {
+		return this as unknown as T;
+	}
+
 	notifyListeners(): void {
 		if (PostOffice.isDestroyed()) return;
 		const postie = PostOffice.getInstance();
