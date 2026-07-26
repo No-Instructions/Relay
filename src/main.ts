@@ -97,6 +97,7 @@ import {
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
+import { createPublicApi, type Api } from "./PublicAPI";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -132,6 +133,7 @@ declare const GIT_TAG: string;
 declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
+	api!: Api;
 	appId!: string;
 	private _instanceId!: string;
 	webviewerPatched = false;
@@ -819,6 +821,13 @@ export default class Live extends Plugin {
 			this.timeProvider,
 			this.appId,
 		);
+
+		const publicApi = createPublicApi(this.relayManager, this.loginManager);
+		this.api = publicApi.api;
+		this.register(() => {
+			publicApi.detach();
+		});
+		this.app.workspace.trigger("system3-relay:api-ready", this.api);
 
 		// Register the sync-status view factory before the workspace layout
 		// is restored. Obsidian restores leaves during boot; leaves of an

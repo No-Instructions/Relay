@@ -95,6 +95,12 @@ export class ObservablePermission
 		});
 	}
 
+	// This class publishes its evaluated result rather than itself (see
+	// subscribe below), so it owns the accessor: the base returns the store.
+	override get value(): boolean {
+		return this.currentValue;
+	}
+
 	subscribe(run: (value: boolean) => void): () => void {
 		if (this.destroyed) {
 			throw new Error("Cannot subscribe to destroyed ObservablePermission");
