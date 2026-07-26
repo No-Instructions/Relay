@@ -228,6 +228,12 @@ export class Settings<T> extends Observable<T> {
 		return this.data;
 	}
 
+	// Publishes the settings data rather than itself (see notifyListeners
+	// below), so it owns the accessor: the base returns the store.
+	override get value(): T {
+		return this.data;
+	}
+
 	async update(updater: (current: T) => T): Promise<void> {
 		if (!this._loaded) {
 			this.warn("Attempted to update before loading settings from disk");
@@ -695,6 +701,13 @@ export class NamespacedSettings<
 
 			return result;
 		});
+	}
+
+	// Publishes the value at this path rather than itself (see subscribe and
+	// notifyListeners below), so it owns the accessor: the base returns the
+	// store.
+	override get value(): T {
+		return this.get();
 	}
 
 	subscribe(run: (value: T) => void): Unsubscriber {
