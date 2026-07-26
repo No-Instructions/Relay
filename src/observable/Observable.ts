@@ -43,6 +43,22 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		this.unsubscribes = [];
 	}
 
+	/**
+	 * The current value, read without subscribing. `subscribe` delivers exactly
+	 * this — immediately on subscription, then again on every change.
+	 *
+	 * The base class publishes itself: `notifyListeners` hands each listener the
+	 * sender, so a plain `Observable<T>`, and `ObservableMap`/`ObservableSet`
+	 * which are observables of themselves, read back as themselves.
+	 *
+	 * A subclass that overrides `notifyListeners` or `subscribe` to deliver a
+	 * separate value must override this accessor to return that same value, or
+	 * `.value` and `subscribe` will disagree.
+	 */
+	get value(): T {
+		return this as unknown as T;
+	}
+
 	notifyListeners(): void {
 		if (PostOffice.isDestroyed()) return;
 		const postie = PostOffice.getInstance();
