@@ -43,6 +43,30 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 		this.unsubscribes = [];
 	}
 
+	/**
+	 * The current value, read without subscribing. `subscribe` delivers exactly
+	 * this — immediately on subscription, then again on every change.
+	 *
+	 * The base class publishes itself: `notifyListeners` hands each listener the
+	 * sender, so a plain `Observable<T>`, and `ObservableMap`/`ObservableSet`
+	 * which are observables of themselves, read back as themselves.
+	 *
+	 * A subclass that overrides `notifyListeners` or `subscribe` to deliver a
+	 * separate value must override this accessor to return that same value, or
+	 * `.value` and `subscribe` will disagree.
+	 *
+	 * The one place they part company is after the post office is destroyed:
+	 * `.value` still answers, while `subscribe` registers the listener and
+	 * delivers nothing, here or ever. Internally that is the end of the plugin's
+	 * life and nothing is left to tell. A store meant to outlive it — one handed
+	 * to another plugin, which keeps answering long after Relay unloads — owes
+	 * its subscribers the immediate delivery anyway, and overrides `subscribe`
+	 * to make it; see `src/api/View.ts`.
+	 */
+	get value(): T {
+		return this as unknown as T;
+	}
+
 	notifyListeners(): void {
 		if (PostOffice.isDestroyed()) return;
 		const postie = PostOffice.getInstance();

@@ -101,6 +101,7 @@ import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
 import { routeVaultDelete, routeVaultRename } from "./vaultEventRouting";
+import { createPublicApi, type Api } from "./PublicAPI";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -136,6 +137,8 @@ declare const GIT_TAG: string;
 declare const REPOSITORY: string;
 
 export default class Live extends Plugin {
+	/** The public API container, also reachable through the plugin registry. */
+	api!: Api;
 	appId!: string;
 	private _instanceId!: string;
 	webviewerPatched = false;
@@ -845,6 +848,21 @@ export default class Live extends Plugin {
 			this.timeProvider,
 			this.appId,
 		);
+
+		// The API is a projection over the managers above, so it exists as soon
+		// as they do — which is what makes the registry path work for a plugin
+		// that loads after Relay. The ready event is for the other case, and
+		// fires here rather than later because readiness is a property of the
+		// stores, not of the event's timing: they are live and empty now, and
+		// they emit as they fill. On unload the views detach from their sources,
+		// leaving a consumer that kept a reference holding a small, inert object
+		// that still answers rather than stores wired into a torn-down instance.
+		const publicApi = createPublicApi(this.relayManager, this.loginManager);
+		this.api = publicApi.api;
+		this.register(() => {
+			publicApi.detach();
+		});
+		this.app.workspace.trigger("system3-relay:api-ready", this.api);
 
 		// Register the sync-status view factory before the workspace layout
 		// is restored. Obsidian restores leaves during boot; leaves of an
