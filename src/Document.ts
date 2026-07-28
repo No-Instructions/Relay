@@ -375,6 +375,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				this._provider! as YjsProvider,
 				{ onSyncedRemoteHead: this.recordProviderSyncedRemoteHead },
 			);
+		} else {
+			// ACQUIRE_LOCK clears the machine's sync gate, and only the
+			// integration constructor re-samples the provider. When an idle
+			// integration is reused, re-sample explicitly: a provider that is
+			// still connected and synced fires no new edge to restore the gate.
+			this._providerIntegration.resampleConnectionState();
 		}
 		this._activeProviderIntegration = true;
 
