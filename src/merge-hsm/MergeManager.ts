@@ -723,6 +723,30 @@ export class MergeManager {
     return provider;
   }
 
+  /**
+   * Re-attach a forked idle document to its own remote replica.
+   *
+   * A document that forked while resting holds no replica: the machine's
+   * pointer was nulled at hibernation while the document's own YDoc stayed
+   * live on a connected, synced provider. Reconciliation has nothing to merge
+   * against until the two are re-joined. Waking rather than assigning also
+   * drains anything buffered while detached and holds off re-hibernation, so
+   * the attach cannot be undone before the reconcile reads it.
+   *
+   * Returns whether the machine now holds a replica.
+   */
+  prepareForkReconcile(guid: string): boolean {
+    const doc = this._getDocument(guid);
+    const hsm = doc?.hsm;
+    if (!doc || !hsm) return false;
+    if (!hsm.hasFork() || !hsm.matches('idle.localAhead')) return false;
+    if (hsm.getRemoteDoc()) return true;
+    const remoteDoc = doc.ensureRemoteDoc();
+    if (!remoteDoc) return false;
+    this.wake(guid, remoteDoc);
+    return hsm.getRemoteDoc() !== null;
+  }
+
   async getConflictInfo(guid: string): Promise<ConflictInfoSnapshot> {
     return (await this.conflictProviderFor(guid).getConflictInfo()) as ConflictInfoSnapshot;
   }

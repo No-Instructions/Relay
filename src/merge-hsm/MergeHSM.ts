@@ -239,6 +239,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// Fork: snapshot of localDoc state before disk edit ingestion (idle mode)
 	private _fork: Fork | null = null;
 
+	// Whether the current fork has already logged a reconcile attempt with no
+	// remote replica attached. Instance-only (never persisted with the fork):
+	// the warning fires once per fork so a stranded fork is diagnosable from
+	// the log without flooding it on every poll.
+	private _warnedForkAwaitingReplica = false;
+
 	// "After" snapshot of each disk ingestion within the current fork.
 	// Each ingestDisk call pushes one entry, giving 1:1 correspondence
 	// with CapturedOp entries from OpCapture. Cleared when the fork is cleared.
@@ -3413,6 +3419,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			clearForkAndUpdateLCA: (_hsm, event) => {
 				this._fork = null;
+				this._warnedForkAwaitingReplica = false;
 				this._ingestionTexts = [];
 				this.pendingIdleUpdates = null;
 				const result = (event as any).data;
@@ -4429,7 +4436,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// No remote replica is attached — an unmet precondition, not a
 			// failure. Rest in idle.localAhead; the folder poll connects forked
 			// documents, and the resulting PROVIDER_SYNCED restarts this invoke
-			// with the replica present.
+			// with the replica present. The rest is a self-transition the
+			// transition log does not record, so leave one trace per fork.
+			if (!this._warnedForkAwaitingReplica) {
+				this._warnedForkAwaitingReplica = true;
+				this.hsmWarn(
+					`fork reconcile awaiting remote replica | guid=${this._guid} ` +
+						`state=${this._statePath} forkOrigin=${this._fork?.origin} ` +
+						`forkCreated=${this._fork?.created}`,
+				);
+			}
 			return { success: false, awaitingProvider: true };
 		}
 
