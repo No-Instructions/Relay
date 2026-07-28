@@ -99,6 +99,10 @@ import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
 import { createPublicApi, type Api } from "./PublicAPI";
+import {
+	TextViewRegistry,
+	type PluginRegistrationSettings,
+} from "./TextViewRegistry";
 
 interface DebugSettings {
 	debugging: boolean;
@@ -112,6 +116,7 @@ interface RelaySettings extends FeatureFlags, DebugSettings {
 	sharedFolders: SharedFolderSettings[];
 	release: ReleaseSettings;
 	endpoints: EndpointSettings;
+	plugins?: PluginRegistrationSettings;
 }
 
 const DEFAULT_SETTINGS: RelaySettings = {
@@ -168,6 +173,8 @@ export default class Live extends Plugin {
 	public releaseSettings!: NamespacedSettings<ReleaseSettings>;
 	public loginSettings!: NamespacedSettings<LoginSettings>;
 	public endpointSettings!: NamespacedSettings<EndpointSettings>;
+	private pluginRegistrySettings!: NamespacedSettings<PluginRegistrationSettings>;
+	private textViewRegistry!: TextViewRegistry;
 	debug!: (...args: unknown[]) => void;
 	log!: (...args: unknown[]) => void;
 	warn!: (...args: unknown[]) => void;
@@ -587,6 +594,10 @@ export default class Live extends Plugin {
 		this.releaseSettings = new NamespacedSettings(this.settings, "release");
 		this.loginSettings = new NamespacedSettings(this.settings, "login");
 		this.endpointSettings = new NamespacedSettings(this.settings, "endpoints");
+		this.pluginRegistrySettings = new NamespacedSettings(
+			this.settings,
+			"plugins",
+		);
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
@@ -823,7 +834,17 @@ export default class Live extends Plugin {
 			this.appId,
 		);
 
-		const publicApi = createPublicApi(this.relayManager, this.loginManager);
+		this.textViewRegistry = new TextViewRegistry(
+			this.pluginRegistrySettings,
+			(viewType) =>
+				!!(this.app as any).viewRegistry?.getViewCreatorByType?.(viewType),
+		);
+
+		const publicApi = createPublicApi(
+			this.relayManager,
+			this.loginManager,
+			this.textViewRegistry,
+		);
 		this.api = publicApi.api;
 		this.register(() => {
 			publicApi.detach();
@@ -883,12 +904,20 @@ export default class Live extends Plugin {
 				});
 			}
 
+			// Apply persisted view registrations before folders connect: leaves
+			// are enumerated as folders come up, with no guarantee a consumer
+			// plugin's own startup has run yet. Every enabled plugin has
+			// registered its view factories by layout-ready, so a stored
+			// registration whose view type no longer resolves is pruned here.
+			this.textViewRegistry.load();
+
 			this.sharedFolders.load();
 			this._liveViews = new LiveViewManager(
 				this.app,
 				this.sharedFolders,
 				this.loginManager,
 				this.networkStatus,
+				this.textViewRegistry,
 			);
 
 			// NOTE: Extensions list should be loaded once and then mutated.
@@ -1855,6 +1884,7 @@ export default class Live extends Plugin {
 			this._liveViews?.destroy();
 		});
 		this._liveViews = null as any;
+		this.textViewRegistry = null as any;
 
 		teardownStep("relayManager.destroy", () => {
 			this.relayManager?.destroy();
@@ -1968,6 +1998,10 @@ export default class Live extends Plugin {
 			this.endpointSettings.destroy();
 		});
 		this.endpointSettings = null as any;
+		teardownStep("pluginRegistrySettings.destroy", () => {
+			this.pluginRegistrySettings.destroy();
+		});
+		this.pluginRegistrySettings = null as any;
 		teardownStep("settings.destroy", () => {
 			this.settings.destroy();
 		});
