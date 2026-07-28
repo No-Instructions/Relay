@@ -438,6 +438,13 @@ export class MergeManager {
   private _activeStateLoads = new Set<string>();
 
   /**
+   * Documents whose initial persisted-state read is still in flight. Their
+   * idle mode determination is already queued behind that read, so the
+   * workspace scan must not race it with one of its own.
+   */
+  private _pendingPersistenceLoads = new Set<string>();
+
+  /**
    * LRU cache of warm document GUIDs. Insertion order = access order
    * (least recently used first). Capacity bounded by _maxConcurrentWarm.
    * When full, the oldest entry is evicted (hibernated) to make room.
@@ -917,7 +924,9 @@ export class MergeManager {
 
     // Async-load full per-document state from IDB (includes lca.contents and fork)
     const loadStateFn = this.loadState ?? (() => Promise.resolve(null));
+    this._pendingPersistenceLoads.add(guid);
     loadStateFn(guid).then((state) => {
+      this._pendingPersistenceLoads.delete(guid);
       if (this.destroyed) return;
       // Build full LCA from IDB state (the source of truth for contents)
       const lca = restorePersistedLCA(state?.lca ?? null);
@@ -925,6 +934,12 @@ export class MergeManager {
         type: 'PERSISTENCE_LOADED',
         lca,
         disk: state?.disk ?? null,
+        // The session's own look at the file rides along with the persisted
+        // record so the load-time guards cannot reach a verdict without it.
+        // Sent separately it was silently discarded whenever mode
+        // determination had already moved the HSM to a state that ignores it,
+        // and the machine then settled as synced on a stale record.
+        observedDisk: currentDiskMetadata,
         localSnapshot: state?.localSnapshot ?? null,
         localStateVector: state?.localSnapshot
           ? null
@@ -934,10 +949,10 @@ export class MergeManager {
         deferredConflict: state?.deferredConflict,
         fork: restorePersistedFork(state?.fork ?? null),
       });
-      this.sendDiskMetadataChangedIfNeeded(hsm, state?.disk ?? null, currentDiskMetadata);
       hsm.send({ type: 'SET_MODE_IDLE' });
       this._updateWakeQueueMetrics();
     }).catch((err) => {
+      this._pendingPersistenceLoads.delete(guid);
       this._error(`Failed to load state for ${guid}: ${err}`);
       // On IDB failure, pass null LCA — metadata without contents would
       // produce wrong merge results. The HSM treats null as "no prior state".
@@ -953,25 +968,6 @@ export class MergeManager {
     });
 
     return hsm;
-  }
-
-  private sendDiskMetadataChangedIfNeeded(
-    hsm: MergeHSM,
-    persistedDisk: { hash: string; mtime: number } | null,
-    currentDisk: { mtime: number; hash?: string } | null,
-  ): void {
-    if (!currentDisk || !persistedDisk) return;
-    if (
-      currentDisk.mtime === persistedDisk.mtime &&
-      (currentDisk.hash === undefined || currentDisk.hash === persistedDisk.hash)
-    ) {
-      return;
-    }
-    hsm.send({
-      type: 'DISK_METADATA_CHANGED',
-      mtime: currentDisk.mtime,
-      ...(currentDisk.hash !== undefined ? { hash: currentDisk.hash } : {}),
-    });
   }
 
   /**
@@ -1530,7 +1526,12 @@ export class MergeManager {
       if (statePath === 'loading') {
         if (activeGuids.has(guid)) {
           hsm.send({ type: 'SET_MODE_ACTIVE' });
-        } else {
+        } else if (!this._pendingPersistenceLoads.has(guid)) {
+          // A document whose state read is still in flight already has an
+          // idle mode determination queued behind it, sent the moment the
+          // record arrives. Sending one now only decides the mode earlier,
+          // out of order with the record — so leave it in `loading` and let
+          // the load path settle it with the record in hand.
           hsm.send({ type: 'SET_MODE_IDLE' });
         }
       } else if (statePath.startsWith('active.') && !activeGuids.has(guid) && !this.activeDocs.has(guid)) {
@@ -2003,6 +2004,7 @@ export class MergeManager {
     this._wakeQueue.length = 0;
     this._wakingDocs.clear();
     this._activeStateLoads.clear();
+    this._pendingPersistenceLoads.clear();
     this._warmLRU.clear();
     this._warmLeases.clear();
     this._managedFiles.clear();
