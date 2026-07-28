@@ -390,6 +390,21 @@ export interface PersistenceLoadedEvent {
 	lca: LCAState | null;
 	/** Last known disk metadata from persisted HSM state. */
 	disk?: MergeMetadata | null;
+	/**
+	 * Metadata for the file as observed in THIS session, captured by the
+	 * caller at the moment it requested the persisted record.
+	 *
+	 * It travels on the same event as `disk` on purpose. The persisted record
+	 * only says what the file looked like when the document last settled; it
+	 * cannot reveal a change made while the plugin was not running. Delivering
+	 * the session observation separately makes the load-time verdict depend on
+	 * delivery order, and a state that ignores the separate report settles as
+	 * synced from the persisted record compared against itself. Carried here,
+	 * the verdict cannot be reached without it.
+	 *
+	 * `hash` is absent when only the modification time was available.
+	 */
+	observedDisk?: { mtime: number; hash?: string } | null;
 	/** Persisted local head snapshot. State vectors are fallback metadata only. */
 	localSnapshot?: Uint8Array | null;
 	/** Existing records may have only state vectors. */
