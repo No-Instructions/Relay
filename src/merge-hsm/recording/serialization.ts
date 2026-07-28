@@ -82,6 +82,9 @@ export function serializeEvent(event: MergeEvent): SerializableEvent {
         type: 'PERSISTENCE_LOADED',
         lca: event.lca ? serializeLCA(event.lca) : null,
         ...(event.disk !== undefined ? { disk: event.disk } : {}),
+        ...(event.observedDisk !== undefined
+          ? { observedDisk: event.observedDisk }
+          : {}),
         ...(event.localSnapshot
           ? { localSnapshot: uint8ArrayToBase64(event.localSnapshot) }
           : {}),
@@ -170,6 +173,7 @@ export function deserializeEvent(event: SerializableEvent): MergeEvent {
         type: 'PERSISTENCE_LOADED',
         lca: event.lca ? deserializeLCA(event.lca) : null,
         disk: event.disk ?? undefined,
+        observedDisk: event.observedDisk ?? undefined,
         localSnapshot: event.localSnapshot
           ? base64ToUint8Array(event.localSnapshot)
           : null,
