@@ -12,7 +12,7 @@ name: E2E burn-in
 # render sensitive). A manual dispatch can override the list, ref, or harness.
 
 run-name: >-
-  burn-in ${{ inputs.tests || 'tp035,tp036,tp037,tp041,tp044,tp058' }}
+  burn-in ${{ inputs.tests || 'tp035,tp036,tp037,tp041,tp044,tp058,tp069' }}
   @ ${{ inputs.ref || 'origin/main' }}
 
 on:
@@ -31,7 +31,7 @@ on:
       tests:
         description: 'Comma-separated plan ids to burn in (one pool VM each)'
         required: false
-        default: 'tp035,tp036,tp037,tp041,tp044,tp058'
+        default: 'tp035,tp036,tp037,tp041,tp044,tp058,tp069'
       harness_ref:
         description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
         required: false
@@ -72,7 +72,7 @@ jobs:
           REQ_REF="${{ inputs.ref }}"
           [ -z "$REQ_REF" ] && REQ_REF="origin/main"
           REQ_TESTS="${{ inputs.tests }}"
-          [ -z "$REQ_TESTS" ] && REQ_TESTS="tp035,tp036,tp037,tp041,tp044,tp058"
+          [ -z "$REQ_TESTS" ] && REQ_TESTS="tp035,tp036,tp037,tp041,tp044,tp058,tp069"
 
           API_REF="$REQ_REF"
           API_REF="${API_REF#origin/}"
