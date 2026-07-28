@@ -43,6 +43,10 @@ import {
 	resolveMarkdownAwarenessAnchor,
 } from "./AwarenessViewPlugin";
 import { TextFileViewPlugin } from "./TextViewPlugin";
+import {
+	iterateTextFileViews,
+	type TextViewRegistry,
+} from "./TextViewRegistry";
 import { ViewHookPlugin } from "./plugins/ViewHookPlugin";
 import { DiskBuffer } from "./DiskBuffer";
 import { trackPromise } from "./trackPromise";
@@ -75,33 +79,6 @@ function iterateCanvasViews(
 	workspace.iterateAllLeaves((leaf) => {
 		if (leaf.view.getViewType() === "canvas") {
 			fn(leaf.view as unknown as CanvasView);
-		}
-	});
-}
-
-function iterateTextFileViews(
-	workspace: Workspace,
-	fn: (leaf: TextFileView) => void,
-) {
-	const ALLOWED_TEXT_FILE_VIEWS = ["markdown", "kanban"];
-	const allLeaves: any[] = [];
-
-	workspace.iterateAllLeaves((leaf) => {
-		allLeaves.push({
-			viewType: leaf.view?.getViewType?.() || "unknown",
-			filePath: (leaf.view as any)?.file?.path || "no-file",
-			isTextFileView: leaf.view instanceof TextFileView,
-			leafType: leaf.view.constructor.name,
-		});
-	});
-
-	workspace.iterateAllLeaves((leaf) => {
-		if (leaf.view instanceof TextFileView) {
-			const viewType = leaf.view.getViewType();
-			if (viewType === "canvas") return;
-			if (ALLOWED_TEXT_FILE_VIEWS.includes(viewType)) {
-				fn(leaf.view);
-			}
 		}
 	});
 }
@@ -1054,6 +1031,7 @@ export class LiveViewManager {
 	refreshQueue: (() => Promise<boolean>)[];
 	private documentViewers: Map<string, Set<DocumentViewer>>;
 	private canvasViewers: Map<string, Set<DocumentViewer>>;
+	private textViewRegistry: TextViewRegistry;
 	log: (message: string, ...args: unknown[]) => void;
 	warn: (message: string, ...args: unknown[]) => void;
 
@@ -1062,7 +1040,9 @@ export class LiveViewManager {
 		sharedFolders: SharedFolders,
 		loginManager: LoginManager,
 		networkStatus: NetworkStatus,
+		textViewRegistry: TextViewRegistry,
 	) {
+		this.textViewRegistry = textViewRegistry;
 		this.workspace = app.workspace;
 		this.sharedFolders = sharedFolders;
 		this.views = [];
@@ -1194,7 +1174,7 @@ export class LiveViewManager {
 		if (!sharedFolder) return false;
 		const fullPath = sharedFolder.getPath(document.path);
 		let open = false;
-		iterateTextFileViews(this.workspace, (view) => {
+		iterateTextFileViews(this.workspace, this.textViewRegistry, (view) => {
 			if (open) return;
 			if (view.file?.path === fullPath) {
 				open = true;
@@ -1414,7 +1394,7 @@ export class LiveViewManager {
 
 	private findFolders(): SharedFolder[] {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
-		iterateTextFileViews(this.workspace, (textFileView) => {
+		iterateTextFileViews(this.workspace, this.textViewRegistry, (textFileView) => {
 			// Check if the view is displaying a file
 			const viewFilePath = textFileView.file?.path;
 			if (!viewFilePath) {
@@ -1444,7 +1424,7 @@ export class LiveViewManager {
 
 	private async foldersReady(): Promise<SharedFolder[]> {
 		const folders: Set<SharedFolder> = new Set<SharedFolder>();
-		iterateTextFileViews(this.workspace, (textFileViews) => {
+		iterateTextFileViews(this.workspace, this.textViewRegistry, (textFileViews) => {
 			// Check if the view is displaying a file
 			const viewFilePath = textFileViews.file?.path;
 			if (!viewFilePath) {
@@ -1484,7 +1464,7 @@ export class LiveViewManager {
 
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
-		iterateTextFileViews(this.workspace, async (textFileView) => {
+		iterateTextFileViews(this.workspace, this.textViewRegistry, async (textFileView) => {
 			const viewFilePath = textFileView.file?.path;
 			if (!viewFilePath) {
 				return;
@@ -1832,7 +1812,7 @@ export class LiveViewManager {
 
 	private refreshOpenEditorLeavesForUnload(): void {
 		const refreshed = new Set<WorkspaceLeaf>();
-		iterateTextFileViews(this.workspace, (view) => {
+		iterateTextFileViews(this.workspace, this.textViewRegistry, (view) => {
 			const leaf = view.leaf;
 			if (!leaf || refreshed.has(leaf)) return;
 			if (!((view as any).editor as any)?.cm) return;

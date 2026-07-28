@@ -25,11 +25,38 @@ export interface User {
 	color?: string;
 }
 
+/**
+ * A view Relay drives live edits into.
+ *
+ * The registered view type must resolve to a view extending Obsidian's
+ * `TextFileView`, and `setViewData` must round-trip through `getViewData`:
+ * Relay pushes merged document text in through `setViewData` and reads local
+ * edits back out through `getViewData`, so a view that renders a projection
+ * it cannot reproduce as text will lose edits.
+ */
+export interface LiveTextViewV0 {
+	getViewType(): string;
+	getViewData(): string;
+	setViewData(data: string, clear: boolean): void;
+}
+
 export interface ApiV0 {
 	identity: {
 		users: ObservableMap<string, User>;
 		currentUser: Observable<User | null>;
 	};
+	/**
+	 * Register a {@link LiveTextViewV0} view type for live editing.
+	 *
+	 * The registration is persisted, so a leaf of this view type restored on
+	 * a cold start attaches before the registering plugin has loaded. It is
+	 * removed by the returned {@link Unsubscriber}, or dropped at startup
+	 * once the view type no longer resolves in the app's view registry
+	 * (the registering plugin was disabled or uninstalled). Re-registering
+	 * the same pair is idempotent, so registering on every load is the
+	 * expected pattern.
+	 */
+	registerView(pluginId: string, viewType: string): Unsubscriber;
 }
 
 export interface Api {
