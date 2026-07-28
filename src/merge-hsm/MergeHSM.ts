@@ -827,6 +827,45 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		);
 	}
 
+	/**
+	 * Fold a session observation of the file into the load-time disk belief.
+	 *
+	 * The persisted record describes the file as it was when this document
+	 * last settled. If the file was rewritten while the plugin was not
+	 * running, only an observation made in this session can reveal it — so
+	 * the load-time guards must see that observation before they can conclude
+	 * anything, including "in sync". Comparing the persisted record against
+	 * itself always says "unchanged", which is why this arrives on the same
+	 * event rather than as a separate report the guards can run without.
+	 *
+	 * Identity only: this compares the recorded modification time and hash of
+	 * one path. It never inspects or compares document content.
+	 */
+	private applyObservedDiskAtLoad(
+		observed?: { mtime: number; hash?: string } | null,
+	): void {
+		if (!observed) return;
+		const persisted = this._disk;
+		// With no persisted record there is nothing to contradict, and
+		// needsDiskContentAtLoad() already requires a read when _disk is null.
+		if (!persisted) return;
+		if (
+			observed.mtime === persisted.mtime &&
+			(observed.hash === undefined || observed.hash === persisted.hash)
+		) {
+			return;
+		}
+		if (typeof observed.hash === "string") {
+			// The observation is complete: it identifies the current bytes.
+			this._disk = { hash: observed.hash, mtime: observed.mtime };
+			this._needsDiskContentLoad = false;
+			return;
+		}
+		// Modification time moved but the current bytes are unknown. The file
+		// must be read before any load-time verdict is reached.
+		this._needsDiskContentLoad = true;
+	}
+
 	// ===========================================================================
 	// Public API
 	// ===========================================================================
@@ -2950,6 +2989,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				if (e.disk !== undefined) {
 					this._disk = e.disk ?? null;
 				}
+				this.applyObservedDiskAtLoad(e.observedDisk);
 				if (e.deferredConflict !== undefined) {
 					this._deferredConflict = e.deferredConflict ?? undefined;
 				}

@@ -162,6 +162,7 @@ export type SerializableEvent =
       type: 'PERSISTENCE_LOADED';
       lca: SerializableLCA | null;
       disk?: { hash: string; mtime: number } | null;
+      observedDisk?: { mtime: number; hash?: string } | null;
       localSnapshot?: string | null;
       localStateVector?: string | null;
       deferredConflict?: {
