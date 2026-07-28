@@ -782,8 +782,20 @@ export class SharedFolder extends HasProvider {
 				if (effect.type === "PERSIST_STATE") {
 					// Persisted fork/LCA state writes run in the background; track
 					// failures so persistence errors are visible.
+					//
+					// Stamp the record with its owning folder here — the one
+					// write point every document persist passes through, so
+					// the association is folder-correct by construction and
+					// survives rewrites the machines build without it. The
+					// store is vault-wide and a record is folder-scoped
+					// evidence only with the stamp. The stamp is written on
+					// every session, folder engine on or off: it is an
+					// additive field on a write that already happens, so
+					// existing records backfill lazily as documents naturally
+					// re-persist and the evidence stock is already grown by
+					// the time the engine turns on.
 					const p = this._hsmStore
-						.saveState(guid, effect.state)
+						.saveState(guid, { ...effect.state, folder: this.guid })
 						.catch((err) => {
 							this.error(
 								`[MergeManager] saveState failed for ${guid}:`,
