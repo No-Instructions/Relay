@@ -4805,16 +4805,43 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const remoteSV = Y.encodeStateVector(this.remoteDoc);
 		if (!stateVectorsEqual(localSV, remoteSV)) return;
 
+		// State vectors carry insert clocks but no delete set, so equal state
+		// vectors do not prove convergence: a delete-only update leaves every
+		// state vector unchanged while the documents' tombstones differ.
+		// Convergence requires equal full snapshots.
+		const localSnapshot = snapshotFromDoc(this.localDoc);
+		if (!snapshotsEqual(localSnapshot, snapshotFromDoc(this.remoteDoc))) {
+			return;
+		}
+
 		this._localStateVector = localSV;
 		this._remoteStateVector = remoteSV;
 
-		if (!stateVectorsEqual(this._lca.stateVector, localSV)) {
-			this._setLCA({
-				...this._lca,
-				stateVector: localSV,
-			});
-			this.emitPersistState();
+		// Advance the baseline whenever the full snapshot moved — including
+		// delete-only changes that leave the state vector untouched — and
+		// upgrade baselines that predate snapshot capture. Recapture the
+		// snapshot from the live document: spreading the previous snapshot
+		// forward would persist a head that lacks the newly absorbed ops.
+		let lcaSnapshotCurrent = false;
+		if (this._lca.snapshot !== undefined) {
+			try {
+				lcaSnapshotCurrent = snapshotsEqual(
+					{ snapshot: this._lca.snapshot },
+					localSnapshot,
+				);
+			} catch {
+				// Unreadable persisted snapshot data — recapture below.
+			}
 		}
+		if (lcaSnapshotCurrent && stateVectorsEqual(this._lca.stateVector, localSV)) {
+			return;
+		}
+		this._setLCA({
+			...this._lca,
+			stateVector: stateVectorFromSnapshot(localSnapshot),
+			snapshot: localSnapshot.snapshot,
+		});
+		this.emitPersistState();
 	}
 
 	private hasLocalChangedSinceLCA(): boolean {
