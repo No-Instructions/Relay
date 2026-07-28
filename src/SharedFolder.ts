@@ -1350,7 +1350,17 @@ export class SharedFolder extends HasProvider {
 	 * every poll.
 	 */
 	private recoverForkedIdleDocument(file: Document, hsm: MergeHSM): void {
-		if (file.connected && file.synced) {
+		// A machine holding no remote replica has nothing to reconcile against.
+		// Redelivering the sync edge restarts a reconcile that cannot finish
+		// and parks it again — silently, because the target carries no reenter.
+		// Join the machine to the document's own replica first: it is the live
+		// server copy, already synced, so this touches no transport. That is
+		// also why it runs before the connectionStable gate — the heavy
+		// connect path below stays behind it.
+		if (!hsm.getRemoteDoc()) {
+			this.mergeManager?.prepareForkReconcile(file.guid);
+		}
+		if (hsm.getRemoteDoc() && file.connected && file.synced) {
 			hsm.send({ type: "PROVIDER_SYNCED" });
 			return;
 		}
