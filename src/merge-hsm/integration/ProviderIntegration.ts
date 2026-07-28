@@ -83,12 +83,25 @@ export class ProviderIntegration {
 
     // Send initial state if already connected/synced
     // (in case ProviderIntegration is created after provider is already connected)
-    if (provider.connectionState?.status === 'connected') {
-      hsm.send({ type: 'CONNECTED' });
+    this.resampleConnectionState();
+  }
+
+  /**
+   * Re-send connection and sync state read from the provider's current level.
+   *
+   * The HSM's sync gate is edge-triggered and can be cleared while the
+   * provider stays connected and synced (e.g. when a lock is acquired). A
+   * genuinely synced provider fires no new 'sync' event afterwards, so a
+   * caller that reuses this integration instead of constructing a fresh one
+   * must re-sample the provider to restore the gate.
+   */
+  resampleConnectionState(): void {
+    if (this.provider.connectionState?.status === 'connected') {
+      this.hsm.send({ type: 'CONNECTED' });
     }
-    if (provider.synced && this.isProviderConnected()) {
+    if (this.provider.synced && this.isProviderConnected()) {
       this.options.onSyncedRemoteHead?.(snapshotFromDoc(this.remoteDoc).snapshot);
-      hsm.send({ type: 'PROVIDER_SYNCED' });
+      this.hsm.send({ type: 'PROVIDER_SYNCED' });
     }
   }
 
