@@ -8,11 +8,14 @@ name: E2E burn-in
 # ledger (s3://system3-ci/burnin/ledger.jsonl) so flake RATES accumulate across
 # nights rather than resetting with each run's artifacts.
 #
-# The default list is the graduation proposal's burn-in members (slow / timing /
-# render sensitive). A manual dispatch can override the list, ref, or harness.
+# Membership is not written down here. `default` is the token both e2e
+# workflows pass to mean "this workflow's canonical set", and the prepare job
+# expands it from the shared suite manifest — the same single source of truth
+# the parallel lane resolves its own set from. A manual dispatch can override
+# with an explicit comma-separated list, or change the ref or harness.
 
 run-name: >-
-  burn-in ${{ inputs.tests || 'tp035,tp036,tp037,tp041,tp044,tp058' }}
+  burn-in ${{ inputs.tests || 'default' }}
   @ ${{ inputs.ref || 'origin/main' }}
 
 on:
@@ -29,9 +32,9 @@ on:
         required: false
         default: 'origin/main'
       tests:
-        description: 'Comma-separated plan ids to burn in (one pool VM each)'
+        description: 'Comma-separated plan ids to burn in (one pool VM each), or "default" for the suite manifest''s burn-in set'
         required: false
-        default: 'tp035,tp036,tp037,tp041,tp044,tp058'
+        default: 'default'
       harness_ref:
         description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
         required: false
@@ -63,6 +66,87 @@ jobs:
       ref: ${{ steps.resolve.outputs.ref }}
       matrix: ${{ steps.resolve.outputs.matrix }}
     steps:
+      # This job runs before any VM exists and has no checkout, so it reaches
+      # the suite manifest directly over the deploy key rather than through the
+      # harness working copy the burn-in legs later clone.
+      - name: Resolve the plan set from the suite manifest
+        id: plans
+        env:
+          REQ_TESTS: ${{ inputs.tests }}
+          REQ_HARNESS_REF: ${{ inputs.harness_ref }}
+          HARNESS_DEPLOY_KEY: ${{ secrets.HARNESS_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$REQ_TESTS" ]; then
+            REQ_TESTS="default"
+          fi
+
+          # Only the bare token expands. An explicit list from a manual
+          # dispatch is the operator's business and passes through verbatim.
+          if [ "$REQ_TESTS" != "default" ]; then
+            echo "Explicit plan list requested: $REQ_TESTS"
+            echo "tests=$REQ_TESTS" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$REQ_HARNESS_REF" ]; then
+            REQ_HARNESS_REF="origin/main"
+          fi
+          FETCH_REF="${REQ_HARNESS_REF#origin/}"
+
+          WORKDIR="$RUNNER_TEMP/suite-manifest"
+          KEY="$RUNNER_TEMP/suite-manifest-key"
+          HOSTS="$RUNNER_TEMP/suite-manifest-hosts"
+          cleanup() { rm -rf "$WORKDIR" "$KEY" "$HOSTS"; }
+          trap cleanup EXIT
+
+          printf '%s\n' "$HARNESS_DEPLOY_KEY" > "$KEY"
+          chmod 600 "$KEY"
+          cat > "$HOSTS" << 'EOF'
+          github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+          github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+          github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+          EOF
+          chmod 600 "$HOSTS"
+          export GIT_SSH_COMMAND="ssh -i $KEY -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOSTS"
+
+          # Blobless, shallow, no checkout: this pulls one commit's trees and
+          # then lazily materializes the single manifest blob. No working copy
+          # of the suite repo is created on this runner.
+          rm -rf "$WORKDIR"
+          if ! git clone --quiet --depth=1 --filter=blob:none --no-checkout \
+              git@github.com:No-Instructions/relay-harness.git "$WORKDIR"; then
+            echo "::error::Could not reach the suite repository to resolve the burn-in plan set"
+            exit 1
+          fi
+          if ! git -C "$WORKDIR" fetch --quiet --depth=1 origin "$FETCH_REF"; then
+            echo "::error::Could not fetch suite ref $REQ_HARNESS_REF"
+            exit 1
+          fi
+          SUITE_SHA=$(git -C "$WORKDIR" rev-parse FETCH_HEAD)
+
+          MANIFEST="$RUNNER_TEMP/suite-manifest.json"
+          if ! git -C "$WORKDIR" show "FETCH_HEAD:test-plans/scripts/manifest.json" > "$MANIFEST"; then
+            echo "::error::Suite manifest is missing at $REQ_HARNESS_REF ($SUITE_SHA)"
+            exit 1
+          fi
+
+          if ! RESOLVED=$(jq -r '[.tests[] | select(.burnIn == true) | .id] | join(",")' "$MANIFEST"); then
+            echo "::error::Could not parse the suite manifest at $SUITE_SHA"
+            exit 1
+          fi
+          # No fallback list on purpose: a hardcoded copy here is exactly the
+          # duplication this resolution exists to remove, so an unreadable or
+          # empty manifest must fail the run instead of guessing at membership.
+          if [ -z "$RESOLVED" ]; then
+            echo "::error::The suite manifest at $SUITE_SHA flags no plans for burn-in"
+            exit 1
+          fi
+
+          echo "Suite manifest $SUITE_SHA resolves 'default' to: $RESOLVED"
+          echo "tests=$RESOLVED" >> "$GITHUB_OUTPUT"
+
       - name: Resolve ref and build the per-plan matrix
         id: resolve
         env:
@@ -71,8 +155,11 @@ jobs:
           set -euo pipefail
           REQ_REF="${{ inputs.ref }}"
           [ -z "$REQ_REF" ] && REQ_REF="origin/main"
-          REQ_TESTS="${{ inputs.tests }}"
-          [ -z "$REQ_TESTS" ] && REQ_TESTS="tp035,tp036,tp037,tp041,tp044,tp058"
+          REQ_TESTS="${{ steps.plans.outputs.tests }}"
+          if [ -z "$REQ_TESTS" ]; then
+            echo "::error::No burn-in plan set was resolved"
+            exit 1
+          fi
 
           API_REF="$REQ_REF"
           API_REF="${API_REF#origin/}"
