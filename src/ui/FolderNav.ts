@@ -418,16 +418,23 @@ class FilePillDecoration {
 			this.pill?.$destroy();
 			return;
 		}
+		const status = this.file.uploadError
+			? ("error" as const)
+			: this.file.pending
+				? ("pending" as const)
+				: ("unknown" as const);
 		if (!this.pill) {
 			this.pill = new UploadPill({
 				target: this.el,
 				props: {
 					text: tag,
+					status,
 				},
 			});
 		} else {
 			this.pill.$set({
 				text: tag,
+				status,
 			});
 		}
 	}
