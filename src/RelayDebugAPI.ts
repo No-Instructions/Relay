@@ -10,6 +10,7 @@
 import * as Y from 'yjs';
 import { diff_match_patch } from 'diff-match-patch';
 import { IndexeddbPersistence } from './storage/y-indexeddb';
+import type { GateResolution } from './folder-hsm/delete-collector';
 import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
@@ -281,12 +282,12 @@ export interface RelayDebugGlobal {
   getFolderSyncStatus: (folderGuid: string) => { guid: string; path: string; status: string }[];
   /** FolderHSM membership projection for the folder owning `path`: statePath, entry dispositions, parked files. Null when the folder has no membership engine (enableFolderHSM off). */
   getFolderSyncSnapshot: (path: string) => any | null;
-  /** Outbound delete gate for the folder at `path`: gated flag + held keys. Null without the split (enableFolderHSM off). */
-  getFolderDeletionGate: (path: string) => { gated: boolean; held: { mapName: string; key: string }[] } | null;
-  /** Explicitly replicate the folder's gated deletion burst. Returns the post-send gated flag, or null without a folder. */
-  sendFolderHeldDeletions: (path: string) => boolean | null;
+  /** Outbound delete gate for the folder at `path`: gated flag, resolution token, and held keys. Null without the split (enableFolderHSM off). */
+  getFolderDeletionGate: (path: string) => { gated: boolean; token: string | null; gatedAt: number | null; paths: string[]; held: { mapName: string; key: string }[] } | null;
+  /** Explicitly replicate the folder's gated deletion burst. Null without a folder. */
+  sendFolderHeldDeletions: (path: string, token?: string) => GateResolution | null;
   /** Explicitly discard the folder's gated deletion burst and restore membership from server truth. */
-  restoreFolderHeldDeletions: (path: string) => boolean | null;
+  restoreFolderHeldDeletions: (path: string, token?: string) => GateResolution | null;
   /** Captured deletion bursts for the folder at `path`: {id, origin: local|remote, timestamp, paths}. */
   getFolderDeletionHistory: (path: string) => { id: number; origin: string; timestamp: number; paths: string[] }[];
   /** Reverse one captured deletion burst (the compensating op replicates to every peer). */
