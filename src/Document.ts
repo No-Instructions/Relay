@@ -1218,6 +1218,13 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 
 		if (this._providerIntegration) {
+			// The bridge is up, but a machine that forked while resting may
+			// hold no replica. The document's YDoc is the one this bridge
+			// already observes; handing it over costs nothing and touches no
+			// transport.
+			if (!hsm.getRemoteDoc() && this.isRemoteDocLoaded) {
+				hsm.setRemoteDoc(this.ydoc);
+			}
 			return true;
 		}
 
