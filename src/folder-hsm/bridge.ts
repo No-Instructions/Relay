@@ -1,7 +1,7 @@
 /**
  * FolderDocBridge — the sole conduit between a shared folder's vault-facing
- * localDoc and provider-facing remoteDoc (specs/folder-hsm.md §The folder
- * doc split).
+ * localDoc and provider-facing remoteDoc; the split lets local deletion
+ * intent be screened before it replicates.
  *
  * Replication is semantic (per-key diff-and-apply), not verbatim update
  * forwarding, so selected keys can be held without blocking unrelated
@@ -35,8 +35,8 @@ export const BRIDGE_IN_ORIGIN = "relay:folder-bridge-in";
 export const BRIDGE_OUT_ORIGIN = "relay:folder-bridge-out";
 /**
  * Origin of host-executed local map deletions on the localDoc. A string so
- * deletion capture persists it (specs/folder-hsm.md §Deletion capture and
- * undo); the machine's delta feed skips it like the host's own
+ * deletion capture persists it with the record that undo restores; the
+ * machine's delta feed skips it like the host's own
  * transactions — these deletions are direct expressions of effects the
  * machine already accounted for.
  */

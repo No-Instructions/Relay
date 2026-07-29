@@ -1,6 +1,6 @@
 /**
  * GatedDeletionController — the decision queue behind the gated-deletion
- * surface (specs/surfacing gated deletions.md).
+ * surface: held deletions replicate only after a human reviews them.
  *
  * The delete collector in the folder doc bridge holds an anomalous deletion
  * burst until a human replicates it (send) or discards it (restore). This
