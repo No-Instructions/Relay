@@ -220,42 +220,54 @@ function createToastFunction(notifier: INotifier, debug: boolean) {
 }
 
 const SENSITIVE_KEYS = ["token", "authorization", "email", "key"];
+const SENSITIVE_QUERY_VALUE =
+	/(\b(?:access_token|refresh_token|id_token|token)=)[A-Za-z0-9%._~+/=-]+/gi;
+const BEARER_CREDENTIAL =
+	/(\bBearer\s+)[A-Za-z0-9%._~+/=-]+/gi;
+
+function redactSensitiveText(text: string): string {
+	return text
+		.replace(SENSITIVE_QUERY_VALUE, "$1[REDACTED]")
+		.replace(BEARER_CREDENTIAL, "$1[REDACTED]");
+}
 
 function serializeArg(arg: unknown): string {
 	if (typeof arg === "object" && arg !== null) {
 		const seen = new WeakSet();
 		try {
-			return JSON.stringify(
-				arg,
-				(key, value) => {
-					if (typeof value === "object" && value !== null) {
-						if (seen.has(value)) {
-							return "[Circular]";
+			return redactSensitiveText(
+				JSON.stringify(
+					arg,
+					(key, value) => {
+						if (typeof value === "object" && value !== null) {
+							if (seen.has(value)) {
+								return "[Circular]";
+							}
+							seen.add(value);
 						}
-						seen.add(value);
-					}
-					// Filter out sensitive information
-					if (
-						typeof key === "string" &&
-						SENSITIVE_KEYS.some((sk) =>
-							key.toLowerCase().includes(sk.toLowerCase()),
-						)
-					) {
-						return "[REDACTED]";
-					}
-					if (value instanceof Error) {
-						return {
-							name: value.name,
-							message: value.message,
-							stack: value.stack
-								?.split("\n")
-								.map((line) => line.trim())
-								.join(" "),
-						};
-					}
-					return value;
-				},
-				2,
+						// Filter out sensitive information
+						if (
+							typeof key === "string" &&
+							SENSITIVE_KEYS.some((sk) =>
+								key.toLowerCase().includes(sk.toLowerCase()),
+							)
+						) {
+							return "[REDACTED]";
+						}
+						if (value instanceof Error) {
+							return {
+								name: value.name,
+								message: value.message,
+								stack: value.stack
+									?.split("\n")
+									.map((line) => line.trim())
+									.join(" "),
+							};
+						}
+						return value;
+					},
+					2,
+				),
 			);
 		} catch (error) {
 			if (error instanceof Error) {
@@ -263,12 +275,12 @@ function serializeArg(arg: unknown): string {
 					// Handle stack overflow
 					return `[Complex Object: ${Object.prototype.toString.call(arg)}]`;
 				}
-				return `[Unserializable: ${error.message}]`;
+				return redactSensitiveText(`[Unserializable: ${error.message}]`);
 			}
 			return "[Unknown Error]";
 		}
 	}
-	return String(arg);
+	return redactSensitiveText(String(arg));
 }
 
 export function curryLog(initialText: string, level: LogLevel = "log") {
@@ -282,8 +294,8 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 			const logEntry: LogEntry = {
 				timestamp,
 				level,
-				message: `${initialText}: ${serializedArgs}`,
-				callerInfo,
+				message: redactSensitiveText(`${initialText}: ${serializedArgs}`),
+				callerInfo: redactSensitiveText(callerInfo),
 				// Attribution happens at log time, not flush time: the batch
 				// flush runs outside any runtime's execution context.
 				sink: sinkResolver ? sinkResolver() : null,

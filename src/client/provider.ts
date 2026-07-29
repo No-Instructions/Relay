@@ -22,6 +22,7 @@ import type { TimeProvider } from "../TimeProvider";
 const providerError = curryLog("[YSweetProvider]", "error");
 const providerLog = curryLog("[YSweetProvider]", "log");
 const providerDebug = curryLog("[YSweetProvider]", "debug");
+const providerWarn = curryLog("[YSweetProvider]", "warn");
 
 export const messageSync = 0;
 export const messageQueryAwareness = 3;
@@ -188,8 +189,14 @@ export const RECONNECT_BASE_DELAY_MS = 300;
 export const RECONNECT_MAX_DELAY_MS = 30000;
 export const RECONNECT_STABILITY_MS = 30000;
 
-const permissionDeniedHandler = (provider: YSweetProvider, reason: string) =>
-	console.warn(`Permission denied to access ${provider.url}.\n${reason}`);
+const permissionDeniedHandler = (provider: YSweetProvider, reason: string) => {
+	provider.setReadOnly(true);
+	providerWarn("Permission denied", {
+		room: provider.roomname,
+		reason,
+	});
+	provider.emit("permission-denied", [{ reason } satisfies PermissionDeniedEvent]);
+};
 
 function reconnectDelay(provider: YSweetProvider): number {
 	// wsUnsuccessfulReconnects counts closes since the last stable connection,
@@ -451,6 +458,10 @@ export type ConnectionIntent = "connected" | "disconnected";
 export interface ConnectionState {
 	status: ConnectionStatus;
 	intent: ConnectionIntent;
+}
+
+export interface PermissionDeniedEvent {
+	reason: string;
 }
 
 export interface EventMessage {
