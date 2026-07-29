@@ -91,7 +91,13 @@ class UserAttributionPluginValue {
 
 		const connectionManager = getLiveViews(view) as any;
 		const folder = connectionManager?.sharedFolders.lookup(file.path);
-		const doc = folder?.proxy.getDoc(file.path);
+		let doc;
+		try {
+			doc = folder?.proxy.getDoc(file.path);
+		} catch {
+			// No shared handle (membership refused or undecided).
+			doc = undefined;
+		}
 		const ydoc = doc?.localDoc as Y.Doc | undefined;
 		if (!ydoc) {
 			this.decorations = Decoration.none;
