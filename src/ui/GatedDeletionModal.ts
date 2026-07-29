@@ -8,8 +8,8 @@ import type {
 } from "./GatedDeletionController";
 
 /**
- * The decision modal for one folder's gated deletion burst
- * (specs/surfacing gated deletions.md). A standard confirmation dialog: the
+ * The decision modal for one folder's gated deletion burst — the human
+ * review that replicates or discards it. A standard confirmation dialog: the
  * title asks the question, one line states what happened, one line states
  * what each action does, and the held paths sit behind a collapsed
  * disclosure so the dialog's size does not depend on the burst. "Decide
