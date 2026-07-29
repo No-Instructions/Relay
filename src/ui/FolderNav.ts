@@ -17,12 +17,14 @@ import { flags, withAnyOf, withFlag } from "src/flagManager";
 import { flag } from "src/flags";
 import type { BackgroundSync, QueueItem } from "src/BackgroundSync";
 import type { Unsubscriber } from "src/observable/Observable";
+import type { ObservableMap } from "src/observable/ObservableMap";
 import type { ObservableSet } from "src/observable/ObservableSet";
 import type { SyncStatus } from "src/merge-hsm/types";
 import { SyncFile, isSyncFile } from "src/SyncFile";
 import { Canvas } from "src/Canvas";
 import { curryLog, metrics } from "src/debug";
 import { isDestroyedError } from "src/DestroyedError";
+import { changedSyncStatusGuids } from "src/ui/FolderNavRefresh";
 
 class SiblingWatcher {
 	mutationObserver: MutationObserver | null;
@@ -626,9 +628,18 @@ class FileConflictDecoration implements Destroyable {
 		private el: HTMLElement,
 		private sharedFolder: SharedFolder,
 		private guid: string,
+		private onDestroyed: (decoration: FileConflictDecoration) => void,
 	) {
 		this.sharedFolder.onDestroy(() => this.destroy());
 		this.update();
+	}
+
+	matches(sharedFolder: SharedFolder, guid: string): boolean {
+		return (
+			!this.destroyed &&
+			this.sharedFolder === sharedFolder &&
+			this.guid === guid
+		);
 	}
 
 	update() {
@@ -650,10 +661,52 @@ class FileConflictDecoration implements Destroyable {
 			this.el.classList.remove("system3-conflict");
 			this.applied = false;
 		}
+		this.onDestroyed(this);
 	}
 }
 
 class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
+	private decorationsByFolder = new WeakMap<
+		SharedFolder,
+		Map<string, FileConflictDecoration>
+	>();
+
+	private createDecoration(
+		el: HTMLElement,
+		sharedFolder: SharedFolder,
+		guid: string,
+	): FileConflictDecoration {
+		const decoration = new FileConflictDecoration(
+			el,
+			sharedFolder,
+			guid,
+			(destroyed) => {
+				const decorations = this.decorationsByFolder.get(sharedFolder);
+				if (decorations?.get(guid) === destroyed) {
+					decorations.delete(guid);
+					if (decorations.size === 0) {
+						this.decorationsByFolder.delete(sharedFolder);
+					}
+				}
+			},
+		);
+		let decorations = this.decorationsByFolder.get(sharedFolder);
+		if (!decorations) {
+			decorations = new Map();
+			this.decorationsByFolder.set(sharedFolder, decorations);
+		}
+		decorations.set(guid, decoration);
+		return decoration;
+	}
+
+	refresh(sharedFolder: SharedFolder, guids: ReadonlySet<string>): void {
+		const decorations = this.decorationsByFolder.get(sharedFolder);
+		if (!decorations) return;
+		for (const guid of guids) {
+			decorations.get(guid)?.update();
+		}
+	}
+
 	visitFile(
 		file: TFile,
 		item: FileItem,
@@ -673,10 +726,13 @@ class FileConflictVisitor extends BaseVisitor<FileConflictDecoration> {
 					return null;
 				}
 				if (storage) {
-					storage.update();
-					return storage;
+					if (storage.matches(sharedFolder, guid)) {
+						storage.update();
+						return storage;
+					}
+					storage.destroy();
 				}
-				return new FileConflictDecoration(item.selfEl, sharedFolder, guid);
+				return this.createDecoration(item.selfEl, sharedFolder, guid);
 			} catch (e) {
 				if (storage) storage.destroy();
 				return null;
@@ -692,6 +748,7 @@ class FileExplorerWalker {
 	sharedFolders: SharedFolders;
 	visitors: FileSystemVisitor<Destroyable>[];
 	storage: Map<FileSystemVisitor<Destroyable>, Map<TreeNode, Destroyable>>;
+	private conflictVisitor: FileConflictVisitor | null;
 
 	constructor(
 		fileExplorer: WorkspaceLeaf,
@@ -701,6 +758,11 @@ class FileExplorerWalker {
 		this.fileExplorer = fileExplorer;
 		this.sharedFolders = sharedFolders;
 		this.visitors = visitors;
+		this.conflictVisitor =
+			this.visitors.find(
+				(visitor): visitor is FileConflictVisitor =>
+					visitor instanceof FileConflictVisitor,
+			) ?? null;
 
 		this.storage = new Map<
 			FileSystemVisitor<Destroyable>,
@@ -797,12 +859,20 @@ class FileExplorerWalker {
 		});
 	}
 
+	refreshConflicts(
+		sharedFolder: SharedFolder,
+		guids: ReadonlySet<string>,
+	): void {
+		this.conflictVisitor?.refresh(sharedFolder, guids);
+	}
+
 	destroy() {
 		this.storage.forEach((store) => {
 			store.forEach((item) => {
 				item.destroy();
 			});
 		});
+		this.conflictVisitor = null;
 	}
 }
 
@@ -849,6 +919,26 @@ export class FolderNavigationDecorations {
 	 * `offDocumentListeners` map.
 	 */
 	private subscribedFolderFsets = new WeakSet<SharedFolder>();
+
+	/**
+	 * Quick refresh requests share one microtask. Folder-specific requests are
+	 * unioned; an unscoped request subsumes every folder-specific request.
+	 */
+	private quickRefreshScheduled = false;
+	private pendingQuickRefreshAll = false;
+	private pendingQuickRefreshFolders = new Set<SharedFolder>();
+
+	/**
+	 * Sync-status notifications carry the complete map rather than the changed
+	 * key. Snapshots identify changed GUIDs by object identity: MergeManager
+	 * replaces a status object only after its semantic equality check fails.
+	 */
+	private syncStatusSnapshots = new WeakMap<
+		SharedFolder,
+		Map<string, SyncStatus>
+	>();
+	private pendingSyncStatusFolders = new Set<SharedFolder>();
+	private destroyed = false;
 
 	private onReopenGatedDeletion: ((folder: SharedFolder) => void) | null;
 
@@ -925,14 +1015,20 @@ export class FolderNavigationDecorations {
 				this.subscribedFolders.add(folder);
 
 				folder.onDestroy(
-					folder.syncSettingsManager.subscribe(() => this.quickRefresh()),
-				);
-				folder.onDestroy(folder.subscribe(this, () => this.quickRefresh()));
-				folder.onDestroy(
-					folder.syncStore.subscribe(() => this.quickRefresh()),
+					folder.syncSettingsManager.subscribe(() =>
+						this.quickRefresh(folder),
+					),
 				);
 				folder.onDestroy(
-					folder.mergeManager.syncStatus.subscribe(() => this.quickRefresh()),
+					folder.subscribe(this, () => this.quickRefresh(folder)),
+				);
+				folder.onDestroy(
+					folder.syncStore.subscribe(() => this.quickRefresh(folder)),
+				);
+				folder.onDestroy(
+					folder.mergeManager.syncStatus.subscribe((statuses) =>
+						this.syncStatusChanged(folder, statuses),
+					),
 				);
 			});
 			this.refresh();
@@ -983,11 +1079,87 @@ export class FolderNavigationDecorations {
 		return fileExplorers;
 	}
 
-	quickRefresh() {
-		if (!this.layoutReady) return;
+	private snapshotSyncStatuses(
+		statuses: ObservableMap<string, SyncStatus>,
+	): Map<string, SyncStatus> {
+		return new Map(statuses.entries());
+	}
+
+	private syncStatusChanged(
+		folder: SharedFolder,
+		statuses: ObservableMap<string, SyncStatus>,
+	): void {
+		const previous = this.syncStatusSnapshots.get(folder);
+		if (!previous || !this.layoutReady) {
+			this.syncStatusSnapshots.set(
+				folder,
+				this.snapshotSyncStatuses(statuses),
+			);
+			return;
+		}
+		this.pendingSyncStatusFolders.add(folder);
+		this.scheduleQuickRefresh();
+	}
+
+	private scheduleQuickRefresh(): void {
+		if (this.quickRefreshScheduled || this.destroyed) return;
+		this.quickRefreshScheduled = true;
+		queueMicrotask(() => {
+			this.quickRefreshScheduled = false;
+			if (this.destroyed) return;
+			this.flushQuickRefresh();
+		});
+	}
+
+	quickRefresh(folder?: SharedFolder): void {
+		if (!this.layoutReady || this.destroyed) return;
+		if (folder) {
+			if (!this.pendingQuickRefreshAll) {
+				this.pendingQuickRefreshFolders.add(folder);
+			}
+		} else {
+			this.pendingQuickRefreshAll = true;
+			this.pendingQuickRefreshFolders.clear();
+		}
+		this.scheduleQuickRefresh();
+	}
+
+	private flushQuickRefresh(): void {
+		if (!this.layoutReady || this.destroyed) return;
 		const t0 = performance.now();
+		const refreshAll = this.pendingQuickRefreshAll;
+		const refreshFolders = new Set(this.pendingQuickRefreshFolders);
+		const statusFolders = new Set(this.pendingSyncStatusFolders);
+		this.pendingQuickRefreshAll = false;
+		this.pendingQuickRefreshFolders.clear();
+		this.pendingSyncStatusFolders.clear();
+
+		const changedStatuses = new Map<SharedFolder, Set<string>>();
+		for (const folder of statusFolders) {
+			if (folder.destroyed) continue;
+			const current = this.snapshotSyncStatuses(
+				folder.mergeManager.syncStatus,
+			);
+			const previous = this.syncStatusSnapshots.get(folder) ?? new Map();
+			const changed = changedSyncStatusGuids(previous, current);
+			this.syncStatusSnapshots.set(folder, current);
+			if (changed.size > 0) {
+				changedStatuses.set(folder, changed);
+			}
+		}
+
+		if (
+			!refreshAll &&
+			refreshFolders.size === 0 &&
+			changedStatuses.size === 0
+		) {
+			return;
+		}
+
 		const fileExplorers = this.getFileExplorers();
-		const sharedFolders = this.sharedFolders.map((folder) => folder.path);
+		const folders = refreshAll
+			? this.sharedFolders.items()
+			: [...refreshFolders];
 		for (const fileExplorer of fileExplorers) {
 			const walker =
 				this.treeState.get(fileExplorer) ||
@@ -997,10 +1169,16 @@ export class FolderNavigationDecorations {
 					this.makeVisitors(),
 				);
 			this.treeState.set(fileExplorer, walker);
-			for (const sharedFolderPath of sharedFolders) {
-				const sharedFolder = this.vault.getAbstractFileByPath(sharedFolderPath);
-				if (sharedFolder instanceof TFolder) {
-					walker.walk(sharedFolder);
+			for (const folder of folders) {
+				if (folder.destroyed) continue;
+				const root = this.vault.getAbstractFileByPath(folder.path);
+				if (root instanceof TFolder) {
+					walker.walk(root);
+				}
+			}
+			for (const [folder, guids] of changedStatuses) {
+				if (!refreshAll && !refreshFolders.has(folder)) {
+					walker.refreshConflicts(folder, guids);
 				}
 			}
 		}
@@ -1008,8 +1186,19 @@ export class FolderNavigationDecorations {
 	}
 
 	refresh() {
-		if (!this.layoutReady) return;
+		if (!this.layoutReady || this.destroyed) return;
 		const t0 = performance.now();
+		this.pendingQuickRefreshAll = false;
+		this.pendingQuickRefreshFolders.clear();
+		this.pendingSyncStatusFolders.clear();
+		this.sharedFolders.forEach((folder) => {
+			if (!folder.destroyed) {
+				this.syncStatusSnapshots.set(
+					folder,
+					this.snapshotSyncStatuses(folder.mergeManager.syncStatus),
+				);
+			}
+		});
 		const fileExplorers = this.getFileExplorers();
 		for (const fileExplorer of fileExplorers) {
 			const walker =
@@ -1029,6 +1218,11 @@ export class FolderNavigationDecorations {
 	}
 
 	destroy() {
+		this.destroyed = true;
+		this.pendingQuickRefreshAll = false;
+		this.pendingQuickRefreshFolders.clear();
+		this.pendingSyncStatusFolders.clear();
+
 		// Release the root SharedFolders subscription first so no further
 		// folder-add notifications can arrive while we're tearing down.
 		this.rootSub?.();
