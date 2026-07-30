@@ -74,6 +74,7 @@ import type { InterpreterConfig, GuardFn, ActionFn, InvokeSourceFn } from "./typ
 import { DISK_ORIGIN, MACHINE_EDIT_ORIGIN, OpCapture } from "./undo";
 import {
 	isEmptyDoc,
+	rewindDocToSnapshot,
 	snapshotFromDoc,
 	snapshotsEqual,
 	snapshotIsAhead,
@@ -653,14 +654,60 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		};
 	}
 
-	private hydrateLCAContentsFromLocalDoc(): void {
-		if (!this._lca || this._lca.contents !== null || !this.localDoc) return;
-		const localStateVector = Y.encodeStateVector(this.localDoc);
-		if (!stateVectorsEqual(localStateVector, this._lca.stateVector)) return;
-		this._lca = {
-			...this._lca,
-			contents: this.localDoc.getText("contents").toString(),
+	// Rebuild a compacted LCA body by rewinding an attached doc to the
+	// baseline's own snapshot. The proof is constructive: a Yjs snapshot
+	// carries insert clocks plus its own delete set, so any doc whose state
+	// vector contains the baseline's can be rewound to it, and the restored
+	// text is accepted only when the restored doc's snapshot verifies equal
+	// to the stored one (rewindDocToSnapshot) — a gc'd doc that destroyed
+	// baseline-visible content fails verification and declines instead of
+	// yielding post-delete text. The two arms run the same verified rewind
+	// and differ only in order and one gate: localDoc is consulted first,
+	// and remoteDoc is not consulted while the local replica is still
+	// syncing from persistence — the about-to-sync localDoc is the
+	// preferred witness.
+	//
+	// localDoc additionally keeps a zero-cost fast path: merge-path
+	// hydrations run only after local persistence has synced, so a localDoc
+	// whose complete state vector equals the baseline's is the very replica
+	// the baseline was captured from, and its text is read directly. Legacy
+	// baselines persisted without a snapshot leave nothing to rewind to or
+	// verify against, so that fast path is their only acceptance; remoteDoc
+	// always declines for them.
+	private hydrateLCAContentsFromMatchingDoc(): void {
+		if (!this._lca || this._lca.contents !== null) return;
+		const lca = this._lca;
+		const hydrateWith = (contents: string): void => {
+			// Deliberately assigns this._lca directly instead of _setLCA:
+			// _setLCA's capture invariant compares against the live localDoc
+			// and would refuse restoring a historical baseline whose text
+			// differs from a moved-on localDoc.
+			this._lca = { ...lca, contents };
 		};
+
+		if (
+			this.localDoc &&
+			stateVectorsEqual(Y.encodeStateVector(this.localDoc), lca.stateVector)
+		) {
+			hydrateWith(this.localDoc.getText("contents").toString());
+			return;
+		}
+
+		if (lca.snapshot === undefined) return;
+		const baseline = { snapshot: lca.snapshot };
+
+		if (this.localDoc) {
+			const contents = rewindDocToSnapshot(this.localDoc, baseline);
+			if (contents !== null) {
+				hydrateWith(contents);
+				return;
+			}
+		}
+
+		if (this.lcaContentsWaitingOnLocalPersistence()) return;
+		if (!this.remoteDoc) return;
+		const contents = rewindDocToSnapshot(this.remoteDoc, baseline);
+		if (contents !== null) hydrateWith(contents);
 	}
 
 	private lcaContentsWaitingOnLocalPersistence(): boolean {
@@ -688,7 +735,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		const contract = MACHINE[this._statePath]?.resources;
 		if (!contract) return;
 		if (contract.lcaContents === "present" && this._lca?.contents === null) {
-			this.hydrateLCAContentsFromLocalDoc();
+			this.hydrateLCAContentsFromMatchingDoc();
 		}
 
 		const errors: string[] = [];
@@ -755,7 +802,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return null;
 		}
 		if (this._lca.contents === null) {
-			this.hydrateLCAContentsFromLocalDoc();
+			this.hydrateLCAContentsFromMatchingDoc();
 		}
 		if (this._lca.contents === null) {
 			this.hsmError(`[HSM resource guard] LCA contents missing | ${this.describeResourceContext(context)}`);
@@ -1024,7 +1071,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	needsFullStateForActiveEntry(): boolean {
 		if (!this._lca || this._lca.contents !== null) return false;
-		this.hydrateLCAContentsFromLocalDoc();
+		this.hydrateLCAContentsFromMatchingDoc();
 		return this._lca.contents === null;
 	}
 
@@ -1240,7 +1287,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	private getLCAContentsForConflictInit(): string | null {
 		if (!this._lca) return null;
 		if (this._lca.contents === null) {
-			this.hydrateLCAContentsFromLocalDoc();
+			this.hydrateLCAContentsFromMatchingDoc();
 		}
 		return this._lca.contents;
 	}
@@ -2600,6 +2647,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				&& (this.pendingIdleUpdates !== null || this.pendingDiskContents !== null),
 			awaitingLocalEnrollment: (_hsm, event) => (event as any).data?.awaitingLocalEnrollment === true,
 			awaitingDiskForLCA: (_hsm, event) => (event as any).data?.awaitingDiskForLCA === true,
+			lcaUnavailable: (_hsm, event) => (event as any).data?.lcaUnavailable === true,
 			hasPendingIdleWork: () =>
 				this.pendingIdleUpdates !== null || this.pendingDiskContents !== null,
 			hasPendingMachineEdits: () => this._pendingMachineEdits.length > 0,
@@ -2670,6 +2718,28 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// mask an invariant failure.
 		this._errorRetryable = retryable;
 		this.hsmError(`${error.message} (${detail}) | ${this.describeResourceContext("storeUnresolvedIdleError")}`);
+	}
+
+	// The idle merge declared its baseline unusable: the LCA is missing, or
+	// its compacted body could not be rebuilt because no attached doc could
+	// be proven to sit at the baseline. Distinct from the generic unresolved
+	// outcome so the stored error names the real blocker.
+	private storeLcaUnavailableError(): void {
+		const error = new Error(
+			"Unable to continue idle reconciliation: LCA unavailable",
+		);
+		this._error = error;
+		// Stored as permanent even though the precondition can be transient:
+		// a wake into idle.diverged can reach this before a remoteDoc has
+		// attached, and a later PROVIDER_SYNCED could supply a baseline-
+		// matching replica. The permanent idle.error trap records that new
+		// information (docs and metadata stay current) but never re-enters
+		// idle.loading for it — recovery waits for a lifecycle event
+		// (unload/reload or a lock cycle). Making the transient
+		// preconditions retryable without masking real invariant failures
+		// is deliberately deferred to a follow-up.
+		this._errorRetryable = false;
+		this.hsmError(`${error.message} | ${this.describeResourceContext("storeLcaUnavailableError")}`);
 	}
 
 	private buildActions(): Record<string, ActionFn> {
@@ -2926,6 +2996,9 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			storeRetryableUnresolvedIdleError: (_hsm, event) => {
 				this.storeUnresolvedIdleError(event, true);
+			},
+			storeLcaUnavailableError: () => {
+				this.storeLcaUnavailableError();
 			},
 			scheduleIdleRetry: () => {
 				this.idleRetryCount++;
@@ -3767,7 +3840,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					await this.awaitLocalPersistenceWhenSynced(signal);
 					if (signal.aborted) return { success: false };
 				}
-				this.hydrateLCAContentsFromLocalDoc();
+				this.hydrateLCAContentsFromMatchingDoc();
 				this.assertMachineResources("before idle-merge");
 
 				// Dispatch to the right merge based on which idle state spawned the invoke.
@@ -4289,7 +4362,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return { success: false };
 		}
 		if (!this._lca) {
-			return { success: false };
+			return { success: false, lcaUnavailable: true };
 		}
 		const lcaContent = this.requireLcaContents("idle disk merge");
 		if (lcaContent === null) {
@@ -4297,7 +4370,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				`idle disk merge: compacted LCA could not hydrate | ` +
 					`guid=${this._guid} state=${this._statePath}`,
 			);
-			return { success: false };
+			return { success: false, lcaUnavailable: true };
 		}
 
 		// If fork was pre-created by registerMachineEdit, reuse it.
@@ -4368,7 +4441,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		if (lcaContent === null) {
 			this.clearPendingDiskContents();
 			this.pendingIdleUpdates = null;
-			return { success: false };
+			return { success: false, lcaUnavailable: true };
 		}
 
 		// Read the remote content from remoteDoc. Applying pendingIdleUpdates
@@ -5064,7 +5137,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Update state vector to reflect what's in localDoc.
 		if (this.localDoc) {
 			this._localStateVector = Y.encodeStateVector(this.localDoc);
-			this.hydrateLCAContentsFromLocalDoc();
+			this.hydrateLCAContentsFromMatchingDoc();
 			this.markLocalDocSnapshotSafeIfLoadedHeadMatches();
 
 			// Record the client ID for reuse across lock cycles.
@@ -6006,13 +6079,16 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	}
 
 	private emitPersistState(): void {
-		if (this._lca?.contents === null) {
-			this.hydrateLCAContentsFromLocalDoc();
+		// A hibernated synced note compacted its LCA body on purpose; do not
+		// re-inflate it (remoteDoc may still match) just to re-persist a body
+		// the store already holds.
+		if (this._lca?.contents === null && this.isExpectedCompactedLCAPersistNoop()) {
+			return;
 		}
 		if (this._lca?.contents === null) {
-			if (this.isExpectedCompactedLCAPersistNoop()) {
-				return;
-			}
+			this.hydrateLCAContentsFromMatchingDoc();
+		}
+		if (this._lca?.contents === null) {
 			this.hsmWarn(
 				`emitPersistState: skipped compacted LCA body | ` +
 					`guid=${this._guid} state=${this._statePath}`,

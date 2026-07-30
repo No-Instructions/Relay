@@ -279,6 +279,51 @@ export function snapshotsEqual(a: YjsSnapshot, b: YjsSnapshot): boolean {
 }
 
 /**
+ * Rewind DOC to the exact state captured by SNAPSHOT and return the
+ * baseline "contents" text — or null when the doc cannot prove it.
+ *
+ * A Yjs snapshot carries insert clocks plus its own delete set, so any
+ * doc whose state vector contains the snapshot's can be rewound to the
+ * baseline with `Y.createDocFromSnapshot` — the live doc's delete set
+ * is never consulted, let alone trusted. Two hazards make the result
+ * conditional:
+ *
+ * - A doc missing baseline ops cannot be rewound; yjs throws an
+ *   unhelpful TypeError, so containment is prechecked and the rewind
+ *   declines cheaply instead.
+ * - Live docs default to gc: true, which may have destroyed content
+ *   that was visible at the baseline and deleted later; the rewind
+ *   would restore the wrong text. That failure is detected rather than
+ *   assumed absent: the restored doc's own snapshot must verify equal
+ *   to the requested one, and gc-destroyed spans surface as a mismatch.
+ *
+ * The doc is laundered into a transient gc: false replica first so the
+ * rewind never mutates or gc's the live doc. Only transient in-memory
+ * docs are built, and both are destroyed before returning.
+ */
+export function rewindDocToSnapshot(doc: Y.Doc, snapshot: YjsSnapshot): string | null {
+	const origin = new Y.Doc({ gc: false });
+	let restored: Y.Doc | null = null;
+	try {
+		const decoded = Y.decodeSnapshot(snapshot.snapshot);
+		if (!svContains(decodeSV(Y.encodeStateVector(doc)), toSnapshotLike(decoded).sv)) {
+			return null;
+		}
+		Y.applyUpdate(origin, Y.encodeStateAsUpdate(doc));
+		restored = Y.createDocFromSnapshot(origin, decoded);
+		if (!snapshotsEqual(snapshotFromDoc(restored), snapshot)) return null;
+		return restored.getText("contents").toString();
+	} catch {
+		// Includes undecodable persisted snapshot bytes: an unprovable
+		// baseline declines rather than trusting the live doc.
+		return null;
+	} finally {
+		restored?.destroy();
+		origin.destroy();
+	}
+}
+
+/**
  * Check whether UPDATE is already covered by SNAPSHOT.
  */
 export function snapshotContainsUpdate(snapshot: YjsSnapshot, update: Uint8Array): boolean {
