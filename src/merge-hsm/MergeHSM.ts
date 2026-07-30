@@ -261,6 +261,15 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// YDocs
 	private localDoc: Y.Doc | null = null; // Alive in idle + active mode; null when unloaded/hibernated
 	private remoteDoc: Y.Doc | null; // Lazily provided, managed externally. Null when hibernated.
+	// Merge metadata normally arrives before local persistence is attached, but
+	// active-entry races allow it to arrive afterward. Hold all deleted content
+	// until that metadata tells the GC filter which baseline must remain
+	// rewindable.
+	private _persistenceStateLoaded = false;
+	private _lcaGcPinCache: {
+		encoded: Uint8Array;
+		decoded: Y.Snapshot | null;
+	} | null = null;
 
 	// Persisted client ID for localDoc across lock cycles.
 	// Reusing the same client ID prevents content duplication when IDB is empty
@@ -1913,7 +1922,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 */
 	private async ensurePersistence(): Promise<void> {
 		if (!this.localDoc) {
-			this.localDoc = new Y.Doc();
+			this.localDoc = this.createLocalDoc();
 			this._localDocSnapshotSafe = false;
 			if (this._localDocClientID !== null) {
 				this.localDoc.clientID = this._localDocClientID;
@@ -3026,6 +3035,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this._guid = e.guid;
 				this._modeDecision = null;
 				this._accumulatedEvents = [];
+				this._persistenceStateLoaded = false;
+				this._lcaGcPinCache = null;
 				this._disk = null;
 				this._remoteStateVector = null;
 				this._needsDiskContentLoad = false;
@@ -3054,7 +3065,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					// prior session under the same invariant, so compacted metadata
 					// can be rehydrated from the full persisted record directly.
 					this._lca = e.lca;
+					this._lcaGcPinCache = null;
 				}
+				this._persistenceStateLoaded = true;
+				this.collectUnpinnedLocalDeletes();
 				if (localStateVector) {
 					this._localStateVector = localStateVector;
 				}
@@ -4822,7 +4836,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	 */
 	ensureLocalDocForIdle(): void {
 		if (!this.localDoc) {
-			this.localDoc = new Y.Doc();
+			this.localDoc = this.createLocalDoc();
 			this._localDocSnapshotSafe = false;
 			if (this._localDocClientID !== null) {
 				this.localDoc.clientID = this._localDocClientID;
@@ -4990,10 +5004,59 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 	// YDoc Management
 	// ===========================================================================
 
+	/**
+	 * Keep every deleted item that was visible at the current LCA snapshot.
+	 * Items deleted by the baseline and items created afterward are unrelated
+	 * to reconstructing that baseline, so Yjs may collect them normally.
+	 */
+	private readonly localDocGcFilter = (item: Y.Item): boolean => {
+		if (!this._persistenceStateLoaded) return false;
+
+		const encoded = this._lca?.snapshot;
+		if (!encoded) return true;
+
+		if (this._lcaGcPinCache?.encoded !== encoded) {
+			let decoded: Y.Snapshot | null = null;
+			try {
+				decoded = Y.decodeSnapshot(encoded);
+			} catch {
+				// An unreadable baseline cannot safely identify disposable
+				// content. Keep deleted items until a valid baseline supersedes it.
+			}
+			this._lcaGcPinCache = { encoded, decoded };
+		}
+
+		const baseline = this._lcaGcPinCache.decoded;
+		if (!baseline) return false;
+
+		const baselineClock = baseline.sv.get(item.id.client) ?? 0;
+		if (item.id.clock >= baselineClock) return true;
+		return Y.isDeleted(baseline.ds, item.id);
+	};
+
+	private createLocalDoc(): Y.Doc {
+		return new Y.Doc({ gcFilter: this.localDocGcFilter });
+	}
+
+	/**
+	 * Revisit tombstones retained for an older baseline. Advancing the LCA adds
+	 * newly accepted deletions to its snapshot, so the filter releases their
+	 * content during this sweep instead of retaining it for the document's
+	 * lifetime.
+	 */
+	private collectUnpinnedLocalDeletes(): void {
+		if (!this.localDoc?.gc) return;
+		Y.tryGc(
+			Y.createDeleteSetFromStructStore(this.localDoc.store),
+			this.localDoc.store,
+			this.localDoc.gcFilter,
+		);
+	}
+
 	private createYDocs(): void {
 		// Reuse localDoc if it already exists (e.g., from initializeFromRemote() enrollment)
 		if (!this.localDoc) {
-			this.localDoc = new Y.Doc();
+			this.localDoc = this.createLocalDoc();
 			this._localDocSnapshotSafe = false;
 
 			// Reuse the client ID from a previous session if available.
@@ -5524,6 +5587,11 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// Any baseline reaching this point supersedes a held invoke result.
 		this._pendingDiskConfirmLCA = null;
 		this._lca = lca;
+		if (lca !== null) {
+			this._persistenceStateLoaded = true;
+		}
+		this._lcaGcPinCache = null;
+		this.collectUnpinnedLocalDeletes();
 	}
 
 
