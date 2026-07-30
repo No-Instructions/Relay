@@ -13,6 +13,34 @@ import { curryLog } from '../../debug';
 import { snapshotFromDoc } from '../state-vectors';
 
 const providerError = curryLog("[ProviderIntegration]", "error");
+const providerWarn = curryLog("[ProviderIntegration]", "warn");
+
+/**
+ * Normalize a provider connection-error payload into an Error.
+ *
+ * Providers emit this event with whatever the transport produced: an Error
+ * (or arbitrary thrown value) from a failed reconnect hook, or a WebSocket
+ * error Event, which carries no failure detail beyond its type. Diagnostics
+ * need a real Error either way.
+ */
+export function normalizeConnectionError(raw: unknown): Error {
+  if (raw instanceof Error) {
+    return raw;
+  }
+  if (raw && typeof raw === 'object') {
+    const shape = raw as { error?: unknown; message?: unknown; type?: unknown };
+    if (shape.error instanceof Error) {
+      return shape.error;
+    }
+    if (typeof shape.message === 'string' && shape.message.length > 0) {
+      return new Error(shape.message);
+    }
+    if (typeof shape.type === 'string') {
+      return new Error(`connection error ('${shape.type}' event)`);
+    }
+  }
+  return new Error(`connection error: ${String(raw)}`);
+}
 
 // =============================================================================
 // Provider Interface
@@ -25,7 +53,7 @@ const providerError = curryLog("[ProviderIntegration]", "error");
 export interface YjsProvider {
   on(event: 'sync', callback: (synced?: boolean) => void): void;
   on(event: 'connection-close' | 'disconnect', callback: () => void): void;
-  on(event: 'connection-error', callback: (error: Error) => void): void;
+  on(event: 'connection-error', callback: (error: unknown) => void): void;
   off(event: string, callback: (...args: unknown[]) => void): void;
   connect(): void;
   disconnect(): void;
@@ -53,7 +81,7 @@ export class ProviderIntegration {
   // Bound event handlers for cleanup
   private onSync: (synced?: boolean) => void;
   private onDisconnect: () => void;
-  private onError: (error: Error) => void;
+  private onError: (error: unknown) => void;
   private onRemoteUpdate: (update: Uint8Array, origin: unknown) => void;
 
   constructor(
@@ -143,10 +171,21 @@ export class ProviderIntegration {
   }
 
   /**
-   * Handle provider error event.
+   * Handle provider connection-error event.
+   *
+   * A connection error is connectivity loss, not a machine fault: in active
+   * mode the HSM goes offline exactly as it does for connection-close, and in
+   * idle mode the machine is left alone — reconnection and retry belong to
+   * the background sync layer there. The payload is normalized because the
+   * provider forwards whatever the transport produced.
    */
-  private handleError(error: Error): void {
-    this.hsm.send({ type: 'ERROR', error });
+  private handleError(raw: unknown): void {
+    const error = normalizeConnectionError(raw);
+    const mode = this.hsm.isActive() ? 'active' : 'idle';
+    providerWarn(`connection error (${mode}): ${error.message}`);
+    if (this.hsm.isActive()) {
+      this.hsm.send({ type: 'DISCONNECTED' });
+    }
   }
 
   /**
