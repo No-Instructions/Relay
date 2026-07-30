@@ -39,10 +39,6 @@ on:
         description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
         required: false
         default: 'origin/main'
-      tsdb_tag:
-        description: 'obsidian-tsdb release tag to install in slots'
-        required: false
-        default: '1.0.12'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
@@ -454,19 +450,6 @@ jobs:
           echo "Relay harness checkout:"
           git show -s --format='  commit: %H%n  subject: %s'
 
-          # Pull the prebuilt TSDB metrics plugin from its GitHub release
-          # (pinned tag) instead of cloning and building it from source.
-          echo ">>> tsdb: reached download step (relay-harness ok)"
-          mkdir -p ~/system3/obsidian-metrics/dist/tsdb
-          TSDB_TAG='${{ inputs.tsdb_tag || '1.0.12' }}'
-          for f in main.js manifest.json styles.css; do
-            url="https://github.com/dtkav/obsidian-tsdb/releases/download/${TSDB_TAG}/$f"
-            echo ">>> fetching tsdb $f"
-            wget -q -O ~/system3/obsidian-metrics/dist/tsdb/"$f" "$url" \
-              || { echo ">>> WGET FAILED for $f (exit $?)"; exit 1; }
-          done
-          echo ">>> tsdb download done"
-
           # Install uv (no apt/sudo) and the test-harness Python deps into a
           # venv, then export the interpreter so run-test-plan-suite.sh runs
           # against that Python.
@@ -491,7 +474,6 @@ jobs:
           echo ">>> playwright ok"
 
           export RELAY_PLUGIN_DIR=~/relay-plugin
-          export RELAY_OBSIDIAN_METRICS_PLUGIN_DIR="$HOME/system3/obsidian-metrics/dist/tsdb"
           if [ -n "$PROFILE_FLAGS" ]; then
             export RELAY_PROFILE_FLAG_OVERRIDES="$PROFILE_FLAGS"
             echo ">>> profile flag overrides: $RELAY_PROFILE_FLAG_OVERRIDES"
