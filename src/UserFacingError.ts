@@ -15,7 +15,11 @@ export function errorFromUnknown(
 ): Error {
 	const message = formatUserFacingError(error, fallback);
 	if (error instanceof Error && message === error.message) return error;
-	return new Error(message);
+	const wrapped = new Error(message);
+	if (error !== undefined && error !== null) {
+		(wrapped as Error & { cause?: unknown }).cause = error;
+	}
+	return wrapped;
 }
 
 function extractErrorMessage(
