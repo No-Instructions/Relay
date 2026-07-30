@@ -65,9 +65,6 @@ export type EntryTarget = EntryStatePath | "retired";
 // Membership context
 // =============================================================================
 
-/** Session confidence: the quality of the folder picture decisions run under. */
-export type ConfidenceTier = "none" | "blind" | "confirmed";
-
 export type AuthorizationScope = "write" | "read-only";
 
 /**
@@ -108,8 +105,6 @@ export interface EntryRow {
 	guid: string | null;
 	origin: FileOrigin;
 	kind: LocalFileKind;
-	/** Confidence tier the current state was decided under. */
-	decidedTier: ConfidenceTier;
 	/**
 	 * The guard that selected the current state, or undefined when the
 	 * deciding candidate was unguarded. Diagnostic only — nothing branches
@@ -124,19 +119,6 @@ export interface EntryRow {
 	dispatched: boolean;
 	/** Content evidence freshness; FILE_MODIFIED marks it stale. */
 	contentAgreement: ContentAgreement;
-	/**
-	 * An inbound removal (or move away from this path) observed before
-	 * the session's confidence reached confirmed. Destruction requires
-	 * confirmed confidence, but the observation is evidence bound to the
-	 * row's identity: it is retained here — never laundered into a fresh
-	 * classification that no longer knows a removal happened — and the
-	 * session's first confirmed pass completes it through the same
-	 * identity semantics, re-derived against the map of that moment (a
-	 * re-committed identity voids it instead of replaying it). In-memory
-	 * by design: the map it derives from is durable, and a reload
-	 * re-derives the same discrepancy by comparison.
-	 */
-	removalEvidence?: { guid: string };
 	/** What outbound destructive intent targeted (deletes and renames). */
 	observedIdentity?: { guid: string; path: string };
 	/** parked / conflicted surfacing. */
@@ -145,9 +127,17 @@ export interface EntryRow {
 
 export interface FolderContext {
 	persistenceLoaded: boolean;
-	/** Session confidence tier. */
-	tier: ConfidenceTier;
-	/** A sync claim is live this session (cleared by DISCONNECTED). */
+	/**
+	 * A sync claim hydrated the picture this session — the persisted
+	 * has-synced marker or a completed live exchange. Drives the
+	 * hydration gate; survives disconnects.
+	 */
+	syncClaimed: boolean;
+	/**
+	 * A live exchange completed this session (cleared by DISCONNECTED).
+	 * Destruction and publication gate on it: the machine never destroys
+	 * or publishes from an unsynced picture.
+	 */
 	providerSynced: boolean;
 	isOnline: boolean;
 	authorization: AuthorizationScope;
@@ -204,11 +194,13 @@ export type FolderEvent =
 	| { type: "LOAD" }
 	| { type: "PERSISTENCE_LOADED" }
 	/**
-	 * The provider claims sync. `tier: "blind"` marks a claim derived from
+	 * The provider claims sync. `marker: true` marks a claim derived from
 	 * the persisted has-synced marker before any live exchange this
-	 * session; an absent tier is a completed live exchange (confirmed).
+	 * session — it hydrates the picture but never opens the
+	 * destruction/publication gate; an absent marker is a completed live
+	 * exchange (or the folder's own membership authority).
 	 */
-	| { type: "PROVIDER_SYNCED"; tier?: "blind" | "confirmed" }
+	| { type: "PROVIDER_SYNCED"; marker?: boolean }
 	| { type: "CONNECTED" }
 	| { type: "DISCONNECTED" }
 	/** The folder doc's pending sync state drained (host-observed). */
@@ -352,7 +344,7 @@ export interface FolderSyncSnapshot {
 	statePath: FolderStatePath;
 	hydrated: boolean;
 	isOnline: boolean;
-	tier: ConfidenceTier;
+	providerSynced: boolean;
 	entries: MembershipEntry[];
 	parked: Array<{ path: string; reason: string }>;
 	conflicted: Array<{ path: string; reason: string }>;
@@ -364,7 +356,7 @@ export interface FolderSerializableSnapshot {
 	revision: number;
 	context: {
 		persistenceLoaded: boolean;
-		tier: ConfidenceTier;
+		syncClaimed: boolean;
 		providerSynced: boolean;
 		isOnline: boolean;
 		authorization: AuthorizationScope;

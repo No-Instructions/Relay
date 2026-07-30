@@ -19,9 +19,15 @@ export const persistenceLoaded = (): FolderEvent => ({
 	type: "PERSISTENCE_LOADED",
 });
 
-export const providerSynced = (tier?: "blind" | "confirmed"): FolderEvent => ({
+/** A completed live exchange (or the folder's own membership authority). */
+export const providerSynced = (): FolderEvent => ({
 	type: "PROVIDER_SYNCED",
-	...(tier !== undefined ? { tier } : {}),
+});
+
+/** The persisted has-synced marker: hydrates, but opens no gates. */
+export const providerSyncMarker = (): FolderEvent => ({
+	type: "PROVIDER_SYNCED",
+	marker: true,
 });
 
 export const connected = (): FolderEvent => ({ type: "CONNECTED" });

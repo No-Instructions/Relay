@@ -1986,24 +1986,25 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Whether a confirmed membership pass can still arrive for this folder.
+	 * Whether a provider-synced membership pass can still arrive for this
+	 * folder.
 	 *
-	 * Confirmed confidence comes from one of two places: the folder is its
-	 * own authority and settles at hydration, or a provider handshake
-	 * confirms the server's picture. A folder with no relay has neither —
+	 * The sync signal comes from one of two places: the folder is its own
+	 * authority and settles at hydration, or a provider handshake
+	 * delivers the server's picture. A folder with no relay has neither —
 	 * it is not the authority (a folder can be left without a relay by
 	 * losing access to one, and losing access must never promote the
 	 * device to authority), and there is no provider to hand it a
-	 * handshake. Its hydration claim is blind and stays blind for the life
-	 * of the session.
+	 * handshake. Its hydration claim is the persisted marker and stays
+	 * that for the life of the session.
 	 *
-	 * That matters wherever work is deferred until the confirmation
-	 * arrives. Deferring is only ever a wait; on a folder that can never
-	 * be confirmed it is a refusal, and one that no later event retracts.
-	 * Callers use this to tell the two apart. It grants nothing: what a
-	 * folder may publish and what it may destroy are still decided by the
-	 * membership row and the dispatch gates, which go on refusing at blind
-	 * confidence exactly as before.
+	 * That matters wherever work is deferred until the sync arrives.
+	 * Deferring is only ever a wait; on a folder that can never sync it
+	 * is a refusal, and one that no later event retracts. Callers use
+	 * this to tell the two apart. It grants nothing: what a folder may
+	 * publish and what it may destroy are still decided by the membership
+	 * row and the dispatch gates, which go on refusing from an unsynced
+	 * picture exactly as before.
 	 */
 	private canConfirmMembership(): boolean {
 		return this.authoritative || this.relayId !== undefined;
@@ -2012,18 +2013,18 @@ export class SharedFolder extends HasProvider {
 	/**
 	 * Feed the machine the bootstrap scan, declare its persistence
 	 * loaded, and assert the hydration-time sync claim. The claim's
-	 * confidence depends on who the folder's membership authority is:
+	 * shape depends on who the folder's membership authority is:
 	 *
 	 * - A folder that syncs with a server boots from its persisted
-	 *   has-synced marker — a BLIND claim. The server may have moved
-	 *   while the session was closed, so decisions made under it are
-	 *   provisional: nothing destructive or publishing dispatches until
-	 *   the session's first real handshake confirms the picture
+	 *   has-synced MARKER. The server may have moved while the session
+	 *   was closed, so the marker hydrates the picture without opening
+	 *   any gate: nothing destructive or publishing dispatches until the
+	 *   session's first real handshake syncs the picture
 	 *   (handleProviderSynced).
 	 * - An AUTHORITATIVE folder is its own membership authority: there
 	 *   is no server picture its local one could understate, so its
-	 *   local tree IS the confirmed picture. It hydrates at confirmed
-	 *   confidence — local files mint identities and register live doc
+	 *   local tree IS the synced picture. It hydrates with the full sync
+	 *   claim — local files mint identities and register live doc
 	 *   objects immediately, and only the network transfer waits for a
 	 *   connection (queued upload work drains when the folder connects).
 	 */
@@ -2048,10 +2049,11 @@ export class SharedFolder extends HasProvider {
 		// folders wait for the first provider handshake
 		// (handleProviderSynced).
 		if (this.ready) {
-			machine.send({
-				type: "PROVIDER_SYNCED",
-				tier: this.authoritative ? "confirmed" : "blind",
-			});
+			machine.send(
+				this.authoritative
+					? { type: "PROVIDER_SYNCED" }
+					: { type: "PROVIDER_SYNCED", marker: true },
+			);
 		}
 	}
 
@@ -2073,9 +2075,10 @@ export class SharedFolder extends HasProvider {
 		this.folderBridge?.reconcile();
 		// The FolderHSM hydration gate rides the same handshake as the
 		// readiness latch; the machine itself dedups repeat syncs
-		// (classification re-runs only after a disconnect or a blind
-		// boot's first confirmed exchange). A completed handshake is a
-		// natural sync moment for the remote-index cache.
+		// (classification re-runs only when no live sync signal stands —
+		// after a disconnect, or a marker-only boot's first exchange). A
+		// completed handshake is a natural sync moment for the
+		// remote-index cache.
 		this._remoteIndexDirty = true;
 		this.folderHSM?.send({ type: "CONNECTED" });
 		this.folderHSM?.send({ type: "PROVIDER_SYNCED" });
@@ -2975,18 +2978,18 @@ export class SharedFolder extends HasProvider {
 			onEffect: (effect) => this.handleFolderHSMEffect(effect),
 			onTransition: (from, to, eventType) => {
 				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
-				// A classification pass settling at confirmed confidence is
-				// a natural sync moment: refresh the remote-index cache on
-				// the next persist. It is also the session's membership
-				// settlement — the moment held outbound flow may run. A
-				// pass the trust gate deferred settled nothing; the drained
-				// re-run comes back through here.
+				// A classification pass settling over a provider-synced
+				// picture is a natural sync moment: refresh the remote-index
+				// cache on the next persist. It is also the session's
+				// membership settlement — the moment held outbound flow may
+				// run. A pass the trust gate deferred settled nothing; the
+				// drained re-run comes back through here.
 				if (from === "reconciling" && to === "tracking") {
 					this._remoteIndexDirty = true;
 					const machine = this.folderHSM;
 					if (
 						machine &&
-						machine.context.tier === "confirmed" &&
+						machine.context.providerSynced &&
 						!machine.context.classificationDeferred
 					) {
 						this.markMembershipSettled();
@@ -4058,7 +4061,7 @@ export class SharedFolder extends HasProvider {
 	 * evidence and honor its verdict. A publication verdict has already
 	 * executed synchronously by the time send() returns (identity minted,
 	 * live file object created); any other verdict — parked, conflicted,
-	 * awaiting trust or confidence, read-only — leaves the file
+	 * awaiting trust or provider sync, read-only — leaves the file
 	 * local-only, surfaced by the machine, with no handle to return.
 	 */
 	private requestMembershipDecision(vpath: string): IFile | undefined {

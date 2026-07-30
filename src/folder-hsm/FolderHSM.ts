@@ -14,9 +14,9 @@
  *
  * Safety structure:
  * - the emit chokepoint refuses (throws) any effect whose capability the
- *   current folder posture does not grant, any destructive dispatch at
- *   blind confidence, and any publishing/index write under read-only
- *   authorization;
+ *   current folder posture does not grant, any destructive or publishing
+ *   dispatch before a completed provider sync, and any publishing/index
+ *   write under read-only authorization;
  * - entry candidates declare the capabilities their effects require; the
  *   cross-product of entry candidate and folder posture is checked at
  *   emit (the two-level check);
@@ -30,7 +30,6 @@ import { curryLog } from "../debug";
 import { FOLDER_MACHINE } from "./machine-definition";
 import { ENTRY_MACHINE } from "./entry-machine";
 import type {
-	ConfidenceTier,
 	Disposition,
 	EntryCandidate,
 	EntryEvent,
@@ -69,8 +68,12 @@ const EFFECT_CAPABILITY: Record<
 	SURFACE_STATUS: "canEmitEffects",
 };
 
-/** Effects that destroy local content or publish to the group. */
-const CONFIRMED_ONLY_EFFECTS = new Set<FolderEffect["type"]>([
+/**
+ * Effects that destroy local content or publish to the group: never
+ * dispatched from an unsynced picture (no completed live exchange this
+ * session).
+ */
+const SYNC_GATED_EFFECTS = new Set<FolderEffect["type"]>([
 	"TRASH_LOCAL",
 	"RENAME_LOCAL",
 	"ENQUEUE_UPLOAD",
@@ -117,7 +120,7 @@ const DISPOSITION_BY_STATE: Record<EntryStatePath, Disposition> = {
 function freshContext(): FolderContext {
 	return {
 		persistenceLoaded: false,
-		tier: "none",
+		syncClaimed: false,
 		providerSynced: false,
 		isOnline: false,
 		authorization: "write",
@@ -182,12 +185,8 @@ export class FolderHSM {
 			guards: {
 				persistenceLoaded: () => this.context.persistenceLoaded,
 				hydrated: () =>
-					this.context.persistenceLoaded && this.context.tier !== "none",
+					this.context.persistenceLoaded && this.context.syncClaimed,
 				reconnectPending: () => !this.context.providerSynced,
-				tierWasBlind: (_hsm, event) =>
-					this.context.tier === "blind" &&
-					event.type === "PROVIDER_SYNCED" &&
-					(event.tier ?? "confirmed") === "confirmed",
 				classificationDeferred: () => this.context.classificationDeferred,
 				authorizationExpanded: (_hsm, event) =>
 					event.type === "AUTHORIZATION_CHANGED" &&
@@ -200,9 +199,9 @@ export class FolderHSM {
 					this.context.persistenceLoaded = true;
 					this.bump();
 				},
-				recordTier: (_hsm, event) => {
+				recordSyncClaim: (_hsm, event) => {
 					if (event.type !== "PROVIDER_SYNCED") return;
-					this.recordTier(event.tier ?? "confirmed");
+					this.recordSyncClaim(event.marker === true);
 				},
 				recordAuthorization: (_hsm, event) => {
 					if (event.type !== "AUTHORIZATION_CHANGED") return;
@@ -434,9 +433,9 @@ export class FolderHSM {
 		return {
 			statePath: this._statePath,
 			hydrated:
-				this.context.persistenceLoaded && this.context.tier !== "none",
+				this.context.persistenceLoaded && this.context.syncClaimed,
 			isOnline: this.context.isOnline,
-			tier: this.context.tier,
+			providerSynced: this.context.providerSynced,
 			entries,
 			parked,
 			conflicted,
@@ -449,7 +448,7 @@ export class FolderHSM {
 			revision: this.context.revision,
 			context: {
 				persistenceLoaded: this.context.persistenceLoaded,
-				tier: this.context.tier,
+				syncClaimed: this.context.syncClaimed,
 				providerSynced: this.context.providerSynced,
 				isOnline: this.context.isOnline,
 				authorization: this.context.authorization,
@@ -529,11 +528,11 @@ export class FolderHSM {
 				);
 			}
 			if (
-				CONFIRMED_ONLY_EFFECTS.has(effect.type) &&
-				this.context.tier !== "confirmed"
+				SYNC_GATED_EFFECTS.has(effect.type) &&
+				!this.context.providerSynced
 			) {
 				throw new Error(
-					`FolderHSM invariant violation: ${effect.type} dispatched at ${this.context.tier} confidence`,
+					`FolderHSM invariant violation: ${effect.type} dispatched before a completed provider sync`,
 				);
 			}
 			if (
@@ -689,19 +688,18 @@ export class FolderHSM {
 		return this.config.listMapEntries().find((entry) => entry.path === path);
 	}
 
-	private recordTier(claim: "blind" | "confirmed"): void {
-		if (claim === "blind") {
-			// A persisted marker can declare sync but never confirm it: it
-			// upgrades nothing once a live exchange has completed.
-			if (this.context.tier === "none") {
-				this.context.tier = "blind";
-				this.bump();
-			}
-		} else if (this.context.tier !== "confirmed") {
-			this.context.tier = "confirmed";
+	private recordSyncClaim(marker: boolean): void {
+		if (!this.context.syncClaimed) {
+			this.context.syncClaimed = true;
 			this.bump();
 		}
-		this.context.providerSynced = true;
+		// A persisted marker hydrates the picture but never stands in for
+		// a live exchange: only a completed exchange this session opens
+		// the destruction/publication gate.
+		if (!marker && !this.context.providerSynced) {
+			this.context.providerSynced = true;
+			this.bump();
+		}
 	}
 
 	// =========================================================================
@@ -741,7 +739,6 @@ export class FolderHSM {
 			guid,
 			origin,
 			kind,
-			decidedTier: this.context.tier,
 			dispatched: false,
 			contentAgreement: "unknown",
 		};
@@ -847,8 +844,8 @@ export class FolderHSM {
 		}
 		// Declared cell, no passing guard: consumed without transition —
 		// but never silently for an explicit user action. A resolution or
-		// unpark whose evidence guards refuse (blind tier above all) is
-		// reported like a refusal so the drop is visible.
+		// unpark whose evidence guards refuse (an unsynced picture above
+		// all) is reported like a refusal so the drop is visible.
 		if (
 			event.type === "RESOLVE_CONFLICT" ||
 			event.type === "UNPARK_REQUESTED"
@@ -879,7 +876,6 @@ export class FolderHSM {
 			return; // internal transition: no re-entry
 		}
 		row.state = target;
-		row.decidedTier = this.context.tier;
 		row.decidedBy = candidate.guard;
 		row.dispatched = false;
 		this.bump();
@@ -901,7 +897,6 @@ export class FolderHSM {
 		}
 		if (policy === "reclassify") {
 			row.state = "unclassified";
-			row.decidedTier = this.context.tier;
 			row.decidedBy = undefined;
 			row.dispatched = false;
 			this.bump();
@@ -1028,29 +1023,6 @@ export class FolderHSM {
 			this.bump();
 		}
 
-		// Decisions made at blind confidence are provisional: the session's
-		// first confirmed pass returns them to unclassified and revisits.
-		// Acknowledged in-flight work is adopted, never demoted. A row
-		// carrying a deferred removal is not a provisional decision — its
-		// completion path is the evidence re-derivation below, which a
-		// demotion here would hide from.
-		if (this.context.tier === "confirmed") {
-			for (const row of Array.from(this.context.rows.values())) {
-				if (
-					row.decidedTier === "blind" &&
-					row.state !== "unclassified" &&
-					row.state !== "upload.inFlight" &&
-					row.state !== "download.inFlight" &&
-					row.removalEvidence === undefined
-				) {
-					row.state = "unclassified";
-					row.decidedTier = this.context.tier;
-					row.dispatched = false;
-					this.bump();
-				}
-			}
-		}
-
 		// Seed rows for map entries this replica has never held rows for.
 		// An identity already carried by some row is skipped: one authority
 		// per file — its row's own transitions (a rename decision above
@@ -1066,27 +1038,30 @@ export class FolderHSM {
 			this.seedRow(entry.path, entry.guid);
 		}
 
-		// Re-derive verdicts for settled rows whose evidence moved while
-		// the machine could not act: a synced row whose identity the map
-		// no longer holds anywhere was remotely deleted (a real decision —
-		// absence alone never deletes; the identity is the association);
-		// one whose identity lives at another path moved. Rows carrying a
-		// deferred removal complete here too, whatever their state — the
-		// event is re-derived from the current map, so an identity
-		// re-committed in the meantime voids the evidence instead of
-		// replaying it. Evidence completion runs only at confirmed
-		// confidence; retained evidence survives a blind pass untouched.
+		// Re-derive verdicts for rows whose evidence moved while the
+		// machine could not act: a row whose identity the map no longer
+		// holds anywhere was remotely deleted (a real decision — absence
+		// alone never deletes; the identity is the association); one whose
+		// identity lives at another path moved. Settled synced rows carry
+		// their identity from adoption; an undecided row carries one when
+		// a pre-sync removal adopted it onto the row. Nothing else is
+		// recorded, because nothing else is needed: the map is the durable
+		// record, the discrepancy is re-derived from it on every pass, and
+		// an identity re-committed in the meantime simply stops reading as
+		// removed. The rungs gate execution on a completed live exchange,
+		// so a pass before provider sync leaves the row in place.
 		for (const row of Array.from(this.context.rows.values())) {
-			const evidenced =
-				row.removalEvidence !== undefined &&
-				this.context.tier === "confirmed";
-			if (!evidenced && row.state !== "synced") continue;
-			const guid = row.guid ?? row.removalEvidence?.guid ?? null;
-			if (guid === null) continue;
-			if (evidenced) {
-				row.removalEvidence = undefined;
-				this.bump();
+			if (
+				row.state !== "synced" &&
+				!(
+					row.state === "unclassified" &&
+					this.context.localFiles.has(row.path)
+				)
+			) {
+				continue;
 			}
+			const guid = row.guid;
+			if (guid === null) continue;
 			const inMap = mapByGuid.get(guid);
 			if (!inMap) {
 				this.tickRow(row, {
@@ -1115,7 +1090,7 @@ export class FolderHSM {
 		this.drainScheduledClassifies();
 	}
 
-	/** Re-run gated dispatches after an authorization (or tier) edge. */
+	/** Re-run gated dispatches after an authorization edge. */
 	private revisitGatedRows(): void {
 		for (const row of Array.from(this.context.rows.values())) {
 			if (row.dispatched) continue;
@@ -1156,9 +1131,9 @@ export class FolderHSM {
 			} else if (this.context.localFiles.has(del.path)) {
 				// A removal for a path the table has never decided about:
 				// seed the row and route the removal through it, so the
-				// event's identity is retained (or acted on at confirmed
-				// confidence) instead of decaying into a bare tombstone the
-				// ladder would park on.
+				// event's identity rides the row (or acts immediately on a
+				// synced picture) instead of decaying into a bare tombstone
+				// the ladder would park on.
 				const seeded = this.seedRow(del.path, guid ?? null);
 				this.tickRow(seeded, {
 					type: "MAP_REMOVED",
@@ -1202,8 +1177,9 @@ export class FolderHSM {
 			this.tickRow(row, { type: "FILE_DISCOVERED", path, origin, kind });
 			// An undecided row is a standing question, and a discovery is
 			// the host asking for the answer (the shared-handle fallback
-			// depends on it). The visit still honors the trust and tier
-			// gates; a row the gates hold stays visibly unclassified.
+			// depends on it). The visit still honors the trust and
+			// provider-sync gates; a row the gates hold stays visibly
+			// unclassified.
 			if (row.state === "unclassified") this.scheduleClassifyRow(row);
 			return;
 		}
@@ -1253,7 +1229,7 @@ export class FolderHSM {
 		string,
 		(row: EntryRow, event: EntryEvent) => boolean
 	> {
-		const confirmed = () => this.context.tier === "confirmed";
+		const synced = () => this.context.providerSynced;
 		const heldAt = (path: string) =>
 			this.config.holds.getHold(path) !== undefined;
 		const eventGuid = (event: EntryEvent): string | undefined => {
@@ -1266,25 +1242,22 @@ export class FolderHSM {
 			// unpublished mint: a persisted hold names one identity and the
 			// map commits another at the same path. Adopting the committed
 			// one discards the mint, so it carries the machine's
-			// confirmed-confidence bar like every other irreversible
-			// verdict — a blind boot reads a map that may have moved while
-			// the session was closed, and the hold marks content the server
-			// does not have.
+			// provider-sync bar like every other irreversible verdict — a
+			// marker boot reads a map that may have moved while the session
+			// was closed, and the hold marks content the server does not
+			// have.
 			//
 			// The bar is about the map's trustworthiness, and only that. It
 			// says nothing about whether the rebind the adoption emits can
-			// run right now: the tier only ever climbs, so a session that
-			// confirmed once reads confirmed for the rest of its life
-			// whether or not the transport is still there, while this guard
-			// is re-evaluated on every later pass. Nor does it say the
-			// committed kind is one the rebind can take. Neither is checked
-			// here, because neither has to be — the host executes the
-			// retraction without discarding anything until the rebind
-			// completes, so a rebind that cannot run leaves the mint, its
-			// document and its durable hold exactly where they were, and the
-			// next one retries from the same evidence.
+			// run right now, nor that the committed kind is one the rebind
+			// can take. Neither is checked here, because neither has to be
+			// — the host executes the retraction without discarding
+			// anything until the rebind completes, so a rebind that cannot
+			// run leaves the mint, its document and its durable hold
+			// exactly where they were, and the next pass retries from the
+			// same evidence.
 			committedIdentitySupersedesHold: (row) => {
-				if (!confirmed()) return false;
+				if (!synced()) return false;
 				if (!this.context.localFiles.has(row.path)) return false;
 				const committed = this.getMapEntry(row.path)?.guid;
 				if (committed === undefined) return false;
@@ -1315,7 +1288,7 @@ export class FolderHSM {
 				this.context.localFiles.has(row.path) &&
 				row.origin === "interactive",
 			recordAliveElsewhere: (row) => {
-				if (!confirmed()) return false;
+				if (!synced()) return false;
 				if (!this.context.localFiles.has(row.path)) return false;
 				const recordGuid = this.config.records.getRecordGuid(row.path);
 				if (recordGuid === undefined) return false;
@@ -1325,7 +1298,7 @@ export class FolderHSM {
 				return alive !== undefined && alive.path !== row.path;
 			},
 			staleCopyCondemned: (row) => {
-				if (!confirmed()) return false;
+				if (!synced()) return false;
 				if (!this.context.localFiles.has(row.path)) return false;
 				// Held-but-unpublished content is never condemned.
 				if (heldAt(row.path)) return false;
@@ -1341,7 +1314,7 @@ export class FolderHSM {
 					.some((entry) => entry.guid === recordGuid);
 			},
 			tombstonedEmptyDirectory: (row) =>
-				confirmed() &&
+				synced() &&
 				row.kind === "folder" &&
 				this.context.localFiles.has(row.path) &&
 				!heldAt(row.path) &&
@@ -1369,7 +1342,7 @@ export class FolderHSM {
 				this.context.recordedDeleteIntents.has(row.path),
 			indexEntryKnown: (row) => this.getMapEntry(row.path) !== undefined,
 			identityMatches: (row, event) => {
-				if (!confirmed()) return false;
+				if (!synced()) return false;
 				if (heldAt(row.path)) return false;
 				const guid = eventGuid(event);
 				if (guid === undefined) return false;
@@ -1378,32 +1351,51 @@ export class FolderHSM {
 					guid === this.config.records.getRecordGuid(row.path)
 				);
 			},
-			// The pre-confirmation counterpart of identityMatches: the same
-			// identity association, one tier early — the removal is retained
-			// on the row instead of acted on. Held content stays exempt, and
-			// an identity another row already carries is never adopted here
-			// (one authority per identity).
-			removalDeferredForConfirmation: (row, event) => {
-				if (confirmed()) return false;
+			// The pre-sync counterpart of identityMatches: the same identity
+			// association before any completed live exchange this session —
+			// the removal cannot act, and the row holds its place instead.
+			// Nothing is recorded: the map is the durable record, and the
+			// first synced classification pass re-derives the removal from
+			// it. Held content stays exempt here as everywhere.
+			removalAwaitsProviderSync: (row, event) => {
+				if (synced()) return false;
 				if (!this.context.localFiles.has(row.path)) return false;
 				if (heldAt(row.path)) return false;
 				const guid = eventGuid(event);
 				if (guid === undefined) return false;
-				if (row.guid !== null) return row.guid === guid;
-				return this.rowByGuid(guid) === undefined;
+				return (
+					guid === row.guid ||
+					guid === this.config.records.getRecordGuid(row.path)
+				);
 			},
-			moveAwayDeferredForConfirmation: (row, event) => {
-				if (confirmed()) return false;
+			moveAwayAwaitsProviderSync: (row, event) => {
+				if (synced()) return false;
 				if (event.type !== "MAP_MOVED") return false;
 				if (heldAt(row.path)) return false;
 				return this.context.localFiles.has(event.from);
 			},
-			carriesRemovalEvidence: (row) =>
-				row.removalEvidence !== undefined,
+			// Classification verdicts over the map — condemnation, rename,
+			// refusal, bootstrap publication — wait for a completed live
+			// exchange; the row stays in the explicit waiting state until
+			// the first synced pass decides it.
+			verdictAwaitsProviderSync: (row) =>
+				!synced() && this.context.localFiles.has(row.path),
+			// The committed map no longer holds this row's identity at this
+			// row's path: it either left the map (a removal already
+			// committed) or lives at another path (the copy here was
+			// stale). A local deletion is then agreement, not new intent.
+			identityLeftPath: (row) =>
+				row.guid !== null &&
+				!this.config
+					.listMapEntries()
+					.some(
+						(entry) =>
+							entry.guid === row.guid && entry.path === row.path,
+					),
 			committedIdentityAtPath: (row) =>
 				this.getMapEntry(row.path) !== undefined,
 			tombstonedBootstrapHold: (row) =>
-				confirmed() &&
+				synced() &&
 				this.config.pathTombstoned(row.path) &&
 				row.origin === "bootstrap",
 			observedIdentityStillCommitted: (row) => {
@@ -1420,7 +1412,7 @@ export class FolderHSM {
 				return this.config.mergeableKind?.(fileType) ?? false;
 			},
 			sourceFilePresent: (row, event) =>
-				this.context.tier === "confirmed" &&
+				synced() &&
 				event.type === "MAP_MOVED" &&
 				this.context.localFiles.has(event.from),
 			destinationPresent: (row, event) =>
@@ -1430,12 +1422,12 @@ export class FolderHSM {
 				event.type === "RESOLVE_CONFLICT" &&
 				event.verdict === "keep-local",
 			verdictKeepRemote: (row, event) =>
-				this.context.tier === "confirmed" &&
+				synced() &&
 				event.type === "RESOLVE_CONFLICT" &&
 				event.verdict === "keep-remote" &&
 				!this.context.localFiles.has(row.path),
 			verdictKeepRemoteWithLocalFile: (row, event) =>
-				this.context.tier === "confirmed" &&
+				synced() &&
 				event.type === "RESOLVE_CONFLICT" &&
 				event.verdict === "keep-remote" &&
 				this.context.localFiles.has(row.path),
@@ -1484,21 +1476,22 @@ export class FolderHSM {
 				this.context.recordedDeleteIntents.add(row.path);
 				this.bump();
 			},
-			retainRemovalEvidence: (row, event) => {
+			// A guid-less row adopts the identity a pre-sync removal names —
+			// the same adoption the delta router performs when it seeds a
+			// removal row. The identity is the association the first synced
+			// classification pass re-derives the removal from; an identity
+			// another row already carries is never adopted (one authority
+			// per identity).
+			adoptRemovalIdentity: (row, event) => {
+				if (this.context.providerSynced) return;
 				const guid =
 					"guid" in event && typeof event.guid === "string"
 						? event.guid
 						: undefined;
 				if (guid === undefined) return;
-				row.removalEvidence = { guid };
-				// A guid-less row adopts the identity the removal names —
-				// the same adoption the delta router performs when it seeds
-				// a removal row. The guard already refused identities other
-				// rows carry.
 				if (row.guid === null && this.rowByGuid(guid) === undefined) {
 					this.rekeyRowGuid(row, guid);
 				}
-				this.bump();
 			},
 			recordObservedIdentity: (row) => {
 				const guid = row.guid ?? this.getMapEntry(row.path)?.guid;
@@ -1543,18 +1536,6 @@ export class FolderHSM {
 			adoptCommittedIdentity: (row) => {
 				const committed = this.getMapEntry(row.path);
 				if (!committed) return;
-				// The map holds an identity at this path again and the row
-				// is taking it: that re-commit is what voids a deferred
-				// removal, so it is voided here rather than only at the
-				// next confirmed pass. Adoption sits above the evidence
-				// rung on the ladder, so evidence left standing would ride
-				// onto a synced row, where a later local delete would read
-				// as agreement with a removal that no longer stands and
-				// would never reach the map.
-				if (row.removalEvidence !== undefined) {
-					row.removalEvidence = undefined;
-					this.bump();
-				}
 				if (row.guid !== committed.guid) {
 					this.rekeyRowGuid(row, committed.guid);
 				}
@@ -1769,13 +1750,14 @@ export class FolderHSM {
 	// =========================================================================
 
 	/**
-	 * The dispatch gate for publication: emits only under confirmed
-	 * confidence, write authorization, and a posture granting the
-	 * origin's upload capability. Otherwise the intent queues silently in
-	 * the row and dispatch fires on the tier/authorization edge.
+	 * The dispatch gate for publication: emits only after a completed
+	 * provider sync, under write authorization, and from a posture
+	 * granting the origin's upload capability. Otherwise the intent
+	 * queues silently in the row and dispatch fires on the sync or
+	 * authorization edge.
 	 */
 	private dispatchUpload(row: EntryRow): void {
-		if (this.context.tier !== "confirmed") return;
+		if (!this.context.providerSynced) return;
 		if (this.context.authorization !== "write") return;
 		const capability: FolderCapabilityName =
 			row.origin === "interactive"
@@ -1813,7 +1795,7 @@ export class FolderHSM {
 
 	/**
 	 * Run the state-shaped invariant checks over the current table. The
-	 * emit-time invariants (capability grants, blind and read-only gates)
+	 * emit-time invariants (capability grants, sync and read-only gates)
 	 * are enforced by throwing in `emit`; these are the observational
 	 * ones, run by tests and periodic checkers.
 	 */
@@ -1835,15 +1817,13 @@ export class FolderHSM {
 			});
 		};
 		for (const row of this.context.rows.values()) {
-			if (row.state === "synced") {
-				// A deferred removal is the declared exception: the map has
-				// already dropped or moved the identity, and the row holds
-				// its place until the confirmed pass completes the removal.
+			if (row.state === "synced" && this.context.providerSynced) {
+				// Before a completed live exchange the map may run ahead of
+				// the rows (a pre-sync removal leaves the row holding its
+				// place until the first synced pass re-derives it), so the
+				// agreement check binds only on a synced picture.
 				const entry = this.getMapEntry(row.path);
-				if (
-					row.removalEvidence === undefined &&
-					(!entry || (row.guid !== null && entry.guid !== row.guid))
-				) {
+				if (!entry || (row.guid !== null && entry.guid !== row.guid)) {
 					report(
 						"synced-agrees",
 						"error",

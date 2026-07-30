@@ -17,14 +17,16 @@
  * cross-product and refuses on violation.
  *
  * Evidence rules the guards encode (see FolderHSM for the bindings):
- * - destruction requires positive identity association at confirmed
- *   confidence — absence never deletes, and content is never consulted:
- *   identity decides, so the outcome cannot depend on event ordering;
+ * - destruction requires positive identity association over a
+ *   provider-synced picture — absence never deletes, and content is
+ *   never consulted: identity decides, so the outcome cannot depend on
+ *   event ordering;
  * - a path carrying a persisted upload hold is never trashed and its
  *   minted identity is never silently discarded: the hold marks content
  *   the server does not have;
- * - publication requires live user intent or a confirmed-confidence
- *   verdict, and dispatch additionally requires write authorization;
+ * - publication requires live user intent or a classification verdict
+ *   over a provider-synced picture, and dispatch additionally requires
+ *   write authorization;
  * - acknowledged work is adopted, never re-emitted; unacknowledged
  *   intent re-emits at-least-once.
  */
@@ -47,11 +49,11 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				// same effect as the live supersession route
 				// (upload.held/MAP_ADDED) — retract the superseded mint
 				// naming the committed identity as the rebind target, then
-				// adopt. Confirmed confidence is a bar on the map, not a
-				// promise that the rebind can run; the host keeps the mint,
-				// its document and its durable hold until the rebind has
-				// actually completed, so a rebind that cannot run yet costs
-				// nothing and is retried from the same evidence.
+				// adopt. A completed provider sync is a bar on the map, not
+				// a promise that the rebind can run; the host keeps the
+				// mint, its document and its durable hold until the rebind
+				// has actually completed, so a rebind that cannot run yet
+				// costs nothing and is retried from the same evidence.
 				{
 					target: "synced",
 					guard: "committedIdentitySupersedesHold",
@@ -72,13 +74,6 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					guard: "indexEntryAtPathWithLocalFile",
 					actions: ["adoptCommittedIdentity"],
 				},
-				// A row carrying a deferred removal is not undecided — its
-				// decision is made and waiting for confirmed confidence. No
-				// lower rung may re-interpret the file while the evidence
-				// stands: the tombstone rung would park it and the
-				// publication rungs would mint for it, both laundering a
-				// removal into something else.
-				{ target: "unclassified", guard: "carriesRemovalEvidence" },
 				{
 					target: "upload.held",
 					guard: "holdAdoptable",
@@ -89,6 +84,14 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					guard: "originInteractive",
 					actions: ["mintHold"],
 				},
+				// Every rung below decides a classification verdict over the
+				// map — condemnation, rename-to-follow, refusal, bootstrap
+				// publication. None is decidable before a live exchange has
+				// synced the picture: the row waits here, in the explicit
+				// waiting state, and the first synced pass decides it once.
+				// (Adoption, hold resumption, and live user intent above are
+				// not verdicts over the map and do not wait.)
+				{ target: "unclassified", guard: "verdictAwaitsProviderSync" },
 				{
 					target: "renaming",
 					guard: "recordAliveElsewhere",
@@ -142,8 +145,11 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				},
 			],
 			// A removal reaching a row still undecided: condemn on identity
-			// at confirmed confidence, retain as evidence before it, and
-			// absorb an identity mismatch — never trash on this event.
+			// over a synced picture; absorb otherwise — never trash on this
+			// event. Pre-sync, a guid-less row adopts the identity the
+			// removal names: the map is the durable record of the removal,
+			// and the identity on the row is what lets the first synced
+			// classification pass re-derive it from that map.
 			MAP_REMOVED: [
 				{
 					target: "trashing",
@@ -151,20 +157,18 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
-				{
-					target: "unclassified",
-					guard: "removalDeferredForConfirmation",
-					actions: ["retainRemovalEvidence"],
-				},
-				{ target: "unclassified" },
+				{ target: "unclassified", actions: ["adoptRemovalIdentity"] },
 			],
 			FILE_CREATED: {
 				target: "unclassified",
 				actions: ["upgradeOriginInteractive", "scheduleClassify"],
 			},
 			FILE_DELETED: [
-				// Deferred-removal agreement: see the synced cell.
-				{ target: "retired", guard: "carriesRemovalEvidence" },
+				// The row's identity already left the committed map at this
+				// path: the local delete is agreement with a removal (or
+				// move) the group already committed — nothing remains to
+				// replicate.
+				{ target: "retired", guard: "identityLeftPath" },
 				{
 					target: "delete.pending",
 					guard: "indexEntryKnown",
@@ -193,17 +197,14 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitTrashLocal"],
 					requires: ["canTrash"],
 				},
-				// Pre-confirmation the removal cannot act — destruction
-				// requires confirmed confidence — but it must not launder
-				// into a fresh classification that no longer knows a removal
-				// happened. The row retains it as evidence; the session's
-				// first confirmed pass completes it through the same
-				// identity semantics.
-				{
-					target: "synced",
-					guard: "removalDeferredForConfirmation",
-					actions: ["retainRemovalEvidence"],
-				},
+				// Before a completed live exchange the removal cannot act —
+				// destruction never runs from an unsynced picture — and
+				// nothing needs recording: the row holds its place, the map
+				// is the durable record, and the first synced classification
+				// pass re-derives the removal from it (an identity
+				// re-committed in the meantime simply no longer reads as
+				// removed).
+				{ target: "synced", guard: "removalAwaitsProviderSync" },
 				// Identity mismatch: the removed entry was a different
 				// document — never trash on this event; reclassify against
 				// present truth.
@@ -216,17 +217,13 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 					actions: ["emitRenameLocal"],
 					requires: ["canRenameLocal"],
 				},
-				// The rename-away form of a pre-confirmation removal: the
-				// local file must follow its identity, but the local rename
-				// is destructive at the source and waits for confirmed
-				// confidence. Retained like a removal; the confirmed pass
+				// The rename-away form of a pre-sync removal: the local file
+				// must follow its identity, but the local rename is
+				// destructive at the source and waits for a completed
+				// exchange. The row holds its place; the first synced pass
 				// re-derives the destination from the map of that moment
 				// and completes it as a rename.
-				{
-					target: "synced",
-					guard: "moveAwayDeferredForConfirmation",
-					actions: ["retainRemovalEvidence"],
-				},
+				{ target: "synced", guard: "moveAwayAwaitsProviderSync" },
 				{
 					target: "synced",
 					guard: "destinationPresent",
@@ -239,10 +236,12 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 				},
 			],
 			FILE_DELETED: [
-				// With a deferred removal on the row, the local delete is
-				// agreement, not new intent: both sides already decided the
-				// file's identity is gone — nothing remains to replicate.
-				{ target: "retired", guard: "carriesRemovalEvidence" },
+				// The row's identity no longer stands committed at this path
+				// (the group already removed or moved it): the local delete
+				// is agreement, not new intent — nothing remains to
+				// replicate, and a minted delete here would target an entry
+				// that no longer exists (or a different document's).
+				{ target: "retired", guard: "identityLeftPath" },
 				{
 					target: "delete.pending",
 					actions: ["recordObservedIdentity", "emitIndexDelete"],
@@ -262,9 +261,10 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 	},
 
 	"upload.held": {
-		// Dispatch is gated: ENQUEUE_UPLOAD emits only under confirmed
-		// tier and write authorization; otherwise the intent queues
-		// silently and dispatch fires on the tier/authorization edge.
+		// Dispatch is gated: ENQUEUE_UPLOAD emits only after a completed
+		// provider sync and under write authorization; otherwise the
+		// intent queues silently and dispatch fires on the sync or
+		// authorization edge.
 		entry: ["dispatchUploadIfPermitted"],
 		otherwise: "absorb",
 		on: {
@@ -281,6 +281,20 @@ export const ENTRY_MACHINE: EntryMachineDefinition = {
 			// Retried on the next occasion.
 			UPLOAD_FAILED: { target: "upload.held" },
 			CLASSIFY: [
+				// The map commits a different identity at this path than the
+				// row's unpublished mint: the same supersession contract as
+				// the live MAP_ADDED route below, reached when the committed
+				// entry was already in the picture the pass reads (a hold
+				// adopted before the session's first completed exchange, or
+				// an entry that landed while the row queued).
+				{
+					target: "synced",
+					guard: "committedIdentitySupersedesHold",
+					actions: [
+						"retractSupersededMintAndRebind",
+						"adoptCommittedIdentity",
+					],
+				},
 				// An emptied directory at a deleted path: directories hold
 				// no content to protect, so the queued work is cancelled
 				// and the directory is removed like any other stale

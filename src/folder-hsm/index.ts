@@ -42,7 +42,6 @@ export {
 } from "./recovery";
 export type {
 	AuthorizationScope,
-	ConfidenceTier,
 	Disposition,
 	EntryEvent,
 	EntryRow,

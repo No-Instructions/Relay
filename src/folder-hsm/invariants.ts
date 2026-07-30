@@ -3,7 +3,7 @@
  * family's declarative form. Two enforcement layers realize them:
  *
  * - emit-time invariants are enforced by the FolderHSM emit chokepoint,
- *   which THROWS on violation (capability grants, the blind-confidence
+ *   which THROWS on violation (capability grants, the provider-sync
  *   gate, the read-only gate) — these can never be observed as state;
  * - state-shaped invariants are evaluated by FolderHSM.checkInvariants()
  *   on demand and by periodic checkers, reporting violations through the
@@ -39,10 +39,10 @@ export const FOLDER_INVARIANTS: FolderInvariantDefinition[] = [
 		enforcement: "emit-throw",
 	},
 	{
-		id: "blind-never-dispatches",
-		name: "Nothing destructive or publishing at blind confidence",
+		id: "unsynced-never-dispatches",
+		name: "Nothing destructive or publishing from an unsynced picture",
 		description:
-			"No TRASH_LOCAL, RENAME_LOCAL, or ENQUEUE_UPLOAD emits while the session tier is not confirmed.",
+			"No TRASH_LOCAL, RENAME_LOCAL, or ENQUEUE_UPLOAD emits before a live sync exchange completes this session.",
 		severity: "critical",
 		trigger: "on-emit",
 		applicableStates: [],
@@ -62,7 +62,7 @@ export const FOLDER_INVARIANTS: FolderInvariantDefinition[] = [
 		id: "synced-agrees",
 		name: "Synced rows agree with the committed map",
 		description:
-			"A synced row's identity is committed in the map at the row's path.",
+			"On a provider-synced picture, a synced row's identity is committed in the map at the row's path. Before a completed exchange the map may run ahead of the rows, so the check binds only once synced.",
 		severity: "error",
 		trigger: "on-state",
 		applicableStates: ["synced"],

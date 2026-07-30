@@ -62,10 +62,10 @@ export interface TestEngine {
 	/** Every event sent, in order — the recording for replay. */
 	recorded: FolderEvent[];
 	send(event: FolderEvent): void;
-	/** PERSISTENCE_LOADED + confirmed PROVIDER_SYNCED. */
+	/** PERSISTENCE_LOADED + a completed live exchange. */
 	hydrate(): void;
-	/** PERSISTENCE_LOADED + blind PROVIDER_SYNCED (the persisted marker). */
-	hydrateBlind(): void;
+	/** PERSISTENCE_LOADED + the persisted has-synced marker only. */
+	hydrateFromMarker(): void;
 	/** Discover local files (adds to the tree and reports to the engine). */
 	discover(...paths: string[]): void;
 	/** Effects of one type. */
@@ -227,9 +227,9 @@ function attachEngine(
 			send(events.persistenceLoaded());
 			send(events.providerSynced());
 		},
-		hydrateBlind: () => {
+		hydrateFromMarker: () => {
 			send(events.persistenceLoaded());
-			send(events.providerSynced("blind"));
+			send(events.providerSyncMarker());
 		},
 		discover,
 		effectsOf: (type) =>

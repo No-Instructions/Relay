@@ -14,18 +14,18 @@
  * - Uploads dispatch from `reconciling` and `tracking` — the two
  *   postures in which classification runs. The posture grant says WHERE
  *   a publication verdict may execute; WHEN is the dispatch gate's job
- *   (confirmed confidence and write authorization, enforced at emit),
- *   and publication verdicts themselves come only from the CLASSIFY
- *   ladder.
+ *   (a completed provider sync and write authorization, enforced at
+ *   emit), and publication verdicts themselves come only from the
+ *   CLASSIFY ladder.
  * - `rebuilding` exits into `reconciling`, never directly into
  *   `tracking`.
  *
- * Classification runs exactly once per (re)connect, plus once per trust
- * or tier edge: a disconnect clears the session's sync claim
- * (`reconnectPending`), the session's first confirmed exchange after a
- * blind boot re-enters classification (`tierWasBlind`), and a
- * classification pass deferred on pending sync state re-arms on the
- * host-observed drain (`classificationDeferred`).
+ * Classification runs exactly once per completed sync exchange, plus
+ * once per trust edge: a disconnect clears the session's live sync
+ * signal (`reconnectPending`, which also covers the first exchange
+ * after a marker-only boot), and a classification pass deferred on
+ * pending sync state re-arms on the host-observed drain
+ * (`classificationDeferred`).
  */
 
 import type { FolderEventHandler, FolderMachineDefinition } from "./types";
@@ -60,7 +60,7 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 			},
 			PROVIDER_SYNCED: {
 				target: "loading",
-				actions: ["recordTier"],
+				actions: ["recordSyncClaim"],
 				reenter: true,
 			},
 			...ABSORB_OBSERVATIONS("loading"),
@@ -72,7 +72,7 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 		on: {
 			PROVIDER_SYNCED: {
 				target: "syncing",
-				actions: ["recordTier"],
+				actions: ["recordSyncClaim"],
 				reenter: true,
 			},
 			...ABSORB_OBSERVATIONS("syncing"),
@@ -107,11 +107,11 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 			// Bootstrap-origin uploads dispatch from steady state too.
 			// Publication verdicts come only from the CLASSIFY ladder,
 			// which visits late-discovered rows in tracking (scheduled
-			// classification) under exactly the trust and tier gates the
-			// reconciling pass honors, and the emit chokepoint still
-			// refuses any upload at blind confidence. Without this grant a
-			// file discovered after the reconciling pass sits decided but
-			// undispatched until the next reconnect re-enters
+			// classification) under exactly the trust and provider-sync
+			// gates the reconciling pass honors, and the emit chokepoint
+			// still refuses any upload before a completed sync. Without
+			// this grant a file discovered after the reconciling pass sits
+			// decided but undispatched until the next reconnect re-enters
 			// classification — a deadlock, not a safety margin.
 			canUploadBootstrap: true,
 			canDownload: true,
@@ -156,23 +156,20 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 			// Connection is an input, not a posture: offline tracking
 			// continues to record local intent.
 			DISCONNECTED: { target: "tracking", actions: ["setOffline"] },
-			// Classification re-runs on a resync after a disconnect, and on
-			// the session's first confirmed exchange after a blind boot —
-			// the blind pass classified before the provider delivered
-			// anything, so the handshake's truth revisits it. A repeat sync
-			// on a live confirmed connection stays a no-op.
+			// Classification re-runs on any completed exchange the session
+			// was not already living on: a resync after a disconnect, and
+			// the first exchange after a marker-only boot — the marker pass
+			// classified before the provider delivered anything, so the
+			// handshake's truth revisits it. Both are one guard: no live
+			// sync signal stands. A repeat sync on a live connection stays
+			// a no-op.
 			PROVIDER_SYNCED: [
 				{
 					target: "reconciling",
 					guard: "reconnectPending",
-					actions: ["recordTier"],
+					actions: ["recordSyncClaim"],
 				},
-				{
-					target: "reconciling",
-					guard: "tierWasBlind",
-					actions: ["recordTier"],
-				},
-				{ target: "tracking", actions: ["recordTier"] },
+				{ target: "tracking", actions: ["recordSyncClaim"] },
 			],
 			// A classification pass deferred on pending sync state re-runs
 			// when the host observes the drain; otherwise a drain is a
@@ -182,7 +179,7 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 				{ target: "tracking" },
 			],
 			// A widened authorization re-enters classification — the same
-			// shape as the tier edge — so publication verdicts gated by the
+			// shape as the sync edge — so publication verdicts gated by the
 			// old scope re-decide and dispatch from the posture that grants
 			// them. A narrowed scope only records; nothing is retracted.
 			AUTHORIZATION_CHANGED: [
@@ -208,7 +205,7 @@ export const FOLDER_MACHINE: FolderMachineDefinition = {
 				target: "rebuilding",
 				actions: ["markPersistenceLoaded"],
 			},
-			PROVIDER_SYNCED: { target: "rebuilding", actions: ["recordTier"] },
+			PROVIDER_SYNCED: { target: "rebuilding", actions: ["recordSyncClaim"] },
 			...ABSORB_OBSERVATIONS("rebuilding"),
 			REBUILD_COMPLETE: { target: "reconciling" },
 		},
