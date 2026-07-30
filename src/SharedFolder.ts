@@ -2794,6 +2794,19 @@ export class SharedFolder extends HasProvider {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
+		// With FolderHSM active, absent-path membership is executed only by
+		// the machine's ENQUEUE_DOWNLOAD and RENAME_LOCAL effects. Running the
+		// legacy sweep's create/rename path as well gives one remote map delta
+		// two filesystem executors. In particular, a rename can be started by
+		// the machine while this sweep still holds the source TFile, causing a
+		// second rename and its watcher echo to race unrelated local moves.
+		//
+		// Existing-path reconciliation above remains sweep-driven: content
+		// pulls and GUID remaps do not materialize membership.
+		if (this.folderHSM) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+
 		if (remoteIds.has(guid) && file) {
 			const oldPath = this.getPath(file.path);
 			const tfile = this.vault.getAbstractFileByPath(oldPath);

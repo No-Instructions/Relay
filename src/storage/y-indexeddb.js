@@ -11,11 +11,36 @@ const updatesStoreName = 'updates'
 const historyStoreName = 'history'
 const DB_VERSION = 2
 const DESTROY_DRAIN_TIMEOUT_MS = 2000
+const enrollmentTails = new Map()
 const requiredStores = [
   [updatesStoreName, { autoIncrement: true }],
   [customStoreName],
   [historyStoreName, { autoIncrement: true }]
 ]
+
+/**
+ * Serialize first-enrollment decisions for persistence instances sharing one
+ * database in this process. A second owner must re-read origin/user data after
+ * the first owner finishes instead of independently inserting the same disk
+ * contents with another Yjs client identity.
+ *
+ * @template T
+ * @param {string} name
+ * @param {() => Promise<T>} operation
+ * @return {Promise<T>}
+ */
+const runEnrollmentExclusive = async (name, operation) => {
+  const previous = enrollmentTails.get(name) || Promise.resolve()
+  const current = previous.catch(() => {}).then(operation)
+  enrollmentTails.set(name, current)
+  try {
+    return await current
+  } finally {
+    if (enrollmentTails.get(name) === current) {
+      enrollmentTails.delete(name)
+    }
+  }
+}
 
 const createMissingStores = db => {
   for (const [storeName, options] of requiredStores) {
@@ -900,38 +925,40 @@ export class IndexeddbPersistence extends Observable {
    */
   async initializeWithContent (contentLoader, fieldName = 'contents') {
     await this.whenSynced
-    if (this._destroyed || !this._hasLiveDoc()) return false
+    return runEnrollmentExclusive(this.name, async () => {
+      if (this._destroyed || !this._hasLiveDoc()) return false
 
-    // Check if already enrolled (origin set = previously initialized)
-    const existingOrigin = await this.getOrigin()
-    if (this._destroyed || !this._hasLiveDoc()) return false
-    if (existingOrigin !== undefined) {
-      return false
-    }
+      // Check if already enrolled (origin set = previously initialized)
+      const existingOrigin = await this.getOrigin()
+      if (this._destroyed || !this._hasLiveDoc()) return false
+      if (existingOrigin !== undefined) {
+        return false
+      }
 
-    // Also check for user data (belt and suspenders)
-    if (this.hasUserData()) {
-      return false
-    }
+      // Also check for user data (belt and suspenders)
+      if (this.hasUserData()) {
+        return false
+      }
 
-    // Not initialized - load content lazily
-    const { content } = await contentLoader()
+      // Not initialized - load content lazily
+      const { content } = await contentLoader()
 
-    // Insert content. The `relay` map carries a single op so every enrolled
-    // doc produces a non-empty state vector — lets the server (and peers)
-    // tell "uploaded" from "never uploaded" for truly-empty content.
-    this.doc.transact(() => {
-      const header = this.doc.getMap('relay')
-      if (!header.has('v')) header.set('v', 0)
-      const ytext = this.doc.getText(fieldName)
-      ytext.insert(0, content)
+      // Insert content. The `relay` map carries a single op so every enrolled
+      // doc produces a non-empty state vector — lets the server (and peers)
+      // tell "uploaded" from "never uploaded" for truly-empty content.
+      this.doc.transact(() => {
+        const header = this.doc.getMap('relay')
+        if (!header.has('v')) header.set('v', 0)
+        const ytext = this.doc.getText(fieldName)
+        ytext.insert(0, content)
+      })
+
+      // Mark origin
+      await this.setOrigin('local')
+      if (this._destroyed || !this._hasLiveDoc()) return false
+
+      return true
     })
-
-    // Mark origin
-    await this.setOrigin('local')
-    if (this._destroyed || !this._hasLiveDoc()) return false
-
-    return true
   }
 
   /**
@@ -943,28 +970,30 @@ export class IndexeddbPersistence extends Observable {
    */
   async initializeFromRemote (update, origin) {
     await this.whenSynced
-    if (this._destroyed || !this._hasLiveDoc()) return false
+    return runEnrollmentExclusive(this.name, async () => {
+      if (this._destroyed || !this._hasLiveDoc()) return false
 
-    // Check if already initialized (origin set = previously initialized)
-    const existingOrigin = await this.getOrigin()
-    if (this._destroyed || !this._hasLiveDoc()) return false
-    if (existingOrigin !== undefined) {
-      return false
-    }
+      // Check if already initialized (origin set = previously initialized)
+      const existingOrigin = await this.getOrigin()
+      if (this._destroyed || !this._hasLiveDoc()) return false
+      if (existingOrigin !== undefined) {
+        return false
+      }
 
-    // Also check for user data (belt and suspenders)
-    if (this.hasUserData()) {
-      return false
-    }
+      // Also check for user data (belt and suspenders)
+      if (this.hasUserData()) {
+        return false
+      }
 
-    // Apply remote CRDT state — origin must differ from `this` so _storeUpdate persists to IDB
-    Y.applyUpdate(this.doc, update, origin)
+      // Apply remote CRDT state — origin must differ from `this` so _storeUpdate persists to IDB
+      Y.applyUpdate(this.doc, update, origin)
 
-    // Mark origin
-    await this.setOrigin('remote')
-    if (this._destroyed || !this._hasLiveDoc()) return false
+      // Mark origin
+      await this.setOrigin('remote')
+      if (this._destroyed || !this._hasLiveDoc()) return false
 
-    return true
+      return true
+    })
   }
 
   /**
