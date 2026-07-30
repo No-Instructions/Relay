@@ -102,9 +102,12 @@ interface FolderSyncSnapshotSubscription {
 }
 
 class RetryableProviderSyncError extends Error {
-	constructor(message: string) {
+	constructor(message: string, cause?: unknown) {
 		super(message);
 		this.name = "RetryableProviderSyncError";
+		if (cause !== undefined) {
+			(this as Error & { cause?: unknown }).cause = cause;
+		}
 	}
 }
 
@@ -2275,6 +2278,7 @@ export class BackgroundSync extends HasLogging {
 				);
 				throw new RetryableProviderSyncError(
 					`Provider sync is not ready for ${this.fileName(doc.path)}: ${this.errorMessage(providerSyncFailure)}`,
+					providerSyncFailure,
 				);
 			} else {
 				this.warn(`[syncDocWS] provider sync timed out: ${doc.path} guid=${doc.guid}`);
@@ -2536,6 +2540,7 @@ export class BackgroundSync extends HasLogging {
 		} catch (error) {
 			throw new RetryableProviderSyncError(
 				`LCA backfill download failed for ${this.fileName(doc.path)}: ${this.errorMessage(error)}`,
+				error,
 			);
 		}
 		if (!updateBytes) {

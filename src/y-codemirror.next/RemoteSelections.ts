@@ -226,6 +226,14 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			return;
 		}
 		this._listener = ({ added, updated, removed }, s, t) => {
+			// A captured listener can still fire after destroy() — e.g. when it
+			// was attached to an awareness instance that was later superseded,
+			// so destroy()'s off() call detached from the wrong instance. The
+			// editor is gone by then; dispatching into it would throw, so a
+			// stale callback is a no-op instead.
+			if (this.destroyed || !this.editor) {
+				return;
+			}
 			const clients = added.concat(updated).concat(removed);
 			if (
 				clients.findIndex((id) => id !== this._awareness?.doc.clientID) >= 0
