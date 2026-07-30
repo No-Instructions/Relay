@@ -367,7 +367,7 @@ export class RelayCanvasView implements S3View {
 
 	attach(): Promise<RelayCanvasView> {
 		// can be called multiple times, whereas release is only ever called once
-		this.canvas.userLock = true;
+		this.canvas.acquireLock();
 
 		// Add CSS class to indicate this view should have live editing
 		this.view.containerEl.addClass("relay-live-editor");
@@ -463,8 +463,10 @@ export class RelayCanvasView implements S3View {
 			this.offConnectionStatusSubscription();
 			this.offConnectionStatusSubscription = undefined;
 		}
-		this.canvas.disconnect();
+		// Withdraw presence while the socket is still open so peers observe
+		// the leave edge, then disconnect.
 		this.canvas.releaseLock();
+		this.canvas.disconnect();
 	}
 
 	destroy() {

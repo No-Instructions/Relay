@@ -177,6 +177,8 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	view?: LiveViewBridge;
 	decorations: DecorationSet;
 	_awareness?: Awareness;
+	/** The instance the change listener is actually subscribed on. */
+	private _boundAwareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
 	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document?: Document;
@@ -226,6 +228,9 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 			return;
 		}
 		this._listener = ({ added, updated, removed }, s, t) => {
+			if (this.destroyed || !this.editor) {
+				return;
+			}
 			const clients = added.concat(updated).concat(removed);
 			if (
 				clients.findIndex((id) => id !== this._awareness?.doc.clientID) >= 0
@@ -235,8 +240,31 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 				});
 			}
 		};
-		this._awareness = provider.awareness;
-		this._awareness.on("change", this._listener);
+		this.bindAwareness(provider.awareness);
+	}
+
+	/**
+	 * Keep the change listener on the awareness instance the plugin is
+	 * currently rendering. The same editor is rebound to other documents by
+	 * view reuse, and a document's provider can be rebuilt — either replaces
+	 * the Awareness instance. If the field moved without the subscription,
+	 * destroy() would unsubscribe from the new instance while the listener
+	 * stayed registered on the old one, outliving the plugin.
+	 *
+	 * Subscription state is tracked separately from the rendered instance:
+	 * the rendered instance can be recorded before the listener exists (the
+	 * document resolves by folder lookup before the view registry catches
+	 * up), and keying the subscription on instance identity alone would then
+	 * skip attaching forever.
+	 */
+	private bindAwareness(awareness: Awareness) {
+		this._awareness = awareness;
+		if (!this._listener || this._boundAwareness === awareness) {
+			return;
+		}
+		this._boundAwareness?.off("change", this._listener);
+		awareness.on("change", this._listener);
+		this._boundAwareness = awareness;
 	}
 
 	getDocument(): Document | undefined {
@@ -267,9 +295,10 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	destroy() {
 		this.destroyed = true;
 		if (this._listener) {
-			this._awareness?.off("change", this._listener);
+			this._boundAwareness?.off("change", this._listener);
 			this._listener = undefined;
 		}
+		this._boundAwareness = undefined;
 		this._awareness = undefined;
 		this.document = undefined;
 		this.decorations = Decoration.none;
@@ -305,12 +334,12 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 		if (!provider) {
 			return;
 		}
-		this._awareness = provider.awareness;
-		const awareness = this._awareness;
+		this.bindAwareness(provider.awareness);
+		const awareness = provider.awareness;
 
 		const ydoc: Y.Doc = ytext.doc;
 		const decorations: Array<Range<Decoration>> = [];
-		const localAwarenessState = this._awareness.getLocalState();
+		const localAwarenessState = awareness.getLocalState();
 
 		// set local awareness state (update cursors)
 		if (localAwarenessState != null) {

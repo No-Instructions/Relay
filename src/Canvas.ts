@@ -94,7 +94,9 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 		const s3rn = parent.relayId
 			? new S3RemoteCanvas(parent.relayId, parent.guid, guid)
 			: new S3Canvas(parent.guid, guid);
-		super(guid, s3rn, parent.tokenStore, loginManager);
+		super(guid, s3rn, parent.tokenStore, loginManager, {
+			awarenessRequiresLock: true,
+		});
 		this.timeProvider = parent.timeProvider;
 		this._parent = parent;
 		this.path = path;
@@ -307,12 +309,22 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 	}
 
 	/**
+	 * A view took ownership of this canvas (and of its disk file). Safe to
+	 * call repeatedly — Obsidian re-attaches views across file switches.
+	 */
+	acquireLock(): void {
+		this.userLock = true;
+		this.setAwarenessActive(true);
+	}
+
+	/**
 	 * Release lock on this canvas.
 	 * Transitions HSM from active back to idle mode.
 	 * Call this when editor closes.
 	 */
 	releaseLock(): void {
 		this.userLock = false;
+		this.setAwarenessActive(false);
 
 		const mergeManager = this.sharedFolder.mergeManager;
 		if (mergeManager) {
