@@ -30,10 +30,6 @@ on:
         description: 'Comma-separated slot platforms (e.g. linux,linux or windows,windows)'
         required: false
         default: 'linux,linux'
-      tsdb_tag:
-        description: 'obsidian-tsdb release tag to install in slots'
-        required: false
-        default: '1.0.12'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
@@ -324,7 +320,6 @@ jobs:
           git checkout --detach "origin/${HARNESS_REF#origin/}" 2>/dev/null \
             || git checkout --detach "$HARNESS_REF"
 
-          export TSDB_TAG='${{ github.event.inputs.tsdb_tag }}'
           bash scripts/mn-lane-node.sh "$REF" "$PLANS" "$LANE_SLUG" "$SLOTS"
           REMOTE_SCRIPT
 
@@ -469,7 +464,6 @@ jobs:
           REF="${INPUT_REF#origin/}"
           LANE_SLUG="mn-w-r${{ github.run_number }}"
           cat > /tmp/win-run.ps1 <<EOF
-          \$env:TSDB_TAG = '${{ github.event.inputs.tsdb_tag }}'
           powershell -NoProfile -File C:\relay-harness\scripts\mn-lane-node.ps1 -ProductRef '$REF' -Plans '${{ github.event.inputs.plans }}' -LaneSlug '$LANE_SLUG'
           exit \$LASTEXITCODE
           EOF
