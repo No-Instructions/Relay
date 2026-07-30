@@ -15,6 +15,7 @@
 
 import { ViewPlugin, EditorView, ViewUpdate } from "@codemirror/view";
 import type { PluginValue } from "@codemirror/view";
+import { Transaction } from "@codemirror/state";
 import { editorInfoField } from "obsidian";
 import { getLiveViews } from "../../editorContext";
 import type { Document } from "../../Document";
@@ -23,7 +24,12 @@ import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
 import { formatUserFacingError } from "../../UserFacingError";
 import type { PositionedChange } from "../types";
-import { buildBufferedCM6ReplayEvents } from "./replayBufferedEdits";
+import {
+  buildBufferedCM6ReplayEvents,
+  buildTextChanges,
+  rebaseBufferedTextAcrossReplacement,
+  type BufferedCM6Edit,
+} from "./replayBufferedEdits";
 
 type EditorConnectionManager = {
   sharedFolders: { lookup(path: string): any };
@@ -45,7 +51,8 @@ class HSMEditorPluginValue implements PluginValue {
   private cm6Integration: CM6Integration | null = null;
   private destroyed = false;
   private embed = false;
-  private pendingEdits: Array<{ changes: PositionedChange[]; docText: string }> = [];
+  private pendingEdits: BufferedCM6Edit[] = [];
+  private pendingEditBaseText: string | null = null;
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
 
@@ -168,6 +175,13 @@ class HSMEditorPluginValue implements PluginValue {
     // This is stable across renames — unlike paths.
     const expectedGuid = this.document.guid;
 
+    // LiveViews attaches after Obsidian creates and populates the EditorView.
+    // Registering with the HSM before that attachment makes bootstrap dispatches
+    // fail their own validity check, while subsequent keystrokes have nowhere
+    // to be buffered. Wait until the editor has an owning LiveView so bootstrap
+    // and input replay form one ordered handoff.
+    if (!this.isCurrentEditorInstance(expectedGuid)) return false;
+
     // Create CM6Integration with a validity check that requires both the
     // expected document GUID and the current editor identity. This detects
     // same-file editor replacement where the old EditorView still resolves to
@@ -201,6 +215,7 @@ class HSMEditorPluginValue implements PluginValue {
         hsm.send(event);
       }
       this.pendingEdits = [];
+      this.pendingEditBaseText = null;
     }
 
     return true;
@@ -213,10 +228,23 @@ class HSMEditorPluginValue implements PluginValue {
   update(update: ViewUpdate): void {
     if (this.destroyed) return;
 
-    // Skip non-live editors entirely (no buffering needed).
-    // Check resolveCurrentDocument() too — the file may be in a shared folder
-    // before the relay-live-editor CSS class is added by acquireLock().
-    if (!this.cm6Integration && !this.isLiveEditor() && !this.resolveCurrentDocument()) return;
+    // Skip editors that are definitively outside a shared folder. During file
+    // open, editorInfoField can still be unset while the CM6 buffer already
+    // accepts input. Preserve document changes from that unidentified window;
+    // a later set transaction will rebase them onto the populated file.
+    if (!this.cm6Integration && !this.isLiveEditor() && !this.resolveCurrentDocument()) {
+      const fileInfo = this.editor.state.field(editorInfoField, false);
+      const file = fileInfo?.file;
+      const connectionManager = getConnectionManager(this.editor);
+      const folder = file
+        ? connectionManager?.sharedFolders.lookup(file.path)
+        : null;
+      if (!update.docChanged || (file && !folder)) {
+        this.pendingEdits = [];
+        this.pendingEditBaseText = null;
+        return;
+      }
+    }
 
     // Detect when the editor is now showing a different document.
     // This happens when Obsidian reuses an editor view for a new file,
@@ -275,18 +303,59 @@ class HSMEditorPluginValue implements PluginValue {
       return;
     }
 
-    if (!this.cm6Integration && !this.initializeIfReady()) {
-      // Buffer the actual CM6 changes so they can be replayed once initialized
-      const changes: PositionedChange[] = [];
-      update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-        changes.push({ from: fromA, to: toA, insert: inserted.toString() });
-      });
-      if (changes.length > 0) {
-        this.pendingEdits.push({
-          changes,
-          docText: update.state.doc.toString(),
+    if (!this.cm6Integration) {
+      const userEvent = update.transactions
+        .map((tr) => tr.annotation(Transaction.userEvent))
+        .find((event) => event != null);
+
+      // Obsidian's initial setViewData populates the new editor from disk
+      // before LiveViews attaches it. The HSM remains authoritative and will
+      // bootstrap the attached editor. User input can land in the temporary
+      // pre-load buffer first, so rebase those edits onto the populated buffer
+      // before discarding their stale positions.
+      if (userEvent === "set") {
+        const baseText = this.pendingEditBaseText;
+        const editedText = this.pendingEdits.at(-1)?.docText;
+        this.pendingEdits = [];
+        this.pendingEditBaseText = null;
+        if (baseText !== null && editedText !== undefined) {
+          queueMicrotask(() => {
+            if (this.destroyed) return;
+            const currentText = this.editor.state.doc.toString();
+            const restoredText = rebaseBufferedTextAcrossReplacement(
+              baseText,
+              editedText,
+              currentText,
+            );
+            if (restoredText === null || restoredText === currentText) return;
+
+            this.editor.dispatch({
+              changes: buildTextChanges(currentText, restoredText),
+              annotations: Transaction.userEvent.of("input.type"),
+            });
+          });
+        }
+      } else {
+        // Buffer the actual CM6 changes before attempting initialization. The
+        // update that makes an attached editor ready can itself contain user
+        // input, and bootstrap must replay that input instead of replacing it.
+        if (this.pendingEdits.length === 0) {
+          this.pendingEditBaseText = update.startState.doc.toString();
+        }
+        const changes: PositionedChange[] = [];
+        update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+          changes.push({ from: fromA, to: toA, insert: inserted.toString() });
         });
+        if (changes.length > 0) {
+          this.pendingEdits.push({
+            changes,
+            docText: update.state.doc.toString(),
+            userEvent,
+          });
+        }
       }
+
+      this.initializeIfReady();
       return;
     }
 
@@ -309,6 +378,7 @@ class HSMEditorPluginValue implements PluginValue {
       this.cm6Integration = null;
     }
     this.pendingEdits = [];
+    this.pendingEditBaseText = null;
     this.document = null;
     this.editor = null as any;
   }
