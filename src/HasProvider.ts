@@ -14,10 +14,34 @@ import type { ClientToken } from "./client/types";
 import { S3RN, type S3RNType } from "./S3RN";
 import { encodeClientToken } from "./client/types";
 import type { TimeProvider } from "./TimeProvider";
+import { Awareness } from "y-protocols/awareness";
 
 export interface Subscription {
 	on: () => void;
 	off: () => void;
+}
+
+export interface HasProviderOptions {
+	/**
+	 * Start with no local awareness state. File models enable it only while an
+	 * attached view holds their lock; provider sessions used for background
+	 * synchronization therefore never announce a viewer.
+	 */
+	awarenessRequiresLock?: boolean;
+}
+
+function localAwarenessState(user: User | undefined): Record<string, unknown> {
+	if (!user) {
+		return {};
+	}
+	return {
+		user: {
+			name: user.name,
+			id: user.id,
+			color: user.color.color,
+			colorLight: user.color.light,
+		},
+	};
 }
 
 function makeProvider(
@@ -25,16 +49,25 @@ function makeProvider(
 	ydoc: Y.Doc,
 	user: User | undefined,
 	timeProvider: TimeProvider,
+	awarenessActive: boolean,
 ): YSweetProvider {
 	const params = {
 		token: clientToken.token,
 	};
+	// Configure the initial state before YSweetProvider subscribes to awareness
+	// updates. A sync-only provider then starts absent without buffering a
+	// synthetic leave message for its first connection.
+	const awareness = new Awareness(ydoc);
+	awareness.setLocalState(
+		awarenessActive ? localAwarenessState(user) : null,
+	);
 	const provider = new YSweetProvider(
 		clientToken.url,
 		clientToken.docId,
 		ydoc,
 		{
 			connect: false,
+			awareness,
 			params: params,
 			disableBc: true,
 			readOnly: clientToken.authorization === "read-only",
@@ -42,14 +75,6 @@ function makeProvider(
 		},
 	);
 
-	if (user) {
-		provider.awareness.setLocalStateField("user", {
-			name: user.name,
-			id: user.id,
-			color: user.color.color,
-			colorLight: user.color.light,
-		});
-	}
 	return provider;
 }
 
@@ -96,6 +121,7 @@ export class HasProvider extends HasLogging {
 	private _offConnectionClose: (() => void) | null = null;
 	private _offState: (() => void) | null = null;
 	private _offSynced: (() => void) | null = null;
+	private _awarenessActive: boolean;
 	listeners: Map<unknown, Listener>;
 	timeProvider!: TimeProvider;
 
@@ -104,10 +130,12 @@ export class HasProvider extends HasLogging {
 		private _s3rn: S3RNType,
 		public tokenStore: LiveTokenStore,
 		public loginManager: LoginManager,
+		options: HasProviderOptions = {},
 	) {
 		super();
 		this.listeners = new Map<unknown, Listener>();
 		this.loginManager = loginManager;
+		this._awarenessActive = !options.awarenessRequiresLock;
 
 		this.tokenStore = tokenStore;
 		this.clientToken =
@@ -158,6 +186,7 @@ export class HasProvider extends HasLogging {
 			this._ydoc,
 			user,
 			this.timeProvider,
+			this._awarenessActive,
 		);
 		this._provider.beforeReconnect = async () => {
 			const clientToken = await this.getProviderToken();
@@ -213,6 +242,36 @@ export class HasProvider extends HasLogging {
 		this._offSynced = syncedSub.off;
 
 		return this._ydoc;
+	}
+
+	/**
+	 * Assert or withdraw this provider's local presence. The enabled state is
+	 * retained across provider recreation so a locked file rejoins if its
+	 * remote document is rebuilt.
+	 */
+	protected setAwarenessActive(active: boolean): void {
+		if (this._awarenessActive === active) {
+			return;
+		}
+		this._awarenessActive = active;
+		const awareness = this._provider?.awareness;
+		if (!awareness) {
+			return;
+		}
+		try {
+			awareness.setLocalState(
+				active ? localAwarenessState(this.loginManager?.user) : null,
+			);
+		} catch (error) {
+			// Awareness subscribers run synchronously inside setLocalState. A
+			// throwing subscriber must not abort the caller's lock transition:
+			// presence is cosmetic, lock bookkeeping is not. The local state
+			// map is already updated when subscribers run, but a throw here
+			// can also suppress the provider's own broadcast of this
+			// transition; the next connection handshake conveys the current
+			// state.
+			this.warn("awareness state change failed", error);
+		}
 	}
 
 	/**
