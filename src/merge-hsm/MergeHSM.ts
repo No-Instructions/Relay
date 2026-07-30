@@ -3361,6 +3361,8 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			applyCM6ToLocalDoc: (_hsm, event) => {
 				const e = event as any;
+				let contentAlreadyApplied = false;
+				let machineEditIdx = -1;
 				if (this.localDoc) {
 					const ytext = this.localDoc.getText("contents");
 					const ytextStr = ytext.toString();
@@ -3373,17 +3375,31 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						);
 					}
 					if (prevEditor !== null && ytextStr !== prevEditor) {
-					// Frontmatter drift detected — no action needed currently
+						// Frontmatter drift detected — no action needed currently
 					}
+
+					machineEditIdx = this._pendingMachineEdits.findIndex(
+						(me) => me.expectedText === e.docText,
+					);
+					// A sibling view can report the same logical edit through an
+					// unannotated Obsidian transaction after another view has
+					// already applied it. Its positioned changes are relative to
+					// the sibling's older buffer, so applying them again would
+					// duplicate content and start a view-to-view feedback loop.
+					// Machine edits still need their own operation identity even
+					// when their visible text is already present.
+					contentAlreadyApplied =
+						machineEditIdx < 0 &&
+						typeof e.docText === "string" &&
+						e.docText === ytextStr;
 				}
 				this.lastKnownEditorText = e.docText;
+				if (contentAlreadyApplied) {
+					return;
+				}
 				let observerWillDispatch = false;
 				if (this.localDoc) {
 					// Check if this CM6 change matches a pending machine edit
-					const machineEditIdx = this._pendingMachineEdits.findIndex(
-						(me) => me.expectedText === e.docText,
-					);
-
 					if (machineEditIdx >= 0) {
 						// Machine edit: apply via a temp proxy Y.Doc so the
 						// items get the proxy's clientID, not localDoc's. This
