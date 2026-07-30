@@ -552,7 +552,7 @@ export const MACHINE: MachineDefinition = {
 	},
 
 	'active.merging.threeWay': {
-		entry: ['replayAccumulatedEvents'],
+		entry: ['replayAccumulatedEvents', 'mergeRemoteToLocal'],
 		invoke: {
 			src: 'three-way-merge',
 			onDone: [
