@@ -60,7 +60,6 @@ scripts/
 templates/
 unit/
 vision/
-.nvmrc
 start-test.sh
 
 # E2E runtime artifacts

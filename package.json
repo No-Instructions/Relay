@@ -16,6 +16,9 @@
 	"keywords": [],
 	"author": "Daniel Grossmann-Kavanagh",
 	"license": "MIT",
+	"engines": {
+		"node": ">=24"
+	},
 	"devDependencies": {
 		"@tsconfig/svelte": "^5.0.4",
 		"@types/diff": "^5.0.9",
