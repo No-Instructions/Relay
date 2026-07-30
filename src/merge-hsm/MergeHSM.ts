@@ -2826,10 +2826,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			// === Idle merge completion ===
 			applyIdleMergeResult: (_hsm, event) => {
 				const result = (event as any).data;
-				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates} localDoc=${!!this.localDoc}`);
+				this.idleMergeLog(`[idle-merge-debug] ${this._guid} applyIdleMergeResult: success=${result?.success} noop=${result?.noop} hasMergedContent=${result?.mergedContent !== undefined} hasUpdates=${!!result?.updates} hasRemoteUpdate=${!!result?.remoteUpdate} localDoc=${!!this.localDoc}`);
 				if (!result?.success || result.noop) return;
 
-				if (result.updates && this.localDoc) {
+				if (
+					result.remoteUpdate &&
+					result.mergedContent !== undefined &&
+					this.localDoc
+				) {
+					this.applyRemoteStateThenMergedContent(
+						result.remoteUpdate,
+						result.mergedContent,
+					);
+				} else if (result.updates && this.localDoc) {
 					// Remote-ahead: apply CRDT updates to real localDoc
 					this._bridge.syncToLocal(result.updates);
 				} else if (result.mergedContent !== undefined && this.localDoc) {
@@ -3589,8 +3598,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						opCapture.cancel(diskOps);
 					}
 
-					// Apply merged result to localDoc
-					this.applyContentToLocalDoc(mergeResult.merged);
+					const remoteUpdate = Y.encodeStateAsUpdate(
+						this.remoteDoc!,
+						Y.encodeStateVector(this.localDoc!),
+					);
+					this.applyRemoteStateThenMergedContent(
+						remoteUpdate,
+						mergeResult.merged,
+					);
 				});
 
 				// Dispatch granular changes to editor if content changed
@@ -3718,7 +3733,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 						Y.encodeStateVector(localDoc),
 					);
 					if (update.byteLength > 0) {
-						Y.applyUpdate(localDoc, update, this.remoteDoc);
+						this._bridge.syncToLocal(update);
 					}
 				}
 
@@ -4430,6 +4445,12 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			return { success: false };
 		}
 
+		// Preserve the CRDT identities behind the remote side of the successful
+		// text merge. A later remote update remains buffered for the next pass.
+		const remoteUpdate = Y.encodeStateAsUpdate(
+			remoteDoc,
+			Y.encodeStateVector(localDoc),
+		);
 		const hash = await this.hashFn(mergeResult.merged);
 		if (signal.aborted) return { success: false };
 		const diskWrite = this.diskWritePlanForHash(hash);
@@ -4439,6 +4460,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		return {
 			success: true,
 			mergedContent: mergeResult.merged,
+			remoteUpdate,
 			needsSync: true,
 			needsDiskWrite: diskWrite.needsDiskWrite,
 			newLCA: { contents: mergeResult.merged, meta: { hash, mtime: diskWrite.mtime }, stateVector: null },
@@ -4558,9 +4580,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				remoteDoc,
 				Y.encodeStateVector(localDoc),
 			);
-			this._bridge.syncToLocal(remoteUpdate);
-
-			this.applyContentToLocalDoc(mergeResult.merged);
+			this.applyRemoteStateThenMergedContent(
+				remoteUpdate,
+				mergeResult.merged,
+			);
 
 			const stateVector = Y.encodeStateVector(localDoc);
 			const update = Y.encodeStateAsUpdate(localDoc);
@@ -5055,7 +5078,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		) {
 			// Only apply if localDoc has no CRDT history - safe to apply remote content.
 			if (isEmptyDoc(this.localDoc)) {
-				Y.applyUpdate(this.localDoc, this.pendingIdleUpdates, this.remoteDoc);
+				this._bridge.syncToLocal(this.pendingIdleUpdates);
 			}
 			// If localDoc has content, DO NOT apply - let flushInbound() handle it
 			this.pendingIdleUpdates = null;
@@ -5126,7 +5149,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 				this.remoteDoc,
 				Y.encodeStateVector(this.localDoc),
 			);
-			Y.applyUpdate(this.localDoc, update, this.remoteDoc);
+			this._bridge.syncToLocal(update);
 		}
 	}
 
@@ -5510,6 +5533,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		}, origin ?? this);
 	}
 
+	/**
+	 * Adopt the remote operations represented by a successful text merge before
+	 * creating any local operations needed to reach its merged content.
+	 */
+	private applyRemoteStateThenMergedContent(
+		remoteUpdate: Uint8Array,
+		mergedContent: string,
+	): void {
+		if (!this.localDoc) return;
+		this._bridge.syncToLocal(remoteUpdate);
+		this.applyContentToLocalDoc(mergedContent);
+	}
+
 	private applyResolvedConflict(
 		contents: string,
 		options: { dispatchEditor: boolean },
@@ -5536,11 +5572,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			remoteDoc,
 			Y.encodeStateVector(localDoc),
 		);
-		this._bridge.syncToLocal(remoteUpdate);
-
-		// DMP the resolved text onto localDoc. After the CRDT merge the text may
-		// not match what the user chose; this fixes it while preserving history.
-		this.applyContentToLocalDoc(contents);
+		this.applyRemoteStateThenMergedContent(remoteUpdate, contents);
 
 		const resolvedText = localDoc.getText("contents").toString();
 		if (options.dispatchEditor) {
