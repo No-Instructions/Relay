@@ -159,7 +159,9 @@ export class Canvas
 		const s3rn = parent.relayId
 			? new S3RemoteCanvas(parent.relayId, parent.guid, guid)
 			: new S3Canvas(parent.guid, guid);
-		super(guid, s3rn, parent.tokenStore, loginManager);
+		super(guid, s3rn, parent.tokenStore, loginManager, {
+			awarenessRequiresLock: true,
+		});
 		this.timeProvider = parent.timeProvider;
 		this._parent = parent;
 		this.path = path;
@@ -702,6 +704,7 @@ export class Canvas
 		this.materialize();
 		this.userLock = true;
 		this.hsm.send({ type: "ACQUIRE_LOCK" });
+		this.setAwarenessActive(true);
 	}
 
 	/**
@@ -711,6 +714,7 @@ export class Canvas
 	 */
 	releaseLock(): void {
 		this.userLock = false;
+		this.setAwarenessActive(false);
 		// Canvases are managed files, never document HSM registrations —
 		// the manager's unload path has nothing to release for them; the
 		// hibernate timer re-arms through the managed warm accounting.
