@@ -114,7 +114,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		const s3rn = parent.relayId
 			? new S3RemoteDocument(parent.relayId, parent.guid, guid)
 			: new S3Document(parent.guid, guid);
-		super(guid, s3rn, parent.tokenStore, loginManager);
+		super(guid, s3rn, parent.tokenStore, loginManager, {
+			awarenessRequiresLock: true,
+		});
 		this.timeProvider = parent.timeProvider;
 		this._parent = parent;
 		this.path = path;
@@ -351,6 +353,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		// integration bridge, keep that lock and simply ensure connectivity.
 		if (mergeManager.isActive(this.guid) && this._providerIntegration) {
 			this._activeProviderIntegration = true;
+			this.setAwarenessActive(true);
 			this.connect();
 			return hsm;
 		}
@@ -365,6 +368,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			editorViewRef,
 		});
 		mergeManager.markActive(this.guid);
+		this.setAwarenessActive(true);
 
 		// Create ProviderIntegration BEFORE awaiting so it can deliver
 		// PROVIDER_SYNCED during the entering phase (needed for empty-IDB flow).
@@ -400,6 +404,9 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	 * Call this when editor closes.
 	 */
 	releaseLock(): Promise<void> {
+		// Withdraw presence before the provider is disconnected or retained for
+		// idle synchronization, so peers always observe the leave edge.
+		this.setAwarenessActive(false);
 		this._activeProviderIntegration = false;
 
 		// Guard: sharedFolder may be null if document was orphaned (file moved out of folder)

@@ -415,11 +415,15 @@ const setupWS = (provider: YSweetProvider) => {
 	}
 };
 
-const broadcastMessage = (provider: YSweetProvider, buf: Uint8Array) => {
+const broadcastMessage = (
+	provider: YSweetProvider,
+	buf: Uint8Array,
+	bufferWhileDisconnected: boolean = true,
+) => {
 	const ws = provider.ws;
 	if (provider.wsconnected && ws && ws.readyState === ws.OPEN) {
 		ws.send(buf);
-	} else {
+	} else if (bufferWhileDisconnected) {
 		// Buffer the message — flushed in onopen when WebSocket connects
 		provider._pendingMessages.push(buf);
 	}
@@ -799,7 +803,10 @@ export class YSweetProvider extends Observable<string> {
 				encoder,
 				awarenessProtocol.encodeAwarenessUpdate(awareness, changedClients),
 			);
-			broadcastMessage(this, encoding.toUint8Array(encoder));
+			// The opening handshake sends the current local awareness state.
+			// Buffering transient states while the socket is closed can replay
+			// a stale join after the owner has already withdrawn presence.
+			broadcastMessage(this, encoding.toUint8Array(encoder), false);
 		};
 
 		this._unloadHandler = () => {
@@ -1038,7 +1045,7 @@ export class YSweetProvider extends Observable<string> {
 				new Map(),
 			),
 		);
-		broadcastMessage(this, encoding.toUint8Array(encoder));
+		broadcastMessage(this, encoding.toUint8Array(encoder), false);
 		if (this.bcconnected) {
 			bc.unsubscribe(this.bcChannel, this._bcSubscriber as any);
 			this.bcconnected = false;
