@@ -16,6 +16,7 @@ import {
 	type Meta,
 } from "./SyncTypes";
 import type { SyncSettingsManager } from "./SyncSettings";
+import { pathWasDeleted } from "./folder-hsm/tombstones";
 
 export interface MapDeltaEntry {
 	path: string;
@@ -283,6 +284,17 @@ export class SyncStore extends Observable<SyncStore> {
 			if (seen.has(path) || this.deleteSet.has(path)) return;
 			callbackFn(null, path);
 		});
+	}
+
+	/**
+	 * The committed map's native deletion record for a path: it was present
+	 * at some point and its most recent entry is a deletion. False for
+	 * never-present, currently-present, and deleted-then-re-added paths.
+	 * Pending local state — holds, overlay, deleteSet, renames — does not
+	 * participate: this reads only what the folder doc itself records.
+	 */
+	hasTombstone(vpath: string): boolean {
+		return pathWasDeleted(this.meta, vpath);
 	}
 
 	has(path: string) {

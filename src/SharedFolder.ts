@@ -285,6 +285,11 @@ export class SharedFolder extends HasProvider {
 	 * vanishes within the window is cancelled before it registers.
 	 */
 	private pendingCreates: Map<string, number> = new Map();
+	// Paths whose presence a deliberate action asserted this session — a
+	// settled vault create, a rename into place, or a membership verdict —
+	// superseding any deletion record the map carries for them. Intent,
+	// not state: session-scoped, consumed by the first publication.
+	private deliberateRecreations: Set<string> = new Set();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
 
@@ -1679,9 +1684,19 @@ export class SharedFolder extends HasProvider {
 			});
 		}
 		const files: IFile[] = [];
-		if (!this.folderHSM && syncTFiles.length > 0) {
-			// Legacy membership path: reserve GUIDs for new files up front.
-			this.placeHold(syncTFiles);
+		if (!this.folderHSM) {
+			// Legacy membership path: a path the map records as deleted is a
+			// decision, not an absence — the scan neither re-mints it nor
+			// materializes the stale copy (deliberate re-creation arrives as
+			// a vault create or rename event, which does). Everything else
+			// gets its GUID reserved up front.
+			syncTFiles = syncTFiles.filter((tfile) => {
+				const vpath = this.getVirtualPath(tfile.path);
+				return !this.deletionRecordStands(vpath);
+			});
+			if (syncTFiles.length > 0) {
+				this.placeHold(syncTFiles);
+			}
 		}
 		syncTFiles.forEach((tfile) => {
 			const vpath = this.getVirtualPath(tfile.path);
@@ -3405,7 +3420,7 @@ export class SharedFolder extends HasProvider {
 			if (this.isPendingDelete(vpath)) return;
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!tfile) return;
-			const newDocs = this.placeHold([tfile]);
+			const newDocs = this.placeHold([tfile], { recreate: true });
 			if (newDocs.includes(vpath)) {
 				this.uploadFile(tfile);
 			}
@@ -3454,7 +3469,7 @@ export class SharedFolder extends HasProvider {
 		if (this.syncStore.has(newVPath) || !this.isSyncableTFile(file)) {
 			return;
 		}
-		const newDocs = this.placeHold([file]);
+		const newDocs = this.placeHold([file], { recreate: true });
 		if (newDocs.includes(newVPath)) {
 			this.uploadFile(file);
 		}
@@ -3635,9 +3650,11 @@ export class SharedFolder extends HasProvider {
 			// The guid is minted here (placeHold) — pendingUpload is the
 			// durable record that this file is ours, awaiting first upload.
 			// placeHold reuses an existing hold's identity, so retries after
-			// restart never mint fresh guids.
+			// restart never mint fresh guids. A publication verdict is
+			// deliberate intent for the path, so it may supersede a deletion
+			// record the same way a settled vault create does.
 			this._uploadDispatches.add(vpath);
-			this.placeHold([tfile]);
+			this.placeHold([tfile], { recreate: true });
 			this.uploadFile(tfile);
 			const guid = this.pendingUpload.get(vpath) ?? this.syncStore.get(vpath);
 			if (guid) {
@@ -4011,6 +4028,15 @@ export class SharedFolder extends HasProvider {
 		// through the sweep's retry path — the preserved hold is identity
 		// safekeeping, not publication intent.
 		if (this.folderHSM && !this.folderHSM.holdIsPublishable(path)) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
+
+		// The map's own deletion record is the second fence: a hold at a
+		// path the map records as deleted is identity safekeeping, not
+		// publication intent — flushing it through the sweep would re-create
+		// a file that was deleted elsewhere. A path deliberately re-created
+		// this session proceeds.
+		if (this.deletionRecordStands(path)) {
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
@@ -4482,6 +4508,11 @@ export class SharedFolder extends HasProvider {
 				if (this.syncStore.willSet(file.path, meta)) {
 					this.log("new meta", file.path, meta);
 					this.syncStore.markUploaded(file.path, meta);
+					// Publication consumes the re-creation assertion: the map
+					// now carries the path again, and a later deletion is a
+					// fresh decision this session's old intent must not
+					// override.
+					this.deliberateRecreations.delete(file.path);
 				}
 			}, this);
 			// Read through an assertion: control flow cannot see the closure
@@ -4653,13 +4684,46 @@ export class SharedFolder extends HasProvider {
 		return null;
 	}
 
-	placeHold(newFiles: TAbstractFile[]): string[] {
+	/**
+	 * True when the folder doc records `vpath` as deleted and nothing this
+	 * session has deliberately re-created it. Bare absence is not this: a
+	 * never-present path carries no deletion record, and a deleted key that
+	 * was re-added no longer reads as deleted.
+	 */
+	private deletionRecordStands(vpath: string): boolean {
+		return (
+			!this.deliberateRecreations.has(vpath) &&
+			this.syncStore.hasTombstone(vpath)
+		);
+	}
+
+	placeHold(
+		newFiles: TAbstractFile[],
+		opts: { recreate: boolean } = { recreate: false },
+	): string[] {
 		const newDocs: string[] = [];
 		this.folderDoc.transact(() => {
 			newFiles.forEach((file) => {
 				const vpath = this.getVirtualPath(file.path);
 				if (this.isPendingDelete(vpath)) {
 					this.log("skipping place hold for pending delete", vpath);
+					return;
+				}
+				if (opts.recreate) {
+					// The caller carries live creation intent for this path
+					// (a settled vault create, a rename into place, or a
+					// membership verdict): any deletion record in the map is
+					// deliberately superseded, and stays superseded until the
+					// re-creation publishes.
+					this.deliberateRecreations.add(vpath);
+				} else if (
+					!this.syncStore.has(vpath) &&
+					this.deletionRecordStands(vpath)
+				) {
+					// Reconciliation is not creation intent: a path the map
+					// records as deleted must not be re-minted just because a
+					// stale copy is still on disk.
+					this.log("skipping place hold for deleted path", vpath);
 					return;
 				}
 				if (!this.syncStore.has(vpath)) {
@@ -5686,7 +5750,7 @@ export class SharedFolder extends HasProvider {
 			// if this was moved from outside the shared folder context, we need to create a live doc
 			this.assertPath(newPath);
 			if (!this.isSyncableTFile(tfile)) return;
-			this.placeHold([tfile]);
+			this.placeHold([tfile], { recreate: true });
 			this.uploadFile(tfile);
 		} else {
 			// live doc exists
