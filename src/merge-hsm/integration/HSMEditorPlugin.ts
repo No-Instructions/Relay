@@ -20,6 +20,7 @@ import { editorInfoField } from "obsidian";
 import type { TFile } from "obsidian";
 import { getLiveViews } from "../../editorContext";
 import type { Document } from "../../Document";
+import type { MergeHSM } from "../MergeHSM";
 import { CM6Integration } from "./CM6Integration";
 import { ySyncAnnotation } from "./annotations";
 import { curryLog } from "../../debug";
@@ -55,6 +56,38 @@ export class HSMEditorPluginValue implements PluginValue {
   private pendingEdits: BufferedCM6Edit[] = [];
   private pendingEditBaseText: string | null = null;
   private pendingEditFile: TFile | null = null;
+  /**
+   * Typed input consumed from the buffer when replacement transactions
+   * rebuilt the editor, awaiting re-entry rebased onto the replacement.
+   * Each layer is a (base, edited) pair whose delta is the typed input;
+   * layers are applied oldest first. Held on the instance (not in scheduled
+   * closures) so a bind that completes in the same task can take the
+   * restores over synchronously.
+   */
+  private pendingRestores: Array<{
+    baseText: string;
+    editedText: string;
+    ingestedText?: string;
+  }> = [];
+  /**
+   * Whether this editor view was created while the document's merge machinery
+   * was already active and holding the editor lock (an attached sibling view
+   * exists). Decided once per document binding at the first moment the file
+   * identity and its document resolve, then sticky until the editor moves to
+   * another document. null = not yet decidable.
+   */
+  private bornAttached: boolean | null = null;
+  /**
+   * True between a born-attached bind and its render. The editor buffer is
+   * stale until the render replaces it, so document-side dispatches (whose
+   * content the render already includes) must not be applied to it; the
+   * integration's validity check reports the editor not-ready until then.
+   */
+  private bornAttachedRenderPending = false;
+  private bindingEpoch = 0;
+  private lastInitializationRetry:
+    | { file: TFile | null; live: boolean }
+    | null = null;
   private log: (...args: unknown[]) => void;
   private debug: (...args: unknown[]) => void;
 
@@ -62,6 +95,7 @@ export class HSMEditorPluginValue implements PluginValue {
     this.pendingEdits = [];
     this.pendingEditBaseText = null;
     this.pendingEditFile = null;
+    this.pendingRestores = [];
   }
 
   private replayPendingEdits(hsm: { send: (event: any) => void }, viewId: string): boolean {
@@ -78,6 +112,9 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   private resetForDocumentChange(nextFile: TFile | null): void {
+    this.bindingEpoch += 1;
+    this.bornAttachedRenderPending = false;
+    this.lastInitializationRetry = null;
     if (this.cm6Integration) {
       this.cm6Integration.destroy();
       this.cm6Integration = null;
@@ -86,6 +123,9 @@ export class HSMEditorPluginValue implements PluginValue {
       this.clearPendingEdits();
     }
     this.document = null;
+    // The attach topology belongs to the document binding, not the editor:
+    // re-decide it against the next document's state.
+    this.bornAttached = null;
   }
 
   constructor(editor: EditorView) {
@@ -98,9 +138,13 @@ export class HSMEditorPluginValue implements PluginValue {
     // because the `relay-live-editor` CSS class is added asynchronously
     // by LiveViews after acquireLock(). If we destroy here, the plugin
     // will never initialize when the class appears later.
-    if (this.isLiveEditor()) {
-      this.initializeIfReady();
-    }
+    //
+    // The attempt is unconditional: a view created for a document whose
+    // merge machinery is already active must bind at creation, before any
+    // input or save echo can reach a detached buffer — and at creation the
+    // live-editor class has not been applied to this view yet. For every
+    // other editor the attempt fails fast on document resolution.
+    this.initializeIfReady();
   }
 
   /**
@@ -164,6 +208,54 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
+   * Check that this editor still shows the exact file (and document) it was
+   * bound to. Keyed off file identity because editor views are reused across
+   * file switches: the TFile reference and the resolved document GUID must
+   * both match, so a reused view pointing at another file can never pass.
+   */
+  private isEditorShowingFile(expectedGuid: string, expectedFile: TFile): boolean {
+    // Obsidian updates editorInfoField.file before setViewData replaces the
+    // buffer on view reuse; this identity check therefore fails before any
+    // render can target another file's content.
+    const fileInfo = this.editor.state.field(editorInfoField, false);
+    if (!fileInfo?.file || fileInfo.file !== expectedFile) return false;
+    const currentDoc = this.resolveCurrentDocument();
+    return (
+      currentDoc !== null &&
+      !currentDoc.destroyed &&
+      currentDoc.guid === expectedGuid
+    );
+  }
+
+  /**
+   * Decide, once per document binding, whether this view was created while
+   * the document's merge machinery was already active and holding the editor
+   * lock. Decided at the first moment the editor's file identity and its
+   * document both resolve, and sticky afterwards: a view whose own lock cycle
+   * runs during its lifetime (first editor on the document) keeps the
+   * buffered-input path, so first-editor behavior is unchanged. Embedded
+   * canvas editors always keep the buffered path.
+   */
+  private probeBornAttached(): boolean {
+    if (this.bornAttached === null) {
+      const fileInfo = this.editor.state.field(editorInfoField, false);
+      if (fileInfo?.file) {
+        const doc = this.resolveCurrentDocument();
+        if (doc) {
+          const sourceView = this.editor.dom.closest(".markdown-source-view");
+          const embed = !!sourceView?.classList.contains("mod-inside-iframe");
+          this.bornAttached =
+            !embed && doc.hsm !== null && doc.hsm.matches("active.tracking");
+          // `active.entering` is deliberately not promoted later: it may be
+          // this view's own first-editor lock cycle. A sibling born in that
+          // narrow state retains the cold-boot buffer/replay path.
+        }
+      }
+    }
+    return this.bornAttached === true;
+  }
+
+  /**
    * Initialize CM6Integration if document and HSM are ready.
    */
   initializeIfReady(): boolean {
@@ -207,20 +299,44 @@ export class HSMEditorPluginValue implements PluginValue {
     // This is stable across renames — unlike paths.
     const expectedGuid = this.document.guid;
 
+    // Decide the attach topology for this binding (sticky; see
+    // probeBornAttached). A view born while the document is already active
+    // and locked binds immediately, keyed off file identity; every other
+    // view keeps the LiveView-gated path below.
+    const bornAttached = this.probeBornAttached();
+
     // LiveViews attaches after Obsidian creates and populates the EditorView.
     // Registering with the HSM before that attachment makes bootstrap dispatches
     // fail their own validity check, while subsequent keystrokes have nowhere
     // to be buffered. Wait until the editor has an owning LiveView so bootstrap
-    // and input replay form one ordered handoff.
-    if (!this.isCurrentEditorInstance(expectedGuid)) return false;
+    // and input replay form one ordered handoff. A born-attached view does not
+    // wait: all attach prerequisites are already satisfied, and waiting is what
+    // opens the detached window the save-echo race lives in.
+    if (!bornAttached && !this.isCurrentEditorInstance(expectedGuid)) {
+      return false;
+    }
 
     // Create CM6Integration with a validity check that requires both the
     // expected document GUID and the current editor identity. This detects
     // same-file editor replacement where the old EditorView still resolves to
-    // the same document but is no longer the active editor instance.
-    this.cm6Integration = new CM6Integration(hsm, this.editor, () =>
-      this.isCurrentEditorInstance(expectedGuid)
-    );
+    // the same document but is no longer the active editor instance. For a
+    // born-attached view that LiveViews has not adopted yet, validity is keyed
+    // off file identity instead; once LiveViews has adopted the editor, the
+    // stricter identity check owns validity permanently.
+    const expectedFile = editorFile;
+    let adoptedByLiveView = false;
+    this.cm6Integration = new CM6Integration(hsm, this.editor, () => {
+      // Until the born-attached render replaces the stale buffer, the editor
+      // is not a valid dispatch target: document-side changes arriving in
+      // this window are already part of the text the render will install.
+      if (this.bornAttachedRenderPending) return false;
+      if (this.isCurrentEditorInstance(expectedGuid)) {
+        adoptedByLiveView = true;
+        return true;
+      }
+      if (!bornAttached || adoptedByLiveView) return false;
+      return this.isEditorShowingFile(expectedGuid, expectedFile);
+    });
     this.debug(`Initialized for ${this.document.guid} (embed: ${this.embed})`);
 
     const currentText = this.editor.state.doc.toString();
@@ -228,6 +344,16 @@ export class HSMEditorPluginValue implements PluginValue {
       { getViewData: () => this.editor.state.doc.toString() },
       currentText,
     );
+
+    if (bornAttached) {
+      // Born attached: render the authoritative document text directly and
+      // rebase any pre-bind input onto it. The buffered replay below never
+      // runs on this path — with an attached sibling view, the save/reload
+      // echo is a second delivery channel for the same keystrokes, and
+      // replaying a buffer next to it can apply them twice.
+      this.renderBornAttached(hsm, expectedGuid);
+      return true;
+    }
 
     if (this.pendingEdits.length === 0) {
       hsm.bootstrapEditorView(
@@ -247,11 +373,155 @@ export class HSMEditorPluginValue implements PluginValue {
   }
 
   /**
+   * Render the localDoc into a view that was born attached, then re-enter any
+   * input typed before the bind.
+   *
+   * The replacement is annotated as sync output so it is not re-captured; the
+   * typed input is rebased across the replacement (the same mechanism the
+   * pre-load populate path uses) and dispatched as ordinary user input, so it
+   * flows into the document exactly once through the wired binding. Runs on a
+   * microtask because the bind can complete inside an editor update, where a
+   * synchronous dispatch is not allowed; the microtask still runs before any
+   * subsequent input or save event can.
+   */
+  private renderBornAttached(hsm: MergeHSM, expectedGuid: string): void {
+    this.bornAttachedRenderPending = true;
+    const integration = this.cm6Integration;
+    const epoch = this.bindingEpoch;
+
+    queueMicrotask(() => {
+      // A queued render belongs to exactly one binding. Same-task view reuse
+      // must not clear or consume the next binding's pending input.
+      if (epoch !== this.bindingEpoch || integration !== this.cm6Integration) return;
+      this.bornAttachedRenderPending = false;
+      // Take over all pre-render input at fire time: the buffered layer
+      // (including anything routed here during the render-pending window)
+      // and any restores replacement transactions extracted before the
+      // bind (their own queued microtasks become no-ops once consumed).
+      const restores = this.pendingRestores;
+      const baseText = this.pendingEditBaseText;
+      const editedText = this.pendingEdits.at(-1)?.docText;
+      this.clearPendingEdits();
+      const abort = (reason: string): void => {
+        this.log(`Aborting born-attached render for ${expectedGuid}: ${reason}`);
+      };
+      if (this.destroyed || !this.cm6Integration) {
+        abort("integration destroyed");
+        return;
+      }
+      if (
+        !this.document ||
+        this.document.destroyed ||
+        this.document.guid !== expectedGuid
+      ) {
+        abort("document binding changed");
+        return;
+      }
+      // The topology can collapse before the render fires (sibling closed,
+      // lock released). Without an authoritative localDoc there is nothing
+      // to render; the normal lock cycle takes over from here.
+      if (!hsm.matches("active.tracking")) {
+        abort("document left active tracking");
+        return;
+      }
+      const localDoc = hsm.getLocalDoc();
+      if (!localDoc) {
+        abort("local document unavailable");
+        return;
+      }
+
+      const localText = localDoc.getText("contents").toString();
+      const currentText = this.editor.state.doc.toString();
+
+      // Replace whatever the buffer holds — stale disk load, a save echo,
+      // pre-bind typing — with the document text.
+      if (currentText !== localText) {
+        this.editor.dispatch({
+          changes: [{ from: 0, to: currentText.length, insert: localText }],
+          annotations: [ySyncAnnotation.of(this.editor)],
+        });
+      }
+
+      // Re-enter pre-bind typing rebased onto the rendered text, oldest
+      // layer first. Each layer is a (base, edited) pair whose delta is the
+      // typed input. The point-in-time ingested replacement lets the rebase
+      // omit any insertion portion already delivered through a save echo.
+      let targetText = localText;
+      const ingestedReplacements = hsm.getRecentIngestedEditorReplacementTexts();
+      const bufferedLayer =
+        baseText !== null && editedText !== undefined
+          ? [{ baseText, editedText }]
+          : [];
+      for (const layer of [...restores, ...bufferedLayer]) {
+        if (layer.baseText === layer.editedText) continue;
+        const rebased = rebaseBufferedTextAcrossReplacement(
+          layer.baseText,
+          layer.editedText,
+          targetText,
+          "ingestedText" in layer && layer.ingestedText !== undefined
+            ? [layer.ingestedText as string, ...ingestedReplacements]
+            : ingestedReplacements,
+        );
+        if (rebased === null) {
+          this.log(
+            `Dropping pre-bind input for ${expectedGuid}: could not rebase onto rendered text`,
+          );
+          continue;
+        }
+        targetText = rebased;
+      }
+      if (targetText === localText) return;
+      this.editor.dispatch({
+        changes: buildTextChanges(localText, targetText),
+        annotations: [Transaction.userEvent.of("input.type")],
+      });
+    });
+  }
+
+  /**
+   * Re-enter typed input that replacement transactions displaced, rebased
+   * onto the current buffer, oldest layer first. Runs on a microtask after
+   * the replacement; a no-op when a bind consumed the restore state in the
+   * meantime.
+   */
+  private flushPendingRestores(): void {
+    const restores = this.pendingRestores;
+    this.pendingRestores = [];
+    if (restores.length === 0 || this.destroyed) return;
+    const currentText = this.editor.state.doc.toString();
+    let restoredText = currentText;
+    const ingestedReplacements =
+      this.document?.hsm?.getRecentIngestedEditorReplacementTexts() ?? [];
+    for (const layer of restores) {
+      if (layer.baseText === layer.editedText) continue;
+      const rebased = rebaseBufferedTextAcrossReplacement(
+        layer.baseText,
+        layer.editedText,
+        restoredText,
+        layer.ingestedText !== undefined
+          ? [layer.ingestedText, ...ingestedReplacements]
+          : ingestedReplacements,
+      );
+      if (rebased === null) continue;
+      restoredText = rebased;
+    }
+    if (restoredText === currentText) return;
+
+    this.editor.dispatch({
+      changes: buildTextChanges(currentText, restoredText),
+      annotations: Transaction.userEvent.of("input.type"),
+    });
+  }
+
+  /**
    * Handle editor updates from CodeMirror.
    * This is called on every editor state change.
    */
   update(update: ViewUpdate): void {
     if (this.destroyed) return;
+    if (update.docChanged) {
+      this.lastInitializationRetry = null;
+    }
 
     // Skip editors that are definitively outside a shared folder. During file
     // open, editorInfoField can still be unset while the CM6 buffer already
@@ -313,8 +583,22 @@ export class HSMEditorPluginValue implements PluginValue {
       }
     }
 
-    // Skip if no document changes
-    if (!update.docChanged) return;
+    // Skip if no document changes — but while unbound, retry initialization
+    // first: a view created on an already-active document must bind on the
+    // first tick where its file identity resolves (editorInfoField can lag
+    // view creation), not wait for input to arrive.
+    if (!update.docChanged) {
+      if (!this.cm6Integration) {
+        const file = this.editor.state.field(editorInfoField, false)?.file ?? null;
+        const live = this.isLiveEditor();
+        const prior = this.lastInitializationRetry;
+        if (!prior || prior.file !== file || prior.live !== live) {
+          this.lastInitializationRetry = { file, live };
+          this.initializeIfReady();
+        }
+      }
+      return;
+    }
 
     // Skip if this change came from Yjs/HSM sync (prevent feedback loop)
     if (
@@ -324,7 +608,11 @@ export class HSMEditorPluginValue implements PluginValue {
       return;
     }
 
-    if (!this.cm6Integration) {
+    // While a born-attached render is pending, the buffer is still the stale
+    // pre-bind content: route any input through the buffering path below so
+    // the render (which captures at fire time) rebases it onto the rendered
+    // text, exactly like input typed before the bind.
+    if (!this.cm6Integration || this.bornAttachedRenderPending) {
       const userEvent = update.transactions
         .map((tr) => tr.annotation(Transaction.userEvent))
         .find((event) => event != null);
@@ -335,25 +623,38 @@ export class HSMEditorPluginValue implements PluginValue {
       // pre-load buffer first, so rebase those edits onto the populated buffer
       // before discarding their stale positions.
       if (userEvent === "set") {
+        // A replacement rebuilt the buffer (initial populate, or a sibling
+        // view's save echoing back through a file reload). When the document
+        // is already active and locked, bind now instead of restoring typed
+        // input onto the replacement: the bind renders the authoritative
+        // document text and rebases the typed input onto that, so the
+        // replacement content is never treated as an edit source. (With the
+        // bind already made and a render pending, the replacement falls
+        // through to the restore extraction below; the render consumes it.)
+        if (
+          !this.cm6Integration &&
+          this.probeBornAttached() &&
+          this.initializeIfReady()
+        ) {
+          return;
+        }
+        const priorRestores = this.pendingRestores;
         const baseText = this.pendingEditBaseText;
         const editedText = this.pendingEdits.at(-1)?.docText;
         this.clearPendingEdits();
-        if (baseText !== null && editedText !== undefined) {
-          queueMicrotask(() => {
-            if (this.destroyed) return;
-            const currentText = this.editor.state.doc.toString();
-            const restoredText = rebaseBufferedTextAcrossReplacement(
-              baseText,
-              editedText,
-              currentText,
-            );
-            if (restoredText === null || restoredText === currentText) return;
-
-            this.editor.dispatch({
-              changes: buildTextChanges(currentText, restoredText),
-              annotations: Transaction.userEvent.of("input.type"),
-            });
-          });
+        const newLayer =
+          baseText !== null && editedText !== undefined
+            ? [{
+                baseText,
+                editedText,
+                ingestedText: update.state.doc.toString(),
+              }]
+            : [];
+        this.pendingRestores = [...priorRestores, ...newLayer];
+        if (this.pendingRestores.length > 0) {
+          // Held on the instance so a bind completing later in this same
+          // task can take the restores over before the microtask fires.
+          queueMicrotask(() => this.flushPendingRestores());
         }
       } else {
         // Buffer the actual CM6 changes before attempting initialization. The

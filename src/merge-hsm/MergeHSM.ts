@@ -346,6 +346,14 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	// Last known editor text (for drift detection)
 	private lastKnownEditorText: string | null = null;
+	/**
+	 * Recent distinct whole-buffer editor replacements, oldest first. Three
+	 * entries cover a detached save followed by two further view echoes during
+	 * the bind window; a fourth distinct set evicts the oldest. Repeated equal
+	 * sets refresh recency without consuming provenance capacity.
+	 */
+	private recentIngestedEditorReplacementTexts: string[] = [];
+	private static readonly INGESTED_REPLACEMENT_HISTORY_LIMIT = 3;
 
 	// Y.Text observer for converting remote deltas to positioned changes
 	private localTextObserver:
@@ -1509,6 +1517,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 
 	captureEditorText(contents: string): void {
 		this.lastKnownEditorText = contents;
+	}
+
+	getRecentIngestedEditorReplacementTexts(): readonly string[] {
+		return this.recentIngestedEditorReplacementTexts;
 	}
 
 	getRemoteDoc(): Y.Doc | null {
@@ -3361,6 +3373,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			applyCM6ToLocalDoc: (_hsm, event) => {
 				const e = event as any;
+				// Obsidian delivers a sibling save echo as an unannotated full-buffer
+				// set. Preserve the accepted snapshot so attachment can distinguish
+				// already-delivered input from a live render target that later moved.
+				if (e.userEvent === "set" && typeof e.docText === "string") {
+					this.recentIngestedEditorReplacementTexts = [
+						...this.recentIngestedEditorReplacementTexts.filter(
+							(text) => text !== e.docText,
+						),
+						e.docText,
+					].slice(-MergeHSM.INGESTED_REPLACEMENT_HISTORY_LIMIT);
+				}
 				let contentAlreadyApplied = false;
 				let machineEditIdx = -1;
 				if (this.localDoc) {
