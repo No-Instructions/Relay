@@ -46,6 +46,16 @@ export interface QueueItem {
 	retryReason?: "provider" | "s3";
 }
 
+/**
+ * How a sync completion settled. Cancellation resolves rather than
+ * rejects — the pipeline behind the completion has nothing to retry —
+ * but the two outcomes are not interchangeable to the caller: an
+ * upload's caller publishes membership on "completed" and must stand
+ * down on "cancelled", because a cancelled transfer moved only part of
+ * its bytes.
+ */
+export type SyncCompletionOutcome = "completed" | "cancelled";
+
 export interface BackgroundSyncFailure {
 	id: string;
 	guid: string;
@@ -201,11 +211,11 @@ export class BackgroundSync extends HasLogging {
 	private syncCompletionCallbacks = new Map<
 		string,
 		{
-			resolve: () => void;
+			resolve: (outcome: SyncCompletionOutcome) => void;
 			reject: (error: Error) => void;
 		}
 	>();
-	private syncPromises = new Map<string, Promise<void>>();
+	private syncPromises = new Map<string, Promise<SyncCompletionOutcome>>();
 	private downloadCompletionCallbacks = new Map<
 		string,
 		{
@@ -353,7 +363,7 @@ export class BackgroundSync extends HasLogging {
 
 	private resolveSyncCancellation(guid: string): void {
 		const callback = this.syncCompletionCallbacks.get(guid);
-		if (callback) callback.resolve();
+		if (callback) callback.resolve("cancelled");
 		this.syncCompletionCallbacks.delete(guid);
 		this.syncPromises.delete(guid);
 		this.inProgressSyncs.delete(guid);
@@ -1114,7 +1124,15 @@ export class BackgroundSync extends HasLogging {
 							metrics.incBgSyncOps("sync", "completed");
 							const callback = this.syncCompletionCallbacks.get(item.guid);
 							if (callback) {
-								callback.resolve();
+								// A cancellation raised while the work was active
+								// usually settles here, not in the catch: the
+								// pipeline consults the cancellation flag at its
+								// stage boundaries and returns cleanly. The clean
+								// resolution must still carry the cancelled
+								// outcome — the transfer did not complete.
+								callback.resolve(
+									this.isSyncCancelled(item) ? "cancelled" : "completed",
+								);
 								this.syncCompletionCallbacks.delete(item.guid);
 								this.syncPromises.delete(item.guid);
 							}
@@ -1377,10 +1395,12 @@ export class BackgroundSync extends HasLogging {
 	 * @param item The document to synchronize
 	 * @returns A promise that resolves when the sync completes
 	 */
-	async enqueueSync(item: SyncFile | Document | Canvas): Promise<void> {
+	async enqueueSync(
+		item: SyncFile | Document | Canvas,
+	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(item)) {
 			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve();
+			return Promise.resolve("completed");
 		}
 
 		// Skip if already in progress — return the same promise all callers share
@@ -1388,7 +1408,7 @@ export class BackgroundSync extends HasLogging {
 			this.debug(
 				`[enqueueSync] Item ${item.guid} already in progress, sharing promise`,
 			);
-			return this.syncPromises.get(item.guid) ?? Promise.resolve();
+			return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -1432,12 +1452,14 @@ export class BackgroundSync extends HasLogging {
 
 		this.inProgressSyncs.add(item.guid);
 
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(item.guid, {
-				resolve,
-				reject,
-			});
-		});
+		const syncPromise = new Promise<SyncCompletionOutcome>(
+			(resolve, reject) => {
+				this.syncCompletionCallbacks.set(item.guid, {
+					resolve,
+					reject,
+				});
+			},
+		);
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
@@ -1451,14 +1473,14 @@ export class BackgroundSync extends HasLogging {
 	async enqueueRetryableSync(
 		item: SyncFile | Document | Canvas,
 		error: Error,
-	): Promise<void> {
+	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(item)) {
 			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve();
+			return Promise.resolve("completed");
 		}
 
 		if (this.inProgressSyncs.has(item.guid)) {
-			return this.syncPromises.get(item.guid) ?? Promise.resolve();
+			return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -1499,12 +1521,14 @@ export class BackgroundSync extends HasLogging {
 		this.syncGroups.set(sharedFolder, group);
 
 		this.inProgressSyncs.add(item.guid);
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(item.guid, {
-				resolve,
-				reject,
-			});
-		});
+		const syncPromise = new Promise<SyncCompletionOutcome>(
+			(resolve, reject) => {
+				this.syncCompletionCallbacks.set(item.guid, {
+					resolve,
+					reject,
+				});
+			},
+		);
 		this.syncPromises.set(item.guid, syncPromise);
 
 		if (!this.requeueRetryableSync(queueItem, error)) {
@@ -1521,23 +1545,31 @@ export class BackgroundSync extends HasLogging {
 	 * Enqueue a local-authoritative upload before markUploaded(). For documents,
 	 * this seeds remoteDoc from the enrolled local CRDT before provider sync
 	 * resolves; other file types use their normal sync mechanics.
+	 *
+	 * The resolved outcome tells the caller whether the transfer actually
+	 * completed: cancellation settles the completion (resolve, not reject)
+	 * so the pipeline behind it drains, but it resolves "cancelled" so the
+	 * caller's markUploaded can stand down instead of publishing membership
+	 * for content that only partially transferred.
 	 */
-	async enqueueUpload(item: SyncFile | Document | Canvas): Promise<void> {
+	async enqueueUpload(
+		item: SyncFile | Document | Canvas,
+	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(item)) {
 			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve();
+			return Promise.resolve("completed");
 		}
 
 		if (this.inProgressSyncs.has(item.guid)) {
 			const queued = this.syncQueue.find((queued) => queued.guid === item.guid);
 			if (queued) {
 				queued.syncIntent = "upload";
-				return this.syncPromises.get(item.guid) ?? Promise.resolve();
+				return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
 			}
 
 			const active = this.activeSync.find((active) => active.guid === item.guid);
 			if (active?.syncIntent === "upload") {
-				return this.syncPromises.get(item.guid) ?? Promise.resolve();
+				return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
 			}
 
 			return this.enqueueUploadAfterCurrentSync(item);
@@ -1584,12 +1616,14 @@ export class BackgroundSync extends HasLogging {
 
 		this.inProgressSyncs.add(item.guid);
 
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(item.guid, {
-				resolve,
-				reject,
-			});
-		});
+		const syncPromise = new Promise<SyncCompletionOutcome>(
+			(resolve, reject) => {
+				this.syncCompletionCallbacks.set(item.guid, {
+					resolve,
+					reject,
+				});
+			},
+		);
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
@@ -1602,7 +1636,7 @@ export class BackgroundSync extends HasLogging {
 
 	private async enqueueUploadAfterCurrentSync(
 		item: SyncFile | Document | Canvas,
-	): Promise<void> {
+	): Promise<SyncCompletionOutcome> {
 		try {
 			await (this.syncPromises.get(item.guid) ?? Promise.resolve());
 		} catch {
@@ -1610,7 +1644,8 @@ export class BackgroundSync extends HasLogging {
 			// even if the weaker sync attempt failed.
 		}
 		await new Promise<void>((resolve) => queueMicrotask(resolve));
-		if (!this.timeProvider) return;
+		// Teardown while waiting: no transfer ran, so nothing may publish.
+		if (!this.timeProvider) return "cancelled";
 		return this.enqueueUpload(item);
 	}
 
@@ -1777,17 +1812,19 @@ export class BackgroundSync extends HasLogging {
 		return docs.length;
 	}
 
-	private async enqueueLCABackfillDoc(doc: Document): Promise<void> {
+	private async enqueueLCABackfillDoc(
+		doc: Document,
+	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(doc)) {
 			this.clearFailure(this.failureKey("sync", doc.guid));
-			return Promise.resolve();
+			return Promise.resolve("completed");
 		}
 
 		if (this.inProgressSyncs.has(doc.guid)) {
 			this.debug(
 				`[enqueueLCABackfillDoc] Item ${doc.guid} already in progress, sharing promise`,
 			);
-			return this.syncPromises.get(doc.guid) ?? Promise.resolve();
+			return this.syncPromises.get(doc.guid) ?? Promise.resolve("completed");
 		}
 
 		const sharedFolder = doc.sharedFolder;
@@ -1831,12 +1868,14 @@ export class BackgroundSync extends HasLogging {
 
 		this.inProgressSyncs.add(doc.guid);
 
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(doc.guid, {
-				resolve,
-				reject,
-			});
-		});
+		const syncPromise = new Promise<SyncCompletionOutcome>(
+			(resolve, reject) => {
+				this.syncCompletionCallbacks.set(doc.guid, {
+					resolve,
+					reject,
+				});
+			},
+		);
 		this.syncPromises.set(doc.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
@@ -2005,10 +2044,10 @@ export class BackgroundSync extends HasLogging {
 	 */
 	private async enqueueForGroupSync(
 		item: Document | Canvas | SyncFile,
-	): Promise<void> {
+	): Promise<SyncCompletionOutcome> {
 		if (this.shouldSkipDocumentSync(item)) {
 			this.clearFailure(this.failureKey("sync", item.guid));
-			return Promise.resolve();
+			return Promise.resolve("completed");
 		}
 
 		// Skip if already in progress — return the same promise all callers share
@@ -2016,7 +2055,7 @@ export class BackgroundSync extends HasLogging {
 			this.debug(
 				`[enqueueForGroupSync] Item ${item.guid} already in progress, sharing promise`,
 			);
-			return this.syncPromises.get(item.guid) ?? Promise.resolve();
+			return this.syncPromises.get(item.guid) ?? Promise.resolve("completed");
 		}
 
 		const sharedFolder = item.sharedFolder;
@@ -2033,12 +2072,14 @@ export class BackgroundSync extends HasLogging {
 
 		this.inProgressSyncs.add(item.guid);
 
-		const syncPromise = new Promise<void>((resolve, reject) => {
-			this.syncCompletionCallbacks.set(item.guid, {
-				resolve,
-				reject,
-			});
-		});
+		const syncPromise = new Promise<SyncCompletionOutcome>(
+			(resolve, reject) => {
+				this.syncCompletionCallbacks.set(item.guid, {
+					resolve,
+					reject,
+				});
+			},
+		);
 		this.syncPromises.set(item.guid, syncPromise);
 
 		this.syncQueue.push(queueItem);
