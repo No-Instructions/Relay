@@ -361,6 +361,18 @@ export class SyncStore extends Observable<SyncStore> {
 	onMapDelta: ((delta: FolderMapDelta, origin: unknown) => void) | null =
 		null;
 
+	/**
+	 * Observer for committed claims landing on paths that still carry a
+	 * pending upload hold under a different identity. Membership publishes
+	 * only after content transfer, so a competing claim can commit while
+	 * the transfer is in flight; this feed lets the host cancel that
+	 * transfer instead of paying for bytes whose publication the
+	 * markUploaded recheck will refuse. Local transactions cannot contest
+	 * their own hold (publication clears the hold in the same transaction),
+	 * so every claim surfaced here came from another writer.
+	 */
+	onCompetingClaim: ((path: string, meta: Meta) => void) | null = null;
+
 	processFolderOperation(event: Y.YMapEvent<Meta>) {
 		const deletedFolders = new Map<string, string>();
 		const addedFolders = new Map<string, string>();
@@ -459,6 +471,22 @@ export class SyncStore extends Observable<SyncStore> {
 			// legacy path above is the only logic that runs.
 			if (this.onMapDelta) {
 				this.onMapDelta(extractMapDelta(event, this.meta), origin);
+			}
+			// The size gate reads the in-memory hold index, so the default
+			// path (no pending upload — the steady state) pays nothing per
+			// membership transaction. Without it, every changed key costs a
+			// backing-storage read — and the initial provider sync of a large
+			// folder lands its whole membership map as one transaction.
+			if (this.onCompetingClaim && this.pendingUpload.size > 0) {
+				event.changes.keys.forEach((change, path) => {
+					if (change.action === "delete") return;
+					const committed = this.meta.get(path);
+					if (!committed) return;
+					const pendingGuid = this.pendingUpload.get(path);
+					if (pendingGuid && pendingGuid !== committed.id) {
+						this.onCompetingClaim?.(path, committed);
+					}
+				});
 			}
 			this.notifyListeners();
 		};
