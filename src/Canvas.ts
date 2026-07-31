@@ -573,11 +573,12 @@ export class Canvas
 			edges.push({ ...yedge });
 		}
 		for (const [, ynode] of ynodes.entries()) {
-			const ytext = ydoc.getText(ynode.id);
-			nodes.push({
-				...ynode,
-				...{ text: ytext.toString() || ynode.text },
-			});
+			const node = { ...ynode };
+			if (node.type === "text") {
+				const ytext = ydoc.getText(node.id);
+				node.text = ytext.toString() || node.text;
+			}
+			nodes.push(node);
 		}
 		return { nodes: nodes, edges: edges };
 	}
