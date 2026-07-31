@@ -30,7 +30,10 @@ import { S3Folder, S3RN, S3RemoteFolder, S3RemoteDocument } from "./S3RN";
 import type { RemoteSharedFolder } from "./Relay";
 import { RelayManager } from "./RelayManager";
 import type { Unsubscriber } from "svelte/store";
-import { BackgroundSync } from "./BackgroundSync";
+import {
+	BackgroundSync,
+	type SyncCompletionOutcome,
+} from "./BackgroundSync";
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
@@ -538,6 +541,20 @@ export class SharedFolder extends HasProvider {
 			this.unsubscribes.push(
 				observeSyncDrain(this.folderHSM, [this.ydoc, this._localDoc]),
 			);
+		} else {
+			// With no membership machine, claim events are the folder's to
+			// consume: a committed claim landing on a path whose own mint is
+			// still unpublished means the in-flight transfer is feeding a
+			// publication the markUploaded recheck will refuse. Cancel the
+			// work and adopt the committed identity instead. Handled on a
+			// fresh microtask so reconciliation never re-enters observer or
+			// transaction context. (Flag-on, the entry machine's MAP_ADDED
+			// supersession contract owns this same event.)
+			this.syncStore.onCompetingClaim = (path: string, meta: Meta) => {
+				void Promise.resolve().then(() => {
+					this.handleCompetingClaim(path, meta);
+				});
+			};
 		}
 
 		this.unsubscribes.push(
@@ -1191,6 +1208,63 @@ export class SharedFolder extends HasProvider {
 				this._pendingRemaps.delete(path);
 			});
 		}
+	}
+
+	/**
+	 * A committed claim landed for a path whose own mint is still
+	 * unpublished (hold present, upload queued or in flight). The
+	 * markUploaded recheck will refuse the mint's publication, so every
+	 * byte its transfer still moves is spent on a publication that cannot
+	 * happen — content-addressed files are where that bill is largest.
+	 * Cancel the mint's work and adopt the committed identity through the
+	 * reconciliation path. Two backstops hold behind this: the resumed
+	 * pipeline's markUploaded stands down on the cancelled completion
+	 * outcome (whatever the slot holds by then), and the recheck refuses
+	 * any publication over a claim still committed.
+	 */
+	private handleCompetingClaim(path: string, committedMeta: Meta): void {
+		if (this.destroyed) return;
+		// The handler runs a microtask after the observer, so the slot can
+		// move again before it acts (a newer claim, a deletion). Act only
+		// while the claim that fired the event is still the committed one
+		// (the same freshness re-read retryDeferredRemapForGuid does);
+		// whatever replaced it re-drives its own event.
+		if (this.syncStore.getCommittedMeta(path)?.id !== committedMeta.id) {
+			return;
+		}
+		const pendingGuid = this.syncStore.pendingUpload.get(path);
+		if (!pendingGuid || pendingGuid === committedMeta.id) return;
+		this.backgroundSync.cancelDocumentWork(pendingGuid);
+		if (this._pendingRemaps.has(path)) return;
+		const file = this.files.get(pendingGuid);
+		if ((!file || isDocument(file)) && isDocumentMeta(committedMeta)) {
+			// executeRemap owns the in-flight claim for the path (raised
+			// before its first await, released in its finally).
+			this.executeRemap({
+				path,
+				fromGuid: pendingGuid,
+				toGuid: committedMeta.id,
+			}).catch((e) => {
+				this.warn(`[${path}] remap from claim event failed`, e);
+			});
+			return;
+		}
+		if (file && isCanvas(file) && isCanvasMeta(committedMeta)) {
+			this._pendingRemaps.add(path);
+			this.executeCanvasRemap({
+				path,
+				fromGuid: pendingGuid,
+				toGuid: committedMeta.id,
+			}).catch((e) => {
+				this.warn(`[${path}] canvas remap from claim event failed`, e);
+			}).finally(() => {
+				this._pendingRemaps.delete(path);
+			});
+		}
+		// Content-addressed files: the transfer is cancelled above; identity
+		// adoption flows through the reconciliation sweep, which swaps a
+		// matching-content mint to the committed identity or pulls the
+		// committed bytes.
 	}
 
 	/** True when empty downloads for the guid have exhausted their attempts. */
@@ -1882,15 +1956,21 @@ export class SharedFolder extends HasProvider {
 			let staged = 0;
 			this.files.forEach((doc) => {
 				if (isSyncFolder(doc)) return; // directories have no rooms
+				// The outcome is dropped: this staging path never publishes
+				// membership itself (settlement does), so there is no
+				// publication decision to make here.
 				const p = this.backgroundSync
 					.enqueueUpload(doc as Document | Canvas | SyncFile)
-					.catch((e) => {
-						this.warn(
-							"[FolderHSM] publication staging failed",
-							doc.path,
-							e,
-						);
-					});
+					.then(
+						() => undefined,
+						(e) => {
+							this.warn(
+								"[FolderHSM] publication staging failed",
+								doc.path,
+								e,
+							);
+						},
+					);
 				trackAsyncCleanup(p);
 				staged++;
 			});
@@ -3985,8 +4065,8 @@ export class SharedFolder extends HasProvider {
 			op: "update",
 			path,
 			promise: (async () => {
-				await this.backgroundSync.enqueueUpload(file);
-				await this.markUploaded(file);
+				const outcome = await this.backgroundSync.enqueueUpload(file);
+				await this.markUploaded(file, outcome);
 			})(),
 		};
 	}
@@ -4336,7 +4416,25 @@ export class SharedFolder extends HasProvider {
 		this.pendingUpload.clear();
 	}
 
-	async markUploaded(file: IFile) {
+	async markUploaded(
+		file: IFile,
+		outcome: SyncCompletionOutcome = "completed",
+	) {
+		// Claim-implies-fetchable: membership is never published for content
+		// whose transfer did not complete. A cancelled transfer must stand
+		// down even when the slot reads empty — the competing claim that
+		// triggered the cancellation can itself be deleted before this
+		// pipeline resumes, and publishing into that empty slot would commit
+		// a claim whose bytes no server holds. The hold stays in place: the
+		// reconciliation sweep re-dispatches the upload into the genuinely
+		// empty slot, and publication follows the completed transfer.
+		if (outcome === "cancelled") {
+			this.log(
+				"[markUploaded] stood down: the content transfer was cancelled",
+				file.path,
+			);
+			return;
+		}
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
 				return;
@@ -4368,9 +4466,28 @@ export class SharedFolder extends HasProvider {
 			}
 
 			// Server-authoritative rule: never overwrite an existing committed
-			// GUID for this path with a local pending GUID.
-			const committedMeta = this.syncStore.getCommittedMeta(file.path);
-			if (committedMeta && committedMeta.id !== meta.id) {
+			// GUID for this path with a local pending GUID. The upload ran
+			// outside the map, so the slot may have acquired a committed claim
+			// while the transfer was in flight. The recheck is atomic with the
+			// publication: the transaction that writes is the one that proves
+			// the slot is still empty (or already carries this identity), so
+			// no step can interleave between the proof and the write.
+			let contestedMeta: Meta | undefined = undefined;
+			this.folderDoc.transact(() => {
+				const committedMeta = this.syncStore.getCommittedMeta(file.path);
+				if (committedMeta && committedMeta.id !== meta.id) {
+					contestedMeta = committedMeta;
+					return;
+				}
+				if (this.syncStore.willSet(file.path, meta)) {
+					this.log("new meta", file.path, meta);
+					this.syncStore.markUploaded(file.path, meta);
+				}
+			}, this);
+			// Read through an assertion: control flow cannot see the closure
+			// assignment above.
+			const committedMeta = contestedMeta as Meta | undefined;
+			if (committedMeta) {
 				this.warn(
 					"[markUploaded] committed GUID differs from local upload metadata",
 					{
@@ -4413,13 +4530,6 @@ export class SharedFolder extends HasProvider {
 					});
 				}
 				return;
-			}
-
-			if (this.syncStore.willSet(file.path, meta)) {
-				this.log("new meta", file.path, meta);
-				this.folderDoc.transact(() => {
-					this.syncStore.markUploaded(file.path, meta);
-				}, this);
 			}
 			if (this.folderHSM) {
 				// A committed upload is a durable local record of this path's
@@ -4678,8 +4788,8 @@ export class SharedFolder extends HasProvider {
 				}
 				canvas.markOrigin("local");
 				this.log(`[${canvas.path}] Uploading file`);
-				await this.backgroundSync.enqueueUpload(canvas);
-				await this.markUploaded(canvas);
+				const outcome = await this.backgroundSync.enqueueUpload(canvas);
+				await this.markUploaded(canvas, outcome);
 			}
 		})();
 
@@ -4730,8 +4840,8 @@ export class SharedFolder extends HasProvider {
 					(!this.folderHSM ||
 						this.folderHSM.holdIsPublishable(canvas.path))
 				) {
-					await this.backgroundSync.enqueueUpload(canvas);
-					await this.markUploaded(canvas);
+					const outcome = await this.backgroundSync.enqueueUpload(canvas);
+					await this.markUploaded(canvas, outcome);
 				}
 			})
 			.catch((error) => {
@@ -5145,8 +5255,8 @@ export class SharedFolder extends HasProvider {
 				// below is one teardown releases, so resuming here after it
 				// ran throws out of a detached call with nothing to catch it.
 				if (this.destroyed) return;
-				await this.backgroundSync.enqueueUpload(doc);
-				await this.markUploaded(doc);
+				const outcome = await this.backgroundSync.enqueueUpload(doc);
+				await this.markUploaded(doc, outcome);
 			}
 		})();
 
@@ -5179,8 +5289,8 @@ export class SharedFolder extends HasProvider {
 					// first upload here (see uploadDoc).
 					(!this.folderHSM || this.folderHSM.holdIsPublishable(doc.path))
 				) {
-					await this.backgroundSync.enqueueUpload(doc);
-					await this.markUploaded(doc);
+					const outcome = await this.backgroundSync.enqueueUpload(doc);
+					await this.markUploaded(doc, outcome);
 				}
 			})
 			.catch((error) => {
@@ -5308,8 +5418,8 @@ export class SharedFolder extends HasProvider {
 
 		void (async () => {
 			if (!this.pendingUpload.get(file.path)) return;
-			await this.backgroundSync.enqueueUpload(file);
-			await this.markUploaded(file);
+			const outcome = await this.backgroundSync.enqueueUpload(file);
+			await this.markUploaded(file, outcome);
 		})();
 
 		this.fset.add(file, update);
@@ -5341,8 +5451,8 @@ export class SharedFolder extends HasProvider {
 			this.log("get syncfile missing meta");
 			void (async () => {
 				if (!this.pendingUpload.get(file.path)) return;
-				await this.backgroundSync.enqueueUpload(file);
-				await this.markUploaded(file);
+				const outcome = await this.backgroundSync.enqueueUpload(file);
+				await this.markUploaded(file, outcome);
 			})();
 		} else {
 			this.log("get syncfile initial pull", {
