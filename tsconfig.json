@@ -21,14 +21,10 @@
     ]
   },
   "include": [
-    "**/*.ts"
+    "src/**/*.ts",
+    "relay-plugin-api.d.ts"
   ],
   "exclude": [
-    "__tests__",
-    "**/*.test.ts",
-    "src/merge-hsm/testing",
-    "node_modules",
-    "vaults",
-    "archive"
+    "src/merge-hsm/testing"
   ]
 }
