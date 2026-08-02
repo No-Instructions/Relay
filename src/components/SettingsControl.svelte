@@ -7,10 +7,11 @@
 	export var label = "Options";
 
 	function handleSettingsClick(event: KeyboardEvent | MouseEvent) {
+		// No instanceof: the settings window has its own event constructors,
+		// so events born there never match this realm's classes.
 		if (
-			event instanceof MouseEvent ||
-			(event instanceof KeyboardEvent &&
-				(event.key === "Enter" || event.key === " "))
+			event.type === "click" ||
+			("key" in event && (event.key === "Enter" || event.key === " "))
 		) {
 			dispatch("settings");
 		}
