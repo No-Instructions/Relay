@@ -1,0 +1,198 @@
+name: Store Lint
+
+# Nightly run of the Obsidian community-store lint (eslint-plugin-obsidianmd)
+# against main. The plugin and its ESLint 9 peer set are installed fresh from
+# the registry every night — latest-each-night is deliberate, so a new store
+# rule surfaces here before it surfaces in a plugin review. The toolchain
+# lives entirely in a scratch directory: the repo's own devDependencies
+# (ESLint 8, the legacy config) are neither installed nor resolved into
+# this run.
+#
+# Severity policy: error-severity findings fail the job; warnings are
+# inventory only — they appear in the job summary but never fail the run.
+
+on:
+  schedule:
+    # 06:43 UTC nightly — an off-minute slot clear of the 08:29 burn-in,
+    # and top-of-hour Actions congestion.
+    - cron: '43 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  store-lint:
+    name: community store lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20.x'
+
+      - name: Install store lint toolchain
+        run: |
+          # Fresh scratch install. Only the plugin and an ESLint 9 major are
+          # named; npm resolves the rest of the peer set (@eslint/js,
+          # typescript-eslint, @eslint/json, obsidian) from the plugin's
+          # peerDependencies at install time rather than pins written here.
+          SCRATCH="$RUNNER_TEMP/store-lint"
+          mkdir -p "$SCRATCH"
+          cd "$SCRATCH"
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund eslint-plugin-obsidianmd@latest eslint@9
+          # Record the resolved versions, then gate each expected package
+          # separately so one dropped or renamed peer cannot pass unnoticed.
+          npm ls eslint eslint-plugin-obsidianmd typescript-eslint @eslint/js @eslint/json obsidian
+          for PACKAGE in eslint eslint-plugin-obsidianmd typescript-eslint @eslint/js @eslint/json obsidian; do
+            npm ls "$PACKAGE" > /dev/null || {
+              echo "Expected store-lint package is missing: $PACKAGE"
+              exit 1
+            }
+          done
+
+      - name: Write standalone lint config
+        run: |
+          # The checkout is dependency-less, so third-party imports type as
+          # `any`. The scratch tsconfig gives the plugin's typed rules a real
+          # TS program over src/, while typescript-eslint's own type-aware
+          # rules are switched off — against `any` imports they only flood.
+          # The plugin has no Svelte parser, so only TypeScript is linted.
+          SCRATCH="$RUNNER_TEMP/store-lint"
+          cat > "$SCRATCH/tsconfig.store-lint.json" << EOF
+          {
+            "compilerOptions": {
+              "target": "ES2022",
+              "module": "ESNext",
+              "moduleResolution": "bundler",
+              "baseUrl": "$SCRATCH/node_modules",
+              "allowJs": true,
+              "skipLibCheck": true,
+              "noEmit": true
+            },
+            "include": ["$GITHUB_WORKSPACE/src/**/*.ts"]
+          }
+          EOF
+          cat > "$SCRATCH/eslint.config.mjs" << 'EOF'
+          import { defineConfig } from "eslint/config";
+          import tseslint from "typescript-eslint";
+          import obsidianmd from "eslint-plugin-obsidianmd";
+
+          const scratch = new URL(".", import.meta.url).pathname;
+          const recommended = obsidianmd.configs?.recommended;
+          if (!Array.isArray(recommended) || recommended.length === 0) {
+            throw new Error("eslint-plugin-obsidianmd recommended config is missing or empty");
+          }
+
+          export default defineConfig([
+            ...recommended,
+            {
+              files: ["**/*.ts"],
+              languageOptions: {
+                parserOptions: {
+                  project: `${scratch}tsconfig.store-lint.json`,
+                  tsconfigRootDir: scratch,
+                },
+              },
+              rules: { ...tseslint.configs.disableTypeChecked.rules },
+            },
+          ]);
+          EOF
+
+      - name: Run store lint
+        run: |
+          # The plugin reads manifest.json from the working directory when it
+          # loads, so eslint runs from the checkout root using the scratch
+          # binary and config. Findings never fail this step — the summary
+          # step applies the severity policy — but a crashed eslint does.
+          SCRATCH="$RUNNER_TEMP/store-lint"
+          STATUS=0
+          "$SCRATCH/node_modules/.bin/eslint" \
+            --config "$SCRATCH/eslint.config.mjs" \
+            --format json --output-file "$SCRATCH/results.json" \
+            "src/**/*.ts" package.json || STATUS=$?
+          if [ "$STATUS" -ge 2 ]; then
+            echo "eslint did not complete (exit $STATUS)"
+            exit "$STATUS"
+          fi
+
+          node - "$SCRATCH/results.json" <<'NODE'
+          // Full findings listing for the step log; the job summary carries
+          // only per-rule counts.
+          const results = require(process.argv[2]);
+          const ruleOf = m => m.ruleId
+            || (/^Unused eslint-disable/.test(m.message) ? 'unused-disable-directive' : 'core');
+          let errors = 0;
+          let warnings = 0;
+          for (const file of results) {
+            if (!file.messages.length) continue;
+            errors += file.errorCount;
+            warnings += file.warningCount;
+            console.log(file.filePath);
+            for (const m of file.messages) {
+              const sev = m.severity === 2 ? 'error' : 'warn ';
+              console.log(`  ${m.line}:${m.column}  ${sev}  ${m.message}  [${ruleOf(m)}]`);
+            }
+          }
+          console.log(`\n${errors} errors, ${warnings} warnings across ${results.length} files`);
+          NODE
+
+      - name: Generate job summary
+        if: always()
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const fs = require('fs');
+
+            let results;
+            try {
+              results = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/store-lint/results.json`, 'utf-8'));
+            } catch {
+              core.summary.addRaw('## Store lint results\n\n:x: **No lint results produced**\n');
+              await core.summary.write();
+              core.setFailed('No store lint results available');
+              return;
+            }
+
+            const ruleOf = m => m.ruleId
+              || (/^Unused eslint-disable/.test(m.message) ? 'unused-disable-directive' : 'core');
+            const byRule = new Map();
+            let errors = 0;
+            let warnings = 0;
+            for (const file of results) {
+              errors += file.errorCount;
+              warnings += file.warningCount;
+              const rel = file.filePath.replace(`${process.env.GITHUB_WORKSPACE}/`, '');
+              for (const m of file.messages) {
+                const key = `${m.severity}:${ruleOf(m)}`;
+                if (!byRule.has(key)) {
+                  byRule.set(key, { rule: ruleOf(m), severity: m.severity, count: 0, sample: `${rel}:${m.line}` });
+                }
+                byRule.get(key).count += 1;
+              }
+            }
+
+            const verdict = errors > 0 ? ':x: **FAIL**' : ':white_check_mark: **PASS**';
+            let md = '## Store lint results\n\n';
+            md += `${verdict} | ${errors} errors, ${warnings} warnings | ${results.length} files | errors fail the job, warnings do not\n\n`;
+            if (byRule.size) {
+              md += '| Rule | Severity | Count | Sample |\n|---|---|---:|---|\n';
+              const rows = [...byRule.values()].sort((a, b) => (b.severity - a.severity) || (b.count - a.count));
+              for (const row of rows) {
+                md += `| \`${row.rule}\` | ${row.severity === 2 ? 'error' : 'warning'} | ${row.count} | \`${row.sample}\` |\n`;
+              }
+            }
+            core.summary.addRaw(md);
+            await core.summary.write();
+
+            if (results.length === 0) {
+              core.setFailed('Store lint matched no files');
+            } else if (errors > 0) {
+              core.setFailed(`${errors} error-severity store lint finding(s)`);
+            }
