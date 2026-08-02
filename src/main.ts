@@ -756,15 +756,21 @@ export default class Live extends Plugin {
 	}
 
 	async openSettings(path: string = "/") {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const setting = (this.app as any).setting;
+		const setting = (
+			this.app as unknown as {
+				setting: {
+					open(): Promise<void>;
+					openTabById(id: string): void;
+				};
+			}
+		).setting;
 		await setting.open();
 		await setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);
 	}
 
 	patchWebviewer(): void {
-		// eslint-disable-next-line
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- patch callbacks run with their own this
 		const plugin = this;
 		try {
 			if (this.webviewerPatched) {

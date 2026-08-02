@@ -182,7 +182,7 @@ export class TextFileViewPlugin extends HasLogging {
 			this.view.document.path,
 		);
 
-		// eslint-disable-next-line
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- patch callbacks run with their own this
 		const that = this;
 
 		this.unsubscribes.push(

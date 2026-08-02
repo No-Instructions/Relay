@@ -6,7 +6,7 @@ import { EditorSelection, SelectionRange } from "@codemirror/state";
 import { RelativePosition, YText } from "yjs/dist/src/internals";
 import { YRange } from "./YRange";
 
-import * as Y from "yjs"; // eslint-disable-line
+import * as Y from "yjs";
 
 export class PositionTranformer {
 	ytext: YText;

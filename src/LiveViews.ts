@@ -1015,9 +1015,8 @@ export class LiveViewManager {
 
 	findView(cmEditor: EditorView): LiveView<MarkdownView> | undefined {
 		return this.views.filter(isLiveMd).find((view) => {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			const editor = view.view.editor as any;
-			const cm = editor.cm as EditorView;
+			const editor = view.view.editor as unknown as { cm: EditorView };
+			const cm = editor.cm;
 			return cm === cmEditor;
 		});
 	}

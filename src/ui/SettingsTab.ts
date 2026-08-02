@@ -22,8 +22,9 @@ export class LiveSettingsTab extends PluginSettingTab {
 			props: {
 				plugin: this.plugin,
 				close: () => {
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any
-					(this as any).setting.close();
+					(
+						this as unknown as { setting: { close(): void } }
+					).setting.close();
 				},
 			},
 		});
@@ -38,8 +39,6 @@ export class LiveSettingsTab extends PluginSettingTab {
 	hide(): void {
 		try {
 			this.component?.$destroy();
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			//(this as any).setting.close();
 		} catch (e) {
 			console.warn(e);
 		}

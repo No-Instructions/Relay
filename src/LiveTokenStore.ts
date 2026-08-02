@@ -25,10 +25,8 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 
 function withLoginManager(
 	loginManager: LoginManager,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	fn: (...args: any[]) => void,
 ) {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	return (...args: any[]) => fn(loginManager, ...args);
 }
 

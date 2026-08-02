@@ -136,7 +136,7 @@ export class CanvasPlugin extends HasLogging {
 			this.relayCanvas.path,
 		);
 
-		// eslint-disable-next-line
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- patch callbacks run with their own this
 		const that = this;
 		const exported = Canvas.exportCanvasData(this.relayCanvas.ydoc);
 		const hasCanvasData =
