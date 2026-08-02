@@ -1,4 +1,5 @@
 .invalid-link {
+	display: inline-flex;
 	color: var(--link-external-color);
 	width: 0.8em;
 	margin-left: 1px;
