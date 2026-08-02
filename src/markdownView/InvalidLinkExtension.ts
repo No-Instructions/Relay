@@ -21,7 +21,7 @@ export const invalidLinkSyncAnnotation = Annotation.define();
 
 class FileWarningWidget extends WidgetType {
 	toDOM() {
-		const span = document.createElement("span");
+		const span = createSpan();
 		span.addClass("invalid-link");
 		setIcon(span, "file-warning");
 		span.title =

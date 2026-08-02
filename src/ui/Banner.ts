@@ -30,14 +30,14 @@ export class Banner {
 		// container to enable easy removal of the banner
 		let bannerBox = leafContentEl.querySelector(".system3-banner-box");
 		if (!bannerBox) {
-			bannerBox = document.createElement("div");
+			bannerBox = createDiv();
 			bannerBox.classList.add("system3-banner-box");
 			leafContentEl.insertBefore(bannerBox, contentEl);
 		}
 
 		let banner = leafContentEl.querySelector(".system3-banner");
 		if (!banner) {
-			banner = document.createElement("div");
+			banner = createDiv();
 			banner.classList.add("system3-banner");
 			const span = banner.createSpan();
 			span.setText(this.text);
