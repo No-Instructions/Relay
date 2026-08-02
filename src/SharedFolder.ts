@@ -1997,14 +1997,14 @@ export class SharedFolder extends HasProvider {
 		);
 	}
 
-	private _assertNamespacing(path: string) {
-		// Check if the path is valid (inside of shared folder), otherwise delete
+	private _assertNamespacing(path: string): boolean {
 		try {
-			this.assertPath(this.path + path);
+			this.assertPath(normalizePath(join(this.path, path)));
+			return true;
 		} catch {
 			this.error("Deleting doc (somehow moved outside of shared folder)", path);
 			this.syncStore.delete(path);
-			return;
+			return false;
 		}
 	}
 
@@ -2632,7 +2632,7 @@ export class SharedFolder extends HasProvider {
 		types: SyncType[],
 	) {
 		syncStore.forEachWithPending((meta, path) => {
-			this._assertNamespacing(path);
+			if (!this._assertNamespacing(path)) return;
 			if (meta && types.contains(meta.type)) {
 				ops.push(
 					this.applyRemoteState(meta.id, path, syncStore.remoteIds, diffLog),
