@@ -51,7 +51,7 @@ class NetworkStatus {
 
 	public stop() {
 		if (this.timer) {
-			clearInterval(this.timer);
+			window.clearInterval(this.timer);
 		}
 	}
 

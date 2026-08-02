@@ -157,9 +157,9 @@ export class IndexeddbPersistence extends Observable {
         if (++this._dbsize >= trimSize) {
           // debounce store call
           if (this._storeTimeoutId !== null) {
-            clearTimeout(this._storeTimeoutId)
+            window.clearTimeout(this._storeTimeoutId)
           }
-          this._storeTimeoutId = setTimeout(() => {
+          this._storeTimeoutId = window.setTimeout(() => {
             storeState(this, false)
             this._storeTimeoutId = null
           }, this._storeTimeout)
@@ -179,7 +179,7 @@ export class IndexeddbPersistence extends Observable {
   once (name, f) {
     if (name === 'synced' && this.synced) {
       // If already synced, call immediately in next tick
-      setTimeout(() => f(this), 0)
+      window.setTimeout(() => f(this), 0)
       return this
     }
     return super.once(name, f)
@@ -187,7 +187,7 @@ export class IndexeddbPersistence extends Observable {
 
   destroy () {
     if (this._storeTimeoutId) {
-      clearTimeout(this._storeTimeoutId)
+      window.clearTimeout(this._storeTimeoutId)
     }
     this.doc.off('update', this._storeUpdate)
     this.doc.off('destroy', this.destroy)

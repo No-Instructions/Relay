@@ -166,7 +166,7 @@ const setupWS = (provider: YSweetProvider) => {
 			// Start with no reconnect timeout and increase timeout by
 			// using exponential backoff starting with 100ms
 			if (provider.canReconnect()) {
-				setTimeout(
+				window.setTimeout(
 					setupWS,
 					math.min(
 						math.pow(2, provider.wsUnsuccessfulReconnects) * 100,
@@ -360,7 +360,7 @@ export class YSweetProvider extends Observable<string> {
 
 		this._resyncInterval = 0;
 		if (resyncInterval > 0) {
-			this._resyncInterval = setInterval(() => {
+			this._resyncInterval = window.setInterval(() => {
 				if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 					// resend sync step 1
 					const encoder = encoding.createEncoder();
@@ -430,7 +430,7 @@ export class YSweetProvider extends Observable<string> {
 		}
 
 		awareness.on("update", this._awarenessUpdateHandler);
-		this._checkInterval = setInterval(() => {
+		this._checkInterval = window.setInterval(() => {
 			if (
 				this.wsconnected &&
 				messageReconnectTimeout <
@@ -466,7 +466,7 @@ export class YSweetProvider extends Observable<string> {
 	 */
 	once(name: string, f: (...args: any[]) => void) {
 		if (name === "synced" && this._synced) {
-			setTimeout(() => f(this._synced), 0);
+			window.setTimeout(() => f(this._synced), 0);
 			return this;
 		}
 		return super.once(name, f);
@@ -506,9 +506,9 @@ export class YSweetProvider extends Observable<string> {
 
 	destroy() {
 		if (this._resyncInterval !== 0) {
-			clearInterval(this._resyncInterval);
+			window.clearInterval(this._resyncInterval);
 		}
-		clearInterval(this._checkInterval);
+		window.clearInterval(this._checkInterval);
 
 		if (this.ws) {
 			this.ws.onopen = null;

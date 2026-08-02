@@ -521,10 +521,10 @@ export class LoginManager extends Observable<LoginManager> {
 		let counter = 0;
 		const interval = 1000;
 		return new Promise((resolve, reject) => {
-			const timer = setInterval(() => {
+			const timer = window.setInterval(() => {
 				counter += 1;
 				if (counter >= 30) {
-					clearInterval(timer);
+					window.clearInterval(timer);
 					return reject(
 						new Error(
 							`Auth timeout: Timed out after ${
@@ -538,7 +538,7 @@ export class LoginManager extends Observable<LoginManager> {
 					.getOne(provider.info.state.slice(0, 15))
 					.then((response) => {
 						if (response) {
-							clearInterval(timer);
+							window.clearInterval(timer);
 							return resolve(provider.login(response.code));
 						}
 					})

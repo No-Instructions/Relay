@@ -168,7 +168,7 @@ export class TextFileViewPlugin extends HasLogging {
 		if (!this.view.view.file) {
 			this.warn("view file not ready, deferring install");
 			// Retry installation after a short delay
-			setTimeout(() => {
+			window.setTimeout(() => {
 				if (!this.destroyed && this.view?.view?.file) {
 					this.install();
 				}

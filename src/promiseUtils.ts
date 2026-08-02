@@ -27,7 +27,7 @@ export class Dependency<T> {
 				const resolve = this.resolver;
 				resolve(result);
 				if (this.timeoutId) {
-					clearTimeout(this.timeoutId);
+					window.clearTimeout(this.timeoutId);
 				}
 				this.resolver = undefined;
 			}
@@ -54,13 +54,13 @@ export class Dependency<T> {
 				this.promiseFunction().then(
 					(result) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							window.clearTimeout(this.timeoutId);
 						}
 						resolve(result);
 					},
 					(error) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							window.clearTimeout(this.timeoutId);
 						}
 						this.currentPromise = null; // Reset on failure
 						reject(error);
@@ -73,7 +73,7 @@ export class Dependency<T> {
 
 	public destroy(): void {
 		if (this.timeoutId) {
-			clearTimeout(this.timeoutId);
+			window.clearTimeout(this.timeoutId);
 			this.timeoutId = undefined;
 		}
 		this.currentPromise = null;
@@ -102,14 +102,14 @@ export class SharedPromise<T> {
 				this.promiseFunction().then(
 					(result) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							window.clearTimeout(this.timeoutId);
 						}
 						this.currentPromise = null;
 						resolve(result);
 					},
 					(error) => {
 						if (this.timeoutId) {
-							clearTimeout(this.timeoutId);
+							window.clearTimeout(this.timeoutId);
 						}
 						this.currentPromise = null;
 						reject(error);
@@ -122,7 +122,7 @@ export class SharedPromise<T> {
 
 	public destroy(): void {
 		if (this.timeoutId) {
-			clearTimeout(this.timeoutId);
+			window.clearTimeout(this.timeoutId);
 			this.timeoutId = undefined;
 		}
 		this.currentPromise = null;
@@ -140,11 +140,11 @@ export function withTimeoutWarning<T>(
 
 		promise.then(
 			(result) => {
-				clearTimeout(timeoutId);
+				window.clearTimeout(timeoutId);
 				resolve(result);
 			},
 			(error) => {
-				clearTimeout(timeoutId);
+				window.clearTimeout(timeoutId);
 				reject(error);
 			},
 		);

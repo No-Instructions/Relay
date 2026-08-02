@@ -359,7 +359,7 @@ export class TokenStore<TokenType extends HasToken> {
 
 	async waitForQueue(): Promise<void> {
 		return new Promise((resolve) => {
-			setInterval(() => {
+			window.setInterval(() => {
 				if (this.refreshQueue.size == 0) {
 					return resolve();
 				}
