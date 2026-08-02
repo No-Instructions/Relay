@@ -205,6 +205,7 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: read
+      checks: write
     strategy:
       fail-fast: false
       # Cap concurrency below MAX_POOLS so the fleet keeps headroom for any
@@ -673,6 +674,28 @@ jobs:
                   ref: context.sha,
                   check_name: checkName,
                   per_page: 100,
+                });
+                const runPath = `/actions/runs/${context.runId}/`;
+                const check = data.check_runs.find(checkRun => (checkRun.details_url || '').includes(runPath))
+                  || data.check_runs[0];
+                if (check) {
+                  await github.rest.checks.update({
+                    owner,
+                    repo,
+                    check_run_id: check.id,
+                    details_url: metadata.reportUrl,
+                  });
+                }
+              } catch (error) {
+                core.warning(`Failed to update check details URL: ${error.message}`);
+              }
+            }
+
+            if ((s.total || 0) === 0 || summary.state === 'error') {
+              core.setFailed('No tests were executed');
+            } else if ((s.fail || 0) > 0) {
+              core.setFailed(`${s.fail} test(s) failed`);
+            }
 
       - name: Delete VM (releases the pool lease)
         if: always()
