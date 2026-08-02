@@ -19,6 +19,10 @@ on:
         description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
         required: false
         default: 'origin/main'
+      obsidian_version:
+        description: 'Obsidian AppImage version to install (e.g. 1.13.4)'
+        required: false
+        default: '1.13.4'
 
 concurrency:
   group: e2e-test-plans-linux
@@ -231,6 +235,8 @@ jobs:
 
       - name: Run scripted test plans on VM
         if: steps.select-tests.outputs.should_run == 'true'
+        env:
+          OBSIDIAN_VERSION_ARG: ${{ github.event.inputs.obsidian_version || '1.13.4' }}
         run: |
           INPUT_REF="${{ github.event.inputs.ref || '' }}"
           REF_TYPE="${{ github.ref_type }}"
@@ -255,17 +261,17 @@ jobs:
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG' '$SHARD_PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$SHARD_SLUG_ARG' '$SHARD_PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$OBSIDIAN_VERSION_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
           SHARD_SLUG="$3"
           SHARD_PROFILE_FLAGS="${4-}"
           HARNESS_REF="${5:-origin/main}"
+          OBSIDIAN_VERSION="${6:-1.13.4}"
 
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
-          OBSIDIAN_VERSION="1.12.7"
           # Version-specific filename so bumping OBSIDIAN_VERSION forces a fresh
           # install on the persistent VM instead of reusing a prior version's
           # cached AppImage.
@@ -273,9 +279,12 @@ jobs:
           if [ ! -f "$OBSIDIAN_PATH" ]; then
             echo "Installing Obsidian AppImage..."
             mkdir -p ~/obsidian
-            wget -q -O "$OBSIDIAN_PATH" \
+            # Publish via temp-then-rename: a failed wget leaves a zero-byte
+            # file at -O's destination that the cache check would trust forever.
+            wget -q -O "${OBSIDIAN_PATH}.tmp" \
               "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
-            chmod +x "$OBSIDIAN_PATH"
+            chmod +x "${OBSIDIAN_PATH}.tmp"
+            mv "${OBSIDIAN_PATH}.tmp" "$OBSIDIAN_PATH"
             echo "Installed Obsidian $OBSIDIAN_VERSION"
           fi
 
