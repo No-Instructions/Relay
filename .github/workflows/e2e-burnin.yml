@@ -39,6 +39,10 @@ on:
         description: 'relay-harness ref to run (e.g. origin/main, a branch, or a SHA)'
         required: false
         default: 'origin/main'
+      obsidian_version:
+        description: 'Obsidian AppImage version to install (e.g. 1.13.4)'
+        required: false
+        default: '1.13.4'
 
 env:
   GCP_PROJECT: tactile-timer-426817-t6
@@ -354,6 +358,8 @@ jobs:
           rm -f /tmp/r2-endpoint /tmp/r2-access-key /tmp/r2-secret-key
 
       - name: Run the burn-in plan on VM
+        env:
+          OBSIDIAN_VERSION_ARG: ${{ inputs.obsidian_version || '1.13.4' }}
         run: |
           REF="${{ needs.prepare.outputs.product_sha }}"
           SELECTED_TESTS="${{ matrix.plan }}"
@@ -371,7 +377,7 @@ jobs:
           gcloud compute ssh "$VM_NAME" --quiet \
             --zone="$VM_ZONE" --project="$GCP_PROJECT" \
             --tunnel-through-iap \
-            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$SHARED_SLOTS'" 2>/dev/null << 'REMOTE_SCRIPT'
+            --command="bash -s -- '$REF' '$SELECTED_TESTS' '$LANE_SLUG' '$PROFILE_FLAGS_ARG' '$HARNESS_REF_ARG' '$SHARED_SLOTS' '$OBSIDIAN_VERSION_ARG'" 2>/dev/null << 'REMOTE_SCRIPT'
           set -eo pipefail
           REF="$1"
           SELECTED_TESTS="$2"
@@ -379,6 +385,7 @@ jobs:
           PROFILE_FLAGS="${4-}"
           HARNESS_REF="${5-}"
           SHARED_SLOT_CANDIDATES="$6"
+          OBSIDIAN_VERSION="${7:-1.13.4}"
 
           # No branch-name fallback: an unpinned suite is a broken run, not a
           # run to guess at.
@@ -389,16 +396,18 @@ jobs:
 
           [ -f ~/.config/relay-e2e/r2-env.sh ] && source ~/.config/relay-e2e/r2-env.sh
 
-          OBSIDIAN_VERSION="1.12.7"
           # Version-specific filename so bumping OBSIDIAN_VERSION forces a fresh
           # install instead of reusing a prior version's cached AppImage.
           export OBSIDIAN_PATH="$HOME/obsidian/Obsidian-${OBSIDIAN_VERSION}.AppImage"
           if [ ! -f "$OBSIDIAN_PATH" ]; then
             echo "Installing Obsidian AppImage..."
             mkdir -p ~/obsidian
-            wget -q -O "$OBSIDIAN_PATH" \
+            # Publish via temp-then-rename: a failed wget leaves a zero-byte
+            # file at -O's destination that the cache check would trust forever.
+            wget -q -O "${OBSIDIAN_PATH}.tmp" \
               "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_VERSION}/Obsidian-${OBSIDIAN_VERSION}.AppImage"
-            chmod +x "$OBSIDIAN_PATH"
+            chmod +x "${OBSIDIAN_PATH}.tmp"
+            mv "${OBSIDIAN_PATH}.tmp" "$OBSIDIAN_PATH"
             echo "Installed Obsidian $OBSIDIAN_VERSION"
           fi
 
