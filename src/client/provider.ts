@@ -392,7 +392,10 @@ export class YSweetProvider extends Observable<string> {
 			}
 		};
 
-		this.doc.on("update", this._updateHandler as any);
+		this.doc.on(
+			"update",
+			this._updateHandler as unknown as (...args: unknown[]) => void,
+		);
 
 		// TODO: I think we can get more specific with the array types.
 		// They are not documented here so we need to do some digging.
@@ -428,9 +431,12 @@ export class YSweetProvider extends Observable<string> {
 		};
 
 		if (typeof window !== "undefined") {
-			window.addEventListener("unload", this._unloadHandler as any);
+			window.addEventListener(
+				"unload",
+				this._unloadHandler as unknown as EventListener,
+			);
 		} else if (typeof process !== "undefined") {
-			process.on("exit", this._unloadHandler as any);
+			process.on("exit", this._unloadHandler as unknown as () => void);
 		}
 
 		awareness.on("update", this._awarenessUpdateHandler);
@@ -533,10 +539,13 @@ export class YSweetProvider extends Observable<string> {
 		this._observers.clear();
 
 		if (typeof window !== "undefined") {
-			window.removeEventListener("unload", this._unloadHandler as any);
+			window.removeEventListener(
+				"unload",
+				this._unloadHandler as unknown as EventListener,
+			);
 			window.clearInterval(this.awareness._checkInterval);
 		} else if (typeof process !== "undefined") {
-			process.off("exit", this._unloadHandler as any);
+			process.off("exit", this._unloadHandler as unknown as () => void);
 		}
 		this.awareness.off("update", this._awarenessUpdateHandler);
 		this.doc.off("update", this._updateHandler);
@@ -548,7 +557,10 @@ export class YSweetProvider extends Observable<string> {
 			return;
 		}
 		if (!this.bcconnected) {
-			bc.subscribe(this.bcChannel, this._bcSubscriber as any);
+			bc.subscribe(
+				this.bcChannel,
+				this._bcSubscriber as unknown as (...args: unknown[]) => void,
+			);
 			this.bcconnected = true;
 		}
 		// send sync step1 to bc
@@ -600,7 +612,10 @@ export class YSweetProvider extends Observable<string> {
 		);
 		broadcastMessage(this, encoding.toUint8Array(encoder));
 		if (this.bcconnected) {
-			bc.unsubscribe(this.bcChannel, this._bcSubscriber as any);
+			bc.unsubscribe(
+				this.bcChannel,
+				this._bcSubscriber as unknown as (...args: unknown[]) => void,
+			);
 			this.bcconnected = false;
 		}
 	}

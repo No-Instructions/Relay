@@ -1023,12 +1023,19 @@ export class LiveViewManager {
 	}
 
 	findCanvas(cmEditor: EditorView): RelayCanvasView | undefined {
-		const state = (cmEditor.state as any).values.find((state: any) => {
+		const state = (
+			cmEditor.state as unknown as {
+				values: { node?: { canvas: ObsidianCanvas } }[];
+			}
+		).values.find((state: { node?: { canvas: ObsidianCanvas } }) => {
 			if (state && state.node) return state.node;
 		});
 		if (!state) return;
 		return this.views.filter(isRelayCanvasView).find((view) => {
-			return view.view.canvas === state.node.canvas;
+			return (
+				view.view.canvas ===
+				(state.node as { canvas: ObsidianCanvas }).canvas
+			);
 		});
 	}
 
@@ -1051,7 +1058,8 @@ export class LiveViewManager {
 
 		const viewHistory = views.sort(
 			(a, b) =>
-				(b.view.leaf as any).activeTime - (a.view.leaf as any).activeTime,
+				(b.view.leaf as unknown as { activeTime: number }).activeTime -
+				(a.view.leaf as unknown as { activeTime: number }).activeTime,
 		);
 		const connectedDocuments = new Set<Document>();
 		for (const view of viewHistory) {

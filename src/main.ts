@@ -308,7 +308,7 @@ export default class Live extends Plugin {
 		}
 	}
 	async onload() {
-		this.appId = (this.app as any).appId;
+		this.appId = (this.app as unknown as { appId: string }).appId;
 		const start = moment.now();
 		RelayInstances.set(this, "plugin");
 		this.timeProvider = new DefaultTimeProvider();
@@ -777,7 +777,18 @@ export default class Live extends Plugin {
 				return;
 			}
 
-			const webviewer = (this.app as any).internalPlugins?.plugins?.webviewer;
+			const webviewer = (
+				this.app as unknown as {
+					internalPlugins?: {
+						plugins?: {
+							webviewer?: {
+								instance?: { options?: Record<string, unknown> };
+								enabled?: boolean;
+							};
+						};
+					};
+				}
+			).internalPlugins?.plugins?.webviewer;
 			if (!webviewer?.instance?.options || !webviewer.enabled) {
 				this.warn("Webviewer plugin not found or not initialized");
 				return;
@@ -1045,7 +1056,11 @@ export default class Live extends Plugin {
 									: file.name;
 							const normalizedFileName = normalizePath(file.name);
 							const destinationFiles = (
-								plugin.app.metadataCache as any
+								plugin.app.metadataCache as unknown as {
+					uniqueFileLookup: {
+						get(key: string): TFile[] | undefined;
+					};
+				}
 							).uniqueFileLookup.get(normalizedFileName.toLowerCase());
 
 							// If there are no conflicts (unique file), return the fileName
@@ -1112,7 +1127,7 @@ export default class Live extends Plugin {
 	openReleaseManager(version?: string) {
 		const modal = new ReleaseManager(this.app, this, version);
 
-		const app = this.app as any;
+		const app = this.app as unknown as { setting: { close(): void } };
 		const setting = app.setting;
 		setting.close();
 
@@ -1136,7 +1151,15 @@ export default class Live extends Plugin {
 			// @ts-ignore
 			super.removeCommand(command);
 		} else {
-			const appAny = this.app as any;
+			const appAny = this.app as unknown as {
+				commands: {
+					commands: Record<string, unknown>;
+					editorCommands: Record<string, unknown>;
+				};
+				hotkeyManager: {
+					removeDefaultHotkeys(id: string): boolean;
+				};
+			};
 			const appCommands = appAny.commands;
 			const qualifiedCommand = `system3-relay:${command}`;
 			if (

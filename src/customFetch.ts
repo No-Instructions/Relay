@@ -14,11 +14,15 @@ if (globalThis.Response === undefined || globalThis.Headers === undefined) {
 		console.warn(
 			"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
 		);
-		if ((globalThis as any).blinkfetch) {
-			globalThis.fetch = (globalThis as any).blinkfetch;
+		if ((globalThis as unknown as { blinkfetch?: typeof fetch }).blinkfetch) {
+			globalThis.fetch = (
+			globalThis as unknown as { blinkfetch: typeof fetch }
+		).blinkfetch;
 			const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
 			for (const key of keys) {
-				(globalThis as any)[key] = (globalThis as any)[`blink${key}`];
+				(globalThis as unknown as Record<string, unknown>)[key] = (
+					globalThis as unknown as Record<string, unknown>
+				)[`blink${key}`];
 			}
 		}
 	} catch (e) {
