@@ -21,14 +21,12 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	return clientToken.expiryTime || 0;
 }
 
-function withLoginManager(
+function withLoginManager<Args extends unknown[]>(
 	loginManager: LoginManager,
 	deviceId: string,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Preserve the refresh callback's heterogeneous argument list.
-	fn: (...args: any[]) => void,
+	fn: (loginManager: LoginManager, deviceId: string, ...args: Args) => void,
 ) {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Preserve the callback's heterogeneous argument list.
-	return (...args: any[]) => fn(loginManager, deviceId, ...args);
+	return (...args: Args) => fn(loginManager, deviceId, ...args);
 }
 
 async function refresh(

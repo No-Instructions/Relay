@@ -108,6 +108,11 @@ import {
 	type PluginRegistrationSettings,
 } from "./TextViewRegistry";
 
+type SettingsController = {
+	open(): void | Promise<void>;
+	openTabById(id: string): void | Promise<void>;
+};
+
 interface DebugSettings {
 	debugging: boolean;
 }
@@ -1217,8 +1222,9 @@ export default class Live extends Plugin {
 	}
 
 	async openSettings(path: string = "/") {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Obsidian's settings controller is not part of the public application type.
-		const setting = (this.app as any).setting;
+		const setting = (
+			this.app as typeof this.app & { setting: SettingsController }
+		).setting;
 		await setting.open();
 		await setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);

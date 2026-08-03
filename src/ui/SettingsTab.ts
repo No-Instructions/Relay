@@ -22,8 +22,11 @@ export class LiveSettingsTab extends PluginSettingTab {
 			props: {
 				plugin: this.plugin,
 				close: () => {
-					// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Obsidian's settings controller is absent from the public tab type.
-					(this as any).setting.close();
+					(
+						this as Partial<{
+							setting: { close(): void };
+						}>
+					).setting!.close();
 				},
 			},
 		});
