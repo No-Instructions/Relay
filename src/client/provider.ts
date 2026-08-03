@@ -4,7 +4,7 @@
  * https://raw.githubusercontent.com/yjs/y-websocket/master/src/y-websocket.js
  */
 
-import * as Y from "yjs"; // eslint-disable-line
+import * as Y from "yjs";
 import * as bc from "lib0/broadcastchannel";
 import * as time from "lib0/time";
 import * as encoding from "lib0/encoding";

@@ -24,10 +24,10 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 function withLoginManager(
 	loginManager: LoginManager,
 	deviceId: string,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Preserve the refresh callback's heterogeneous argument list.
 	fn: (...args: any[]) => void,
 ) {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Preserve the callback's heterogeneous argument list.
 	return (...args: any[]) => fn(loginManager, deviceId, ...args);
 }
 
@@ -170,7 +170,6 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 					throw this.getDestroyedError();
 				}
 				const expiryTime = this.getJwtExpiry(newToken);
-				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
 				const existing = this.tokenMap.get(key)!;
 				this.tokenMap.set(fileHash, {
 					...existing,

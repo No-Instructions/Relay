@@ -213,7 +213,7 @@ if (globalThis.EventSource === undefined) {
 		);
 	} else {
 		console.warn("[Relay] Polyfilling EventSource API");
-		// @ts-ignore
+		// eslint-disable-next-line @typescript-eslint/no-require-imports -- Electron loads this fallback only when EventSource is unavailable.
 		globalThis.EventSource = require("eventsource");
 	}
 }

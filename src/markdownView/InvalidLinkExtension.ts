@@ -46,7 +46,6 @@ export class InvalidLinkPluginValue {
 	app?: App;
 	metadata: Map<number, CacheLink>;
 	editor: EditorView;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document?: Document;
 	decorationAnchors: number[];
 	decorations: DecorationSet;
