@@ -360,6 +360,16 @@ export class SyncStore extends Observable<SyncStore> {
 	 */
 	onMapDelta: ((delta: FolderMapDelta, origin: unknown) => void) | null =
 		null;
+	private readonly mapDeltaSubscribers = new Set<
+		(delta: FolderMapDelta, origin: unknown) => void
+	>();
+
+	subscribeMapDelta(
+		listener: (delta: FolderMapDelta, origin: unknown) => void,
+	): () => void {
+		this.mapDeltaSubscribers.add(listener);
+		return () => this.mapDeltaSubscribers.delete(listener);
+	}
 
 	/**
 	 * Observer for committed claims landing on paths that still carry a
@@ -466,11 +476,12 @@ export class SyncStore extends Observable<SyncStore> {
 			if (origin == this) return;
 
 			this.processFolderOperation(event);
-			// Membership engine feed: computed only when a consumer is wired
-			// (enableFolderHSM); flag-off, no delta is ever extracted and the
-			// legacy path above is the only logic that runs.
-			if (this.onMapDelta) {
-				this.onMapDelta(extractMapDelta(event, this.meta), origin);
+			// Compute a delta only when at least one consumer is installed;
+			// otherwise the legacy path above is the only logic that runs.
+			if (this.onMapDelta || this.mapDeltaSubscribers.size > 0) {
+				const delta = extractMapDelta(event, this.meta);
+				this.onMapDelta?.(delta, origin);
+				this.mapDeltaSubscribers.forEach((listener) => listener(delta, origin));
 			}
 			// The size gate reads the in-memory hold index, so the default
 			// path (no pending upload — the steady state) pays nothing per

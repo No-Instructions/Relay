@@ -521,6 +521,14 @@ export class SyncFile
 
 	public async push(force = false) {
 		this.log("push");
+		// Explicit user uploads retain their current force semantics.
+		if (
+			!force &&
+			this.sharedFolder.shouldDeferPendingPublication(this.path)
+		) {
+			this.log("deferring pending publication until folder convergence");
+			return;
+		}
 		if (this.sharedFolder.skipStorageBlockedUpload(this.path)) {
 			return;
 		}

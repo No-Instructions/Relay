@@ -180,6 +180,17 @@ interface Noop extends Operation {
 
 type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 
+type PendingPublicationDecision = "noop" | "delete" | "rebind" | "publish";
+
+interface PendingPublicationRun {
+	decision: PendingPublicationDecision;
+	pendingGuid: string;
+	rerun: boolean;
+	cancelled: boolean;
+	supersedingMeta?: Meta;
+	promise: Promise<void>;
+}
+
 // Empty downloads for a guid become terminal after this many attempts; the
 // server pushes a document.updated event (and advertises the guid in the
 // subdoc index) once content exists, so polling past this is wasted work.
@@ -420,6 +431,27 @@ export class SharedFolder extends HasProvider {
 	private _membershipSettled = false;
 	private _membershipSettledPromise: Promise<void> | undefined;
 	private _resolveMembershipSettled: (() => void) | undefined;
+	/** Default-off session gate: local discovery may mint identities, but it
+	 * cannot publish them until the provider's first completed handshake. */
+	private readonly _syncConvergenceLatchEnabled: boolean;
+	private _firstSyncConverged = false;
+	private _firstSyncConvergedPromise: Promise<void> | undefined;
+	private _resolveFirstSyncConverged: (() => void) | undefined;
+	/** Paths removed by provider-applied membership updates before convergence. */
+	private _preConvergenceRemoteDeletes: Set<string> | undefined;
+	/** Deleted paths that had a local publication hold when convergence opened. */
+	private _convergenceRemoteDeletedHolds: Map<string, string> | undefined;
+	/** One parked latch re-entry per held path. */
+	private _convergenceParkedUploads: Map<string, Promise<void>> | undefined;
+	/** One post-convergence publication decision executor per held path. */
+	private _convergencePublicationRuns:
+		| Map<string, PendingPublicationRun>
+		| undefined;
+	/** Document enrollment is single-flight and remains complete per live doc. */
+	private _pendingDocumentEnrollments:
+		| WeakMap<Document, Promise<void>>
+		| undefined;
+	private _convergenceDeletionInFlight: Set<string> | undefined;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
@@ -484,6 +516,22 @@ export class SharedFolder extends HasProvider {
 		}
 
 		this.authoritative = authoritative;
+		// An authoritative folder is its own membership authority and may have no
+		// provider to handshake with. Later boots are non-authoritative, so they
+		// still wait for the server view before publishing local discoveries.
+		this._syncConvergenceLatchEnabled =
+			flags().enableSyncConvergenceLatch && !authoritative;
+		if (this._syncConvergenceLatchEnabled) {
+			this._preConvergenceRemoteDeletes = new Set();
+			this._convergenceRemoteDeletedHolds = new Map();
+			this._convergenceParkedUploads = new Map();
+			this._convergencePublicationRuns = new Map();
+			this._pendingDocumentEnrollments = new WeakMap();
+			this._convergenceDeletionInFlight = new Set();
+			this._firstSyncConvergedPromise = new Promise<void>((resolve) => {
+				this._resolveFirstSyncConverged = resolve;
+			});
+		}
 
 		this.syncSettingsManager = this._settings.getChild<
 			Record<keyof SyncFlags, boolean>,
@@ -555,6 +603,19 @@ export class SharedFolder extends HasProvider {
 					this.handleCompetingClaim(path, meta);
 				});
 			};
+		}
+		if (this._syncConvergenceLatchEnabled) {
+			this.unsubscribes.push(
+				this.syncStore.subscribeMapDelta((delta, origin) => {
+					if (
+						origin === this ||
+						origin === this._persistence ||
+						origin === FOLDER_LOCAL_DELETE_ORIGIN
+					)
+						return;
+					this.recordPreConvergenceRemoteDeletes(delta);
+				}),
+			);
 		}
 
 		this.unsubscribes.push(
@@ -1188,6 +1249,12 @@ export class SharedFolder extends HasProvider {
 		if (!localIdentity) return;
 		const committedMeta = this.syncStore.getCommittedMeta(path);
 		if (committedMeta?.id !== guid) return;
+		if (this._syncConvergenceLatchEnabled && this.pendingUpload.has(path)) {
+			this.applyPendingUpload(path).promise.catch((e) => {
+				this.warn(`[${path}] coordinated remap retry failed`, e);
+			});
+			return;
+		}
 
 		if (
 			(!localIdentity.file || isDocument(localIdentity.file)) &&
@@ -1247,6 +1314,12 @@ export class SharedFolder extends HasProvider {
 		const pendingGuid = this.syncStore.pendingUpload.get(path);
 		if (!pendingGuid || pendingGuid === committedMeta.id) return;
 		this.backgroundSync.cancelDocumentWork(pendingGuid);
+		if (this._syncConvergenceLatchEnabled) {
+			this.applyPendingUpload(path).promise.catch((e) => {
+				this.warn(`[${path}] coordinated remap from claim failed`, e);
+			});
+			return;
+		}
 		if (this._pendingRemaps.has(path)) return;
 		const file = this.files.get(pendingGuid);
 		if ((!file || isDocument(file)) && isDocumentMeta(committedMeta)) {
@@ -1423,6 +1496,9 @@ export class SharedFolder extends HasProvider {
 		// is held, not dropped — the effect is not re-emitted.
 		if (!this._membershipSettled) {
 			await this.whenMembershipSettled();
+		}
+		if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
+			await this.whenFirstSyncConverged();
 		}
 		if (this.destroyed) return;
 		const file = this.files.get(guid);
@@ -1964,6 +2040,9 @@ export class SharedFolder extends HasProvider {
 			if (!this._membershipSettled) {
 				await this.whenMembershipSettled();
 			}
+			if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
+				await this.whenFirstSyncConverged();
+			}
 			if (this.destroyed) return;
 			let staged = 0;
 			this.files.forEach((doc) => {
@@ -2270,6 +2349,7 @@ export class SharedFolder extends HasProvider {
 		// before the machine's hydration gate so the ladder sees a
 		// converged map.
 		this.folderBridge?.reconcile();
+		this.markFirstSyncConverged();
 		// The FolderHSM hydration gate rides the same handshake as the
 		// readiness latch; the machine itself dedups repeat syncs
 		// (classification re-runs only after a disconnect or a blind
@@ -2285,7 +2365,10 @@ export class SharedFolder extends HasProvider {
 		// sweep triggered only by connect misses a self-heal. Re-drive every
 		// document still holding an unreconciled fork toward reconciliation.
 		this.recoverForkedIdleDocuments();
-		if (this.authoritative || this._persistence.hasServerSync) {
+		if (
+			(!this._syncConvergenceLatchEnabled && this.authoritative) ||
+			this._persistence.hasServerSync
+		) {
 			return;
 		}
 		trackPromise(
@@ -3340,6 +3423,42 @@ export class SharedFolder extends HasProvider {
 		this._resolveMembershipSettled?.();
 	}
 
+	private whenFirstSyncConverged(): Promise<void> {
+		return this._firstSyncConvergedPromise ?? Promise.resolve();
+	}
+
+	public shouldDeferPendingPublication(path: string): boolean {
+		return (
+			this._syncConvergenceLatchEnabled &&
+			!this._firstSyncConverged &&
+			this.pendingUpload.has(path)
+		);
+	}
+
+	private shouldRoutePendingPublication(path: string): boolean {
+		return this._syncConvergenceLatchEnabled && this.pendingUpload.has(path);
+	}
+
+	private markFirstSyncConverged(): void {
+		if (!this._syncConvergenceLatchEnabled || this._firstSyncConverged) return;
+		this._firstSyncConverged = true;
+		for (const path of this._preConvergenceRemoteDeletes ?? []) {
+			const guid = this.pendingUpload.get(path);
+			if (guid) {
+				this._convergenceRemoteDeletedHolds?.set(path, guid);
+			}
+		}
+		this._preConvergenceRemoteDeletes?.clear();
+		this._resolveFirstSyncConverged?.();
+	}
+
+	private recordPreConvergenceRemoteDeletes(delta: FolderMapDelta): void {
+		if (this._firstSyncConverged || !this._preConvergenceRemoteDeletes) return;
+		for (const entry of delta.deletes) {
+			this._preConvergenceRemoteDeletes.add(entry.path);
+		}
+	}
+
 	/**
 	 * Route a vault create event into the machine with its origin decided
 	 * by the discriminator: interactive iff the bootstrap scan completed and the
@@ -4012,10 +4131,66 @@ export class SharedFolder extends HasProvider {
 	 * pendingUpload's guid, re-enqueues sync, and calls markUploaded on success
 	 * so the local meta gets written and pendingUpload is cleared.
 	 */
-	private applyPendingUpload(path: string): OperationType {
+	private applyPendingUpload(
+		path: string,
+		coordinated = false,
+		run?: PendingPublicationRun,
+	): OperationType {
+		if (this._syncConvergenceLatchEnabled && this.destroyed) {
+			return { op: "noop", path, promise: Promise.resolve() };
+		}
 		const pendingGuid = this.syncStore.pendingUpload.get(path);
 		if (!pendingGuid) {
+			if (!this._convergenceDeletionInFlight?.has(path)) {
+				this._convergenceRemoteDeletedHolds?.delete(path);
+			}
 			return { op: "noop", path, promise: Promise.resolve() };
+		}
+
+		if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
+			let parked = this._convergenceParkedUploads?.get(path);
+			if (!parked) {
+				parked = this.whenFirstSyncConverged()
+					.then(async () => {
+						if (this.destroyed) return;
+						await this.applyPendingUpload(path).promise;
+					})
+					.finally(() => {
+						this._convergenceParkedUploads?.delete(path);
+					});
+				this._convergenceParkedUploads?.set(path, parked);
+			}
+			return {
+				op: "update",
+				path,
+				promise: parked,
+			};
+		}
+		if (this._syncConvergenceLatchEnabled && !coordinated) {
+			return this.coordinatePendingPublication(path, pendingGuid);
+		}
+
+		const committedMeta =
+			run?.supersedingMeta ?? this.syncStore.getCommittedMeta(path);
+		if (run?.supersedingMeta) run.supersedingMeta = undefined;
+		const deletedHoldGuid = this._convergenceRemoteDeletedHolds?.get(path);
+		if (deletedHoldGuid !== undefined && deletedHoldGuid !== pendingGuid) {
+			this._convergenceRemoteDeletedHolds?.delete(path);
+		}
+		if (this._syncConvergenceLatchEnabled && committedMeta) {
+			this._convergenceRemoteDeletedHolds?.delete(path);
+		}
+		if (
+			this._syncConvergenceLatchEnabled &&
+			!committedMeta &&
+			deletedHoldGuid === pendingGuid
+		) {
+			if (run) run.decision = "delete";
+			return {
+				op: "delete",
+				path,
+				promise: this.discardRemotelyDeletedHold(path, pendingGuid),
+			};
 		}
 
 		// The membership row is the only per-file authority: a hold whose
@@ -4023,14 +4198,17 @@ export class SharedFolder extends HasProvider {
 		// through the sweep's retry path — the preserved hold is identity
 		// safekeeping, not publication intent.
 		if (this.folderHSM && !this.folderHSM.holdIsPublishable(path)) {
+			if (run) run.decision = "noop";
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
 		// Server-authoritative rule: if committed filemeta already points at a
 		// different GUID for this path, do not publish/overwrite local pending
 		// metadata. Adopt the committed GUID instead.
-		const committedMeta = this.syncStore.getCommittedMeta(path);
 		if (committedMeta && committedMeta.id !== pendingGuid) {
+			if (run) run.decision = "rebind";
+			this._uploadDispatches.delete(path);
+			this.backgroundSync.cancelDocumentWork(pendingGuid);
 			this.warn(
 				"[applyPendingUpload] committed GUID differs from pending upload",
 				{
@@ -4066,21 +4244,168 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (this.skipStorageBlockedUpload(path)) {
+			if (run) run.decision = "noop";
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
 		const file = this.files.get(pendingGuid);
 		if (!file || !(isDocument(file) || isCanvas(file) || isSyncFile(file))) {
+			if (run) run.decision = "noop";
 			return { op: "noop", path, promise: Promise.resolve() };
 		}
+		if (run) run.decision = "publish";
 		return {
 			op: "update",
 			path,
 			promise: (async () => {
+				if (this._syncConvergenceLatchEnabled) {
+					await this.preparePendingFileForPublication(file);
+					if (this.destroyed || run?.cancelled) return;
+					const latestMeta = this.syncStore.getCommittedMeta(path);
+					if (latestMeta && latestMeta.id !== pendingGuid) {
+						if (run) {
+							run.cancelled = true;
+							run.rerun = true;
+							run.supersedingMeta = latestMeta;
+						}
+						this.backgroundSync.cancelDocumentWork(pendingGuid);
+						return;
+					}
+				}
 				const outcome = await this.backgroundSync.enqueueUpload(file);
+				if (run?.cancelled) {
+					this.backgroundSync.cancelDocumentWork(pendingGuid);
+					return;
+				}
 				await this.markUploaded(file, outcome);
 			})(),
 		};
+	}
+
+	private coordinatePendingPublication(
+		path: string,
+		pendingGuid: string,
+	): OperationType {
+		const active = this._convergencePublicationRuns?.get(path);
+		if (active) {
+			active.rerun = true;
+			const committedMeta = this.syncStore.getCommittedMeta(path);
+			if (
+				active.decision === "publish" &&
+				committedMeta &&
+				committedMeta.id !== active.pendingGuid
+			) {
+				active.cancelled = true;
+				active.supersedingMeta = committedMeta;
+				this._uploadDispatches.delete(path);
+				this.backgroundSync.cancelDocumentWork(active.pendingGuid);
+			}
+			return { op: "update", path, promise: active.promise };
+		}
+
+		const run: PendingPublicationRun = {
+			decision: "noop",
+			pendingGuid,
+			rerun: false,
+			cancelled: false,
+			supersedingMeta: undefined,
+			promise: Promise.resolve(),
+		};
+		this._convergencePublicationRuns?.set(path, run);
+		run.promise = this.runPendingPublication(path, run)
+			.finally(() => {
+				if (this._convergencePublicationRuns?.get(path) === run) {
+					this._convergencePublicationRuns.delete(path);
+				}
+			});
+		return { op: "update", path, promise: run.promise };
+	}
+
+	private async runPendingPublication(
+		path: string,
+		run: PendingPublicationRun,
+	): Promise<void> {
+		do {
+			run.rerun = false;
+			run.cancelled = false;
+			run.pendingGuid = this.pendingUpload.get(path) ?? run.pendingGuid;
+			const operation = this.applyPendingUpload(path, true, run);
+			await operation.promise;
+		} while (
+			run.rerun &&
+			!this.destroyed &&
+			this.pendingUpload.has(path)
+		);
+	}
+
+	private async preparePendingFileForPublication(file: IFile): Promise<void> {
+		if (isDocument(file)) {
+			await this.initializeDocumentContentOnce(file);
+			return;
+		}
+		if (isCanvas(file) && (await file.getOrigin()) === undefined) {
+			const contents = await this.read(file);
+			await file.enrollLocal(contents);
+			file.markOrigin("local");
+		}
+	}
+
+	private async initializeDocumentContentOnce(file: Document): Promise<void> {
+		const hsm = file.hsm;
+		if (!hsm) return;
+		let enrollment = this._pendingDocumentEnrollments?.get(file);
+		if (!enrollment) {
+			const newEnrollment = (async () => {
+				await hsm.initializeWithContent();
+			})().catch((error) => {
+				this._pendingDocumentEnrollments?.delete(file);
+				throw error;
+			});
+			this._pendingDocumentEnrollments?.set(file, newEnrollment);
+			enrollment = newEnrollment;
+		}
+		await enrollment;
+	}
+
+	private async discardRemotelyDeletedHold(
+		path: string,
+		pendingGuid: string,
+	): Promise<void> {
+		const file = this.files.get(pendingGuid);
+		this._convergenceDeletionInFlight?.add(path);
+		this.pendingUpload.delete(path);
+		this._uploadDispatches.delete(path);
+		this.backgroundSync.cancelDocumentWork(pendingGuid);
+		if (file) {
+			this.files.delete(pendingGuid);
+			this.fset.delete(file);
+		}
+		const tfile = this.vault.getAbstractFileByPath(this.getPath(path));
+		try {
+			if (tfile) {
+				this.markPendingDelete(path);
+				await this.trashFile(tfile);
+			}
+		} catch (error) {
+			this.pendingUpload.set(path, pendingGuid);
+			if (file) {
+				this.files.set(pendingGuid, file);
+				this.fset.add(file, true);
+			}
+			this.warn("failed to adopt remote deletion", path, error);
+			return;
+		} finally {
+			this._convergenceDeletionInFlight?.delete(path);
+			if (tfile) {
+				this.clearPendingDelete(path);
+			}
+		}
+		if (file) {
+			file.cleanup();
+			file.destroy();
+		}
+		this._convergenceRemoteDeletedHolds?.delete(path);
+		this.fset.update();
 	}
 
 	syncFileTree(): Promise<void> {
@@ -4513,6 +4838,13 @@ export class SharedFolder extends HasProvider {
 				// committed identity instead of leaving pendingUpload to shadow
 				// every later path lookup.
 				if (
+					this._syncConvergenceLatchEnabled &&
+					this.pendingUpload.has(file.path)
+				) {
+					this.applyPendingUpload(file.path).promise.catch((e) => {
+						this.warn(`[${file.path}] coordinated remap after upload failed`, e);
+					});
+				} else if (
 					isDocument(file) &&
 					isDocumentMeta(committedMeta) &&
 					!this._pendingRemaps.has(file.path)
@@ -4782,6 +5114,10 @@ export class SharedFolder extends HasProvider {
 			]);
 			if (this.destroyed) return;
 			if (!awaitingUpdates && origin === undefined) {
+				if (this.shouldRoutePendingPublication(vpath)) {
+					await this.applyPendingUpload(vpath).promise;
+					return;
+				}
 				// The entry row is the per-file authority: a refused row's
 				// content never ships (see uploadDoc).
 				if (this.folderHSM && !this.folderHSM.holdIsPublishable(vpath)) {
@@ -4852,8 +5188,12 @@ export class SharedFolder extends HasProvider {
 					(!this.folderHSM ||
 						this.folderHSM.holdIsPublishable(canvas.path))
 				) {
-					const outcome = await this.backgroundSync.enqueueUpload(canvas);
-					await this.markUploaded(canvas, outcome);
+					if (this.shouldRoutePendingPublication(canvas.path)) {
+						await this.applyPendingUpload(canvas.path).promise;
+					} else {
+						const outcome = await this.backgroundSync.enqueueUpload(canvas);
+						await this.markUploaded(canvas, outcome);
+					}
 				}
 			})
 			.catch((error) => {
@@ -5244,12 +5584,16 @@ export class SharedFolder extends HasProvider {
 				if (!this._membershipSettled) {
 					await this.whenMembershipSettled();
 				}
+				if (this.destroyed) return;
+				if (this.shouldRoutePendingPublication(vpath)) {
+					await this.applyPendingUpload(vpath).promise;
+					return;
+				}
 				// Teardown is what releases a dispatch parked on that latch —
 				// destroy() settles membership so awaiters resume rather than
 				// pend forever — so resuming here is the ordinary consequence
 				// of teardown rather than a race, and everything below reads a
 				// folder that no longer has the collaborators it needs.
-				if (this.destroyed) return;
 				// The entry row is the per-file authority: a preserved hold
 				// on a row the machine parked or condemned is identity
 				// safekeeping, not publication intent — neither content nor
@@ -5262,7 +5606,11 @@ export class SharedFolder extends HasProvider {
 					);
 					return;
 				}
-				await doc.hsm?.initializeWithContent();
+				if (this._syncConvergenceLatchEnabled) {
+					await this.initializeDocumentContentOnce(doc);
+				} else {
+					await doc.hsm?.initializeWithContent();
+				}
 				// The second window in this dispatch: the queue reached for
 				// below is one teardown releases, so resuming here after it
 				// ran throws out of a detached call with nothing to catch it.
@@ -5301,8 +5649,12 @@ export class SharedFolder extends HasProvider {
 					// first upload here (see uploadDoc).
 					(!this.folderHSM || this.folderHSM.holdIsPublishable(doc.path))
 				) {
-					const outcome = await this.backgroundSync.enqueueUpload(doc);
-					await this.markUploaded(doc, outcome);
+					if (this.shouldRoutePendingPublication(doc.path)) {
+						await this.applyPendingUpload(doc.path).promise;
+					} else {
+						const outcome = await this.backgroundSync.enqueueUpload(doc);
+						await this.markUploaded(doc, outcome);
+					}
 				}
 			})
 			.catch((error) => {
@@ -5430,8 +5782,12 @@ export class SharedFolder extends HasProvider {
 
 		void (async () => {
 			if (!this.pendingUpload.get(file.path)) return;
-			const outcome = await this.backgroundSync.enqueueUpload(file);
-			await this.markUploaded(file, outcome);
+			if (this.shouldRoutePendingPublication(file.path)) {
+				await this.applyPendingUpload(file.path).promise;
+			} else {
+				const outcome = await this.backgroundSync.enqueueUpload(file);
+				await this.markUploaded(file, outcome);
+			}
 		})();
 
 		this.fset.add(file, update);
@@ -5463,8 +5819,12 @@ export class SharedFolder extends HasProvider {
 			this.log("get syncfile missing meta");
 			void (async () => {
 				if (!this.pendingUpload.get(file.path)) return;
-				const outcome = await this.backgroundSync.enqueueUpload(file);
-				await this.markUploaded(file, outcome);
+				if (this.shouldRoutePendingPublication(file.path)) {
+					await this.applyPendingUpload(file.path).promise;
+				} else {
+					const outcome = await this.backgroundSync.enqueueUpload(file);
+					await this.markUploaded(file, outcome);
+				}
 			})();
 		} else {
 			this.log("get syncfile initial pull", {
@@ -5779,6 +6139,7 @@ export class SharedFolder extends HasProvider {
 		// Release outbound work held for membership settlement: awaiters
 		// re-check `destroyed` and bail instead of pending forever.
 		this.markMembershipSettled();
+		this.markFirstSyncConverged();
 		if (this._downloadSweepTimer !== null) {
 			this.timeProvider.clearTimeout(this._downloadSweepTimer);
 			this._downloadSweepTimer = null;

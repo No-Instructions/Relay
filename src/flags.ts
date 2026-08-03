@@ -14,6 +14,7 @@ export interface FeatureFlags {
 	enableFolderIdbMigration: boolean;
 	enableMetadataHealthNotice: boolean;
 	enableFolderHSM: boolean;
+	enableSyncConvergenceLatch: boolean;
 	enableNoteStateInspector: boolean;
 	enableSavingFlagPolyfill: boolean;
 }
@@ -151,6 +152,13 @@ export const FeatureFlagSchema: {
 		title: "Folder membership state machine (experimental)",
 		description:
 			"Drive shared-folder membership (trash, upload, park decisions) through the FolderHSM engine. Read at folder construction; toggling applies on the next folder (re)load. Replicated state is unchanged either way.",
+	},
+	enableSyncConvergenceLatch: {
+		default: true,
+		category: "danger",
+		title: "Wait for server sync before publishing local files",
+		description:
+			"Defer locally discovered file publication until the folder completes its first server sync. Read at folder construction; toggling applies on the next folder (re)load.",
 	},
 	enableNoteStateInspector: {
 		default: false,
