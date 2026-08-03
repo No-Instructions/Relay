@@ -1,46 +1,10 @@
 "use strict";
 import { requestUrl } from "obsidian";
-import { Platform } from "obsidian";
 import type { RequestUrlParam, RequestUrlResponse } from "obsidian";
 import { curryLog } from "./debug";
 import { flags } from "./flagManager";
 
 declare const GIT_TAG: string;
-
-if (globalThis.Response === undefined || globalThis.Headers === undefined) {
-	// Fetch API is broken for some versions of Electron
-	// https://github.com/electron/electron/pull/42419
-	try {
-		console.warn(
-			"[Relay] Polyfilling Fetch API (Electron Bug: https://github.com/electron/electron/pull/42419)",
-		);
-		if ((globalThis as unknown as { blinkfetch?: typeof fetch }).blinkfetch) {
-			globalThis.fetch = (
-			globalThis as unknown as { blinkfetch: typeof fetch }
-		).blinkfetch;
-			const keys = ["fetch", "Response", "FormData", "Request", "Headers"];
-			for (const key of keys) {
-				(globalThis as unknown as Record<string, unknown>)[key] = (
-					globalThis as unknown as Record<string, unknown>
-				)[`blink${key}`];
-			}
-		}
-	} catch (e) {
-		console.error(e);
-	}
-}
-
-if (globalThis.EventSource === undefined) {
-	if (Platform.isMobile) {
-		console.warn(
-			"[Relay] Polyfilling EventSource API required, but unable to polyfill on Mobile",
-		);
-	} else {
-		console.warn("[Relay] Polyfilling EventSource API");
-		// @ts-ignore
-		globalThis.EventSource = require("eventsource");
-	}
-}
 
 export const customFetch = async (
 	url: RequestInfo | URL,
