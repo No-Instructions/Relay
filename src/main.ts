@@ -1218,8 +1218,7 @@ export default class Live extends Plugin {
 	}
 
 	patchWebviewer(): void {
-		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Patched webviewer callbacks need the plugin instance rather than their own receiver.
-		const plugin = this;
+		const owner = () => this;
 		try {
 			if (this.webviewerPatched) {
 				return;
@@ -1244,6 +1243,7 @@ export default class Live extends Plugin {
 
 			Object.defineProperty(options, "openExternalURLs", {
 				get() {
+					const plugin = owner();
 					const currentEvent = window.event as any;
 					if (currentEvent?.type === "open-url" && currentEvent?.detail?.url) {
 						const url = currentEvent.detail.url;
