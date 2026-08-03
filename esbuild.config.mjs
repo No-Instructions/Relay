@@ -14,9 +14,18 @@ if you want to view the source, please visit the github repository of this plugi
 */
 `;
 
-const gitTag = execSync("git describe --tags --always", {
-	encoding: "utf8",
-}).trim();
+const gitTag = (() => {
+	try {
+		return execSync("git describe --tags --always", {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+		}).trim();
+	} catch {
+		// Building outside a git checkout (e.g. from a source archive):
+		// the manifest carries the release version.
+		return JSON.parse(fs.readFileSync("manifest.json", "utf8")).version;
+	}
+})();
 
 const develop = process.argv[2] === "develop";
 const staging = process.argv[2] === "staging";
@@ -35,7 +44,14 @@ const NotifyPlugin = {
 	name: "on-end",
 	setup(build) {
 		build.onEnd((result) => {
-			if (result.errors.length > 0) execSync(`notify-send "Build Failed"`);
+			if (result.errors.length > 0) {
+				try {
+					execSync(`notify-send "Build Failed"`);
+				} catch {
+					// No desktop notifier available; the build errors
+					// already reported on stderr.
+				}
+			}
 		});
 	},
 };
