@@ -259,7 +259,7 @@ export class SyncStore extends Observable<SyncStore> {
 			});
 		});
 
-		const syncFileObserver = async (event: Y.YMapEvent<Meta>) => {
+		const syncFileObserver = (event: Y.YMapEvent<Meta>) => {
 			if (event.changes.keys.size === 0) {
 				this.log("no changes detected");
 				return;
@@ -271,7 +271,7 @@ export class SyncStore extends Observable<SyncStore> {
 			this.processFolderOperation(event);
 			this.notifyListeners();
 		};
-		const legacyListener = async (event: Y.YMapEvent<string>) => {
+		const legacyListener = (event: Y.YMapEvent<string>) => {
 			this.migrateUp();
 			this.notifyListeners();
 		};

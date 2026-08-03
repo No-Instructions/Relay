@@ -56,10 +56,9 @@ class NetworkStatus {
 	}
 
 	private checkStatusRepeatedly(): number {
-		return this.timeProvider.setInterval(
-			this._checkStatus.bind(this),
-			this.interval,
-		);
+		return this.timeProvider.setInterval(() => {
+			void this._checkStatus();
+		}, this.interval);
 	}
 
 	public checkStatus(): Promise<boolean> {

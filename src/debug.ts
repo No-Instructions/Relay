@@ -66,7 +66,9 @@ export function initializeLogger(
 	if (config) {
 		logConfig = { ...logConfig, ...config };
 	}
-	timeProvider.setInterval(flushLogs, logConfig.batchInterval);
+	timeProvider.setInterval(() => {
+		void flushLogs();
+	}, logConfig.batchInterval);
 }
 
 export async function flushLogs() {

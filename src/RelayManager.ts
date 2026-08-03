@@ -1887,13 +1887,15 @@ export class RelayManager extends HasLogging {
 				expand: "relay,user",
 			}),
 		];
-		promises.forEach(async (promise) => {
-			const result = await promise;
-			for (const record of result) {
-				if (!this.destroyed && this.store) {
-					this.store.ingest(record);
+		promises.forEach((promise) => {
+			void (async () => {
+				const result = await promise;
+				for (const record of result) {
+					if (!this.destroyed && this.store) {
+						this.store.ingest(record);
+					}
 				}
-			}
+			})();
 		});
 	}
 

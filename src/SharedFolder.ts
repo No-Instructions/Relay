@@ -215,8 +215,8 @@ export class SharedFolder extends HasProvider {
 			this.pendingUpload,
 			this.syncSettingsManager,
 		);
-		this.syncStore.on(async () => {
-			await this.syncFileTree(this.syncStore);
+		this.syncStore.on(() => {
+			void this.syncFileTree(this.syncStore);
 		});
 
 		// The newly-enabled-types diff in syncFileTree compares against this
@@ -235,29 +235,31 @@ export class SharedFolder extends HasProvider {
 		);
 
 		this.unsubscribes.push(
-			this.relayManager.storageQuotas.subscribe(async (storageQuotas) => {
-				const quota = storageQuotas.find((quota) => {
-					return quota.id === this._remote?.relay.storageQuotaId;
-				});
-				if (quota === undefined) {
-					return;
-				}
-				if (this.storageQuota !== quota.quota) {
-					if (
-						this.storageQuota !== undefined &&
-						quota.quota !== undefined &&
-						quota.quota > this.storageQuota
-					) {
-						this.debug(
-							"storage quota increase",
-							this.storageQuota,
-							quota.quota,
-						);
-						await this.netSync();
+			this.relayManager.storageQuotas.subscribe((storageQuotas) => {
+				void (async () => {
+					const quota = storageQuotas.find((quota) => {
+						return quota.id === this._remote?.relay.storageQuotaId;
+					});
+					if (quota === undefined) {
+						return;
 					}
-					this.debug("storage quota update", this.storageQuota, quota.quota);
-					this.storageQuota = quota.quota;
-				}
+					if (this.storageQuota !== quota.quota) {
+						if (
+							this.storageQuota !== undefined &&
+							quota.quota !== undefined &&
+							quota.quota > this.storageQuota
+						) {
+							this.debug(
+								"storage quota increase",
+								this.storageQuota,
+								quota.quota,
+							);
+							await this.netSync();
+						}
+						this.debug("storage quota update", this.storageQuota, quota.quota);
+						this.storageQuota = quota.quota;
+					}
+				})();
 			}),
 		);
 

@@ -142,8 +142,8 @@ export class LoggedOutView implements S3View {
 			loginButton.setAttribute("tabindex", "0");
 			
 			// Add click handler
-			loginButton.addEventListener("click", async () => {
-				await this.login();
+			loginButton.addEventListener("click", () => {
+				void this.login();
 			});
 			
 			// Insert after view-header-left
@@ -342,7 +342,7 @@ export class RelayCanvasView implements S3View {
 		}
 
 		return new Promise((resolve) => {
-			return this.canvas
+			void this.canvas
 				.whenReady()
 				.then((doc) => {
 					if (
@@ -493,29 +493,31 @@ export class LiveView<ViewType extends TextFileView>
 			mergeButton.setAttribute("tabindex", "0");
 			
 			// Add click handler
-			mergeButton.addEventListener("click", async () => {
-				const diskBuffer = await this.document.diskBuffer();
-				const stale = await this.document.checkStale();
-				if (!stale) {
-					this.clearMergeButton();
-					return;
-				}
-				this._parent.openDiffView({
-					file1: this.document,
-					file2: diskBuffer,
-					showMergeOption: true,
-					onResolve: async () => {
-						void this.document.clearDiskBuffer();
+			mergeButton.addEventListener("click", () => {
+				void (async () => {
+					const diskBuffer = await this.document.diskBuffer();
+					const stale = await this.document.checkStale();
+					if (!stale) {
 						this.clearMergeButton();
-						// Force view to sync to CRDT state after differ resolution
-						if (
-							this._plugin &&
-							typeof this._plugin.syncViewToCRDT === "function"
-						) {
-							await this._plugin.syncViewToCRDT();
-						}
-					},
-				});
+						return;
+					}
+					this._parent.openDiffView({
+						file1: this.document,
+						file2: diskBuffer,
+						showMergeOption: true,
+						onResolve: async () => {
+							void this.document.clearDiskBuffer();
+							this.clearMergeButton();
+							// Force view to sync to CRDT state after differ resolution
+							if (
+								this._plugin &&
+								typeof this._plugin.syncViewToCRDT === "function"
+							) {
+								await this._plugin.syncViewToCRDT();
+							}
+						},
+					});
+				})();
 			});
 			
 			// Insert after view-header-left
@@ -689,7 +691,7 @@ export class LiveView<ViewType extends TextFileView>
 		}
 
 		return new Promise((resolve) => {
-			return this.document
+			void this.document
 				.whenReady()
 				.then((doc) => {
 					if (
@@ -959,30 +961,32 @@ export class LiveViewManager {
 
 	private async getViews(): Promise<S3View[]> {
 		const views: S3View[] = [];
-		iterateTextFileViews(this.workspace, async (textFileView) => {
-			const viewFilePath = textFileView.file?.path;
-			if (!viewFilePath) {
-				return;
-			}
-			const folder = this.sharedFolders.lookup(viewFilePath);
-			if (folder) {
-				if (!this.loginManager.loggedIn) {
-					const view = new LoggedOutView(this, textFileView, () => {
-						return this.loginManager.openLoginPage();
-					});
-					views.push(view);
-				} else if (folder.ready) {
-					const doc = folder.proxy.getDoc(viewFilePath);
-					const view = new LiveView<typeof textFileView>(
-						this,
-						textFileView,
-						doc,
-					);
-					views.push(view);
-				} else {
-					this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+		iterateTextFileViews(this.workspace, (textFileView) => {
+			void (async () => {
+				const viewFilePath = textFileView.file?.path;
+				if (!viewFilePath) {
+					return;
 				}
-			}
+				const folder = this.sharedFolders.lookup(viewFilePath);
+				if (folder) {
+					if (!this.loginManager.loggedIn) {
+						const view = new LoggedOutView(this, textFileView, () => {
+							return this.loginManager.openLoginPage();
+						});
+						views.push(view);
+					} else if (folder.ready) {
+						const doc = folder.proxy.getDoc(viewFilePath);
+						const view = new LiveView<typeof textFileView>(
+							this,
+							textFileView,
+							doc,
+						);
+						views.push(view);
+					} else {
+						this.log(`Folder not ready, skipping views. folder=${folder.path}`);
+					}
+				}
+			})();
 		});
 
 		iterateCanvasViews(this.workspace, (canvasView) => {

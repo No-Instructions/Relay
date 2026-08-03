@@ -255,7 +255,9 @@ export class UpdateManager extends Observable<UpdateManager> {
 	public start(): void {
 		void this.update();
 		this.updateCheckInterval = this.timeProvider.setInterval(
-			() => this.update(),
+			() => {
+				void this.update();
+			},
 			this.CHECK_INTERVAL,
 		);
 	}
