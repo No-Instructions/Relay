@@ -44,6 +44,39 @@ import { curryLog } from "src/debug";
 
 export const VIEW_TYPE_DIFFERENCES = "system3-differences-view";
 
+type CompatibleWorkspace = {
+	getLeaf?: (newLeaf: boolean) => WorkspaceLeaf;
+	revealLeaf?: (leaf: WorkspaceLeaf) => Promise<void>;
+	setActiveLeaf?: (
+		leaf: WorkspaceLeaf,
+		pushHistory: boolean,
+		focus: boolean,
+	) => void;
+};
+
+function createLeaf(workspace: Workspace): WorkspaceLeaf {
+	const getLeaf = (workspace as CompatibleWorkspace).getLeaf;
+	return typeof getLeaf === "function"
+		? getLeaf.call(workspace, true)
+		: workspace.splitActiveLeaf();
+}
+
+function activateLeaf(workspace: Workspace, leaf: WorkspaceLeaf): void {
+	const compatible = workspace as CompatibleWorkspace;
+	if (typeof compatible.setActiveLeaf === "function") {
+		compatible.setActiveLeaf.call(workspace, leaf, true, true);
+	}
+}
+
+function revealLeaf(workspace: Workspace, leaf: WorkspaceLeaf): void {
+	const reveal = (workspace as CompatibleWorkspace).revealLeaf;
+	if (typeof reveal === "function") {
+		void reveal.call(workspace, leaf);
+	} else {
+		activateLeaf(workspace, leaf);
+	}
+}
+
 export interface ViewState {
 	file1: TFile;
 	file2: TFile;
@@ -66,13 +99,13 @@ export async function openDiffView(
 	workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
 
 	// Opens a new leaf (view) of the type VIEW_TYPE_DIFFERENCES
-	const leaf = workspace.getLeaf(true);
+	const leaf = createLeaf(workspace);
 	void leaf.setViewState({
 		type: VIEW_TYPE_DIFFERENCES,
 		active: true,
 		state,
 	});
-	void workspace.revealLeaf(leaf);
+	revealLeaf(workspace, leaf);
 }
 
 export class DifferencesView extends ItemView {
@@ -130,7 +163,7 @@ export class DifferencesView extends ItemView {
 	private closeAndReturnToOriginal(): void {
 		// Return to original leaf if available and still valid
 		if (this.state?.originalLeaf && this.state.originalLeaf.parent) {
-			this.app.workspace.setActiveLeaf(this.state.originalLeaf, { focus: true });
+			activateLeaf(this.app.workspace, this.state.originalLeaf);
 		}
 		this.leaf.detach();
 	}

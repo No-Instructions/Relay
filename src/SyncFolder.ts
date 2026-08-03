@@ -47,9 +47,22 @@ export class SyncFolder extends HasLogging implements IFile {
 			if (this._parent.isPendingDelete(path)) {
 				this.warn("skipping folder creation for pending delete", path);
 			} else {
-				this.createPromise = this.vault.createFolder(
-					this.sharedFolder.getPath(path),
-				);
+				const folderPath = this.sharedFolder.getPath(path);
+				const createFolder = (
+					this.vault as {
+						createFolder?: (path: string) => Promise<TFolder>;
+					}
+				).createFolder;
+				this.createPromise =
+					typeof createFolder === "function"
+						? createFolder.call(this.vault, folderPath)
+						: this.vault.adapter.mkdir(folderPath).then(() => {
+								const created = this.vault.getAbstractFileByPath(folderPath);
+								if (!(created instanceof TFolder)) {
+									throw new Error(`Unable to create folder: ${folderPath}`);
+								}
+								return created;
+							});
 				this.createPromise
 					.then((tfolder) => {
 						this._tfolder = tfolder;

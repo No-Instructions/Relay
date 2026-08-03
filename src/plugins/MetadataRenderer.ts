@@ -1,4 +1,5 @@
-import { MarkdownView, getFrontMatterInfo, parseYaml } from "obsidian";
+import { MarkdownView, parseYaml } from "obsidian";
+import * as ObsidianApi from "obsidian";
 import { Document } from "../Document";
 import type { ViewRenderer } from "./ViewRenderer";
 import { flags } from "../flagManager";
@@ -42,7 +43,15 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 			}
 
 			// Parse frontmatter from document text
-			const fmi = getFrontMatterInfo(document.text);
+			const getFrontMatterInfo = (
+				ObsidianApi as {
+					getFrontMatterInfo?: (content: string) => { frontmatter: string };
+				}
+			).getFrontMatterInfo;
+			const fmi =
+				typeof getFrontMatterInfo === "function"
+					? getFrontMatterInfo(document.text)
+					: { frontmatter: this.getFrontmatter(document.text) };
 			const fm = fmi.frontmatter;
 			
 			if (fm) {
@@ -57,6 +66,11 @@ export class MetadataRenderer extends HasLogging implements ViewRenderer {
 		} catch (error) {
 			this.error("Error rendering metadata:", error);
 		}
+	}
+
+	private getFrontmatter(content: string): string {
+		const match = content.match(/^\uFEFF?---[\t ]*\r?\n([\s\S]*?)\r?\n---[\t ]*(?:\r?\n|$)/);
+		return match?.[1] ?? "";
 	}
 
 	destroy(): void {

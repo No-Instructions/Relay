@@ -1187,8 +1187,6 @@ export default class Live extends Plugin {
 
 		this.folderNavDecorations?.destroy();
 
-		this.app.workspace.detachLeavesOfType(VIEW_TYPE_DIFFERENCES);
-
 		// Explicitly destroy the update manager
 		if (this.updateManager) {
 			this.updateManager.destroy();

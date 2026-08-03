@@ -611,7 +611,20 @@ export class SharedFolder extends HasProvider {
 	}
 
 	trashFile(file: TAbstractFile): Promise<void> {
-		return this.fileManager.trashFile(file);
+		const trashFile = (
+			this.fileManager as {
+				trashFile?: (target: TAbstractFile) => Promise<void>;
+			}
+		).trashFile;
+		if (typeof trashFile === "function") {
+			return trashFile.call(this.fileManager, file);
+		}
+		const trash = (
+			this.vault as {
+				trash: (target: TAbstractFile, system: boolean) => Promise<void>;
+			}
+		).trash;
+		return trash.call(this.vault, file, false);
 	}
 
 	async _handleServerCreate(
@@ -1876,7 +1889,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	private _load(folders: SharedFolderSettings[]) {
 		let updated = false;
 		folders.forEach((folder: SharedFolderSettings) => {
-			const tFolder = this.vault.getFolderByPath(folder.path);
+			const abstractFile = this.vault.getAbstractFileByPath(folder.path);
+			const tFolder = abstractFile instanceof TFolder ? abstractFile : null;
 			if (!tFolder) {
 				this.warn(`Invalid settings, ${folder.path} does not exist`);
 				return;

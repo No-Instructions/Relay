@@ -201,14 +201,26 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 			};
 
 			if (!logConfig.disableConsole) {
-				if (logConfig.allowStackTraces || level === 'debug' || level === 'log') {
-					console[level](formatLogEntry(logEntry));
+				if (level === "debug" || level === "log") {
+					console.debug(formatLogEntry(logEntry));
 				} else {
 					const styles = {
 						warn: 'color: #ff8c00; background: rgba(255, 140, 0, 0.1); font-weight: normal; padding: 1px 4px; border-radius: 2px;',
 						error: 'color: #ff5555; background: rgba(255, 85, 85, 0.1); font-weight: normal; padding: 1px 4px; border-radius: 2px;'
 					};
-					console.log(`%c${formatLogEntry(logEntry)}`, styles[level]);
+					if (level === "warn") {
+						if (logConfig.allowStackTraces) {
+							console.warn(formatLogEntry(logEntry));
+						} else {
+							console.warn(`%c${formatLogEntry(logEntry)}`, styles.warn);
+						}
+					} else {
+						if (logConfig.allowStackTraces) {
+							console.error(formatLogEntry(logEntry));
+						} else {
+							console.error(`%c${formatLogEntry(logEntry)}`, styles.error);
+						}
+					}
 				}
 			}
 
