@@ -402,8 +402,12 @@ export class YSweetProvider extends Observable<string> {
 				added,
 				updated,
 				removed,
-			}: { added: Array<any>; updated: Array<any>; removed: Array<any> },
-			_origin: any,
+			}: {
+				added: Array<number>;
+				updated: Array<number>;
+				removed: Array<number>;
+			},
+			_origin: unknown,
 		) => {
 			const changedClients = added.concat(updated).concat(removed);
 			const encoder = encoding.createEncoder();

@@ -233,7 +233,7 @@ export class SyncStore extends Observable<SyncStore> {
 
 	start() {
 		withFlag(flag.enableDeltaLogging, () => {
-			const logObserver = (event: Y.YMapEvent<any>) => {
+			const logObserver = (event: Y.YMapEvent<string> | Y.YMapEvent<Meta>) => {
 				let log = "";
 				log += `Transaction origin: ${event.transaction.origin}${event.transaction.origin?.constructor?.name}\n`;
 				event.changes.keys.forEach((change, key) => {

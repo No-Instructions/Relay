@@ -128,8 +128,12 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 export function createUserFromOAuth(
 	id: string,
 	token: string,
-	authStoreModel: any,
-	rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser | any,
+	authStoreModel: {
+		name?: string;
+		email?: string;
+		picture?: string;
+	},
+	rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser | unknown,
 ): User {
 	const normalizedOAuth = rawUser ? normalizeOAuthUser(rawUser) : null;
 
@@ -382,7 +386,11 @@ export class LoginManager extends Observable<LoginManager> {
 		return createUserFromOAuth(
 			authStore.model?.id,
 			authStore.token,
-			authStore.model,
+			authStore.model as {
+				name?: string;
+				email?: string;
+				picture?: string;
+			},
 			rawUser,
 		);
 	}

@@ -63,9 +63,13 @@ export const customFetch = async (
 	let response: RequestUrlResponse | undefined = undefined;
 	try {
 		response = await requestUrl(requestParams);
-	} catch (error: any) {
+	} catch (error) {
 		// Handle Electron networking errors gracefully to prevent complete networking failure
-		if (error?.message?.includes("net::ERR_FAILED")) {
+		if (
+			(error as { message?: string } | undefined)?.message?.includes(
+				"net::ERR_FAILED",
+			)
+		) {
 			// Return a proper error response instead of throwing
 			return new Response(JSON.stringify({ error: "Network request failed" }), {
 				status: 503,

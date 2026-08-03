@@ -796,7 +796,9 @@ export default class Live extends Plugin {
 
 			Object.defineProperty(options, "openExternalURLs", {
 				get() {
-					const currentEvent = window.event as any;
+					const currentEvent = window.event as unknown as
+						| { type?: string; detail?: { url?: string } }
+						| undefined;
 					if (currentEvent?.type === "open-url" && currentEvent?.detail?.url) {
 						const url = currentEvent.detail.url;
 						for (const pattern of plugin.interceptedUrls) {
@@ -991,11 +993,11 @@ export default class Live extends Plugin {
 		});
 
 		getPatcher().patch(this.app.vault, {
-			process(old: any) {
+			process(old: unknown) {
 				return function (
-					tfile: any,
+					tfile: TFile,
 					fn: (data: string) => string,
-					options: any,
+					options: unknown,
 				) {
 					try {
 						const folder = plugin.sharedFolders.lookup(tfile.path);

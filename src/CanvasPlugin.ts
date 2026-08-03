@@ -1,4 +1,5 @@
 import { getPatcher } from "./Patcher";
+import type { MarkdownView } from "obsidian";
 import { Canvas } from "src/Canvas";
 import type {
 	CanvasEdge,
@@ -97,11 +98,11 @@ export class CanvasPlugin extends HasLogging {
 		}
 	}
 
-	private isEmbedAlreadyTracked(embedView: any): boolean {
+	private isEmbedAlreadyTracked(embedView: unknown): boolean {
 		return this.trackedEmbedViews.has(embedView);
 	}
 
-	private connectEmbedView(embedView: any): void {
+	private connectEmbedView(embedView: MarkdownView): void {
 		if (!embedView.file) {
 			return;
 		}

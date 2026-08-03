@@ -23,11 +23,11 @@ function getJwtExpiryFromClientToken(clientToken: ClientToken): number {
 	return clientToken.expiryTime || 0;
 }
 
-function withLoginManager(
+function withLoginManager<A extends unknown[]>(
 	loginManager: LoginManager,
-	fn: (...args: any[]) => void,
+	fn: (loginManager: LoginManager, ...args: A) => void,
 ) {
-	return (...args: any[]) => fn(loginManager, ...args);
+	return (...args: A) => fn(loginManager, ...args);
 }
 
 async function refresh(

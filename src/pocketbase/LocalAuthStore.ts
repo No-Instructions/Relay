@@ -88,14 +88,14 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * Stores a new data in the browser's local storage
 	 * (or runtime/memory if local storage is undefined).
 	 */
-	private _storageSet(key: string, value: any) {
+	private _storageSet(key: string, value: unknown) {
 		if (typeof window !== "undefined" && window?.localStorage) {
 			// store in local storage
 			let normalizedVal = value;
 			if (typeof value !== "string") {
 				normalizedVal = JSON.stringify(value);
 			}
-			window.localStorage.setItem(key, normalizedVal);
+			window.localStorage.setItem(key, normalizedVal as string);
 		} else {
 			// store in fallback
 			this.storageFallback[key] = value;

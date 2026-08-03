@@ -41,7 +41,11 @@ export class LiveNodePluginValue implements PluginValue {
 	node?: CanvasNodeData;
 
 	private getNode() {
-		const state = (this.editor.state as any).values.find((state: any) => {
+		const state = (
+			this.editor.state as unknown as {
+				values: { node?: CanvasNodeData }[];
+			}
+		).values.find((state: { node?: CanvasNodeData }) => {
 			if (state && state.node) return state.node;
 		});
 		if (!state) return;
@@ -52,18 +56,22 @@ export class LiveNodePluginValue implements PluginValue {
 	private getYText(): YText | undefined {
 		this.view = this.connectionManager?.findCanvas(this.editor);
 
-		const state = (this.editor.state as any).values.find((state: any) => {
+		const state = (
+			this.editor.state as unknown as {
+				values: { node?: CanvasNodeData }[];
+			}
+		).values.find((state: { node?: CanvasNodeData }) => {
 			if (state && state.node) return state.node;
 		});
 		if (!state) {
 			if (this.observer) this._ytext?.unobserve(this.observer);
 			return;
 		}
-		if (state.node.id !== this.node?.id && this.observer) {
+		if ((state.node as CanvasNodeData).id !== this.node?.id && this.observer) {
 			this._ytext?.unobserve(this.observer);
 		}
 		this.node = state.node;
-		return this.view?.canvas.textNode(state.node);
+		return this.view?.canvas.textNode(state.node as CanvasNodeData);
 	}
 
 	constructor(editor: EditorView) {

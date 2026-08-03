@@ -1,4 +1,5 @@
 import type { Extension } from "@codemirror/state";
+import type { ObsidianCanvas } from "src/CanvasView";
 import { StateField, EditorState, Compartment } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import {
@@ -57,12 +58,12 @@ function iterateTextFileViews(
 	if (flags().enableKanbanView) {
 		ALLOWED_TEXT_FILE_VIEWS.push("kanban");
 	}
-	const allLeaves: any[] = [];
+	const allLeaves: unknown[] = [];
 
 	workspace.iterateAllLeaves((leaf) => {
 		allLeaves.push({
 			viewType: leaf.view?.getViewType?.() || "unknown",
-			filePath: (leaf.view as any)?.file?.path || "no-file",
+			filePath: (leaf.view as { file?: { path?: string } })?.file?.path || "no-file",
 			isTextFileView: leaf.view instanceof TextFileView,
 			leafType: leaf.view.constructor.name,
 		});
@@ -388,13 +389,13 @@ export class RelayCanvasView implements S3View {
 
 	destroy() {
 		this.plugin?.destroy();
-		this.plugin = null as any;
+		this.plugin = null as unknown as typeof this.plugin;
 		this.release();
 		this.clearViewActions();
-		(this.view.leaf as any).rebuildView?.();
-		this._parent = null as any;
-		this.view = null as any;
-		this.canvas = null as any;
+		(this.view.leaf as { rebuildView?: () => void }).rebuildView?.();
+		this._parent = null as unknown as typeof this._parent;
+		this.view = null as unknown as typeof this.view;
+		this.canvas = null as unknown as typeof this.canvas;
 	}
 }
 
@@ -742,11 +743,11 @@ export class LiveView<ViewType extends TextFileView>
 		this.release();
 		this.clearViewActions();
 		this.clearMergeButton();
-		(this.view.leaf as any).rebuildView?.();
-		this._parent = null as any;
-		this.view = null as any;
-		this.document = null as any;
-		this._plugin = null as any;
+		(this.view.leaf as { rebuildView?: () => void }).rebuildView?.();
+		this._parent = null as unknown as typeof this._parent;
+		this.view = null as unknown as typeof this.view;
+		this.document = null as unknown as typeof this.document;
+		this._plugin = null as unknown as typeof this._plugin;
 	}
 }
 

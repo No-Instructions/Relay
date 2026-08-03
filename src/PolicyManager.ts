@@ -1,5 +1,5 @@
 import type { Permission, Resource } from "./Relay";
-import type { RelayManager } from "./RelayManager";
+import type { RelayManager, RelayCollectionMap } from "./RelayManager";
 import { Observable } from "./observable/Observable";
 import type { ObservableMap } from "./observable/ObservableMap";
 import type { Readable } from "svelte/store";
@@ -77,7 +77,7 @@ export class ObservablePermission
 
 	constructor(
 		private evaluate: () => boolean,
-		dependencies: ObservableMap<any, any>[],
+		dependencies: { on(listener: () => void): () => void }[],
 	) {
 		super();
 		this.currentValue = this.evaluate();
@@ -260,11 +260,11 @@ export class PolicyManager implements IPolicyManager {
 	private getFilteredCollections(
 		dependencies: Record<
 			string,
-			(item: any, request: AuthorizationRequest) => boolean
+			(item: unknown, request: AuthorizationRequest) => boolean
 		>,
 		request: AuthorizationRequest,
-	): ObservableMap<any, any>[] {
-		const collections: ObservableMap<any, any>[] = [];
+	): RelayCollectionMap[] {
+		const collections: RelayCollectionMap[] = [];
 
 		for (const collectionKey of Object.keys(dependencies)) {
 			const collection =

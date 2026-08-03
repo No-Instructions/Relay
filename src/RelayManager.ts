@@ -41,16 +41,24 @@ interface Identified {
 	id: string;
 }
 
-function hasId(obj: any): obj is Identified {
-	return typeof obj.id === "string";
+export type RelayCollectionMap =
+	| ObservableMap<string, FolderRole>
+	| ObservableMap<string, RelayRole>
+	| ObservableMap<string, RemoteSharedFolder>
+	| ObservableMap<string, Relay>
+	| ObservableMap<string, StorageQuota>
+	| ObservableMap<string, RelaySubscription>;
+
+function hasId(obj: unknown): obj is Identified {
+	return typeof (obj as { id?: unknown }).id === "string";
 }
 
 interface Named {
 	name: string;
 }
 
-function hasName(obj: any): obj is Named {
-	return typeof obj.name === "string";
+function hasName(obj: unknown): obj is Named {
+	return typeof (obj as { name?: unknown }).name === "string";
 }
 
 interface UserDAO extends RecordModel {
@@ -172,16 +180,19 @@ interface hasRoot {
 	aggregate_root: [string, string] | undefined;
 }
 
-function hasRoot(obj: any): obj is hasRoot {
-	return typeof obj.aggregate_root === "object";
+function hasRoot(obj: unknown): obj is hasRoot {
+	return typeof (obj as { aggregate_root?: unknown }).aggregate_root === "object";
 }
 
 interface hasPermissionParents {
 	permissionParents: [string, string][];
 }
 
-function hasPermissionParents(obj: any): obj is hasPermissionParents {
-	return obj && Array.isArray(obj.permissionParents);
+function hasPermissionParents(obj: unknown): obj is hasPermissionParents {
+	return (obj &&
+		Array.isArray(
+			(obj as { permissionParents?: unknown }).permissionParents,
+		)) as boolean;
 }
 
 class Auto implements hasRoot, hasPermissionParents {
@@ -1598,7 +1609,7 @@ export class RelayManager extends HasLogging {
 
 	public getCollectionMapByName(
 		name: string,
-	): ObservableMap<any, any> | undefined {
+	): RelayCollectionMap | undefined {
 		// TODO don't hardcode this
 		switch (name) {
 			case "folder_roles":

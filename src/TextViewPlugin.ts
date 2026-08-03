@@ -187,8 +187,12 @@ export class TextFileViewPlugin extends HasLogging {
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.view.view, {
-				setViewData(old: any) {
-					return function (this: any, data: string, clear: boolean) {
+				setViewData(old: (...args: unknown[]) => unknown) {
+					return function (
+						this: { getViewType(): string },
+						data: string,
+						clear: boolean,
+					) {
 						that.warn("instance hook: setViewData", this.getViewType());
 
 						// Don't process if file isn't loaded yet
@@ -221,8 +225,8 @@ export class TextFileViewPlugin extends HasLogging {
 						return result;
 					};
 				},
-				requestSave(old: any) {
-					return function (this: any) {
+				requestSave(old: (...args: unknown[]) => unknown) {
+					return function (this: { getViewType(): string }) {
 						that.warn("instance hook: requestSave called", this.getViewType());
 						if (isLive(that.view) && !that.saving && that.doc) {
 							if (that.view.tracking && !that.saving) {

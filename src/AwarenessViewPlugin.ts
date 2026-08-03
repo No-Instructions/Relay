@@ -10,9 +10,9 @@ export class AwarenessViewPlugin extends HasLogging {
 	private awarenessComponent?: UserAwareness;
 	private targetElement?: HTMLElement;
 	private awarenessElement?: HTMLElement;
-	private relayUsersStore: any;
+	private relayUsersStore: unknown;
 
-	constructor(view: LiveView<MarkdownView>, relayUsersStore: any) {
+	constructor(view: LiveView<MarkdownView>, relayUsersStore: unknown) {
 		super();
 		this.view = view;
 		this.doc = view.document;

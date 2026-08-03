@@ -9,7 +9,7 @@ export type Subscriber<T> = (value: T) => void;
 /** Unsubscribes from value updates. */
 export type Unsubscriber = () => void;
 
-const observables = new Map<Observable<any>, () => void>();
+const observables = new Map<object, () => void>();
 
 export function auditTeardown(): void {
 	for (const [, auditTeardown] of observables) {

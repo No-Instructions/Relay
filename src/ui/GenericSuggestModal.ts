@@ -1,12 +1,12 @@
 import { App, Modal } from "obsidian";
 
 export class GenericSuggestModal<T> extends Modal {
-	private component?: any;
+	private component?: { $destroy(): void };
 
 	constructor(
 		app: App,
-		private ComponentClass: any,
-		private componentProps: any,
+		private ComponentClass: new (options: { target: Element; props: Record<string, unknown> }) => { $destroy(): void },
+		private componentProps: Record<string, unknown>,
 		private onSelect: (item: T) => void,
 	) {
 		super(app);
