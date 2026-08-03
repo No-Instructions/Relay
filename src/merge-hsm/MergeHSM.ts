@@ -496,13 +496,19 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		this.pendingDiskHash = null;
 	}
 
-	private capturePendingDiskLCA(contents: string): void {
+	private capturePendingDiskLCA(
+		contents: string,
+		options: { allowViewData?: boolean } = {},
+	): void {
 		if (
 			this._fork ||
 			this._conflict ||
 			!this.localDoc ||
 			!this._disk ||
-			this.pendingDiskSource !== "disk-event" ||
+			(
+				this.pendingDiskSource !== "disk-event" &&
+				!(options.allowViewData && this.pendingDiskSource === "view-data")
+			) ||
 			this.pendingDiskContents === null ||
 			this.pendingDiskContents !== contents ||
 			this.pendingDiskHash === null ||
@@ -5766,6 +5772,10 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 		// no longer exists, and leaving it behind refuses the note a fresh copy
 		// from the server for good.
 		this._deferredConflict = undefined;
+		// Resolution can be a no-op for the editor when the selected text is
+		// already on disk. Capture through the normal confirmed-disk path now,
+		// because that case produces no later save or disk event to do it.
+		this.capturePendingDiskLCA(resolvedText, { allowViewData: true });
 		this.clearPendingDiskContents();
 		this.pendingEditorContent = null;
 		return resolvedText;
