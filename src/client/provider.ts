@@ -289,15 +289,22 @@ export class YSweetProvider extends Observable<string> {
 	wsLastMessageReceived: number;
 	shouldConnect: boolean;
 	_resyncInterval: ReturnType<typeof setInterval> | number; // TODO: is setting this to 0 used as null?
-	_bcSubscriber: Function;
+	_bcSubscriber: (data: ArrayBuffer, origin: unknown) => void;
 	_updateHandler: (
 		arg0: Uint8Array,
 		arg1: unknown,
 		arg2: Y.Doc,
 		arg3: Y.Transaction,
 	) => void;
-	_awarenessUpdateHandler: Function;
-	_unloadHandler: Function;
+	_awarenessUpdateHandler: (
+		changes: {
+			added: Array<number>;
+			updated: Array<number>;
+			removed: Array<number>;
+		},
+		origin: unknown,
+	) => void;
+	_unloadHandler: () => void;
 	_checkInterval: ReturnType<typeof setInterval> | number;
 	maxConnectionErrors: number;
 
@@ -433,10 +440,10 @@ export class YSweetProvider extends Observable<string> {
 		if (typeof window !== "undefined") {
 			window.addEventListener(
 				"unload",
-				this._unloadHandler as unknown as EventListener,
+				this._unloadHandler,
 			);
 		} else if (typeof process !== "undefined") {
-			process.on("exit", this._unloadHandler as unknown as () => void);
+			process.on("exit", this._unloadHandler);
 		}
 
 		awareness.on("update", this._awarenessUpdateHandler);
@@ -541,11 +548,11 @@ export class YSweetProvider extends Observable<string> {
 		if (typeof window !== "undefined") {
 			window.removeEventListener(
 				"unload",
-				this._unloadHandler as unknown as EventListener,
+				this._unloadHandler,
 			);
 			window.clearInterval(this.awareness._checkInterval);
 		} else if (typeof process !== "undefined") {
-			process.off("exit", this._unloadHandler as unknown as () => void);
+			process.off("exit", this._unloadHandler);
 		}
 		this.awareness.off("update", this._awarenessUpdateHandler);
 		this.doc.off("update", this._updateHandler);
@@ -559,7 +566,7 @@ export class YSweetProvider extends Observable<string> {
 		if (!this.bcconnected) {
 			bc.subscribe(
 				this.bcChannel,
-				this._bcSubscriber as unknown as (...args: unknown[]) => void,
+				this._bcSubscriber,
 			);
 			this.bcconnected = true;
 		}
@@ -614,7 +621,7 @@ export class YSweetProvider extends Observable<string> {
 		if (this.bcconnected) {
 			bc.unsubscribe(
 				this.bcChannel,
-				this._bcSubscriber as unknown as (...args: unknown[]) => void,
+				this._bcSubscriber,
 			);
 			this.bcconnected = false;
 		}
