@@ -1160,23 +1160,23 @@ export default class Live extends Plugin {
 		// Explicitly destroy the update manager
 		if (this.updateManager) {
 			this.updateManager.destroy();
-			this.updateManager = null as any;
+			this.updateManager = null as unknown as typeof this.updateManager;
 		}
 
 		this._liveViews?.destroy();
-		this._liveViews = null as any;
+		this._liveViews = null as unknown as typeof this._liveViews;
 
 		this.relayManager?.destroy();
-		this.relayManager = null as any;
+		this.relayManager = null as unknown as typeof this.relayManager;
 
 		this.tokenStore?.stop();
 		this.tokenStore?.clearState();
 		this.tokenStore?.destroy();
-		this.tokenStore = null as any;
+		this.tokenStore = null as unknown as typeof this.tokenStore;
 
 		this.networkStatus?.stop();
 		this.networkStatus?.destroy();
-		this.networkStatus = null as any;
+		this.networkStatus = null as unknown as typeof this.networkStatus;
 
 		this.openModals.forEach((modal) => {
 			modal.close();
@@ -1184,47 +1184,47 @@ export default class Live extends Plugin {
 		this.openModals.length = 0;
 
 		this.sharedFolders?.destroy();
-		this.sharedFolders = null as any;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
 
 		this.settingsTab?.destroy();
-		this.settingsTab = null as any;
+		this.settingsTab = null as unknown as typeof this.settingsTab;
 
 		this.loginManager?.destroy();
-		this.loginManager = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
 
 		this.backgroundSync?.destroy();
-		this.backgroundSync = null as any;
+		this.backgroundSync = null as unknown as typeof this.backgroundSync;
 
 		this.hashStore.destroy();
-		this.hashStore = null as any;
+		this.hashStore = null as unknown as typeof this.hashStore;
 
 		this.app?.workspace.updateOptions();
-		this.app = null as any;
-		this.fileManager = null as any;
-		this.manifest = null as any;
-		this.vault = null as any;
+		this.app = null as unknown as typeof this.app;
+		this.fileManager = null as unknown as typeof this.fileManager;
+		this.manifest = null as unknown as typeof this.manifest;
+		this.vault = null as unknown as typeof this.vault;
 
 		this.debugSettings.destroy();
-		this.debugSettings = null as any;
+		this.debugSettings = null as unknown as typeof this.debugSettings;
 		this.folderSettings.destroy();
-		this.folderSettings = null as any;
+		this.folderSettings = null as unknown as typeof this.folderSettings;
 
 		// Destroy FeatureFlagManager before destroying featureSettings
 		FeatureFlagManager.destroy();
 
 		this.featureSettings.destroy();
-		this.featureSettings = null as any;
+		this.featureSettings = null as unknown as typeof this.featureSettings;
 		this.releaseSettings.destroy();
-		this.releaseSettings = null as any;
+		this.releaseSettings = null as unknown as typeof this.releaseSettings;
 		this.loginSettings.destroy();
-		this.loginSettings = null as any;
+		this.loginSettings = null as unknown as typeof this.loginSettings;
 		this.endpointSettings.destroy();
-		this.endpointSettings = null as any;
+		this.endpointSettings = null as unknown as typeof this.endpointSettings;
 
 		this.interceptedUrls.length = 0;
 		PostOffice.destroy();
 
-		this.notifier = null as any;
+		this.notifier = null as unknown as typeof this.notifier;
 
 		auditTeardown();
 		void flushLogs();

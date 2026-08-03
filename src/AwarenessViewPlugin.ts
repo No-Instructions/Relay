@@ -114,7 +114,7 @@ export class AwarenessViewPlugin extends HasLogging {
 			this.awarenessElement = undefined;
 		}
 
-		this.view = null as any;
-		this.doc = null as any;
+		this.view = null as unknown as typeof this.view;
+		this.doc = null as unknown as typeof this.doc;
 	}
 }

@@ -306,9 +306,9 @@ export class TextFileViewPlugin extends HasLogging {
 		// Clean up ViewHookPlugin
 		this.viewHookPlugin?.destroy();
 
-		this.observer = null as any;
-		this._ytext = null as any;
-		this.view = null as any;
-		this.doc = null as any;
+		this.observer = null as unknown as typeof this.observer;
+		this._ytext = null as unknown as typeof this._ytext;
+		this.view = null as unknown as typeof this.view;
+		this.doc = null as unknown as typeof this.doc;
 	}
 }

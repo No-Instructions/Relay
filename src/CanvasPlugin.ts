@@ -55,9 +55,9 @@ export class CanvasPlugin extends HasLogging {
 			this.unsubscribes = [];
 		}
 		this.relayCanvasView.tracking = false;
-		this.canvas = null as any;
-		this.relayCanvas = null as any;
-		this.relayCanvasView = null as any;
+		this.canvas = null as unknown as typeof this.canvas;
+		this.relayCanvas = null as unknown as typeof this.relayCanvas;
+		this.relayCanvasView = null as unknown as typeof this.relayCanvasView;
 		this.unsubscribes.length = 0;
 	}
 

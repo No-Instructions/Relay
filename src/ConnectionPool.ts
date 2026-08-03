@@ -289,7 +289,7 @@ export class ConnectionPool extends HasLogging {
 		});
 
 		this.connections.clear();
-		this.timeProvider = null as any;
-		ConnectionPool.instance = null as any;
+		this.timeProvider = null as unknown as typeof this.timeProvider;
+		ConnectionPool.instance = null as unknown as typeof ConnectionPool.instance;
 	}
 }

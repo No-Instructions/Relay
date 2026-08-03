@@ -416,12 +416,12 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this._diskBuffer.contents = "";
 			this._diskBuffer = undefined;
 		}
-		this._diskBufferStore = null as any;
+		this._diskBufferStore = null as unknown as typeof this._diskBufferStore;
 		this.whenSyncedPromise?.destroy();
-		this.whenSyncedPromise = null as any;
+		this.whenSyncedPromise = null as unknown as typeof this.whenSyncedPromise;
 		this.readyPromise?.destroy();
-		this.readyPromise = null as any;
-		this._parent = null as any;
+		this.readyPromise = null as unknown as typeof this.readyPromise;
+		this._parent = null as unknown as typeof this._parent;
 	}
 
 	public async read(): Promise<string> {

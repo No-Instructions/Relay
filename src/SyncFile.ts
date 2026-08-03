@@ -250,8 +250,8 @@ export class ContentAddressedFile extends HasLogging {
 	}
 
 	destroy() {
-		this.vault = null as any;
-		this._tfile = null as any;
+		this.vault = null as unknown as typeof this.vault;
+		this._tfile = null as unknown as typeof this._tfile;
 		// Don't destroy store as it might be shared
 	}
 }
@@ -571,9 +571,9 @@ export class SyncFile
 
 	destroy() {
 		this.offFileInfo?.();
-		this.offFileInfo = null as any;
+		this.offFileInfo = null as unknown as typeof this.offFileInfo;
 
-		this._parent = null as any;
+		this._parent = null as unknown as typeof this._parent;
 		this.caf.destroy();
 	}
 }

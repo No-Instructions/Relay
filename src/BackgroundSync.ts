@@ -1044,8 +1044,8 @@ export class BackgroundSync extends HasLogging {
 		this.loggedItems.clear();
 
 		// Clean up references
-		this.loginManager = null as any;
-		this.timeProvider = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
+		this.timeProvider = null as unknown as typeof this.timeProvider;
 
 		// Unsubscribe from all subscriptions
 		this.subscriptions.forEach((off) => off());

@@ -218,6 +218,6 @@ class DerivedMap<K, V> extends ObservableMap<K, V> {
 			this.unsub = undefined;
 		}
 		this._listeners?.clear();
-		this.parentCallback = null as any;
+		this.parentCallback = null as unknown as typeof this.parentCallback;
 	}
 }

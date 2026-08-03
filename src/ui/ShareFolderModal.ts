@@ -58,9 +58,9 @@ export class ShareFolderModal extends Modal {
 	}
 
 	destroy() {
-		this.relay = null as any;
-		this.sharedFolders = null as any;
-		this.relayManager = null as any;
-		this.onConfirm = null as any;
+		this.relay = null as unknown as typeof this.relay;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
+		this.relayManager = null as unknown as typeof this.relayManager;
+		this.onConfirm = null as unknown as typeof this.onConfirm;
 	}
 }

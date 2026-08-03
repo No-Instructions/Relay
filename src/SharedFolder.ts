@@ -1766,21 +1766,21 @@ export class SharedFolder extends HasProvider {
 		this.ydoc.destroy();
 		this.fset.clear();
 		this._settings.destroy();
-		this._settings = null as any;
-		this.diskBufferStore = null as any;
-		this.relayManager = null as any;
-		this.backgroundSync = null as any;
-		this.loginManager = null as any;
-		this.tokenStore = null as any;
-		this.fileManager = null as any;
-		this.syncStore = null as any;
-		this.syncSettingsManager = null as any;
+		this._settings = null as unknown as typeof this._settings;
+		this.diskBufferStore = null as unknown as typeof this.diskBufferStore;
+		this.relayManager = null as unknown as typeof this.relayManager;
+		this.backgroundSync = null as unknown as typeof this.backgroundSync;
+		this.loginManager = null as unknown as typeof this.loginManager;
+		this.tokenStore = null as unknown as typeof this.tokenStore;
+		this.fileManager = null as unknown as typeof this.fileManager;
+		this.syncStore = null as unknown as typeof this.syncStore;
+		this.syncSettingsManager = null as unknown as typeof this.syncSettingsManager;
 		this.whenSyncedPromise?.destroy();
-		this.whenSyncedPromise = null as any;
+		this.whenSyncedPromise = null as unknown as typeof this.whenSyncedPromise;
 		this.readyPromise?.destroy();
-		this.readyPromise = null as any;
+		this.readyPromise = null as unknown as typeof this.readyPromise;
 		this.syncFileTreePromise?.destroy();
-		this.syncFileTreePromise = null as any;
+		this.syncFileTreePromise = null as unknown as typeof this.syncFileTreePromise;
 	}
 }
 

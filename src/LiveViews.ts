@@ -183,7 +183,7 @@ export class LoggedOutView implements S3View {
 		this.banner?.destroy();
 		this.banner = undefined;
 		this.clearLoginButton();
-		this.view = null as any;
+		this.view = null as unknown as typeof this.view;
 	}
 }
 
@@ -1242,20 +1242,20 @@ export class LiveViewManager {
 		this.offListeners.forEach((off) => off());
 		this.offListeners.length = 0;
 		this.metadataListeners.clear();
-		this.metadataListeners = null as any;
+		this.metadataListeners = null as unknown as typeof this.metadataListeners;
 		this.folderListeners.forEach((off) => off());
 		this.folderListeners.clear();
-		this.folderListeners = null as any;
+		this.folderListeners = null as unknown as typeof this.folderListeners;
 		this.views.forEach((view) => view.destroy());
 		this.views = [];
 		this.wipe();
-		this.sharedFolders = null as any;
-		this.refreshQueue = null as any;
-		this.networkStatus = null as any;
-		this._activePromise = null as any;
-		this.loginManager = null as any;
-		this.app = null as any;
-		this.workspace = null as any;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
+		this.refreshQueue = null as unknown as typeof this.refreshQueue;
+		this.networkStatus = null as unknown as typeof this.networkStatus;
+		this._activePromise = null as unknown as typeof this._activePromise;
+		this.loginManager = null as unknown as typeof this.loginManager;
+		this.app = null as unknown as typeof this.app;
+		this.workspace = null as unknown as typeof this.workspace;
 	}
 }
 

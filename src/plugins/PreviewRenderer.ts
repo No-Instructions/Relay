@@ -59,6 +59,6 @@ export class PreviewRenderer extends HasLogging implements ViewRenderer {
 	destroy(): void {
 		this.destroyed = true;
 		this.debug("destroyed");
-		this.view = null as any;
+		this.view = null as unknown as typeof this.view;
 	}
 }

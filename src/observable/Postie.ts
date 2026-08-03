@@ -194,7 +194,7 @@ export class PostOffice {
 	static destroy(): void {
 		if (PostOffice.instance) {
 			// Clear all mailboxes
-			PostOffice.instance.mailboxes = null as any;
+			PostOffice.instance.mailboxes = null as unknown as typeof PostOffice.instance.mailboxes;
 
 			// Clear mail logs
 			PostOffice.instance.allMailLog = [];
@@ -202,7 +202,7 @@ export class PostOffice {
 
 			// Cancel any pending delivery
 			PostOffice.instance.timeProvider.destroy();
-			PostOffice.instance.timeProvider = null as any;
+			PostOffice.instance.timeProvider = null as unknown as typeof PostOffice.instance.timeProvider;
 
 			// Reset flags
 			PostOffice.instance.isDelivering = false;
@@ -214,7 +214,7 @@ export class PostOffice {
 			PostOffice._destroyed = true;
 
 			// Remove the singleton instance
-			PostOffice.instance = undefined as any;
+			PostOffice.instance = undefined as unknown as typeof PostOffice.instance;
 		}
 	}
 
@@ -227,7 +227,7 @@ export class PostOffice {
 			PostOffice.instance.timeProvider?.destroy();
 		}
 		PostOffice._destroyed = false;
-		PostOffice.instance = undefined as any;
+		PostOffice.instance = undefined as unknown as typeof PostOffice.instance;
 		if (timeProvider) {
 			PostOffice.instance = new PostOffice(timeProvider);
 			RelayInstances.set(PostOffice.instance, "postie");

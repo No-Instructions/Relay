@@ -395,12 +395,12 @@ export class TokenStore<TokenType extends HasToken> {
 	destroy() {
 		this.clear();
 		this.timeProvider.destroy();
-		this.timeProvider = null as any;
-		this.refresh = null as any;
+		this.timeProvider = null as unknown as typeof this.timeProvider;
+		this.refresh = null as unknown as typeof this.refresh;
 		this.callbacks.clear();
-		this.callbacks = null as any;
+		this.callbacks = null as unknown as typeof this.callbacks;
 		this._activePromises.clear();
-		this._activePromises = null as any;
-		this.tokenMap = null as any;
+		this._activePromises = null as unknown as typeof this._activePromises;
+		this.tokenMap = null as unknown as typeof this.tokenMap;
 	}
 }

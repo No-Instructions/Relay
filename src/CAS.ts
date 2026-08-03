@@ -99,8 +99,8 @@ export class ContentAddressedStore extends HasLogging {
 
 	public destroy() {
 		this.pb.cancelAllRequests();
-		this.pb = null as any;
-		this.tokenStore = null as any;
-		this.sharedFolder = null as any;
+		this.pb = null as unknown as typeof this.pb;
+		this.tokenStore = null as unknown as typeof this.tokenStore;
+		this.sharedFolder = null as unknown as typeof this.sharedFolder;
 	}
 }

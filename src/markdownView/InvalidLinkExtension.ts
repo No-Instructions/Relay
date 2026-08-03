@@ -288,11 +288,11 @@ export class InvalidLinkPluginValue {
 		if (this.connectionManager && this.view?.document?.tfile) {
 			this.connectionManager.offMeta(this.view.document.tfile);
 		}
-		this.connectionManager = null as any;
+		this.connectionManager = null as unknown as typeof this.connectionManager;
 		this.view = undefined;
 		this.metadata.clear();
-		this.metadata = null as any;
-		this.editor = null as any;
+		this.metadata = null as unknown as typeof this.metadata;
+		this.editor = null as unknown as typeof this.editor;
 	}
 }
 

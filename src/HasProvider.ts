@@ -299,6 +299,6 @@ export class HasProvider extends HasLogging {
 		if (this._provider) {
 			this._provider.destroy();
 		}
-		this.loginManager = null as any;
+		this.loginManager = null as unknown as typeof this.loginManager;
 	}
 }

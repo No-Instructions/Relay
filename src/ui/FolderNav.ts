@@ -362,7 +362,7 @@ class FilePillDecoration {
 			el.remove();
 		});
 		this.pill?.$destroy();
-		this.file = null as any;
+		this.file = null as unknown as typeof this.file;
 	}
 }
 
@@ -800,10 +800,10 @@ export class FolderNavigationDecorations {
 		this.treeState.clear();
 		this.offLayoutChange();
 
-		this.vault = null as any;
-		this.workspace = null as any;
-		this.sharedFolders = null as any;
-		this.backgroundSync = null as any;
-		this.offFolderListener = null as any;
+		this.vault = null as unknown as typeof this.vault;
+		this.workspace = null as unknown as typeof this.workspace;
+		this.sharedFolders = null as unknown as typeof this.sharedFolders;
+		this.backgroundSync = null as unknown as typeof this.backgroundSync;
+		this.offFolderListener = null as unknown as typeof this.offFolderListener;
 	}
 }

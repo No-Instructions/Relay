@@ -89,6 +89,6 @@ export class Observable<T> extends HasLogging implements IObservable<T> {
 			});
 		}
 		this._listeners?.clear();
-		this._listeners = null as any;
+		this._listeners = null as unknown as typeof this._listeners;
 	}
 }

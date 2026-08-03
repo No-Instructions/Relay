@@ -485,10 +485,10 @@ export class LiveCMPluginValue implements PluginValue {
 		});
 		this.unsubscribes.length = 0;
 		this.viewHookPlugin?.destroy();
-		this.connectionManager = null as any;
+		this.connectionManager = null as unknown as typeof this.connectionManager;
 		this.view = undefined;
 		this._ytext = undefined;
-		this.editor = null as any;
+		this.editor = null as unknown as typeof this.editor;
 	}
 }
 
