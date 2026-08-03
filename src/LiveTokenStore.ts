@@ -149,7 +149,6 @@ export class LiveTokenStore extends TokenStore<ClientToken> {
 		)
 			.then((newToken: FileToken) => {
 				const expiryTime = this.getJwtExpiry(newToken);
-				// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- the store registered this key before scheduling the refresh
 				const existing = this.tokenMap.get(key)!;
 				this.tokenMap.set(fileHash, {
 					...existing,

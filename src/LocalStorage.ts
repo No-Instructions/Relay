@@ -67,14 +67,12 @@ export class LocalStorage<T> implements Map<string, T> {
 	}
 
 	public values(): IterableIterator<T> {
-		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- keys() yields only stored keys
 		const values = Array.from(this.keys()).map((key) => this.get(key)!);
 		return values.values();
 	}
 
 	public entries(): IterableIterator<[string, T]> {
 		const entries = Array.from(this.keys()).map(
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- keys() yields only stored keys
 			(key) => [key, this.get(key)!] as [string, T],
 		);
 		return entries.values();

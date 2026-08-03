@@ -293,7 +293,6 @@ export class DifferencesView extends ItemView {
 		);
 		while (lineCount1 <= maxLineCount || lineCount2 <= maxLineCount) {
 			const difference = this.fileDifferences?.differences.find(
-				// eslint-disable-next-line no-loop-func -- the callback runs synchronously within this iteration
 				(d) => d.file1Start === lineCount1 && d.file2Start === lineCount2,
 			);
 
