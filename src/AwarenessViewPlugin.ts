@@ -3,7 +3,6 @@ import { MarkdownView } from "obsidian";
 import { Document } from "./Document";
 import { type LiveView } from "./LiveViews";
 import UserAwareness from "./components/UserAwareness.svelte";
-import type { RelayUser } from "./Relay";
 export class AwarenessViewPlugin extends HasLogging {
 	view: LiveView<MarkdownView>;
 	doc: Document;

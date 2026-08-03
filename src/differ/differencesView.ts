@@ -29,7 +29,6 @@ import {
 	TFile,
 	type ViewStateResult,
 	WorkspaceLeaf,
-	TextFileView,
 } from "obsidian";
 import { diffMatchPatch } from "src/y-diffMatchPatch";
 import { Difference } from "./difference";

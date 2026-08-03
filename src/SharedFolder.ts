@@ -9,7 +9,6 @@ import {
 	normalizePath,
 } from "obsidian";
 import { IndexeddbPersistence } from "./storage/y-indexeddb";
-import * as idb from "lib0/indexeddb";
 import { dirname, join, sep } from "path-browserify";
 import { HasProvider, type ConnectionIntent } from "./HasProvider";
 import { Document } from "./Document";

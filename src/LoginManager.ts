@@ -18,7 +18,7 @@ import { LocalAuthStore } from "./pocketbase/LocalAuthStore";
 import type { TimeProvider } from "./TimeProvider";
 import { FeatureFlagManager } from "./flagManager";
 import type { NamespacedSettings } from "./SettingsStorage";
-import { type EndpointManager, type EndpointSettings } from "./EndpointManager";
+import { type EndpointManager } from "./EndpointManager";
 
 interface GoogleUser {
 	email: string;
