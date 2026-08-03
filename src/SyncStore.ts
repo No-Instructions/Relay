@@ -486,7 +486,6 @@ export class SyncStore extends Observable<SyncStore> {
 				!(this.meta.has(folderPath) || this.overlay.has(folderPath))
 			) {
 				const guid = uuidv4();
-				console.log("creating folder path", folderPath, guid);
 				this.overlay.set(folderPath, makeFolderMeta(guid));
 			}
 		});

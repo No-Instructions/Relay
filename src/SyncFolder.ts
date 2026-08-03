@@ -79,10 +79,6 @@ export class SyncFolder extends HasLogging implements IFile {
 	}
 
 	static fromTFolder(sharedFolder: SharedFolder, tfolder: TFolder) {
-		console.log(
-			"virtualpath for new syncfolder",
-			sharedFolder.getVirtualPath(tfolder.path),
-		);
 		return new SyncFolder(
 			sharedFolder.getVirtualPath(tfolder.path),
 			uuidv4(),
