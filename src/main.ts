@@ -976,7 +976,7 @@ export default class Live extends Plugin {
 			}),
 		);
 
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- patch callbacks run with their own this
 		const plugin = this;
 
 		getPatcher().patch(MarkdownView.prototype, {

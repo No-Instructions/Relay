@@ -208,9 +208,9 @@ export class TokenStore<TokenType extends HasToken> {
 	private onTokenRefreshed(documentId: string, token: TokenType) {
 		const expiryTime = this.getJwtExpiry(token);
 		if (this.tokenMap.has(documentId)) {
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by the has check above
 			const existing = this.tokenMap.get(documentId)!;
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- callbacks are registered alongside tokenMap entries
 			const callback = this.callbacks.get(documentId)!;
 			this.log(`new expiry time is ${expiryTime}`);
 			this.tokenMap.set(documentId, {
@@ -224,7 +224,7 @@ export class TokenStore<TokenType extends HasToken> {
 	}
 
 	private onRefreshFailure(documentId: string) {
-		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+		// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by the has check above
 		const existing = this.tokenMap.get(documentId)!;
 		const attempts = (existing?.attempts ?? 0) + 1;
 		if (attempts <= 3) {
@@ -297,7 +297,7 @@ export class TokenStore<TokenType extends HasToken> {
 			);
 		}
 		if (this.tokenMap.has(documentId)) {
-			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+			// eslint-disable-next-line @typescript-eslint/no-non-null-assertion -- guarded by the has check above
 			const tokenInfo = this.tokenMap.get(documentId)!;
 			if (tokenInfo.token && this.isTokenValid(tokenInfo)) {
 				this.callbacks.set(documentId, callback);

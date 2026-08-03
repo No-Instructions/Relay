@@ -47,7 +47,7 @@ export class ViewHookPlugin extends HasLogging {
 	 * Install hooks into Obsidian's internal methods for UI-specific edit pathways
 	 */
 	private installMarkdownHooks(view: MarkdownView): void {
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- patch callbacks run with their own this
 		const that = this;
 
 		// Hook 1: Track metadata saves (if enableMetadataViewHooks)

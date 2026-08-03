@@ -158,7 +158,7 @@ export class LiveCMPluginValue implements PluginValue {
 		);
 		this.debug("created");
 
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- CodeMirror facet callbacks run with their own this
 		const liveEditPlugin = this;
 		let fmSave = false;
 

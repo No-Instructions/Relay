@@ -271,14 +271,14 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 					? null
 					: Y.createRelativePositionFromJSON(
 							localAwarenessState.cursor.anchor,
-							// eslint-disable-next-line no-mixed-spaces-and-tabs
+							// eslint-disable-next-line no-mixed-spaces-and-tabs -- prettier formats this continuation with mixed indentation
 						);
 			const currentHead =
 				localAwarenessState.cursor == null
 					? null
 					: Y.createRelativePositionFromJSON(
 							localAwarenessState.cursor.head,
-							// eslint-disable-next-line no-mixed-spaces-and-tabs
+							// eslint-disable-next-line no-mixed-spaces-and-tabs -- prettier formats this continuation with mixed indentation
 						);
 
 			if (sel != null) {
