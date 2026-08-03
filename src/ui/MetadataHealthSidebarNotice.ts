@@ -50,13 +50,9 @@ export class MetadataHealthSidebarNoticeMount {
 			.filter((el) => el.classList.contains("system3-metadata-health-slot"))
 			.forEach((el) => el.remove());
 
-		this.containerEl = target.ownerDocument.createElement("div");
-		this.containerEl.classList.add("system3-metadata-health-slot");
-		this.containerEl.style.order = "1";
-		this.containerEl.style.flex = "0 0 auto";
-		this.containerEl.style.height = "auto";
-		this.containerEl.style.minHeight = "0";
-		this.containerEl.style.overflow = "visible";
+		this.containerEl = target.createDiv({
+			cls: "system3-metadata-health-slot",
+		});
 		target.insertBefore(this.containerEl, vaultProfile);
 
 		this.component = new MetadataHealthNotice({

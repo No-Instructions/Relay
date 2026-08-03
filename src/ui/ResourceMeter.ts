@@ -79,8 +79,9 @@ export class ResourceMeterMount {
 			.querySelectorAll(".system3-resource-meter")
 			.forEach((el) => el.remove());
 
-		this.containerEl = target.ownerDocument.createElement("span");
-		this.containerEl.classList.add("clickable-icon", "system3-resource-meter");
+		this.containerEl = target.createSpan({
+			cls: ["clickable-icon", "system3-resource-meter"],
+		});
 		target.insertBefore(this.containerEl, target.firstChild);
 
 		this.component = new ResourceMeterContent({
