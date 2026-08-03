@@ -165,7 +165,7 @@ export class LiveCMPluginValue implements PluginValue {
 		if (this.view?.view) {
 			this.unsubscribes.push(
 				getPatcher().patch(this.view.view, {
-					setViewData(old: any) {
+					setViewData(old: unknown) {
 						return function (data: string, clear: boolean) {
 							if (clear) {
 								if (isLiveMd(liveEditPlugin.view)) {
@@ -186,8 +186,8 @@ export class LiveCMPluginValue implements PluginValue {
 						};
 					},
 					// @ts-ignore
-					saveFrontmatter(old: any) {
-						return function (data: any) {
+					saveFrontmatter(old: unknown) {
+						return function (data: unknown) {
 							fmSave = true;
 							// @ts-ignore
 							const result = old.call(this, data);
@@ -195,7 +195,7 @@ export class LiveCMPluginValue implements PluginValue {
 							return result;
 						};
 					},
-					requestSave(old: any) {
+					requestSave(old: unknown) {
 						return function () {
 							// @ts-ignore
 							const result = old.call(this);

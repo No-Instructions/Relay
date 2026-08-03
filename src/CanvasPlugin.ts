@@ -22,7 +22,7 @@ export class CanvasPlugin extends HasLogging {
 	unsubscribes: Array<() => void>;
 	relayCanvasView: RelayCanvasView;
 	observedTextNodes: Set<string>;
-	trackedEmbedViews: Set<any>;
+	trackedEmbedViews: Set<unknown>;
 
 	constructor(
 		private connectionManager: LiveViewManager,
@@ -149,7 +149,7 @@ export class CanvasPlugin extends HasLogging {
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.canvas, {
-				requestSave(old: any) {
+				requestSave(old: unknown) {
 					return function () {
 						// @ts-ignore
 						const res = old.call(this);
@@ -161,8 +161,8 @@ export class CanvasPlugin extends HasLogging {
 						return res;
 					};
 				},
-				applyHistory(old: any) {
-					return function (data: any) {
+				applyHistory(old: unknown) {
+					return function (data: unknown) {
 						// @ts-ignore
 						const res = old.call(this, data);
 						try {

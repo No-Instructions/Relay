@@ -157,7 +157,7 @@ export interface ISettingsStorage {
 }
 
 export class ObsidianSettingsStorage implements ISettingsStorage {
-	constructor(private plugin: StorageAdapter<any>) {}
+	constructor(private plugin: StorageAdapter<unknown>) {}
 
 	getData<T>(): T {
 		return this.plugin.loadData() as T;
@@ -175,7 +175,7 @@ export class ObsidianSettingsStorage implements ISettingsStorage {
 }
 
 export class MemorySettingsStorage implements ISettingsStorage {
-	private data: any = null;
+	private data: unknown = null;
 
 	getData<T>(): T {
 		return this.data as T;
@@ -252,7 +252,7 @@ export class Settings<T> extends Observable<T> {
 
 export class NamespacedSettings<
 	T extends Record<string, any>,
-	Parent extends Record<string, any> = Record<string, any>,
+	Parent extends Record<string, unknown> = Record<string, unknown>,
 > extends Observable<T> {
 	private readonly path: string[];
 	private readonly basePath: string[];
@@ -335,7 +335,7 @@ export class NamespacedSettings<
 						obj[key] = value;
 						return obj;
 					},
-					{} as Record<string, any>,
+					{} as Record<string, unknown>,
 				);
 			return filtered as T;
 		}
@@ -480,7 +480,7 @@ export class NamespacedSettings<
 						obj[key] = value;
 						return obj;
 					},
-					{} as Record<string, any>,
+					{} as Record<string, unknown>,
 				);
 			return filtered as T;
 		}
@@ -492,7 +492,7 @@ export class NamespacedSettings<
 			if (!Array.isArray(current[baseKey])) return undefined;
 
 			const matchedItem = current[baseKey].find(
-				(item: Record<string, any>) =>
+				(item: Record<string, unknown>) =>
 					item[firstPattern.key] === firstPattern.value,
 			);
 
@@ -524,7 +524,7 @@ export class NamespacedSettings<
 	private setNestedValue(
 		obj: Record<string, any>,
 		value: T,
-	): Record<string, any> {
+	): Record<string, unknown> {
 		const result = { ...obj };
 
 		// Handle array pattern matching
@@ -538,7 +538,7 @@ export class NamespacedSettings<
 			}
 
 			const index = result[baseKey].findIndex(
-				(item: Record<string, any>) =>
+				(item: Record<string, unknown>) =>
 					item[arrayPattern.key] === arrayPattern.value,
 			);
 
@@ -569,7 +569,7 @@ export class NamespacedSettings<
 				// Add new item
 				if (remainingPath.length > 0) {
 					// Handle nested properties in new array item
-					const newItem: Record<string, any> = {
+					const newItem: Record<string, unknown> = {
 						[arrayPattern.key]: arrayPattern.value,
 					};
 					let current: Record<string, any> = newItem;
@@ -620,7 +620,7 @@ export class NamespacedSettings<
 		R extends NamespacedSettings<C> = NamespacedSettings<C>,
 	>(
 		childPath: string,
-		factory?: (settings: Settings<any>, path: string) => R,
+		factory?: (settings: Settings<unknown>, path: string) => R,
 	): R {
 		const fullPath = [...this.path, childPath].join("/");
 		if (factory) {
@@ -660,7 +660,7 @@ export class NamespacedSettings<
 				const baseKey = this.basePath[0];
 				if (Array.isArray(result[baseKey])) {
 					result[baseKey] = result[baseKey].filter(
-						(item: Record<string, any>) =>
+						(item: Record<string, unknown>) =>
 							item[arrayPattern.key] !== arrayPattern.value,
 					);
 

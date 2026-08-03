@@ -981,8 +981,8 @@ export default class Live extends Plugin {
 
 		getPatcher().patch(MarkdownView.prototype, {
 			// When this is called, the active editors haven't yet updated.
-			onUnloadFile(old: any) {
-				return function (file: any) {
+			onUnloadFile(old: unknown) {
+				return function (file: unknown) {
 					plugin._liveViews.wipe();
 					// @ts-ignore
 					return old.call(this, file);
@@ -1005,7 +1005,7 @@ export default class Live extends Plugin {
 								void file.process(fn);
 							}
 						}
-					} catch (e: any) {
+					} catch (e: unknown) {
 						plugin.log(e);
 					}
 

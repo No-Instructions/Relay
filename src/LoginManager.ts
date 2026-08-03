@@ -346,7 +346,7 @@ export class LoginManager extends Observable<LoginManager> {
 	async validateAndApplyEndpoints(timeoutMs?: number): Promise<{
 		success: boolean;
 		error?: string;
-		licenseInfo?: any;
+		licenseInfo?: unknown;
 	}> {
 		const result = await this.endpointManager.validateAndSetEndpoints(timeoutMs);
 		

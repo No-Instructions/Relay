@@ -2162,7 +2162,7 @@ export class RelayManager extends HasLogging {
 		principal: string,
 		permission: Permission,
 		resource: Relay | RemoteSharedFolder | RelaySubscription,
-		context?: Record<string, any>,
+		context?: Record<string, unknown>,
 	): ObservablePermission {
 		if (!this.policyManager) {
 			// Return a static false observable for missing policy manager
@@ -2189,7 +2189,7 @@ export class RelayManager extends HasLogging {
 	userCan(
 		permission: Permission,
 		resource: Relay | RemoteSharedFolder | RelaySubscription,
-		context?: Record<string, any>,
+		context?: Record<string, unknown>,
 	): ObservablePermission {
 		if (!this.user) {
 			// Return a static false observable for missing user

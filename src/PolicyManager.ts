@@ -147,7 +147,7 @@ export interface IPolicyManager {
 		principal: string,
 		permission: Permission,
 		resource: Resource,
-		context?: Record<string, any>,
+		context?: Record<string, unknown>,
 	): ObservablePermission;
 
 	/**
@@ -216,7 +216,7 @@ export class PolicyManager implements IPolicyManager {
 		principal: string,
 		permission: Permission,
 		resource: Resource,
-		context?: Record<string, any>,
+		context?: Record<string, unknown>,
 	): ObservablePermission {
 		const resourceType = this.getResourceType(resource);
 		const action = permission[1];

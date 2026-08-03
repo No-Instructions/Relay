@@ -91,7 +91,7 @@ function isLicense(obj: unknown): obj is License {
 	return typeof obj === 'object' && 
 		obj !== null && 
 		'license' in obj && 
-		typeof (obj as any).license === 'string';
+		typeof (obj as { license?: unknown }).license === 'string';
 }
 
 function isLicenseArray(data: unknown): data is License[] {

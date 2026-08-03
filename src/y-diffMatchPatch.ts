@@ -6,7 +6,7 @@ import { flags } from "./flagManager";
 export function diffMatchPatch(
 	ydoc: Y.Doc,
 	diskBuffer: string,
-	origin?: any,
+	origin?: unknown,
 ): void {
 	// Get the YText from the YDoc
 	const ytext = ydoc.getText("contents");
@@ -28,7 +28,7 @@ export function diffMatchPatch(
 
 	const log = flags().enableDeltaLogging
 		? curryLog("[diffMatchPatch]", "debug")
-		: (...args: any) => {};
+		: (...args: unknown[]) => {};
 
 	// Log the overall change
 	log("Updating YDoc:");

@@ -69,7 +69,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 	) as Record<keyof SyncFlags, boolean>;
 
 	constructor(
-		settings: Settings<any>,
+		settings: Settings<unknown>,
 		path: string,
 		public enabled = true,
 	) {

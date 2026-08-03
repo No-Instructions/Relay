@@ -292,7 +292,7 @@ export class YSweetProvider extends Observable<string> {
 	_bcSubscriber: Function;
 	_updateHandler: (
 		arg0: Uint8Array,
-		arg1: any,
+		arg1: unknown,
 		arg2: Y.Doc,
 		arg3: Y.Transaction,
 	) => void;
@@ -371,7 +371,7 @@ export class YSweetProvider extends Observable<string> {
 			}, resyncInterval);
 		}
 
-		this._bcSubscriber = (data: ArrayBuffer, origin: any) => {
+		this._bcSubscriber = (data: ArrayBuffer, origin: unknown) => {
 			if (origin !== this) {
 				const encoder = readMessage(this, new Uint8Array(data), false);
 				if (encoding.length(encoder) > 1) {
@@ -383,7 +383,7 @@ export class YSweetProvider extends Observable<string> {
 		/**
 		 * Listens to Yjs updates and sends them to remote peers (ws and broadcastchannel)
 		 */
-		this._updateHandler = (update: Uint8Array, origin: any) => {
+		this._updateHandler = (update: Uint8Array, origin: unknown) => {
 			if (origin !== this) {
 				const encoder = encoding.createEncoder();
 				encoding.writeVarUint(encoder, messageSync);
@@ -464,7 +464,7 @@ export class YSweetProvider extends Observable<string> {
 	/**
 	 * Override once to handle race condition where synced event already fired
 	 */
-	once(name: string, f: (...args: any[]) => void) {
+	once(name: string, f: (...args: unknown[]) => void) {
 		if (name === "synced" && this._synced) {
 			window.setTimeout(() => f(this._synced), 0);
 			return this;

@@ -8,7 +8,7 @@
 import { BaseAuthStore, type AuthModel } from "pocketbase";
 
 export class LocalAuthStore extends BaseAuthStore {
-	private storageFallback: { [key: string]: any } = {};
+	private storageFallback: { [key: string]: unknown } = {};
 	private storageKey: string;
 
 	constructor(storageKey = "pocketbase_auth") {

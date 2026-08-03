@@ -208,7 +208,7 @@ export class BackgroundSync extends HasLogging {
 
 			try {
 				const doc = item.doc;
-				let syncPromise: Promise<any>;
+				let syncPromise: Promise<unknown>;
 
 				if (doc instanceof SyncFile) {
 					syncPromise = this.syncFile(doc);
@@ -326,7 +326,7 @@ export class BackgroundSync extends HasLogging {
 			this.activeDownloads.add(item);
 
 			try {
-				let downloadPromise: Promise<any>;
+				let downloadPromise: Promise<unknown>;
 
 				// Choose the appropriate download method based on the document type
 				if (item.doc instanceof Canvas) {

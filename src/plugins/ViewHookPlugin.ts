@@ -55,8 +55,8 @@ export class ViewHookPlugin extends HasLogging {
 			this.unsubscribes.push(
 				getPatcher().patch(view, {
 					// @ts-ignore
-					saveFrontmatter(old: any) {
-						return function (data: any) {
+					saveFrontmatter(old: unknown) {
+						return function (data: unknown) {
 							that.debug("saveFrontmatter hook triggered");
 							that.saving = true;
 							// @ts-ignore
@@ -73,8 +73,8 @@ export class ViewHookPlugin extends HasLogging {
 		this.unsubscribes.push(
 			getPatcher().patch(view, {
 				// @ts-ignore
-				save(old: any) {
-					return function (data: any) {
+				save(old: unknown) {
+					return function (data: unknown) {
 						// @ts-ignore
 						const result = old.call(this, data);
 						try {

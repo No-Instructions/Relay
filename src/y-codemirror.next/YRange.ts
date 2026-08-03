@@ -18,14 +18,14 @@ export class YRange {
 		this.yhead = yhead;
 	}
 
-	toJSON(): any {
+	toJSON(): unknown {
 		return {
 			yanchor: Y.relativePositionToJSON(this.yanchor),
 			yhead: Y.relativePositionToJSON(this.yhead),
 		};
 	}
 
-	static fromJSON(json: any): YRange {
+	static fromJSON(json: { yanchor: unknown; yhead: unknown }): YRange {
 		return new YRange(
 			Y.createRelativePositionFromJSON(json.yanchor),
 			Y.createRelativePositionFromJSON(json.yhead),

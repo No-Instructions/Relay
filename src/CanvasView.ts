@@ -1,10 +1,10 @@
 import type { TFile, TextFileView, WorkspaceLeaf } from "obsidian";
 
 export interface ObsidianCanvas extends TextFileView {
-	__proto__: any;
+	__proto__: unknown;
 	importData(data: CanvasData, noclue: boolean): void;
 	requestSave(): void;
-	applyHistory(data: any): void;
+	applyHistory(data: unknown): void;
 	getData(): CanvasData;
 	markMoved(item: CanvasNode | CanvasEdge): void;
 	markDirty(item: CanvasNode | CanvasEdge): void;

@@ -15,7 +15,7 @@ export interface Mail<T> {
 export class PostOffice {
 	private static _destroyed: boolean = false;
 	private static instance: PostOffice;
-	private mailboxes: Map<(value: any) => void, Set<IObservable<any>>> =
+	private mailboxes: Map<(value: any) => void, Set<IObservable<unknown>>> =
 		new Map();
 	private allMailLog: Mail<any>[] = [];
 	private deliveredMailLog: Mail<any>[] = [];
@@ -122,11 +122,11 @@ export class PostOffice {
 		}
 	}
 
-	getAllMailLog(): Mail<any>[] {
+	getAllMailLog(): Mail<unknown>[] {
 		return [...this.allMailLog];
 	}
 
-	getDeliveredMailLog(): Mail<any>[] {
+	getDeliveredMailLog(): Mail<unknown>[] {
 		return [...this.deliveredMailLog];
 	}
 
@@ -163,7 +163,7 @@ export class PostOffice {
 		return text;
 	}
 
-	getFunctionOrigin(func: (...args: any[]) => any): string {
+	getFunctionOrigin(func: (...args: any[]) => unknown): string {
 		// If the function has a name, return it
 		if (func.name) {
 			return func.name;

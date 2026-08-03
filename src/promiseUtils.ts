@@ -131,7 +131,7 @@ export class SharedPromise<T> {
 
 export function withTimeoutWarning<T>(
 	promise: Promise<T>,
-	...logArgs: any[]
+	...logArgs: unknown[]
 ): Promise<T> {
 	return new Promise((resolve, reject) => {
 		const timeoutId = window.setTimeout(() => {

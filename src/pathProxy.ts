@@ -8,7 +8,7 @@ export function createPathProxy<T>(
 		get(target, prop) {
 			const originalMethod = target[prop];
 			if (typeof originalMethod === "function") {
-				return function (...args: any[]) {
+				return function (...args: unknown[]) {
 					if (args.length > 0 && typeof args[0] === "string") {
 						args[0] = pathConverter(args[0], rootPath);
 					}
