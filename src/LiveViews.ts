@@ -1532,9 +1532,10 @@ export class LiveViewManager {
 
 	findView(cmEditor: EditorView): LiveView<MarkdownView> | undefined {
 		return this.views.filter(isLiveMd).find((view) => {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Obsidian's editor wrapper exposes CodeMirror through an untyped property.
-			const editor = view.view.editor as any;
-			const cm = editor.cm as EditorView;
+			const editor = view.view.editor as typeof view.view.editor & {
+				cm: EditorView;
+			};
+			const cm = editor.cm;
 			return cm === cmEditor;
 		});
 	}
