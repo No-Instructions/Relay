@@ -31,7 +31,7 @@ export class EndpointConfigModal extends Modal {
 		// Listen for apply event from component
 		this.component.$on("apply", () => {
 			this.close();
-			new Notice("Reload the Relay plugin to apply endpoint changes.", 8000);
+			new Notice("Reload the plugin to apply endpoint changes.", 8000);
 		});
 	}
 

@@ -55,7 +55,7 @@
 {#if isLoggedOut}
 	<button
 		class="clickable-icon view-action system3-view-action mod-warning"
-		aria-label="Login to enable Live edits"
+		aria-label="Login to enable live edits"
 		tabindex="0"
 		on:click={handleClick}
 		on:keypress={handleKeyPress}

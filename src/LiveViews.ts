@@ -137,8 +137,8 @@ export class LoggedOutView implements S3View {
 			// Create login button element
 			const loginButton = createEl("button", {
 				cls: "view-header-left system3-login-button",
-				text: "Login to enable Live edits",
-				attr: { "aria-label": "Login to enable Live edits", tabindex: "0" },
+				text: "Login to enable live edits",
+				attr: { "aria-label": "Login to enable live edits", tabindex: "0" },
 			});
 			
 			// Add click handler
@@ -165,7 +165,7 @@ export class LoggedOutView implements S3View {
 		} else {
 			this.banner = new Banner(
 				this.view,
-				"Login to enable Live edits",
+				"Login to enable live edits",
 				async () => {
 					return await this.login();
 				},

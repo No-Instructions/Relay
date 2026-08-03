@@ -203,7 +203,7 @@ export default class Live extends Plugin {
 					_lastValidationError: undefined,
 					_lastValidationAttempt: undefined,
 				}));
-				new Notice("✓ Endpoints validated and applied successfully!", 5000);
+				new Notice("Endpoints validated and applied successfully!", 5000);
 				if (result.licenseInfo) {
 					this.log("License validation successful:", result.licenseInfo);
 				}
