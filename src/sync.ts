@@ -22,7 +22,7 @@ export async function getSyncInfo(
 	const dbExists = databases.some((db) => db.name === dbName);
 
 	if (!dbExists) {
-		console.log(`Database ${dbName} does not exist.`);
+		console.debug(`Database ${dbName} does not exist.`);
 		return null;
 	}
 
