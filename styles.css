@@ -1,4 +1,6 @@
 .invalid-link {
+	--icon-size: 16px;
+	--icon-stroke-width: 2px;
 	display: inline-flex;
 	color: var(--link-external-color);
 	width: 0.8em;
@@ -61,6 +63,13 @@
 }
 .nav-folder-title-content {
 	margin-inline-end: auto;
+}
+.system3-metadata-health-slot {
+	order: 1;
+	flex: 0 0 auto;
+	height: auto;
+	min-height: 0;
+	overflow: visible;
 }
 .system3-sync-status-folder {
 	position: relative;
@@ -277,6 +286,8 @@
 }
 
 .file-diff__link-warning {
+	--icon-size: 16px;
+	--icon-stroke-width: 2px;
 	display: inline-flex;
 	vertical-align: text-bottom;
 }
