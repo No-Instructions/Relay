@@ -48,6 +48,9 @@ export class DiskBuffer implements TFile {
 		return this.path.substring(0, this.path.lastIndexOf("/"));
 	}
 }
+const asError = (e: unknown): Error =>
+	e instanceof Error ? e : new Error(String(e));
+
 export class DiskBufferStore {
 	private dbName = "RelayDiskBuffer";
 	private storeName = "diskBuffers";
@@ -63,7 +66,8 @@ export class DiskBufferStore {
 	private async openDB(): Promise<IDBDatabase> {
 		return new Promise((resolve, reject) => {
 			const request = indexedDB.open(this.dbName, 1);
-			request.onerror = () => reject(request.error);
+			request.onerror = () =>
+				reject(request.error ?? new Error("failed to open database"));
 			request.onsuccess = () => resolve(request.result);
 			request.onupgradeneeded = (event) => {
 				const db = (event.target as IDBOpenDBRequest).result;
@@ -79,10 +83,11 @@ export class DiskBufferStore {
 				const transaction = db.transaction(this.storeName, "readwrite");
 				const store = transaction.objectStore(this.storeName);
 				const request = store.put({ guid, contents });
-				request.onerror = () => reject(request.error);
+				request.onerror = () =>
+					reject(request.error ?? new Error("failed to save disk buffer"));
 				request.onsuccess = () => resolve();
 			} catch (e) {
-				reject(e);
+				reject(asError(e));
 			}
 		});
 	}
@@ -94,11 +99,12 @@ export class DiskBufferStore {
 				const transaction = db.transaction(this.storeName, "readonly");
 				const store = transaction.objectStore(this.storeName);
 				const request = store.get(guid);
-				request.onerror = () => reject(request.error);
+				request.onerror = () =>
+					reject(request.error ?? new Error("failed to load disk buffer"));
 				request.onsuccess = () =>
 					resolve(request.result ? request.result.contents : null);
 			} catch (e) {
-				reject(e);
+				reject(asError(e));
 			}
 		});
 	}
@@ -110,10 +116,11 @@ export class DiskBufferStore {
 				const transaction = db.transaction(this.storeName, "readwrite");
 				const store = transaction.objectStore(this.storeName);
 				const request = store.delete(guid);
-				request.onerror = () => reject(request.error);
+				request.onerror = () =>
+					reject(request.error ?? new Error("failed to delete disk buffer"));
 				request.onsuccess = () => resolve();
 			} catch (e) {
-				reject(e);
+				reject(asError(e));
 			}
 		});
 	}

@@ -58,7 +58,7 @@ export class Dependency<T> {
 						}
 						resolve(result);
 					},
-					(error) => {
+					(error: Error) => {
 						if (this.timeoutId) {
 							window.clearTimeout(this.timeoutId);
 						}
@@ -107,7 +107,7 @@ export class SharedPromise<T> {
 						this.currentPromise = null;
 						resolve(result);
 					},
-					(error) => {
+					(error: Error) => {
 						if (this.timeoutId) {
 							window.clearTimeout(this.timeoutId);
 						}
@@ -143,7 +143,7 @@ export function withTimeoutWarning<T>(
 				window.clearTimeout(timeoutId);
 				resolve(result);
 			},
-			(error) => {
+			(error: Error) => {
 				window.clearTimeout(timeoutId);
 				reject(error);
 			},
