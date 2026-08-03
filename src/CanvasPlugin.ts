@@ -553,8 +553,7 @@ export class CanvasPlugin extends HasLogging {
 			this.relayCanvas.path,
 		);
 
-		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Callbacks need the plugin instance when their receiver is the patched canvas.
-		const that = this;
+		const owner = () => this;
 
 		const reconciler = () => this.reconcileViewWithCanvas();
 		this.relayCanvas.setViewReconciler(reconciler);
@@ -566,6 +565,7 @@ export class CanvasPlugin extends HasLogging {
 			getPatcher().patch(this.view, {
 				setViewData(old: any) {
 					return function (data: string, clear: boolean) {
+						const plugin = owner();
 						// @ts-ignore
 						const res = old.call(this, data, clear);
 						// A load delivers view.file's own data, so it grants
@@ -573,7 +573,7 @@ export class CanvasPlugin extends HasLogging {
 						// stale disk file would overwrite anything imported
 						// earlier; the machine re-reconciles after every load.
 						try {
-							that.loadSeq++;
+							plugin.loadSeq++;
 							// A non-clearing load of an already-owned view is
 							// Obsidian ingesting an external disk change (file
 							// opens always clear): the rendered view is disk
@@ -584,21 +584,21 @@ export class CanvasPlugin extends HasLogging {
 							// freshly opened file would destructively import
 							// stale disk state.
 							if (clear) {
-								that.pendingViewIngest = null;
+								plugin.pendingViewIngest = null;
 							} else if (
-								that.viewDataOwned &&
-								that.view.file &&
-								that.view.file === that.relayCanvas.tfile
+								plugin.viewDataOwned &&
+								plugin.view.file &&
+								plugin.view.file === plugin.relayCanvas.tfile
 							) {
-								that.pendingViewIngest = {
-									seq: that.loadSeq,
-									file: that.view.file,
+								plugin.pendingViewIngest = {
+									seq: plugin.loadSeq,
+									file: plugin.view.file,
 								};
 							}
-							that.markViewDataOwned();
-							that.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
+							plugin.markViewDataOwned();
+							plugin.relayCanvas.hsm.send({ type: "OBSIDIAN_SET_VIEW_DATA" });
 						} catch (e) {
-							that.log(e);
+							plugin.log(e);
 						}
 						return res;
 					};
@@ -610,6 +610,7 @@ export class CanvasPlugin extends HasLogging {
 			getPatcher().patch(this.canvas, {
 				requestSave(old: any) {
 					return function () {
+						const plugin = owner();
 						// @ts-ignore
 						const res = old.call(this);
 						try {
@@ -618,24 +619,25 @@ export class CanvasPlugin extends HasLogging {
 							// definition — this is what re-establishes
 							// ownership for a view that held unsaved edits
 							// when the plugin attached.
-							that.markViewDataOwned();
-							that.relayCanvas.importFromView(that.view);
+							plugin.markViewDataOwned();
+							plugin.relayCanvas.importFromView(plugin.view);
 						} catch (e) {
-							that.log(e);
+							plugin.log(e);
 						}
 						return res;
 					};
 				},
 				applyHistory(old: any) {
 					return function (data: any) {
+						const plugin = owner();
 						// @ts-ignore
 						const res = old.call(this, data);
 						try {
-							if (that.viewDataOwned) {
-								that.relayCanvas.importFromView(that.view);
+							if (plugin.viewDataOwned) {
+								plugin.relayCanvas.importFromView(plugin.view);
 							}
 						} catch (e) {
-							that.log(e);
+							plugin.log(e);
 						}
 						return res;
 					};

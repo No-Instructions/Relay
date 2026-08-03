@@ -36,7 +36,7 @@ const DELAYS_ENABLED = process.env.TEST_ASYNC_DELAYS === "1";
 let fountain = new SeededRandom(TEST_SEED);
 
 if (DELAYS_ENABLED) {
-	console.log(`[test] Random delays ENABLED, seed: ${TEST_SEED}`);
+	console.debug(`[test] Random delays ENABLED, seed: ${TEST_SEED}`);
 }
 
 /** Check if async delays are enabled */

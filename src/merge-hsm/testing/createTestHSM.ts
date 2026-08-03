@@ -486,7 +486,7 @@ export async function createTestHSM(
 	hsm.onStateChange((from, to, event) => {
 		stateHistory.push({ from, to, event: event.type });
 		if (options.logTransitions) {
-			console.log(`[HSM] ${from} -> ${to} (${event.type})`);
+			console.debug(`[HSM] ${from} -> ${to} (${event.type})`);
 		}
 	});
 
