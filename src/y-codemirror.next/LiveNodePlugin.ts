@@ -102,45 +102,47 @@ export class LiveNodePluginValue implements PluginValue {
 		);
 		this.debug("created");
 
-		this._observer = async (event, tr) => {
-			this._ytext = this.getYText();
+		this._observer = (event, tr) => {
+			void (async () => {
+				this._ytext = this.getYText();
 
-			if (this.destroyed) {
-				this.debug("Recived yjs event but editor was destroyed");
-				return;
-			}
+				if (this.destroyed) {
+					this.debug("Recived yjs event but editor was destroyed");
+					return;
+				}
 
-			// Called when a yjs event is received. Results in updates to codemirror.
-			if (tr.origin !== this) {
-				const delta = event.delta;
-				const changes: ChangeSpec[] = [];
-				let pos = 0;
-				for (let i = 0; i < delta.length; i++) {
-					const d = delta[i];
-					if (d.insert != null) {
-						changes.push({
-							from: pos,
-							to: pos,
-							insert: d.insert as string,
+				// Called when a yjs event is received. Results in updates to codemirror.
+				if (tr.origin !== this) {
+					const delta = event.delta;
+					const changes: ChangeSpec[] = [];
+					let pos = 0;
+					for (let i = 0; i < delta.length; i++) {
+						const d = delta[i];
+						if (d.insert != null) {
+							changes.push({
+								from: pos,
+								to: pos,
+								insert: d.insert as string,
+							});
+						} else if (d.delete != null) {
+							changes.push({
+								from: pos,
+								to: pos + d.delete,
+								insert: "",
+							});
+							pos += d.delete;
+						} else if (d.retain != null) {
+							pos += d.retain;
+						}
+					}
+					if (this.view?.canvas) {
+						editor.dispatch({
+							changes,
+							annotations: [ySyncAnnotation.of(this.editor)],
 						});
-					} else if (d.delete != null) {
-						changes.push({
-							from: pos,
-							to: pos + d.delete,
-							insert: "",
-						});
-						pos += d.delete;
-					} else if (d.retain != null) {
-						pos += d.retain;
 					}
 				}
-				if (this.view?.canvas) {
-					editor.dispatch({
-						changes,
-						annotations: [ySyncAnnotation.of(this.editor)],
-					});
-				}
-			}
+		})();
 		};
 
 		this.observer = (event, tr) => {

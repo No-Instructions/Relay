@@ -229,63 +229,65 @@ export class LiveCMPluginValue implements PluginValue {
 			});
 		}
 
-		this._observer = async (event, tr) => {
-			this.document = this.getDocument();
+		this._observer = (event, tr) => {
+			void (async () => {
+				this.document = this.getDocument();
 
-			if (!this.active(this.view)) {
-				this.debug("Recived yjs event against a non-live view");
-				return;
-			}
-			if (this.destroyed) {
-				this.debug("Recived yjs event but editor was destroyed");
-				return;
-			}
+				if (!this.active(this.view)) {
+					this.debug("Recived yjs event against a non-live view");
+					return;
+				}
+				if (this.destroyed) {
+					this.debug("Recived yjs event but editor was destroyed");
+					return;
+				}
 
-			// Called when a yjs event is received. Results in updates to codemirror.
-			if (tr.origin !== this) {
-				const delta = event.delta;
-				let changes: ChangeSpec[] = [];
-				let pos = 0;
-				for (let i = 0; i < delta.length; i++) {
-					const d = delta[i];
-					if (d.insert != null) {
-						changes.push({
-							from: pos,
-							to: pos,
-							insert: d.insert as string,
+				// Called when a yjs event is received. Results in updates to codemirror.
+				if (tr.origin !== this) {
+					const delta = event.delta;
+					let changes: ChangeSpec[] = [];
+					let pos = 0;
+					for (let i = 0; i < delta.length; i++) {
+						const d = delta[i];
+						if (d.insert != null) {
+							changes.push({
+								from: pos,
+								to: pos,
+								insert: d.insert as string,
+							});
+						} else if (d.delete != null) {
+							changes.push({
+								from: pos,
+								to: pos + d.delete,
+								insert: "",
+							});
+							pos += d.delete;
+						} else if (d.retain != null) {
+							pos += d.retain;
+						}
+					}
+					if (
+						(isLiveMd(this.view) && !this.view.tracking) ||
+						(flags().enableEditorTweens && this.keyFrameCounter > TWEENS)
+					) {
+						this.keyFrameCounter = 0;
+						changes = await this.getKeyFrame(true);
+						this.debug(`dispatch (full)`);
+					} else {
+						this.keyFrameCounter += 1;
+						this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
+					}
+					if (this.active(this.view)) {
+						editor.dispatch({
+							changes,
+							annotations: [ySyncAnnotation.of(this.editor)],
 						});
-					} else if (d.delete != null) {
-						changes.push({
-							from: pos,
-							to: pos + d.delete,
-							insert: "",
-						});
-						pos += d.delete;
-					} else if (d.retain != null) {
-						pos += d.retain;
+						if (isLiveMd(this.view)) {
+							this.view.tracking = true;
+						}
 					}
 				}
-				if (
-					(isLiveMd(this.view) && !this.view.tracking) ||
-					(flags().enableEditorTweens && this.keyFrameCounter > TWEENS)
-				) {
-					this.keyFrameCounter = 0;
-					changes = await this.getKeyFrame(true);
-					this.debug(`dispatch (full)`);
-				} else {
-					this.keyFrameCounter += 1;
-					this.debug(`dispatch (incremental + ${this.keyFrameCounter})`);
-				}
-				if (this.active(this.view)) {
-					editor.dispatch({
-						changes,
-						annotations: [ySyncAnnotation.of(this.editor)],
-					});
-					if (isLiveMd(this.view)) {
-						this.view.tracking = true;
-					}
-				}
-			}
+		})();
 		};
 
 		this.observer = (event, tr) => {

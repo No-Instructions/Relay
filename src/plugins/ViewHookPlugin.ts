@@ -136,18 +136,20 @@ export class ViewHookPlugin extends HasLogging {
 	 * Setup document observer to trigger UI updates
 	 */
 	private setupDocumentObserver(): void {
-		this.observer = async (event: YTextEvent, tr: Transaction) => {
-			if (!this.active()) {
-				this.debug("Received yjs event against a non-active view");
-				return;
-			}
-			if (this.destroyed) {
-				this.debug("Received yjs event but plugin was destroyed");
-				return;
-			}
+		this.observer = (event: YTextEvent, tr: Transaction) => {
+			void (async () => {
+				if (!this.active()) {
+					this.debug("Received yjs event against a non-active view");
+					return;
+				}
+				if (this.destroyed) {
+					this.debug("Received yjs event but plugin was destroyed");
+					return;
+				}
 
-			this.debug("Document changed, updating all renderers");
-			this.renderAll();
+				this.debug("Document changed, updating all renderers");
+				this.renderAll();
+		})();
 		};
 
 		this._ytext.observe(this.observer);
