@@ -442,8 +442,6 @@ export class YSweetProvider extends Observable<string> {
 				"unload",
 				this._unloadHandler,
 			);
-		} else if (typeof process !== "undefined") {
-			process.on("exit", this._unloadHandler);
 		}
 
 		awareness.on("update", this._awarenessUpdateHandler);
@@ -551,8 +549,6 @@ export class YSweetProvider extends Observable<string> {
 				this._unloadHandler,
 			);
 			window.clearInterval(this.awareness._checkInterval);
-		} else if (typeof process !== "undefined") {
-			process.off("exit", this._unloadHandler);
 		}
 		this.awareness.off("update", this._awarenessUpdateHandler);
 		this.doc.off("update", this._updateHandler);
