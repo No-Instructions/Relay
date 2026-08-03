@@ -235,18 +235,18 @@ export class TextFileViewPlugin extends HasLogging {
 			this.view.document.path,
 		);
 
-		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Patch callbacks need the plugin instance when their receiver is the patched view.
-		const that = this;
+		const owner = () => this;
 
 		this.unsubscribes.push(
 			getPatcher().patch(this.view.view, {
 				setViewData(old: any) {
 					return function (this: any, data: string, clear: boolean) {
-						that.warn("instance hook: setViewData", this.getViewType());
+						const plugin = owner();
+						plugin.warn("instance hook: setViewData", this.getViewType());
 
 						// Don't process if file isn't loaded yet
-						if (!that.view.view.file) {
-							that.warn(
+						if (!plugin.view.view.file) {
+							plugin.warn(
 								"setViewData called before file loaded, deferring to original",
 							);
 							return old.call(this, data, clear);
@@ -254,12 +254,12 @@ export class TextFileViewPlugin extends HasLogging {
 
 						if (clear) {
 							if (
-								isLive(that.view) &&
-								that.doc &&
-								that.view.view.file === that.doc.tfile
+								isLive(plugin.view) &&
+								plugin.doc &&
+								plugin.view.view.file === plugin.doc.tfile
 							) {
-								if (that.doc.localText === data) {
-									that.view.tracking = true;
+								if (plugin.doc.localText === data) {
+									plugin.view.tracking = true;
 								}
 							}
 						}
@@ -268,7 +268,7 @@ export class TextFileViewPlugin extends HasLogging {
 
 						// Call resync AFTER original setViewData succeeds
 						if (clear) {
-							that.resync();
+							plugin.resync();
 						}
 
 						return result;
@@ -276,25 +276,26 @@ export class TextFileViewPlugin extends HasLogging {
 				},
 				requestSave(old: any) {
 					return function (this: any) {
-						that.warn("instance hook: requestSave called", this.getViewType());
-						if (isLive(that.view) && !that.saving && that.doc) {
-							if (that.view.tracking && !that.saving) {
-								that.warn("tracking - applying diff");
-								const hsm = that.doc.hsm;
-								const docText = that.view.view.getViewData();
+						const plugin = owner();
+						plugin.warn("instance hook: requestSave called", this.getViewType());
+						if (isLive(plugin.view) && !plugin.saving && plugin.doc) {
+							if (plugin.view.tracking && !plugin.saving) {
+								plugin.warn("tracking - applying diff");
+								const hsm = plugin.doc.hsm;
+								const docText = plugin.view.view.getViewData();
 								if (!hsm) {
 									throw new Error("TextFileViewPlugin requestSave: no HSM");
 								}
 								hsm.send({
 									type: "CM6_CHANGE",
-									changes: hsm.computeDiffChanges(that.doc.localText, docText),
+									changes: hsm.computeDiffChanges(plugin.doc.localText, docText),
 									docText,
 									userEvent: "set",
 								});
 								return old.call(this);
 							} else {
-								that.warn("not tracking - resync");
-								that.resync();
+								plugin.warn("not tracking - resync");
+								plugin.resync();
 							}
 						}
 						return old.call(this);

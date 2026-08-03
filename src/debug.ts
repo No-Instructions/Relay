@@ -302,14 +302,27 @@ export function curryLog(initialText: string, level: LogLevel = "log") {
 			};
 
 			if (!logConfig.disableConsole) {
-				if (logConfig.allowStackTraces || level === 'debug' || level === 'log') {
-					console[level](formatLogEntry(logEntry));
+				const formattedEntry = formatLogEntry(logEntry);
+				if (level === "error") {
+					if (logConfig.allowStackTraces) {
+						console.error(formattedEntry);
+					} else {
+						console.error(
+							`%c${formattedEntry}`,
+							"color: #ff5555; background: rgba(255, 85, 85, 0.1); font-weight: normal; padding: 1px 4px; border-radius: 2px;",
+						);
+					}
+				} else if (level === "warn") {
+					if (logConfig.allowStackTraces) {
+						console.warn(formattedEntry);
+					} else {
+						console.warn(
+							`%c${formattedEntry}`,
+							"color: #ff8c00; background: rgba(255, 140, 0, 0.1); font-weight: normal; padding: 1px 4px; border-radius: 2px;",
+						);
+					}
 				} else {
-					const styles = {
-						warn: 'color: #ff8c00; background: rgba(255, 140, 0, 0.1); font-weight: normal; padding: 1px 4px; border-radius: 2px;',
-						error: 'color: #ff5555; background: rgba(255, 85, 85, 0.1); font-weight: normal; padding: 1px 4px; border-radius: 2px;'
-					};
-					console.log(`%c${formatLogEntry(logEntry)}`, styles[level]);
+					console.debug(formattedEntry);
 				}
 			}
 
