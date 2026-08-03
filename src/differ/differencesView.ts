@@ -123,7 +123,7 @@ export class DifferencesView extends ItemView {
 		this.build();
 	}
 
-	async onunload(): Promise<void> {
+	onunload(): void {
 		void this.state?.onResolve?.();
 	}
 
