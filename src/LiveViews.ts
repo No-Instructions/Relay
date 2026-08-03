@@ -135,11 +135,11 @@ export class LoggedOutView implements S3View {
 			this.clearLoginButton();
 			
 			// Create login button element
-			const loginButton = document.createElement("button");
-			loginButton.className = "view-header-left system3-login-button";
-			loginButton.textContent = "Login to enable Live edits";
-			loginButton.setAttribute("aria-label", "Login to enable Live edits");
-			loginButton.setAttribute("tabindex", "0");
+			const loginButton = createEl("button", {
+				cls: "view-header-left system3-login-button",
+				text: "Login to enable Live edits",
+				attr: { "aria-label": "Login to enable Live edits", tabindex: "0" },
+			});
 			
 			// Add click handler
 			loginButton.addEventListener("click", () => {
@@ -486,11 +486,14 @@ export class LiveView<ViewType extends TextFileView>
 			this.clearMergeButton();
 			
 			// Create merge button element
-			const mergeButton = document.createElement("button");
-			mergeButton.className = "view-header-left system3-merge-button";
-			mergeButton.textContent = "Merge conflict";
-			mergeButton.setAttribute("aria-label", "Merge conflict -- click to resolve");
-			mergeButton.setAttribute("tabindex", "0");
+			const mergeButton = createEl("button", {
+				cls: "view-header-left system3-merge-button",
+				text: "Merge conflict",
+				attr: {
+					"aria-label": "Merge conflict -- click to resolve",
+					tabindex: "0",
+				},
+			});
 			
 			// Add click handler
 			mergeButton.addEventListener("click", () => {

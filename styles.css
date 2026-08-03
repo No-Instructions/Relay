@@ -309,3 +309,11 @@
 .is-phone .modal .setting-item-control button.system3-button {
 	width: auto;
 }
+
+.system3-awareness-host {
+	position: relative;
+}
+
+.system3-hidden {
+	display: none;
+}

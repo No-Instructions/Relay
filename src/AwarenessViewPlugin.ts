@@ -56,8 +56,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		}
 
 		// Create container for the awareness component
-		this.awarenessElement = document.createElement("div");
-		this.awarenessElement.className = "user-awareness-container";
+		this.awarenessElement = createDiv({ cls: "user-awareness-container" });
 
 		// Insert as sibling after the inline-title (more robust than wrapping)
 		// Use absolute positioning via CSS to place it next to the title
@@ -66,7 +65,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		// Make the parent position relative so we can position absolutely
 		const parent = inlineTitle.parentElement;
 		if (parent) {
-			parent.style.position = "relative";
+			parent.addClass("system3-awareness-host");
 		}
 	}
 
