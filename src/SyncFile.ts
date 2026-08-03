@@ -429,7 +429,7 @@ export class SyncFile
 			if (flags().enableVerifyUploads) {
 				// Not remote
 				try {
-					if (!this.verifyUpload()) {
+					if (!(await this.verifyUpload())) {
 						this.warn("file in metadata, but not on the server!");
 						await this.push();
 					}
