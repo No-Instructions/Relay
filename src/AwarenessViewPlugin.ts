@@ -122,7 +122,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		}
 
 		if (!this.awarenessElement) {
-			this.awarenessElement = containerEl.ownerDocument.createElement("div");
+			this.awarenessElement = containerEl.createDiv();
 			this.awarenessElement.className = "user-awareness-container";
 			if (this.host.variantClass) {
 				this.awarenessElement.classList.add(this.host.variantClass);

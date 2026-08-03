@@ -24,6 +24,7 @@
 
 import { structuredPatch, diffWords } from "diff";
 import {
+	setIcon,
 	Workspace,
 	ItemView,
 	TFile,
@@ -526,7 +527,7 @@ export class DifferencesView extends ItemView {
 	}
 
 	private buildDecoratedLine(runs: DiffTextRun[]): HTMLDivElement {
-		const fragment = this.contentEl.ownerDocument.createElement("div");
+		const fragment = createDiv();
 		const text = runs.map((run) => run.text).join("");
 		if (text.length === 0) {
 			fragment.textContent = preventEmptyString(text);
@@ -558,7 +559,7 @@ export class DifferencesView extends ItemView {
 			const link = linkRanges.find(
 				(range) => from >= range.from && to <= range.to,
 			);
-			const span = this.contentEl.ownerDocument.createElement("span");
+			const span = fragment.createSpan();
 			span.textContent = segment;
 			if (run?.className) {
 				span.classList.add(run.className);
@@ -566,7 +567,6 @@ export class DifferencesView extends ItemView {
 			if (link) {
 				this.decorateLinkSpan(span, link);
 			}
-			fragment.appendChild(span);
 			if (link && to === link.to && !link.resolved) {
 				fragment.appendChild(this.createBrokenLinkIcon(link));
 			}
@@ -602,11 +602,10 @@ export class DifferencesView extends ItemView {
 	}
 
 	private createBrokenLinkIcon(link: DiffLinkRange): HTMLSpanElement {
-		const span = this.contentEl.ownerDocument.createElement("span");
+		const span = createSpan();
 		span.classList.add("invalid-link", "file-diff__link-warning");
 		span.title = `Link target not found: ${link.target}`;
-		span.innerHTML =
-			'<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-warning"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+		setIcon(span, "file-warning");
 		return span;
 	}
 
