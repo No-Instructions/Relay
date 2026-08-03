@@ -1217,7 +1217,7 @@ export default class Live extends Plugin {
 	}
 
 	async openSettings(path: string = "/") {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Obsidian's settings controller is not part of the public application type.
 		const setting = (this.app as any).setting;
 		await setting.open();
 		await setting.openTabById("system3-relay");
@@ -1246,7 +1246,7 @@ export default class Live extends Plugin {
 	}
 
 	patchWebviewer(): void {
-		// eslint-disable-next-line
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Patched webviewer callbacks need the plugin instance rather than their own receiver.
 		const plugin = this;
 		try {
 			if (this.webviewerPatched) {
@@ -1572,7 +1572,7 @@ export default class Live extends Plugin {
 			}),
 		);
 
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Prototype patches need the plugin instance when their receiver is the patched view.
 		const plugin = this;
 
 		/** Route a diagnostic event to the HSM for the given file (if it's a Relay document). */
@@ -1887,6 +1887,7 @@ export default class Live extends Plugin {
 			const appCommands = appAny.commands;
 			const qualifiedCommand = `system3-relay:${command}`;
 			if (
+				// eslint-disable-next-line no-prototype-builtins -- Obsidian's command registry owns its command entries.
 				appCommands.commands.hasOwnProperty(qualifiedCommand) ||
 				appAny.hotkeyManager.removeDefaultHotkeys(qualifiedCommand)
 			) {

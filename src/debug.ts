@@ -954,7 +954,6 @@ class RelayMetrics {
  * Initialize metrics integration with Obsidian app.
  * Sets up event listener for tsdb:ready and checks if already available.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function initializeMetrics(
 	app: any,
 	registerEvent: (eventRef: any) => void,

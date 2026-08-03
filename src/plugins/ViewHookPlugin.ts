@@ -16,7 +16,6 @@ import { MetadataRenderer } from "./MetadataRenderer";
  */
 export class ViewHookPlugin extends HasLogging {
 	private view: MarkdownView;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	private document: Document;
 	private renderers: ViewRenderer[];
 	private unsubscribes: Array<() => void> = [];
@@ -109,7 +108,7 @@ export class ViewHookPlugin extends HasLogging {
 	 * Install hooks into Obsidian's internal methods for UI-specific edit pathways
 	 */
 	private installMarkdownHooks(view: MarkdownView): void {
-		// eslint-disable-next-line @typescript-eslint/no-this-alias
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Renderer hooks need the plugin instance when Obsidian supplies another receiver.
 		const that = this;
 
 		// Hook 1: Track metadata saves.

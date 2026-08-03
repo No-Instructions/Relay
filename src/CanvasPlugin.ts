@@ -553,7 +553,7 @@ export class CanvasPlugin extends HasLogging {
 			this.relayCanvas.path,
 		);
 
-		// eslint-disable-next-line
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Callbacks need the plugin instance when their receiver is the patched canvas.
 		const that = this;
 
 		const reconciler = () => this.reconcileViewWithCanvas();
