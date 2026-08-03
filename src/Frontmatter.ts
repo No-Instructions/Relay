@@ -20,7 +20,7 @@ export function updateFrontMatter(
 
 export function hasKey(markdownString: string, keyMatch: string) {
 	const parsed = matter(markdownString);
-	return parsed.data.hasOwnProperty(keyMatch);
+	return Object.prototype.hasOwnProperty.call(parsed.data, keyMatch);
 }
 
 export function removeKey(markdownString: string, keyMatch: string) {

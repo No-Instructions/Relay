@@ -1162,7 +1162,10 @@ export default class Live extends Plugin {
 			const appCommands = appAny.commands;
 			const qualifiedCommand = `system3-relay:${command}`;
 			if (
-				appCommands.commands.hasOwnProperty(qualifiedCommand) ||
+				Object.prototype.hasOwnProperty.call(
+					appCommands.commands,
+					qualifiedCommand,
+				) ||
 				appAny.hotkeyManager.removeDefaultHotkeys(qualifiedCommand)
 			) {
 				delete appCommands.commands[qualifiedCommand];
