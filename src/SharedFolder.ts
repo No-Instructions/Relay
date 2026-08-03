@@ -1865,8 +1865,8 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		this.unsubscribes.forEach((unsub) => {
 			unsub();
 		});
-		this.relayManager = null as any;
-		this.folderBuilder = null as any;
+		this.relayManager = null as unknown as typeof this.relayManager;
+		this.folderBuilder = null as unknown as typeof this.folderBuilder;
 	}
 
 	load() {

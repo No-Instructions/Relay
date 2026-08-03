@@ -1,4 +1,4 @@
-import { NamespacedSettings, Settings } from "./SettingsStorage";
+import { NamespacedSettings, type SettingsTree } from "./SettingsStorage";
 import { flags } from "./flagManager";
 
 export interface SyncCategory {
@@ -69,7 +69,7 @@ export class SyncSettingsManager extends NamespacedSettings<
 	) as Record<keyof SyncFlags, boolean>;
 
 	constructor(
-		settings: Settings<unknown>,
+		settings: SettingsTree,
 		path: string,
 		public enabled = true,
 	) {

@@ -49,7 +49,11 @@ import { PostOffice } from "./observable/Postie";
 import { BackgroundSync } from "./BackgroundSync";
 import { FeatureFlagToggleModal } from "./ui/FeatureFlagModal";
 import { DebugModal } from "./ui/DebugModal";
-import { NamespacedSettings, Settings } from "./SettingsStorage";
+import {
+	NamespacedSettings,
+	Settings,
+	type SettingsTree,
+} from "./SettingsStorage";
 import { ObsidianFileAdapter, ObsidianNotifier } from "./debugObsididan";
 import { BugReportModal } from "./ui/BugReportModal";
 import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
@@ -341,15 +345,16 @@ export default class Live extends Plugin {
 		this.settings = new Settings(this, DEFAULT_SETTINGS);
 		await this.settings.load();
 
-		this.featureSettings = new NamespacedSettings(this.settings, "(enable*)");
-		this.debugSettings = new NamespacedSettings(this.settings, "(debugging)");
+		const settingsTree = this.settings as unknown as SettingsTree;
+		this.featureSettings = new NamespacedSettings(settingsTree, "(enable*)");
+		this.debugSettings = new NamespacedSettings(settingsTree, "(debugging)");
 		this.folderSettings = new NamespacedSettings(
-			this.settings,
+			settingsTree,
 			"sharedFolders",
 		);
-		this.releaseSettings = new NamespacedSettings(this.settings, "release");
-		this.loginSettings = new NamespacedSettings(this.settings, "login");
-		this.endpointSettings = new NamespacedSettings(this.settings, "endpoints");
+		this.releaseSettings = new NamespacedSettings(settingsTree, "release");
+		this.loginSettings = new NamespacedSettings(settingsTree, "login");
+		this.endpointSettings = new NamespacedSettings(settingsTree, "endpoints");
 
 		const flagManager = FeatureFlagManager.getInstance();
 		flagManager.setSettings(this.featureSettings);
@@ -705,7 +710,7 @@ export default class Live extends Plugin {
 	): SharedFolder {
 		// Initialize settings with pattern matching syntax
 		const folderSettings = new NamespacedSettings<SharedFolderSettings>(
-			this.settings,
+			this.settings as unknown as SettingsTree,
 			`sharedFolders/[guid=${guid}]`,
 		);
 		const settings: SharedFolderSettings = { guid: guid, path: path };

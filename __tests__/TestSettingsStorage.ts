@@ -4,7 +4,7 @@ import { MockTimeProvider } from "./mocks/MockTimeProvider";
 import { NamespacedSettings, Settings } from "../src/SettingsStorage";
 import { PostOffice } from "../src/observable/Postie";
 
-interface TestData {
+type TestData = {
 	foo: string;
 	count: number;
 }
@@ -52,7 +52,10 @@ describe("NamespacedSettings", () => {
 		/**
 		 * Tests that the NamespacedSettings returns an empty object when the specified path is not found in the settings.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		expect(namespaced.get()).toEqual({});
 	});
 
@@ -79,7 +82,10 @@ describe("NamespacedSettings", () => {
 		 * Tests setting and retrieving a nested value within the settings.
 		 * Verifies that the data is correctly stored and can be retrieved via the NamespacedSettings instance.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		const testData: TestData = {
 			foo: "bar",
 			count: 42,
@@ -125,7 +131,10 @@ describe("NamespacedSettings", () => {
 		 * Tests updating an existing nested value within the settings.
 		 * Uses the update method to modify a specific property and verifies the change.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<{ count: number; foo?: string }>(
+			settings,
+			"test/path",
+		);
 		await namespaced.set({ foo: "initial", count: 1 });
 		mockTime.setTime(mockTime.getTime() + 30);
 
@@ -179,7 +188,10 @@ describe("NamespacedSettings", () => {
 		/**
 		 * Tests the exists method to confirm it returns true when the path exists in the settings.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		await namespaced.set({ foo: "test", count: 1 });
 		mockTime.setTime(mockTime.getTime() + 30);
 
@@ -200,7 +212,10 @@ describe("NamespacedSettings", () => {
 		 * Tests the delete method to ensure it removes the specified value from the settings.
 		 * Verifies that after deletion, exists returns false and get returns an empty object.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		await namespaced.set({ foo: "test", count: 1 });
 		mockTime.setTime(mockTime.getTime() + 30);
 
@@ -268,7 +283,10 @@ describe("NamespacedSettings", () => {
 		 * Tests that unsubscribing a listener stops it from receiving further notifications.
 		 * Verifies by setting a new value after unsubscribing and checking that the listener is not called again.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		const unsubscribe = namespaced.subscribe(listener);
 		unsubscribe();
 
@@ -460,7 +478,10 @@ describe("NamespacedSettings", () => {
 		/**
 		 * Tests that an error is thrown when attempting to set an undefined value.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 
 		await expect(
 			namespaced.set(undefined as unknown as TestData),
@@ -471,7 +492,10 @@ describe("NamespacedSettings", () => {
 		/**
 		 * Tests that a destroyed NamespacedSettings instance throws an error when methods are called.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		namespaced.destroy();
 
 		expect(() => namespaced.get()).toThrow("Cannot use destroyed settings");
@@ -499,7 +523,10 @@ describe("NamespacedSettings", () => {
 		/**
 		 * Tests the flush method, which forces an update notification to listeners.
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		namespaced.subscribe(listener);
 
 		await namespaced.flush();
@@ -549,7 +576,10 @@ describe("NamespacedSettings", () => {
 		/**
 		 * Tests that listeners are notified when the underlying settings change externally (not through the NamespacedSettings instance).
 		 */
-		const namespaced = new NamespacedSettings(settings, "test/path");
+		const namespaced = new NamespacedSettings<Record<string, unknown>>(
+			settings,
+			"test/path",
+		);
 		namespaced.subscribe(listener);
 
 		await settings.update((current) => ({

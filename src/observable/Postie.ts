@@ -12,13 +12,21 @@ export interface Mail<T> {
 	recipientOrigin?: string;
 }
 
+export interface MailLogEntry {
+	sender: { observableName?: string; constructor: { name: string } };
+	recipient: { name: string };
+	transactionId: number;
+	timestamp: number;
+	recipientOrigin?: string;
+}
+
 export class PostOffice {
 	private static _destroyed: boolean = false;
 	private static instance: PostOffice;
-	private mailboxes: Map<(value: any) => void, Set<IObservable<unknown>>> =
+	private mailboxes: Map<(value: never) => void, Set<IObservable<unknown>>> =
 		new Map();
-	private allMailLog: Mail<any>[] = [];
-	private deliveredMailLog: Mail<any>[] = [];
+	private allMailLog: MailLogEntry[] = [];
+	private deliveredMailLog: MailLogEntry[] = [];
 	private isDelivering: boolean = false;
 	private deliveryInterval: number | null = null;
 	private currentTransactionId: number = 0;
@@ -108,7 +116,7 @@ export class PostOffice {
 		const log = curryLog("[postie]", "debug");
 		for (const [recipient, senders] of this.mailboxes) {
 			for (const sender of senders) {
-				recipient(sender);
+				(recipient as (value: unknown) => void)(sender);
 				log("send", sender.constructor.name, recipient);
 				this.deliveredMailLog.push({
 					sender,
@@ -122,11 +130,11 @@ export class PostOffice {
 		}
 	}
 
-	getAllMailLog(): Mail<unknown>[] {
+	getAllMailLog(): MailLogEntry[] {
 		return [...this.allMailLog];
 	}
 
-	getDeliveredMailLog(): Mail<unknown>[] {
+	getDeliveredMailLog(): MailLogEntry[] {
 		return [...this.deliveredMailLog];
 	}
 
@@ -142,7 +150,7 @@ export class PostOffice {
 		);
 	}
 
-	private prettyPrintMailLog(log: Mail<any>[]): string {
+	private prettyPrintMailLog(log: MailLogEntry[]): string {
 		let text = "";
 		const _log = (msg: string) => {
 			text += `${msg}\n`;
@@ -163,7 +171,7 @@ export class PostOffice {
 		return text;
 	}
 
-	getFunctionOrigin(func: (...args: any[]) => unknown): string {
+	getFunctionOrigin(func: (...args: never[]) => unknown): string {
 		// If the function has a name, return it
 		if (func.name) {
 			return func.name;

@@ -1,4 +1,12 @@
-import type { Permission, Resource } from "./Relay";
+import type {
+	FolderRole,
+	Permission,
+	Relay,
+	RelayRole,
+	RemoteSharedFolder,
+	Resource,
+	StorageQuota,
+} from "./Relay";
 import type { RelayManager, RelayCollectionMap } from "./RelayManager";
 import { Observable } from "./observable/Observable";
 import type { Readable } from "svelte/store";
@@ -10,7 +18,7 @@ export interface AuthorizationRequest {
 	principal: string; // User ID
 	action: string; // What action to perform
 	resource: Resource; // Resource identifier (["relay", id])
-	context?: Record<string, any>; // Additional context (file size, etc.)
+	context?: Record<string, unknown>; // Additional context (file size, etc.)
 }
 
 /**
@@ -49,7 +57,7 @@ export interface PolicyDefinition {
 	 */
 	dependencies: Record<
 		string,
-		(item: any, request: AuthorizationRequest) => boolean
+		(item: never, request: AuthorizationRequest) => boolean
 	>;
 
 	/**
@@ -259,7 +267,7 @@ export class PolicyManager implements IPolicyManager {
 	private getFilteredCollections(
 		dependencies: Record<
 			string,
-			(item: unknown, request: AuthorizationRequest) => boolean
+			(item: never, request: AuthorizationRequest) => boolean
 		>,
 		request: AuthorizationRequest,
 	): RelayCollectionMap[] {
@@ -282,12 +290,12 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "delete"],
 			description: "Delete a shared folder",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					!!(
 						role.sharedFolderId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
 					),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
@@ -297,7 +305,7 @@ export class PolicyManager implements IPolicyManager {
 						role.userId === request.principal
 					);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderDelete.bind(this),
@@ -307,12 +315,12 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "rename"],
 			description: "Rename a shared folder",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					!!(
 						role.sharedFolderId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
 					),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
@@ -322,7 +330,7 @@ export class PolicyManager implements IPolicyManager {
 						role.userId === request.principal
 					);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderRename.bind(this),
@@ -332,15 +340,15 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "read_content"],
 			description: "Read folder contents and add to vault",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					role.sharedFolderId === this.getResourceId(request.resource),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
 					return !!(folder && role.relayId === folder.relayId);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderRead.bind(this),
@@ -350,15 +358,15 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "edit_content"],
 			description: "Edit notes in folder",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					role.sharedFolderId === this.getResourceId(request.resource),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
 					return !!(folder && role.relayId === folder.relayId);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderWrite.bind(this),
@@ -368,23 +376,23 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "upload"],
 			description: "Upload attachments to folder",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					role.sharedFolderId === this.getResourceId(request.resource),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
 					return !!(folder && role.relayId === folder.relayId);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
-				relays: (relay, request) => {
+				relays: (relay: Relay, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
 					return !!(folder && relay.id === folder.relayId);
 				},
-				storage_quotas: (quota, request) => {
+				storage_quotas: (quota: StorageQuota, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
@@ -399,15 +407,15 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "download"],
 			description: "Download attachments from folder",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					role.sharedFolderId === this.getResourceId(request.resource),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
 					return !!(folder && role.relayId === folder.relayId);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderDownload.bind(this),
@@ -417,15 +425,15 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "manage_files"],
 			description: "Add/remove/rename files in folder",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					role.sharedFolderId === this.getResourceId(request.resource),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
 					return !!(folder && role.relayId === folder.relayId);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderManageFiles.bind(this),
@@ -436,7 +444,7 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["relay", "delete"],
 			description: "Delete a relay server",
 			dependencies: {
-				relay_roles: (role, request) =>
+				relay_roles: (role: RelayRole, request) =>
 					!!(
 						role.relayId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
@@ -449,7 +457,7 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["relay", "rename"],
 			description: "Rename a relay server",
 			dependencies: {
-				relay_roles: (role, request) =>
+				relay_roles: (role: RelayRole, request) =>
 					!!(
 						role.relayId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
@@ -462,7 +470,7 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["relay", "manage_users"],
 			description: "Manage users in relay server (add/remove/change roles)",
 			dependencies: {
-				relay_roles: (role, request) =>
+				relay_roles: (role: RelayRole, request) =>
 					!!(
 						role.relayId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
@@ -476,7 +484,7 @@ export class PolicyManager implements IPolicyManager {
 			description:
 				"Manage relay share keys (enable/disable sharing, rotate keys)",
 			dependencies: {
-				relay_roles: (role, request) =>
+				relay_roles: (role: RelayRole, request) =>
 					!!(
 						role.relayId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
@@ -489,7 +497,7 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["subscription", "manage"],
 			description: "Manage relay subscriptions and plans",
 			dependencies: {
-				relay_roles: (role, request) =>
+				relay_roles: (role: RelayRole, request) =>
 					!!(
 						role.relayId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
@@ -502,12 +510,12 @@ export class PolicyManager implements IPolicyManager {
 			permission: ["folder", "manage_users"],
 			description: "Manage users in folder (add/remove/change roles)",
 			dependencies: {
-				folder_roles: (role, request) =>
+				folder_roles: (role: FolderRole, request) =>
 					!!(
 						role.sharedFolderId === this.getResourceId(request.resource) &&
 						role.userId === request.principal
 					),
-				relay_roles: (role, request) => {
+				relay_roles: (role: RelayRole, request) => {
 					const folder = this.relayManager.remoteFolders.get(
 						this.getResourceId(request.resource),
 					);
@@ -517,7 +525,7 @@ export class PolicyManager implements IPolicyManager {
 						role.userId === request.principal
 					);
 				},
-				shared_folders: (folder, request) =>
+				shared_folders: (folder: RemoteSharedFolder, request) =>
 					!!(folder.id === this.getResourceId(request.resource)),
 			},
 			evaluate: this.evaluateFolderManageUsers.bind(this),
@@ -705,7 +713,7 @@ export class PolicyManager implements IPolicyManager {
 
 	private evaluateFolderUpload(request: AuthorizationRequest): boolean {
 		const folderId = this.getResourceId(request.resource);
-		const fileSize = request.context?.fileSize || 0;
+		const fileSize = (request.context?.fileSize as number) || 0;
 		return (
 			this.hasFolderWriteAccess(request.principal, folderId) &&
 			this.hasStorageQuota(folderId, fileSize)

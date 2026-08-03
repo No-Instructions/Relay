@@ -13,6 +13,7 @@ import {
 	NamespacedSettings,
 	Settings,
 	type StorageAdapter,
+	type SettingsTree,
 } from "../src/SettingsStorage";
 import { describe, jest, beforeEach, test, expect } from "@jest/globals";
 import { SyncSettingsManager, type SyncFlags } from "../src/SyncSettings";
@@ -47,7 +48,7 @@ class TestStorageAdapter implements StorageAdapter<any> {
 	}
 }
 
-interface TestSettings {
+type TestSettings = {
 	sync: SyncFlags;
 }
 
@@ -65,7 +66,10 @@ describe("SyncStore", () => {
 		ydoc = new Y.Doc();
 		storage = new TestStorageAdapter();
 		settings = new Settings(storage, {});
-		syncSettings = new NamespacedSettings(settings, "sync");
+		syncSettings = new NamespacedSettings(
+			settings as unknown as SettingsTree,
+			"sync",
+		);
 		syncSettingsManager = syncSettings.getChild<
 			Record<keyof SyncFlags, boolean>,
 			SyncSettingsManager

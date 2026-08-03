@@ -64,9 +64,10 @@ interface NormalizedOAuthUser {
 /**
  * Normalizes OAuth2 user data from different providers into a consistent format
  */
-function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
+function normalizeOAuthUser(rawUser: unknown): NormalizedOAuthUser | null {
+	const user = rawUser as Record<string, unknown>;
 	// Handle Google user
-	if ("email" in rawUser && "name" in rawUser && "given_name" in rawUser && "family_name" in rawUser) {
+	if ("email" in user && "name" in user && "given_name" in user && "family_name" in user) {
 		const googleUser = rawUser as GoogleUser;
 		return {
 			name: googleUser.name,
@@ -78,7 +79,7 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 	}
 
 	// Handle GitHub user
-	if ("email" in rawUser && "login" in rawUser && "avatar_url" in rawUser) {
+	if ("email" in user && "login" in user && "avatar_url" in user) {
 		const githubUser = rawUser as GitHubUser;
 		const nameParts = (githubUser.name || githubUser.login).split(' ');
 		return {
@@ -91,7 +92,7 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 	}
 
 	// Handle Microsoft user
-	if ("mail" in rawUser && "displayName" in rawUser) {
+	if ("mail" in user && "displayName" in user) {
 		const microsoftUser = rawUser as MicrosoftUser;
 		return {
 			name: microsoftUser.displayName,
@@ -103,7 +104,7 @@ function normalizeOAuthUser(rawUser: any): NormalizedOAuthUser | null {
 	}
 
 	// Handle OIDC user (standard OpenID Connect claims)
-	if ("email" in rawUser && "given_name" in rawUser && "family_name" in rawUser) {
+	if ("email" in user && "given_name" in user && "family_name" in user) {
 		const oidcUser = rawUser as OIDCUser;
 		return {
 			name: oidcUser.name || `${oidcUser.given_name} ${oidcUser.family_name}`,

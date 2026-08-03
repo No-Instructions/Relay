@@ -22,7 +22,10 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * @inheritdoc
 	 */
 	get token(): string {
-		const data = this._storageGet(this.storageKey) || {};
+		const data = (this._storageGet(this.storageKey) || {}) as {
+			token?: string;
+			model?: AuthModel;
+		};
 
 		return data.token || "";
 	}
@@ -31,7 +34,10 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * @inheritdoc
 	 */
 	get model(): AuthModel {
-		const data = this._storageGet(this.storageKey) || {};
+		const data = (this._storageGet(this.storageKey) || {}) as {
+			token?: string;
+			model?: AuthModel;
+		};
 
 		return data.model || null;
 	}
@@ -69,7 +75,7 @@ export class LocalAuthStore extends BaseAuthStore {
 	 * Retrieves `key` from the browser's local storage
 	 * (or runtime/memory if local storage is undefined).
 	 */
-	private _storageGet(key: string): any {
+	private _storageGet(key: string): unknown {
 		if (typeof window !== "undefined" && window?.localStorage) {
 			const rawValue = window.localStorage.getItem(key) || "";
 			try {
@@ -120,7 +126,10 @@ export class LocalAuthStore extends BaseAuthStore {
 			return;
 		}
 
-		const data = this._storageGet(this.storageKey) || {};
+		const data = (this._storageGet(this.storageKey) || {}) as {
+			token?: string;
+			model?: AuthModel;
+		};
 
 		super.save(data.token || "", data.model || null);
 	};
