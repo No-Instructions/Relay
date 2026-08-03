@@ -32,7 +32,7 @@ import { DiskBuffer } from "src/DiskBuffer";
 import { diffMatchPatch } from "src/y-diffMatchPatch";
 import type { App } from "obsidian";
 
-type VoidCallback = () => void;
+type RebuildCallback = () => void | Promise<void>;
 
 export class ActionLine {
 	constructor(
@@ -43,7 +43,7 @@ export class ActionLine {
 			file2: TFile;
 			file1Content: string;
 			file2Content: string;
-			triggerRebuild: VoidCallback;
+			triggerRebuild: RebuildCallback;
 		},
 	) {
 		this.difference = args.difference;
@@ -64,7 +64,7 @@ export class ActionLine {
 
 	private file2Content: string;
 
-	private triggerRebuild: VoidCallback;
+	private triggerRebuild: RebuildCallback;
 
 	async modify(file: TFile, newContent: string): Promise<void> {
 		if (file instanceof Document) {
