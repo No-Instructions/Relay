@@ -1135,7 +1135,6 @@ export type MachineDefinition = Partial<Record<StatePath, StateNode>>;
 
 // Forward-reference MergeHSM to avoid circular imports — the interpreter
 // receives the HSM instance opaquely and passes it to guard/action/invoke functions.
-// eslint-disable-next-line @typescript-eslint/no-empty-interface
 export interface MachineHSM {
 	/** Current state path */
 	readonly statePath: StatePath;

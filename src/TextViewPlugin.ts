@@ -235,7 +235,7 @@ export class TextFileViewPlugin extends HasLogging {
 			this.view.document.path,
 		);
 
-		// eslint-disable-next-line
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- Patch callbacks need the plugin instance when their receiver is the patched view.
 		const that = this;
 
 		this.unsubscribes.push(

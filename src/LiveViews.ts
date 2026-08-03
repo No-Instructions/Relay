@@ -187,7 +187,6 @@ export interface S3View {
 	view: TextFileView | CanvasView;
 	release: () => void;
 	attach: () => Promise<S3View>;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document: Document | Canvas | null;
 	destroy: () => void;
 	canConnect: boolean;
@@ -198,7 +197,6 @@ export class LoggedOutView implements S3View {
 	view: TextFileView | CanvasView;
 	login: () => Promise<boolean>;
 	banner?: Banner;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document = null;
 	canConnect = false;
 
@@ -263,7 +261,6 @@ export class RelayCanvasView implements S3View {
 	shouldConnect: boolean;
 	canConnect: boolean;
 	plugin?: CanvasPlugin;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document: Canvas;
 
 	private _viewActions?: ViewActions;
@@ -519,7 +516,6 @@ export class LiveView<ViewType extends TextFileView>
 	implements S3View
 {
 	view: ViewType;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document: Document;
 	shouldConnect: boolean;
 	canConnect: boolean;
@@ -1556,7 +1552,7 @@ export class LiveViewManager {
 
 	findView(cmEditor: EditorView): LiveView<MarkdownView> | undefined {
 		return this.views.filter(isLiveMd).find((view) => {
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Obsidian's editor wrapper exposes CodeMirror through an untyped property.
 			const editor = view.view.editor as any;
 			const cm = editor.cm as EditorView;
 			return cm === cmEditor;
