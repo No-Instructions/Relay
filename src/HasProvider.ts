@@ -274,7 +274,7 @@ export class HasProvider extends HasLogging {
 		const off = () => {
 			this._provider.off("connection-error", f);
 		};
-		return { on, off } as Subscription;
+		return { on, off };
 	}
 
 	protected providerStateSubscription(
@@ -286,7 +286,7 @@ export class HasProvider extends HasLogging {
 		const off = () => {
 			this._provider.off("status", f);
 		};
-		return { on, off } as Subscription;
+		return { on, off };
 	}
 
 	destroy() {

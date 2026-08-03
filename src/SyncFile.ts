@@ -251,7 +251,7 @@ export class ContentAddressedFile extends HasLogging {
 
 	destroy() {
 		this.vault = null as unknown as typeof this.vault;
-		this._tfile = null as unknown as typeof this._tfile;
+		this._tfile = null;
 		// Don't destroy store as it might be shared
 	}
 }
@@ -439,7 +439,7 @@ export class SyncFile
 			}
 			if (hash !== this.meta.hash) {
 				// local is newer
-				if (this.stat.mtime > (this.meta as FileMetas).synctime) {
+				if (this.stat.mtime > this.meta.synctime) {
 					const pushed = await this.push();
 					if (!pushed) {
 						throw new Error(

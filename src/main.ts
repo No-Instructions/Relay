@@ -56,7 +56,6 @@ import { IndexedDBAnalysisModal } from "./ui/IndexedDBAnalysisModal";
 
 import { UpdateManager } from "./UpdateManager";
 import type {
-	PluginWithVersion,
 	Release,
 	ReleaseSettings,
 } from "./UpdateManager";
@@ -362,7 +361,7 @@ export default class Live extends Plugin {
 
 		// Initialize update manager
 		this.updateManager = new UpdateManager(
-			this as unknown as PluginWithVersion,
+			this,
 			this.timeProvider,
 			this.releaseSettings,
 		);

@@ -1776,11 +1776,11 @@ export class SharedFolder extends HasProvider {
 		this.syncStore = null as unknown as typeof this.syncStore;
 		this.syncSettingsManager = null as unknown as typeof this.syncSettingsManager;
 		this.whenSyncedPromise?.destroy();
-		this.whenSyncedPromise = null as unknown as typeof this.whenSyncedPromise;
+		this.whenSyncedPromise = null;
 		this.readyPromise?.destroy();
-		this.readyPromise = null as unknown as typeof this.readyPromise;
+		this.readyPromise = null;
 		this.syncFileTreePromise?.destroy();
-		this.syncFileTreePromise = null as unknown as typeof this.syncFileTreePromise;
+		this.syncFileTreePromise = null;
 	}
 }
 

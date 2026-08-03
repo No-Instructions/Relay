@@ -401,7 +401,7 @@ export class YSweetProvider extends Observable<string> {
 
 		this.doc.on(
 			"update",
-			this._updateHandler as unknown as (...args: unknown[]) => void,
+			this._updateHandler,
 		);
 
 		// TODO: I think we can get more specific with the array types.

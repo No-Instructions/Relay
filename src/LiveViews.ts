@@ -1261,7 +1261,7 @@ export class LiveViewManager {
 		this.sharedFolders = null as unknown as typeof this.sharedFolders;
 		this.refreshQueue = null as unknown as typeof this.refreshQueue;
 		this.networkStatus = null as unknown as typeof this.networkStatus;
-		this._activePromise = null as unknown as typeof this._activePromise;
+		this._activePromise = null;
 		this.loginManager = null as unknown as typeof this.loginManager;
 		this.app = null as unknown as typeof this.app;
 		this.workspace = null as unknown as typeof this.workspace;

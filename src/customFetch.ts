@@ -64,7 +64,7 @@ export const customFetch = async (
 
 	// Add json method to the response
 	const json = async () => {
-		return JSON.parse(response!.text);
+		return JSON.parse(response.text);
 	};
 	Object.defineProperty(fetchResponse, "json", {
 		value: json,

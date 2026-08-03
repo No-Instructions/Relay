@@ -417,7 +417,7 @@ export class EndpointManager {
 		for (const lic of licenses) {
 			try {
 				// Decode the JWT to check if it matches our endpoint
-				const payload = decodeJwt(lic.license) as EndpointJWTPayload;
+				const payload = decodeJwt(lic.license);
 
 				// Check if this license is for the right endpoint type and URL
 				if (payload.endpointType === endpointType && payload.url === endpointUrl) {
@@ -543,7 +543,7 @@ export class EndpointManager {
 				algorithms: ['RS256'], // Explicitly only allow RS256
 			});
 			
-			return payload as EndpointJWTPayload;
+			return payload;
 		} catch (error) {
 			this.log("JWT verification failed:", error);
 			throw new ValidationError(

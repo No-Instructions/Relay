@@ -143,6 +143,6 @@ export class SyncFolder extends HasLogging implements IFile {
 		this.offFolderStatusListener?.();
 		this.offFolderStatusListener = null as unknown as typeof this.offFolderStatusListener;
 		this._parent = null as unknown as typeof this._parent;
-		this._tfolder = null as unknown as typeof this._tfolder;
+		this._tfolder = null;
 	}
 }
