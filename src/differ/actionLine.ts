@@ -143,7 +143,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newContent);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	private async acceptBottomClick(
@@ -161,7 +161,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file1, newContent);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	private async acceptAllClick(
@@ -191,7 +191,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newFile2Content);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	private async acceptNoneClick(
@@ -214,7 +214,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newFile2Content);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	private async insertFile1Difference(
@@ -231,7 +231,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newContent);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	private async insertFile2Difference(
@@ -248,7 +248,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file1, newContent);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	async discardFile1Difference(
@@ -264,7 +264,7 @@ export class ActionLine {
 		});
 		await this.modify(this.file1, newContent);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 
 	async discardFile2Difference(
@@ -280,6 +280,6 @@ export class ActionLine {
 		});
 		await this.modify(this.file2, newContent);
 
-		this.triggerRebuild();
+		void this.triggerRebuild();
 	}
 }

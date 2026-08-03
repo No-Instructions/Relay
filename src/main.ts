@@ -769,7 +769,7 @@ export default class Live extends Plugin {
 			}
 		).setting;
 		await setting.open();
-		await setting.openTabById("system3-relay");
+		setting.openTabById("system3-relay");
 		this.settingsTab.navigateTo(path);
 	}
 

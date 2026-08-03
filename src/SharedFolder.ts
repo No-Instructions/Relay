@@ -1666,7 +1666,7 @@ export class SharedFolder extends HasProvider {
 				this.syncStore.delete(vpath);
 				const doc = this.files.get(guid);
 				if (doc) {
-					doc.cleanup();
+					void doc.cleanup();
 					this.fset.delete(doc);
 				}
 				this.files.delete(guid);
@@ -1709,7 +1709,7 @@ export class SharedFolder extends HasProvider {
 					this.syncStore.delete(oldVPath);
 				}, this);
 				if (file) {
-					file.cleanup();
+					void file.cleanup();
 					file.destroy();
 					this.fset.delete(file);
 				}
