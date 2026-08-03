@@ -9,7 +9,7 @@
  */
 
 import * as Y from "yjs";
-import * as jsyaml from "js-yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { diff_match_patch } from "diff-match-patch";
 import type {
 	EditorViewRef,
@@ -440,12 +440,11 @@ export async function createTestHSM(
 		replayMode: options.replayMode,
 		yaml: {
 			parse: (raw: string) =>
-				jsyaml.load(raw, { schema: jsyaml.JSON_SCHEMA }) as any,
+				parseYaml(raw, { schema: "core" }) as any,
 			stringify: (obj: any) =>
-				jsyaml.dump(obj, {
-					schema: jsyaml.JSON_SCHEMA,
-					flowLevel: -1,
-					lineWidth: -1,
+				stringifyYaml(obj, {
+					schema: "core",
+					lineWidth: 0,
 				}),
 			// Test-only approximation of Obsidian's getFrontMatterInfo. Production
 			// always uses Obsidian's real implementation via SharedFolder.
