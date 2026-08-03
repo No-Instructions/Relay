@@ -424,7 +424,7 @@ export class EndpointManager {
 					this.log(`Found matching license for ${endpointType}: ${this.sanitizeUrlForLog(endpointUrl)}`);
 					return lic;
 				}
-			} catch (error) {
+			} catch {
 				// Skip invalid tokens
 				continue;
 			}

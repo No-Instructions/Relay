@@ -202,7 +202,7 @@ export class LiveCMPluginValue implements PluginValue {
 							try {
 								// @ts-ignore
 								this.app.metadataCache.trigger("resolve", this.file);
-							} catch (e) {
+							} catch {
 								// pass
 							}
 							return result;

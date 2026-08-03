@@ -304,7 +304,7 @@ export class SharedFolder extends HasProvider {
 				void this._persistence.set("relay", this.relayId || "");
 				void this._persistence.set("appId", this.appId);
 				void this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			} catch (e) {
+			} catch {
 				// pass
 			}
 		});
@@ -469,7 +469,7 @@ export class SharedFolder extends HasProvider {
 			// FIXME: race condition because sharedFolder doesn't use postie
 			// for notifyListener updates.
 			this._remote?.relay;
-		} catch (e) {
+		} catch {
 			return undefined;
 		}
 		return this._remote;

@@ -393,7 +393,7 @@ export class SyncFile
 				let errorMessage = "Failed to push file";
 				try {
 					errorMessage = (error as string).toString();
-				} catch (e) {
+				} catch {
 					//pass
 				}
 				this.uploadError = errorMessage.replace(/^Error:/, "").trim();
@@ -433,7 +433,7 @@ export class SyncFile
 						this.warn("file in metadata, but not on the server!");
 						await this.push();
 					}
-				} catch (err) {
+				} catch {
 					// pass
 				}
 			}

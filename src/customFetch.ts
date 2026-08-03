@@ -112,7 +112,7 @@ export const customFetch = async (
 		if (contentType.includes("application/json")) {
 			try {
 				response_json = JSON.parse(response_text);
-			} catch (e) {
+			} catch {
 				// pass
 			}
 		}

@@ -197,7 +197,7 @@ export class InvalidLinkPluginValue {
 					link: cacheLink.link,
 					original: cacheLink.original,
 				});
-			} catch (e) {
+			} catch {
 				this.metadata.delete(cacheFrom);
 			}
 		}

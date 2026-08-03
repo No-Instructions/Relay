@@ -104,7 +104,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				void this._persistence.set("relay", this.sharedFolder.relayId || "");
 				void this._persistence.set("appId", this.sharedFolder.appId);
 				void this._persistence.set("s3rn", S3RN.encode(this.s3rn));
-			} catch (e) {
+			} catch {
 				// pass
 			}
 

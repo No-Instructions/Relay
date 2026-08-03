@@ -742,7 +742,7 @@ export class BackgroundSync extends HasLogging {
 		}
 		try {
 			currentFileContents = await doc.sharedFolder.read(doc);
-		} catch (e) {
+		} catch {
 			// File does not exist
 		}
 
@@ -797,7 +797,7 @@ export class BackgroundSync extends HasLogging {
 			try {
 				const stringContents = await canvas.sharedFolder.read(canvas);
 				currentFileContents = JSON.parse(stringContents) as CanvasData;
-			} catch (e) {
+			} catch {
 				// File doesn't exist
 			}
 
@@ -835,7 +835,7 @@ export class BackgroundSync extends HasLogging {
 			let currentFileContents = "";
 			try {
 				currentFileContents = await doc.sharedFolder.read(doc);
-			} catch (e) {
+			} catch {
 				// File doesn't exist
 			}
 

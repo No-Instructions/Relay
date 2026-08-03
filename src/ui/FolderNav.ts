@@ -503,7 +503,7 @@ class FileStatusVisitor extends BaseVisitor<DocumentStatus> {
 				if (!(document instanceof Document)) return null;
 				if (!document) return null;
 				return storage || new DocumentStatus(item.el, document, file);
-			} catch (e) {
+			} catch {
 				// document doesn't exist yet...
 				return null;
 			}
@@ -544,7 +544,7 @@ class FileExplorerWalker {
 		try {
 			//@ts-expect-error this is a private API
 			return this.fileExplorer.view.fileItems[path];
-		} catch (e) {
+		} catch {
 			return null;
 		}
 	}
