@@ -59,6 +59,10 @@ interface DiffLinkRange {
 	resolvedPath?: string;
 }
 
+type RevealLeafWorkspace = {
+	revealLeaf?: (leaf: WorkspaceLeaf) => Promise<void>;
+};
+
 export interface ViewState {
 	file1: TFile;
 	file2: TFile;
@@ -93,7 +97,12 @@ export async function openDiffView(
 		active: true,
 		state,
 	});
-	workspace.revealLeaf(leaf);
+	const revealLeaf = (workspace as unknown as RevealLeafWorkspace).revealLeaf;
+	if (typeof revealLeaf === "function") {
+		void revealLeaf.call(workspace, leaf);
+	} else {
+		workspace.setActiveLeaf(leaf, { focus: true });
+	}
 }
 
 export class DifferencesView extends ItemView {

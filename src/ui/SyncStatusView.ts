@@ -417,6 +417,10 @@ export function detachSyncStatusViews(workspace: Workspace): void {
 		.forEach((leaf) => leaf.detach());
 }
 
+type RevealLeafWorkspace = {
+	revealLeaf?: (leaf: WorkspaceLeaf) => Promise<void>;
+};
+
 /**
  * Open the sync status view in the right sidebar. If a view is already open,
  * reveals it (and rebinds to `sharedFolder` when supplied). Without an
@@ -427,6 +431,7 @@ export async function openSyncStatusView(
 	sharedFolder?: SharedFolder,
 	timeProvider?: TimeProvider,
 ): Promise<SyncStatusView | null> {
+	const revealLeaf = (workspace as unknown as RevealLeafWorkspace).revealLeaf;
 	const existing = cleanupSyncStatusViews(workspace);
 	if (existing) {
 		const leaf = existing;
@@ -436,7 +441,11 @@ export async function openSyncStatusView(
 		} else {
 			view.bindToActiveFile();
 		}
-		await workspace.revealLeaf(leaf);
+		if (typeof revealLeaf === "function") {
+			await revealLeaf.call(workspace, leaf);
+		} else {
+			workspace.setActiveLeaf(leaf, { focus: true });
+		}
 		return view;
 	}
 
@@ -454,7 +463,11 @@ export async function openSyncStatusView(
 	} else {
 		view.bindToActiveFile();
 	}
-	await workspace.revealLeaf(leaf);
+	if (typeof revealLeaf === "function") {
+		await revealLeaf.call(workspace, leaf);
+	} else {
+		workspace.setActiveLeaf(leaf, { focus: true });
+	}
 	return view;
 }
 
