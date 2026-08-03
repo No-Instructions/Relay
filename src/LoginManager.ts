@@ -133,7 +133,7 @@ export function createUserFromOAuth(
 		email?: string;
 		picture?: string;
 	},
-	rawUser?: GoogleUser | GitHubUser | MicrosoftUser | OIDCUser | unknown,
+	rawUser?: unknown,
 ): User {
 	const normalizedOAuth = rawUser ? normalizeOAuthUser(rawUser) : null;
 
@@ -250,7 +250,7 @@ export class LoginManager extends Observable<LoginManager> {
 	}
 
 	setup(
-		authData?: RecordAuthResponse<RecordModel> | undefined,
+		authData?: RecordAuthResponse<RecordModel>,
 		provider?: string,
 	): boolean {
 		if (!this.pb.authStore.isValid) {

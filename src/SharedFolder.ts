@@ -106,7 +106,7 @@ type OperationType = Create | Rename | Delete | Update | Upgrade | Noop;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
-	notifyListeners = debounce(super.notifyListeners, 100);
+	notifyListeners = debounce(() => super.notifyListeners(), 100);
 
 	update() {
 		this.notifyListeners();
@@ -469,7 +469,7 @@ export class SharedFolder extends HasProvider {
 		try {
 			// FIXME: race condition because sharedFolder doesn't use postie
 			// for notifyListener updates.
-			this._remote?.relay;
+			void this._remote?.relay;
 		} catch {
 			return undefined;
 		}
@@ -1837,7 +1837,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		return deleted;
 	}
 
-	update = debounce(this.notifyListeners, 100);
+	update = debounce(() => this.notifyListeners(), 100);
 
 	public get manager(): RelayManager {
 		return this.relayManager;

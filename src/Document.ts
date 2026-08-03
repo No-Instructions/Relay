@@ -121,7 +121,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 				let log = "";
 				log += `Transaction origin: ${event.transaction.origin} ${event.transaction.origin?.constructor?.name}\n`;
 				for (const delta of event.changes.delta) {
-					log += `insert: ${delta.insert}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
+					log += `insert: ${String(delta.insert)}\n\nretain: ${delta.retain}\n\ndelete: ${delta.delete}\n`;
 				}
 				this.debug(log);
 			};
@@ -175,7 +175,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		if (!this.ytext) {
 			return "";
 		}
-		return this.ytext.toString();
+		return this.ytext.toJSON();
 	}
 
 	public async diskBuffer(read = false): Promise<TFile> {
@@ -383,7 +383,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		this.warn("file saved", this.path);
 	}
 
-	requestSave = debounce(this.save, 2000);
+	requestSave = debounce(() => this.save(), 2000);
 
 	async markOrigin(origin: "local" | "remote"): Promise<void> {
 		await this._persistence.setOrigin(origin);

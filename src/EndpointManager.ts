@@ -519,7 +519,7 @@ export class EndpointManager {
 		// Check endpoint type
 		if (payload.endpointType !== endpointType) {
 			throw new ValidationError(
-				`License endpoint type mismatch: expected ${endpointType}, got ${payload.endpointType}`,
+				`License endpoint type mismatch: expected ${endpointType}, got ${String(payload.endpointType)}`,
 				ValidationErrorType.LICENSE_INVALID
 			);
 		}
@@ -527,7 +527,7 @@ export class EndpointManager {
 		// Check endpoint URL
 		if (payload.url !== endpointUrl) {
 			throw new ValidationError(
-				`License URL mismatch: expected ${endpointUrl}, got ${payload.url}`,
+				`License URL mismatch: expected ${endpointUrl}, got ${String(payload.url)}`,
 				ValidationErrorType.LICENSE_INVALID
 			);
 		}

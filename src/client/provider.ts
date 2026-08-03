@@ -225,7 +225,7 @@ const broadcastMessage = (provider: YSweetProvider, buf: ArrayBuffer) => {
 };
 
 type WebSocketPolyfillType = {
-	new (url: string | URL, protocols?: string | string[] | undefined): WebSocket;
+	new (url: string | URL, protocols?: string | string[]): WebSocket;
 	prototype: WebSocket;
 	readonly CLOSED: number;
 	readonly CLOSING: number;

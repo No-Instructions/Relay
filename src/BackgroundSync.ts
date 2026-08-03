@@ -851,7 +851,7 @@ export class BackgroundSync extends HasLogging {
 			const newDoc = new Y.Doc();
 			Y.applyUpdate(newDoc, updateBytes);
 			const users = newDoc.getMap("users");
-			const contents = newDoc.getText("contents").toString();
+			const contents = newDoc.getText("contents").toJSON();
 
 			if (contents === "") {
 				if (users.size === 0) {
@@ -988,7 +988,7 @@ export class BackgroundSync extends HasLogging {
 		void this.processSyncQueue();
 		void this.processDownloadQueue();
 	}
-	start = this.resume;
+	start = (): void => this.resume();
 
 	/**
 	 * Gets the current status of sync and download queues

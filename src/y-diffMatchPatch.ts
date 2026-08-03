@@ -12,7 +12,7 @@ export function diffMatchPatch(
 	const ytext = ydoc.getText("contents");
 
 	// Get the current content of the YText
-	const currentContent = ytext.toString();
+	const currentContent = ytext.toJSON();
 
 	// Create a new diff_match_patch object
 	const dmp = new diff_match_patch();
@@ -57,12 +57,12 @@ export function diffMatchPatch(
 					ytext.delete(cursor, text.length);
 					break;
 			}
-			log("intermediate", ytext.toString());
+			log("intermediate", ytext.toJSON());
 		}
 	}, origin);
 
-	log("result", ytext.toString());
+	log("result", ytext.toJSON());
 
 	// Log the final state
-	log("Update complete. New content length:", ytext.toString().length);
+	log("Update complete. New content length:", ytext.toJSON().length);
 }

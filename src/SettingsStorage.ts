@@ -325,7 +325,9 @@ export class NamespacedSettings<
 			return {} as T;
 		}
 
-		const wildcardPattern = this.patterns.find(this.isWildcardPattern);
+		const wildcardPattern = this.patterns.find((pattern): pattern is WildcardPattern =>
+			this.isWildcardPattern(pattern),
+		);
 		if (wildcardPattern && this.path.length === 1) {
 			const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
 			const filtered = Object.entries(data)
@@ -359,7 +361,9 @@ export class NamespacedSettings<
 
 		try {
 			await this.settings.update((data) => {
-				const wildcardPattern = this.patterns.find(this.isWildcardPattern);
+				const wildcardPattern = this.patterns.find((pattern): pattern is WildcardPattern =>
+			this.isWildcardPattern(pattern),
+		);
 				if (wildcardPattern) {
 					if (this.path.length === 1) {
 						const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
@@ -469,7 +473,9 @@ export class NamespacedSettings<
 		let current = obj;
 
 		// Special case: if we have a wildcard pattern at this level
-		const wildcardPattern = this.patterns.find(this.isWildcardPattern);
+		const wildcardPattern = this.patterns.find((pattern): pattern is WildcardPattern =>
+			this.isWildcardPattern(pattern),
+		);
 		if (wildcardPattern && this.path.length === 1) {
 			const regex = new RegExp(`^${wildcardPattern.wildcardPattern}$`);
 			// Filter the object entries based on the wildcard pattern

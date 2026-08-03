@@ -1035,13 +1035,13 @@ export default class Live extends Plugin {
 					old: (
 						file: TFile,
 						sourcePath: string,
-						omitMdExtension?: boolean | undefined,
+						omitMdExtension?: boolean,
 					) => string,
 				) {
 					return function (
 						file: TFile,
 						sourcePath: string,
-						omitMdExtension?: boolean | undefined,
+						omitMdExtension?: boolean,
 					) {
 						const folder = plugin.sharedFolders.lookup(file.path);
 						if (folder) {
@@ -1099,7 +1099,7 @@ export default class Live extends Plugin {
 		this.registerObsidianProtocolHandler("relay/settings/relays", async (e) => {
 			const parameters = e as unknown as Parameters;
 			const query = new URLSearchParams({ ...parameters }).toString();
-			const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
+			const path = `/${parameters.action.split("/").pop() ?? ""}?${query}`;
 			void this.openSettings(path);
 		});
 
@@ -1108,7 +1108,7 @@ export default class Live extends Plugin {
 			async (e) => {
 				const parameters = e as unknown as Parameters;
 				const query = new URLSearchParams({ ...parameters }).toString();
-				const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
+				const path = `/${parameters.action.split("/").pop() ?? ""}?${query}`;
 				void this.openSettings(path);
 			},
 		);

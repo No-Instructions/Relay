@@ -70,7 +70,7 @@ export class CanvasPlugin extends HasLogging {
 			const _textObserver = (event: Y.YTextEvent) => {
 				const node = this.canvas.nodes.get(nodeId);
 				if (node) {
-					node.setText(ytext.toString());
+					node.setText(ytext.toJSON());
 					this.canvas.markDirty(node);
 				}
 			};
