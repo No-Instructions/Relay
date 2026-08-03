@@ -40,7 +40,7 @@ export class FolderCreateModal extends Modal {
 					});
 				text.inputEl.addEventListener("keypress", (e) => {
 					if (e.key === "Enter") {
-						this.handleCreate();
+						void this.handleCreate();
 					}
 				});
 				// Focus the input
@@ -124,7 +124,7 @@ export class FolderCreateModal extends Modal {
 					this.isPrivate
 				);
 				folder.remote = remote;
-				folder.connect();
+				void folder.connect();
 				this.sharedFolders.notifyListeners();
 			} else {
 				// Ensure folder exists in vault

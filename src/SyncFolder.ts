@@ -70,11 +70,11 @@ export class SyncFolder extends HasLogging implements IFile {
 				}
 			},
 		);
-		(async () => {
+		void (async () => {
 			if (this.createPromise) {
 				await this.createPromise;
 			}
-			parent.markUploaded(this);
+			void parent.markUploaded(this);
 		})();
 		this.log("created");
 	}

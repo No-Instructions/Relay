@@ -245,7 +245,7 @@ export class RelayCanvasView implements S3View {
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
 		if (this.shouldConnect) {
-			this.canvas.connect().then((connected) => {
+			void this.canvas.connect().then((connected) => {
 				if (!connected) {
 					// If we couldn't connect, ensure their next press tries again.
 					this.shouldConnect = false;
@@ -262,7 +262,7 @@ export class RelayCanvasView implements S3View {
 				this.view,
 				"You're offline -- click to reconnect",
 				async () => {
-					this._parent.networkStatus.checkStatus();
+					void this._parent.networkStatus.checkStatus();
 					this.connect();
 					return this._parent.networkStatus.online;
 				},
@@ -363,7 +363,7 @@ export class RelayCanvasView implements S3View {
 	}
 
 	connect() {
-		this.canvas.connect();
+		void this.canvas.connect();
 	}
 
 	release() {
@@ -438,7 +438,7 @@ export class LiveView<ViewType extends TextFileView>
 	toggleConnection() {
 		this.shouldConnect = !this.shouldConnect;
 		if (this.shouldConnect) {
-			this.document.connect().then((connected) => {
+			void this.document.connect().then((connected) => {
 				if (!connected) {
 					// If we couldn't connect, ensure their next press tries again.
 					this.shouldConnect = false;
@@ -457,7 +457,7 @@ export class LiveView<ViewType extends TextFileView>
 		const old = this._tracking;
 		this._tracking = value;
 		if (this._tracking !== old) {
-			this.attach();
+			void this.attach();
 		}
 	}
 
@@ -504,7 +504,7 @@ export class LiveView<ViewType extends TextFileView>
 					file2: diskBuffer,
 					showMergeOption: true,
 					onResolve: async () => {
-						this.document.clearDiskBuffer();
+						void this.document.clearDiskBuffer();
 						this.clearMergeButton();
 						// Force view to sync to CRDT state after differ resolution
 						if (
@@ -548,7 +548,7 @@ export class LiveView<ViewType extends TextFileView>
 						file2: diskBuffer,
 						showMergeOption: true,
 						onResolve: async () => {
-							this.document.clearDiskBuffer();
+							void this.document.clearDiskBuffer();
 							// Force view to sync to CRDT state after differ resolution
 							if (
 								this._plugin &&
@@ -571,7 +571,7 @@ export class LiveView<ViewType extends TextFileView>
 				this.view,
 				"You're offline -- click to reconnect",
 				async () => {
-					this._parent.networkStatus.checkStatus();
+					void this._parent.networkStatus.checkStatus();
 					this.connect();
 					return this._parent.networkStatus.online;
 				},
@@ -710,7 +710,7 @@ export class LiveView<ViewType extends TextFileView>
 	}
 
 	connect() {
-		this.document.connect();
+		void this.document.connect();
 	}
 
 	release() {
@@ -802,17 +802,17 @@ export class LiveViewManager {
 
 		this.offListeners.push(
 			this.loginManager.on(() => {
-				this.refresh("[LoginManager]");
+				void this.refresh("[LoginManager]");
 			}),
 		);
 
 		const folderSub = (folder: SharedFolder) => {
 			if (!folder.ready) {
-				(async () => {
+				void (async () => {
 					folder
 						.whenReady()
 						.then(() => {
-							this.refresh("[Shared Folder Ready]");
+							void this.refresh("[Shared Folder Ready]");
 						})
 						.catch((_) => {
 							this.views.forEach((view) => {
@@ -825,13 +825,13 @@ export class LiveViewManager {
 			}
 
 			return folder.fset.on(() => {
-				this.refresh("[Docset]");
+				void this.refresh("[Docset]");
 			});
 		};
 
 		this.offListeners.push(
 			this.sharedFolders.subscribe(() => {
-				this.refresh("[Shared Folders]");
+				void this.refresh("[Shared Folders]");
 				this.folderListeners.forEach((off, folder) => {
 					if (!this.sharedFolders.has(folder)) {
 						off();
@@ -867,22 +867,22 @@ export class LiveViewManager {
 	}
 
 	openDiffView(state: Differ.ViewState) {
-		Differ.openDiffView(this.workspace, state);
+		void Differ.openDiffView(this.workspace, state);
 	}
 
 	goOffline() {
 		this.log("[System 3][Relay][Live Views] going offline");
 		this.views.forEach((view) => view.document?.disconnect());
-		this.refresh("[NetworkStatus]");
+		void this.refresh("[NetworkStatus]");
 	}
 
 	goOnline() {
 		this.log("[System 3][Relay][Live Views] going online");
-		this.refresh("[NetworkStatus]");
+		void this.refresh("[NetworkStatus]");
 		this.sharedFolders.items().forEach((folder: SharedFolder) => {
-			folder.connect();
+			void folder.connect();
 		});
-		this.viewsAttachedWithConnectionPool(this.views);
+		void this.viewsAttachedWithConnectionPool(this.views);
 	}
 
 	docIsOpen(doc: Document): boolean {
@@ -1155,7 +1155,7 @@ export class LiveViewManager {
 
 		if (this.loginManager.loggedIn && this.networkStatus.online) {
 			activeDocumentFolders.forEach((folder) => {
-				folder.connect();
+				void folder.connect();
 			});
 		} else {
 			this.sharedFolders.forEach((folder) => {

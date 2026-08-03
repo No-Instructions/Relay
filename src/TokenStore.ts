@@ -290,7 +290,7 @@ export class TokenStore<TokenType extends HasToken> {
 	): Promise<TokenType> {
 		this.log(`getting token ${friendlyName}`);
 		if (!this.tokenMap) {
-			Promise.reject(
+			void Promise.reject(
 				new Error(
 					"attempted to get token after TokenStore was destroyed.",
 				),

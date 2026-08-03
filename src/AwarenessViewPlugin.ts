@@ -19,7 +19,7 @@ export class AwarenessViewPlugin extends HasLogging {
 		this.doc = view.document;
 		this.relayUsersStore = relayUsersStore;
 		this.setLoggers(`[AwarenessView](${this.doc.path})`);
-		this.install();
+		void this.install();
 	}
 
 	private async install() {

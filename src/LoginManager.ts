@@ -220,7 +220,7 @@ export class LoginManager extends Observable<LoginManager> {
 	refreshToken() {
 		if (this.pb.authStore.isValid) {
 			this.user = this.makeUser(this.pb.authStore);
-			this.pb
+			void this.pb
 				.collection("users")
 				.authRefresh()
 				.then((authData) => {
@@ -270,13 +270,13 @@ export class LoginManager extends Observable<LoginManager> {
 				});
 		}
 		if (provider) {
-			this.loginSettings.set({ provider });
+			void this.loginSettings.set({ provider });
 		}
 		return true;
 	}
 
 	clearPreferredProvider() {
-		this.loginSettings.set({ provider: undefined });
+		void this.loginSettings.set({ provider: undefined });
 	}
 
 	async checkRelayHost(relay_guid: string): Promise<RequestUrlResponsePromise> {
@@ -304,7 +304,7 @@ export class LoginManager extends Observable<LoginManager> {
 			.then((response) => {
 				if (response.status === 200) {
 					const serverFlags = response.json;
-					FeatureFlagManager.getInstance().applyServerFlags(serverFlags);
+					void FeatureFlagManager.getInstance().applyServerFlags(serverFlags);
 				}
 			})
 			.catch((reason) => {
@@ -572,7 +572,7 @@ export class LoginManager extends Observable<LoginManager> {
 
 	destroy() {
 		this.pb.cancelAllRequests();
-		this.pb.realtime.unsubscribe();
+		void this.pb.realtime.unsubscribe();
 		this.pb = null as any;
 		this.authStore.destroy();
 		this.authStore = null as any;

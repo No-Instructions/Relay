@@ -67,7 +67,7 @@ class NetworkStatus {
 			return Promise.resolve(true);
 		}
 		return new Promise((resolve) => {
-			this._checkStatus().then(() => {
+			void this._checkStatus().then(() => {
 				resolve(this.online);
 			});
 		});
@@ -102,7 +102,7 @@ class NetworkStatus {
 				if (error.message.includes("ERR_NETWORK_CHANGED")) {
 					// This doesn't necessarily imply a disconnect,
 					// We should immediately try again to get a name resolution error.
-					this._checkStatus();
+					void this._checkStatus();
 					return;
 				}
 				this.online = false;

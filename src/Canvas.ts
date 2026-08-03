@@ -83,18 +83,18 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			throw e;
 		}
 
-		this.whenSynced().then(() => {
+		void this.whenSynced().then(() => {
 			this.updateStats();
 			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.sharedFolder.relayId || "");
-				this._persistence.set("appId", this.sharedFolder.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				void this._persistence.set("path", this.path);
+				void this._persistence.set("relay", this.sharedFolder.relayId || "");
+				void this._persistence.set("appId", this.sharedFolder.appId);
+				void this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 			} catch (e) {
 				// pass
 			}
 
-			(async () => {
+			void (async () => {
 				const serverSynced = await this.getServerSynced();
 				if (!serverSynced) {
 					await this.onceProviderSynced();
@@ -195,7 +195,7 @@ export class Canvas extends HasProvider implements IFile, HasMimeType {
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 				this.log("awaiting updates");
-				this.connect();
+				void this.connect();
 				await this.onceConnected();
 				this.log("connected");
 				await this.onceProviderSynced();

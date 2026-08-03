@@ -91,7 +91,7 @@ export class HasProvider extends HasLogging {
 				const shouldConnect = this._provider.canReconnect();
 				this.disconnect();
 				if (shouldConnect) {
-					this.connect();
+					void this.connect();
 				}
 			},
 		);

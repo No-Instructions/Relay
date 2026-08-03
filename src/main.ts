@@ -135,7 +135,7 @@ export default class Live extends Plugin {
 		setDebugging(true);
 		console.warn("RelayInstances", RelayInstances);
 		if (save) {
-			this.debugSettings.update((settings) => ({
+			void this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: true,
 			}));
@@ -145,7 +145,7 @@ export default class Live extends Plugin {
 	disableDebugging(save?: boolean) {
 		setDebugging(false);
 		if (save) {
-			this.debugSettings.update((settings) => ({
+			void this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: false,
 			}));
@@ -156,7 +156,7 @@ export default class Live extends Plugin {
 		const setTo = !this.debugSettings.get().debugging;
 		setDebugging(setTo);
 		if (save) {
-			this.debugSettings.update((settings) => ({
+			void this.debugSettings.update((settings) => ({
 				...settings,
 				debugging: setTo,
 			}));
@@ -232,7 +232,7 @@ export default class Live extends Plugin {
 	 */
 	resetToDefaultEndpoints() {
 		this.loginManager.getEndpointManager().clearValidatedEndpoints();
-		this.endpointSettings.update(() => ({}));
+		void this.endpointSettings.update(() => ({}));
 		new Notice("Reset to default endpoints", 3000);
 	}
 
@@ -357,7 +357,7 @@ export default class Live extends Plugin {
 
 		this.settingsTab = new LiveSettingsTab(this.app, this);
 		this.addRibbonIcon("satellite", "Relay", () => {
-			this.openSettings();
+			void this.openSettings();
 		});
 
 		// Initialize update manager
@@ -443,7 +443,7 @@ export default class Live extends Plugin {
 			id: "open-settings",
 			name: "Open settings",
 			callback: () => {
-				this.openSettings();
+				void this.openSettings();
 			},
 		});
 
@@ -465,7 +465,7 @@ export default class Live extends Plugin {
 						this.relayManager,
 						(relay) => {
 							// Open relay settings after successful creation
-							this.openSettings(`/relays?id=${relay.id}`);
+							void this.openSettings(`/relays?id=${relay.id}`);
 						},
 					);
 					this.openModals.push(modal);
@@ -575,8 +575,8 @@ export default class Live extends Plugin {
 				});
 				this.networkStatus.addEventListener("online", () => {
 					this.tokenStore.start();
-					this.relayManager.subscribe();
-					this.relayManager.update();
+					void this.relayManager.subscribe();
+					void this.relayManager.update();
 					this._liveViews.goOnline();
 				});
 				this.networkStatus.start();
@@ -602,7 +602,7 @@ export default class Live extends Plugin {
 									.setTitle("Relay: Relay settings")
 									.setIcon("gear")
 									.onClick(() => {
-										this.openSettings(`/relays?id=${folder.relayId}`);
+										void this.openSettings(`/relays?id=${folder.relayId}`);
 									});
 							});
 							menu.addItem((item) => {
@@ -610,7 +610,7 @@ export default class Live extends Plugin {
 									.setTitle("Relay: Local folder settings")
 									.setIcon("gear")
 									.onClick(() => {
-										this.openSettings(`/shared-folders?id=${folder.guid}`);
+										void this.openSettings(`/shared-folders?id=${folder.guid}`);
 									});
 							});
 							menu.addItem((item) => {
@@ -625,9 +625,9 @@ export default class Live extends Plugin {
 											folder.disconnect();
 										} else {
 											folder.shouldConnect = true;
-											folder.connect();
+											void folder.connect();
 										}
-										this._liveViews.refresh("folder connection toggle");
+										void this._liveViews.refresh("folder connection toggle");
 									});
 							});
 						} else {
@@ -636,7 +636,7 @@ export default class Live extends Plugin {
 									.setTitle("Relay: Local folder settings")
 									.setIcon("gear")
 									.onClick(() => {
-										this.openSettings(`/shared-folders?id=${folder.guid}`);
+										void this.openSettings(`/shared-folders?id=${folder.guid}`);
 									});
 							});
 						}
@@ -646,7 +646,7 @@ export default class Live extends Plugin {
 									.setTitle("Relay: Sync")
 									.setIcon("folder-sync")
 									.onClick(() => {
-										folder.netSync();
+										void folder.netSync();
 									});
 							});
 						}
@@ -693,7 +693,7 @@ export default class Live extends Plugin {
 				}),
 			);
 			this.setup();
-			this._liveViews.refresh("init");
+			void this._liveViews.refresh("init");
 			this.loadTime = moment.now() - start;
 		});
 	}
@@ -713,7 +713,7 @@ export default class Live extends Plugin {
 		if (relayId) {
 			settings["relay"] = relayId;
 		}
-		folderSettings.update((current) => {
+		void folderSettings.update((current) => {
 			return {
 				...current,
 				path,
@@ -746,13 +746,13 @@ export default class Live extends Plugin {
 	private _onLogout() {
 		this.tokenStore?.clear();
 		this.relayManager?.logout();
-		this._liveViews.refresh("logout");
+		void this._liveViews.refresh("logout");
 	}
 
 	private _onLogin() {
 		this.sharedFolders.load();
 		this.relayManager?.login();
-		this._liveViews.refresh("login");
+		void this._liveViews.refresh("login");
 	}
 
 	async openSettings(path: string = "/") {
@@ -858,14 +858,14 @@ export default class Live extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("file-open", (file) => {
 				workspaceLog("file-open");
-				plugin._liveViews.refresh("file-open");
+				void plugin._liveViews.refresh("file-open");
 			}),
 		);
 
 		this.registerEvent(
 			this.app.workspace.on("layout-change", () => {
 				workspaceLog("layout-change");
-				this._liveViews.refresh("layout-change");
+				void this._liveViews.refresh("layout-change");
 			}),
 		);
 
@@ -890,7 +890,7 @@ export default class Live extends Plugin {
 					if (newDocs.length > 0) {
 						folder.uploadFile(tfile);
 					} else {
-						folder.whenReady().then((folder) => {
+						void folder.whenReady().then((folder) => {
 							folder.getFile(tfile);
 						});
 					}
@@ -918,7 +918,7 @@ export default class Live extends Plugin {
 						return;
 					}
 					folder.markPendingDelete(vpath);
-					folder.whenReady().then((folder) => {
+					void folder.whenReady().then((folder) => {
 						folder.proxy.deleteFile(file.path);
 					}).finally(() => {
 						folder.clearPendingDelete(vpath);
@@ -948,12 +948,12 @@ export default class Live extends Plugin {
 					vaultLog("Rename", file.path, oldPath);
 					fromFolder.renameFile(file, oldPath);
 					toFolder.renameFile(file, oldPath);
-					this._liveViews.refresh("rename");
+					void this._liveViews.refresh("rename");
 					this.folderNavDecorations.quickRefresh();
 				} else if (folder) {
 					vaultLog("Rename", file.path, oldPath);
 					folder.renameFile(file, oldPath);
-					this._liveViews.refresh("rename");
+					void this._liveViews.refresh("rename");
 					this.folderNavDecorations.refresh();
 				}
 			}),
@@ -966,7 +966,7 @@ export default class Live extends Plugin {
 					vaultLog("Modify", tfile.path);
 					const file = folder.proxy.getFile(tfile);
 					if (file && isSyncFile(file)) {
-						file.sync();
+						void file.sync();
 					}
 					// Dataview race condition
 					this.timeProvider.setTimeout(() => {
@@ -1002,7 +1002,7 @@ export default class Live extends Plugin {
 						if (folder) {
 							const file = folder.proxy.getFile(tfile);
 							if (tfile instanceof TFile && file && isDocument(file)) {
-								file.process(fn);
+								void file.process(fn);
 							}
 						}
 					} catch (e: any) {
@@ -1084,7 +1084,7 @@ export default class Live extends Plugin {
 			const parameters = e as unknown as Parameters;
 			const query = new URLSearchParams({ ...parameters }).toString();
 			const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
-			this.openSettings(path);
+			void this.openSettings(path);
 		});
 
 		this.registerObsidianProtocolHandler(
@@ -1093,7 +1093,7 @@ export default class Live extends Plugin {
 				const parameters = e as unknown as Parameters;
 				const query = new URLSearchParams({ ...parameters }).toString();
 				const path = `/${parameters.action.split("/").slice(-1)}?${query}`;
-				this.openSettings(path);
+				void this.openSettings(path);
 			},
 		);
 
@@ -1227,11 +1227,11 @@ export default class Live extends Plugin {
 		this.notifier = null as any;
 
 		auditTeardown();
-		flushLogs();
+		void flushLogs();
 	}
 
 	async loadSettings() {
-		this.settings.load();
+		void this.settings.load();
 	}
 
 	async saveSettings() {

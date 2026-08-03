@@ -87,7 +87,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			throw e;
 		}
 
-		this.whenSynced().then(() => {
+		void this.whenSynced().then(() => {
 			const statsObserver = (event: Y.YTextEvent) => {
 				const origin = event.transaction.origin;
 				if (event.changes.keys.size === 0) return;
@@ -100,15 +100,15 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			});
 			this.updateStats();
 			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.sharedFolder.relayId || "");
-				this._persistence.set("appId", this.sharedFolder.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				void this._persistence.set("path", this.path);
+				void this._persistence.set("relay", this.sharedFolder.relayId || "");
+				void this._persistence.set("appId", this.sharedFolder.appId);
+				void this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 			} catch (e) {
 				// pass
 			}
 
-			(async () => {
+			void (async () => {
 				const serverSynced = await this.getServerSynced();
 				if (!serverSynced) {
 					await this.onceProviderSynced();
@@ -247,7 +247,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			applied.push(fn);
 
 			if (text == contents) {
-				this.clearDiskBuffer();
+				void this.clearDiskBuffer();
 				if (og == this.text) {
 					diffMatchPatch(this.ydoc, text, this);
 				} else {
@@ -268,7 +268,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 		}
 		this.pendingOps = [];
 		if (!stale) {
-			this.clearDiskBuffer();
+			void this.clearDiskBuffer();
 		}
 		return stale;
 	}
@@ -321,7 +321,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
 				this.log("awaiting updates");
-				this.connect();
+				void this.connect();
 				await this.onceConnected();
 				this.log("connected");
 				await this.onceProviderSynced();
@@ -380,7 +380,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 			this.warn("skipping save for pending delete", this.path);
 			return;
 		}
-		this.vault.modify(this.tfile, this.text);
+		void this.vault.modify(this.tfile, this.text);
 		this.warn("file saved", this.path);
 	}
 
@@ -430,7 +430,7 @@ export class Document extends HasProvider implements IFile, HasMimeType {
 	}
 
 	public async cleanup(): Promise<void> {
-		this._diskBufferStore?.removeDiskBuffer(this.guid);
+		void this._diskBufferStore?.removeDiskBuffer(this.guid);
 	}
 
 	// Helper method to update file stats

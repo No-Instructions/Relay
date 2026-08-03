@@ -246,7 +246,7 @@ export class ViewHookPlugin extends HasLogging {
 		this.view.previewMode.renderer.set(this.document.text);
 		this.renderAll();
 
-		this.document.connect();
+		void this.document.connect();
 		this.debug("ViewHookPlugin initialized");
 	}
 

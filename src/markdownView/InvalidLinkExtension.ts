@@ -86,7 +86,7 @@ export class InvalidLinkPluginValue {
 		this.log("created");
 
 		if (this.view.document) {
-			this.view.document.whenSynced().then(() => {
+			void this.view.document.whenSynced().then(() => {
 				const tfile = this.view?.document?.getTFile();
 				if (this.connectionManager && this.app && tfile) {
 					this.connectionManager.onMeta(tfile, this.cb);

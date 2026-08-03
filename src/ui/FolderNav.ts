@@ -685,7 +685,7 @@ export class FolderNavigationDecorations {
 						);
 					}
 				});
-				folder.whenReady().then(() => {
+				void folder.whenReady().then(() => {
 					this.refresh();
 				});
 				this.unsubscribes.push(

@@ -292,7 +292,7 @@ class StorageQuotaCollection
 			return existingStorageQuota;
 		}
 		const storageQuota = new StorageQuotaAuto(update, this.relays);
-		this.subscribeRecord(this.collectionName, update.id, []).then((unsub) => {
+		void this.subscribeRecord(this.collectionName, update.id, []).then((unsub) => {
 			storageQuota.offRecordSubscription = unsub;
 		});
 		this.storageQuota.set(update.id, storageQuota);
@@ -1515,8 +1515,8 @@ export class RelayManager extends HasLogging {
 		RelayInstances.set(this, "RelayManager");
 
 		this.buildGraph();
-		this.subscribe();
-		this.update();
+		void this.subscribe();
+		void this.update();
 	}
 
 	buildGraph() {
@@ -1633,8 +1633,8 @@ export class RelayManager extends HasLogging {
 		}
 		this.setUser();
 		this.buildGraph();
-		this.subscribe();
-		this.update();
+		void this.subscribe();
+		void this.update();
 	}
 
 	logout() {
@@ -1767,7 +1767,7 @@ export class RelayManager extends HasLogging {
 		];
 
 		for (const collection of collections) {
-			this.pb
+			void this.pb
 				.collection(collection.name)
 				.subscribe("*", (e) => this._handleEvent(collection.name, e), {
 					expand: collection.expand.join(","),
@@ -2204,7 +2204,7 @@ export class RelayManager extends HasLogging {
 		this._offLoginManager?.();
 		this._offLoginManager = null as any;
 		this.pb?.cancelAllRequests();
-		this.pb?.realtime?.unsubscribe();
+		void this.pb?.realtime?.unsubscribe();
 		this.loginManager = null as any;
 		this.store?.destroy();
 		this.pb = null as any;

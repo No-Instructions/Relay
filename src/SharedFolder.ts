@@ -266,7 +266,7 @@ export class SharedFolder extends HasProvider {
 		// while disconnected get retried.
 		const reconnectSub = this.providerStateSubscription((state) => {
 			if (state.status === "connected") {
-				this.syncFileTree(this.syncStore);
+				void this.syncFileTree(this.syncStore);
 			}
 		});
 		reconnectSub.on();
@@ -285,31 +285,31 @@ export class SharedFolder extends HasProvider {
 		}
 
 		if (loginManager.loggedIn) {
-			this.connect();
+			void this.connect();
 		}
 
 		this.cas = new ContentAddressedStore(this);
 
-		this.whenReady().then(() => {
+		void this.whenReady().then(() => {
 			if (!this.destroyed) {
 				this.addLocalDocs();
-				this.syncFileTree(this.syncStore);
+				void this.syncFileTree(this.syncStore);
 			}
 		});
 
-		this.whenSynced().then(async () => {
+		void this.whenSynced().then(async () => {
 			this.syncStore.start();
 			try {
-				this._persistence.set("path", this.path);
-				this._persistence.set("relay", this.relayId || "");
-				this._persistence.set("appId", this.appId);
-				this._persistence.set("s3rn", S3RN.encode(this.s3rn));
+				void this._persistence.set("path", this.path);
+				void this._persistence.set("relay", this.relayId || "");
+				void this._persistence.set("appId", this.appId);
+				void this._persistence.set("s3rn", S3RN.encode(this.s3rn));
 			} catch (e) {
 				// pass
 			}
 		});
 
-		(async () => {
+		void (async () => {
 			const serverSynced = await this.getServerSynced();
 			if (!serverSynced) {
 				await this.onceProviderSynced();
@@ -369,9 +369,9 @@ export class SharedFolder extends HasProvider {
 			return token.token?.folder === this.guid;
 		});
 		if (shouldConnect) {
-			this.connect();
+			void this.connect();
 			reconnect.forEach((file) => {
-				file.connect();
+				void file.connect();
 			});
 		}
 		this._server = value;
@@ -425,7 +425,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	public set shouldConnect(connect: boolean) {
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			connect,
 		}));
@@ -484,7 +484,7 @@ export class SharedFolder extends HasProvider {
 		this.s3rn = this.relayId
 			? new S3RemoteFolder(this.relayId, this.guid)
 			: new S3Folder(this.guid);
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			...{ relay: this.relayId },
 		}));
@@ -540,7 +540,7 @@ export class SharedFolder extends HasProvider {
 			const awaitingUpdates = await this.awaitingUpdates();
 			if (awaitingUpdates) {
 				// If this is a brand new shared folder, we want to wait for a connection before we start reserving new guids for local files.
-				this.connect();
+				void this.connect();
 				await this.onceConnected();
 				await this.onceProviderSynced();
 				return this;
@@ -845,7 +845,7 @@ export class SharedFolder extends HasProvider {
 						} else {
 							// Seeded, but the enqueue or meta write never landed.
 							return this.backgroundSync.enqueueSync(file).then(() => {
-								this.markUploaded(file);
+								void this.markUploaded(file);
 							});
 						}
 					})
@@ -894,7 +894,7 @@ export class SharedFolder extends HasProvider {
 		if (this.syncFileTreePromise) {
 			this.syncRequestedDuringSync = true;
 			const promise = this.syncFileTreePromise.getPromise();
-			promise.then(() => {
+			void promise.then(() => {
 				if (this.syncRequestedDuringSync) {
 					this.syncRequestedDuringSync = false;
 					return this.syncFileTree(syncStore);
@@ -919,13 +919,13 @@ export class SharedFolder extends HasProvider {
 				const ops: Operation[] = [];
 				const diffLog: string[] = [];
 
-				this.ydoc.transact(async () => {
+				void this.ydoc.transact(async () => {
 					// Sync folder operations first because renames/moves also affect files
 					this.syncStore.migrateUp();
 					this.syncByType(syncStore, diffLog, ops, [SyncType.Folder]);
 				}, this);
 				await Promise.all(ops.map((op) => op.promise));
-				this.ydoc.transact(async () => {
+				void this.ydoc.transact(async () => {
 					this.syncByType(
 						syncStore,
 						diffLog,
@@ -974,7 +974,7 @@ export class SharedFolder extends HasProvider {
 	move(path: string) {
 		this.path = path;
 		this.setLoggers(`[SharedFile](${this.path})`);
-		this._settings.update((current) => ({
+		void this._settings.update((current) => ({
 			...current,
 			path,
 		}));
@@ -1242,9 +1242,9 @@ export class SharedFolder extends HasProvider {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
-		canvas.markOrigin("remote");
+		void canvas.markOrigin("remote");
 
-		this.backgroundSync.enqueueCanvasDownload(canvas);
+		void this.backgroundSync.enqueueCanvasDownload(canvas);
 
 		this.files.set(guid, canvas);
 		this.fset.add(canvas, update);
@@ -1267,7 +1267,7 @@ export class SharedFolder extends HasProvider {
 		const originPromise = canvas.getOrigin();
 		const awaitingUpdatesPromise = this.awaitingUpdates();
 
-		(async () => {
+		void (async () => {
 			const exists = await this.exists(canvas);
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
@@ -1281,16 +1281,16 @@ export class SharedFolder extends HasProvider {
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
 				this.ydoc.transact(() => {
 					try {
-						canvas.applyJSON(contents);
+						void canvas.applyJSON(contents);
 					} catch (e) {
 						console.warn(contents);
 						throw e;
 					}
 				}, this._persistence);
-				canvas.markOrigin("local");
+				void canvas.markOrigin("local");
 				this.log(`[${canvas.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(canvas);
-				this.markUploaded(canvas);
+				void this.markUploaded(canvas);
 			}
 		})();
 
@@ -1312,13 +1312,13 @@ export class SharedFolder extends HasProvider {
 		}
 		const canvas = this.getOrCreateCanvas(guid, vpath);
 
-		(async () => {
-			this.whenReady().then(async () => {
+		void (async () => {
+			void this.whenReady().then(async () => {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueCanvasDownload(canvas);
+					void this.backgroundSync.enqueueCanvasDownload(canvas);
 				} else if (this.pendingUpload.get(canvas.path)) {
-					this.backgroundSync.enqueueSync(canvas);
+					void this.backgroundSync.enqueueSync(canvas);
 				}
 			});
 		})();
@@ -1385,9 +1385,9 @@ export class SharedFolder extends HasProvider {
 			throw new Error(`called download on item that is not in ids ${vpath}`);
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
-		doc.markOrigin("remote");
+		void doc.markOrigin("remote");
 
-		this.backgroundSync.enqueueDownload(doc);
+		void this.backgroundSync.enqueueDownload(doc);
 
 		this.files.set(guid, doc);
 		this.fset.add(doc, update);
@@ -1411,7 +1411,7 @@ export class SharedFolder extends HasProvider {
 		const originPromise = doc.getOrigin();
 		const awaitingUpdatesPromise = this.awaitingUpdates();
 
-		(async () => {
+		void (async () => {
 			const exists = await this.exists(doc);
 			if (!exists) {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
@@ -1433,10 +1433,10 @@ export class SharedFolder extends HasProvider {
 					if (!header.has("v")) header.set("v", 0);
 					text.insert(0, contents);
 				});
-				doc.markOrigin("local");
+				void doc.markOrigin("local");
 				this.log(`[${doc.path}] Uploading file`);
 				await this.backgroundSync.enqueueSync(doc);
-				this.markUploaded(doc);
+				void this.markUploaded(doc);
 			}
 		})();
 
@@ -1458,13 +1458,13 @@ export class SharedFolder extends HasProvider {
 		}
 		const doc = this.getOrCreateDoc(guid, vpath);
 
-		(async () => {
-			this.whenReady().then(async () => {
+		void (async () => {
+			void this.whenReady().then(async () => {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
-					this.backgroundSync.enqueueDownload(doc);
+					void this.backgroundSync.enqueueDownload(doc);
 				} else if (this.pendingUpload.get(doc.path)) {
-					this.backgroundSync.enqueueSync(doc);
+					void this.backgroundSync.enqueueSync(doc);
 				}
 			});
 		})();
@@ -1534,7 +1534,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		this.backgroundSync.enqueueSync(file);
+		void this.backgroundSync.enqueueSync(file);
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
@@ -1559,7 +1559,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, meta.hash);
 
-		this.backgroundSync.enqueueDownload(file);
+		void this.backgroundSync.enqueueDownload(file);
 
 		this.files.set(guid, file);
 		this.fset.add(file, update);
@@ -1587,7 +1587,7 @@ export class SharedFolder extends HasProvider {
 		}
 		const file = this.getOrCreateSyncFile(guid, vpath, tfile);
 
-		this.backgroundSync.enqueueSync(file);
+		void this.backgroundSync.enqueueSync(file);
 
 		this.fset.add(file, update);
 		return file;
@@ -1616,9 +1616,9 @@ export class SharedFolder extends HasProvider {
 		const meta = this.syncStore.getMeta(vpath);
 		if (!meta) {
 			this.log("get syncfile missing meta");
-			file.push();
+			void file.push();
 		} else {
-			file.pull();
+			void file.pull();
 		}
 
 		this.files.set(guid, file);
@@ -1830,7 +1830,7 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 	public delete(item: SharedFolder): boolean {
 		item?.destroy();
 		const deleted = super.delete(item);
-		this.settings.update((current) => {
+		void this.settings.update((current) => {
 			return current.filter((settings) => settings.guid !== item.guid);
 		});
 		return deleted;

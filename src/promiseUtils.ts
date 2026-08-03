@@ -48,7 +48,7 @@ export class Dependency<T> {
 					);
 					const [success, result] = this.checkFunction();
 					if (success) {
-						onSuccess(result);
+						void onSuccess(result);
 					}
 				}, 3000);
 				this.promiseFunction().then(

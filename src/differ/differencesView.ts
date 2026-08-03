@@ -68,12 +68,12 @@ export async function openDiffView(
 
 	// Opens a new leaf (view) of the type VIEW_TYPE_DIFFERENCES
 	const leaf = workspace.getLeaf(true);
-	leaf.setViewState({
+	void leaf.setViewState({
 		type: VIEW_TYPE_DIFFERENCES,
 		active: true,
 		state,
 	});
-	workspace.revealLeaf(leaf);
+	void workspace.revealLeaf(leaf);
 }
 
 export class DifferencesView extends ItemView {
@@ -117,7 +117,7 @@ export class DifferencesView extends ItemView {
 		state: ViewState,
 		result: ViewStateResult,
 	): Promise<void> {
-		super.setState(state, result);
+		void super.setState(state, result);
 		this.state = state;
 
 		await this.updateState();
@@ -125,7 +125,7 @@ export class DifferencesView extends ItemView {
 	}
 
 	async onunload(): Promise<void> {
-		this.state?.onResolve?.();
+		void this.state?.onResolve?.();
 	}
 
 	private closeAndReturnToOriginal(): void {

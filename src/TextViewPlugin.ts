@@ -131,7 +131,7 @@ export class TextFileViewPlugin extends HasLogging {
 			const stale = await this.doc.checkStale();
 			if (stale && this.view) {
 				this.warn("Document is stale - showing merge banner");
-				this.view.checkStale().then(async (stale) => {
+				void this.view.checkStale().then(async (stale) => {
 					if (!stale) {
 						await this.syncViewToCRDT();
 					}
@@ -215,7 +215,7 @@ export class TextFileViewPlugin extends HasLogging {
 
 						// Call resync AFTER original setViewData succeeds
 						if (clear) {
-							that.resync();
+							void that.resync();
 						}
 
 						return result;
@@ -236,7 +236,7 @@ export class TextFileViewPlugin extends HasLogging {
 								return;
 							} else {
 								that.warn("not tracking - resync");
-								that.resync();
+								void that.resync();
 							}
 						}
 						return old.call(this);
@@ -266,7 +266,7 @@ export class TextFileViewPlugin extends HasLogging {
 			if (tr.origin !== this.doc) {
 				if (!this.view.tracking) {
 					this.warn("resync from update, not tracking");
-					this.resync();
+					void this.resync();
 				}
 				this.warn("setting view data");
 				this.saving = true;
@@ -277,7 +277,7 @@ export class TextFileViewPlugin extends HasLogging {
 			}
 		};
 
-		this.resync();
+		void this.resync();
 
 		// Use the dynamically retrieved document for ytext
 		this.doc = this.getDocument();

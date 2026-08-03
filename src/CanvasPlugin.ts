@@ -154,7 +154,7 @@ export class CanvasPlugin extends HasLogging {
 						// @ts-ignore
 						const res = old.call(this);
 						try {
-							that.relayCanvas.importFromView(that.view);
+							void that.relayCanvas.importFromView(that.view);
 						} catch (e) {
 							that.log(e);
 						}
@@ -166,7 +166,7 @@ export class CanvasPlugin extends HasLogging {
 						// @ts-ignore
 						const res = old.call(this, data);
 						try {
-							that.relayCanvas.importFromView(that.view);
+							void that.relayCanvas.importFromView(that.view);
 						} catch (e) {
 							that.log(e);
 						}

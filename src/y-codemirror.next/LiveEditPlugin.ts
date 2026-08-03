@@ -103,8 +103,8 @@ export class LiveCMPluginValue implements PluginValue {
 						if (this.destroyed || !this.editor || !this.document) {
 							return;
 						}
-						this.document.clearDiskBuffer();
-						this.resync();
+						void this.document.clearDiskBuffer();
+						void this.resync();
 					},
 				});
 				return true;
@@ -173,7 +173,7 @@ export class LiveCMPluginValue implements PluginValue {
 										liveEditPlugin.view.tracking = true;
 									}
 								}
-								liveEditPlugin.resync();
+								void liveEditPlugin.resync();
 							} else if (fmSave) {
 								const changes = liveEditPlugin.incrementalBufferChange(data);
 								editor.dispatch({
@@ -211,14 +211,14 @@ export class LiveCMPluginValue implements PluginValue {
 				}),
 			);
 		} else {
-			this.document.connect();
+			void this.document.connect();
 		}
 
 		if (this.document.connected) {
-			this.resync();
+			void this.resync();
 		} else {
-			this.document.onceConnected().then(() => {
-				this.resync();
+			void this.document.onceConnected().then(() => {
+				void this.resync();
 			});
 		}
 
@@ -424,7 +424,7 @@ export class LiveCMPluginValue implements PluginValue {
 
 		// disk and ytext differ
 		if (isLiveMd(this.view) && !this.view.tracking) {
-			this.view.checkStale();
+			void this.view.checkStale();
 		} else if (this.document) {
 			const stale = await this.document.checkStale();
 			if (stale && !this.destroyed && this.editor) {

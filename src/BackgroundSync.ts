@@ -97,8 +97,8 @@ export class BackgroundSync extends HasLogging {
 		super();
 		RelayInstances.set(this, "BackgroundSync");
 		this.timeProvider.setInterval(() => {
-			this.processSyncQueue();
-			this.processDownloadQueue();
+			void this.processSyncQueue();
+			void this.processDownloadQueue();
 		}, 1000);
 	}
 
@@ -272,7 +272,7 @@ export class BackgroundSync extends HasLogging {
 
 						// Unwind the call stack before checking for more work
 						this.timeProvider.setTimeout(() => {
-							this.processSyncQueue();
+							void this.processSyncQueue();
 						}, 0);
 					});
 			} catch (error) {
@@ -381,7 +381,7 @@ export class BackgroundSync extends HasLogging {
 
 						// Unwind the call stack before checking for more work
 						this.timeProvider.setTimeout(() => {
-							this.processDownloadQueue();
+							void this.processDownloadQueue();
 						}, 0);
 					});
 			} catch (error) {
@@ -434,7 +434,7 @@ export class BackgroundSync extends HasLogging {
 					existingCallback.reject = reject;
 				});
 			}
-			this.processSyncQueue();
+			void this.processSyncQueue();
 			return Promise.resolve();
 		}
 
@@ -476,7 +476,7 @@ export class BackgroundSync extends HasLogging {
 
 		this.syncQueue.push(queueItem);
 		this.syncQueue.sort(compareFilePaths);
-		this.processSyncQueue();
+		void this.processSyncQueue();
 
 		return syncPromise;
 	}
@@ -500,13 +500,13 @@ export class BackgroundSync extends HasLogging {
 			// Return existing promise if already processing
 			const existingCallback = this.downloadCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
-				this.processDownloadQueue();
+				void this.processDownloadQueue();
 				return new Promise<void>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
 				});
 			}
-			this.processDownloadQueue();
+			void this.processDownloadQueue();
 			return Promise.resolve();
 		}
 
@@ -552,7 +552,7 @@ export class BackgroundSync extends HasLogging {
 		// Add to the queue and start processing
 		this.downloadQueue.push(queueItem);
 		this.downloadQueue.sort(compareFilePaths);
-		this.processDownloadQueue();
+		void this.processDownloadQueue();
 
 		return downloadPromise;
 	}
@@ -594,7 +594,7 @@ export class BackgroundSync extends HasLogging {
 		);
 
 		for (const doc of sortedDocs) {
-			this.enqueueForGroupSync(doc);
+			void this.enqueueForGroupSync(doc);
 		}
 
 		// Update group status to running
@@ -625,7 +625,7 @@ export class BackgroundSync extends HasLogging {
 			// Return existing promise if already processing
 			const existingCallback = this.syncCompletionCallbacks.get(item.guid);
 			if (existingCallback) {
-				this.processSyncQueue();
+				void this.processSyncQueue();
 				return new Promise<void>((resolve, reject) => {
 					existingCallback.resolve = resolve;
 					existingCallback.reject = reject;
@@ -654,7 +654,7 @@ export class BackgroundSync extends HasLogging {
 
 		this.syncQueue.push(queueItem);
 		this.syncQueue.sort(compareFilePaths);
-		this.processSyncQueue();
+		void this.processSyncQueue();
 
 		return syncPromise;
 	}
@@ -767,7 +767,7 @@ export class BackgroundSync extends HasLogging {
 
 		const promise = doc.onceProviderSynced();
 		const intent = doc.intent;
-		doc.connect();
+		void doc.connect();
 		if (intent === "disconnected") {
 			await promise;
 		}
@@ -819,7 +819,7 @@ export class BackgroundSync extends HasLogging {
 				return;
 			}
 			if (canvas.sharedFolder.syncStore.has(canvas.path)) {
-				canvas.sharedFolder.flush(canvas, canvas.json);
+				void canvas.sharedFolder.flush(canvas, canvas.json);
 				this.log("[getCanvas] flushed");
 			}
 		} catch (e) {
@@ -864,7 +864,7 @@ export class BackgroundSync extends HasLogging {
 					);
 					if (retry > 0) {
 						this.timeProvider.setTimeout(() => {
-							this.getDocument(doc, retry - 1, wait * 2);
+							void this.getDocument(doc, retry - 1, wait * 2);
 						}, wait);
 					}
 					return;
@@ -873,7 +873,7 @@ export class BackgroundSync extends HasLogging {
 					this.log(
 						"[getDocument] local crdt has contents, but remote is empty",
 					);
-					this.enqueueSync(doc);
+					void this.enqueueSync(doc);
 					return;
 				}
 			}
@@ -886,7 +886,7 @@ export class BackgroundSync extends HasLogging {
 				return;
 			}
 			if (doc.sharedFolder.syncStore.has(doc.path)) {
-				doc.sharedFolder.flush(doc, doc.text);
+				void doc.sharedFolder.flush(doc, doc.text);
 				this.log("[getDocument] flushed");
 			}
 		} catch (e) {
@@ -985,8 +985,8 @@ export class BackgroundSync extends HasLogging {
 	resume(): void {
 		this.debug("starting");
 		this.isPaused = false;
-		this.processSyncQueue();
-		this.processDownloadQueue();
+		void this.processSyncQueue();
+		void this.processDownloadQueue();
 	}
 	start = this.resume;
 
