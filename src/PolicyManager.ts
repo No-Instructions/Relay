@@ -1,7 +1,6 @@
 import type { Permission, Resource } from "./Relay";
 import type { RelayManager, RelayCollectionMap } from "./RelayManager";
 import { Observable } from "./observable/Observable";
-import type { ObservableMap } from "./observable/ObservableMap";
 import type { Readable } from "svelte/store";
 
 /**
