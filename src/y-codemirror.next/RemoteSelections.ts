@@ -180,7 +180,6 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 	/** The instance the change listener is actually subscribed on. */
 	private _boundAwareness?: Awareness;
 	_listener?: AwarenessChangeHandler;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document?: Document;
 	private destroyed = false;
 
@@ -356,14 +355,12 @@ export class YRemoteSelectionsPluginValue implements PluginValue {
 					? null
 					: Y.createRelativePositionFromJSON(
 							localAwarenessState.cursor.anchor,
-							// eslint-disable-next-line no-mixed-spaces-and-tabs
 						);
 			const currentHead =
 				localAwarenessState.cursor == null
 					? null
 					: Y.createRelativePositionFromJSON(
 							localAwarenessState.cursor.head,
-							// eslint-disable-next-line no-mixed-spaces-and-tabs
 						);
 
 			if (sel != null) {

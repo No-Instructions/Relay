@@ -511,7 +511,6 @@ class NotSyncedPillVisitor extends BaseVisitor<NotSyncedPillDecoration> {
 
 class DocumentStatus implements Destroyable {
 	el: HTMLElement;
-	// eslint-disable-next-line -- Relay document model, not DOM global.
 	document?: Document;
 
 	constructor(el: HTMLElement, document: Document, doc: TFile) {
