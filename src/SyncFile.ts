@@ -431,9 +431,6 @@ export class SyncFile
 			this.vault,
 			this.sharedFolder.getPath(path),
 			this.hashStore,
-			// Guid evidence records only accumulate when the membership
-			// engine that consumes them is enabled (enableFolderHSM).
-			this.sharedFolder.folderHSM ? () => this.guid : undefined,
 		);
 
 		this.log("created");

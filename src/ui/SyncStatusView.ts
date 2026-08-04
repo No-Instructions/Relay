@@ -33,8 +33,6 @@ export interface SyncStatusViewContext {
 	timeProvider: TimeProvider;
 	/** Backs the note state inspector strip when its feature flag is on. */
 	debugAPI?: RelayDebugAPI;
-	/** Reopen the gated-deletion decision modal for a folder. */
-	onReviewHeldDeletions?: (folder: SharedFolder) => void;
 }
 
 export class SyncStatusView extends ItemView {
@@ -221,7 +219,6 @@ export class SyncStatusView extends ItemView {
 	}
 
 	private folderStatusIcon(folder: SharedFolder): string {
-		if (folder.deletionsGated) return "trash-2";
 		return iconForFolderSyncState(
 			folder.backgroundSync.getFolderSyncSnapshot(folder).visibleState,
 		);
@@ -262,9 +259,6 @@ export class SyncStatusView extends ItemView {
 					boundFolder,
 					this.binding.timeProvider,
 				),
-				onReviewHeldDeletions: this.context.onReviewHeldDeletions
-					? () => this.context.onReviewHeldDeletions?.(boundFolder)
-					: null,
 			},
 		});
 
@@ -314,7 +308,6 @@ export class SyncStatusView extends ItemView {
 				remote: folder.remote,
 				localOnly: folder.localOnly,
 				enableDraftMode: flags().enableDraftMode,
-				deletionsGated: folder.deletionsGated,
 				progress: 0,
 				showProgress: false,
 				syncStatus: "pending",
@@ -329,7 +322,6 @@ export class SyncStatusView extends ItemView {
 					remote: folder.remote,
 					localOnly: folder.localOnly,
 					enableDraftMode: flags().enableDraftMode,
-					deletionsGated: folder.deletionsGated,
 				});
 			}),
 		);

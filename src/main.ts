@@ -28,9 +28,6 @@ import {
 
 import { SharedFolders } from "./SharedFolder";
 import { FolderNavigationDecorations } from "./ui/FolderNav";
-import { GatedDeletionController } from "./ui/GatedDeletionController";
-import { GatedDeletionModal } from "./ui/GatedDeletionModal";
-import { sharedFolderGateView } from "./ui/GatedDeletionView";
 import { MetadataHealthSidebarNoticeMount } from "./ui/MetadataHealthSidebarNotice";
 import { ResourceMeterMount } from "./ui/ResourceMeter";
 import { LiveSettingsTab } from "./ui/SettingsTab";
@@ -101,7 +98,6 @@ import {
 import { RelayDebugAPI } from "./RelayDebugAPI";
 import { isRetryableS3Error } from "./S3Error";
 import { MetadataHealth } from "./MetadataHealth";
-import { routeVaultDelete, routeVaultRename } from "./vaultEventRouting";
 
 type SettingsController = {
 	open(): void | Promise<void>;
@@ -159,7 +155,6 @@ export default class Live extends Plugin {
 	networkStatus!: NetworkStatus;
 	backgroundSync!: BackgroundSync;
 	folderNavDecorations!: FolderNavigationDecorations;
-	private gatedDeletions: GatedDeletionController | null = null;
 	private metadataHealthSidebarNotice: MetadataHealthSidebarNoticeMount | null = null;
 	private resourceMeter: ResourceMeterMount | null = null;
 	relayManager!: RelayManager;
@@ -265,23 +260,7 @@ export default class Live extends Plugin {
 				removedSharedRoots.push({ folder, path: folder.path });
 			}
 		}
-		// Legacy folders: the root filter destroys the registration
-		// immediately and swallows same-batch children. FolderHSM folders:
-		// the root deletion is a collector signal — the burst (children
-		// included, which flow through notifyVaultDelete below) classifies
-		// as detach after the quiet window, nothing replicates, and the
-		// registration suspends relinkably instead of being destroyed.
-		const destroyedRoots: { folder: SharedFolder; path: string }[] = [];
-		for (const entry of removedSharedRoots) {
-			if (entry.folder.folderHSM) {
-				entry.folder.onRootDetach = () => {
-					this.sharedFolders.suspend(entry.folder);
-				};
-				entry.folder.notifyVaultRootDeleted();
-			} else {
-				destroyedRoots.push(entry);
-			}
-		}
+		const destroyedRoots = removedSharedRoots;
 		for (const { folder } of destroyedRoots) {
 			this.sharedFolders.delete(folder);
 		}
@@ -310,11 +289,6 @@ export default class Live extends Plugin {
 				continue;
 			}
 			vaultLog("Delete", event.path);
-			if (routeVaultDelete(folder, vpath)) {
-				// Local delete intent flows through the machine; its
-				// MAP_DELETE effect executes the map mutation.
-				continue;
-			}
 			let batch = batches.get(folder);
 			if (!batch) {
 				batch = { files: new Set<string>(), folders: new Set<string>() };
@@ -863,8 +837,6 @@ export default class Live extends Plugin {
 					sharedFolders: this.sharedFolders,
 					timeProvider: this.timeProvider,
 					debugAPI: this.relayDebugAPI,
-					onReviewHeldDeletions: (folder) =>
-						this.gatedDeletions?.present(sharedFolderGateView(folder)),
 				}),
 		);
 
@@ -1287,53 +1259,11 @@ export default class Live extends Plugin {
 	}
 
 	setup() {
-		this.gatedDeletions = new GatedDeletionController({
-			openModal: (view, actions) =>
-				new GatedDeletionModal(this.app, view, actions).openHandle(),
-			notifyDisconnected: (view) => {
-				new Notice(
-					`"${view.name}" is disconnected. Reconnect to decide on its held deletions.`,
-					8000,
-				);
-			},
-		});
-		this.register(() => {
-			this.gatedDeletions?.destroy();
-			this.gatedDeletions = null;
-		});
-
-		// Watch each shared folder for its outbound delete gate closing on a
-		// held burst. A false→true edge opens the decision modal — for a
-		// fresh burst and for a burst rehydrated at load — while the gate
-		// staying closed after a dismissal never reopens it on its own.
-		const watchedGates = new WeakSet<SharedFolder>();
-		const lastGated = new WeakMap<SharedFolder, boolean>();
-		const watchFolderGate = (folder: SharedFolder) => {
-			if (watchedGates.has(folder)) return;
-			watchedGates.add(folder);
-			const view = sharedFolderGateView(folder);
-			const check = () => {
-				const gated = folder.deletionsGated;
-				const wasGated = lastGated.get(folder) ?? false;
-				lastGated.set(folder, gated);
-				if (gated && !wasGated) this.gatedDeletions?.present(view);
-			};
-			folder.onDestroy(folder.subscribe({}, check));
-			check();
-		};
-		this.register(
-			this.sharedFolders.subscribe(() => {
-				this.sharedFolders.forEach(watchFolderGate);
-			}),
-		);
-		this.sharedFolders.forEach(watchFolderGate);
-
 		this.folderNavDecorations = new FolderNavigationDecorations(
 			this.vault,
 			this.app.workspace,
 			this.sharedFolders,
 			this.backgroundSync,
-			(folder) => this.gatedDeletions?.present(sharedFolderGateView(folder)),
 		);
 		this.folderNavDecorations.refresh();
 
@@ -1377,31 +1307,7 @@ export default class Live extends Plugin {
 				// NOTE: this is called on every file at startup...
 				const folder = this.sharedFolders.lookup(tfile.path);
 				if (folder) {
-					if (folder.folderHSM) {
-						// Membership classification is the machine's job; the
-						// origin discriminator inside notifyVaultCreate keeps
-						// Obsidian's startup create replay from laundering
-						// into user intent.
-						const alreadyShared = folder.notifyVaultCreate(tfile);
-						if (alreadyShared) {
-							folder.whenReady()
-								.then((folder) => {
-									folder.getFile(tfile);
-								})
-								.catch((error) => {
-									if (isDestroyedError(error)) {
-										return;
-									}
-									this.warn(
-										"folder ready failed after file create",
-										error,
-									);
-								});
-						}
-						return;
-					}
-					// Legacy (non-HSM) path: a known file materializes
-					// immediately; a genuinely-new file's registration settles
+					// A known file materializes immediately; a new file's registration settles
 					// for a debounce window so a short-lived atomic-write temp
 					// file vanishes before it is place-held and uploaded.
 					if (folder.notifyVaultCreateLegacy(tfile)) {
@@ -1441,7 +1347,15 @@ export default class Live extends Plugin {
 				}
 				const fromFolder = this.sharedFolders.lookup(oldPath);
 				const toFolder = this.sharedFolders.lookup(file.path);
-				if (routeVaultRename(file, oldPath, fromFolder, toFolder)) {
+				if (fromFolder && fromFolder === toFolder) {
+					fromFolder.notifyVaultRename(file, oldPath);
+				} else if (fromFolder && toFolder) {
+					fromFolder.renameFile(file, oldPath);
+					toFolder.renameFile(file, oldPath);
+				} else {
+					(fromFolder || toFolder)?.renameFile(file, oldPath);
+				}
+				if (fromFolder || toFolder) {
 					vaultLog("Rename", file.path, oldPath);
 					this._liveViews.refresh("rename");
 					if (fromFolder && toFolder) {
