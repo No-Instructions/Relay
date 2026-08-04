@@ -224,25 +224,6 @@ export class SyncStore extends Observable<SyncStore> {
 		});
 	}
 
-	/**
-	 * Effective membership entries (committed map plus migration overlay,
-	 * minus locally deleted paths) — the FolderHSM's view of "the map".
-	 */
-	listEffectiveEntries(): MapDeltaEntry[] {
-		const entries: MapDeltaEntry[] = [];
-		this.forEach((meta, path) => {
-			entries.push({ path, guid: meta.id, type: meta.type });
-		});
-		return entries;
-	}
-
-	/**
-	 * Committed membership size — the delete collector's threshold
-	 * denominator.
-	 */
-	committedEntryCount(): number {
-		return this.meta.size;
-	}
 
 	getCommittedSubdocGuids(): string[] {
 		const guids = new Set<string>();
@@ -353,11 +334,7 @@ export class SyncStore extends Observable<SyncStore> {
 		});
 	}
 
-	/**
-	 * Observer for remote membership deltas, fed to FolderHSM as MAP_DELTA.
-	 * Receives the paired delta plus the transaction origin so the host can
-	 * skip its own transactions.
-	 */
+	/** Receives map deltas plus their transaction origin. */
 	onMapDelta: ((delta: FolderMapDelta, origin: unknown) => void) | null =
 		null;
 
@@ -454,9 +431,8 @@ export class SyncStore extends Observable<SyncStore> {
 			if (origin == this) return;
 
 			this.processFolderOperation(event);
-			// Membership engine feed: computed only when a consumer is wired
-			// (enableFolderHSM); flag-off, no delta is ever extracted and the
-			// legacy path above is the only logic that runs.
+			// Compute a delta only when a consumer is installed; otherwise
+			// the legacy path above is the only logic that runs.
 			if (this.onMapDelta) {
 				this.onMapDelta(extractMapDelta(event, this.meta), origin);
 			}

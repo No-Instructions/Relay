@@ -23,7 +23,7 @@ on:
         required: false
         default: 'origin/main'
       profile_flags:
-        description: 'Optional profile flag overrides (e.g. enableFolderHSM=true)'
+        description: 'Optional profile flag overrides (e.g. enableSyncConvergenceLatch=true)'
         required: false
         default: ''
       tsdb_tag:
