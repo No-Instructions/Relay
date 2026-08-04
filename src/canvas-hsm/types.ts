@@ -2,9 +2,7 @@
  * CanvasHSM Types
  *
  * Type definitions for the per-canvas content-convergence state machine.
- * Where MergeHSM reconciles three representations of one document's text
- * and FolderHSM reconciles two representations of the folder's membership,
- * CanvasHSM reconciles the canvas JSON on disk with the canvas localDoc,
+ * Like the document merge machine, CanvasHSM reconciles the canvas JSON on disk with the canvas localDoc,
  * anchored by a persisted LCA. Remote state converges through the
  * CanvasDocBridge (localDoc ↔ remoteDoc) in CRDT space; the machine only
  * ever reasons about disk, localDoc, and the LCA.
@@ -165,7 +163,7 @@ export type CanvasEffect =
 	| { type: "SURFACE_STATUS" };
 
 // =============================================================================
-// Configuration (host-injected callbacks, mirroring folder-hsm)
+// Configuration (host-injected callbacks)
 // =============================================================================
 
 export interface CanvasHSMConfig {
