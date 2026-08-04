@@ -70,6 +70,30 @@ function replaceYTextContent(ytext: Y.Text, nextText: string): void {
 	}
 }
 
+function copyDefined<T>(value: T): T {
+	if (typeof value === "number" && !Number.isFinite(value)) {
+		return null as T;
+	}
+	if (Array.isArray(value)) {
+		return value.map((item) =>
+			item === undefined ? null : copyDefined(item),
+		) as T;
+	}
+	if (
+		value === null ||
+		typeof value !== "object" ||
+		(Object.getPrototypeOf(value) !== Object.prototype &&
+			Object.getPrototypeOf(value) !== null)
+	) {
+		return value;
+	}
+	const copy: Record<string, unknown> = {};
+	for (const [key, item] of Object.entries(value)) {
+		if (item !== undefined) copy[key] = copyDefined(item);
+	}
+	return copy as T;
+}
+
 export class Canvas
 	extends HasProvider
 	implements IFile, HasMimeType, ManagedFile
@@ -570,10 +594,10 @@ export class Canvas
 		const edges = [];
 		const nodes = [];
 		for (const [, yedge] of yedges.entries()) {
-			edges.push({ ...yedge });
+			edges.push(copyDefined(yedge));
 		}
 		for (const [, ynode] of ynodes.entries()) {
-			const node = { ...ynode };
+			const node = copyDefined(ynode);
 			if (node.type === "text") {
 				const ytext = ydoc.getText(node.id);
 				node.text = ytext.toString() || node.text;
@@ -589,10 +613,10 @@ export class Canvas
 		const edges = [];
 		const nodes = [];
 		for (const [, yedge] of yedges.entries()) {
-			edges.push({ ...yedge });
+			edges.push(copyDefined(yedge));
 		}
 		for (const [, ynode] of ynodes.entries()) {
-			nodes.push({ ...ynode });
+			nodes.push(copyDefined(ynode));
 		}
 		return { nodes: nodes, edges: edges };
 	}

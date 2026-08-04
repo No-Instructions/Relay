@@ -1423,21 +1423,7 @@ export default class Live extends Plugin {
 					if (file && isCanvas(file) && tfile instanceof TFile) {
 						try {
 							if (file.isMaterialized) {
-								// Suppress the echo of the machine's own
-								// write: FLUSH_COMPLETE recorded the
-								// resulting stat, and a modify event whose
-								// mtime matches it is that write coming back
-								// — the same identity comparison the folder
-								// poll makes. A mismatch (including a stat
-								// not yet refreshed) falls through to the
-								// machine's read-and-evaluate, which is
-								// always safe.
-								if (
-									file.hsm.getDiskMeta()?.mtime !==
-									tfile.stat.mtime
-								) {
-									file.hsm.send({ type: 'DISK_CHANGED' });
-								}
+								file.hsm.send({ type: 'DISK_CHANGED' });
 							} else {
 								folder?.mergeManager?.wakeManagedFile(file.guid);
 							}
