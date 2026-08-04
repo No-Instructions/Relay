@@ -64,7 +64,7 @@
 .nav-folder-title-content {
 	margin-inline-end: auto;
 }
-.system3-metadata-health-slot {
+.workspace-split > .system3-metadata-health-slot {
 	order: 1;
 	flex: 0 0 auto;
 	height: auto;
