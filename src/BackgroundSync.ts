@@ -1965,6 +1965,12 @@ export class BackgroundSync extends HasLogging {
 	private shouldEnqueueForSharedFolderSync(
 		item: Document | Canvas | SyncFile,
 	): boolean {
+		if (
+			isSyncFile(item) &&
+			item.sharedFolder.shouldDeferPendingPublication(item.path)
+		) {
+			return false;
+		}
 		if (isCanvas(item)) {
 			const mergeManager = item.sharedFolder.mergeManager;
 			if (!mergeManager) return true;
