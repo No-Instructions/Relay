@@ -60,6 +60,20 @@ export interface FolderSyncStatusModel {
 	actionableFiles: ActionableSyncFile[];
 }
 
+export function resolveFileSyncPath(
+	sharedFolder: SharedFolder,
+	guid: string,
+): string | undefined {
+	const loadedFile = sharedFolder.files.get(guid);
+	if (loadedFile?.path) return loadedFile.path;
+
+	let resolved: string | undefined;
+	sharedFolder.syncStore?.forEach((meta: { id?: string }, path: string) => {
+		if (!resolved && meta?.id === guid) resolved = path;
+	});
+	return resolved;
+}
+
 interface DeriveFileSyncStatusInput {
 	statePath?: StatePath | string;
 	syncStatus?: Pick<SyncStatus, "status"> | null;
@@ -186,6 +200,23 @@ export function buildFolderSyncStatusModel(
 			path: file.path,
 			category: derived.category,
 			label: derived.label,
+			source: "hsm",
+		});
+	}
+
+	for (const [guid, syncStatus] of sharedFolder.mergeManager?.syncStatus?.entries?.() ?? []) {
+		if (sharedFolder.files.has(guid)) continue;
+		const category = deriveFileSyncStatus({ syncStatus }).category;
+		if (!category) continue;
+		if (category === "error" && dismissedErrors.has(guid)) continue;
+		const path = resolveFileSyncPath(sharedFolder, guid);
+		if (!path) continue;
+		actionableFiles.push({
+			id: guid,
+			guid,
+			path,
+			category,
+			label: category === "conflict" ? "Open to resolve" : "Unable to continue sync",
 			source: "hsm",
 		});
 	}

@@ -13,6 +13,7 @@ import { IndexeddbPersistence } from './storage/y-indexeddb';
 import type { TimeProvider } from './TimeProvider';
 import type { E2ERecordingBridge, E2ERecordingState } from './merge-hsm/recording';
 import type { ConflictInfoSnapshot } from './merge-hsm/conflict';
+import { resolveFileSyncPath } from './ui/SyncStatusModel';
 import { base64ToUint8Array, uint8ArrayToBase64 } from './merge-hsm/recording/serialization';
 import { snapshotContains, snapshotFromDoc, snapshotsEqual, type YjsSnapshot } from './merge-hsm/state-vectors';
 import { getHSMBootId, getHSMBootEntries, flushHSMRecording, getRecentEntries, getSessionLogs } from './debug';
@@ -660,7 +661,7 @@ export class RelayDebugAPI {
    */
   lookupDocument(path: string): { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null {
     const sharedFolders = this.plugin?.sharedFolders;
-    if (!sharedFolders) return null;
+    if (!sharedFolders || typeof path !== 'string') return null;
     if (!path.startsWith('/')) {
       for (const folder of (sharedFolders as any)._set.values()) {
         const doc = folder.mergeManager?._getDocument(path);
@@ -1607,8 +1608,7 @@ export class RelayDebugAPI {
 
     const rows: { guid: string; path: string; status: string }[] = [];
     for (const [guid, syncStatus] of mm.syncStatus.entries()) {
-      const doc = mm._getDocument?.(guid);
-      const vpath = doc?.path;
+      const vpath = resolveFileSyncPath(folder, guid);
       rows.push({
         guid,
         path: vpath ? this.toVaultPath(folder, vpath) : guid,
