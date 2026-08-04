@@ -295,6 +295,22 @@ export class SharedFolder extends HasProvider {
 	 * recurring sweeps do not re-request known-empty documents.
 	 */
 	private _emptyOnServer: Map<string, number> = new Map();
+	/**
+	 * Membership before content: latched when the membership machine's
+	 * first confirmed classification pass of the session completes (an
+	 * authoritative folder settles at hydration; a server-backed folder at
+	 * its handshake). Per-document OUTBOUND flow — fork-reconcile
+	 * connects, idle sync-to-remote execution, the folder-wide upload
+	 * flush, the bootstrap-upload dispatch — waits on it, so content whose
+	 * file the settlement will condemn (a re-creation at a remotely
+	 * deleted path above all) cannot race to the server ahead of the
+	 * membership decision. Inbound and download flow never consults it.
+	 * Trivially true when the machine is off; resolved on destroy so held
+	 * work observes teardown instead of pending forever.
+	 */
+	private _membershipSettled = false;
+	private _membershipSettledPromise: Promise<void> | undefined;
+	private _resolveMembershipSettled: (() => void) | undefined;
 	private readonly remoteActivityIndex = new RemoteActivityIndex();
 	private readonly remoteActivitySubscribers = new Set<() => void>();
 
@@ -383,6 +399,8 @@ export class SharedFolder extends HasProvider {
 		this.enabledSyncTypes = new Set(
 			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 		);
+
+		this.initializeMembershipLatch();
 
 		this.unsubscribes.push(
 			this.relayManager.remoteFolders.subscribe((folders) => {
@@ -672,7 +690,16 @@ export class SharedFolder extends HasProvider {
 			}
 			this.recordRemoteActivities(remoteActivity);
 			this.syncFileTree()
-				.then(() => {
+				.then(async () => {
+					// Membership before content: the sweep's remote-head
+					// syncs open sessions that push local-ahead ops, so the
+					// sweep waits for the session's first confirmed
+					// membership settlement. The backfill selection below is
+					// download-side and needs no gate of its own; it shares
+					// this one because it shares the callback.
+					if (!this._membershipSettled) {
+						await this.whenMembershipSettled();
+					}
 					if (this.destroyed) return;
 					const queuedRemoteHead = this.backgroundSync.enqueueRemoteHeadSyncs(
 						this,
@@ -1055,6 +1082,13 @@ export class SharedFolder extends HasProvider {
 		guid: string,
 		update: Uint8Array,
 	): Promise<void> {
+		// Membership before content: outbound execution waits for the
+		// session's first confirmed membership settlement, so a file the
+		// settlement will condemn cannot push its content first. The work
+		// is held, not dropped — the effect is not re-emitted.
+		if (!this._membershipSettled) {
+			await this.whenMembershipSettled();
+		}
 		if (this.destroyed) return;
 		const file = this.files.get(guid);
 		if (!file || !isDocument(file)) {
@@ -1483,6 +1517,12 @@ export class SharedFolder extends HasProvider {
 			if (this.destroyed) return;
 			this.addLocalDocs();
 			await this.syncFileTree();
+			// Membership before content: the folder-wide flush pushes local
+			// ops, so it waits for the session's first confirmed membership
+			// settlement. Discovery above is unaffected.
+			if (!this._membershipSettled) {
+				await this.whenMembershipSettled();
+			}
 			if (this.destroyed) return;
 			this.backgroundSync.enqueueSharedFolderSync(this);
 		} catch (error) {
@@ -1723,15 +1763,6 @@ export class SharedFolder extends HasProvider {
 		await this._persistence.markServerSynced();
 	}
 
-	/**
-	 * Latch `ready` on the first completed handshake. `ready` is a
-	 * one-way gate — "safe to enroll and edit files in this folder" —
-	 * so the first provider sync must durably record hasServerSync.
-	 * The transient `synced` term in the `ready` getter only bridges
-	 * the moment between the handshake and this marker landing.
-	 * Event-driven so the latch cannot miss the handshake when the
-	 * remote record or login resolves after construction.
-	 */
 	protected handleProviderSynced(): void {
 		// The folder provider completing a sync is the connectivity-level signal
 		// that the transport has returned. It fires on the provider's own
@@ -2381,6 +2412,47 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
+	 * Build the settlement latch around the membership machine the
+	 * constructor just decided on. Called once, immediately after that
+	 * decision, and never again.
+	 *
+	 * The branch is the whole point: with no machine, no classification
+	 * pass will ever settle membership, so the latch has to open here and
+	 * now. That is what makes every outbound membership gate dead when the
+	 * engine is off — if it stops happening, outbound flow parks for the
+	 * life of the session. It lives in one method so that anything
+	 * standing in for the constructor delegates here instead of
+	 * re-implementing it and drifting.
+	 */
+	private initializeMembershipLatch(): void {
+		this._membershipSettledPromise = new Promise<void>((resolve) => {
+			this._resolveMembershipSettled = resolve;
+		});
+		this.markMembershipSettled();
+	}
+
+	/**
+	 * Membership before content: true once per-document outbound flow may
+	 * run — the membership machine's first confirmed classification pass
+	 * of the session has completed (trivially true with the machine off).
+	 * Inbound and download flow never consults this.
+	 */
+	public get membershipSettled(): boolean {
+		return this._membershipSettled;
+	}
+
+	/** Resolves at membership settlement (immediately when already settled). */
+	public whenMembershipSettled(): Promise<void> {
+		return this._membershipSettledPromise ?? Promise.resolve();
+	}
+
+	private markMembershipSettled(): void {
+		if (this._membershipSettled) return;
+		this._membershipSettled = true;
+		this._resolveMembershipSettled?.();
+	}
+
+	/**
 	 * Legacy create routing. A file already known to the sync store
 	 * materializes immediately (the caller reads it in); a genuinely-new file's
 	 * registration settles for the debounce window so a short-lived atomic-write
@@ -2774,11 +2846,11 @@ export class SharedFolder extends HasProvider {
 			}
 		} else {
 			// the File exists, but the ID doesn't
-			this.warn("[getDoc]: creating new shared ID for existing tfile");
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!(tfile instanceof TFile)) {
 				throw new Error("unexpectedly missing tfile or got tfolder");
 			}
+			this.warn("[getDoc]: creating new shared ID for existing tfile");
 			const newDocs = this.placeHold([tfile]);
 			if (newDocs.length > 0) {
 				return this.uploadDoc(vpath);
@@ -2808,11 +2880,11 @@ export class SharedFolder extends HasProvider {
 			}
 		} else {
 			// the File exists, but the ID doesn't
-			this.warn("[getCanvas]: creating new shared ID for existing tfile");
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!(tfile instanceof TFile)) {
 				throw new Error("unexpectedly missing tfile or got tfolder");
 			}
+			this.warn("[getCanvas]: creating new shared ID for existing tfile");
 			const newDocs = this.placeHold([tfile]);
 			if (newDocs.length > 0) {
 				return this.uploadCanvas(vpath);
@@ -3535,6 +3607,18 @@ export class SharedFolder extends HasProvider {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
 			if (!awaitingUpdates) {
+				// Membership before content: this dispatch is how the entry
+				// machine's ENQUEUE_UPLOAD effect ships content (bootstrap
+				// uploads included), so it waits for folder membership settlement.
+				if (!this._membershipSettled) {
+					await this.whenMembershipSettled();
+				}
+				// Teardown is what releases a dispatch parked on that latch —
+				// destroy() settles membership so awaiters resume rather than
+				// pend forever — so resuming here is the ordinary consequence
+				// of teardown rather than a race, and everything below reads a
+				// folder that no longer has the collaborators it needs.
+				if (this.destroyed) return;
 				await doc.hsm?.initializeWithContent();
 				// The second window in this dispatch: the queue reached for
 				// below is one teardown releases, so resuming here after it
@@ -3846,7 +3930,7 @@ export class SharedFolder extends HasProvider {
 		if (paths.length === 0) {
 			return;
 		}
-		const cleanupGuids = new Set<string>();
+		const cleanupGuids = new Map<string, string>();
 		this.folderDoc.transact(() => {
 			for (const vpath of paths) {
 				this.pendingUpload.delete(vpath);
@@ -3860,7 +3944,7 @@ export class SharedFolder extends HasProvider {
 						doc.cleanup();
 						doc.destroy();
 					}
-					cleanupGuids.add(guid);
+					cleanupGuids.set(guid, vpath);
 				} else {
 					// syncStore entry already gone (remote delete) - find by path
 					const doc = this.fset.find((f) => f.path === vpath);
@@ -3870,13 +3954,13 @@ export class SharedFolder extends HasProvider {
 						this.files.delete(docGuid);
 						doc.cleanup();
 						doc.destroy();
-						cleanupGuids.add(docGuid);
+						cleanupGuids.set(docGuid, vpath);
 					}
 				}
 			}
 		}, this);
 
-		for (const guid of cleanupGuids) {
+		for (const guid of cleanupGuids.keys()) {
 			this.teardownDocState(guid);
 		}
 	}
@@ -3983,6 +4067,9 @@ export class SharedFolder extends HasProvider {
 			`${this.path} (${this.guid})`,
 		);
 		this.destroyed = true;
+		// Release outbound work held for membership settlement: awaiters
+		// re-check `destroyed` and bail instead of pending forever.
+		this.markMembershipSettled();
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
 		this.clearDownloadsDeferredByState();

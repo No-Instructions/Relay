@@ -274,7 +274,7 @@ const readMessage = (
 
 const setupWS = (provider: YSweetProvider) => {
 	if (provider.shouldConnect && provider.ws === null) {
-		const websocket = new provider._WS(provider.url);
+		const websocket = new WebSocket(provider.url);
 		metrics.recordNetworkWebSocketConnection("relay", "attempt");
 		websocket.binaryType = "arraybuffer";
 		provider.ws = websocket;
@@ -428,22 +428,12 @@ const broadcastMessage = (provider: YSweetProvider, buf: Uint8Array) => {
 	}
 };
 
-type WebSocketPolyfillType = {
-	new (url: string | URL, protocols?: string | string[] | undefined): WebSocket;
-	prototype: WebSocket;
-	readonly CLOSED: number;
-	readonly CLOSING: number;
-	readonly CONNECTING: number;
-	readonly OPEN: number;
-};
-
 export type YSweetProviderParams = {
 	connect?: boolean;
 	awareness?: awarenessProtocol.Awareness;
 	params?: {
 		[x: string]: string;
 	};
-	WebSocketPolyfill?: WebSocketPolyfillType;
 	resyncInterval?: number;
 	maxBackoffTime?: number;
 	disableBc?: boolean;
@@ -593,7 +583,6 @@ export class YSweetProvider extends Observable<string> {
 	url: string;
 	roomname: string;
 	doc: Y.Doc;
-	_WS: WebSocketPolyfillType;
 	awareness: awarenessProtocol.Awareness;
 	wsconnected: boolean;
 	wsconnecting: boolean;
@@ -688,7 +677,6 @@ export class YSweetProvider extends Observable<string> {
 	 * @param opts.connect - connect option
 	 * @param opts.awareness - awareness protocol instance
 	 * @param opts.params - parameters
-	 * @param opts.WebSocketPolyfill - WebSocket polyfill
 	 * @param opts.resyncInterval - resync interval
 	 * @param opts.maxBackoffTime - maximum backoff time
 	 * @param opts.disableBc - disable broadcast channel
@@ -701,7 +689,6 @@ export class YSweetProvider extends Observable<string> {
 			connect = true,
 			awareness = new awarenessProtocol.Awareness(doc),
 			params = {},
-			WebSocketPolyfill = WebSocket,
 			resyncInterval = -1,
 			maxBackoffTime = RECONNECT_MAX_DELAY_MS,
 			disableBc = false,
@@ -725,7 +712,6 @@ export class YSweetProvider extends Observable<string> {
 			(encodedParams.length === 0 ? "" : "?" + encodedParams);
 		this.roomname = roomname;
 		this.doc = doc;
-		this._WS = WebSocketPolyfill;
 		this.awareness = awareness;
 		this.wsconnected = false;
 		this._pendingMessages = [];
