@@ -44,6 +44,10 @@ import { curryLog } from "src/debug";
 
 export const VIEW_TYPE_DIFFERENCES = "system3-differences-view";
 
+type RevealLeafWorkspace = {
+	revealLeaf?: (leaf: WorkspaceLeaf) => Promise<void>;
+};
+
 export interface ViewState {
 	file1: TFile;
 	file2: TFile;
@@ -72,7 +76,12 @@ export async function openDiffView(
 		active: true,
 		state,
 	});
-	void workspace.revealLeaf(leaf);
+	const revealLeaf = (workspace as unknown as RevealLeafWorkspace).revealLeaf;
+	if (typeof revealLeaf === "function") {
+		void revealLeaf.call(workspace, leaf);
+	} else {
+		workspace.setActiveLeaf(leaf, { focus: true });
+	}
 }
 
 export class DifferencesView extends ItemView {
