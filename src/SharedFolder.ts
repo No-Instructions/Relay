@@ -37,36 +37,10 @@ import {
 import type { NamespacedSettings } from "./SettingsStorage";
 import { RelayInstances, metrics } from "./debug";
 import { LocalStorage } from "./LocalStorage";
-import type { CapturedOp } from "./merge-hsm/undo";
 import type { MergeHSM } from "./merge-hsm/MergeHSM";
 import { SyncFolder, isSyncFolder } from "./SyncFolder";
 import { isDocument } from "./Document";
 import { SyncStore, type FolderMapDelta } from "./SyncStore";
-import {
-	FolderHSM,
-	FolderDocBridge,
-	DeleteCollector,
-	FolderHSMStore,
-	BRIDGE_IN_ORIGIN,
-	FOLDER_LOCAL_DELETE_ORIGIN,
-	deriveRecoveryDelta,
-	isEmptyRecoveryDelta,
-	pathWasDeleted,
-	docsHavePendingSyncState,
-	observeSyncDrain,
-	type FolderEffect,
-	type FolderFork,
-	type LocalFileKind,
-	type FolderMapName,
-	type FolderSyncSnapshot,
-	type DeletionGateSnapshot,
-	type DeleteCollectorOptions,
-	type GateResolution,
-	type HeldDelete,
-	type PersistedFolderState,
-	type RemoteIndexCache,
-	type RetainedDoc,
-} from "./folder-hsm";
 import {
 	SyncType,
 	makeCanvasMeta,
@@ -127,11 +101,6 @@ export interface SharedFolderSettings {
 	 */
 	suspended?: boolean;
 	suspendedAt?: number;
-}
-
-/** Host policy hooks that do not belong in replicated folder settings. */
-export interface SharedFolderOptions {
-	deleteCollector?: DeleteCollectorOptions;
 }
 
 interface Operation {
@@ -196,10 +165,6 @@ interface PendingPublicationRun {
 // subdoc index) once content exists, so polling past this is wasted work.
 const MAX_EMPTY_SERVER_ATTEMPTS = 3;
 
-// Captured deletion bursts (history/undo) and the deferred teardown of
-// deleted docs' local state expire together after this window.
-export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
-
 // Vault-delete echo suppression tokens outlive the slowest observed
 // reconcile dispatch (seconds) by a wide margin, and expire so a stale
 // token cannot swallow a genuine user deletion later.
@@ -217,18 +182,9 @@ export const DOWNLOAD_SWEEP_INTERVAL_MS = 10_000;
 // guid or enqueue an upload. Startup discovery and already-known files skip the
 // wait — only novel interactive creates settle.
 export const NEW_FILE_REGISTRATION_DEBOUNCE_MS = 500;
-
-/** Unique logical paths of a held-deletion batch (keys are vpaths). */
-function heldPaths(deletes: HeldDelete[]): string[] {
-	return [...new Set(deletes.map((deleted) => deleted.key))];
-}
-
-/**
- * Transaction origin of remote-index cache replay onto the provider doc.
- * Replay is a boot-time restoration of server-owned state, not provider
- * traffic: the bridge must not treat it as inbound intent.
- */
-export const REMOTE_INDEX_ORIGIN = "relay:folder-remote-index";
+// Suspended registrations expire after this window so abandoned local state
+// does not remain eligible for restoration indefinitely.
+export const FOLDER_DELETION_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 class Files extends ObservableSet<IFile> {
 	// Startup performance optimization
@@ -298,43 +254,7 @@ export class SharedFolder extends HasProvider {
 	private pendingCreates: Map<string, number> = new Map();
 	private enabledSyncTypes: Set<SyncType> = new Set();
 
-
 	private _persistence: IndexeddbPersistence;
-	private _downloadSweepTimer: number | null = null;
-	/**
-	 * Vault-facing folder doc under the folder doc split (flag-on). Inherits
-	 * the folder's persistence key, so local history and native tombstones
-	 * ride it. Null flag-off: the provider doc is the only folder doc.
-	 */
-	private _localDoc: Y.Doc | null = null;
-	/**
-	 * The provider-facing doc's persisted picture: the remote-index cache
-	 * carried by the folder's state row. Refreshed at natural sync
-	 * moments, never streamed per-update.
-	 */
-	private _lastRemoteIndex: RemoteIndexCache | null = null;
-	private _remoteIndexDirty = false;
-	/** Sole conduit between localDoc and the provider doc (flag-on). */
-	folderBridge: FolderDocBridge | null = null;
-	/** Outbound deletion policy at the bridge (flag-on). */
-	deleteCollector: DeleteCollector | null = null;
-	/**
-	 * Deleted docs whose local data is retained for undo until expiry
-	 * (split only). Persisted as the `retained` half of the folder's
-	 * fork-class state.
-	 */
-	private _deferredTeardown: RetainedDoc[] = [];
-	/**
-	 * Fork-class persistence: one row per folder holding the withheld
-	 * deletion fork and the retained-doc ledger. Writes flow only through
-	 * the machine's PERSIST_STATE effect; the row retires with the
-	 * folder.
-	 */
-	private _folderStateStore: FolderHSMStore | null = null;
-	/** The persisted folder row has been loaded (or migrated); writes may flow. */
-	private _folderStateLoaded = false;
-	/** Host hook: the collector classified a burst as root detach. */
-	onRootDetach: (() => void) | null = null;
 	proxy: SharedFolder;
 	private revokeProxy: (() => void) | null = null;
 	cas: ContentAddressedStore;
@@ -388,45 +308,9 @@ export class SharedFolder extends HasProvider {
 	 */
 	private _emptyOnServer: Map<string, number> = new Map();
 	/**
-	 * Per-folder membership machine. Null when
-	 * enableFolderHSM is off; the flag is read once at construction.
-	 */
-	folderHSM: FolderHSM | null = null;
-	/**
-	 * Synchronous local-record lookups for the FolderHSM guards: vpath →
-	 * identity plus the content evidence (mtime/hash captured when the
-	 * record was written), assembled from persisted HSM state metadata
-	 * and guid-bearing hash-store entries before hydration completes.
-	 * The evidence is what ties the recorded identity to the file now on
-	 * disk; a record without it never authorizes destruction.
-	 */
-	private _localRecordCache: Map<
-		string,
-		{ guid: string; hash?: string; mtime?: number }
-	> = new Map();
-	/**
-	 * Upload effect executions in flight, vpath-keyed, so concurrent
-	 * dispatches of the same decision collapse to one enrollment.
-	 */
-	private _uploadDispatches: Set<string> = new Set();
-	/**
-	 * True once the bootstrap discovery pass over the local tree has run —
-	 * the boundary the origin discriminator uses to tell interactive vault
-	 * creates from startup replays.
-	 */
-	private _hsmBootstrapScanned = false;
-	/**
-	 * Membership before content: latched when the membership machine's
-	 * first confirmed classification pass of the session completes (an
-	 * authoritative folder settles at hydration; a server-backed folder at
-	 * its handshake). Per-document OUTBOUND flow — fork-reconcile
-	 * connects, idle sync-to-remote execution, the folder-wide upload
-	 * flush, the bootstrap-upload dispatch — waits on it, so content whose
-	 * file the settlement will condemn (a re-creation at a remotely
-	 * deleted path above all) cannot race to the server ahead of the
-	 * membership decision. Inbound and download flow never consults it.
-	 * Trivially true when the machine is off; resolved on destroy so held
-	 * work observes teardown instead of pending forever.
+	 * Compatibility latch for outbound consumers. It settles during
+	 * construction and again defensively on destroy so no waiter can remain
+	 * pending during teardown.
 	 */
 	private _membershipSettled = false;
 	private _membershipSettledPromise: Promise<void> | undefined;
@@ -441,6 +325,11 @@ export class SharedFolder extends HasProvider {
 	private _preConvergenceRemoteDeletes: Set<string> | undefined;
 	/** Deleted paths that had a local publication hold when convergence opened. */
 	private _convergenceRemoteDeletedHolds: Map<string, string> | undefined;
+	/**
+	 * Paths with an upload dispatch in flight; the rebind arm clears a
+	 * path's entry so a superseded dispatch cannot replay a stale decision.
+	 */
+	private _uploadDispatches: Set<string> = new Set();
 	/** One parked latch re-entry per held path. */
 	private _convergenceParkedUploads: Map<string, Promise<void>> | undefined;
 	/** One post-convergence publication decision executor per held path. */
@@ -473,7 +362,6 @@ export class SharedFolder extends HasProvider {
 		relayId?: string,
 		authoritative: boolean = false,
 		remote?: RemoteSharedFolder,
-		options: SharedFolderOptions = {},
 	) {
 		const folderRelayId = remote?.relay.guid ?? relayId;
 		const s3rn = folderRelayId
@@ -538,14 +426,6 @@ export class SharedFolder extends HasProvider {
 			SyncSettingsManager
 		>("sync", (settings, path) => new SyncSettingsManager(settings, path));
 
-		// The folder doc split (flag-on): the vault-facing localDoc carries
-		// the map the machine observes and mutates; the provider doc
-		// (HasProvider's ydoc) is the replica the server knows. Read once at
-		// construction, like the machine itself.
-		if (flags().enableFolderHSM) {
-			this._localDoc = new Y.Doc({ gc: true });
-		}
-
 		this.syncStore = new SyncStore(
 			this.folderDoc,
 			this.path,
@@ -565,52 +445,18 @@ export class SharedFolder extends HasProvider {
 			this.syncStore.typeRegistry.getEnabledFileSyncTypes(),
 		);
 
-		this.folderHSM = this.maybeConstructFolderHSM();
 		this.initializeMembershipLatch();
-		if (this.folderHSM) {
-			// Remote map deltas (provider-applied transactions) drive
-			// membership; our own transactions are direct expressions of
-			// effects the machine already accounted for.
-			this.syncStore.onMapDelta = (
-				delta: FolderMapDelta,
-				origin: unknown,
-			) => {
-				if (
-					origin === this ||
-					origin === this._persistence ||
-					origin === FOLDER_LOCAL_DELETE_ORIGIN
-				)
-					return;
-				this.folderHSM?.send({ type: "MAP_DELTA", ...delta });
-			};
-			// A classification pass deferred on pending sync state re-runs
-			// when that state drains; the observer's logic lives with the
-			// engine — this is only its installation on the folder docs.
-			this.unsubscribes.push(
-				observeSyncDrain(this.folderHSM, [this.ydoc, this._localDoc]),
-			);
-		} else {
-			// With no membership machine, claim events are the folder's to
-			// consume: a committed claim landing on a path whose own mint is
-			// still unpublished means the in-flight transfer is feeding a
-			// publication the markUploaded recheck will refuse. Cancel the
-			// work and adopt the committed identity instead. Handled on a
-			// fresh microtask so reconciliation never re-enters observer or
-			// transaction context. (Flag-on, the entry machine's MAP_ADDED
-			// supersession contract owns this same event.)
-			this.syncStore.onCompetingClaim = (path: string, meta: Meta) => {
-				void Promise.resolve().then(() => {
-					this.handleCompetingClaim(path, meta);
-				});
-			};
-		}
+		this.syncStore.onCompetingClaim = (path: string, meta: Meta) => {
+			void Promise.resolve().then(() => {
+				this.handleCompetingClaim(path, meta);
+			});
+		};
 		if (this._syncConvergenceLatchEnabled) {
 			this.unsubscribes.push(
 				this.syncStore.subscribeMapDelta((delta, origin) => {
 					if (
 						origin === this ||
-						origin === this._persistence ||
-						origin === FOLDER_LOCAL_DELETE_ORIGIN
+						origin === this._persistence
 					)
 						return;
 					this.recordPreConvergenceRemoteDeletes(delta);
@@ -660,123 +506,18 @@ export class SharedFolder extends HasProvider {
 		try {
 			const folderDbName = `${this.appId}-relay-folder-${this.guid}`;
 			const migrateFrom = flags().enableFolderIdbMigration ? this.guid : null;
-			// Under the split the existing folder DB stays with the localDoc,
-			// preserving local history and native tombstones; the provider doc
-			// persists separately and (re)fills from the server.
 			this._persistence = new IndexeddbPersistence(
 				folderDbName,
 				this.folderDoc,
-				// Deletion capture rides the localDoc persistence (split only):
-				// bridge-applied remote deletions and host-executed local
-				// deletions are captured, coalesced per origin, and persisted
-				// for history/undo.
-				this._localDoc
-					? {
-							scope: ["filemeta_v0", "docs"],
-							scopeType: "map",
-							trackedOrigins: new Set<unknown>([
-								BRIDGE_IN_ORIGIN,
-								FOLDER_LOCAL_DELETE_ORIGIN,
-							]),
-							captureTimeout: 2000,
-						}
-					: null,
+				null,
 				migrateFrom,
 				this.timeProvider,
 			);
-			// The provider doc has no database of its own: it boots from the
-			// remote-index cache in the folder's state row (loaded below)
-			// and refills from the server on handshake.
 		} catch (e) {
 			this.warn("Unable to open persistence.", this.guid);
 			console.error(e);
 			throw e;
 		}
-
-		if (this._localDoc) {
-			this.folderBridge = new FolderDocBridge(this._localDoc, this.ydoc, {
-				onOutboundDeletes: (deletes) => this.deleteCollector?.collect(deletes),
-				onOutboundSets: (sets) => this.deleteCollector?.dropReasserted(sets),
-				isHeld: (mapName, key) =>
-					this.deleteCollector?.isHeld(mapName, key) ?? false,
-				// A path awaiting first upload is local intent; everything else
-				// converges toward server truth. Disk safety is the machine's:
-				// remote-wins deletions reach it as evidence-checked map deltas.
-				classifyDivergence: (_mapName, key) =>
-					this.pendingUpload.has(key) ? "local-wins" : "remote-wins",
-				// Persistence replay is not local intent; the remote doc
-				// converges through its own persistence and reconcile().
-				skipOutboundOrigin: (origin) =>
-					origin != null && origin === this._persistence,
-				// The remote-index cache can be stale — the localDoc's
-				// database also advances while the split is inactive — so
-				// its boot-time replay must not overwrite the localDoc.
-				// reconcile() at provider sync converges the docs.
-				skipInboundOrigin: (origin) =>
-					origin != null && origin === REMOTE_INDEX_ORIGIN,
-				// Publication staged the membership to an empty relay; the
-				// per-document rooms there are empty shells until content
-				// re-uploads. Stage every registered doc's content.
-				onPublication: () => this.stagePublicationUploads(),
-			});
-			this.deleteCollector = new DeleteCollector(
-				this.folderBridge,
-				this.timeProvider,
-				{
-					membershipSize: () => this.syncStore.committedEntryCount(),
-					onDetach: (deletes) => this.handleCollectorDetach(deletes),
-					onReplicated: (deletes) => {
-						this.folderHSM?.send({
-							type: "DELETE_REPLICATED",
-							paths: heldPaths(deletes),
-						});
-						this.notifyListeners();
-					},
-					onGated: (deletes) => {
-						this.log(
-							`[DeleteCollector] gated ${new Set(deletes.map((deleted) => deleted.key)).size} deletions pending send/restore`,
-						);
-						this.folderHSM?.send({
-							type: "DELETE_HELD",
-							paths: heldPaths(deletes),
-						});
-						this.notifyListeners();
-					},
-					onRestored: (deletes) => this.handleCollectorRestore(deletes),
-					onDroppedStale: (deletes) =>
-						this.handleCollectorDroppedStale(deletes),
-					currentRemoteIdentity: (mapName, key) =>
-						this.currentRemoteIdentity(mapName, key),
-					persist: () => {
-						// Fork-class state persists only through the machine's
-						// PERSIST_STATE effect; the collector's change also
-						// reaches the deletion surface through the same
-						// listeners the pill uses.
-						this.folderHSM?.requestPersist();
-						this.notifyListeners();
-					},
-				},
-				options.deleteCollector,
-			);
-			// Retention: captured deletion bursts and the retained-doc
-			// ledger expire together.
-			void this.whenSynced()
-				.then(() => {
-					if (this.destroyed) return;
-					this._persistence.opCapture?.dropBefore(
-						this.timeProvider.now() - FOLDER_DELETION_RETENTION_MS,
-					);
-					this.sweepDeferredTeardown();
-				})
-				.catch(() => {});
-			this._folderStateStore = new FolderHSMStore(this.appId);
-			const loadPromise = this.loadPersistedFolderState().catch((e) => {
-				this.warn("failed to load persisted folder state", e);
-				this._folderStateLoaded = true;
-			});
-			trackPromise(`folderStateLoad:${this.guid}`, loadPromise);
-		}
-
 		// If folder is authoritative (local-only, not awaiting server updates),
 		// mark it as server synced so it's considered "ready" even after reload
 		if (this.authoritative) {
@@ -935,15 +676,7 @@ export class SharedFolder extends HasProvider {
 				// Remote folder metadata can also land before SyncStore observers are
 				// installed, so replay both local doc discovery and file-tree sync after
 				// start() to avoid missing the first batch of remote entries.
-				if (this.folderHSM) {
-					// Assemble the local-record evidence before declaring the
-					// folder persistence loaded, so the provenance ladder never
-					// runs against an empty record cache.
-					await this.assembleLocalRecordCache();
-					this.hydrateFolderMachine();
-				} else {
-					this.addLocalDocs();
-				}
+				this.addLocalDocs();
 				await this.syncFileTree();
 				try {
 					this._persistence.set("path", this.path);
@@ -1090,7 +823,6 @@ export class SharedFolder extends HasProvider {
 
 		const docId = event.doc_id;
 		if (!docId) return;
-
 
 		// Extract the guid from the doc_id
 		// The doc_id format is "{relayId}-{guid}" where both are UUIDs
@@ -1767,54 +1499,12 @@ export class SharedFolder extends HasProvider {
 			});
 		}
 		const files: IFile[] = [];
-		if (!this.folderHSM && syncTFiles.length > 0) {
-			// Legacy membership path: reserve GUIDs for new files up front.
+		if (syncTFiles.length > 0) {
 			this.placeHold(syncTFiles);
 		}
 		syncTFiles.forEach((tfile) => {
 			const vpath = this.getVirtualPath(tfile.path);
-			if (this.folderHSM) {
-				// Every syncable local file is evidence for the machine;
-				// files unknown to the map are classified by the provenance
-				// ladder after hydration instead of being
-				// speculatively place-held, which minted guids and enqueued
-				// uploads from a possibly partially hydrated map.
-				this.folderHSM.send({
-					type: "FILE_DISCOVERED",
-					path: vpath,
-					origin: "bootstrap",
-					kind: tfile instanceof TFolder ? "folder" : "file",
-				});
-				// Pending-upload-ONLY paths are the machine's to re-enqueue
-				// after hydration, so the scan leaves them alone. Two things
-				// have to hold for that to be a wait rather than a refusal.
-				// The hydration the machine is waiting on has to be able to
-				// arrive (canConfirmMembership). And the path has to really
-				// be pending-upload-only: a path the map already commits
-				// carries two identities, and no verdict the machine can
-				// reach for that pair re-enqueues an upload — it either
-				// keeps the hold or supersedes it through a rebind.
-				// Deferring such a path here leaves the user's file with no
-				// live document at all.
-				//
-				// Materializing the committed-and-held class does reach
-				// uploadDoc, which is what the deferral used to avoid. What
-				// makes that safe is not this branch but the membership
-				// latch: uploadDoc's dispatch awaits settlement, settlement
-				// is the first confirmed classification pass, and by then
-				// the row has been decided and refuses publication. The
-				// server-authoritative fence in applyPendingUpload backs it
-				// independently.
-				if (
-					this.pendingUpload.has(vpath) &&
-					!this.syncStore.getCommittedMeta(vpath) &&
-					this.canConfirmMembership()
-				) {
-					return;
-				}
-			}
 			const guid = this.syncStore.get(vpath);
-			if (this.folderHSM && !guid) return;
 			const existing = guid ? this.files.get(guid) : undefined;
 			if (existing) {
 				files.push(existing);
@@ -1995,35 +1685,6 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Level-triggered re-arm for pending downloads (the safety net over the
-	 * edge-triggered enqueue): while membership holds pendingDownload
-	 * entries, periodically re-run the enqueue for entries with no download
-	 * in flight. Covers enqueues dropped against a mid-sync store and
-	 * downloads deferred because the sharer had not yet staged content to
-	 * the room ("server has guid but no content yet"). The guards inside
-	 * executeEnqueueDownload keep each pass cheap and idempotent; the sweep
-	 * disarms itself when nothing is pending.
-	 */
-	private armDownloadSweep(): void {
-		if (this.destroyed || this._downloadSweepTimer !== null) return;
-		if (!this.folderHSM) return;
-		this._downloadSweepTimer = this.timeProvider.setTimeout(() => {
-			this._downloadSweepTimer = null;
-			if (this.destroyed || !this.folderHSM) return;
-			const pending = this.folderHSM
-				.getSnapshot()
-				.entries.filter((entry) => entry.disposition === "pendingDownload");
-			for (const entry of pending) {
-				if (entry.guid === null) continue;
-				this.executeEnqueueDownload(entry.path, entry.guid);
-			}
-			if (pending.length > 0) {
-				this.armDownloadSweep();
-			}
-		}, DOWNLOAD_SWEEP_INTERVAL_MS);
-	}
-
-	/**
 	 * A publication staged this folder's membership onto an empty relay.
 	 * Every per-document room there is an empty shell until content
 	 * re-uploads, so joining peers would download guids without bodies.
@@ -2033,13 +1694,8 @@ export class SharedFolder extends HasProvider {
 	private stagePublicationUploads(): void {
 		// Reconciliation fires this synchronously after its staging
 		// transaction; enqueue on a fresh microtask so upload bookkeeping
-		// never re-enters observer or transaction context. Membership
-		// before content: the staged uploads also wait for the settlement
-		// the same handshake produces moments later.
+		// never re-enters observer or transaction context.
 		void Promise.resolve().then(async () => {
-			if (!this._membershipSettled) {
-				await this.whenMembershipSettled();
-			}
 			if (this._syncConvergenceLatchEnabled && !this._firstSyncConverged) {
 				await this.whenFirstSyncConverged();
 			}
@@ -2048,24 +1704,19 @@ export class SharedFolder extends HasProvider {
 			this.files.forEach((doc) => {
 				if (isSyncFolder(doc)) return; // directories have no rooms
 				// The outcome is dropped: this staging path never publishes
-				// membership itself (settlement does), so there is no
-				// publication decision to make here.
+				// membership itself, so there is no publication decision to make here.
 				const p = this.backgroundSync
 					.enqueueUpload(doc as Document | Canvas | SyncFile)
 					.then(
 						() => undefined,
 						(e) => {
-							this.warn(
-								"[FolderHSM] publication staging failed",
-								doc.path,
-								e,
-							);
+							this.warn("publication staging failed", doc.path, e);
 						},
 					);
 				trackAsyncCleanup(p);
 				staged++;
 			});
-			this.log(`[FolderHSM] publication: staged ${staged} content uploads`);
+			this.log(`publication: staged ${staged} content uploads`);
 		});
 	}
 
@@ -2263,102 +1914,8 @@ export class SharedFolder extends HasProvider {
 		await this._persistence.markServerSynced();
 	}
 
-	/**
-	 * Whether a confirmed membership pass can still arrive for this folder.
-	 *
-	 * Confirmed confidence comes from one of two places: the folder is its
-	 * own authority and settles at hydration, or a provider handshake
-	 * confirms the server's picture. A folder with no relay has neither —
-	 * it is not the authority (a folder can be left without a relay by
-	 * losing access to one, and losing access must never promote the
-	 * device to authority), and there is no provider to hand it a
-	 * handshake. Its hydration claim is blind and stays blind for the life
-	 * of the session.
-	 *
-	 * That matters wherever work is deferred until the confirmation
-	 * arrives. Deferring is only ever a wait; on a folder that can never
-	 * be confirmed it is a refusal, and one that no later event retracts.
-	 * Callers use this to tell the two apart. It grants nothing: what a
-	 * folder may publish and what it may destroy are still decided by the
-	 * membership row and the dispatch gates, which go on refusing at blind
-	 * confidence exactly as before.
-	 */
-	private canConfirmMembership(): boolean {
-		return this.authoritative || this.relayId !== undefined;
-	}
-
-	/**
-	 * Feed the machine the bootstrap scan, declare its persistence
-	 * loaded, and assert the hydration-time sync claim. The claim's
-	 * confidence depends on who the folder's membership authority is:
-	 *
-	 * - A folder that syncs with a server boots from its persisted
-	 *   has-synced marker — a BLIND claim. The server may have moved
-	 *   while the session was closed, so decisions made under it are
-	 *   provisional: nothing destructive or publishing dispatches until
-	 *   the session's first real handshake confirms the picture
-	 *   (handleProviderSynced).
-	 * - An AUTHORITATIVE folder is its own membership authority: there
-	 *   is no server picture its local one could understate, so its
-	 *   local tree IS the confirmed picture. It hydrates at confirmed
-	 *   confidence — local files mint identities and register live doc
-	 *   objects immediately, and only the network transfer waits for a
-	 *   connection (queued upload work drains when the folder connects).
-	 */
-	private hydrateFolderMachine(): void {
-		const machine = this.folderHSM;
-		if (!machine) return;
-		// A clone's root directory may not exist on disk yet, so local
-		// discovery can have nothing to scan — valid evidence (every map
-		// entry classifies as a download). The machine must still hear
-		// PERSISTENCE_LOADED: without it, it stays in `loading` absorbing
-		// every observation forever.
-		try {
-			this.addLocalDocs();
-		} catch (e) {
-			this.warn("local doc discovery failed during machine bootstrap", e);
-		}
-		this._hsmBootstrapScanned = true;
-		machine.send({ type: "PERSISTENCE_LOADED" });
-		// Hydration builds on the folder readiness latch: a folder that
-		// completed the sync handshake before (hasServerSync) or that is
-		// authoritative is hydrated as soon as persistence loads; fresh
-		// folders wait for the first provider handshake
-		// (handleProviderSynced).
-		if (this.ready) {
-			machine.send({
-				type: "PROVIDER_SYNCED",
-				tier: this.authoritative ? "confirmed" : "blind",
-			});
-		}
-	}
-
-	/**
-	 * Latch `ready` on the first completed handshake. `ready` is a
-	 * one-way gate — "safe to enroll and edit files in this folder" —
-	 * so the first provider sync must durably record hasServerSync.
-	 * The transient `synced` term in the `ready` getter only bridges
-	 * the moment between the handshake and this marker landing.
-	 * Event-driven so the latch cannot miss the handshake when the
-	 * remote record or login resolves after construction.
-	 */
 	protected handleProviderSynced(): void {
-		// Bridge reconciliation runs only against genuine server truth (a
-		// completed handshake), never a cold remote persistence — an empty
-		// provider doc must not read as "everything was deleted". It runs
-		// before the machine's hydration gate so the ladder sees a
-		// converged map.
-		this.folderBridge?.reconcile();
 		this.markFirstSyncConverged();
-		// The FolderHSM hydration gate rides the same handshake as the
-		// readiness latch; the machine itself dedups repeat syncs
-		// (classification re-runs only after a disconnect or a blind
-		// boot's first confirmed exchange). A completed handshake is a
-		// natural sync moment for the remote-index cache.
-		this._remoteIndexDirty = true;
-		this.folderHSM?.send({ type: "CONNECTED" });
-		this.folderHSM?.send({ type: "PROVIDER_SYNCED" });
-		this.folderHSM?.requestPersist();
 		// The folder provider completing a sync is the connectivity-level signal
 		// that the transport has returned. It fires on the provider's own
 		// reconnect-backoff self-heal, which never routes through connect(), so a
@@ -2379,278 +1936,8 @@ export class SharedFolder extends HasProvider {
 		});
 	}
 
-	protected handleProviderDesynced(): void {
-		this.folderHSM?.send({ type: "DISCONNECTED" });
-	}
-
-	/**
-	 * The vault-facing folder doc: the localDoc under the folder doc split
-	 * (flag-on), the provider doc otherwise.
-	 */
 	get folderDoc(): Y.Doc {
-		return this._localDoc ?? this.ydoc;
-	}
-
-	/**
-	 * Load the folder's persisted state row (the withheld deletion fork,
-	 * the retained-doc ledger, and the remote-index cache). The engine
-	 * manages only its own storage and builds its state fresh when no
-	 * row exists.
-	 */
-	private async loadPersistedFolderState(): Promise<void> {
-		const store = this._folderStateStore;
-		if (!store) {
-			this._folderStateLoaded = true;
-			return;
-		}
-		const row = await store.loadState(this.guid);
-		if (this.destroyed) return;
-		if (row?.remoteIndex?.snapshot) {
-			// The provider doc boots from the cached picture of the
-			// server-owned folder doc; a stale cache only costs a fuller
-			// resync at the next handshake.
-			try {
-				Y.applyUpdate(
-					this.ydoc,
-					row.remoteIndex.snapshot,
-					REMOTE_INDEX_ORIGIN,
-				);
-				this._lastRemoteIndex = row.remoteIndex;
-			} catch (e) {
-				this.warn("failed to apply cached remote index", e);
-			}
-		}
-		if (row?.retained && row.retained.length > 0) {
-			this._deferredTeardown.push(...row.retained);
-		}
-		if (row?.fork && row.fork.deletes.length > 0) {
-			this.deleteCollector?.loadPersisted({
-				phase: "gated",
-				deletes: row.fork.deletes.map((deleted) => ({
-					mapName: deleted.mapName as FolderMapName,
-					key: deleted.key,
-					...(deleted.guid !== undefined ? { guid: deleted.guid } : {}),
-				})),
-				gatedAt: row.fork.created,
-			});
-			if (this.deleteCollector?.currentPhase === "gated") {
-				this.log(
-					`[DeleteCollector] rehydrated withheld burst of ${row.fork.deletes.length} deletions`,
-				);
-				this.folderHSM?.send({
-					type: "DELETE_HELD",
-					paths: heldPaths(this.deleteCollector.heldDeletes()),
-				});
-				this.notifyListeners();
-			}
-		}
-		this._folderStateLoaded = true;
-	}
-
-	/**
-	 * The PERSIST_STATE executor: write the approved fork-class subset —
-	 * the collector's withheld burst and the retained-doc ledger — to the
-	 * folder's row. The machine snapshot itself is observability only and
-	 * is not stored. Writes wait until the initial load (and migration)
-	 * has finished so a fresh boot cannot blank an existing row.
-	 */
-	private executeFolderStatePersist(): void {
-		const store = this._folderStateStore;
-		if (!store || !this._folderStateLoaded || this.destroyed) return;
-		const serialized = this.deleteCollector?.serialize() ?? null;
-		const fork: FolderFork | null = serialized
-			? {
-					deletes: serialized.deletes.map((deleted) => ({
-						mapName: deleted.mapName,
-						key: deleted.key,
-						...(deleted.guid !== undefined
-							? { guid: deleted.guid }
-							: {}),
-					})),
-					origin: "bulk-delete",
-					created: serialized.gatedAt,
-				}
-			: null;
-		// The remote-index cache refreshes only at natural sync moments
-		// (marked dirty by the handshake and the post-classification
-		// settle), never per-update.
-		if (this._remoteIndexDirty) {
-			this._remoteIndexDirty = false;
-			try {
-				this._lastRemoteIndex = {
-					snapshot: Y.encodeStateAsUpdate(this.ydoc),
-					stateVector: Y.encodeStateVector(this.ydoc),
-					updated: this.timeProvider.now(),
-				};
-			} catch (e) {
-				this.warn("failed to capture remote index", e);
-			}
-		}
-		const row: PersistedFolderState = {
-			guid: this.guid,
-			version: 1,
-			fork,
-			retained: this._deferredTeardown.map((doc) => ({ ...doc })),
-			remoteIndex: this._lastRemoteIndex,
-		};
-		const p = store.saveState(this.guid, row).catch((e) => {
-			this.warn("failed to persist folder state", e);
-		});
-		trackAsyncCleanup(p);
-	}
-
-	/**
-	 * Retire the folder's persisted row — unsharing the folder removes
-	 * it; the row's lifecycle is bound to the folder's.
-	 */
-	retireFolderState(): void {
-		const store = this._folderStateStore;
-		if (!store) return;
-		const p = store
-			.deleteState(this.guid)
-			.catch(() => {})
-			.then(() => store.flush());
-		trackAsyncCleanup(p);
-	}
-
-	/**
-	 * A deletion burst containing the folder root: nothing replicates; the
-	 * host detaches the folder locally (suspension is wired through
-	 * flushVaultDeletes' flag-on path).
-	 */
-	private handleCollectorDetach(deletes: HeldDelete[]): void {
-		this.log(
-			`[DeleteCollector] detach: ${deletes.length} deletions withheld from replication`,
-		);
-		this.notifyListeners();
-		this.onRootDetach?.();
-	}
-
-	/**
-	 * A gated burst discarded by restore(): re-assert the keys on the
-	 * localDoc from server truth. The resulting bridge-origin map deltas
-	 * drive the machine to re-materialize the local files.
-	 */
-	private handleCollectorRestore(deletes: HeldDelete[]): void {
-		this.folderBridge?.refreshFromRemote(deletes);
-		this.folderHSM?.send({
-			type: "DELETE_RESTORED",
-			paths: heldPaths(deletes),
-		});
-		this.notifyListeners();
-	}
-
-	/**
-	 * Deletions dropped at send() resolution because their target changed
-	 * since the intent was recorded: the intent expired. The keys stay on
-	 * the remote replica; re-assert them locally so the replicas converge
-	 * and the machine re-materializes from present truth.
-	 */
-	private handleCollectorDroppedStale(deletes: HeldDelete[]): void {
-		this.log(
-			`[DeleteCollector] dropped ${deletes.length} stale deletions whose targets changed`,
-		);
-		this.folderBridge?.refreshFromRemote(deletes);
-		this.folderHSM?.send({
-			type: "DELETE_RESTORED",
-			paths: heldPaths(deletes),
-		});
-		this.notifyListeners();
-	}
-
-	/**
-	 * The identity the committed remote replica currently holds for a
-	 * map key, for the collector's expired-intent check at resolution.
-	 */
-	private currentRemoteIdentity(
-		mapName: FolderMapName,
-		key: string,
-	): string | undefined {
-		const value = this.ydoc.getMap<unknown>(mapName).get(key);
-		if (typeof value === "string") return value;
-		if (
-			value !== null &&
-			typeof value === "object" &&
-			"id" in value &&
-			typeof (value as { id: unknown }).id === "string"
-		) {
-			return (value as { id: string }).id;
-		}
-		return undefined;
-	}
-
-	/** Deletions currently held by the outbound gate. */
-	heldDeletions(): HeldDelete[] {
-		return this.deleteCollector?.heldDeletes() ?? [];
-	}
-
-	/** Stable, logical-path projection of the current gated burst. */
-	deletionGate(): DeletionGateSnapshot | null {
-		return this.deleteCollector?.gateSnapshot() ?? null;
-	}
-
-	/** Whether the outbound delete gate is awaiting a send/restore decision. */
-	get deletionsGated(): boolean {
-		return this.deleteCollector?.currentPhase === "gated";
-	}
-
-	/** Explicitly replicate a gated deletion burst. */
-	sendHeldDeletions(token: string): GateResolution {
-		return this.deleteCollector?.send(token) ?? "not-gated";
-	}
-
-	/** Explicitly discard a gated deletion burst and restore membership. */
-	restoreHeldDeletions(token: string): GateResolution {
-		return this.deleteCollector?.restore(token) ?? "not-gated";
-	}
-
-	/**
-	 * Host signal from the vault feed: the folder's root was deleted. The
-	 * root is never a map key, so the collector needs this out-of-band to
-	 * classify the active burst as detach.
-	 */
-	notifyVaultRootDeleted(): void {
-		this.deleteCollector?.notifyFolderRootDeleted();
-	}
-
-	/**
-	 * Captured deletion history for this folder (split only): one entry per
-	 * coalesced burst, newest last. Undo reverses the captured op — a
-	 * compensating operation that re-asserts the removed entries on every
-	 * replica (P10).
-	 */
-	deletionHistory(): Array<{
-		id: number;
-		origin: "local" | "remote";
-		timestamp: number;
-		paths: string[];
-	}> {
-		const capture = this._persistence?.opCapture;
-		if (!capture) return [];
-		return capture.entries.map((entry: CapturedOp, id: number) => ({
-			id,
-			origin:
-				entry.origin === FOLDER_LOCAL_DELETE_ORIGIN
-					? ("local" as const)
-					: ("remote" as const),
-			timestamp: entry.timestamp,
-			paths: capture.deletedKeys(entry),
-		}));
-	}
-
-	/**
-	 * Reverse one captured deletion burst. The re-asserted entries flow
-	 * outbound through the bridge (replicating the undo to peers) and their
-	 * map deltas drive the machine to re-materialize local files. Always a
-	 * user action, never automatic.
-	 */
-	undoDeletion(id: number): boolean {
-		const capture = this._persistence?.opCapture;
-		const entry = capture?.entries[id];
-		if (!capture || !entry) return false;
-		capture.reverse([entry]);
-		this.notifyListeners();
-		return true;
+		return this.ydoc;
 	}
 
 	async getServerSynced(): Promise<boolean> {
@@ -2711,8 +1998,6 @@ export class SharedFolder extends HasProvider {
 	public get intent(): ConnectionIntent {
 		return this.shouldConnect ? "connected" : "disconnected";
 	}
-
-
 
 	async _handleServerRename(
 		doc: IFile,
@@ -3277,137 +2562,15 @@ export class SharedFolder extends HasProvider {
 		return expandDesiredRemotePaths(paths);
 	}
 
-	/**
-	 * Construct the membership machine when enableFolderHSM is on. The flag
-	 * is read here, at folder construction, and never again — toggling it
-	 * applies on the next folder (re)load. One FolderHSM per shared folder,
-	 * as there is one MergeHSM per document.
-	 */
-	private maybeConstructFolderHSM(): FolderHSM | null {
-		if (!flags().enableFolderHSM) {
-			return null;
-		}
-		return new FolderHSM({
-			folderGuid: this.guid,
-			listMapEntries: () => this.syncStore.listEffectiveEntries(),
-			getMapEntry: (vpath: string) => {
-				const meta = this.syncStore.getCommittedMeta(vpath);
-				return meta
-					? { path: vpath, guid: meta.id, type: meta.type }
-					: undefined;
-			},
-			// Upload holds ride the existing pending-upload persistence in
-			// its current format: the identity minted at placeHold time,
-			// reused by retries across restarts.
-			holds: {
-				getHold: (vpath: string) =>
-					this.pendingUpload.get(vpath) ?? undefined,
-				moveHold: (from: string, to: string) => {
-					const guid = this.pendingUpload.get(from);
-					if (guid === undefined || guid === null) return;
-					this.pendingUpload.delete(from);
-					this.pendingUpload.set(to, guid);
-				},
-			},
-			// Local records: the in-memory identity cache assembled from
-			// persisted merge-state metadata and guid-bearing hash rows.
-			// Retirement removes only the cache row; the underlying stores
-			// keep their own lifecycles.
-			records: {
-				getRecordGuid: (vpath: string) =>
-					this._localRecordCache.get(vpath)?.guid,
-				retireRecord: (vpath: string) => {
-					this._localRecordCache.delete(vpath);
-				},
-				moveRecord: (from: string, to: string) => {
-					const record = this._localRecordCache.get(from);
-					if (!record) return;
-					this._localRecordCache.delete(from);
-					this._localRecordCache.set(to, record);
-				},
-			},
-			pathTombstoned: (vpath: string) =>
-				pathWasDeleted(this.folderDoc.getMap<Meta>("filemeta_v0"), vpath),
-			// Live doc state only — a persisted readiness marker can declare
-			// a folder synced while the session's exchange is incomplete.
-			hasPendingSyncState: () =>
-				docsHavePendingSyncState(this.ydoc, this._localDoc),
-			// Only documents carry content-merge machinery; everything else
-			// conflicts rather than silently merging.
-			mergeableKind: (fileType?: string) =>
-				fileType === SyncType.Document,
-			onEffect: (effect) => this.handleFolderHSMEffect(effect),
-			onTransition: (from, to, eventType) => {
-				this.debug(`[FolderHSM] ${from} -> ${to} (${eventType})`);
-				// A classification pass settling at confirmed confidence is
-				// a natural sync moment: refresh the remote-index cache on
-				// the next persist. It is also the session's membership
-				// settlement — the moment held outbound flow may run. A
-				// pass the trust gate deferred settled nothing; the drained
-				// re-run comes back through here.
-				if (from === "reconciling" && to === "tracking") {
-					this._remoteIndexDirty = true;
-					const machine = this.folderHSM;
-					if (
-						machine &&
-						machine.context.tier === "confirmed" &&
-						!machine.context.classificationDeferred
-					) {
-						this.markMembershipSettled();
-					}
-				}
-			},
-		});
-	}
-
-	/**
-	 * A record for a path whose on-disk state IS the synced state (a
-	 * download that just landed, an upload that just committed): capture
-	 * the file's current mtime as the record's content evidence.
-	 */
-	private recordSyncedNow(
-		vpath: string,
-		guid: string,
-	): { guid: string; mtime?: number } {
-		const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
-		return tfile instanceof TFile
-			? { guid, mtime: tfile.stat.mtime }
-			: { guid };
-	}
-
-	/** Live membership snapshot for status surfaces; null when the engine is off. */
-	public getFolderSyncSnapshot(): FolderSyncSnapshot | null {
-		return this.folderHSM?.getSnapshot() ?? null;
-	}
-
-	/**
-	 * Build the settlement latch around the membership machine the
-	 * constructor just decided on. Called once, immediately after that
-	 * decision, and never again.
-	 *
-	 * The branch is the whole point: with no machine, no classification
-	 * pass will ever settle membership, so the latch has to open here and
-	 * now. That is what makes every outbound membership gate dead when the
-	 * engine is off — if it stops happening, outbound flow parks for the
-	 * life of the session. It lives in one method so that anything
-	 * standing in for the constructor delegates here instead of
-	 * re-implementing it and drifting.
-	 */
+	/** Initialize the construction-time compatibility latch. */
 	private initializeMembershipLatch(): void {
 		this._membershipSettledPromise = new Promise<void>((resolve) => {
 			this._resolveMembershipSettled = resolve;
 		});
-		if (!this.folderHSM) {
-			this.markMembershipSettled();
-		}
+		this.markMembershipSettled();
 	}
 
-	/**
-	 * Membership before content: true once per-document outbound flow may
-	 * run — the membership machine's first confirmed classification pass
-	 * of the session has completed (trivially true with the machine off).
-	 * Inbound and download flow never consults this.
-	 */
+	/** True once construction has opened the outbound compatibility latch. */
 	public get membershipSettled(): boolean {
 		return this._membershipSettled;
 	}
@@ -3460,57 +2623,7 @@ export class SharedFolder extends HasProvider {
 	}
 
 	/**
-	 * Route a vault create event into the machine with its origin decided
-	 * by the discriminator: interactive iff the bootstrap scan completed and the
-	 * path was not already known as a local file. Obsidian replays create
-	 * events for every existing file at vault load; those must never
-	 * launder into user intent.
-	 */
-	public notifyVaultCreate(tfile: TAbstractFile): boolean {
-		const machine = this.folderHSM;
-		if (!machine) return false;
-		const vpath = this.getVirtualPath(tfile.path);
-		if (this.isPendingDelete(vpath)) return false;
-		// Capture shared-ness before the machine runs: its upload effect
-		// place-holds the path, which must not be mistaken for an
-		// already-shared file afterwards. Callers materialize the live file
-		// object for already-shared paths (e.g. a download landing on disk).
-		const alreadyShared = Boolean(this.syncStore.getCommittedMeta(vpath));
-		const kind = tfile instanceof TFolder ? "folder" : "file";
-		if (!this._hsmBootstrapScanned || machine.hasLocalFile(vpath)) {
-			machine.send({
-				type: "FILE_DISCOVERED",
-				path: vpath,
-				origin: "bootstrap",
-				kind,
-			});
-			return alreadyShared;
-		}
-		this.scheduleInteractiveCreate(vpath, kind);
-		return alreadyShared;
-	}
-
-	/**
-	 * A novel interactive create settles for a debounce window before entering
-	 * the machine, so a short-lived file removed by a rename or delete within
-	 * the window never registers. The timer re-checks that the file still
-	 * exists on disk before it fires — a rename-away leaves nothing to register.
-	 */
-	private scheduleInteractiveCreate(vpath: string, kind: LocalFileKind): void {
-		this.cancelPendingCreate(vpath);
-		const timer = this.timeProvider.setTimeout(() => {
-			this.pendingCreates.delete(vpath);
-			const machine = this.folderHSM;
-			if (!machine) return;
-			if (this.isPendingDelete(vpath)) return;
-			if (!this.vault.getAbstractFileByPath(this.getPath(vpath))) return;
-			machine.send({ type: "FILE_CREATED", path: vpath, kind });
-		}, NEW_FILE_REGISTRATION_DEBOUNCE_MS);
-		this.pendingCreates.set(vpath, timer);
-	}
-
-	/**
-	 * Legacy (non-HSM) create routing. A file already known to the sync store
+	 * Legacy create routing. A file already known to the sync store
 	 * materializes immediately (the caller reads it in); a genuinely-new file's
 	 * registration settles for the debounce window so a short-lived atomic-write
 	 * temp file vanishes before it is place-held and uploaded. Returns whether
@@ -3544,7 +2657,7 @@ export class SharedFolder extends HasProvider {
 		this.pendingCreates.set(vpath, timer);
 	}
 
-	/** Cancel a settling interactive create — the path was removed or renamed away. */
+	/** Cancel a settling create — the path was removed or renamed away. */
 	private cancelPendingCreate(vpath: string): void {
 		const timer = this.pendingCreates.get(vpath);
 		if (timer !== undefined) {
@@ -3553,31 +2666,12 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	/** Route a vault delete into the machine (skipping internal-trash echoes). */
-	public notifyVaultDelete(vpath: string): void {
-		this.cancelPendingCreate(vpath);
-		const machine = this.folderHSM;
-		if (!machine) return;
-		if (this.isPendingDelete(vpath)) return;
-		machine.send({ type: "FILE_DELETED", path: vpath });
-	}
-
-	/** Route an in-folder vault rename through the active membership path. */
+	/** Route an in-folder vault rename. */
 	public notifyVaultRename(file: TAbstractFile, oldPath: string): void {
 		const oldVPath = this.getVirtualPath(oldPath);
 		const newVPath = this.getVirtualPath(file.path);
 		this.cancelPendingCreate(oldVPath);
 		this.cancelPendingCreate(newVPath);
-		const machine = this.folderHSM;
-		if (machine) {
-			machine.send({
-				type: "FILE_RENAMED",
-				from: oldVPath,
-				to: newVPath,
-			});
-			return;
-		}
-
 		if (this.syncStore.has(oldVPath)) {
 			this.renameFile(file, oldPath);
 			return;
@@ -3591,49 +2685,6 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	/**
-	 * Missed-event recovery. The sweep is an event source for the machine, not an imperative
-	 * differ: it replays the local file tree as discoveries and the
-	 * difference between the machine's membership table and the committed
-	 * map as a synthesized MAP_DELTA. Absence alone never deletes:
-	 * every delete op in the derived delta carries the guid of a previously
-	 * synced entry the map no longer holds anywhere — a real decision.
-	 */
-	private replayMembershipRecovery(diffLog: string[]): void {
-		const machine = this.folderHSM;
-		if (!machine) return;
-		for (const tfile of this.getSyncFiles()) {
-			const vpath = this.getVirtualPath(tfile.path);
-			if (this.isPendingDelete(vpath) || this.pendingCreates.has(vpath)) {
-				continue;
-			}
-			machine.send({
-				type: "FILE_DISCOVERED",
-				path: vpath,
-				origin: "bootstrap",
-				kind: tfile instanceof TFolder ? "folder" : "file",
-			});
-		}
-
-		const snapshot = machine.getSnapshot();
-		if (snapshot.statePath !== "tracking") return;
-		const delta = deriveRecoveryDelta(
-			snapshot.entries,
-			this.syncStore.listEffectiveEntries(),
-		);
-		if (isEmptyRecoveryDelta(delta)) return;
-		diffLog.push(
-			`membership recovery delta: adds=${delta.adds.length} deletes=${delta.deletes.length} moves=${delta.moves.length}`,
-		);
-		machine.send({ type: "MAP_DELTA", ...delta });
-	}
-
-	/**
-	 * Assemble the synchronous local-record cache the FolderHSM guards
-	 * consult: HSM persisted state metadata (documents) plus guid-bearing
-	 * hash-store entries (attachments). Runs before the folder is declared
-	 * hydrated so the provenance ladder never sees an empty cache.
-	 */
 	/**
 	 * Remove the durable records this folder owns outside its per-file IDB
 	 * databases: merge-HSM states scoped to this folder and hash-store rows
@@ -3662,448 +2713,6 @@ export class SharedFolder extends HasProvider {
 		}
 	}
 
-	private async assembleLocalRecordCache(): Promise<void> {
-		try {
-			const stateMetas = await this._hsmStore.getAllStateMeta();
-			for (const stateMeta of stateMetas) {
-				// The HSM store is app-wide; a record is evidence for THIS
-				// folder only with a positive folder association. Records
-				// predating folder scoping carry no association and are
-				// ignored: absent evidence means upload, never trash (P4) —
-				// a colliding vpath from another folder's record must not
-				// classify a fresh local file as a stale materialization.
-				if (stateMeta?.folder !== this.guid) continue;
-				if (stateMeta?.path && stateMeta?.guid) {
-					this._localRecordCache.set(stateMeta.path, {
-						guid: stateMeta.guid,
-						hash: stateMeta.disk?.hash ?? undefined,
-						mtime: stateMeta.disk?.mtime ?? undefined,
-					});
-				}
-			}
-		} catch (e) {
-			this.warn("local record cache: HSM state metadata unavailable", e);
-		}
-		try {
-			const entries = await this.hashStore.getAllEntries();
-			for (const entry of entries) {
-				if (!entry.guid) continue;
-				// Hash store keys are vault-absolute paths.
-				if (!this.checkPath(entry.path)) continue;
-				this._localRecordCache.set(this.getVirtualPath(entry.path), {
-					guid: entry.guid,
-					hash: entry.hash,
-					mtime: entry.modifiedAt,
-				});
-			}
-		} catch (e) {
-			this.warn("local record cache: hash store unavailable", e);
-		}
-	}
-
-	/**
-	 * Execute FolderHSM effects through the existing sync machinery:
-	 * uploads/downloads ride BackgroundSync via placeHold/uploadFile and
-	 * _handleServerCreate, trash goes through Obsidian's trash
-	 * (FileManager.trashFile — honors the user's trash preference), map
-	 * mutations reuse deleteFile/renameFile.
-	 */
-	private handleFolderHSMEffect(effect: FolderEffect): void {
-		switch (effect.type) {
-			case "ENQUEUE_UPLOAD":
-				this.executeEnqueueUpload(effect.path);
-				return;
-			case "ENQUEUE_DOWNLOAD":
-				this.executeEnqueueDownload(effect.path, effect.guid);
-				return;
-			case "TRASH_LOCAL":
-				this.executeTrashLocal(effect.path, effect.guid);
-				return;
-			case "RENAME_LOCAL":
-				this.executeRenameLocal(effect.from, effect.to, effect.guid);
-				return;
-			case "MAP_SET":
-				this.executeMapRename(effect.oldPath, effect.path);
-				return;
-			case "MAP_DELETE":
-				this.executeMapDelete(effect.path);
-				return;
-			case "RETRACT_UPLOAD":
-				this.executeRetractUpload(
-					effect.path,
-					effect.guid,
-					effect.releaseHold,
-					effect.supersededBy,
-				);
-				return;
-			case "PARK":
-				// The parked file AND its persisted hold both stay: a hold
-				// marks content the server does not have, and its identity
-				// is never dropped without a completed publication or an
-				// explicit user action. The machine's row state keeps the
-				// host's retry paths from publishing it (holdIsPublishable).
-				this.log(`[FolderHSM] parked ${effect.path}: ${effect.reason}`);
-				return;
-			case "SURFACE_STATUS":
-				this.notifyListeners();
-				return;
-			case "PERSIST_STATE":
-				this.executeFolderStatePersist();
-				return;
-		}
-	}
-
-	private executeEnqueueUpload(vpath: string): void {
-		// Idempotent under concurrent invocation: the machine re-emits
-		// decided-but-unacknowledged work at-least-once, so a dispatch
-		// already in flight for this path is the same work item, not new
-		// work.
-		if (this._uploadDispatches.has(vpath)) return;
-		try {
-			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
-			if (!tfile || !this.isSyncableTFile(tfile)) return;
-			if (this.skipStorageBlockedUpload(vpath)) return;
-			// The guid is minted here (placeHold) — pendingUpload is the
-			// durable record that this file is ours, awaiting first upload.
-			// placeHold reuses an existing hold's identity, so retries after
-			// restart never mint fresh guids.
-			this._uploadDispatches.add(vpath);
-			this.placeHold([tfile]);
-			this.uploadFile(tfile);
-			const guid = this.pendingUpload.get(vpath) ?? this.syncStore.get(vpath);
-			if (guid) {
-				// Durable acceptance: the hold row is persisted and the
-				// upload queued. Reported exactly once per work item.
-				this.folderHSM?.send({
-					type: "WORK_STARTED",
-					kind: "upload",
-					path: vpath,
-					guid,
-				});
-			}
-		} catch (e) {
-			this._uploadDispatches.delete(vpath);
-			this.warn("[FolderHSM] upload effect failed", vpath, e);
-		}
-	}
-
-	/**
-	 * Resolve the identity a superseding retraction rebinds onto, or
-	 * undefined when this host cannot perform the rebind it was asked
-	 * for. Answered BEFORE the retraction touches anything, because every
-	 * refusal has to be reachable while the mint's durable hold still
-	 * exists — a refusal reached afterwards would already have thrown
-	 * away the only record that content was minted and never published.
-	 *
-	 * Documents only: content-addressed files materialize through their
-	 * own pipeline, and there is no merge to perform for them.
-	 */
-	private rebindTargetForRetraction(
-		vpath: string,
-		heldGuid: string | undefined,
-		supersededBy: string,
-	): string | undefined {
-		if (!heldGuid) return;
-		if (this._pendingRemaps.has(vpath)) return;
-		const committedMeta = this.syncStore.getCommittedMeta(vpath);
-		if (!isDocumentMeta(committedMeta)) return;
-		if (committedMeta.id !== supersededBy) return;
-		return supersededBy;
-	}
-
-	/**
-	 * Withdraw queued upload work for a path. Always cancels the queued
-	 * work; releases the persisted hold and tears down provisional
-	 * live-doc state only when the machine sanctioned it (the local file
-	 * is gone) — otherwise the hold's identity is preserved with the file.
-	 *
-	 * A retraction naming a committed identity that supersedes the mint is
-	 * a rebind, not a bare retraction: retracting alone would leave the
-	 * path with no live document at all, since the mint's provisional
-	 * state comes down and nothing has materialized the committed
-	 * history. For that class NOTHING is released here.
-	 *
-	 * The hold is the only durable record that a guid was minted and never
-	 * uploaded — lose one and the content behind it is unrecoverable and
-	 * untraceable. So it is released on a result, never on a request. The
-	 * rebind can decline (no transport, no server content yet, a stale
-	 * document) and this host can decline (a committed kind it cannot
-	 * merge, a rebind already in flight); on every one of those the path
-	 * keeps its mint, its live document and its hold, stays usable, and is
-	 * retried from the same durable evidence — by the next update event
-	 * for the committed identity, the next pending-upload sweep, or the
-	 * next session's classification pass. The release happens inside the
-	 * rebind, at the point the committed history is in hand.
-	 */
-	private executeRetractUpload(
-		vpath: string,
-		guid: string | null,
-		releaseHold: boolean,
-		supersededBy?: string,
-	): void {
-		this._uploadDispatches.delete(vpath);
-		const heldGuid = this.pendingUpload.get(vpath) ?? guid ?? undefined;
-		if (heldGuid) {
-			this.backgroundSync.cancelDocumentWork(heldGuid);
-		}
-		if (supersededBy !== undefined && supersededBy !== heldGuid) {
-			// Rebuild the path's document on the committed history, seeding
-			// the merge base from the bytes on disk — the same convergence
-			// the committed-guid-differs path in markUploaded drives. The
-			// mint's document, its local state and its hold all come down
-			// inside the rebind.
-			const rebindTo = this.rebindTargetForRetraction(
-				vpath,
-				heldGuid,
-				supersededBy,
-			);
-			if (rebindTo === undefined || heldGuid === undefined) {
-				this.warn(
-					`[${vpath}] supersession kept its hold: no rebind available`,
-					{ heldGuid, supersededBy },
-				);
-				return;
-			}
-			this._pendingRemaps.add(vpath);
-			this.executeRemap({
-				path: vpath,
-				fromGuid: heldGuid,
-				toGuid: rebindTo,
-			})
-				.catch((e) => {
-					this.warn(`[${vpath}] rebind to committed identity failed`, e);
-				})
-				.finally(() => {
-					this._pendingRemaps.delete(vpath);
-				});
-			return;
-		}
-		if (heldGuid) {
-			const file = this.files.get(heldGuid);
-			if (file) {
-				this.fset.delete(file);
-				this.files.delete(heldGuid);
-				file.cleanup();
-				file.destroy();
-				this.fset.update();
-			}
-		}
-		if (releaseHold) {
-			this.pendingUpload.delete(vpath);
-			if (heldGuid) {
-				if (this._localDoc) {
-					this.deferDocTeardown([{ guid: heldGuid, path: vpath }]);
-				} else {
-					this.teardownDocState(heldGuid);
-				}
-			}
-		}
-	}
-
-	private executeEnqueueDownload(vpath: string, guid: string): void {
-		if (this.existsSync(vpath)) return;
-		if (this._pendingDownloads.has(vpath)) return;
-		const meta = this.syncStore.getMeta(vpath);
-		if (!meta || meta.id !== guid) {
-			// A mid-sync store (meta/docs window) or a moved-on map. Report
-			// instead of dropping silently: the machine keeps the entry
-			// pendingDownload and retries on the next delta for the key.
-			this.warn(
-				"[FolderHSM] download enqueue dropped: store not ready",
-				vpath,
-				guid,
-				meta?.id,
-			);
-			this.folderHSM?.send({ type: "DOWNLOAD_FAILED", path: vpath, guid });
-			this.armDownloadSweep();
-			return;
-		}
-		// Durable acceptance: the download enters the in-flight set and the
-		// server-create pipeline. Reported exactly once per work item.
-		this.folderHSM?.send({
-			type: "WORK_STARTED",
-			kind: "download",
-			path: vpath,
-			guid,
-		});
-		const promise = this._handleServerCreate(vpath, meta)
-			.then((file) => {
-				if (file) {
-					this._localRecordCache.set(
-						vpath,
-						this.recordSyncedNow(vpath, guid),
-					);
-					this.folderHSM?.send({
-						type: "DOWNLOAD_COMPLETE",
-						path: vpath,
-						guid,
-					});
-				} else {
-					// Deferred: the room exists but carries no content yet
-					// (the sharer has not finished staging). The accepted
-					// work item died without executing — report it so the
-					// machine returns the row to pending; the sweep retries
-					// once content lands.
-					this.folderHSM?.send({
-						type: "DOWNLOAD_FAILED",
-						path: vpath,
-						guid,
-					});
-					this.armDownloadSweep();
-				}
-				return file;
-			})
-			.catch((e) => {
-				this.warn("[FolderHSM] download effect failed", vpath, e);
-				this.folderHSM?.send({
-					type: "DOWNLOAD_FAILED",
-					path: vpath,
-					guid,
-				});
-				this.armDownloadSweep();
-			});
-		trackPromise(`folderHSMDownload:${this.guid}:${vpath}`, promise);
-	}
-
-	private executeTrashLocal(vpath: string, guid: string | null): void {
-		const fullPath = this.getPath(vpath);
-		const tfile = this.vault.getAbstractFileByPath(fullPath);
-		if (!tfile) {
-			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
-			return;
-		}
-		// A folder trash cascades vault-delete events for every descendant.
-		// Unmarked, those echoes launder into recorded local delete intent
-		// and the machine then lawfully fights any later re-add (a deletion
-		// undo re-deletes forever). Mark the whole subtree before trashing
-		// so the cascade reads as our own effect, not user intent.
-		const marked: string[] = [vpath];
-		if (tfile instanceof TFolder) {
-			Vault.recurseChildren(tfile, (child) => {
-				if (child === tfile) return;
-				try {
-					marked.push(this.getVirtualPath(child.path));
-				} catch {
-					// Child resolves outside the folder namespace; no mark.
-				}
-			});
-		}
-		marked.forEach((p) => this.markPendingDelete(p));
-		const promise = (async () => {
-			try {
-				await this.trashFile(tfile);
-			} catch (e) {
-				// A vanished file (already moved by an ancestor folder's
-				// trash) IS completed work; anything else leaves the entry
-				// pendingTrash for retry. TRASH_COMPLETE is a report of work
-				// done, never of work attempted — reporting completion for
-				// work that did not happen strands local files.
-				if (this.vault.getAbstractFileByPath(fullPath)) {
-					this.warn("[FolderHSM] trash effect failed", vpath, e);
-					return;
-				}
-			}
-			// The trash executor never mutates the map: membership deletion
-			// belongs to the machine, and the entry was already removed by
-			// the delta that emitted this effect. A map write here (the old
-			// deleteFiles call) re-deleted undo-restored entries under a
-			// local origin whenever a cascade-trashed child's own effect
-			// resolved late — the deletion-echo defect. Only the live doc
-			// object and local records are cleaned up.
-			//
-			// The completion report is unconditional from here: the file
-			// has left the disk, so the work IS done. A cleanup failure
-			// must neither swallow the report — an unreported completion
-			// strands the row in its trashing state, and the tracked
-			// promise records a rejection without a word — nor pass
-			// unnarrated.
-			try {
-				const doc =
-					(guid ? this.files.get(guid) : undefined) ??
-					this.fset.find((f) => f.path === vpath);
-				if (doc) {
-					this.fset.delete(doc);
-					this.files.delete(doc.guid);
-					doc.cleanup();
-					doc.destroy();
-					if (this._localDoc) {
-						this.deferDocTeardown([{ guid: doc.guid, path: vpath }]);
-					} else {
-						this.teardownDocState(doc.guid);
-					}
-				}
-				this.pendingUpload.delete(vpath);
-				this._localRecordCache.delete(vpath);
-				this._uploadDispatches.delete(vpath);
-				this.fset.update();
-			} catch (e) {
-				this.warn("[FolderHSM] trash cleanup failed", vpath, e);
-			}
-			this.folderHSM?.send({ type: "TRASH_COMPLETE", path: vpath, guid });
-		})().catch((e) => {
-			// Nothing on this path may die silently: whatever slips the
-			// inner handling is narrated here.
-			this.warn("[FolderHSM] trash completion failed", vpath, e);
-		});
-		// Suppression tokens are NOT cleared here: the cascade's vault
-		// delete events arrive seconds after the rename resolves, so each
-		// token is consumed by its event (consumePendingDelete) or expires
-		// by TTL. Clearing on completion re-opens the echo window.
-		trackPromise(`folderHSMTrash:${this.guid}:${vpath}`, promise);
-	}
-
-	private executeRenameLocal(from: string, to: string, guid: string): void {
-		const tfile = this.vault.getAbstractFileByPath(this.getPath(from));
-		if (!tfile) return;
-		const file = this.files.get(guid);
-		const promise = (async () => {
-			if (file) {
-				await this._handleServerRename(file, to, tfile);
-			} else {
-				const dir = dirname(to);
-				if (!this.existsSync(dir)) {
-					await this.mkdir(dir);
-				}
-				await this.fileManager.renameFile(
-					tfile,
-					normalizePath(this.getPath(to)),
-				);
-			}
-			const record = this._localRecordCache.get(from);
-			if (record) {
-				this._localRecordCache.delete(from);
-				this._localRecordCache.set(to, record);
-			}
-		})().catch((e) => {
-			this.warn("[FolderHSM] rename effect failed", from, to, e);
-		});
-		trackPromise(`folderHSMRename:${this.guid}:${from}`, promise);
-	}
-
-	private executeMapRename(oldPath: string | undefined, newPath: string): void {
-		try {
-			const tfile = this.vault.getAbstractFileByPath(this.getPath(newPath));
-			if (!tfile) return;
-			if (oldPath) {
-				this.renameFile(tfile, this.getPath(oldPath));
-			}
-			// No oldPath: nothing to rename, and nothing to mint — identity
-			// is minted only in the execution of the machine's upload
-			// effect. (The machine's MAP_SET always carries oldPath; this
-			// branch exists only so a malformed effect cannot mint.)
-		} catch (e) {
-			this.warn("[FolderHSM] map rename effect failed", newPath, e);
-		}
-	}
-
-	private executeMapDelete(vpath: string): void {
-		try {
-			this.deleteFile(vpath);
-		} catch (e) {
-			this.warn("[FolderHSM] map delete effect failed", vpath, e);
-		}
-	}
-
 	syncByType(
 		syncStore: SyncStore,
 		diffLog: string[],
@@ -4117,9 +2726,6 @@ export class SharedFolder extends HasProvider {
 					this.applyRemoteState(meta.id, path, syncStore.remoteIds, diffLog),
 				);
 			} else if (!meta && types.contains(SyncType.Document)) {
-				// Pending upload only — no meta yet. Retry the upload so
-				// syncFileTree's sweep covers outbound reconciliation alongside
-				// the inbound remap/update work above.
 				ops.push(this.applyPendingUpload(path));
 			}
 		});
@@ -4191,15 +2797,6 @@ export class SharedFolder extends HasProvider {
 				path,
 				promise: this.discardRemotelyDeletedHold(path, pendingGuid),
 			};
-		}
-
-		// The membership row is the only per-file authority: a hold whose
-		// row the machine parked, condemned, or contested must not flush
-		// through the sweep's retry path — the preserved hold is identity
-		// safekeeping, not publication intent.
-		if (this.folderHSM && !this.folderHSM.holdIsPublishable(path)) {
-			if (run) run.decision = "noop";
-			return { op: "noop", path, promise: Promise.resolve() };
 		}
 
 		// Server-authoritative rule: if committed filemeta already points at a
@@ -4374,7 +2971,6 @@ export class SharedFolder extends HasProvider {
 		const file = this.files.get(pendingGuid);
 		this._convergenceDeletionInFlight?.add(path);
 		this.pendingUpload.delete(path);
-		this._uploadDispatches.delete(path);
 		this.backgroundSync.cancelDocumentWork(pendingGuid);
 		if (file) {
 			this.files.delete(pendingGuid);
@@ -4479,18 +3075,10 @@ export class SharedFolder extends HasProvider {
 					),
 				);
 
-				let deletes: Delete[] = [];
-				if (this.folderHSM) {
-					// Local deletions are event-driven (map observer deltas
-					// plus the machine's decide-first recovery replay) — never
-					// inferred from absence in the map.
-					this.replayMembershipRecovery(diffLog);
-				} else {
-					const remotePaths = this.getDesiredRemotePaths();
-					deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
-					if (![...ops, ...deletes].every((op) => op.op === "noop")) {
-						this.log("remote paths", Array.from(remotePaths));
-					}
+				const remotePaths = this.getDesiredRemotePaths();
+				const deletes = this.cleanupExtraLocalFiles(remotePaths, diffLog);
+				if (![...ops, ...deletes].every((op) => op.op === "noop")) {
+					this.log("remote paths", Array.from(remotePaths));
 				}
 				if ([...ops, ...deletes].every((op) => op.op === "noop")) {
 					this.debug("sync: noop");
@@ -4641,22 +3229,6 @@ export class SharedFolder extends HasProvider {
 			if (!(tfile instanceof TFile)) {
 				throw new Error("unexpectedly missing tfile or got tfolder");
 			}
-			if (this.folderHSM) {
-				this.log("[getDoc]: no shared ID; requesting membership decision");
-				const shared = this.requestMembershipDecision(vpath);
-				if (shared !== undefined) {
-					if (!isDocument(shared)) {
-						throw new Error("getDoc(): unexpected ifile type");
-					}
-					shared.move(vpath, this);
-					return shared;
-				}
-				throw new Error(
-					`getDoc(): no shared identity for ${vpath}; membership is ${
-						this.folderHSM.getRowState(vpath) ?? "undecided"
-					}`,
-				);
-			}
 			this.warn("[getDoc]: creating new shared ID for existing tfile");
 			const newDocs = this.placeHold([tfile]);
 			if (newDocs.length > 0) {
@@ -4665,31 +3237,6 @@ export class SharedFolder extends HasProvider {
 				return this.createDoc(vpath, update);
 			}
 		}
-	}
-
-	/**
-	 * The engine-on path for a local file with no shared identity. The
-	 * machine is the only authority that may mint one — minting happens in
-	 * the execution of its upload effect — so the lookup becomes a
-	 * membership decision request: hand the machine the file's presence as
-	 * evidence and honor its verdict. A publication verdict has already
-	 * executed synchronously by the time send() returns (identity minted,
-	 * live file object created); any other verdict — parked, conflicted,
-	 * awaiting trust or confidence, read-only — leaves the file
-	 * local-only, surfaced by the machine, with no handle to return.
-	 */
-	private requestMembershipDecision(vpath: string): IFile | undefined {
-		const machine = this.folderHSM;
-		if (!machine) return undefined;
-		machine.send({
-			type: "FILE_DISCOVERED",
-			path: vpath,
-			origin: "bootstrap",
-			kind: "file",
-		});
-		const minted = this.syncStore.get(vpath);
-		if (minted === undefined) return undefined;
-		return this.files.get(minted);
 	}
 
 	public getCanvas(vpath: string, update = true): Canvas {
@@ -4715,24 +3262,6 @@ export class SharedFolder extends HasProvider {
 			const tfile = this.vault.getAbstractFileByPath(this.getPath(vpath));
 			if (!(tfile instanceof TFile)) {
 				throw new Error("unexpectedly missing tfile or got tfolder");
-			}
-			if (this.folderHSM) {
-				this.log(
-					"[getCanvas]: no shared ID; requesting membership decision",
-				);
-				const shared = this.requestMembershipDecision(vpath);
-				if (shared !== undefined) {
-					if (!isCanvas(shared)) {
-						throw new Error("getCanvas(): unexpected ifile type");
-					}
-					shared.move(vpath, this);
-					return shared;
-				}
-				throw new Error(
-					`getCanvas(): no shared identity for ${vpath}; membership is ${
-						this.folderHSM.getRowState(vpath) ?? "undecided"
-					}`,
-				);
 			}
 			this.warn("[getCanvas]: creating new shared ID for existing tfile");
 			const newDocs = this.placeHold([tfile]);
@@ -4775,31 +3304,6 @@ export class SharedFolder extends HasProvider {
 		const mark = (file: IFile, meta: Meta) => {
 			if (!this.syncStore) {
 				return;
-			}
-
-			// An upload can resolve after the machine refused its path (the
-			// row parked or was condemned while the work was in flight).
-			// With the row outside the upload states there is no membership
-			// to record — writing one would publish the very file the
-			// machine refused. Defense at both layers: the machine also
-			// refuses the late completion. The fence stops only the
-			// refused: a `synced` row refreshing the identity the map
-			// already committed is not a publication — an edited
-			// content-addressed file's steady-state hash refresh must keep
-			// flowing, or the map's picture of the bytes goes permanently
-			// stale.
-			let syncedRefresh = false;
-			if (this.folderHSM && !this.folderHSM.holdIsPublishable(file.path)) {
-				syncedRefresh =
-					this.folderHSM.getRowState(file.path) === "synced" &&
-					this.syncStore.getCommittedMeta(file.path)?.id === meta.id;
-				if (!syncedRefresh) {
-					this.warn(
-						"[markUploaded] dropped: the membership row no longer accepts publication",
-						file.path,
-					);
-					return;
-				}
 			}
 
 			// Server-authoritative rule: never overwrite an existing committed
@@ -4874,25 +3378,6 @@ export class SharedFolder extends HasProvider {
 					});
 				}
 				return;
-			}
-			if (this.folderHSM) {
-				// A committed upload is a durable local record of this path's
-				// identity (with the content evidence that ties it to the
-				// bytes just uploaded), and it settles the membership row.
-				this._localRecordCache.set(
-					file.path,
-					this.recordSyncedNow(file.path, meta.id),
-				);
-				this._uploadDispatches.delete(file.path);
-				if (!syncedRefresh) {
-					// A synced row's refresh has no outstanding work to
-					// settle; only an upload state's completion is reported.
-					this.folderHSM.send({
-						type: "UPLOAD_COMPLETE",
-						path: file.path,
-						guid: meta.id,
-					});
-				}
 			}
 		};
 		if (isDocument(file)) {
@@ -4971,24 +3456,14 @@ export class SharedFolder extends HasProvider {
 		if (tfile instanceof TFolder) {
 			return this.getSyncFolder(vpath, update);
 		} else if (tfile instanceof TFile) {
-			try {
-				if (Document.checkExtension(vpath)) {
-					return this.getDoc(vpath);
-				}
-				if (
-					Canvas.checkExtension(vpath) &&
-					this.syncSettingsManager.isExtensionEnabled(vpath)
-				) {
-					return this.getCanvas(vpath);
-				}
-			} catch (e) {
-				if (this.folderHSM) {
-					// The machine declined to mint an identity: the file
-					// stays local-only and there is no shared handle.
-					this.debug("[getFile] no shared handle", vpath, e);
-					return null;
-				}
-				throw e;
+			if (Document.checkExtension(vpath)) {
+				return this.getDoc(vpath);
+			}
+			if (
+				Canvas.checkExtension(vpath) &&
+				this.syncSettingsManager.isExtensionEnabled(vpath)
+			) {
+				return this.getCanvas(vpath);
 			}
 			if (this.isSyncableTFile(tfile)) {
 				return this.getSyncFile(vpath, update);
@@ -5118,15 +3593,6 @@ export class SharedFolder extends HasProvider {
 					await this.applyPendingUpload(vpath).promise;
 					return;
 				}
-				// The entry row is the per-file authority: a refused row's
-				// content never ships (see uploadDoc).
-				if (this.folderHSM && !this.folderHSM.holdIsPublishable(vpath)) {
-					this.warn(
-						"[uploadCanvas] skipped: the membership row does not accept publication",
-						vpath,
-					);
-					return;
-				}
 				this.log(`[${canvas.path}] No Known Peers: Syncing file into ytext.`);
 				try {
 					await canvas.enrollLocal(contents);
@@ -5181,13 +3647,7 @@ export class SharedFolder extends HasProvider {
 				const synced = await canvas.getServerSynced();
 				if (canvas.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueCanvasDownload(canvas);
-				} else if (
-					this.pendingUpload.get(canvas.path) &&
-					// A preserved hold on a refused row must not resume its
-					// first upload here (see uploadDoc).
-					(!this.folderHSM ||
-						this.folderHSM.holdIsPublishable(canvas.path))
-				) {
+				} else if (this.pendingUpload.get(canvas.path)) {
 					if (this.shouldRoutePendingPublication(canvas.path)) {
 						await this.applyPendingUpload(canvas.path).promise;
 					} else {
@@ -5431,10 +3891,9 @@ export class SharedFolder extends HasProvider {
 	 * The reconciliation branch above hands its deferrals to the
 	 * reconciliation that displaced them. This branch has nothing equivalent:
 	 * the refusal comes from the document itself, so the document is what has
-	 * to discharge it. The machine notifies on every event it handles, which
-	 * is exactly when its answer can change, so the re-drive is driven by the
-	 * document's own state rather than by a timer — and it works with the
-	 * folder engine off, which is the default.
+	 * to discharge it. The document machine notifies on every event it handles,
+	 * which is exactly when its answer can change, so the re-drive is driven by
+	 * the document's own state rather than by a timer.
 	 */
 	private deferDownloadUntilDocumentAccepts(
 		doc: Document,
@@ -5571,16 +4030,8 @@ export class SharedFolder extends HasProvider {
 				throw new Error(`Upload failed, doc does not exist at ${vpath}`);
 			}
 			if (!awaitingUpdates) {
-				// Membership before content: this dispatch is how the entry
-				// machine's ENQUEUE_UPLOAD effect ships content (bootstrap
-				// uploads included), so it waits for the folder's first
-				// confirmed membership settlement before the row check below
-				// is trusted. Without this, a non-authoritative folder could
-				// mint and publish a bootstrap upload during the first,
-				// unconfirmed reconciling pass — before the real handshake
-				// reveals a peer already committed a different identity at
-				// this path — since holdIsPublishable only reflects settled
-				// state once we've actually waited for it.
+				// Outbound content waits for the folder compatibility latch before
+				// dispatching, including bootstrap uploads.
 				if (!this._membershipSettled) {
 					await this.whenMembershipSettled();
 				}
@@ -5594,18 +4045,6 @@ export class SharedFolder extends HasProvider {
 				// pend forever — so resuming here is the ordinary consequence
 				// of teardown rather than a race, and everything below reads a
 				// folder that no longer has the collaborators it needs.
-				// The entry row is the per-file authority: a preserved hold
-				// on a row the machine parked or condemned is identity
-				// safekeeping, not publication intent — neither content nor
-				// membership may ship through this path (defense in depth
-				// with the markUploaded fence).
-				if (this.folderHSM && !this.folderHSM.holdIsPublishable(vpath)) {
-					this.warn(
-						"[uploadDoc] skipped: the membership row does not accept publication",
-						vpath,
-					);
-					return;
-				}
 				if (this._syncConvergenceLatchEnabled) {
 					await this.initializeDocumentContentOnce(doc);
 				} else {
@@ -5643,12 +4082,7 @@ export class SharedFolder extends HasProvider {
 				const synced = await doc.getServerSynced();
 				if (doc.tfile?.stat.size === 0 && !synced) {
 					this.backgroundSync.enqueueDownload(doc, false);
-				} else if (
-					this.pendingUpload.get(doc.path) &&
-					// A preserved hold on a refused row must not resume its
-					// first upload here (see uploadDoc).
-					(!this.folderHSM || this.folderHSM.holdIsPublishable(doc.path))
-				) {
+				} else if (this.pendingUpload.get(doc.path)) {
 					if (this.shouldRoutePendingPublication(doc.path)) {
 						await this.applyPendingUpload(doc.path).promise;
 					} else {
@@ -5966,24 +4400,10 @@ export class SharedFolder extends HasProvider {
 					}
 				}
 			}
-			// The tagged origin exists for deletion capture, which only
-			// rides the split; flag-off keeps the folder instance origin.
-		}, this._localDoc ? FOLDER_LOCAL_DELETE_ORIGIN : this);
+		}, this);
 
-		if (this._localDoc) {
-			// Under the split, teardown of a deleted doc's local CRDT
-			// persistence and HSM state defers for the capture retention
-			// window, so a deletion undo reattaches instead of re-downloading.
-			this.deferDocTeardown(
-				Array.from(cleanupGuids.entries()).map(([guid, path]) => ({
-					guid,
-					path,
-				})),
-			);
-		} else {
-			for (const guid of cleanupGuids.keys()) {
-				this.teardownDocState(guid);
-			}
+		for (const guid of cleanupGuids.keys()) {
+			this.teardownDocState(guid);
 		}
 	}
 
@@ -5994,46 +4414,6 @@ export class SharedFolder extends HasProvider {
 		indexedDB.deleteDatabase(`${this.appId}-relay-canvas-${guid}`);
 		const p = this._hsmStore.deleteState(guid).catch(() => {});
 		trackAsyncCleanup(p);
-	}
-
-	private deferDocTeardown(
-		docs: Iterable<{ guid: string; path: string }>,
-	): void {
-		const expiresAt =
-			this.timeProvider.now() + FOLDER_DELETION_RETENTION_MS;
-		let changed = false;
-		for (const { guid, path } of docs) {
-			this._deferredTeardown.push({ guid, path, expiresAt });
-			changed = true;
-		}
-		if (changed) {
-			// The retained-doc ledger persists as fork-class state, written
-			// only through the machine's PERSIST_STATE effect.
-			this.folderHSM?.requestPersist();
-		}
-	}
-
-	/**
-	 * Execute expired deferred teardowns. Guids re-added to membership by an
-	 * undo leave the ledger without teardown — their state is live again.
-	 */
-	private sweepDeferredTeardown(): void {
-		if (this._deferredTeardown.length === 0) return;
-		const now = this.timeProvider.now();
-		const live = new Set(this.syncStore.getCommittedSubdocGuids());
-		const keep: RetainedDoc[] = [];
-		for (const entry of this._deferredTeardown) {
-			if (live.has(entry.guid)) continue;
-			if (entry.expiresAt <= now) {
-				this.teardownDocState(entry.guid);
-			} else {
-				keep.push(entry);
-			}
-		}
-		if (keep.length !== this._deferredTeardown.length) {
-			this._deferredTeardown = keep;
-			this.folderHSM?.requestPersist();
-		}
 	}
 
 	renameFile(tfile: TAbstractFile, oldPath: string) {
@@ -6081,13 +4461,6 @@ export class SharedFolder extends HasProvider {
 				const guid = this.syncStore.get(oldVPath);
 				if (!guid) {
 					return;
-				}
-				if (this.folderHSM) {
-					const record = this._localRecordCache.get(oldVPath);
-					if (record) {
-						this._localRecordCache.delete(oldVPath);
-						this._localRecordCache.set(newVPath, record);
-					}
 				}
 				const toMove: [string, string, string][] = [];
 				if (file instanceof SyncFolder) {
@@ -6140,10 +4513,6 @@ export class SharedFolder extends HasProvider {
 		// re-check `destroyed` and bail instead of pending forever.
 		this.markMembershipSettled();
 		this.markFirstSyncConverged();
-		if (this._downloadSweepTimer !== null) {
-			this.timeProvider.clearTimeout(this._downloadSweepTimer);
-			this._downloadSweepTimer = null;
-		}
 		this.pendingCreates.forEach((timer) => this.timeProvider.clearTimeout(timer));
 		this.pendingCreates.clear();
 		this.clearDownloadsDeferredByState();
@@ -6169,10 +4538,6 @@ export class SharedFolder extends HasProvider {
 
 		this.recordingBridge?.dispose();
 		this.cas.destroy();
-		this.deleteCollector?.destroy();
-		this.deleteCollector = null;
-		this.folderBridge?.destroy();
-		this.folderBridge = null;
 		this.syncStore.destroy();
 		this.syncSettingsManager.destroy();
 		this.mergeManager?.destroy();
@@ -6186,13 +4551,6 @@ export class SharedFolder extends HasProvider {
 			const p = this._persistence.destroy().catch(() => {});
 			trackAsyncCleanup(p);
 		}
-		if (this._folderStateStore) {
-			const p = this._folderStateStore.destroy().catch(() => {});
-			trackAsyncCleanup(p);
-			this._folderStateStore = null;
-		}
-		this._localDoc?.destroy();
-		this._localDoc = null;
 		super.destroy();
 		this.fset.destroy();
 		this._settings.destroy();
@@ -6286,9 +4644,6 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 			// The folder's pending-upload records live in localStorage, not
 			// IDB; removal is the only point where they become garbage.
 			item.clearPendingUploads();
-			// The fork-class row's lifecycle is bound to the folder's:
-			// unsharing retires it.
-			item.retireFolderState();
 			// Folder-scoped HSM states and in-folder hash rows, including
 			// records for files outside the current in-memory enumeration.
 			void item.reclaimOwnedRecords();
@@ -6392,12 +4747,6 @@ export class SharedFolders extends ObservableSet<SharedFolder> {
 		indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}`);
 		indexedDB.deleteDatabase(`${this.appId}-relay-folder-${guid}-remote`);
 		indexedDB.deleteDatabase(guid);
-		// The folder's fork-class row retires with the rest of its state.
-		const folderStateStore = new FolderHSMStore(this.appId);
-		void folderStateStore
-			.deleteState(guid)
-			.catch(() => {})
-			.then(() => folderStateStore.destroy());
 	}
 
 	/**

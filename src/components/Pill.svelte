@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Activity, ArrowUp, Satellite, Layers, Unplug } from "lucide-svelte";
+	import { Activity, Satellite, Layers, Unplug } from "lucide-svelte";
 	import type { ConnectionStatus } from "src/HasProvider";
 	import type { RemoteSharedFolder } from "src/Relay";
 	export let status: ConnectionStatus = "disconnected";
@@ -9,8 +9,6 @@
 	export let showProgress = false;
 	export let localOnly: boolean = false;
 	export let enableDraftMode: boolean = false;
-	export let deletionsGated: boolean = false;
-	export let pendingDeletions: number = 0;
 	export let syncStatus: "pending" | "running" | "completed" | "failed" =
 		"pending";
 
@@ -18,16 +16,12 @@
 	$: satelliteClass = effectiveLocalOnly
 		? "system3-paused"
 		: `system3-${status}`;
-	$: satelliteLabel = deletionsGated
-		? `${remote?.relay.name || "Relay Server"} (${status}) — ${pendingDeletions} ${
-				pendingDeletions === 1 ? "deletion" : "deletions"
-			} pending`
-		: effectiveLocalOnly
+	$: satelliteLabel = effectiveLocalOnly
 			? `${remote?.relay.name || "Relay Server"} (paused)`
 			: `${remote?.relay.name || "Relay Server"} (${status})`;
 </script>
 
-<div class="system3-folder-icons" class:system3-gated-clickable={deletionsGated}>
+<div class="system3-folder-icons">
 	<!-- Always show progress while running, regardless of completion -->
 	{#if showProgress}
 		<span class="system3-progress-text system3-{syncStatus}" style="opacity: 1">
@@ -35,20 +29,9 @@
 		</span>
 	{/if}
 	{#if relayId}
-		{#if !deletionsGated}
-			<!-- The stack icon's hover reveal reads as noise next to the held
-			     count, so it stays out of the pill while a burst is gated. -->
-			<span class="notebook system3-icon hidden" aria-label="Tracking Changes">
-				<Layers class="inline-icon" style="width: 0.8em" />
-			</span>
-		{/if}
-		{#if deletionsGated && pendingDeletions > 0}
-			<span class="system3-held-count">
-				<span class="system3-held-digits">{pendingDeletions}</span><ArrowUp
-					style="width: 1em; height: 1em; flex: none"
-				/>
-			</span>
-		{/if}
+		<span class="notebook system3-icon hidden" aria-label="Tracking Changes">
+			<Layers class="inline-icon" style="width: 0.8em" />
+		</span>
 		<span
 			class="satellite system3-icon {satelliteClass}"
 			aria-label={satelliteLabel}
