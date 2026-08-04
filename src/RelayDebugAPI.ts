@@ -660,7 +660,7 @@ export class RelayDebugAPI {
    */
   lookupDocument(path: string): { doc: any; hsm: any; guid: string; folder: any; filePath: string } | null {
     const sharedFolders = this.plugin?.sharedFolders;
-    if (!sharedFolders) return null;
+    if (!sharedFolders || !path) return null;
     if (!path.startsWith('/')) {
       for (const folder of (sharedFolders as any)._set.values()) {
         const doc = folder.mergeManager?._getDocument(path);
@@ -1607,8 +1607,10 @@ export class RelayDebugAPI {
 
     const rows: { guid: string; path: string; status: string }[] = [];
     for (const [guid, syncStatus] of mm.syncStatus.entries()) {
-      const doc = mm._getDocument?.(guid);
-      const vpath = doc?.path;
+      const document = mm._getDocument?.(guid);
+      const candidate = folder.files?.get(guid);
+      const file = document ?? (isCanvas(candidate) ? candidate : undefined);
+      const vpath = file?.path;
       rows.push({
         guid,
         path: vpath ? this.toVaultPath(folder, vpath) : guid,
