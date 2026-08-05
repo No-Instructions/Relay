@@ -3352,6 +3352,17 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 			},
 			storeTwoWayConflict: (_hsm, event) => {
 				const data = (event as any).data;
+				// The invoke loaded the file to compare against, so its disk
+				// identity is confirmed even when no disk event preceded the
+				// conflict. Record it now: a resolution that picks the on-disk
+				// text produces no later save or disk event, and the capture
+				// path refuses without a confirmed hash to attach.
+				if (data.disk) {
+					this._disk = { hash: data.disk.hash, mtime: data.disk.mtime };
+					if (this.pendingDiskContents === data.disk.content) {
+						this.pendingDiskHash = data.disk.hash;
+					}
+				}
 				this._conflict = new Conflict({
 					base: data.localText,
 					ours: data.localText,
@@ -3871,6 +3882,7 @@ export class MergeHSM implements MachineHSM, SyncBridgeHost {
 					clean: false,
 					localText,
 					diskText,
+					disk,
 					conflictRegions: computeTwoWayConflictRegions(localText, diskText),
 				};
 			},
