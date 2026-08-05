@@ -34,7 +34,34 @@ export const attributionFilterField = StateField.define<AttributionFilter>({
 });
 
 export const userAttributionTheme = EditorView.baseTheme({
-	".cm-attribution": {},
+	".cm-attribution": {
+		position: "relative",
+	},
+	// Author name badge, rendered purely in CSS from the mark's data-author
+	// attribute so it appears the instant the pointer enters — a native title
+	// attribute would wait out the browser's fixed tooltip delay. Styled to
+	// match the remote-caret name label (.cm-ySelectionInfo). Only exists
+	// while attribution decorations do, so it costs nothing when the mode is
+	// off and nothing outside hover while it is on.
+	".cm-attribution:hover::after": {
+		content: "attr(data-author)",
+		position: "absolute",
+		top: "-1.05em",
+		left: "-1px",
+		fontSize: ".75em",
+		fontFamily: "serif",
+		fontStyle: "normal",
+		fontWeight: "normal",
+		lineHeight: "normal",
+		userSelect: "none",
+		pointerEvents: "none",
+		color: "white",
+		paddingLeft: "2px",
+		paddingRight: "2px",
+		zIndex: 101,
+		backgroundColor: "var(--cm-attribution-color)",
+		whiteSpace: "nowrap",
+	},
 });
 
 function filterIncludes(
@@ -50,7 +77,7 @@ function readAttributionFilter(state: EditorState): AttributionFilter {
 	return state.field(attributionFilterField, false) ?? null;
 }
 
-class UserAttributionPluginValue {
+export class UserAttributionPluginValue {
 	decorations: DecorationSet = Decoration.none;
 	editor: EditorView;
 	private destroyed = false;
@@ -177,8 +204,9 @@ class UserAttributionPluginValue {
 					ranges.push(
 						Decoration.mark({
 							attributes: {
-								style: `background-color: ${color.light}; border-bottom: 1px solid ${color.color}`,
-								title: `Written by ${display}`,
+								style: `background-color: ${color.light}; border-bottom: 1px solid ${color.color}; --cm-attribution-color: ${color.color}`,
+								"data-author": display,
+								"aria-description": `Written by ${display}`,
 							},
 							class: "cm-attribution",
 						}).range(from, to),
