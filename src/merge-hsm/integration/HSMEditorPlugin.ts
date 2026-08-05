@@ -261,6 +261,23 @@ export class HSMEditorPluginValue implements PluginValue {
     if (this.cm6Integration) return true;
     if (this.destroyed) return false;
 
+    // Never bind a fragment editor. Obsidian creates child EditorViews
+    // scoped to a fragment of the document (e.g. live-preview table cell
+    // editors); they resolve editorInfoField.file to the host file, so every
+    // identity check below passes, but their buffer holds only the fragment.
+    // Binding one treats fragment content and offsets as whole-document
+    // state: the born-attached render replaces the fragment with the full
+    // document text, and CM6_CHANGE events apply fragment-relative positions
+    // to the document Y.Text. A fragment editor is recognizable because the
+    // info field's `editor` is the host view's main editor, not itself. (DOM
+    // ancestry cannot be used here: fragment editors are created detached,
+    // so their DOM is not yet inside the host editor at bind time.)
+    // Fragment edits reach the document through the host editor when the
+    // widget commits them.
+    const bindingInfo = this.editor.state.field(editorInfoField, false);
+    const infoEditorView = (bindingInfo?.editor as { cm?: EditorView } | undefined)?.cm;
+    if (infoEditorView && infoEditorView !== this.editor) return false;
+
     const connectionManager = getConnectionManager(this.editor);
     if (!connectionManager) return false;
 
