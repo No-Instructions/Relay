@@ -397,6 +397,17 @@ export async function createTestHSM(
 				initializedAfterSync = true;
 				return true;
 			},
+			async initializeWithContent(contentLoader, fieldName = "contents") {
+				if (hadContentAtSync || initializedAfterSync) return false;
+				const { content } = await contentLoader();
+				doc.transact(() => {
+					const header = doc.getMap("relay");
+					if (!header.has("v")) header.set("v", 0);
+					doc.getText(fieldName).insert(0, content);
+				});
+				initializedAfterSync = true;
+				return true;
+			},
 			opCapture: null as OpCapture | null,
 		};
 
